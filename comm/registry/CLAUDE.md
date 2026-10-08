@@ -6,7 +6,7 @@ may act as it. These scripts resolve the handle, claim it, list the rows and rec
 `~/.sot-comm/bin` (the folder is listed in `bin-folders.txt`). Part of messaging; charter: comm/CLAUDE.md.
 
 ## Files
-- `comm-context.sh`: resolve this shell's identity from pin, self-file or derivation
+- `comm-context.sh`: resolve identity from pin, declared-host self slot or derivation, migrating only a validated raw-host legacy slot
 - `comm-join.sh`: claim and declare a handle
 - `comm-leave.sh`: leave the registry
 - `comm-list.sh`: the registry plus the frontend boxes' declared sessions
@@ -25,5 +25,6 @@ may act as it. These scripts resolve the handle, claim it, list the rows and rec
 - Every registry write is `registry_replace` under `with_lock`, and an unreadable registry is never "absent"
   (`sot_registry_read` returns 2).
 - `comm-join.sh` refuses to write another repo's identity into a slot keyed by `$SOT_WORKSPACE_ID`.
+- An unpinned self slot and registry host use the declared host; derived handle text keeps its raw host component. Every current self publication and legacy migration uses the registry lock; the migration calls the already-locked writer. It never replaces another project or a concurrently populated canonical slot, and legacy recovery requires the matching registry handle/workspace/root.
 - `comm-context.sh` trusts a row's self-file even after a newer `agent.join` moved its handle off that row
   (`comm/CLAUDE.md` records the gap).

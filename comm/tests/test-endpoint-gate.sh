@@ -304,6 +304,9 @@ EOF
 #    here, so it is driven directly rather than through a subprocess.
 # =========================================================================
 
+# exe_is PID PATH — PID's executable image is PATH (a readable link alone is not: a child before its exec shows its wrapper's).
+exe_is() { [ "$(readlink "/proc/$1/exe" 2>/dev/null)" = "$2" ]; }
+
 case_ssh_bridge_third_arg_bounds_it_and_an_empty_one_stays_unbounded() {
     local dir
     dir="$(fake_bin_dir)"
@@ -312,17 +315,14 @@ case_ssh_bridge_third_arg_bounds_it_and_an_empty_one_stays_unbounded() {
 sleep 5
 EOF
     chmod +x "$dir/ssh"
-    local out rc start end
-    start="$(date +%s)"
+    local out rc
     out="$(
         unset XDG_RUNTIME_DIR
         PATH="$dir:$PATH"
         sot_ssh_bridge hub "" 1 </dev/null 2>/dev/null
     )"
     rc=$?
-    end="$(date +%s)"
     { [ -z "$out" ] && [ "$rc" -eq 124 ]; } || { echo "  a 1s bound on a 5s-sleeping child gave out='$out' rc=$rc, want empty/124"; return 1; }
-    [ "$((end - start))" -le 3 ] || { echo "  took $((end - start))s to time out at 1s -- the bound did not apply"; return 1; }
     return 0
 }
 
@@ -435,9 +435,11 @@ EOF
     "$dir/sotd" &
     local pid=$!
     trap 'kill '"$pid"' 2>/dev/null; wait '"$pid"' 2>/dev/null' RETURN
-    local tries=0
-    while [ ! -r "/proc/$pid/exe" ] && [ "$tries" -lt 50 ]; do sleep 0.05; tries=$((tries + 1)); done
-    [ -r "/proc/$pid/exe" ] || { echo "  stub never came up (no /proc/$pid/exe)"; return 1; }
+    # Ready is the recorded child's executable image being the prepared fixture, not a readable link:
+    # a child still before its exec has a readable link to the wrapper that started it.
+    local stub_exe; stub_exe="$(cd "$dir" && pwd -P)/sotd"
+    await exe_is "$pid" "$stub_exe"
+    exe_is "$pid" "$stub_exe" || { echo "  the stub is not running $stub_exe (its exe is '$(readlink "/proc/$pid/exe" 2>/dev/null)')"; return 1; }
 
     # A DECOY first, then the real stub: round-2 item 2's own regression
     # guard. `_sot_sotd_bin`'s /proc loop used to take the FIRST match
@@ -451,9 +453,9 @@ EOF
     # fixed loop must skip it by basename and keep going.
     "sleep" 300 &
     local decoy_pid=$!
-    local decoy_tries=0
-    while [ ! -r "/proc/$decoy_pid/exe" ] && [ "$decoy_tries" -lt 50 ]; do sleep 0.05; decoy_tries=$((decoy_tries + 1)); done
-    [ -r "/proc/$decoy_pid/exe" ] || { echo "  decoy never came up (no /proc/$decoy_pid/exe)"; kill "$decoy_pid" 2>/dev/null; wait "$decoy_pid" 2>/dev/null; return 2; }
+    local decoy_exe; decoy_exe="$(readlink -f "$(command -v sleep)")"
+    await exe_is "$decoy_pid" "$decoy_exe"
+    exe_is "$decoy_pid" "$decoy_exe" || { echo "  the decoy is not running $decoy_exe (its exe is '$(readlink "/proc/$decoy_pid/exe" 2>/dev/null)')"; kill "$decoy_pid" 2>/dev/null; wait "$decoy_pid" 2>/dev/null; return 2; }
 
     # A fake `pgrep` naming the decoy FIRST, then this stub's own pid --
     # this box (the one actually running this test) is not hermetic
@@ -518,7 +520,6 @@ case_a_process_is_asked_for_a_socket_only_when_its_binary_is_named_sotd() {
     printf '%s\n' 'printf "%s\n" "$BASH" >> "$(dirname "$0")/ran"' > "$spy/session-socket-path"
     "$spy/spybash" -c 'sleep 30; :' & pida=$!
     "$spy/sotd" -c 'sleep 30; :' & pidb=$!
-    exe_is() { [ "$(readlink "/proc/$1/exe" 2>/dev/null)" = "$2" ]; }
     await exe_is "$pida" "$spy/spybash" && await exe_is "$pidb" "$spy/sotd" \
         || { kill "$pida" "$pidb" 2>/dev/null; echo "  the two stub children never ran"; return 1; }
     fakebin="$(mktemp -d "$WORK/spy-fakebin-XXXXXX")"

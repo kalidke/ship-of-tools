@@ -222,11 +222,10 @@ sot_jq_rawfile() {
 # the SSH target a remote frontend dials, `scripts/launch-sot.ps1`/
 # `launch-sot.sh` — reusing it here would silently rename a frontend's
 # declared identity to whatever it dials), else the first `.`-label of
-# `hostname -s`, lowercased. Feeds ONLY `sot_hello_frame`'s wire `host`
-# field and display/logs — never an address or on-disk namespace: no
-# on-disk namespace changes this sprint (S1), so comm-context.sh's own
-# `HOST` (the self-file key, handle derivation) does NOT call this;
-# `hostname -s` there stays completely independent, exactly as on main.
+# `hostname -s`, lowercased. Feeds `sot_hello_frame`'s wire `host` field,
+# display/logs, and comm-context.sh's `HOST`, which keys the registry row and
+# the unpinned self slot.
+# The declared host owns registry facts and self-slot keys; raw host text is only the derived-handle component and validated legacy-slot input. Local defaults use HANDLE_HOST; remote defaults use the admitted target's declared host.
 # Fails loudly (S19) rather than printing empty when neither source
 # resolves — a hello with an empty declared host is worse than a hello
 # that never sent one at all.

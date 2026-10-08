@@ -18,6 +18,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+use sot_protocol::op;
+
+#[allow(dead_code, reason = "the shared fixture serves more suites than this one uses")]
+mod support;
+use support::{call, connect_and_hello, Env, BOUND};
+
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 use comm_inbox::{
     create_lock_record, file_frame, inbox_lock_wait, lock_identity, machine_id, record_at_start, route, AtStart, Role, Route,
     LOCK_RECORD,
@@ -327,4 +335,155 @@ fn t11_rust_sends_one() {
         Ok(()) => println!("filed {msg} after {ms}ms"),
         Err(e) => println!("FAILED {msg}: {e} after {ms}ms"),
     }
+}
+
+/// The host a session and the daemon agree on (C2): a box whose declared host (`SOT_SELF_HOST`) differs from its raw
+/// `hostname -s` still joins under the daemon's host. The registry row, the unpinned self slot, the unread clear on
+/// activation and the destroy prune all key on that one fact; a raw-host registry row is invisible to the daemon.
+#[tokio::test]
+async fn a_join_under_a_distinct_declared_host_binds_clears_and_is_pruned() {
+    const DECLARED: &str = "Declared-Box";
+    const RAW: &str = "rawbox";
+    const HANDLE: &str = "hostjoin";
+    let _serial = SERIAL.lock().await;
+    assert!(
+        support::sot_capsule_exe().is_file(),
+        "{} not found next to sotd; build it first",
+        support::CAPSULE_EXE_NAME
+    );
+    let env = Env::new("cfhost");
+    let stub = env._tmp.path().join("stubbin");
+    std::fs::create_dir_all(&stub).unwrap();
+    sot_log::test_exec::write_executable(&stub.join("claude"), "#!/bin/sh\nexec sleep 600\n");
+    env.spawn_sotd_with_path_and_env(&stub, &[("SOT_SELF_HOST", DECLARED)]);
+    let (mut conn, mut id) = connect_and_hello(&env.socket_path).await;
+    let create = serde_json::json!({
+        "label": "host-row", "project_root": env.workspace_project_root.to_string_lossy(), "runtime": "capsule", "agent": "claude",
+    });
+    let res = call(&mut conn, id, op::WORKSPACE_CREATE, create).await;
+    id += 1;
+    assert!(
+        res.payload.get("error").is_none(),
+        "workspace.create failed: {:?}",
+        res.payload
+    );
+    let ws = res.payload["workspace_id"]
+        .as_str()
+        .expect("workspace_id")
+        .to_string();
+
+    let bin = env._tmp.path().join("bin");
+    let staged = Command::new("bash")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../comm/tests/stage-bin.sh"
+        ))
+        .arg(&bin)
+        .output()
+        .unwrap();
+    assert!(
+        staged.status.success(),
+        "staging failed: {}",
+        String::from_utf8_lossy(&staged.stdout)
+    );
+    // Beneath a stand-in for the row's capsule (the process walk reads only the command line), as the session is.
+    let join = Command::new("bash")
+        .args(["-c", "exec -a sot-capsule bash -c 'shift; \"$@\"; exit $?' _ \"/in-row/state/workspaces/$0/voyages/v0\" timeout 60 bash \"$1\" --name \"$2\""])
+        .arg(&ws)
+        .arg(bin.join("comm-join.sh"))
+        .arg(HANDLE)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", &env.home_root)
+        .env("SOT_COMM_HOME", &env.comm_root)
+        .env("SOT_COMM_TEST_HOST", RAW)
+        .env("SOT_SELF_HOST", DECLARED)
+        .env("SOT_SOCKET", &env.socket_path)
+        .env("SOT_WORKSPACE_ID", &ws)
+        .env("XDG_RUNTIME_DIR", env._runtime_tmp.path())
+        .env("TMPDIR", env._tmp.path())
+        .current_dir(&env.workspace_project_root)
+        .output()
+        .expect("run comm-join.sh");
+    assert!(
+        join.status.success(),
+        "join: {} {}",
+        String::from_utf8_lossy(&join.stdout),
+        String::from_utf8_lossy(&join.stderr)
+    );
+
+    let registry = || -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(env.comm_root.join("registry.json")).unwrap())
+            .unwrap()
+    };
+    assert_eq!(
+        registry()["agents"][HANDLE]["host"],
+        DECLARED,
+        "the registry row carries the daemon's declared host"
+    );
+    let slot = env
+        .comm_root
+        .join("self")
+        .join(format!("{DECLARED}__{ws}.txt"));
+    assert!(
+        slot.is_file(),
+        "the unpinned self slot is keyed by the declared host: {:?}",
+        std::fs::read_dir(env.comm_root.join("self"))
+            .map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>())
+    );
+    assert!(
+        !env.comm_root
+            .join("self")
+            .join(format!("{RAW}__{ws}.txt"))
+            .exists(),
+        "no raw-host slot"
+    );
+
+    support::write_registry(&env.comm_root, |reg| {
+        reg["agents"][HANDLE]["done"] = serde_json::json!(true);
+        reg["agents"][HANDLE]["state"] = serde_json::json!("done");
+    });
+    let act = call(
+        &mut conn,
+        id,
+        op::WORKSPACE_ACTIVATE,
+        serde_json::json!({ "workspace_id": ws, "read": true }),
+    )
+    .await;
+    id += 1;
+    assert!(
+        act.payload.get("error").is_none(),
+        "activate: {:?}",
+        act.payload
+    );
+    support::poll_until(
+        || async {
+            registry()["agents"][HANDLE]
+                .get("done")
+                .is_none()
+                .then_some(())
+        },
+        BOUND,
+        "the daemon to clear the joined handle's unread on activation",
+    )
+    .await;
+
+    let destroy = call(
+        &mut conn,
+        id,
+        op::WORKSPACE_DESTROY,
+        serde_json::json!({ "workspace_id": ws }),
+    )
+    .await;
+    assert!(
+        destroy.payload.get("error").is_none(),
+        "destroy: {:?}",
+        destroy.payload
+    );
+    assert!(
+        registry()["agents"].get(HANDLE).is_none(),
+        "destroy prunes the joined handle: {}",
+        registry()
+    );
+    env.kill_daemon_bounded().await;
 }

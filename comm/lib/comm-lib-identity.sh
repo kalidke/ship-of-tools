@@ -20,14 +20,9 @@
 # there is a single place that gets the atomicity right, rather than two
 # copies that could drift.
 #
-# No cross-process lock: the self-file's "nopane" slot is deliberately
-# SHARED across every no-workspace shell on a host (see
-# comm-context.sh's nopane note) and is last-writer-wins BY DESIGN — every
-# read of it is independently re-validated (against root=, or against
-# repo=/the registry for a legacy file), so a slot two shells raced to
-# write is caught on its next read rather than silently trusted either
-# way. Serializing the write here would only slow down an already-safe
-# race, not close a real hazard.
+# The write holds the registry lock (sot_write_self_file below), the same lock a legacy-slot migration takes, so
+# the two never interleave. The "nopane" slot is still shared across every no-workspace shell on a host and
+# last-writer-wins; every read of it is re-validated (against root=, or repo=/the registry for a legacy file).
 #
 # Returns 0 only once SELF_FILE has been VERIFIABLY replaced with the new
 # content; nonzero (with a reason on stderr) otherwise, and the original
@@ -73,7 +68,10 @@ sot_self_file_project_conflict() {
     echo "the identity slot '$self_file' already names @$name, claimed for $claim" >&2
     return 0
 }
-sot_write_self_file() {
+# sot_write_self_file runs the writer under the registry lock, so a migration (below) and a join never publish
+# the same slot at once. _sot_write_self_file_locked is the body, called as-is by a caller that already holds it.
+sot_write_self_file() { with_lock _sot_write_self_file_locked "$@"; }
+_sot_write_self_file_locked() {
     local self_file="$1" name="$2" repo="$3" root="$4" repin="${5:-0}" tmp
     if [ "$repin" != 1 ] && sot_self_file_project_conflict "$self_file" "$repo" "$root"; then
         echo "sot_write_self_file: REFUSING to write '$name' (repo='$repo', root='$root') over it — a slot keyed by one row must not come to name another project's session, or that row reads mail addressed to this one. If this row really is '$repo' now, re-run the join with --repin." >&2
@@ -93,6 +91,70 @@ sot_write_self_file() {
         rm -f "${tmp:?}" 2>/dev/null
         return 1
     fi
+    return 0
+}
+
+# _sot_leaf_valid LEAF — 0 when LEAF is one filename this platform can create as written. The host is declared
+# text and is never rewritten to fit: a leaf that cannot be represented is refused. Rejected everywhere: a
+# separator, a control character, a NUL-free but empty leaf, a leaf longer than the directory's component limit
+# (NAME_MAX of the comm home, default 255 bytes). On Windows also the characters <>:"|?*, a trailing dot or space,
+# a device-name stem, and more than 255 UTF-16 units. Read-only: no probe file, no directory is created.
+_sot_leaf_valid() {
+    local leaf="$1" max stem lc probe
+    [ -n "$leaf" ] || return 1
+    case "$leaf" in
+        */*|*\\*|*[[:cntrl:]]*) return 1 ;;
+    esac
+    probe="$SELF_DIR"; while [ ! -d "$probe" ] && [ "$probe" != "/" ] && [ "$probe" != "." ]; do probe="$(dirname "$probe")"; done
+    max="$(getconf NAME_MAX "$probe" 2>/dev/null)" || max=255
+    case "$max" in ''|*[!0-9]*) max=255 ;; esac
+    lc="$(LC_ALL=C; printf '%s' "$leaf" | wc -c | tr -d ' ')"
+    [ "$lc" -le "$max" ] || return 1
+    if _sot_is_windows; then
+        case "$leaf" in
+            *[\<\>:\"\|\?\*]*|*.|*" ") return 1 ;;
+        esac
+        stem="${leaf%%.*}"; stem="$(printf '%s' "$stem" | tr '[:lower:]' '[:upper:]')"
+        case "$stem" in CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]) return 1 ;; esac
+        [ "${#leaf}" -le 255 ] || return 1
+    fi
+    return 0
+}
+
+# _sot_self_slot HOST WORKSPACE_ID — the one formatter of an unpinned self-file leaf, `<host>__<ws>.txt`, with the
+# workspace id's bytes replaced by `_` outside [A-Za-z0-9._-] and `nopane` for no workspace. Prints the leaf only
+# when _sot_leaf_valid accepts it whole; otherwise a reason on stderr and nonzero, before anything is written.
+_sot_self_slot() {
+    local host="$1" ws_safe leaf
+    [ -n "$host" ] || { echo "comm: no declared host to name a self slot" >&2; return 1; }
+    ws_safe="$(printf '%s' "${2:-}" | tr -c 'A-Za-z0-9._-' '_')" || return 1
+    leaf="${host}__${ws_safe:-nopane}.txt"
+    _sot_leaf_valid "$leaf" || { echo "comm: the declared host cannot name a self slot on this filesystem" >&2; return 1; }
+    printf '%s' "$leaf"
+}
+
+# sot_self_slot_migrate LEGACY CANON WORKSPACE_ID ROOT REPO — move an old raw-host slot to the declared-host slot
+# when, and only when, this workspace's own identity is proven by it: the legacy file names a handle whose registry
+# row is present with this workspace id and this root. An absent or unreadable registry authorizes nothing. Under
+# the registry lock the proofs are read again and the canonical slot must still be absent; the legacy file is
+# removed only if it still holds the bytes that were validated. 0 migrated, 1 nothing to do, 2 refused or failed.
+sot_self_slot_migrate() { with_lock _sot_self_slot_migrate_locked "$@"; }
+_sot_self_slot_migrate_locked() {
+    local legacy="$1" canon="$2" ws="$3" root="$4" repo="$5" content name status reg_root row row_ws
+    [ -n "$ws" ] && [ -f "$legacy" ] && [ ! -e "$canon" ] || return 1
+    content="$(cat "$legacy" 2>/dev/null; printf x)" || return 2
+    name="$(printf '%s' "${content%x}" | sed -n 1p)"
+    [ -n "$name" ] || return 2
+    IFS=$'\t' read -r status reg_root <<< "$(sot_registry_entry_status "$name")"
+    [ "$status" = present ] && [ "$reg_root" = "$root" ] || return 2
+    row="$(sot_registry_read "$name")" || return 2
+    row_ws="$(printf '%s' "$row" | sot_jq -r '.workspace_id // ""' 2>/dev/null)" || return 2
+    [ "$row_ws" = "$ws" ] || return 2
+    if ! _sot_write_self_file_locked "$canon" "$name" "$repo" "$root" 1 2>/dev/null; then
+        echo "comm: could not publish the migrated self slot '$canon'; the old one is kept" >&2
+        return 2
+    fi
+    if [ "$(cat "$legacy" 2>/dev/null; printf x)" = "$content" ]; then rm -f "${legacy:?}"; fi
     return 0
 }
 
@@ -348,6 +410,20 @@ sot_sanitize_component() {
     printf '%s' "$s"
 }
 
+# _sot_handle_host RAW_HOST — the host piece of a derived handle: sanitized
+# and clamped to 12, with a -<hash6> of the raw host when that changed it, so
+# two long hosts that differ past the clamp stay distinct. The one rule for
+# sot_derive_handle and ccx's default handle.
+_sot_handle_host() {
+    local raw="$1" host digest
+    host="$(sot_sanitize_component "$raw" 12)" || return 1
+    if [ "$host" != "$raw" ]; then
+        digest="$(sot_hash6 "$raw")" || return 1
+        host="${host}-${digest}"
+    fi
+    printf '%s' "$host"
+}
+
 # _sot_tier_claimable MODE ROOT STATUS HELD_ROOT — true if a tier whose
 # registry status is STATUS/HELD_ROOT (from sot_registry_entry_status) can
 # be claimed under MODE:
@@ -425,7 +501,7 @@ _sot_tier_claimable() {
 # handle: `NAME="$(sot_derive_handle reclaim "$ROOT" "$HOST" | head -n1)"`.
 sot_derive_handle() {
     local mode="$1" root="$2" raw_host="$3"
-    local base parent hash6 tier1 tier2 tier3 host host_digest
+    local base parent hash6 tier1 tier2 tier3 host
     local status1 held1 status2 held2 status3 held3 shown1 shown2 shown3
     local unreadable="comm: the registry could not be read, so no handle was derived; nothing was written"
 
@@ -435,11 +511,7 @@ sot_derive_handle() {
     esac
 
     base="$(sot_sanitize_component "$(basename "$root")")"
-    host="$(sot_sanitize_component "$raw_host" 12)"
-    if [ "$host" != "$raw_host" ]; then
-        host_digest="$(sot_hash6 "$raw_host")" || return 1
-        host="${host}-${host_digest}"
-    fi
+    host="$(_sot_handle_host "$raw_host")" || return 1
 
     tier1="${base}-${host}"
     IFS=$'\t' read -r status1 held1 <<< "$(sot_registry_entry_status "$tier1")"
