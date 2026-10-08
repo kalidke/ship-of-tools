@@ -248,3 +248,7 @@ Not addressed here: helper servers still speak TCP because browsers cannot consu
 UNIX sockets directly. Moving them behind private sockets with an FE-local bridge,
 and replacing raw port identity with generation-bound service capabilities, remains
 the stronger long-term model.
+
+## Update (0.6.6): Pluto grant lifetime
+
+Pluto's proxy port belongs to the supervisor generation that published a loopback READY URL. Child exit and the supplied Signal cancel stdin writes and flushes even when a descendant retains the pipes. Shared closeout releases the grant and fails current, pending and queued requests before checked asynchronous cleanup; a cancelled partial OPEN is never resent. Every exit and cancellation releases that grant; a stale release cannot remove a newer generation's grant. New proxy requests after release refuse a port granted only by that Pluto generation. Already-open byte pipes and the allowlist-lookup-to-connect race are not covered by this lifetime rule.

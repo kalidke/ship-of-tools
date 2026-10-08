@@ -141,14 +141,7 @@ Phase 1 (this ADR) is implemented and verified end-to-end: ok / error+stacktrace
 `Main` state across executes / exit codes. Figure-spill code is in place but not
 yet exercised (the test REPL project had no plotting package).
 
-Phase 2 (implemented, this ADR): a backend-emitted `Started` control frame
-(a new `ReplFrame` variant carrying `run_id`/`origin`/`display`) rides the
-existing `repl.frame` broadcast BEFORE submit; the FE pre-registers a drawer
-entry keyed by the canonical `(workspace_id, eval_id)`, stops dropping foreign
-`eval_id`s, and renders the run with a distinct `⟨origin ▸ display⟩` prompt.
-A synthetic terminal `done` is emitted for timeout/repl_died (the shim's own
-won't arrive). `sot-fe repl … --origin <who>` labels the entry. Wire-verified;
-seeing it in the live drawer needs an FE rebuild + ADR-0017 relaunch.
+Phase 2 uses a backend `Started` frame before submit to register a session-originated run in the drawer. The frontend keys it by the dial host and eval_id, deriving its workspace from the frame's hint, and renders origin and display as its prompt. The backend closes every run it announced before returning a repl.execute report: submit failure and a collected result lacking Done receive a synthetic Done, including timeout, repl_died and terminal res-only errors. A collected Done suppresses handler synthesis. Validation before Started creates no run. A timeout closes the report's drawer entry while the underlying eval may still run; this does not deduplicate later child frames. `sot-fe repl … --origin <who>` labels the entry.
 
 Deferred:
 

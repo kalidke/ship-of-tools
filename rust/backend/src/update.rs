@@ -614,17 +614,19 @@ mod tests {
         assert_eq!(repo_from_env(), "fork/x");
     }
 
-    /// The julia an update's prepare runs is the resolver's, which never returns a path with a `WindowsApps` component; only a
-    /// backend role runs one.
+    /// Only a backend role prepares Julia. prepare_julia returns the shared resolver's selected path or error unchanged; directory spelling does not establish alias identity.
     #[test]
     fn the_update_prepare_runs_the_resolvers_julia() {
         let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _restore = crate::paths::EnvGuard::capture("SOT_JULIA_BIN");
-        std::env::set_var("SOT_JULIA_BIN", r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\julia.exe");
-        let err = prepare_julia(true).unwrap_err();
-        assert!(err.contains("app-execution alias"), "unexpected error: {err}");
+        std::env::set_var("SOT_JULIA_BIN", "relative-julia");
+        let refusal = crate::sidecars::julia::resolve_bin().unwrap_err();
+        assert_eq!(prepare_julia(true), Err(refusal), "the resolver's error is returned unchanged");
+        assert_eq!(prepare_julia(false), Ok(None), "a frontend-only role prepares no julia, whatever the override");
+        // A path that does not exist, under a folder with the name an alias lives in, is a selection for the spawn
+        // to fail on, not evidence of an alias.
         let dir = tempfile::tempdir().unwrap();
-        let stub = dir.path().join("julia");
+        let stub = dir.path().join("WindowsApps").join("julia");
         std::env::set_var("SOT_JULIA_BIN", &stub);
         assert_eq!(prepare_julia(true), Ok(Some(stub.to_string_lossy().into_owned())));
         assert_eq!(prepare_julia(false), Ok(None));

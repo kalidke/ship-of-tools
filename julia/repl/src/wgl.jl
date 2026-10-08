@@ -214,6 +214,26 @@ function page_server(Bonito, host::String, port::Int)
     return server
 end
 
+# The loopback address `wglshow` serves on.
+const WGL_HOST = "127.0.0.1"
+
+# The page server `wglshow` serves from, bound once per REPL lifetime: the first call binds it (on `port`, nothing:
+# any port the OS assigns; a taken port throws and publishes no server), and every later call reuses it. A different
+# explicit port while it is live throws before anything changes: the listener, its secret path and its routes stay
+# as they were. Restart the REPL to choose another port.
+function wgl_server(Bonito, port::Union{Integer,Nothing})
+    port === nothing || 1 <= port <= 65535 || throw(ArgumentError("wglshow: port must be in 1:65535"))
+    page = WGL_SERVER[]
+    if page === nothing
+        page = (server = page_server(Bonito, WGL_HOST, port === nothing ? 0 : Int(port)),
+                path = "/" * bytes2hex(rand(Random.RandomDevice(), UInt8, 16)))
+        WGL_SERVER[] = page
+    elseif port !== nothing && port != page.server.port
+        throw(ArgumentError("wglshow: the page server is already bound to port $(page.server.port); restart the REPL to use port $port"))
+    end
+    return page
+end
+
 # `wglshow` renders pages Bonito's way only on the Bonito 5.1 line and later 5.x: the page handler below rebuilds the
 # body of Bonito's own `apply_handler(::App, context)` with another asset server.
 wgl_bonito_supported(v::VersionNumber) = v"5.1" <= v < v"6"
@@ -263,8 +283,7 @@ finds the port gets nothing: `/` and every other path answer 404. The page is se
 A repeat `wglshow` shows the new figure at the same address without closing the listener. Tabs still showing
 an earlier figure keep it until they close. The frontend opens the page through a one-use local redirect, so the
 address is never on a command line. A remote frontend reaches it through the per-URL ADR-0035 proxy. Pass
-`port` (1-65535) to pin a port. If it differs from the live server's port, a new server binds there with a new
-secret and the old one closes. A taken pinned port throws and leaves the live page as it was.
+`port` (1-65535) on the first call to pin the listener. Repeated calls reuse that listener. A different port while it is live throws `ArgumentError` and leaves its page and secret unchanged; restart the REPL to choose another port. A taken first pin throws without publishing a server.
 
 The figure fills the browser window and grows with it as the window is resized
 (`resize_to=:parent` mounted in a viewport-filling container).
@@ -289,18 +308,8 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Union{Bool,A
     Bonito = Base.require(Base.PkgId(
         Base.UUID("824d6782-a2ef-11e9-3a09-e5662e0c26f8"), "Bonito"))
     wgl_bonito_supported(pkgversion(Bonito)) || error("wglshow needs Bonito 5.1 or a later 5.x; this REPL loaded Bonito $(pkgversion(Bonito))")
-    port === nothing || 1 <= port <= 65535 || throw(ArgumentError("wglshow: port must be in 1:65535"))
-    host = "127.0.0.1"
-    page = WGL_SERVER[]
-    if page === nothing || (port !== nothing && port != page.server.port)
-        # Bind the new server first: a taken pinned port throws here and leaves the live page as it was.
-        fresh = (server = page_server(Bonito, host, port === nothing ? 0 : Int(port)),
-                 path = "/" * bytes2hex(rand(Random.RandomDevice(), UInt8, 16)))
-        old = WGL_SERVER[]
-        WGL_SERVER[] = fresh
-        old === nothing || try Base.invokelatest(close, old.server) catch end
-        page = fresh
-    end
+    host = WGL_HOST
+    page = wgl_server(Bonito, port)
     external = "http://$host:$(page.server.port)"
     # Warn (never silently) if the figure carries interactive Makie widgets —
     # wglshow can't make them respond over the browser (see wgl_warn_if_widgets).

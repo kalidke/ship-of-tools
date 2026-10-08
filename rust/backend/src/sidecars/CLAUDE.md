@@ -8,18 +8,16 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - Per row a Julia kernel (`Kernel`, kernel.rs) and a Julia REPL (`Repl`, repl/).
 - Per daemon one Pluto (`Pluto`, pluto.rs) and one MathJax node child (`MathJax`, mathjax.rs).
 - One sampler per monitored host (`MonitorHub::start` and `supervise`, monitor.rs).
-- The julia choice: `julia::resolve_bin` takes `SOT_JULIA_BIN`, then juliaup's default channel, then a verified PATH
-  entry; it never returns a path with a `WindowsApps` component (where app-execution aliases live), wherever it
-  found one, though it does not inspect the file, so an alias reached by another spelling is not refused, and never a
-  bare `julia`: none found is an error. The kernel, the REPL, Pluto, quarto (`run_quarto`) and the update prepare (`prepare_julia`) all run its answer.
+- The julia choice: `julia::resolve_bin` takes an absolute `SOT_JULIA_BIN`, then juliaup's default channel, then a verified PATH candidate, never a bare `julia`. On Windows the selected existing file is inspected through ordinary filesystem links: `IO_REPARSE_TAG_APPEXECLINK` and inspection errors are refused; a directory called `WindowsApps` is not evidence of an alias. PATH skips refused candidates; an explicit/default-channel alias is an error. A missing explicit absolute path still fails at spawn. The kernel, the REPL, Pluto, quarto (`run_quarto`) and the update prepare (`prepare_julia`) all run its answer.
 
 ## Promises
 - A kernel caller waits at most `KERNEL_REQUEST_TIMEOUT` (10 s, `Kernel::request`) and never spawns or kills.
 - `supervisor_loop` respawns a dead kernel with a backoff from 250 ms doubling to 30 s.
 - Pluto and MathJax respawn on the next call after a death (`ensure_supervisor`).
-- Every sidecar child starts through `Signal::spawn`, so the shutdown signal kills it with everything it started: the
-  kernel, Pluto and the monitor take the `Signal` passed in, the REPL and MathJax use `child_signal::process()` and
-  `fired()`; the monitor's respawn backoff ends at the fire.
+- Pluto's proxy port is a supervisor-owned generation grant, published only after a loopback READY URL and released on every supervisor exit or cancellation before cleanup awaits. An old generation's release cannot erase its replacement's grant (`bound_pluto_port`).
+- Pluto polls child exit and its supplied Signal during each stdin write and flush. Cancelling a submission retires the supervisor, releases its grant and closes current, pending and queued replies before checked cleanup; it never resends a partial OPEN line.
+- A REPL restart explicitly retires and joins its owned supervisor before replacement; it never relies on Julia reaching stdin EOF. Errors retain retirement ownership and prevent replacement.
+- Every sidecar child starts through `Signal::spawn`. Kernel, REPL, Pluto, MathJax and monitor supervisors receive a caller-supplied `&'static Signal` for both spawn and shutdown observation; the monitor's respawn backoff ends at its fire. REPL and MathJax select the daemon's process `Signal` only where their production handles are constructed.
 - A remote host's sampler ssh is built from `SSH_OPTS`, so it turns ssh sharing off as the bridges do
   (`sampler_command`).
 - The kernel runs only its own `julia/kernel` project (`run_one_generation`).
@@ -38,7 +36,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `Kernel::request`, `file.preview`,
 `repl.eval`, `repl.run_file`, `repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`,
 `monitor.subscribe`, `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `bound_pluto_port`,
-`allowed_proxy_ports`, `Kernel`, `Repl`, `julia::resolve_bin`. Uses: `dispatch`, `SSH_OPTS`, `Signal::spawn`, `Contained`, `Signal`, `child_signal::fired`,
+`allowed_proxy_ports`, `Kernel`, `Repl`, `julia::resolve_bin`. Uses: `dispatch`, `SSH_OPTS`, `Signal::spawn`, `Contained`, `Contained::wait_until_exited`, `Signal`,
 `child_signal::process`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `sot_state_dir`, `sot_config_dir`,
 `host_name`, `state_dir_hash`, `resource_dir`, `rust/backend/src/paths.rs`, `record_browser_port`,
 `revoke_browser_ports`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`, `ensure_proxy_for_url`.
@@ -51,6 +49,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 - `mod.rs`: declares the seven modules and `WireRequest`.
+- `contract_tests.rs`: native REPL/MathJax private-Signal spawn, shutdown closeout and owned-child observations, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions.
 - `julia.rs`: which julia binary runs (`resolve_bin`).
 - `kernel.rs`: the per-row kernel and its supervisor.
 - `repl/`: the per-row Julia REPL child.
@@ -70,5 +69,4 @@ for a sampler's life.
 - A wire shape changes together with its other side: kernel NDJSON and `KERNEL_PROTOCOL_VERSION` with julia/kernel;
   Pluto's `READY`/`OPEN`/`URL`/`ERR` lines with julia/pluto/start.jl; MathJax `{id, tex, display}` with
   rust/backend/sidecars/mathjax/render.mjs.
-- The shutdown wiring exists in two forms (the kernel, Pluto and the monitor take the `Signal`; the REPL and MathJax
-  use `child_signal::process()` and `fired()`); change one, check the other.
+- A supervisor uses the `Signal` it was given for spawn and `fired()`; it never selects a different shutdown signal inside its service loop.

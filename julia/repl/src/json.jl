@@ -1,7 +1,7 @@
 # A minimal RFC 8259 JSON reader/writer for ShipToolsRepl's wire protocol.
 #
 # Why this exists instead of `using JSON3`: ShipToolsRepl is STACKED under the
-# user's project via `JULIA_LOAD_PATH` (see `spawn_supervisor_with_project` in
+# user's project via `JULIA_LOAD_PATH` (see `spawn_supervisor` in
 # rust/backend/src/sidecars/repl/supervisor.rs and ADR 0032 §2), so any registered dependency of
 # this package can be resolved from the USER's manifest instead of ours. A
 # CairoMakie-pinned Parsers 3.0.0 shadowed JSON3's own Parsers dependency (no

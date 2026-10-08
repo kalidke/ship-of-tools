@@ -22,6 +22,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - The `WorkspaceChanged` event the `workspace.changed` bus carries (`mod.rs`).
 
 ## Promises
+- `Workspace::repl` supplies `project_root` unconditionally; a missing `Project.toml` does not activate the installed REPL shim.
 - Re-inserting a slug keeps its workspace id and takes every other field from the new row (`Workspaces::insert`).
 - The default row's declared handle is carried through the boot re-seed (`seed_default_row` copies it, `insert`
   keeps it); the one-row-per-handle promise below still applies to it.

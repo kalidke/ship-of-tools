@@ -42,6 +42,9 @@ struct MathJaxInner {
     /// task itself owns the child + state. When the supervisor exits, this
     /// channel breaks and we relaunch lazily on the next call.
     submit: Mutex<Option<mpsc::Sender<Submission>>>,
+    /// The shutdown signal the child is started under and the service loop watches; supplied by the owner of
+    /// this handle, never chosen inside supervision.
+    sig: &'static crate::lifecycle::child_signal::Signal,
 }
 
 struct Submission {
@@ -75,13 +78,14 @@ struct WireRequest<'a> {
 }
 
 impl MathJax {
-    pub fn new(script_path: PathBuf) -> Self {
+    pub fn new(script_path: PathBuf, sig: &'static crate::lifecycle::child_signal::Signal) -> Self {
         let node_bin = std::env::var("SOT_NODE_BIN").unwrap_or_else(|_| "node".to_string());
         Self {
             inner: Arc::new(MathJaxInner {
                 script_path,
                 node_bin,
                 submit: Mutex::new(None),
+                sig,
             }),
         }
     }
@@ -120,13 +124,17 @@ impl MathJax {
             }
             // Supervisor died; fall through and relaunch.
         }
-        let tx = spawn_supervisor(&self.inner.node_bin, &self.inner.script_path)?;
+        let tx = spawn_supervisor(&self.inner.node_bin, &self.inner.script_path, self.inner.sig)?;
         *guard = Some(tx.clone());
         Ok(tx)
     }
 }
 
-fn spawn_supervisor(node_bin: &str, script_path: &std::path::Path) -> Result<mpsc::Sender<Submission>> {
+fn spawn_supervisor(
+    node_bin: &str,
+    script_path: &std::path::Path,
+    sig: &'static crate::lifecycle::child_signal::Signal,
+) -> Result<mpsc::Sender<Submission>> {
     if !script_path.exists() {
         return Err(anyhow!(
             "mathjax render script missing at {}",
@@ -138,7 +146,7 @@ fn spawn_supervisor(node_bin: &str, script_path: &std::path::Path) -> Result<mps
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut contained = crate::lifecycle::child_signal::process()
+    let mut contained = sig
         .spawn(&mut cmd)
         .with_context(|| format!("spawn {node_bin} {}", script_path.display()))?;
 
@@ -165,7 +173,7 @@ fn spawn_supervisor(node_bin: &str, script_path: &std::path::Path) -> Result<mps
         }
     });
 
-    tokio::spawn(supervisor_task(contained, stdin, stdout, submit_rx));
+    tokio::spawn(supervisor_task(contained, stdin, stdout, submit_rx, sig));
     Ok(submit_tx)
 }
 
@@ -174,6 +182,7 @@ async fn supervisor_task(
     mut stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) {
     let mut pending: HashMap<u64, oneshot::Sender<Result<RenderedSvg>>> = HashMap::new();
     let mut next_id: u64 = 1;
@@ -184,7 +193,7 @@ async fn supervisor_task(
             biased;
             // The daemon is shutting down: the signal has already killed the
             // child's tree.
-            _ = crate::lifecycle::child_signal::fired() => {
+            _ = sig.fired() => {
                 break;
             }
             // Drain incoming submissions, write to child stdin.

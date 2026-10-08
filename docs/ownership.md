@@ -112,9 +112,9 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | process `sot-capsule run` (leg) | process | capsule | `rust/log/src/supervisor/leg.rs` `build_run_command`; `rust/log/src/capsule/writer_loop/mod.rs` `run` |
 | the agent program (claude, codex): the launch recipe (the leg runs it) | process | agents | `rust/backend/src/agents/argv.rs` `agent_argv`; `rust/log/src/capsule/producer/pty/mod.rs`; `rust/log/src/capsule/producer/conpty/producer.rs` |
 | Julia kernel per workspace | process | sidecars | `rust/backend/src/sidecars/kernel.rs` `Kernel`, `run_one_generation` |
-| Julia REPL per workspace | process | sidecars | `rust/backend/src/sidecars/repl/supervisor.rs` `spawn_supervisor`, `supervisor_task` |
+| Julia REPL per workspace and restart retirement | process, state | sidecars | `rust/backend/src/sidecars/repl/mod.rs` `Repl`, `restart_with_project`, `REPL_RESTART_WAIT`; `rust/backend/src/sidecars/repl/supervisor.rs` `spawn_supervisor`, `supervisor_task` |
 | Pluto per daemon | process | sidecars | `rust/backend/src/sidecars/pluto.rs` `Pluto`, `spawn_supervisor` |
-| MathJax (node) per daemon | process | sidecars | `rust/backend/src/sidecars/mathjax.rs` `MathJax`, `spawn_supervisor` |
+| MathJax (node) per daemon | process | sidecars | `rust/backend/src/sidecars/mathjax.rs` `MathJax`, `spawn_supervisor`, `supervisor_task`; the constructor supplies `Signal` |
 | monitor sampler (`bash -s`, `ssh <alias> bash -s`) | process | sidecars | `rust/backend/src/sidecars/monitor.rs` `spawn_source`, `SAMPLER_SH` |
 | quarto render child | process | pages | `rust/backend/src/pages/ops.rs` `run_quarto` |
 | `git` child of a site open | process | pages | `rust/backend/src/pages/site/links.rs` `run_git` |
@@ -205,8 +205,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | video suffix and MIME decision in Rust | rule | wire | `rust/protocol/src/video_path.rs` `video_mime` |
 | video, site-prefix, site-pool listeners and grant tables | endpoint, state | pages | `rust/backend/src/pages/video.rs` `Grants`, `register_video`; `rust/backend/src/pages/site/mod.rs` `spawn`, `spawn_pool`, `set_root` |
 | window page-proxy listeners and arming | endpoint | pages | `rust/frontend/src/pages.rs` `serve_browser`, `Arm`; `rust/frontend/src/ui/page_proxy.rs` `ensure_proxy_for_url` |
-| Pluto's page server and notebook workers | endpoint | sidecars | `julia/pluto/start.jl`; `julia/pluto/session_options.jl` `configure_session!` |
-| `wglshow`'s page server, one per REPL child | endpoint | sidecars | `julia/repl/src/wgl.jl` `page_server`, `no_referrer_page`, `WGL_SERVER` |
+| Pluto's page server, notebook workers and supervisor proxy grant | endpoint, state | sidecars | `julia/pluto/start.jl`; `julia/pluto/session_options.jl` `configure_session!`; `rust/backend/src/sidecars/pluto.rs` `supervisor_task`, `bound_pluto_port` |
+| `wglshow`'s page server, bound once per REPL lifetime | endpoint | sidecars | `julia/repl/src/wgl.jl` `page_server`, `wgl_server`, `no_referrer_page`, `WGL_SERVER` |
 | `lane.connect` | op | rows | `rust/backend/src/rows/ops/lane_bridge.rs` `handle_lane_connect` |
 | `pty.open` (start a row, answer `attach_direct`) | op | rows | `rust/backend/src/rows/ops/pty.rs` `handle_pty_open` |
 | `pty.write` | op | rows | `rust/protocol/src/ops/mod.rs` `PTY_WRITE` (no dispatch arm) |
@@ -256,7 +256,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `GH_OAUTH_CLIENT_ID`, `SOT_GH_SCOPES` (sot-gh-auth also honours gh's own `GH_HOST`, `GH_CONFIG_DIR`) | env | agents | `agents/sot-gh-auth.sh` |
 | `SOT_BACKEND_LABEL`, `SOT_RELAY_ENDPOINT`, `SOT_RELAY_LABEL`, `SOT_RELAY_SOTD`, `SOT_RELAY_TARGET` | env | topology | `rust/protocol/src/topology/relay_units.rs` `relay_command_line`; `comm/lib/comm-lib-client.sh` `sot_relay_endpoint` |
 | `SOT_JULIA_BIN`, `SOT_NODE_BIN`, `QUARTO_JULIA` | env | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; `rust/backend/src/sidecars/mathjax.rs` `default_script_path`; `QUARTO_JULIA` is set for quarto by `rust/backend/src/pages/ops.rs` `run_quarto` |
-| which Julia binary the daemon runs (`julia::resolve_bin`: an absolute `SOT_JULIA_BIN`, juliaup's default channel, a verified PATH candidate; never a path with a `WindowsApps` component) | rule | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; read by `rust/backend/src/update.rs` `prepare_julia` and `rust/backend/src/pages/ops.rs` `run_quarto` |
+| Which Julia binary the daemon runs: absolute override, juliaup default channel, then a verified PATH candidate; Windows app-execution aliases refused by file tag | rule | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; read by `rust/backend/src/update.rs` `prepare_julia` and `rust/backend/src/pages/ops.rs` `run_quarto` |
 | `SOT_WATCH_BUDGET` | env | files | `rust/backend/src/files/watcher.rs` `watch_budget` |
 | `SOT_VIDEO_PORT`, `SOT_DOCS_PORT`, `SOT_PROXY_EXTRA_PORTS` | env | pages | `rust/backend/src/pages/video.rs` `video_port`; `rust/backend/src/pages/site/mod.rs` `site_port`; `rust/backend/src/pages/proxy.rs` `allowed_proxy_ports` |
 | `SOT_SETTINGS`, `SOT_KEYBINDINGS`, `SOT_PROJECTS_ROOT`, `SOT_REMOTE_HOME` | env | fe-ui | `rust/frontend/src/ui/persist/discover.rs` `find_config_file`; `rust/frontend/src/ui/persist/settings.rs`; `rust/frontend/src/ui/input/keybindings.rs`; `rust/frontend/src/ui/session/picker.rs` |
@@ -274,7 +274,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | per-host table (`host_connected`, `host_transports`, `host_resolved_dial`, `link_gates`, `declared_host`, `reconnect_now`) | state | fe-net | `rust/frontend/src/net/hosts.rs` `HostTable`; `rust/frontend/src/ui/connections.rs` |
 | `FrontendIdentity` | state | fe-net | `rust/frontend/src/net/identity.rs` `FrontendIdentity`, `frontend_identity` |
 | steady control read/write scheduling | state, rule | fe-net | `rust/frontend/src/net/transport/steady.rs` `steady_loop`; request correlation remains in PendingGuard |
-| `Signal` and its tree registry, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `ContainedStd`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `ContainedStd`, `fire`; `rust/backend/src/lifecycle/contain.rs` `Tree` |
+| `Signal` and its tree registry, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `ContainedStd`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `Contained::wait_until_exited`, `ContainedStd`, `fire`; `rust/backend/src/lifecycle/contain.rs` `Tree` |
 | process-start rule: each call of a function in `rust/clippy.toml`'s process-spawns group outside `Signal::spawn`, `Signal::spawn_std` and `Signal::output` is a reasoned exception; what the group does not hold is named in rust/backend/src/lifecycle/CLAUDE.md | rule | lifecycle | `rust/clippy.toml` (process-spawns group); `rust/backend/src/lifecycle/child_signal.rs` `Signal::spawn`, `Signal::spawn_std`, `Signal::output` |
 | `Leases`, its mutex and phase | state, lock | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `Phase` |
 | window exit decision (`ExitReason`, `ExitStep`, `exit_intent`, `close_now`) | state | lifecycle | `rust/frontend/src/lease.rs` `ExitReason`, `ExitStep`, `exit_intent`, `close_now` |
