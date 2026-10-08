@@ -295,6 +295,9 @@ pub(super) fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
         if !open {
             return;
         }
+        shared
+            .controls
+            .barrier_point(&shared.progress, None, "reaper.pass");
         if let Some(deadline) = shutdown {
             for record in &mut pending {
                 record.claimed.tighten(deadline);

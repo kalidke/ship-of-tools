@@ -204,11 +204,11 @@ use crate::host::wide_null;
 use crate::lane::attach_proto::ConnId;
 use crate::lane::client::{Client, Endpoint};
 use crate::lane::pending::{
-    self, report_server_teardown_failed, Claimed, ReaperMsg, REAPER_INBOX_SLACK,
+    self, report_server_teardown_failed, Claimed, ReaperMsg, ThreadJoins, REAPER_INBOX_SLACK,
 };
 use crate::lane::test_progress::{Controls, Progress, Role};
 use crate::lane::transport::{
-    join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget,
+    join_checked, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget,
     SendMarker, StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
     EVENTS_RETRY_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
 };
@@ -420,6 +420,8 @@ use slot::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::lane::transport::join_within;
 
     // -- join_within: the ADR 0041 step 6 U1b teardown-deadline mechanism,
     // proven directly against plain `std::thread::spawn` closures this

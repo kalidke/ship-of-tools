@@ -304,6 +304,7 @@ struct ControlState {
     exit_holds: HashMap<(u64, Role), Arc<Gate>>,
     exit_panics: HashSet<(u64, Role)>,
     barriers: HashMap<&'static str, Arc<Gate>>,
+    panics: HashSet<&'static str>,
     #[cfg(windows)]
     failures: HashSet<&'static str>,
     teardown: Option<Duration>,
@@ -349,6 +350,11 @@ impl Controls {
             .barriers
             .insert(name, Arc::clone(&gate));
         gate
+    }
+
+    /// Arm a one-shot panic at the named site, when its thread next reaches it.
+    pub(crate) fn arm_panic(&self, name: &'static str) {
+        self.state.lock().unwrap().panics.insert(name);
     }
 
     /// Arm a one-shot failure at the named site.
@@ -410,13 +416,20 @@ impl Controls {
         }
     }
 
-    /// The named barrier, if armed: wait here until the test releases it.
+    /// The named site: wait here until the test releases an armed barrier, then panic if a panic is armed.
     pub(crate) fn barrier_point(&self, progress: &Progress, conn: Option<u64>, name: &'static str) {
-        let gate = self.state.lock().unwrap().barriers.remove(name);
+        let (gate, panic) = {
+            let mut state = self.state.lock().unwrap();
+            (state.barriers.remove(name), state.panics.remove(name))
+        };
         if let Some(gate) = gate {
             progress.note(conn, name, "held");
             gate.pass();
             progress.note(conn, name, "released");
+        }
+        if panic {
+            progress.note(conn, name, "panic injected");
+            panic!("injected panic at {name}");
         }
     }
 

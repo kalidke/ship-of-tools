@@ -141,11 +141,11 @@ use crate::identity::challenge_macos as challenge_os;
 use crate::identity::challenge_unix as challenge_os;
 use crate::lane::attach_proto::ConnId;
 use crate::lane::pending::{
-    self, report_server_teardown_failed, Claimed, ReaperMsg, REAPER_INBOX_SLACK,
+    self, report_server_teardown_failed, Claimed, ReaperMsg, ThreadJoins, REAPER_INBOX_SLACK,
 };
 use crate::lane::test_progress::Role;
 use crate::lane::transport::{
-    join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget,
+    join_checked, validate_voyage_id, ClosedReason, Joined, LaneEvent, LaneServer, OutboundBudget,
     SendMarker, StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
     EVENTS_RETRY_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
 };

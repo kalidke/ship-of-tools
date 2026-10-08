@@ -5,7 +5,7 @@
 
 use super::attach_proto::ConnId;
 use super::test_progress::Progress;
-use super::transport::{ClosedReason, LaneEvent, JOIN_POLL_INTERVAL};
+use super::transport::{ClosedReason, Joined, LaneEvent, JOIN_POLL_INTERVAL};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::thread::JoinHandle;
@@ -152,6 +152,45 @@ pub(super) const REAPER_INBOX_SLACK: usize = 2;
 /// fail the run-end teardown; the pair stays reaper-owned, and a pair still unfinished at the shutdown deadline keeps
 /// the reaper running and fails `join_workers` there.
 pub(crate) const NORMAL_CLOSE_BUDGET: Duration = Duration::from_secs(20);
+
+/// What `join_workers` found of a server's own threads (the acceptor and the reaper). Both fail the teardown for good:
+/// one unfinished at the deadline, and one that panicked, because a panicked reaper left its pending pairs unjoined.
+#[derive(Default)]
+pub(crate) struct ThreadJoins {
+    pub(crate) expired: bool,
+    pub(crate) panicked: bool,
+}
+
+impl ThreadJoins {
+    /// Take one thread's outcome; a panic is reported by name, loudly.
+    pub(crate) fn record(&mut self, prefix: &str, thread: &str, joined: Joined) {
+        match joined {
+            Joined::Ended => {}
+            Joined::Unfinished => self.expired = true,
+            Joined::Panicked => {
+                self.panicked = true;
+                eprintln!("{prefix}: server thread panicked thread={thread}; teardown failed");
+            }
+        }
+    }
+
+    /// The `server.join.end` result: the first of expiry, a thread panic, an earlier latched failure, or ok.
+    pub(crate) fn result(&self, failed: bool) -> &'static str {
+        if self.expired {
+            "deadline-expired"
+        } else if self.panicked {
+            "thread-panicked"
+        } else if failed {
+            "teardown-failed"
+        } else {
+            "ok"
+        }
+    }
+
+    pub(crate) fn failed(&self) -> bool {
+        self.expired || self.panicked
+    }
+}
 
 /// A message to a reaper -- the only thread that ever claims a registered connection or joins its workers.
 pub(crate) enum ReaperMsg {

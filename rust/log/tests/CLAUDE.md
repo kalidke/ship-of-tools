@@ -34,7 +34,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `reconcile_matrix.rs`: every row of the startup reconciliation table (`reconcile`) entered by file surgery, then `verify_voyage`; Unix and Windows.
 - `isolation_guards.rs`: remaining ADR 0049 source guards for browser-opener spellings and the macOS peer-token reader; Rust listener admission is proved at its native owners, not by an allowance catalog. REPL child arguments, selected environment and page-secret exclusion are observed in the backend REPL project_tests.rs; WGL listener selection and lifetime are observed in julia/repl/test/bonito/runtests.jl and the MathJax helper's tree in the backend's contract_tests.rs; this file retains only the unrelated browser-opener and macOS peer-token source guards.
 - `socket_unix/`: real Unix connect, close, teardown and client contracts; named waits and captured diagnostics
-  (`diagnostics.rs`), independent-reaping regressions (`reaper.rs`), the registration cutoff and `shutdown(2)` records
+  (`diagnostics.rs`), independent-reaping regressions (`reaper.rs`), the registration cutoff, a panicked server thread and `shutdown(2)` records
   (`shutdown.rs`), observed real factory birth/fallback flags (`cloexec.rs`), one bounded-read phase path (`read.rs`),
   and supervised native-account fixtures with retained failure causes (`privileged.rs`; the foreign-account case needs
   passwordless `sudo -n` and skips without it except on CI), process-isolated; Unix.

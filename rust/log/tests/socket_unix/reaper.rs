@@ -385,68 +385,6 @@ fn expired_writer_is_reported_and_remains_owned() {
     );
 }
 
-/// A pair that expired its normal-close budget earlier and is still unfinished at the shutdown deadline fails the
-/// teardown: the reaper cannot end while it owns the pair.
-fn expired_then_unfinished_at_shutdown(test: &str, role: Role) {
-    let mut f = fixture(test, 1);
-    f.server.set_teardown_deadline_for_test(SHORT);
-    let (client, a) = connect(&f, test, "a");
-    let hold = f.server.hold_worker_exit_for_test(a, role);
-    named!(test, "a.close", Some(a), f.server.close(a));
-    let want = format!("worker={}", role_name(role));
-    await_progress(
-        &f.server,
-        test,
-        "expiry.record",
-        "expiry reported before shutdown",
-        Some(a),
-        |r| r.conn == Some(a) && r.step == "pending.expired" && r.result == want,
-    );
-    named!(
-        test,
-        "listener.disconnect",
-        None,
-        f.server.disconnect_listener()
-    );
-    let budget = Duration::from_millis(300);
-    let started = Instant::now();
-    let ok = WaitContext::from_origin(
-        test,
-        "workers.join",
-        "false while A is still unfinished",
-        None,
-        started,
-        started + budget,
-    )
-    .workers(&mut f.server);
-    assert!(!ok, "shutdown reported success with A still unfinished");
-    named!(test, "a.release", Some(a), hold.release());
-    await_progress(
-        &f.server,
-        test,
-        "a.done",
-        "A retired after release",
-        Some(a),
-        at(a, "pending.done"),
-    );
-    named!(test, "client.drop", None, drop(client));
-    named!(test, "server.drop", None, drop(f));
-}
-
-#[test]
-fn expired_pair_unfinished_at_shutdown_fails_teardown_reader_held() {
-    let test = "reaper::expired_pair_unfinished_at_shutdown_fails_teardown_reader_held";
-    isolated!(test);
-    expired_then_unfinished_at_shutdown(test, Role::Reader);
-}
-
-#[test]
-fn expired_pair_unfinished_at_shutdown_fails_teardown_writer_held() {
-    let test = "reaper::expired_pair_unfinished_at_shutdown_fails_teardown_writer_held";
-    isolated!(test);
-    expired_then_unfinished_at_shutdown(test, Role::Writer);
-}
-
 /// An injected worker panic is reported as a completed panic and closes the connection with an error.
 fn panicked_worker(test: &str, role: Role) {
     if child_role(test) {

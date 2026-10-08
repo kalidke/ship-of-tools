@@ -327,37 +327,27 @@ impl SocketServer {
             .progress
             .note(None, "server.join.begin", "begin");
         signal_shutdown(&self.shared, deadline);
-        let mut expired = false;
+        let mut joins = ThreadJoins::default();
         if let Some(jh) = self.accept_jh.take() {
-            expired |= !self.join_observed(jh, deadline);
+            let joined = Self::join_with_progress(&self.shared, jh, deadline);
+            joins.record("sot-sock", "acceptor", joined);
         }
         if let Some(jh) = self.reaper_jh.take() {
-            expired |= !self.join_observed(jh, deadline);
+            let joined = Self::join_with_progress(&self.shared, jh, deadline);
+            joins.record("sot-sock", "reaper", joined);
         }
-        if expired {
-            // An aggregate worker unfinished at the deadline fails this teardown for good.
+        if joins.failed() {
+            // A server thread unfinished at the deadline, or one that panicked, fails this teardown for good.
             self.shared.teardown_failed.store(true, Ordering::Release);
         }
         let failed = self.shared.teardown_failed.load(Ordering::Acquire);
-        self.shared.progress.note(
-            None,
-            "server.join.end",
-            if expired {
-                "deadline-expired"
-            } else if failed {
-                "teardown-failed"
-            } else {
-                "ok"
-            },
-        );
+        self.shared
+            .progress
+            .note(None, "server.join.end", joins.result(failed));
         !failed
     }
 
-    fn join_observed(&self, jh: JoinHandle<()>, deadline: Instant) -> bool {
-        Self::join_with_progress(&self.shared, jh, deadline)
-    }
-
-    fn join_with_progress(shared: &ServerShared, jh: JoinHandle<()>, deadline: Instant) -> bool {
+    fn join_with_progress(shared: &ServerShared, jh: JoinHandle<()>, deadline: Instant) -> Joined {
         #[cfg(any(test, feature = "test-support"))]
         let (id, role) = {
             let name = jh.thread().name().unwrap_or("pending");
@@ -374,14 +364,16 @@ impl SocketServer {
                 .note(id, "worker.join.begin", format_args!("role={role}"));
             (id, role)
         };
-        let ok = join_within(jh, deadline);
+        let joined = join_checked(jh, deadline);
         #[cfg(any(test, feature = "test-support"))]
-        shared
-            .progress
-            .note(id, "worker.join.end", format_args!("role={role} ok={ok}"));
+        shared.progress.note(
+            id,
+            "worker.join.end",
+            format_args!("role={role} ok={}", joined != Joined::Unfinished),
+        );
         #[cfg(not(any(test, feature = "test-support")))]
         let _ = shared;
-        ok
+        joined
     }
 }
 
@@ -465,6 +457,16 @@ impl SocketServer {
         role: crate::lane::test_progress::Role,
     ) {
         self.shared.controls.arm_exit_panic(conn, role);
+    }
+
+    /// Make the reaper panic at its next pass that follows an intake, outside every transport lock.
+    pub fn inject_reaper_panic_for_test(&self) {
+        self.shared.controls.arm_panic("reaper.pass");
+    }
+
+    /// Make the acceptor panic immediately before it registers its next connection.
+    pub fn inject_acceptor_panic_for_test(&self) {
+        self.shared.controls.arm_panic("registration.barrier");
     }
 
     /// Stop the acceptor immediately before it registers its next connection, workers still gated, until released.

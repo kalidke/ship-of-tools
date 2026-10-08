@@ -328,6 +328,16 @@ impl PipeServer {
         self.shared.controls.arm_exit_panic(conn, role);
     }
 
+    /// Make the reaper panic at its next pass that follows an intake, outside every transport lock.
+    pub fn inject_reaper_panic_for_test(&self) {
+        self.shared.controls.arm_panic("reaper.pass");
+    }
+
+    /// Make the acceptor panic immediately before it registers its next connection.
+    pub fn inject_acceptor_panic_for_test(&self) {
+        self.shared.controls.arm_panic("registration.barrier");
+    }
+
     /// Stop the acceptor immediately before it registers its next connection, workers still gated, until released.
     pub fn pause_registration_for_test(&self) -> crate::lane::test_progress::Pause {
         crate::lane::test_progress::Pause::new(
@@ -469,29 +479,21 @@ impl PipeServer {
             .progress
             .note(None, "server.join.begin", "begin");
         signal_shutdown(&self.shared, deadline);
-        let mut expired = false;
+        let mut joins = ThreadJoins::default();
         if let Some(jh) = self.accept_jh.take() {
-            expired |= !join_within(jh, deadline);
+            joins.record("sot-pipe", "acceptor", join_checked(jh, deadline));
         }
         if let Some(jh) = self.reaper_jh.take() {
-            expired |= !join_within(jh, deadline);
+            joins.record("sot-pipe", "reaper", join_checked(jh, deadline));
         }
-        if expired {
-            // An aggregate worker unfinished at the deadline fails this teardown for good.
+        if joins.failed() {
+            // A server thread unfinished at the deadline, or one that panicked, fails this teardown for good.
             self.shared.teardown_failed.store(true, Ordering::Release);
         }
         let failed = self.shared.teardown_failed.load(Ordering::Acquire);
-        self.shared.progress.note(
-            None,
-            "server.join.end",
-            if expired {
-                "deadline-expired"
-            } else if failed {
-                "teardown-failed"
-            } else {
-                "ok"
-            },
-        );
+        self.shared
+            .progress
+            .note(None, "server.join.end", joins.result(failed));
         !failed
     }
 }

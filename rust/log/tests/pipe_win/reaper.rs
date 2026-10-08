@@ -590,3 +590,42 @@ fn registration_after_shutdown_is_rejected() {
     assert!(server.events().try_recv().is_err());
     drop(client);
 }
+
+/// A server thread that panicked fails the teardown for good: a panicked reaper leaves its pending pairs unjoined, and
+/// the shutdown that joined it used to see only a finished thread.
+fn server_thread_panic(thread: &str) {
+    let id = fresh_voyage_id();
+    let mut server = PipeServer::bind(&id, 2).unwrap();
+    let client = if thread == "reaper" {
+        let (client, a) = connect(&server, &id);
+        server.inject_reaper_panic_for_test();
+        server.close(a);
+        client
+    } else {
+        server.inject_acceptor_panic_for_test();
+        connect_voyage_pipe(&id).unwrap()
+    };
+    await_progress(&server, "panic.injected", |r| r.result == "panic injected");
+    server.disconnect_listener();
+    assert!(
+        !server.join_workers(Instant::now() + RECORD),
+        "a panicked {thread} thread reported a clean teardown"
+    );
+    drop(client);
+}
+
+#[test]
+fn a_panicked_reaper_fails_the_teardown() {
+    if !run_isolated("reaper::a_panicked_reaper_fails_the_teardown") {
+        return;
+    }
+    server_thread_panic("reaper");
+}
+
+#[test]
+fn a_panicked_acceptor_fails_the_teardown() {
+    if !run_isolated("reaper::a_panicked_acceptor_fails_the_teardown") {
+        return;
+    }
+    server_thread_panic("acceptor");
+}

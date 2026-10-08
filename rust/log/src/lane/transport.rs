@@ -199,8 +199,9 @@ pub trait Transport {
     /// any blocking wait), THEN join everything against `deadline` rather
     /// than a budget it invents itself. True requires every owned join
     /// complete and no latched teardown failure. False is loud and terminal
-    /// on expiry or completed-worker panic (no seal, no fence release past
-    /// it), and unfinished registered pairs remain reaper-owned. A synthetic
+    /// on expiry, a completed-worker panic or a panicked acceptor or reaper (no
+    /// seal, no fence release past it), and unfinished registered pairs remain
+    /// reaper-owned. A synthetic
     /// transport with no joins or failure returns true.
     fn shutdown_all(&mut self, deadline: Instant) -> bool;
 }
@@ -267,14 +268,32 @@ pub(crate) const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// decision, made exactly once, from the caller's own single call site —
 /// nothing later re-evaluates or overturns it, whether the answer was
 /// `true` or `false`.
+///
+/// A thread that panicked still counts as finished here; a caller that must tell the two apart uses [`join_checked`].
 pub(crate) fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
+    join_checked(jh, deadline) != Joined::Unfinished
+}
+
+/// How [`join_checked`] found a thread at its deadline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Joined {
+    Ended,
+    Panicked,
+    Unfinished,
+}
+
+/// [`join_within`] with the joined thread's panic kept: the same poll and the same boundary semantic.
+pub(crate) fn join_checked(jh: JoinHandle<()>, deadline: Instant) -> Joined {
     loop {
         if jh.is_finished() {
-            let _ = jh.join();
-            return true;
+            return if jh.join().is_ok() {
+                Joined::Ended
+            } else {
+                Joined::Panicked
+            };
         }
         if Instant::now() >= deadline {
-            return false;
+            return Joined::Unfinished;
         }
         thread::sleep(JOIN_POLL_INTERVAL);
     }
@@ -633,8 +652,9 @@ pub trait LaneServer: Sized {
     fn disconnect_listener(&mut self);
     /// Phase two: wait for every thread this transport owns, against one
     /// shared absolute `deadline`. True requires every owned join complete and
-    /// no latched teardown failure. False is loud and terminal on expiry or
-    /// completed-worker panic; unfinished registered pairs remain reaper-owned.
+    /// no latched teardown failure. False is loud and terminal on expiry, a
+    /// completed-worker panic or a panicked acceptor or reaper; unfinished
+    /// registered pairs remain reaper-owned.
     fn join_workers(&mut self, deadline: Instant) -> bool;
 }
 
