@@ -89,6 +89,10 @@ fn cancel_ends_the_child_before_the_target_runs() {
     let (mut birth, index) = gated(&mut fx, launch, "cancelled child");
     birth.ready(BOUND).unwrap();
     birth.cancel().expect("CANCEL");
+    assert!(
+        fx.identity(index).exited(BOUND),
+        "the cancelled child is still alive"
+    );
     let status = birth.wait().expect("reap");
     assert_eq!(
         status.code(),
@@ -664,6 +668,10 @@ fn a_pause_whose_go_end_closes_ends_the_child_before_its_target() {
     let (mut birth, index) = gated(&mut fx, launch, "closed pause");
     std::thread::sleep(QUIET);
     drop(go_w);
+    assert!(
+        fx.identity(index).exited(BOUND),
+        "the child did not end when its go end closed: it holds a copy of that end"
+    );
     let status = birth.wait().unwrap();
     assert_eq!(status.code(), Some(125), "{status}");
     assert!(fx.identity(index).exited(BOUND));
