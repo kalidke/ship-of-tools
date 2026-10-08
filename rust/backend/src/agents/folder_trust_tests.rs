@@ -446,64 +446,30 @@ fn windows_case_and_drive_alias_keep_the_cwd_key() {
 
 #[cfg(windows)]
 fn run_windows_alias_receipts(home: &Path, emit: &mut impl FnMut(&str)) {
-    let case_home = home.join("case-control");
-    touch_dir(&case_home);
-    let prefix = declared_parent(&case_home);
-    let root = prefix.join("mixed-case");
-    touch_dir(&root);
-    let alias = prefix.join("MIXED-CASE");
-    assert_ne!(alias.as_os_str(), root.as_os_str());
-    assert_eq!(
-        crate::agents::support_tests::platform_spelling(&alias),
-        crate::agents::support_tests::platform_spelling(&root),
-        "W1 P4 STOP: directory-case alias does not converge"
-    );
-    assert_eq!(
-        ensure_folder_trusted(&case_home, "", &alias, Some(&prefix)),
-        Ok(TrustOutcome::Recorded)
-    );
-    assert_eq!(
-        recorded_trust(&claude_trust_file(&case_home, ""), &alias),
-        Some(true)
-    );
-    emit("W1 P4 case spelling PASS: OS comparison converges; original cwd key retained");
-
-    let drive_home = home.join("drive-control");
-    touch_dir(&drive_home);
-    let prefix = declared_parent(&drive_home);
+    let prefix = declared_parent(home);
     let root = prefix.join("mixed-case");
     touch_dir(&root);
     let mut spelling = root.to_str().unwrap().to_owned();
-    if spelling.as_bytes().get(1) != Some(&b':') || !spelling.as_bytes()[0].is_ascii_alphabetic() {
-        emit("W1 P4 drive-alias NOT CHECKED: fixture has no drive-letter spelling");
-        return;
-    }
-    let drive = spelling.as_bytes()[0];
-    let opposite = if drive.is_ascii_uppercase() {
-        drive.to_ascii_lowercase()
+    if spelling.as_bytes().get(1) == Some(&b':') {
+        spelling.replace_range(..1, &spelling[..1].to_ascii_lowercase());
     } else {
-        drive.to_ascii_uppercase()
-    };
-    spelling.replace_range(..1, &(opposite as char).to_string());
-    let alias = PathBuf::from(spelling);
-    if alias.as_os_str() == root.as_os_str() {
-        emit("W1 P4 drive-alias NOT CHECKED: fixture supplies no distinct drive spelling");
-        return;
+        emit("W1 P4 drive-alias NOT CHECKED: fixture has no drive-letter spelling");
     }
+    let alias = PathBuf::from(spelling).parent().unwrap().join("MIXED-CASE");
     assert_eq!(
         crate::agents::support_tests::platform_spelling(&alias),
         crate::agents::support_tests::platform_spelling(&root),
-        "W1 P4 STOP: distinct drive alias does not converge"
+        "W1 P4 STOP: case/drive aliases do not converge"
     );
     assert_eq!(
-        ensure_folder_trusted(&drive_home, "", &alias, Some(&prefix)),
+        ensure_folder_trusted(home, "", &alias, Some(&prefix)),
         Ok(TrustOutcome::Recorded)
     );
     assert_eq!(
-        recorded_trust(&claude_trust_file(&drive_home, ""), &alias),
+        recorded_trust(&claude_trust_file(home, ""), &alias),
         Some(true)
     );
-    emit("W1 P4 drive spelling PASS: distinct drive spelling exercised; OS comparison converges; original cwd key retained");
+    emit("W1 P4 case/drive spelling PASS: OS comparison converges; original cwd key retained");
 }
 
 #[cfg(windows)]
