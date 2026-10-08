@@ -6,7 +6,7 @@ file is published durably, how a lock is held, and what a volume must support. I
 workspace's bottom crate: every other Rust crate can reach it and it reaches none of them.
 
 ## Owns
-- The per-machine dirs and the host name (`state_dir.rs`: `sot_state_dir`, `sot_config_dir`, `runtime_dir`,
+- The per-machine dirs and the host name (`state_dir.rs`: `sot_state_dir`, `sot_config_dir`, `runtime_sot_dir`, `runtime_dir`,
   `state_dir_hash`, `host_name`).
 - Publication and fsync (`durable.rs`: `publish_noreplace`, `finish_publication`, `rename_noreplace_raw`, `fsync_dir`,
   `fsync_file`, `ensure_container`, `create_dir_protected`).
@@ -24,6 +24,13 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 
 ## Promises
 - `host_name` returns `Err`, never a guessed name.
+- Every process resolves the runtime base itself, from its own environment (`runtime_sot_dir`); `runtime_dir` adds
+  only `SOT_RUNTIME_DIR`, which no production code sets and which moves only the capsule lane sockets. A path one
+  process binds and another dials or copies (the session socket and the `SOT_SOCKET` each row is spawned with, the
+  lane sockets) agrees only while the base does not change. The supported setups keep it fixed for a boot (Linux:
+  linger and the user manager's `XDG_RUNTIME_DIR`; macOS: no `XDG_RUNTIME_DIR`; Windows has no runtime base). A boot
+  without logind binds at `/tmp/sot-<uid>`; a daemon that takes over after `/run/user/<uid>` appears cannot reach the
+  rows that boot spawned.
 - `dir_identity` opens only a directory (`O_DIRECTORY` on Unix), so a path that names a FIFO or any other non-directory
   fails at once and never waits.
 - `preflight_volume` refuses a root the store cannot make durable: a network filesystem (NFS answers EINVAL to every

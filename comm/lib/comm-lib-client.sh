@@ -273,14 +273,13 @@ sot_dial() {
 
 # sot_relay_endpoint — the endpoint for comm RELAY traffic (send): where the
 # HANDLES live. It is whatever `sotd topology relay-endpoint` answers for THIS
-# box, through the one gate, and nothing else: no argument and no variable
-# overrides topology's rule, so a copy of the endpoint exported once cannot
-# outlive the runtime directory it named (2026-10-08: an inherited
+# box, through the one gate, and nothing else: no argument and no relay
+# variable overrides topology's rule (2026-10-08: an inherited
 # SOT_RELAY_ENDPOINT named a socket the hub's daemon did not listen on, and a
 # cross-host send from a row failed while the daemon's own SOT_SOCKET was
-# right). One copy remains: on the hub topology's answer takes SOT_SOCKET
-# first, and the daemon pins SOT_SOCKET into a row at spawn, so a row that
-# outlives a daemon restarted at another path keeps the old one. `sotd` always
+# right). On the hub topology's answer is the daemon's own endpoint, SOT_SOCKET
+# first: a copy the daemon pins into each row at spawn, true while the runtime
+# base does not change (rust/log/src/host/CLAUDE.md, Promises). `sotd` always
 # has an answer once it exists: on the hub its own endpoint (SOT_SOCKET first),
 # on a frontend box `ssh:<hub>`, on any other listed box the reverse-tunnel
 # socket, on a box that never declared a topology its own endpoint, and its own
