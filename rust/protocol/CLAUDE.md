@@ -19,6 +19,7 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 - Reaching a daemon: the topology grammar, endpoints, ssh recipe and lane client (`topology/`).
 - Annotation frontmatter and synced_against (src/annotation.rs), shared by the window and daemon.
 - PhysicalScale's shared JSON validity and parse (src/physical_scale.rs).
+- Rust video suffix classification and its MIME result (src/video_path.rs); the unchanged Julia plugin is exercised against the same suffix corpus by its real matches tests.
 
 ## Promises
 - An envelope is at most `MAX_ENVELOPE_BYTES` (1 MiB), its newline not counted, in every writer and reader.
@@ -40,7 +41,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `codec::read_envelope`, `codec::write_frame`, `hello`, `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`,
 `sot_hello_frame`, `comm/lib/comm-lib-client.sh`, `fe.lease`, `fe.leaving`, `scripts/sot-lease.ps1`,
 `launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`, `is_release_build`, `rust/backend/src/update.rs`,
-`rust/frontend/src/selfupdate.rs`, `version_line`, `--version`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against, sot_protocol::physical_scale::PhysicalScale, sot_protocol::physical_scale::parse_physical_scale. Uses: `sot_state_dir`, `sot_config_dir`, `host_name`,
+`rust/frontend/src/selfupdate.rs`, `version_line`, `--version`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against, sot_protocol::physical_scale::PhysicalScale, sot_protocol::physical_scale::parse_physical_scale, sot_protocol::video_path::video_mime. Uses: `sot_state_dir`, `sot_config_dir`, `host_name`,
 `state_dir_hash`.
 
 ## Folders
@@ -57,6 +58,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/ops/`: the op names and payload types, one file per family
 - `src/physical_scale.rs`: PhysicalScale, ScaleAxis and parse_physical_scale, shared by preview reads, writes and display.
 - `src/page_url.rs`: the loopback page-URL grammar, one parser for the daemon's proxy allowlist and the window's page proxy
+- `src/video_path.rs`: video_mime, the five ASCII-insensitive dotted suffixes, and Rust consumer fixtures matching the executed Julia matches corpus.
 - `src/topology/`: the topology, endpoint, ssh bridge and lane client modules
 - `src/version.rs`: the product version string and `is_release_build`
 

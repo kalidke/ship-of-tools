@@ -200,6 +200,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `video.open`, `docs.open`, `quarto.open` | op | pages | `rust/backend/src/pages/ops.rs` `handle_video_open`, `handle_docs_open`, `handle_quarto_open` |
 | `proxy.connect` and the loopback allowlist | op, state | pages | `rust/backend/src/pages/proxy.rs` `handle_proxy_connect`, `allowed_proxy_ports` |
 | loopback page-URL grammar (`http` or `https`, host `127.0.0.1` or `localhost`, an explicit port) | rule | pages | `rust/protocol/src/page_url.rs` `loopback_port_from_url` |
+| video suffix and MIME decision in Rust | rule | wire | `rust/protocol/src/video_path.rs` `video_mime` |
 | video, site-prefix, site-pool listeners and grant tables | endpoint, state | pages | `rust/backend/src/pages/video.rs` `Grants`, `register_video`; `rust/backend/src/pages/site/mod.rs` `spawn`, `spawn_pool`, `set_root` |
 | window page-proxy listeners and arming | endpoint | pages | `rust/frontend/src/pages.rs` `serve_browser`, `Arm`; `rust/frontend/src/ui/page_proxy.rs` `ensure_proxy_for_url` |
 | Pluto's page server and notebook workers | endpoint | sidecars | `julia/pluto/start.jl`; `julia/pluto/session_options.jl` `configure_session!` |
@@ -321,5 +322,5 @@ user or another process sees.
 | Row creation and removal announced twice: ring entries and the live bus | rows | `rust/backend/src/rows/ops/create.rs`; `rust/backend/src/rows/ops/destroy.rs`; `rust/backend/src/rows/mod.rs` `WorkspaceChanged` | `workspace.changed` is the one announcement | behaviour |
 | Skill copies | agents | `.claude/skills/sot-setup/SKILL.md`; `agents/claude/sot-setup/SKILL.md`; `.claude/skills/sot-statusline-setup/statusline.sh`; `agents/claude/sot-statusline-setup/statusline.sh` | The `.claude` copies are deleted | pure |
 | cgroup kill written twice | rows | `rust/log/src/claude.rs`; `rust/backend/src/rows/spawn/row_scope.rs` `end` | `claude.rs` goes with the SDK producer's fate | behaviour |
-| Video extensions written three times | sidecars | `rust/backend/src/pages/video.rs` `VIDEO_EXTS`; `rust/backend/src/files/preview/mod.rs`; `julia/plugins/video-file/src/ShipToolsVideoFile.jl` | One const now; plugin-declared bounds later | pure (Rust const) |
+| Rust video suffix/MIME classification and its Julia twin | wire | `rust/protocol/src/video_path.rs` `video_mime`; `julia/plugins/video-file/src/ShipToolsVideoFile.jl` matches method | Rust consumers call video_mime; Rust and the unchanged Julia matches method execute the same suffix corpus, including leading-dot filenames | pure (remaining language twin) |
 | `fe.sessions`: the window relays its computer's roster to other daemons | server | `rust/backend/src/clients.rs` `handle_fe_sessions`; `rust/frontend/src/net/transport/ops/workspace.rs` | Moves with the ruling on the hub link | behaviour |
