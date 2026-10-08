@@ -130,8 +130,8 @@ you. Full reference: `sot-fe --help`; rarer essays: `references/fe-verbs.md`.
 
 | Verb | Does |
 |------|------|
-| `preview <ws> <path> [--caption <t>]` | switch + render `<path>` in the preview pane |
-| `reveal <ws> <path>` | preview `<path>` and expand the file tree to it; the same badge and focus rules as `preview` |
+| `preview <ws> <path> [--caption <t>]` | preview `<path>` and expand the file tree to it: at once when the FE is on `<ws>`, else badged until the user visits (only `--urgent --fe <host>` switches) |
+| `reveal <ws> <path>` | the same as `preview` (one code path in the FE) |
 | `goto <ws> [--boot]` | switch the FE to a workspace |
 | `mode <mode>` | switch the FE's active mode |
 | `notify <text>` | one-line notice |
