@@ -1491,7 +1491,7 @@ struct State {
     proxy_listener_tx: Option<
         tokio::sync::mpsc::UnboundedSender<(
             std::net::TcpListener,
-            sot_protocol::topology::ssh_bridge::SshRecipe,
+            crate::pages::PageDial,
             Option<String>,
             sot_protocol::topology::ssh_bridge::LinkGate,
             std::sync::Arc<crate::pages::Arm>,

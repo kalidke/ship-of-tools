@@ -35,3 +35,4 @@ rust/frontend/src/ui/CLAUDE.md. The record is ADR 0042, 0044 and 0025.
 - Reconcile canonical pending-result identities before rebuilding workspace caches from an authoritative host list. A disconnect is not removal, and a kept default row retains its identity.
 - A replacement result or restarted attempt gets fresh local serials. Result-owned root/children requests retain them through pending entries and tagged events; stale successes and failures are rejected before tree or reveal mutation. Ordinary tree replies cannot complete or abort a result-owned reveal. Preview generations and presentation certificates are bound to the same issuing attempt.
 - The picker sends its selected account by name; only absent, out-of-range or default selections omit the account (selected_account).
+- Proxy arming follows the host's resolved control selection and capability; a generated relay is a remote page target.

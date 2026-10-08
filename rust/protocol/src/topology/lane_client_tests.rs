@@ -183,6 +183,43 @@ fn an_ssh_dial_with_a_down_gate_is_link_down_at_once() {
     assert!(t0.elapsed() < Duration::from_millis(50));
 }
 
+/// A generated hub relay is dialed through the same protected local connector as a local socket, behind its host's
+/// gate: the stub daemon sees the handoff hello and the `lane.connect` once the gate is up, and a down gate dials nothing.
+#[test]
+fn a_relay_dial_waits_for_its_gate_then_uses_the_local_connector() {
+    let daemon = FakeDaemon::new();
+    let gate = crate::topology::ssh_bridge::LinkGate::default();
+    gate.set_up(false);
+    let endpoint = DaemonLaneEndpoint {
+        dial: LaneDial::Relay(daemon.path.clone(), gate.clone()),
+        token: None,
+    };
+    assert!(!endpoint.link_up());
+    let result = endpoint.dial("row-1", "supervisor", None);
+    assert!(
+        matches!(result, Err(TransportError::LinkDown)),
+        "got {:?}",
+        result.err()
+    );
+    // Nothing connected: the listener has no pending connection to accept.
+    gate.set_up(true);
+    assert!(endpoint.link_up());
+    let handle = std::thread::spawn(move || {
+        let mut conn = daemon.accept();
+        let (_, request) = serve_hello(&mut conn);
+        assert_eq!(request.op, op::LANE_CONNECT);
+        let ok = serde_json::json!({ "ok": true, "pid": 41, "created": 7 });
+        let mut line = serde_json::to_vec(&Frame::res(2, op::LANE_CONNECT, ok)).unwrap();
+        line.push(b'\n');
+        conn.write_all(&line).unwrap();
+    });
+    let client = endpoint
+        .dial("row-1", "supervisor", None)
+        .expect("an up gate dials the relay path");
+    assert_eq!((client.peer.pid, client.peer.created), (41, 7));
+    handle.join().unwrap();
+}
+
 /// `dial_failed` is the daemon's OWN dial/authenticate step failing
 /// on the far side — uncertain transport, not a confirmed absence,
 /// so it must classify as `Unreachable` (retried, clock cleared),

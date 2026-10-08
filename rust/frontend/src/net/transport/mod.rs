@@ -116,6 +116,8 @@ impl<'a> ResultTreeTestDriver<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dial {
     Pipe(PathBuf),
+    /// A generated hub relay, remote for policy; its link gate precedes the existing protected local connector.
+    Relay(PathBuf),
     Ssh(sot_protocol::topology::ssh_bridge::SshRecipe),
 }
 
@@ -142,6 +144,8 @@ pub struct TransportConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedDial {
     Local,
+    /// The exact generated relay path selected by the control connection; never a local lease target.
+    Relay(PathBuf),
     Ssh(sot_protocol::topology::ssh_bridge::SshRecipe),
 }
 
@@ -162,7 +166,8 @@ pub fn outgoing_channel() -> (UnboundedSender<OutgoingReq>, UnboundedReceiver<Ou
 fn next_backoff_ms(current: u64, dial: &Dial) -> u64 {
     let cap = match dial {
         Dial::Pipe(_) => 5_000,
-        Dial::Ssh(_) => 30_000,
+        // Connecting to a relay socket always succeeds; the hub then opens an ssh login to the far host.
+        Dial::Relay(_) | Dial::Ssh(_) => 30_000,
     };
     current.saturating_mul(2).min(cap)
 }
@@ -296,6 +301,26 @@ async fn connect_and_run(
                 backoff_ms,
                 ResolvedDial::Local,
                 None,
+            )
+            .await
+        }
+        Dial::Relay(path) => {
+            // The relay reaches a remote daemon: no window lease, but the account rule and budget of any local socket.
+            let stream = connect_pipe(path).await?;
+            tracing::info!(dial = %host, ?path, "connected via hub relay socket");
+            let (rx, tx) = stream.split();
+            let rx = codec::buffered(rx);
+            run_protocol(
+                host,
+                rx,
+                tx,
+                config.token.as_deref(),
+                &evt_tx,
+                out_rx,
+                &window,
+                backoff_ms,
+                ResolvedDial::Relay(path.clone()),
+                Some(gate),
             )
             .await
         }

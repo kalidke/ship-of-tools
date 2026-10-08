@@ -32,10 +32,11 @@ through the channel types below.
   (`StateSaveGate`, `SessionState`'s drop).
 - A pipe host is leased before its data connection (`connect_and_run` calls `Leases::before_data_connection`).
 - The gate goes down when the session ends, except after a hello refusal (`run_protocol`).
+- Unix parsing classifies generated hub-relay paths once; Relay remains distinct from Pipe through control, lease, page and lane selection.
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `OutgoingReq`, `IncomingEvt`,
-`HostTable`, `lane_dial`, `ResolvedDial`. Uses: `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`,
+`HostTable`, `lane_dial`, `ResolvedDial`, Dial::Relay, ResolvedDial::Relay. Uses: sot_protocol::topology::relay_host_for_path, `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`,
 `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `version_line`, `--version`,
 `SshRecipe::new`, `is_plain_host_name`, `LinkGate`, `Leases::before_data_connection`, `sot_state_dir`,
 `sot_config_dir`, `host_name`, `state_dir_hash`, `tree.root`, `tree.children`, `directory.list`, `nav.toggle_hidden`,

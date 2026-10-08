@@ -45,7 +45,8 @@ pub enum IncomingEvt {
         proxy: bool,
         /// C3 as amended §5: which transport actually connected —
         /// `ResolvedDial::Local` for the pipe, `ResolvedDial::Ssh(recipe)`
-        /// for the ssh child, carrying the exact recipe it spawned. The
+        /// for the ssh child, carrying the exact recipe it spawned, and
+        /// `ResolvedDial::Relay(path)` for a generated hub relay socket. The
         /// proxy arms on `proxy && !matches!(resolved, ResolvedDial::Local)`
         /// (`ui/events.rs`) — keyed on the transport that CONNECTED, not the CLI
         /// shape.

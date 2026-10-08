@@ -21,6 +21,7 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
   for a caller that contains the child), in `ssh_bridge.rs`.
 - The lane dial `DaemonLaneEndpoint`, the attach worker's endpoint over op `lane.connect`, in `lane_client.rs`.
 - The hub's systemd unit text for each relayed host, in `relay_units.rs`.
+- Generated hub-relay path classification (relay_host_for_path in mod.rs), distinct from this computer's daemon endpoint.
 
 ## Promises
 - `SshRecipe::new` checks both the ssh target and the host against the plain host-name grammar.
@@ -32,9 +33,10 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
   no ssh child outlives its client.
 - A lane dial to a local socket or pipe goes through `sot_log::identity::connect_own::connect_own`, so it speaks only to an endpoint this OS account serves.
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
+- A generated relay socket is remote even when reached locally; page and lane clients reuse its exact resolved path and do not acquire a window lease for its remote daemon.
 
 ## Connections
-Each connection is one row of docs/integration.md, owned by its provider. Provides: `SshRecipe::new`,
+Each connection is one row of docs/integration.md, owned by its provider. Provides: relay_host_for_path, `SshRecipe::new`,
 `is_plain_host_name`, `LinkGate`, `SSH_OPTS`, `DaemonLaneEndpoint`, `SshRecipe`, `recipe_for`, `dial_and_call_tracked`,
 `sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
 `scripts/lib/sot-daemon.sh`, `sotd stdio-bridge`, `TopologyStore`, `topology.set`, `topology.changed`, `sot_ssh_bridge`,
@@ -51,7 +53,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mod.rs`: the hosts.toml parser, search rule, derivations, edits and status table.
 - `endpoint.rs`: this box's own daemon endpoint, the label, the slug and the host-name grammar.
 - `ssh_bridge.rs`: the ssh recipe, its argv and `LinkGate`.
-- `lane_client.rs`: `DaemonLaneEndpoint`, the lane dial over ssh or a socket.
+- `lane_client.rs`: DaemonLaneEndpoint over local, gated relay and SSH dials; only SSH owns the parked spare.
 - `lane_client_tests.rs`: the lane dial's tests against a stub daemon.
 - `relay_units.rs`: the unit text `sotd topology apply` writes for each relayed host.
 - `tests.rs`: the parser, search rule, edit and status-table tests.

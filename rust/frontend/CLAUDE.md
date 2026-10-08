@@ -19,7 +19,7 @@ each belong to one other subsystem, named below. Part of fe-ui; charter: rust/fr
 - `src/lease_grant_tests.rs`: the lease tests for taking and holding a lease (lifecycle).
 - `src/lease_leave_tests.rs`: the lease tests for leaving and what the daemon is told on the way out (lifecycle).
 - `src/pages.rs`: the window's page proxy, loopback listeners that pipe each browser connection to the owning
-  daemon's `proxy.connect` (pages; charter rust/backend/src/pages/CLAUDE.md).
+  daemon's `proxy.connect`. The window's page proxy opens a dedicated SSH or generated-relay connection using the owning host's resolved control selection; handoff hello and proxy.connect share one write. (pages; charter rust/backend/src/pages/CLAUDE.md).
 - `src/selfupdate.rs`: startup self-update staging and `--update-status` (distribution; charter scripts/CLAUDE.md).
 - `src/relaunch.rs`: the relaunch sentinel, its watcher thread, and the Windows foreground handover (distribution;
   charter scripts/CLAUDE.md).
