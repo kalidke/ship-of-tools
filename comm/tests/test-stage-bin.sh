@@ -69,13 +69,16 @@ new_dest() { CASEN=$((CASEN + 1)); DEST="$WORK/dest-$CASEN"; mkdir -p "$DEST"; }
 stage() {  # VAR=val... : run stage-bin.sh into $DEST under the wrappers; sets RC and OUT
     OUT="$(env "$@" PATH="$FX:$PATH" bash "$STAGE_SH" "$DEST" 2>&1)"; RC=$?
 }
+# Whether this platform keeps a chmod 600 (git-bash on Windows does not): the 0600 check runs only where it does.
+: > "$WORK/modeprobe"; chmod 600 "$WORK/modeprobe"
+if [ "$(stat -c %a "$WORK/modeprobe" 2>/dev/null || stat -f %Lp "$WORK/modeprobe")" = 600 ]; then MODES_KEPT=1; else MODES_KEPT=0; fi
 mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 leftovers() { find "$DEST" -name '.stage.*' | wc -l | tr -d ' '; }
 
 case_a_clean_stage_sets_the_modes_and_takes_no_source_permissions() {
     new_dest; stage CP_REJECT_P=1
     [ "$RC" -eq 0 ] || { echo "  rc $RC: $OUT"; return 1; }
-    [ "$(mode_of "$DEST/a.sh")" = 755 ] && [ "$(mode_of "$DEST/tool")" = 755 ] && [ "$(mode_of "$DEST/c.txt")" = 600 ] \
+    [ "$(mode_of "$DEST/a.sh")" = 755 ] && [ "$(mode_of "$DEST/tool")" = 755 ] && { [ "$MODES_KEPT" = 0 ] || [ "$(mode_of "$DEST/c.txt")" = 600 ]; } \
         || { echo "  modes: a.sh $(mode_of "$DEST/a.sh") tool $(mode_of "$DEST/tool") c.txt $(mode_of "$DEST/c.txt")"; return 1; }
     [ ! -e "$DEST/CLAUDE.md" ] && [ -f "$DEST/d.txt" ] && [ "$(leftovers)" = 0 ] || { echo "  layout: $(ls -A "$DEST" | tr '\n' ' ')"; return 1; }
 }

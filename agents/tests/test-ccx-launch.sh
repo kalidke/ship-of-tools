@@ -19,7 +19,8 @@ export SOT_COMM_HOME="$WORK/commhome"
 guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 trap 'rm -rf "${WORK:?}"' EXIT
 STAGE="$(guard_stage_bin "$WORK")" || exit 2
-mkdir -p "$SOT_COMM_HOME" && ln -s "$STAGE" "$SOT_COMM_HOME/bin" || exit 2
+# The comm home's bin is the staged folder itself (a symlink is a copy under MSYS, so edits to the stage would not reach it).
+mkdir -p "$SOT_COMM_HOME" && mv "$STAGE" "$SOT_COMM_HOME/bin" && STAGE="$SOT_COMM_HOME/bin" || exit 2
 
 PASS=0
 FAIL=0
