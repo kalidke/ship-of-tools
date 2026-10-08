@@ -15,8 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-/// The fixtures' scratch folder, under the system temp folder: the
-/// supervisor tests' process guard accepts only roots below it.
+/// The fixtures' scratch folder, under the system temp folder.
 fn scratch() -> PathBuf {
     let scratch = std::env::temp_dir().join("sot-l3-scratch");
     std::fs::create_dir_all(&scratch).unwrap();

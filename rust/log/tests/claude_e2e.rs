@@ -529,14 +529,11 @@ fn e2e_kill_domain_sweep() {
     // Null stdio: an inherited pipe held by a leaked descendant would hold
     // the whole test runner hostage on a failure; the log frames are the
     // diagnostics. The guard makes a panicking assert leave no orphans.
-    let mut capsule = capsule_guard::CapsuleGuard::new(
+    let mut capsule = capsule_guard::CapsuleGuard::spawn(
         capsule
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("sot-capsule binary"),
-        &root,
+            .stderr(Stdio::null()),
     );
     let mut stdin = capsule.child_mut().stdin.take().unwrap();
     let pid = capsule.id() as i32;

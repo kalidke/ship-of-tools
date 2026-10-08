@@ -83,7 +83,8 @@ fn pdeathsig_kills_the_producer_when_the_capsule_dies_hard() {
     let voyage_root = dir.path().join(&voyage_id);
 
     let capsule_exe = env!("CARGO_BIN_EXE_sot-capsule");
-    let child = std::process::Command::new(capsule_exe)
+    let mut command = std::process::Command::new(capsule_exe);
+    command
         .arg("run")
         .arg(&voyage_root)
         .arg(&voyage_id)
@@ -95,10 +96,8 @@ fn pdeathsig_kills_the_producer_when_the_capsule_dies_hard() {
         .env("SOT_RUNTIME_DIR", _runtime.path())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn sot-capsule");
-    let mut child = capsule_guard::CapsuleGuard::new(child, &voyage_root);
+        .stderr(std::process::Stdio::null());
+    let mut child = capsule_guard::CapsuleGuard::spawn(&mut command);
     let capsule_pid = child.id();
 
     // Poll directly for the producer's own child pid to appear -- the

@@ -39,8 +39,8 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
   (`shutdown.rs`), observed real factory birth/fallback flags (`cloexec.rs`), one bounded-read phase path (`read.rs`),
   and supervised native-account fixtures with retained failure causes (`privileged.rs`; the foreign-account case needs
   passwordless `sudo -n` and skips without it except on CI), process-isolated; Unix.
-- `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules; Linux and Windows.
-- `support/`: helpers shared by several binaries: `capsule_guard.rs` (a spawned `sot-capsule` no test can leave behind) and `transports.rs` (`NoopTransport` and `TestTransport`).
+- `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules, and the killed- and panicking-test proofs that no capsule process outlives its test (`main.rs`); Linux and Windows.
+- `support/`: helpers shared by several binaries: `capsule_guard.rs` (`CapsuleGuard::spawn`: a spawned `sot-capsule` ends with its test process, killed or panicking, through a watcher-led process group on Linux and a kill-on-close job on Windows; a leg still outlives a killed supervisor) and `transports.rs` (`NoopTransport` and `TestTransport`).
 - `winhandle_windows.rs`: `winhandle::harden_own_stdio` clears handle inheritance; Windows only, alone in its binary because it mutates the process's real std handles.
 - `wire/`: the `wire` frame codec through its public API, with arbitrary chunking and fuzzing (`main.rs`), and the supervisor and attach lane bytes pinned against committed fixtures (`pinned.rs`); every platform.
 
@@ -58,6 +58,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `support/` files are shared with `#[path = "support/<f>.rs"] mod <f>;` (`../support/` from a binary folder); each binary includes only what it uses.
 - `fixtures/` holds committed bytes read by `include_bytes!` or through `CARGO_MANIFEST_DIR`; the four golden `.sotseg` files are also read by julia/sotlog/test/runtests.jl, so a fixture is never rewritten, only added.
 - CI runs the Windows binaries by name in the `conpty-windows-2022` job of rust.yml: `conpty`, `capsule`, `pipe_win`, `e2e_pipe`, `supervisor`, `fe_client`.
+- Every `sot-capsule` a test starts goes through `CapsuleGuard::spawn` (`support/capsule_guard.rs`). The exceptions are the two `sot-capsule run` legs in `fault_storage/exits.rs`: they build on macOS, which the guard is not proven for, and their producers end them within 3 s.
 - `claude_e2e` skips unless `SOT_HELPER_E2E=1`; rust.yml's `p2-e2e` job sets it against rust/log/claude-sdk-helper.
 - scripts/tests/rc-gate.sh names `fe_client/supervisor_word::unresponsive_supervisor_expires_the_health_window` by path, so moving that test edits rc-gate.sh in the same commit.
 - A `fault_storage` volume test fails, never skips, when its volume cannot be made; it fills only its own volume, one volume at a time. On Linux it is `#[ignore]` and runs only in rust.yml's "Test L3 storage exhaustion" step, which sets `L3_HOSTED_VOLUME_ROOT` and passes `--include-ignored`.
