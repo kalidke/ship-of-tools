@@ -2507,6 +2507,10 @@ mod result_tests {
         }
 
         /// The picker sends its selected account by name, wherever "default" sits in the list.
+        #[allow(
+            dead_code,
+            reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one"
+        )]
         pub(in crate::ui) fn first_named_account_is_sent(&mut self) -> Result<()> {
             println!("account-choice phase=body-entered entered_bodies=1");
             let (a, mut rx, _events) = self.prepare_lifetime_probe("<host-account>", "id-account");
