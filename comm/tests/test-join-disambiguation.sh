@@ -38,6 +38,8 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh" || exit 2
+not_running() { ! kill -0 "$1" 2>/dev/null; }   # for await: the background child has ended
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -252,8 +254,7 @@ start_stub_daemon() {  # WSID SLUG ROOT [HANDLE]
         esac
       done ) &
     STUB_WATCHER_PID=$!
-    local deadline=$((SECONDS + 5))
-    while [ ! -S "$STUB_SOCK" ]; do [ "$SECONDS" -lt "$deadline" ] || break; sleep 0.05; done
+    await test -S "$STUB_SOCK" || echo "stub daemon socket never appeared: $STUB_SOCK" >&2
 }
 stop_stub_daemon() {
     [ -n "$STUB_WATCHER_PID" ] && pkill -TERM -P "$STUB_WATCHER_PID" >/dev/null 2>&1

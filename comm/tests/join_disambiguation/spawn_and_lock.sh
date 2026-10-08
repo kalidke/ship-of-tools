@@ -182,7 +182,7 @@ case_lock_closes_derive_write_gap() {
     #      ever touching the lock and clobbered root A's row regardless of
     #      what happened while it waited. With the fix, it must re-derive
     #      under the lock and see the collision.
-    local rootA rootB rbase="racer" rh1 rh2 mutate_obj self out errfile pid rc barrier deadline
+    local rootA rootB rbase="racer" rh1 rh2 mutate_obj self out errfile pid rc barrier
     mkdir -p "$WORK/lockrace-a/grp/racer"
     mkdir -p "$WORK/lockrace-b/grp/racer"
     rootA="$(realpath "$WORK/lockrace-a/grp/racer")"
@@ -200,17 +200,13 @@ case_lock_closes_derive_write_gap() {
         SOT_COMM_TEST_LOCK_BARRIER="$barrier" "$JOIN" >"$out" 2>"$errfile" ) &
     pid=$!
 
-    deadline=$(( $(date +%s) + 10 ))
-    until [ -e "$barrier" ]; do
-        if [ "$(date +%s)" -ge "$deadline" ]; then
-            echo "  timed out waiting for the backgrounded join to reach its lock attempt"
-            kill -9 "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-            rmdir "$LOCKDIR" 2>/dev/null || true
-            return 1
-        fi
-        sleep 0.02
-    done
+    await test -e "$barrier" || {
+        echo "  timed out waiting for the backgrounded join to reach its lock attempt"
+        kill -9 "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        rmdir "$LOCKDIR" 2>/dev/null || true
+        return 1
+    }
 
     mutate_obj="$(jq -n --arg root "$rootA" \
         '{host:"other",tmux:"",pane_id:"",repo:"racer",root:$root,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
@@ -221,16 +217,12 @@ case_lock_closes_derive_write_gap() {
 
     # Bounded wait on the child too (Codex review F10): a live-stuck child
     # must fail the test, not hang it forever.
-    deadline=$(( $(date +%s) + 10 ))
-    while kill -0 "$pid" 2>/dev/null; do
-        if [ "$(date +%s)" -ge "$deadline" ]; then
-            echo "  backgrounded join did not finish within 10s after the lock was released"
-            kill -9 "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-            return 1
-        fi
-        sleep 0.05
-    done
+    await not_running "$pid" || {
+        echo "  backgrounded join did not finish after the lock was released"
+        kill -9 "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        return 1
+    }
     wait "$pid"; rc=$?
 
     local bg_out bg_err

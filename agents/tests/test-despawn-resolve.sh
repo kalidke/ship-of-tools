@@ -10,6 +10,7 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-wait.sh" || exit 2
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -84,11 +85,7 @@ start_stub_daemon() {
       done ) &
     STUB_WATCHER_PID=$!
 
-    local deadline=$((SECONDS + 5))
-    while [ ! -S "$SOCK" ]; do
-        [ "$SECONDS" -lt "$deadline" ] || { echo "stub daemon socket never appeared: $SOCK" >&2; break; }
-        sleep 0.05
-    done
+    await test -S "$SOCK" || echo "stub daemon socket never appeared: $SOCK" >&2
 }
 
 stop_stub_daemon() {

@@ -79,7 +79,7 @@ case_slot_guard_refusal_in_the_write_gap_exits_three() {
     # with_lock touches before its first mkdir attempt (so the join is
     # provably past its pre-check and not yet at its write), plant a foreign
     # identity in the slot, release. No sleep is load-bearing.
-    local self out errfile pid rc barrier deadline err
+    local self out errfile pid rc barrier err
     next_self_file; self="$NEXT_SELF_FILE"
     out="$WORK/writegap.out"; errfile="$WORK/writegap.err"
     barrier="$WORK/writegap.barrier"; rm -f "${barrier:?}"
@@ -89,31 +89,23 @@ case_slot_guard_refusal_in_the_write_gap_exits_three() {
         SOT_COMM_TEST_LOCK_BARRIER="$barrier" "$JOIN" >"$out" 2>"$errfile" ) &
     pid=$!
 
-    deadline=$(( $(date +%s) + 10 ))
-    until [ -e "$barrier" ]; do
-        if [ "$(date +%s)" -ge "$deadline" ]; then
-            echo "  timed out waiting for the backgrounded join to reach its lock attempt"
-            kill -9 "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-            rmdir "$LOCKDIR" 2>/dev/null || true
-            return 1
-        fi
-        sleep 0.02
-    done
+    await test -e "$barrier" || {
+        echo "  timed out waiting for the backgrounded join to reach its lock attempt"
+        kill -9 "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        rmdir "$LOCKDIR" 2>/dev/null || true
+        return 1
+    }
 
     _plant_slot "$self" "other-repo-$HOST" "other-repo" "$ROOT4"
     rmdir "$LOCKDIR"
 
-    deadline=$(( $(date +%s) + 10 ))
-    while kill -0 "$pid" 2>/dev/null; do
-        if [ "$(date +%s)" -ge "$deadline" ]; then
-            echo "  backgrounded join did not finish within 10s after the lock was released"
-            kill -9 "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-            return 1
-        fi
-        sleep 0.02
-    done
+    await not_running "$pid" || {
+        echo "  backgrounded join did not finish after the lock was released"
+        kill -9 "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        return 1
+    }
     wait "$pid"; rc=$?
     err="$(cat "$errfile" 2>/dev/null || true)"
 
