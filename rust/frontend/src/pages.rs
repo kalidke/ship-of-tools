@@ -531,11 +531,12 @@ mod tests {
     /// account alone can enter.
     #[cfg(unix)]
     fn relay_stand_in_path(tag: &str) -> std::path::PathBuf {
-        use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::fs::PermissionsExt;
         let dir =
             std::path::PathBuf::from(format!("/tmp/sot-relay-page-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         dir.join("sot-host-far.sock")
     }
 
