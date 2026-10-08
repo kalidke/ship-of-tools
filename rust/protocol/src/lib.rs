@@ -5,6 +5,7 @@
 // Blob payloads are length-prefixed binary frames following an envelope whose
 // payload contains `"blob": {"len": N, "mime": "…"}`. See docs/adr/0001.
 
+pub mod annotation;
 pub mod codec;
 pub mod ir;
 pub mod ops;

@@ -25,6 +25,7 @@ Per workspace row (built in `rows/workspace.rs`):
 - The watcher never watches the daemon's own state, install or updates trees (`self_owned_roots`, `should_skip`), never
   crosses a filesystem (`device_of`) and never exceeds its budget (`watch_budget`, `SOT_WATCH_BUDGET`).
 - `preview.changed` is live-only and carries no revision.
+- Annotation headers are parsed only by sot_protocol::annotation; the on-disk stale-write guard and window drift hash use the same grammar.
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `tree.root`, `tree.children`,
@@ -33,7 +34,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `dir.create`, `preview.changed`, `FilesMode`, `ConceptStore`, `rust/backend/src/rows/workspace.rs`, `Watcher`,
 `rust/backend/src/rows/registry.rs`. Uses: `dispatch`, `write_frame_to`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `Kernel::request`, `file.preview`,
-`is_servable_video`, `Signal::spawn_std`, `ContainedStd`, `child_signal::process`.
+`is_servable_video`, `Signal::spawn_std`, `ContainedStd`, `child_signal::process`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against.
 
 ## Folders
 - `examples/preview/` (repo root): sample files that previews are tried on.

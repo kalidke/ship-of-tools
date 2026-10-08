@@ -6,7 +6,7 @@ PNG and SVG bitmaps as wgpu quads, and the in-pane editor's buffer. Part of fe-u
 ## Files
 - `mod.rs`: declares the subfolders and the files below.
 - `pane.rs`: which node the pane shows and how a reply's bytes route to a renderer (`render_preview_source`), plus the pin and the path routing for `o`/`W`/`O`.
-- `concept.rs`: the concept-annotation slot beside the preview: the `concept.read` request, the frontmatter split and the `file.parse` drift check.
+- `concept.rs`: annotation requests and drift checks; frontmatter comes from sot_protocol::annotation.
 - `fetch.rs`: the cursor-follow `preview.get` (`maybe_fire_preview`), the request-generation counters for the preview and concept slots, and which reply counts (`reply_is_current`).
 - `keys.rs`: What a key does in the preview pane, in order: the editor, page turns, the image, then actions and scroll.
 - `open.rs`: the external opens of the previewed file: the right outside tool (`open_path_external`), the docs page and the quarto execute.
@@ -38,3 +38,4 @@ rust/frontend/src/ui/render/quad.rs.
   (`layout_figure`, `image_rect_for_caption`).
 - A result belongs to the producing host's listed canonical row. Removal or identity replacement invalidates its entry and attempts; while the row remains listed, only its matching cursor, installed preview and successful presentation acknowledge it. Late completion cannot affect a successor.
 - A replacement result or restarted attempt gets fresh local serials. Result-owned root/children requests retain them through pending entries and tagged events; stale successes and failures are rejected before tree or reveal mutation. Ordinary tree replies cannot complete or abort a result-owned reveal. Preview generations and presentation certificates are bound to the same issuing attempt.
+- Annotation headers are parsed only by sot_protocol::annotation; the on-disk stale-write guard and window drift hash use the same grammar.

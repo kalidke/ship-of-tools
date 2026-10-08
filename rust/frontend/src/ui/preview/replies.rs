@@ -91,7 +91,7 @@ impl State {
                 let (header, body) = split_frontmatter(&content);
                 edit.header = header;
                 edit.expected_ast_hash = if exists {
-                    parse_synced_against(&content)
+                    sot_protocol::annotation::synced_against(&content)
                 } else {
                     None
                 };
@@ -110,12 +110,12 @@ impl State {
         // request for the current selection.
         if self.concept_target_fired.as_deref() == Some(target.as_str()) {
             let synced_against = if exists {
-                parse_synced_against(&content)
+                sot_protocol::annotation::synced_against(&content)
             } else {
                 None
             };
             if exists {
-                let body = strip_frontmatter(&content);
+                let body = split_frontmatter(&content).1;
                 self.preview_concept = Some(MarkdownPreview::new(
                     self.text.font_system_mut(),
                     &body,

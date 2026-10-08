@@ -1609,9 +1609,7 @@ mod scan_tests;
 pub(crate) mod preview;
 pub(crate) mod render;
 use render::*;
-use self::preview::concept::{
-    parse_synced_against, split_frontmatter, strip_frontmatter, ConceptInfo, FILE_PARSE_MAX_RETRIES,
-};
+use self::preview::concept::{split_frontmatter, ConceptInfo, FILE_PARSE_MAX_RETRIES};
 use self::preview::editor::state::EditState;
 use self::preview::reply_is_current;
 use self::preview::pane::{

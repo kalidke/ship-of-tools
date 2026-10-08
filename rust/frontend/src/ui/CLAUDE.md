@@ -58,7 +58,7 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `video.open`, `docs.open`, `quarto.open`,
 `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`,
 `OutgoingReq`, `IncomingEvt`, `HostTable`, `lane_dial`, `ResolvedDial`, `--socket`, `--dial`, `--relaunched`,
-`relaunch.request`, `spawn_watcher`, `rust/frontend/src/relaunch.rs`.
+`relaunch.request`, `spawn_watcher`, `rust/frontend/src/relaunch.rs`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against.
 
 ## Folders
 - `app/`: the winit application (`App`), event-loop callbacks, one frame (`frame.rs`) and the quit prompt and exit.
