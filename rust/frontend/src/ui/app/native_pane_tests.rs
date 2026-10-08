@@ -452,16 +452,19 @@ fn plan_for(role: &str, scenario: &Scenario) -> Result<Vec<Plan>> {
 
 fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     let scenario: Scenario = serde_json::from_slice(&std::fs::read(scenario_path)?).map_err(|e| anyhow::anyhow!("pane-timing scenario malformed: {e}"))?;
-    // The parent holds this pipe's write end for the child's whole life; its end is the parent's.
-    std::thread::spawn(|| {
-        let mut sink = Vec::new();
-        let _ = std::io::stdin().lock().read_to_end(&mut sink);
-        // The parent's reader is gone too, so this write may fail; it must not panic before the abort.
-        let _ = writeln!(std::io::stdout(), "pane-timing parent gone");
-        std::process::exit(70);
-    });
     println!("pane-timing: body entered");
     let _home = FixtureHome::enter()?;
+    // The parent holds this pipe's write end for the child's whole life; its end is the parent's. The exit skips
+    // the drops, so the watcher removes the fixture root itself first.
+    let root = std::path::PathBuf::from(std::env::var_os("XDG_STATE_HOME").ok_or_else(|| anyhow::anyhow!("the fixture root is not set"))?);
+    std::thread::spawn(move || {
+        let mut sink = Vec::new();
+        let _ = std::io::stdin().lock().read_to_end(&mut sink);
+        // The parent's reader is gone too, so this write may fail; it must not panic before the exit.
+        let _ = writeln!(std::io::stdout(), "pane-timing parent gone");
+        let _ = std::fs::remove_dir_all(&root);
+        std::process::exit(70);
+    });
     let capture = sot_log::test_log::capture();
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

@@ -460,7 +460,7 @@ pub(super) fn kill_proof() -> Result<()> {
             }
         }
     });
-    let (mut daemon_line, mut roots) = (String::new(), Vec::<PathBuf>::new());
+    let (mut daemon_line, mut roots, mut child_pid) = (String::new(), Vec::<PathBuf>::new(), String::new());
     let deadline = Instant::now() + Duration::from_secs(600);
     loop {
         let line = match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
@@ -476,7 +476,8 @@ pub(super) fn kill_proof() -> Result<()> {
             roots.extend(daemon_line.split("roots=").nth(1).unwrap_or_default().split(',').map(PathBuf::from));
         } else if let Some(hub) = line.strip_prefix("pane-timing roots hub=") {
             roots.push(PathBuf::from(hub));
-        } else if line.starts_with("pane-timing child run-1 started") {
+        } else if let Some(rest) = line.strip_prefix("pane-timing child run-1 started pid=") {
+            child_pid = rest.trim().to_string();
             break;
         }
     }
@@ -516,6 +517,13 @@ pub(super) fn kill_proof() -> Result<()> {
         if name != "anchor.toml" {
             rows_left += 1;
             failures.push(format!("row {name} survived its daemon's close"));
+        }
+    }
+    let prefix = format!("sot-state-migration-test-{child_pid}-");
+    for entry in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !child_pid.is_empty() && name.starts_with(&prefix) {
+            failures.push(format!("fixture root {name} of the killed child remains"));
         }
     }
     let mut removed = 0;
