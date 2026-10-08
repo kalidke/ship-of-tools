@@ -591,21 +591,47 @@ mod tests {
     }
 
     /// One tick of the supervisor lane against `lifecycle`, at `now`.
-    fn tick(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, authority: &mut AuthorityState, lifecycle: &mut Lifecycle, now: Instant) {
-        let mut ctx = LaneCtx { authority, lifecycle };
-        assert!(!service_lane(lane, None, conns, &mut ctx, now), "the accept loop is alive");
+    fn tick(
+        lane: &Lane,
+        conns: &mut HashMap<ConnId, Conn>,
+        authority: &mut AuthorityState,
+        lifecycle: &mut Lifecycle,
+        now: Instant,
+    ) {
+        let mut ctx = LaneCtx {
+            authority,
+            lifecycle,
+        };
+        assert!(
+            !service_lane(lane, None, conns, &mut ctx, now),
+            "the accept loop is alive"
+        );
     }
 
     /// Ticks at `now` until the lane has registered one more connection, and returns its id.
-    fn accept_one(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, f: &mut Fixture, now: Instant) -> ConnId {
+    fn accept_one(
+        lane: &Lane,
+        conns: &mut HashMap<ConnId, Conn>,
+        f: &mut Fixture,
+        now: Instant,
+    ) -> ConnId {
         let before: Vec<ConnId> = conns.keys().copied().collect();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            tick(lane, conns, &mut f.authority, &mut Lifecycle::EndedNoRespawn, now);
+            tick(
+                lane,
+                conns,
+                &mut f.authority,
+                &mut Lifecycle::EndedNoRespawn,
+                now,
+            );
             if let Some(id) = conns.keys().find(|id| !before.contains(id)) {
                 return *id;
             }
-            assert!(Instant::now() < deadline, "the lane registers the connection");
+            assert!(
+                Instant::now() < deadline,
+                "the lane registers the connection"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     }

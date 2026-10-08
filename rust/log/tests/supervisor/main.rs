@@ -161,7 +161,10 @@ struct Lane {
 
 impl Lane {
     fn new(h: &str, conn: Client) -> Lane {
-        Lane { h: h.to_string(), conn: std::cell::RefCell::new(conn) }
+        Lane {
+            h: h.to_string(),
+            conn: std::cell::RefCell::new(conn),
+        }
     }
 
     /// The connection now held, for a test of a raw connection's own behaviour.
@@ -170,7 +173,12 @@ impl Lane {
     }
 
     /// One reply to `request`, each attempt bounded by `budget`; a failed first attempt reconnects once.
-    fn request(&self, what: &str, request: &SupervisorRequest, budget: Duration) -> SupervisorReply {
+    fn request(
+        &self,
+        what: &str,
+        request: &SupervisorRequest,
+        budget: Duration,
+    ) -> SupervisorReply {
         let first = match request_for_test(&self.conn.borrow(), request, Instant::now() + budget) {
             Ok(reply) => return reply,
             Err(e) => e,
@@ -184,7 +192,9 @@ impl Lane {
 
 fn status(conn: &Lane) -> (Option<String>, Option<u64>, SupervisorPhase) {
     match conn.request("status", &SupervisorRequest::Status, Duration::from_secs(5)) {
-        SupervisorReply::StatusOk { voyage, leg, phase, .. } => (voyage, leg, phase),
+        SupervisorReply::StatusOk {
+            voyage, leg, phase, ..
+        } => (voyage, leg, phase),
         other => panic!("expected StatusOk, got {other:?}"),
     }
 }
@@ -219,7 +229,10 @@ fn wait_for_ready(conn: &Lane, timeout: Duration) -> (String, u64) {
 fn command(conn: &Lane, operation_id: &str, op: SupervisorOp) -> SupervisorOperationState {
     match conn.request(
         "command",
-        &SupervisorRequest::Command { operation_id: operation_id.to_string(), op },
+        &SupervisorRequest::Command {
+            operation_id: operation_id.to_string(),
+            op,
+        },
         // Generous: an EndRun's own reply is DEFERRED to record_closed
         // (B3) -- the mgmt-lane exchange plus the leg writing its own
         // marker, both real OS work on a background thread, not a bound
@@ -237,7 +250,9 @@ fn command(conn: &Lane, operation_id: &str, op: SupervisorOp) -> SupervisorOpera
 fn query(conn: &Lane, operation_id: &str) -> SupervisorOperationState {
     match conn.request(
         "query",
-        &SupervisorRequest::Query { operation_id: operation_id.to_string() },
+        &SupervisorRequest::Query {
+            operation_id: operation_id.to_string(),
+        },
         Duration::from_secs(5),
     ) {
         SupervisorReply::Operation(state) => state,
@@ -249,7 +264,11 @@ fn query(conn: &Lane, operation_id: &str) -> SupervisorOperationState {
 /// state follows. Callers that already PROVED `record_closed` via the
 /// `end_run` command's own deferred reply (B3) use this only for the
 /// remaining `record_closed -> record_verified`/`failed` step.
-fn poll_to_terminal(conn: &Lane, operation_id: &str, timeout: Duration) -> SupervisorOperationState {
+fn poll_to_terminal(
+    conn: &Lane,
+    operation_id: &str,
+    timeout: Duration,
+) -> SupervisorOperationState {
     poll_until(
         || match query(conn, operation_id) {
             SupervisorOperationState::Accepted | SupervisorOperationState::RecordClosed => None,
@@ -268,8 +287,19 @@ fn poll_to_terminal(conn: &Lane, operation_id: &str, timeout: Duration) -> Super
 /// workflow's own description is unproved... never requires observing
 /// record_closed").
 fn end_run_and_expect_record_closed(conn: &Lane, operation_id: &str, reason: &str, voyage: String) {
-    let reply = command(conn, operation_id, SupervisorOp::EndRun { reason: reason.into(), voyage });
-    assert_eq!(reply, SupervisorOperationState::RecordClosed, "end_run's own command reply must arrive AT record_closed (ADR 0041:592)");
+    let reply = command(
+        conn,
+        operation_id,
+        SupervisorOp::EndRun {
+            reason: reason.into(),
+            voyage,
+        },
+    );
+    assert_eq!(
+        reply,
+        SupervisorOperationState::RecordClosed,
+        "end_run's own command reply must arrive AT record_closed (ADR 0041:592)"
+    );
 }
 
 /// Blocks on `conn.read` in a scoped thread so an EOF (or any other
