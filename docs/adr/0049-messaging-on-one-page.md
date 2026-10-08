@@ -149,7 +149,7 @@ page carrying its scripts and files inside it, so that nothing on that port answ
 `julia/repl/test/bonito/runtests.jl` (exact listener sets, with a control that rejects an extra listener), and the MathJax helper's
 whole process tree is observed to listen nowhere after real work (`mathjax_helper_tree_listens_nowhere` in the backend's sidecar
 contract tests, with the same observer rejecting a listening node tree). REPL startup arguments, selected environment and
-page-secret exclusion are observed in the backend REPL project tests. These are entry-path tests on the platforms exercised, not
+page-secret exclusion are observed in the backend REPL project tests. `wglshow` keeps its listener for the REPL lifetime instead of closing and replacing it while the old proxy grant remains: a different live pin is refused, and restarting retires the child and its browser grants. Arbitrary user-code BrowserView servers and explicit extra port grants are separate trust choices. These are entry-path tests on the platforms exercised, not
 a whole-program prohibition: the dormant Claude SDK helper is not exercised. The cost is on Windows only: in this mode
 Pluto cannot stop a running cell there (it says so; restoring interrupt is planned for 0.6.7). The guarantee is
 isolation, not availability: another account can still fill a listener's backlog and delay this account's own

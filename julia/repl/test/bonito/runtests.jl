@@ -105,24 +105,15 @@ get_page(port, path) = Bonito.HTTP.get("http://127.0.0.1:$port$path"; status_exc
         @test ShipToolsRepl.wgl_server(Bonito, port) === page
         @test exact_listeners(before, Set([(port, true)]))
 
-        # A different explicit pin replaces it: the new listener serves, the old one is closed, and exactly the
-        # replacement's set remains.
-        other = free_port()
-        replacement = ShipToolsRepl.wgl_server(Bonito, other)
-        @test replacement.server.port == other
-        Bonito.route!(replacement.server, replacement.path => ShipToolsRepl.no_referrer_page(Bonito, app))
-        @test get_page(other, replacement.path).status == 200
-        @test exact_listeners(before, Set([(other, true)]))
-
         # The comparison rejects a listener beyond the declared set, with the declared listener still serving.
         extra = listen(ip"127.0.0.1", 0)
         try
-            @test get_page(other, replacement.path).status == 200
-            @test !exact_listeners(before, Set([(other, true)]))
+            @test get_page(port, page.path).status == 200
+            @test !exact_listeners(before, Set([(port, true)]))
         finally
             close(extra)
         end
-        @test exact_listeners(before, Set([(other, true)]))
+        @test exact_listeners(before, Set([(port, true)]))
 
         # A taken first pin throws and publishes no server.
         reset_wgl!()
@@ -136,6 +127,51 @@ get_page(port, path) = Bonito.HTTP.get("http://127.0.0.1:$port$path"; status_exc
             close(taken)
         end
         @test exact_listeners(before, Set{Tuple{Int,Bool}}())
+        reset_wgl!()
+    end
+end
+
+@testset "a live WGL port cannot be replaced" begin
+    if !Sys.islinux()
+        @test_skip "listener observation reads /proc"
+    else
+        reset_wgl!()
+        before = listeners()
+        app = Bonito.App(() -> Bonito.DOM.div("page"))
+        page = ShipToolsRepl.wgl_server(Bonito, nothing)
+        port = page.server.port
+        Bonito.route!(page.server, page.path => ShipToolsRepl.no_referrer_page(Bonito, app))
+        secret = page.path
+        @test get_page(port, secret).status == 200
+
+        # A distinct port, reserved by an owned listener and released, so a collision is not the failure.
+        other = free_port()
+        @test other != port
+        err = try ShipToolsRepl.wgl_server(Bonito, other); nothing catch e; e end
+        @test err isa ArgumentError
+
+        # Nothing changed: the same server, port and secret (compared as a boolean, never printed) ...
+        @test ShipToolsRepl.WGL_SERVER[] === page
+        same_secret = ShipToolsRepl.WGL_SERVER[].path == secret
+        @test same_secret
+        # ... the original listener still serves its page ...
+        @test get_page(port, secret).status == 200
+        # ... and no listener was created at the requested port: an owned replacement can bind it.
+        owned = listen(ip"127.0.0.1", other)
+        try
+            @test exact_listeners(before, Set([(port, true), (other, true)]))
+        finally
+            close(owned)
+        end
+        @test exact_listeners(before, Set([(port, true)]))
+
+        # The same pin and the default still reuse it.
+        @test ShipToolsRepl.wgl_server(Bonito, port) === page
+        @test ShipToolsRepl.wgl_server(Bonito, nothing) === page
+        # An invalid pin is rejected before anything is bound.
+        @test_throws ArgumentError ShipToolsRepl.wgl_server(Bonito, 0)
+        @test_throws ArgumentError ShipToolsRepl.wgl_server(Bonito, 70000)
+        @test exact_listeners(before, Set([(port, true)]))
         reset_wgl!()
     end
 end

@@ -13,7 +13,7 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md (not yet writ
 - `src/wgl.jl`: browser-served artifacts, `BrowserView`, `page_server`, private `wgl_server` listener selection and `wglshow`.
 - `src/frames.jl`: how an eval's output becomes typed frames, and the BrowserView announcements.
 - `test/runtests.jl`: the streaming tests and the stdlib-only guard test.
-- `test/bonito/`: the `wglshow` page test's own environment (Bonito): the page carries its assets, its port has no asset route, and (Linux) serving it opens exactly one listener (CI's "wglshow pages" job). Actual owned-process listener, loopback HTTP/bind and selection-preservation controls, with an extra-listener rejection control.
+- `test/bonito/`: the `wglshow` page test's own environment (Bonito): the page carries its assets, its port has no asset route, and (Linux) serving it opens exactly one listener (CI's "wglshow pages" job). Actual owned-process listener, loopback HTTP/bind and selection-preservation controls, with an extra-listener rejection control, and the live-port refusal proof.
 
 ## Start here
 `serve` for an op; `stream_eval_frames` for output; `wglshow` for browser artifacts.
@@ -26,5 +26,5 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md (not yet writ
 - Every request gets a terminal `res` (`emit_fallback_done`).
 - A `BrowserView` is announced once per (url, open) (`announce_browserview`).
 - WGLMakie code lives only in ext/.
-- `wglshow` serves from one Bonito server per child (`page_server`), on a port the OS assigns, at a secret path minted with that server (`WGL_SERVER` holds both). Its page is a Bonito session of its own with `NoServer` (`no_referrer_page`), so its scripts and files travel inside the page and the port answers only the page and its websocket; `/` and every other path answer 404. It needs Bonito 5.1 or a later 5.x (`wgl_bonito_supported`). `wgl_server` selects the listener; at this extraction commit a different explicit live port still replaces it, binding the new listener before closing the old one.
+- `wglshow` serves from one Bonito server per child (`page_server`), on a port the OS assigns, at a secret path minted with that server (`WGL_SERVER` holds both). Its page is a Bonito session of its own with `NoServer` (`no_referrer_page`), so its scripts and files travel inside the page and the port answers only the page and its websocket; `/` and every other path answer 404. It needs Bonito 5.1 or a later 5.x (`wgl_bonito_supported`). `wgl_server` binds once per REPL lifetime: the first call may pin a port, later default/same-port calls reuse it, and a different live pin raises `ArgumentError` without changing the listener, secret, routes or announcement. Restart the REPL to choose another port. The listener stays owned until the REPL ends; generic BrowserView servers retain their own multi-port behavior.
 - `write_envelope` has a twin in julia/kernel.

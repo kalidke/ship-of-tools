@@ -3,7 +3,7 @@
 **Status:** partly superseded by ADR 0035 — IMPLEMENTED + VALIDATED LIVE END-TO-END
 (2026-07-12, branch `feat/wglmakie-browser`).
 
-> *Note (0.6.6, decision 0031): the `SOT_WGL_PORT`/1241 port this record names is gone; `wglshow` binds an OS-assigned port and serves under a secret path (transport page, "Browser-facing ports"). The private `wgl_server` helper now owns listener selection; this extraction preserves live explicit-port replacement.*
+**Current port rule (0.6.6):** WGL binds one OS-assigned port per REPL lifetime unless its first call explicitly pins a free port. Later default/same-pin calls reuse it; a different live pin fails before listener, secret or route changes. Restart the REPL to repin. There is no fixed preferred WGL port or live listener replacement; older descriptions below are design history. (Decision 0031: `SOT_WGL_PORT` and 1241 are gone; transport page, "Browser-facing ports".)
 
 > **Transport note (2026-08-10, updated 2026-09-29):** the launcher `-L 1241`
 > forward described here is the pre-ADR-0035 transport. Since v0.5.0 the WGL
@@ -11,9 +11,8 @@
 > the fixed forward was retired first as an opt-in fallback
 > (`SOT_LEGACY_FORWARDS=1` for pre-v0.5.0 backends) and then, once the
 > control connection itself stopped being a tunnel (the isolation lane,
-> `dev/output/isolation-plan.md`), deleted outright. Port 1241 remains the
-> loopback port Bonito tries first on the backend, falling back to an
-> OS-assigned one.
+> `dev/output/isolation-plan.md`), deleted outright. (Port 1241 is no longer
+> preferred; see the current port rule above.)
 
 > **Display-stack integration (2026-09-01):** a consumer no longer has to call
 > `wglshow` explicitly. `ShipToolsRepl` pushes a `WGLDisplay <: Base.AbstractDisplay`
