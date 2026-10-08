@@ -15,7 +15,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `control_session.rs`: server; a control session's replies pinned over the wire: unknown op, `monitor.*`, `pty.open` refusals, the off-loop ops, the evt skip and the refused hellos
 - `daemon_boot.rs`: server; a first boot seeds the default row as the inert anchor, and the registry poll relays a state change; on Linux, observes that a spawned daemon inherits no `SOT_` variable the test did not set
 - `hub_link.rs`: messaging; a hub `sotd` and a guest `sotd` joined by a stub `ssh`, broadcast filed on the guest
-- `keystroke_latency.rs`: rows; keystroke timing against a private daemon, every test `#[ignore]`
+- `keystroke_latency.rs`: rows and topology; ignored private-daemon keystroke timing and headless request-to-checkpoint switch timing, with explicit SSH prerequisites; T3 owns proof from the frontend attach request to the pane showing it
 - `live_socket.rs`: server; a second daemon on a live daemon's socket refuses and the first keeps answering
 - `old_watcher.rs`: server; a pre-0.6.6 wake watcher's hello and `pty.input` in its library's exact form: the hello is refused with `protocol_mismatch`, then the connection ends with no other byte
 - `ping_reaper.rs`: server; the reaper of half-open long-lived client roles, over the wire
@@ -28,7 +28,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `topology_set.rs`: topology; `topology.set` and `topology.changed` over the wire; a hub daemon started from umask 022 creates its comm files owner-only
 - `window_start.rs`: lifecycle; a daemon's start from `held.json`, resumed or ended rows
 - `capsule_workspaces/`: rows; a real `sotd` and a real detached `sot-capsule` over a real local socket (`main.rs` plus modules); `session_env.rs`: a session's `SOTD_BIN` is the daemon's own start path, over an inherited value and, on Linux, after an in-place update; each test's row ends through its own supervisor, and its folders are kept, with a report, when that end is not confirmed
-- `lane_bridge/`: rows; a frontend attach client reaching a capsule row through a daemon and a Unix-socket relay that can be cut, blackholed and throttled
+- `lane_bridge/`: rows and topology; a frontend attach client reaching a capsule row through a daemon and a test-owned relay, plus explicitly spawned SSH stand-ins
 - `switch_latency/`: server; a slow request does not block a later cheap reply on one connection; its `dead_kernel` module is sidecars
 - `window_lease/`: lifecycle; the close lifecycle's daemon half, one daemon per state root
 - `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs` (`sotd_command` and `sotd_command_at`, also loaded alone by suites that need nothing else), `registry.rs` (`write_registry`), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the process count)
@@ -58,3 +58,6 @@ shows the shape.
   tests by module path in `SLOW_FIRST`; a renamed test changes there in the same commit.
 - Two suites compile src files by `#[path]`: `support/mod.rs` (`row_scope_aim.rs`) and `comm_file.rs` (the inbox
   source). A move of either src file changes that line in the same commit.
+
+- SSH stand-ins and k3b/k5 observe parent PATH and SHELL preservation through fixture setup, child execution and teardown; equality failures identify the phase without printing environment values.
+- Admission-expiry coverage reports the single first voyage's sanitized typed result, fresh-start count and expired-child reap before assertions; its ordinary gated fallback retains the production handshake bound and typed outcomes, before any worker recovery.

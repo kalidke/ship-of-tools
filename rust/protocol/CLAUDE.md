@@ -2,7 +2,7 @@
 
 Every byte two Ship of Tools programs exchange is defined here, once, and so is the way a process names a daemon's
 endpoint and starts an ssh login. The crate is shared by the frontend and the backend; its only dependency of ours is
-sot-log. It holds no state, threads or files of its own.
+sot-log. The wire definitions own no runtime state; topology clients own their connections and ssh children.
 
 ## Idea
 A frame is one `\n`-terminated JSON envelope, and may be followed by raw blob bytes. Payload types are plain serde
@@ -44,7 +44,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/topology/`: the topology subsystem, with its own charter; endpoints, ssh bridge, lane client and relay units.
 
 ## Files
-- `Cargo.toml`: the crate manifest
+- `Cargo.toml`: the crate manifest; `test-handshake-bound` is enabled only by backend dev-dependencies for lane-client fixtures
 - `build.rs`: stamps the git-derived build inputs of the product version
 - `src/codec.rs`: the async and blocking frame readers and writers, and the envelope cap
 - `src/ir.rs`: the wire's tree and preview payload types

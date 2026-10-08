@@ -114,9 +114,9 @@ fn command(recipe: &SshRecipe) -> std::process::Command {
 /// Spawn the child for a synchronous caller — the lane client, which
 /// implements `sot_log::lane::client::Client`'s blocking `&self` methods and so
 /// cannot hold a tokio `Child`.
-fn spawn_sync(recipe: &SshRecipe) -> std::io::Result<std::process::Child> {
+fn spawn_sync(mut command: std::process::Command) -> std::io::Result<std::process::Child> {
     #[allow(clippy::disallowed_methods, reason = "the window's and the lane client's ssh; the daemon starts ssh only through LinkGate::command and lifecycle's containment")]
-    let child = command(recipe).spawn();
+    let child = command.spawn();
     child
 }
 
@@ -125,10 +125,24 @@ fn spawn_sync(recipe: &SshRecipe) -> std::io::Result<std::process::Child> {
 /// `Child` (the branch returning, the splice task ending) never leaves an
 /// orphaned `ssh` running past its client — the async twin of
 /// `BridgedClient`'s own explicit `Drop` on the sync side.
-fn spawn_async(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child> {
+fn spawn_async(command: std::process::Command) -> std::io::Result<tokio::process::Child> {
     #[allow(clippy::disallowed_methods, reason = "the window's and the lane client's ssh; the daemon starts ssh only through LinkGate::command and lifecycle's containment")]
-    let child = tokio::process::Command::from(command(recipe)).kill_on_drop(true).spawn();
+    let child = tokio::process::Command::from(command).kill_on_drop(true).spawn();
     child
+}
+
+/// Both gated command APIs return a real owned child before admission ends.
+pub(crate) trait StartedChild {
+    #[cfg(test)]
+    fn child_id(&self) -> Option<u32>;
+}
+impl StartedChild for std::process::Child {
+    #[cfg(test)]
+    fn child_id(&self) -> Option<u32> { Some(self.id()) }
+}
+impl StartedChild for tokio::process::Child {
+    #[cfg(test)]
+    fn child_id(&self) -> Option<u32> { self.id() }
 }
 
 /// Why a gated spawn did not start a child.
@@ -160,6 +174,9 @@ impl std::error::Error for SpawnError {}
 #[derive(Debug, Clone, Default)]
 pub struct LinkGate {
     down: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    admission: std::sync::Arc<std::sync::Mutex<()>>,
+    #[cfg(test)]
+    rendezvous: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<tests::GateRendezvous>>>>,
 }
 
 impl LinkGate {
@@ -169,21 +186,71 @@ impl LinkGate {
 
     /// Transport only.
     pub fn set_up(&self, up: bool) {
+        #[cfg(test)]
+        let observation = if up { None } else {
+            self.rendezvous.lock().unwrap().clone().and_then(|hook| {
+                let sender = hook.close.lock().unwrap().take()?;
+                Some((hook, sender))
+            })
+        };
+        #[cfg(test)]
+        let _admission = self.observe_close_lock(observation.as_ref());
+        #[cfg(not(test))]
+        let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
         self.down.store(!up, std::sync::atomic::Ordering::Release);
+        #[cfg(test)]
+        if let Some((hook, sender)) = observation {
+            hook.events.lock().unwrap().push("closed".into());
+            hook.snapshot.lock().unwrap().close = "completed";
+            sender.send(tests::CloseObservation::Completed).unwrap();
+        }
+    }
+
+    #[cfg(test)]
+    fn observe_close_lock(&self, observation: Option<&(std::sync::Arc<tests::GateRendezvous>, std::sync::mpsc::Sender<tests::CloseObservation>)>) -> std::sync::MutexGuard<'_, ()> {
+        if let Some((hook, sender)) = observation {
+            match self.admission.try_lock() {
+                Ok(guard) => return guard,
+                Err(std::sync::TryLockError::Poisoned(error)) => return error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    hook.snapshot.lock().unwrap().close = "contended";
+                    sender.send(tests::CloseObservation::Contended).unwrap();
+                }
+            }
+        }
+        self.admission.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub(crate) fn admit<C: StartedChild>(&self, command: std::process::Command, spawn: impl FnOnce(std::process::Command) -> std::io::Result<C>) -> Result<C, SpawnError> {
+        let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
+        if !self.is_up() { return Err(SpawnError::LinkDown); }
+        #[cfg(test)]
+        let rendezvous = self.rendezvous.lock().unwrap().clone();
+        #[cfg(test)]
+        let command = if let Some(hook) = &rendezvous { hook.prepare(command) } else { command };
+        #[cfg(test)]
+        if let Some(hook) = &rendezvous { hook.phase("os-spawn"); }
+        #[cfg(not(test))]
+        let child = spawn(command).map_err(SpawnError::Io)?;
+        #[cfg(test)]
+        let child = {
+            let started = spawn(command);
+            if let Some(hook) = &rendezvous { hook.phase("spawn-return"); }
+            started.map_err(SpawnError::Io)?
+        };
+        #[cfg(test)]
+        if let Some(hook) = &rendezvous { hook.created(child.child_id()); }
+        #[cfg(test)]
+        if let Some(hook) = &rendezvous { hook.phase("admission-return"); }
+        Ok(child)
     }
 
     pub fn spawn_sync(&self, recipe: &SshRecipe) -> Result<std::process::Child, SpawnError> {
-        if !self.is_up() {
-            return Err(SpawnError::LinkDown);
-        }
-        spawn_sync(recipe).map_err(SpawnError::Io)
+        self.admit(command(recipe), spawn_sync)
     }
 
     pub fn spawn_async(&self, recipe: &SshRecipe) -> Result<tokio::process::Child, SpawnError> {
-        if !self.is_up() {
-            return Err(SpawnError::LinkDown);
-        }
-        spawn_async(recipe).map_err(SpawnError::Io)
+        self.admit(command(recipe), spawn_async)
     }
 
     /// The gated command, not yet started, for a caller that contains the
@@ -198,7 +265,7 @@ impl LinkGate {
     /// The one ungated spawn: the transport's own reconnect probe, which
     /// is what discovers that a link is back.
     pub fn probe(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child> {
-        spawn_async(recipe)
+        spawn_async(command(recipe))
     }
 }
 
@@ -228,6 +295,255 @@ pub async fn last_stderr_after_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum CloseObservation { Contended, Completed }
+
+    #[derive(Clone, Copy, Debug)]
+    pub(super) struct GateSnapshot {
+        mode: &'static str,
+        phase: &'static str,
+        admission: usize,
+        ready: usize,
+        releases_sent: usize,
+        releases_consumed: usize,
+        starts: usize,
+        pub(super) close: &'static str,
+    }
+
+    impl GateSnapshot {
+        fn new(mode: &'static str) -> Self {
+            Self { mode, phase: "done", admission: 0, ready: 0, releases_sent: 0, releases_consumed: 0, starts: 0, close: "unobserved" }
+        }
+    }
+
+    #[derive(Debug)]
+    pub(super) struct GateRendezvous {
+        program: std::path::PathBuf,
+        ready: std::sync::mpsc::Sender<()>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        pub(super) events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        pub(super) close: std::sync::Mutex<Option<std::sync::mpsc::Sender<CloseObservation>>>,
+        // One-use: the first admitted start claims the pause, later starts proceed.
+        pause: std::sync::atomic::AtomicBool,
+        // Each prepare entry reports its ordinal and whether it claimed the pause.
+        entries: std::sync::Mutex<Option<std::sync::mpsc::Sender<(usize, bool)>>>,
+        pub(super) snapshot: std::sync::Mutex<GateSnapshot>,
+    }
+
+    impl GateRendezvous {
+        fn new(program: &std::path::Path, mode: &'static str, pause: bool, events: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> (std::sync::Arc<Self>, std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+            let (ready, ready_rx) = std::sync::mpsc::channel();
+            let (release, release_rx) = std::sync::mpsc::channel();
+            let hook = Self { program: program.to_path_buf(), ready, release: std::sync::Mutex::new(release_rx), events, close: std::sync::Mutex::new(None), pause: std::sync::atomic::AtomicBool::new(pause), entries: std::sync::Mutex::new(None), snapshot: std::sync::Mutex::new(GateSnapshot::new(mode)) };
+            (std::sync::Arc::new(hook), ready_rx, release)
+        }
+
+        pub(super) fn phase(&self, phase: &'static str) { self.snapshot.lock().unwrap().phase = phase; }
+
+        fn watchdog(&self, event: &str, result: &str) {
+            let state = *self.snapshot.lock().unwrap();
+            println!("T2 gate watchdog: mode={} wait={event} result={result} phase={} admission={} ready={} releases-sent={} releases-consumed={} starts={} close={}", state.mode, state.phase, state.admission, state.ready, state.releases_sent, state.releases_consumed, state.starts, state.close);
+        }
+
+        fn wait_entry(&self, event: &str) {
+            let mode = self.snapshot.lock().unwrap().mode;
+            println!("T2 gate wait: mode={mode} wait={event}");
+        }
+
+        fn wait<T>(&self, receiver: &std::sync::mpsc::Receiver<T>, event: &str, panic: &str) -> T {
+            self.wait_entry(event);
+            // A genuine hang is bounded by the hosted job's own guard; no local deadline claims progress.
+            let result = receiver.recv();
+            if result.is_err() { self.watchdog(event, "Disconnected"); }
+            result.expect(panic)
+        }
+
+        fn release(&self, sender: &std::sync::mpsc::Sender<()>) {
+            let mut state = self.snapshot.lock().unwrap();
+            let result = sender.send(());
+            if result.is_ok() { state.releases_sent += 1; }
+            drop(state);
+            result.unwrap();
+        }
+
+        pub(super) fn prepare(&self, prepared: std::process::Command) -> std::process::Command {
+            assert!(prepared.get_args().any(|arg| arg == "ControlMaster=no"), "one prepared argv authority");
+            let claimed = self.pause.swap(false, std::sync::atomic::Ordering::AcqRel);
+            let ordinal = { let mut state = self.snapshot.lock().unwrap(); state.admission += 1; state.phase = "admission-release"; state.admission };
+            if let Some(entries) = &*self.entries.lock().unwrap() { entries.send((ordinal, claimed)).unwrap(); }
+            if claimed {
+                { let mut state = self.snapshot.lock().unwrap(); self.ready.send(()).unwrap(); state.ready += 1; }
+                self.wait(&self.release.lock().unwrap(), "admission-release", "admission rendezvous watchdog");
+                self.snapshot.lock().unwrap().releases_consumed += 1;
+            }
+            let mut command = std::process::Command::new("python3");
+            command.arg("-u").arg(&self.program).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            command
+        }
+
+        pub(super) fn created(&self, id: Option<u32>) {
+            self.events.lock().unwrap().push(format!("created {}", id.expect("a successful spawn owns a child id")));
+            let mut state = self.snapshot.lock().unwrap();
+            state.starts += 1; state.phase = "created";
+        }
+    }
+
+    fn cleanup_sync(child: &mut std::process::Child, hook: &GateRendezvous) {
+        hook.phase("cleanup"); hook.wait_entry("child-reaped");
+        if child.try_wait().unwrap().is_none() { child.kill().expect("terminate owned gate child"); }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline { hook.watchdog("child-reaped", "Timeout"); }
+            assert!(std::time::Instant::now() < deadline, "owned gate child reap watchdog");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn gate_start(mode: &str, gate: &LinkGate, voyage: bool) -> bool {
+        let recipe = SshRecipe::new("teststub", None).unwrap();
+        let hook = gate.rendezvous.lock().unwrap().clone().unwrap();
+        let refused = match mode {
+            "sync" => match gate.spawn_sync(&recipe) {
+                Ok(mut child) => { cleanup_sync(&mut child, &hook); false }
+                Err(SpawnError::LinkDown) => true,
+                Err(error) => panic!("gate fixture failed: {error}"),
+            },
+            "async" => {
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                let _entered = runtime.enter();
+                match gate.spawn_async(&recipe) {
+                    Ok(mut child) => {
+                        hook.phase("cleanup"); hook.wait_entry("child-reaped");
+                        child.start_kill().expect("terminate owned async gate child");
+                        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                        while child.try_wait().unwrap().is_none() {
+                            if std::time::Instant::now() >= deadline { hook.watchdog("child-reaped", "Timeout"); }
+                            assert!(std::time::Instant::now() < deadline, "owned async gate child reap watchdog");
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        false
+                    }
+                    Err(SpawnError::LinkDown) => true,
+                    Err(error) => panic!("gate fixture failed: {error}"),
+                }
+            }
+            "fixture" => {
+                use sot_log::lane::client::Endpoint;
+                use super::super::lane_client::{DaemonLaneEndpoint, LaneDial};
+                let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None)
+                    .with_test_ssh_spawner(std::sync::Arc::new(|mut command| command.spawn()));
+                hook.phase("endpoint-handshake");
+                let result = if voyage { endpoint.connect_voyage_unchallenged("fixture-row", "fixture-voyage") }
+                    else { endpoint.connect_supervisor_unchallenged("fixture-row") };
+                hook.phase("cleanup"); hook.wait_entry("endpoint-reaped");
+                let refused = matches!(result, Err(sot_log::lane::transport::TransportError::LinkDown));
+                drop(result); drop(endpoint);
+                refused
+            }
+            _ => unreachable!(),
+        };
+        hook.phase("done");
+        refused
+    }
+
+    fn gate_race(mode: &'static str, program: &std::path::Path) -> bool {
+        use std::sync::{Arc, Mutex, mpsc};
+        let gate = LinkGate::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let (hook, ready, release) = GateRendezvous::new(program, mode, true, events.clone());
+        *gate.rendezvous.lock().unwrap() = Some(hook.clone());
+        gate.set_up(false);
+        assert!(gate_start(mode, &gate, true), "close-first must return LinkDown");
+        assert!(events.lock().unwrap().is_empty(), "close-first creates no child");
+        gate.set_up(true);
+        let admitted = gate.clone();
+        let (spawn_done_tx, spawn_done) = mpsc::channel();
+        let starter = std::thread::spawn(move || { let result = gate_start(mode, &admitted, false); spawn_done_tx.send(result).unwrap(); });
+        hook.wait(&ready, "admission-ready", "spawn reached its admission rendezvous");
+        let closing = gate.clone();
+        let (closed_tx, closed_rx) = mpsc::channel();
+        // Arm only this actual close attempt, after admitted creation is held.
+        *hook.close.lock().unwrap() = Some(closed_tx);
+        let closer = std::thread::spawn(move || closing.set_up(false));
+        let first = hook.wait(&closed_rx, "close-first", "owner close-lock observation watchdog");
+        hook.release(&release);
+        if first == CloseObservation::Contended {
+            assert_eq!(hook.wait(&closed_rx, "close-completed", "owner down-transition watchdog"), CloseObservation::Completed);
+        }
+        hook.wait(&spawn_done, "starter-done", "owned child completion watchdog");
+        starter.join().unwrap(); closer.join().unwrap();
+        let observed = events.lock().unwrap().clone();
+        let closed: Vec<_> = observed.iter().enumerate().filter(|(_, event)| *event == "closed").map(|(index, _)| index).collect();
+        let starts = observed.iter().filter(|event| event.starts_with("created ")).count();
+        let held_before_close = closed.len() == 1 && observed.first().is_some_and(|event| event.starts_with("created ")) && closed[0] > 0;
+        let all_before_close = closed.len() == 1 && closed[0] == starts;
+        let paused = hook.snapshot.lock().unwrap().releases_consumed;
+        let count = observed.len();
+        let refused = gate_start(mode, &gate, true);
+        assert!(refused, "after close returns the gate must return LinkDown");
+        assert_eq!(events.lock().unwrap().len(), count, "after close creates no additional child");
+        let (reopened, _, _) = GateRendezvous::new(program, mode, false, events.clone());
+        *gate.rendezvous.lock().unwrap() = Some(reopened);
+        gate.set_up(true);
+        let count = events.lock().unwrap().len();
+        gate_start(mode, &gate, true);
+        let reopen_starts = events.lock().unwrap().len() - count;
+        println!("T2 gate order: mode={mode} first={first:?} held-start-before-close={held_before_close} all-starts-before-close={all_before_close} after-close-refused={refused} reopen-starts={reopen_starts} paused={paused}");
+        assert_eq!(reopen_starts, 1, "reopen admits one ordinary child start");
+        let start_bound = if mode == "fixture" { 2 } else { 1 };
+        first == CloseObservation::Contended && held_before_close && all_before_close && (1..=start_bound).contains(&starts) && paused == 1
+    }
+
+    /// The contested pause is one-use: of two admissions through one armed hook, exactly one pauses.
+    #[test]
+    fn admission_rendezvous_pauses_once_per_armed_hook() {
+        use std::sync::{Arc, Mutex, mpsc};
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!("sot-gate-pause-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+        std::fs::create_dir(&path).unwrap();
+        let program = path.join("child.py");
+        sot_log::test_exec::write_executable(&program, "import sys\nsys.stdin.buffer.read()\n");
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { std::fs::remove_dir_all(&self.0).expect("remove own gate fixture"); } }
+        let _fixture = Fixture(path);
+        let gate = LinkGate::default();
+        let (hook, _ready, release) = GateRendezvous::new(&program, "pause", true, Arc::new(Mutex::new(Vec::new())));
+        let (entries_tx, entries) = mpsc::channel();
+        *hook.entries.lock().unwrap() = Some(entries_tx);
+        *gate.rendezvous.lock().unwrap() = Some(hook.clone());
+        let recipe = SshRecipe::new("teststub", None).unwrap();
+        let starters: Vec<_> = (0..2).map(|_| { let gate = gate.clone(); let recipe = recipe.clone(); std::thread::spawn(move || gate.spawn_sync(&recipe).expect("admitted start")) }).collect();
+        let mut pauses = 0;
+        for _ in 0..2 {
+            let (_, claimed) = entries.recv().expect("an admission entry");
+            if claimed { pauses += 1; hook.release(&release); }
+        }
+        let mut reaped = true;
+        for starter in starters {
+            let mut child = starter.join().unwrap();
+            cleanup_sync(&mut child, &hook);
+            reaped &= child.try_wait().unwrap().is_some();
+        }
+        println!("T2 gate pause: admissions=2 pauses={pauses} owned-children-reaped={reaped}");
+        assert_eq!(pauses, 1, "one armed admission rendezvous must pause exactly once");
+    }
+
+    #[test]
+    fn spawn_admission_and_link_close_are_one_decision() {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!("sot-gate-fixture-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+        std::fs::create_dir(&path).unwrap();
+        let program = path.join("child.py");
+        sot_log::test_exec::write_executable(&program, "import sys\nsys.stdin.buffer.read()\n");
+        // Always remove the test-owned absolute folder, including on a reversal assertion.
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { std::fs::remove_dir_all(&self.0).expect("remove own gate fixture"); } }
+        let _fixture = Fixture(path);
+        let observations: Vec<_> = ["sync", "async", "fixture"].into_iter().map(|mode| (mode, gate_race(mode, &program))).collect();
+        // All three modes have released creation, reaped their children and joined before this verdict.
+        assert!(observations.iter().all(|(_, valid)| *valid), "a real child start must precede close completion: {observations:?}");
+    }
 
     #[test]
     fn a_down_gate_spawns_no_child() {

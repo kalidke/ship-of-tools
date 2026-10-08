@@ -59,6 +59,8 @@ name = "sotd"
 path = "src/main.rs"
 
 [dev-dependencies]
+# Lane-client fixtures only; resolver 2 keeps this feature out of normal product builds.
+sot-protocol = { path = "../protocol", features = ["test-handshake-bound"] }
 # `topology/dial.rs`'s Windows test reads the impersonation level a pipe server gets (`identity::impersonation_probe`).
 # `test_log`, `test_exec::write_executable` and `test_scan::rust_sources()` (dev-only: resolver 2 keeps the feature out of builds).
 sot-log = { path = "../log", features = ["test-support"] }

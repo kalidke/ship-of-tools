@@ -123,7 +123,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `sotd stdio-bridge` | process | topology | `rust/backend/src/topology/stdio_bridge.rs` `run`, `connect` |
 | relay-unit ssh per relayed connection | process | topology | `rust/protocol/src/topology/relay_units.rs` `relay_command_line`; `rust/protocol/src/topology/ssh_bridge.rs` `SshRecipe` |
 | window control ssh per host | process | fe-net | `rust/frontend/src/net/transport/mod.rs` `connect_and_run` |
-| lane-dial ssh | process | topology | `rust/protocol/src/topology/lane_client.rs` `DaemonLaneEndpoint`, `dial` |
+| lane-dial ssh, including the first-voyage spare | process | topology | `rust/protocol/src/topology/lane_client.rs` `DaemonLaneEndpoint`, `dial`, `start_spare`, `take_spare`; `rust/protocol/src/topology/lane_child.rs` `BridgedClient` owns each child and its bounded teardown |
+| supervisor-attempt spare abandonment | contract | capsule | `rust/log/src/lane/client.rs` `Endpoint::drop_spare`; called by `rust/log/src/attach_client/worker/converge.rs` `connect_supervisor_lane`, `converge_on_ready`; implemented by `rust/protocol/src/topology/lane_client.rs` `DaemonLaneEndpoint` |
 | page-proxy ssh per browser connection | process | pages | `rust/frontend/src/pages.rs` `pipe_one`, `dial` |
 | browser opener | process | pages | `rust/frontend/src/pages.rs` `open_url_in_browser`, `open_html_in_browser` |
 | drawer shell (portable-pty) | process | fe-ui | `rust/frontend/src/ui/drawer/terminal/pty.rs` `LocalTerminal`, `spawn` |

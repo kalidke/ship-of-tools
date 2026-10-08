@@ -23,3 +23,4 @@ program against. Part of capsule; charter: rust/log/CLAUDE.md.
 - `TransportError::is_endpoint_absent` is the one absence predicate on every platform.
 - The platform is chosen once, by `client::PlatformEndpoint` and `transport::PlatformLaneServer`.
 - A connection's outbound bytes are reserved in `OutboundBudget` before queueing and released when the write returns.
+- `Endpoint::drop_spare` abandons work started for a supervisor attempt that ended before a voyage dial; local endpoints use its default no-op.

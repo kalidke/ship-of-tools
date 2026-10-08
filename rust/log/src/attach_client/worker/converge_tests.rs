@@ -491,3 +491,51 @@ fn an_attach_refusal_carries_its_reason_to_the_caller() {
         "the pane line must not promise what a restart costs — the degraded-scope supervisor breaks that promise, got {capped:?}"
     );
 }
+
+/// Drives the actual worker challenge and failed-Status paths, recording their contract calls.
+struct AbandonedEndpoint { foreign: bool, drops: AtomicUsize }
+struct DeadClient;
+impl Client for DeadClient {
+    fn write_all(&self, _: &[u8]) -> Result<(), crate::lane::transport::TransportError> {
+        Err(crate::lane::transport::TransportError::LinkDown)
+    }
+    fn read(&self, _: &mut [u8]) -> Result<usize, crate::lane::transport::TransportError> {
+        Err(crate::lane::transport::TransportError::LinkDown)
+    }
+    fn cancel(&self) {}
+}
+impl Endpoint for AbandonedEndpoint {
+    type Client = DeadClient;
+    type Process = TestProcess;
+    fn connect_supervisor_unchallenged(&self, _: &str) -> Result<DeadClient, crate::lane::transport::TransportError> { Ok(DeadClient) }
+    fn connect_voyage_unchallenged(&self, _: &str, _: &str) -> Result<DeadClient, crate::lane::transport::TransportError> { panic!("an abandoned attempt never dials voyage") }
+    fn challenge(&self, _: &DeadClient, _: &mut dyn crate::identity::exchange::IdentityExchange, _: Instant) -> ChallengeOutcome<TestProcess> {
+        if self.foreign { ChallengeOutcome::Foreign } else { ChallengeOutcome::Undetermined }
+    }
+    fn authenticate_server(&self, _: &DeadClient) -> PeerAuthOutcome { unreachable!() }
+    fn drop_spare(&self) { self.drops.fetch_add(1, Ordering::SeqCst); }
+}
+
+#[test]
+fn an_unproven_supervisor_hello_drops_the_spare() {
+    let mut calls = Vec::new();
+    for foreign in [true, false] {
+        let ep = AbandonedEndpoint { foreign, drops: AtomicUsize::new(0) };
+        assert!(connect_supervisor_lane(&ep, "owned-row").is_err());
+        calls.push(ep.drops.load(Ordering::SeqCst));
+    }
+    assert_eq!(calls, [1, 1], "Foreign and Undetermined supervisor hellos must each abandon their spare");
+}
+
+#[test]
+fn a_supervisor_link_down_drops_the_spare() {
+    let ep = AbandonedEndpoint { foreign: false, drops: AtomicUsize::new(0) };
+    let (_tx, rx) = mpsc::channel();
+    let mut reconnect = ReconnectState::new();
+    let mut held = Held { quit: None, resize: None, discarded: Arc::new(AtomicUsize::new(0)) };
+    let outcome = converge_on_ready(&ep, DeadClient, FrameReader::new(), "owned-row", &rx,
+        &mut reconnect, &mut held, &mut QuitDispatcher::new(), &mut OutstandingSlot::new(),
+        None, &AtomicBool::new(true), &|_| {});
+    assert!(matches!(outcome, ReadyOutcome::LaneDown));
+    assert_eq!(ep.drops.load(Ordering::SeqCst), 1, "failed supervisor Status must abandon its spare");
+}
