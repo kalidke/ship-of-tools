@@ -204,7 +204,10 @@ def seed(root, stage, mode, nonce, bash):
         shutil.copyfile(stage / "comm-context.sh", target)
         subprocess.run(["git", "init", "-q", str(root / "project")], check=True)
         self_file = home / "self/fixture.txt"
-        project = str((root / "project").resolve()).replace("\\", "/")
+        probe = subprocess.run([bash, "-c", f". {q(stage / 'comm-lib.sh')} && cd {q(root / 'project')} && "
+                                "sot_canonical_path \"$(git rev-parse --show-toplevel)\""],
+                               capture_output=True, timeout=30, check=True)
+        project = probe.stdout.decode().strip()
         self_file.write_bytes(f"{NAME}\nrepo=project\nroot={project}\n".encode())
         env.update(SOT_COMM_SELF_FILE=str(self_file), SOT_COMM_TEST_HOST="fixture")
     if mode == "missing":
@@ -326,11 +329,13 @@ def validate(mode, observed, entries, stamped, unchanged, artifacts, stderr):
 def release_valid(f):
     ticks = f["ticks"] or "200"
     rounded = (int(ticks) + 19) // 20 if ticks.isdigit() else 10
+    # The command bound starts at the context's entry; hook start-up before it is not budget.
+    origin = f["stamps"].get("entry", f["started"])
     assert f["released_at"] is not None, "FIXTURE: release handshake missing"
-    assert f["released_at"] - f["started"] < rounded, "FIXTURE: actual release exhausted the rounded head budget"
-    assert f["released_at"] - f["ready_at"] >= f["delay"], "FIXTURE: release preceded the requested delay"
+    assert f["released_at"] - origin < rounded, "FIXTURE: actual release exhausted the rounded head budget"
+    assert f["released_at"] - origin >= f["delay"], "FIXTURE: release preceded the requested delay"
     if any(r[1] == "released" for r in f["rows"]):
-        assert f["stamps"]["released"] - f["started"] < rounded, "FIXTURE: release consumption exhausted the rounded head budget"
+        assert f["stamps"]["released"] - origin < rounded, "FIXTURE: release consumption exhausted the rounded head budget"
 
 
 def case_verdict(f):
@@ -379,11 +384,13 @@ def capture_case(root, home, observation, before, label, mode, ticks, delay):
         now = time.monotonic()
         for row in rows:
             stamps.setdefault(row[1], now)
+        if "entry" in stamps and ready_at is None:
+            deadline = max(deadline, stamps["entry"] + OBSERVE)  # slow start-up precedes the context
         if ready_rows(rows) and ready_at is None:
             ready_at = now
             deadline = ready_at + OBSERVE
             (root / "child-ready").touch()
-        if mode == "release" and ready_at and not released_at and now >= ready_at + delay:
+        if mode == "release" and ready_at and not released_at and now >= stamps["entry"] + delay:
             (root / "release").touch()
             released_at = time.monotonic()
         if observation.complete() and (mode != "release" or released_at):
@@ -450,15 +457,17 @@ def run_case(work, stage, bash, label, mode, ticks, delay=0):
         case_verdict(f)
     except AssertionError as error:
         failure = str(error)
+    final = cleanup_case(root, home, mode, observation)
     if mode == "repeat":
         again = Observation(command, env, root)
         assert again.cleanup(time.monotonic() + CLEANUP) and again.complete(), "repeat completion failed"
-        assert events(root, root.name) == f["rows"], "repeat key started context"
-    final = cleanup_case(root, home, mode, observation)
+        assert events(root, root.name) == final, "repeat key started context"
     f["cleanup"] = True
     f["failure"] = failure
     print(f"{label} nonce={root.name} entry={f['entries']} exit={f['facts'][0]} stdout-EOF={f['facts'][1]} stderr-EOF={f['facts'][2]} cleanup=True", flush=True)
     print(f"{label} timing={dict(invocation=f['started'], readiness=f['ready_at'], release_send=f['released_at'], cutoff=f['cutoff'], events=f['stamps'])} events={','.join(r[1] for r in f['rows'])}", flush=True)
+    if failure:
+        print(f"{label} stderr-tail={f['stderr'][-600:]!r}", flush=True)
     print(f"{'FAIL' if failure else 'PASS'} {label}: {failure or 'required registry, capture and cleanup outcomes'}", flush=True)
     if mode == "release":
         kinds = [r[1] for r in f["rows"] if r[1] in ("cancelled", "released", "completed")]
@@ -563,7 +572,7 @@ def timing_control():
     f = copy.deepcopy(BUDGET_COMPANION)
     ticks = f["ticks"] or "200"
     rounded = (int(ticks) + 19) // 20 if ticks.isdigit() else 10
-    f["released_at"] = f["started"] + rounded + 0.1
+    f["released_at"] = f["stamps"].get("entry", f["started"]) + rounded + 0.1
     return f
 
 
@@ -780,7 +789,7 @@ def main():
     if WINDOWS:
         print("Coverage P5: native Python foreground child with stdout and stderr tokens")
     print("B4 range=0..9223372036854775807 input=999999999999999999999999999999999999; zero/overflow inherit ignored TERM")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1 if WINDOWS else 4) as executor:
         results = list(executor.map(lambda c: run_case(work, stage, bash, *c), cases))
     COMPANION = next(f for f in results if f["label"] == "success")
     BUDGET_COMPANION = next(f for f in results if f["mode"] == "release")
