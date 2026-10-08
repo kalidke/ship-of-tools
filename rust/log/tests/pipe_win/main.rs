@@ -40,15 +40,17 @@
 //! the separate `sot_log::identity::challenge_win::PipeChallengeable` extension
 //! trait — see `InvalidHandleConn`'s own two `impl` blocks below.
 
-use sot_log::test_isolated::run_isolated;
 use sot_log::host::wide_null;
 use sot_log::identity::challenge::ChallengeOutcome;
 use sot_log::identity::challenge_win::challenge;
 use sot_log::identity::exchange::VoyageMgmtExchange;
 use sot_log::lane::attach_proto::ConnId;
 use sot_log::lane::pipe_win::{connect_voyage_pipe, PipeServer};
-use sot_log::lane::transport::{ClosedReason, LaneEvent, TransportError, CONNECT_BOUND, TEARDOWN_AGGREGATE_DEADLINE};
+use sot_log::lane::transport::{
+    ClosedReason, LaneEvent, TransportError, CONNECT_BOUND, TEARDOWN_AGGREGATE_DEADLINE,
+};
 use sot_log::lane::wire::{self, MgmtReply, MgmtRequest, Survival};
+use sot_log::test_isolated::run_isolated;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -96,7 +98,10 @@ fn expect_closed(server: &PipeServer, conn_id: ConnId, timeout: Duration) -> Clo
 /// loudly. Identical helper in `tests/e2e_pipe.rs` and
 /// `tests/e2e_socket/` (no shared test module spans Windows-only and
 /// Linux-only files).
-fn wait_for_endpoint<T, E: std::fmt::Display>(connect: impl Fn() -> Result<T, E>, deadline: Duration) -> T {
+fn wait_for_endpoint<T, E: std::fmt::Display>(
+    connect: impl Fn() -> Result<T, E>,
+    deadline: Duration,
+) -> T {
     let started = Instant::now();
     loop {
         match connect() {

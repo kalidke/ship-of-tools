@@ -14,7 +14,11 @@ pub(super) fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crat
             StartMode::Start => {
                 std::fs::create_dir_all(voyages_dir(state_dir))?;
                 let id = uuid::Uuid::now_v7().to_string();
-                VoyageStore::bootstrap(&voyage_root_path(state_dir, &id), &id, RetentionClass::Archive)?;
+                VoyageStore::bootstrap(
+                    &voyage_root_path(state_dir, &id),
+                    &id,
+                    RetentionClass::Archive,
+                )?;
                 pointer::publish(state_dir, &id)?;
                 Ok(id)
             }
@@ -22,7 +26,9 @@ pub(super) fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crat
                 "--resume with no drawer.voyage pointer at all: nothing to resume",
             )),
         },
-        PointerState::Corrupt => Err(err_state("drawer.voyage is corrupt — run `sot-capsule reset`")),
+        PointerState::Corrupt => Err(err_state(
+            "drawer.voyage is corrupt — run `sot-capsule reset`",
+        )),
         PointerState::OtherIo(e) => Err(e.into()),
     }
 }
@@ -31,7 +37,11 @@ pub(super) fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crat
 /// consulted ONLY when no live capsule was adopted. Checks the marker on
 /// an UNSEALED leg too, not only a sealed one: the marker is written
 /// mid graceful-teardown, before sealing completes.
-pub(super) fn should_spawn_after_absent(state_dir: &Path, voyage_id: &str, mode: StartMode) -> crate::Result<bool> {
+pub(super) fn should_spawn_after_absent(
+    state_dir: &Path,
+    voyage_id: &str,
+    mode: StartMode,
+) -> crate::Result<bool> {
     if mode == StartMode::Start {
         return Ok(true);
     }
@@ -193,7 +203,10 @@ impl LegLease {
                 return Err(std::io::Error::last_os_error());
             }
         }
-        Ok(Self { read, _write: write })
+        Ok(Self {
+            read,
+            _write: write,
+        })
     }
 
     /// A fresh handle for ONE spawn attempt — Windows clones the (cheap)
@@ -273,7 +286,9 @@ pub(super) fn build_run_command(
         // call below is.
         use std::os::fd::AsRawFd;
         let read_fd = lease.0.as_raw_fd();
-        command.arg("--parent-lease-fd").arg(PARENT_LEASE_FD.to_string());
+        command
+            .arg("--parent-lease-fd")
+            .arg(PARENT_LEASE_FD.to_string());
         unsafe {
             command.pre_exec(move || {
                 if read_fd == PARENT_LEASE_FD {
@@ -316,9 +331,12 @@ pub(super) fn strip_first_leg_tokens(producer_argv: &[String], tokens: &[String]
     if tokens.is_empty() {
         return producer_argv.to_vec();
     }
-    producer_argv.iter().filter(|a| !tokens.contains(a)).cloned().collect()
+    producer_argv
+        .iter()
+        .filter(|a| !tokens.contains(a))
+        .cloned()
+        .collect()
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -172,7 +172,11 @@ const INTAKE_BATCH: usize = 32;
 /// One reaper pass's intake: wait for the first message (without bound when `idle`, else one poll interval), then take
 /// up to [`INTAKE_BATCH`] in all, handing each to `handle`. False when the inbox is disconnected while idle: the reaper
 /// is done.
-pub(crate) fn intake(rx: &Receiver<ReaperMsg>, idle: bool, mut handle: impl FnMut(ReaperMsg)) -> bool {
+pub(crate) fn intake(
+    rx: &Receiver<ReaperMsg>,
+    idle: bool,
+    mut handle: impl FnMut(ReaperMsg),
+) -> bool {
     let mut message = if idle {
         match rx.recv() {
             Ok(message) => Some(message),
@@ -192,11 +196,15 @@ pub(crate) fn intake(rx: &Receiver<ReaperMsg>, idle: bool, mut handle: impl FnMu
 }
 
 /// The checkpoint of a lifecycle event's enqueue: its connection, step and the marker identity of a `Sent`.
-pub(crate) fn enqueue_checkpoint(evt: &LaneEvent) -> Option<(Option<ConnId>, &'static str, String)> {
+pub(crate) fn enqueue_checkpoint(
+    evt: &LaneEvent,
+) -> Option<(Option<ConnId>, &'static str, String)> {
     match evt {
         LaneEvent::Accepted(id) => Some((Some(*id), "accepted.enqueue", String::new())),
         LaneEvent::Closed(id, _) => Some((Some(*id), "closed.enqueue", String::new())),
-        LaneEvent::Sent(id, marker) => Some((Some(*id), "sent.enqueue", format!(" marker={marker}"))),
+        LaneEvent::Sent(id, marker) => {
+            Some((Some(*id), "sent.enqueue", format!(" marker={marker}")))
+        }
         LaneEvent::AcceptError(_) => Some((None, "accept_error.enqueue", String::new())),
         LaneEvent::Bytes(..) => None,
     }
@@ -348,11 +356,15 @@ impl Claimed {
                 Worker::Reader => "reader.join.end",
                 Worker::Writer => "writer.join.end",
             };
-            ctx.progress.note(Some(id), step, if *ok { "ok" } else { "panic" });
+            ctx.progress
+                .note(Some(id), step, if *ok { "ok" } else { "panic" });
             if !ok {
                 self.panicked = true;
-                ctx.progress
-                    .note(Some(id), "pending.panicked", format_args!("worker={}", worker.name()));
+                ctx.progress.note(
+                    Some(id),
+                    "pending.panicked",
+                    format_args!("worker={}", worker.name()),
+                );
             }
         }
         if let Some(unfinished) = &poll.expired {

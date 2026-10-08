@@ -1,9 +1,9 @@
 //! The client: `SocketClient`, its `Client`/`Endpoint` impls, and the unchallenged and challenged connects.
 
+use super::connect::{capture_connect_anchor_boot_ticks, one_connect_attempt, ConnectAttempt};
 use super::*;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::lane::client::map_peer_auth_outcome;
-use super::connect::{capture_connect_anchor_boot_ticks, one_connect_attempt, ConnectAttempt};
 
 // ---------------------------------------------------------------------
 // L1-unix LU1c: the client side of one voyage's (or the supervisor
@@ -165,7 +165,10 @@ impl SocketClient {
                     // error here -- this caller earned the real
                     // diagnostic, not a generic `Cancelled`.
                     self.cancel();
-                    return Err(TransportError::Io { op: "write", source: e });
+                    return Err(TransportError::Io {
+                        op: "write",
+                        source: e,
+                    });
                 }
             }
         }
@@ -212,7 +215,10 @@ impl SocketClient {
                     return if self.cancelled.load(Ordering::SeqCst) {
                         Err(TransportError::Cancelled)
                     } else {
-                        Err(TransportError::Io { op: "read", source: e })
+                        Err(TransportError::Io {
+                            op: "read",
+                            source: e,
+                        })
                     };
                 }
             }
@@ -285,7 +291,10 @@ impl SocketClient {
     /// `connect_anchor_boot_ticks`, so the pin-validation tests can exercise
     /// both sides of its strict inequality without racing a real clock.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn from_stream_for_test(stream: UnixStream, connect_anchor_boot_ticks: u64) -> SocketClient {
+    pub fn from_stream_for_test(
+        stream: UnixStream,
+        connect_anchor_boot_ticks: u64,
+    ) -> SocketClient {
         SocketClient {
             stream,
             cancelled: AtomicBool::new(false),
@@ -390,7 +399,10 @@ impl Endpoint for SocketEndpoint {
         challenge_os::challenge(conn, exchange, reply_deadline)
     }
 
-    fn authenticate_server(&self, conn: &Self::Client) -> crate::identity::challenge::PeerAuthOutcome {
+    fn authenticate_server(
+        &self,
+        conn: &Self::Client,
+    ) -> crate::identity::challenge::PeerAuthOutcome {
         challenge_os::authenticate_server(conn)
     }
 }
@@ -440,7 +452,9 @@ impl Endpoint for SocketEndpoint {
 /// in an external deadline would leak the blocked connect thread past
 /// that deadline on a full listen backlog, which this loop's own
 /// non-blocking `connect(2)` + bounded poll never does.
-pub(crate) fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, TransportError> {
+pub(crate) fn connect_unix_socket_unchallenged(
+    path: &Path,
+) -> Result<SocketClient, TransportError> {
     let addr_bytes = path.as_os_str().as_bytes();
     let deadline = Instant::now() + CONNECT_BOUND;
     loop {
@@ -485,9 +499,14 @@ pub(crate) fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClie
 /// `pipe_win::connect_voyage_pipe_unchallenged`'s own "never widen" doc:
 /// an unchallenged `SocketClient` reachable through a PUBLIC path would
 /// defeat this whole module's enforcement.
-pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<SocketClient, TransportError> {
+pub(crate) fn connect_voyage_socket_unchallenged(
+    voyage_id: &str,
+) -> Result<SocketClient, TransportError> {
     let path = voyage_socket_path(voyage_id)?;
-    #[allow(clippy::disallowed_methods, reason = "a voyage lane connector: the caller runs the lane's identity challenge")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a voyage lane connector: the caller runs the lane's identity challenge"
+    )]
     let client = connect_unix_socket_unchallenged(&path)?;
     Ok(client)
 }
@@ -500,9 +519,14 @@ pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<Sock
 /// called on Linux AND macOS, via `Endpoint for SocketEndpoint`'s own
 /// `connect_supervisor_unchallenged` (`attach_client/client.rs` and
 /// `supervisor_client`, both generic over `Endpoint`, are its callers).
-pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketClient, TransportError> {
+pub(crate) fn connect_supervisor_socket_unchallenged(
+    h: &str,
+) -> Result<SocketClient, TransportError> {
     let path = supervisor_socket_path(h)?;
-    #[allow(clippy::disallowed_methods, reason = "a supervisor lane connector: the caller runs the lane's identity challenge")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a supervisor lane connector: the caller runs the lane's identity challenge"
+    )]
     let client = connect_unix_socket_unchallenged(&path)?;
     Ok(client)
 }

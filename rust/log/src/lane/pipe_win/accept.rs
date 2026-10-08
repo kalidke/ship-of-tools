@@ -65,7 +65,11 @@ pub(super) fn terminalize_accept_loop(shared: &Arc<ServerShared>, message: Strin
 /// that ever actually closes it. If `id` is already gone (`close_all` closed it, or is closing it this instant), this
 /// returns at once, touching neither `DisconnectNamedPipe` nor either queue: the load-bearing check that prevents a
 /// stale-handle call racing `close_all`.
-pub(super) fn recycle_checked(shared: &Arc<ServerShared>, id: u64, raw: SendableHandle) -> Result<(), String> {
+pub(super) fn recycle_checked(
+    shared: &Arc<ServerShared>,
+    id: u64,
+    raw: SendableHandle,
+) -> Result<(), String> {
     let disconnected = match shared.instances.live(id) {
         Some(live) => {
             // An armed test failure stands in for the OS refusing, so the retained-dead path runs for real.
@@ -119,10 +123,9 @@ pub(super) fn obtain_instance(shared: &Arc<ServerShared>) -> Option<(u64, Sendab
         if st.created < shared.max_instances {
             st.created += 1;
             drop(st);
-            return match shared
-                .instances
-                .create_and_register(|| create_pipe_instance(&shared.name, false, shared.max_instances))
-            {
+            return match shared.instances.create_and_register(|| {
+                create_pipe_instance(&shared.name, false, shared.max_instances)
+            }) {
                 CreateOutcome::Created(id, raw) => Some((id, raw)),
                 CreateOutcome::CreateFailed(e) => {
                     let mut st = shared.accept.lock().unwrap();
@@ -175,7 +178,10 @@ pub(super) fn accept_loop(shared: Arc<ServerShared>, first_id: u64, first_raw: S
             }
             st.current = Some((id, raw, Arc::clone(&slot)));
         }
-        #[allow(clippy::disallowed_methods, reason = "listener: capsule lane pipe: an owner-only DACL, then the identity challenge")]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "listener: capsule lane pipe: an owner-only DACL, then the identity challenge"
+        )]
         let connect_result = slot.submit_and_wait_registered(
             &shared.instances,
             id,
@@ -338,7 +344,9 @@ pub(super) fn handle_new_connection(
         // Shutdown won the cutoff: nothing was registered, and nobody was told this connection exists. Only the
         // never-registered gated pair is aborted and joined here.
         drop(conns);
-        shared.progress.note(Some(conn_id), "registration.cutoff", "rejected");
+        shared
+            .progress
+            .note(Some(conn_id), "registration.cutoff", "rejected");
         gate.abort();
         reader_jh.join().ok();
         writer_jh.join().ok();
@@ -362,7 +370,9 @@ pub(super) fn handle_new_connection(
         },
     );
     drop(conns);
-    shared.progress.note(Some(conn_id), "registration.cutoff", "inserted");
+    shared
+        .progress
+        .note(Some(conn_id), "registration.cutoff", "inserted");
     // RELIABLE, not best-effort: retries until the consumer actually has
     // room, so the gate below can never open onto a connection the
     // consumer was never told exists.

@@ -24,7 +24,9 @@ pub(super) fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
     loop {
         if let Some((id, step, detail)) = &checkpoint {
             if last.is_empty() {
-                shared.progress.note(*id, step, format_args!("begin{detail}"));
+                shared
+                    .progress
+                    .note(*id, step, format_args!("begin{detail}"));
             }
         }
         let sent = shared.events_tx.try_send(item);
@@ -35,7 +37,9 @@ pub(super) fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
         };
         if let Some((id, step, detail)) = &checkpoint {
             if result != last {
-                shared.progress.note(*id, step, format_args!("{result}{detail}"));
+                shared
+                    .progress
+                    .note(*id, step, format_args!("{result}{detail}"));
             }
         }
         last = result;
@@ -72,7 +76,9 @@ pub(super) fn request_teardown(
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        shared.progress.note(Some(conn_id), "teardown.enqueue", "begin");
+        shared
+            .progress
+            .note(Some(conn_id), "teardown.enqueue", "begin");
         let sent = shared.reaper_tx.send(ReaperMsg::Torn(conn_id, reason));
         shared.progress.note(
             Some(conn_id),
@@ -89,7 +95,11 @@ pub(super) fn request_teardown(
 /// created and discarded cleanly rather than never learning this
 /// connection existed. Not terminal to the accept loop — the next
 /// connection attempt is unaffected.
-pub(super) fn report_registration_failure(shared: &Arc<ServerShared>, what: &str, e: impl std::fmt::Display) {
+pub(super) fn report_registration_failure(
+    shared: &Arc<ServerShared>,
+    what: &str,
+    e: impl std::fmt::Display,
+) {
     let conn_id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     send_lifecycle_event(shared, LaneEvent::Accepted(conn_id));
     send_lifecycle_event(
@@ -100,7 +110,12 @@ pub(super) fn report_registration_failure(shared: &Arc<ServerShared>, what: &str
 
 /// Signal the reaper to shut down against `deadline` (see [`pending::signal_shutdown`]).
 pub(super) fn signal_shutdown(shared: &ServerShared, deadline: Instant) {
-    pending::signal_shutdown(&shared.shutdown_sent, &shared.reaper_tx, &shared.progress, deadline);
+    pending::signal_shutdown(
+        &shared.shutdown_sent,
+        &shared.reaper_tx,
+        &shared.progress,
+        deadline,
+    );
 }
 
 /// A claimed connection: its slots stay owned through completion; the registry stays the only closer of its handle.
@@ -143,8 +158,12 @@ fn claim(
     let conn = {
         let mut conns = shared.conns.lock().unwrap();
         let live = conns.get(&conn_id)?;
-        let read_pending = live.read_slot.cancel_registered(&shared.instances, live.registry_id);
-        let write_pending = live.write_slot.cancel_registered(&shared.instances, live.registry_id);
+        let read_pending = live
+            .read_slot
+            .cancel_registered(&shared.instances, live.registry_id);
+        let write_pending = live
+            .write_slot
+            .cancel_registered(&shared.instances, live.registry_id);
         shared.progress.note(
             Some(conn_id),
             "claim",
@@ -156,7 +175,9 @@ fn claim(
         shared.progress.note(
             Some(conn_id),
             "cancel.registered",
-            format_args!("read_genuinely_pending={read_pending} write_genuinely_pending={write_pending}"),
+            format_args!(
+                "read_genuinely_pending={read_pending} write_genuinely_pending={write_pending}"
+            ),
         );
         conns.remove(&conn_id)?
     };
@@ -171,8 +192,12 @@ fn claim(
         ..
     } = conn;
     drop(sender); // unblocks a writer idle-waiting on `recv` with nothing queued
-    shared.progress.note(Some(conn_id), "reader.join.begin", "begin");
-    shared.progress.note(Some(conn_id), "writer.join.begin", "begin");
+    shared
+        .progress
+        .note(Some(conn_id), "reader.join.begin", "begin");
+    shared
+        .progress
+        .note(Some(conn_id), "writer.join.begin", "begin");
     let own = Instant::now() + shared.controls.teardown_deadline();
     let deadline = shutdown.map_or(own, |shutdown| own.min(shutdown));
     Some(Pending {
@@ -185,7 +210,12 @@ fn claim(
 }
 
 /// One pass over a pending connection. True when it is retired and its instance is no longer charged.
-fn poll_pending(shared: &Arc<ServerShared>, pending: &mut Pending, staged: &mut Staged, now: Instant) -> bool {
+fn poll_pending(
+    shared: &Arc<ServerShared>,
+    pending: &mut Pending,
+    staged: &mut Staged,
+    now: Instant,
+) -> bool {
     if !pending.claimed.poll(&reaper_ctx(shared), now) {
         return false;
     }
@@ -343,7 +373,13 @@ pub(super) fn reader_loop(
             &shared.instances,
             registry_id,
             |h, ov| unsafe {
-                ReadFile(h, buf.as_mut_ptr(), buf.len() as u32, std::ptr::null_mut(), ov)
+                ReadFile(
+                    h,
+                    buf.as_mut_ptr(),
+                    buf.len() as u32,
+                    std::ptr::null_mut(),
+                    ov,
+                )
             },
             |_| false,
         );
@@ -377,7 +413,9 @@ pub(super) fn reader_loop(
     };
     request_teardown(&shared, conn_id, &torn_down_requested, reason);
     shared.progress.note(Some(conn_id), "reader.exit", "ok");
-    shared.controls.exit_point(&shared.progress, conn_id, Role::Reader);
+    shared
+        .controls
+        .exit_point(&shared.progress, conn_id, Role::Reader);
 }
 
 /// One connection's write side: drains queued sends in order, one
@@ -405,7 +443,13 @@ pub(super) fn writer_loop(
             &shared.instances,
             registry_id,
             |h, ov| unsafe {
-                WriteFile(h, cmd.bytes.as_ptr(), cmd.bytes.len() as u32, std::ptr::null_mut(), ov)
+                WriteFile(
+                    h,
+                    cmd.bytes.as_ptr(),
+                    cmd.bytes.len() as u32,
+                    std::ptr::null_mut(),
+                    ov,
+                )
             },
             |_| false,
         );
@@ -446,5 +490,7 @@ pub(super) fn writer_loop(
         }
     }
     shared.progress.note(Some(conn_id), "writer.exit", "ok");
-    shared.controls.exit_point(&shared.progress, conn_id, Role::Writer);
+    shared
+        .controls
+        .exit_point(&shared.progress, conn_id, Role::Writer);
 }

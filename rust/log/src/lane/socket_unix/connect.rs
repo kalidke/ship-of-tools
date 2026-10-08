@@ -71,7 +71,10 @@ fn set_blocking(fd: RawFd) -> io::Result<()> {
 /// [`CONNECT_BOUND`] on every attempt — an interrupted poll near the
 /// deadline must not be able to overrun it by another whole
 /// `CONNECT_BOUND`.
-pub(super) fn one_connect_attempt(addr_bytes: &[u8], deadline: Instant) -> Result<UnixStream, ConnectAttempt> {
+pub(super) fn one_connect_attempt(
+    addr_bytes: &[u8],
+    deadline: Instant,
+) -> Result<UnixStream, ConnectAttempt> {
     let raw = unsafe { libc::socket(libc::AF_UNIX, STREAM_SOCKET, 0) };
     if raw < 0 {
         return Err(ConnectAttempt::Fatal(io::Error::last_os_error()));
@@ -97,10 +100,11 @@ pub(super) fn one_connect_attempt(addr_bytes: &[u8], deadline: Instant) -> Resul
     let addr_len =
         (std::mem::size_of::<libc::sa_family_t>() + addr_bytes.len() + 1) as libc::socklen_t;
 
-    #[allow(clippy::disallowed_methods, reason = "the one raw connect(2) of the unchallenged connector")]
-    let rc = unsafe {
-        libc::connect(fd.as_raw_fd(), std::ptr::addr_of!(addr).cast(), addr_len)
-    };
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the one raw connect(2) of the unchallenged connector"
+    )]
+    let rc = unsafe { libc::connect(fd.as_raw_fd(), std::ptr::addr_of!(addr).cast(), addr_len) };
     if rc != 0 {
         let err = io::Error::last_os_error();
         match err.raw_os_error() {

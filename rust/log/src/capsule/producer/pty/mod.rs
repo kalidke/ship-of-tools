@@ -242,7 +242,11 @@ pub struct PtyProducer {
 #[cfg(target_os = "linux")]
 fn stat_fields_from_field_3(stat: &[u8]) -> Option<impl Iterator<Item = &[u8]>> {
     let close = stat.iter().rposition(|&b| b == b')')?;
-    Some(stat[close + 1..].split(|&b| b == b' ').filter(|f| !f.is_empty()))
+    Some(
+        stat[close + 1..]
+            .split(|&b| b == b' ')
+            .filter(|f| !f.is_empty()),
+    )
 }
 
 /// Parses one `/proc/.../stat` numeric field (pid/ppid/pgrp are all the
@@ -270,8 +274,12 @@ fn any_task_is_live(pid_str: &str) -> bool {
         let Ok(task) = task else { continue };
         let tid = task.file_name();
         let Some(tid) = tid.to_str() else { continue };
-        let Ok(stat) = std::fs::read(format!("/proc/{pid_str}/task/{tid}/stat")) else { continue };
-        let Some(mut fields) = stat_fields_from_field_3(&stat) else { continue };
+        let Ok(stat) = std::fs::read(format!("/proc/{pid_str}/task/{tid}/stat")) else {
+            continue;
+        };
+        let Some(mut fields) = stat_fields_from_field_3(&stat) else {
+            continue;
+        };
         let Some(state) = fields.next() else { continue };
         if state != b"Z" && state != b"X" {
             return true;
@@ -358,7 +366,7 @@ impl Drop for PtyProducer {
                 match io::Error::last_os_error().raw_os_error() {
                     Some(libc::EINTR) => continue, // retry immediately
                     Some(libc::ECHILD) => return,  // already reaped
-                    _ => return,                   // Drop cannot propagate an error; give up quietly
+                    _ => return, // Drop cannot propagate an error; give up quietly
                 }
             }
             // rc == 0: not yet reapable -- keep polling until the bound.
@@ -420,8 +428,14 @@ mod executable_is_resolvable_tests {
 
     #[test]
     fn a_real_program_resolves_both_by_path_and_by_bare_name() {
-        assert!(executable_is_resolvable("/bin/sh"), "/bin/sh must exist and be executable on every Linux CI image");
-        assert!(executable_is_resolvable("sh"), "a bare name must resolve via PATH the same way execvp would");
+        assert!(
+            executable_is_resolvable("/bin/sh"),
+            "/bin/sh must exist and be executable on every Linux CI image"
+        );
+        assert!(
+            executable_is_resolvable("sh"),
+            "a bare name must resolve via PATH the same way execvp would"
+        );
     }
 
     #[test]
@@ -455,7 +469,10 @@ mod parent_lease_tests {
     #[test]
     fn alive_while_the_write_end_stays_open() {
         let (r, w) = make_pipe();
-        assert!(!parent_lease_fd_broken(r), "a pipe with its write end still open must read as alive");
+        assert!(
+            !parent_lease_fd_broken(r),
+            "a pipe with its write end still open must read as alive"
+        );
         unsafe {
             libc::close(r);
             libc::close(w);
@@ -468,7 +485,10 @@ mod parent_lease_tests {
         unsafe {
             libc::close(w);
         }
-        assert!(parent_lease_fd_broken(r), "a pipe whose write end closed must read as broken");
+        assert!(
+            parent_lease_fd_broken(r),
+            "a pipe whose write end closed must read as broken"
+        );
         unsafe {
             libc::close(r);
         }
@@ -476,7 +496,10 @@ mod parent_lease_tests {
 
     #[test]
     fn broken_for_a_missing_or_closed_fd() {
-        assert!(parent_lease_fd_broken(-1), "a negative fd must read as broken");
+        assert!(
+            parent_lease_fd_broken(-1),
+            "a negative fd must read as broken"
+        );
         // A definitely-closed fd number -- EBADF, not a real descriptor.
         // An fd number nothing in this test binary holds: descriptors are
         // allocated lowest-free-first, so the top of the table is never
@@ -484,7 +507,10 @@ mod parent_lease_tests {
         // other test threads, which can reopen that number in between --
         // seen once as a flake in the lib suite.)
         let top = unsafe { libc::getdtablesize() } - 1;
-        assert!(parent_lease_fd_broken(top), "an fd number that is not open must read as broken");
+        assert!(
+            parent_lease_fd_broken(top),
+            "an fd number that is not open must read as broken"
+        );
     }
 }
 
@@ -519,7 +545,10 @@ mod drop_and_domain_tests {
     fn proc_state(pid: libc::pid_t) -> Option<String> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let close = stat.rfind(')')?;
-        stat[close + 1..].split_whitespace().next().map(str::to_string)
+        stat[close + 1..]
+            .split_whitespace()
+            .next()
+            .map(str::to_string)
     }
 
     #[cfg(target_os = "linux")]
@@ -567,16 +596,26 @@ mod drop_and_domain_tests {
             let Ok(entry) = entry else { continue };
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            let Ok(pid) = name.parse::<libc::pid_t>() else { continue };
+            let Ok(pid) = name.parse::<libc::pid_t>() else {
+                continue;
+            };
             if pid == leader_pid {
                 continue;
             }
-            let Ok(stat) = std::fs::read_to_string(format!("/proc/{name}/stat")) else { continue };
-            let Some(close) = stat.rfind(')') else { continue };
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{name}/stat")) else {
+                continue;
+            };
+            let Some(close) = stat.rfind(')') else {
+                continue;
+            };
             let mut fields = stat[close + 1..].split_whitespace();
-            let Some(_state) = fields.next() else { continue };
+            let Some(_state) = fields.next() else {
+                continue;
+            };
             let Some(_ppid) = fields.next() else { continue };
-            let Some(pgrp) = fields.next().and_then(|s| s.parse::<libc::pid_t>().ok()) else { continue };
+            let Some(pgrp) = fields.next().and_then(|s| s.parse::<libc::pid_t>().ok()) else {
+                continue;
+            };
             if pgrp == leader_pid {
                 return Some(pid);
             }
@@ -585,7 +624,10 @@ mod drop_and_domain_tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn wait_for_descendant_by_pgrp(leader_pid: libc::pid_t, timeout: Duration) -> Option<libc::pid_t> {
+    fn wait_for_descendant_by_pgrp(
+        leader_pid: libc::pid_t,
+        timeout: Duration,
+    ) -> Option<libc::pid_t> {
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(pid) = find_descendant_by_pgrp(leader_pid) {
@@ -630,15 +672,21 @@ mod drop_and_domain_tests {
             }
             let _ = tx.send(String::from_utf8_lossy(&seen).into_owned());
         });
-        let seen = rx.recv_timeout(Duration::from_secs(10)).expect("the pty never delivered the marker");
-        assert!(seen.contains("<xterm-256color|truecolor>"), "pty output was {seen:?}");
+        let seen = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the pty never delivered the marker");
+        assert!(
+            seen.contains("<xterm-256color|truecolor>"),
+            "pty output was {seen:?}"
+        );
         drop(producer);
         reader.join().unwrap();
     }
 
     #[test]
     fn drop_before_phase_b_does_not_strand_the_reader() {
-        let mut producer = PtyProducer::spawn(&["sleep".to_string(), "600".to_string()], 80, 24).unwrap();
+        let mut producer =
+            PtyProducer::spawn(&["sleep".to_string(), "600".to_string()], 80, 24).unwrap();
         let mut output = producer.take_output();
         let (tx, rx) = std::sync::mpsc::channel();
         let reader = std::thread::spawn(move || {
@@ -647,11 +695,16 @@ mod drop_and_domain_tests {
         });
 
         std::thread::sleep(Duration::from_millis(100));
-        assert!(rx.try_recv().is_err(), "the reader must still be blocked before the early drop (sleep is silent)");
+        assert!(
+            rx.try_recv().is_err(),
+            "the reader must still be blocked before the early drop (sleep is silent)"
+        );
 
         drop(producer); // no close_output_side/terminate_domain call -- simulates an early return/panic
 
-        let result = rx.recv_timeout(Duration::from_secs(10)).expect("the reader never unblocked after an early Drop");
+        let result = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the reader never unblocked after an early Drop");
         // An ordered EOF (`Ok(0)`) or an I/O error (`EIO`) are both an
         // acceptable "unblocked, not stranded" outcome -- Drop's own real
         // behavior (kill + reap the child, drop the held slave and the
@@ -681,12 +734,21 @@ mod drop_and_domain_tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn drop_kills_surviving_descendants_when_the_leader_already_exited() {
-        let argv = vec!["/bin/sh".to_string(), "-c".to_string(), "trap '' HUP; sleep 600 & exit 0".to_string()];
+        let argv = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "trap '' HUP; sleep 600 & exit 0".to_string(),
+        ];
         let producer = PtyProducer::spawn(&argv, 80, 24).unwrap();
 
-        assert!(wait_for_zombie(producer.pid, Duration::from_secs(5)), "the leader never exited within 5s");
+        assert!(
+            wait_for_zombie(producer.pid, Duration::from_secs(5)),
+            "the leader never exited within 5s"
+        );
         let descendant_pid = wait_for_descendant_by_pgrp(producer.pid, Duration::from_secs(5))
-            .expect("the backgrounded sleep must survive the leader's own exit (SIGHUP is ignored)");
+            .expect(
+                "the backgrounded sleep must survive the leader's own exit (SIGHUP is ignored)",
+            );
 
         drop(producer); // no terminate_domain/close_output_side call -- Drop alone must do this
 
@@ -704,9 +766,13 @@ mod drop_and_domain_tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn domain_is_empty_ignores_a_zombie_leader() {
-        let producer = PtyProducer::spawn(&["sleep".to_string(), "600".to_string()], 80, 24).unwrap();
+        let producer =
+            PtyProducer::spawn(&["sleep".to_string(), "600".to_string()], 80, 24).unwrap();
 
-        assert!(!producer.domain_is_empty().unwrap(), "a live leader means the domain is not empty");
+        assert!(
+            !producer.domain_is_empty().unwrap(),
+            "a live leader means the domain is not empty"
+        );
 
         producer.terminate_domain().unwrap();
         assert!(

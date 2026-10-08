@@ -313,7 +313,11 @@ impl PipeServer {
     }
 
     /// Stop `conn`'s `role` worker at its exit point (after its last I/O and teardown request) until released.
-    pub fn hold_worker_exit_for_test(&self, conn: ConnId, role: Role) -> crate::lane::test_progress::Pause {
+    pub fn hold_worker_exit_for_test(
+        &self,
+        conn: ConnId,
+        role: Role,
+    ) -> crate::lane::test_progress::Pause {
         crate::lane::test_progress::Pause::new(self.shared.controls.arm_exit_hold(conn, role))
     }
 
@@ -324,7 +328,9 @@ impl PipeServer {
 
     /// Stop the acceptor immediately before it registers its next connection, workers still gated, until released.
     pub fn pause_registration_for_test(&self) -> crate::lane::test_progress::Pause {
-        crate::lane::test_progress::Pause::new(self.shared.controls.arm_barrier("registration.barrier"))
+        crate::lane::test_progress::Pause::new(
+            self.shared.controls.arm_barrier("registration.barrier"),
+        )
     }
 
     /// Stop the reaper immediately before the next instance recycle, after both joins, until released.
@@ -415,12 +421,18 @@ impl PipeServer {
         self.shared.accept_cv.notify_all();
         {
             let map = self.shared.conns.lock().unwrap();
-            let mut write_latches = self.shared.write_cancel_observed_genuine_pending.lock().unwrap();
+            let mut write_latches = self
+                .shared
+                .write_cancel_observed_genuine_pending
+                .lock()
+                .unwrap();
             for (&conn_id, conn) in map.iter() {
-                let read_was_pending =
-                    conn.read_slot.cancel_registered(&self.shared.instances, conn.registry_id);
-                let write_was_pending =
-                    conn.write_slot.cancel_registered(&self.shared.instances, conn.registry_id);
+                let read_was_pending = conn
+                    .read_slot
+                    .cancel_registered(&self.shared.instances, conn.registry_id);
+                let write_was_pending = conn
+                    .write_slot
+                    .cancel_registered(&self.shared.instances, conn.registry_id);
                 self.shared.progress.note(
                     Some(conn_id),
                     "cancel.registered",
@@ -428,7 +440,9 @@ impl PipeServer {
                         "read_genuinely_pending={read_was_pending} write_genuinely_pending={write_was_pending}"
                     ),
                 );
-                self.shared.progress.note(Some(conn_id), "phase_one.route", "reaper");
+                self.shared
+                    .progress
+                    .note(Some(conn_id), "phase_one.route", "reaper");
                 write_latches.insert(conn_id, write_was_pending);
             }
         }
@@ -449,7 +463,9 @@ impl PipeServer {
     /// registered pair is reaper-owned, including phase-one shutdown. False means expiry or latched teardown failure.
     /// Call disconnect_listener first; the phases remain separately observable.
     pub fn join_workers(&mut self, deadline: Instant) -> bool {
-        self.shared.progress.note(None, "server.join.begin", "begin");
+        self.shared
+            .progress
+            .note(None, "server.join.begin", "begin");
         signal_shutdown(&self.shared, deadline);
         let mut expired = false;
         if let Some(jh) = self.accept_jh.take() {
@@ -505,7 +521,12 @@ impl LaneServer for PipeServer {
         PipeServer::events(self)
     }
 
-    fn send(&self, conn: ConnId, bytes: Vec<u8>, marker: Option<u64>) -> Result<(), TransportError> {
+    fn send(
+        &self,
+        conn: ConnId,
+        bytes: Vec<u8>,
+        marker: Option<u64>,
+    ) -> Result<(), TransportError> {
         PipeServer::send(self, conn, bytes, marker)
     }
 

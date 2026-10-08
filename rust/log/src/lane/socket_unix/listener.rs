@@ -191,16 +191,10 @@ pub(super) fn create_and_bind_listener(
     for (dst, &b) in addr.sun_path.iter_mut().zip(addr_bytes) {
         *dst = b as libc::c_char;
     }
-    let addr_len = (std::mem::size_of::<libc::sa_family_t>() + addr_bytes.len() + 1)
-        as libc::socklen_t; // +1: the NUL terminator `sockaddr_un` expects, already zeroed in.
+    let addr_len =
+        (std::mem::size_of::<libc::sa_family_t>() + addr_bytes.len() + 1) as libc::socklen_t; // +1: the NUL terminator `sockaddr_un` expects, already zeroed in.
 
-    let rc = unsafe {
-        libc::bind(
-            fd.as_raw_fd(),
-            std::ptr::addr_of!(addr).cast(),
-            addr_len,
-        )
-    };
+    let rc = unsafe { libc::bind(fd.as_raw_fd(), std::ptr::addr_of!(addr).cast(), addr_len) };
     if rc != 0 {
         // ADR 0043 decision 2: a real error, never a retry -- the caller
         // holds the endpoint's lifetime lock, so nothing legitimate
@@ -247,7 +241,12 @@ pub(super) fn create_and_bind_listener(
     }
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     let rc = unsafe {
-        libc::fstatat(dir_fd, file_name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW)
+        libc::fstatat(
+            dir_fd,
+            file_name.as_ptr(),
+            &mut st,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
     };
     if rc != 0 {
         return Err(TransportError::Io {
@@ -372,6 +371,10 @@ fn assert_domain_is_unix(fd: RawFd) {
         )
     };
     if rc == 0 {
-        assert_eq!(domain, libc::AF_UNIX, "socket() did not create an AF_UNIX socket");
+        assert_eq!(
+            domain,
+            libc::AF_UNIX,
+            "socket() did not create an AF_UNIX socket"
+        );
     }
 }

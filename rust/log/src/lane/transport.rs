@@ -305,7 +305,6 @@ pub(crate) const OUTBOUND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 /// magnitude as [`OUTBOUND_BUDGET_BYTES`].
 pub(crate) const EVENTS_CHANNEL_CAP: usize = OUTBOUND_BUDGET_BYTES / READ_BUF_LEN;
 
-
 /// How long a stalled delivery (lifecycle retry, or one `Bytes` attempt)
 /// sleeps between retries against a full `events` channel.
 pub(crate) const EVENTS_RETRY_INTERVAL: Duration = Duration::from_millis(20);
@@ -619,7 +618,12 @@ pub trait LaneServer: Sized {
     /// Queue `bytes` for `conn`, tagged with `marker` if the caller wants
     /// a [`LaneEvent::Sent`] once the OS write physically completes.
     /// Non-blocking.
-    fn send(&self, conn: ConnId, bytes: Vec<u8>, marker: Option<u64>) -> std::result::Result<(), TransportError>;
+    fn send(
+        &self,
+        conn: ConnId,
+        bytes: Vec<u8>,
+        marker: Option<u64>,
+    ) -> std::result::Result<(), TransportError>;
     /// Request that `conn` be torn down. Fire-and-forget; a no-op if
     /// already gone or already tearing down.
     fn close(&self, conn: ConnId);

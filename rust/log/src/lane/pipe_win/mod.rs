@@ -201,14 +201,16 @@
 #![cfg(windows)]
 
 use crate::host::wide_null;
-use crate::lane::client::{Client, Endpoint};
 use crate::lane::attach_proto::ConnId;
+use crate::lane::client::{Client, Endpoint};
+use crate::lane::pending::{
+    self, report_server_teardown_failed, Claimed, ReaperMsg, REAPER_INBOX_SLACK,
+};
 use crate::lane::test_progress::{Controls, Progress, Role};
-use crate::lane::pending::{self, report_server_teardown_failed, Claimed, ReaperMsg, REAPER_INBOX_SLACK};
 use crate::lane::transport::{
-    join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget, SendMarker, StartGate,
-    TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL, JOIN_POLL_INTERVAL, READ_BUF_LEN,
-    TEARDOWN_AGGREGATE_DEADLINE,
+    join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget,
+    SendMarker, StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
+    EVENTS_RETRY_INTERVAL, JOIN_POLL_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
 };
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
@@ -220,10 +222,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA,
-    ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
-    GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_OPERATION_ABORTED,
+    ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GENERIC_READ, GENERIC_WRITE,
+    HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
@@ -409,11 +410,11 @@ mod slot;
 
 use accept::*;
 pub(crate) use client::connect_pipe_path_unchallenged;
-pub use client::{connect_voyage_pipe, PipeClient, PipeEndpoint};
 pub(crate) use client::connect_voyage_pipe_unchallenged;
+pub use client::{connect_voyage_pipe, PipeClient, PipeEndpoint};
 use conn::*;
-pub use server::PipeServer;
 use registry::*;
+pub use server::PipeServer;
 use slot::*;
 
 #[cfg(test)]
@@ -468,7 +469,10 @@ mod tests {
         let deadline = Instant::now() + budget;
 
         let jh1 = thread::spawn(move || thread::sleep(Duration::from_millis(100)));
-        assert!(join_within(jh1, deadline), "the first join should still fit its share");
+        assert!(
+            join_within(jh1, deadline),
+            "the first join should still fit its share"
+        );
 
         let (tx, rx) = mpsc::channel::<()>();
         let jh2 = thread::spawn(move || {
@@ -491,7 +495,8 @@ mod tests {
     /// proves the DECISION itself (`false`), captured once, is never
     /// revisited by the thread's later completion.
     #[test]
-    fn expiry_with_a_genuinely_unfinished_thread_is_terminal_even_though_it_finishes_moments_later() {
+    fn expiry_with_a_genuinely_unfinished_thread_is_terminal_even_though_it_finishes_moments_later()
+    {
         let (tx, rx) = mpsc::channel::<()>();
         let jh = thread::spawn(move || {
             let _ = rx.recv(); // blocks until released below, AFTER the decision is made
@@ -506,7 +511,10 @@ mod tests {
             "the thread must be genuinely unfinished at the deadline for this test to mean              anything -- confirmed BEFORE join_within is ever called"
         );
         let decision = join_within(jh, deadline);
-        assert!(!decision, "an unfinished thread at expiry must be terminal (false)");
+        assert!(
+            !decision,
+            "an unfinished thread at expiry must be terminal (false)"
+        );
         // Release the thread now, strictly AFTER the decision was made --
         // it finishing here must not (and structurally cannot: `decision`
         // is a plain bool already captured) retroactively flip anything.
