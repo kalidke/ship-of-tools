@@ -4,7 +4,6 @@
 use super::listener::set_cloexec;
 use super::listener::{set_nonblocking, STREAM_SOCKET};
 use super::*;
-use super::*;
 
 // ---------------------------------------------------------------------
 // Connect (ADR 0043 decision 4, property 18): a bounded, non-blocking
