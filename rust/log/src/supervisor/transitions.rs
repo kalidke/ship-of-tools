@@ -3,7 +3,7 @@
 
 use super::*;
 
-pub(super) fn advance_recovering(rx: mpsc::Receiver<RecoveryOutcome>, handle: JoinHandle<()>, started_at: Instant, first_leg: bool, config: &SuperviseConfig, authority: &mut AuthorityState, now: Instant) -> Lifecycle {
+pub(super) fn advance_recovering(rx: mpsc::Receiver<RecoveryOutcome>, handle: JoinHandle<()>, started_at: Instant, config: &SuperviseConfig, authority: &mut AuthorityState, now: Instant) -> Lifecycle {
     match rx.try_recv() {
         Ok(RecoveryOutcome::Done { voyage_id, ended }) => {
             join_and_warn(handle, "recovery");
@@ -13,13 +13,13 @@ pub(super) fn advance_recovering(rx: mpsc::Receiver<RecoveryOutcome>, handle: Jo
             } else {
                 let voyage_root = voyage_root_path(&config.state_dir, &voyage_id);
                 let (rx, handle) = spawn_initial_probe(voyage_id, voyage_root);
-                Lifecycle::InitialProbe { rx, handle, started_at: now, first_leg }
+                Lifecycle::InitialProbe { rx, handle, started_at: now }
             }
         }
         Ok(RecoveryOutcome::Storage(detail)) => {
             join_and_warn(handle, "recovery");
             note(format_args!("recovery met storage exhaustion ({detail}); waiting for storage"));
-            Lifecycle::StorageFull(storage::Wait::new(storage::Resume::Recover { first_leg }))
+            Lifecycle::StorageFull(storage::Wait::new(storage::Resume::Recover))
         }
         Ok(RecoveryOutcome::Fatal { detail }) => {
             join_and_warn(handle, "recovery");
@@ -30,7 +30,7 @@ pub(super) fn advance_recovering(rx: mpsc::Receiver<RecoveryOutcome>, handle: Jo
                 abandon_worker(handle, "recovery");
                 Lifecycle::Terminal { detail: "recovery operation watchdog expired".into(), entered_at: now }
             } else {
-                Lifecycle::Recovering { rx, handle, started_at, first_leg }
+                Lifecycle::Recovering { rx, handle, started_at }
             }
         }
         Err(mpsc::TryRecvError::Disconnected) => {
@@ -44,10 +44,11 @@ pub(super) fn advance_recovering(rx: mpsc::Receiver<RecoveryOutcome>, handle: Jo
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn advance_initial_probe(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant, first_leg: bool, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState, now: Instant) -> Lifecycle {
+pub(super) fn advance_initial_probe(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &mut AuthorityState, now: Instant) -> Lifecycle {
     match rx.try_recv() {
         Ok(ProbeOutcome::Adopted(process)) => {
             join_and_warn(handle, "initial probe");
+            authority.producer_ran = true;
             Lifecycle::Ready { process }
         }
         Ok(ProbeOutcome::Absent) => {
@@ -57,15 +58,9 @@ pub(super) fn advance_initial_probe(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>
                 Ok(true) => match lease.for_spawn() {
                     Ok(spawn_lease) => {
                         let voyage_root = voyage_root_path(&config.state_dir, &voyage_id);
-                        // The very first leg THIS PROCESS spawns --
-                        // see `strip_first_leg_tokens`'s own doc. Not a
-                        // recovery re-run after a storage wait: a leg
-                        // may already have run.
-                        let argv = if first_leg {
-                            strip_first_leg_tokens(&config.producer_argv, &config.first_leg_without)
-                        } else {
-                            config.producer_argv.clone()
-                        };
+                        // Stripped while no producer has run in this process
+                        // (`leg_argv`), as the very first leg is.
+                        let argv = leg_argv(config, authority.producer_ran, false);
                         let (rx, handle) = spawn_owned_spawn_attempt(
                             capsule_exe.to_path_buf(),
                             voyage_root,
@@ -108,7 +103,7 @@ pub(super) fn advance_initial_probe(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>
                 abandon_worker(handle, "initial probe");
                 Lifecycle::Terminal { detail: "initial probe operation watchdog expired".into(), entered_at: now }
             } else {
-                Lifecycle::InitialProbe { rx, handle, started_at, first_leg }
+                Lifecycle::InitialProbe { rx, handle, started_at }
             }
         }
         Err(mpsc::TryRecvError::Disconnected) => {
@@ -122,7 +117,7 @@ pub(super) fn advance_initial_probe(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState, now: Instant) -> Lifecycle {
+pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &mut AuthorityState, now: Instant) -> Lifecycle {
     match rx.try_recv() {
         Ok(ProbeOutcome::Ready(process)) => {
             // No anti-flap accounting here at all — the counter
@@ -137,6 +132,7 @@ pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, han
             // ~120s of real Windows CI, the anti-flap bound
             // never tripping.
             join_and_warn(handle, "spawn");
+            authority.producer_ran = true;
             Lifecycle::Ready { process }
         }
         Ok(ProbeOutcome::SpawnFailed(e)) => {
@@ -347,7 +343,7 @@ fn end_run_finished(result: EndRunWorkerResult, operation_id: &str, process: Leg
         }
         EndRunWorkerResult::Storage(detail) => {
             note(format_args!("end_run {operation_id} met storage exhaustion ({detail}); waiting for storage"));
-            Lifecycle::StorageFull(storage::Wait::new(storage::Resume::Recover { first_leg: false }))
+            Lifecycle::StorageFull(storage::Wait::new(storage::Resume::Recover))
         }
         EndRunWorkerResult::Fatal(detail) => {
             Lifecycle::Terminal { detail: format!("end_run {operation_id}: {detail}"), entered_at: now }
@@ -390,7 +386,7 @@ pub(super) fn advance_resetting(operation_id: String, rx: mpsc::Receiver<ResetWo
         Ok(ResetWorkerResult::Storage(detail)) => {
             join_and_warn(handle, "reset");
             note(format_args!("reset {operation_id} met storage exhaustion ({detail}); waiting for storage"));
-            Lifecycle::StorageFull(storage::Wait::new(storage::Resume::Recover { first_leg: false }))
+            Lifecycle::StorageFull(storage::Wait::new(storage::Resume::Recover))
         }
         Ok(ResetWorkerResult::Fatal(detail)) => {
             join_and_warn(handle, "reset");
@@ -429,12 +425,12 @@ pub(super) fn advance_storage_full(wait: storage::Wait, consecutive_unstable_leg
             note(format_args!("storage is back; respawning the leg"));
             respawn_or_terminal(consecutive_unstable_legs, capsule_exe, config, lease, authority, false)
         }
-        storage::Outcome::Resume(storage::Resume::Recover { first_leg }) => {
+        storage::Outcome::Resume(storage::Resume::Recover) => {
             note(format_args!("storage is back; re-running startup recovery"));
             let (rx, handle) = spawn_recovery(config.state_dir.clone(), config.mode);
-            Lifecycle::Recovering { rx, handle, started_at: now, first_leg }
+            Lifecycle::Recovering { rx, handle, started_at: now }
         }
-        storage::Outcome::Resume(storage::Resume::Suspect) | storage::Outcome::NotStorage => {
+        storage::Outcome::Resume(storage::Resume::Suspect) => {
             account_and_respawn("with no storage cause", consecutive_unstable_legs, storage_step, capsule_exe, config, lease, authority)
         }
         storage::Outcome::Terminal(detail) => Lifecycle::Terminal { detail, entered_at: now },
@@ -473,6 +469,7 @@ mod tests {
             self_pid: 0,
             self_created: 0,
             stop_requested: None,
+            producer_ran: false,
             retired_legs: Vec::new(),
         };
         Fixture {
@@ -506,9 +503,9 @@ mod tests {
         Lifecycle::Spawning { rx, handle: std::thread::spawn(|| {}), started_at: Instant::now() }
     }
 
-    fn advance_one_spawning(f: &Fixture, counter: &mut u32, outcome: ProbeOutcome<LegProcess>) -> Lifecycle {
+    fn advance_one_spawning(f: &mut Fixture, counter: &mut u32, outcome: ProbeOutcome<LegProcess>) -> Lifecycle {
         let Lifecycle::Spawning { rx, handle, started_at } = spawning(outcome) else { unreachable!() };
-        advance_spawning(rx, handle, started_at, counter, &f.capsule_exe, &f.config, &f.lease, &f.authority, Instant::now())
+        advance_spawning(rx, handle, started_at, counter, &f.capsule_exe, &f.config, &f.lease, &mut f.authority, Instant::now())
     }
 
     /// A leg that exits 71 is a storage exit: the crash counter is left
@@ -516,15 +513,15 @@ mod tests {
     /// counted, and the third unstable leg is Terminal.
     #[test]
     fn a_storage_leg_exit_keeps_the_crash_counter() {
-        let f = fixture();
+        let mut f = fixture();
         let mut counter = 2;
-        let held = advance_one_spawning(&f, &mut counter, ProbeOutcome::LegEnded(Some(ExitStatus::Code(71))));
+        let held = advance_one_spawning(&mut f, &mut counter, ProbeOutcome::LegEnded(Some(ExitStatus::Code(71))));
         assert!(!matches!(held, Lifecycle::Terminal { .. }), "a storage exit never goes Terminal");
         assert!(matches!(held, Lifecycle::StorageFull(_)), "a storage exit holds the authority");
         assert_eq!(counter, 2, "a storage exit leaves the counter alone");
 
         let mut counter = 2;
-        let counted = advance_one_spawning(&f, &mut counter, ProbeOutcome::LegEnded(Some(ExitStatus::Code(1))));
+        let counted = advance_one_spawning(&mut f, &mut counter, ProbeOutcome::LegEnded(Some(ExitStatus::Code(1))));
         assert!(matches!(counted, Lifecycle::Terminal { .. }), "an ordinary exit is counted: the third is Terminal");
         assert_eq!(counter, 3);
     }
@@ -540,13 +537,11 @@ mod tests {
             _ => panic!("expected the storage wait"),
         };
 
-        // Recovery keeps whether it was for the first leg.
-        for first_leg in [true, false] {
-            let (tx, rx) = mpsc::channel();
-            tx.send(RecoveryOutcome::Storage("full".into())).unwrap();
-            let next = advance_recovering(rx, std::thread::spawn(|| {}), now, first_leg, &f.config, &mut f.authority, now);
-            expect(next, storage::Resume::Recover { first_leg });
-        }
+        // Recovery.
+        let (tx, rx) = mpsc::channel();
+        tx.send(RecoveryOutcome::Storage("full".into())).unwrap();
+        let next = advance_recovering(rx, std::thread::spawn(|| {}), now, &f.config, &mut f.authority, now);
+        expect(next, storage::Resume::Recover);
 
         // An end_run worker.
         let (mut counter, mut step) = (0, 0);
@@ -562,13 +557,35 @@ mod tests {
             &mut f.authority,
             now,
         );
-        expect(next, storage::Resume::Recover { first_leg: false });
+        expect(next, storage::Resume::Recover);
         assert_eq!(counter, 0, "an end_run storage failure does not touch the counter");
 
         // A reset worker.
         let (tx, rx) = mpsc::channel();
         tx.send(ResetWorkerResult::Storage("full".into())).unwrap();
         let next = advance_resetting("op-2".into(), rx, std::thread::spawn(|| {}), now, &f.capsule_exe.clone(), &f.config, &f.lease, &mut f.authority, now);
-        expect(next, storage::Resume::Recover { first_leg: false });
+        expect(next, storage::Resume::Recover);
+    }
+
+    /// The first-leg tokens are stripped while no producer has run in this
+    /// process and after an unstable leg, and kept after a stable one; a leg
+    /// that reaches Ready is the producer having run.
+    #[test]
+    fn a_respawn_before_any_producer_ran_keeps_the_first_leg_tokens_stripped() {
+        let mut f = fixture();
+        f.config.producer_argv = vec!["agent".into(), "--continue".into()];
+        f.config.first_leg_without = vec!["--continue".into()];
+        let stripped = vec!["agent".to_string()];
+        let whole = f.config.producer_argv.clone();
+        assert_eq!(leg_argv(&f.config, false, false), stripped, "no producer ran: stripped");
+        assert_eq!(leg_argv(&f.config, true, false), whole, "a producer ran and the leg was stable: kept");
+        assert_eq!(leg_argv(&f.config, true, true), stripped, "an unstable leg: stripped");
+
+        // A leg that reaches Ready sets `producer_ran`.
+        assert!(!f.authority.producer_ran);
+        let mut counter = 0;
+        let ready = advance_one_spawning(&mut f, &mut counter, ProbeOutcome::Ready(exited_leg()));
+        assert!(matches!(ready, Lifecycle::Ready { .. }));
+        assert!(f.authority.producer_ran);
     }
 }

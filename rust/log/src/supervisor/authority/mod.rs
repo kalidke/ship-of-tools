@@ -105,6 +105,11 @@ pub(super) struct AuthorityState {
     pub(super) self_pid: u32,
     pub(super) self_created: u64,
     pub(super) stop_requested: Option<StopRequested>,
+    /// Whether a producer has run in this process: a leg reached Ready, or one
+    /// was adopted. Until then `first_leg_without` is stripped from a leg's
+    /// argv, and afterwards only from the respawn of an unstable leg
+    /// (`leg_argv`).
+    pub(super) producer_ran: bool,
     /// legs whose `Lifecycle` state was left
     /// (`Ready`/`Ending` resolving to something else) while STILL ALIVE —
     /// [`reap_leg_if_already_exited`]'s old design only ever handled
@@ -441,7 +446,7 @@ mod tests {
     #[test]
     fn reset_refusal_detail_names_the_reason_for_every_busy_state() {
         let (_tx, rx) = mpsc::channel::<RecoveryOutcome>();
-        let recovering = Lifecycle::Recovering { rx, handle: std::thread::spawn(|| {}), started_at: Instant::now(), first_leg: true };
+        let recovering = Lifecycle::Recovering { rx, handle: std::thread::spawn(|| {}), started_at: Instant::now() };
         assert!(reset_refusal_detail(&recovering).contains("recovering"));
 
         let terminal = Lifecycle::Terminal { detail: "x".into(), entered_at: Instant::now() };
@@ -455,6 +460,7 @@ mod tests {
             self_pid: 0,
             self_created: 0,
             stop_requested: None,
+            producer_ran: false,
             retired_legs: Vec::new(),
         }
     }

@@ -35,11 +35,20 @@ pub(super) enum Resume {
     /// A leg died with no status: the first probe decides whether this was storage.
     Suspect,
     /// A recovery, end_run or reset worker failed with storage exhaustion: run startup recovery again.
-    Recover { first_leg: bool },
+    Recover,
+}
+
+/// What one probe did. `written` is the probe's verdict: Ok once the new file
+/// is written and synced and the state root synced. A file it could not
+/// remove is a `leftover`, which does not change that verdict: the wait
+/// removes it later, by its absolute path.
+pub(super) struct Probed {
+    pub(super) written: std::io::Result<()>,
+    pub(super) leftover: Option<PathBuf>,
 }
 
 struct InFlight {
-    rx: mpsc::Receiver<std::io::Result<()>>,
+    rx: mpsc::Receiver<Probed>,
     handle: JoinHandle<()>,
     started_at: Instant,
 }
@@ -48,9 +57,11 @@ struct InFlight {
 pub(super) struct Wait {
     resume: Resume,
     next_probe_at: Option<Instant>,
-    probe_fn: fn(&Path) -> std::io::Result<()>,
+    probe_fn: fn(&Path) -> Probed,
     in_flight: Option<InFlight>,
     noted: bool,
+    /// Probe files that could not be removed when they were written.
+    leftovers: Vec<PathBuf>,
 }
 
 impl Wait {
@@ -58,13 +69,14 @@ impl Wait {
         Self::with_probe(resume, probe)
     }
 
-    fn with_probe(resume: Resume, probe_fn: fn(&Path) -> std::io::Result<()>) -> Self {
+    fn with_probe(resume: Resume, probe_fn: fn(&Path) -> Probed) -> Self {
         Self {
             resume,
             next_probe_at: None,
             probe_fn,
             in_flight: None,
             noted: false,
+            leftovers: Vec::new(),
         }
     }
 
@@ -81,9 +93,9 @@ impl Wait {
 
 pub(super) enum Outcome {
     Waiting(Wait),
+    /// A good probe. For a `Suspect` it says the death was not storage:
+    /// ordinary accounting.
     Resume(Resume),
-    /// A suspected leg death whose probe passed: ordinary accounting.
-    NotStorage,
     Terminal(String),
 }
 
@@ -112,18 +124,21 @@ pub(super) fn account(counter: &mut u32, step: &mut u32, unstable: bool) {
 
 /// One tick of the wait. A probe is a worker thread; its result is read on a
 /// later tick. The first tick probes at once for `Suspect` and otherwise at
-/// `now + delay(*step)`. A success is `NotStorage` for `Suspect` and
-/// `Resume(resume)` otherwise, with the step kept; a recognized error moves
+/// `now + delay(*step)`. A success is `Resume(resume)`, with the step kept
+/// (the caller takes a `Suspect` resume as ordinary accounting); a recognized error moves
 /// the step on and waits again (a `Suspect` is then a known storage death);
 /// anything else ends the wait Terminal.
 pub(super) fn advance(mut wait: Wait, step: &mut u32, state_dir: &Path, now: Instant) -> Outcome {
     if let Some(flight) = wait.in_flight.take() {
         match flight.rx.try_recv() {
-            Ok(result) => {
+            Ok(probed) => {
                 join_and_warn(flight.handle, "storage probe");
-                return match result {
-                    Ok(()) if wait.resume == Resume::Suspect => Outcome::NotStorage,
-                    Ok(()) => Outcome::Resume(wait.resume),
+                wait.leftovers.extend(probed.leftover);
+                return match probed.written {
+                    Ok(()) => {
+                        sweep(&mut wait.leftovers, true);
+                        Outcome::Resume(wait.resume)
+                    }
                     Err(e) => probe_failed(wait, step, e, now),
                 };
             }
@@ -152,6 +167,7 @@ pub(super) fn advance(mut wait: Wait, step: &mut u32, state_dir: &Path, now: Ins
         }
     };
     if due {
+        sweep(&mut wait.leftovers, false);
         let (tx, rx) = mpsc::channel();
         let probe_fn = wait.probe_fn;
         let dir = state_dir.to_path_buf();
@@ -189,28 +205,62 @@ fn probe_failed(mut wait: Wait, step: &mut u32, e: std::io::Error, now: Instant)
     }
 }
 
-/// A real durable write to the state root: a new 4 KiB file written, synced
-/// and removed, then the root synced. After the file exists, any error removes
-/// it before the first error is returned; a name this did not create is never
-/// removed.
-pub(super) fn probe(state_dir: &Path) -> std::io::Result<()> {
+/// Removes each leftover probe file by its absolute path (a file already gone
+/// counts as removed). With `resuming`, any still there is noted and forgotten.
+/// The folder is never listed: only names a probe created are touched.
+fn sweep(leftovers: &mut Vec<PathBuf>, resuming: bool) {
+    leftovers.retain(|path| match std::fs::remove_file(path) {
+        Ok(()) => false,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    });
+    if resuming {
+        for path in leftovers.drain(..) {
+            note(format_args!(
+                "a storage probe file could not be removed and is left behind: {path:?}"
+            ));
+        }
+    }
+}
+
+/// A real durable write to the state root: a new 4 KiB file written and synced
+/// and the state root synced is success. The file is then removed; a file that
+/// cannot be removed is a `leftover` for the wait to remove later. A failed
+/// write also removes the file, and gives it as `leftover` when that removal
+/// fails. A name this did not create is never removed.
+pub(super) fn probe(state_dir: &Path) -> Probed {
     use std::io::Write as _;
     let mut nonce = [0u8; 8];
-    getrandom::fill(&mut nonce).map_err(std::io::Error::from)?;
+    if let Err(e) = getrandom::fill(&mut nonce) {
+        return Probed {
+            written: Err(std::io::Error::from(e)),
+            leftover: None,
+        };
+    }
     let path = state_dir.join(format!(".storage-probe-{:016x}", u64::from_le_bytes(nonce)));
-    let mut file = std::fs::OpenOptions::new()
+    let mut file = match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&path)?;
-    let written = file.write_all(&[0u8; 4096]).and_then(|()| file.sync_all());
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(e) => {
+            return Probed {
+                written: Err(e),
+                leftover: None,
+            }
+        }
+    };
+    let mut written = file.write_all(&[0u8; 4096]).and_then(|()| file.sync_all());
     drop(file);
-    let removed = std::fs::remove_file(&path);
-    written?;
-    removed?;
-    crate::host::fsync_dir(state_dir).map_err(|e| match e {
-        crate::Error::Io(e) => e,
-        other => std::io::Error::other(other),
-    })
+    if written.is_ok() {
+        written = crate::host::fsync_dir(state_dir).map_err(|e| match e {
+            crate::Error::Io(e) => e,
+            other => std::io::Error::other(other),
+        });
+    }
+    let leftover = std::fs::remove_file(&path).is_err().then_some(path);
+    Probed { written, leftover }
 }
 
 #[cfg(test)]

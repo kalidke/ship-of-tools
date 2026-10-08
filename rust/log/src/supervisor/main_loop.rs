@@ -56,6 +56,7 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         self_pid: self_ids.0,
         self_created: self_ids.1,
         stop_requested: None,
+        producer_ran: false,
         retired_legs: Vec::new(),
     };
     let mut conns: HashMap<ConnId, Conn> = HashMap::new();
@@ -67,7 +68,7 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     // background worker — the lane is already up and serviced from the
     // very first loop iteration below, well before either concludes.
     let (rx, handle) = spawn_recovery(config.state_dir.clone(), config.mode);
-    let mut lifecycle = Lifecycle::Recovering { rx, handle, started_at: Instant::now(), first_leg: true };
+    let mut lifecycle = Lifecycle::Recovering { rx, handle, started_at: Instant::now() };
 
     let mut consecutive_unstable_legs: u32 = 0;
     // The storage wait's backoff step: carried across a storage exit that
@@ -100,9 +101,9 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             Lifecycle::Terminal { detail: "transitioning".into(), entered_at: now },
         );
         lifecycle = match current {
-            Lifecycle::Recovering { rx, handle, started_at, first_leg } => advance_recovering(rx, handle, started_at, first_leg, &config, &mut authority, now),
-            Lifecycle::InitialProbe { rx, handle, started_at, first_leg } => advance_initial_probe(rx, handle, started_at, first_leg, &capsule_exe, &config, &lease, &authority, now),
-            Lifecycle::Spawning { rx, handle, started_at } => advance_spawning(rx, handle, started_at, &mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, now),
+            Lifecycle::Recovering { rx, handle, started_at } => advance_recovering(rx, handle, started_at, &config, &mut authority, now),
+            Lifecycle::InitialProbe { rx, handle, started_at } => advance_initial_probe(rx, handle, started_at, &capsule_exe, &config, &lease, &mut authority, now),
+            Lifecycle::Spawning { rx, handle, started_at } => advance_spawning(rx, handle, started_at, &mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &mut authority, now),
             Lifecycle::Ready { process } => advance_ready(process, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &authority, now),
             Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply, process } => advance_ending(operation_id, rx, handle, started_at, pending_reply, process, &lane, &conns, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &mut authority, now),
             Lifecycle::StorageFull(wait) => advance_storage_full(wait, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &authority, now),

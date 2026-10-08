@@ -40,13 +40,10 @@ pub(super) enum Lifecycle {
     /// Journal recovery + pointer discovery, folded into ONE
     /// non-blocking startup step (recovery runs BEFORE pointer
     /// discovery; neither may block the lane).
-    /// `first_leg` is true until this process has spawned a leg: it is what
-    /// lets `first_leg_without` strip tokens from the first leg only, and
-    /// stays false when recovery is re-run after a storage wait.
-    Recovering { rx: mpsc::Receiver<RecoveryOutcome>, handle: JoinHandle<()>, started_at: Instant, first_leg: bool },
+    Recovering { rx: mpsc::Receiver<RecoveryOutcome>, handle: JoinHandle<()>, started_at: Instant },
     /// The ONE initial placement decision (adopt if live, else consult
     /// the start-mode table).
-    InitialProbe { rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant, first_leg: bool },
+    InitialProbe { rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant },
     /// A fresh owned-spawn attempt in flight — every respawn reaches
     /// this, never `InitialProbe` again.
     Spawning { rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant },
@@ -596,11 +593,7 @@ pub(super) fn respawn_or_terminal(
     };
     let voyage_id = authority.voyage_id.clone().expect("respawn is only reachable once voyage_id is Some");
     let voyage_root = voyage_root_path(&authority.state_dir, &voyage_id);
-    let argv = if unstable {
-        strip_first_leg_tokens(&config.producer_argv, &config.first_leg_without)
-    } else {
-        config.producer_argv.clone()
-    };
+    let argv = leg_argv(config, authority.producer_ran, unstable);
     let (rx, handle) = spawn_owned_spawn_attempt(
         capsule_exe.to_path_buf(),
         voyage_root,
@@ -663,7 +656,7 @@ mod tests {
     fn take_worker_handle_extracts_the_handle_from_a_worker_bearing_state() {
         let mut retired_legs = Vec::new();
         let (_tx, rx) = mpsc::channel::<RecoveryOutcome>();
-        let mut recovering = Lifecycle::Recovering { rx, handle: std::thread::spawn(|| {}), started_at: Instant::now(), first_leg: true };
+        let mut recovering = Lifecycle::Recovering { rx, handle: std::thread::spawn(|| {}), started_at: Instant::now() };
         assert!(take_worker_handle(&mut recovering, &mut retired_legs).is_some());
 
         let mut ended = Lifecycle::EndedNoRespawn;

@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -14,13 +15,17 @@ fn storage_error() -> std::io::Error {
 static SCRIPT: Mutex<VecDeque<std::io::Result<()>>> = Mutex::new(VecDeque::new());
 static PROBES: AtomicUsize = AtomicUsize::new(0);
 
-fn scripted_probe(_: &Path) -> std::io::Result<()> {
+fn scripted_probe(_: &Path) -> Probed {
     PROBES.fetch_add(1, Ordering::SeqCst);
-    SCRIPT
+    let written = SCRIPT
         .lock()
         .unwrap()
         .pop_front()
-        .expect("a scripted probe result")
+        .expect("a scripted probe result");
+    Probed {
+        written,
+        leftover: None,
+    }
 }
 
 fn script(results: impl IntoIterator<Item = std::io::Result<()>>) {
@@ -154,7 +159,7 @@ fn ends_terminal_or_not_storage(at: Instant) -> Instant {
         &mut step,
         at,
     );
-    assert!(matches!(outcome, Outcome::NotStorage));
+    assert!(matches!(outcome, Outcome::Resume(Resume::Suspect)));
     // ... and storage there is a known storage death, which waits and resumes as Respawn.
     script([Err(storage_error()), Ok(())]);
     let Outcome::Waiting(wait) = probe_at(
@@ -178,12 +183,15 @@ fn one_probe_at_a_time_and_bounded(at: Instant) {
     // Never two probes at once: while a probe runs, a tick starts no second one.
     static STARTED: AtomicUsize = AtomicUsize::new(0);
     static RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    fn held_probe(_: &Path) -> std::io::Result<()> {
+    fn held_probe(_: &Path) -> Probed {
         STARTED.fetch_add(1, Ordering::SeqCst);
         while !RELEASE.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(5));
         }
-        Ok(())
+        Probed {
+            written: Ok(()),
+            leftover: None,
+        }
     }
     let mut step = 0;
     let Outcome::Waiting(wait) = advance(
@@ -245,7 +253,9 @@ fn the_probe_cleans_up_only_its_own_file() {
         .unwrap()
         .map(|e| e.unwrap().file_name())
         .collect();
-    probe(dir.path()).unwrap();
+    let probed = probe(dir.path());
+    probed.written.unwrap();
+    assert!(probed.leftover.is_none());
     let mut after: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
         .map(|e| e.unwrap().file_name())
@@ -259,4 +269,57 @@ fn the_probe_cleans_up_only_its_own_file() {
         b"not ours",
         "a name it did not create survives"
     );
+}
+
+// The leftover of `a_probe_file_that_cannot_be_removed_...`, the path the fake probe reports.
+static LEFTOVER: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn probe_that_leaves_a_file(_: &Path) -> Probed {
+    Probed {
+        written: Ok(()),
+        leftover: LEFTOVER.lock().unwrap().clone(),
+    }
+}
+
+/// A probe whose write was good but whose file could not be removed is a
+/// success; the wait removes the file later, by its absolute path, and a real
+/// probe on a healthy root writes, removes and leaves nothing.
+#[test]
+fn a_probe_file_that_cannot_be_removed_is_a_success_and_is_removed_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let left = dir.path().join(".storage-probe-left-behind");
+    std::fs::write(&left, b"leftover").unwrap();
+    *LEFTOVER.lock().unwrap() = Some(left.clone());
+
+    let at = Instant::now();
+    let mut step = 0;
+    let wait = Wait::with_probe(Resume::Respawn, probe_that_leaves_a_file);
+    let Outcome::Waiting(wait) = advance(wait, &mut step, dir.path(), at) else {
+        panic!("the first tick only schedules the probe");
+    };
+    let at = at + delay(0);
+    let Outcome::Waiting(wait) = advance(wait, &mut step, dir.path(), at) else {
+        panic!("the probe starts as a worker");
+    };
+    let mut outcome = Outcome::Waiting(wait);
+    for _ in 0..2000 {
+        outcome = match outcome {
+            Outcome::Waiting(wait) => {
+                std::thread::sleep(Duration::from_millis(5));
+                advance(wait, &mut step, dir.path(), at)
+            }
+            _ => break,
+        };
+    }
+    assert!(
+        matches!(outcome, Outcome::Resume(Resume::Respawn)),
+        "a good write is a success"
+    );
+    assert!(!left.exists(), "the wait removed the leftover by its path");
+
+    let healthy = tempfile::tempdir().unwrap();
+    let probed = probe(healthy.path());
+    probed.written.unwrap();
+    assert!(probed.leftover.is_none());
+    assert_eq!(std::fs::read_dir(healthy.path()).unwrap().count(), 0);
 }
