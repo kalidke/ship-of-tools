@@ -41,6 +41,8 @@ pub(in crate::ui) struct RoiRect {
 /// switches over and the preview renders. One slot, latest-wins.
 #[derive(Debug, Clone)]
 pub(in crate::ui) struct RoiAim {
+    /// The resolved (host, listed workspace slug) of the carrying result.
+    pub(in crate::ui) row_key: WsKey,
     pub(in crate::ui) workspace: String,
     pub(in crate::ui) path: String,
     /// `files:<path>` — the node id the aimed preview fires under.

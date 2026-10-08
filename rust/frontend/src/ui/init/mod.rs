@@ -94,6 +94,24 @@ struct LaunchInputs {
 fn load_launch_inputs(
     conns: &[(crate::net::dial::HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)],
 ) -> LaunchInputs {
+    #[cfg(all(test, feature = "test-window-progress"))]
+    if let Some(inputs) = NATIVE_STARTUP.with(|slot| slot.borrow().clone()) {
+        let persisted_geom = inputs.resume;
+        let active_host = persisted_geom
+            .last_host
+            .clone()
+            .filter(|h| conns.iter().any(|(ch, _)| ch == h))
+            .unwrap_or_else(|| resolve_default_host(conns, "offline".to_string()));
+        return LaunchInputs {
+            resume_matches_last_host: persisted_geom.last_host.as_ref() == Some(&active_host),
+            init_w: persisted_geom.window_w.unwrap_or(640.0),
+            init_h: persisted_geom.window_h.unwrap_or(480.0),
+            persisted_geom,
+            active_host,
+            monitor_hub: inputs.topology.map(|t| t.hub),
+            settings: inputs.settings,
+        };
+    }
     // Loaded here (rather than at each of its several uses below) so
     // `last_host` and the window-geometry fields below all read the
     // SAME snapshot of the file.
@@ -139,6 +157,51 @@ fn load_launch_inputs(
     // mid-startup.
     let settings = Settings::load_layered();
     LaunchInputs { persisted_geom, active_host, resume_matches_last_host, monitor_hub, init_w, init_h, settings }
+}
+
+fn load_keybindings() -> KeyBindings {
+    #[cfg(all(test, feature = "test-window-progress"))]
+    if let Some(bindings) =
+        NATIVE_STARTUP.with(|slot| slot.borrow().as_ref().map(|i| i.keybindings.clone()))
+    {
+        return bindings;
+    }
+    KeyBindings::load_layered()
+}
+
+#[cfg(all(test, feature = "test-window-progress"))]
+#[derive(Clone)]
+pub(in crate::ui) struct NativeStartupInputs {
+    pub(in crate::ui) resume: crate::ui::persist::resume::GlobalState,
+    pub(in crate::ui) topology: Option<sot_protocol::topology::Topology>,
+    pub(in crate::ui) settings: Settings,
+    pub(in crate::ui) keybindings: KeyBindings,
+    pub(in crate::ui) ledger: Arc<std::sync::Mutex<NativeProgressLedger>>,
+}
+
+#[cfg(all(test, feature = "test-window-progress"))]
+thread_local! {
+    static NATIVE_STARTUP: std::cell::RefCell<Option<NativeStartupInputs>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(in crate::ui) fn with_native_startup<T>(
+    inputs: NativeStartupInputs,
+    body: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<NativeStartupInputs>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            NATIVE_STARTUP.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(NATIVE_STARTUP.with(|slot| slot.replace(Some(inputs))));
+    body()
+}
+
+#[cfg(all(test, feature = "test-window-progress"))]
+fn native_progress_ledger() -> Option<Arc<std::sync::Mutex<NativeProgressLedger>>> {
+    NATIVE_STARTUP.with(|slot| slot.borrow().as_ref().map(|i| i.ledger.clone()))
 }
 
 fn create_window(

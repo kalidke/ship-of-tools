@@ -46,6 +46,42 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  window-minimized-windows:
+    name: native minimized window (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 18
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Prove native minimized workload and progress
+        run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
+
+  window-minimized-macos:
+    name: native minimized window (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 18
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Prove native minimized workload and progress
+        run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
+
   test:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

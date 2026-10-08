@@ -78,6 +78,8 @@ use crate::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
 /// exactly once — never duplicated onto the dial value itself.
 pub enum LaneDial {
     Local(PathBuf),
+    /// A generated hub relay, remote for policy; its link gate precedes the existing protected local connector.
+    Relay(PathBuf, crate::topology::ssh_bridge::LinkGate),
     /// The recipe and its host's link gate: a down gate makes the dial
     /// fail with `TransportError::LinkDown` and start no ssh.
     Ssh(crate::topology::ssh_bridge::SshRecipe, crate::topology::ssh_bridge::LinkGate),
@@ -278,8 +280,8 @@ impl Endpoint for DaemonLaneEndpoint {
     /// The host's link gate for an ssh dial; every other dial is local.
     fn link_up(&self) -> bool {
         match &self.dial {
-            LaneDial::Ssh(_, gate) => gate.is_up(),
-            _ => true,
+            LaneDial::Relay(_, gate) | LaneDial::Ssh(_, gate) => gate.is_up(),
+            LaneDial::Local(_) => true,
         }
     }
 }
@@ -557,9 +559,15 @@ impl DaemonLaneEndpoint {
         let hello = Frame::req(1, op::HELLO, serde_json::to_value(&hello).expect("HelloReq always serializes"));
         let frame = Frame::req(2, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
 
+        // A down link starts no dial, ssh or relay: the connect itself waits for the gate.
+        if let LaneDial::Relay(_, gate) = &self.dial {
+            if !gate.is_up() {
+                return Err(TransportError::LinkDown);
+            }
+        }
         let stream = match &self.dial {
             #[cfg(unix)]
-            LaneDial::Local(path) => {
+            LaneDial::Local(path) | LaneDial::Relay(path, _) => {
                 // `connect_own`: the folder rule (ADR 0049, User
                 // isolation), then `sot_log::lane::socket_unix`'s own
                 // bounded, non-blocking connector rather than a blocking
@@ -572,7 +580,7 @@ impl DaemonLaneEndpoint {
                 LaneStream::Unix(client)
             }
             #[cfg(windows)]
-            LaneDial::Local(path) => {
+            LaneDial::Local(path) | LaneDial::Relay(path, _) => {
                 // `connect_own`: `sot_log::lane::pipe_win`'s bounded pipe
                 // connector, then the check that this OS account serves the
                 // pipe (ADR 0049, User isolation), before the first byte.

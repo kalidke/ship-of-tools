@@ -17,10 +17,7 @@ same box to reach.
 
 Every endpoint this version can dial has one of three schemes:
 
-- `unix:<path>` / `pipe:<name>` — a local socket or named pipe, reached
-  only when this OS account serves it: a Rust client through
-  `connect_own`, a shell or PowerShell script through `sotd stdio-bridge
-  --endpoint`.
+- unix:<path> / pipe:<name> — a socket or named pipe reached directly. A generated hub relay socket is a route to a remote daemon: the window classifies its complete derived path once, does not lease that remote daemon, and reuses the path for gated page and lane connections. Other local endpoints retain their existing policy.
 - `ssh:<target>` — that box's own daemon, reached by spawning
   `ssh <target> sotd stdio-bridge` and speaking the protocol over its
   stdin/stdout. `<target>` is a plain host name (`hosts.toml`'s own

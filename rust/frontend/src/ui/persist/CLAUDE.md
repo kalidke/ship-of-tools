@@ -23,3 +23,4 @@ session. Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
   `$HOME/.config/sot/`: `find_config_file`, called with `SOT_SETTINGS`/`settings.toml` and `SOT_KEYBINDINGS`/`keybindings.toml`.
 - `[display] fullscreen_vsync_pin` defaults false and is a per-box choice; never add an always-redraw path for every
   panel: `Settings`'s `Default` (test `fullscreen_vsync_pin_defaults_false_and_parses`).
+- The settings merger treats '#' as a comment delimiter only outside single/double quotes; quoted values keep it (strip_comment).

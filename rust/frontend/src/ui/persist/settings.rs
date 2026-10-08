@@ -432,7 +432,7 @@ impl Settings {
     fn merge_text(&mut self, contents: &str) {
         let mut section = String::new();
         for (lineno, raw) in contents.lines().enumerate() {
-            let line = raw.split('#').next().unwrap_or("").trim();
+            let line = strip_comment(raw).trim();
             if line.is_empty() {
                 continue;
             }
@@ -610,6 +610,24 @@ fn parse_bool(s: &str) -> Option<bool> {
         "false" | "no" | "off" | "0" => Some(false),
         _ => None,
     }
+}
+
+/// Strip a trailing comment outside quotes, preserving the existing value text and quote decoding.
+fn strip_comment(line: &str) -> &str {
+    let mut quote = None;
+    let mut escaped = false;
+    for (at, c) in line.char_indices() {
+        match (quote, c) {
+            (Some('"'), _) if escaped => escaped = false,
+            (Some('"'), '\\') => escaped = true,
+            (Some(open), c) if c == open => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '#') => return &line[..at],
+            (None, _) => {}
+        }
+    }
+    line
 }
 
 pub(in crate::ui) fn strip_quotes(s: &str) -> String {

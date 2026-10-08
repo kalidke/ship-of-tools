@@ -41,6 +41,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | umask 077, boot refusals | process rule | server | `rust/backend/src/main.rs` `apply_umask`, `parse_args` |
 | session socket/pipe path rule `<runtime>/sessions/<label>.sock`, `\\.\pipe\sot-<USER>-<label>` | disk rule | topology | `rust/protocol/src/topology/endpoint.rs` `session_socket_path` |
 | local daemon label (`sot`, `local`) | setting | topology | `rust/protocol/src/topology/endpoint.rs` `local_daemon_label`; spelled at several script sites (see two owners) |
+| generated hub-relay endpoint classification | rule | topology | `rust/protocol/src/topology/mod.rs` `relay_host_for_path`; `rust/frontend/src/net/dial.rs` `parse_dial_arg` consumes it |
 | the bound session socket/pipe, its DACL and inbound buffer, live-socket refusal | disk, endpoint | server | `rust/backend/src/server/listen.rs` `run_local`, `bind_session`, `refuse_live_socket`, `session_pipe_security_descriptor` |
 | `<state>/held.json` | disk | lifecycle | `rust/backend/src/lifecycle/lease.rs` `HeldRecord`, `persist`; name `rust/protocol/src/ops/lease.rs` `HELD_RECORD_FILE` |
 | `<state>/relaunch.request` | disk | distribution | `rust/frontend/src/relaunch.rs` `relaunch_sentinel_path`, `spawn_watcher`; writer `scripts/relaunch-sot.ps1` |
@@ -51,7 +52,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `<config>/workspaces-<host>/<slug>.toml` | disk | rows | `rust/backend/src/rows/store/mod.rs` `workspaces_dir`, `toml_path_for`, `save` |
 | `<config>/sessions-<host>/<label>.toml` (the older row-file shape) | disk | rows | `rust/backend/src/rows/store/mod.rs` `sessions_dir`, `scan_disk` |
 | boot migrations of the row store (Windows config dir, unsuffixed fold, sessions read) | disk | rows | `rust/backend/src/rows/store/migrate.rs` `migrate_legacy_state_dirs`; `rust/backend/src/rows/store/mod.rs` `scan_disk` |
-| `<config>/settings.toml`: the file and every section but `[trust]` | disk, setting | fe-ui | `rust/frontend/src/ui/persist/settings.rs` `Settings`, `load_layered`; `rust/frontend/src/ui/persist/discover.rs` `find_config_file` |
+| `<config>/settings.toml`: the file and every section but `[trust]` | disk, setting | fe-ui | `rust/frontend/src/ui/persist/settings.rs` `Settings`, `load_layered`, `merge_text`, `strip_comment`; `rust/frontend/src/ui/persist/discover.rs` `find_config_file` |
 | `[trust] root_prefix` in settings.toml | setting | agents | `rust/backend/src/agents/trust_declaration.rs` `declare_trust`, `read_trust_declaration` |
 | `<config>/keybindings.toml` | disk, setting | fe-ui | `rust/frontend/src/ui/input/keybindings.rs` `KeyBindings`, `load_layered` |
 | `<config>/hosts.toml`, `SOT_HOSTS` | disk, setting | topology | `rust/protocol/src/topology/mod.rs` `locate`, `load`, `parse` |
@@ -89,10 +90,10 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | derived handle `<repo>-<host>` (safe components and shortened host digest; raw host component retained) | rule | messaging | `comm/lib/comm-lib-identity.sh` `sot_derive_handle`, `sot_sanitize_component`, `sot_raw_host`, `_sot_handle_host`; the Codex launcher builds its default `<repo>-cx-<host>` from the same pieces in `agents/codex/bin/ccx` |
 | `state/*.tick`, `stop-feedback-*`, `askq-*` | disk | messaging | `comm/work_state/hooks/comm-status-heartbeat.sh`; `comm/work_state/hooks/comm-status-idle.sh`; `comm/work_state/hooks/comm-status-blocked.sh` |
 | `<root>/.concept/` | disk | files | `rust/backend/src/files/concept.rs` `ConceptStore`, `target_to_path` |
-| annotation header grammar (the `---` fences, `synced_against`) | rule | files | `rust/backend/src/files/concept.rs` `read_synced_against`; second parser `rust/frontend/src/ui/preview/concept.rs` `split_frontmatter` (see two owners) |
+| annotation header grammar (fences and synced_against) | rule | wire | `rust/protocol/src/annotation.rs` `split_frontmatter`, `synced_against`; consumers in files and fe-ui |
 | `<root>/.sot-trash/` | disk | files | `rust/backend/src/files/io.rs` `trash_file`, `trash_file_fallback` |
 | `<image>.scale.json` sidecars | disk | files | `rust/backend/src/files/preview/scale.rs` `merge_scale_sidecar` |
-| physical-scale schema and validity (`{axes:[{name, nm_per_px > 0}], unit}`) | rule | files | `rust/backend/src/files/preview/scale.rs`; `rust/backend/src/files/preview/mod.rs`; second check `rust/frontend/src/ui/preview/image/mod.rs` (see two owners) |
+| physical-scale schema and validity | rule | wire | `rust/protocol/src/physical_scale.rs` `PhysicalScale`, `parse_physical_scale`; consumers in files and fe-ui |
 | `<ws>/.sot/captures/` | disk | files | `rust/backend/src/files/preview/crop.rs` `handle_image_crop` |
 | `<ws>/.sot/runs/<run_id>/` | disk | sidecars | `rust/backend/src/sidecars/repl/execute.rs` |
 | `<home>/.claude-auth/<name>/` and its allowlisted links | disk | agents | `rust/backend/src/agents/accounts.rs` `ensure_account_links`, `SHARED_ENTRIES`, `CLAUDE_ACCOUNTS_DIR` |
@@ -201,6 +202,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `video.open`, `docs.open`, `quarto.open` | op | pages | `rust/backend/src/pages/ops.rs` `handle_video_open`, `handle_docs_open`, `handle_quarto_open` |
 | `proxy.connect` and the loopback allowlist | op, state | pages | `rust/backend/src/pages/proxy.rs` `handle_proxy_connect`, `allowed_proxy_ports` |
 | loopback page-URL grammar (`http` or `https`, host `127.0.0.1` or `localhost`, an explicit port) | rule | pages | `rust/protocol/src/page_url.rs` `loopback_port_from_url` |
+| video suffix and MIME decision in Rust | rule | wire | `rust/protocol/src/video_path.rs` `video_mime` |
 | video, site-prefix, site-pool listeners and grant tables | endpoint, state | pages | `rust/backend/src/pages/video.rs` `Grants`, `register_video`; `rust/backend/src/pages/site/mod.rs` `spawn`, `spawn_pool`, `set_root` |
 | window page-proxy listeners and arming | endpoint | pages | `rust/frontend/src/pages.rs` `serve_browser`, `Arm`; `rust/frontend/src/ui/page_proxy.rs` `ensure_proxy_for_url` |
 | Pluto's page server and notebook workers | endpoint | sidecars | `julia/pluto/start.jl`; `julia/pluto/session_options.jl` `configure_session!` |
@@ -271,14 +273,19 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `LinkGate` (one per host; the window's transport is its only writer) | state | topology | `rust/protocol/src/topology/ssh_bridge.rs` `LinkGate`; written `rust/frontend/src/net/transport/mod.rs` |
 | per-host table (`host_connected`, `host_transports`, `host_resolved_dial`, `link_gates`, `declared_host`, `reconnect_now`) | state | fe-net | `rust/frontend/src/net/hosts.rs` `HostTable`; `rust/frontend/src/ui/connections.rs` |
 | `FrontendIdentity` | state | fe-net | `rust/frontend/src/net/identity.rs` `FrontendIdentity`, `frontend_identity` |
+| steady control read/write scheduling | state, rule | fe-net | `rust/frontend/src/net/transport/steady.rs` `steady_loop`; request correlation remains in PendingGuard |
 | `Signal` and its tree registry, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `ContainedStd`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `ContainedStd`, `fire`; `rust/backend/src/lifecycle/contain.rs` `Tree` |
 | process-start rule: each call of a function in `rust/clippy.toml`'s process-spawns group outside `Signal::spawn`, `Signal::spawn_std` and `Signal::output` is a reasoned exception; what the group does not hold is named in rust/backend/src/lifecycle/CLAUDE.md | rule | lifecycle | `rust/clippy.toml` (process-spawns group); `rust/backend/src/lifecycle/child_signal.rs` `Signal::spawn`, `Signal::spawn_std`, `Signal::output` |
 | `Leases`, its mutex and phase | state, lock | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `Phase` |
 | window exit decision (`ExitReason`, `ExitStep`, `exit_intent`, `close_now`) | state | lifecycle | `rust/frontend/src/lease.rs` `ExitReason`, `ExitStep`, `exit_intent`, `close_now` |
+| no-lease notice and precedence | rule | lifecycle | `rust/frontend/src/lease.rs` `lease_notice` |
 | quit prompt, `request_quit` | UI | fe-ui | `rust/frontend/src/ui/app/exit.rs` `quit_prompt_key`; `rust/frontend/src/ui/app/handler.rs` |
+| new-row account selection | rule | fe-ui | `rust/frontend/src/ui/session/picker.rs` `selected_account`; daemon default resolution stays in agents |
 | parent-death lease (fd-3 pipe; Windows `Local\sot-lease-*` mutex) | lock | capsule | `rust/log/src/supervisor/lease_win.rs`; `rust/log/src/supervisor/leg.rs` `SpawnLease`, `LegLease` |
 | REPL `OUT_LOCK` | lock | sidecars | `julia/repl/src/ShipToolsRepl.jl` |
 | the shell `with_lock` | lock | messaging | `comm/lib/comm-lib-registry-lock.sh` `with_lock` |
+| result target resolution and row attachment names | rule | fe-ui | `rust/frontend/src/ui/session/workspace_key.rs` `resolve_listed_workspace`; row facts from `workspace.list` |
+| pending-result lifetime and acknowledgement | state, rule | fe-ui | `rust/frontend/src/ui/session/badge.rs` `PendingNav`, result/attempt serials and admission; authoritative list/destroy invalidation, cursor, preview and presentation hooks; fe-net carries the saved attempt through its existing pending entry and event |
 
 ## Two owners today
 
@@ -292,8 +299,7 @@ user or another process sees.
 | A session's handle in five places: self-file, registry key, row toml `agent_handle`, hello `name`, capsule env `SOT_COMM_NAME` | messaging | `comm/lib/comm-lib-identity.sh` `sot_write_self_file`; `rust/backend/src/rows/workspace.rs` `agent_handle`; `rust/backend/src/agents/env.rs` `agent_env`; resolver `rust/backend/src/comm/registry/registry.rs` `comm_handle_for_workspace` | The row toml is the daemon's one record of which row holds the handle and `comm_handle_for_workspace` its one resolver; the self-file is the session's cache, the registry key the address book's index, hello `name` a display label, `SOT_COMM_NAME` the issued pin | behaviour |
 | settings.toml on Windows is two files: the window reads a clone-local file through `SOT_SETTINGS`, sotd reads `<config>/settings.toml`; platform decides where (`<config>`), agents own `[trust]` | fe-ui | `scripts/launch-sot.ps1`; `rust/frontend/src/ui/persist/discover.rs` `find_config_file`; `rust/backend/src/agents/trust_declaration.rs` `read_trust_declaration` | The window reads `<config>/settings.toml` like sotd; the repo-local settings file under `.sot/` (untracked; `.sot/settings.toml.example` shows its shape) stays a dev override | behaviour |
 | Hand TOML parsers: hosts.toml, the row store, the settings and resume files; each file's owner keeps its schema, the parser is the `toml` crate | platform | `rust/protocol/src/topology/mod.rs` `parse`; `rust/backend/src/rows/store/codec.rs` `parse_kv`, `toml_quote`, `toml_unquote`; `rust/frontend/src/ui/persist/settings.rs` `parse`; `rust/frontend/src/ui/persist/resume.rs` `strip_quotes`, `toml_quote` | Each remaining hand parser becomes `toml::from_str` into a typed struct | behaviour |
-| Session name `sot-be-<slug>` re-derived in the window | rows | `rust/backend/src/rows/mod.rs` `session_name`; `rust/frontend/src/ui/session/switch.rs` `session_name_of` | The window reads `session_name` from `workspace.list` | behaviour |
-| Workspace-key normalizers in two key spaces | fe-ui | `rust/frontend/src/ui/session/workspace_key.rs` `ws_key_of`, `caption_ws_key`, `reply_ws_key`, `lifecycle_key_of`, `active_repl_starting`, `migrate_default_slug_keys` | One workspace ref, resolved where the wire is read; the six become calls to it | behaviour |
+| Workspace view/reply/lifecycle key compatibility | fe-ui | `rust/frontend/src/ui/session/workspace_key.rs` `ws_key_of`, `reply_ws_key`, `lifecycle_key_of`, `active_repl_starting`, `migrate_default_slug_keys` | Command ingress resolves listed rows once; the remaining view/reply/lifecycle compatibility helpers keep their existing key spaces | behaviour (remaining) |
 | Remaining host-name copies: the window's resume lookup, comm_self_host alias and host_matches compatibility | platform | `rust/frontend/src/ui/persist/resume.rs` `state_path`; `rust/backend/src/comm/mail/filer.rs` `comm_self_host`; `rust/backend/src/comm/registry/registry.rs` `host_matches` | Shell registry facts and self slots now use sot_host; raw host remains a handle component and legacy-slot input. Remaining copies require their own proved deletion. | pure |
 | State-dir rule written twice (Windows `...\sot` against `...\sot\state`; Unix fallback) | platform | `rust/log/src/host/state_dir.rs` `sot_state_dir`; `rust/backend/src/paths.rs` `state_dir` | `paths.rs` `state_dir` is deleted; sotd.log uses `sot_state_dir()` | behaviour |
 | Config-dir rule written more than once | platform | `rust/log/src/host/state_dir.rs` `sot_config_dir`; `rust/frontend/src/ui/persist/resume.rs` `config_dir`; `rust/frontend/src/ui/persist/discover.rs` `find_config_file` | Both walks call `sot_config_dir()` | behaviour |
@@ -319,7 +325,6 @@ user or another process sees.
 | Folder trust written two ways | agents | `rust/backend/src/agents/folder_trust.rs` `ensure_folder_trusted`; `agents/codex/bin/ccx` | `ccx`'s append is deleted where the bypass flag answers the prompt | behaviour |
 | Row creation and removal announced twice: ring entries and the live bus | rows | `rust/backend/src/rows/ops/create.rs`; `rust/backend/src/rows/ops/destroy.rs`; `rust/backend/src/rows/mod.rs` `WorkspaceChanged` | `workspace.changed` is the one announcement | behaviour |
 | Skill copies | agents | `.claude/skills/sot-setup/SKILL.md`; `agents/claude/sot-setup/SKILL.md`; `.claude/skills/sot-statusline-setup/statusline.sh`; `agents/claude/sot-statusline-setup/statusline.sh` | The `.claude` copies are deleted | pure |
-| Annotation header parsed twice | files | `rust/backend/src/files/concept.rs` `read_synced_against`; `rust/frontend/src/ui/preview/concept.rs` `split_frontmatter`, `strip_frontmatter` | One parser in the protocol crate | behaviour |
 | cgroup kill written twice | rows | `rust/log/src/claude.rs`; `rust/backend/src/rows/spawn/row_scope.rs` `end` | `claude.rs` goes with the SDK producer's fate | behaviour |
-| Video extensions written three times | sidecars | `rust/backend/src/pages/video.rs` `VIDEO_EXTS`; `rust/backend/src/files/preview/mod.rs`; `julia/plugins/video-file/src/ShipToolsVideoFile.jl` | One const now; plugin-declared bounds later | pure (Rust const) |
+| Rust video suffix/MIME classification and its Julia twin | wire | `rust/protocol/src/video_path.rs` `video_mime`; `julia/plugins/video-file/src/ShipToolsVideoFile.jl` matches method | Rust consumers call video_mime; Rust and the unchanged Julia matches method execute the same suffix corpus, including leading-dot filenames | pure (remaining language twin) |
 | `fe.sessions`: the window relays its computer's roster to other daemons | server | `rust/backend/src/clients.rs` `handle_fe_sessions`; `rust/frontend/src/net/transport/ops/workspace.rs` | Moves with the ruling on the hub link | behaviour |

@@ -28,24 +28,15 @@ pub(in crate::ui) fn truncate_caption(s: &str) -> String {
 /// one whose figure the user is least likely to still be looking at.
 const CAPTION_STORE_CAP: usize = 256;
 
-/// Sticky per-(workspace, file) figure captions, with bounded FIFO eviction.
-/// Keyed by the SAME normalized workspace key the render path looks up with
-/// (`ws_key_of`), so a caption addressed to the default workspace by slug and
-/// one addressed to it as "default" land in one slot instead of two.
-///
-/// Keying by workspace (rather than storing "the current caption" on `State`)
-/// is what makes the cross-workspace badge work AND makes the ADR-0034 F2
-/// hazard — workspace A's annotation rendered over workspace B's image —
-/// unrepresentable: a lookup can only ever return the active workspace's
-/// caption for the file actually on screen.
+/// Captions are keyed by (host, listed workspace slug, file); the store keeps at most 256 (CaptionStore). ROI readiness and consumption use the same host-qualified row key.
 #[derive(Default)]
 pub(in crate::ui) struct CaptionStore {
-    map: HashMap<(String, String), String>,
-    order: std::collections::VecDeque<(String, String)>,
+    map: HashMap<(WsKey, String), String>,
+    order: std::collections::VecDeque<(WsKey, String)>,
 }
 
 impl CaptionStore {
-    pub(in crate::ui) fn set(&mut self, ws_key: String, node_id: String, text: String) {
+    pub(in crate::ui) fn set(&mut self, ws_key: WsKey, node_id: String, text: String) {
         let key = (ws_key, node_id);
         if self.map.insert(key.clone(), text).is_none() {
             self.order.push_back(key);
@@ -57,61 +48,25 @@ impl CaptionStore {
         }
     }
 
-    pub(in crate::ui) fn clear_one(&mut self, ws_key: &str, node_id: &str) {
-        let key = (ws_key.to_string(), node_id.to_string());
+    pub(in crate::ui) fn clear_one(&mut self, ws_key: &WsKey, node_id: &str) {
+        let key = (ws_key.clone(), node_id.to_string());
         if self.map.remove(&key).is_some() {
             self.order.retain(|k| k != &key);
         }
     }
 
-    pub(in crate::ui) fn get(&self, ws_key: &str, node_id: &str) -> Option<&String> {
-        self.map.get(&(ws_key.to_string(), node_id.to_string()))
+    pub(in crate::ui) fn get(&self, ws_key: &WsKey, node_id: &str) -> Option<&String> {
+        self.map.get(&(ws_key.clone(), node_id.to_string()))
     }
 }
 
-/// One axis of a raster's physical scale (ADR 0034). `per_px` is the physical
-/// length of one *source* pixel, in the payload's `unit`. `name` is the axis
-/// label (`"x"`, `"z"`, …) so an anisotropic (XZ) view labels each bar.
-#[derive(Debug, Clone, PartialEq)]
-struct ScaleAxis {
-    name: String,
-    per_px: f64,
-}
+pub(in crate::ui) use sot_protocol::physical_scale::PhysicalScale;
 
-/// A raster preview's physical scale, from `extras.physical_scale` (ADR 0034).
-/// `axes[0]` is the horizontal (x) image axis. Isotropic sources ship two
-/// equal axes; Phase 1 renders one bar from `axes[0]`.
-#[derive(Debug, Clone, PartialEq)]
-pub(in crate::ui) struct PhysicalScale {
-    axes: Vec<ScaleAxis>,
-    unit: String,
-}
-
-/// Parse `extras.physical_scale` into a [`PhysicalScale`]. Shape (ADR 0034 §2):
-/// `{"axes":[{"name","nm_per_px"}],"unit"}`. `None` for any reply without the
-/// key (so it clears like `preview_page`) or a malformed/empty axes array.
+/// A raster preview's physical scale (ADR 0034) from the reply's `extras.physical_scale`, valid by
+/// `sot_protocol::physical_scale`. `None` for a reply without the key (so it clears like `preview_page`) or
+/// with an invalid value: the window invents no unit, name or axis.
 pub(in crate::ui) fn parse_physical_scale(extras: &serde_json::Value) -> Option<PhysicalScale> {
-    let ps = extras.get("physical_scale")?;
-    let unit = ps
-        .get("unit")
-        .and_then(|v| v.as_str())
-        .unwrap_or("nm")
-        .to_string();
-    let axes_v = ps.get("axes")?.as_array()?;
-    let mut axes = Vec::with_capacity(axes_v.len());
-    for a in axes_v {
-        let per_px = a.get("nm_per_px").and_then(|v| v.as_f64())?;
-        let name = a
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        axes.push(ScaleAxis { name, per_px });
-    }
-    if axes.is_empty() {
-        return None;
-    }
-    Some(PhysicalScale { axes, unit })
+    sot_protocol::physical_scale::parse_physical_scale(extras.get("physical_scale")?)
 }
 
 /// Snap a positive length to a "nice" `1/2/5 × 10ⁿ` value — the map-scalebar
@@ -267,7 +222,7 @@ impl State {
         let Some(axis) = scale.axes.first() else {
             return clear_and_none(self);
         };
-        if axis.per_px <= 0.0 {
+        if axis.nm_per_px <= 0.0 {
             return clear_and_none(self);
         }
         // Source→screen mapping (must match the draw block's `canvas_w`).
@@ -288,7 +243,7 @@ impl State {
             return clear_and_none(self);
         }
         let screen_px_per_src_px = canvas_w / src_w as f32;
-        let screen_px_per_unit = screen_px_per_src_px / axis.per_px as f32;
+        let screen_px_per_unit = screen_px_per_src_px / axis.nm_per_px as f32;
         if !screen_px_per_unit.is_finite() || screen_px_per_unit <= 0.0 {
             return clear_and_none(self);
         }
@@ -369,7 +324,9 @@ impl State {
         if !Self::is_image_node_id(&node_id) {
             return clear_and_none(self);
         }
-        let ws_key = self.current_workspace_key();
+        let Some(ws_key) = self.active_result_row_key() else {
+            return clear_and_none(self);
+        };
         let Some(text) = self.preview_captions.get(&ws_key, &node_id).cloned() else {
             return clear_and_none(self);
         };
@@ -510,33 +467,73 @@ mod tests {
     #[test]
     fn caption_store_is_keyed_by_workspace_and_evicts_fifo() {
         let mut s = CaptionStore::default();
-        s.set("wsA".into(), "files:p.png".into(), "A's caption".into());
-        s.set("wsB".into(), "files:p.png".into(), "B's caption".into());
+        s.set(
+            ("<host>".into(), "wsA".into()),
+            "files:p.png".into(),
+            "A's caption".into(),
+        );
+        s.set(
+            ("<host>".into(), "wsB".into()),
+            "files:p.png".into(),
+            "B's caption".into(),
+        );
         // Same FILE, different workspace → distinct entries. This is the ADR-0034
         // F2 hazard (one workspace's annotation over another's image) made
         // unrepresentable rather than merely avoided.
-        assert_eq!(s.get("wsA", "files:p.png").unwrap(), "A's caption");
-        assert_eq!(s.get("wsB", "files:p.png").unwrap(), "B's caption");
-        assert_eq!(s.get("wsC", "files:p.png"), None);
+        assert_eq!(
+            s.get(&("<host>".into(), "wsA".into()), "files:p.png")
+                .unwrap(),
+            "A's caption"
+        );
+        assert_eq!(
+            s.get(&("<host>".into(), "wsB".into()), "files:p.png")
+                .unwrap(),
+            "B's caption"
+        );
+        assert_eq!(s.get(&("<host>".into(), "wsC".into()), "files:p.png"), None);
         // Latest-wins on re-set, and no duplicate order entry.
-        s.set("wsA".into(), "files:p.png".into(), "A's second".into());
-        assert_eq!(s.get("wsA", "files:p.png").unwrap(), "A's second");
+        s.set(
+            ("<host>".into(), "wsA".into()),
+            "files:p.png".into(),
+            "A's second".into(),
+        );
+        assert_eq!(
+            s.get(&("<host>".into(), "wsA".into()), "files:p.png")
+                .unwrap(),
+            "A's second"
+        );
         assert_eq!(s.order.len(), 2);
         // Retiring one leaves the other alone.
-        s.clear_one("wsA", "files:p.png");
-        assert_eq!(s.get("wsA", "files:p.png"), None);
-        assert_eq!(s.get("wsB", "files:p.png").unwrap(), "B's caption");
+        s.clear_one(&("<host>".into(), "wsA".into()), "files:p.png");
+        assert_eq!(s.get(&("<host>".into(), "wsA".into()), "files:p.png"), None);
+        assert_eq!(
+            s.get(&("<host>".into(), "wsB".into()), "files:p.png")
+                .unwrap(),
+            "B's caption"
+        );
         assert_eq!(s.order.len(), 1);
         // Bounded: past the cap the oldest badge is evicted, newest retained.
         let mut s = CaptionStore::default();
         for i in 0..(CAPTION_STORE_CAP + 10) {
-            s.set("ws".into(), format!("files:{i}.png"), format!("cap {i}"));
+            s.set(
+                ("<host>".into(), "ws".into()),
+                format!("files:{i}.png"),
+                format!("cap {i}"),
+            );
         }
         assert_eq!(s.map.len(), CAPTION_STORE_CAP);
-        assert_eq!(s.get("ws", "files:0.png"), None, "oldest evicted");
+        assert_eq!(
+            s.get(&("<host>".into(), "ws".into()), "files:0.png"),
+            None,
+            "oldest evicted"
+        );
         let newest = CAPTION_STORE_CAP + 9;
         assert_eq!(
-            s.get("ws", &format!("files:{newest}.png")).unwrap(),
+            s.get(
+                &("<host>".into(), "ws".into()),
+                &format!("files:{newest}.png")
+            )
+            .unwrap(),
             &format!("cap {newest}")
         );
     }
@@ -614,7 +611,27 @@ mod tests {
         assert_eq!(ps.unit, "nm");
         assert_eq!(ps.axes.len(), 2);
         assert_eq!(ps.axes[0].name, "x");
-        assert_eq!(ps.axes[0].per_px, 2.0);
+        assert_eq!(ps.axes[0].nm_per_px, 2.0);
+    }
+
+    #[test]
+    fn invalid_scale_is_not_displayable() {
+        for ps in [
+            serde_json::json!({"axes": [{"name": "x", "nm_per_px": 2.0}]}),
+            serde_json::json!({"axes": [{"nm_per_px": 2.0}], "unit": "nm"}),
+            serde_json::json!({"axes": [{"name": "x", "nm_per_px": 0.0}], "unit": "nm"}),
+            serde_json::json!({"axes": [{"name": "x", "nm_per_px": -3.0}], "unit": "nm"}),
+            serde_json::json!({"axes": [{"name": "x", "nm_per_px": "2"}], "unit": "nm"}),
+        ] {
+            assert_eq!(
+                parse_physical_scale(&serde_json::json!({ "physical_scale": ps })),
+                None,
+                "{ps}"
+            );
+        }
+        // Empty strings keep their existing acceptance.
+        let ok = serde_json::json!({"physical_scale": {"axes": [{"name": "", "nm_per_px": 2.0}], "unit": ""}});
+        assert!(parse_physical_scale(&ok).is_some());
     }
 
     #[test]

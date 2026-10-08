@@ -16,92 +16,14 @@ pub(in crate::ui) struct ConceptInfo {
     pub(in crate::ui) synced_against: Option<String>,
 }
 
-/// Pull `synced_against: <value>` out of a markdown file's leading YAML
-/// frontmatter. Accepts quoted (`"x"` / `'x'`) and bare values; trims
-/// whitespace. Returns `None` when no frontmatter, no closing fence, or
-/// the field isn't present. Matches the minimal parser Linux used on the
-/// kernel side (`6864c93`) — full YAML is overkill here.
-pub(in crate::ui) fn parse_synced_against(s: &str) -> Option<String> {
-    let mut lines = s.lines();
-    if lines.next()?.trim() != "---" {
-        return None;
-    }
-    for line in lines {
-        let trimmed = line.trim();
-        if trimmed == "---" {
-            return None;
-        }
-        let Some(rest) = trimmed.strip_prefix("synced_against:") else {
-            continue;
-        };
-        let v = rest.trim();
-        let unquoted = v
-            .strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .or_else(|| v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-            .unwrap_or(v);
-        let unquoted = unquoted.trim();
-        return if unquoted.is_empty() {
-            None
-        } else {
-            Some(unquoted.to_string())
-        };
-    }
-    None
-}
-
-/// Strip a leading YAML frontmatter block from an annotation. Matches the
-/// jekyll-style `---\n…\n---\n` envelope; returns the original string
-/// unchanged when no opening delimiter is on line 1. Tolerant of `\r\n`
-/// line endings via `str::lines`.
-pub(in crate::ui) fn strip_frontmatter(s: &str) -> String {
-    split_frontmatter(s).1
-}
-
-/// Split a concept-file source into `(header, body)` where `header` is
-/// the YAML frontmatter (including both `---` delimiters and the
-/// trailing newline) or `None` when there is no frontmatter. The
-/// concatenation `header.unwrap_or_default() + body` reproduces a
-/// frontmatter-free file exactly and a frontmatter-bearing file
-/// modulo a possibly-missing trailing newline after the closing
-/// `---` (always preserved here when present in the input).
-///
-/// Edit mode uses this so the editable buffer is the body only —
-/// frontmatter (target, target_kind, synced_against, authored_by,
-/// references) renders as a read-only header above the edit area and
-/// concatenation on save preserves it byte-perfect.
+/// An annotation as `(header, body)`: the header, fences included, is `None` when `sot_protocol::annotation`
+/// finds no complete one, and the two concatenate to the original. Edit mode keeps the header read-only above
+/// the edit area and joins it back on save.
 pub(in crate::ui) fn split_frontmatter(s: &str) -> (Option<String>, String) {
-    let mut lines = s.split('\n');
-    let Some(first) = lines.next() else {
-        return (None, String::new());
-    };
-    if first.trim() != "---" {
-        return (None, s.to_string());
+    match sot_protocol::annotation::split_frontmatter(s) {
+        Some((header, body)) => (Some(header.to_string()), body.to_string()),
+        None => (None, s.to_string()),
     }
-    let mut header_lines = vec![first.to_string()];
-    let mut body_lines: Vec<&str> = Vec::new();
-    let mut closed = false;
-    for line in lines {
-        if !closed {
-            header_lines.push(line.to_string());
-            if line.trim() == "---" {
-                closed = true;
-            }
-        } else {
-            body_lines.push(line);
-        }
-    }
-    if !closed {
-        return (None, s.to_string());
-    }
-    // `split('\n')` on a string ending with `\n` produces a trailing
-    // empty element; rejoining with `\n` reproduces the original.
-    let header = header_lines.join("\n");
-    // Add the newline that separates header from body (it was the
-    // `\n` after the closing `---` in the source).
-    let header = header + "\n";
-    let body = body_lines.join("\n");
-    (Some(header), body)
 }
 
 /// Give up on a file's drift check after this many failed `file.parse`
@@ -226,128 +148,26 @@ impl State {
 mod tests {
     use super::*;
 
+    /// A closing fence with no newline after it is the end of the file: the header keeps exactly what was
+    /// there, so header plus body is the original and no final newline appears.
     #[test]
-    fn split_frontmatter_returns_header_and_body() {
-        let s = "---\ntarget: x\nsynced_against: abc\n---\n# Body\n\nText.\n";
-        let (h, b) = split_frontmatter(s);
+    fn concept_frontmatter_closing_fence_at_eof_preserves_bytes() {
+        for s in [
+            "---\ntarget: x\n---",
+            "---\r\ntarget: x\r\n---",
+            "---\ntarget: x\n---\nbody",
+            "# no header",
+        ] {
+            let (h, b) = split_frontmatter(s);
+            assert_eq!(h.unwrap_or_default() + &b, s);
+        }
         assert_eq!(
-            h.as_deref(),
-            Some("---\ntarget: x\nsynced_against: abc\n---\n")
-        );
-        assert_eq!(b, "# Body\n\nText.\n");
-        // Round-trip: header + body == original.
-        assert_eq!(h.unwrap() + &b, s);
-    }
-
-    #[test]
-    fn split_frontmatter_no_header_returns_none() {
-        let s = "# Just markdown\n\nNo frontmatter.\n";
-        let (h, b) = split_frontmatter(s);
-        assert_eq!(h, None);
-        assert_eq!(b, s);
-    }
-
-    #[test]
-    fn split_frontmatter_unterminated_treated_as_no_header() {
-        let s = "---\ntarget: x\n# never closed\n";
-        let (h, b) = split_frontmatter(s);
-        assert_eq!(h, None);
-        assert_eq!(b, s);
-    }
-
-    #[test]
-    fn split_frontmatter_empty_body_after_header() {
-        let s = "---\ntarget: x\n---\n";
-        let (h, b) = split_frontmatter(s);
-        assert_eq!(h.as_deref(), Some("---\ntarget: x\n---\n"));
-        assert_eq!(b, "");
-        assert_eq!(h.unwrap() + &b, s);
-    }
-
-    #[test]
-    fn strip_frontmatter_removes_yaml_block() {
-        // Trailing newline is preserved now — the new `split_frontmatter`
-        // back-end uses `s.split('\n')` so the round-trip (header +
-        // body) reproduces the source byte-perfect, which the edit
-        // flow needs to keep `concept.write` payloads stable.
-        let s = "---\ntarget: foo\nsynced_against: hash\n---\n# Body\n\nText.\n";
-        assert_eq!(strip_frontmatter(s), "# Body\n\nText.\n");
-    }
-
-    #[test]
-    fn strip_frontmatter_passthrough_when_no_block() {
-        let s = "# Title\n\nNo frontmatter here.";
-        assert_eq!(strip_frontmatter(s), s);
-    }
-
-    #[test]
-    fn strip_frontmatter_passthrough_when_unterminated() {
-        let s = "---\ntarget: foo\n# But no closing fence\n\nBody.";
-        assert_eq!(strip_frontmatter(s), s);
-    }
-
-    #[test]
-    fn strip_frontmatter_handles_empty_body() {
-        let s = "---\ntarget: foo\n---\n";
-        // Lines after the closing fence: empty trailing line. join("\n") = "".
-        assert_eq!(strip_frontmatter(s), "");
-    }
-
-    #[test]
-    fn parse_synced_against_bare_value() {
-        let s = "---\ntarget: foo\nsynced_against: abc123\n---\n# Body\n";
-        assert_eq!(parse_synced_against(s).as_deref(), Some("abc123"));
-    }
-
-    #[test]
-    fn parse_synced_against_double_quoted() {
-        let s = "---\nsynced_against: \"abc123\"\n---\n";
-        assert_eq!(parse_synced_against(s).as_deref(), Some("abc123"));
-    }
-
-    #[test]
-    fn parse_synced_against_single_quoted() {
-        let s = "---\nsynced_against: 'abc123'\n---\n";
-        assert_eq!(parse_synced_against(s).as_deref(), Some("abc123"));
-    }
-
-    #[test]
-    fn parse_synced_against_missing_field() {
-        let s = "---\ntarget: foo\nauthored_by: x\n---\n";
-        assert_eq!(parse_synced_against(s), None);
-    }
-
-    #[test]
-    fn parse_synced_against_no_frontmatter() {
-        let s = "# Just markdown, no frontmatter\n";
-        assert_eq!(parse_synced_against(s), None);
-    }
-
-    #[test]
-    fn parse_synced_against_empty_value() {
-        let s = "---\nsynced_against:\n---\n";
-        assert_eq!(parse_synced_against(s), None);
-    }
-
-    #[test]
-    fn parse_synced_against_field_in_body_ignored() {
-        // The closing `---` ends scanning before we see this line.
-        let s = "---\ntarget: foo\n---\nsynced_against: not-real\n";
-        assert_eq!(parse_synced_against(s), None);
-    }
-
-    #[test]
-    fn node_id_to_target_files_and_modules() {
-        assert_eq!(
-            node_id_to_concept_target("files:rust/foo.rs").as_deref(),
-            Some("files/rust/foo.rs")
+            split_frontmatter("---\nt: x\n---").0.as_deref(),
+            Some("---\nt: x\n---")
         );
         assert_eq!(
-            node_id_to_concept_target("modules:Foo").as_deref(),
-            Some("modules/Foo")
+            split_frontmatter("---\nt: x\nbody"),
+            (None, "---\nt: x\nbody".to_string())
         );
-        assert_eq!(node_id_to_concept_target("files:"), None);
-        assert_eq!(node_id_to_concept_target("modules:"), None);
-        assert_eq!(node_id_to_concept_target("unknown:Foo"), None);
     }
 }

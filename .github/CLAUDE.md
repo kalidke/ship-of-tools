@@ -16,6 +16,7 @@ scripts/CLAUDE.md.
   tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the latest published tag
   into a clean container). The step "Test selected Rust bodies" runs the portable real-libtest shell proofs on the Linux, Windows and macOS legs; it invokes no daemon or peer suite. Its Linux leg also runs the candidate gate's finite selected-job and runtime-listing proofs; the full candidate gate is not invoked by that proof step.
   The heartbeat context-deadline suite runs independently on Ubuntu, macOS and Windows Git Bash. Its per-behavior and sensitivity receipts distinguish fixture entry, actual release times, hook exit, both EOFs and positive lifetime cleanup; MSYS budget coverage remains separate from native Python P5 and its termination acceptance gate.
+  window-minimized-windows and window-minimized-macos run the native ten-minute minimized-window event-progress check on hosted Windows and macOS; a runner without a usable native window is not a passing result.
 - `workflows/CI.yml` ("CI"): push to `main` (paths `core/**`, `julia/**`, `docs/**`, `src/**`, `test/**`, `Project.toml`,
   `Manifest.toml` and the file itself) and dispatch. Jobs: `test` (the root package on Julia 1.12 and pre-release),
   `julia-packages` (core, kernel, repl, the two preview plugins and SotLog), `docs` (builds the manual with

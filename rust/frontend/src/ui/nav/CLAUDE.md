@@ -17,7 +17,7 @@ rust/frontend/src/ui/CLAUDE.md. The rest of the Files tree's code still lives in
 - `hosts_tree.rs`: the Hosts tree, one row per host (`populate_hosts_tree`, `select_active_host`).
 - `keys.rs`: What a key does in the navigation tree: its own keys and the per-row action match, in order.
 - `support_tests.rs`: `node` and `ws_info`, fixtures shared with the tests of the window around this folder.
-- `replies.rs`: tree.root, tree.children, project.scan, file.parse and function.methods replies
+- `replies.rs`: navigation replies; on_result_tree validates the listed canonical row and issuing result/attempt before tree installation, reveal progress or failure effects, while ordinary replies retain their tree routing.
 
 ## Start here
 `swap_active_tree` in tree_store.rs for how trees switch; `TreeView::apply_children` in tree.rs for how a reply lands.
@@ -31,3 +31,5 @@ rust/frontend/src/ui/CLAUDE.md. The rest of the Files tree's code still lives in
 - Files and Modules trees are per (host, workspace); Sessions and Hosts are `TreeScope::Global` (`mode_scope`).
 - The inert anchor row never enters the Sessions tree (`session_host_children`).
 - `enter_mode` loads a Files or Modules tree only into an empty view.
+- A result belongs to the producing host's listed canonical row. Removal or identity replacement invalidates its entry and attempts; while the row remains listed, only its matching cursor, installed preview and successful presentation acknowledge it. Late completion cannot affect a successor.
+- A replacement result or restarted attempt gets fresh local serials. Result-owned root/children requests retain them through pending entries and tagged events; stale successes and failures are rejected before tree or reveal mutation. Ordinary tree replies cannot complete or abort a result-owned reveal. Preview generations and presentation certificates are bound to the same issuing attempt.

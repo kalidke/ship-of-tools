@@ -642,10 +642,13 @@ pub async fn handle_fe_command_send(
         }
     }
     let resolved_target = req.target.clone();
+    // Relay diagnostics include the optional forwarded workspace and path without changing command routing.
+    let forwarded = |key: &str| req.args.get(key).and_then(serde_json::Value::as_str);
+    let (workspace, path) = (forwarded("ws"), forwarded("path"));
 
     if req.cmd == "relaunch" && req.target.is_none() {
         tracing::info!(
-            cmd = %req.cmd,
+            cmd = %req.cmd, workspace, path,
             delivered_to = 0,
             "fe.command.send relay: relaunch has no active frontend and no explicit target — not publishing"
         );
@@ -690,7 +693,7 @@ pub async fn handle_fe_command_send(
             .count(),
     };
 
-    tracing::info!(cmd = %req.cmd, target = ?req.target, delivered_to, "fe.command.send relay");
+    tracing::info!(cmd = %req.cmd, workspace, path, target = ?req.target, delivered_to, "fe.command.send relay");
     let evt = FeCommandEvt {
         v: 1,
         cmd: req.cmd,
@@ -797,3 +800,7 @@ pub async fn handle_fe_sessions(
 #[cfg(test)]
 #[path = "clients_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "clients_relay_tests.rs"]
+mod relay_tests;

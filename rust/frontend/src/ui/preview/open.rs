@@ -33,9 +33,7 @@ impl State {
             }
         } else if let Some(abs) = abs.as_deref() {
             let lower = abs.to_ascii_lowercase();
-            let is_video = [".mp4", ".webm", ".mov", ".mkv", ".m4v"]
-                .iter()
-                .any(|ext| lower.ends_with(ext));
+            let is_video = sot_protocol::video_path::video_mime(abs).is_some();
             if abs.ends_with(".jl") {
                 if let Err(e) = self.send(crate::net::transport::OutgoingReq::PlutoOpen {
                     path: abs.to_string(),

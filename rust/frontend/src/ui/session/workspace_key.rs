@@ -2,6 +2,97 @@
 
 use super::*;
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(in crate::ui) struct ResultRowIdentity {
+    pub(in crate::ui) host: HostKey,
+    pub(in crate::ui) workspace_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub(in crate::ui) struct ResolvedWorkspace {
+    identity: ResultRowIdentity,
+    row_key: WsKey,
+    view_key: WsKey,
+    is_default: bool,
+    session_name: String,
+    visible: bool,
+}
+
+impl ResolvedWorkspace {
+    pub(in crate::ui) fn identity(&self) -> &ResultRowIdentity {
+        &self.identity
+    }
+
+    pub(in crate::ui) fn row_key(&self) -> &WsKey {
+        &self.row_key
+    }
+
+    pub(in crate::ui) fn view_key(&self) -> &WsKey {
+        &self.view_key
+    }
+
+    pub(in crate::ui) fn slug(&self) -> Option<String> {
+        (!self.is_default).then(|| self.row_key.1.clone())
+    }
+
+    pub(in crate::ui) fn visible(&self) -> bool {
+        self.visible
+    }
+
+    pub(in crate::ui) fn attachment(&self) -> Result<Option<String>, String> {
+        if !self.visible {
+            Ok(None)
+        } else if self.session_name.is_empty() {
+            Err("listed workspace has no attachment target".to_string())
+        } else {
+            Ok(Some(self.session_name.clone()))
+        }
+    }
+}
+
+pub(in crate::ui) fn resolve_listed_workspace(
+    lists: &HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>>,
+    host: &HostKey,
+    spelling: &str,
+) -> Result<ResolvedWorkspace, String> {
+    let list = lists
+        .get(host)
+        .ok_or_else(|| "workspace list unavailable".to_string())?;
+    let mut matches = list.iter().filter(|row| {
+        (is_default_workspace_name(spelling) && row.is_default)
+            || row.slug == spelling
+            || row.workspace_id == spelling
+    });
+    let row = matches
+        .next()
+        .ok_or_else(|| "unknown workspace".to_string())?;
+    if matches.next().is_some() || row.workspace_id.is_empty() {
+        return Err("ambiguous or empty workspace identity".to_string());
+    }
+    if list
+        .iter()
+        .filter(|other| other.workspace_id == row.workspace_id)
+        .count()
+        != 1
+    {
+        return Err("ambiguous workspace identity".to_string());
+    }
+    Ok(ResolvedWorkspace {
+        identity: ResultRowIdentity {
+            host: host.clone(),
+            workspace_id: row.workspace_id.clone(),
+        },
+        row_key: (host.clone(), row.slug.clone()),
+        view_key: (
+            host.clone(),
+            ws_key_of(Some(&row.slug), row.is_default.then_some(row.slug.as_str())),
+        ),
+        is_default: row.is_default,
+        session_name: row.session_name.clone(),
+        visible: !row.is_inert_anchor(),
+    })
+}
+
 /// Normalize a wire `workspace_id` to the workspace-key literal. BOTH
 /// spellings of the daemon-default workspace — `None` AND its actual slug
 /// (`Some(default_slug)`) — map to `"<default>"`: startup keys the default
@@ -60,6 +151,20 @@ fn lifecycle_key_of(
 }
 
 impl State {
+    pub(in crate::ui) fn active_result_workspace(&self) -> Option<ResolvedWorkspace> {
+        resolve_listed_workspace(
+            &self.workspace_lists,
+            &self.active_host,
+            self.active_workspace_id.as_deref().unwrap_or(""),
+        )
+        .ok()
+    }
+
+    pub(in crate::ui) fn active_result_row_key(&self) -> Option<WsKey> {
+        self.active_result_workspace()
+            .map(|target| target.row_key().clone())
+    }
+
     /// Key used to index `workspace_ui_snapshots` for the *current*
     /// workspace. The daemon's default workspace doesn't carry a slug
     /// in `active_workspace_id`; `<default>` is the literal we use
@@ -77,21 +182,6 @@ impl State {
     /// not a value to retype.
     pub(in crate::ui) fn active_ws_key(&self) -> WsKey {
         (self.active_host.clone(), self.current_workspace_key())
-    }
-
-    /// Caption-store key for an fe-command's `workspace` argument. The wire
-    /// spells the default workspace three ways (`""`, `"default"`,
-    /// `"<default>"`, per `preview_targets_active_ws`) plus its real slug;
-    /// all four must land on the one key `current_workspace_key` will later
-    /// look up, or a caption addressed to the default workspace is stored
-    /// under a key nothing reads.
-    pub(in crate::ui) fn caption_ws_key(&self, workspace: &str) -> String {
-        let is_default = is_default_workspace_name(workspace);
-        if is_default {
-            "<default>".to_string()
-        } else {
-            ws_key_of(Some(workspace), self.default_workspace_slug.as_deref())
-        }
     }
 
     /// Workspace-key for a wire `workspace_id` — the ONE normalization both
@@ -261,5 +351,72 @@ mod tests {
             lifecycle_key_of("myhost", None, &ids, None),
             ("myhost".to_string(), "<default>".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod listed_tests {
+    use super::*;
+
+    #[test]
+    fn listed_resolution_keeps_each_host_and_key_space() {
+        let a = "<host-a>".to_string();
+        let b = "<host-b>".to_string();
+        let mut a_row = ws_info("project", "stored-a");
+        a_row.workspace_id = "id-a".into();
+        let mut b_row = ws_info("project", "stored-b");
+        b_row.workspace_id = "id-b".into();
+        let mut a_default = ws_info("base-a", "default-a");
+        a_default.is_default = true;
+        let mut b_default = ws_info("base-b", "default-b");
+        b_default.is_default = true;
+        let lists = HashMap::from([
+            (a.clone(), vec![a_row, a_default]),
+            (b.clone(), vec![b_row, b_default]),
+        ]);
+        let by_slug = resolve_listed_workspace(&lists, &b, "project").unwrap();
+        let by_id = resolve_listed_workspace(&lists, &b, "id-b").unwrap();
+        assert_eq!(by_slug.identity(), by_id.identity());
+        assert_eq!(by_slug.row_key(), &(b.clone(), "project".into()));
+        assert_eq!(by_slug.attachment().unwrap(), Some("stored-b".into()));
+        for spelling in ["", "default", "<default>", "base-b", "ws-base-b-0000"] {
+            let target = resolve_listed_workspace(&lists, &b, spelling).unwrap();
+            assert_eq!(target.row_key(), &(b.clone(), "base-b".into()));
+            assert_eq!(target.view_key(), &(b.clone(), "<default>".into()));
+            assert!(target.slug().is_none());
+        }
+        assert!(resolve_listed_workspace(&lists, &a, "id-b").is_err());
+        assert_ne!(
+            resolve_listed_workspace(&lists, &a, "project")
+                .unwrap()
+                .identity(),
+            by_id.identity()
+        );
+    }
+
+    #[test]
+    fn ambiguous_empty_and_unknown_targets_are_refused() {
+        let host = "<host>".to_string();
+        let row = ws_info("project", "stored");
+        let mut lists = HashMap::from([(host.clone(), vec![row.clone(), row.clone()])]);
+        assert!(resolve_listed_workspace(&lists, &host, "project").is_err());
+        let mut empty = row.clone();
+        empty.workspace_id.clear();
+        lists.insert(host.clone(), vec![empty]);
+        assert!(resolve_listed_workspace(&lists, &host, "project").is_err());
+        let mut no_target = row;
+        no_target.session_name.clear();
+        lists.insert(host.clone(), vec![no_target.clone()]);
+        assert!(resolve_listed_workspace(&lists, &host, "unknown").is_err());
+        assert!(resolve_listed_workspace(&lists, &host, "project")
+            .unwrap()
+            .attachment()
+            .is_err());
+        no_target.is_default = true;
+        no_target.agent = "none".into();
+        lists.insert(host.clone(), vec![no_target]);
+        let anchor = resolve_listed_workspace(&lists, &host, "default").unwrap();
+        assert!(!anchor.visible());
+        assert_eq!(anchor.attachment().unwrap(), None);
     }
 }

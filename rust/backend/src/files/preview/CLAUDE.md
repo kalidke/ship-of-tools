@@ -22,3 +22,4 @@ rust/backend/src/files/CLAUDE.md.
   HDF5, PDF).
 - The sidecar is written through a unique `O_EXCL` temp and a rename, verbatim (`write_scale_sidecar_atomic`).
 - A PNG `pHYs` is trusted only with a valid CRC and is never written (`png_phys_nm_per_px`).
+- Read, write and display use sot_protocol::physical_scale; invalid metadata is absent for fallback selection and cannot hide a valid PNG pHYs scale.

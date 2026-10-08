@@ -49,6 +49,13 @@ pub(in crate::ui) struct WorkspacePicker {
     pub(in crate::ui) account_selected: usize,
 }
 
+/// The account a new row is created under: the selected one by name, or `None` (the daemon's own default)
+/// for an absent or out-of-range selection and for the account named `default`, wherever it sits in the list.
+fn selected_account(picker: &WorkspacePicker) -> Option<String> {
+    let account = picker.accounts.get(picker.account_selected)?;
+    (account.name != "default").then(|| account.name.clone())
+}
+
 impl WorkspacePicker {
     /// Install a listing that answers `current_path` and place the cursor:
     /// on `reveal` if the listing holds it, else where it was if that is
@@ -392,16 +399,8 @@ impl State {
             .and_then(|n| n.to_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| "workspace".to_string());
-        // Per-session accounts: index 0 ("default") and an empty/absent
-        // accounts list both mean "no choice" — `None` either way, so the
-        // daemon resolves its own default directory.
-        let account = self.workspace_picker.as_ref().and_then(|p| {
-            if p.account_selected == 0 {
-                None
-            } else {
-                p.accounts.get(p.account_selected).map(|a| a.name.clone())
-            }
-        });
+        // Only the selected name default means the daemon's default account.
+        let account = self.workspace_picker.as_ref().and_then(selected_account);
         if let Err(e) = self.send_to(
             &host,
             crate::net::transport::OutgoingReq::WorkspaceCreate {
@@ -650,5 +649,20 @@ mod tests {
         p.account_selected = (p.account_selected + 1) % p.accounts.len();
         assert_eq!(p.account_selected, 1);
         assert!(!p.accounts[p.account_selected].any_logged_in());
+    }
+
+    #[test]
+    fn selected_account_is_chosen_by_name_not_position() {
+        let chosen = |names: &[&str], selected: usize| {
+            let mut p = picker_with_accounts(names.iter().map(|n| account(n, &[], &[])).collect());
+            p.account_selected = selected;
+            selected_account(&p)
+        };
+        assert_eq!(chosen(&["team", "other"], 0).as_deref(), Some("team"));
+        assert_eq!(chosen(&["default", "team"], 0), None);
+        assert_eq!(chosen(&["default", "team"], 1).as_deref(), Some("team"));
+        assert_eq!(chosen(&["team", "default"], 1), None);
+        assert_eq!(chosen(&[], 0), None);
+        assert_eq!(chosen(&["default"], 9), None);
     }
 }

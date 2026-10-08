@@ -67,7 +67,7 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   `shutdown::run`).
 
 ## Connections
-Each connection is one row of docs/integration.md, owned by its provider. Provides: `proxy.connect`,
+Each connection is one row of docs/integration.md, owned by its provider. Provides: handle_fe_command_send relay diagnostics, `proxy.connect`,
 `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`, `lane.connect`, `handle_lane_connect`,
 `fe.lease`, `lease::hold`, `admit_peer`, `dispatch`, `hello`, `admit_hello`, `sotd stdio-bridge`, `write_frame_within`,
 `write_frame_to`, `version.query`. Uses: `Frame`, `codec::read_frame`, `codec::read_envelope`, `codec::write_frame`, `hello`,

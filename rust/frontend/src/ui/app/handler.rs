@@ -93,6 +93,8 @@ impl ApplicationHandler for App {
                 self.state = Some(state);
             }
             Err(e) => {
+                #[cfg(all(test, feature = "test-window-progress"))]
+                eprintln!("window-progress not runnable here: native State startup failed: {e}");
                 tracing::error!(error = %e, "failed to bring up wgpu surface");
                 event_loop.exit();
             }

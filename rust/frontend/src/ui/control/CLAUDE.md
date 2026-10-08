@@ -7,7 +7,7 @@ ends in `State::dispatch_fe_command`. Part of fe-ui; charter: rust/frontend/src/
 ## Files
 - `mod.rs`: declares the folder and re-exports what the rest of ui names.
 - `command.rs`: `route_fe_command` (an fe.command evt to an `FeCommand`) and the `FeCommand` enum, with their tests.
-- `dispatch.rs`: `dispatch_fe_command` and `drain_fe_commands`, plus `preview_targets_active_ws` and `badge_host_key`.
+- `dispatch.rs`: dispatch_fe_command, drain_fe_commands and result_route_decision; workspace effects use resolve_listed_workspace before any mutation.
 - `envelope.rs`: `parse_nav_envelope`, `NavEnvelope` and `handle_nav_envelope` (ADR 0025's same-workspace open).
 - `file_channel.rs`: `fe_commands_dir`, `fe_state_path`, `maybe_write_fe_state` and `spawn_command_watcher`, the thread that reads dropped command files.
 - `replies.rs`: the daemon's pushed events, by op (workspace.changed, agent.message, fe.command, preview.changed)
@@ -24,4 +24,4 @@ ends in `State::dispatch_fe_command`. Part of fe-ui; charter: rust/frontend/src/
   urgent one switches to it (`dispatch_fe_command`).
 - A harness instance (`ephemeral`) starts no command watcher: `resumed` skips `spawn_command_watcher` for it, since the watcher deletes the files it reads.
 - Present limit: the file channel deserializes `FeCommand` directly, so `route_fe_command`'s checks do not apply to it.
-- Present limit: a `Preview` command compares the workspace slug without its host (`preview_targets_active_ws`).
+- Goto, preview, reveal and nav envelopes resolve the producing host's listed slug or id once; an unknown target changes no view, badge, caption or ROI and reports a refusal.

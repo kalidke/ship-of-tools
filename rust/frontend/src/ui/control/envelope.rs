@@ -3,33 +3,22 @@
 use super::*;
 
 impl State {
-    /// Item 2: a session drove a `nav.preview` envelope at us. Act ONLY when
-    /// it targets our currently-active workspace (the gate the maintainer and I locked —
-    /// a broadcast reaches every FE, so each acts only for the workspace it's
-    /// viewing; others ignore it, and it's NEVER rendered as chat either way).
-    /// On a match: switch to Files mode and fire `preview.get` for
-    /// `files:<path>`. node ids are workspace-relative and the backend
-    /// resolves them directly, so no tree expansion is required to show the
-    /// file. (Cursor-reveal — expanding the tree to select the row — is a
-    /// follow-up; the preview pane is the payload of `nav.preview`.)
+    /// Goto, preview, reveal and nav envelopes resolve the producing host's listed slug or id once; an unknown target changes no view, badge, caption or ROI and reports a refusal.
     pub(in crate::ui) fn handle_nav_envelope(&mut self, host: &HostKey, env: &NavEnvelope) {
-        let current = self
-            .active_workspace_id
-            .clone()
-            .or_else(|| self.default_workspace_slug.clone());
-        // ADR 0042 L2a codex review, item E: the slug alone isn't enough
-        // — two hosts can share a slug (their own default workspace, say),
-        // so this must also confirm the push arrived on active_host.
-        if host != &self.active_host || current.as_deref() != Some(env.workspace.as_str()) {
-            // Badge floor (ADR 0025 §1): the result targets a workspace we're
-            // not viewing (or arrived from a non-active host). Don't silently
-            // drop it — record + badge it so it reaches the user when they
-            // switch to that workspace.
-            tracing::debug!(target_host = %host, target_ws = %env.workspace, ?current,
-                active_host = %self.active_host,
-                "nav.preview targets a non-active (host, workspace) — badging as pending (not chat)");
-            self.mark_pending_nav(host.clone(), env.workspace.clone(), env.path.clone());
-            return;
+        match self.result_route(host, &env.workspace, false, false) {
+            super::dispatch::ResultRoute::Render(_) => {}
+            super::dispatch::ResultRoute::Badge(target) => {
+                let (host, slug) = target.row_key().clone();
+                self.mark_pending_nav(host, slug, env.path.clone());
+                return;
+            }
+            super::dispatch::ResultRoute::Refusal(reason) => {
+                self.refuse_result(&reason);
+                return;
+            }
+            super::dispatch::ResultRoute::Switch(_) => {
+                unreachable!("nav envelope never force-switches")
+            }
         }
         // Drive both panes via the shared same-ws open: preview body now, and a
         // deep-path cursor reveal so the cursor follows the file even when its
