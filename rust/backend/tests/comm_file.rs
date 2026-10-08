@@ -337,6 +337,54 @@ fn t11_rust_sends_one() {
     }
 }
 
+/// Stages the scripts and runs `comm-join.sh` for row `ws` as that row's session, on the raw host `raw` under the declared host `declared`.
+fn join_in_row(env: &Env, ws: &str, handle: &str, raw: &str, declared: &str) {
+    let bin = env._tmp.path().join("bin");
+    let staged = Command::new("bash")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../comm/tests/stage-bin.sh"
+        ))
+        .arg(&bin)
+        .output()
+        .unwrap();
+    assert!(
+        staged.status.success(),
+        "staging failed: {}",
+        String::from_utf8_lossy(&staged.stdout)
+    );
+    // Beneath a stand-in for the row's capsule (the process walk reads only the command line), as the session is.
+    let join = Command::new("bash")
+        .args(["-c", "exec -a sot-capsule bash -c 'shift; \"$@\"; exit $?' _ \"/in-row/state/workspaces/$0/voyages/v0\" timeout 60 bash \"$1\" --name \"$2\""])
+        .arg(ws)
+        .arg(bin.join("comm-join.sh"))
+        .arg(handle)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", &env.home_root)
+        .env("SOT_COMM_HOME", &env.comm_root)
+        .env("SOT_COMM_TEST_HOST", raw)
+        .env("SOT_SELF_HOST", declared)
+        .env("SOT_SOCKET", &env.socket_path)
+        .env("SOT_WORKSPACE_ID", ws)
+        .env("XDG_RUNTIME_DIR", env._runtime_tmp.path())
+        .env("TMPDIR", env._tmp.path())
+        .current_dir(&env.workspace_project_root)
+        .output()
+        .expect("run comm-join.sh");
+    assert!(
+        join.status.success(),
+        "join: {} {}",
+        String::from_utf8_lossy(&join.stdout),
+        String::from_utf8_lossy(&join.stderr)
+    );
+
+}
+
+fn registry_of(env: &Env) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(env.comm_root.join("registry.json")).unwrap()).unwrap()
+}
+
 /// The host a session and the daemon agree on (C2): a box whose declared host (`SOT_SELF_HOST`) differs from its raw
 /// `hostname -s` still joins under the daemon's host. The registry row, the unpinned self slot, the unread clear on
 /// activation and the destroy prune all key on that one fact; a raw-host registry row is invisible to the daemon.
@@ -372,50 +420,9 @@ async fn a_join_under_a_distinct_declared_host_binds_clears_and_is_pruned() {
         .expect("workspace_id")
         .to_string();
 
-    let bin = env._tmp.path().join("bin");
-    let staged = Command::new("bash")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../comm/tests/stage-bin.sh"
-        ))
-        .arg(&bin)
-        .output()
-        .unwrap();
-    assert!(
-        staged.status.success(),
-        "staging failed: {}",
-        String::from_utf8_lossy(&staged.stdout)
-    );
-    // Beneath a stand-in for the row's capsule (the process walk reads only the command line), as the session is.
-    let join = Command::new("bash")
-        .args(["-c", "exec -a sot-capsule bash -c 'shift; \"$@\"; exit $?' _ \"/in-row/state/workspaces/$0/voyages/v0\" timeout 60 bash \"$1\" --name \"$2\""])
-        .arg(&ws)
-        .arg(bin.join("comm-join.sh"))
-        .arg(HANDLE)
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("HOME", &env.home_root)
-        .env("SOT_COMM_HOME", &env.comm_root)
-        .env("SOT_COMM_TEST_HOST", RAW)
-        .env("SOT_SELF_HOST", DECLARED)
-        .env("SOT_SOCKET", &env.socket_path)
-        .env("SOT_WORKSPACE_ID", &ws)
-        .env("XDG_RUNTIME_DIR", env._runtime_tmp.path())
-        .env("TMPDIR", env._tmp.path())
-        .current_dir(&env.workspace_project_root)
-        .output()
-        .expect("run comm-join.sh");
-    assert!(
-        join.status.success(),
-        "join: {} {}",
-        String::from_utf8_lossy(&join.stdout),
-        String::from_utf8_lossy(&join.stderr)
-    );
+    join_in_row(&env, &ws, HANDLE, RAW, DECLARED);
 
-    let registry = || -> serde_json::Value {
-        serde_json::from_slice(&std::fs::read(env.comm_root.join("registry.json")).unwrap())
-            .unwrap()
-    };
+    let registry = || registry_of(&env);
     assert_eq!(
         registry()["agents"][HANDLE]["host"],
         DECLARED,
