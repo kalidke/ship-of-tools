@@ -27,3 +27,4 @@ rust/frontend/src/ui/CLAUDE.md.
 - Captions are keyed by (host, listed workspace slug, file); the store keeps at most 256 (CaptionStore). ROI readiness and consumption use the same host-qualified row key.
 - A failed figure stays failed until a fresh preview reply clears `figure_failed` (`figure_already_handled`).
 - Only a raster node qualifies for crop and scale, never a PDF page (`State::is_image_node_id`).
+- Read, write and display use sot_protocol::physical_scale; invalid metadata is absent for fallback selection and cannot hide a valid PNG pHYs scale.

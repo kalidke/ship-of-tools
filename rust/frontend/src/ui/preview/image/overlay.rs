@@ -60,49 +60,13 @@ impl CaptionStore {
     }
 }
 
-/// One axis of a raster's physical scale (ADR 0034). `per_px` is the physical
-/// length of one *source* pixel, in the payload's `unit`. `name` is the axis
-/// label (`"x"`, `"z"`, …) so an anisotropic (XZ) view labels each bar.
-#[derive(Debug, Clone, PartialEq)]
-struct ScaleAxis {
-    name: String,
-    per_px: f64,
-}
+pub(in crate::ui) use sot_protocol::physical_scale::PhysicalScale;
 
-/// A raster preview's physical scale, from `extras.physical_scale` (ADR 0034).
-/// `axes[0]` is the horizontal (x) image axis. Isotropic sources ship two
-/// equal axes; Phase 1 renders one bar from `axes[0]`.
-#[derive(Debug, Clone, PartialEq)]
-pub(in crate::ui) struct PhysicalScale {
-    axes: Vec<ScaleAxis>,
-    unit: String,
-}
-
-/// Parse `extras.physical_scale` into a [`PhysicalScale`]. Shape (ADR 0034 §2):
-/// `{"axes":[{"name","nm_per_px"}],"unit"}`. `None` for any reply without the
-/// key (so it clears like `preview_page`) or a malformed/empty axes array.
+/// A raster preview's physical scale (ADR 0034) from the reply's `extras.physical_scale`, valid by
+/// `sot_protocol::physical_scale`. `None` for a reply without the key (so it clears like `preview_page`) or
+/// with an invalid value: the window invents no unit, name or axis.
 pub(in crate::ui) fn parse_physical_scale(extras: &serde_json::Value) -> Option<PhysicalScale> {
-    let ps = extras.get("physical_scale")?;
-    let unit = ps
-        .get("unit")
-        .and_then(|v| v.as_str())
-        .unwrap_or("nm")
-        .to_string();
-    let axes_v = ps.get("axes")?.as_array()?;
-    let mut axes = Vec::with_capacity(axes_v.len());
-    for a in axes_v {
-        let per_px = a.get("nm_per_px").and_then(|v| v.as_f64())?;
-        let name = a
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        axes.push(ScaleAxis { name, per_px });
-    }
-    if axes.is_empty() {
-        return None;
-    }
-    Some(PhysicalScale { axes, unit })
+    sot_protocol::physical_scale::parse_physical_scale(extras.get("physical_scale")?)
 }
 
 /// Snap a positive length to a "nice" `1/2/5 × 10ⁿ` value — the map-scalebar
@@ -258,7 +222,7 @@ impl State {
         let Some(axis) = scale.axes.first() else {
             return clear_and_none(self);
         };
-        if axis.per_px <= 0.0 {
+        if axis.nm_per_px <= 0.0 {
             return clear_and_none(self);
         }
         // Source→screen mapping (must match the draw block's `canvas_w`).
@@ -279,7 +243,7 @@ impl State {
             return clear_and_none(self);
         }
         let screen_px_per_src_px = canvas_w / src_w as f32;
-        let screen_px_per_unit = screen_px_per_src_px / axis.per_px as f32;
+        let screen_px_per_unit = screen_px_per_src_px / axis.nm_per_px as f32;
         if !screen_px_per_unit.is_finite() || screen_px_per_unit <= 0.0 {
             return clear_and_none(self);
         }
@@ -647,7 +611,27 @@ mod tests {
         assert_eq!(ps.unit, "nm");
         assert_eq!(ps.axes.len(), 2);
         assert_eq!(ps.axes[0].name, "x");
-        assert_eq!(ps.axes[0].per_px, 2.0);
+        assert_eq!(ps.axes[0].nm_per_px, 2.0);
+    }
+
+    #[test]
+    fn invalid_scale_is_not_displayable() {
+        for ps in [
+            serde_json::json!({"axes": [{"name": "x", "nm_per_px": 2.0}]}),
+            serde_json::json!({"axes": [{"nm_per_px": 2.0}], "unit": "nm"}),
+            serde_json::json!({"axes": [{"name": "x", "nm_per_px": 0.0}], "unit": "nm"}),
+            serde_json::json!({"axes": [{"name": "x", "nm_per_px": -3.0}], "unit": "nm"}),
+            serde_json::json!({"axes": [{"name": "x", "nm_per_px": "2"}], "unit": "nm"}),
+        ] {
+            assert_eq!(
+                parse_physical_scale(&serde_json::json!({ "physical_scale": ps })),
+                None,
+                "{ps}"
+            );
+        }
+        // Empty strings keep their existing acceptance.
+        let ok = serde_json::json!({"physical_scale": {"axes": [{"name": "", "nm_per_px": 2.0}], "unit": ""}});
+        assert!(parse_physical_scale(&ok).is_some());
     }
 
     #[test]

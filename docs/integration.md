@@ -42,6 +42,7 @@ page (`Rules`), its `## Idea` or a code comment, and the row says which in its l
 | wire | distribution | `is_release_build`, read by `rust/backend/src/update.rs` and `rust/frontend/src/selfupdate.rs` | The version string is bare `X.Y.Z` only for a CI build on its clean release tag, and `is_release_build` is the only question policy may ask. |
 | wire | server, fe-net, distribution | `version_line`, printed by every binary's `--version` | The version string is bare `X.Y.Z` only for a CI build on its clean release tag, and `is_release_build` is the only question policy may ask. |
 | wire | files, fe-ui | sot_protocol::annotation::split_frontmatter and synced_against | One complete-fence grammar supplies the on-disk stale-write check and the window's hash; no closing fence means no header/hash. |
+| wire | files, fe-ui | PhysicalScale and parse_physical_scale | Scale reads, writes and display accept the same schema; an invalid higher tier cannot suppress valid lower-tier metadata. |
 | topology | fe-net | `SshRecipe::new`, `is_plain_host_name` (checked by `parse_dial_arg`) | `SshRecipe::new` checks both the ssh target and the host against the plain host-name grammar. |
 | topology | fe-net, pages, messaging | `LinkGate` (`set_up` by fe-net alone; `is_up`, `spawn_async`, `probe`, `command` by the callers) | While a host's `LinkGate` is down, no gated spawn or command starts ssh. |
 | topology | sidecars | `SSH_OPTS`, read by the monitor's `sampler_command` | Every ssh started from `SSH_OPTS` turns sharing off. |

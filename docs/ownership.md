@@ -92,7 +92,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | annotation header grammar (fences and synced_against) | rule | wire | `rust/protocol/src/annotation.rs` `split_frontmatter`, `synced_against`; consumers in files and fe-ui |
 | `<root>/.sot-trash/` | disk | files | `rust/backend/src/files/io.rs` `trash_file`, `trash_file_fallback` |
 | `<image>.scale.json` sidecars | disk | files | `rust/backend/src/files/preview/scale.rs` `merge_scale_sidecar` |
-| physical-scale schema and validity (`{axes:[{name, nm_per_px > 0}], unit}`) | rule | files | `rust/backend/src/files/preview/scale.rs`; `rust/backend/src/files/preview/mod.rs`; second check `rust/frontend/src/ui/preview/image/mod.rs` (see two owners) |
+| physical-scale schema and validity | rule | wire | `rust/protocol/src/physical_scale.rs` `PhysicalScale`, `parse_physical_scale`; consumers in files and fe-ui |
 | `<ws>/.sot/captures/` | disk | files | `rust/backend/src/files/preview/crop.rs` `handle_image_crop` |
 | `<ws>/.sot/runs/<run_id>/` | disk | sidecars | `rust/backend/src/sidecars/repl/execute.rs` |
 | `<home>/.claude-auth/<name>/` and its allowlisted links | disk | agents | `rust/backend/src/agents/accounts.rs` `ensure_account_links`, `SHARED_ENTRIES`, `CLAUDE_ACCOUNTS_DIR` |

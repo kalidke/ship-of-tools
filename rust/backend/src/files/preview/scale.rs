@@ -4,31 +4,7 @@
 use super::*;
 use sot_protocol::PreviewSetScaleReq;
 
-/// A `physical_scale` is valid iff it's an object with a non-empty `axes` array
-/// where every axis has BOTH a string `name` (the FE labels each bar by it) and
-/// a finite, strictly-positive numeric `nm_per_px`, plus a top-level string
-/// `unit`. Guards `preview.set_scale` from persisting garbage that would then
-/// mislabel (or fail to label) every bar.
-fn physical_scale_is_valid(v: &serde_json::Value) -> bool {
-    let Some(obj) = v.as_object() else {
-        return false;
-    };
-    if !obj.get("unit").map(|u| u.is_string()).unwrap_or(false) {
-        return false;
-    }
-    match obj.get("axes").and_then(|a| a.as_array()) {
-        Some(axes) if !axes.is_empty() => axes.iter().all(|ax| {
-            let has_name = ax.get("name").map(|n| n.is_string()).unwrap_or(false);
-            let good_per_px = ax
-                .get("nm_per_px")
-                .and_then(|n| n.as_f64())
-                .map(|n| n.is_finite() && n > 0.0)
-                .unwrap_or(false);
-            has_name && good_per_px
-        }),
-        _ => false,
-    }
-}
+use sot_protocol::physical_scale::parse_physical_scale;
 
 /// Monotone per-process counter so two concurrent `set_scale` writes to the same
 /// image within one microsecond get DISTINCT temp names (see below).
@@ -151,7 +127,7 @@ pub async fn handle_preview_set_scale(
             ),
         );
     }
-    if !physical_scale_is_valid(&req.physical_scale) {
+    if parse_physical_scale(&req.physical_scale).is_none() {
         return err(
             "bad_scale",
             "physical_scale must be {axes:[{name,nm_per_px>0}], unit:<string>}".to_string(),
@@ -213,10 +189,9 @@ pub async fn handle_preview_set_scale(
 /// (`read_bytes_preview`), not via the kernel — and a JSON sidecar is not image
 /// metadata, so it doesn't cross the "Rust never parses image metadata" line.
 ///
-/// Best-effort + opaque: a missing/unparseable sidecar leaves `extras` untouched;
-/// the sidecar's JSON (expected `{axes:[{name,nm_per_px}],unit}`) is passed
-/// through as-is — the FE validates the shape. Merges into an existing `extras`
-/// object (e.g. a plugin's) rather than clobbering it.
+/// Best-effort: a missing, unparseable or invalid sidecar leaves `extras` untouched, so a lower tier can still
+/// answer. A valid sidecar's JSON (`{axes:[{name,nm_per_px}],unit}`) is passed through as written. Merges into
+/// an existing `extras` object (e.g. a plugin's) rather than clobbering it.
 pub(super) fn merge_scale_sidecar(
     path: &std::path::Path,
     mime: &str,
@@ -240,6 +215,11 @@ pub(super) fn merge_scale_sidecar(
             return extras;
         }
     };
+    // Validate sidecar metadata through the shared scale parser before overriding a lower tier.
+    if parse_physical_scale(&scale).is_none() {
+        tracing::warn!(sidecar = %sidecar.display(), "scale sidecar is not a valid physical scale — ignoring");
+        return extras;
+    }
     let mut obj = match extras {
         Some(serde_json::Value::Object(m)) => m,
         _ => serde_json::Map::new(),
@@ -355,7 +335,13 @@ pub(super) fn merge_png_phys_scale(
     if !raw_file_bytes || mime != "image/png" {
         return extras;
     }
-    if matches!(&extras, Some(serde_json::Value::Object(m)) if m.contains_key("physical_scale")) {
+    // Only a valid existing scale suppresses PNG pHYs fallback.
+    if extras
+        .as_ref()
+        .and_then(|e| e.get("physical_scale"))
+        .and_then(parse_physical_scale)
+        .is_some()
+    {
         return extras;
     }
     let Some((x_nm, y_nm)) = png_phys_nm_per_px(bytes) else {
@@ -395,7 +381,7 @@ pub(super) fn merge_png_phys_scale(
 
 #[cfg(test)]
 mod scalebar_sidecar_tests {
-    use super::{merge_scale_sidecar, physical_scale_is_valid, write_scale_sidecar_atomic};
+    use super::{merge_scale_sidecar, write_scale_sidecar_atomic};
     use std::path::PathBuf;
 
     fn tmp(name: &str) -> PathBuf {
@@ -432,40 +418,6 @@ mod scalebar_sidecar_tests {
             .collect();
         assert!(leftover.is_empty(), "temp file not cleaned: {leftover:?}");
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn physical_scale_is_valid_accepts_good_rejects_bad() {
-        assert!(physical_scale_is_valid(&serde_json::json!({
-            "axes": [{"name":"x","nm_per_px":5.0},{"name":"z","nm_per_px":20.0}],
-            "unit": "nm"
-        })));
-        // empty axes
-        assert!(!physical_scale_is_valid(
-            &serde_json::json!({"axes":[],"unit":"nm"})
-        ));
-        // nm_per_px <= 0
-        assert!(!physical_scale_is_valid(
-            &serde_json::json!({"axes":[{"name":"x","nm_per_px":0.0}],"unit":"nm"})
-        ));
-        assert!(!physical_scale_is_valid(
-            &serde_json::json!({"axes":[{"name":"x","nm_per_px":-1.0}],"unit":"nm"})
-        ));
-        // missing nm_per_px
-        assert!(!physical_scale_is_valid(
-            &serde_json::json!({"axes":[{"name":"x"}],"unit":"nm"})
-        ));
-        // missing axis name (would produce an unlabelable bar)
-        assert!(!physical_scale_is_valid(
-            &serde_json::json!({"axes":[{"nm_per_px":5.0}],"unit":"nm"})
-        ));
-        // missing unit
-        assert!(!physical_scale_is_valid(
-            &serde_json::json!({"axes":[{"name":"x","nm_per_px":2.0}]})
-        ));
-        // missing axes / not an object
-        assert!(!physical_scale_is_valid(&serde_json::json!({"unit":"nm"})));
-        assert!(!physical_scale_is_valid(&serde_json::json!("nope")));
     }
 
     #[test]
@@ -513,7 +465,11 @@ mod scalebar_sidecar_tests {
         let dir = tmp("merge");
         let img = dir.join("m.png");
         std::fs::write(&img, b"").unwrap();
-        std::fs::write(dir.join("m.png.scale.json"), br#"{"unit":"nm"}"#).unwrap();
+        std::fs::write(
+            dir.join("m.png.scale.json"),
+            br#"{"axes":[{"name":"x","nm_per_px":2}],"unit":"nm"}"#,
+        )
+        .unwrap();
         let extras = merge_scale_sidecar(&img, "image/png", Some(serde_json::json!({"page": 2})))
             .expect("some");
         assert_eq!(extras["page"], 2, "existing extras preserved");
@@ -697,14 +653,10 @@ mod phys_scale_tests {
         assert_eq!(axes[1]["name"], "y");
         assert_eq!(axes[1]["nm_per_px"], 10.0);
         assert_eq!(merged["physical_scale"]["unit"], "nm");
-        // Sidecar already resolved → untouched (exact floats win).
-        let sidecar = serde_json::json!({"physical_scale": {"axes": [], "unit": "nm"}});
+        // A valid scale already resolved → untouched (exact floats win).
+        let sidecar = serde_json::json!({"physical_scale": {"axes": [{"name": "x", "nm_per_px": 3.0}], "unit": "nm"}});
         let kept = merge_png_phys_scale(&png, "image/png", Some(sidecar.clone()), true);
         assert_eq!(kept, Some(sidecar));
-        // A present-but-null sidecar value still counts as resolved.
-        let null_sidecar = serde_json::json!({ "physical_scale": null });
-        let kept_null = merge_png_phys_scale(&png, "image/png", Some(null_sidecar.clone()), true);
-        assert_eq!(kept_null, Some(null_sidecar));
         // Non-PNG mime → untouched.
         assert_eq!(merge_png_phys_scale(&png, "image/jpeg", None, true), None);
         // Unrelated extras are preserved alongside the new key.
@@ -712,6 +664,64 @@ mod phys_scale_tests {
         let both = merge_png_phys_scale(&png, "image/png", Some(other), true).unwrap();
         assert_eq!(both["page_count"], 3);
         assert_eq!(both["physical_scale"]["axes"][0]["nm_per_px"], 10.0);
+    }
+
+    /// The tiers as `build_preview_payload` runs them: sidecar, then embedded `pHYs`.
+    fn resolved(
+        img: &std::path::Path,
+        png: &[u8],
+        extras: Option<serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        let extras = super::merge_scale_sidecar(img, "image/png", extras);
+        merge_png_phys_scale(png, "image/png", extras, true)
+    }
+
+    #[test]
+    fn invalid_sidecar_preserves_png_phys() {
+        let dir = std::env::temp_dir().join(format!("sot-scale-invalid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("render.png");
+        let sidecar = dir.join("render.png.scale.json");
+        let png = isotropic_10nm();
+        for bad in [
+            r#"{"axes":[],"unit":"nm"}"#,
+            r#"{"axes":[{"name":"x","nm_per_px":0}],"unit":"nm"}"#,
+            r#"{"axes":[{"name":"x","nm_per_px":-2}],"unit":"nm"}"#,
+            r#"{"axes":[{"name":"x","nm_per_px":"2"}],"unit":"nm"}"#,
+            r#"{"axes":[{"nm_per_px":2}],"unit":"nm"}"#,
+            r#"{"axes":[{"name":"x","nm_per_px":2}]}"#,
+            r#"{"axes":[{"name":"x","nm_per_px":2}],"unit":7}"#,
+            r#"null"#,
+            r#""scale""#,
+        ] {
+            std::fs::write(&sidecar, bad).unwrap();
+            let got = resolved(&img, &png, Some(serde_json::json!({"page_count": 3}))).unwrap();
+            assert_eq!(got["physical_scale"]["axes"][0]["nm_per_px"], 10.0, "{bad}");
+            assert_eq!(got["page_count"], 3, "{bad}");
+        }
+        // A valid sidecar, anisotropic or with empty strings, still outranks the embedded density.
+        for good in [
+            r#"{"axes":[{"name":"x","nm_per_px":2},{"name":"z","nm_per_px":8}],"unit":"nm"}"#,
+            r#"{"axes":[{"name":"","nm_per_px":2}],"unit":""}"#,
+        ] {
+            std::fs::write(&sidecar, good).unwrap();
+            let got = resolved(&img, &png, None).unwrap();
+            assert_eq!(got["physical_scale"]["axes"][0]["nm_per_px"], 2.0, "{good}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_existing_scale_does_not_hide_png_phys() {
+        let png = isotropic_10nm();
+        for bad in [
+            serde_json::json!({"physical_scale": {"axes": [], "unit": "nm"}}),
+            serde_json::json!({"physical_scale": null}),
+            serde_json::json!({"physical_scale": {"axes": [{"name": "x", "nm_per_px": 0}], "unit": "nm"}}),
+        ] {
+            let got = merge_png_phys_scale(&png, "image/png", Some(bad), true).unwrap();
+            assert_eq!(got["physical_scale"]["axes"][0]["nm_per_px"], 10.0);
+        }
     }
 
     #[test]

@@ -18,6 +18,7 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 - The loopback page-URL grammar, owned by pages: `loopback_port_from_url` (page_url.rs).
 - Reaching a daemon: the topology grammar, endpoints, ssh recipe and lane client (`topology/`).
 - Annotation frontmatter and synced_against (src/annotation.rs), shared by the window and daemon.
+- PhysicalScale's shared JSON validity and parse (src/physical_scale.rs).
 
 ## Promises
 - An envelope is at most `MAX_ENVELOPE_BYTES` (1 MiB), its newline not counted, in every writer and reader.
@@ -32,13 +33,14 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 - The version string is bare `X.Y.Z` only for a CI build on its clean release tag. `is_release_build` is the only
   question policy may ask; the string is for people.
 - An annotation header has two complete trimmed --- fence lines; hash parsing handles CRLF and indentation and trims one matching quote pair. An unclosed header has no hash and splitting preserves body bytes.
+- A physical scale has a string unit and a nonempty axes array of string names and finite, positive nm_per_px; empty string names/units retain their existing acceptance.
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `Frame`, `codec::read_frame`,
 `codec::read_envelope`, `codec::write_frame`, `hello`, `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`,
 `sot_hello_frame`, `comm/lib/comm-lib-client.sh`, `fe.lease`, `fe.leaving`, `scripts/sot-lease.ps1`,
 `launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`, `is_release_build`, `rust/backend/src/update.rs`,
-`rust/frontend/src/selfupdate.rs`, `version_line`, `--version`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against. Uses: `sot_state_dir`, `sot_config_dir`, `host_name`,
+`rust/frontend/src/selfupdate.rs`, `version_line`, `--version`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against, sot_protocol::physical_scale::PhysicalScale, sot_protocol::physical_scale::parse_physical_scale. Uses: `sot_state_dir`, `sot_config_dir`, `host_name`,
 `state_dir_hash`.
 
 ## Folders
@@ -53,6 +55,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/ir.rs`: the wire's tree and preview payload types
 - `src/lib.rs`: `Frame`, `Kind`, `PROTOCOL_VERSION` and the crate's re-exports
 - `src/ops/`: the op names and payload types, one file per family
+- `src/physical_scale.rs`: PhysicalScale, ScaleAxis and parse_physical_scale, shared by preview reads, writes and display.
 - `src/page_url.rs`: the loopback page-URL grammar, one parser for the daemon's proxy allowlist and the window's page proxy
 - `src/topology/`: the topology, endpoint, ssh bridge and lane client modules
 - `src/version.rs`: the product version string and `is_release_build`
