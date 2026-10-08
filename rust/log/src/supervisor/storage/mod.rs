@@ -213,38 +213,5 @@ pub(super) fn probe(state_dir: &Path) -> std::io::Result<()> {
     })
 }
 
-/// Runs `f` until it stops failing with storage exhaustion, sleeping
-/// `delay(step)` between tries (1, 2, 4 s and on); any other error returns at
-/// once. For the steps before the lane binds, which have nothing to hold yet.
-pub(super) fn retry_bootstrap<T>(
-    what: &str,
-    f: impl FnMut() -> crate::Result<T>,
-) -> crate::Result<T> {
-    retry_with(what, f, std::thread::sleep)
-}
-
-fn retry_with<T>(
-    what: &str,
-    mut f: impl FnMut() -> crate::Result<T>,
-    mut sleep: impl FnMut(Duration),
-) -> crate::Result<T> {
-    let mut step = 0;
-    loop {
-        match f() {
-            Err(e) => match storage_exhaustion(&e) {
-                Some(code) => {
-                    if step == 0 {
-                        note(format_args!("{what}: the state root's storage is exhausted (os error {code}); retrying"));
-                    }
-                    sleep(delay(step));
-                    step += 1;
-                }
-                None => return Err(e),
-            },
-            ok => return ok,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests;

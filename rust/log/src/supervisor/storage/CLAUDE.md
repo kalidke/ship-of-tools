@@ -5,7 +5,7 @@ it holds in one wait, probes the root with a real durable write on a backoff, an
 Part of capsule; charter: rust/log/CLAUDE.md.
 
 ## Files
-- `mod.rs`: `leg_death`, `Wait` and `Resume`, `advance`, `account`, `probe` (the durable state-root write), `delay` and `retry_bootstrap`.
+- `mod.rs`: `leg_death`, `Wait` and `Resume`, `advance`, `account`, `probe` (the durable state-root write) and `delay`.
 - `tests.rs`: the wait's backoff, resumes and refusals with an injected probe and clock, and the probe on a real directory.
 
 ## Start here

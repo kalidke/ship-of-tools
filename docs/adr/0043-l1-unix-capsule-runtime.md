@@ -664,7 +664,7 @@ own comm bootstrap → adoption across a daemon restart → a verified end.
     auto-placement, a compatibility log symlink, diagnostics in the `phase` string, and
     refusing the whole daemon.
 
-    **Amendment (2026-10-08, 0.6.6).** A preflight probe failure that is storage exhaustion (ENOSPC, EDQUOT) returns that `Error::Io` with its code, not the `Unsupported` refusal: a full volume is not an unqualified one. Every other probe failure keeps the refusal. The daemon's `qualified_state_root` lets such a preflight pass (`preflight_verdict`); the supervisor waits for storage.
+    **Amendment (2026-10-08, 0.6.6).** A preflight probe failure that is storage exhaustion (ENOSPC, EDQUOT) returns that `Error::Io` with its code, not the `Unsupported` refusal: a full volume is not an unqualified one. Every other probe failure keeps the refusal. The daemon lets such a preflight pass only for a row that has run (its `supervisor.lock` exists), whose supervisor holds its fence and waits; `workspace.create` refuses a full volume.
 
 24. **Launch ownership is a transient user scope per supervisor — REVERSES decision 16's
     survival clause.** The cgroup is the Unix job. `spawn_detached`'s Linux twin runs

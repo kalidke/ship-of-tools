@@ -9,16 +9,10 @@ use super::*;
 pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     init_process_globals(&config)?;
 
-    // The first steps run before the lane binds, so there is nothing to hold
-    // yet: a full volume retries them in place (`storage::retry_bootstrap`).
-    storage::retry_bootstrap("creating the voyages folder", || {
-        std::fs::create_dir_all(voyages_dir(&config.state_dir)).map_err(crate::Error::Io)
-    })?;
+    std::fs::create_dir_all(voyages_dir(&config.state_dir))?;
 
     // ONE AUTHORITY.
-    let _fence = match storage::retry_bootstrap("taking the authority fence", || {
-        crate::supervisor::journal::fence::lock_supervisor(&config.state_dir)
-    }) {
+    let _fence = match crate::supervisor::journal::fence::lock_supervisor(&config.state_dir) {
         Ok(f) => f,
         // `Error::State` is the ONE error `lock_supervisor` can return for
         // "already held" (see `EXIT_CONTENDED`'s own doc for why this is
@@ -37,10 +31,7 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     let h = crate::host::state_dir::state_dir_hash(&config.state_dir);
 
     // The lane: bound AFTER the fence, BEFORE any adopt or spawn.
-    // The fence stays held while a full volume holds the bind.
-    let lane = match storage::retry_bootstrap("binding the supervisor lane", || {
-        Lane::bind_supervisor(&h, MAX_LANE_INSTANCES).map_err(crate::Error::Transport)
-    }) {
+    let lane = match Lane::bind_supervisor(&h, MAX_LANE_INSTANCES) {
         Ok(l) => l,
         Err(e) => {
             note(format_args!("could not bind the supervisor lane: {e}"));

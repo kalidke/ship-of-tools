@@ -53,11 +53,16 @@ struct Row {
 
 impl Row {
     fn start(state_dir: PathBuf) -> Row {
+        Row::spawn(state_dir, "--start")
+    }
+
+    /// `mode` is `--start` for a new row and `--resume` for one that has run.
+    fn spawn(state_dir: PathBuf, mode: &str) -> Row {
         let mut command = Command::new(env!("CARGO_BIN_EXE_sot-capsule"));
         command
             .arg("supervise")
             .arg(&state_dir)
-            .args(["--start", "--assume-no-rollback-target", "--"])
+            .args([mode, "--assume-no-rollback-target", "--"])
             .args(agent())
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
@@ -129,6 +134,16 @@ impl Row {
                     .sum()
             })
             .unwrap_or(0)
+    }
+}
+
+/// Waits until nothing holds the voyage's writer lock: its leg is gone.
+fn await_writer_free(state_dir: &Path, voyage: &str, within: Duration) {
+    let lock = voyage_root_path(state_dir, voyage).join("writer.lock");
+    let deadline = Instant::now() + within;
+    while sot_log::lock_writer(&lock).is_err() {
+        assert!(Instant::now() < deadline, "L3 the leg still holds its voyage after {within:?}");
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -219,9 +234,21 @@ fn three_rows_hold_and_resume_on_a_full_volume() {
             std::thread::sleep(Duration::from_secs(1));
         }
 
+        // A Stop ends a held row even though storage keeps its record from
+        // being written: the supervisor answers, exits 0 and lets go of its
+        // fence and voyage, which is what the daemon's absence proof reads.
+        let mut stopped = rows.pop().expect("three rows");
+        let (_, stopped_voyage) = before.last().expect("three rows");
+        sot_log::attach_client::supervisor_client::stop(&stopped.state_dir)
+            .expect("L3 a held row must accept a Stop while storage is full");
+        let status = stopped.guard.as_mut().unwrap().child_mut().wait().unwrap();
+        assert_eq!(status.code(), Some(0), "a stopped, held supervisor exits clean");
+        drop(sot_log::supervisor::journal::fence::lock_supervisor(&stopped.state_dir).expect("the fence is free"));
+        await_writer_free(&stopped.state_dir, stopped_voyage, Duration::from_secs(30));
+
         volume::free_and_sync(root);
 
-        // Within 120 s each is Ready again on the same voyage, and it writes.
+        // Within 120 s each of the others is Ready again on the same voyage, and it writes.
         for ((row, (pid, voyage)), bytes) in rows.iter_mut().zip(&before).zip(&grown) {
             let (now_pid, now_voyage) =
                 row.ready(Duration::from_secs(120), "after storage cleared");
@@ -248,25 +275,79 @@ fn three_rows_hold_and_resume_on_a_full_volume() {
     target_os = "linux",
     ignore = "needs the bounded ext4 volume of rust.yml's L3 step"
 )]
-fn a_new_row_on_a_full_volume_waits_then_starts() {
+fn a_new_rows_supervisor_on_a_full_volume_exits_at_once() {
     volume::on_volume(|root| {
         let _runtime = runtime_dir();
         let filled = volume::fill(root);
 
+        // Nothing waits before the authority holds its fence: a new row's
+        // supervisor that cannot write its first folder ends at once.
         let mut row = Row::start(root.join("row-new"));
-        // Alive and not exited for 15 s: it waits, it does not end.
-        let until = Instant::now() + Duration::from_secs(15);
-        while Instant::now() < until {
-            let child = row.guard.as_mut().unwrap().child_mut();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = row.guard.as_mut().unwrap().child_mut().try_wait().unwrap() {
+                break status;
+            }
             assert!(
-                child.try_wait().unwrap().is_none(),
-                "L3 a new row's supervisor ended while the volume was full"
+                Instant::now() < deadline,
+                "L3 a new row's supervisor was still alive 10 s after starting on a full volume"
             );
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert_eq!(status.code(), Some(69), "a new row's supervisor exits terminal");
+
+        volume::free_and_sync(root);
+        println!("L3 scenario new-row fill-code={filled} exited=69");
+    });
+}
+
+#[test]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "needs the bounded ext4 volume of rust.yml's L3 step"
+)]
+fn an_existing_row_restarted_on_a_full_volume_holds_then_resumes() {
+    volume::on_volume(|root| {
+        let _runtime = runtime_dir();
+        let state_dir = root.join("row-existing");
+
+        // A row that has run, stopped and gone: its fence file and voyage exist.
+        let mut first = Row::start(state_dir.clone());
+        let (pid, voyage) = first.ready(Duration::from_secs(90), "start");
+        sot_log::attach_client::supervisor_client::stop(&state_dir).expect("stop the first supervisor");
+        drop(first);
+        await_writer_free(&state_dir, &voyage, Duration::from_secs(60));
+
+        let filled = volume::fill(root);
+        let mut row = Row::spawn(state_dir.clone(), "--resume");
+
+        // Within 30 s it answers, holds its fence, and is not terminal for 20 s.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let new_pid = loop {
+            if let Some((new_pid, _, _)) = row.status() {
+                break new_pid;
+            }
+            assert!(Instant::now() < deadline, "L3 the restarted supervisor never answered on a full volume");
             std::thread::sleep(Duration::from_millis(250));
+        };
+        assert_ne!(new_pid, pid, "a new supervisor process");
+        assert!(
+            sot_log::supervisor::journal::fence::lock_supervisor(&state_dir).is_err(),
+            "the restarted supervisor must hold its fence"
+        );
+        let until = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < until {
+            let (_, _, phase) = row.answer().expect("L3 a holding supervisor must keep answering status");
+            assert!(
+                !matches!(phase, SupervisorPhase::Terminal | SupervisorPhase::EndedNoRespawn),
+                "L3 the restarted row left its voyage for {phase:?} while storage was full"
+            );
+            std::thread::sleep(Duration::from_secs(1));
         }
 
         volume::free_and_sync(root);
-        row.ready(Duration::from_secs(120), "after storage cleared");
-        println!("L3 scenario new-row fill-code={filled} waited=ok started=ok");
+        let (_, again) = row.ready(Duration::from_secs(120), "after storage cleared");
+        assert_eq!(again, voyage, "the same voyage resumed");
+        println!("L3 scenario existing-row fill-code={filled} held=ok resumed=ok");
     });
 }

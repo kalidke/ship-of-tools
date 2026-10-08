@@ -260,36 +260,3 @@ fn the_probe_cleans_up_only_its_own_file() {
         "a name it did not create survives"
     );
 }
-
-#[test]
-fn retry_bootstrap_waits_out_storage_exhaustion_only() {
-    let mut tries = 0;
-    let mut slept = Vec::new();
-    let result = retry_with(
-        "test",
-        || {
-            tries += 1;
-            if tries <= 2 {
-                Err(crate::Error::Io(storage_error()))
-            } else {
-                Ok(tries)
-            }
-        },
-        |d| slept.push(d.as_secs()),
-    );
-    assert_eq!(result.unwrap(), 3);
-    assert_eq!(
-        slept,
-        [1, 2],
-        "one sleep per storage failure, on the backoff"
-    );
-
-    let mut slept = Vec::new();
-    let other = retry_with(
-        "test",
-        || -> crate::Result<()> { Err(crate::Error::State("held".into())) },
-        |d| slept.push(d),
-    );
-    assert!(matches!(other, Err(crate::Error::State(_))));
-    assert!(slept.is_empty(), "another error returns at once");
-}

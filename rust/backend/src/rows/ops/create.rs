@@ -253,7 +253,7 @@ fn check_create_host(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, agent_
     // capsule runtime, so there is no second, platform-shaped refusal for
     // this check to defer to.
     let capsule_state_root: Option<std::path::PathBuf> = if runtime == "capsule" {
-        match crate::rows::spawn::state_root::qualified_state_root() {
+        match crate::rows::spawn::state_root::qualified_state_root(None) {
             Ok(root) => Some(root),
             Err(detail) => {
                 let payload = json!({
