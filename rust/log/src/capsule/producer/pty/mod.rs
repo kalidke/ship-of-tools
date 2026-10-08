@@ -181,6 +181,18 @@ const PR_SET_PDEATHSIG: libc::c_int = 1;
 /// would be.
 const REAP_BOUND: Duration = Duration::from_secs(2);
 
+/// One of the PTY factory's close-on-exec flag calls. A test may make it fail for real (the factory's own path then
+/// runs) and learns which descriptors the factory flagged.
+fn flag_fcntl(end: &'static str, fd: RawFd, cmd: libc::c_int, arg: libc::c_int) -> libc::c_int {
+    #[cfg(test)]
+    if flag_plan::fails(end, fd, cmd) {
+        return -1;
+    }
+    #[cfg(not(test))]
+    let _ = end;
+    unsafe { libc::fcntl(fd, cmd, arg) }
+}
+
 /// `PtyProducer::spawn`'s own pre-flight check (see that call site's own
 /// doc for WHY this exists — the `close_range` in `pre_exec` closes
 /// `std::process::Command`'s own exec-failure-reporting pipe before a
@@ -729,5 +741,106 @@ mod drop_and_domain_tests {
             producer.domain_is_empty().unwrap(),
             "a domain containing only an unreaped zombie leader must read as empty"
         );
+    }
+}
+
+/// The thread's plan for the PTY flag calls: which one fails, and the descriptors it saw.
+#[cfg(test)]
+mod flag_plan {
+    use std::cell::RefCell;
+    use std::os::fd::RawFd;
+
+    #[derive(Default)]
+    struct Plan {
+        fail: Option<(&'static str, libc::c_int)>,
+        seen: Vec<(&'static str, RawFd)>,
+    }
+
+    thread_local! {
+        static PLAN: RefCell<Plan> = RefCell::new(Plan::default());
+    }
+
+    pub(super) fn arm(end: &'static str, cmd: libc::c_int) {
+        PLAN.with(|plan| *plan.borrow_mut() = Plan { fail: Some((end, cmd)), seen: Vec::new() });
+    }
+
+    pub(super) fn take_seen() -> Vec<(&'static str, RawFd)> {
+        PLAN.with(|plan| std::mem::take(&mut *plan.borrow_mut()).seen)
+    }
+
+    pub(super) fn fails(end: &'static str, fd: RawFd, cmd: libc::c_int) -> bool {
+        PLAN.with(|plan| {
+            let mut plan = plan.borrow_mut();
+            if !plan.seen.contains(&(end, fd)) {
+                plan.seen.push((end, fd));
+            }
+            plan.fail == Some((end, cmd))
+        })
+    }
+}
+
+/// Both PTY ends get close-on-exec before publication, and either flag call failing is the factory's error with both
+/// ends closed and no child started.
+#[cfg(test)]
+mod flag_tests {
+    use super::{flag_plan, Producer, PtyProducer};
+    use std::os::fd::AsRawFd;
+
+    fn fd_is_closed(fd: std::os::fd::RawFd) -> bool {
+        let rc = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        rc < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
+    }
+
+    fn flag_failure(test: &str, end: &'static str, cmd: libc::c_int) {
+        if !crate::test_isolated::run_isolated(test) {
+            return;
+        }
+        flag_plan::arm(end, cmd);
+        let argv = ["/bin/sh", "-c", "exit 0"].map(String::from);
+        let spawned = PtyProducer::spawn(&argv, 80, 24);
+        let seen = flag_plan::take_seen();
+        assert!(spawned.is_err(), "PTY flag failure was not returned ({end} {cmd})");
+        assert_eq!(seen.len().min(2), seen.len(), "the factory flagged only its two ends: {seen:?}");
+        assert!(seen.iter().any(|(e, _)| *e == end), "the failing end was never flagged: {seen:?}");
+        for (e, fd) in seen {
+            assert!(fd_is_closed(fd), "the {e} end (fd {fd}) was left open after the failure");
+        }
+        let child = unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) };
+        assert_eq!(child, -1, "a child was started despite the failure");
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+        eprintln!("flag-failure-proof test={test} end={end} cmd={cmd} bodies=1");
+    }
+
+    #[test]
+    fn master_getfd_failure_is_returned() {
+        flag_failure("capsule::producer::pty::flag_tests::master_getfd_failure_is_returned", "master", libc::F_GETFD);
+    }
+
+    #[test]
+    fn master_setfd_failure_is_returned() {
+        flag_failure("capsule::producer::pty::flag_tests::master_setfd_failure_is_returned", "master", libc::F_SETFD);
+    }
+
+    #[test]
+    fn slave_getfd_failure_is_returned() {
+        flag_failure("capsule::producer::pty::flag_tests::slave_getfd_failure_is_returned", "slave", libc::F_GETFD);
+    }
+
+    #[test]
+    fn slave_setfd_failure_is_returned() {
+        flag_failure("capsule::producer::pty::flag_tests::slave_setfd_failure_is_returned", "slave", libc::F_SETFD);
+    }
+
+    /// Publication: a successfully spawned producer's master and held slave are close-on-exec.
+    #[test]
+    fn a_published_pty_pair_is_close_on_exec() {
+        let producer = PtyProducer::spawn(&["sleep".to_string(), "600".to_string()], 80, 24).unwrap();
+        for (end, fd) in [
+            ("master", producer.reader_fd.as_ref().expect("the master").as_raw_fd()),
+            ("slave", producer.slave.as_ref().expect("the held slave").as_raw_fd()),
+        ] {
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0, "the {end} end is not close-on-exec at publication");
+        }
     }
 }

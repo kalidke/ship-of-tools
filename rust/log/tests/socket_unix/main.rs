@@ -624,6 +624,7 @@ fn wait_for_probe(
 }
 
 mod client;
+mod cloexec;
 mod close;
 mod connect;
 mod reaper;

@@ -464,6 +464,72 @@ impl Drop for Pause {
     }
 }
 
+/// One descriptor a factory created, as it was when ownership was taken and before any flag-setting call.
+#[cfg(all(unix, any(test, feature = "test-support")))]
+#[derive(Clone, Debug)]
+pub struct Birth {
+    pub role: &'static str,
+    pub fd: std::os::fd::RawFd,
+    /// `F_GETFD` read at birth; `-1` when that read failed.
+    pub fd_flags: i32,
+}
+
+#[cfg(all(unix, any(test, feature = "test-support")))]
+#[derive(Default)]
+struct BirthScope {
+    births: Vec<Birth>,
+    /// Fail the n-th (1-based) flag-setting call made in this scope.
+    fail_at: Option<usize>,
+    calls: usize,
+}
+
+#[cfg(all(unix, any(test, feature = "test-support")))]
+thread_local! {
+    static BIRTHS: std::cell::RefCell<Option<BirthScope>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `factory` on this thread with every descriptor birth observed and, when `fail_at` is set, that flag-setting
+/// call (`set_cloexec`/`set_nonblocking` and the lease's checked pass) failing for real through the factory's own
+/// error path. Returns the factory's result, the births in order, and how many flag-setting calls it made. Reads
+/// `F_GETFD` only; it changes no descriptor.
+#[cfg(all(unix, any(test, feature = "test-support")))]
+pub fn observe_births<R>(fail_at: Option<usize>, factory: impl FnOnce() -> R) -> (R, Vec<Birth>, usize) {
+    BIRTHS.with(|scope| *scope.borrow_mut() = Some(BirthScope { fail_at, ..BirthScope::default() }));
+    let result = factory();
+    let scope = BIRTHS.with(|scope| scope.borrow_mut().take()).expect("the scope opened above");
+    (result, scope.births, scope.calls)
+}
+
+/// A factory has just taken ownership of `fd` for `role`, before any flag-setting call.
+#[cfg(unix)]
+#[inline]
+pub(crate) fn birth(role: &'static str, fd: std::os::fd::RawFd) {
+    #[cfg(any(test, feature = "test-support"))]
+    BIRTHS.with(|scope| {
+        if let Some(scope) = scope.borrow_mut().as_mut() {
+            let fd_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            scope.births.push(Birth { role, fd, fd_flags });
+        }
+    });
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = (role, fd);
+}
+
+/// A flag-setting call is about to run: the injected error when this is the call a scope chose to fail.
+#[cfg(unix)]
+#[inline]
+pub(crate) fn flag_call() -> Option<std::io::Error> {
+    #[cfg(any(test, feature = "test-support"))]
+    return BIRTHS.with(|scope| {
+        let mut scope = scope.borrow_mut();
+        let scope = scope.as_mut()?;
+        scope.calls += 1;
+        (scope.fail_at == Some(scope.calls)).then(|| std::io::Error::from_raw_os_error(libc::EPERM))
+    });
+    #[cfg(not(any(test, feature = "test-support")))]
+    None
+}
+
 /// Opaque test fixture holding only a server's recorder.
 #[cfg(any(test, feature = "test-support"))]
 pub struct Hold<'a> {

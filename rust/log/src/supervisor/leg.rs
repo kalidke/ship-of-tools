@@ -189,10 +189,18 @@ impl LegLease {
         // an `fcntl` failure below closes both rather than leaking them.
         let read = unsafe { std::os::fd::OwnedFd::from_raw_fd(fds[0]) };
         let write = unsafe { std::os::fd::OwnedFd::from_raw_fd(fds[1]) };
+        crate::lane::test_progress::birth("lease.read", read.as_raw_fd());
+        crate::lane::test_progress::birth("lease.write", write.as_raw_fd());
         for fd in [read.as_raw_fd(), write.as_raw_fd()] {
+            if let Some(injected) = crate::lane::test_progress::flag_call() {
+                return Err(injected);
+            }
             let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
             if flags < 0 {
                 return Err(std::io::Error::last_os_error());
+            }
+            if let Some(injected) = crate::lane::test_progress::flag_call() {
+                return Err(injected);
             }
             if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
                 return Err(std::io::Error::last_os_error());
@@ -371,5 +379,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let id = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap();
         assert!(should_spawn_after_absent(dir.path(), &id, StartMode::Resume).unwrap());
+    }
+
+    /// A lease end is close-on-exec at publication on every Unix and born so where `pipe2` exists.
+    #[cfg(unix)]
+    fn lease_end_is_close_on_exec(role: &str) {
+        use crate::lane::test_progress::observe_births;
+        let (lease, births, _) = observe_births(None, || LegLease::create("h").expect("the lease"));
+        let birth = births.iter().find(|b| b.role == role).unwrap_or_else(|| panic!("no {role} descriptor: {births:?}"));
+        #[cfg(target_os = "linux")]
+        assert!(
+            birth.fd_flags >= 0 && birth.fd_flags & libc::FD_CLOEXEC != 0,
+            "descriptor missing FD_CLOEXEC at birth: {birth:?}"
+        );
+        let now = unsafe { libc::fcntl(birth.fd, libc::F_GETFD) };
+        assert!(now >= 0 && now & libc::FD_CLOEXEC != 0, "{role} published without FD_CLOEXEC");
+        drop(lease);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lease_read_is_close_on_exec_at_birth_and_publication() {
+        lease_end_is_close_on_exec("lease.read");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lease_write_is_close_on_exec_at_birth_and_publication() {
+        lease_end_is_close_on_exec("lease.write");
+    }
+
+    /// Each flag call of the lease's checked pass fails for real through `create`, which then closes both ends.
+    #[cfg(unix)]
+    #[test]
+    fn a_lease_flag_failure_closes_both_ends() {
+        if !crate::test_isolated::run_isolated("supervisor::leg::tests::a_lease_flag_failure_closes_both_ends") {
+            return;
+        }
+        use crate::lane::test_progress::observe_births;
+        for call in 1..=4 {
+            let (made, births, calls) = observe_births(Some(call), || LegLease::create("h"));
+            assert!(made.is_err(), "lease flag failure {call} was not returned");
+            assert_eq!(births.len(), 2);
+            assert!(calls >= call, "the injected call {call} was never made ({calls})");
+            for birth in births {
+                let rc = unsafe { libc::fcntl(birth.fd, libc::F_GETFD) };
+                assert!(rc < 0, "{} (fd {}) was left open after failure {call}", birth.role, birth.fd);
+            }
+        }
+        let (made, _, calls) = observe_births(Some(5), || LegLease::create("h"));
+        assert!(made.is_ok() && calls == 4, "the checked pass makes four flag calls, made {calls}");
+        eprintln!("lease-flag-proof calls=4 failures=4 bodies=1");
     }
 }

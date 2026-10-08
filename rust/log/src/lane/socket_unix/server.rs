@@ -104,6 +104,8 @@ impl SocketServer {
         // open, and not owned by anything else yet.
         let wake_read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
         let wake_write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+        crate::lane::test_progress::birth("wake.read", wake_read.as_raw_fd());
+        crate::lane::test_progress::birth("wake.write", wake_write.as_raw_fd());
         for fd in [wake_read.as_raw_fd(), wake_write.as_raw_fd()] {
             if let Err(e) = set_cloexec(fd).and_then(|()| set_nonblocking(fd)) {
                 let err = TransportError::Io {

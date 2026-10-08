@@ -115,10 +115,10 @@ impl Producer for PtyProducer {
         // clears the flag on those) and `close_range` severs its
         // inherited copies anyway. The parent keeps the slave open for
         // the whole run (decision 12).
-        for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
-            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        for (end, fd) in [("master", master.as_raw_fd()), ("slave", slave.as_raw_fd())] {
+            let flags = flag_fcntl(end, fd, libc::F_GETFD, 0);
             if flags >= 0 {
-                unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+                flag_fcntl(end, fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
             }
         }
 

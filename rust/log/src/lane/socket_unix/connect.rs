@@ -77,6 +77,7 @@ pub(super) fn one_connect_attempt(addr_bytes: &[u8], deadline: Instant) -> Resul
     // SAFETY: `raw` is a freshly created, valid, not-otherwise-owned fd.
     // Wrapped immediately so every early return below closes it.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    crate::lane::test_progress::birth("connector", fd.as_raw_fd());
     if let Err(e) = set_cloexec(fd.as_raw_fd()) {
         return Err(ConnectAttempt::Fatal(e));
     }

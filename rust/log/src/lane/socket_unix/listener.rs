@@ -150,6 +150,7 @@ pub(super) fn create_and_bind_listener(
     // SAFETY: `raw` is a freshly created, valid, not-otherwise-owned fd.
     // Wrapped immediately so every early return below closes it.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    crate::lane::test_progress::birth("listener", fd.as_raw_fd());
     set_cloexec(fd.as_raw_fd()).map_err(|e| TransportError::Io {
         op: "fcntl(FD_CLOEXEC socket)",
         source: e,
@@ -288,6 +289,9 @@ pub(super) fn create_and_bind_listener(
 /// creation flags (not available uniformly across this crate's Unix
 /// targets — see the call sites' own doc).
 pub(super) fn set_cloexec(fd: RawFd) -> io::Result<()> {
+    if let Some(injected) = crate::lane::test_progress::flag_call() {
+        return Err(injected);
+    }
     let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     if rc != 0 {
         return Err(io::Error::last_os_error());
@@ -299,6 +303,9 @@ pub(super) fn set_cloexec(fd: RawFd) -> io::Result<()> {
 /// portable equivalent of Linux's own `pipe2(O_NONBLOCK)` (see the wake
 /// pipe's own construction).
 pub(super) fn set_nonblocking(fd: RawFd) -> io::Result<()> {
+    if let Some(injected) = crate::lane::test_progress::flag_call() {
+        return Err(injected);
+    }
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
     if flags < 0 {
         return Err(io::Error::last_os_error());
