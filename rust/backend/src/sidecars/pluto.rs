@@ -286,7 +286,22 @@ pub(crate) mod seams {
     use std::sync::{Arc, Mutex};
 
     pub(crate) static WRITE_PENDING_POLLS: AtomicU64 = AtomicU64::new(0);
+    /// Held (zero permits) while a test wants the flush await to stay pending; one-shot error for the flush.
+    pub(crate) static FLUSH_GATE: Mutex<Option<Arc<tokio::sync::Semaphore>>> = Mutex::new(None);
+    pub(crate) static FAIL_FLUSH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     pub(crate) static CLEANUP_GATE: Mutex<Option<Arc<tokio::sync::Semaphore>>> = Mutex::new(None);
+
+    /// The leaf in front of the real flush: waits on the gate, then fails once if asked.
+    pub(crate) async fn before_flush() -> std::io::Result<()> {
+        let gate = FLUSH_GATE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(gate) = gate {
+            let _ = gate.acquire().await;
+        }
+        if FAIL_FLUSH.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::Error::other("injected flush error"));
+        }
+        Ok(())
+    }
 
     pub(crate) async fn observed<F: std::future::Future>(future: F) -> F::Output {
         let mut future = std::pin::pin!(future);
@@ -335,6 +350,8 @@ async fn supervisor_task(
                     let line = format!("OPEN {}\n", sub.abs_path);
                     let write = async {
                         stdin.write_all(line.as_bytes()).await?;
+                        #[cfg(test)]
+                        seams::before_flush().await?;
                         stdin.flush().await
                     };
                     #[cfg(test)]
@@ -401,7 +418,6 @@ async fn supervisor_task(
 mod port_parse_tests {
     use super::spawn_supervisor;
     use std::time::Duration;
-    #[cfg(target_os = "linux")]
     use {
         super::{bound_pluto_port, seams, Submission},
         crate::lifecycle::child_signal::Signal,
@@ -466,14 +482,11 @@ mod port_parse_tests {
         assert!(gone, "the Pluto grandchild survived the shutdown");
     }
 
-    #[cfg(target_os = "linux")]
     /// The longest an isolated body here may take.
     const BODY: Duration = Duration::from_secs(180);
-    #[cfg(target_os = "linux")]
     /// How long a fixture waits for the supervisor to react to the child's exit or the Signal.
     const REACT: Duration = Duration::from_secs(30);
 
-    #[cfg(target_os = "linux")]
     /// An owned `start.jl` standing in for Pluto's: it binds a real loopback listener, says READY, records its pid,
     /// optionally starts a descendant that keeps the child's pipes, and exits when the test creates `gate`.
     fn start_script(dir: &Path, ready_url: &str, descendant: &str) -> PathBuf {
@@ -488,6 +501,7 @@ write(joinpath(dir, "pid"), string(getpid()))
 println({ready}); flush(stdout)
 {descendant}
 while !isfile(joinpath(dir, "gate")) sleep(0.05) end
+write(joinpath(dir, "exiting"), "x")
 exit(0)
 "#,
             dir = dir.display(),
@@ -497,23 +511,18 @@ exit(0)
         script
     }
 
-    #[cfg(target_os = "linux")]
     const READY_LOCAL: &str = r#""READY http://127.0.0.1:$port""#;
-    #[cfg(target_os = "linux")]
     /// A descendant that holds only the child's stdout.
-    const KEEP_STDOUT: &str = r#"p = run(pipeline(`sleep 300`, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
-    #[cfg(target_os = "linux")]
+    const KEEP_STDOUT: &str = r#"p = run(pipeline(`$(Base.julia_cmd()) --startup-file=no -e "sleep(300)"`, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
     /// A descendant that holds the read end of the child's stdin and the write end of its stdout, reading nothing.
-    const KEEP_PIPES: &str = r#"p = run(pipeline(`sleep 300`, stdin=stdin, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
+    const KEEP_PIPES: &str = r#"p = run(pipeline(`$(Base.julia_cmd()) --startup-file=no -e "sleep(300)"`, stdin=stdin, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
 
-    #[cfg(target_os = "linux")]
     struct Harness {
         dir: PathBuf,
         sig: &'static Signal,
         tx: mpsc::Sender<Submission>,
     }
 
-    #[cfg(target_os = "linux")]
     impl Harness {
         async fn start(ready_url: &str, descendant: &str) -> Harness {
             let dir = tempfile::tempdir().expect("owned fixture root").keep();
@@ -551,34 +560,55 @@ exit(0)
         }
     }
 
-    #[cfg(target_os = "linux")]
-    /// Whether the process has exited and not been reaped (Linux), or is gone.
-    fn exited(pid: u32) -> bool {
-        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Ok(stat) => stat.rsplit_once(')').map(|(_, rest)| rest.trim_start().starts_with('Z')).unwrap_or(false),
-            Err(_) => true,
+    /// Whether the fixture's child has begun exiting: its script writes `exiting` as its last act before `exit(0)`,
+    /// so the observation is the same on every platform (the supervisor, not the test, waits for the child).
+    fn exited(h: &Harness) -> bool {
+        h.dir.join("exiting").exists()
+    }
+
+    /// Whether a process of this id is running (a zombie is not).
+    #[cfg(unix)]
+    fn alive(pid: u32) -> bool {
+        // SAFETY: signal 0 only probes.
+        let probe = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        #[cfg(target_os = "linux")]
+        if std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| stat.rsplit_once(')').map(|(_, rest)| rest.trim_start().starts_with('Z')))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        probe
+    }
+
+    #[cfg(windows)]
+    fn alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        // SAFETY: a plain query on a process handle opened and closed here.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut code = 0u32;
+            let ok = GetExitCodeProcess(handle, &mut code);
+            CloseHandle(handle);
+            ok != 0 && code == 259
         }
     }
 
-    #[cfg(target_os = "linux")]
-    fn alive(pid: u32) -> bool {
-        // SAFETY: signal 0 only probes.
-        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 && !exited(pid) }
-    }
-
-    #[cfg(target_os = "linux")]
     async fn errors(rx: oneshot::Receiver<anyhow::Result<String>>, what: &str) {
         let got = tokio::time::timeout(REACT, rx).await.unwrap_or_else(|_| panic!("{what}: no answer"));
         assert!(matches!(got, Ok(Err(_))), "{what}: must end with an error");
     }
 
-    #[cfg(target_os = "linux")]
     fn granted(port: u16) -> bool {
         bound_pluto_port() == Some(port) || crate::pages::proxy::allowed_proxy_ports().contains(&port)
     }
 
     /// The child's own exit, with no descendant, takes the proxy grant.
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn death_releases_proxy_grant() {
         if !isolated("sidecars::pluto::port_parse_tests::death_releases_proxy_grant", BODY) {
@@ -587,15 +617,13 @@ exit(0)
         let h = Harness::start(READY_LOCAL, "").await;
         let port = h.wait_number("port").await as u16;
         assert!(granted(port), "setup: READY grants the port");
-        let child = h.wait_number("pid").await;
         h.open_gate();
-        within(REACT, "the child exits", || exited(child)).await;
+        within(REACT, "the child exits", || exited(&h)).await;
         within(REACT, "the grant is released", || !granted(port)).await;
         h.finish().await;
     }
 
     /// A descendant that keeps stdout open past the child's exit does not keep the grant.
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn inherited_stdout_does_not_keep_grant() {
         if !isolated("sidecars::pluto::port_parse_tests::inherited_stdout_does_not_keep_grant", BODY) {
@@ -604,10 +632,9 @@ exit(0)
         *seams::CLEANUP_GATE.lock().unwrap() = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(0)));
         let h = Harness::start(READY_LOCAL, KEEP_STDOUT).await;
         let port = h.wait_number("port").await as u16;
-        let child = h.wait_number("pid").await;
         let descendant = h.wait_number("desc").await;
         h.open_gate();
-        within(REACT, "the child exits", || exited(child)).await;
+        within(REACT, "the child exits", || exited(&h)).await;
         within(REACT, "the grant is released", || !granted(port)).await;
         assert!(alive(descendant), "the release must not wait for cleanup or EOF");
         let gate = seams::CLEANUP_GATE.lock().unwrap().clone().unwrap();
@@ -617,7 +644,6 @@ exit(0)
     }
 
     /// A READY line that is not a loopback page address grants nothing.
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn nonloopback_ready_grants_nothing() {
         if !isolated("sidecars::pluto::port_parse_tests::nonloopback_ready_grants_nothing", BODY) {
@@ -630,12 +656,10 @@ exit(0)
         h.finish().await;
     }
 
-    #[cfg(target_os = "linux")]
     /// A stdin write that cannot complete: three requests are in flight (one answered by nobody, one mid-write, one
     /// queued) when the child exits with a descendant holding both pipes.
-    async fn blocked_write_scenario(h: &Harness) -> (u16, u32, u32, Vec<oneshot::Receiver<anyhow::Result<String>>>) {
+    async fn blocked_write_scenario(h: &Harness) -> (u16, u32, Vec<oneshot::Receiver<anyhow::Result<String>>>) {
         let port = h.wait_number("port").await as u16;
-        let child = h.wait_number("pid").await;
         let descendant = h.wait_number("desc").await;
         let first = h.submit("a".to_string()).await;
         let before = seams::WRITE_PENDING_POLLS.load(std::sync::atomic::Ordering::SeqCst);
@@ -646,12 +670,11 @@ exit(0)
         .await;
         let queued = h.submit("c".to_string()).await;
         tokio::time::sleep(Duration::from_secs(1)).await;
-        assert!(alive(child) && alive(descendant), "setup: child and descendant are running");
+        assert!(alive(h.number("pid").unwrap()) && alive(descendant), "setup: child and descendant are running");
         assert!(granted(port), "setup: the grant is held");
-        (port, child, descendant, vec![first, big, queued])
+        (port, descendant, vec![first, big, queued])
     }
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn blocked_write_death_releases_grant_and_closes_requests() {
         if !isolated("sidecars::pluto::port_parse_tests::blocked_write_death_releases_grant_and_closes_requests", BODY) {
@@ -660,9 +683,9 @@ exit(0)
         let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
         *seams::CLEANUP_GATE.lock().unwrap() = Some(gate.clone());
         let h = Harness::start(READY_LOCAL, KEEP_PIPES).await;
-        let (port, child, descendant, replies) = blocked_write_scenario(&h).await;
+        let (port, descendant, replies) = blocked_write_scenario(&h).await;
         h.open_gate();
-        within(REACT, "the child exits", || exited(child)).await;
+        within(REACT, "the child exits", || exited(&h)).await;
         within(REACT, "the grant is released", || !granted(port)).await;
         assert!(alive(descendant), "revocation precedes cleanup: the descendant still holds the pipes");
         for (i, rx) in replies.into_iter().enumerate() {
@@ -674,19 +697,56 @@ exit(0)
         h.finish().await;
     }
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn signal_cancels_blocked_pluto_write() {
         if !isolated("sidecars::pluto::port_parse_tests::signal_cancels_blocked_pluto_write", BODY) {
             return;
         }
         let h = Harness::start(READY_LOCAL, KEEP_PIPES).await;
-        let (port, _child, _descendant, replies) = blocked_write_scenario(&h).await;
+        let (port, _descendant, replies) = blocked_write_scenario(&h).await;
         h.sig.fire();
         within(REACT, "the grant is released", || !granted(port)).await;
         for (i, rx) in replies.into_iter().enumerate() {
             errors(rx, &format!("request {i}")).await;
         }
+        h.finish().await;
+    }
+
+    /// A flush that cannot finish gives way to the child's exit like a write does: the grant is released and the
+    /// current and pending requests end with errors.
+    #[tokio::test]
+    async fn flush_blocked_death_releases_grant_and_closes_requests() {
+        if !isolated("sidecars::pluto::port_parse_tests::flush_blocked_death_releases_grant_and_closes_requests", BODY) {
+            return;
+        }
+        let h = Harness::start(READY_LOCAL, "").await;
+        let port = h.wait_number("port").await as u16;
+        let first = h.submit("a".to_string()).await;
+        let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        *seams::FLUSH_GATE.lock().unwrap() = Some(gate.clone());
+        let second = h.submit("b".to_string()).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(granted(port), "setup: the grant is held while the flush waits");
+        h.open_gate();
+        within(REACT, "the child exits", || exited(&h)).await;
+        within(REACT, "the grant is released", || !granted(port)).await;
+        errors(first, "first").await;
+        errors(second, "second").await;
+        h.finish().await;
+    }
+
+    /// A flush that fails ends the supervisor the same way: grant released, requests failed.
+    #[tokio::test]
+    async fn flush_error_releases_grant_and_closes_requests() {
+        if !isolated("sidecars::pluto::port_parse_tests::flush_error_releases_grant_and_closes_requests", BODY) {
+            return;
+        }
+        let h = Harness::start(READY_LOCAL, "").await;
+        let port = h.wait_number("port").await as u16;
+        seams::FAIL_FLUSH.store(true, std::sync::atomic::Ordering::SeqCst);
+        let only = h.submit("a".to_string()).await;
+        errors(only, "the request whose flush failed").await;
+        within(REACT, "the grant is released", || !granted(port)).await;
         h.finish().await;
     }
 }

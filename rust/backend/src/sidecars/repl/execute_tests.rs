@@ -48,6 +48,7 @@ fn eval_payload(id: &str, code: &str, timeout_ms: Option<u64>) -> Value {
     p
 }
 
+#[cfg_attr(windows, allow(dead_code, reason = "used by the Unix-only tests of this file"))]
 fn run_file_payload(id: &str, path: &str) -> Value {
     json!({ "workspace_id": id, "input": { "kind": "run_file", "path": path } })
 }
@@ -78,11 +79,13 @@ fn refusal(id: &str, outcome: &str, message: &str) -> Value {
     r
 }
 
+#[cfg_attr(windows, allow(dead_code, reason = "used by the Unix-only tests of this file"))]
 fn started(run_id: &str, display: &str) -> Value {
     json!({ "kind": "started", "run_id": run_id, "origin": "session", "display": display })
 }
 
 /// One run: the reply (without `elapsed_ms`, `run_id`), those two, the eval id and every frame the bus carried for it.
+#[cfg_attr(windows, allow(dead_code, reason = "used by the Unix-only tests of this file"))]
 struct Ran {
     reply: Value,
     elapsed: u64,
