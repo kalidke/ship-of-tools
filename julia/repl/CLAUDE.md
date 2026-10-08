@@ -3,7 +3,7 @@
 The shim runs user code. It speaks newline-delimited JSON over stdin/stdout and is stacked behind the workspace's own
 project by `JULIA_LOAD_PATH`, so its `[deps]` are stdlib only, forever: a registered dependency would be shadowed by
 the version a user's manifest pins. That is why `json.jl` exists, and a guard test in `test/runtests.jl` enforces it.
-Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md (not yet written at this commit).
+Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 
 ## Files
 - `Project.toml`: the package, stdlib dependencies only.
