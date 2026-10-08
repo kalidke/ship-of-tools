@@ -11,12 +11,13 @@
 # Requires a daemon built with agent.send/agent.message support (workspace push +
 # this relay land together).
 #
-# ENDPOINT (SOT_RELAY_ENDPOINT, or auto-detected): unix:/path, ssh:target[/host],
-# or — Windows only, ADR 0042 amendment decision 5 — pipe:\\.\pipe\name /
-# pipe:name, reaching that box's OWN local daemon over its named pipe. A unix:
-# or pipe: endpoint is opened by `sotd stdio-bridge` (comm-lib's sot_dial),
-# which connects only to an endpoint this OS account serves (ADR 0049, User
-# isolation). `send` works over a pipe: endpoint.
+# ENDPOINT: what `sotd topology relay-endpoint` answers for this box (comm-lib's
+# sot_relay_endpoint), and nothing else; no variable overrides it. unix:/path,
+# ssh:target[/host], or — Windows only, ADR 0042 amendment decision 5 —
+# pipe:\\.\pipe\name / pipe:name, reaching that box's OWN local daemon over its
+# named pipe. A unix: or pipe: endpoint is opened by `sotd stdio-bridge`
+# (comm-lib's sot_dial), which connects only to an endpoint this OS account
+# serves (ADR 0049, User isolation). `send` works over a pipe: endpoint.
 #
 # Usage:
 #   comm-relay.sh send @to "message"        # fire-and-forget, instant
@@ -49,10 +50,6 @@ case "$SUB" in
     send) why="$(sot_require_routable_identity)" || { to="${1:-}"; echo "FAILED -> @${to#@}: $why" >&2; exit 1; } ;;
 esac
 
-ENDPOINT="${SOT_RELAY_ENDPOINT:-}"
-resolve_endpoint() {
-    sot_relay_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
-}
 # A unix: or pipe: endpoint goes through sot_dial, an ssh: one through sot_ssh_bridge (nc_send below).
 # SOFT for `send` (see the file-first rule below): a target this box's
 # registry names is handed to comm-send.sh, which files it by its own route
@@ -62,11 +59,11 @@ resolve_endpoint() {
 # there instead.
 # A directed send (HANDLE given) reports it as that send's verdict.
 _endpoint_missing() {  # [HANDLE]
-    local why="no sotd daemon found; set SOT_RELAY_ENDPOINT=unix:/path, ssh:target[/host], or (Windows) pipe:name"
+    local why="no sotd daemon found; \`sotd topology relay-endpoint\` named no endpoint for this box"
     if [ -n "${1:-}" ]; then echo "FAILED -> @$1: $why" >&2; else echo "ERROR: $why" >&2; fi
 }
 _require_endpoint() { [ -n "$ENDPOINT" ] && return 0; _endpoint_missing "${1:-}"; return 1; }
-ENDPOINT="$(resolve_endpoint || true)"
+ENDPOINT="$(sot_relay_endpoint || true)"
 if [ -z "$ENDPOINT" ]; then
     case "$SUB" in
         send) ;;

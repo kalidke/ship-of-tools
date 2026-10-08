@@ -196,24 +196,20 @@ pub fn runtime_sot_dir() -> PathBuf {
     PathBuf::from(format!("/tmp/sot-{uid}"))
 }
 
-/// L1-unix LU1b (ADR 0043 decision 1): the propagation seam. Determinism
-/// for a Unix-domain-socket path comes from PROPAGATION, not discovery —
-/// the daemon (LU4) resolves the runtime dir ONCE and exports it as
-/// `SOT_RUNTIME_DIR` to every capsule and client it spawns, so they can
-/// never disagree with the daemon (or each other) about `$XDG_RUNTIME_DIR`
-/// the way two independently-launched processes' own [`runtime_sot_dir`]
-/// discovery could. A set `SOT_RUNTIME_DIR` is trusted only after it is
-/// ABSOLUTE (a relative one would resolve against whatever the CALLER's
-/// own current directory happens to be at the moment — a second, silent
-/// source of disagreement this propagation seam exists to remove, since
-/// `chdir` is per-process state the daemon cannot pin for everything it
-/// spawns) and passes the SAME [`is_private_dir`] check `runtime_sot_dir`'s
-/// own discovery applies to its candidates — a stale or maliciously-set
-/// var pointing at a group/world-accessible or symlinked directory is a
-/// loud, named error, never a silent fallback to discovery (which would
-/// let a mismatched env var produce a silent SECOND endpoint no caller
-/// intended). Discovery ([`runtime_sot_dir`]) is only the fallback for a
-/// process started outside the daemon's tree.
+/// L1-unix LU1b (ADR 0043 decision 1): the override seam. A set `SOT_RUNTIME_DIR`
+/// pins the runtime dir for every process that reads it, so they cannot disagree
+/// about `$XDG_RUNTIME_DIR` the way two independently-launched processes' own
+/// [`runtime_sot_dir`] discovery could. No production code sets it today: the
+/// daemon does not export it to the capsules and clients it spawns, so tests and
+/// an operator are its only writers. A set `SOT_RUNTIME_DIR` is trusted only after
+/// it is ABSOLUTE (a relative one would resolve against whatever the CALLER's own
+/// current directory happens to be at the moment, a silent source of
+/// disagreement) and passes the SAME [`is_private_dir`] check `runtime_sot_dir`'s
+/// own discovery applies to its candidates: a stale or maliciously-set var
+/// pointing at a group/world-accessible or symlinked directory is a loud, named
+/// error, never a silent fallback to discovery (which would let a mismatched env
+/// var produce a silent SECOND endpoint no caller intended). Without it,
+/// discovery ([`runtime_sot_dir`]) answers.
 pub fn runtime_dir() -> std::io::Result<PathBuf> {
     if let Some(dir) = std::env::var_os("SOT_RUNTIME_DIR") {
         let dir = PathBuf::from(dir);

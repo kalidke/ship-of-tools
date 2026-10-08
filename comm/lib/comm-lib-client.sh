@@ -271,23 +271,24 @@ sot_dial() {
     esac
 }
 
-# sot_relay_endpoint [EXPLICIT] — the endpoint for comm RELAY traffic (send):
-# where the HANDLES live. On a Windows box this
-# is the box's own ssh child to the hub — never the local daemon's pipe,
-# which has no route to a handle on another host and drops the frame
-# without a word (2026-09-08: every cross-host send from a Windows session
+# sot_relay_endpoint — the endpoint for comm RELAY traffic (send): where the
+# HANDLES live. It is whatever `sotd topology relay-endpoint` answers for THIS
+# box, through the one gate, and nothing else: no argument and no variable
+# overrides topology's rule, so an endpoint exported once cannot outlive the
+# runtime directory it named (2026-10-08: an inherited SOT_RELAY_ENDPOINT
+# named a socket the hub's daemon did not listen on, and a cross-host send
+# from a row failed while the daemon's own SOT_SOCKET was right). `sotd` always
+# has an answer once it exists: on the hub its own endpoint (SOT_SOCKET first),
+# on a frontend box `ssh:<hub>`, on any other listed box the reverse-tunnel
+# socket, on a box that never declared a topology its own endpoint, and its own
+# error line and nothing else on a file that names a hub without this box. On
+# a Windows box this is the box's own ssh child to the hub — never the local
+# daemon's pipe, which has no route to a handle on another host and drops the
+# frame without a word (2026-09-08: every cross-host send from a Windows session
 # went dark the day discovery became pipe-first). Workspace ops, spawn and
-# sot-fe keep sot_daemon_endpoint's pipe-first order: those really do
-# target the local daemon. An explicit endpoint always wins, as everywhere
-# else -- but a refusal here is a MISS, not a death: this resolver
-# continues to its next source (main's ruling; contrast
-# sot_daemon_endpoint's explicit arm below, which is fatal).
+# sot-fe keep sot_daemon_endpoint's pipe-first order: those really do target
+# the local daemon.
 #
-# Two lines, both through the one gate: an explicit value, else whatever
-# `sotd topology relay-endpoint` answers for THIS box (`sotd` always has
-# an answer once it exists -- its own endpoint on a box that never
-# declared a topology, the plan's endpoint on one that did, its own error
-# line and nothing else on a file that names a hub without this box).
 # NEVER falls through to `sot_daemon_endpoint`: that would silently
 # resolve THIS box's own daemon for a question about the hub's, which is
 # the 2026-09-08 cross-host regression pinned at
@@ -295,9 +296,7 @@ sot_dial() {
 # `comm/tests/join_disambiguation/pipe_endpoint.sh` -- a failed
 # resolution is no endpoint, never the local daemon, on either platform.
 sot_relay_endpoint() {
-    _sot_emit_endpoint "${1:-}" && return 0
-    _sot_emit_endpoint "$(_sot_planned_relay_endpoint)" && return 0
-    return 1
+    _sot_emit_endpoint "$(_sot_planned_relay_endpoint)"
 }
 
 # sot_daemon_endpoint [EXPLICIT] — resolve the control socket endpoint used by

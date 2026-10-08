@@ -42,6 +42,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | umask 077, boot refusals | process rule | server | `rust/backend/src/main.rs` `apply_umask`, `parse_args` |
 | session socket/pipe path rule `<runtime>/sessions/<label>.sock`, `\\.\pipe\sot-<USER>-<label>` | disk rule | topology | `rust/protocol/src/topology/endpoint.rs` `session_socket_path` |
 | local daemon label (`sot`, `local`) | setting | topology | `rust/protocol/src/topology/endpoint.rs` `local_daemon_label`; spelled at several script sites (see two owners) |
+| this box's comm relay endpoint (derived when asked; no variable overrides it) | rule | topology | `rust/protocol/src/topology/mod.rs` `relay_endpoint`; `rust/backend/src/topology/cli.rs` `relay_endpoint_cmd`; asked, never derived, by `comm/lib/comm-lib-client.sh` `sot_relay_endpoint` |
 | generated hub-relay endpoint classification | rule | topology | `rust/protocol/src/topology/mod.rs` `relay_host_for_path`; `rust/frontend/src/net/dial.rs` `parse_dial_arg` consumes it |
 | the bound session socket/pipe, its DACL and inbound buffer, live-socket refusal | disk, endpoint | server | `rust/backend/src/server/listen.rs` `run_local`, `bind_session`, `refuse_live_socket`, `session_pipe_security_descriptor` |
 | `<state>/held.json` | disk | lifecycle | `rust/backend/src/lifecycle/lease.rs` `HeldRecord`, `persist`; name `rust/protocol/src/ops/lease.rs` `HELD_RECORD_FILE` |
@@ -256,7 +257,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `SOT_COMM_SPAWN_WAIT`, `SOT_COMM_SPAWN_CAPSULE_WAIT`, `SOT_FE_ENDPOINT`, `SOT_SPAWN_ENDPOINT`, `SOT_NAV_DRY_RUN`, `SOT_ACCOUNT` | env | agents | `agents/spawn/comm-spawn.sh`; `agents/sot-fe/sot-fe`; `agents/spawn/comm-bootstrap.sh`; `rust/backend/src/agents/accounts.rs` `account_env` |
 | `SOT_PROBE_READ_TIMEOUT`, `SOT_PROBE_READY_WAIT` | env | agents | `agents/spawn/comm-probe.sh` |
 | `GH_OAUTH_CLIENT_ID`, `SOT_GH_SCOPES` (sot-gh-auth also honours gh's own `GH_HOST`, `GH_CONFIG_DIR`) | env | agents | `agents/sot-gh-auth.sh` |
-| `SOT_BACKEND_LABEL`, `SOT_RELAY_ENDPOINT`, `SOT_RELAY_LABEL`, `SOT_RELAY_SOTD`, `SOT_RELAY_TARGET` | env | topology | `rust/protocol/src/topology/relay_units.rs` `relay_command_line`; `comm/lib/comm-lib-client.sh` `sot_relay_endpoint` |
+| `SOT_BACKEND_LABEL`, `SOT_RELAY_SOTD`, `SOT_RELAY_TARGET` | env | topology | `rust/protocol/src/topology/relay_units.rs` `relay_command_line`; `rust/protocol/src/topology/endpoint.rs` `local_endpoint`; `comm/lib/comm-lib-client.sh` `sot_daemon_endpoint` |
 | `SOT_JULIA_BIN`, `SOT_NODE_BIN`, `QUARTO_JULIA` | env | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; `rust/backend/src/sidecars/mathjax.rs` `default_script_path`; `QUARTO_JULIA` is set for quarto by `rust/backend/src/pages/ops.rs` `run_quarto` |
 | Which Julia binary the daemon runs: absolute override, juliaup default channel, then a verified PATH candidate; Windows app-execution aliases refused by file tag | rule | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; read by `rust/backend/src/update.rs` `prepare_julia` and `rust/backend/src/pages/ops.rs` `run_quarto` |
 | `SOT_WATCH_BUDGET` | env | files | `rust/backend/src/files/watcher.rs` `watch_budget` |

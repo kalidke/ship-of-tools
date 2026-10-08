@@ -329,7 +329,7 @@ fn relay_host_in(dir: &Path, path: &Path) -> Option<String> {
 /// ```text
 /// self <host>
 /// hub <host>
-/// relay-endpoint <endpoint>          # what SOT_RELAY_ENDPOINT is on this box
+/// relay-endpoint <endpoint>          # where this box's comm relay sends go
 /// dial <host> <endpoint>             # one per dialable host (every box declaring
 ///                                    # `daemon`): this box's own socket for itself;
 ///                                    # ON THE HUB, the hub's own relay socket for a
