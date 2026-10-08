@@ -26,7 +26,13 @@ pub(crate) fn isolated(name: &str, bound: Duration) -> bool {
         clippy::disallowed_methods,
         reason = "bounded fixture child through test_isolated::test_command, enter, drain and assert_once"
     )]
-    let child = command.spawn().expect("start isolated test body");
+    // The child inherits this process's environment at the moment of the spawn. Sibling tests change it under
+    // `ENV_TEST_LOCK` and restore it before releasing the lock, so the spawn takes the lock: it sees only restored
+    // values, never another test's temporary HOME or julia override.
+    let child = {
+        let _env = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        command.spawn().expect("start isolated test body")
+    };
     let pid = child.id();
     let (status, output, errors) = sot_log::test_isolated::drain(child).wait_within(bound);
     print!("{output}{errors}");
