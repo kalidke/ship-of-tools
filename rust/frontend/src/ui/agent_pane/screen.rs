@@ -251,15 +251,26 @@ impl State {
         // new client's own screen (`PaneScreen::Client`) rather than the
         // held prior content or the tmux fallback. One-shot per attach,
         // same edge-triggered pattern as the other attach-outcome lines.
-        if pane_screen == PaneScreen::Client && !self.pane_attach_presented {
-            self.pane_attach_presented = true;
-            let since_request_ms = self
-                .pane_attach_requested_at
-                .map(|s| s.elapsed().as_millis() as u64)
-                .unwrap_or(0);
-            tracing::info!(since_request_ms, "session pane: capsule screen presented");
+        if pane_screen == PaneScreen::Client {
+            let facts = PaneFacts { checkpointed: pane_attach_checkpointed, attached: pane_attach_is_attached, live: !pane_attach_is_dead };
+            if let Some(c) = self.pane_presentation.candidate(facts, (u16::MAX, u16::MAX)) {
+                self.log_presentation(c);
+            }
         }
         (pane_screen, pane_overlay)
+    }
+
+    /// Offers a candidate to the owner and logs its outcome.
+    pub(in crate::ui) fn log_presentation(&mut self, candidate: PresentationCandidate) {
+        match self.pane_presentation.complete(candidate, std::time::Instant::now()) {
+            Presentation::Receipt { elapsed, .. } => tracing::info!(
+                since_request_ms = elapsed.as_millis() as u64,
+                since_request_ns = elapsed.as_nanos() as u64,
+                "session pane: capsule screen presented"
+            ),
+            Presentation::NoOrigin => tracing::warn!("session pane: capsule screen presented without a request origin"),
+            Presentation::Stale => {}
+        }
     }
 
     pub(in crate::ui) fn sync_pane_pty_size(&mut self, pty_size_observed: (u16, u16)) {

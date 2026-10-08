@@ -142,6 +142,7 @@ impl State {
                 .take()
                 .unwrap_or_else(std::time::Instant::now),
         );
+        self.pane_presentation.begin(self.pane_attach_requested_at);
         if let Some(mut t) = self.pane_attach_term.take() {
             self.pane_hold = Some(HeldPaneScreen(t.screen().clone()));
             match self.bl_pane_target.clone() {
@@ -260,7 +261,6 @@ impl State {
                 self.pane_hold = None;
                 self.pane_attach_started_at = Some(std::time::Instant::now());
                 self.pane_attach_episode_warnings = 0;
-                self.pane_attach_presented = false;
                 return true;
             }
         }
@@ -319,7 +319,6 @@ impl State {
                 // episode warnings.
                 self.pane_attach_started_at = Some(std::time::Instant::now());
                 self.pane_attach_episode_warnings = 0;
-                self.pane_attach_presented = false;
                 true
             }
             Err(e) => {
