@@ -151,7 +151,12 @@ const REAP_BOUND: Duration = Duration::from_secs(2);
 
 /// One of the PTY factory's close-on-exec flag calls. A test may make it fail for real (the factory's own path then
 /// runs) and learns which descriptors the factory flagged.
-fn flag_fcntl(end: &'static str, fd: RawFd, cmd: libc::c_int, arg: libc::c_int) -> io::Result<libc::c_int> {
+fn flag_fcntl(
+    end: &'static str,
+    fd: RawFd,
+    cmd: libc::c_int,
+    arg: libc::c_int,
+) -> io::Result<libc::c_int> {
     #[cfg(test)]
     if flag_plan::fails(end, fd, cmd) {
         return Err(io::Error::from_raw_os_error(libc::EPERM));
@@ -733,7 +738,12 @@ mod flag_plan {
     }
 
     pub(super) fn arm(end: &'static str, cmd: libc::c_int) {
-        PLAN.with(|plan| *plan.borrow_mut() = Plan { fail: Some((end, cmd)), seen: Vec::new() });
+        PLAN.with(|plan| {
+            *plan.borrow_mut() = Plan {
+                fail: Some((end, cmd)),
+                seen: Vec::new(),
+            }
+        });
     }
 
     pub(super) fn take_seen() -> Vec<(&'static str, RawFd)> {
@@ -771,48 +781,90 @@ mod flag_tests {
         let argv = ["/bin/sh", "-c", "exit 0"].map(String::from);
         let spawned = PtyProducer::spawn(&argv, 80, 24);
         let seen = flag_plan::take_seen();
-        assert!(spawned.is_err(), "PTY flag failure was not returned ({end} {cmd})");
-        assert_eq!(seen.len().min(2), seen.len(), "the factory flagged only its two ends: {seen:?}");
-        assert!(seen.iter().any(|(e, _)| *e == end), "the failing end was never flagged: {seen:?}");
+        assert!(
+            spawned.is_err(),
+            "PTY flag failure was not returned ({end} {cmd})"
+        );
+        assert_eq!(
+            seen.len().min(2),
+            seen.len(),
+            "the factory flagged only its two ends: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|(e, _)| *e == end),
+            "the failing end was never flagged: {seen:?}"
+        );
         for (e, fd) in seen {
-            assert!(fd_is_closed(fd), "the {e} end (fd {fd}) was left open after the failure");
+            assert!(
+                fd_is_closed(fd),
+                "the {e} end (fd {fd}) was left open after the failure"
+            );
         }
         let child = unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) };
         assert_eq!(child, -1, "a child was started despite the failure");
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
         eprintln!("flag-failure-proof test={test} end={end} cmd={cmd} bodies=1");
     }
 
     #[test]
     fn master_getfd_failure_is_returned() {
-        flag_failure("capsule::producer::pty::flag_tests::master_getfd_failure_is_returned", "master", libc::F_GETFD);
+        flag_failure(
+            "capsule::producer::pty::flag_tests::master_getfd_failure_is_returned",
+            "master",
+            libc::F_GETFD,
+        );
     }
 
     #[test]
     fn master_setfd_failure_is_returned() {
-        flag_failure("capsule::producer::pty::flag_tests::master_setfd_failure_is_returned", "master", libc::F_SETFD);
+        flag_failure(
+            "capsule::producer::pty::flag_tests::master_setfd_failure_is_returned",
+            "master",
+            libc::F_SETFD,
+        );
     }
 
     #[test]
     fn slave_getfd_failure_is_returned() {
-        flag_failure("capsule::producer::pty::flag_tests::slave_getfd_failure_is_returned", "slave", libc::F_GETFD);
+        flag_failure(
+            "capsule::producer::pty::flag_tests::slave_getfd_failure_is_returned",
+            "slave",
+            libc::F_GETFD,
+        );
     }
 
     #[test]
     fn slave_setfd_failure_is_returned() {
-        flag_failure("capsule::producer::pty::flag_tests::slave_setfd_failure_is_returned", "slave", libc::F_SETFD);
+        flag_failure(
+            "capsule::producer::pty::flag_tests::slave_setfd_failure_is_returned",
+            "slave",
+            libc::F_SETFD,
+        );
     }
 
     /// Publication: a successfully spawned producer's master and held slave are close-on-exec.
     #[test]
     fn a_published_pty_pair_is_close_on_exec() {
-        let producer = PtyProducer::spawn(&["sleep".to_string(), "600".to_string()], 80, 24).unwrap();
+        let producer =
+            PtyProducer::spawn(&["sleep".to_string(), "600".to_string()], 80, 24).unwrap();
         for (end, fd) in [
-            ("master", producer.reader_fd.as_ref().expect("the master").as_raw_fd()),
-            ("slave", producer.slave.as_ref().expect("the held slave").as_raw_fd()),
+            (
+                "master",
+                producer.reader_fd.as_ref().expect("the master").as_raw_fd(),
+            ),
+            (
+                "slave",
+                producer.slave.as_ref().expect("the held slave").as_raw_fd(),
+            ),
         ] {
             let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-            assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0, "the {end} end is not close-on-exec at publication");
+            assert!(
+                flags >= 0 && flags & libc::FD_CLOEXEC != 0,
+                "the {end} end is not close-on-exec at publication"
+            );
         }
     }
 }

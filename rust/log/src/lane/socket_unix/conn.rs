@@ -112,7 +112,9 @@ fn enqueue_checkpoint(evt: &LaneEvent) -> Option<(Option<ConnId>, &'static str, 
     match evt {
         LaneEvent::Accepted(id) => Some((Some(*id), "accepted.enqueue", String::new())),
         LaneEvent::Closed(id, _) => Some((Some(*id), "closed.enqueue", String::new())),
-        LaneEvent::Sent(id, marker) => Some((Some(*id), "sent.enqueue", format!(" marker={marker}"))),
+        LaneEvent::Sent(id, marker) => {
+            Some((Some(*id), "sent.enqueue", format!(" marker={marker}")))
+        }
         LaneEvent::AcceptError(_) => Some((None, "accept_error.enqueue", String::new())),
         LaneEvent::Bytes(..) => None,
     }
@@ -267,8 +269,12 @@ fn claim(
         conn
     };
     drop(sender); // unblocks a writer idle-waiting on `recv` with nothing queued
-    shared.progress.note(Some(conn_id), "reader.join.begin", "begin");
-    shared.progress.note(Some(conn_id), "writer.join.begin", "begin");
+    shared
+        .progress
+        .note(Some(conn_id), "reader.join.begin", "begin");
+    shared
+        .progress
+        .note(Some(conn_id), "writer.join.begin", "begin");
     let own = Instant::now() + shared.controls.teardown_deadline();
     let deadline = shutdown.map_or(own, |shutdown| own.min(shutdown));
     Some(Pending {
@@ -315,12 +321,16 @@ fn note_poll(shared: &Arc<ServerShared>, pending: &mut Pending, poll: &JoinPoll)
             Worker::Reader => "reader.join.end",
             Worker::Writer => "writer.join.end",
         };
-        shared.progress.note(Some(id), step, if *ok { "ok" } else { "panic" });
+        shared
+            .progress
+            .note(Some(id), step, if *ok { "ok" } else { "panic" });
         if !ok {
             pending.panicked = true;
-            shared
-                .progress
-                .note(Some(id), "pending.panicked", format_args!("worker={}", worker.name()));
+            shared.progress.note(
+                Some(id),
+                "pending.panicked",
+                format_args!("worker={}", worker.name()),
+            );
         }
     }
     if let Some(unfinished) = &poll.expired {

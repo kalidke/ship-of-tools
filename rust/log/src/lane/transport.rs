@@ -375,7 +375,10 @@ impl PendingJoins {
 
     pub(crate) fn poll(&mut self, now: Instant) -> JoinPoll {
         let mut poll = JoinPoll::default();
-        for (worker, slot) in [(Worker::Reader, &mut self.reader), (Worker::Writer, &mut self.writer)] {
+        for (worker, slot) in [
+            (Worker::Reader, &mut self.reader),
+            (Worker::Writer, &mut self.writer),
+        ] {
             if slot.as_ref().is_some_and(JoinHandle::is_finished) {
                 let ended = slot.take().expect("checked present").join();
                 poll.joined.push((worker, ended.is_ok()));
@@ -385,11 +388,14 @@ impl PendingJoins {
         if !poll.done && now >= self.deadline && !self.expiry_reported {
             self.expiry_reported = true;
             poll.expired = Some(
-                [(Worker::Reader, &self.reader), (Worker::Writer, &self.writer)]
-                    .into_iter()
-                    .filter(|(_, slot)| slot.is_some())
-                    .map(|(worker, _)| worker)
-                    .collect(),
+                [
+                    (Worker::Reader, &self.reader),
+                    (Worker::Writer, &self.writer),
+                ]
+                .into_iter()
+                .filter(|(_, slot)| slot.is_some())
+                .map(|(worker, _)| worker)
+                .collect(),
             );
         }
         poll

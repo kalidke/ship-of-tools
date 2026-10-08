@@ -2,7 +2,9 @@
 
 use super::accept::accept_loop;
 use super::conn::{reaper_loop, request_teardown, signal_shutdown};
-use super::listener::{create_and_bind_listener, create_wake_pipe, ensure_private_runtime_dir, open_verified_dir_fd};
+use super::listener::{
+    create_and_bind_listener, create_wake_pipe, ensure_private_runtime_dir, open_verified_dir_fd,
+};
 use super::*;
 
 /// The server side of one voyage's (or the supervisor lane's) socket:
@@ -305,7 +307,9 @@ impl SocketServer {
                     &conn.stream,
                     "rust/log/src/lane/socket_unix/server.rs::disconnect_listener",
                 );
-                self.shared.progress.note(Some(id), "phase_one.route", "reaper");
+                self.shared
+                    .progress
+                    .note(Some(id), "phase_one.route", "reaper");
             }
         }
         if !self.shared.sweep_nudged.swap(true, Ordering::AcqRel) {
@@ -446,18 +450,28 @@ impl SocketServer {
     }
 
     /// Stop `conn`'s `role` worker at its exit point (after its last I/O and teardown request) until released.
-    pub fn hold_worker_exit_for_test(&self, conn: ConnId, role: crate::lane::test_progress::Role) -> crate::lane::test_progress::Pause {
+    pub fn hold_worker_exit_for_test(
+        &self,
+        conn: ConnId,
+        role: crate::lane::test_progress::Role,
+    ) -> crate::lane::test_progress::Pause {
         crate::lane::test_progress::Pause::new(self.shared.controls.arm_exit_hold(conn, role))
     }
 
     /// Make `conn`'s `role` worker panic at its exit point.
-    pub fn inject_worker_panic_for_test(&self, conn: ConnId, role: crate::lane::test_progress::Role) {
+    pub fn inject_worker_panic_for_test(
+        &self,
+        conn: ConnId,
+        role: crate::lane::test_progress::Role,
+    ) {
         self.shared.controls.arm_exit_panic(conn, role);
     }
 
     /// Stop the acceptor immediately before it registers its next connection, workers still gated, until released.
     pub fn pause_registration_for_test(&self) -> crate::lane::test_progress::Pause {
-        crate::lane::test_progress::Pause::new(self.shared.controls.arm_barrier("registration.barrier"))
+        crate::lane::test_progress::Pause::new(
+            self.shared.controls.arm_barrier("registration.barrier"),
+        )
     }
 
     /// Shorten the per-connection teardown budget (and the one `Drop` uses) for this server.

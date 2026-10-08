@@ -184,7 +184,9 @@ impl Progress {
             match self.ring.try_lock() {
                 Ok(ring) => return Some(ring),
                 Err(TryLockError::Poisoned(_)) => return None,
-                Err(TryLockError::WouldBlock) if attempt < ADMIT_ATTEMPTS / 2 => std::hint::spin_loop(),
+                Err(TryLockError::WouldBlock) if attempt < ADMIT_ATTEMPTS / 2 => {
+                    std::hint::spin_loop()
+                }
                 Err(TryLockError::WouldBlock) => std::thread::yield_now(),
             }
         }
@@ -425,7 +427,13 @@ impl Controls {
     #[inline]
     pub(crate) fn exit_point(&self, _progress: &Progress, _conn: u64, _role: Role) {}
     #[inline]
-    pub(crate) fn barrier_point(&self, _progress: &Progress, _conn: Option<u64>, _name: &'static str) {}
+    pub(crate) fn barrier_point(
+        &self,
+        _progress: &Progress,
+        _conn: Option<u64>,
+        _name: &'static str,
+    ) {
+    }
     #[cfg(windows)]
     #[inline]
     pub(crate) fn take_failure(&self, _name: &'static str) -> bool {
@@ -493,10 +501,20 @@ thread_local! {
 /// error path. Returns the factory's result, the births in order, and how many flag-setting calls it made. Reads
 /// `F_GETFD` only; it changes no descriptor.
 #[cfg(all(unix, any(test, feature = "test-support")))]
-pub fn observe_births<R>(fail_at: Option<usize>, factory: impl FnOnce() -> R) -> (R, Vec<Birth>, usize) {
-    BIRTHS.with(|scope| *scope.borrow_mut() = Some(BirthScope { fail_at, ..BirthScope::default() }));
+pub fn observe_births<R>(
+    fail_at: Option<usize>,
+    factory: impl FnOnce() -> R,
+) -> (R, Vec<Birth>, usize) {
+    BIRTHS.with(|scope| {
+        *scope.borrow_mut() = Some(BirthScope {
+            fail_at,
+            ..BirthScope::default()
+        })
+    });
     let result = factory();
-    let scope = BIRTHS.with(|scope| scope.borrow_mut().take()).expect("the scope opened above");
+    let scope = BIRTHS
+        .with(|scope| scope.borrow_mut().take())
+        .expect("the scope opened above");
     (result, scope.births, scope.calls)
 }
 
@@ -687,7 +705,10 @@ mod tests {
         progress.note(Some(4), "registered", "ok");
         let snapshot = progress.snapshot();
         let first = fields(&snapshot.records[0]);
-        assert_eq!(first[..3], ["transport-progress", "transport=pipe", "conn=pending"]);
+        assert_eq!(
+            first[..3],
+            ["transport-progress", "transport=pipe", "conn=pending"]
+        );
         assert_eq!(first[3], "step=shutdown.result");
         assert!(first[4].starts_with("elapsed_ms="));
         assert_eq!(
@@ -721,10 +742,16 @@ mod tests {
                 controls.exit_point(&progress, 7, Role::Reader);
             }
         });
-        assert!(gate.wait_reached(Duration::from_secs(5)), "the worker never stopped at its hold");
+        assert!(
+            gate.wait_reached(Duration::from_secs(5)),
+            "the worker never stopped at its hold"
+        );
         assert!(!worker.is_finished(), "the hold did not hold");
         gate.release();
-        assert!(worker.join().is_err(), "the armed panic did not fire after the release");
+        assert!(
+            worker.join().is_err(),
+            "the armed panic did not fire after the release"
+        );
         // Both were consumed: the same point now passes.
         controls.exit_point(&progress, 7, Role::Reader);
         controls.exit_point(&progress, 7, Role::Writer);
@@ -737,7 +764,8 @@ mod tests {
         controls.barrier_point(&progress, None, "registration.barrier");
         let gate = controls.arm_barrier("registration.barrier");
         std::thread::scope(|scope| {
-            let waiting = scope.spawn(|| controls.barrier_point(&progress, Some(1), "registration.barrier"));
+            let waiting =
+                scope.spawn(|| controls.barrier_point(&progress, Some(1), "registration.barrier"));
             assert!(gate.wait_reached(Duration::from_secs(5)));
             gate.release();
             waiting.join().unwrap();

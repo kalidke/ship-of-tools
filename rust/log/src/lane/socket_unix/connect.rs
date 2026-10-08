@@ -1,9 +1,10 @@
 //! The bounded, non-blocking connect(2) attempt over a fresh socket.
 
-use super::*;
 #[cfg(not(target_os = "linux"))]
 use super::listener::set_cloexec;
 use super::listener::{set_nonblocking, STREAM_SOCKET};
+use super::*;
+use super::*;
 
 // ---------------------------------------------------------------------
 // Connect (ADR 0043 decision 4, property 18): a bounded, non-blocking

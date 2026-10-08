@@ -373,14 +373,20 @@ mod tests {
     fn lease_end_is_close_on_exec(role: &str) {
         use crate::lane::test_progress::observe_births;
         let (lease, births, _) = observe_births(None, || LegLease::create("h").expect("the lease"));
-        let birth = births.iter().find(|b| b.role == role).unwrap_or_else(|| panic!("no {role} descriptor: {births:?}"));
+        let birth = births
+            .iter()
+            .find(|b| b.role == role)
+            .unwrap_or_else(|| panic!("no {role} descriptor: {births:?}"));
         #[cfg(target_os = "linux")]
         assert!(
             birth.fd_flags >= 0 && birth.fd_flags & libc::FD_CLOEXEC != 0,
             "descriptor missing FD_CLOEXEC at birth: {birth:?}"
         );
         let now = unsafe { libc::fcntl(birth.fd, libc::F_GETFD) };
-        assert!(now >= 0 && now & libc::FD_CLOEXEC != 0, "{role} published without FD_CLOEXEC");
+        assert!(
+            now >= 0 && now & libc::FD_CLOEXEC != 0,
+            "{role} published without FD_CLOEXEC"
+        );
         drop(lease);
     }
 
@@ -400,7 +406,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_lease_flag_failure_closes_both_ends() {
-        if !crate::test_isolated::run_isolated("supervisor::leg::tests::a_lease_flag_failure_closes_both_ends") {
+        if !crate::test_isolated::run_isolated(
+            "supervisor::leg::tests::a_lease_flag_failure_closes_both_ends",
+        ) {
             return;
         }
         use crate::lane::test_progress::observe_births;
@@ -408,14 +416,25 @@ mod tests {
             let (made, births, calls) = observe_births(Some(call), || LegLease::create("h"));
             assert!(made.is_err(), "lease flag failure {call} was not returned");
             assert_eq!(births.len(), 2);
-            assert!(calls >= call, "the injected call {call} was never made ({calls})");
+            assert!(
+                calls >= call,
+                "the injected call {call} was never made ({calls})"
+            );
             for birth in births {
                 let rc = unsafe { libc::fcntl(birth.fd, libc::F_GETFD) };
-                assert!(rc < 0, "{} (fd {}) was left open after failure {call}", birth.role, birth.fd);
+                assert!(
+                    rc < 0,
+                    "{} (fd {}) was left open after failure {call}",
+                    birth.role,
+                    birth.fd
+                );
             }
         }
         let (made, _, calls) = observe_births(Some(5), || LegLease::create("h"));
-        assert!(made.is_ok() && calls == 4, "the checked pass makes four flag calls, made {calls}");
+        assert!(
+            made.is_ok() && calls == 4,
+            "the checked pass makes four flag calls, made {calls}"
+        );
         eprintln!("lease-flag-proof calls=4 failures=4 bodies=1");
     }
 }
