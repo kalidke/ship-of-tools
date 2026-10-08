@@ -419,7 +419,8 @@ tmux; a capsule-capable install needs no tmux.
    whose transcript was not started in the row's root (`resume_not_this_row`):
    the first `cwd` the transcript records must be the same directory as
    `project_root`, compared by kernel identity (`sot_log::host::dir_identity`),
-   so spelling, case, separators and symlinks do not matter. A conversation
+   so spelling, case, separators and symlinks do not matter. The account moves only on the row
+   `check` validated (`set_account_on`): a row replaced while the reauth waits for its guard is refused. A conversation
    belongs to the row it was started in, and `workspace.create` gives a
    directory to one row, so no client can resume one row's conversation in
    another. The cost, stated: a row whose conversation was started in another

@@ -27,7 +27,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - The default row's declared handle is carried through the boot re-seed (`seed_default_row` copies it, `insert`
   keeps it); the one-row-per-handle promise below still applies to it.
 - Handle, account and agent change in place on the shared `Arc`, never through a replacing `insert`, so a destroyed row
-  is not brought back (`set_agent_handle`, `set_account`, `reset_agent_to_none`).
+  is not brought back (`set_agent_handle`, `set_account`, `set_account_on`, `reset_agent_to_none`).
 - No two rows hold one declared handle. At run time `set_agent_handle` clears it from every other row under the
   registry's write lock and returns their ids for the caller to save; at boot `store::scan_disk` keeps a handle that
   several tomls declare only on the row the comm registry names as its last joiner, if it is one of them

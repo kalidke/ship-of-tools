@@ -65,7 +65,7 @@ pub(crate) struct Refusal {
 /// out, so holding one means the record is already updated and the ack is
 /// the caller's next act.
 pub struct ReauthRestart {
-    /// The row itself — the `Arc` [`Workspaces::set_account`] mutated,
+    /// The row itself — the `Arc` [`Workspaces::set_account_on`] mutated,
     /// carried rather than copied field by field so nothing here can drift
     /// from the registry it was taken from: the id, slug, agent name, root
     /// and the account all come off it, and the ACCOUNT is read fresh at
@@ -418,9 +418,9 @@ pub async fn handle_workspace_reauth(
     let refuse = |code: &'static str, error: String| -> Result<(HandlerOutput, Option<ReauthRestart>)> {
         Ok((refused(req_id, Refusal { code, error, accounts: names.clone() }), None))
     };
-    // The one refusal a row can hit twice: once here, and once more after
-    // the guard is held, because a destroy could have won the wait.
-    let gone = || "the workspace was removed before its reauth could start".to_string();
+    // The refusal a row can hit before the guard, after it, and when the
+    // record moves: a destroy or a re-insert of its slug can win the wait.
+    let gone = || "the workspace was removed or replaced before its reauth could start".to_string();
 
     let Some(ws) = workspaces.resolve(Some(&req.workspace_id)) else {
         return refuse("unknown_workspace", format!("no workspace {:?} is registered here", req.workspace_id));
@@ -486,24 +486,24 @@ pub async fn handle_workspace_reauth(
         Err(e) => return refuse("launcher_unresolved", e),
     };
 
-    // The record moves now, while the old leg is still running. What is
-    // persisted — and what the restart is built from — is the `Arc`
-    // `set_account` itself mutated, never the one resolved before the
-    // guard: `Workspaces::insert` is NOT taken under this guard, so a
-    // concurrent `workspace.create` for the same slug can swap the
-    // registry's `Arc` for this row inside the window, and saving the
-    // stale one would write the OLD account into a toml the registry no
-    // longer agrees with.
+    // The record moves now, while the old leg is still running, and only on
+    // the row `check` proved the transcript against. `Workspaces::insert` is
+    // NOT taken under this guard, so a concurrent `workspace.create` for the
+    // same slug can replace this row, at another root, inside the window;
+    // `set_account_on` writes only while `ws` is still the registered row, so
+    // a replaced row is a refusal, never a restart in a root nothing checked
+    // and never a save of an account the registry no longer holds.
     let previous = ws.account();
-    let Some(row) = workspaces.set_account(&ws.workspace_id, &want) else {
+    if !workspaces.set_account_on(&ws, &want) {
         return refuse("unknown_workspace", gone());
-    };
+    }
+    let row = ws;
     if let Err(e) = crate::rows::store::save(&row) {
         // An unpersisted switch is a row that comes back on the OLD login
         // after any daemon restart while its live leg spends the new one —
         // two truths. Put the field back and refuse; nothing else has been
         // touched yet, so this is still a reauth that changed nothing.
-        workspaces.set_account(&ws.workspace_id, &previous);
+        workspaces.set_account_on(&row, &previous);
         return refuse("persist_failed", format!("could not persist the row's new account: {e}"));
     }
 

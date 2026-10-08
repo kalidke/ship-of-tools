@@ -217,3 +217,52 @@ async fn a_relative_start_directory_is_refused() {
     assert_eq!(payload["code"], "resume_not_this_row", "{payload:?}");
     assert!(restart.is_none(), "a refusal hands back no restart");
 }
+
+// A row replaced while its reauth waits for the row's guard: `check` proved
+// the transcript against the old root, and a `workspace.create` re-inserted
+// the slug at another root. Nothing moves on the replacement, whose root
+// nothing checked.
+#[tokio::test]
+async fn a_row_replaced_while_its_reauth_waits_is_refused() {
+    let _g = env_guarded();
+    let home = home_with(true, &[("team", true)]);
+    let scratch = tempfile::tempdir().unwrap();
+    pin_home(home.path(), scratch.path());
+    seed_claude_binary(home.path());
+    let root = project_root(home.path(), "reauth-row");
+    let moved = project_root(home.path(), "moved-row");
+    seed_transcript(&claude_config_dir(home.path(), "team"), &sid(51), &[&root]);
+    let (reg, id, _slug) = seed_capsule_row(&root, "", "row-declared-handle");
+    let guard = reg
+        .capsule_guard(&id)
+        .expect("a registered row has a guard");
+    let held = guard.clone().lock_owned().await;
+    let waiting = tokio::spawn({
+        let (reg, id) = (reg.clone(), id.clone());
+        async move { reauth(&reg, &id, "team", &sid(51)).await }
+    });
+    // Four handles on the guard once the reauth waits for it: the registry's,
+    // this test's, the held lock's and the waiting reauth's.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::sync::Arc::strong_count(&guard) < 4 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reauth never reached the row's guard"
+        );
+        tokio::task::yield_now().await;
+    }
+    let (same_id, _) = seed_row_into(&reg, "reauth-row", &moved, "", "row-declared-handle");
+    assert_eq!(same_id, id, "a re-inserted slug keeps its id");
+    drop(held);
+
+    let (payload, restart) = waiting.await.unwrap();
+    assert_eq!(payload["code"], "unknown_workspace", "{payload:?}");
+    assert!(restart.is_none(), "a refusal hands back no restart");
+    let now = reg.resolve(Some(&id)).unwrap();
+    assert_eq!(now.project_root, moved);
+    assert_eq!(
+        now.account(),
+        "",
+        "the replacement's account is not touched"
+    );
+}

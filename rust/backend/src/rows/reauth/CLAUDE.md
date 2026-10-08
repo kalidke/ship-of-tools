@@ -18,12 +18,15 @@ Part of the daemon's rows subsystem; charter: rust/backend/src/rows/CLAUDE.md.
 happens to the old leg after the accept frame is written.
 
 ## Rules
-- Every check runs before anything changes: `check` precedes `set_account` in `handle_workspace_reauth`, so a refusal
+- Every check runs before anything changes: `check` precedes `set_account_on` in `handle_workspace_reauth`, so a refusal
   leaves the record and the leg as they were.
 - A `resume` names the row's own conversation or is refused: a session id, a lowercase UUID (`is_session_id`), whose
   `projects/*/<id>.jsonl` the target account can open, and whose first recorded `cwd` is the same directory as the
   row's `project_root`, by `sot_log::host::dir_identity` (`transcript_refusal`). Claude Code's `--resume` opens a
   transcript from any project folder, so this is what keeps one row's conversation out of another.
+- The account moves only on the row `check` validated: `set_account_on` writes it only while that `Arc` is still the
+  registered row for its id, so a row whose slug was re-inserted while the reauth waited on its guard is refused,
+  `unknown_workspace`.
 - The new account is recorded before the old leg is touched, and the accept frame is written before the restart is
   handed its plan: `write_accept_then` hands the plan on only after the write returned.
 - An accept that cannot be written rolls the record back: `ReauthRestart::rollback`.
