@@ -118,6 +118,50 @@ jobs:
       - name: Prove native window close and the teardown backstop
         run: cargo test -p sot-frontend --test window_close --features test-window-close --locked
 
+  pane-timing-windows:
+    name: native pane timing, stand-in route (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build the private daemon
+        run: cargo build -p sot-backend --bin sotd --locked
+      - name: Build the capsule
+        run: cargo build -p sot-log --bin sot-capsule --locked
+      - name: Time cold attaches over the stand-in route to the presented pane
+        run: cargo test -p sot-frontend --test pane_timing --features test-pane-timing --locked -- stand-in
+
+  pane-timing-macos:
+    name: native pane timing, stand-in route (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build the private daemon
+        run: cargo build -p sot-backend --bin sotd --locked
+      - name: Build the capsule
+        run: cargo build -p sot-log --bin sot-capsule --locked
+      - name: Time cold attaches over the stand-in route to the presented pane
+        run: cargo test -p sot-frontend --test pane_timing --features test-pane-timing --locked -- stand-in
+
   test:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -152,7 +196,7 @@ jobs:
       # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
       # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
       - name: Function length
-        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --locked -- -A clippy::all -D clippy::too_many_lines
+        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::too_many_lines
       # rust/clippy.toml holds the rules this step enforces, one labelled group each, every group opening with its
       # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
       # that does not exist on a leg draws a warning there.

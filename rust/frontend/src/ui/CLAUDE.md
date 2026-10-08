@@ -36,6 +36,7 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),
   `resumed` (app/handler.rs); a relaunch command is refused for them (control/dispatch.rs).
+- A presentation receipt requires the current live attached client's checkpoint, a nonempty painted pane and a known request origin, and is emitted once only after frame presentation.
 - Showing a result never steals the view: `route_fe_command` (control/command.rs) honours force-show only for a
   command addressed to this frontend, and a broadcast `relaunch` is refused.
 - Help is one chord: `help.toggle` = `Primary+?` and `drawer.help` = `F1` (input/keybindings.rs). There is no bare `?`

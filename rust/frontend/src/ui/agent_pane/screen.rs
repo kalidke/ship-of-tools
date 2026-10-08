@@ -171,7 +171,7 @@ pub(in crate::ui) fn pane_discard_notice(pane: usize, client: usize) -> Option<S
 
 
 impl State {
-    pub(in crate::ui) fn session_pane_view(&mut self) -> (PaneScreen, Vec<String>) {
+    pub(in crate::ui) fn session_pane_view(&mut self) -> (PaneScreen, Vec<String>, Option<PaneFacts>) {
         // Borrow the LLM terminal screen for the duration of the draw.
         // `pane_attach_term`'s `vt100-ctt` `screen()` returns a `&Screen`
         // tied to the client; since `terminal.draw` borrows a different
@@ -181,14 +181,8 @@ impl State {
         // platform since ADR 0045 decision 1 (a capsule row attaches
         // through its own daemon everywhere).
         //
-        // LU6a: which source actually wins is `pane_screen_choice`'s
-        // call, not an unconditional `pane_attach_term`-if-present — a
-        // live but not-yet-checkpointed client (or a still-`Pending`
-        // feed) defers to `pane_hold` so a capsule switch never paints
-        // the new client's empty parser. Coordinator amendment: a client
-        // that went terminal before ever checkpointing falls all the way
-        // through to blank instead (`pane_screen_choice`'s own doc) —
-        // three separate `let`s (rather than inlining each as a call
+        // While awaiting a checkpoint, prefer the departing screen when a hold exists. With no hold a live client's initially empty parser can be selected; it cannot produce a presentation receipt. A client that becomes terminal before its first checkpoint falls through to blank.
+        // Three separate `let`s (rather than inlining each as a call
         // argument) so the one `&mut` read (`is_dead`) never overlaps
         // the `&ref` reads around it.
         let pane_attach_has_client = self.pane_attach_term.is_some();
@@ -244,22 +238,23 @@ impl State {
                 self.pane_attach_term.as_ref().map_or(0, |t| t.inputs_discarded()),
             ),
         );
-        // Switch-latency Phase 1, item 3: the acceptance metric itself
-        // (keypress → current screen visible), not merely the client's
-        // own parser being ready (`pump_pane_attach_term`'s "checkpoint
-        // applied") — this is the first REDRAW that actually paints the
-        // new client's own screen (`PaneScreen::Client`) rather than the
-        // held prior content or the tmux fallback. One-shot per attach,
-        // same edge-triggered pattern as the other attach-outcome lines.
-        if pane_screen == PaneScreen::Client && !self.pane_attach_presented {
-            self.pane_attach_presented = true;
-            let since_request_ms = self
-                .pane_attach_requested_at
-                .map(|s| s.elapsed().as_millis() as u64)
-                .unwrap_or(0);
-            tracing::info!(since_request_ms, "session pane: capsule screen presented");
+        // Choosing a screen does not complete presentation. The frame carries a qualified candidate to the presentation owner and completes it only after submit/present.
+        let facts = (pane_screen == PaneScreen::Client)
+            .then_some(PaneFacts { checkpointed: pane_attach_checkpointed, attached: pane_attach_is_attached, live: !pane_attach_is_dead });
+        (pane_screen, pane_overlay, facts)
+    }
+
+    /// Offers a candidate to the owner and logs its outcome.
+    pub(in crate::ui) fn log_presentation(&mut self, candidate: PresentationCandidate) {
+        match self.pane_presentation.complete(candidate, std::time::Instant::now()) {
+            Presentation::Receipt { elapsed, .. } => tracing::info!(
+                since_request_ms = elapsed.as_millis() as u64,
+                since_request_ns = elapsed.as_nanos() as u64,
+                "session pane: capsule screen presented"
+            ),
+            Presentation::NoOrigin => tracing::warn!("session pane: capsule screen presented without a request origin"),
+            Presentation::Stale => {}
         }
-        (pane_screen, pane_overlay)
     }
 
     pub(in crate::ui) fn sync_pane_pty_size(&mut self, pty_size_observed: (u16, u16)) {

@@ -86,3 +86,4 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   child's last stderr line is added once, after the error's own words, and only to a failure that is not the daemon's
   answer: by `diagnose` to the client's own write or read error, by `read_reply` to a reply that ended early, ran over
   the cap or did not parse, and by `run_handshake` to the bound.
+- A test build can give an `SshRecipe` a fixture command (`with_test_command`, compiled only under `cfg(any(test, feature = "test-handshake-bound"))`): every start the recipe drives, the window's control probe, gated lane dials and the parked spare, then runs that program and argv in place of `ssh`, through the same `LinkGate` admission. An ordinary build has no fixture command.

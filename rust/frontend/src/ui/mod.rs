@@ -1102,17 +1102,8 @@ struct State {
     /// otherwise only ever logged "attaching"). Reset to 0 on every new
     /// spawn.
     pane_attach_episode_warnings: u32,
-    /// Switch-latency Phase 1, item 3: one-shot per attach — set the first
-    /// time the render loop actually paints THIS client's own screen
-    /// (`pane_screen_choice` resolving to `PaneScreen::Client`), so the
-    /// `capsule screen presented` line fires exactly once per attach, the
-    /// same edge-triggered pattern `pump_pane_attach_term` already uses
-    /// for "checkpoint applied"/"attached". This is the acceptance metric
-    /// itself (keypress → current screen visible) — `checkpoint applied`
-    /// only proves the client's OWN parser is ready, not that a frame with
-    /// it on screen has actually been submitted for display. Reset to
-    /// `false` on every new spawn (`spawn_pane_attach_term`).
-    pane_attach_presented: bool,
+    /// Owns the current attach request's presentation generation and immutable origin; only its submitted and presented checkpoint frame can consume its receipt.
+    pane_presentation: PanePresentation,
     /// ADR 0042 slice L1b fix 2: which state the session pane's input
     /// routes to right now — see `PaneFeed`'s own doc for why this can't
     /// just be derived from `pane_attach_term.is_some()`. Starts
@@ -2872,6 +2863,8 @@ pub(crate) use app::tests::NativeProgressLedger;
 
 #[cfg(all(test, feature = "test-window-close"))]
 pub(crate) use app::native_exit_tests::run_native_window_close;
+#[cfg(all(test, feature = "test-pane-timing"))]
+pub(crate) use app::native_pane_tests::run_native_pane_timing;
 
 #[cfg(all(test, feature = "test-window-progress"))]
 pub(crate) fn run_native_window_progress() -> Result<()> {

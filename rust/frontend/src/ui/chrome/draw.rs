@@ -18,6 +18,7 @@ impl State {
         Option<String>,
         bool,
         bool,
+        Option<PresentationCandidate>,
     )> {
         // Single preview pane rect that the preview-layer surface draws
         // into. The exact source (PNG quad / SVG quad / cosmic-text
@@ -82,7 +83,7 @@ impl State {
         // Re-read after a possible spawn-failure close above; this is the
         // value the renderer branches on.
         let drawer = self.drawer;
-        let (pane_screen, pane_overlay) = self.session_pane_view();
+        let (pane_screen, pane_overlay, pane_facts) = self.session_pane_view();
         let blank_pty_screen;
         let pty_screen = match match pane_screen {
             PaneScreen::Client => self.pane_attach_term.as_ref().map(|t| t.screen()),
@@ -209,9 +210,10 @@ impl State {
         self.nav_spill_segments = nav_spill_segs_out;
 
         self.sync_pane_pty_size(pty_size_observed);
+        let candidate = pane_facts.and_then(|facts| self.pane_presentation.candidate(facts, pty_size_observed));
 
         self.sync_terminal_drawer_size(term_size_observed);
-        Ok((preview_cells, repl_cells, repl_scrollback_cells, repl_window, llm_selection, owed, owed_line, owed_drawn, leaving_drawn))
+        Ok((preview_cells, repl_cells, repl_scrollback_cells, repl_window, llm_selection, owed, owed_line, owed_drawn, leaving_drawn, candidate))
     }
 
     fn nav_pinned_text(

@@ -37,6 +37,15 @@ use crate::topology::endpoint::is_plain_host_name;
 pub struct SshRecipe {
     target: String,
     host: Option<String>,
+    #[cfg(any(test, feature = "test-handshake-bound"))]
+    test_command: Option<TestCommand>,
+}
+
+#[cfg(any(test, feature = "test-handshake-bound"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TestCommand {
+    program: std::path::PathBuf,
+    args: Vec<std::ffi::OsString>,
 }
 
 impl SshRecipe {
@@ -49,7 +58,19 @@ impl SshRecipe {
                 return Err(format!("`{h}` is not a plain host name"));
             }
         }
-        Ok(Self { target: target.to_string(), host: host.map(str::to_string) })
+        Ok(Self {
+            target: target.to_string(),
+            host: host.map(str::to_string),
+            #[cfg(any(test, feature = "test-handshake-bound"))]
+            test_command: None,
+        })
+    }
+
+    /// Test builds only: every start this recipe drives runs `program` with `args` in place of `ssh`, through the same `LinkGate`.
+    #[cfg(any(test, feature = "test-handshake-bound"))]
+    pub fn with_test_command(mut self, program: impl Into<std::path::PathBuf>, args: impl IntoIterator<Item = impl Into<std::ffi::OsString>>) -> Self {
+        self.test_command = Some(TestCommand { program: program.into(), args: args.into_iter().map(Into::into).collect() });
+        self
     }
 
     pub fn target(&self) -> &str {
@@ -105,6 +126,12 @@ fn argv(recipe: &SshRecipe) -> (&'static str, Vec<String>) {
 
 /// The ssh command for `recipe`: its argv and three piped stdio.
 fn command(recipe: &SshRecipe) -> std::process::Command {
+    #[cfg(any(test, feature = "test-handshake-bound"))]
+    if let Some(fixture) = &recipe.test_command {
+        let mut cmd = std::process::Command::new(&fixture.program);
+        cmd.args(&fixture.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        return cmd;
+    }
     let (program, args) = argv(recipe);
     let mut cmd = std::process::Command::new(program);
     cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -295,6 +322,35 @@ pub async fn last_stderr_after_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fixture_recipe_runs_its_fixture_command() {
+        let plain = SshRecipe::new("hub", Some("far")).unwrap();
+        let fixture = plain.clone().with_test_command("/fixture/prog", ["a", "b"]);
+        let cmd = command(&fixture);
+        assert_eq!(cmd.get_program(), std::ffi::OsStr::new("/fixture/prog"), "fixture recipe ran ssh");
+        assert_eq!(cmd.get_args().collect::<Vec<_>>(), [std::ffi::OsStr::new("a"), std::ffi::OsStr::new("b")]);
+        let (program, args) = argv(&plain);
+        let ssh = command(&plain);
+        assert_eq!(ssh.get_program(), std::ffi::OsStr::new(program));
+        assert_eq!(ssh.get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>(), args);
+        assert_eq!(fixture.to_string(), "ssh:hub/far");
+        assert_eq!(plain.to_string(), "ssh:hub/far");
+    }
+
+    #[test]
+    fn a_down_gate_starts_no_fixture_command() {
+        let dir = std::env::temp_dir().join(format!("sot-fixture-missing-{}", std::process::id()));
+        let recipe = SshRecipe::new("hub", None).unwrap().with_test_command(dir.join("no-such-program"), ["x"]);
+        let gate = LinkGate::default();
+        gate.set_up(false);
+        assert!(matches!(gate.spawn_sync(&recipe), Err(SpawnError::LinkDown)), "down gate started a fixture child");
+        gate.set_up(true);
+        match gate.spawn_sync(&recipe) {
+            Err(SpawnError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+            other => panic!("admission did not reach the fixture program: {other:?}"),
+        }
+    }
 
     #[derive(Debug, PartialEq, Eq)]
     pub(super) enum CloseObservation { Contended, Completed }

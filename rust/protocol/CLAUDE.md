@@ -49,7 +49,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/topology/`: the topology subsystem, with its own charter; endpoints, ssh bridge, lane client and relay units.
 
 ## Files
-- `Cargo.toml`: the crate manifest; `test-handshake-bound` is enabled only by backend dev-dependencies for lane-client fixtures
+- `Cargo.toml`: the crate manifest; `test-handshake-bound` is enabled only by test-fixture features (the backend's dev-dependencies and the frontend's `test-pane-timing`), for the lane client's handshake bound and the ssh recipe's fixture command
 - `build.rs`: stamps the git-derived build inputs of the product version
 - `src/annotation.rs`: split_frontmatter and synced_against, the shared annotation header grammar and its fixtures.
 - `src/codec.rs`: the async and blocking frame readers and writers, and the envelope cap

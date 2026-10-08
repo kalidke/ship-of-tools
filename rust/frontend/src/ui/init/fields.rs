@@ -271,7 +271,7 @@ impl State {
             pending_capsule_create_requested_at: None,
             pane_attach_started_at: None,
             pane_attach_episode_warnings: 0,
-            pane_attach_presented: false,
+            pane_presentation: PanePresentation::default(),
             pane_feed: PaneFeed::Pending,
             pane_inputs_discarded: 0,
             term_size: None,
