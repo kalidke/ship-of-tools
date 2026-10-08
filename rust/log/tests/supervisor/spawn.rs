@@ -23,11 +23,12 @@ fn start_reaches_ready_promptly() {
     let started = Instant::now();
     let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
     let elapsed = started.elapsed();
     println!("LU6b start_reaches_ready_promptly: spawn->Ready = {elapsed:?}");
     assert!(elapsed < Duration::from_secs(30), "expected Ready well within the generous 30s bound, took {elapsed:?}");
 
+    end_run_and_expect_record_closed(&conn, "start-reaches-ready-end", "cleanup", voyage);
     let _ = command(&conn, "start-reaches-ready-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
@@ -77,6 +78,8 @@ fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
          if this ever fails, the daemon's spawn-side identity read was NOT a second implementation of the same value"
     );
 
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
+    end_run_and_expect_record_closed(&conn, "identity-equality-end", "cleanup", voyage);
     let _ = command(&conn, "identity-equality-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }

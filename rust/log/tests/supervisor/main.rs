@@ -435,3 +435,55 @@ fn a_panicking_test_leaves_no_capsule_process() {
         "no supervise or run process to survive the unwind",
     );
 }
+
+/// Windows: a panicking test must leave no capsule process. The guard's
+/// kill-on-close job ends the leg that outlives its supervisor by design; the
+/// leg is gone once its voyage's writer lock is free, which the kernel
+/// releases on any death. A leg that survives is ended over its own mgmt
+/// lane before the assert, so even a red leaves nothing behind.
+#[cfg(windows)]
+#[test]
+fn a_panicking_test_leaves_no_capsule_process() {
+    use sot_log::lane::wire::{encode_mgmt_request, MgmtRequest};
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let child = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
+    drop(conn);
+    let writer_lock =
+        sot_log::supervisor::voyage_root_path(&state_dir, &voyage).join(sot_log::store::voyage::WRITER_LOCK);
+    let leg_gone_within = |bound: Duration| {
+        let deadline = Instant::now() + bound;
+        loop {
+            if sot_log::lock_writer(&writer_lock).is_ok() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _held = child;
+        panic!("a test assert fires before its own kill");
+    }));
+    assert!(unwound.is_err());
+
+    let gone = leg_gone_within(Duration::from_secs(5));
+    if !gone {
+        if let Ok(mgmt) = connect_voyage_mgmt(&voyage) {
+            let shutdown = encode_mgmt_request(&MgmtRequest::Shutdown { reason: "test cleanup".into() }).unwrap();
+            let _ = mgmt.write_all(&shutdown);
+            let _ = leg_gone_within(Duration::from_secs(30));
+        }
+    }
+    assert!(gone, "the leg outlived its guard (its voyage writer lock was still held 5 s after the unwind)");
+}

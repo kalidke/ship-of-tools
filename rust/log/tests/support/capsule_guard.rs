@@ -20,7 +20,7 @@ pub struct CapsuleGuard {
     state_root: PathBuf,
     /// Windows: the job the supervisor and everything it starts run in; the
     /// kernel ends them all when this handle closes, after the explicit kill
-    /// and wait in `drop`.
+    /// and wait in `drop`. `Some` in every guard `new_for_exe` returns.
     #[cfg(windows)]
     _job: Option<job::KillOnClose>,
 }
@@ -38,13 +38,13 @@ mod job {
     pub struct KillOnClose(OwnedHandle);
 
     impl KillOnClose {
-        /// A new job holding `child`; `None` when the OS refuses (the guard then only kills the child, as before).
-        pub fn holding(child: &std::process::Child) -> Option<KillOnClose> {
+        /// A new job holding `child`, or the OS error that refused it.
+        pub fn holding(child: &std::process::Child) -> std::io::Result<KillOnClose> {
             // SAFETY: plain Win32 calls on handles this function creates or borrows.
             unsafe {
                 let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
                 if handle.is_null() {
-                    return None;
+                    return Err(std::io::Error::last_os_error());
                 }
                 let job = KillOnClose(OwnedHandle::from_raw_handle(handle as RawHandle));
                 let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
@@ -55,8 +55,13 @@ mod job {
                     &info as *const _ as *const std::ffi::c_void,
                     std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
                 );
-                let assigned = AssignProcessToJobObject(job.0.as_raw_handle() as HANDLE, child.as_raw_handle() as HANDLE);
-                (set != 0 && assigned != 0).then_some(job)
+                if set == 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if AssignProcessToJobObject(job.0.as_raw_handle() as HANDLE, child.as_raw_handle() as HANDLE) == 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(job)
             }
         }
     }
@@ -115,14 +120,29 @@ impl CapsuleGuard {
             sweep_root_ok(&state_root),
             "CapsuleGuard refuses root {state_root:?}: it must be absolute, free of `..`, strictly below a temp dir that is not `/`, and outside the production state dirs"
         );
-        #[cfg(windows)]
-        let job = job::KillOnClose::holding(&child);
-        Self {
+        let guard = Self {
             child: Some(child),
             exe: exe.into(),
             state_root,
             #[cfg(windows)]
-            _job: job,
+            _job: None,
+        };
+        #[cfg(windows)]
+        let guard = guard.in_a_kill_on_close_job();
+        guard
+    }
+
+    /// Puts the child in a kill-on-close job, or panics; the unwind drops
+    /// `self`, which kills and waits for the child, so no guard whose legs
+    /// could outlive it is ever returned.
+    #[cfg(windows)]
+    fn in_a_kill_on_close_job(mut self) -> Self {
+        match job::KillOnClose::holding(self.child.as_ref().expect("capsule child still held")) {
+            Ok(job) => {
+                self._job = Some(job);
+                self
+            }
+            Err(e) => panic!("CapsuleGuard could not put the capsule in a kill-on-close job: {e}"),
         }
     }
 
