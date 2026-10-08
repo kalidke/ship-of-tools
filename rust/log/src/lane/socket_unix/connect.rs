@@ -3,7 +3,7 @@
 use super::*;
 #[cfg(not(target_os = "linux"))]
 use super::listener::set_cloexec;
-use super::listener::set_nonblocking;
+use super::listener::{set_nonblocking, STREAM_SOCKET};
 
 // ---------------------------------------------------------------------
 // Connect (ADR 0043 decision 4, property 18): a bounded, non-blocking
@@ -72,11 +72,7 @@ fn set_blocking(fd: RawFd) -> io::Result<()> {
 /// deadline must not be able to overrun it by another whole
 /// `CONNECT_BOUND`.
 pub(super) fn one_connect_attempt(addr_bytes: &[u8], deadline: Instant) -> Result<UnixStream, ConnectAttempt> {
-    #[cfg(target_os = "linux")]
-    let socket_type = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
-    #[cfg(not(target_os = "linux"))]
-    let socket_type = libc::SOCK_STREAM;
-    let raw = unsafe { libc::socket(libc::AF_UNIX, socket_type, 0) };
+    let raw = unsafe { libc::socket(libc::AF_UNIX, STREAM_SOCKET, 0) };
     if raw < 0 {
         return Err(ConnectAttempt::Fatal(io::Error::last_os_error()));
     }

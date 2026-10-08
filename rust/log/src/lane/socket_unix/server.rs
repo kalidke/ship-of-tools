@@ -2,9 +2,7 @@
 
 use super::accept::accept_loop;
 use super::conn::{reaper_loop, request_teardown, signal_shutdown};
-#[cfg(not(target_os = "linux"))]
-use super::listener::{set_cloexec, set_nonblocking};
-use super::listener::{create_and_bind_listener, ensure_private_runtime_dir, open_verified_dir_fd};
+use super::listener::{create_and_bind_listener, create_wake_pipe, ensure_private_runtime_dir, open_verified_dir_fd};
 use super::*;
 
 /// The server side of one voyage's (or the supervisor lane's) socket:
@@ -75,38 +73,13 @@ impl SocketServer {
         let listener =
             create_and_bind_listener(dir_fd.as_raw_fd(), &file_name, &path, max_connections)?;
 
-        // The wake self-pipe: disconnect_listener wakes the acceptor through its nonblocking self-pipe, never by dialing
-        // the listener. Linux creates both wake ends with pipe2(O_CLOEXEC | O_NONBLOCK); macOS immediately owns and
-        // checks both ends with fcntl before publication. The macOS creation-to-flagging inheritance window remains.
-        let mut fds: [RawFd; 2] = [-1, -1];
-        #[cfg(target_os = "linux")]
-        let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
-        #[cfg(not(target_os = "linux"))]
-        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
-        if rc != 0 {
-            let err = TransportError::Io {
-                op: "pipe(wake)",
-                source: io::Error::last_os_error(),
-            };
-            unsafe { libc::unlinkat(dir_fd.as_raw_fd(), file_name.as_ptr(), 0) };
-            return Err(err);
-        }
-        // SAFETY: `pipe`/`pipe2` just returned these two fds; each is valid, open, and not owned by anything else yet.
-        let wake_read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-        let wake_write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
-        crate::lane::test_progress::birth("wake.read", wake_read.as_raw_fd());
-        crate::lane::test_progress::birth("wake.write", wake_write.as_raw_fd());
-        #[cfg(not(target_os = "linux"))]
-        for fd in [wake_read.as_raw_fd(), wake_write.as_raw_fd()] {
-            if let Err(e) = set_cloexec(fd).and_then(|()| set_nonblocking(fd)) {
-                let err = TransportError::Io {
-                    op: "fcntl(wake pipe)",
-                    source: e,
-                };
+        let (wake_read, wake_write) = match create_wake_pipe() {
+            Ok(ends) => ends,
+            Err(err) => {
                 unsafe { libc::unlinkat(dir_fd.as_raw_fd(), file_name.as_ptr(), 0) };
                 return Err(err);
             }
-        }
+        };
 
         let (events_tx, events_rx) = mpsc::sync_channel(EVENTS_CHANNEL_CAP);
         let (reaper_tx, reaper_rx) =
