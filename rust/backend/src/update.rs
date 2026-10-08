@@ -427,7 +427,7 @@ async fn run_check_once(
                 // Re-check after the grace sleep: a client that attached in
                 // the window must not have its session killed.
                 if clients.count() == 0 {
-                    exit_for_update(leases, |code| crate::lifecycle::shutdown::exit(code));
+                    exit_for_update(leases, |code| crate::lifecycle::shutdown::exit(code)).await;
                 } else {
                     tracing::info!(tag = %id.tag, "auto mode: a client attached during the exit window — deferring");
                 }
@@ -607,7 +607,8 @@ pub async fn handle_update_apply(
         exit_for_update(&leases, |code| {
             tracing::info!("update.apply: exiting now");
             crate::lifecycle::shutdown::exit(code)
-        });
+        })
+        .await;
     });
 
     let res = UpdateApplyRes {
@@ -625,11 +626,11 @@ pub async fn handle_update_apply(
 /// An update's exit, a restart (75) handed to `exit`, taken only while no shutdown is under way. The commit is made under
 /// the lease lock and the exit after it, outside the lock: a close that comes later cannot begin, and the exit's wait for
 /// the child fire holds no lease. Once a shutdown has begun its own exit stands and the update's is skipped (ruling f).
-fn exit_for_update(leases: &Leases, exit: impl FnOnce(i32)) {
+async fn exit_for_update(leases: &Leases, exit: impl FnOnce(i32)) {
     if leases.commit_update() {
         tracing::info!("update committed: exiting 75 for the apply owner");
         #[cfg(feature = "daemon-lifetime-faults")]
-        crate::lifecycle::test_gates::hold("update-committed");
+        crate::lifecycle::test_gates::held("update-committed").await;
         exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART);
     } else {
         tracing::info!("update exit skipped: a shutdown is under way, and its own exit stands");
@@ -749,20 +750,20 @@ mod tests {
 
     /// Once a shutdown has begun its own exit stands: the update's is
     /// skipped (ruling f).
-    #[test]
-    fn update_exit_yields_to_shutdown() {
+    #[tokio::test]
+    async fn update_exit_yields_to_shutdown() {
         let leases = Leases::new(Some("boot".into()), None, None, false);
-        let exit_code = |leases: &Leases| {
+        async fn exit_code(leases: &Leases) -> Option<i32> {
             let mut code = None;
-            exit_for_update(leases, |c| code = Some(c));
+            exit_for_update(leases, |c| code = Some(c)).await;
             code
-        };
-        assert_eq!(exit_code(&leases), Some(sot_protocol::ops::lease::EXIT_UPDATE_RESTART), "no shutdown under way: the update exits 75");
+        }
+        assert_eq!(exit_code(&leases).await, Some(sot_protocol::ops::lease::EXIT_UPDATE_RESTART), "no shutdown under way: the update exits 75");
         let leases = Leases::new(Some("boot".into()), None, None, false);
         leases.begin_close();
-        assert_eq!(exit_code(&leases), None, "the update exits 75 during a shutdown");
+        assert_eq!(exit_code(&leases).await, None, "the update exits 75 during a shutdown");
         leases.finish_shutdown(0, Vec::new()).unwrap();
-        assert_eq!(exit_code(&leases), None, "the update exits 75 after the shutdown's final record");
+        assert_eq!(exit_code(&leases).await, None, "the update exits 75 after the shutdown's final record");
     }
 
     /// An update committed first stands: a close that comes after it does not begin, so the daemon cannot be sent down the
@@ -771,7 +772,7 @@ mod tests {
     async fn a_committed_update_is_not_undone_by_a_later_close() {
         let leases = Leases::new(Some("boot".into()), None, None, false);
         let mut code = None;
-        exit_for_update(&leases, |c| code = Some(c));
+        exit_for_update(&leases, |c| code = Some(c)).await;
         assert_eq!(code, Some(sot_protocol::ops::lease::EXIT_UPDATE_RESTART));
         leases.begin_close();
         assert!(

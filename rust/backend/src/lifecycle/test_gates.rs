@@ -18,18 +18,7 @@ fn file(name: &str) -> Option<PathBuf> {
     std::env::var_os("SOT_TEST_GATES").map(|folder| PathBuf::from(folder).join(name))
 }
 
-/// Wait at the point `name` on the calling thread, if a case engaged it.
-pub(crate) fn hold(name: &str) {
-    let (Some(open), Some(engaged)) = (file(name), file(&format!("{name}.hold"))) else {
-        return;
-    };
-    let deadline = Instant::now() + HELD_AT_MOST;
-    while engaged.exists() && !open.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-/// Wait at the point `name` without holding a thread, if a case engaged it.
+/// Wait at the point `name`, if a case engaged it; a point never holds a runtime thread.
 pub(crate) async fn held(name: &str) {
     let (Some(open), Some(engaged)) = (file(name), file(&format!("{name}.hold"))) else {
         return;
