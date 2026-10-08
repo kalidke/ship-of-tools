@@ -13,7 +13,9 @@ license.workspace = true
 # this same package needs, since those compile the library WITHOUT
 # `cfg(test)` on it. Never enabled by a normal consumer (the frontend, or
 # a future `sot-capsule` caller) unless it explicitly opts in. It also brings
-# `test_log`, `test_exec`, `test_scan`, `test_isolated` and, on Unix, `test_foreign`: the way a test installs a subscriber, the one way a test writes a program it runs, the walker the source scans share, the one way a test re-runs its binary, and a socket another account listens on.
+# `test_log`, `test_exec`, `test_scan`, `test_isolated` and, on Unix, `test_foreign`: the way a test installs a
+# subscriber, the one way a test writes a program it runs, the walker the source scans share, the one way a test re-runs
+# its binary, and a socket another account listens on.
 test-support = ["dep:tracing-subscriber", "dep:tempfile"]
 
 [dependencies]

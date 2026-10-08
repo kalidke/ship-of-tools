@@ -29,7 +29,10 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - Every ssh started from `SSH_OPTS` turns sharing off (`ControlMaster=no`, `ControlPath=none`, `ControlPersist=no`):
   the bridges `SshRecipe` builds and the daemon's monitor sampler (`argv_has_no_shell_and_the_stated_option_set` pins
   the list).
-- A production lane dial's local connect uses the platform connector's fixed `CONNECT_BOUND` retry budget; an attempt or wait in progress finishes first (Unix's 20 ms sleep, Windows's 200 ms wait). Its handshake has a separate bound and can be cancelled; refusals remain typed. Its child owner bounds teardown to 2 s, confirms reaping on success and reports termination, reap or deadline failures (`lane_child.rs`).
+- A production lane dial's local connect uses the platform connector's fixed `CONNECT_BOUND` retry budget; an attempt or
+  wait in progress finishes first (Unix's 20 ms sleep, Windows's 200 ms wait). Its handshake has a separate bound and
+  can be cancelled; refusals remain typed. Its child owner bounds teardown to 2 s, confirms reaping on success and
+  reports termination, reap or deadline failures (`lane_child.rs`).
 - A lane dial to a local socket or pipe goes through `sot_log::identity::connect_own::connect_own`, so it speaks only to an endpoint this OS account serves.
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
 - On an SSH route an initial supervisor attempt may park at most one voyage login as an optional optimization; spare spawn failure leaves ordinary voyage fallback available. A local route parks none. The first voyage consumes a usable spare once or uses an ordinary gated dial; a spent endpoint starts no further spare, with pre-voyage abandonment governed by ADR 0045 (`start_spare`, `take_spare`).
@@ -61,7 +64,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `endpoint.rs`: this box's own daemon endpoint, the label, the slug and the host-name grammar.
 - `ssh_bridge.rs`: the ssh recipe, its argv and `LinkGate`.
 - `lane_client.rs`: `DaemonLaneEndpoint`, the immutable daemon route over local, gated relay and SSH dials, the lane handshake and the first-voyage spare state (only an SSH route parks a spare)
-- `lane_client_tests.rs`: wire, refusal, handshake and local-transport behavior against test-owned peers
+- `lane_client_tests.rs`: wire, refusal, handshake and local-transport behavior against test-owned peers; the two cases
+  with another account's listener (refusal, full backlog) need passwordless `sudo -n` and skip without it except on CI
 - `lane_client_ownership_tests.rs`: counted endpoint fixtures and spare consumption, fallback, destruction and retry behavior
 - `lane_child.rs`: the piped lane child, error diagnosis, cancellation and bounded teardown
 - `lane_child_tests.rs`: owner-entry teardown and child-lock deadline witnesses, error reporting and observed exit/reaping

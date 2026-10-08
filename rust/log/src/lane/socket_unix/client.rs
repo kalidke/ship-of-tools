@@ -80,14 +80,12 @@ impl std::fmt::Debug for SocketClient {
     }
 }
 
-/// The connected socket, for a check that reads it without I/O (`identity::connect_own`'s account check).
-impl std::os::fd::AsFd for SocketClient {
-    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+impl SocketClient {
+    /// The connected socket, for a check that reads it without I/O (`identity::connect_own`'s account check).
+    pub(crate) fn socket_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         std::os::fd::AsFd::as_fd(&self.stream)
     }
-}
 
-impl SocketClient {
     /// Blocking write of the whole buffer, cancellable from another
     /// thread via [`cancel`](Self::cancel). `bytes` must be non-empty. A
     /// concurrent SECOND `write_all` call from another thread returns

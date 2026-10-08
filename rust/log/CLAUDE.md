@@ -51,7 +51,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `../../julia/sotlog/`: SotLog, the Julia reader of the golden segment fixtures.
 
 ## Files
-- `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests, and brings `test_log`, `test_exec`, `test_scan`, `test_isolated` and, on Unix, `test_foreign` (the backend, frontend and updater turn it on in their dev-dependencies).
+- `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests, and brings
+  `test_log`, `test_exec`, `test_scan`, `test_isolated` and, on Unix, `test_foreign` (the backend, frontend and updater
+  turn it on in their dev-dependencies).
 - `build.rs`: stamps the lane build id (`SOT_LOG_BUILD_SHA`) from the full git sha, or `SOT_BUILD_ID`.
 - `claude-sdk-helper/`: the Node helper that drives one Claude Agent SDK session.
 - `tests/`: integration and whole-process tests.
@@ -61,7 +63,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/test_exec.rs`: `write_executable`, the test-program writer (feature `test-support`); its Linux FIFO proof observes actual parent descriptors while the child writer is active, without a permission-spelling catalog.
 - `src/test_isolated.rs`: shared exact-body isolation, scoped direct-fixture supervision and bounded child/output waits (feature `test-support`); readiness errors retain termination/entry checks, and byte-captured output renders invalid UTF-8 with explicit byte escapes. Wrapped fixtures retain launcher status and both streams, validate the native role/PID witness against exact entry, and share direct fixtures' wait/drain/finalization implementation.
 - `src/test_log.rs`: timestamp-free `capture()` and formatting-preserving `install()` (feature `test-support`), with behavioral tests of the capture format, first-callsite routing, parallel isolation and guard restoration.
-- `src/test_foreign.rs`: `ForeignListener`, a socket another OS account (`nobody`) listens on, for the User isolation tests (feature `test-support`, Unix).
+- `src/test_foreign.rs`: `ForeignListener`, a socket another OS account (`nobody`) listens on, for the User isolation
+  tests, and `elevation_or_skip`, the one rule for a test that needs root: it skips only when `sudo -n true` fails (a
+  failure on CI), and every later helper failure fails the test (feature `test-support`, Unix).
 - `src/store/`: the voyage store.
 - `src/capsule/`: the leg's runtime and producers.
 - `src/supervisor/`: the supervisor, its journal, probe and authority.

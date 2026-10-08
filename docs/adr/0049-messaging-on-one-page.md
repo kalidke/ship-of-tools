@@ -121,13 +121,15 @@ frontend, its lease, `sotd stdio-bridge`, the lane client and `sotd topology` sp
 only to an endpoint their own OS account serves, a pipe whose serving process runs as
 this account on Windows and on Unix a socket this account listens on (lane F3-OWN's
 check, below) (`rust/log/src/identity/connect_own.rs`); a client opens that pipe at
-identification level, so its server cannot act as the account before the check. Built by lane M1c: no product script opens a socket or pipe
+identification level, so its server cannot act as the account before the check. Built by lane M1c: no product script
+opens a socket or pipe
 itself; a shell or PowerShell script reaches one on this computer only through `sotd stdio-bridge --endpoint`, so the
 same check applies (comm's `sot_dial`, the launch scripts' probes, and the launcher's lease, which names its bridge
 child). Each of those paths is shown by running it: `rust/backend/tests/shell_dial.rs` runs comm's `sot_dial`, with and
 without its bound, `sot_oneshot_request` and the launch scripts' `sot_socket_open` (which `restart-backend.sh` also
 runs) against a socket another OS account listens on, which each refuses before writing a byte, and `sot_dial`, with and
-without its bound, and `sot_socket_open` reach this account's own (`sot_oneshot_request` sends through the bounded `sot_dial`);
+without its bound, and `sot_socket_open` reach this account's own (`sot_oneshot_request` sends through the bounded
+`sot_dial`);
 on Windows it runs `sot_dial` against SYSTEM's `epmapper` pipe and this account's own. The launcher suites do the same
 for the PowerShell probe and lease (sections 4b and 11e), and comm's ssh path is shown to run the far box's own bridge.
 No test reads the scripts for a dial outside these paths: a script that adds one is caught in review. Isolation holds
@@ -140,11 +142,14 @@ that can have been reused). The connector uses a fixed `CONNECT_BOUND` retry bud
 progress finishes first: Unix includes a 20 ms retry sleep, Windows a 200 ms named-pipe wait. This is not an exact
 elapsed-time limit. The check is the account of the process that called `listen()`, not of the process serving now: a
 listener this account hands to another process by `SCM_RIGHTS` keeps this account's record, so that process, whatever
-account it runs as, is trusted as this account's and receives what a client sends. A refused listener learns which of
-this account's processes connected, and is sent nothing. The daemon's bind check, by pathname, covers the runtime
+account it runs as, is trusted as this account's and receives what a client sends. A process in a user namespace that
+maps no uid of its own reads its own uid and every listener's as the overflow uid, so on Linux a listener at that uid is
+refused when this process's own uid is unmapped. A refused listener learns which of this account's processes connected,
+and is sent nothing. The daemon's bind check, by pathname, covers the runtime
 folder and every folder below it down to the socket's for a derived path, and the socket's own folder for a custom one,
 not the folders above: a custom `SOT_SOCKET`, `SOT_RUNTIME_DIR` or `XDG_RUNTIME_DIR` under another account's writable,
-non-sticky folder is not covered there, though a client still refuses another account's listener at that path. The video, site and site-pool servers, the frontend's page proxy and the one-use redirect listener that opens a page
+non-sticky folder is not covered there, though a client still refuses another account's listener at that path. The
+video, site and site-pool servers, the frontend's page proxy and the one-use redirect listener that opens a page
 in the browser accept only through `serve_own`, which drops another account's connection before reading a byte.
 Pluto's server, its notebook workers and `wglshow`'s Bonito server are Julia processes listening on loopback ports of
 their own, which any account on the computer can reach; Ship of Tools does not accept on them, so no owner check

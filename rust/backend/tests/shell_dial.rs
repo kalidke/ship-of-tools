@@ -106,7 +106,8 @@ fn a_shell_request_to_a_socket_another_account_listens_on_writes_nothing() {
         assert_eq!(foreign.finish(), 0, "{path}: the shell client sent another account's listener bytes (ADR 0049 `## User isolation`)");
         assert!(status.success(), "{path}: bash: {stderr}");
         assert_eq!(stdout, "refused\n", "{path}: {stderr}");
-        // sot_socket_open discards the bridge's stderr; its socket exists, so only the bridge's refusal prints `refused`.
+        // sot_socket_open discards the bridge's stderr; its socket exists, so only the bridge's refusal prints
+        // `refused`.
         assert!(
             path == "socket open" || stderr.contains("another OS account listens on this socket"),
             "{path}: {stderr}"

@@ -406,6 +406,33 @@ fn a_local_dial_starts_no_ssh_child() {
     }
 }
 
+/// ADR 0049, User isolation: a lane dial refuses a socket another OS account listens on, and that listener gets no
+/// byte.
+#[cfg(unix)]
+#[test]
+fn a_socket_another_account_listens_on_is_refused_by_the_lane_dial() {
+    if !sot_log::test_isolated::run_isolated("topology::lane_client::tests::a_socket_another_account_listens_on_is_refused_by_the_lane_dial") {
+        return;
+    }
+    let Some(foreign) = sot_log::test_foreign::ForeignListener::start(false) else {
+        return;
+    };
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Local(foreign.path.clone()), None);
+    let refused = match endpoint.dial("row-1", "supervisor", None) {
+        Ok(_) => String::from("connected"),
+        Err(e) => e.to_string(),
+    };
+    assert_eq!(
+        foreign.finish(),
+        0,
+        "the lane dial sent another account's listener bytes"
+    );
+    assert!(
+        refused.contains("another OS account listens on this socket"),
+        "{refused}"
+    );
+}
+
 /// ADR 0049, User isolation: a lane dial to a socket whose backlog another OS account has filled returns within
 /// `CONNECT_BOUND` plus 2 s of slack, and its error is not the account refusal, so the backlog was full.
 #[cfg(unix)]

@@ -715,11 +715,11 @@ case_a_broadcast_names_the_local_bridges_refusal() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local dir why
     dir="$(mktemp -d "$WORK/refusing-bridge-XXXXXX")"
-    why='sotd stdio-bridge: /x/s.sock: not connecting: /x is not a private folder of this OS account'
+    why='sotd stdio-bridge: /x/s.sock: not connecting: another OS account listens on this socket'
     cat > "$dir/sotd" <<'FAKEBRIDGE'
 #!/bin/sh
 [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
-printf 'sotd stdio-bridge: /x/s.sock: not connecting: /x is not a private folder of this OS account\n' >&2
+printf 'sotd stdio-bridge: /x/s.sock: not connecting: another OS account listens on this socket\n' >&2
 exit 1
 FAKEBRIDGE
     chmod +x "$dir/sotd"

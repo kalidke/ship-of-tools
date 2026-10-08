@@ -24,9 +24,17 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `ping_reaper.rs`: server; the reaper of half-open long-lived client roles, over the wire
 - `preview_order.rs`: server; a `preview.get` written behind a `preview.set_scale` on one connection carries the new scale
 - `relay_refresh.rs`: topology; `sotd topology refresh` on a scratch hub with a stand-in `systemctl`
-- `shell_dial.rs`: topology; comm-lib's `sot_dial` (with and without its bound) and `sot_oneshot_request`, and the launch scripts' `sot_socket_open`, run by bash against the built `sotd`: a socket another account listens on and a pipe another account serves are refused with nothing written, and `sot_dial` and `sot_socket_open` reach this account's; `sot_ssh_bridge` runs the far box's own `sotd stdio-bridge`; and `sot_bounded`, the bound each of the four timed comm calls runs under, through its one perl routine, on each platform's bash and perl, with a group that outlives its leader, a command that leaves its group and the grace period's length as tests of their own (ADR 0049 `## User isolation`)
+- `shell_dial.rs`: topology; comm-lib's `sot_dial` (with and without its bound) and `sot_oneshot_request`, and the
+  launch scripts' `sot_socket_open`, run by bash against the built `sotd`: a socket another account listens on (needs
+  passwordless `sudo -n`; skips without it except on CI) and a pipe another account serves are refused with nothing
+  written, and `sot_dial` and `sot_socket_open` reach this account's; `sot_ssh_bridge` runs the far box's own `sotd
+  stdio-bridge`; and `sot_bounded`, the bound each of the four timed comm calls runs under, through its one perl
+  routine, on each platform's bash and perl, with a group that outlives its leader, a command that leaves its group and
+  the grace period's length as tests of their own (ADR 0049 `## User isolation`)
 - `status_integration.rs`: topology; `sotd status` against a real daemon the test starts and stops
-- `stdio_bridge.rs`: topology; `sotd stdio-bridge [--host | --endpoint]` with real pipes and real processes
+- `stdio_bridge.rs`: topology; `sotd stdio-bridge [--host | --endpoint]` with real pipes and real processes; the two
+  cases with another account's listener (refusal, full backlog) need passwordless `sudo -n` and skip without it except
+  on CI
 - `subcommand_help.rs`: server; every `sotd` subcommand's `--help` prints usage and dials nothing
 - `topology_set.rs`: topology; `topology.set` and `topology.changed` over the wire; a hub daemon started from umask 022 creates its comm files owner-only
 - `window_start.rs`: lifecycle; a daemon's start from `held.json`, resumed or ended rows

@@ -12,7 +12,14 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `challenge_unix.rs`: the Linux identity challenge (`authenticate_server`, `challenge`) and the `SocketClient` connect path it authenticates, each test process-isolated; Linux only.
 - `claude_e2e.rs`: the real claude-sdk-helper and pinned SDK driving the Claude adapter against a fake Messages API, including the no-replay resume gate; Linux, and only with `SOT_HELPER_E2E=1`.
 - `claude_rig.rs`: the Claude adapter (`claude::run`) against a scripted fake helper: turn table, WAL, redaction, terminal and successor closure, test-only unfenced mode; Linux.
-- `connect_own.rs`: `connect_own`'s rule (ADR 0049, User isolation): a socket this account listens on is reached in any folder, one another account listens on is refused by the account recorded at `listen()`, a full backlog returns within `CONNECT_BOUND` plus the test's stated slack, and a missing socket is NotFound (Unix; the other account is `nobody`, through `sot_log::test_foreign`); a pipe another account serves is refused, one this account serves is accepted, a busy one returns within `CONNECT_BOUND` plus the test's stated slack, and the pipe is opened at identification level (a server that impersonates the client gets `SecurityIdentification`) (Windows).
+- `connect_own.rs`: `connect_own`'s rule (ADR 0049, User isolation): a socket this account listens on is reached in any
+  folder, one another account listens on is refused by the account recorded at `listen()`, a full backlog returns within
+  `CONNECT_BOUND` plus the test's stated slack, a listener seen from a user namespace that maps no uid (`unshare -U`,
+  Linux) is refused, and a missing socket is NotFound (Unix; the other account is `nobody`, through
+  `sot_log::test_foreign`; the two cases with another account's listener need passwordless `sudo -n`, and skip without
+  it except on CI); a pipe another account serves is refused, one this account serves is accepted, a busy one returns
+  within `CONNECT_BOUND` plus the test's stated slack, and the pipe is opened at identification level (a server that
+  impersonates the client gets `SecurityIdentification`) (Windows).
 - `conpty.rs`: the owned ConPTY and job containment layer; Windows only.
 - `e2e_pipe.rs`: a real capsule run over a real `PipeServer`, with watcher, driver and mgmt clients on one capsule; Windows only.
 - `e2e_socket/`: the same end to end over a real `SocketServer` and `connect_voyage_socket` (`main.rs`), and the producer dying with its capsule through PDEATHSIG (`pdeathsig.rs`); Linux only.
@@ -26,7 +33,9 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `pipe_win/`: `PipeServer` and the same-connection challenge over real pipes, process-isolated: connect, teardown, close, challenge modules; Windows only.
 - `reconcile_matrix.rs`: every row of the startup reconciliation table (`reconcile`) entered by file surgery, then `verify_voyage`; Unix and Windows.
 - `isolation_guards.rs`: remaining ADR 0049 source guards for Julia/Node listener spellings, browser/argument spellings and the macOS peer-token reader; Rust listener admission is proved at its native owners, not by an allowance catalog.
-- `socket_unix/`: real Unix connect, close, teardown and client contracts; named waits and captured diagnostics, one bounded-read phase path (`read.rs`), and supervised native-account fixtures with retained failure causes (`privileged.rs`); Unix.
+- `socket_unix/`: real Unix connect, close, teardown and client contracts; named waits and captured diagnostics, one
+  bounded-read phase path (`read.rs`), and supervised native-account fixtures with retained failure causes
+  (`privileged.rs`; the foreign-account case needs passwordless `sudo -n` and skips without it except on CI); Unix.
 - `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules; Linux and Windows.
 - `support/`: helpers shared by several binaries: `capsule_guard.rs` (a spawned `sot-capsule` no test can leave behind) and `transports.rs` (`NoopTransport` and `TestTransport`).
 - `winhandle_windows.rs`: `winhandle::harden_own_stdio` clears handle inheritance; Windows only, alone in its binary because it mutates the process's real std handles.

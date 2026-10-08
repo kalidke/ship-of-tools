@@ -111,7 +111,84 @@ mod unix {
         );
     }
 
-    /// A missing socket keeps the connector's NotFound, so a caller that treats "no daemon yet" as NotFound is unchanged.
+    /// The environment variable that makes `a_client_in_an_unmapped_user_namespace` do its work in the child.
+    #[cfg(target_os = "linux")]
+    const USERNS_SOCKET: &str = "SOT_TEST_USERNS_SOCKET";
+
+    /// ADR 0049, User isolation: a process in a user namespace that maps no uid of its own reads its own uid and every
+    /// listener's as the overflow uid (65534), so `connect_own` cannot tell this account's listener from another's and
+    /// refuses it. The listener here is this account's own, reached through `unshare -U`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_listener_seen_from_an_unmapped_user_namespace_is_refused() {
+        use std::process::{Command, Stdio};
+        let unshare = Command::new("unshare")
+            .args(["-U", "true"])
+            .stdin(Stdio::null())
+            .status();
+        if !matches!(unshare, Ok(status) if status.success()) {
+            eprintln!("skipped: `unshare -U` cannot create a user namespace here: {unshare:?}");
+            return;
+        }
+        let (dir, path, listener) = listener_in_folder(0o700);
+        let mut child = Command::new("unshare")
+            .arg("-U")
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::a_client_in_an_unmapped_user_namespace",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(USERNS_SOCKET, &path)
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        let status =
+            sot_log::test_isolated::wait_within(&mut child, CONNECT_BOUND + Duration::from_secs(5));
+        drop(listener);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            status.success(),
+            "the client in the unmapped namespace failed: {status}"
+        );
+    }
+
+    /// The body of the test above, run by `unshare -U`: a no-op in an ordinary run.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_client_in_an_unmapped_user_namespace() {
+        let Some(path) = std::env::var_os(USERNS_SOCKET) else {
+            return;
+        };
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        assert_eq!(
+            euid, 65534,
+            "the namespace maps no uid, so this process reads itself as the overflow uid"
+        );
+        let err = connect_own(std::path::Path::new(&path))
+            .err()
+            .expect("connected to a listener nobody can name");
+        let TransportError::Io { op, source } = err else {
+            panic!("not an Io error: {err}");
+        };
+        assert_eq!(op, "connect_own", "{source}");
+        assert_eq!(
+            source.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "{source}"
+        );
+        assert!(
+            source
+                .to_string()
+                .contains("not connecting: cannot tell which OS account listens"),
+            "{source}"
+        );
+    }
+
+    /// A missing socket keeps the connector's NotFound, so a caller that treats "no daemon yet" as NotFound is
+    /// unchanged.
     #[test]
     fn a_missing_socket_is_not_found() {
         let path = PathBuf::from(format!("/tmp/sot-co-{}-missing.sock", std::process::id()));
@@ -195,8 +272,8 @@ mod windows {
         result.unwrap_or_else(|e| panic!("refused {name}: {e}"));
     }
 
-    /// ADR 0049, User isolation: a pipe whose one instance is taken returns from the connect within `CONNECT_BOUND` plus
-    /// 2 s of slack, so no caller of `connect_own` hangs on it.
+    /// ADR 0049, User isolation: a pipe whose one instance is taken returns from the connect within `CONNECT_BOUND`
+    /// plus 2 s of slack, so no caller of `connect_own` hangs on it.
     #[test]
     fn a_busy_pipe_ends_the_connect_within_its_bound() {
         if !run_isolated("windows::a_busy_pipe_ends_the_connect_within_its_bound") {

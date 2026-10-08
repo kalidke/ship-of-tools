@@ -1,7 +1,8 @@
 //! Test-only (feature `test-support`, Unix): a socket another OS account listens on, in a folder this test owns, for
 //! the tests of ADR 0049's User isolation. A root helper (`sudo -n`, as on the hosted Linux and macOS runners) binds it
-//! and listens as `nobody`. A test that cannot start one says so and passes, except on CI (`GITHUB_ACTIONS` set),
-//! where that is a failure.
+//! and listens as `nobody`. One rule decides every test that needs root: it skips only when this process is not root
+//! and `sudo -n true` fails (`elevation_or_skip`); it says so and passes, except on CI (`GITHUB_ACTIONS` set), where
+//! that is a failure. Once root is available, every later failure of a helper fails the test.
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -14,7 +15,8 @@ use std::time::Duration;
 /// `nobody` for the listener), and takes root back. With `full` it fills the backlog with connections it never
 /// accepts, and fails if 64 do not fill it. It prints `ready` and waits for its input to end; then it accepts every
 /// connection still queued, reads each to its end, removes the socket and prints the bytes it read (`open` when a
-/// client was still open five seconds after the input ended). Its alarm ends it within two minutes whatever it waits on.
+/// client was still open five seconds after the input ended). Its alarm ends it within two minutes whatever it waits
+/// on.
 const LISTENER: &str = r#"
 import os, pwd, signal, socket, sys
 signal.alarm(120)
@@ -67,9 +69,31 @@ print(n, flush=True)
 /// How long the helper may take to start, or to report when it ends.
 const BOUND: Duration = Duration::from_secs(20);
 
-/// Ends `child` within `BOUND`: closes its input and waits. `Some(status)` when it exited on its own; `None` when it was
-/// still running at `BOUND`, or could not be polled. It is then killed (sudo; the root helper ends on its input's end or
-/// its alarm), and its exit is not taken as confirmed. Never waits without a bound.
+/// Whether this process can run a program as root without asking: it is root, or `sudo -n true` succeeds.
+pub fn can_elevate() -> bool {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return true;
+    }
+    matches!(
+        Command::new("sudo").args(["-n", "true"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status(),
+        Ok(status) if status.success()
+    )
+}
+
+/// The one skip rule for a test that needs root: `true` when it can go on. When root is not available it says so and
+/// returns `false`, so the test passes, except on CI, where this panics.
+pub fn elevation_or_skip(what: &str) -> bool {
+    if can_elevate() {
+        return true;
+    }
+    let _ = skip::<()>(&format!("{what} needs root, and `sudo -n true` fails here"));
+    false
+}
+
+/// Ends `child` within `BOUND`: closes its input and waits. `Some(status)` when it exited on its own; `None` when it
+/// was still running at `BOUND`, or could not be polled. It is then killed (sudo; the root helper ends on its input's
+/// end or its alarm), and its exit is not taken as confirmed. Never waits without a bound.
 fn reap(child: &mut Child) -> Option<std::process::ExitStatus> {
     drop(child.stdin.take());
     let deadline = std::time::Instant::now() + BOUND;
@@ -98,10 +122,14 @@ pub struct ForeignListener {
 }
 
 impl ForeignListener {
-    /// Starts the helper, its backlog full when `full`. `None` when it cannot start here: the test then says so and
-    /// passes, except on CI, where this panics.
+    /// Starts the helper, its backlog full when `full`. `None` only when root is not available here
+    /// (`elevation_or_skip`): the test then says so and passes, except on CI, where this panics. A helper that fails to
+    /// start once root is available panics.
     pub fn start(full: bool) -> Option<Self> {
         use std::os::unix::fs::PermissionsExt;
+        if !elevation_or_skip("a listener of another account") {
+            return None;
+        }
         // Keep the socket path short enough for macOS's sun_path.
         let allocated = tempfile::Builder::new()
             .prefix("sotfo-")
@@ -112,8 +140,16 @@ impl ForeignListener {
         // Relinquish automatic cleanup before a helper can use this directory.
         let folder = allocated.keep();
         let path = folder.join("s.sock");
-        let spawned = Command::new("sudo")
-            .args(["-n", "/usr/bin/python3", "-c", LISTENER])
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let mut command = if unsafe { libc::geteuid() } == 0 {
+            Command::new("/usr/bin/python3")
+        } else {
+            let mut sudo = Command::new("sudo");
+            sudo.args(["-n", "/usr/bin/python3"]);
+            sudo
+        };
+        let spawned = command
+            .args(["-c", LISTENER])
             .arg(&path)
             .arg(if full { "full" } else { "open" })
             .stdin(Stdio::piped())
@@ -124,7 +160,7 @@ impl ForeignListener {
             Err(error) => {
                 // No helper was started; this allocator-created directory is ours.
                 std::fs::remove_dir_all(&folder).expect("remove the unused fixture directory");
-                return skip(&format!("cannot start the listener helper: {error}"));
+                panic!("root is available, but the listener helper did not start: {error}");
             }
         };
         let stdout = child.stdout.take().expect("the helper's stdout");
@@ -144,9 +180,9 @@ impl ForeignListener {
                 folder,
             }),
             _ => match reap(&mut child) {
-                Some(_) => {
+                Some(status) => {
                     std::fs::remove_dir_all(&folder).expect("remove the ended fixture directory");
-                    skip("the helper started no listener")
+                    panic!("root is available, but the listener helper ended before it was ready: {status}");
                 }
                 None => panic!(
                     "listener startup failed; helper termination unconfirmed; directory retained"
