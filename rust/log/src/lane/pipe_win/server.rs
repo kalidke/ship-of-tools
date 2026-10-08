@@ -97,7 +97,7 @@ impl PipeServer {
             write_cancel_observed_genuine_pending: Mutex::new(HashMap::new()),
             teardown_failed: AtomicBool::new(false),
             sweep_nudged: AtomicBool::new(false),
-            shutdown_sent: AtomicBool::new(false),
+            shutdown: OnceLock::new(),
             progress: Progress::new("pipe"),
             controls: Controls::default(),
         });
@@ -467,7 +467,7 @@ impl PipeServer {
         }
         if !self.shared.sweep_nudged.swap(true, Ordering::AcqRel) {
             // Nonblocking: a full inbox already has the reaper awake, and the slack keeps the one `Shutdown` a slot.
-            let _ = self.shared.reaper_tx.try_send(ReaperMsg::Sweep);
+            let _ = self.shared.reaper_tx.try_send(ReaperMsg::Wake);
         }
     }
 

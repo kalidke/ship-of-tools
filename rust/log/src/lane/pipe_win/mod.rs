@@ -82,7 +82,8 @@
 //! the writer's own error signal can all race for the same connection,
 //! but at most one of them ever reaches the channel. The inbox can
 //! therefore never hold more than one live `Torn` message per
-//! currently-open connection (≤ `max_instances`) plus the single phase-one `Sweep` and the single `Shutdown`.
+//! currently-open connection (≤ `max_instances`) plus the single phase-one `Wake` and the single shutdown `Wake`. A wake
+//! carries no state: the shutdown deadline lives in `ServerShared::shutdown`, so a wake the full inbox refuses loses nothing.
 //!
 //! # Continuous name hold
 //!
@@ -394,9 +395,10 @@ struct ServerShared {
     progress: Progress,
     /// Latched by a completed worker panic or a thread unfinished at the shutdown deadline, and never cleared.
     teardown_failed: AtomicBool,
-    /// The phase-one `Sweep` nudge and the one `Shutdown` have each been sent (or refused) once.
+    /// The phase-one wake has been sent (or refused) once.
     sweep_nudged: AtomicBool,
-    shutdown_sent: AtomicBool,
+    /// The one absolute shutdown deadline, set by the first `join_workers`; the reaper reads it each pass.
+    shutdown: OnceLock<Instant>,
     /// Scoped regression controls (zero-sized outside a test build).
     controls: Controls,
 }

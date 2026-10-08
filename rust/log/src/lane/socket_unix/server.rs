@@ -104,7 +104,7 @@ impl SocketServer {
             pending: AtomicUsize::new(0),
             teardown_failed: AtomicBool::new(false),
             sweep_nudged: AtomicBool::new(false),
-            shutdown_sent: AtomicBool::new(false),
+            shutdown: OnceLock::new(),
             controls: crate::lane::test_progress::Controls::default(),
         });
 
@@ -314,7 +314,7 @@ impl SocketServer {
         }
         if !self.shared.sweep_nudged.swap(true, Ordering::AcqRel) {
             // Nonblocking: a full inbox already has the reaper awake, and the slack keeps the one `Shutdown` a slot.
-            let _ = self.shared.reaper_tx.try_send(ReaperMsg::Sweep);
+            let _ = self.shared.reaper_tx.try_send(ReaperMsg::Wake);
         }
         self.shared.progress.note(None, "listener.disconnect", "ok");
     }

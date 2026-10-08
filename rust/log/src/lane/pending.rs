@@ -8,6 +8,7 @@ use super::test_progress::Progress;
 use super::transport::{ClosedReason, Joined, LaneEvent, JOIN_POLL_INTERVAL};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
+use std::sync::OnceLock;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -141,8 +142,10 @@ impl PendingJoins {
 /// Extra capacity on a server's bounded reaper inbox beyond its connection
 /// ceiling -- a connection's own at-most-once teardown flag already caps live
 /// `Torn` messages at one per open connection, so the only other traffic this
-/// inbox ever carries is the single phase-one `Sweep` nudge and the single
-/// `Shutdown`, each sent without blocking at most once.
+/// inbox ever carries is the single phase-one wake and the single shutdown
+/// wake, each sent without blocking at most once. Correctness does not rest on
+/// them: a wake carries no state (see [`ReaperMsg::Wake`]), and a send that
+/// finds the inbox full leaves the reaper with messages to take anyway.
 pub(super) const REAPER_INBOX_SLACK: usize = 2;
 
 /// How long a normal (not shutdown) close may leave a connection's workers unfinished before the reaper reports it,
@@ -196,23 +199,23 @@ impl ThreadJoins {
 pub(crate) enum ReaperMsg {
     /// A connection ended (natural EOF/error, or a caller's `close`).
     Torn(ConnId, ClosedReason),
-    /// Phase one cancelled every registered connection: claim them (sent without blocking, at most once).
-    Sweep,
-    /// Shutdown applies the caller's one absolute deadline to all registered and pending pairs; dropping suppresses
-    /// lifecycle publication. Unfinished pairs remain owned by the reaper.
-    Shutdown(Instant),
+    /// A pure wake, sent without blocking and at most once for phase one and once for shutdown. It carries no state:
+    /// every pass re-reads `dropping` (phase one cancelled every registered connection: claim them) and the shutdown
+    /// deadline (one absolute deadline for all registered and pending pairs; unfinished pairs remain owned).
+    Wake,
 }
 
-/// Signal the reaper to shut down against `deadline`, once and without blocking: a repeat call never extends the first
-/// deadline or queues a second message. The inbox keeps a slot for it beyond the live connections' `Torn` messages.
+/// Record the shutdown `deadline` in `shutdown` -- the first call wins, and a repeat never extends it -- and wake the
+/// reaper, without blocking. The deadline is shared state the reaper reads each pass, so a wake that cannot be queued
+/// loses nothing.
 pub(crate) fn signal_shutdown(
-    sent: &AtomicBool,
+    shutdown: &OnceLock<Instant>,
     tx: &SyncSender<ReaperMsg>,
     progress: &Progress,
     deadline: Instant,
 ) {
-    if !sent.swap(true, Ordering::AcqRel) {
-        let _ = tx.try_send(ReaperMsg::Shutdown(deadline));
+    if shutdown.set(deadline).is_ok() {
+        let _ = tx.try_send(ReaperMsg::Wake);
         progress.note(None, "reaper.shutdown", "signalled");
     }
 }

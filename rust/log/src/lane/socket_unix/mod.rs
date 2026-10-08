@@ -377,9 +377,10 @@ struct ServerShared {
     pending: AtomicUsize,
     /// Latched by a completed worker panic or a thread unfinished at the shutdown deadline, and never cleared.
     teardown_failed: AtomicBool,
-    /// The phase-one `Sweep` nudge and the one `Shutdown` have each been sent (or refused) once.
+    /// The phase-one wake has been sent (or refused) once.
     sweep_nudged: AtomicBool,
-    shutdown_sent: AtomicBool,
+    /// The one absolute shutdown deadline, set by the first `join_workers`; the reaper reads it each pass.
+    shutdown: OnceLock<Instant>,
     /// Scoped regression controls (worker-exit holds and panics, barriers, a short teardown deadline): zero-sized
     /// outside a test build.
     controls: crate::lane::test_progress::Controls,

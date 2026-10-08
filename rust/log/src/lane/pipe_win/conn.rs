@@ -111,7 +111,7 @@ pub(super) fn report_registration_failure(
 /// Signal the reaper to shut down against `deadline` (see [`pending::signal_shutdown`]).
 pub(super) fn signal_shutdown(shared: &ServerShared, deadline: Instant) {
     pending::signal_shutdown(
-        &shared.shutdown_sent,
+        &shared.shutdown,
         &shared.reaper_tx,
         &shared.progress,
         deadline,
@@ -148,12 +148,11 @@ fn reaper_ctx(shared: &ServerShared) -> pending::Ctx<'_> {
 
 /// Claim `conn_id` if it is still registered, once: under the `conns` lock, cancel both slots (so the cancellation
 /// precedes any `close_all`) and move the pair to a pending record. Only the reaper calls this. `reason: None` is a
-/// shutdown claim; `shutdown` is the deadline every pair is held to once one was signalled.
+/// shutdown claim; once a shutdown deadline was signalled every pair is held to it.
 fn claim(
     shared: &Arc<ServerShared>,
     conn_id: ConnId,
     reason: Option<ClosedReason>,
-    shutdown: Option<Instant>,
 ) -> Option<Pending> {
     let conn = {
         let mut conns = shared.conns.lock().unwrap();
@@ -199,7 +198,10 @@ fn claim(
         .progress
         .note(Some(conn_id), "writer.join.begin", "begin");
     let own = Instant::now() + shared.controls.close_budget();
-    let deadline = shutdown.map_or(own, |shutdown| own.min(shutdown));
+    let deadline = shared
+        .shutdown
+        .get()
+        .map_or(own, |shutdown| own.min(*shutdown));
     Some(Pending {
         id: conn_id,
         claimed: Claimed::new(conn_id, reason, reader_jh, writer_jh, deadline),
@@ -259,18 +261,14 @@ fn publish_staged(shared: &Arc<ServerShared>, staged: &mut Staged) {
 pub(super) fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
     let mut pending: Vec<Pending> = Vec::new();
     let mut staged = Staged::default();
-    let mut shutdown: Option<Instant> = None;
     loop {
-        let idle = pending.is_empty() && shutdown.is_none() && staged.error.is_none();
+        let idle = pending.is_empty() && shared.shutdown.get().is_none() && staged.error.is_none();
         let open = pending::intake(&rx, idle, |message| match message {
             ReaperMsg::Torn(id, reason) => {
                 shared.progress.note(Some(id), "teardown.dequeue", "ok");
-                pending.extend(claim(&shared, id, Some(reason), shutdown));
+                pending.extend(claim(&shared, id, Some(reason)));
             }
-            ReaperMsg::Sweep => {}
-            ReaperMsg::Shutdown(deadline) => {
-                shutdown.get_or_insert(deadline);
-            }
+            ReaperMsg::Wake => {}
         });
         if !open {
             return;
@@ -278,6 +276,7 @@ pub(super) fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
         shared
             .controls
             .barrier_point(&shared.progress, None, "reaper.pass");
+        let shutdown = shared.shutdown.get().copied();
         if let Some(deadline) = shutdown {
             for record in &mut pending {
                 record.claimed.tighten(deadline);
@@ -286,7 +285,7 @@ pub(super) fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
         if shutdown.is_some() || shared.dropping.load(Ordering::Acquire) {
             let ids: Vec<ConnId> = shared.conns.lock().unwrap().keys().copied().collect();
             for id in ids {
-                pending.extend(claim(&shared, id, None, shutdown));
+                pending.extend(claim(&shared, id, None));
             }
         }
         publish_staged(&shared, &mut staged);

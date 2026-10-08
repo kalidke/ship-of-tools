@@ -1,7 +1,9 @@
-//! `PendingJoins` against real threads: completion, panic, once-only expiry and ownership after expiry.
+//! `PendingJoins` against real threads: completion, panic, once-only expiry and ownership after expiry; and the
+//! shutdown deadline's shared state, which a wake that cannot be queued does not lose.
 
-use super::pending::{PendingJoins, Worker};
-use std::sync::mpsc;
+use super::pending::{signal_shutdown, PendingJoins, ReaperMsg, Worker};
+use super::test_progress::Progress;
+use std::sync::{mpsc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -115,4 +117,25 @@ fn tightening_only_moves_the_deadline_forward() {
     assert_eq!(joins.poll(Instant::now()).expired.map(|w| w.len()), Some(2));
     release_reader.send(()).unwrap();
     release_writer.send(()).unwrap();
+}
+
+#[test]
+fn the_shutdown_deadline_survives_a_wake_that_cannot_be_queued() {
+    let (wake, inbox) = mpsc::sync_channel(1);
+    wake.try_send(ReaperMsg::Wake).unwrap();
+    let shutdown = OnceLock::new();
+    let progress = Progress::default();
+    let first = Instant::now() + Duration::from_secs(20);
+    signal_shutdown(&shutdown, &wake, &progress, first);
+    assert_eq!(
+        shutdown.get(),
+        Some(&first),
+        "the full inbox lost the deadline"
+    );
+    signal_shutdown(&shutdown, &wake, &progress, first + Duration::from_secs(5));
+    assert_eq!(shutdown.get(), Some(&first), "a repeat moved the deadline");
+    assert!(
+        matches!(inbox.try_recv(), Ok(ReaperMsg::Wake)),
+        "the earlier message is still queued"
+    );
 }
