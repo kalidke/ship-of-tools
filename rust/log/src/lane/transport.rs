@@ -197,22 +197,17 @@ pub trait Transport {
     /// real transport must issue cancellation to every worker it owns
     /// FIRST (so the listener name and every connection are gone before
     /// any blocking wait), THEN join everything against `deadline` rather
-    /// than a budget it invents itself. Returns `true` iff every one of
-    /// ITS OWN joins finished within `deadline`; `false` — LOUD, and the
-    /// caller MUST treat this as terminal (no seal, no fence release past
-    /// it), since this crate cannot force an OS thread to stop. A
-    /// synthetic test transport with nothing to bound returns `true`
-    /// unconditionally.
+    /// than a budget it invents itself. True requires every owned join
+    /// complete and no latched teardown failure. False is loud and terminal
+    /// on expiry or completed-worker panic (no seal, no fence release past
+    /// it), and unfinished registered pairs remain reaper-owned. A synthetic
+    /// transport with no joins or failure returns true.
     fn shutdown_all(&mut self, deadline: Instant) -> bool;
 }
 
-/// ADR 0041 Lifecycle "the pipe NAME disappears before any blocking
-/// join" / the bounds table's "teardown aggregate": 20 s TOTAL after the
-/// listener is gone, one absolute deadline shared by every join
-/// (acceptor, reaper, and — inside the reaper's own drain — every
-/// connection worker), loud on expiry. Shared by every platform's
-/// transport and by the capsule writer loop's closer/reader joins — one
-/// constant, one mechanism.
+/// The existing 20 s aggregate budget is shared by acceptor, reaper and all registered pending worker joins. Expiry is
+/// loud and unfinished registered pairs remain reaper-owned. The capsule's closer/reader joins use the same caller
+/// deadline.
 pub const TEARDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_secs(20);
 
 /// L1-unix LU1b (ADR 0043 "Bounds are the same numbers on both
@@ -285,6 +280,122 @@ pub(crate) fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
     }
 }
 
+/// One of a connection's two workers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Worker {
+    Reader,
+    Writer,
+}
+
+impl Worker {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Worker::Reader => "reader",
+            Worker::Writer => "writer",
+        }
+    }
+}
+
+/// `reader`, `writer` or `both` for the workers a record names.
+pub(crate) fn worker_label(workers: &[Worker]) -> &'static str {
+    match workers {
+        [only] => only.name(),
+        _ => "both",
+    }
+}
+
+/// What one [`PendingJoins::poll`] found.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct JoinPoll {
+    /// The workers joined by this poll, each with whether it ended without a panic.
+    pub(crate) joined: Vec<(Worker, bool)>,
+    /// The workers still unfinished when the deadline was first seen expired; reported by one poll only.
+    pub(crate) expired: Option<Vec<Worker>>,
+    /// Both workers have been joined.
+    pub(crate) done: bool,
+}
+
+impl JoinPoll {
+    /// True for a poll that found a completed panic or an expiry.
+    pub(crate) fn failed(&self) -> bool {
+        self.expired.is_some() || self.joined.iter().any(|(_, ok)| !ok)
+    }
+
+    /// Print this poll's runtime records, one line per fact: each completed panic, then the expiry naming only the
+    /// unfinished workers. `prefix` is the transport's (`sot-sock`, `sot-pipe`); the workers stay owned either way.
+    pub(crate) fn report(&self, prefix: &str, conn: ConnId, elapsed: Duration) {
+        let ms = elapsed.as_millis();
+        for (worker, _) in self.joined.iter().filter(|(_, ok)| !ok) {
+            eprintln!(
+                "{prefix}: connection teardown failed conn={conn} worker={} elapsed_ms={ms} reason=worker-panicked \
+                 outcome=panicked; worker join completed",
+                worker.name()
+            );
+        }
+        if let Some(unfinished) = &self.expired {
+            let which = worker_label(unfinished);
+            eprintln!(
+                "{prefix}: connection teardown failed conn={conn} worker={which} elapsed_ms={ms} \
+                 reason=deadline-expired; unfinished workers remain owned"
+            );
+        }
+    }
+}
+
+/// The record a server prints when its teardown ends failed, after the per-connection records above.
+pub(crate) fn report_server_teardown_failed(prefix: &str) {
+    eprintln!("{prefix}: server teardown failed; see worker panic and deadline records");
+}
+
+/// A connection's two worker handles under teardown, owned until both are joined. A poll joins every handle that has
+/// finished (so a panic or a clean end is seen the moment it happens, whatever the other worker is doing) and never
+/// joins or drops a handle that has not; expiry is reported once and the unfinished handles stay owned, to be polled
+/// again.
+pub(crate) struct PendingJoins {
+    reader: Option<JoinHandle<()>>,
+    writer: Option<JoinHandle<()>>,
+    deadline: Instant,
+    expiry_reported: bool,
+}
+
+impl PendingJoins {
+    pub(crate) fn new(reader: JoinHandle<()>, writer: JoinHandle<()>, deadline: Instant) -> Self {
+        Self {
+            reader: Some(reader),
+            writer: Some(writer),
+            deadline,
+            expiry_reported: false,
+        }
+    }
+
+    /// Bring the absolute deadline forward to `deadline`; it never moves back.
+    pub(crate) fn tighten(&mut self, deadline: Instant) {
+        self.deadline = self.deadline.min(deadline);
+    }
+
+    pub(crate) fn poll(&mut self, now: Instant) -> JoinPoll {
+        let mut poll = JoinPoll::default();
+        for (worker, slot) in [(Worker::Reader, &mut self.reader), (Worker::Writer, &mut self.writer)] {
+            if slot.as_ref().is_some_and(JoinHandle::is_finished) {
+                let ended = slot.take().expect("checked present").join();
+                poll.joined.push((worker, ended.is_ok()));
+            }
+        }
+        poll.done = self.reader.is_none() && self.writer.is_none();
+        if !poll.done && now >= self.deadline && !self.expiry_reported {
+            self.expiry_reported = true;
+            poll.expired = Some(
+                [(Worker::Reader, &self.reader), (Worker::Writer, &self.writer)]
+                    .into_iter()
+                    .filter(|(_, slot)| slot.is_some())
+                    .map(|(worker, _)| worker)
+                    .collect(),
+            );
+        }
+        poll
+    }
+}
+
 // ---------------------------------------------------------------------
 // Shared implementation helpers — both platforms' transports use these
 // (L1-unix LU1a, hoisted out of `lane/pipe_win/`). Not part of the
@@ -311,10 +422,11 @@ pub(crate) const OUTBOUND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const EVENTS_CHANNEL_CAP: usize = OUTBOUND_BUDGET_BYTES / READ_BUF_LEN;
 
 /// Extra capacity on a server's bounded reaper inbox beyond its connection
-/// ceiling — a connection's own at-most-once teardown flag already caps live
-/// `Torn` messages at one per open connection, so the only other traffic
-/// this inbox ever carries is `Drop`'s own single `Shutdown` message.
-pub(super) const REAPER_INBOX_SLACK: usize = 1;
+/// ceiling -- a connection's own at-most-once teardown flag already caps live
+/// `Torn` messages at one per open connection, so the only other traffic this
+/// inbox ever carries is the single phase-one `Sweep` nudge and the single
+/// `Shutdown`, each sent without blocking at most once.
+pub(super) const REAPER_INBOX_SLACK: usize = 2;
 
 /// How long a stalled delivery (lifecycle retry, or one `Bytes` attempt)
 /// sleeps between retries against a full `events` channel.
@@ -638,8 +750,9 @@ pub trait LaneServer: Sized {
     /// join.
     fn disconnect_listener(&mut self);
     /// Phase two: wait for every thread this transport owns, against one
-    /// shared absolute `deadline`. `true` iff every one finished within
-    /// budget; `false` — LOUD, terminal — on expiry.
+    /// shared absolute `deadline`. True requires every owned join complete and
+    /// no latched teardown failure. False is loud and terminal on expiry or
+    /// completed-worker panic; unfinished registered pairs remain reaper-owned.
     fn join_workers(&mut self, deadline: Instant) -> bool;
 }
 

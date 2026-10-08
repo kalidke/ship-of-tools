@@ -9,7 +9,7 @@ The twin of the Windows pipe transport by property, not mechanism: a server for 
 - `server.rs`: `SocketServer`: bind, events, send, close, and the `LaneServer` impl
 - `listener.rs`: the private runtime dir, the fd-anchored bind, and the socket flag helpers
 - `accept.rs`: the accept loop thread and admission of one new connection
-- `conn.rs`: the reaper, reader and writer threads, lifecycle events and teardown requests
+- `conn.rs`: per-connection workers and the polling reaper's charged pending teardown
 - `client.rs`: `SocketClient`, its `Client` and `Endpoint` impls, and the unchallenged and challenged connects
 - `connect.rs`: the bounded, non-blocking `connect(2)` attempt over a fresh socket
 
@@ -24,3 +24,4 @@ The twin of the Windows pipe transport by property, not mechanism: a server for 
 - A connect uses a fresh socket per attempt and retries a busy listener only until `CONNECT_BOUND` has passed; the
   attempt or 20 ms sleep in progress finishes first (`connect_unix_socket_unchallenged`).
 - A change to one server's accept or teardown is made to the Windows twin, `pipe_win`, too.
+- Live and pending records share the admission bound; `Closed` follows both joins. Shutdown errno alone preserves close reason and failure state.

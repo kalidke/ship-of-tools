@@ -12,14 +12,15 @@ program against. Part of capsule; charter: rust/log/CLAUDE.md.
 - `platform_transport.rs`: `PlatformTransport`, the capsule's `Transport` over `PlatformLaneServer`
 - `socket_unix/`: the Unix domain-socket transport, server and client
 - `test_progress.rs`: test-only socket/client and pipe progress, ownership/enqueue observations and scoped regression controls
-- `transport.rs`: `Transport`, `TransportEvent`, `LaneServer`, `LaneEvent`, `TransportError`, the teardown bound and the servers' shared helpers
+- `reaper_tests.rs`: real-thread pending-join completion, panic, expiry and ownership tests
+- `transport.rs`: transport contracts, bounds and shared owned nonblocking `PendingJoins`
 - `wire/`: the frame layouts of the three lanes, pure encode and decode
 
 ## Start here
 `transport.rs` for the contract every lane server implements; `client.rs` for how a client dials one.
 
 ## Rules
-- Every worker join is bounded: `join_within` polls `is_finished` against one deadline, and a teardown spends one `TEARDOWN_AGGREGATE_DEADLINE` across all its joins.
+- Reapers poll every pending pair, retaining unfinished workers after expiry (`PendingJoins`); other joins use `join_within` and the caller's absolute deadline. Phase-one registered pairs use the reaper, and `join_workers` reports latched failure.
 - `TransportError::is_endpoint_absent` is the one absence predicate on every platform.
 - The platform is chosen once, by `client::PlatformEndpoint` and `transport::PlatformLaneServer`.
 - A connection's outbound bytes are reserved in `OutboundBudget` before queueing and released when the write returns.

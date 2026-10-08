@@ -9,7 +9,7 @@ frame or opcode. Windows only (`mod.rs` is `#![cfg(windows)]`). Part of capsule;
 - `registry.rs`: `create_pipe_instance`, `InstanceRegistry` and `LiveHandle`, the one closer of instance handles
 - `server.rs`: `PipeServer` and its `LaneServer` impl
 - `accept.rs`: the accept loop: `obtain_instance`, `accept_loop`, `handle_new_connection`, `recycle_instance`
-- `conn.rs`: the reaper and each connection's reader and writer threads
+- `conn.rs`: per-connection workers and the polling reaper's charged pending teardown
 - `client.rs`: `PipeClient`, the voyage and supervisor connects, `PipeEndpoint`
 
 ## Start here
@@ -22,3 +22,4 @@ frame or opcode. Windows only (`mod.rs` is `#![cfg(windows)]`). Part of capsule;
 - A raw connect (`connect_voyage_pipe_unchallenged`, `connect_supervisor_pipe_unchallenged`) stays `pub(crate)`; `connect_voyage_pipe` authenticates the server before returning.
 - An `OVERLAPPED`, its event and buffer stay valid until the kernel is done: if completion is not proven within `OVERLAPPED_COMPLETION_PROOF_TIMEOUT`, the server leaks the slot and buffer and the client aborts (`CompletionUnproven`).
 - Same event vocabulary and thread roles as `socket_unix`, its Unix twin by property; a change to one server's accept or teardown is made to both.
+- Registration and shutdown share one cutoff lock; instances remain charged through joins and close-event retirement. Cancellation precedes `close_all`; slot completion proof is preserved.

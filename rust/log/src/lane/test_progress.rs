@@ -15,6 +15,10 @@ use std::{
 #[cfg(any(test, feature = "test-support"))]
 const CAPACITY: usize = 256;
 
+/// How many times a checkpoint tries a momentarily busy ring before it is skipped: bounded, never a wait.
+#[cfg(any(test, feature = "test-support"))]
+const ADMIT_ATTEMPTS: u32 = 64;
+
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug)]
 pub struct Checkpoint {
@@ -135,9 +139,9 @@ impl Progress {
             result: result.to_string(),
             errno,
         });
-        let mut ring = match self.ring.try_lock() {
-            Ok(ring) => ring,
-            Err(_) => {
+        let mut ring = match self.admit() {
+            Some(ring) => ring,
+            None => {
                 self.skipped.fetch_add(1, Ordering::Relaxed);
                 return;
             }
@@ -169,6 +173,22 @@ impl Progress {
         _caller: &str,
         _errno: Option<i32>,
     ) {
+    }
+
+    /// The ring if it is free within a bounded few attempts. Another thread's checkpoint or a polling snapshot holds
+    /// it for microseconds; a deliberate fixture hold or a poisoned ring outlasts the attempts, and the checkpoint is
+    /// skipped (and counted) rather than waited for.
+    #[cfg(any(test, feature = "test-support"))]
+    fn admit(&self) -> Option<MutexGuard<'_, Ring>> {
+        for attempt in 0..ADMIT_ATTEMPTS {
+            match self.ring.try_lock() {
+                Ok(ring) => return Some(ring),
+                Err(TryLockError::Poisoned(_)) => return None,
+                Err(TryLockError::WouldBlock) if attempt < ADMIT_ATTEMPTS / 2 => std::hint::spin_loop(),
+                Err(TryLockError::WouldBlock) => std::thread::yield_now(),
+            }
+        }
+        None
     }
 
     /// Deliberate fixture hold; passive operations never use this blocking acquisition.

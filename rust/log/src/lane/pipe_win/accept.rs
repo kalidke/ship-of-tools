@@ -55,43 +55,43 @@ pub(super) fn terminalize_accept_loop(shared: &Arc<ServerShared>, message: Strin
 /// `DisconnectNamedPipe` resets it to the listening state; on success
 /// it's pushed onto `AcceptState::recycled` (SAME `id`, never
 /// re-registered). On FAILURE, it's retained (still registered, never
-/// closed by this function) and the accept loop is terminalized — see
+/// closed by this function) and the failure is returned -- see
 /// the module doc's "Continuous name hold" section for why retaining
 /// the dead handle, rather than replacing or closing it, is the correct
 /// response.
 ///
-/// This function itself NEVER calls `CloseHandle`, and NEVER touches the
-/// raw handle except through a [`LiveHandle`] (Codex round-4 finding 3):
-/// `id` stays registered either way, and [`InstanceRegistry::close_all`]
-/// is the only thing that ever actually closes it. If `id` is already
-/// gone (`InstanceRegistry::live` returns `None` — `close_all` already
-/// closed it, or is closing it this instant), this returns immediately,
-/// touching neither `DisconnectNamedPipe` nor either queue: not a
-/// cleanliness nicety here but the load-bearing check that prevents a
-/// stale-handle `DisconnectNamedPipe` call racing `close_all`.
-pub(super) fn recycle_instance(shared: &Arc<ServerShared>, id: u64, raw: SendableHandle) {
+/// This function itself NEVER calls `CloseHandle`, and NEVER touches the raw handle except through a [`LiveHandle`]
+/// (Codex round-4 finding 3): `id` stays registered either way, and [`InstanceRegistry::close_all`] is the only thing
+/// that ever actually closes it. If `id` is already gone (`close_all` closed it, or is closing it this instant), this
+/// returns at once, touching neither `DisconnectNamedPipe` nor either queue: the load-bearing check that prevents a
+/// stale-handle call racing `close_all`.
+pub(super) fn recycle_checked(shared: &Arc<ServerShared>, id: u64, raw: SendableHandle) -> Result<(), String> {
     let disconnected = match shared.instances.live(id) {
         Some(live) => {
             // An armed test failure stands in for the OS refusing, so the retained-dead path runs for real.
             !shared.controls.take_failure("recycle")
                 && (unsafe { DisconnectNamedPipe(live.get()) }) != 0
         }
-        None => return,
+        None => return Ok(()),
     };
     shared.progress.note(None, "recycle.result", disconnected);
     if disconnected {
         shared.accept.lock().unwrap().recycled.push_back((id, raw));
         shared.accept_cv.notify_all();
-        return;
+        return Ok(());
     }
     shared.accept.lock().unwrap().retained_dead.push((id, raw));
-    terminalize_accept_loop(
-        shared,
-        "DisconnectNamedPipe failed on a torn-down instance; it is retained (never closed) to keep the pipe \
+    Err("DisconnectNamedPipe failed on a torn-down instance; it is retained (never closed) to keep the pipe \
          name held, permanently costing one instance's worth of capacity, and no further connections will be \
          accepted"
-            .to_string(),
-    );
+        .to_string())
+}
+
+/// [`recycle_checked`] for the acceptor's own paths, which may block: a failure terminalizes the accept loop.
+pub(super) fn recycle_instance(shared: &Arc<ServerShared>, id: u64, raw: SendableHandle) {
+    if let Err(message) = recycle_checked(shared, id, raw) {
+        terminalize_accept_loop(shared, message);
+    }
 }
 
 /// Obtain the next instance to listen on: a recycled one (SAME
@@ -207,13 +207,9 @@ pub(super) fn accept_loop(shared: Arc<ServerShared>, first_id: u64, first_raw: S
             }
         }
 
-        // Codex round-3/4: `id`/`raw` stay correctly owned by
-        // `InstanceRegistry` regardless of this check's own timing (see
-        // that type's doc, and `recycle_instance`'s) -- this is a pure
-        // CLEANLINESS optimization, not a safety decision. Once
-        // `disconnect_listener` has started, avoid a pointless
-        // recycle/connection attempt and a possible spurious
-        // `AcceptError` on what may already be a closed handle.
+        // The early dropping check avoids unnecessary work. The final registration check and shutdown cutoff share the
+        // connection-state lock; registration after that cutoff is refused. Registry liveness separately protects every
+        // handle operation.
         if shared.dropping.load(Ordering::Acquire) {
             return;
         }
@@ -337,18 +333,35 @@ pub(super) fn handle_new_connection(
     shared
         .controls
         .barrier_point(&shared.progress, Some(conn_id), "registration.barrier");
-    let conn = ConnHandle {
-        raw,
-        registry_id: id,
-        read_slot,
-        write_slot,
-        outbound,
-        sender: tx,
-        reader_jh,
-        writer_jh,
-        torn_down_requested,
-    };
-    shared.conns.lock().unwrap().insert(conn_id, conn);
+    let mut conns = shared.conns.lock().unwrap();
+    if shared.dropping.load(Ordering::Acquire) {
+        // Shutdown won the cutoff: nothing was registered, and nobody was told this connection exists. Only the
+        // never-registered gated pair is aborted and joined here.
+        drop(conns);
+        shared.progress.note(Some(conn_id), "registration.cutoff", "rejected");
+        gate.abort();
+        reader_jh.join().ok();
+        writer_jh.join().ok();
+        shared.progress.note(Some(conn_id), "reader.join.end", "ok");
+        shared.progress.note(Some(conn_id), "writer.join.end", "ok");
+        recycle_instance(shared, id, raw);
+        return;
+    }
+    conns.insert(
+        conn_id,
+        ConnHandle {
+            raw,
+            registry_id: id,
+            read_slot,
+            write_slot,
+            outbound,
+            sender: tx,
+            reader_jh,
+            writer_jh,
+            torn_down_requested,
+        },
+    );
+    drop(conns);
     shared.progress.note(Some(conn_id), "registration.cutoff", "inserted");
     // RELIABLE, not best-effort: retries until the consumer actually has
     // room, so the gate below can never open onto a connection the

@@ -34,9 +34,10 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `reconcile_matrix.rs`: every row of the startup reconciliation table (`reconcile`) entered by file surgery, then `verify_voyage`; Unix and Windows.
 - `isolation_guards.rs`: remaining ADR 0049 source guards for browser-opener spellings and the macOS peer-token reader; Rust listener admission is proved at its native owners, not by an allowance catalog. REPL child arguments, selected environment and page-secret exclusion are observed in the backend REPL project_tests.rs; WGL listener selection and lifetime are observed in julia/repl/test/bonito/runtests.jl and the MathJax helper's tree in the backend's contract_tests.rs; this file retains only the unrelated browser-opener and macOS peer-token source guards.
 - `socket_unix/`: real Unix connect, close, teardown and client contracts; named waits and captured diagnostics
-  (`diagnostics.rs`), independent-reaping and shutdown regressions (`reaper.rs`), one bounded-read phase path
-  (`read.rs`), and supervised native-account fixtures with retained failure causes (`privileged.rs`; the
-  foreign-account case needs passwordless `sudo -n` and skips without it except on CI), process-isolated; Unix.
+  (`diagnostics.rs`), independent-reaping regressions (`reaper.rs`), the registration cutoff and `shutdown(2)` records
+  (`shutdown.rs`), one bounded-read phase path (`read.rs`), and supervised native-account fixtures with retained
+  failure causes (`privileged.rs`; the foreign-account case needs passwordless `sudo -n` and skips without it except
+  on CI), process-isolated; Unix.
 - `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules; Linux and Windows.
 - `support/`: helpers shared by several binaries: `capsule_guard.rs` (a spawned `sot-capsule` no test can leave behind) and `transports.rs` (`NoopTransport` and `TestTransport`).
 - `winhandle_windows.rs`: `winhandle::harden_own_stdio` clears handle inheritance; Windows only, alone in its binary because it mutates the process's real std handles.

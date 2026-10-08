@@ -627,6 +627,7 @@ mod client;
 mod close;
 mod connect;
 mod reaper;
+mod shutdown;
 mod teardown;
 
 #[derive(Clone)]

@@ -44,11 +44,11 @@
 //! connection's fd: it unblocks a blocked `read` (returns `0`, ordinary
 //! EOF) and a blocked `write` (returns a partial count or `EPIPE`) BOTH AT
 //! ONCE, from any thread, without needing to know which direction (if
-//! either) is currently mid-call. So [`teardown_if_present`] issues ONE
+//! either) is currently mid-call. So the reaper's claim issues ONE
 //! `shutdown(SHUT_RDWR)` regardless of which of the three triggers (an
 //! explicit [`SocketServer::close`], the reader's own EOF/error signal, or
 //! the writer's own error signal) requested it — the direct analogue of
-//! `pipe_win`'s own `teardown_if_present` unconditionally cancelling BOTH
+//! `pipe_win`'s own claim unconditionally cancelling BOTH
 //! its read and write `IoSlot`s no matter which one signalled first.
 //!
 //! # The accept loop wakes via `poll(2)` over a self-pipe, never a
@@ -86,14 +86,9 @@
 //!
 //! # Reliable lifecycle delivery, byte-bounded both directions
 //!
-//! Identical contract to `lane/pipe_win/` (see that module's doc for the full
-//! argument): `Accepted`/`Sent`/`Closed`/`AcceptError` retry against a full
-//! `events()` channel indefinitely (escaping only via `dropping`); `Bytes`
-//! is the one event kind allowed to be abandoned, and abandoning it always
-//! forces a guaranteed `Closed` through the same reliable path. Outbound:
-//! [`crate::lane::transport::OutboundBudget`] reserves bytes per connection,
-//! including the in-flight item, released only once the write physically
-//! completes.
+//! Lifecycle events remain reliable until consumer-gone or dropping. Accepted, Sent and acceptor errors use their retry
+//! sender; the reaper retains blocked Closed and recycle-error records and tries them nonblockingly while polling every
+//! pending pair. Bytes abandonment still forces Closed. Outbound bytes remain reserved until the physical write returns.
 //!
 //! # Security: the runtime dir's ancestors are not trusted
 //!
@@ -156,9 +151,11 @@ use crate::identity::challenge_unix as challenge_os;
 use crate::lane::attach_proto::ConnId;
 use crate::lane::test_progress::Role;
 use crate::lane::transport::{
-    join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget,
-    SendMarker, StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
-    EVENTS_RETRY_INTERVAL, READ_BUF_LEN, REAPER_INBOX_SLACK,
+    join_within, report_server_teardown_failed, validate_voyage_id, worker_label, ClosedReason,
+    JoinPoll, LaneEvent, LaneServer, OutboundBudget, PendingJoins, SendMarker, StartGate,
+    TransportError, Worker, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
+    EVENTS_RETRY_INTERVAL, JOIN_POLL_INTERVAL, READ_BUF_LEN, REAPER_INBOX_SLACK,
+    TEARDOWN_AGGREGATE_DEADLINE,
 };
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -167,9 +164,7 @@ use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-#[cfg(any(test, feature = "test-support"))]
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -243,13 +238,8 @@ struct WriteCmd {
     marker: Option<SendMarker>,
 }
 
-/// One live connection's threads, handle, and budget — owned by the
-/// `conns` map for the connection's whole life; removed and torn down
-/// exclusively by [`teardown_if_present`], called exclusively from
-/// [`reaper_loop`] (mirrors `pipe_win::ConnHandle`'s own "one registry,
-/// one closer" invariant — here there is no separate registry at all,
-/// since `Arc<UnixStream>` closes its own fd on its own last drop, one
-/// unavoidable owner).
+/// A registered connection is owned by the live map until the reaper claims it, then by a charged pending record
+/// through worker joins and close-event retirement. The owned Unix stream remains alive through both joins.
 struct ConnHandle {
     stream: Arc<UnixStream>,
     outbound: Arc<OutboundBudget>,
@@ -263,15 +253,15 @@ struct ConnHandle {
     torn_down_requested: Arc<AtomicBool>,
 }
 
-/// A message to [`reaper_loop`] — the only thread that ever removes a
-/// registered connection from `conns` or joins its threads.
+/// A message to [`reaper_loop`] -- the only thread that ever claims a registered connection or joins its workers.
 enum ReaperMsg {
     /// A connection ended (natural EOF/error, or a caller's `close`).
     Torn(ConnId, ClosedReason),
-    /// The server is being dropped: drain and tear down every connection
-    /// still in `conns` (no `Closed` event for these — nothing could
-    /// ever observe it), then stop.
-    Shutdown,
+    /// Phase one cancelled every registered connection: claim them (sent without blocking, at most once).
+    Sweep,
+    /// Shutdown applies the caller's one absolute deadline to all registered and pending pairs; dropping suppresses
+    /// lifecycle publication. Unfinished pairs remain owned by the reaper.
+    Shutdown(Instant),
 }
 
 /// TEST-SUPPORT ONLY counters proving the events channel actually
@@ -401,6 +391,14 @@ struct ServerShared {
     /// outside a test build.
     probes: Probes,
     progress: crate::lane::test_progress::Progress,
+    /// Claimed connections still charged against `max_connections`: workers unjoined or their close unretired.
+    /// Raised under the `conns` lock at the claim, so live plus pending never exceeds the bound.
+    pending: AtomicUsize,
+    /// Latched by a completed worker panic or an unfinished worker at its deadline, and never cleared.
+    teardown_failed: AtomicBool,
+    /// The phase-one `Sweep` nudge and the one `Shutdown` have each been sent (or refused) once.
+    sweep_nudged: AtomicBool,
+    shutdown_sent: AtomicBool,
     /// Scoped regression controls (worker-exit holds and panics, barriers, a short teardown deadline): zero-sized
     /// outside a test build.
     controls: crate::lane::test_progress::Controls,

@@ -89,7 +89,10 @@ pub(super) fn accept_loop(shared: Arc<ServerShared>, listener: UnixListener, wak
         );
         match accepted {
             Ok((stream, _addr)) => {
-                if shared.conns.lock().unwrap().len() >= shared.max_connections as usize {
+                // Live plus pending: a claimed connection stays charged until its joins and close are done.
+                let charged =
+                    shared.conns.lock().unwrap().len() + shared.pending.load(Ordering::Acquire);
+                if charged >= shared.max_connections as usize {
                     // ADR 0043 decision 4: accept-then-close at capacity.
                     drop(stream);
                     continue;
@@ -190,24 +193,9 @@ fn handle_new_connection(shared: &Arc<ServerShared>, stream: UnixStream) {
         }
     };
 
-    // Codex review finding 2 (P2): registration must not be able to
-    // escape phase one of `disconnect_listener`. That method's own drain
-    // and this insert take the SAME `conns` lock, so whichever of the two
-    // threads acquires it first establishes a real happens-before order
-    // for `dropping` that a bare atomic load, on its own, cannot promise:
-    // if `disconnect_listener` locked first, its own `dropping` write is
-    // now certainly visible here (the lock's release-then-acquire is what
-    // provides that, not `dropping`'s own ordering in isolation) — refuse
-    // to register at all. If this insert locks FIRST instead,
-    // `disconnect_listener` — however soon after it next acquires the
-    // SAME lock — will find this connection already in `conns` and hand
-    // it a normal, correct teardown through `detached_workers`. There is
-    // no window where a connection is registered AFTER
-    // `disconnect_listener`'s own drain has already run and will never
-    // see it again — which is exactly the leak this check closes (an
-    // orphaned reader/writer pair neither joined by the reaper, since it
-    // was never registered, NOR by `join_workers`, since it never reached
-    // `detached_workers` either).
+    // Registration and shutdown use the same connection-state lock. An earlier insert is cancelled by phase one and
+    // owned by the reaper; an earlier shutdown refuses insertion. Only never-registered gated workers are aborted and
+    // joined locally.
     shared
         .controls
         .barrier_point(&shared.progress, Some(conn_id), "registration.barrier");
