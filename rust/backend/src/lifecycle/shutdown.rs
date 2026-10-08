@@ -101,22 +101,30 @@ const FIRE_WAIT: Duration = Duration::from_secs(2);
 
 /// Fire the child signal and then take the one raw daemon exit. A controlled exit of the serving daemon (the close, the
 /// backstop, an update restart, a handled signal, the main result) comes here, so each contained tree is asked to end
-/// first. Request errors are logged and the chosen code stands; this is no wait for death, and the exit waits no longer
-/// than [`FIRE_WAIT`] for the requests either: a child creation stalled in the OS holds the mutex the fire needs, and the
-/// exit, the backstop's included, does not depend on it.
+/// first; the first caller's code is the one the process exits with ([`terminal`]). Request errors are logged and the
+/// chosen code stands; this is no wait for death, and the exit waits no longer than [`FIRE_WAIT`] for the requests either:
+/// a child creation stalled in the OS holds the mutex the fire needs, and the exit, the backstop's included, does not
+/// depend on it.
 pub(crate) fn exit(code: i32) -> ! {
     terminal(super::child_signal::process(), code, |code| {
         std::process::exit(code)
     })
 }
 
-/// The terminal body: fire `signal` on a thread of its own, wait at most [`FIRE_WAIT`] for it, then hand `code` to
-/// `terminate`. A test supplies a private signal and a callback.
+/// The terminal body: claim the exit, fire `signal` on a thread of its own, wait at most [`FIRE_WAIT`] for it, then hand
+/// `code` to `terminate`. Two controlled ends can arrive together (the backstop and a close that finishes at the bound):
+/// the first to arrive claims the exit and its code stands; the other waits for the process to end under it. A test
+/// supplies a private signal and a callback.
 pub(super) fn terminal<T>(
     signal: &'static super::child_signal::Signal,
     code: i32,
     terminate: impl FnOnce(i32) -> T,
 ) -> T {
+    if !signal.claim_exit() {
+        loop {
+            std::thread::park();
+        }
+    }
     let (sent, answered) = std::sync::mpsc::channel();
     let started = std::thread::Builder::new()
         .name("sotd-fire".into())
@@ -437,6 +445,39 @@ mod tests {
         assert!(
             signal.is_fired(),
             "the permanent flag was not published before the wait"
+        );
+    }
+
+    /// Two controlled ends that arrive together (the backstop and a close finishing at the bound): the first one's code is
+    /// the only one handed to the exit, and the second never reaches it.
+    #[test]
+    fn the_first_controlled_exit_decides_the_code() {
+        use crate::lifecycle::child_signal::Signal;
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let handed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (first_in, first_inside) = std::sync::mpsc::channel();
+        let record = handed.clone();
+        let first = std::thread::spawn(move || {
+            terminal(signal, 1, |code| {
+                record.lock().unwrap().push(code);
+                first_in.send(()).unwrap();
+                // The first exit is still on its way out when the second arrives.
+                std::thread::sleep(Duration::from_millis(500));
+            })
+        });
+        first_inside
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the first exit did not reach its end");
+        let record = handed.clone();
+        let _second = std::thread::spawn(move || {
+            terminal(signal, 0, |code| record.lock().unwrap().push(code))
+        });
+        std::thread::sleep(Duration::from_millis(1000));
+        first.join().unwrap();
+        assert_eq!(
+            *handed.lock().unwrap(),
+            vec![1],
+            "the second controlled exit reached the process exit"
         );
     }
 

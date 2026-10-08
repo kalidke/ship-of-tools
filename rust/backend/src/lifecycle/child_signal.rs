@@ -16,6 +16,8 @@ pub(crate) struct Signal {
     /// requests retain ownership for a later checked cleanup; the permanent flag still refuses new starts.
     trees: Mutex<Option<HashMap<u64, crate::lifecycle::contain::Tree>>>,
     next: AtomicU64,
+    /// Set by the first controlled exit that reaches the terminal ([`claim_exit`](Self::claim_exit)).
+    exit_claimed: std::sync::atomic::AtomicBool,
     /// Test-only: called right after a child is created, to put the shutdown's fire in that window.
     #[cfg(test)]
     pub(super) after_create: Mutex<Option<Box<dyn FnMut(u32) + Send>>>,
@@ -29,6 +31,7 @@ impl Signal {
             fired: watch::channel(false).0,
             trees: Mutex::new(Some(HashMap::new())),
             next: AtomicU64::new(0),
+            exit_claimed: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             after_create: Mutex::new(None),
             #[cfg(test)]
@@ -72,6 +75,11 @@ impl Signal {
         } else {
             Err(std::io::Error::other(failures.join("; ")))
         }
+    }
+
+    /// Whether the caller is the first controlled exit (true once, then false): the one whose code the process exits with.
+    pub(crate) fn claim_exit(&self) -> bool {
+        !self.exit_claimed.swap(true, Ordering::SeqCst)
     }
 
     pub(crate) fn is_fired(&self) -> bool {
