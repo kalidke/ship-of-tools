@@ -273,15 +273,12 @@ pub(super) fn advance_ready(process: LegProcess, consecutive_unstable_legs: &mut
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn advance_ending(operation_id: String, rx: mpsc::Receiver<EndingProgress>, handle: JoinHandle<()>, started_at: Instant, mut pending_reply: Option<ConnId>, process: LegProcess, lane: &Lane, conns: &HashMap<ConnId, Conn>, consecutive_unstable_legs: &mut u32, storage_step: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &mut AuthorityState, now: Instant) -> Lifecycle {
+pub(super) fn advance_ending(operation_id: String, rx: mpsc::Receiver<EndingProgress>, handle: JoinHandle<()>, started_at: Instant, mut pending_reply: Option<ConnId>, process: LegProcess, lane: &Lane, conns: &mut HashMap<ConnId, Conn>, consecutive_unstable_legs: &mut u32, storage_step: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &mut AuthorityState, now: Instant) -> Lifecycle {
     match rx.try_recv() {
         Ok(EndingProgress::RecordClosed) => {
             if let Some(conn_id) = pending_reply.take() {
-                if conns.contains_key(&conn_id) {
-                    let reply = SupervisorReply::Operation(SupervisorOperationState::RecordClosed);
-                    let bytes = encode_reply_or_fallback(&reply);
-                    let _ = lane.send(conn_id, bytes, None);
-                } // else: client disconnected meanwhile -- fine (B3).
+                let reply = SupervisorReply::Operation(SupervisorOperationState::RecordClosed);
+                send_deferred_reply(lane, conns, conn_id, &reply, now);
             }
             // Still in flight -- carry `process` forward untouched.
             Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply, process }

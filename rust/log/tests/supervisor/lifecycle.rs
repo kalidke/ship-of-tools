@@ -378,3 +378,49 @@ fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
         wait_for_exit_with_diagnostics(guard.child_mut(), &h, Duration::from_secs(360));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_TERMINAL), "three unstable legs must terminate the supervisor");
 }
+
+/// An EndRun whose `record_closed` lands after the supervisor lane's 5 s idle deadline still answers
+/// the client that waits for it in silence (ADR 0041: the command reply arrives at `record_closed`).
+/// The delay is the leg's own: four plain connections that never send a frame fill its pre-admission
+/// cap, so the supervisor's delivery is refused until the leg's 10 s pre-admission timeout closes them.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_end_run_reply_owed_past_the_lane_idle_deadline_reaches_the_waiting_client() {
+    use std::io::Read as _;
+    use std::os::unix::net::UnixStream;
+    /// The supervisor's `LANE_IDLE_DEADLINE`.
+    const LANE_IDLE: Duration = Duration::from_secs(5);
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+
+    let socket = sot_log::lane::socket_unix::voyage_socket_path(&voyage).expect("the voyage socket path");
+    let opened = Instant::now();
+    let held: Vec<UnixStream> = (0..4).map(|_| UnixStream::connect(&socket).expect("a plain connection")).collect();
+    // The premise, observed: a fifth is closed with no frame, and the four are still open.
+    let mut fifth = UnixStream::connect(&socket).expect("a fifth plain connection");
+    fifth.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    assert_eq!(fifth.read(&mut [0u8; 1]).expect("the leg refuses the fifth"), 0, "the leg's pre-admission cap is full");
+    for mut c in &held {
+        c.set_nonblocking(true).unwrap();
+        let open = matches!(c.read(&mut [0u8; 1]), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock);
+        assert!(open, "each held connection is still admitted, unclassified");
+    }
+    assert!(opened.elapsed() < Duration::from_secs(3), "the setup left the leg's pre-admission window open past the idle deadline");
+
+    let sent = Instant::now();
+    end_run_and_expect_record_closed(&conn, "late-end", "late", voyage);
+    let waited = sent.elapsed();
+    assert!(waited > LANE_IDLE, "record_closed landed after the idle deadline, as this test needs: {waited:?}");
+    drop(held);
+    let _ = poll_to_terminal(&conn, "late-end", Duration::from_secs(60));
+    let _ = command(&conn, "late-stop", SupervisorOp::Stop);
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
+}

@@ -100,7 +100,10 @@
 //! `record_closed` is reached (ADR 0041:592) — held via
 //! `(ConnId, operation_id)` correlation through `Ending`; a client
 //! disconnecting meanwhile is fine, since the journal itself carries the
-//! result for a later `query`. This deferred-reply signal is now passed
+//! result for a later `query`. While it is owed, that connection is not
+//! closed as idle, and queuing the reply restarts its idle clock
+//! (`authority/lane.rs` `service_lane`, `send_deferred_reply`). This
+//! deferred-reply signal is now passed
 //! on EVERY live no-process reconciliation attempt (an
 //! earlier version hardcoded `None` here, so a `pending_reply` could
 //! wait forever once THIS path — not the with-process one — was what
