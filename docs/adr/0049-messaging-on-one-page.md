@@ -145,7 +145,10 @@ listener this account hands to another process by `SCM_RIGHTS` keeps this accoun
 account it runs as, is trusted as this account's and receives what a client sends. A process in a user namespace that
 maps no uid of its own reads its own uid and every listener's as the overflow uid, so on Linux a listener at that uid is
 refused when this process's own uid is unmapped. A refused listener learns which of this account's processes connected,
-and is sent nothing. The daemon's bind check, by pathname, covers the runtime
+and is sent nothing. The daemon's two start probes (`refuse_live_socket`, `socket_answers`) connect through
+`connect_own` too, so another account's listener and a listener with a full backlog refuse a start within
+`CONNECT_BOUND` instead of hanging it; only a missing socket or a stale file counts as no listener (macOS refuses a
+full backlog like a stale file, so there it reads as stale). The daemon's bind check, by pathname, covers the runtime
 folder and every folder below it down to the socket's for a derived path, and the socket's own folder for a custom one,
 not the folders above: a custom `SOT_SOCKET`, `SOT_RUNTIME_DIR` or `XDG_RUNTIME_DIR` under another account's writable,
 non-sticky folder is not covered there, though a client still refuses another account's listener at that path. The
