@@ -5,7 +5,7 @@ use super::native_pane_route_tests::{recipe_from, Route, RouteKind};
 use super::tests::{fixture_cli, FixtureHome};
 use super::*;
 use serde_json::{json, Value};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use winit::event_loop::{EventLoop, EventLoopProxy};
@@ -30,6 +30,7 @@ pub(crate) fn run_native_pane_timing() -> Result<()> {
         [c, role, path] if c == "child" => child(role, std::path::Path::new(path)),
         [route] if route == "ssh-relay" => parent(RouteKind::SshRelay),
         [route] if route == "stand-in" => parent(RouteKind::StandIn),
+        [proof] if proof == "kill-proof" => super::native_pane_daemon_tests::kill_proof(),
         _ => anyhow::bail!("pane-timing needs one route argument: ssh-relay or stand-in"),
     }
 }
@@ -55,8 +56,8 @@ fn parent(kind: RouteKind) -> Result<()> {
     let route_down = route.as_mut().map(Route::teardown).transpose();
     let down = daemon.teardown();
     let confirmed = match (&route_down, &down) {
-        (Ok(_), Ok(rows)) => {
-            println!("pane-timing teardown rows_destroyed={rows} daemon_reaped=true");
+        (Ok(_), Ok(roots)) => {
+            println!("pane-timing teardown close not_ended=0 daemon_exit=0 roots_removed={roots}");
             true
         }
         _ => false,
@@ -106,17 +107,47 @@ fn daemon_scenario_path(daemon: &Daemon) -> std::path::PathBuf {
     daemon.endpoint_root().join("scenario.json")
 }
 
+/// Reads `pipe` to its end on a thread of its own.
+fn read_all(pipe: Option<impl std::io::Read + Send + 'static>) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(mut pipe) = pipe {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            text = String::from_utf8_lossy(&bytes).into_owned();
+        }
+        let _ = tx.send(text);
+    });
+    rx
+}
+
+/// Runs one child with its stdin held open until it has exited, so a parent that dies takes the child with it.
 fn run_child(role: &str, scenario: &std::path::Path) -> Result<ChildRun> {
-    let child = std::process::Command::new(std::env::current_exe()?)
+    let mut child = std::process::Command::new(std::env::current_exe()?)
         .args(["child", role])
         .arg(scenario)
-        .stdin(std::process::Stdio::null())
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
-    let (status, out, err) = sot_log::test_isolated::drain(child).wait_within(CHILD_BOUND);
-    println!("pane-timing child {role} status={status}");
-    Ok(ChildRun { role: role.to_string(), ok: status.success(), out, err })
+    println!("pane-timing child {role} started pid={}", child.id());
+    let _stdin = child.stdin.take();
+    let (out_rx, err_rx) = (read_all(child.stdout.take()), read_all(child.stderr.take()));
+    let waited = sot_log::test_isolated::wait_until(&mut child, Instant::now() + CHILD_BOUND);
+    let out = out_rx.recv_timeout(Duration::from_secs(10)).unwrap_or_default();
+    let mut err = err_rx.recv_timeout(Duration::from_secs(10)).unwrap_or_default();
+    let ok = match &waited {
+        Ok(status) => {
+            println!("pane-timing child {role} status={status}");
+            status.success()
+        }
+        Err(e) => {
+            err.push_str(&format!("child {role} did not finish in its bound; cleanup: {e}\n"));
+            false
+        }
+    };
+    Ok(ChildRun { role: role.to_string(), ok, out, err })
 }
 
 fn field(line: &str, name: &str) -> Option<String> {
@@ -392,6 +423,14 @@ fn plan_for(role: &str, scenario: &Value) -> Result<Vec<Plan>> {
 
 fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     let scenario: Value = serde_json::from_slice(&std::fs::read(scenario_path)?)?;
+    // The parent holds this pipe's write end for the child's whole life; its end is the parent's.
+    std::thread::spawn(|| {
+        let mut sink = Vec::new();
+        let _ = std::io::stdin().lock().read_to_end(&mut sink);
+        println!("pane-timing parent gone");
+        let _ = std::io::stdout().flush();
+        std::process::exit(70);
+    });
     println!("pane-timing: body entered");
     let _home = FixtureHome::enter()?;
     let capture = sot_log::test_log::capture();

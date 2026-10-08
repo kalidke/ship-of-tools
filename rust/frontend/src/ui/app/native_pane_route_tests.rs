@@ -38,7 +38,6 @@ pub(super) struct Route {
     args: Vec<String>,
     #[cfg(unix)]
     relay: Option<Relay>,
-    hub_dir: Option<PathBuf>,
 }
 
 impl Route {
@@ -52,7 +51,6 @@ impl Route {
                 args: vec!["stdio-bridge".into(), "--endpoint".into(), endpoint_arg(endpoint)],
                 #[cfg(unix)]
                 relay: None,
-                hub_dir: None,
             }),
             #[cfg(unix)]
             RouteKind::SshRelay => unix::start_relayed(&host, sotd, endpoint),
@@ -77,14 +75,11 @@ impl Route {
         None
     }
 
-    /// Stops the acceptor and ends every hop-2 child it recorded, each reaped within its bound.
+    /// Stops the acceptor, ends every hop-2 child it recorded and removes the hub folder; every problem is reported.
     pub(super) fn teardown(&mut self) -> Result<()> {
         #[cfg(unix)]
         if let Some(relay) = self.relay.take() {
-            relay.stop()?;
-        }
-        if let Some(dir) = self.hub_dir.take() {
-            std::fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
+            return relay.stop();
         }
         Ok(())
     }
@@ -99,7 +94,7 @@ pub(super) fn recipe_from(host: &str, program: &Path, args: &[String]) -> SshRec
 pub(super) fn preflight(route: &Route, daemon: &Daemon) -> Result<()> {
     let name = route.kind.name();
     let child = LinkGate::default().spawn_sync(&route.recipe()).map_err(|e| anyhow::anyhow!("{name} route could not start: {e}"))?;
-    let mut control = Control::from_child(child)?;
+    let mut control = Control::from_child(child, Duration::from_secs(30))?;
     let session = control.hello("t3-preflight")?;
     ensure!(session == daemon.session_id, "{name} route reached another daemon");
     if route.kind == RouteKind::SshRelay {
@@ -140,19 +135,29 @@ struct Relay {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     hop2: Arc<Mutex<Vec<std::process::Child>>>,
+    hub_dir: PathBuf,
 }
 
 #[cfg(unix)]
 impl Relay {
     fn stop(mut self) -> Result<()> {
+        let mut problems = Vec::new();
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
-            thread.join().map_err(|_| anyhow::anyhow!("relay acceptor panicked"))?;
+            if thread.join().is_err() {
+                problems.push("relay acceptor panicked".to_string());
+            }
         }
         let children = std::mem::take(&mut *self.hop2.lock().unwrap());
         for mut child in children {
-            ensure!(reap(&mut child, Duration::from_secs(10)), "a relay hop-2 child was not reaped in its bound");
+            if !reap(&mut child, Duration::from_secs(10)) {
+                problems.push("a relay hop-2 child was not reaped in its bound".to_string());
+            }
         }
+        if let Err(e) = std::fs::remove_dir_all(&self.hub_dir) {
+            problems.push(format!("remove {}: {e}", self.hub_dir.display()));
+        }
+        ensure!(problems.is_empty(), "{}", problems.join("; "));
         Ok(())
     }
 }
@@ -171,6 +176,7 @@ mod unix {
         std::fs::create_dir(&hub)?;
         std::fs::set_permissions(&hub, std::fs::Permissions::from_mode(0o700))?;
         ensure!(sot_log::host::state_dir::is_private_dir(&hub), "the hub runtime dir is not private");
+        println!("pane-timing roots hub={}", hub.display());
         let socket = hub.join(format!("sot-host-{host}.sock"));
         let listener = UnixListener::bind(&socket).context("bind the relay socket")?;
         listener.set_nonblocking(true)?;
@@ -195,8 +201,7 @@ mod unix {
             host: host.to_string(),
             program: "ssh".into(),
             args,
-            relay: Some(Relay { accepts, stop, thread: Some(thread), hop2 }),
-            hub_dir: Some(hub),
+            relay: Some(Relay { accepts, stop, thread: Some(thread), hop2, hub_dir: hub }),
         })
     }
 
