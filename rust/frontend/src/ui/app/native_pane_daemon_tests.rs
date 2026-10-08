@@ -420,6 +420,8 @@ impl Daemon {
         for dir in std::mem::take(&mut self.roots) {
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => removed += 1,
+                // A root that is already gone counts as removed (on Windows the runtime folder lies inside the first root).
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => removed += 1,
                 Err(e) => problems.push(format!("remove {}: {e}", dir.display())),
             }
         }

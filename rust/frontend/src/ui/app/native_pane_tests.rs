@@ -57,18 +57,25 @@ fn parent(kind: RouteKind) -> Result<()> {
     let runs = run_children(kind, &sotd, &mut daemon, &mut route);
     let route_down = route.as_mut().map(Route::teardown).transpose();
     let down = daemon.teardown();
-    let confirmed = match (&route_down, &down) {
+    let teardown = match (route_down, down) {
         (Ok(_), Ok(roots)) => {
             println!("pane-timing teardown close not_ended=0 daemon_exit=0 roots_removed={roots}");
-            true
+            Ok(())
         }
-        _ => false,
+        (route_down, down) => {
+            let detail = [route_down.err().map(|e| e.to_string()), down.err().map(|e| e.to_string())].into_iter().flatten().collect::<Vec<_>>().join("; ");
+            println!("pane-timing teardown not confirmed: {detail}");
+            Err(anyhow::anyhow!("pane teardown not confirmed: {detail}"))
+        }
     };
-    if !confirmed {
-        let detail = [route_down.err().map(|e| e.to_string()), down.err().map(|e| e.to_string())].into_iter().flatten().collect::<Vec<_>>().join("; ");
-        anyhow::bail!("pane teardown not confirmed: {detail}");
+    // The children's own result first (a missing display reads as "not runnable"), then the teardown's.
+    let judged = runs.and_then(|runs| verdict(kind, &runs));
+    match (judged, teardown) {
+        (Err(e), Err(t)) => Err(anyhow::anyhow!("{e:#}\n{t:#}")),
+        (Err(e), Ok(())) => Err(e),
+        (Ok(()), Err(t)) => Err(t),
+        (Ok(()), Ok(())) => Ok(()),
     }
-    verdict(kind, &runs?)
 }
 
 fn run_children(kind: RouteKind, sotd: &std::path::Path, daemon: &mut Daemon, route: &mut Option<Route>) -> Result<Vec<ChildRun>> {
