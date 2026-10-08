@@ -124,17 +124,16 @@ fn read_all(pipe: Option<impl std::io::Read + Send + 'static>) -> std::sync::mps
     rx
 }
 
-/// Runs one child with its stdin held open until it has exited, so a parent that dies takes the child with it.
+/// Runs one child to its end or its bound; an orphaned child ends at its next print, when its stdout pipe is gone.
 fn run_child(role: &str, scenario: &std::path::Path) -> Result<ChildRun> {
     let mut child = std::process::Command::new(std::env::current_exe()?)
         .args(["child", role])
         .arg(scenario)
-        .stdin(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
     println!("pane-timing child {role} started pid={}", child.id());
-    let _stdin = child.stdin.take();
     let (out_rx, err_rx) = (read_all(child.stdout.take()), read_all(child.stderr.take()));
     let waited = sot_log::test_isolated::wait_until(&mut child, Instant::now() + CHILD_BOUND);
     let out = out_rx.recv_timeout(Duration::from_secs(10)).unwrap_or_default();
@@ -452,14 +451,6 @@ fn plan_for(role: &str, scenario: &Scenario) -> Result<Vec<Plan>> {
 
 fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     let scenario: Scenario = serde_json::from_slice(&std::fs::read(scenario_path)?).map_err(|e| anyhow::anyhow!("pane-timing scenario malformed: {e}"))?;
-    // The parent holds this pipe's write end for the child's whole life; its end is the parent's.
-    std::thread::spawn(|| {
-        let mut sink = Vec::new();
-        let _ = std::io::stdin().lock().read_to_end(&mut sink);
-        println!("pane-timing parent gone");
-        let _ = std::io::stdout().flush();
-        std::process::exit(70);
-    });
     println!("pane-timing: body entered");
     let _home = FixtureHome::enter()?;
     let capture = sot_log::test_log::capture();
