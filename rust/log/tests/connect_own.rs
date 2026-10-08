@@ -146,11 +146,19 @@ mod unix {
             .unwrap();
         let status =
             sot_log::test_isolated::wait_within(&mut child, CONNECT_BOUND + Duration::from_secs(5));
+        // `connect_own` connects before it refuses, so a child whose body ran left a connection queued here; a name
+        // that matches no test runs nothing, exits 0 and leaves none.
+        listener.set_nonblocking(true).unwrap();
+        let queued = listener.accept().map(|_| ());
         drop(listener);
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(
             status.success(),
             "the client in the unmapped namespace failed: {status}"
+        );
+        assert!(
+            queued.is_ok(),
+            "the client in the unmapped namespace never connected: its body did not run ({queued:?})"
         );
     }
 
