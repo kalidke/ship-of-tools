@@ -102,9 +102,22 @@ rpeer() { ssh -o BatchMode=yes "$PEER" "$@"; }
 PRELUDE="source $(printf %q "$DIR/lib/comm-lib.sh"); source $(printf %q "$DIR/lib/wire-stub.sh")"
 peer_sh()  { rpeer "SOT_COMM_HOME=$(printf %q "$1") bash -c $(printf %q "$PRELUDE; $2")"; }
 local_sh() { SOT_COMM_HOME="$1" bash -c "$PRELUDE; $2"; }
+. "$SCRIPT_DIR/../../scripts/tests/lib-test-body.sh" || exit 2
 rust_arm() {  # $1 = case folder, $2 = ignored test name
+    local log
+    log="$(mktemp "$LOCAL/rust-body.XXXXXX")" || return 2
     ( cd "$RUST_DIR" && SOT_TEST_INBOX_DIR="$1/inbox" \
-        cargo test -q -p sot-backend --test comm_file "$2" -- --ignored --exact --nocapture 2>"$LOCAL/cargo.err" )
+        test_body_run "$2" "$log" -- cargo test -p sot-backend --test comm_file "$2" -- \
+        --ignored --exact --format pretty --color never --show-output --test-threads=1 )
+}
+# Wait each recorded writer once; keep every failure, including an earlier one.
+wait_writers() {
+    local pid status
+    WRITER_FAILURE=""
+    for pid in "$@"; do
+        if wait "$pid"; then status=0; else status=$?; fi
+        [ "$status" -eq 0 ] || WRITER_FAILURE+="writer exit $status; "
+    done
 }
 new_case() { local c="$DIR/$1"; mkdir -p "$c/inbox"; cp "$DIR/inbox-lock-manager" "$c/"; printf '%s' "$c"; }
 wires() { [ -e "$1/wire.log" ] && wc -l < "$1/wire.log" || echo 0; }
@@ -172,7 +185,7 @@ overlap() {  # $1 = inbox file, $2 = its writers (default 2); prints "" or a rea
 PROOF_BAD=0
 proof_case() {  # $1 = description, $2 = inbox file, $3.. = check_inbox args (want, reports)
     local d="$1" f="$2" content ov; shift 2
-    content="$(check_inbox "$f" "$@")"
+    content="${WRITER_FAILURE:-}$(check_inbox "$f" "$@")"
     ov="$(overlap "$f")"
     verdict "$d: content ($(interleaved "$f"))" "$content"
     verdict "$d: overlap > 0 ($(jq -r .from "$f" 2>/dev/null | uniq | wc -l) writer runs)" "$ov"
@@ -218,7 +231,7 @@ echo "there: $(rpeer "findmnt -no FSTYPE,OPTIONS -T $(printf %q "$DIR") | tr , '
 rpeer "test -r $(printf %q "$DIR/lib/comm-lib.sh")" || { echo "FATAL: $PEER cannot see the working folder" >&2; exit 1; }
 ( cd "$RUST_DIR" && cargo test -q -p sot-backend --test comm_file --no-run 2>"$LOCAL/cargo.err" ) \
     || { echo "FATAL: the Rust arm does not build:"; cat "$LOCAL/cargo.err"; exit 1; }
-rust_arm "$DIR" t11_write_lock_record >/dev/null
+rust_arm "$DIR" t11_write_lock_record >/dev/null || { echo "FATAL: the Rust lock-record body failed" >&2; exit 1; }
 [ -s "$DIR/inbox-lock-manager" ] || { echo "FATAL: the Rust arm wrote no lock record" >&2; exit 1; }
 echo "record (Rust, here): $(cat "$DIR/inbox-lock-manager")"
 echo "identity here:  $(local_sh "$DIR" 'sot_inbox_lock_identity "$INBOX_DIR"')"
@@ -236,7 +249,7 @@ verdict "the route: here $here_route, $PEER $there_route" \
 c="$(new_case t3)"; t0=$SECONDS
 out="$(rust_arm "$c" two_threads_on_the_env_dir)"; rc=$?
 verdict "two threads of one process on the shared home give 400 whole lines ($((SECONDS - t0))s)" \
-    "$([ "$rc" -eq 0 ] || { echo "rc $rc"; grep -m3 -E 'panicked|assert' "$LOCAL/cargo.err" <<<"$out"; })"
+    "$([ "$rc" -eq 0 ] || { echo "rc $rc"; grep -m3 -E 'panicked|assert|selected test' <<<"$out"; })"
 
 # Wait until $1 holds "held <pid>"; print the pid.
 held_pid() {
@@ -267,14 +280,20 @@ if [ "$EXPECT" = wire ]; then
     }
     c="$(new_case a1)"; t0=$SECONDS
     peer_sh "$c" "W=peer; $APPEND" > "$LOCAL/a1.peer" &
-    touch "$c/inbox/go"; rust_arm "$c" t11_rust_appends_200 > "$LOCAL/a1.rust"; wait
+    wpid=$!
+    touch "$c/inbox/go"; rust_arm "$c" t11_rust_appends_200 > "$LOCAL/a1.rust"; rust_rc=$?
+    wait_writers "$wpid"
+    [ "$rust_rc" -eq 0 ] || WRITER_FAILURE+="Rust writer exit $rust_rc; "
     verdict "(a) Rust here and shell on $PEER: the peer's 200 go to the wire, the inbox holds the Rust 200 ($((SECONDS - t0))s)" \
-        "$(check_wire "$c/inbox/t11.jsonl" 200 rust "$c" 200)"
+        "$WRITER_FAILURE$(check_wire "$c/inbox/t11.jsonl" 200 rust "$c" 200)"
     c="$(new_case a2)"; t0=$SECONDS
     peer_sh "$c" "W=peer; $APPEND" > "$LOCAL/a2.peer" &
-    local_sh "$c" "W=here; $APPEND" > "$LOCAL/a2.here"; wait
+    wpid=$!
+    local_sh "$c" "W=here; $APPEND" > "$LOCAL/a2.here"; shell_rc=$?
+    wait_writers "$wpid"
+    [ "$shell_rc" -eq 0 ] || WRITER_FAILURE+="shell writer exit $shell_rc; "
     verdict "(a) shell here and shell on $PEER: here files 200 locally, the peer's 200 go to the wire ($((SECONDS - t0))s)" \
-        "$(check_wire "$c/inbox/t11.jsonl" 200 here "$c" 200)"
+        "$WRITER_FAILURE$(check_wire "$c/inbox/t11.jsonl" 200 here "$c" 200)"
     c="$(new_case b2)"
     local_sh "$c" "$HOLDER; $FREEZE" > "$LOCAL/b2.holder" &
     lpid=$!
@@ -309,6 +328,7 @@ fi
 # ---- (a1) Rust here, shell there, one inbox --------------------------------
 c="$(new_case a1)"; mkfifo "$LOCAL/go.a1"; t0=$SECONDS
 peer_sh "$c" "echo ready; read -r _; PACE=0.025; W=peer; $APPEND" < "$LOCAL/go.a1" > "$LOCAL/a1.peer" &
+wpid=$!
 exec 7> "$LOCAL/go.a1"
 rust_arm "$c" t11_rust_appends_200 > "$LOCAL/a1.rust" &
 rpid=$!
@@ -316,18 +336,20 @@ for _ in $(seq 1 1200); do
     grep -q ready "$LOCAL/a1.peer" 2>/dev/null && [ -e "$c/inbox/rust.ready" ] && break; sleep 0.1
 done
 echo go >&7; touch "$c/inbox/go"; exec 7>&-
-wait
+wait_writers "$rpid" "$wpid"
 proof_case "(a) Rust here and shell on $PEER, 200 each, paced, one inbox ($((SECONDS - t0))s)" \
     "$c/inbox/t11.jsonl" 400 "$LOCAL/a1.peer" "$LOCAL/a1.rust"
 
 # ---- (a2) shell here, shell there, one inbox --------------------------------
 c="$(new_case a2)"; mkfifo "$LOCAL/go.a2"; t0=$SECONDS
 peer_sh "$c" "echo ready; read -r _; PACE=0.025; W=peer; $APPEND" < "$LOCAL/go.a2" > "$LOCAL/a2.peer" &
+wpid=$!
 exec 7> "$LOCAL/go.a2"
 local_sh "$c" "while [ ! -e \"\$SOT_COMM_HOME/inbox/go\" ]; do sleep 0.01; done; PACE=0.025; W=here; $APPEND" > "$LOCAL/a2.here" &
+lpid=$!
 for _ in $(seq 1 600); do grep -q ready "$LOCAL/a2.peer" 2>/dev/null && break; sleep 0.1; done
 echo go >&7; touch "$c/inbox/go"; exec 7>&-
-wait
+wait_writers "$lpid" "$wpid"
 proof_case "(a) shell here and shell on $PEER, 200 each, paced, one inbox ($((SECONDS - t0))s)" \
     "$c/inbox/t11.jsonl" 400 "$LOCAL/a2.peer" "$LOCAL/a2.here"
 
@@ -351,11 +373,11 @@ done
 reader_loop "$c" "$LOCAL/a3.done" &
 rdpid=$!
 echo go >&7; touch "$c/inbox/go"; exec 7>&-
-wait "${wpids[@]}"
+wait_writers "${wpids[@]}"
 touch "$LOCAL/a3.done"; wait "$rdpid"
 failed_of() { grep -c '^FAILED' "$1" 2>/dev/null; }
 nf_peer="$(failed_of "$LOCAL/a3.peer")"; nf_here="$(failed_of "$LOCAL/a3.here")"; nf_rust="$(failed_of "$LOCAL/a3.rust")"
-a3_content="$([ "$((nf_peer + nf_here + nf_rust))" -eq 0 ] || echo "sends were FAILED under ordinary load: $(grep -h '^FAILED' "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust" | head -2 | tr '\n' ' ')")$(check_inbox "$c/inbox/t11.jsonl" 600 "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust")"
+a3_content="$WRITER_FAILURE$([ "$((nf_peer + nf_here + nf_rust))" -eq 0 ] || echo "sends were FAILED under ordinary load: $(grep -h '^FAILED' "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust" | head -2 | tr '\n' ' ')")$(check_inbox "$c/inbox/t11.jsonl" 600 "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust")"
 a3_ov="$(overlap "$c/inbox/t11.jsonl" 3)"
 verdict "(a3) liveness, unpaced, 600 sends: FAILED peer $nf_peer, here $nf_here, Rust $nf_rust; content ($((SECONDS - t0))s)" "$a3_content"
 verdict "(a3) liveness: overlap > 0 ($(jq -r .from "$c/inbox/t11.jsonl" 2>/dev/null | uniq | wc -l) writer runs, 3 writers)" "$a3_ov"
@@ -384,10 +406,10 @@ peer_sh "$c" "$HOLDER; $FREEZE" > "$LOCAL/b1.holder" &
 lpid=$!
 if p="$(held_pid "$LOCAL/b1.holder")"; then
     PEER_PIDS+=("$p")
-    send="$(rust_arm "$c" t11_rust_sends_one | grep -E '^(filed|FAILED) ')"
+    send="$(rust_arm "$c" t11_rust_sends_one | grep -E '^(filed|FAILED) ')"; rust_rc=$?
     rpeer "kill -CONT $p"; wait "$lpid"
     verdict "(b) holder frozen on $PEER: the Rust sender here waits ${WAIT}s and fails; no torn line [$send]" \
-        "$(check_after_freeze "$c/inbox/t11.jsonl" rust-one "$send")"
+        "$([ "$rust_rc" -eq 0 ] || echo "Rust sender exit $rust_rc; ")$(check_after_freeze "$c/inbox/t11.jsonl" rust-one "$send")"
 else
     verdict "(b) holder frozen on $PEER" "the holder never took the lock"
 fi
@@ -422,9 +444,9 @@ lpid=$!
 if p="$(held_pid "$LOCAL/c1.holder")"; then
     PEER_PIDS+=("$p")
     rpeer "kill -9 $p"; wait "$lpid" 2>/dev/null
-    send="$(rust_arm "$c" t11_rust_sends_one | grep -E '^(filed|FAILED) ')"
+    send="$(rust_arm "$c" t11_rust_sends_one | grep -E '^(filed|FAILED) ')"; rust_rc=$?
     verdict "(c) holder killed on $PEER: the Rust sender here files at once [$send]" \
-        "$(check_after_kill "$c/inbox/t11.jsonl" "$send")"
+        "$([ "$rust_rc" -eq 0 ] || echo "Rust sender exit $rust_rc; ")$(check_after_kill "$c/inbox/t11.jsonl" "$send")"
 else
     verdict "(c) holder killed on $PEER" "the holder never took the lock"
 fi

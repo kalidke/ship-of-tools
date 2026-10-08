@@ -14,7 +14,7 @@ scripts/CLAUDE.md.
   `scripts/tests/` suites on their legs, the comm hermetic suites on ubuntu, and on ubuntu the steps "Check the layout"
   (`scripts/tests/check-layout.sh` with `check-layout.allow`) and "Test the layout tools" (its two self-tests)), `conpty-windows-2022` (ConPTY and capsule
   tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the latest published tag
-  into a clean container).
+  into a clean container). The step "Test selected Rust bodies" runs the portable real-libtest shell proofs on the Linux, Windows and macOS legs; it invokes no daemon or peer suite. Its Linux leg also runs the candidate gate's finite selected-job and runtime-listing proofs; the full candidate gate is not invoked by that proof step.
 - `workflows/CI.yml` ("CI"): push to `main` (paths `core/**`, `julia/**`, `docs/**`, `src/**`, `test/**`, `Project.toml`,
   `Manifest.toml` and the file itself) and dispatch. Jobs: `test` (the root package on Julia 1.12 and pre-release),
   `julia-packages` (core, kernel, repl, the two preview plugins and SotLog), `docs` (builds the manual with
