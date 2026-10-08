@@ -140,6 +140,7 @@ impl SocketServer {
             wake_write,
             probes: Probes::default(),
             progress: crate::lane::test_progress::Progress::default(),
+            controls: crate::lane::test_progress::Controls::default(),
         });
 
         // Spawn the reaper FIRST -- if the accept thread then fails to
@@ -343,8 +344,16 @@ impl SocketServer {
             // own `IoSlot::is_closing` plays there once its own
             // `cancel_registered` latches `Closing`.
             conn.torn_down_requested.store(true, Ordering::Release);
-            super::conn::observe_shutdown(&self.shared, id, &conn.stream);
+            super::conn::observe_shutdown(
+                &self.shared.progress,
+                Some(id),
+                &conn.stream,
+                "rust/log/src/lane/socket_unix/server.rs::disconnect_listener",
+            );
             drop(conn.sender); // unblocks a writer idle-waiting on `recv`
+            self.shared
+                .progress
+                .note(Some(id), "phase_one.route", "detached-workers");
             self.detached_workers.push(conn.reader_jh);
             self.detached_workers.push(conn.writer_jh);
         }
@@ -376,7 +385,11 @@ impl SocketServer {
         for jh in self.detached_workers.drain(..) {
             ok = Self::join_with_progress(shared, jh, deadline) && ok;
         }
-        self.shared.progress.note(None, "server.join.end", ok);
+        self.shared.progress.note(
+            None,
+            "server.join.end",
+            if ok { "ok" } else { "deadline-expired" },
+        );
         ok
     }
 
@@ -476,6 +489,26 @@ impl SocketServer {
         }
     }
 
+    /// Stop `conn`'s `role` worker at its exit point (after its last I/O and teardown request) until released.
+    pub fn hold_worker_exit_for_test(&self, conn: ConnId, role: crate::lane::test_progress::Role) -> crate::lane::test_progress::Pause {
+        crate::lane::test_progress::Pause::new(self.shared.controls.arm_exit_hold(conn, role))
+    }
+
+    /// Make `conn`'s `role` worker panic at its exit point.
+    pub fn inject_worker_panic_for_test(&self, conn: ConnId, role: crate::lane::test_progress::Role) {
+        self.shared.controls.arm_exit_panic(conn, role);
+    }
+
+    /// Stop the acceptor immediately before it registers its next connection, workers still gated, until released.
+    pub fn pause_registration_for_test(&self) -> crate::lane::test_progress::Pause {
+        crate::lane::test_progress::Pause::new(self.shared.controls.arm_barrier("registration.barrier"))
+    }
+
+    /// Shorten the per-connection teardown budget (and the one `Drop` uses) for this server.
+    pub fn set_teardown_deadline_for_test(&self, deadline: Duration) {
+        self.shared.controls.set_teardown_deadline(deadline);
+    }
+
     /// Server-local checkpoints, retained after connection removal; never locks connection state.
     pub fn progress_for_test(&self) -> crate::lane::test_progress::Snapshot {
         self.shared.progress.snapshot()
@@ -507,10 +540,11 @@ impl Drop for SocketServer {
     /// explicitly with it.
     fn drop(&mut self) {
         self.disconnect_listener();
-        let deadline = Instant::now() + TEARDOWN_AGGREGATE_DEADLINE;
+        let budget = self.shared.controls.teardown_deadline();
+        let deadline = Instant::now() + budget;
         if !self.join_workers(deadline) {
             eprintln!(
-                "sot-sock: teardown did not complete within its {TEARDOWN_AGGREGATE_DEADLINE:?} \
+                "sot-sock: teardown did not complete within its {budget:?} \
                  aggregate deadline; a worker thread may still be running"
             );
         }

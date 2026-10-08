@@ -71,9 +71,14 @@ pub(super) fn terminalize_accept_loop(shared: &Arc<ServerShared>, message: Strin
 /// stale-handle `DisconnectNamedPipe` call racing `close_all`.
 pub(super) fn recycle_instance(shared: &Arc<ServerShared>, id: u64, raw: SendableHandle) {
     let disconnected = match shared.instances.live(id) {
-        Some(live) => (unsafe { DisconnectNamedPipe(live.get()) }) != 0,
+        Some(live) => {
+            // An armed test failure stands in for the OS refusing, so the retained-dead path runs for real.
+            !shared.controls.take_failure("recycle")
+                && (unsafe { DisconnectNamedPipe(live.get()) }) != 0
+        }
         None => return,
     };
+    shared.progress.note(None, "recycle.result", disconnected);
     if disconnected {
         shared.accept.lock().unwrap().recycled.push_back((id, raw));
         shared.accept_cv.notify_all();
@@ -329,6 +334,9 @@ pub(super) fn handle_new_connection(
         }
     };
 
+    shared
+        .controls
+        .barrier_point(&shared.progress, Some(conn_id), "registration.barrier");
     let conn = ConnHandle {
         raw,
         registry_id: id,
@@ -341,6 +349,7 @@ pub(super) fn handle_new_connection(
         torn_down_requested,
     };
     shared.conns.lock().unwrap().insert(conn_id, conn);
+    shared.progress.note(Some(conn_id), "registration.cutoff", "inserted");
     // RELIABLE, not best-effort: retries until the consumer actually has
     // room, so the gate below can never open onto a connection the
     // consumer was never told exists.

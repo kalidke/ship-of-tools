@@ -626,6 +626,7 @@ fn wait_for_probe(
 mod client;
 mod close;
 mod connect;
+mod reaper;
 mod teardown;
 
 #[derive(Clone)]

@@ -72,6 +72,8 @@ pub struct SocketClient {
     /// reads this field.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     connect_anchor_boot_ticks: u64,
+    /// The client's own recorder (`conn=pending`): never linked to a server's connection id.
+    progress: crate::lane::test_progress::Progress,
 }
 
 impl std::fmt::Debug for SocketClient {
@@ -228,9 +230,12 @@ impl SocketClient {
     /// observes `cancelled` already set before it ever reaches the OS.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
-        unsafe {
-            libc::shutdown(self.stream.as_raw_fd(), libc::SHUT_RDWR);
-        }
+        super::conn::observe_shutdown(
+            &self.progress,
+            None,
+            &self.stream,
+            "rust/log/src/lane/socket_unix/client.rs::cancel",
+        );
     }
 
     /// ADR 0045 decision 2 (the daemon-side lane bridge): hand the raw
@@ -261,6 +266,12 @@ impl SocketClient {
         self.read_slot_entered.load(Ordering::SeqCst)
     }
 
+    /// The client's own checkpoints (`conn=pending`); a snapshot never waits for a lock a read or write holds.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn progress_for_test(&self) -> crate::lane::test_progress::Snapshot {
+        self.progress.snapshot()
+    }
+
     /// The write twin of
     /// [`read_slot_entered_for_test`](Self::read_slot_entered_for_test).
     #[cfg(any(test, feature = "test-support"))]
@@ -285,6 +296,7 @@ impl SocketClient {
             #[cfg(any(test, feature = "test-support"))]
             write_slot_entered: AtomicBool::new(false),
             connect_anchor_boot_ticks,
+            progress: crate::lane::test_progress::Progress::default(),
         }
     }
 }
@@ -445,6 +457,7 @@ pub(crate) fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClie
                     #[cfg(any(test, feature = "test-support"))]
                     write_slot_entered: AtomicBool::new(false),
                     connect_anchor_boot_ticks,
+                    progress: crate::lane::test_progress::Progress::default(),
                 });
             }
             Err(ConnectAttempt::Fatal(e)) => {

@@ -381,4 +381,5 @@ fn churn_one(server: &PipeServer, id: &str) {
 mod challenge;
 mod close;
 mod connect;
+mod reaper;
 mod teardown;

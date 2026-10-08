@@ -100,6 +100,8 @@ impl PipeServer {
             instances: InstanceRegistry::new(),
             accept_cancel_observed_genuine_pending: AtomicBool::new(false),
             write_cancel_observed_genuine_pending: Mutex::new(HashMap::new()),
+            progress: Progress::new("pipe"),
+            controls: Controls::default(),
         });
 
         // Create AND register the squat-detecting first instance
@@ -313,6 +315,41 @@ impl PipeServer {
         }
     }
 
+    /// Server-local checkpoints, retained after connection removal; never locks connection state.
+    pub fn progress_for_test(&self) -> crate::lane::test_progress::Snapshot {
+        self.shared.progress.snapshot()
+    }
+
+    /// Stop `conn`'s `role` worker at its exit point (after its last I/O and teardown request) until released.
+    pub fn hold_worker_exit_for_test(&self, conn: ConnId, role: Role) -> crate::lane::test_progress::Pause {
+        crate::lane::test_progress::Pause::new(self.shared.controls.arm_exit_hold(conn, role))
+    }
+
+    /// Make `conn`'s `role` worker panic at its exit point.
+    pub fn inject_worker_panic_for_test(&self, conn: ConnId, role: Role) {
+        self.shared.controls.arm_exit_panic(conn, role);
+    }
+
+    /// Stop the acceptor immediately before it registers its next connection, workers still gated, until released.
+    pub fn pause_registration_for_test(&self) -> crate::lane::test_progress::Pause {
+        crate::lane::test_progress::Pause::new(self.shared.controls.arm_barrier("registration.barrier"))
+    }
+
+    /// Stop the reaper immediately before the next instance recycle, after both joins, until released.
+    pub fn pause_recycle_for_test(&self) -> crate::lane::test_progress::Pause {
+        crate::lane::test_progress::Pause::new(self.shared.controls.arm_barrier("recycle.barrier"))
+    }
+
+    /// Make the next recycle (`DisconnectNamedPipe`) fail, so the retained-dead path runs for real.
+    pub fn fail_next_recycle_for_test(&self) {
+        self.shared.controls.arm_failure("recycle");
+    }
+
+    /// Shorten the per-connection teardown budget (and the one `Drop` uses) for this server.
+    pub fn set_teardown_deadline_for_test(&self, deadline: Duration) {
+        self.shared.controls.set_teardown_deadline(deadline);
+    }
+
     /// Poll until `conn_id`'s writer has genuinely gone `ERROR_IO_PENDING`
     /// at the OS level (`IoSlot::is_genuinely_pending`) or `timeout`
     /// elapses. `TransportError::QueueFull` alone only proves the outbound
@@ -429,9 +466,17 @@ impl PipeServer {
             let map = self.shared.conns.lock().unwrap();
             let mut write_latches = self.shared.write_cancel_observed_genuine_pending.lock().unwrap();
             for (&conn_id, conn) in map.iter() {
-                conn.read_slot.cancel_registered(&self.shared.instances, conn.registry_id);
+                let read_was_pending =
+                    conn.read_slot.cancel_registered(&self.shared.instances, conn.registry_id);
                 let write_was_pending =
                     conn.write_slot.cancel_registered(&self.shared.instances, conn.registry_id);
+                self.shared.progress.note(
+                    Some(conn_id),
+                    "cancel.registered",
+                    format_args!(
+                        "read_genuinely_pending={read_was_pending} write_genuinely_pending={write_was_pending}"
+                    ),
+                );
                 write_latches.insert(conn_id, write_was_pending);
             }
         }
@@ -443,12 +488,15 @@ impl PipeServer {
             st.recycled.clear();
             st.retained_dead.clear();
         }
-        let drained: Vec<ConnHandle> = {
+        let drained: Vec<(ConnId, ConnHandle)> = {
             let mut map = self.shared.conns.lock().unwrap();
-            map.drain().map(|(_, conn)| conn).collect()
+            map.drain().collect()
         };
-        for conn in drained {
+        for (id, conn) in drained {
             drop(conn.sender);
+            self.shared
+                .progress
+                .note(Some(id), "phase_one.route", "detached-workers");
             self.detached_workers.push(conn.reader_jh);
             self.detached_workers.push(conn.writer_jh);
         }
@@ -472,6 +520,7 @@ impl PipeServer {
     ///
     /// [`disconnect_listener`]: Self::disconnect_listener
     pub fn join_workers(&mut self, deadline: Instant) -> bool {
+        self.shared.progress.note(None, "server.join.begin", "begin");
         let mut ok = true;
         if let Some(jh) = self.accept_jh.take() {
             ok = join_within(jh, deadline) && ok;
@@ -483,6 +532,11 @@ impl PipeServer {
         for jh in self.detached_workers.drain(..) {
             ok = join_within(jh, deadline) && ok;
         }
+        self.shared.progress.note(
+            None,
+            "server.join.end",
+            if ok { "ok" } else { "deadline-expired" },
+        );
         ok
     }
 }
@@ -505,10 +559,11 @@ impl Drop for PipeServer {
     /// regardless.
     fn drop(&mut self) {
         self.disconnect_listener();
-        let deadline = Instant::now() + TEARDOWN_AGGREGATE_DEADLINE;
+        let budget = self.shared.controls.teardown_deadline();
+        let deadline = Instant::now() + budget;
         if !self.join_workers(deadline) {
             eprintln!(
-                "sot-pipe: teardown did not complete within its {TEARDOWN_AGGREGATE_DEADLINE:?} \
+                "sot-pipe: teardown did not complete within its {budget:?} \
                  aggregate deadline; a worker thread may still be running"
             );
         }

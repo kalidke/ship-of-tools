@@ -18,9 +18,28 @@ pub(super) fn notify_wake(shared: &Arc<ServerShared>) {
 /// RELIABLY — see the module doc's "Reliable lifecycle delivery" section
 /// for the full contract this implements.
 pub(super) fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
+    let checkpoint = enqueue_checkpoint(&evt);
     let mut item = evt;
+    let mut last = "";
     loop {
-        match shared.events_tx.try_send(item) {
+        if let Some((id, step, detail)) = &checkpoint {
+            if last.is_empty() {
+                shared.progress.note(*id, step, format_args!("begin{detail}"));
+            }
+        }
+        let sent = shared.events_tx.try_send(item);
+        let result = match &sent {
+            Ok(()) => "ok",
+            Err(TrySendError::Full(_)) => "full",
+            Err(TrySendError::Disconnected(_)) => "disconnected",
+        };
+        if let Some((id, step, detail)) = &checkpoint {
+            if result != last {
+                shared.progress.note(*id, step, format_args!("{result}{detail}"));
+            }
+        }
+        last = result;
+        match sent {
             Ok(()) => {
                 notify_wake(shared);
                 return;
@@ -34,6 +53,17 @@ pub(super) fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
                 std::thread::sleep(EVENTS_RETRY_INTERVAL);
             }
         }
+    }
+}
+
+/// The checkpoint of a lifecycle event's enqueue: its connection, step and the marker identity of a `Sent`.
+fn enqueue_checkpoint(evt: &LaneEvent) -> Option<(Option<ConnId>, &'static str, String)> {
+    match evt {
+        LaneEvent::Accepted(id) => Some((Some(*id), "accepted.enqueue", String::new())),
+        LaneEvent::Closed(id, _) => Some((Some(*id), "closed.enqueue", String::new())),
+        LaneEvent::Sent(id, marker) => Some((Some(*id), "sent.enqueue", format!(" marker={marker}"))),
+        LaneEvent::AcceptError(_) => Some((None, "accept_error.enqueue", String::new())),
+        LaneEvent::Bytes(..) => None,
     }
 }
 
@@ -53,7 +83,13 @@ pub(super) fn request_teardown(
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        let _ = shared.reaper_tx.send(ReaperMsg::Torn(conn_id, reason));
+        shared.progress.note(Some(conn_id), "teardown.enqueue", "begin");
+        let sent = shared.reaper_tx.send(ReaperMsg::Torn(conn_id, reason));
+        shared.progress.note(
+            Some(conn_id),
+            "teardown.enqueue",
+            if sent.is_ok() { "ok" } else { "disconnected" },
+        );
     }
 }
 
@@ -82,11 +118,28 @@ pub(super) fn report_registration_failure(shared: &Arc<ServerShared>, what: &str
 pub(super) fn teardown_if_present(shared: &Arc<ServerShared>, conn_id: ConnId, reason: Option<ClosedReason>) {
     let conn = shared.conns.lock().unwrap().remove(&conn_id);
     let Some(conn) = conn else { return };
-    conn.read_slot.cancel_registered(&shared.instances, conn.registry_id);
-    conn.write_slot.cancel_registered(&shared.instances, conn.registry_id);
+    shared.progress.note(
+        Some(conn_id),
+        "claim",
+        match &reason {
+            Some(reason) => format!("reaper reason={reason:?}"),
+            None => "reaper reason=shutdown".to_string(),
+        },
+    );
+    let read_pending = conn.read_slot.cancel_registered(&shared.instances, conn.registry_id);
+    let write_pending = conn.write_slot.cancel_registered(&shared.instances, conn.registry_id);
+    shared.progress.note(
+        Some(conn_id),
+        "cancel.registered",
+        format_args!("read_genuinely_pending={read_pending} write_genuinely_pending={write_pending}"),
+    );
     drop(conn.sender); // unblocks a writer idle-waiting on `recv` with nothing queued
-    conn.reader_jh.join().ok();
-    conn.writer_jh.join().ok();
+    shared.progress.note(Some(conn_id), "reader.join.begin", "begin");
+    let joined = conn.reader_jh.join();
+    shared.progress.note(Some(conn_id), "reader.join.end", if joined.is_ok() { "ok" } else { "panic" });
+    shared.progress.note(Some(conn_id), "writer.join.begin", "begin");
+    let joined = conn.writer_jh.join();
+    shared.progress.note(Some(conn_id), "writer.join.end", if joined.is_ok() { "ok" } else { "panic" });
     // Codex round-3/4 discharge: this connection's instance HANDLE is
     // closed entirely through `InstanceRegistry` (`conn.registry_id`
     // stayed registered this whole connection's life, independent of
@@ -98,6 +151,9 @@ pub(super) fn teardown_if_present(shared: &Arc<ServerShared>, conn_id: ConnId, r
     // itself now checks liveness before touching the handle (round-4),
     // so calling it unconditionally is safe -- it is a no-op if
     // `close_all` already claimed this id.
+    shared
+        .controls
+        .barrier_point(&shared.progress, Some(conn_id), "recycle.barrier");
     recycle_instance(shared, conn.registry_id, conn.raw);
     if let Some(reason) = reason {
         send_lifecycle_event(shared, LaneEvent::Closed(conn_id, reason));
@@ -112,7 +168,10 @@ pub(super) fn teardown_if_present(shared: &Arc<ServerShared>, conn_id: ConnId, r
 pub(super) fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
     for msg in rx.iter() {
         match msg {
-            ReaperMsg::Torn(id, reason) => teardown_if_present(&shared, id, Some(reason)),
+            ReaperMsg::Torn(id, reason) => {
+                shared.progress.note(Some(id), "teardown.dequeue", "ok");
+                teardown_if_present(&shared, id, Some(reason));
+            }
             ReaperMsg::Shutdown => {
                 let ids: Vec<ConnId> = shared.conns.lock().unwrap().keys().copied().collect();
                 for id in ids {
@@ -140,7 +199,17 @@ pub(super) fn deliver_bytes(
     let mut item = LaneEvent::Bytes(conn_id, bytes);
     let deadline = Instant::now() + BYTES_ABANDON_AFTER;
     loop {
-        match shared.events_tx.try_send(item) {
+        let sent = shared.events_tx.try_send(item);
+        shared.progress.note(
+            Some(conn_id),
+            "bytes.enqueue",
+            match &sent {
+                Ok(()) => "ok",
+                Err(TrySendError::Full(_)) => "full",
+                Err(TrySendError::Disconnected(_)) => "disconnected",
+            },
+        );
+        match sent {
             Ok(()) => {
                 notify_wake(shared);
                 return true;
@@ -220,6 +289,8 @@ pub(super) fn reader_loop(
         }
     };
     request_teardown(&shared, conn_id, &torn_down_requested, reason);
+    shared.progress.note(Some(conn_id), "reader.exit", "ok");
+    shared.controls.exit_point(&shared.progress, conn_id, Role::Reader);
 }
 
 /// One connection's write side: drains queued sends in order, one
@@ -287,4 +358,6 @@ pub(super) fn writer_loop(
             }
         }
     }
+    shared.progress.note(Some(conn_id), "writer.exit", "ok");
+    shared.controls.exit_point(&shared.progress, conn_id, Role::Writer);
 }

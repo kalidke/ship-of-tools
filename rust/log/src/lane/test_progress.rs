@@ -1,14 +1,15 @@
-//! Server-local transport checkpoints. Normal builds carry only a zero-sized no-op.
+//! Transport-local checkpoints and scoped regression controls, one recorder per server (and per socket client).
+//! Normal builds carry only zero-sized no-ops.
 
 #[cfg(any(test, feature = "test-support"))]
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, HashSet, VecDeque},
     fmt,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Mutex, MutexGuard, TryLockError,
+        Arc, Condvar, Mutex, MutexGuard, TryLockError,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 #[cfg(any(test, feature = "test-support"))]
@@ -17,10 +18,13 @@ const CAPACITY: usize = 256;
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug)]
 pub struct Checkpoint {
+    pub transport: &'static str,
     pub conn: Option<u64>,
     pub step: &'static str,
     pub elapsed_ms: u128,
+    pub caller: String,
     pub result: String,
+    pub errno: Option<i32>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -29,22 +33,26 @@ impl fmt::Display for Checkpoint {
         let conn = self
             .conn
             .map_or_else(|| "pending".into(), |id| id.to_string());
+        let errno = self
+            .errno
+            .map_or_else(|| "none".into(), |code| code.to_string());
         write!(
             f,
-            "transport-progress transport=socket conn={conn} step={} elapsed_ms={} result={}",
-            self.step, self.elapsed_ms, self.result
+            "transport-progress transport={} conn={conn} step={} elapsed_ms={} caller={} result={} errno={errno}",
+            self.transport, self.step, self.elapsed_ms, self.caller, self.result
         )
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 struct Ring {
-    records: VecDeque<Checkpoint>,
+    records: VecDeque<Arc<Checkpoint>>,
     overwritten: usize,
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub struct Progress {
+    transport: &'static str,
     started: Instant,
     ring: Mutex<Ring>,
     skipped: AtomicUsize,
@@ -57,7 +65,16 @@ pub struct Progress;
 #[cfg(any(test, feature = "test-support"))]
 impl Default for Progress {
     fn default() -> Self {
+        Self::new("socket")
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Progress {
+    /// A recorder for `transport` (`socket` or `pipe`).
+    pub(crate) fn new(transport: &'static str) -> Self {
         Self {
+            transport,
             started: Instant::now(),
             skipped: AtomicUsize::new(0),
             ring: Mutex::new(Ring {
@@ -68,15 +85,56 @@ impl Default for Progress {
     }
 }
 
+#[cfg(not(any(test, feature = "test-support")))]
 impl Progress {
+    #[inline]
+    pub(crate) fn new(_transport: &'static str) -> Self {
+        Progress
+    }
+}
+
+/// The repository-relative spelling of a source path as rustc recorded it.
+#[cfg(any(test, feature = "test-support"))]
+fn repo_relative(file: &str) -> String {
+    let file = file.replace('\\', "/");
+    if let Some(at) = file.find("rust/") {
+        file[at..].to_string()
+    } else if file.starts_with("log/") {
+        format!("rust/{file}")
+    } else {
+        format!("rust/log/{file}")
+    }
+}
+
+impl Progress {
+    /// A checkpoint whose caller is the site that noted it and whose errno is none.
     #[cfg(any(test, feature = "test-support"))]
+    #[track_caller]
     pub(crate) fn note(&self, conn: Option<u64>, step: &'static str, result: impl fmt::Display) {
-        let record = Checkpoint {
+        let at = std::panic::Location::caller();
+        let caller = format!("{}:{}", repo_relative(at.file()), at.line());
+        self.note_with(conn, step, result, &caller, None);
+    }
+
+    /// A checkpoint with an explicit caller (a repository-relative function) and the numeric errno captured at the call.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn note_with(
+        &self,
+        conn: Option<u64>,
+        step: &'static str,
+        result: impl fmt::Display,
+        caller: &str,
+        errno: Option<i32>,
+    ) {
+        let record = Arc::new(Checkpoint {
+            transport: self.transport,
             conn,
             step,
             elapsed_ms: self.started.elapsed().as_millis(),
+            caller: caller.to_string(),
             result: result.to_string(),
-        };
+            errno,
+        });
         let mut ring = match self.ring.try_lock() {
             Ok(ring) => ring,
             Err(_) => {
@@ -101,8 +159,21 @@ impl Progress {
     ) {
     }
 
+    #[cfg(not(any(test, feature = "test-support")))]
+    #[inline]
+    pub(crate) fn note_with(
+        &self,
+        _conn: Option<u64>,
+        _step: &'static str,
+        _result: impl std::fmt::Display,
+        _caller: &str,
+        _errno: Option<i32>,
+    ) {
+    }
+
     /// Deliberate fixture hold; passive operations never use this blocking acquisition.
     #[cfg(any(test, feature = "test-support"))]
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn hold(&self) -> Hold<'_> {
         Hold {
             _held: self.ring.lock().expect("hold the recorder fixture"),
@@ -113,13 +184,18 @@ impl Progress {
     #[cfg(any(test, feature = "test-support"))]
     pub fn snapshot(&self) -> Snapshot {
         match self.ring.try_lock() {
-            Ok(ring) => Snapshot {
-                records: ring.records.iter().cloned().collect(),
-                overwritten: Some(ring.overwritten),
-                skipped: self.skipped.load(Ordering::Relaxed),
-                unavailable: false,
-                reason: None,
-            },
+            Ok(ring) => {
+                // Only reference counts are copied under the lock, so a polling reader keeps it for microseconds.
+                let (shared, overwritten) = (ring.records.clone(), ring.overwritten);
+                drop(ring);
+                Snapshot {
+                    records: shared.iter().map(|record| (**record).clone()).collect(),
+                    overwritten: Some(overwritten),
+                    skipped: self.skipped.load(Ordering::Relaxed),
+                    unavailable: false,
+                    reason: None,
+                }
+            }
             Err(error) => Snapshot {
                 records: Vec::new(),
                 overwritten: None,
@@ -131,6 +207,240 @@ impl Progress {
                 }),
             },
         }
+    }
+}
+
+/// Which of a connection's two workers a regression control addresses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Role {
+    Reader,
+    Writer,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Role {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Role::Reader => "reader",
+            Role::Writer => "writer",
+        }
+    }
+}
+
+/// A one-shot rendezvous: the guarded site marks it reached and waits; the test observes that and releases it.
+/// Neither side holds a transport lock while it waits.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug)]
+pub struct Gate {
+    state: Mutex<(bool, bool)>,
+    cv: Condvar,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Gate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new((false, false)),
+            cv: Condvar::new(),
+        })
+    }
+
+    /// The guarded site's side: mark reached, then wait for the release.
+    pub(crate) fn pass(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.0 = true;
+        self.cv.notify_all();
+        while !state.1 {
+            state = self.cv.wait(state).unwrap();
+        }
+    }
+
+    /// True once the guarded site is waiting here, within `timeout`.
+    pub fn wait_reached(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self.state.lock().unwrap();
+        while !state.0 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            state = self.cv.wait_timeout(state, left).unwrap().0;
+        }
+        true
+    }
+
+    /// Let the guarded site continue. Idempotent.
+    pub fn release(&self) {
+        self.state.lock().unwrap().1 = true;
+        self.cv.notify_all();
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+struct ControlState {
+    exit_holds: HashMap<(u64, Role), Arc<Gate>>,
+    exit_panics: HashSet<(u64, Role)>,
+    barriers: HashMap<&'static str, Arc<Gate>>,
+    #[cfg(windows)]
+    failures: HashSet<&'static str>,
+    teardown: Option<Duration>,
+}
+
+/// Scoped regression controls of one server: worker-exit holds and panics, named barriers, injected failures and a
+/// short teardown deadline. Every site reaches them after its last I/O and outside every transport lock. Normal builds
+/// carry a zero-sized value whose methods do nothing.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+pub struct Controls {
+    state: Mutex<ControlState>,
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+#[derive(Default)]
+pub struct Controls;
+
+#[cfg(any(test, feature = "test-support"))]
+impl Controls {
+    /// Arm a one-shot hold of `conn`'s `role` worker at its exit point.
+    pub(crate) fn arm_exit_hold(&self, conn: u64, role: Role) -> Arc<Gate> {
+        let gate = Gate::new();
+        self.state
+            .lock()
+            .unwrap()
+            .exit_holds
+            .insert((conn, role), Arc::clone(&gate));
+        gate
+    }
+
+    /// Arm a one-shot panic of `conn`'s `role` worker at its exit point.
+    pub(crate) fn arm_exit_panic(&self, conn: u64, role: Role) {
+        self.state.lock().unwrap().exit_panics.insert((conn, role));
+    }
+
+    /// Arm a one-shot barrier at the named site.
+    pub(crate) fn arm_barrier(&self, name: &'static str) -> Arc<Gate> {
+        let gate = Gate::new();
+        self.state
+            .lock()
+            .unwrap()
+            .barriers
+            .insert(name, Arc::clone(&gate));
+        gate
+    }
+
+    /// Arm a one-shot failure at the named site.
+    #[cfg(windows)]
+    pub(crate) fn arm_failure(&self, name: &'static str) {
+        self.state.lock().unwrap().failures.insert(name);
+    }
+
+    pub(crate) fn set_teardown_deadline(&self, deadline: Duration) {
+        self.state.lock().unwrap().teardown = Some(deadline);
+    }
+
+    /// The per-connection teardown budget: a test's short one, else the production aggregate.
+    pub(crate) fn teardown_deadline(&self) -> Duration {
+        self.state
+            .lock()
+            .unwrap()
+            .teardown
+            .unwrap_or(crate::lane::transport::TEARDOWN_AGGREGATE_DEADLINE)
+    }
+
+    /// A worker's exit point, reached after its last I/O and its teardown request: the armed hold waits here until
+    /// released, then the armed panic fires.
+    pub(crate) fn exit_point(&self, progress: &Progress, conn: u64, role: Role) {
+        let (hold, panic) = {
+            let mut state = self.state.lock().unwrap();
+            (
+                state.exit_holds.remove(&(conn, role)),
+                state.exit_panics.remove(&(conn, role)),
+            )
+        };
+        if let Some(gate) = hold {
+            let step = if role == Role::Reader {
+                "reader.hold"
+            } else {
+                "writer.hold"
+            };
+            progress.note(Some(conn), step, "held");
+            gate.pass();
+            progress.note(Some(conn), step, "released");
+        }
+        if panic {
+            let step = if role == Role::Reader {
+                "reader.panic"
+            } else {
+                "writer.panic"
+            };
+            progress.note(Some(conn), step, "injected");
+            panic!("injected {} worker panic", role.name());
+        }
+    }
+
+    /// The named barrier, if armed: wait here until the test releases it.
+    pub(crate) fn barrier_point(&self, progress: &Progress, conn: Option<u64>, name: &'static str) {
+        let gate = self.state.lock().unwrap().barriers.remove(name);
+        if let Some(gate) = gate {
+            progress.note(conn, name, "held");
+            gate.pass();
+            progress.note(conn, name, "released");
+        }
+    }
+
+    /// True once if a failure was armed at `name`.
+    #[cfg(windows)]
+    pub(crate) fn take_failure(&self, name: &'static str) -> bool {
+        self.state.lock().unwrap().failures.remove(name)
+    }
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+impl Controls {
+    #[inline]
+    pub(crate) fn teardown_deadline(&self) -> std::time::Duration {
+        crate::lane::transport::TEARDOWN_AGGREGATE_DEADLINE
+    }
+    #[inline]
+    pub(crate) fn exit_point(&self, _progress: &Progress, _conn: u64, _role: Role) {}
+    #[inline]
+    pub(crate) fn barrier_point(&self, _progress: &Progress, _conn: Option<u64>, _name: &'static str) {}
+    #[cfg(windows)]
+    #[inline]
+    pub(crate) fn take_failure(&self, _name: &'static str) -> bool {
+        false
+    }
+}
+
+/// A test's end of a [`Gate`]: wait until the guarded site is stopped there, then release it. Dropping releases, so a
+/// failed test cannot leave a worker held behind its server.
+#[cfg(any(test, feature = "test-support"))]
+pub struct Pause {
+    gate: Arc<Gate>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Pause {
+    pub(crate) fn new(gate: Arc<Gate>) -> Self {
+        Self { gate }
+    }
+
+    /// True once the guarded site is stopped here, within `timeout`.
+    pub fn wait_reached(&self, timeout: Duration) -> bool {
+        self.gate.wait_reached(timeout)
+    }
+
+    /// Let the guarded site continue. Idempotent.
+    pub fn release(&self) {
+        self.gate.release();
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for Pause {
+    fn drop(&mut self) {
+        self.gate.release();
     }
 }
 
@@ -268,5 +578,84 @@ mod tests {
         assert_eq!(snapshot.records.len(), 256);
         assert_eq!(snapshot.records[0].conn, Some(44));
         assert_eq!(snapshot.records[255].conn, Some(299));
+    }
+
+    fn fields(record: &Checkpoint) -> Vec<String> {
+        record
+            .to_string()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn checkpoint_line_names_transport_caller_result_and_errno() {
+        let progress = Progress::new("pipe");
+        progress.note_with(
+            None,
+            "shutdown.result",
+            "rc=-1",
+            "rust/log/src/lane/socket_unix/client.rs::cancel",
+            Some(107),
+        );
+        progress.note(Some(4), "registered", "ok");
+        let snapshot = progress.snapshot();
+        let first = fields(&snapshot.records[0]);
+        assert_eq!(first[..3], ["transport-progress", "transport=pipe", "conn=pending"]);
+        assert_eq!(first[3], "step=shutdown.result");
+        assert!(first[4].starts_with("elapsed_ms="));
+        assert_eq!(
+            first[5..],
+            [
+                "caller=rust/log/src/lane/socket_unix/client.rs::cancel",
+                "result=rc=-1",
+                "errno=107"
+            ]
+        );
+        let second = fields(&snapshot.records[1]);
+        assert_eq!(second[2], "conn=4");
+        assert!(
+            second[5].starts_with("caller=rust/log/src/lane/test_progress.rs:"),
+            "an unnamed caller is the site that noted: {}",
+            second[5]
+        );
+        assert_eq!(second[6..], ["result=ok", "errno=none"]);
+    }
+
+    #[test]
+    fn exit_hold_blocks_once_and_panic_fires_once_at_the_exit_point() {
+        let progress = Progress::default();
+        let controls = Arc::new(Controls::default());
+        let gate = controls.arm_exit_hold(7, Role::Reader);
+        controls.arm_exit_panic(7, Role::Reader);
+        let worker = std::thread::spawn({
+            let controls = Arc::clone(&controls);
+            move || {
+                let progress = Progress::default();
+                controls.exit_point(&progress, 7, Role::Reader);
+            }
+        });
+        assert!(gate.wait_reached(Duration::from_secs(5)), "the worker never stopped at its hold");
+        assert!(!worker.is_finished(), "the hold did not hold");
+        gate.release();
+        assert!(worker.join().is_err(), "the armed panic did not fire after the release");
+        // Both were consumed: the same point now passes.
+        controls.exit_point(&progress, 7, Role::Reader);
+        controls.exit_point(&progress, 7, Role::Writer);
+    }
+
+    #[test]
+    fn barrier_is_one_shot_and_unarmed_points_pass() {
+        let progress = Progress::default();
+        let controls = Controls::default();
+        controls.barrier_point(&progress, None, "registration.barrier");
+        let gate = controls.arm_barrier("registration.barrier");
+        std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| controls.barrier_point(&progress, Some(1), "registration.barrier"));
+            assert!(gate.wait_reached(Duration::from_secs(5)));
+            gate.release();
+            waiting.join().unwrap();
+        });
+        controls.barrier_point(&progress, Some(2), "registration.barrier");
     }
 }

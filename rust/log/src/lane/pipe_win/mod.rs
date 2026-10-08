@@ -233,10 +233,11 @@
 use crate::host::wide_null;
 use crate::lane::client::{Client, Endpoint};
 use crate::lane::attach_proto::ConnId;
+use crate::lane::test_progress::{Controls, Progress, Role};
 use crate::lane::transport::{
     join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget, SendMarker,
     StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
-    EVENTS_RETRY_INTERVAL, READ_BUF_LEN, REAPER_INBOX_SLACK, TEARDOWN_AGGREGATE_DEADLINE,
+    EVENTS_RETRY_INTERVAL, READ_BUF_LEN, REAPER_INBOX_SLACK,
 };
 #[cfg(any(test, feature = "test-support"))]
 use crate::lane::transport::JOIN_POLL_INTERVAL;
@@ -437,6 +438,10 @@ struct ServerShared {
     /// as `accept_cancel_observed_genuine_pending`, scoped per
     /// connection since several can be torn down at once.
     write_cancel_observed_genuine_pending: Mutex<HashMap<ConnId, bool>>,
+    /// Transport-local checkpoints (zero-sized outside a test build).
+    progress: Progress,
+    /// Scoped regression controls (zero-sized outside a test build).
+    controls: Controls,
 }
 
 mod accept;

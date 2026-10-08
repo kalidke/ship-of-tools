@@ -11,7 +11,7 @@ program against. Part of capsule; charter: rust/log/CLAUDE.md.
 - `pipe_win/`: the Windows named-pipe transport, server and client
 - `platform_transport.rs`: `PlatformTransport`, the capsule's `Transport` over `PlatformLaneServer`
 - `socket_unix/`: the Unix domain-socket transport, server and client
-- `test_progress.rs`: Unix-only server-local socket checkpoints; nonwaiting admission counts skipped records, and test/support snapshots retain bounded history.
+- `test_progress.rs`: test-only socket/client and pipe progress, ownership/enqueue observations and scoped regression controls
 - `transport.rs`: `Transport`, `TransportEvent`, `LaneServer`, `LaneEvent`, `TransportError`, the teardown bound and the servers' shared helpers
 - `wire/`: the frame layouts of the three lanes, pure encode and decode
 

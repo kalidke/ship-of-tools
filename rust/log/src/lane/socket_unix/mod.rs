@@ -154,10 +154,11 @@ use crate::identity::challenge_macos as challenge_os;
 #[cfg(target_os = "linux")]
 use crate::identity::challenge_unix as challenge_os;
 use crate::lane::attach_proto::ConnId;
+use crate::lane::test_progress::Role;
 use crate::lane::transport::{
     join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget,
     SendMarker, StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
-    EVENTS_RETRY_INTERVAL, READ_BUF_LEN, REAPER_INBOX_SLACK, TEARDOWN_AGGREGATE_DEADLINE,
+    EVENTS_RETRY_INTERVAL, READ_BUF_LEN, REAPER_INBOX_SLACK,
 };
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -400,6 +401,9 @@ struct ServerShared {
     /// outside a test build.
     probes: Probes,
     progress: crate::lane::test_progress::Progress,
+    /// Scoped regression controls (worker-exit holds and panics, barriers, a short teardown deadline): zero-sized
+    /// outside a test build.
+    controls: crate::lane::test_progress::Controls,
 }
 
 mod accept;

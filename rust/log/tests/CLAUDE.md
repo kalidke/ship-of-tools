@@ -30,12 +30,13 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `golden.rs`: the v1 segment bytes pinned against the committed `.sotseg` fixtures; Unix and Windows.
 - `macos_kernel_facts/`: the macOS kernel behaviours the lane rests on, one module per fact group (peer token, pty hangup, kqueue death watch, pty revoke); macOS only.
 - `other_account.rs`: a client run as `sudo -n -u nobody` gets no byte from a `serve_own` listener, a client of this account does (ADR 0049, User isolation); Unix, skipped where passwordless sudo is not available.
-- `pipe_win/`: `PipeServer` and the same-connection challenge over real pipes, process-isolated: connect, teardown, close, challenge modules; Windows only.
+- `pipe_win/`: real pipe connect, teardown, close and challenge contracts plus reaping/shutdown regressions (`reaper.rs`); isolated selections require qualified identities and matching body-entry proof; Windows.
 - `reconcile_matrix.rs`: every row of the startup reconciliation table (`reconcile`) entered by file surgery, then `verify_voyage`; Unix and Windows.
 - `isolation_guards.rs`: remaining ADR 0049 source guards for browser-opener spellings and the macOS peer-token reader; Rust listener admission is proved at its native owners, not by an allowance catalog. REPL child arguments, selected environment and page-secret exclusion are observed in the backend REPL project_tests.rs; WGL listener selection and lifetime are observed in julia/repl/test/bonito/runtests.jl and the MathJax helper's tree in the backend's contract_tests.rs; this file retains only the unrelated browser-opener and macOS peer-token source guards.
-- `socket_unix/`: real Unix connect, close, teardown and client contracts; named waits and captured diagnostics, one
-  bounded-read phase path (`read.rs`), and supervised native-account fixtures with retained failure causes
-  (`privileged.rs`; the foreign-account case needs passwordless `sudo -n` and skips without it except on CI); Unix.
+- `socket_unix/`: real Unix connect, close, teardown and client contracts; named waits and captured diagnostics
+  (`diagnostics.rs`), independent-reaping and shutdown regressions (`reaper.rs`), one bounded-read phase path
+  (`read.rs`), and supervised native-account fixtures with retained failure causes (`privileged.rs`; the
+  foreign-account case needs passwordless `sudo -n` and skips without it except on CI), process-isolated; Unix.
 - `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules; Linux and Windows.
 - `support/`: helpers shared by several binaries: `capsule_guard.rs` (a spawned `sot-capsule` no test can leave behind) and `transports.rs` (`NoopTransport` and `TestTransport`).
 - `winhandle_windows.rs`: `winhandle::harden_own_stdio` clears handle inheritance; Windows only, alone in its binary because it mutates the process's real std handles.
@@ -59,3 +60,4 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - scripts/tests/rc-gate.sh names `fe_client/supervisor_word::unresponsive_supervisor_expires_the_health_window` by path, so moving that test edits rc-gate.sh in the same commit.
 - A lower-bound timing check takes its clock origin before the action that starts the product's timer.
 - Bounded socket reads distinguish deadline setup from read outcomes under the original context; capacity rejection still requires EOF. Native-account socket fixtures fail with retained status/output on missing entry or unavailable prerequisites; launcher completion alone proves no native body or denial.
+- Socket and pipe reaper regressions observe real worker ownership, cancellation and event delivery; Unix factory tests observe descriptor flags at birth/publication and real flag-error cleanup. Role lists are runtime scenarios, not source-text inventory tests.

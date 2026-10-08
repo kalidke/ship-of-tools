@@ -208,9 +208,15 @@ fn handle_new_connection(shared: &Arc<ServerShared>, stream: UnixStream) {
     // orphaned reader/writer pair neither joined by the reaper, since it
     // was never registered, NOR by `join_workers`, since it never reached
     // `detached_workers` either).
+    shared
+        .controls
+        .barrier_point(&shared.progress, Some(conn_id), "registration.barrier");
     let mut conns = shared.conns.lock().unwrap();
     if shared.dropping.load(Ordering::Acquire) {
         drop(conns);
+        shared
+            .progress
+            .note(Some(conn_id), "registration.cutoff", "rejected");
         // Never touched the stream (still gated) -- `abort` makes both
         // threads' own `wait_for_start` return `false` immediately, so
         // joining them here (NOT through the reaper: neither was ever
@@ -218,7 +224,12 @@ fn handle_new_connection(shared: &Arc<ServerShared>, stream: UnixStream) {
         // failure path above. `shutdown` first anyway, defensively, in
         // case either thread is somehow already past the gate (it is
         // not, by construction) -- costs nothing, removes any doubt.
-        super::conn::observe_shutdown(shared, conn_id, &stream);
+        super::conn::observe_shutdown(
+            &shared.progress,
+            Some(conn_id),
+            &stream,
+            "rust/log/src/lane/socket_unix/accept.rs::handle_new_connection",
+        );
         gate.abort();
         observe_join(shared, conn_id, reader_jh, "reader");
         observe_join(shared, conn_id, writer_jh, "writer");
@@ -236,6 +247,9 @@ fn handle_new_connection(shared: &Arc<ServerShared>, stream: UnixStream) {
         },
     );
     drop(conns); // never hold this lock while sending on the events channel
+    shared
+        .progress
+        .note(Some(conn_id), "registration.cutoff", "inserted");
     shared.progress.note(Some(conn_id), "registered", "ok");
     // RELIABLE, not best-effort: retries until the consumer actually has
     // room, so the gate below can never open onto a connection the

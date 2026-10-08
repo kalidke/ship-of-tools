@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The role label of the reaper's own `shutdown(2)`.
+const REAPER_CALLER: &str = "rust/log/src/lane/socket_unix/conn.rs::reaper_loop";
+
 /// Marker error: a partial-progress write loop observed
 /// [`ConnHandle::torn_down_requested`] flip mid-write and stopped rather
 /// than continue submitting more of the payload — the write(s) that DID
@@ -67,24 +70,24 @@ fn notify_wake(shared: &Arc<ServerShared>) {
 /// could ever call `events()` again. Identical contract to
 /// `pipe_win::send_lifecycle_event`.
 pub(super) fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
-    let checkpoint = match &evt {
-        LaneEvent::Accepted(id) => Some((*id, "accepted.enqueue")),
-        LaneEvent::Closed(id, _) => Some((*id, "closed.enqueue")),
-        _ => None,
-    };
+    let checkpoint = enqueue_checkpoint(&evt);
     let mut item = evt;
     loop {
-        if let Some((id, step)) = checkpoint {
-            shared.progress.note(Some(id), step, "begin");
+        if let Some((id, step, detail)) = &checkpoint {
+            shared
+                .progress
+                .note(*id, step, format_args!("begin{detail}"));
         }
         let sent = shared.events_tx.try_send(item);
-        if let Some((id, step)) = checkpoint {
+        if let Some((id, step, detail)) = &checkpoint {
             let result = match &sent {
                 Ok(()) => "ok",
                 Err(TrySendError::Full(_)) => "full",
                 Err(TrySendError::Disconnected(_)) => "disconnected",
             };
-            shared.progress.note(Some(id), step, result);
+            shared
+                .progress
+                .note(*id, step, format_args!("{result}{detail}"));
         }
         match sent {
             Ok(()) => {
@@ -104,6 +107,17 @@ pub(super) fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
     }
 }
 
+/// The checkpoint of a lifecycle event's enqueue: its connection, step and the marker identity of a `Sent`.
+fn enqueue_checkpoint(evt: &LaneEvent) -> Option<(Option<ConnId>, &'static str, String)> {
+    match evt {
+        LaneEvent::Accepted(id) => Some((Some(*id), "accepted.enqueue", String::new())),
+        LaneEvent::Closed(id, _) => Some((Some(*id), "closed.enqueue", String::new())),
+        LaneEvent::Sent(id, marker) => Some((Some(*id), "sent.enqueue", format!(" marker={marker}"))),
+        LaneEvent::AcceptError(_) => Some((None, "accept_error.enqueue", String::new())),
+        LaneEvent::Bytes(..) => None,
+    }
+}
+
 /// Attempt to deliver one `Bytes` event, retrying against a full `events`
 /// channel for up to [`BYTES_ABANDON_AFTER`] — abandoning delivery
 /// (returning `false`) once that bound elapses OR the moment
@@ -119,7 +133,17 @@ fn deliver_bytes(
     let mut item = LaneEvent::Bytes(conn_id, bytes);
     let deadline = Instant::now() + BYTES_ABANDON_AFTER;
     loop {
-        match shared.events_tx.try_send(item) {
+        let sent = shared.events_tx.try_send(item);
+        shared.progress.note(
+            Some(conn_id),
+            "bytes.enqueue",
+            match &sent {
+                Ok(()) => "ok",
+                Err(TrySendError::Full(_)) => "full",
+                Err(TrySendError::Disconnected(_)) => "disconnected",
+            },
+        );
+        match sent {
             Ok(()) => {
                 notify_wake(shared);
                 return true;
@@ -194,7 +218,15 @@ pub(super) fn report_registration_failure(
 fn teardown_if_present(shared: &Arc<ServerShared>, conn_id: ConnId, reason: Option<ClosedReason>) {
     let conn = shared.conns.lock().unwrap().remove(&conn_id);
     let Some(conn) = conn else { return };
-    observe_shutdown(shared, conn_id, &conn.stream);
+    shared.progress.note(
+        Some(conn_id),
+        "claim",
+        match &reason {
+            Some(reason) => format!("reaper reason={reason:?}"),
+            None => "reaper reason=shutdown".to_string(),
+        },
+    );
+    observe_shutdown(&shared.progress, Some(conn_id), &conn.stream, REAPER_CALLER);
     drop(conn.sender); // unblocks a writer idle-waiting on `recv` with nothing queued
     shared
         .progress
@@ -276,6 +308,9 @@ pub(super) fn reader_loop(
     };
     request_teardown(&shared, conn_id, &torn_down_requested, reason);
     shared.progress.note(Some(conn_id), "reader.exit", "ok");
+    shared
+        .controls
+        .exit_point(&shared.progress, conn_id, Role::Reader);
 }
 
 /// `write(2)` in a partial-progress loop, checking `torn_down_requested`
@@ -378,21 +413,34 @@ pub(super) fn writer_loop(
         }
     }
     shared.progress.note(Some(conn_id), "writer.exit", "ok");
+    shared
+        .controls
+        .exit_point(&shared.progress, conn_id, Role::Writer);
 }
 
-/// Observe the existing shutdown without changing its error handling or cancellation policy.
-pub(super) fn observe_shutdown(shared: &ServerShared, id: ConnId, stream: &UnixStream) {
-    shared.progress.note(Some(id), "shutdown.enter", "begin");
+/// The one observation wrapper of every server and client `shutdown(2)`: it records `shutdown.enter`, performs the
+/// actual call, captures `errno` straight after a failure (before any logging or locking), then records the result,
+/// the numeric errno and `caller`. It changes neither the call nor what the caller does with the outcome.
+pub(super) fn observe_shutdown(
+    progress: &crate::lane::test_progress::Progress,
+    conn: Option<ConnId>,
+    stream: &UnixStream,
+    caller: &'static str,
+) {
+    progress.note_with(conn, "shutdown.enter", "begin", caller, None);
     let rc = unsafe { libc::shutdown(stream.as_raw_fd(), libc::SHUT_RDWR) };
     #[cfg(any(test, feature = "test-support"))]
     {
         let error = (rc != 0).then(io::Error::last_os_error);
-        shared.progress.note(
-            Some(id),
+        let errno = error.as_ref().and_then(io::Error::raw_os_error);
+        progress.note_with(
+            conn,
             "shutdown.result",
             format_args!("rc={rc} error={error:?}"),
+            caller,
+            errno,
         );
     }
     #[cfg(not(any(test, feature = "test-support")))]
-    let _ = rc;
+    let _ = (rc, progress, conn, caller);
 }
