@@ -27,6 +27,7 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
   dispatch cannot disagree.
 - Preview and concept replies require the current generation, host and workspace. Result-owned tree replies also require the currently listed canonical row and issuing result/attempt before active or parked tree installation and reveal effects; ordinary nav replies retain their tree-key routing.
 - Workspace view maps use WsKey = (host, normalized slug); strip keys use the listed (host, slug). Canonical ids are resolved through workspace.list before command effects.
+- Final window teardown has one shared three-second OS-clock process deadline, independent of the UI and transport runtime; it starts at the terminal decision, after any daemon acknowledgement and notice presentation.
 - `State::set_focus` (chrome/panes.rs) is the one write of `focus`; scan_tests.rs (`focus_written_only_by_set_focus`)
   fails any other.
 - Input reaches only the selected row's client or is counted: `State::send_pane_input` (agent_pane/input.rs) bumps
@@ -89,7 +90,7 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `events.rs`: drain_events routes each IncomingEvt variant to its owner, forwarding result-tree attempt identities unchanged to the navigation reply handler; event-service scheduling remains owned by the app.
 - `connections.rs`: the window's view of its connection set: `send`, `send_to`, `default_host`, `ordered_hosts`.
 - `page_proxy.rs`: arming a local listener so a remote daemon's page opens (`ensure_proxy_for_url`).
-- `scan_tests.rs`: the crate's own source for the tests that scan it (focus writes, leave, paste), read through `sot_log::test_scan`.
+- `scan_tests.rs`: the remaining inherited focus-write and ROI-paste source scans; the leave contract is tested behaviorally by the inline begin_leave tests in app/exit.rs.
 - `agent_pane/`: the agent pane (its own page).
 - `app/`: the winit application and exit path (its own page).
 - `chrome/`: the pane chrome (its own page).

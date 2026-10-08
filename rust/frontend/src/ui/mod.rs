@@ -330,6 +330,8 @@ struct State {
     /// True after a successful capture; the WindowEvent handler reads this
     /// next event-loop iteration and calls `event_loop.exit()`.
     should_exit: bool,
+    /// The App's one process backstop, shared so the final decision arms it.
+    exit_deadline: ExitDeadline,
     /// Frame-rate cap state. `request_redraw` from event handlers and the
     /// transport task queue `RedrawRequested`; if we'd draw twice within
     /// `FRAME_BUDGET`, the second one sets `dirty` and `about_to_wait`
@@ -2867,6 +2869,9 @@ mod result_tests {
 
 #[cfg(all(test, feature = "test-window-progress"))]
 pub(crate) use app::tests::NativeProgressLedger;
+
+#[cfg(all(test, feature = "test-window-close"))]
+pub(crate) use app::native_exit_tests::run_native_window_close;
 
 #[cfg(all(test, feature = "test-window-progress"))]
 pub(crate) fn run_native_window_progress() -> Result<()> {

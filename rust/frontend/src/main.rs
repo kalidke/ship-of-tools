@@ -183,8 +183,8 @@ fn ordinary_startup() -> Result<()> {
         None
     };
 
-    let mut app = ui::App::new(evt_rx, rt, cli, evt_tx, conns, Some(pending_transports), leases);
-    event_loop.run_app(&mut app)?;
+    let app = ui::App::new(evt_rx, rt, cli, evt_tx, conns, Some(pending_transports), leases);
+    app.run(event_loop)?;
     Ok(())
 }
 

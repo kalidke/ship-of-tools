@@ -279,7 +279,9 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `Leases`, its mutex and phase | state, lock | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `Phase` |
 | window exit decision (`ExitReason`, `ExitStep`, `exit_intent`, `close_now`) | state | lifecycle | `rust/frontend/src/lease.rs` `ExitReason`, `ExitStep`, `exit_intent`, `close_now` |
 | no-lease notice and precedence | rule | lifecycle | `rust/frontend/src/lease.rs` `lease_notice` |
-| quit prompt, `request_quit` | UI | fe-ui | `rust/frontend/src/ui/app/exit.rs` `quit_prompt_key`; `rust/frontend/src/ui/app/handler.rs` |
+| quit prompt, `request_quit` | UI | fe-ui | `rust/frontend/src/ui/app/exit.rs` `quit_prompt_step`, `request_quit`; `rust/frontend/src/ui/input/keypress.rs` `keyboard_input`; `rust/frontend/src/ui/input/global_keys.rs` `confirm_quit_key` |
+| returned-loop runtime shutdown | process rule | fe-ui | `rust/frontend/src/ui/app/mod.rs` `App::run`, `shutdown_transport` |
+| final window process deadline | process rule | fe-ui | `rust/frontend/src/ui/app/exit.rs` `ExitDeadline`; `rust/frontend/src/ui/app/mod.rs` `App::run` |
 | new-row account selection | rule | fe-ui | `rust/frontend/src/ui/session/picker.rs` `selected_account`; daemon default resolution stays in agents |
 | parent-death lease (fd-3 pipe; Windows `Local\sot-lease-*` mutex) | lock | capsule | `rust/log/src/supervisor/lease_win.rs`; `rust/log/src/supervisor/leg.rs` `SpawnLease`, `LegLease` |
 | REPL `OUT_LOCK` | lock | sidecars | `julia/repl/src/ShipToolsRepl.jl` |

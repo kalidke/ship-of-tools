@@ -559,7 +559,7 @@ impl ApplicationHandler for NativeDriver {
     }
 }
 
-fn fixture_cli() -> crate::cli::Cli {
+pub(super) fn fixture_cli() -> crate::cli::Cli {
     crate::cli::Cli {
         dial: Vec::new(),
         socket: None,
@@ -661,14 +661,14 @@ pub(in crate::ui) fn minimized_window_drains_events_for_ten_minutes() -> Result<
     })
 }
 
-struct FixtureHome {
+pub(super) struct FixtureHome {
     saved: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
     cwd: PathBuf,
     _state: crate::net::state::test_env::EnvGuard,
 }
 
 impl FixtureHome {
-    fn enter() -> Result<Self> {
+    pub(super) fn enter() -> Result<Self> {
         let state = crate::net::state::test_env::set_test_env();
         let root = PathBuf::from(std::env::var_os("XDG_STATE_HOME").expect("owned fixture root"));
         let mut guard = Self {

@@ -5,10 +5,13 @@ the event loop against it. Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.m
 hand-over it serves.
 
 ## Files
-- `mod.rs`: `App` and its constructor; `FRAME_BUDGET` and `NAV_FIRE_DEBOUNCE`, the frame pacing constants.
-- `exit.rs`: the Ctrl+Q prompt's key table, `request_quit`, `leave` and `finish_exit`, and `redraw_exits`.
+- `mod.rs`: App, its constructor and run/finalizer boundary, plus FRAME_BUDGET and NAV_FIRE_DEBOUNCE.
+- `exit_process_tests.rs`: bounded runtime and process-exit cases, run through the shared isolation helper.
+- `exit.rs`: quit_prompt_step, request_quit, begin_leave, leave, finish_exit, redraw_exits and the per-App ExitDeadline shared with State.
 - `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `new_events`.
 - `frame.rs`: `State::redraw`, one frame's sequence, its upkeep (`frame_upkeep`) and `ack_presented_lines`.
+- `native_eventlog.rs`: Windows only: the Application log's Application Hang events (1002) for one fixture child; an unreadable log is an error.
+- `native_exit_tests.rs`: the opt-in main-thread native window-close fixture, using the actual App callbacks and test-owned inputs; the parent runs each close case as a child of its binary.
 - `tests.rs`: the native minimized-window event-progress harness; test-owned inputs, no daemon or user settings. It first runs the native-only State fixtures of the result-routing, badge and account commits, printing one `state-fixture name=... ok=...` line each.
 
 ## Start here
@@ -19,10 +22,17 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 
 ## Rules
 - Every user quit goes through `request_quit`: `exit_intent` asks on Ctrl+Q and leaves at once on the close button.
-- `leave` never ends the drawer's session and sets `should_exit` before it polls (test `leave_never_ends_the_drawer`).
+- begin_leave can access only lease and exit-state slots and returns Redraw or Finish; leave_close_keep_and_handover_only_leave_leases drives that production transition and observes pending exit and actual lease frames. No agent or drawer input capability is passed to it.
 - A leaving window exits from `about_to_wait`'s poll once the acks are in (`redraw_exits`).
 - A harness instance (`ephemeral`) starts neither watcher thread: `resumed` skips `relaunch::spawn_watcher` and `spawn_command_watcher` for it.
 - Frames are capped at `FRAME_BUDGET` (`window_event`'s redraw arm and `about_to_wait`).
 - A frame runs in `redraw`'s fixed order: upkeep, the chrome draw, the pixel layout, the text prepare, one render pass,
   then the capture's staging, submit, present, the acks and the capture's write.
+- While the quit prompt is open, non-repeat Tab toggles and Enter confirms by logical key identity, every other non-repeat key cancels, and repeats do nothing; input routing consumes the event before modifier-only suppression and later dispatch.
+- A second close resolves close_now's code and makes one bounded deliver_queued attempt before the window finishes; a write timeout is reported and is not a daemon acknowledgement.
+- Every return from run_app, including an error or capture completion, takes the transport runtime once and calls shutdown_timeout(LEAVE_WRITE_WAIT) before App drops. Timed-out blocking work may continue; the yielding-child cleanup proof does not promise cancellation of arbitrary synchronous work.
+- The final window decision arms one three-second std-thread process backstop before a forced queued-write attempt or final event-loop exit; capture and returned-loop failure also enter this finalization. Prompt time and daemon acknowledgement/presentation time precede that deadline.
+- Codes 0, 75 and 76 are preserved, including a Close superseding Handover; the historical immediate nonzero branch retains its foreground handover.
+- Process-exit tests stall between the arm under test and every later arming opportunity: forced delivery stalls before finish_exit, a loop return stalls before fallback arming, nonzero finish_exit stalls before its direct exit, and fallback cases stall after fallback arming. Reversals remove only the production arm and must fail their own exit assertion.
+- Ordinary native close must exit 0 before 2.5 seconds without the backstop; deliberate stalled teardown must end under the three-second backstop with the decided code. The native cases are OS close, Ctrl+Q then No, a second close during a held Close, a Close whose acknowledgement is held past three seconds and whose not-ended notice is presented, relaunch 75 and 76, capture through a real State, and closes held at the loop return, before delivery and before the direct exit. On Windows each ordinary case also requires no Application Hang event correlated to the fixture's image and process id.
 - Native progress evidence separates producer workload validity from UI queue progress; counters are taken at successful fan-in enqueue and actual State dequeue, and the fixture never drains the queue.

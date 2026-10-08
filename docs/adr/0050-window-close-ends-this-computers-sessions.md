@@ -250,3 +250,9 @@ A generated hub relay socket is physically local transport to a remote daemon. T
 ## Update (0.6.6): Foreign notice
 
 Foreign reports a refused boot, pid or creation-time claim and does not by itself prove another OS account. Without a granted or pending lease, the window names the known cause: unknown verification, then unsupported backend, then a refused identity claim, then unreached or absent backend.
+
+## Update (0.6.6): final window teardown
+
+The Ctrl+Q prompt reads Tab and Enter by key identity; other non-repeat keys cancel and repeats do nothing. Final window teardown starts after the leave acknowledgement and any required notice presentation, or at an explicit second-close decision. Queued writes share a one-second OS-monotonic deadline, returning event loops use a one-second runtime shutdown timeout, and one independent three-second std-thread backstop bounds final process teardown. These intervals do not shorten the Close acknowledgement wait. A timed-out blocking task can continue until process termination; tests separately observe cleanup of a yielding task's owned child. The existing nonzero handover exit remains immediate.
+
+The macOS default menu remains enabled. Earlier T1 review recorded native Cmd+Q bypassing the Ctrl+Q prompt; this lane does not re-test or change that native menu route.

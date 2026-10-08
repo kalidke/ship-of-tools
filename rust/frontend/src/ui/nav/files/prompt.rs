@@ -37,7 +37,7 @@ pub(in crate::ui) enum NavPrompt {
     },
     /// Ctrl+Q in navigation focus: ask whether to keep the daemon and its
     /// sessions running. `keep` is the highlighted answer (No by default);
-    /// Tab flips it, Enter confirms, Esc cancels.
+    /// Tab flips the choice, Enter confirms by key identity, every other non-repeat key cancels, and repeats are ignored.
     ConfirmQuit { keep: bool },
     /// Ctrl+S on a raster that carries NO physical scale (ADR 0034 §4 live
     /// entry): type the pixel size in MICRONS. Enter validates + fires
