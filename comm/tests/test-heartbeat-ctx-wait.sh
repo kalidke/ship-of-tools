@@ -18,5 +18,6 @@ if [ -f "$WORK/cleanup-confirmed" ]; then
     rm -rf "${WORK:?}"
 else
     echo 'FATAL: fixture cleanup unconfirmed; retaining scratch' >&2
+    [ "$rc" -ne 0 ] || rc=2
 fi
 exit "$rc"
