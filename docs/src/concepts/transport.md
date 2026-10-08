@@ -92,7 +92,7 @@ doubling from 200 ms, to a cap of 5 s on a local socket and 30 s on an ssh
 dial. Once the wait reaches its cap, a down host costs the hub at most two
 logins a minute per frontend; the first minute, while the wait doubles, costs
 about nine. The wait starts over only after a session that lasted a minute
-(`STABLE`), so a daemon that answers the hello and then drops costs no more
+(`STABLE`), or at F5, so a daemon that answers the hello and then drops costs no more
 than a down one; the daemon's hub link and each pane's attach worker follow
 the same rule. F5 retries at once. A browser connection to a proxied page is refused while
 the gate is down.

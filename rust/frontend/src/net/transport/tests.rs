@@ -30,13 +30,12 @@ fn a_down_ssh_host_costs_the_hub_at_most_two_logins_a_minute() {
 
 /// A daemon that answers every hello and then closes is redialed on the doubling wait, not every 200 ms: an answered
 /// hello is not a working connection. The reconnect loop `spawn` runs dials a generated-relay endpoint this test serves
-/// (an in-process Unix socket, or a named pipe on Windows); each accepted connection is one dial. The waits are lower
-/// bounds, so a slow machine can only lower the count.
+/// (an in-process Unix socket, or a named pipe on Windows) and names, in each `Disconnected` event, the wait it is about
+/// to sleep. The first three are 200, 400 and 800 ms: three attempts happened and each wait doubled. No clock decides
+/// the outcome; the deadline only fails a loop that stops redialing.
 #[test]
 fn a_daemon_that_answers_the_hello_and_drops_is_redialed_on_the_doubling_wait() {
     use interprocess::local_socket::{tokio::prelude::*, GenericFilePath, ListenerOptions};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    const WINDOW: std::time::Duration = std::time::Duration::from_millis(2_500);
     let _env = crate::net::state::test_env::set_test_env();
     #[cfg(windows)]
     let sock_path = std::path::PathBuf::from(format!(r"\\.\pipe\sot-redial-test-{}", std::process::id()));
@@ -49,14 +48,11 @@ fn a_daemon_that_answers_the_hello_and_drops_is_redialed_on_the_doubling_wait() 
         dir.join("s.sock")
     };
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    let dials = Arc::new(AtomicUsize::new(0));
-    let counted = rt.block_on(async {
+    rt.block_on(async {
         let name = sock_path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();
         let listener = ListenerOptions::new().name(name).create_tokio().expect("bind test endpoint");
-        let accepted = Arc::clone(&dials);
         tokio::spawn(async move {
             while let Ok(conn) = listener.accept().await {
-                accepted.fetch_add(1, Ordering::SeqCst);
                 tokio::spawn(async move {
                     let (rx, mut tx) = conn.split();
                     let mut rx = codec::buffered(rx);
@@ -68,30 +64,38 @@ fn a_daemon_that_answers_the_hello_and_drops_is_redialed_on_the_doubling_wait() 
                 });
             }
         });
-        let (evt_tx, _evt_rx) = std::sync::mpsc::channel();
-        let (_out_tx, out_rx) = outgoing_channel();
-        let config = TransportConfig { dial: Dial::Relay(sock_path.clone()), token: None };
-        spawn(
-            &rt,
-            "redial-test".to_string(),
-            config,
-            evt_tx,
-            out_rx,
-            NoWindow,
-            Arc::new(tokio::sync::Notify::new()),
-            sot_protocol::topology::ssh_bridge::LinkGate::default(),
-            crate::lease::Leases::new(true, Vec::new()),
-        );
-        tokio::time::sleep(WINDOW).await;
-        dials.load(Ordering::SeqCst)
     });
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    let (_out_tx, out_rx) = outgoing_channel();
+    let config = TransportConfig { dial: Dial::Relay(sock_path.clone()), token: None };
+    spawn(
+        &rt,
+        "redial-test".to_string(),
+        config,
+        evt_tx,
+        out_rx,
+        NoWindow,
+        Arc::new(tokio::sync::Notify::new()),
+        sot_protocol::topology::ssh_bridge::LinkGate::default(),
+        crate::lease::Leases::new(true, Vec::new()),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut waits: Vec<u64> = Vec::new();
+    while waits.len() < 3 {
+        match evt_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok((_, IncomingEvt::Disconnected { reason })) => {
+                let ms = reason.rsplit_once("retry in ").and_then(|(_, rest)| rest.split_once("ms")).and_then(|(n, _)| n.parse().ok());
+                waits.push(ms.unwrap_or_else(|| panic!("no wait named in {reason:?}")));
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
     rt.shutdown_timeout(std::time::Duration::from_secs(2));
     #[cfg(not(windows))]
     let _ = std::fs::remove_dir_all(sock_path.parent().unwrap());
-    println!("redial: {counted} dials in {WINDOW:?} to a daemon that answers the hello and closes");
-    // The doubling wait from 200 ms dials at 0, 0.2, 0.6 and 1.4 s, then not before 3 s.
-    assert!(counted >= 1, "the loop never dialed the test endpoint");
-    assert!(counted <= 4, "{counted} dials in {WINDOW:?}: an answered hello restarted the wait");
+    println!("redial: waits {waits:?} ms against a daemon that answers the hello and closes");
+    assert_eq!(waits, [200, 400, 800], "the reconnect loop's first three waits: an answered hello restarted the doubling, or the loop stopped redialing");
 }
 
 // --- ADR 0045 decision 4: the link gate. ---

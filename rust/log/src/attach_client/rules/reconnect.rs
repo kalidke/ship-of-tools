@@ -136,17 +136,13 @@ impl ReconnectState {
         self.unresponsive_since = None;
     }
 
-    /// A failed dial or attach step: the wait before the next attempt
-    /// (250 ms doubling to 4 s), whether or not the row has ever attached —
-    /// over an ssh lane every dial is a login (ADR 0043 decision 28).
-    pub fn retry_with_backoff(&mut self) -> Duration {
-        self.redial.after(Duration::ZERO)
-    }
-
-    /// An attached session that ended after `lasted`: the wait before the
-    /// next episode. It starts over at 250 ms only when the session lasted
-    /// `STABLE`; an attach that drops sooner keeps the doubling.
-    pub fn retry_after_session(&mut self, lasted: Duration) -> Duration {
+    /// The wait before the next attempt, given how long the one that just
+    /// ended lasted: a failed dial or attach step lasted nothing
+    /// (`Duration::ZERO`), an attached session as long as it ran. 250 ms
+    /// doubling to 4 s, whether or not the row has ever attached — over an
+    /// ssh lane every dial is a login (ADR 0043 decision 28) — and back to
+    /// 250 ms only after a session that lasted `STABLE`.
+    pub fn retry_after(&mut self, lasted: Duration) -> Duration {
         self.redial.after(lasted)
     }
 }
@@ -162,7 +158,7 @@ mod tests {
         // ADR 0043 decision 28: every failed dial doubles, whether or not the
         // row has ever attached — over an ssh lane each dial is a login.
         let mut r = ReconnectState::new();
-        let waits: Vec<Duration> = (0..6).map(|_| r.retry_with_backoff()).collect();
+        let waits: Vec<Duration> = (0..6).map(|_| r.retry_after(Duration::ZERO)).collect();
         assert_eq!(
             waits,
             vec![
@@ -175,16 +171,16 @@ mod tests {
             ]
         );
         let short = crate::host::redial::STABLE - Duration::from_secs(1);
-        assert_eq!(r.retry_after_session(short), Duration::from_secs(4), "an attach that drops sooner keeps the doubling");
-        assert_eq!(r.retry_after_session(crate::host::redial::STABLE), Duration::from_millis(250));
+        assert_eq!(r.retry_after(short), Duration::from_secs(4), "an attach that drops sooner keeps the doubling");
+        assert_eq!(r.retry_after(crate::host::redial::STABLE), Duration::from_millis(250));
     }
 
     #[test]
     fn post_attach_backoff_doubles_and_caps_at_4s() {
         let mut r = ReconnectState::new();
-        let mut waits = vec![r.retry_after_session(crate::host::redial::STABLE)];
+        let mut waits = vec![r.retry_after(crate::host::redial::STABLE)];
         for _ in 0..5 {
-            waits.push(r.retry_with_backoff());
+            waits.push(r.retry_after(Duration::ZERO));
         }
         assert_eq!(
             waits,

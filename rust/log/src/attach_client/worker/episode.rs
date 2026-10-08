@@ -52,7 +52,7 @@ pub(super) fn reach_supervisor<E: Endpoint>(
                 }
                 ReconnectDecision::Retry => {
                     emit(WorkerEvent::Status("supervisor lane not answering \u{2014} retrying\u{2026}".to_string()));
-                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), held) {
+                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_after(Duration::ZERO), held) {
                         WaitOutcome::Shutdown => return Err(EpisodeExit::End),
                         WaitOutcome::Continue => return Err(EpisodeExit::Retry),
                     }
@@ -161,7 +161,7 @@ fn dial_and_converge<E: Endpoint>(
                 _ => unreachable!("matched above"),
             };
             emit(WorkerEvent::Status(msg));
-            match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), held) {
+            match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_after(Duration::ZERO), held) {
                 WaitOutcome::Shutdown => return Err(EpisodeExit::End),
                 WaitOutcome::Continue => return Err(EpisodeExit::Retry),
             }
@@ -227,7 +227,7 @@ pub(super) fn attach_voyage<E: Endpoint>(
             return Err(EpisodeExit::End);
         }
         PeerAuthOutcome::Undetermined => {
-            match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), held) {
+            match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_after(Duration::ZERO), held) {
                 WaitOutcome::Shutdown => return Err(EpisodeExit::End),
                 WaitOutcome::Continue => return Err(EpisodeExit::Retry),
             }
@@ -259,7 +259,7 @@ pub(super) fn attach_voyage<E: Endpoint>(
             _ => {
                 match wait_for_retry_or_shutdown(
                     &cmd_rx,
-                    reconnect.retry_with_backoff(),
+                    reconnect.retry_after(Duration::ZERO),
                     held,
                 ) {
                     WaitOutcome::Shutdown => return Err(EpisodeExit::End),
@@ -281,7 +281,7 @@ pub(super) fn attach_voyage<E: Endpoint>(
                 if let LaneError::AttachRefused(reason) = e {
                     emit(WorkerEvent::Status(attach_refused_text(reason).to_string()));
                 }
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), held) {
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_after(Duration::ZERO), held) {
                     WaitOutcome::Shutdown => return Err(EpisodeExit::End),
                     WaitOutcome::Continue => return Err(EpisodeExit::Retry),
                 }

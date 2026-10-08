@@ -132,7 +132,7 @@ pub(super) struct SupLane<C> {
     reader: FrameReader,
     /// When `conn` was dialed: how long it lasted decides the wait before the next dial.
     dialed_at: Instant,
-    /// The earliest next dial while the lane misses its probes; `None` while it answers.
+    /// The earliest next dial, set at the first missed probe after the last dial; `None` until then.
     redial_at: Option<Instant>,
     redial: crate::host::redial::Redial,
 }

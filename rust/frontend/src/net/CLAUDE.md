@@ -28,7 +28,7 @@ through the channel types below.
 - Every `figure.get` ends in exactly one result (`send_figure_get` records its `PendingKind` before it writes).
 - A result-tree completion carries the canonical workspace id and result/attempt serials saved at issuance through the request-id pending entry; the existing fan-in envelope supplies its dial HostKey. These identities are local and change no daemon payload.
 - A down ssh host costs at most two logins a minute, and a daemon that answers the hello and then drops costs no more:
-  the wait starts over only after a session that lasted `STABLE` (`redial_for`, `Redial`).
+  the wait starts over only after a session that lasted `STABLE`, or at F5 (`redial_for`, `Redial`).
 - A burst of replies costs one reconnect-memory write per 2 s, and the last revision is flushed when the session ends
   (`StateSaveGate`, `SessionState`'s drop).
 - A pipe host is leased before its data connection (`connect_and_run` calls `Leases::before_data_connection`).

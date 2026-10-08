@@ -50,9 +50,9 @@ use super::WireRequest;
 /// immediately — this bound only ever costs one caller one message.
 const KERNEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Respawn backoff floor: the first failed spawn (or the first failure
-/// after a prior successful hello) waits this long before the supervisor
-/// tries again.
+/// Respawn backoff floor: the first failed spawn, and the first failure
+/// after a generation that ran `STABLE`, waits this long before the
+/// supervisor tries again.
 const RESPAWN_BACKOFF_FLOOR: Duration = Duration::from_millis(250);
 
 /// Respawn backoff ceiling: a persistently broken install is retried no
@@ -266,7 +266,9 @@ async fn submit_and_await(
 
 /// The persistent loop: spawn a generation of the child, run it until it
 /// answers hello and then dies (or dies before ever answering), record
-/// `Dead` with the appropriate backoff, sleep, repeat — until `status`
+/// `Dead` with the wait platform's `Redial` gives (started over only after
+/// a generation that ran `STABLE`, so a kernel that answers hello and then
+/// dies keeps the doubling), sleep, repeat — until `status`
 /// closes (every `Kernel` handle sharing it has been dropped), at which
 /// point this returns and the task ends. It also ends when `sig` fires, and
 /// never respawns after.
@@ -276,31 +278,22 @@ async fn supervisor_loop(
     status: watch::Sender<Status>,
     sig: &'static crate::lifecycle::child_signal::Signal,
 ) {
-    let mut backoff: Option<Duration> = None;
+    let mut redial = sot_log::host::redial::Redial::new(RESPAWN_BACKOFF_FLOOR, RESPAWN_BACKOFF_CAP);
     loop {
         if status.is_closed() || sig.is_fired() {
             return;
         }
         let _ = status.send(Status::Starting);
-        let (reached_running, reason) = run_one_generation(&kernel_project, &project_root, &status, sig).await;
-        if reached_running {
-            // A generation that answered hello resets the ladder — the NEXT
-            // failure (whenever it comes) is a fresh first failure, not a
-            // continuation of whatever backoff preceded this success.
-            backoff = None;
-        }
+        let began = tokio::time::Instant::now();
+        let reason = run_one_generation(&kernel_project, &project_root, &status, sig).await;
         if status.is_closed() || sig.is_fired() {
             return;
         }
-        let next_backoff = match backoff {
-            Some(b) => (b * 2).min(RESPAWN_BACKOFF_CAP),
-            None => RESPAWN_BACKOFF_FLOOR,
-        };
-        backoff = Some(next_backoff);
-        tracing::warn!(reason = %reason, next_retry_in = ?next_backoff, "kernel unavailable; will retry after backoff");
+        let wait = redial.after(began.elapsed());
+        tracing::warn!(reason = %reason, next_retry_in = ?wait, "kernel unavailable; will retry after backoff");
         let _ = status.send(Status::Dead { reason });
         tokio::select! {
-            _ = tokio::time::sleep(next_backoff) => {}
+            _ = tokio::time::sleep(wait) => {}
             _ = sig.fired() => return,
         }
     }
@@ -321,10 +314,9 @@ fn julia_bin(kernel_project: &Path) -> Result<(String, &'static str), String> {
 /// publish `Running` the moment it answers, then keep serving until it
 /// dies OR `status` closes (the owning `Kernel` was dropped — the
 /// contained tree dies as `contained` goes out of scope on return). Returns
-/// `(reached_running, reason)`: `reached_running` tells the caller whether
-/// to reset the backoff ladder; `reason` is the human-readable cause of
-/// this generation's end (spawn failure, the child's exit — before or
-/// after hello alike — or a owner-dropped shutdown).
+/// the human-readable cause of this generation's end (spawn failure, the
+/// child's exit — before or after hello alike — or a owner-dropped
+/// shutdown).
 ///
 /// The binary is resolved FRESH here, not cached: a removed or replaced
 /// juliaup install recovers on the very next attempt.
@@ -334,17 +326,17 @@ async fn run_one_generation(
     project_root: &Path,
     status: &watch::Sender<Status>,
     sig: &'static crate::lifecycle::child_signal::Signal,
-) -> (bool, String) {
+) -> String {
     let (julia_bin, source) = match julia_bin(kernel_project) {
         Ok(v) => v,
-        Err(reason) => return (false, reason),
+        Err(reason) => return reason,
     };
     if !kernel_project.exists() {
-        return (false, format!("kernel project missing at {}", kernel_project.display()));
+        return format!("kernel project missing at {}", kernel_project.display());
     }
     let project_root_str = match project_root.to_str() {
         Some(s) => s,
-        None => return (false, format!("project_root not utf-8: {}", project_root.display())),
+        None => return format!("project_root not utf-8: {}", project_root.display()),
     };
     let escaped = project_root_str.replace('\\', "\\\\").replace('"', "\\\"");
     let julia_src = format!(
@@ -365,20 +357,20 @@ async fn run_one_generation(
     // not polling for (a full stdin pipe) and what it started still die.
     let mut contained = match sig.spawn(&mut cmd) {
         Ok(c) => c,
-        Err(e) => return (false, format!("spawn {julia_bin} failed: {e}")),
+        Err(e) => return format!("spawn {julia_bin} failed: {e}"),
     };
 
     let mut stdin = match contained.stdin.take() {
         Some(s) => s,
-        None => return (false, "kernel child stdin missing".to_string()),
+        None => return "kernel child stdin missing".to_string(),
     };
     let stdout = match contained.stdout.take() {
         Some(s) => s,
-        None => return (false, "kernel child stdout missing".to_string()),
+        None => return "kernel child stdout missing".to_string(),
     };
     let stderr = match contained.stderr.take() {
         Some(s) => s,
-        None => return (false, "kernel child stderr missing".to_string()),
+        None => return "kernel child stderr missing".to_string(),
     };
 
     tokio::spawn(async move {
@@ -402,7 +394,7 @@ async fn run_one_generation(
     next_id += 1;
     pending.insert(hello_id, hello_tx);
     if let Err(e) = write_request(&mut stdin, hello_id, "kernel.hello", &json!({})).await {
-        return (false, format!("julia exited at once (path {julia_bin}): {e}"));
+        return format!("julia exited at once (path {julia_bin}): {e}");
     }
 
     loop {
@@ -411,7 +403,7 @@ async fn run_one_generation(
             // The daemon is shutting down: the signal has already killed the
             // child's tree.
             _ = sig.fired() => {
-                return (published_running, "the daemon is shutting down".to_string());
+                return "the daemon is shutting down".to_string();
             }
             // Every `Kernel` handle sharing this `status` has been dropped
             // (a destroyed workspace, most commonly) — stop serving; the
@@ -421,7 +413,7 @@ async fn run_one_generation(
             // nobody is watching `status` to read a `Dead` we could no
             // longer deliver anyway).
             _ = status.closed() => {
-                return (published_running, "owning kernel handle dropped".to_string());
+                return "owning kernel handle dropped".to_string();
             }
             hello = &mut hello_rx, if !published_running => {
                 match hello {
@@ -431,7 +423,7 @@ async fn run_one_generation(
                         let _ = status.send(Status::Running(submit_tx.clone()));
                     }
                     Ok(Err(e)) => {
-                        return (false, format!("julia exited at once (path {julia_bin}): {e:#}"));
+                        return format!("julia exited at once (path {julia_bin}): {e:#}");
                     }
                     Err(_) => {
                         // `pending`'s hello entry can only be consumed by
@@ -446,14 +438,14 @@ async fn run_one_generation(
                     // Unreachable while this function holds `submit_tx`
                     // itself (it does, for the whole loop) — kept as a
                     // defensive exit rather than an `unreachable!()`.
-                    return (published_running, "kernel submission channel closed".to_string());
+                    return "kernel submission channel closed".to_string();
                 };
                 let id = next_id;
                 next_id += 1;
                 if let Err(e) = write_request(&mut stdin, id, &sub.op, &sub.payload).await {
                     let _ = sub.reply.send(Err(anyhow!("kernel stdin: {e}")));
                     let reason = format!("julia exited at once (path {julia_bin}): {e}");
-                    return finish_generation(status, published_running, reason, pending).await;
+                    return finish_generation(status, reason, pending).await;
                 }
                 pending.insert(id, sub.reply);
             }
@@ -466,12 +458,12 @@ async fn run_one_generation(
                             "julia exited {} (path {julia_bin})",
                             if published_running { "mid-request" } else { "at once" }
                         );
-                        return finish_generation(status, published_running, reason, pending).await;
+                        return finish_generation(status, reason, pending).await;
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "kernel stdout error");
                         let reason = format!("kernel stdout error (path {julia_bin}): {e}");
-                        return finish_generation(status, published_running, reason, pending).await;
+                        return finish_generation(status, reason, pending).await;
                     }
                 }
             }
@@ -488,17 +480,16 @@ async fn run_one_generation(
 /// generic "kernel terminated" string).
 async fn finish_generation(
     status: &watch::Sender<Status>,
-    published_running: bool,
     reason: String,
     mut pending: HashMap<u64, oneshot::Sender<Result<Value>>>,
-) -> (bool, String) {
+) -> String {
     let _ = status.send(Status::Dead { reason: reason.clone() });
     for (_id, reply) in pending.drain() {
         let _ = reply.send(Err(anyhow::Error::new(KernelUnavailable::Dead {
             reason: reason.clone(),
         })));
     }
-    (published_running, reason)
+    reason
 }
 
 async fn write_request(stdin: &mut ChildStdin, id: u64, op: &str, payload: &Value) -> Result<()> {
@@ -667,6 +658,42 @@ mod tests {
         assert!(gc.gone(), "the kernel's grandchild survived the shutdown");
         assert_eq!(sig.live(), 0);
         drop(replies);
+    }
+
+    /// A kernel that answers hello and then dies is respawned on the doubling wait, 250 ms to 30 s, not every 250 ms:
+    /// an answered hello is not a working kernel (`supervisor_loop`, `Redial`). Each spawn appends a line; the doubling
+    /// spawns at 0, 0.25, 0.75 and 1.75 s, then not before 3.75 s, and the waits are lower bounds, so a slow machine can
+    /// only lower the count. Two spawns prove a respawn happened.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_kernel_that_answers_and_dies_is_respawned_on_the_doubling_wait() {
+        const WINDOW: Duration = Duration::from_secs(3);
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("spawns");
+        let stub = dir.path().join("stub-julia");
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!(
+                "#!/bin/sh\necho x >> {}\nread l\necho '{{\"id\":1,\"payload\":{{\"protocol\":{KERNEL_PROTOCOL_VERSION}}}}}'\n",
+                counter.display()
+            ),
+        );
+        let project = dir.path().join("kp");
+        std::fs::create_dir(&project).unwrap();
+        STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (status, _keep) = watch::channel(Status::Starting);
+        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig));
+        tokio::time::sleep(WINDOW).await;
+        let spawns = std::fs::read_to_string(&counter).map_or(0, |s| s.lines().count());
+        sig.fire();
+        tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("the supervisor loop outlived the shutdown")
+            .expect("supervisor task");
+        println!("respawn: {spawns} kernel spawns in {WINDOW:?} against a kernel that answers hello and exits");
+        assert!(spawns >= 2, "the supervisor never respawned the kernel: {spawns} spawn(s) in {WINDOW:?}");
+        assert!(spawns <= 4, "{spawns} kernel spawns in {WINDOW:?}: an answered hello restarted the wait");
     }
 
     #[test]

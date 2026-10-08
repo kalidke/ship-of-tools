@@ -15,8 +15,8 @@ checkpoint and runs the steady state, reporting to the caller's event sink. Part
 - `ingress_tests.rs`: tests of bounded ingress, checkpoint deadlines and `QueuedBytes` wakeups
 - `converge_tests.rs`: tests of the health probe, absence clock, first attach, link-down pause, dial backoff, attach refusal and abandoned-supervisor spare cleanup
 - `steady_tests.rs`: tests of held inputs, take-queue drops, the status-probe keystroke and the held-handshake gate
-- `redial_tests.rs`: the redial pace against a lane that accepts and then drops: the episode reconnect and the
-  supervisor re-dial
+- `redial_tests.rs`: the redial pace, each dial's instant checked against the doubling wait: an attach and a
+  supervisor lane that accept and then drop, a failed supervisor re-dial, and a lane that lasted `STABLE`
 
 ## Start here
 `run.rs`, `run_worker`, for the thread's whole life; then `converge.rs`, `converge_on_ready`, for what precedes the attach.
@@ -29,5 +29,5 @@ checkpoint and runs the steady state, reporting to the caller's event sink. Part
 - A dial whose host link is down waits until the link is up and the client is viewed (`pause_for_link`).
 - The episode reconnect (250 ms to 4 s) and the steady-state supervisor re-dial (2 s to 30 s) wait on platform's
   `Redial`: each starts over only after an attach or a lane that lasted `STABLE`, never on a completed attach or a
-  bare connect (`ReconnectState::retry_after_session`, `probe_supervisor_lane`).
+  bare connect (`ReconnectState::retry_after`, `probe_supervisor_lane`).
 - An unproven supervisor hello or failed Status abandons the endpoint's spare before returning (`connect_supervisor_lane`, `converge_on_ready`, `Endpoint::drop_spare`).

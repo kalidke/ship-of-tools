@@ -96,15 +96,14 @@ pub(super) fn probe_supervisor_lane<E: Endpoint>(endpoint: &E, h: &str, lane: &m
     // answered probe restores "attached".
     let due = *lane.redial_at.get_or_insert_with(|| lane.dialed_at + lane.redial.after(now.saturating_duration_since(lane.dialed_at)));
     if now >= due {
+        // Whatever this dial's outcome, the next missed probe measures from it: a dial that failed counts as a lane
+        // that lasted until that miss, so the doubling goes on.
         lane.dialed_at = now;
-        lane.redial_at = match connect_supervisor_lane::<E>(endpoint, h) {
-            Ok((c, _)) => {
-                lane.conn = c;
-                lane.reader = FrameReader::new();
-                None
-            }
-            Err(_) => Some(now + lane.redial.after(Duration::ZERO)),
-        };
+        lane.redial_at = None;
+        if let Ok((c, _)) = connect_supervisor_lane::<E>(endpoint, h) {
+            lane.conn = c;
+            lane.reader = FrameReader::new();
+        }
     }
     answered
 }
@@ -118,9 +117,8 @@ pub(super) fn probe_supervisor_lane<E: Endpoint>(endpoint: &E, h: &str, lane: &m
 /// name"). A live voyage pipe means the capsule survives headless
 /// (exactly the scenario ADR 0041 P3 is built to tolerate), so this
 /// clears the clock and asks the caller to retry shortly rather than
-/// attaching blind this round — the caller's own backoff (fixed pre-
-/// attach interval, doubling only after a first attach) makes that a
-/// brief, bounded gap, not a stall.
+/// attaching blind this round — the caller's own backoff (the episode's
+/// doubling `Redial` wait) makes that a brief, bounded gap, not a stall.
 ///
 /// ADR 0043 decision 28, ADR 0045 decision 6: `voyage` is now OPTIONAL —
 /// the attach client converges on the supervisor's own word only, never a
@@ -397,7 +395,7 @@ pub(super) fn converge_on_ready<E: Endpoint>(
                         _ => unreachable!("matched above"),
                     };
                     emit(WorkerEvent::Status(msg));
-                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_with_backoff(), held) {
+                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_after(Duration::ZERO), held) {
                         WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                         WaitOutcome::Continue => continue,
                     }
@@ -407,7 +405,7 @@ pub(super) fn converge_on_ready<E: Endpoint>(
                         return ReadyOutcome::Terminal("voyage pipe: access denied".to_string());
                     }
                     emit(WorkerEvent::Status(format!("voyage pipe not yet available: {io}")));
-                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_with_backoff(), held) {
+                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_after(Duration::ZERO), held) {
                         WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                         WaitOutcome::Continue => continue,
                     }

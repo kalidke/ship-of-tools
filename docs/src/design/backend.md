@@ -41,7 +41,7 @@ Restart policy differs by process:
 
 | Process | On exit |
 |---------|---------|
-| Kernel | auto-restart, exponential backoff (1s → 16s, then surface to UI); state rebuilds from disk, so restart is safe |
+| Kernel | auto-restart, backoff from 250 ms doubling to 30 s, started over only after a kernel that ran a minute; callers get `Dead` meanwhile; state rebuilds from disk, so restart is safe |
 | REPL | never auto-restarts — a crashed REPL is meaningful; the user decides, and the UI must say "REPL is dead, press X to restart" |
 
 Orphaned `julia` processes are unacceptable, so the whole tree of every process

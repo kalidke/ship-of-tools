@@ -199,7 +199,7 @@ pub(crate) fn spawn<Wn: Redraw + Clone + Send + Sync + 'static>(
         //
         // We never give up — the user can quit the window to terminate
         // the task. The wait starts over only after a session that lasted
-        // `STABLE` (`redial_for`): an answered hello alone does not prove a
+        // `STABLE` (`redial_for`), or at F5: an answered hello alone does not prove a
         // working connection, so a daemon that answers and drops keeps
         // the wait doubling. The F5 `reconnect_now` notify lets the user
         // collapse the current sleep — useful when wifi flickers and
