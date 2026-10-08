@@ -229,7 +229,9 @@ fn transcript_refusal(
     if !is_session_id(resume) {
         return Some((
             "resume_unreachable",
-            format!("{resume:?} is not a session id: claude names a conversation by a lowercase UUID"),
+            format!(
+                "{resume:?} is not a session id: claude names a conversation by a lowercase UUID"
+            ),
         ));
     }
     let name = format!("{resume}.jsonl");
@@ -378,7 +380,12 @@ async fn check_blocking(
     home: &Path,
     accounts: &[DiscoveredAccount],
 ) -> Result<Result<(), Refusal>> {
-    let (ws, req, home, accounts) = (ws.clone(), req.clone(), home.to_path_buf(), accounts.to_vec());
+    let (ws, req, home, accounts) = (
+        ws.clone(),
+        req.clone(),
+        home.to_path_buf(),
+        accounts.to_vec(),
+    );
     let checked = tokio::task::spawn_blocking(move || {
         check(
             &ws.runtime,
