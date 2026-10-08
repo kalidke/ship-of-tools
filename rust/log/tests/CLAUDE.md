@@ -17,6 +17,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `e2e_pipe.rs`: a real capsule run over a real `PipeServer`, with watcher, driver and mgmt clients on one capsule; Windows only.
 - `e2e_socket/`: the same end to end over a real `SocketServer` and `connect_voyage_socket` (`main.rs`), and the producer dying with its capsule through PDEATHSIG (`pdeathsig.rs`); Linux only.
 - `fault_kill.rs`: a randomized SIGKILL sweep of a real `sot-capsule` on a real PTY, then store recovery and chain continuation over many rounds on one voyage; Linux only.
+- `fault_storage/`: storage exhaustion on a real bounded volume (`main.rs`, `volume.rs`, `boundaries.rs`): a 256 MiB APFS image on macOS, a VHD on Windows, and on Linux the 64 MiB ext4 volume only rust.yml's "Test L3 storage exhaustion" step provides; Linux, macOS and Windows.
 - `fault_terminate.rs`: the portable terminate sweep with `sot-fault-writer`, killed mid-write, then store recovery; Unix and Windows.
 - `fe_client/`: `FeAttachClient` against a real `sot-capsule supervise` and capsule: watcher attach, pen and resize order, `end_run`, reconnect (`pane.rs`), the headless client (`headless.rs`), the supervisor's word and the health window (`supervisor_word.rs`); Linux and Windows.
 - `fixtures/`: committed bytes: the golden `.sotseg` segments, the pinned lane `.bin` files and the fake Messages API script.
@@ -48,5 +49,6 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - CI runs the Windows binaries by name in the `conpty-windows-2022` job of rust.yml: `conpty`, `capsule`, `pipe_win`, `e2e_pipe`, `supervisor`, `fe_client`.
 - `claude_e2e` skips unless `SOT_HELPER_E2E=1`; rust.yml's `p2-e2e` job sets it against rust/log/claude-sdk-helper.
 - scripts/tests/rc-gate.sh names `fe_client/supervisor_word::unresponsive_supervisor_expires_the_health_window` by path, so moving that test edits rc-gate.sh in the same commit.
+- A `fault_storage` volume test fails, never skips, when its volume cannot be made; it fills only its own volume, one volume at a time. On Linux it is `#[ignore]` and runs only in rust.yml's "Test L3 storage exhaustion" step, which sets `L3_HOSTED_VOLUME_ROOT` and passes `--include-ignored`.
 - A lower-bound timing check takes its clock origin before the action that starts the product's timer.
 - Bounded socket reads distinguish deadline setup from read outcomes under the original context; capacity rejection still requires EOF. Native-account socket fixtures fail with retained status/output on missing entry or unavailable prerequisites; launcher completion alone proves no native body or denial.

@@ -31,6 +31,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | durable write (fsync, no-clobber rename, publish) | primitive | platform | `rust/log/src/host/durable.rs` `publish_noreplace`, `fsync_dir`, `ensure_container`; `rust/backend/src/durable.rs` `write` |
 | bounded file locks | primitive | platform | `rust/log/src/host/lock.rs` `lock_writer`, `lock_supervisor`, `try_lock_daemon` |
 | volume preflight | primitive | platform | `rust/log/src/host/volume.rs` `preflight_volume` |
+| storage-exhaustion recognition | primitive | platform | `rust/log/src/host/storage.rs` `storage_exhaustion` |
 | Windows SDDL/SID helpers | primitive | platform | `rust/log/src/host/winsec.rs` `owner_protected_descriptor`, `sid_string_from_process` |
 | peer challenge (OS peer, then wire identity) | primitive | platform | `rust/log/src/identity/challenge.rs` `exchange_identity`; `rust/log/src/identity/exchange.rs`; `rust/log/src/identity/deadline.rs` `run_with_deadline`; per-OS `rust/log/src/identity/challenge_unix.rs`, `rust/log/src/identity/challenge_win.rs`, `rust/log/src/identity/challenge_macos.rs` |
 | private-dir and socket-dir checks | primitive | platform | `rust/backend/src/paths.rs` `ensure_private_dir`, `secure_private_dir`, `secure_socket_dir` |
