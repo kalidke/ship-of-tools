@@ -27,11 +27,13 @@
 //! that never touch the OS at all — so a model test can construct every
 //! row without a real pipe, a real spawned process, or a real challenge.
 
+use crate::capsule::producer::ExitStatus;
 use crate::identity::challenge::ChallengeOutcome;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub mod classify;
+pub mod leg_process;
 pub mod macos;
 pub mod unix;
 pub mod win;
@@ -139,6 +141,15 @@ pub trait ProbeOps {
     /// else's leftover process."
     fn proven_identity(&self, process: &Self::Process) -> (u32, u64);
 
+    /// How the owned child ended, once a wait has seen it exit and reaped
+    /// it: `Code` for an exit, `Signal` for a kill. `None` when it is
+    /// unknown.
+    fn child_exit_status(&self, child: &Self::SpawnedChild) -> Option<ExitStatus>;
+    /// A4: the challenge proved the answering server is the owned child, so
+    /// the supervisor keeps the child (its handle and its one reap) in place
+    /// of the proven handle.
+    fn retain_owned_child(&self, proven: Self::Process, child: Self::SpawnedChild) -> Self::Process;
+
     /// An injectable clock. B0/readiness cutoffs are measured against
     /// THIS, never `Instant::now()` directly, in any code that consumes
     /// `ProbeOps` — so a model test can deterministically reach any
@@ -202,6 +213,8 @@ pub struct ScriptedProbeOps {
     terminate: std::sync::Mutex<std::collections::VecDeque<std::io::Result<()>>>,
     spawned_identity: std::sync::Mutex<std::collections::VecDeque<std::io::Result<(u32, u64)>>>,
     proven_identity: std::sync::Mutex<std::collections::VecDeque<(u32, u64)>>,
+    child_exit_status: std::sync::Mutex<Option<ExitStatus>>,
+    retained_children: std::sync::atomic::AtomicUsize,
     now: std::sync::Mutex<Instant>,
 }
 
@@ -219,6 +232,8 @@ impl Default for ScriptedProbeOps {
             terminate: Default::default(),
             spawned_identity: Default::default(),
             proven_identity: Default::default(),
+            child_exit_status: Default::default(),
+            retained_children: Default::default(),
             now: std::sync::Mutex::new(Instant::now()),
         }
     }
@@ -259,6 +274,15 @@ impl ScriptedProbeOps {
     }
     pub fn push_proven_identity(&self, identity: (u32, u64)) {
         self.proven_identity.lock().unwrap().push_back(identity);
+    }
+
+    /// The exit status `child_exit_status` reports (none by default).
+    pub fn set_child_exit_status(&self, status: Option<ExitStatus>) {
+        *self.child_exit_status.lock().unwrap() = status;
+    }
+    /// How many times `retain_owned_child` has been called.
+    pub fn retained_children(&self) -> usize {
+        self.retained_children.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Set the injected clock to an absolute `Instant` (typically derived
@@ -325,6 +349,13 @@ impl ProbeOps for ScriptedProbeOps {
     }
     fn proven_identity(&self, _process: &DummyProcess) -> (u32, u64) {
         self.proven_identity.lock().unwrap().pop_front().expect("scripted proven_identity outcome exhausted")
+    }
+    fn child_exit_status(&self, _child: &DummySpawnedChild) -> Option<ExitStatus> {
+        *self.child_exit_status.lock().unwrap()
+    }
+    fn retain_owned_child(&self, proven: DummyProcess, _child: DummySpawnedChild) -> DummyProcess {
+        self.retained_children.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        proven
     }
     fn now(&self) -> Instant {
         *self.now.lock().unwrap()

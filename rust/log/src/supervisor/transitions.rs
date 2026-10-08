@@ -39,7 +39,7 @@ pub(super) fn advance_recovering(rx: mpsc::Receiver<RecoveryOutcome>, handle: Jo
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn advance_initial_probe(rx: mpsc::Receiver<ProbeOutcome<Process>>, handle: JoinHandle<()>, started_at: Instant, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState, now: Instant) -> Lifecycle {
+pub(super) fn advance_initial_probe(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState, now: Instant) -> Lifecycle {
     match rx.try_recv() {
         Ok(ProbeOutcome::Adopted(process)) => {
             join_and_warn(handle, "initial probe");
@@ -111,7 +111,7 @@ pub(super) fn advance_initial_probe(rx: mpsc::Receiver<ProbeOutcome<Process>>, h
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<Process>>, handle: JoinHandle<()>, started_at: Instant, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState, now: Instant) -> Lifecycle {
+pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState, now: Instant) -> Lifecycle {
     match rx.try_recv() {
         Ok(ProbeOutcome::Ready(process)) => {
             // No anti-flap accounting here at all — the counter
@@ -136,11 +136,16 @@ pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<Process>>, handle
             ));
             respawn_or_terminal(consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, true)
         }
-        Ok(ProbeOutcome::KilledAfterTimeout | ProbeOutcome::LegEnded) => {
+        Ok(outcome @ (ProbeOutcome::KilledAfterTimeout | ProbeOutcome::LegEnded(_))) => {
             join_and_warn(handle, "spawn");
             *consecutive_unstable_legs += 1;
+            let status = match outcome {
+                ProbeOutcome::LegEnded(status) => status,
+                _ => None,
+            };
             note(format_args!(
-                "leg ended before reaching Ready (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}"
+                "leg ended status={} before reaching Ready (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}",
+                status_text(status)
             ));
             respawn_or_terminal(consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, true)
         }
@@ -181,26 +186,27 @@ pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<Process>>, handle
     }
 }
 
-pub(super) fn advance_ready(process: Process, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState, now: Instant) -> Lifecycle {
+/// `code N`, `signal N` or `unknown`: how a leg ended, for the diagnostic notes.
+fn status_text(status: Option<ExitStatus>) -> String {
+    match status {
+        Some(ExitStatus::Code(c)) => format!("code {c}"),
+        Some(ExitStatus::Signal(n)) => format!("signal {n}"),
+        None => "unknown".into(),
+    }
+}
+
+pub(super) fn advance_ready(process: LegProcess, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState, now: Instant) -> Lifecycle {
     match process.wait(Duration::ZERO) {
         Ok(true) => {
-            // Single-owner reaping, every Unix:
-            // `wait` just confirmed this leg's exit and nothing
-            // below reads `process` again — reap it now,
-            // explicitly, here rather than relying on an implicit
-            // `Drop` (see `ChallengedProcess::reap`'s own doc).
-            // A Windows process HANDLE has no
-            // zombie/reap concept — `Drop`'s own `CloseHandle` is
-            // the whole cleanup there.
-            //
-            // `cfg(unix)`, not `linux` — see
-            // `finish_end_run_with_process`'s own reap comment.
-            // This is the site a long-running macOS supervisor
-            // would have leaked from hardest: one zombie per
-            // natural leg exit, forever, because `SIGCHLD` is
-            // `SIG_DFL` and nothing else auto-reaps.
-            #[cfg(unix)]
-            process.reap();
+            // Single-owner reaping: `wait` just confirmed this leg's exit
+            // and nothing below reads `process` again — reap it now,
+            // explicitly, here rather than relying on an implicit `Drop`
+            // (see `ChallengedProcess::reap`'s own doc). An owned leg
+            // answers with the exit status its one reap read; an adopted
+            // leg's status is unknown. A Windows process HANDLE has no
+            // zombie/reap concept — `Drop`'s own `CloseHandle` is the
+            // whole cleanup there.
+            let status = process.reap();
             // stability is judged on
             // the PRODUCER's own recorded lifetime
             // (`leg_was_stable`), never on a wall-clock interval
@@ -217,7 +223,8 @@ pub(super) fn advance_ready(process: Process, consecutive_unstable_legs: &mut u3
                 *consecutive_unstable_legs = 0;
             }
             note(format_args!(
-                "leg ended (unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
+                "leg ended status={} (unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}",
+                status_text(status)
             ));
             respawn_or_terminal(consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, unstable)
         }
@@ -230,7 +237,7 @@ pub(super) fn advance_ready(process: Process, consecutive_unstable_legs: &mut u3
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn advance_ending(operation_id: String, rx: mpsc::Receiver<EndingProgress>, handle: JoinHandle<()>, started_at: Instant, mut pending_reply: Option<ConnId>, process: Process, lane: &Lane, conns: &HashMap<ConnId, Conn>, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &mut AuthorityState, now: Instant) -> Lifecycle {
+pub(super) fn advance_ending(operation_id: String, rx: mpsc::Receiver<EndingProgress>, handle: JoinHandle<()>, started_at: Instant, mut pending_reply: Option<ConnId>, process: LegProcess, lane: &Lane, conns: &HashMap<ConnId, Conn>, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &mut AuthorityState, now: Instant) -> Lifecycle {
     match rx.try_recv() {
         Ok(EndingProgress::RecordClosed) => {
             if let Some(conn_id) = pending_reply.take() {
@@ -263,7 +270,7 @@ pub(super) fn advance_ending(operation_id: String, rx: mpsc::Receiver<EndingProg
         }
         Ok(EndingProgress::Final(EndRunWorkerResult::PreBarrierFailed)) => {
             join_and_warn(handle, "end_run");
-            retire_leg(&mut authority.retired_legs, process);
+            let status = retire_leg(&mut authority.retired_legs, process);
             // the SAME producer-
             // recorded stability check the natural-death Ready
             // arm uses — a pre-barrier failure still means the
@@ -280,7 +287,8 @@ pub(super) fn advance_ending(operation_id: String, rx: mpsc::Receiver<EndingProg
                 *consecutive_unstable_legs = 0;
             }
             note(format_args!(
-                "leg ended (end_run not durably accepted; unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
+                "leg ended status={} (end_run not durably accepted; unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}",
+                status_text(status)
             ));
             respawn_or_terminal(consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, unstable)
         }

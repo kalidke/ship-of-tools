@@ -241,7 +241,9 @@
 
 use crate::lane::attach_proto::ConnId;
 use crate::identity::challenge::ChallengeOutcome;
+use crate::capsule::producer::ExitStatus;
 use crate::supervisor::probe::classify::{self, ProbeOutcome};
+use crate::supervisor::probe::leg_process::LegProcess;
 use crate::lane::client::{Endpoint, PlatformEndpoint};
 use crate::host;
 use crate::supervisor::journal::pointer::{self, PointerState};

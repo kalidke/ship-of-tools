@@ -17,7 +17,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `e2e_pipe.rs`: a real capsule run over a real `PipeServer`, with watcher, driver and mgmt clients on one capsule; Windows only.
 - `e2e_socket/`: the same end to end over a real `SocketServer` and `connect_voyage_socket` (`main.rs`), and the producer dying with its capsule through PDEATHSIG (`pdeathsig.rs`); Linux only.
 - `fault_kill.rs`: a randomized SIGKILL sweep of a real `sot-capsule` on a real PTY, then store recovery and chain continuation over many rounds on one voyage; Linux only.
-- `fault_storage/`: storage exhaustion on a real bounded volume (`main.rs`, `volume.rs`, `boundaries.rs`): a 256 MiB APFS image on macOS, a VHD on Windows, and on Linux the 64 MiB ext4 volume only rust.yml's "Test L3 storage exhaustion" step provides; Linux, macOS and Windows.
+- `fault_storage/`: storage exhaustion on a real bounded volume (`main.rs`, `volume.rs`, `boundaries.rs`, and `exits.rs` for a leg's exit code): a 256 MiB APFS image on macOS, a VHD on Windows, and on Linux the 64 MiB ext4 volume only rust.yml's "Test L3 storage exhaustion" step provides; Linux, macOS and Windows.
 - `fault_terminate.rs`: the portable terminate sweep with `sot-fault-writer`, killed mid-write, then store recovery; Unix and Windows.
 - `fe_client/`: `FeAttachClient` against a real `sot-capsule supervise` and capsule: watcher attach, pen and resize order, `end_run`, reconnect (`pane.rs`), the headless client (`headless.rs`), the supervisor's word and the health window (`supervisor_word.rs`); Linux and Windows.
 - `fixtures/`: committed bytes: the golden `.sotseg` segments, the pinned lane `.bin` files and the fake Messages API script.

@@ -150,6 +150,12 @@ use output::*;
 pub use frame::wall_ms;
 pub use writer_loop::run;
 
+/// The exit code of a leg (`sot-capsule run`) whose run failed with storage
+/// exhaustion (`host::storage_exhaustion`): the supervisor holds such a row
+/// instead of counting the leg against its crash bound. Reserved: a
+/// producer's own exit 71 leaves the leg with exit 1 (`leg_exit_code`).
+pub const EXIT_LEG_STORAGE_FULL: i32 = 71;
+
 const SEGMENT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const READ_CHUNK: usize = 8192;
 

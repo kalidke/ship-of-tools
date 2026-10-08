@@ -131,7 +131,7 @@ pub(super) struct AuthorityState {
     /// no zombie/reap delay at all) and is then dropped by
     /// `reap_retired_legs`'s own `retain`, its `Drop` (`CloseHandle`)
     /// doing the only cleanup that platform needs.
-    pub(super) retired_legs: Vec<Process>,
+    pub(super) retired_legs: Vec<LegProcess>,
 }
 
 /// What `handle_command` decided to do — the CALLER (`handle_lane_bytes`)

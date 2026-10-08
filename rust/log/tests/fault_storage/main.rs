@@ -2,6 +2,7 @@
 #![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 mod boundaries;
+mod exits;
 #[allow(dead_code)]
 #[path = "../support/transports.rs"]
 mod transports;

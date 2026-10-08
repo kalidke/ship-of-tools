@@ -41,7 +41,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `host_name`, `state_dir_hash`, `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`,
 `owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `resource_dir`, `rust/backend/src/paths.rs`,
-`sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`. Uses: none.
+`sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`, `storage_exhaustion`. Uses: none.
 
 ## Folders
 - `rust/log/src/host/` (here) and `rust/log/src/identity/` (the peer challenge; its folder is not at this commit, so

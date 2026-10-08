@@ -43,10 +43,10 @@ pub(super) enum Lifecycle {
     Recovering { rx: mpsc::Receiver<RecoveryOutcome>, handle: JoinHandle<()>, started_at: Instant },
     /// The ONE initial placement decision (adopt if live, else consult
     /// the start-mode table).
-    InitialProbe { rx: mpsc::Receiver<ProbeOutcome<Process>>, handle: JoinHandle<()>, started_at: Instant },
+    InitialProbe { rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant },
     /// A fresh owned-spawn attempt in flight — every respawn reaches
     /// this, never `InitialProbe` again.
-    Spawning { rx: mpsc::Receiver<ProbeOutcome<Process>>, handle: JoinHandle<()>, started_at: Instant },
+    Spawning { rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant },
     /// A live leg. Stability is judged by [`leg_was_stable`] reading the
     /// leg's OWN recorded `producer_uptime_ms`, never by a
     /// wall-clock `ready_at` this variant no longer carries — an
@@ -54,7 +54,7 @@ pub(super) enum Lifecycle {
     /// own observation window, which a slow capsule teardown could
     /// inflate past the stability interval with nothing to do with how
     /// long the producer itself actually ran.
-    Ready { process: Process },
+    Ready { process: LegProcess },
     /// An `end_run` is in flight. `pending_reply` is the connection
     /// awaiting the DEFERRED reply at `record_closed` — `None` once
     /// delivered, or if that connection disconnected first (fine: the
@@ -92,7 +92,7 @@ pub(super) enum Lifecycle {
         handle: JoinHandle<()>,
         started_at: Instant,
         pending_reply: Option<ConnId>,
-        process: Process,
+        process: LegProcess,
     },
     /// A `reset` is in flight — admissible ONLY from `EndedNoRespawn`.
     Resetting { operation_id: String, rx: mpsc::Receiver<ResetWorkerResult>, handle: JoinHandle<()>, started_at: Instant },
@@ -168,7 +168,7 @@ impl Lifecycle {
 /// used to paper over. [`retire_leg`] reaps it immediately if already
 /// exited, otherwise moves it into `retired_legs` rather than dropping it
 /// — see `AuthorityState::retired_legs`'s own doc.
-fn take_worker_handle(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>) -> Option<JoinHandle<()>> {
+fn take_worker_handle(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<LegProcess>) -> Option<JoinHandle<()>> {
     match std::mem::replace(lifecycle, Lifecycle::EndedNoRespawn) {
         Lifecycle::Recovering { handle, .. }
         | Lifecycle::InitialProbe { handle, .. }
@@ -196,34 +196,24 @@ fn take_worker_handle(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>
 /// state is left used to have no owner left at all). See
 /// `AuthorityState::retired_legs`'s own doc for the full rationale and
 /// [`reap_retired_legs`] for the other half (the main loop's own poll).
-pub(super) fn retire_leg(retired_legs: &mut Vec<Process>, process: Process) {
-    // `cfg(unix)` rather than `linux`: see `finish_end_run_with_process`'s
-    // own reap comment — the gate names "this OS has zombies", and
-    // spelling it `linux` made macOS silently skip the reap entirely.
-    #[cfg(unix)]
+pub(super) fn retire_leg(retired_legs: &mut Vec<LegProcess>, process: LegProcess) -> Option<ExitStatus> {
     if matches!(process.wait(Duration::ZERO), Ok(true)) {
-        process.reap();
-        return;
-    }
-    #[cfg(windows)]
-    if matches!(process.wait(Duration::ZERO), Ok(true)) {
-        return;
+        return process.reap();
     }
     retired_legs.push(process);
+    None
 }
 
 /// The other half of [`retire_leg`]: called once per main-loop tick
 /// (`supervise_inner`'s own `MAIN_LOOP_POLL` cadence — no new timer) to
 /// give every leg that outlived its own Lifecycle state a chance to be
 /// observed dead and reaped. A non-blocking `wait` per entry; a confirmed
-/// exit reaps it (Linux) and removes it from the vector, everything else
-/// stays for the next tick.
-pub(super) fn reap_retired_legs(retired_legs: &mut Vec<Process>) {
+/// exit reaps it and removes it from the vector, everything else stays for
+/// the next tick.
+pub(super) fn reap_retired_legs(retired_legs: &mut Vec<LegProcess>) {
     retired_legs.retain(|process| {
         let exited = matches!(process.wait(Duration::ZERO), Ok(true));
         if exited {
-            // `cfg(unix)`, not `linux` — same reason as `retire_leg`'s.
-            #[cfg(unix)]
             process.reap();
         }
         !exited
@@ -265,7 +255,7 @@ pub(super) fn spawn_recovery(state_dir: PathBuf, mode: StartMode) -> (mpsc::Rece
 pub(super) fn spawn_initial_probe(
     voyage_id: String,
     voyage_root: PathBuf,
-) -> (mpsc::Receiver<ProbeOutcome<Process>>, JoinHandle<()>) {
+) -> (mpsc::Receiver<ProbeOutcome<LegProcess>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
         let episode_deadline = Instant::now() + PROBE_EPISODE;
@@ -292,7 +282,7 @@ pub(super) fn spawn_owned_spawn_attempt(
     lease: SpawnLease,
     survival: Survival,
     producer_argv: Vec<String>,
-) -> (mpsc::Receiver<ProbeOutcome<Process>>, JoinHandle<()>) {
+) -> (mpsc::Receiver<ProbeOutcome<LegProcess>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
         let readiness_cutoff = Instant::now() + READINESS_CUTOFF;
@@ -523,7 +513,7 @@ pub(super) fn spawn_reset(
 /// [`take_worker_handle`] also reaps a retained leg `process` (`Ready`/
 /// `Ending`) the SAME jump would otherwise silently drop unreaped — see
 /// its own doc.
-pub(super) fn force_terminal(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>, detail: String) {
+pub(super) fn force_terminal(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<LegProcess>, detail: String) {
     if let Some(handle) = take_worker_handle(lifecycle, retired_legs) {
         note(format_args!(
             "abandoning an in-flight worker thread while forcing a terminal state ({detail}) — its \

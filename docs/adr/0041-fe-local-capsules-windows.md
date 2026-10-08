@@ -1239,6 +1239,8 @@ loop. Which way a leg was unstable is DIAGNOSTIC — the sealed
 `producer_dead` detail, or the child's exit code and stderr tail when the
 store never opened — never a second counter.
 
+**Amendment (2026-10-08, 0.6.6): the leg's exit channel.** `sot-capsule run` exits 71 only when its run failed with storage exhaustion; a producer that itself exits 71 is recorded with 71 and its leg exits 1. The supervisor keeps a leg it spawned as its child (`LegProcess`) until its one reap, so an owned leg's exit status reaches the lifecycle; an adopted leg's status is unknown. This amendment changes no accounting.
+
 **Supervisor exit codes are the launcher's contract.** `0` = clean end
 (the run ended by request, or a stop was requested) — DO NOT restart.
 `69` = terminal (three consecutive unstable legs, a foreign server, a

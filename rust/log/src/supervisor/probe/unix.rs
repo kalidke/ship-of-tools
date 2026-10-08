@@ -11,7 +11,9 @@
 #![cfg(target_os = "linux")]
 
 use crate::identity::challenge::ChallengeOutcome;
-use crate::identity::challenge_unix::{self, ChallengedProcess};
+use crate::identity::challenge_unix;
+use crate::capsule::producer::ExitStatus;
+use crate::supervisor::probe::leg_process::LegProcess;
 use crate::supervisor::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
 use crate::store::voyage::WRITER_LOCK;
 use std::cell::Cell;
@@ -40,7 +42,7 @@ const FAILURE_CLEANUP_REAP_BOUND: Duration = Duration::from_secs(2);
 /// what makes that safe: the child stays a retained zombie, its pid unrecycled, until
 /// [`Self::wait`] observes the exit and reaps it THEN — "reaps on the
 /// exit it observes", the moment there is nothing further Stage A needs
-/// to read off it (unlike a [`ChallengedProcess`], whose own reap
+/// to read off it (unlike a [`challenge_unix::ChallengedProcess`], whose own reap
 /// (`ChallengedProcess::reap`) is a separate, explicit, owner-called
 /// step because a caller may still want to read its exit status first).
 pub struct SpawnedChild {
@@ -53,6 +55,9 @@ pub struct SpawnedChild {
     /// the way the Windows twin reads creation time from the handle.
     start_ticks: u64,
     reaped: Cell<bool>,
+    /// The exit status the one reap read (`reap`): `Code` for an exit,
+    /// `Signal` for a kill. `None` until the child has been reaped.
+    exit_status: Cell<Option<ExitStatus>>,
 }
 
 impl SpawnedChild {
@@ -69,7 +74,7 @@ impl SpawnedChild {
         }) {
             Ok((pidfd, start_ticks)) => {
                 drop(child);
-                Ok(Self { pid, pidfd, start_ticks, reaped: Cell::new(false) })
+                Ok(Self { pid, pidfd, start_ticks, reaped: Cell::new(false), exit_status: Cell::new(None) })
             }
             Err(e) => {
                 // Could not get a pidfd to track this child at all — an
@@ -125,7 +130,7 @@ impl SpawnedChild {
     /// See [`challenge_unix::poll_pidfd_readable`]'s own doc for the
     /// bound. Reaps (`waitid(P_PIDFD, ..)`, ADR 0043 decision 21) the
     /// MOMENT this observes the exit — see this type's own doc for why
-    /// that is safe here, unlike [`ChallengedProcess`].
+    /// that is safe here, unlike [`challenge_unix::ChallengedProcess`].
     pub fn wait(&self, timeout: Duration) -> std::io::Result<bool> {
         let exited = challenge_unix::poll_pidfd_readable(self.pidfd.as_raw_fd(), timeout)?;
         if exited {
@@ -169,14 +174,28 @@ impl SpawnedChild {
             return;
         }
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        unsafe {
+        let rc = unsafe {
             libc::waitid(
                 libc::P_PIDFD,
                 self.pidfd.as_raw_fd() as libc::id_t,
                 &mut info,
                 libc::WEXITED | libc::WNOHANG,
-            );
+            )
+        };
+        if rc == 0 && unsafe { info.si_pid() } != 0 {
+            let status = unsafe { info.si_status() };
+            self.exit_status.set(match info.si_code {
+                libc::CLD_EXITED => Some(ExitStatus::Code(status as u32)),
+                libc::CLD_KILLED | libc::CLD_DUMPED => Some(ExitStatus::Signal(status)),
+                _ => None,
+            });
         }
+    }
+
+    /// How the child ended, once [`Self::wait`] has seen it exit and reaped
+    /// it; `None` before that.
+    pub fn exit_status(&self) -> Option<ExitStatus> {
+        self.exit_status.get()
     }
 }
 
@@ -195,7 +214,7 @@ pub(crate) struct RealProbeOps;
 impl ProbeOps for RealProbeOps {
     type Conn = crate::lane::socket_unix::SocketClient;
     type SpawnedChild = SpawnedChild;
-    type Process = ChallengedProcess;
+    type Process = LegProcess;
 
     fn spawn(&self, command: &mut std::process::Command) -> SpawnOutcome<Self::SpawnedChild> {
         #[allow(clippy::disallowed_methods, reason = "the supervisor starts its leg (ADR 0043)")]
@@ -247,7 +266,11 @@ impl ProbeOps for RealProbeOps {
 
     fn challenge(&self, conn: &Self::Conn, deadline: Instant) -> ChallengeOutcome<Self::Process> {
         let mut exchange = crate::identity::exchange::VoyageMgmtExchange::default();
-        challenge_unix::challenge(conn, &mut exchange, deadline)
+        match challenge_unix::challenge(conn, &mut exchange, deadline) {
+            ChallengeOutcome::Proven(process) => ChallengeOutcome::Proven(LegProcess::Adopted(process)),
+            ChallengeOutcome::Foreign => ChallengeOutcome::Foreign,
+            ChallengeOutcome::Undetermined => ChallengeOutcome::Undetermined,
+        }
     }
 
     fn writer_fence_probe(&self, voyage_root: &Path) -> FenceProbe {
@@ -279,10 +302,57 @@ impl ProbeOps for RealProbeOps {
     }
 
     fn proven_identity(&self, process: &Self::Process) -> (u32, u64) {
-        (process.pid(), process.created())
+        process.identity()
+    }
+
+    fn child_exit_status(&self, child: &Self::SpawnedChild) -> Option<ExitStatus> {
+        child.exit_status()
+    }
+
+    /// A4 has proved the answering server is this child, so the child itself
+    /// is what the supervisor keeps: its pidfd and its one reap, not a second
+    /// pidfd for the same process.
+    fn retain_owned_child(&self, _proven: Self::Process, child: Self::SpawnedChild) -> Self::Process {
+        LegProcess::Owned(child)
     }
 
     fn now(&self) -> Instant {
         Instant::now()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spawns `script` through `RealProbeOps::spawn` and waits, bounded, for
+    /// it to exit.
+    fn ended(script: &str) -> LegProcess {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", script]);
+        let SpawnOutcome::Spawned(child) = RealProbeOps.spawn(&mut command) else {
+            panic!("spawn {script:?}");
+        };
+        let leg = LegProcess::Owned(child);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !leg.wait(Duration::from_millis(100)).unwrap() {
+            assert!(Instant::now() < deadline, "{script:?} did not exit within 30 s");
+        }
+        leg
+    }
+
+    /// An owned leg keeps how it ended: the one reap reads the status and
+    /// every later ask gives the same answer.
+    #[test]
+    fn an_owned_leg_keeps_its_exit_status() {
+        for (script, expected) in [
+            ("exit 71", ExitStatus::Code(71)),
+            ("exit 3", ExitStatus::Code(3)),
+            ("kill -9 $$", ExitStatus::Signal(9)),
+        ] {
+            let leg = ended(script);
+            assert_eq!(leg.reap(), Some(expected), "{script}");
+            assert_eq!(leg.reap(), Some(expected), "{script}: a second ask");
+        }
     }
 }

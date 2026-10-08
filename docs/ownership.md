@@ -248,7 +248,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | sotd exit 0 (requested shutdown) | exit code | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `REASON`; `rust/protocol/src/ops/lease.rs` `EXIT_REQUESTED_SHUTDOWN` |
 | sotd exit 75 (update restart) | exit code | distribution | `rust/backend/src/update.rs` `exit_for_update`; `rust/protocol/src/ops/lease.rs` `EXIT_UPDATE_RESTART` |
 | sot exit 75/76 (relaunch, converge) | exit code | distribution | `rust/frontend/src/lease.rs` `exit_intent`, `close_now`; `rust/frontend/src/relaunch.rs` |
-| sot-capsule exit 0/69/70 | exit code | capsule | `rust/log/src/supervisor/mod.rs`; `rust/log/src/bin/sot-capsule.rs` |
+| sot-capsule exit 0/69/70 (supervise) and 71 (run: storage exhaustion) | exit code | capsule | `rust/log/src/supervisor/mod.rs`; `rust/log/src/capsule/mod.rs` `EXIT_LEG_STORAGE_FULL`; `rust/log/src/bin/sot-capsule.rs` `leg_exit_code` |
 | `SOT_SOCKET`, `SOT_SESSION`, `SOT_WORKSPACE`, `SOT_WORKSPACE_ID`, `SOT_WORKSPACE_ROOT`, `SOT_MANUAL` | env | agents | `rust/backend/src/agents/awareness.rs` `awareness_env` |
 | `SOT_COMM_NAME`, `SOT_COMM_SELF_FILE` (issued at spawn) | env | messaging | `rust/backend/src/agents/env.rs` `agent_env`; read `comm/registry/comm-context.sh`; `comm/registry/comm-join.sh` |
 | `SOT_COMM_HOOKS`, `SOT_LOCK_WAIT_SECS`, `SOT_INBOX_LOCK_WAIT_SECS`, `SOT_INBOX_READ_WAIT_SECS`, `SOT_INBOX_READ_WARNING`, `SOT_SEND_TIMEOUT`, `SOT_COMM_ASKQ_ID`, `SOT_COMM_EXPERTISE`, `SOT_HB_CTX_TIMEOUT_TICKS`, `SOT_TURN_AUDITOR`, `SOT_AUDITOR_*` | env | messaging | `comm/lib/comm-lib-base.sh`; `comm/lib/comm-lib-inbox.sh`; `comm/work_state/hooks/comm-status-heartbeat.sh`; `comm/work_state/comm-turn-auditor.sh` |
