@@ -28,9 +28,16 @@ mod supervisor;
 #[cfg(test)]
 mod project_tests;
 
+#[cfg(all(test, unix))]
+mod restart_tests;
+
 use lifecycle::ReplLifecycle;
 use lifecycle::{LifecycleCell, SharedLifecycle};
-use supervisor::spawn_supervisor;
+use supervisor::{spawn_supervisor, Supervisor};
+
+/// How long a retirement (the stop, the tree's termination request and the direct child's reap) may take before a
+/// restart gives up with an error. It bounds that asynchronous wait only, not lock acquisition or the OS calls.
+pub(crate) const REPL_RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// One streamed REPL frame relayed off the supervisor onto the per-backend
 /// broadcast bus. The supervisor reads each `repl.frame` evt line off the
@@ -94,16 +101,11 @@ pub struct Repl {
 }
 
 struct ReplInner {
-    /// The workspace directory, activated as the DEFAULT env for the
-    /// persistent REPL so user code runs in the session package's
-    /// environment — never the `ShipToolsRepl` shim project, even before the
-    /// directory holds a `Project.toml`. `ShipToolsRepl` stays reachable via
-    /// `JULIA_LOAD_PATH` (see `spawn_supervisor`).
-    user_project: PathBuf,
     /// The shutdown signal every supervisor of this REPL is started under and watches; supplied by the owner of
     /// this handle, never chosen inside supervision.
     sig: &'static crate::lifecycle::child_signal::Signal,
-    submit: Mutex<Option<mpsc::Sender<Submission>>>,
+    /// The selected project, the running supervisor and the one being retired, under one lock.
+    slot: Mutex<Slot>,
     /// Broadcast sink for streamed `repl.frame` evts. Threaded into every
     /// supervisor we spawn (initial + each `restart_with_project`) so frames
     /// from a fresh child still reach subscribers.
@@ -116,6 +118,36 @@ struct ReplInner {
     /// `workspace.list` so a precompiling first boot renders as *starting*,
     /// not dead. See `ReplLifecycle`.
     lifecycle: SharedLifecycle,
+}
+
+/// What the handle owns. `project` is the workspace directory, activated as the DEFAULT env for the persistent REPL
+/// so user code runs in the session package's environment, never the `ShipToolsRepl` shim project, even before the
+/// directory holds a `Project.toml` (`ShipToolsRepl` stays reachable via `JULIA_LOAD_PATH`, see `spawn_supervisor`);
+/// a restart changes it and every later spawn, a death respawn included, uses it. `retiring` is a supervisor whose
+/// retirement has not finished: no replacement starts while it is set.
+struct Slot {
+    project: PathBuf,
+    current: Option<Supervisor>,
+    retiring: Option<Supervisor>,
+}
+
+impl Slot {
+    /// Finish retiring what is retiring: the current supervisor, once taken for retirement, or a retained earlier
+    /// one. An error leaves a task that has not finished owned; one that finished with an error is reported here
+    /// once.
+    async fn settle(&mut self) -> Result<()> {
+        if self.retiring.is_none() {
+            self.retiring = self.current.take();
+        }
+        let Some(retiring) = self.retiring.as_mut() else {
+            return Ok(());
+        };
+        let outcome = retiring.retire(REPL_RESTART_WAIT).await;
+        if retiring.is_done() {
+            self.retiring = None;
+        }
+        outcome
+    }
 }
 
 struct Submission {
@@ -142,9 +174,12 @@ impl Repl {
     ) -> Self {
         Self {
             inner: Arc::new(ReplInner {
-                user_project,
                 sig,
-                submit: Mutex::new(None),
+                slot: Mutex::new(Slot {
+                    project: user_project,
+                    current: None,
+                    retiring: None,
+                }),
                 frame_tx,
                 workspace_id,
                 lifecycle: Arc::new(std::sync::Mutex::new(LifecycleCell {
@@ -191,9 +226,12 @@ impl Repl {
     /// or has died.
     pub async fn request_if_running(&self, op: &str, payload: Value) -> Result<Option<Value>> {
         let tx = {
-            let guard = self.inner.submit.lock().await;
-            match guard.as_ref() {
-                Some(tx) if !tx.is_closed() => tx.clone(),
+            let mut slot = self.inner.slot.lock().await;
+            if slot.retiring.is_some() {
+                slot.settle().await?;
+            }
+            match slot.current.as_ref() {
+                Some(sup) if !sup.tx.is_closed() => sup.tx.clone(),
                 _ => return Ok(None),
             }
         };
@@ -260,60 +298,59 @@ impl Repl {
     }
 
     async fn ensure_supervisor(&self) -> Result<mpsc::Sender<Submission>> {
-        let mut guard = self.inner.submit.lock().await;
+        let mut slot = self.inner.slot.lock().await;
         // Liveness is the CHILD's state, not the channel's. `is_closed()` only
         // reports whether the supervisor TASK still holds the receiver, and a
         // task that has already marked itself `Dead` is on its way out — a
         // submission queued into that window would sit in the buffer until the
         // receiver dropped, which is a wait with no child behind it. Ask both,
         // and respawn unless the sender is open AND the child is not dead.
-        if let Some(tx) = guard.as_ref() {
-            if !tx.is_closed() && self.state() != ReplLifecycle::Dead {
-                return Ok(tx.clone());
+        if slot.retiring.is_none() {
+            if let Some(sup) = slot.current.as_ref() {
+                if !sup.tx.is_closed() && self.state() != ReplLifecycle::Dead {
+                    return Ok(sup.tx.clone());
+                }
             }
         }
-        // Default the persistent REPL into the WORKSPACE directory so user
-        // code runs in the session package's env (not the ShipToolsRepl shim).
-        let tx = spawn_supervisor(
-            &self.inner.user_project,
+        // What is there is dead or still retiring: it is retired and joined
+        // before the replacement opens, on every route to a spawn.
+        slot.settle().await?;
+        let sup = self.spawn(&slot.project)?;
+        let tx = sup.tx.clone();
+        slot.current = Some(sup);
+        Ok(tx)
+    }
+
+    fn spawn(&self, project: &Path) -> Result<Supervisor> {
+        spawn_supervisor(
+            project,
             self.inner.frame_tx.clone(),
             self.inner.workspace_id.clone(),
             self.inner.lifecycle.clone(),
             self.inner.sig,
-        )?;
-        *guard = Some(tx.clone());
-        Ok(tx)
+        )
     }
 
-    /// Tear down the persistent REPL child and respawn it with `user_project`
+    /// Retire the persistent REPL child and start another with `user_project`
     /// active (`julia --project=<user_project>`). Used by the `r` keybind in
     /// the frontend (priority J): "reset and run" walks up from the file to
     /// find the closest `Project.toml`, calls this, then forwards a plain
     /// `repl.run_file { fresh: false }` to the fresh child.
     ///
-    /// The supervisor's stdin handle is held by `supervisor_task`. Dropping
-    /// the submit sender closes `submit_rx`, the task's `recv` returns
-    /// `None`, the task drops its stdin handle, and the Julia child exits
-    /// on EOF. We don't `await` the task's JoinHandle (we never stored one)
-    /// — instead we re-spawn immediately under the same lock so callers
-    /// blocking on this method see the new sender. Any in-flight requests
-    /// against the old child are reaped by `supervisor_task`'s drain loop.
+    /// The old supervisor is stopped directly, whatever clones of its submit
+    /// sender exist and whether or not Julia ever reads its stdin: it closes
+    /// out its work, requests the tree's termination and confirms the direct
+    /// child reaped, and this method joins it (at most `REPL_RESTART_WAIT`)
+    /// before the new child starts. A retirement error or timeout is returned,
+    /// the retiring supervisor stays owned and no replacement starts. The
+    /// selected project is kept for every later spawn, a death respawn
+    /// included.
     pub async fn restart_with_project(&self, user_project: &Path) -> Result<()> {
-        let mut guard = self.inner.submit.lock().await;
-        // Drop the existing sender (if any). This closes the channel, which
-        // is what causes the supervisor_task to terminate and the child to
-        // exit. We do NOT await the old task here — it cleans up
-        // asynchronously and the next request will go to the new child via
-        // the freshly-installed sender below.
-        guard.take();
-        let tx = spawn_supervisor(
-            user_project,
-            self.inner.frame_tx.clone(),
-            self.inner.workspace_id.clone(),
-            self.inner.lifecycle.clone(),
-            self.inner.sig,
-        )?;
-        *guard = Some(tx);
+        let mut slot = self.inner.slot.lock().await;
+        slot.settle().await?;
+        slot.project = user_project.to_path_buf();
+        let sup = self.spawn(user_project)?;
+        slot.current = Some(sup);
         Ok(())
     }
 }

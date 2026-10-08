@@ -13,7 +13,7 @@ use crate::rows::Workspace;
 use crate::sidecars::contract_tests::{isolated, owned_julia_env, within};
 
 /// The longest an isolated body here may take: an empty depot compiles the shim on first start.
-const BODY: Duration = Duration::from_secs(240);
+pub(super) const BODY: Duration = Duration::from_secs(240);
 const EVAL: Duration = Duration::from_secs(180);
 
 /// A bare workspace (no `Project.toml`) whose path holds a space, and the real `Workspace::repl` factory over it.
@@ -85,7 +85,7 @@ impl Fixture {
 }
 
 /// Evaluates `code` in the REPL and returns the frames it produced.
-async fn eval(repl: &Repl, id: u64, code: &str) -> Vec<Value> {
+pub(super) async fn eval(repl: &Repl, id: u64, code: &str) -> Vec<Value> {
     let (reply, collector) = repl
         .execute("repl.eval", json!({ "code": code, "eval_id": id }))
         .await
@@ -99,7 +99,7 @@ async fn eval(repl: &Repl, id: u64, code: &str) -> Vec<Value> {
     frames
 }
 
-fn stdout_of(frames: &[Value]) -> String {
+pub(super) fn stdout_of(frames: &[Value]) -> String {
     frames
         .iter()
         .filter(|f| f["kind"] == "stdout")
@@ -110,7 +110,7 @@ fn stdout_of(frames: &[Value]) -> String {
 }
 
 /// A Julia source literal for `text`.
-fn raw(text: &str) -> String {
+pub(super) fn raw(text: &str) -> String {
     format!("raw\"{text}\"")
 }
 
