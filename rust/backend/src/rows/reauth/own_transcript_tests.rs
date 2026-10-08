@@ -112,3 +112,37 @@ async fn a_transcript_is_the_rows_by_the_directory_it_started_in() {
     );
     drop(restart);
 }
+
+// A resume id is a session id, a UUID, before it is joined into a path or
+// handed to claude: a flag-shaped id (claude would read it as a flag) and a
+// plain word are refused even when a transcript by that name, started in this
+// row's root, exists.
+#[tokio::test]
+async fn a_resume_id_must_be_a_session_uuid() {
+    let _g = env_guarded();
+    let home = home_with(true, &[("team", true)]);
+    let scratch = tempfile::tempdir().unwrap();
+    pin_home(home.path(), scratch.path());
+    seed_claude_binary(home.path());
+    let root = project_root(home.path(), "reauth-row");
+    let team = claude_config_dir(home.path(), "team");
+    let (reg, id, _slug) = seed_capsule_row(&root, "", "row-declared-handle");
+    for resume in [
+        "--dangerously-skip-permissions",
+        "-0000000-0000-4000-8000-000000000031",
+        "sid-plain",
+        "00000000-0000-4000-8000-00000000003A",
+    ] {
+        seed_transcript(&team, resume, &[&root]);
+        let (payload, restart) = reauth(&reg, &id, "team", resume).await;
+        assert_eq!(
+            payload["code"], "resume_unreachable",
+            "resume {resume:?}: {payload:?}"
+        );
+        assert!(restart.is_none(), "resume {resume:?}");
+    }
+    seed_transcript(&team, &sid(31), &[&root]);
+    let (payload, restart) = reauth(&reg, &id, "team", &sid(31)).await;
+    assert_eq!(payload["code"], ACCEPTED_CODE, "{payload:?}");
+    drop(restart);
+}

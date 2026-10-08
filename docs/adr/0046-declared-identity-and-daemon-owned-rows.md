@@ -414,7 +414,8 @@ tmux; a capsule-capable install needs no tmux.
    that row's conversation, two legs writing one file: an older
    `sot-fe reauth <workspace> <account>`, run in one row against another,
    sent its own session's id. `check` now also refuses a `resume` that is not
-   a plain id (ASCII letters, digits and `-`; `resume_unreachable`) and one
+   a session id (a lowercase UUID; `resume_unreachable`), so claude never
+   reads an id as a flag and no id is joined as a path, and one
    whose transcript was not started in the row's root (`resume_not_this_row`):
    the first `cwd` the transcript records must be the same directory as
    `project_root`, compared by kernel identity (`sot_log::host::dir_identity`),

@@ -196,10 +196,21 @@ fn started_in(path: &Path) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Whether `id` has the shape of a Claude Code session id: a lowercase UUID,
+/// 8-4-4-4-12 hex digits. Only that shape is joined into a path or handed to
+/// `claude --resume`: it holds no separator, so it names one transcript under
+/// `projects`, and no leading `-`, so claude never reads it as a flag.
+fn is_session_id(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_digit() || (b'a'..=b'f').contains(&b),
+        })
+}
+
 /// The refusal, if any, for resuming transcript `resume` as `account` in the
-/// row rooted at `root`. In order: `resume` must be a plain id, so
-/// `projects/*/<id>.jsonl` names one transcript under the account's own
-/// `projects` and nothing outside it; the account must be able to open that
+/// row rooted at `root`. In order: `resume` must be a session id
+/// ([`is_session_id`]); the account must be able to open that
 /// transcript, found by globbing `projects`' children rather than by
 /// rebuilding claude's own cwd-to-directory mangling (a rule this daemon
 /// copied would be a rule it could get wrong); and the transcript must have
@@ -215,11 +226,10 @@ fn transcript_refusal(
     resume: &str,
     root: &Path,
 ) -> Option<(&'static str, String)> {
-    let plain = resume.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
-    if !plain {
+    if !is_session_id(resume) {
         return Some((
             "resume_unreachable",
-            format!("{resume:?} is not a transcript id: an id is ASCII letters, digits and '-'"),
+            format!("{resume:?} is not a session id: claude names a conversation by a lowercase UUID"),
         ));
     }
     let name = format!("{resume}.jsonl");
