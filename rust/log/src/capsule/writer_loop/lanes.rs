@@ -49,7 +49,7 @@ pub(super) fn execute_light_actions<P: Producer>(seed: Vec<AttachAction>, leg: &
                 // Diagnostic only -- no wire frame exists for most
                 // of these refusals, by design (ADR 0041 decision
                 // 5: queue overflow has none at all).
-                eprintln!("sot-capsule: attach protocol refusal conn={conn:?} reason={reason:?}");
+                super::leg_note(format_args!("sot-capsule: attach protocol refusal conn={conn:?} reason={reason:?}"));
             }
             AttachAction::BeginCheckpoint { conn } => {
                 // A connection that negotiated attach proto v1
@@ -279,9 +279,9 @@ pub(super) fn service_transport_events<'t, P: Producer>(mut leg: Leg<'t, P>) -> 
             // can ever be admitted, so continuing to run would
             // leave this capsule silently unreachable forever.
             TransportEvent::TransportFatal(detail) => {
-                eprintln!(
+                super::leg_note(format_args!(
                     "sot-capsule: transport reported a terminal failure, ending this run: {detail}"
-                );
+                ));
                 leg.shutdown_requested = true;
                 leg.shutdown_reason = Some("transport-accept-failed".to_string());
             }
@@ -417,9 +417,9 @@ pub(super) fn service_transport_events_teardown<P: Producer>(leg: &mut Leg<'_, P
                 // OTHER cause; don't overwrite it with a fatal
                 // event that is likely just this SAME pipe closing
                 // as a side effect of that other teardown).
-                eprintln!(
+                super::leg_note(format_args!(
                     "sot-capsule: transport reported a terminal failure during teardown: {detail}"
-                );
+                ));
                 leg.shutdown_reason.get_or_insert_with(|| "transport-accept-failed".to_string());
             }
         }
@@ -476,9 +476,9 @@ pub(super) fn drain_pending_sends_only<P: Producer>(leg: &mut Leg<'_, P>) -> Res
                 }
             }
             TransportEvent::TransportFatal(detail) => {
-                eprintln!(
+                super::leg_note(format_args!(
                     "sot-capsule: transport reported a terminal failure during the shutdown-ack grace: {detail}"
-                );
+                ));
                 leg.shutdown_reason.get_or_insert_with(|| "transport-accept-failed".to_string());
             }
         }
