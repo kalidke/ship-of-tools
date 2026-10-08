@@ -11,7 +11,7 @@ Part of the daemon's rows subsystem; charter: rust/backend/src/rows/CLAUDE.md.
 - `support_tests.rs`: shared fixtures: the env guard and the seeded homes and rows
 - `check_tests.rs`: the `check` refusals and the accept that passes them
 - `accept_tests.rs`: the handler's payloads and the accept-frame ordering cases, with the fake peer they write to
-- `own_transcript_tests.rs`: a reauth resumes only the target row's own conversation: the cross-row refusal and the directory a transcript started in
+- `own_transcript_tests.rs`: a reauth resumes only the target row's own conversation: the cross-row refusal, the session-id shape, the start directory and how it is read, and a row replaced while its reauth waits
 
 ## Start here
 `mod.rs::handle_workspace_reauth` for the ops a reauth runs in order, then `restart.rs::restart_blocking` for what

@@ -369,6 +369,32 @@ pub(crate) fn check(
     Ok(())
 }
 
+/// [`check`] on the blocking pool: it lists the account's `projects`, reads
+/// up to [`HEAD_SCAN_BYTES`] of a transcript and opens two directories, and
+/// none of that may stall the connection's task.
+async fn check_blocking(
+    ws: &std::sync::Arc<crate::rows::Workspace>,
+    req: &sot_protocol::WorkspaceReauthReq,
+    home: &Path,
+    accounts: &[DiscoveredAccount],
+) -> Result<Result<(), Refusal>> {
+    let (ws, req, home, accounts) = (ws.clone(), req.clone(), home.to_path_buf(), accounts.to_vec());
+    let checked = tokio::task::spawn_blocking(move || {
+        check(
+            &ws.runtime,
+            &ws.agent(),
+            &ws.account(),
+            &req.account,
+            &req.resume,
+            &ws.project_root,
+            &home,
+            &accounts,
+        )
+    })
+    .await?;
+    Ok(checked)
+}
+
 /// The ONE refusal frame this op builds — one constructor, so the
 /// discovered accounts ride on every refusal as both the module doc above
 /// and `ops/workspace.rs`'s wire doc promise. The only refusals that answer with an
@@ -426,16 +452,7 @@ pub async fn handle_workspace_reauth(
         return refuse("unknown_workspace", format!("no workspace {:?} is registered here", req.workspace_id));
     };
     let want = normalize(&req.account).to_string();
-    if let Err(r) = check(
-        &ws.runtime,
-        &ws.agent(),
-        &ws.account(),
-        &req.account,
-        &req.resume,
-        &ws.project_root,
-        &home,
-        &accounts,
-    ) {
+    if let Err(r) = check_blocking(&ws, &req, &home, &accounts).await? {
         return Ok((refused(req_id, r), None));
     }
 

@@ -266,3 +266,46 @@ async fn a_row_replaced_while_its_reauth_waits_is_refused() {
         "the replacement's account is not touched"
     );
 }
+
+// The start directory is the first line that parses and records a string
+// `cwd`; every line before it that does not is skipped.
+#[test]
+fn lines_before_the_start_directory_that_record_none_are_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("transcript.jsonl");
+    let lines = [
+        "not json",
+        "[1, 2]",
+        "{\"cwd\": 7}",
+        "{\"cwd\": null}",
+        "{\"type\": \"user\", \"cwd\": \"/first\"}",
+        "{\"cwd\": \"/second\"}",
+    ];
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    assert_eq!(started_in(&path), Some(PathBuf::from("/first")));
+}
+
+// `HEAD_SCAN_BYTES` bounds the read: a start directory whose line ends at the
+// bound is found, and one byte more of what precedes it puts it out of reach.
+#[test]
+fn the_start_directory_is_read_only_from_the_first_head_scan_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = "{\"cwd\":\"/root\"}";
+    let with_filler = |pad: usize| {
+        let path = dir.path().join(format!("transcript-{pad}.jsonl"));
+        let filler = format!(
+            "{{\"type\":\"queue-operation\",\"pad\":\"{}\"}}\n",
+            "x".repeat(pad)
+        );
+        std::fs::write(&path, format!("{filler}{start}\n")).unwrap();
+        started_in(&path)
+    };
+    let fixed = "{\"type\":\"queue-operation\",\"pad\":\"\"}\n".len() + start.len();
+    let fits = usize::try_from(HEAD_SCAN_BYTES).unwrap() - fixed;
+    assert_eq!(
+        with_filler(fits),
+        Some(PathBuf::from("/root")),
+        "a line that ends at the bound is read"
+    );
+    assert_eq!(with_filler(fits + 1), None, "a line the bound cuts is not");
+}
