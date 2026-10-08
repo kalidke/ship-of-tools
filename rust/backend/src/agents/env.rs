@@ -203,7 +203,7 @@ fn effective_claude_trust_file(
         .rev()
         .find(|(key, _)| key == "CLAUDE_CONFIG_DIR")
         .map(|(_, value)| std::ffi::OsString::from(value))
-        .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR"));
+        ;
     let Some(config) = config else {
         return Ok(home.join(".claude.json"));
     };
