@@ -38,6 +38,7 @@ computer's sessions end (ADR 0050).
 - A close that finishes exits 0 (`bounds::EXIT_REQUESTED_SHUTDOWN`); the update restart exits 75 and only while no
   shutdown has begun (`Leases::while_open`, called by update.rs).
 - `fire()` is permanent: the signal is never reset for the life of the process (`Signal::fire`).
+- `Contained::wait_until_exited` observes its owned direct child's exit without releasing containment or reaping it. Cancelling that wait retains the child's identity and owner; checked wait/kill still request tree termination before direct-child reap.
 - A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything it started when its owner
   kills, waits for or drops its `Contained` or `ContainedStd`, or the signal fires; its leader is reaped only after
   that kill, and neither type hands its caller the child to reap (`Contained::wait`, `ContainedStd::wait`;
@@ -103,7 +104,7 @@ computer's sessions end (ADR 0050).
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `startup::begin`, `lease::ticker`,
 `Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
 `Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::while_open`, `Signal::spawn`, `Signal::spawn_std`,
-`Signal::output`, `Contained`, `ContainedStd`, `Signal`, `child_signal::fired`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
+`Signal::output`, `Contained`, `Contained::wait_until_exited`, `ContainedStd`, `Signal`, `child_signal::fired`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
 `reject`, `write_frame_within`, `write_frame_to`, `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`,
 `close_gate_and_settle`, `remove_row_files`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `deploy/sotd.service`, `sot-apply.sh`, Dial.
@@ -114,7 +115,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 - `child_signal.rs`: the process-wide signal, the registry of contained trees, the contained children (`Contained`,
-  `ContainedStd`) and the live-child count.
+  `ContainedStd`) and the live-child count. It also owns observation-only `Contained::wait_until_exited` and its native cancellation/retained-identity controls.
 - `contain.rs`: the platform half of containment: the process group or job, adopting a child, the kill.
 - `lease.rs`: the window lease: `Leases`, the grant rule, the lease connection (`hold`), `held.json` and the start plan.
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.

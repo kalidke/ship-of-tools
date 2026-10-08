@@ -415,6 +415,41 @@ mod tests {
         dres.unwrap();
     }
 
+    /// A Pluto grant ends with its supervisor: after its release, a listener that took over the former port is
+    /// refused and sees no connection.
+    #[tokio::test]
+    async fn expired_pluto_grant_refuses_rebound_port() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
+        let owner = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = owner.local_addr().unwrap().port();
+        let grant = crate::sidecars::pluto::Grant::publish(port);
+        assert!(allowed_proxy_ports().contains(&port), "setup: the live grant allows the port");
+        drop(owner);
+        drop(grant);
+        let replacement = TcpListener::bind(("127.0.0.1", port)).await.expect("take over the former port");
+        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = accepted.clone();
+        tokio::spawn(async move {
+            while let Ok((_stream, _)) = replacement.accept().await {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        let (client, daemon) = tokio::io::duplex(4096);
+        let (dr, dw) = tokio::io::split(daemon);
+        let (mut cr, _cw) = tokio::io::split(client);
+        let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(port));
+        let client_fut = async {
+            let res = read_res(&mut cr).await;
+            assert_eq!(res.get("code").and_then(|v| v.as_str()), Some("bad_port"));
+        };
+        let (dres, _) = tokio::join!(daemon_fut, client_fut);
+        dres.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 0, "the replacement saw a connection");
+    }
+
     #[tokio::test]
     async fn a_refused_port_is_logged_once_per_streak() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

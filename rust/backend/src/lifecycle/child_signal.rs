@@ -261,9 +261,10 @@ pub(crate) struct Contained {
 }
 
 impl Contained {
-    /// Wait for the leader to exit, kill what it started, then reap it. A
-    /// descendant that holds the child's pipes open is killed too.
-    pub(crate) async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+    /// Wait for the leader to exit without releasing its tree or reaping it: the child's identity and containment
+    /// stay owned, so a caller can close requests and revoke grants before the checked [`wait`](Self::wait) or
+    /// [`kill`](Self::kill) takes the tree. Cancelling it loses nothing; a later call observes the same exit.
+    pub(crate) async fn wait_until_exited(&mut self) -> std::io::Result<()> {
         #[cfg(unix)]
         {
             if let Some(pid) = self.child.id() {
@@ -272,15 +273,20 @@ impl Contained {
                     self.sigchld.recv().await;
                 }
             }
-            self.held.release();
-            self.child.wait().await
+            Ok(())
         }
         #[cfg(windows)]
         {
-            let status = self.child.wait().await?;
-            self.held.release();
-            Ok(status)
+            self.child.wait().await.map(|_| ())
         }
+    }
+
+    /// Wait for the leader to exit, kill what it started, then reap it. A
+    /// descendant that holds the child's pipes open is killed too.
+    pub(crate) async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.wait_until_exited().await?;
+        self.held.release();
+        self.child.wait().await
     }
 
     /// Kill the tree, then the child, and reap it.
@@ -568,6 +574,43 @@ pub(crate) mod tests {
         contained.wait().await.expect("wait");
         assert!(descendant.gone(), "the leader's descendant survived its exit");
         assert!(signal.held_groups().is_empty(), "a reaped leader's tree is still held");
+        drop(contained);
+        assert_eq!(signal.live(), 0);
+    }
+
+    /// Observation alone neither releases the tree nor reaps the leader: a cancelled observation loses nothing, and
+    /// after the leader exits the tree is still held with its descendant alive until the checked wait takes it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exit_observation_retains_owner_and_descendant() {
+        use tokio::io::AsyncWriteExt;
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "sleep 3211 & echo $!; read x"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        let mut contained = signal.spawn(&mut cmd).expect("spawn");
+        let mut stdout = tokio::io::BufReader::new(contained.stdout.take().unwrap());
+        let mut line = String::new();
+        tokio::io::AsyncBufReadExt::read_line(&mut stdout, &mut line).await.unwrap();
+        let descendant = Leftover::of_pid(line.trim().parse().expect("descendant pid"));
+
+        let live = tokio::time::timeout(Duration::from_millis(200), contained.wait_until_exited()).await;
+        assert!(live.is_err(), "a live leader must not be reported exited");
+        assert_eq!(signal.held_groups().len(), 1);
+
+        contained.stdin.take().unwrap().write_all(b"\n").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), contained.wait_until_exited())
+            .await
+            .expect("the exit must be observed")
+            .expect("observe");
+        assert_eq!(signal.held_groups().len(), 1, "observation released the tree");
+        // SAFETY: signal 0 only probes the descendant this test started.
+        assert_eq!(unsafe { libc::kill(descendant.pid().expect("pid"), 0) }, 0, "observation took the descendant");
+
+        contained.wait().await.expect("the checked wait");
+        assert!(descendant.gone(), "the checked wait left the descendant");
+        assert!(signal.held_groups().is_empty());
         drop(contained);
         assert_eq!(signal.live(), 0);
     }

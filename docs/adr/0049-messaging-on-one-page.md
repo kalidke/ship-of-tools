@@ -145,7 +145,7 @@ Distributed cluster cookie (16 characters), which the worker reads from its stdi
 before it reads a message (Pluto's default Malt worker accepted the first connection with no secret and is not used:
 `julia/pluto/session_options.jl`); and a `wglshow` page by its secret path and its websocket by its session id, the
 page carrying its scripts and files inside it, so that nothing on that port answers without one of them
-(`julia/repl/src/wgl.jl`). Every listener of the Rust processes, the Julia children and the Node helpers is listed,
+(`julia/repl/src/wgl.jl`). Pluto's proxy grant ends when its supervisor generation releases ownership, including child death during a blocked stdin write or flush and Signal cancellation; current and queued requests close before cleanup awaits, and later requests cannot reach a replacement listener through that expired grant. This does not authenticate an upstream listener atomically across allowlist lookup and connection, or revoke an already-open proxy pipe. Every listener of the Rust processes, the Julia children and the Node helpers is listed,
 and a new one fails `rust/log/tests/isolation_guards.rs` or, on Linux, the listener census of
 `julia/pluto/test/runtests.jl` and `julia/repl/test/bonito/runtests.jl`. The cost is on Windows only: in this mode
 Pluto cannot stop a running cell there (it says so; restoring interrupt is planned for 0.6.7). The guarantee is
