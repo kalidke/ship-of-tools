@@ -76,6 +76,9 @@ impl State {
     /// tolerance): the aim hit the zoom ceiling or ran off the image, and the
     /// caller may want to re-aim.
     pub(in crate::ui) fn emit_preview_roi_applied(&self, aim: &RoiAim, eff: &PreviewRoi) {
+        if self.active_result_row_key().as_ref() != Some(&aim.row_key) {
+            return;
+        }
         // `visible_roi_px`'s floor/ceil quantization can nibble an edge pixel;
         // don't call that a clamp.
         const TOL: u32 = 2;

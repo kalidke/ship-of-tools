@@ -242,3 +242,17 @@ connection is the only handle.
   an accept-loop failure (`server::run` returning an error) and a termination signal (SIGTERM, SIGINT), which the
   daemon does not handle. Under the systemd unit its cgroup ends them.
 - Window: see the release notes.
+
+## Update (0.6.6): hub relay locality
+
+A generated hub relay socket is physically local transport to a remote daemon. The window carries that distinction from endpoint parsing to control, page and lane consumers and never acquires a local-window lease through it. Relay unit target/path overrides and local daemon leases retain their existing behavior.
+
+## Update (0.6.6): Foreign notice
+
+Foreign reports a refused boot, pid or creation-time claim and does not by itself prove another OS account. Without a granted or pending lease, the window names the known cause: unknown verification, then unsupported backend, then a refused identity claim, then unreached or absent backend.
+
+## Update (0.6.6): final window teardown
+
+The Ctrl+Q prompt reads Tab and Enter by key identity; other non-repeat keys cancel and repeats do nothing. Final window teardown starts after the leave acknowledgement and any required notice presentation, or at an explicit second-close decision. Queued writes share a one-second OS-monotonic deadline, returning event loops use a one-second runtime shutdown timeout, and one independent three-second std-thread backstop bounds final process teardown. These intervals do not shorten the Close acknowledgement wait. A timed-out blocking task can continue until process termination; tests separately observe cleanup of a yielding task's owned child. The existing nonzero handover exit remains immediate.
+
+The macOS default menu remains enabled. Earlier T1 review recorded native Cmd+Q bypassing the Ctrl+Q prompt; this lane does not re-test or change that native menu route.

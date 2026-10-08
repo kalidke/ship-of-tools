@@ -22,6 +22,7 @@ impl State {
         // ADR 0022: recomputed below when an image is shown; cleared each
         // frame so a switch to markdown / no-preview drops the stale ROI.
         self.preview_roi = None;
+        let row_key = self.active_result_row_key();
         if let (Some(quad), Some(letterbox_rect)) = (self.preview_png.as_ref(), png_rect) {
             // Re-clamp against the live pane size before sizing the
             // canvas: a pane resize or a zoom restored from the
@@ -39,7 +40,9 @@ impl State {
             // effective rect echoed back after `preview_roi` recomputes.
             let mut roi_aim: Option<RoiAim> = None;
             if self.pending_roi_aim.as_ref().is_some_and(|a| {
-                a.ready && Some(a.node_id.as_str()) == self.preview_node_id_fired.as_deref()
+                a.ready
+                    && row_key.as_ref() == Some(&a.row_key)
+                    && Some(a.node_id.as_str()) == self.preview_node_id_fired.as_deref()
             }) {
                 let aim = self.pending_roi_aim.take().expect("checked Some above");
                 let (src_w, src_h) = self.preview_png_dims.unwrap_or(quad.size_px);

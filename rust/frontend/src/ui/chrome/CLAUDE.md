@@ -36,3 +36,4 @@ rows say; `layout.rs` for where the panes sit; `draw_chrome` in draw.rs for what
 - The nav pane's pinned rows are kept whole or dropped whole (`nav_pinned_rows`).
 - The chrome draw reads only its `ChromeView`, the ratatui frame and the tree rows, and writes only the view's outs
   and `nav_spill_segs_out` (`ChromeView::paint`).
+- Pinned rows are Yellow and Bold while any navigation prompt is open; ordinary pinned status rows are LightGreen. Rendered-cell tests cover wrapping and clipped panes.

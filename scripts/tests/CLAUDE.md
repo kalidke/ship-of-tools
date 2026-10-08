@@ -4,8 +4,10 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 `sotd` under a temp folder and touches no live daemon. Part of distribution; charter: scripts/CLAUDE.md.
 
 ## Files
+- `lib-test-body.sh`: the shared completion verdict for one selected Rust test; ordered, unambiguous capture closure precedes the outer result; missing, ignored, mismatched and failed bodies cannot pass.
+- `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners, including combined captured-summary/truncation and scratch-path controls; accepts a compiled fixture executable by absolute path and validates its shell scratch root before cleanup.
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
-  and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
+  and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies, and executed trust declaration delegation (`--trust-only`). Runs in the `rust.yml`
   step "Test installer state (bash)" (ubuntu leg) and in `rc-gate.sh`.
 - `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper and the network refusal. Runs in the
   `rust.yml` step "Test installer apply (bash)" (ubuntu leg) and in `rc-gate.sh`.
@@ -20,10 +22,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `on-host.sh`: `on-host.sh HOST DIR -- CMD [ARG...]` runs CMD in DIR on a second host through `ssh HOST bash -s`, with
   the host's SOT_ variables, XDG_STATE_HOME, JULIA_LOAD_PATH and JULIA_PROJECT unset first; prints nothing of its own.
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
-- `rc-gate.sh`: the local candidate gate: the Rust workspace tests, doc tests, windows-gnu and darwin cross checks,
-  every Julia suite and the shell suites, as concurrent jobs under one cap. Linux only, run by hand.
+- `rc-gate.sh`: the Linux candidate gate; a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
-  `Set-SotFolderTrust` (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test install layout
+  `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test install layout
   (pinned-checkout predicate)".
 - `test-local-daemon.ps1`: scripts/sot-local-daemon.ps1 start, stop and wait behaviour (sections 0-8 and 12-15: the
   refusal, the pipe name, a late bind, `-Stop`, log retention, `Get-StopWaitMs`). Runs in the `rust.yml` step "Test
@@ -142,11 +143,14 @@ Last line: `violations: n, allowed: m, exempt: e, unused-allow: u, folders check
 behaviour it pins. For a Windows script change, the `.ps1` suite named for it above.
 
 ## Rules
+- The checker accepts the outer result only after complete, unambiguous captured-output boundaries; a captured summary or truncated capture cannot supply that result.
+- The proof binds its shell scratch root to a validated absolute directory before installing cleanup; behavior controls observe the driver and cleanup paths under relative TMPDIR.
+- A shell owner that selects one Rust body consumes the completion verdict from lib-test-body.sh; a listed name, child exit zero or a zero-test summary alone is not execution proof.
 - The five `.ps1` suites run only on the windows-latest leg of `rust.yml`, under Windows PowerShell 5.1; `rc-gate.sh`
   and a Linux box never run them. The step "Parse PowerShell scripts" globs `scripts/*.ps1` without recursion, so each
   `.ps1` suite parses itself and its siblings in its section 0.
 - A suite runs only if a step of `.github/workflows/rust.yml` or a job of `rc-gate.sh` names it; a new suite is added
-  to the step list in the commit that adds it. `rc-gate.sh` lists only the three shell suites here by name
+  to the step list in the commit that adds it. `rc-gate.sh` lists the three installer/topology shell suites and the finite selected-body proof here by name
   (`SHELL_ALL` in `producer`).
 - `installer-support.sh` sources `install.sh` with `SOT_INSTALL_SOURCE_ONLY=1` and `lib/sot-daemon.sh` for both installer
   suites; `installer-state.sh` reads `rust/protocol/src/ops/lease.rs` for the pinned bounds (`launcher_bounds_match_ops`), so a
@@ -159,3 +163,6 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   (`FAKE_SOTD_EXIT_ARM_FILE`), never at its own start.
 - `rc-gate.sh` needs `CARGO_TARGET_DIR` to itself while it runs; its verdict ends `<logdir>/summary.txt` as `ALLDONE` or
   `ALLDONE FAILED`.
+
+- Trust tests execute the real declaration owner and installer entry; emitted-byte assertions and native exit-status
+  observations establish behavior, never source membership or statement offsets.

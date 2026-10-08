@@ -119,3 +119,20 @@ windows-sys = { version = "0.59", features = [
 # Uses the MSVC toolchain's rc.exe; Linux/macOS builds never see this crate.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+[features]
+test-window-progress = []
+# The window_close target reuses the in-memory startup seam of the progress target.
+test-window-close = ["test-window-progress", "windows-sys/Win32_System_EventLog"]
+
+[[test]]
+name = "window_minimized"
+path = "src/main.rs"
+harness = false
+required-features = ["test-window-progress"]
+
+[[test]]
+name = "window_close"
+path = "src/window_close_test.rs"
+harness = false
+required-features = ["test-window-close"]

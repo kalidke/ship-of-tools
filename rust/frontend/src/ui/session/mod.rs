@@ -12,11 +12,13 @@ mod switch;
 mod workspace_key;
 mod workspace_list;
 
+pub(in crate::ui) use badge::PendingResults;
 pub(in crate::ui) use picker::*;
 pub(in crate::ui) use presence::*;
 pub(in crate::ui) use snapshot::*;
 #[cfg(test)]
-pub(in crate::ui) use workspace_key::*;
-pub(in crate::ui) use workspace_key::is_default_workspace_name;
-pub(in crate::ui) use switch::session_name_of;
+pub(in crate::ui) use workspace_key::ws_key_of;
+pub(in crate::ui) use workspace_key::{
+    is_default_workspace_name, resolve_listed_workspace, ResolvedWorkspace, ResultRowIdentity,
+};
 pub(in crate::ui) use workspace_list::*;

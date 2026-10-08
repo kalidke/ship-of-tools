@@ -40,6 +40,8 @@
 > {"v":3,"id":41,"kind":"req","op":"monitor.unsubscribe","payload":{}}
 > {"v":3,"id":42,"kind":"req","op":"agent.send","payload":{"from":"as.from","text":"as.text","to":"as.to"}}
 > {"v":3,"id":43,"kind":"req","op":"monitor.history","payload":{"host":"mh.host","points":119,"until":3.5,"window_s":2.5}}
+> {"v":3,"id":44,"kind":"req","op":"tree.root","payload":{"mode":"files","workspace_id":"rt.ws"}}
+> {"v":3,"id":45,"kind":"req","op":"tree.children","payload":{"node_id":"rc.parent","workspace_id":"rc.ws"}}
 < golden Connected { session_id: "sess-1", revision: 0, host: None, project_root: None, proxy: false, resolved: Local, backend_version: "" }
 < golden TreeChildrenFailed { workspace_id: Some("tc.ws"), parent_id: "tc.parent", error: "err-tree.children" }
 < golden Event { op: "nav.toggle_hidden", payload: Object {"code": String("code-nav.toggle_hidden"), "error": String("err-nav.toggle_hidden")} }
@@ -72,3 +74,5 @@
 < golden FileTransferFailed { op: "upload", message: "err-file.upload" }
 < golden Event { op: "monitor.unsubscribe", payload: Object {"code": String("code-monitor.unsubscribe"), "error": String("err-monitor.unsubscribe")} }
 < golden Event { op: "agent.send", payload: Object {"code": String("code-agent.send"), "error": String("err-agent.send")} }
+< golden ResultTree { attempt: ResultAttemptId { workspace_id: "rt.ws", result_serial: 201, attempt_serial: 202 }, reply: Failed { request: Root, error: "err-tree.root" } }
+< golden ResultTree { attempt: ResultAttemptId { workspace_id: "rc.ws", result_serial: 203, attempt_serial: 204 }, reply: Failed { request: Children { parent_id: "rc.parent" }, error: "err-tree.children" } }

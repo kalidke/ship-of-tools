@@ -54,6 +54,10 @@ mod ops;
 mod preamble;
 mod reply;
 mod request;
+mod steady;
+
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(crate) use reply::observe_native_fan_in;
 
 use crate::net::state::{note_revision, SessionState, StateSaveGate};
 use hello::{accept_hello, read_hello, send_hello, HelloRefused};
@@ -64,14 +68,47 @@ use request::send_request;
 
 // The transport's interface: what code outside this folder names.
 pub(crate) use self::{
-    event::IncomingEvt,
+    event::{IncomingEvt, ResultTreeReply},
     ops::{
         AccountInfo, ConceptWriteResult, DefinitionInfo, DirCreateResult, DirEntry,
         FileDeleteResult, FileWriteResult, MarkdownToken, MethodInfo, ReplRunFileInfo,
         ScanModule, ScanType, WorkspaceCreatedInfo, WorkspaceDestroyedInfo, WorkspaceInfo,
     },
-    request::OutgoingReq,
+    request::{OutgoingReq, ResultAttemptId, ResultTreeRequest},
 };
+
+#[cfg(test)]
+pub(crate) struct ResultTreeTestDriver<'a> {
+    pending: PendingGuard<'a>,
+}
+
+#[cfg(test)]
+impl<'a> ResultTreeTestDriver<'a> {
+    pub(crate) fn new(host: HostKey, evt_tx: &'a StdSender<(HostKey, IncomingEvt)>) -> Self {
+        Self {
+            pending: PendingGuard {
+                map: HashMap::new(),
+                evt_tx,
+                host,
+            },
+        }
+    }
+
+    pub(crate) async fn send<W: AsyncWrite + Unpin>(
+        &mut self,
+        writer: W,
+        id: u64,
+        request: OutgoingReq,
+    ) -> Result<()> {
+        send_request(writer, &mut self.pending, id, request).await
+    }
+
+    pub(crate) fn reply(&mut self, frame: Frame) {
+        let host = self.pending.host.clone();
+        let evt_tx = self.pending.evt_tx;
+        handle_response_frame(frame, None, &mut self.pending, evt_tx, &host);
+    }
+}
 
 /// What the transport task should dial: a local socket/named pipe, or an
 /// ssh child's stdio (C3). Exactly one, never neither and never both —
@@ -83,6 +120,8 @@ pub(crate) use self::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dial {
     Pipe(PathBuf),
+    /// A generated hub relay, remote for policy; its link gate precedes the existing protected local connector.
+    Relay(PathBuf),
     Ssh(sot_protocol::topology::ssh_bridge::SshRecipe),
 }
 
@@ -109,6 +148,8 @@ pub struct TransportConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedDial {
     Local,
+    /// The exact generated relay path selected by the control connection; never a local lease target.
+    Relay(PathBuf),
     Ssh(sot_protocol::topology::ssh_bridge::SshRecipe),
 }
 
@@ -129,7 +170,8 @@ pub fn outgoing_channel() -> (UnboundedSender<OutgoingReq>, UnboundedReceiver<Ou
 fn next_backoff_ms(current: u64, dial: &Dial) -> u64 {
     let cap = match dial {
         Dial::Pipe(_) => 5_000,
-        Dial::Ssh(_) => 30_000,
+        // Connecting to a relay socket always succeeds; the hub then opens an ssh login to the far host.
+        Dial::Relay(_) | Dial::Ssh(_) => 30_000,
     };
     current.saturating_mul(2).min(cap)
 }
@@ -266,6 +308,26 @@ async fn connect_and_run(
             )
             .await
         }
+        Dial::Relay(path) => {
+            // The relay reaches a remote daemon: no window lease, but the account rule and budget of any local socket.
+            let stream = connect_pipe(path).await?;
+            tracing::info!(dial = %host, ?path, "connected via hub relay socket");
+            let (rx, tx) = stream.split();
+            let rx = codec::buffered(rx);
+            run_protocol(
+                host,
+                rx,
+                tx,
+                config.token.as_deref(),
+                &evt_tx,
+                out_rx,
+                &window,
+                backoff_ms,
+                ResolvedDial::Relay(path.clone()),
+                Some(gate),
+            )
+            .await
+        }
         Dial::Ssh(recipe) => {
             #[allow(clippy::disallowed_methods, reason = "the window's control ssh, owned by the window")]
             let mut child = sot_protocol::topology::ssh_bridge::LinkGate::probe(recipe)
@@ -338,19 +400,6 @@ pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> 
         .map_err(|e| anyhow::anyhow!("{e}"))
         .with_context(|| format!("connect {path:?}"))?;
     Ok(LocalStream::from(stream))
-}
-
-/// Read exactly one frame while *owning* the reader, handing it back with the
-/// result. This lets the steady-state select! loop keep a single in-flight
-/// read future across iterations (cancel-safe: a cancelled select! pauses it
-/// rather than dropping it mid-blob) without the borrow checker objecting to a
-/// stored future that re-borrows `rx` each loop. See the CANCEL-SAFETY note in
-/// `run_protocol`'s steady-state loop.
-async fn read_owned<R: AsyncRead + Unpin>(
-    mut rx: tokio::io::BufReader<R>,
-) -> (tokio::io::BufReader<R>, Result<(Frame, Option<Vec<u8>>)>) {
-    let res = codec::read_frame(&mut rx).await;
-    (rx, res)
 }
 
 /// How often this connection sends `ping` (topology plan §F step 2) — a
@@ -504,120 +553,57 @@ where
     let prev_id = take_id(&mut next_id);
     preamble_preview(&mut tx, &mut rx, prev_id, root_node_id, &host, &mut session, &emit, window).await?;
 
-    steady_loop(rx, &mut tx, next_id, &mut pending, &mut session, host, evt_tx, out_rx, window).await
+    steady::steady_loop(
+        rx,
+        &mut tx,
+        next_id,
+        &mut pending,
+        &mut session,
+        host,
+        evt_tx,
+        out_rx,
+        window,
+        ping_interval_duration(),
+    )
+    .await
 }
 
-/// The steady-state loop: replies and pushed events, the ping, and the window's requests.
-async fn steady_loop<R, W, Wn>(
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(crate) async fn run_native_progress_transport<R, W>(
     rx: tokio::io::BufReader<R>,
-    mut tx: W,
-    mut next_id: u64,
-    pending: &mut HashMap<u64, PendingKind>,
-    session: &mut SessionState,
+    tx: W,
     host: HostKey,
     evt_tx: &StdSender<(HostKey, IncomingEvt)>,
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
-    window: &Wn,
+    window: &Arc<Window>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
-    Wn: Redraw,
 {
-    // Steady-state loop. `tokio::select!` lets us simultaneously read frames
-    // arriving from the backend (replays, future server-pushed evts, replies
-    // to outgoing requests) and accept new requests from the GPU thread. The
-    // request id is allocated on the writer side and stashed in `pending`;
-    // the reader matches incoming response frames against it to route
-    // deserialization. Unsolicited events (no id in pending) fall through to
-    // the catch-all `Event` evt the same way the old idle loop handled them.
-    //
-    // CANCEL-SAFETY: `read_frame` is NOT cancellation-safe — it reads the
-    // `\n`-terminated envelope and then `read_exact`s the blob tail across
-    // two separate awaits. If we polled `codec::read_frame(&mut rx)` directly
-    // as a select! arm, an outgoing request arriving while a blob was still
-    // mid-flight would make select! drop the half-read future: the envelope
-    // bytes were already consumed but the blob tail was not, so the next read
-    // parsed leftover binary blob bytes as a JSON envelope, failed, and forced
-    // a reconnect — the spurious-reconnect → tree-collapse → nav-reset bug.
-    // Fix: hold one read future across iterations and poll it by `&mut`, so a
-    // cancelled select! merely *pauses* it; it resumes mid-blob next iteration
-    // instead of being recreated from a desynced stream offset. The future
-    // *owns* the reader (via `read_owned`) and hands it back on completion, so
-    // the borrow checker never sees an external `&mut rx` re-borrowed across
-    // iterations.
-    let mut read_fut = Some(Box::pin(read_owned(rx)));
-    // Topology plan §F step 2 (the half-open-roster fix): this connection
-    // is always `fe`-declared (see `hello` above), one of the daemon's two
-    // long-lived roles, so it always pings — no role check needed here,
-    // unlike the daemon side which also has to let `cli`/`agent` through
-    // ungated. `Interval`, not a plain `sleep_until` recomputed each loop:
-    // it owns its own next-tick state and its `tick()` is cancellation-
-    // safe, so a `select!` iteration that takes another arm just leaves it
-    // armed for next time instead of losing the schedule.
-    let mut ping_interval = tokio::time::interval(ping_interval_duration());
-    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    ping_interval.tick().await; // first tick fires immediately; consume it
-    loop {
-        tokio::select! {
-            // Bias to reads so an avalanche of GPU-thread requests can't
-            // starve replies. Spike-grade — revisit if it ever matters.
-            biased;
-
-            done = read_fut.as_mut().expect("read_fut is always Some at loop top") => {
-                // Completed: reclaim the reader and arm the next read.
-                let (rx_back, read) = done;
-                read_fut = Some(Box::pin(read_owned(rx_back)));
-                let (frame, blob) = read?;
-                note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
-                handle_response_frame(frame, blob, pending, evt_tx, &host);
-                window.request_redraw();
-            }
-
-            // Topology plan §F step 2: prove this connection's read half is
-            // alive to the daemon even when the person is idle (no other
-            // outgoing traffic). Fire-and-forget, same idiom as
-            // `OutgoingReq::FePresence` below — no `PendingKind`, the reply
-            // is silently ignored by the unmatched-id fallthrough.
-            _ = ping_interval.tick() => {
-                let id = take_id(&mut next_id);
-                tracing::debug!(id, "→ ping");
-                codec::write_frame(
-                    &mut tx,
-                    &Frame::req(id, op::PING, serde_json::to_value(PingReq {})?),
-                    None,
-                )
-                .await?;
-            }
-
-            req = out_rx.recv() => {
-                let Some(req) = req else {
-                    // Sender side dropped — the app is shutting down. Drain
-                    // the reader by falling back to a plain read loop until
-                    // the connection closes.
-                    tracing::debug!("outgoing channel closed; draining reads until disconnect");
-                    // Shutdown path: no more outgoing requests can race the
-                    // reader, so cancel-safety no longer matters. Resume the
-                    // in-flight read (reclaiming the reader), then fall back to
-                    // plain sequential reads until the connection closes.
-                    let fut = read_fut.take().expect("read_fut is always Some here");
-                    let (mut rx, read) = fut.await;
-                    let (frame, blob) = read?;
-                    note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
-                    handle_response_frame(frame, blob, pending, evt_tx, &host);
-                    window.request_redraw();
-                    loop {
-                        let (frame, blob) = codec::read_frame(&mut rx).await?;
-                        note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
-                        handle_response_frame(frame, blob, pending, evt_tx, &host);
-                        window.request_redraw();
-                    }
-                };
-                let id = take_id(&mut next_id);
-                send_request(&mut tx, pending, id, req).await?;
-            }
-        }
-    }
+    let mut pending = PendingGuard {
+        map: HashMap::new(),
+        evt_tx,
+        host: host.clone(),
+    };
+    let mut session = SessionState {
+        host: host.clone(),
+        memory: crate::net::state::SessionMemory::fresh(),
+        gate: StateSaveGate::new(),
+    };
+    steady::steady_loop(
+        rx,
+        tx,
+        1,
+        &mut pending,
+        &mut session,
+        host,
+        evt_tx,
+        out_rx,
+        window,
+        ping_interval_duration(),
+    )
+    .await
 }
 
 fn take_id(next_id: &mut u64) -> u64 {

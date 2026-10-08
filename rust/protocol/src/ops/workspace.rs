@@ -116,10 +116,7 @@ pub struct WorkspaceListEntry {
     pub slug: String,
     pub label: String,
     pub project_root: String,
-    /// The row's session name, `sot-be-<slug>`: the stable token
-    /// `pty.open` / `lane.connect` `target` address the row by, fixed for
-    /// its lifetime (protocol 2 renamed it from `tmux_session`; the tmux
-    /// runtime is one of the two things it can name a session in).
+    /// The row's stored session name, the target used to attach its pane; it need not be derived from the slug.
     pub session_name: String,
     /// True if the workspace's `Kernel` handle has been constructed —
     /// i.e. some op has caused the daemon to lazily instantiate it.

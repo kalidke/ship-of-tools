@@ -80,11 +80,6 @@ fn path_for_token(token: &str) -> Option<PathBuf> {
         .cloned()
 }
 
-/// Video extensions this server will serve. Mirrors `ShipToolsVideoFile`'s
-/// `VIDEO_EXTENSIONS`. The preview's size-gate exemption and bytes reader
-/// read this same list (through `is_servable_video`), so editing it moves them.
-const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v"];
-
 /// PREFERRED loopback port for the video server (env-overridable, default
 /// 1235). This is a preference, not a promise: on a shared host another
 /// user's daemon may already hold it (the 2026-07-23 shared-host collision — two
@@ -145,13 +140,13 @@ async fn serve_conn(stream: TcpStream) {
     }
 }
 
-/// Whether this path is a video extension this server will serve. Public so
-/// the `video.open` handler can reject non-video requests before building a URL.
+/// Rust video opens, preview bounds and HTTP MIME decisions use sot_protocol::video_path::video_mime; leading-dot filenames follow the existing Julia suffix contract.
+/// Public so the `video.open` handler can reject non-video requests before building a URL; the preview's size-gate
+/// exemption and bytes reader ask it too.
 pub fn is_servable_video(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
-        Some(e) if VIDEO_EXTS.contains(&e)
-    )
+    path.to_str()
+        .and_then(sot_protocol::video_path::video_mime)
+        .is_some()
 }
 
 pub(super) async fn handle_conn(mut stream: TcpStream) -> Result<()> {
@@ -277,6 +272,38 @@ mod video_ext_tests {
         }
         for p in ["clip.avi", "song.mp3", "x.gif", "noext", "mp4"] {
             assert!(!is_servable_video(Path::new(p)), "{p} should not be servable");
+        }
+    }
+
+    /// The Julia plugin matches a name that ends in a dotted suffix, a leading-dot name included; the server
+    /// serves and types exactly those names.
+    #[test]
+    fn dotfile_video_has_one_route_and_mime() {
+        let video = [
+            (".mp4", "video/mp4"),
+            (".M4V", "video/mp4"),
+            ("dir.d/.webm", "video/webm"),
+            ("a.b.c.MOV", "video/quicktime"),
+            ("/x/y/clip.Mkv", "video/x-matroska"),
+        ];
+        for (p, mime) in video {
+            assert!(is_servable_video(Path::new(p)), "{p} should be servable");
+            assert_eq!(content_type(Path::new(p)), mime, "{p}");
+        }
+        for p in [
+            "mp4",
+            "webm",
+            "dir.mp4/clip",
+            "clip.mp4.txt",
+            "clip.mp4/",
+            "",
+            "clip.avi",
+        ] {
+            assert!(
+                !is_servable_video(Path::new(p)),
+                "{p} should not be servable"
+            );
+            assert!(!content_type(Path::new(p)).starts_with("video/"), "{p}");
         }
     }
 }

@@ -57,7 +57,7 @@ impl ConceptStore {
         if !exists {
             return Ok(None);
         }
-        Ok(parse_synced_against(&content))
+        Ok(sot_protocol::annotation::synced_against(&content))
     }
 
     /// Atomic write via temp file + rename. Returns `(absolute path, byte
@@ -167,42 +167,9 @@ impl ConceptStore {
     }
 }
 
-/// Minimal frontmatter parser: finds the `synced_against` field in a
-/// `---\n…\n---\n` YAML block at the top of `content`. We don't depend on
-/// a full YAML crate here — the field shape is fixed (`synced_against:
-/// <hex-or-quoted-string>` on its own line), and any value that isn't a
-/// plain string is treated as missing. Returns the trimmed value (quotes
-/// stripped) or `None`.
-fn parse_synced_against(content: &str) -> Option<String> {
-    let body = content.strip_prefix("---\n")?;
-    let end = body.find("\n---\n").or_else(|| body.find("\n---"))?;
-    let block = &body[..end];
-    for line in block.lines() {
-        let line = line.trim_end();
-        // strip leading indentation but bail on nested-mapping content —
-        // the field we want sits at top-level of the frontmatter block.
-        let line = line.strip_prefix("  ").unwrap_or(line);
-        let line = line.strip_prefix("\t").unwrap_or(line);
-        if let Some(rest) = line.strip_prefix("synced_against:") {
-            let v = rest.trim();
-            // strip surrounding quotes if present
-            let v = v
-                .strip_prefix('"')
-                .and_then(|s| s.strip_suffix('"'))
-                .or_else(|| v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-                .unwrap_or(v);
-            if v.is_empty() {
-                return None;
-            }
-            return Some(v.to_string());
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{parse_synced_against, ConceptStore};
+    use super::ConceptStore;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -372,39 +339,38 @@ mod tests {
         assert!(s.list().is_err());
     }
 
+    /// The stale-write guard reads the header the window hashed, whatever its line endings or indentation.
     #[test]
-    fn parses_plain_value() {
-        let s = "---\ntarget: M.f\nsynced_against: abc123\nsynced_at: 2026-05-11\n---\n\nbody\n";
-        assert_eq!(parse_synced_against(s).as_deref(), Some("abc123"));
-    }
-
-    #[test]
-    fn parses_quoted_value() {
-        let s = "---\nsynced_against: \"deadbeef\"\n---\nbody\n";
-        assert_eq!(parse_synced_against(s).as_deref(), Some("deadbeef"));
-    }
-
-    #[test]
-    fn returns_none_for_no_frontmatter() {
-        assert_eq!(parse_synced_against("just a body\n"), None);
-    }
-
-    #[test]
-    fn returns_none_for_missing_field() {
-        let s = "---\ntarget: M.f\n---\nbody\n";
-        assert_eq!(parse_synced_against(s), None);
-    }
-
-    #[test]
-    fn returns_none_for_empty_value() {
-        let s = "---\nsynced_against:\n---\nbody\n";
-        assert_eq!(parse_synced_against(s), None);
-    }
-
-    #[test]
-    fn ignores_field_outside_frontmatter() {
-        let s = "no frontmatter\nsynced_against: imposter\n";
-        assert_eq!(parse_synced_against(s), None);
+    fn stored_header_hash_is_read_in_every_shape() {
+        let dir = Tmp::new();
+        let s = ConceptStore::new(dir.path());
+        let cases = [
+            ("lf", "---\ntarget: x\nsynced_against: h1\n---\nbody\n"),
+            (
+                "crlf",
+                "---\r\ntarget: x\r\nsynced_against: h1\r\n---\r\nbody\r\n",
+            ),
+            (
+                "indented",
+                "---\ntarget: x\n    synced_against: h1\n---\nbody\n",
+            ),
+            (
+                "quoted with trailing space",
+                "---\nsynced_against: \"h1\"  \n---\nbody\n",
+            ),
+            ("closing fence at eof", "---\nsynced_against: h1\n---"),
+        ];
+        for (label, content) in cases {
+            s.write(label, content).unwrap();
+            assert_eq!(
+                s.read_synced_against(label).unwrap().as_deref(),
+                Some("h1"),
+                "{label}"
+            );
+        }
+        s.write("no-close", "---\nsynced_against: h1\nbody\n")
+            .unwrap();
+        assert_eq!(s.read_synced_against("no-close").unwrap(), None);
     }
 }
 

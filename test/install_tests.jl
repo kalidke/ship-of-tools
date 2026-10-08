@@ -223,9 +223,10 @@ end
                 # sot-fe reaches its dispatch: every part it sourced is in the one file.
                 @test occursin("sot-fe", read(Cmd(`bash $(joinpath(bin, "sot-fe")) help`; dir = home), String))
                 # A script runs on the installed library.
-                withenv("SOT_COMM_TEST_HOST" => "pin-host") do
+                withenv("SOT_COMM_TEST_HOST" => "pin-host", "SOT_SELF_HOST" => "declared-host") do
                     out = read(Cmd(`bash $(joinpath(bin, "comm-context.sh"))`; dir = home), String)
-                    @test occursin(r"(?m)^HOST=pin-host$", out)
+                    @test occursin(r"(?m)^HOST=declared-host$", out)
+                    @test occursin(r"(?m)^HANDLE_HOST=pin-host$", out)
                 end
             end
         end

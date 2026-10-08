@@ -3860,6 +3860,7 @@ dependencies = [
  "sot-updater",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "uuid",

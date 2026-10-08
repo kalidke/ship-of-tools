@@ -27,6 +27,8 @@ const NOTICE_UNDETERMINED: &str =
     "closing will not end sessions: this computer's backend could not verify this window";
 const NOTICE_UNSUPPORTED: &str =
     "closing will not end sessions: this computer's backend is older than this window";
+const NOTICE_FOREIGN: &str =
+    "closing will not end sessions: this computer's backend refused this window's identity claim";
 const NOTICE_NO_BACKEND: &str =
     "closing will not end sessions: there is no backend on this computer";
 const LEAVE_UNCONFIRMED_CLOSE: &str =
@@ -110,9 +112,6 @@ struct Book {
     /// wait (`set`); open while one is in flight, so the leave is not done
     /// until it closes.
     late: Option<mpsc::UnboundedSender<PendingAck>>,
-    /// The runtime the holders run on, for a forced exit's wait
-    /// (`deliver_queued`).
-    rt: Option<tokio::runtime::Handle>,
     /// Each daemon's newest nonzero not-ended count no presented frame has acked, keyed at
     /// its grant by the state root it named (else its label): `owed`, `notice_seen`.
     owed: BTreeMap<HostKey, u32>,
@@ -148,7 +147,7 @@ impl Leases {
             .collect();
         Arc::new(Self {
             exempt,
-            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, rt: None, owed: BTreeMap::new() }),
+            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, owed: BTreeMap::new() }),
             reply_wait: lease::LEASE_REPLY_WAIT,
         })
     }
@@ -307,7 +306,6 @@ impl Leases {
                     // The count and the holder its ack goes through are published under one lock: a count drawn
                     // and acked before its holder was installed would be acked to nobody and stay owed forever.
                     let mut book = self.book.lock().unwrap();
-                    book.rt.get_or_insert_with(tokio::runtime::Handle::current);
                     if res.not_ended > 0 {
                         book.owed.insert(key, res.not_ended);
                     }
@@ -318,7 +316,7 @@ impl Leases {
             }
             LeaseOutcome::Foreign => {
                 self.set(host, Standing::Foreign, None);
-                tracing::warn!(%host, "window lease: another user's backend");
+                tracing::warn!(%host, "window lease: the backend refused this window's identity claim");
                 Ok(0)
             }
             LeaseOutcome::Undetermined => {
@@ -416,37 +414,47 @@ impl Leases {
     /// leave already queued to it (the write, not the reply), at most `bound`
     /// in all, so the stream's EOF never overtakes a queued Close.
     pub fn deliver_queued(&self, bound: Duration) {
-        let rt = self.book.lock().unwrap().rt.clone();
-        if let Some(rt) = rt {
-            rt.block_on(self.written(bound));
-        }
-    }
-
-    /// `deliver_queued`'s wait. The hosts still unwritten at the bound are
-    /// named in one warn line, and the exit goes on.
-    async fn written(&self, bound: Duration) {
-        let waits: Vec<(HostKey, oneshot::Receiver<()>)> = {
-            let book = self.book.lock().unwrap();
-            book.slots
-                .iter()
-                .filter_map(|(host, slot)| {
+        let deadline = Instant::now() + bound;
+        let mut waits = loop {
+            match self.book.try_lock() {
+                Ok(book) => break book.slots.iter().filter_map(|(host, slot)| {
+                    let holder = slot.holder.as_ref()?;
                     let (tx, rx) = oneshot::channel();
-                    slot.holder.as_ref()?.send(HolderCmd::Written(tx)).ok()?;
+                    // A failed send leaves a closed receipt, which is unconfirmed.
+                    let _ = holder.send(HolderCmd::Written(tx));
                     Some((host.clone(), rx))
-                })
-                .collect()
-        };
-        let deadline = tokio::time::Instant::now() + bound;
-        let mut unwritten = Vec::new();
-        for (host, rx) in waits {
-            if !matches!(tokio::time::timeout_at(deadline, rx).await, Ok(Ok(()))) {
-                unwritten.push(host);
+                }).collect::<Vec<_>>(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        tracing::warn!("window lease: lease book stayed locked through forced delivery deadline");
+                        return;
+                    }
+                    std::thread::sleep(left.min(Duration::from_millis(2)));
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => panic!("window lease book poisoned"),
             }
+        };
+        let mut unwritten = Vec::new();
+        loop {
+            waits.retain_mut(|(host, rx)| match rx.try_recv() {
+                Ok(()) => false,
+                Err(TryRecvError::Closed) => { unwritten.push(host.clone()); false }
+                Err(TryRecvError::Empty) => true,
+            });
+            if waits.is_empty() { break; }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                unwritten.extend(waits.into_iter().map(|(host, _)| host));
+                break;
+            }
+            std::thread::sleep(left.min(Duration::from_millis(2)));
         }
         if !unwritten.is_empty() {
             tracing::warn!(hosts = ?unwritten, "window lease: exiting before every queued leave was written");
         }
     }
+
 }
 
 /// How long the leaving line holds, from the presented frame that drew it,
@@ -610,6 +618,8 @@ pub fn lease_notice(exempt: bool, standings: &[Standing]) -> Option<&'static str
         Some(NOTICE_UNDETERMINED)
     } else if standings.contains(&Standing::Unsupported) {
         Some(NOTICE_UNSUPPORTED)
+    } else if standings.contains(&Standing::Foreign) {
+        Some(NOTICE_FOREIGN)
     } else {
         Some(NOTICE_NO_BACKEND)
     }
@@ -782,8 +792,97 @@ pub(crate) fn close_now(leaving: Option<&mut crate::lease::Leaving>, code: i32) 
 
 #[cfg(test)]
 #[path = "lease_grant_tests.rs"]
-mod grant_tests;
+pub(crate) mod grant_tests;
 
 #[cfg(test)]
 #[path = "lease_leave_tests.rs"]
-mod leave_tests;
+pub(crate) mod leave_tests;
+
+#[cfg(test)]
+#[cfg_attr(feature = "test-window-progress", allow(unused_imports, reason = "the harness=false native targets run none of these tests"))]
+mod delivery_tests {
+    use super::*;
+    use sot_log::test_isolated::run_isolated;
+
+    #[test]
+    fn held_book_does_not_extend_forced_delivery() {
+        if !run_isolated("lease::delivery_tests::held_book_does_not_extend_forced_delivery") { return; }
+        let leases = Leases::new(true, vec![]);
+        let held = leases.clone();
+        let (ready, entered) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            let _book = held.book.lock().unwrap();
+            ready.send(()).unwrap();
+            let _ = gate.recv_timeout(Duration::from_millis(2400));
+        });
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let log = sot_log::test_log::capture();
+        let start = Instant::now();
+        leases.deliver_queued(LEAVE_WRITE_WAIT);
+        let elapsed = start.elapsed();
+        let _ = release.send(());
+        owner.join().unwrap();
+        assert!(elapsed < Duration::from_millis(1500), "Book acquisition exceeded total deadline: {elapsed:?}");
+        assert!(log.text().contains("lease book stayed locked"), "missing lock-contention warning");
+        println!("forced delivery: held Book returned within 1.5 seconds");
+    }
+
+    #[test]
+    fn frozen_worker_and_multiple_holders_share_one_deadline() {
+        if !run_isolated("lease::delivery_tests::frozen_worker_and_multiple_holders_share_one_deadline") { return; }
+        use super::{grant_tests::bind, leave_tests::{leave_fake, logged, is_leave, finish}};
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let leases = Leases::new(false, vec![]);
+        let mut peers = Vec::new();
+        runtime.block_on(async {
+            for host in ["pending-a", "pending-b"] {
+                let (listener, path) = bind("forcedclock");
+                let (log, _, peer) = leave_fake(listener, None, None, Duration::ZERO);
+                tokio::time::timeout(Duration::from_secs(5), leases.before_data_connection(&host.to_string(), &path, None)).await.unwrap().unwrap();
+                peers.push((log, peer));
+            }
+        });
+        let fast = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let fast_peer = fast.block_on(async {
+            let (listener, path) = bind("forcedready");
+            let peer = leave_fake(listener, None, None, Duration::ZERO);
+            tokio::time::timeout(Duration::from_secs(5), leases.before_data_connection(&"ready".to_string(), &path, None)).await.unwrap().unwrap();
+            peer
+        });
+        let (closed, rx) = mpsc::unbounded_channel();
+        drop(rx);
+        leases.set(&"closed".to_string(), Standing::Granted { state_root: None }, Some(closed));
+        let (ready, entered) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        runtime.spawn(async move {
+            ready.send(()).unwrap();
+            let _ = gate.recv_timeout(Duration::from_secs(3));
+        });
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let keep = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
+        let close = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
+        let log = sot_log::test_log::capture();
+        let start = Instant::now();
+        leases.deliver_queued(LEAVE_WRITE_WAIT);
+        let elapsed = start.elapsed();
+        let _ = release.send(());
+        runtime.block_on(async {
+            for (log, _) in &peers {
+                let seen = logged(log, 2).await;
+                assert!(is_leave(&seen[0], "keep") && is_leave(&seen[1], "close"));
+            }
+        });
+        drop((keep, close, leases));
+        runtime.block_on(async { for (log, peer) in peers { finish(peer, &log).await; } });
+        fast.block_on(async { finish(fast_peer.2, &fast_peer.0).await; });
+        runtime.shutdown_timeout(LEAVE_WRITE_WAIT);
+        fast.shutdown_timeout(LEAVE_WRITE_WAIT);
+        assert!(elapsed < Duration::from_millis(1500), "transport worker extended forced delivery: {elapsed:?}");
+        let text = log.text();
+        assert!(text.contains("pending-a") && text.contains("pending-b") && text.contains("closed"), "unconfirmed holders missing: {text}");
+        assert!(!text.contains("ready"), "written holder was reported unconfirmed: {text}");
+        assert_eq!(text.matches("exiting before every queued leave was written").count(), 1);
+        println!("forced delivery: frozen worker and mixed holders returned within 1.5 seconds");
+    }
+}

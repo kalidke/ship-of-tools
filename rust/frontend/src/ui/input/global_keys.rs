@@ -4,24 +4,16 @@ use super::*;
 use std::ops::ControlFlow::{self, Break, Continue};
 use crate::ui::input::keypress::KeyPress;
 
-pub(in crate::ui) fn confirm_quit_key(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>) -> ControlFlow<()> {
-    let KeyPress { event, action, .. } = key;
-    // The Ctrl+Q prompt owns the keyboard while it is open: it
-    // reads every key before any global binding (`prompt_takes_key`).
-    if let Some(NavPrompt::ConfirmQuit { keep }) = &state.nav_prompt {
-        let tab = matches!(event.logical_key, Key::Named(NamedKey::Tab));
-        match prompt_takes_key(*keep, tab, action, event.repeat) {
-            QuitPromptStep::Stay { keep } => {
-                state.nav_prompt = Some(NavPrompt::ConfirmQuit { keep });
-                state.window.request_redraw();
-            }
-            QuitPromptStep::Cancel => state.cancel_nav_prompt(),
-            QuitPromptStep::Leave(i) => state.leave(event_loop, i, 0),
-            QuitPromptStep::Ignore => {}
+pub(in crate::ui) fn confirm_quit_key(state: &mut State, event_loop: &ActiveEventLoop, step: QuitPromptStep) {
+    match step {
+        QuitPromptStep::Stay { keep } => {
+            state.nav_prompt = Some(NavPrompt::ConfirmQuit { keep });
+            state.window.request_redraw();
         }
-        return Break(());
+        QuitPromptStep::Cancel => state.cancel_nav_prompt(),
+        QuitPromptStep::Leave(i) => state.leave(event_loop, i, 0),
+        QuitPromptStep::Ignore => {}
     }
-    Continue(())
 }
 
 pub(in crate::ui) fn help_key(state: &mut State, key: KeyPress<'_>, context: help::Context) -> ControlFlow<()> {

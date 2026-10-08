@@ -38,6 +38,8 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh" || exit 2
+not_running() { ! kill -0 "$1" 2>/dev/null; }   # for await: the background child has ended
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -109,6 +111,9 @@ trap 'stop_stub_daemon; rm -rf "${WORK:?}"' EXIT
 # regardless of what machine or CI runner executes this script.
 HOST="testhost"
 export SOT_COMM_TEST_HOST="$HOST"
+# The declared host (sot_host) is the registry's and the unpinned self slot's host; pinned to the same string, so
+# every case that does not test the difference sees one host. The declared-host cases below override it.
+export SOT_SELF_HOST="$HOST"
 
 PASS=0
 FAIL=0
@@ -252,8 +257,7 @@ start_stub_daemon() {  # WSID SLUG ROOT [HANDLE]
         esac
       done ) &
     STUB_WATCHER_PID=$!
-    local deadline=$((SECONDS + 5))
-    while [ ! -S "$STUB_SOCK" ]; do [ "$SECONDS" -lt "$deadline" ] || break; sleep 0.05; done
+    await test -S "$STUB_SOCK" || echo "stub daemon socket never appeared: $STUB_SOCK" >&2
 }
 stop_stub_daemon() {
     [ -n "$STUB_WATCHER_PID" ] && pkill -TERM -P "$STUB_WATCHER_PID" >/dev/null 2>&1
@@ -303,6 +307,7 @@ contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
 . "$(dirname "${BASH_SOURCE[0]}")/join_disambiguation/derive.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/join_disambiguation/self_file.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/join_disambiguation/declared_host.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/join_disambiguation/send_identity.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/join_disambiguation/spawn_and_lock.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/join_disambiguation/jq_args.sh"
@@ -330,7 +335,13 @@ check "legacy self-file + an unknown-root registry row: still heals on repo matc
 check "ancient one-line self-file WITH a matching-root registry row: heals" case_ancient_oneline_with_matching_registry_heals
 check "ancient one-line self-file WITHOUT registry corroboration: discarded" case_ancient_oneline_without_registry_match_discarded
 check "self-heal write failure is reported loudly, file left intact (round-1 F3)" case_self_heal_write_failure_reported_loudly_file_intact
-check "comm-context.sh host part: pinned, raw hostname -s with case kept, plain hostname fallback" case_context_host_part_follows_the_raw_host_rule
+check "comm-context.sh: HOST is the declared host, HANDLE_HOST the raw hostname -s (case kept, pin first, plain fallback)" case_context_host_part_follows_the_raw_host_rule
+check "a join under a distinct declared host: registry host and unpinned slot are the declared host, the derived handle keeps the raw one" case_join_uses_the_declared_host_and_the_raw_handle_component
+check "a declared host that cannot name a whole slot leaf is refused before any write" case_unrepresentable_declared_host_is_refused_before_any_write
+check "the slot formatter validates the complete leaf: separators, controls, length, and the Windows rules" case_self_slot_formatter_validates_the_whole_leaf
+check "a raw-host slot of this workspace migrates to the declared-host slot only on a matching registry row" case_legacy_raw_host_slot_migrates_only_on_registry_proof
+check "a migration never overwrites a populated canonical slot, and a failed publication keeps the legacy slot" case_legacy_migration_conflict_and_failure_keep_the_old_slot
+check "an explicit self-file pin keeps its text whatever the declared host is" case_explicit_pin_ignores_the_declared_host
 check "nopane self-file shared across repos: mismatched read discarded, never healed" case_nopane_selffile_shared_across_repos_not_healed
 check "nopane + same-basename DIFFERENT root: basename alone must not heal (round-2 F-A)" case_nopane_same_basename_different_root_discarded
 check "nopane + same-basename NON-repo cwd: basename alone must not heal (round-2 F-A)" case_nopane_same_basename_non_repo_cwd_discarded

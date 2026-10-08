@@ -5,6 +5,16 @@ use super::*;
 mod exit;
 mod frame;
 mod handler;
+#[cfg(test)]
+#[cfg_attr(feature = "test-window-progress", allow(unused_imports, reason = "the harness=false native targets run none of these tests"))]
+mod exit_process_tests;
+
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(super) mod tests;
+#[cfg(all(test, feature = "test-window-close"))]
+pub(super) mod native_exit_tests;
+#[cfg(all(test, feature = "test-window-close", windows))]
+mod native_eventlog;
 
 pub(in crate::ui) use exit::*;
 
@@ -34,6 +44,8 @@ pub struct App {
     /// separately from key presses, so we keep a running copy and consult
     /// it inside the KeyboardInput arm.
     modifiers: winit::keyboard::ModifiersState,
+    /// Shared with State: the one three-second process backstop.
+    deadline: ExitDeadline,
 }
 
 impl App {
@@ -59,8 +71,33 @@ impl App {
             pending_transports,
             leases,
             modifiers: winit::keyboard::ModifiersState::empty(),
+            deadline: ExitDeadline::new(),
         }
     }
+
+    /// Own the returning event loop and finalize transport before any App field drops.
+    pub fn run(mut self, event_loop: winit::event_loop::EventLoop<()>) -> Result<(), winit::error::EventLoopError> {
+        self.run_with(|app| event_loop.run_app(app))
+    }
+
+    fn run_with(&mut self, run: impl FnOnce(&mut Self) -> Result<(), winit::error::EventLoopError>) -> Result<(), winit::error::EventLoopError> {
+        let result = run(self);
+        #[cfg(test)]
+        barrier("returned");
+        // A return no terminal decision armed (a startup failure, a loop error) gets the fallback.
+        self.deadline.arm(if result.is_ok() { 0 } else { 1 });
+        #[cfg(test)]
+        barrier("fallback");
+        self.shutdown_transport();
+        result
+    }
+
+    fn shutdown_transport(&mut self) {
+        if let Some(runtime) = self.rt.take() {
+            runtime.shutdown_timeout(crate::lease::LEAVE_WRITE_WAIT);
+        }
+    }
+
 }
 
 /// Minimum time between frames in interactive mode (~120 fps). Picks the

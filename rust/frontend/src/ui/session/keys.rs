@@ -110,60 +110,36 @@ pub(in crate::ui) fn session_enter_key(state: &mut State) -> ControlFlow<()> {
             return Break(());
         }
         Some("session") | Some("pane") => {
-            if let Some(session_name) =
-                state.selected_session_name()
-            {
-                // ADR 0014: route the swap
-                // through the unified entry
-                // point. The slug is the
-                // session name with the
-                // `sot-be-` prefix
-                // stripped (the backend's
-                // resolve() accepts either
-                // a workspace_id or a slug).
-                let slug = session_name
-                    .strip_prefix("sot-be-")
-                    .map(|s| s.to_string());
-                if slug.is_some() {
-                    // ADR 0042 L2a: the
-                    // cursored row's OWN
-                    // host — both `session`
-                    // and `pane` rows carry
-                    // `payload.host`,
-                    // stamped at the reply
-                    // that built them.
-                    let host = state
-                        .selected_session_host()
-                        .unwrap_or_else(|| {
-                            state.active_host.clone()
-                        });
-                    // Sessions-Enter is
-                    // person-driven: clear
-                    // this row's blue.
-                    state.switch_to_workspace(
-                        host,
-                        slug,
-                        Some(session_name),
-                        true,
-                    );
+            if let Some(session_name) = state.selected_session_name() {
+                let host = state
+                    .selected_session_host()
+                    .unwrap_or_else(|| state.active_host.clone());
+                let listed_spelling = if let Some(id) = row
+                    .and_then(|r| r.node.payload.get("workspace_id"))
+                    .and_then(|v| v.as_str())
+                {
+                    if id.is_empty() {
+                        state.refuse_result("empty workspace identity");
+                        return Continue(());
+                    }
+                    Some(id.to_string())
+                } else if let Some(rows) = state.workspace_lists.get(&host) {
+                    let mut matches = rows.iter().filter(|w| w.session_name == session_name);
+                    let first = matches.next();
+                    if matches.next().is_some() {
+                        state.refuse_result("ambiguous attachment target");
+                        return Continue(());
+                    }
+                    first.map(|w| w.workspace_id.clone())
                 } else {
-                    // Foreign tmux session
-                    // surfaced by an older
-                    // backend that hadn't
-                    // filtered them out —
-                    // just retarget BL, on
-                    // the cursored row's
-                    // OWN host (this row
-                    // was never switched
-                    // to, so active_host
-                    // alone would be wrong
-                    // — same reasoning as
-                    // the branch above).
-                    let host = state
-                        .selected_session_host()
-                        .unwrap_or_else(|| {
-                            state.active_host.clone()
-                        });
+                    None
+                };
+                if let Some(spelling) = listed_spelling {
+                    match resolve_listed_workspace(&state.workspace_lists, &host, &spelling) {
+                        Ok(target) => state.switch_to_resolved_workspace(target, true),
+                        Err(reason) => state.refuse_result(&reason),
+                    }
+                } else {
                     state.attach_session_to_bl(host, session_name);
                 }
             }

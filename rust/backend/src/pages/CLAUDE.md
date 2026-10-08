@@ -33,8 +33,10 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   inherited one overridden, and a refusal by the resolver fails the render (`run_quarto`), `--no-execute` or not,
   since quarto runs `QUARTO_JULIA` for an `engine: julia` document even then; so a host without julia renders no
   document through quarto. The site's `git` child runs through `Signal::spawn_std` (`run_git`).
+- A window's relay page proxy opens the same generated relay endpoint as its control connection, with a handoff hello and proxy.connect before the existing byte splice.
 - `.git` and `..` are never served, and a link is followed only when git tracks it and its target lies under a
   declared data root (`site/` `resolve_and_open`).
+- Rust video opens, preview bounds and HTTP MIME decisions use sot_protocol::video_path::video_mime; leading-dot filenames follow the existing Julia suffix contract.
 
 ## Connections
 
@@ -43,7 +45,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `is_servable_video`, `start_page_servers`, `remove_root`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`.
 Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`,
 `dispatch`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `ContainedStd`, `Signal`, `child_signal::fired`, `child_signal::process`, `resolve_bin`,
-`sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `bound_pluto_port`, `allowed_proxy_ports`, `lane_dial`, `ResolvedDial`.
+`sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `bound_pluto_port`, `allowed_proxy_ports`, `lane_dial`, `ResolvedDial`, `sot_protocol::video_path::video_mime`.
 
 ## Folders
 

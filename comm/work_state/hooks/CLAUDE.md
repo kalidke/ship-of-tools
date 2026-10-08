@@ -24,3 +24,4 @@ others are short. The events the Claude hooks are wired to are `_COMM_STATE_HOOK
   `comm-status-heartbeat.sh` also call `sot_require_agent` themselves.
 - This folder holds hooks only. Installed, the Stop hook finds the auditor beside it in the bin; in the tree it must
   not, so a suite can run it with no live model (`comm/tests/test-status-floor.sh`).
+- Heartbeat context resolution uses the library's `sot_bounded` owner. A context timeout, setup failure or cancellation discards its entire output and skips the stamp; the hook adds no separate child wait. Its stdout and stderr files are removed after the bounded invocation; diagnostics are replayed from a finite stderr snapshot, and an ordinary completed context call retains its stdout even when it exits nonzero.

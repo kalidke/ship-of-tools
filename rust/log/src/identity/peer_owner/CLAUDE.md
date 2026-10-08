@@ -15,9 +15,7 @@ refuses. Part of platform; charter: rust/log/src/host/CLAUDE.md.
 Read `mod.rs`: `serve_own`, then `PeerOwner`, `tcp_peer_owner` and `admit`; `pcblist_n.rs` only for the macOS table.
 
 ## Rules
-- Every TCP accept of the Rust processes is `serve_own`'s: `rust/clippy.toml` disallows every accept, and the one
-  TCP accept carries the allow named `listener: page (TCP)` in `serve`; `rust/log/tests/isolation_guards.rs` lists
-  every listener's allow. No caller can hand a loop a weaker check.
+- TCP accepts use `serve_own` and its private owner decision; the existing accept lint remains. Native owner tests prove refusal before handler entry and a same-account serving control; no listener-spelling catalog supplies that proof.
 - Only `PeerOwner::Mine` is served; every failure is `Unknown` and refuses (`admit`, private).
 - A refused connection is closed with nothing read or written (`serve`). On Windows the accepted socket is made
   non-inheritable the moment it is accepted, before the check, so a child process started after that cannot keep it

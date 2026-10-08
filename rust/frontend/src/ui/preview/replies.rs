@@ -91,7 +91,7 @@ impl State {
                 let (header, body) = split_frontmatter(&content);
                 edit.header = header;
                 edit.expected_ast_hash = if exists {
-                    parse_synced_against(&content)
+                    sot_protocol::annotation::synced_against(&content)
                 } else {
                     None
                 };
@@ -110,12 +110,12 @@ impl State {
         // request for the current selection.
         if self.concept_target_fired.as_deref() == Some(target.as_str()) {
             let synced_against = if exists {
-                parse_synced_against(&content)
+                sot_protocol::annotation::synced_against(&content)
             } else {
                 None
             };
             if exists {
-                let body = strip_frontmatter(&content);
+                let body = split_frontmatter(&content).1;
                 self.preview_concept = Some(MarkdownPreview::new(
                     self.text.font_system_mut(),
                     &body,
@@ -269,15 +269,19 @@ impl State {
             }
         }
         self.render_preview_source(&mime, &bytes);
+        self.result_preview_installed(generation, node_id.as_deref());
         // ADR 0025 `preview --roi`: certify a pending aim once its
         // image is the INSTALLED quad. A preview reply installs
         // whatever arrived last (node-unchecked above), so the
         // render-pass solve gates on this — never on the previous
         // file's quad. The solve itself stays in the render pass,
         // where the live pane geometry exists.
+        let row_key = self.active_result_row_key();
         let drop_aim = match self.pending_roi_aim.as_mut() {
             Some(aim)
-                if !aim.ready && node_id.as_deref() == Some(aim.node_id.as_str()) =>
+                if !aim.ready
+                    && row_key.as_ref() == Some(&aim.row_key)
+                    && node_id.as_deref() == Some(aim.node_id.as_str()) =>
             {
                 if is_raster_preview_mime(&mime) && self.preview_png.is_some() {
                     aim.ready = true;

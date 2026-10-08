@@ -9,7 +9,7 @@ them to the UI. Part of fe-net; charter: rust/frontend/src/net/CLAUDE.md.
 
 ## Files
 - `mod.rs`: declares the families and re-exports their functions and reply types to the transport
-- `tree.rs`: tree.children, tree.root, nav.toggle_hidden, directory.list
+- `tree.rs`: ordinary tree.children, tree.root, nav.toggle_hidden and directory.list; send_result_tree and on_result_tree share the existing tree wire/parse operations while preserving local attempt identity.
 - `preview.rs`: preview.get (and `send_figure_get`), .set_scale, image.crop, math.render
 - `concept.rs`: concept.read, concept.write
 - `files.rs`: file.read, file.write, file.delete, dir.create, file.download, file.upload
@@ -29,7 +29,7 @@ arm in `send_request`; and an `on_<op>` with its `PendingKind` variant and arm i
   inserts none is fire-and-forget, and its reply reaches the UI as `IncomingEvt::Event`:
   `send_toggle_hidden`, `send_workspace_activate`, `send_fe_presence`, `send_fe_sessions`,
   `send_repl_interrupt`, `send_monitor_unsubscribe`, `send_agent_send`.
-- `send_figure_get` alone inserts before it writes, so `PendingGuard`'s drop reports a figure whose
-  write failed (`FigureGetFailed`).
+- send_figure_get and send_result_tree insert before writing, so PendingGuard reports their outstanding failures on connection teardown; ordinary send_<op> ordering remains write then insert.
+- Each matched result-tree root or children reply yields one tagged success or failure, including backend errors and malformed payloads; a result-root parse error is not dropped.
 - `on_file_download` alone puts its entry back, with its open file, until the chunk marked eof (one
   request id, many replies).

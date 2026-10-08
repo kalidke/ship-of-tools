@@ -124,8 +124,9 @@ fn fresh_workspace_caches(
 /// 2026-09-08): red, white, blue, green, purple, gray — left to right.
 /// Needs-you first: `blocked` (a question pending on the user) ahead of a
 /// BADGED row (a result the session deliberately surfaced for the user and
-/// they have not looked at — the ADR 0025 badge floor, FE-local, cleared by
-/// the very act of switching to it), ahead of `done` (a turn the user asked
+/// they have not looked at — the ADR 0025 badge floor, FE-local, cleared only
+/// after its canonical row's matching cursor, preview and successful presentation),
+/// ahead of `done` (a turn the user asked
 /// for, finished and unread — ADR 0044). Then the busy tiers, `working`
 /// before `waiting` (delegated, owed a result), then everything resting
 /// (`idle`, empty, unknown). A badge lifts any row except a red one — red
@@ -222,6 +223,22 @@ impl State {
             .map(|s| (self.active_host.clone(), s.to_string()))
     }
 
+    /// Reconcile canonical pending-result identities before rebuilding workspace caches from an authoritative host list. A disconnect is not removal, and a kept default row retains its identity.
+    pub(in crate::ui) fn reconcile_pending_results(
+        &mut self,
+        host: &HostKey,
+        incoming: &[crate::net::transport::WorkspaceInfo],
+    ) {
+        let owed: Vec<String> = self
+            .pending_nav_workspace_ids(host)
+            .into_iter()
+            .filter(|id| !incoming.iter().any(|row| &row.workspace_id == id))
+            .collect();
+        for id in owed {
+            self.invalidate_result_row(host, &id);
+        }
+    }
+
     /// Re-rank the strip in place after a badge was marked or cleared —
     /// the one activity input that changes without a `workspace.list`
     /// arrival. Same pure function, same pin, same stability: a call that
@@ -247,6 +264,7 @@ impl State {
     /// one thing that genuinely needs history — flash-on-transition
     /// detection against the PRIOR `prev_workspace_states`.
     pub(in crate::ui) fn rebuild_workspace_caches(&mut self) {
+        self.refresh_badge_index();
         let fresh = fresh_workspace_caches(
             &self.ordered_hosts(),
             &self.workspace_lists,

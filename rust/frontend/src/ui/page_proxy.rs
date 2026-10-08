@@ -12,7 +12,7 @@ use super::*;
 pub(in crate::ui) enum ProxyTarget {
     NotNeeded,
     Refused(String),
-    Dial(sot_protocol::topology::ssh_bridge::SshRecipe, Option<String>),
+    Dial(crate::pages::PageDial, Option<String>),
 }
 
 impl State {
@@ -43,10 +43,13 @@ impl State {
         if !proxy_capable_hosts.contains(host) {
             return ProxyTarget::NotNeeded;
         }
+        let token = host_transports.get(host).and_then(|c| c.token.clone());
         match host_resolved_dial.get(host) {
             Some(ResolvedDial::Ssh(recipe)) => {
-                let token = host_transports.get(host).and_then(|c| c.token.clone());
-                ProxyTarget::Dial(recipe.clone(), token)
+                ProxyTarget::Dial(crate::pages::PageDial::Ssh(recipe.clone()), token)
+            }
+            Some(ResolvedDial::Relay(path)) => {
+                ProxyTarget::Dial(crate::pages::PageDial::Relay(path.clone()), token)
             }
             _ => ProxyTarget::Refused(format!(
                 "'{host}' has no resolved connection to proxy its pages through"
@@ -113,7 +116,7 @@ impl State {
             &self.hosts.host_resolved_dial,
             &self.hosts.host_transports,
         );
-        let (recipe, token) = match &target {
+        let (dial, token) = match &target {
             ProxyTarget::NotNeeded => return true,
             ProxyTarget::Refused(reason) => {
                 tracing::warn!(%host, %reason, "proxy: refusing — no dial to proxy through");
@@ -121,7 +124,7 @@ impl State {
                 self.window.request_redraw();
                 return false;
             }
-            ProxyTarget::Dial(recipe, token) => (recipe.clone(), token.clone()),
+            ProxyTarget::Dial(dial, token) => (dial.clone(), token.clone()),
         };
         let gate = self.hosts.link_gates.entry(host.clone()).or_default().clone();
         let Some(tx) = self.proxy_listener_tx.as_ref() else {
@@ -145,12 +148,12 @@ impl State {
                     self.proxy_ensured.remove(&port);
                     return false;
                 }
-                if tx.send((listener, recipe.clone(), token, gate, arm)).is_err() {
+                if tx.send((listener, dial.clone(), token, gate, arm)).is_err() {
                     tracing::warn!(port, "proxy: manager gone; not arming");
                     self.proxy_ensured.remove(&port);
                     return false;
                 }
-                tracing::info!(port, %recipe, "proxy: bound local listener for backend page");
+                tracing::info!(port, %dial, "proxy: bound local listener for backend page");
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 // Something already holds the port. Do NOT cache this: un-mark
@@ -217,7 +220,7 @@ mod tests {
         match State::resolve_proxy_target(&host, &proxy_capable_hosts, &host_resolved_dial, &host_transports)
         {
             ProxyTarget::Dial(got, token) => {
-                assert_eq!(got, recipe);
+                assert_eq!(got, crate::pages::PageDial::Ssh(recipe));
                 assert_eq!(token.as_deref(), Some("tok-gpu"));
             }
             other => panic!("expected Dial for a proxy-capable host with a resolved ssh recipe, got {other:?}"),
@@ -238,7 +241,7 @@ mod tests {
         match State::resolve_proxy_target(&host, &proxy_capable_hosts, &host_resolved_dial, &host_transports)
         {
             ProxyTarget::Dial(got, token) => {
-                assert_eq!(got, recipe);
+                assert_eq!(got, crate::pages::PageDial::Ssh(recipe));
                 assert_eq!(token, None);
             }
             other => panic!("expected Dial for the default host, got {other:?}"),
@@ -262,6 +265,32 @@ mod tests {
             ProxyTarget::Refused(reason) => assert!(reason.contains(&host)),
             other => panic!("expected a visible Refused reason, got {other:?}"),
         }
+    }
+
+    /// A generated hub relay is a remote page target: the proxy dials the exact path the control connection
+    /// resolved, with the host's token, and a `Local` resolution still refuses.
+    #[test]
+    fn a_resolved_relay_is_a_remote_page_target() {
+        let host = "gpu-box".to_string();
+        let capable = std::collections::HashSet::from([host.clone()]);
+        let path = std::path::PathBuf::from("/run/user/1000/sot-host-gpu-box.sock");
+        let resolved = HashMap::from([(host.clone(), ResolvedDial::Relay(path.clone()))]);
+        let transports = HashMap::from([(
+            host.clone(),
+            crate::net::transport::TransportConfig {
+                dial: crate::net::transport::Dial::Relay(path.clone()),
+                token: Some("tok".to_string()),
+            },
+        )]);
+        assert_eq!(
+            State::resolve_proxy_target(&host, &capable, &resolved, &transports),
+            ProxyTarget::Dial(crate::pages::PageDial::Relay(path), Some("tok".to_string()))
+        );
+        let local = HashMap::from([(host.clone(), ResolvedDial::Local)]);
+        assert!(matches!(
+            State::resolve_proxy_target(&host, &capable, &local, &transports),
+            ProxyTarget::Refused(_)
+        ));
     }
 
     /// A host that never advertised proxy capability (a local daemon, or
@@ -294,7 +323,12 @@ mod tests {
             bind.as_ref().err().map(std::io::Error::kind),
             Some(std::io::ErrorKind::AddrInUse)
         ));
-        let target = ProxyTarget::Dial(sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap(), None);
+        let target = ProxyTarget::Dial(
+            crate::pages::PageDial::Ssh(
+                sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap(),
+            ),
+            None,
+        );
         assert!(!State::proxy_open_permitted(&target, Some(&bind)));
     }
 
@@ -304,7 +338,12 @@ mod tests {
     fn proxy_open_permitted_allows_a_successful_dial_bind() {
         let bind = std::net::TcpListener::bind(("127.0.0.1", 0));
         assert!(bind.is_ok());
-        let target = ProxyTarget::Dial(sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap(), None);
+        let target = ProxyTarget::Dial(
+            crate::pages::PageDial::Ssh(
+                sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap(),
+            ),
+            None,
+        );
         assert!(State::proxy_open_permitted(&target, Some(&bind)));
     }
 

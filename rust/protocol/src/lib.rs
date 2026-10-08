@@ -5,13 +5,16 @@
 // Blob payloads are length-prefixed binary frames following an envelope whose
 // payload contains `"blob": {"len": N, "mime": "…"}`. See docs/adr/0001.
 
+pub mod annotation;
 pub mod codec;
 pub mod ir;
 pub mod ops;
 pub mod page_url;
+pub mod physical_scale;
 // The declared topology (`hosts.toml`, grammar v2): the ONE parser and the
 // ONE search rule for the daemon, `sotd topology`, and the frontend.
 pub mod topology;
+pub mod video_path;
 
 pub use codec::{read_frame, write_frame};
 pub use ir::{BlobDescriptor, PreviewPayload, TreeNode};

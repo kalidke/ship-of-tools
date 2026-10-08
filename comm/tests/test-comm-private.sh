@@ -42,7 +42,7 @@ chmod 755 "$HOME"
 export SOT_COMM_HOME="$HOME/.sot-comm"
 guard_refuse_live_home "$SOT_COMM_HOME"
 SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
-export SOT_COMM_TEST_HOST="testhost"
+export SOT_COMM_TEST_HOST="testhost" SOT_SELF_HOST="testhost"
 unset SOT_COMM_NAME SOT_COMM_SELF_FILE CLAUDE_CODE_SESSION_ID
 
 # A copy of the staged bin whose library finds no daemon and a fixture mount, so a library append is local.

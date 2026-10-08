@@ -54,12 +54,20 @@ done
 
 COMM="${SOT_COMM_HOME:-$HOME/.sot-comm}/bin"
 
-# Default handle: <repo>-cx-<host>. SOT_COMM_NAME (set by the daemon's boot
-# wrapper from workspace.agent_name) wins when present.
+# Default handle: <repo>-cx-<host>, from the comm library's own component
+# rules (a repo name can hold spaces or Unicode that workspace.create refuses).
+# SOT_COMM_NAME (set by the daemon's boot wrapper from workspace.agent_name)
+# wins when present. The library is sourced in a subshell: it sets umask 077,
+# which codex must not inherit. A failed derivation stops the launch.
 if [ -z "${SOT_COMM_NAME:-}" ]; then
-    repo="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
-    host="$(hostname -s 2>/dev/null || hostname)"
-    SOT_COMM_NAME="${repo}-cx-${host}"
+    SOT_COMM_NAME="$(
+        . "$COMM/comm-lib.sh" || exit 1
+        root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+        sot_raw_host raw_host || exit 1
+        repo="$(sot_sanitize_component "$(basename "$root")")" || exit 1
+        host="$(_sot_handle_host "$raw_host")" || exit 1
+        printf '%s-cx-%s' "$repo" "$host"
+    )" || { echo "ccx: cannot derive the default handle from $COMM/comm-lib.sh; set SOT_COMM_NAME or reinstall sot-comm" >&2; exit 1; }
 fi
 export SOT_COMM_NAME
 

@@ -155,6 +155,10 @@ const SOTD_HELP: &str = r#"Usage: sotd [OPTIONS]
   --adopt-legacy-registry  allow the Windows one-time legacy registry
                           adoption (installed launchers only)
 
+Offline command (returns before daemon initialization):
+  trust declare <absolute-prefix>
+                          declare folder trust in user-level settings
+
 Pure queries (no startup side effects, answered before any of the above):
   --version, -V           print the version line and exit
   --help, -h              print usage and exit; every subcommand accepts it
@@ -190,6 +194,7 @@ fn help_for(args: &[String]) -> Option<&'static str> {
         return None;
     }
     Some(match first.as_str() {
+        "trust" => agents::trust_declaration::USAGE,
         "topology" => topology::cli::USAGE,
         "status" => topology::status::USAGE,
         "stdio-bridge" => topology::stdio_bridge::USAGE,
@@ -283,6 +288,12 @@ async fn main() -> Result<()> {
     }
     if let Some(first) = std::env::args().nth(1) {
         match first.as_str() {
+            "trust" => {
+                apply_umask();
+                let outcome = agents::trust_declaration::run(&args[1..])?;
+                println!("{outcome:?}");
+                return Ok(());
+            }
             "session-socket-path" => {
                 // No label means this box's own daemon — the only thing a
                 // caller that omits it can mean, and the one place that

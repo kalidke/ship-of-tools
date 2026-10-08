@@ -65,9 +65,11 @@ sot_require_tools() {
 }
 
 # sot_bounded SECS CMD [ARG...] — runs the program CMD (not a shell function) with this shell's stdin, stdout and
-# stderr, and ends it SECS seconds (a whole number above 0) after it starts. The four timed comm calls run under it:
-# sot_ssh_bridge's ssh, sot_dial's bridge, comm-list.sh's `sot-fe version` and comm-turn-auditor.sh's headless
-# claude. One perl process owns the deadline and CMD's process group, which CMD gets before it runs, or it does not
+# stderr, and ends it SECS seconds (a whole number above 0) after it starts.
+# The bounded comm calls run under it: sot_ssh_bridge's ssh, sot_dial's bridge,
+# comm-list.sh's `sot-fe version`, comm-turn-auditor.sh's headless claude, and
+# the PostToolUse heartbeat's comm-context.sh.
+# One perl process owns the deadline and CMD's process group, which CMD gets before it runs, or it does not
 # run. The call returns when CMD has exited and no member of its group is left; until then the deadline holds, so a
 # descendant still holding CMD's output after CMD exits is ended at the bound too. At the bound, or when that perl is
 # itself sent TERM, INT or HUP, it signals the group and CMD itself (TERM, or the signal it got), so CMD is reached
@@ -222,11 +224,10 @@ sot_jq_rawfile() {
 # the SSH target a remote frontend dials, `scripts/launch-sot.ps1`/
 # `launch-sot.sh` — reusing it here would silently rename a frontend's
 # declared identity to whatever it dials), else the first `.`-label of
-# `hostname -s`, lowercased. Feeds ONLY `sot_hello_frame`'s wire `host`
-# field and display/logs — never an address or on-disk namespace: no
-# on-disk namespace changes this sprint (S1), so comm-context.sh's own
-# `HOST` (the self-file key, handle derivation) does NOT call this;
-# `hostname -s` there stays completely independent, exactly as on main.
+# `hostname -s`, lowercased. Feeds `sot_hello_frame`'s wire `host` field,
+# display/logs, and comm-context.sh's `HOST`, which keys the registry row and
+# the unpinned self slot.
+# The declared host owns registry facts and self-slot keys; raw host text is only the derived-handle component and validated legacy-slot input. Local defaults use HANDLE_HOST; remote defaults use the admitted target's declared host.
 # Fails loudly (S19) rather than printing empty when neither source
 # resolves — a hello with an empty declared host is worse than a hello
 # that never sent one at all.

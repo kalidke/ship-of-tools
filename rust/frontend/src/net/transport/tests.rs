@@ -1,5 +1,6 @@
 //! Tests of the connection task: backoff, the link gate, a closed local connection.
 
+use super::steady::read_owned;
 use super::*;
 
 #[test]
@@ -16,6 +17,13 @@ fn a_down_ssh_host_costs_the_hub_at_most_two_logins_a_minute() {
     let ssh = Dial::Ssh(sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", Some("gamma")).unwrap());
     let n = count(&ssh);
     assert!(n <= 130, "{n} logins per hour on the hub for one down host");
+    let n = count(&Dial::Relay(std::path::PathBuf::from(
+        "/run/user/1000/sot-host-gamma.sock",
+    )));
+    assert!(
+        n <= 130,
+        "{n} relay connects per hour: each one makes the hub log in to the far host"
+    );
     let n = count(&Dial::Pipe(std::path::PathBuf::from("/x")));
     assert!(n >= 700, "a local socket keeps its 5 s cap, got {n} probes per hour");
 }

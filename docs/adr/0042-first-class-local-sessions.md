@@ -532,3 +532,7 @@ which ADR 0041 had already discharged.
   keeps its special tenant but not a special transport.
 - Records for local sessions live on the local disk under the daemon's
   state root — the same durability rules as everywhere (ADR 0039).
+
+## Update (0.6.6): listed workspace targets
+
+The window resolves result commands against the producing host's workspace.list, accepting its listed slug or canonical id. Strip keys retain the listed slug and view keys normalize the per-host default. Pane attachment reads session_name from that row; the window derives neither a session name from a slug nor a slug from a session name.

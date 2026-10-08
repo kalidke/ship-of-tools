@@ -20,7 +20,7 @@ they run beside the library at its installed name. Part of agents; charter: agen
 - Spawn derives a name in mode `fresh` (`claim_derived_handle`): an existing row for the name is a refusal, never a
   reclaim.
 - A second agent inside a session neither spawns nor despawns rows (`sot_require_agent`, checked before any write).
-- `comm-despawn.sh` changes nothing when the name resolves to no workspace, and removes the registry row only after the
-  daemon confirms the destroy.
+- `comm-despawn.sh` resolves the target daemon's declared host before destroying; missing identity or a failed destroy changes no row or self file. A confirmed destroy removes only that target's exact workspace self slot and its registry row. It changes nothing when the name resolves to no workspace.
+- Local spawn stores the declared host but derives its handle from HANDLE_HOST; remote spawn derives from the target daemon's declared host and writes no local registry row or inbox.
 - `comm-bootstrap.sh` and `comm-probe.sh` are the two scripts that still type into rows (`sot_pty_input`).
 - `comm-probe.sh` creates, types into and replies to nothing whose handle does not begin `probe`.

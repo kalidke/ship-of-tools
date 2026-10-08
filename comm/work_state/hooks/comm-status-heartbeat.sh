@@ -123,43 +123,68 @@ _agent_gate
 mkdir -p "$COMM_HOME/state" 2>/dev/null || true
 touch -- "$_hb_tick" 2>/dev/null || true
 NAME=""
-# TIMEOUT GUARD (2026-09-17): comm-context.sh was observed hung on Windows,
-# and because this hook fires on EVERY PostToolUse a stalled child piles up
-# one wedged bash per tool call -- ~150 of them on one box, which starved Git
-# Bash startup past 120s and stalled the harness's own Bash tool. "A hook must
-# never wedge a turn" (header, above), so cap the child and carry on
-# contextless if it stalls: a missing NAME just exits 0 a few lines down,
-# which is the same no-op as not being a comm agent.
-# Bash-native watchdog, not an external `timeout`: in Git Bash a bare
-# `timeout` resolves to C:\WINDOWS\system32\timeout.exe, which is NOT
-# coreutils and takes no command, and /usr/bin/timeout isn't guaranteed
-# either. Run comm-context.sh in the background, poll every 50 ms for up to
-# 10s (a context call that ends in 30 ms costs 50 ms, not a whole second;
-# SOT_HB_CTX_TIMEOUT_TICKS shortens the bound for tests), kill it
-# if it's still alive past that -- collect its output only when it finished
-# on its own (a non-zero exit from a fast, legitimate no-context run still
-# has its output used, matching the old unconditional `|| true`).
-if [ -x "$SELF_DIR/comm-context.sh" ]; then
-    _ctx_out="$COMM_HOME/state/.hb-ctx-$$"
-    "$SELF_DIR/comm-context.sh" >"$_ctx_out" 2>/dev/null &
-    _ctx_pid=$!
-    _ticks="${SOT_HB_CTX_TIMEOUT_TICKS:-200}"
-    case "$_ticks" in ''|*[!0-9]*) _ticks=200 ;; esac
-    _waited=0
-    while kill -0 "$_ctx_pid" 2>/dev/null && [ "$_waited" -lt "$_ticks" ]; do
-        sleep 0.05
-        _waited=$((_waited + 1))
-    done
-    if kill -0 "$_ctx_pid" 2>/dev/null; then
-        kill "$_ctx_pid" 2>/dev/null
-        _ctx=""
-    else
-        _ctx="$(cat "$_ctx_out" 2>/dev/null)"
+# Context resolution runs under comm-lib's one command-bound owner, sot_bounded.
+# Its default command budget is 10 seconds, followed by bounded TERM/KILL
+# confirmation. SOT_HB_CTX_TIMEOUT_TICKS is a test seam: positive counts round
+# up from 50 ms ticks to whole seconds; zero skips resolution.
+# Keep stdout and stderr in private regular files so an unfinished descendant
+# cannot hold the hook's own output capture open. Replay a finite stderr
+# snapshot after the bound returns; failed bounds discard all context stdout.
+_hb_context_budget() {
+    _ctx_ticks="${SOT_HB_CTX_TIMEOUT_TICKS:-200}"
+    case "$_ctx_ticks" in ''|*[!0-9]*) _ctx_ticks=200 ;; esac
+    while [ "${_ctx_ticks#0}" != "$_ctx_ticks" ]; do _ctx_ticks="${_ctx_ticks#0}"; done
+    [ -n "$_ctx_ticks" ] || return 1
+    # Bash's signed integer range on the supported 64-bit platforms. Check the
+    # decimal text before arithmetic; quotient/remainder avoids ticks + 19.
+    if [ "${#_ctx_ticks}" -gt 19 ] || { [ "${#_ctx_ticks}" -eq 19 ] && [[ "$_ctx_ticks" > 9223372036854775807 ]]; }; then
+        echo "sot-comm: heartbeat context budget is unusable; heartbeat skipped" >&2
+        return 1
     fi
-    wait "$_ctx_pid" 2>/dev/null
-    rm -f "${_ctx_out:?}" 2>/dev/null
-    [ -n "${_ctx:-}" ] && eval "$_ctx" 2>/dev/null || true
-fi
+    _ctx_ticks=$((10#$_ctx_ticks))
+    _ctx_secs=$((_ctx_ticks / 20 + (_ctx_ticks % 20 != 0)))
+}
+_hb_context() {
+    # Capture these before the library assigns SELF_DIR to its identity cache.
+    local _ctx_exec="$SELF_DIR/comm-context.sh" _ctx_ticks _ctx_secs
+    local _ctx_state _ctx_out _ctx_err _ctx_rc _ctx_bytes _ctx=""
+    [ -x "$_ctx_exec" ] || return 0
+    _hb_context_budget || return 0
+    _ctx_state="$(cd "$COMM_HOME/state" 2>/dev/null && pwd -P)" || {
+        echo "sot-comm: heartbeat context artifact could not be created or removed; heartbeat skipped" >&2
+        return 0
+    }
+    _ctx_out="$_ctx_state/.hb-ctx-$$"
+    _ctx_err="$_ctx_state/.hb-ctx-$$.err"
+    if ! ( set -C; : >"$_ctx_out" ) 2>/dev/null; then
+        echo "sot-comm: heartbeat context artifact could not be created or removed; heartbeat skipped" >&2
+        return 0
+    fi
+    if ! ( set -C; : >"$_ctx_err" ) 2>/dev/null; then
+        rm -f "${_ctx_out:?}" 2>/dev/null || true
+        echo "sot-comm: heartbeat context artifact could not be created or removed; heartbeat skipped" >&2
+        return 0
+    fi
+    (
+        . "$hb_lib" || exit 125
+        type sot_bounded >/dev/null 2>&1 || exit 125
+        sot_bounded "$_ctx_secs" "$_ctx_exec"
+    ) >"$_ctx_out" 2>"$_ctx_err"
+    _ctx_rc=$?
+    _ctx_bytes="$(wc -c <"$_ctx_err")"
+    head -c "$_ctx_bytes" "$_ctx_err" >&2
+    case "$_ctx_rc" in
+        124|125|127|137|129|130|143)
+            echo "sot-comm: heartbeat context unavailable (command bound status $_ctx_rc); heartbeat skipped" >&2 ;;
+        *) _ctx="$(cat "$_ctx_out" 2>/dev/null)" ;;
+    esac
+    if ! rm -f "${_ctx_out:?}" "${_ctx_err:?}" 2>/dev/null; then
+        echo "sot-comm: heartbeat context artifact could not be created or removed; heartbeat skipped" >&2
+        _ctx=""
+    fi
+    [ -n "$_ctx" ] && eval "$_ctx" 2>/dev/null || true
+}
+_hb_context
 [ -n "${NAME:-}" ] || exit 0
 
 # The row and the write below are comm-lib.sh's sot_registry_read and

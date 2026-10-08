@@ -3,8 +3,8 @@
 # the backend (ADR 0025, op::FE_COMMAND). A BE-side CLI: it frames an
 # `fe.command.send` request, sends it to the running sotd daemon over its
 # socket (no comm relay, no FE LLM), and the daemon re-emits it as an
-# `fe.command` evt. The FE switches + shows the target regardless of its
-# current view. With no --fe, the daemon resolves delivery to the ACTIVE
+# `fe.command` evt. The FE shows the target in place when it is already on
+# that workspace and otherwise badges it (see preview below). With no --fe, the daemon resolves delivery to the ACTIVE
 # frontend — whichever FE last reported real keyboard/mouse input
 # (`fe.presence`), within a 5-minute window — and delivers to that ONE
 # connection exclusively; it falls back to broadcasting to every attached FE
@@ -32,8 +32,12 @@
 #   sot-fe version                                 [--endpoint <ep>] [--timeout <s>]
 #   sot-fe reauth <account>                        [--timeout <s>]
 #
-#   preview  — switch the FE to <workspace>, Files mode, and preview <path>.
-#   reveal   — switch + reveal <path> in the file tree (cursor it, no preview).
+#   preview  — preview <path> and expand the file tree to it. If the FE is
+#              already on <workspace> it happens at once; otherwise it is
+#              badged and shown when the user next visits <workspace>. Only
+#              --urgent with --fe switches the view now.
+#   reveal   — the same as preview (one code path in the FE); --roi and
+#              --caption apply to either.
 #   goto     — switch the FE to <workspace> (no path).
 #   mode     — switch the FE's active mode (files | modules | project | ...).
 #   notify   — surface a one-line notice (optionally scoped to a workspace).

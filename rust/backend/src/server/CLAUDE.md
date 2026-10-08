@@ -67,7 +67,7 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   `shutdown::run`).
 
 ## Connections
-Each connection is one row of docs/integration.md, owned by its provider. Provides: `proxy.connect`,
+Each connection is one row of docs/integration.md, owned by its provider. Provides: handle_fe_command_send relay diagnostics, `proxy.connect`,
 `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`, `lane.connect`, `handle_lane_connect`,
 `fe.lease`, `lease::hold`, `admit_peer`, `dispatch`, `hello`, `admit_hello`, `sotd stdio-bridge`, `write_frame_within`,
 `write_frame_to`, `version.query`. Uses: `Frame`, `codec::read_frame`, `codec::read_envelope`, `codec::write_frame`, `hello`,
@@ -92,6 +92,9 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 - `events.rs`: one `write_*` per bus turning a broadcast item into its evt frame, and `recv_or_pending` for the two buses a connection holds as `Option` (always `Some` in a served connection, `None` only in tests)
 - `reply.rs`: the write deadline, the frame writers, the reply and error containment, and the off-loop job pool
 - `pipe.rs`: the shared byte pipe after a connect frame (`pipe_bidirectional`) and the one error frame for a refused connect (`reject`)
+
+## Rules
+- Native listener tests observe accept-time rejection before connection-handler entry, a same-account control, and Windows access denial using the live session-pipe descriptor; hello account-conflict tests do not substitute for OS admission.
 
 ## Start here
 An op: the `match` in `dispatch`. Bind, accept and the lock: `run_local` and `lock_daemon`. Boot order and

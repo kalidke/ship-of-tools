@@ -11,6 +11,7 @@ program against. Part of capsule; charter: rust/log/CLAUDE.md.
 - `pipe_win/`: the Windows named-pipe transport, server and client
 - `platform_transport.rs`: `PlatformTransport`, the capsule's `Transport` over `PlatformLaneServer`
 - `socket_unix/`: the Unix domain-socket transport, server and client
+- `test_progress.rs`: Unix-only server-local socket checkpoints; nonwaiting admission counts skipped records, and test/support snapshots retain bounded history.
 - `transport.rs`: `Transport`, `TransportEvent`, `LaneServer`, `LaneEvent`, `TransportError`, the teardown bound and the servers' shared helpers
 - `wire/`: the frame layouts of the three lanes, pure encode and decode
 
@@ -22,3 +23,4 @@ program against. Part of capsule; charter: rust/log/CLAUDE.md.
 - `TransportError::is_endpoint_absent` is the one absence predicate on every platform.
 - The platform is chosen once, by `client::PlatformEndpoint` and `transport::PlatformLaneServer`.
 - A connection's outbound bytes are reserved in `OutboundBudget` before queueing and released when the write returns.
+- `Endpoint::drop_spare` abandons work started for a supervisor attempt that ended before a voyage dial; local endpoints use its default no-op.

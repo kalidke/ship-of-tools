@@ -88,7 +88,9 @@ source "$SCRIPT_DIR/comm-lib.sh"
 # needs is asked of its row's agent); the gate comes before the context call, so
 # a refused child touches nothing.
 _why="$(sot_require_agent)" || { echo "comm-spawn.sh: $_why" >&2; exit 1; }
-eval "$("$SCRIPT_DIR/comm-context.sh")"
+# A context that cannot name this session (an unusable declared host) has already said why: nothing is written.
+_ctx="$("$SCRIPT_DIR/comm-context.sh")" || exit 1
+eval "$_ctx"
 
 # Spawner's own handle, captured before arg parsing reuses NAME for the
 # child. Deliberately NOT synthesized into a "spawner-$HOST" placeholder
@@ -324,9 +326,10 @@ fi
 #
 # `sot_host` is the local side of that comparison — comm-lib.sh's
 # documented mirror of Rust's `state_dir::host_name()` (first `.`-label,
-# lowercased, `$SOT_SELF_HOST` override), which comm-context.sh's own raw
-# `hostname -s` `HOST` deliberately is not, so a mixed-case hostname does
-# not read as a foreign box.
+# lowercased, `$SOT_SELF_HOST` override). comm-context.sh's `HOST` is the same
+# fact, so a mixed-case hostname does not read as a foreign box; its raw
+# `HANDLE_HOST` only spells a derived handle. Local defaults use HANDLE_HOST; remote defaults use the admitted
+# target's declared host.
 #
 # An UNDECLARED host stays LOCAL, exactly as before this fix: the field is
 # `#[serde(default)]` and only a daemon predating v0.6.0 answers without
@@ -397,7 +400,7 @@ AUTO_DISPLAY_LABEL=false
 if [ -z "$NAME" ]; then
     if [ "$SPAWN_IS_LOCAL" = true ]; then
         DERIVED_CLAIM=true
-        claim_derived_handle fresh "$CANON_ROOT" "$HOST" "$PROV_OBJ"
+        claim_derived_handle fresh "$CANON_ROOT" "$HANDLE_HOST" "$PROV_OBJ"
         NAME="$CLAIMED_NAME"
         PROV_WRITTEN=true
     else
