@@ -62,13 +62,15 @@ fn inbox_home() -> tempfile::TempDir {
 
 /// A holder of `inbox/<h>.lock`: takes the lock, then runs `body`. `exec` so
 /// the child's pid IS the lock holder — a grandchild that inherited the fd
-/// would keep the lock past the kill.
+/// would keep the lock past the kill. The ready signal's `touch` closes fds 8
+/// and 9 for the same reason: the test waits only for the file, so a `touch`
+/// still running at the kill would hold the lock after it.
 fn holder(inbox: &Path, h: &str, body: &str) -> Child {
     let ready = inbox.join(format!("{h}.ready"));
     let child = Command::new("bash")
         .arg("-c")
         .arg(format!(
-            r#"exec 9>> "$1/$2.lock"; flock 9; exec 8>> "$1/$2.jsonl"; touch "$3"; {body}"#
+            r#"exec 9>> "$1/$2.lock"; flock 9; exec 8>> "$1/$2.jsonl"; touch "$3" 8>&- 9>&-; {body}"#
         ))
         .args(["_", inbox.to_str().unwrap(), h, ready.to_str().unwrap()])
         .spawn()
