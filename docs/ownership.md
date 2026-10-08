@@ -206,7 +206,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | video, site-prefix, site-pool listeners and grant tables | endpoint, state | pages | `rust/backend/src/pages/video.rs` `Grants`, `register_video`; `rust/backend/src/pages/site/mod.rs` `spawn`, `spawn_pool`, `set_root` |
 | window page-proxy listeners and arming | endpoint | pages | `rust/frontend/src/pages.rs` `serve_browser`, `Arm`; `rust/frontend/src/ui/page_proxy.rs` `ensure_proxy_for_url` |
 | Pluto's page server, notebook workers and supervisor proxy grant | endpoint, state | sidecars | `julia/pluto/start.jl`; `julia/pluto/session_options.jl` `configure_session!`; `rust/backend/src/sidecars/pluto.rs` `supervisor_task`, `bound_pluto_port` |
-| `wglshow`'s page server, one per REPL child | endpoint | sidecars | `julia/repl/src/wgl.jl` `page_server`, `no_referrer_page`, `WGL_SERVER` |
+| `wglshow`'s page server, one current server per REPL child | endpoint | sidecars | `julia/repl/src/wgl.jl` `page_server`, `wgl_server`, `no_referrer_page`, `WGL_SERVER` |
 | `lane.connect` | op | rows | `rust/backend/src/rows/ops/lane_bridge.rs` `handle_lane_connect` |
 | `pty.open` (start a row, answer `attach_direct`) | op | rows | `rust/backend/src/rows/ops/pty.rs` `handle_pty_open` |
 | `pty.write` | op | rows | `rust/protocol/src/ops/mod.rs` `PTY_WRITE` (no dispatch arm) |

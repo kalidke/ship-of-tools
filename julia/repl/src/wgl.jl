@@ -214,6 +214,27 @@ function page_server(Bonito, host::String, port::Int)
     return server
 end
 
+# The loopback address `wglshow` serves on.
+const WGL_HOST = "127.0.0.1"
+
+# The page server `wglshow` serves from: the live one, or a new one bound on `port` (nothing: any port the OS
+# assigns). A different explicit port than the live server's binds a replacement first (a taken port throws and
+# leaves the live page as it was), then closes the old server; its secret path goes with it.
+function wgl_server(Bonito, port::Union{Integer,Nothing})
+    port === nothing || 1 <= port <= 65535 || throw(ArgumentError("wglshow: port must be in 1:65535"))
+    page = WGL_SERVER[]
+    if page === nothing || (port !== nothing && port != page.server.port)
+        # Bind the new server first: a taken pinned port throws here and leaves the live page as it was.
+        fresh = (server = page_server(Bonito, WGL_HOST, port === nothing ? 0 : Int(port)),
+                 path = "/" * bytes2hex(rand(Random.RandomDevice(), UInt8, 16)))
+        old = WGL_SERVER[]
+        WGL_SERVER[] = fresh
+        old === nothing || try Base.invokelatest(close, old.server) catch end
+        page = fresh
+    end
+    return page
+end
+
 # `wglshow` renders pages Bonito's way only on the Bonito 5.1 line and later 5.x: the page handler below rebuilds the
 # body of Bonito's own `apply_handler(::App, context)` with another asset server.
 wgl_bonito_supported(v::VersionNumber) = v"5.1" <= v < v"6"
@@ -289,18 +310,8 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Union{Bool,A
     Bonito = Base.require(Base.PkgId(
         Base.UUID("824d6782-a2ef-11e9-3a09-e5662e0c26f8"), "Bonito"))
     wgl_bonito_supported(pkgversion(Bonito)) || error("wglshow needs Bonito 5.1 or a later 5.x; this REPL loaded Bonito $(pkgversion(Bonito))")
-    port === nothing || 1 <= port <= 65535 || throw(ArgumentError("wglshow: port must be in 1:65535"))
-    host = "127.0.0.1"
-    page = WGL_SERVER[]
-    if page === nothing || (port !== nothing && port != page.server.port)
-        # Bind the new server first: a taken pinned port throws here and leaves the live page as it was.
-        fresh = (server = page_server(Bonito, host, port === nothing ? 0 : Int(port)),
-                 path = "/" * bytes2hex(rand(Random.RandomDevice(), UInt8, 16)))
-        old = WGL_SERVER[]
-        WGL_SERVER[] = fresh
-        old === nothing || try Base.invokelatest(close, old.server) catch end
-        page = fresh
-    end
+    host = WGL_HOST
+    page = wgl_server(Bonito, port)
     external = "http://$host:$(page.server.port)"
     # Warn (never silently) if the figure carries interactive Makie widgets —
     # wglshow can't make them respond over the browser (see wgl_warn_if_widgets).

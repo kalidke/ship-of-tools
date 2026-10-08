@@ -52,7 +52,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 - `mod.rs`: declares the seven modules and `WireRequest`.
-- `contract_tests.rs`: native REPL/MathJax private-Signal spawn, shutdown closeout and owned-child observations; no source-text assertions.
+- `contract_tests.rs`: native REPL/MathJax private-Signal spawn, shutdown closeout and owned-child observations, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions.
 - `julia.rs`: which julia binary runs (`resolve_bin`).
 - `kernel.rs`: the per-row kernel and its supervisor.
 - `repl/`: the per-row Julia REPL child.

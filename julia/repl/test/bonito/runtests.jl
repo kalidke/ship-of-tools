@@ -5,6 +5,7 @@
 using Test
 using Bonito
 using SHA
+using Sockets
 using ShipToolsRepl
 
 # Linux: the (port, loopback) of every TCP socket in state LISTEN whose inode this process holds open.
@@ -58,5 +59,83 @@ end
         end
     finally
         close(server)
+    end
+end
+
+# The listener set of this process must equal the declared one exactly: a listener beyond it fails the comparison even
+# when every listener is on loopback and the declared one still serves.
+exact_listeners(before, declared) = setdiff(listeners(), before) == declared
+
+# A port the OS had free a moment ago, released.
+function free_port()
+    probe = listen(ip"127.0.0.1", 0)
+    port = Int(getsockname(probe)[2])
+    close(probe)
+    return port
+end
+
+function reset_wgl!()
+    page = ShipToolsRepl.WGL_SERVER[]
+    page === nothing || close(page.server)
+    ShipToolsRepl.WGL_SERVER[] = nothing
+end
+
+get_page(port, path) = Bonito.HTTP.get("http://127.0.0.1:$port$path"; status_exception = false, retry = false, read_idle_timeout = 30)
+
+@testset "WGL listener selection exposes only its owned loopback listener" begin
+    if !Sys.islinux()
+        @test_skip "listener observation reads /proc"
+    else
+        reset_wgl!()
+        before = listeners()
+
+        # First default selection: one OS-assigned loopback listener, serving its page.
+        page = ShipToolsRepl.wgl_server(Bonito, nothing)
+        port = page.server.port
+        @test exact_listeners(before, Set([(port, true)]))
+        app = Bonito.App(() -> Bonito.DOM.div("page"))
+        Bonito.route!(page.server, page.path => ShipToolsRepl.no_referrer_page(Bonito, app))
+        for _ in 1:2   # repeated page serves
+            @test get_page(port, page.path).status == 200
+            @test exact_listeners(before, Set([(port, true)]))
+        end
+
+        # Default and same-pin calls reuse it.
+        @test ShipToolsRepl.wgl_server(Bonito, nothing) === page
+        @test ShipToolsRepl.wgl_server(Bonito, port) === page
+        @test exact_listeners(before, Set([(port, true)]))
+
+        # A different explicit pin replaces it: the new listener serves, the old one is closed, and exactly the
+        # replacement's set remains.
+        other = free_port()
+        replacement = ShipToolsRepl.wgl_server(Bonito, other)
+        @test replacement.server.port == other
+        Bonito.route!(replacement.server, replacement.path => ShipToolsRepl.no_referrer_page(Bonito, app))
+        @test get_page(other, replacement.path).status == 200
+        @test exact_listeners(before, Set([(other, true)]))
+
+        # The comparison rejects a listener beyond the declared set, with the declared listener still serving.
+        extra = listen(ip"127.0.0.1", 0)
+        try
+            @test get_page(other, replacement.path).status == 200
+            @test !exact_listeners(before, Set([(other, true)]))
+        finally
+            close(extra)
+        end
+        @test exact_listeners(before, Set([(other, true)]))
+
+        # A taken first pin throws and publishes no server.
+        reset_wgl!()
+        taken = listen(ip"127.0.0.1", 0)
+        try
+            taken_port = Int(getsockname(taken)[2])
+            @test_throws ErrorException ShipToolsRepl.wgl_server(Bonito, taken_port)
+            @test ShipToolsRepl.WGL_SERVER[] === nothing
+            @test exact_listeners(before, Set([(taken_port, true)]))   # the reservation alone
+        finally
+            close(taken)
+        end
+        @test exact_listeners(before, Set{Tuple{Int,Bool}}())
+        reset_wgl!()
     end
 end

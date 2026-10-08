@@ -190,3 +190,117 @@ async fn mathjax_uses_private_signal() {
     assert_eq!(sig.live(), 0, "the refused start created no child");
     println!("D-L mathjax private Signal PASS");
 }
+
+/// Linux: the listening TCP and bound UDP sockets, as `(protocol, port)`, of every process in process group `group`
+/// (a contained child leads its group, so this is its whole tree). A socket belongs to a process when the process
+/// holds its inode open.
+#[cfg(target_os = "linux")]
+pub(crate) fn group_listeners(group: i32) -> (usize, std::collections::BTreeSet<(&'static str, u16)>) {
+    let pgrp = |pid: &str| -> Option<i32> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat[stat.rfind(')')? + 2..].split_whitespace().nth(2)?.parse().ok()
+    };
+    let mut inodes = std::collections::BTreeSet::new();
+    let mut processes = 0;
+    for entry in std::fs::read_dir("/proc").expect("read the process table").flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.bytes().all(|b| b.is_ascii_digit()) || pgrp(&name) != Some(group) {
+            continue;
+        }
+        processes += 1;
+        for fd in std::fs::read_dir(format!("/proc/{name}/fd")).into_iter().flatten().flatten() {
+            if let Ok(target) = std::fs::read_link(fd.path()) {
+                if let Some(inode) = target.to_string_lossy().strip_prefix("socket:[").and_then(|t| t.strip_suffix(']')) {
+                    inodes.insert(inode.to_owned());
+                }
+            }
+        }
+    }
+    let mut found = std::collections::BTreeSet::new();
+    for (file, protocol, state) in [
+        ("tcp", "tcp", "0A"),
+        ("tcp6", "tcp", "0A"),
+        ("udp", "udp", "07"),
+        ("udp6", "udp", "07"),
+    ] {
+        let table = std::fs::read_to_string(format!("/proc/net/{file}")).unwrap_or_default();
+        for line in table.lines().skip(1) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() > 9 && f[3] == state && inodes.contains(f[9]) {
+                if let Some(port) = f[1].rsplit(':').next().and_then(|p| u16::from_str_radix(p, 16).ok()) {
+                    found.insert((protocol, port));
+                }
+            }
+        }
+    }
+    (processes, found)
+}
+
+/// The MathJax helper, started and put to work through its production path, listens nowhere in its whole tree.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn mathjax_helper_tree_listens_nowhere() {
+    if !isolated(
+        "sidecars::contract_tests::mathjax_helper_tree_listens_nowhere",
+        Duration::from_secs(60),
+    ) {
+        return;
+    }
+    let sig = private_signal();
+    std::env::set_var("SOT_NODE_BIN", executable("node"));
+    let mathjax = MathJax::new(MathJax::default_script_path(), sig);
+    tokio::time::timeout(Duration::from_secs(30), mathjax.render("x^2", false))
+        .await
+        .expect("the render must answer")
+        .expect("the render must succeed");
+    let groups = sig.held_groups();
+    assert_eq!(groups.len(), 1, "the helper is alive and owned");
+    let (processes, listeners) = group_listeners(groups[0]);
+    assert!(processes >= 1, "setup: the observer sees the helper's process");
+    assert!(listeners.is_empty(), "the helper's tree must listen nowhere: {listeners:?}");
+    sig.fire();
+    within(Duration::from_secs(30), "the helper is reaped", || sig.live() == 0).await;
+}
+
+/// The same observer and the same empty-set comparison reject a node tree that does listen: the listener is
+/// functional, and the comparison fails on it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn listener_observer_rejects_a_listening_node_tree() {
+    if !isolated(
+        "sidecars::contract_tests::listener_observer_rejects_a_listening_node_tree",
+        Duration::from_secs(60),
+    ) {
+        return;
+    }
+    let sig = private_signal();
+    let mut command = tokio::process::Command::new(executable("node"));
+    command
+        .args([
+            "-e",
+            "const s = require('net').createServer().listen(0, '127.0.0.1', () => { console.log(s.address().port); setTimeout(() => {}, 60000); });",
+        ])
+        .stdout(Stdio::piped());
+    let mut owned = sig.spawn(&mut command).expect("start the owned listener");
+    let mut out = tokio::io::BufReader::new(owned.stdout.take().expect("stdout"));
+    let mut line = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::io::AsyncBufReadExt::read_line(&mut out, &mut line),
+    )
+    .await
+    .expect("the listener reports its port")
+    .expect("read the port");
+    let port: u16 = line.trim().parse().expect("port");
+    let group = sig.held_groups()[0];
+    let (_, listeners) = group_listeners(group);
+    assert!(
+        listeners != std::collections::BTreeSet::new(),
+        "the empty-set comparison must reject a listening tree"
+    );
+    assert!(listeners.contains(&("tcp", port)), "the observer sees the declared listener: {listeners:?}");
+    sig.fire();
+    let _ = owned.kill().await;
+    drop(owned);
+    within(Duration::from_secs(30), "the listener is reaped", || sig.live() == 0).await;
+}
