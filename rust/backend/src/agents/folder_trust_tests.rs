@@ -441,14 +441,19 @@ fn resolved_aliases_keep_the_original_cwd_key() {
 fn windows_case_and_drive_alias_keep_the_cwd_key() {
     let temp = tempfile::tempdir().unwrap();
     let home = crate::agents::support_tests::platform_spelling(temp.path());
-    let prefix = declared_parent(&home);
+    run_windows_alias_receipts(&home, &mut |receipt| println!("{receipt}"));
+}
+
+#[cfg(windows)]
+fn run_windows_alias_receipts(home: &Path, emit: &mut impl FnMut(&str)) {
+    let prefix = declared_parent(home);
     let root = prefix.join("mixed-case");
     touch_dir(&root);
     let mut spelling = root.to_str().unwrap().to_owned();
     if spelling.as_bytes().get(1) == Some(&b':') {
         spelling.replace_range(..1, &spelling[..1].to_ascii_lowercase());
     } else {
-        println!("W1 P4 drive-alias NOT CHECKED: fixture has no drive-letter spelling");
+        emit("W1 P4 drive-alias NOT CHECKED: fixture has no drive-letter spelling");
     }
     let alias = PathBuf::from(spelling).parent().unwrap().join("MIXED-CASE");
     assert_eq!(
@@ -457,14 +462,88 @@ fn windows_case_and_drive_alias_keep_the_cwd_key() {
         "W1 P4 STOP: case/drive aliases do not converge"
     );
     assert_eq!(
-        ensure_folder_trusted(&home, "", &alias, Some(&prefix)),
+        ensure_folder_trusted(home, "", &alias, Some(&prefix)),
         Ok(TrustOutcome::Recorded)
     );
     assert_eq!(
-        recorded_trust(&claude_trust_file(&home, ""), &alias),
+        recorded_trust(&claude_trust_file(home, ""), &alias),
         Some(true)
     );
-    println!("W1 P4 case/drive spelling PASS: OS comparison converges; original cwd key retained");
+    emit("W1 P4 case/drive spelling PASS: OS comparison converges; original cwd key retained");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_alias_receipts_unavailable_drive_has_no_pass() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = crate::agents::support_tests::platform_spelling(temp.path());
+    let verbatim = home.canonicalize().unwrap();
+    assert_eq!(
+        crate::agents::support_tests::platform_spelling(&verbatim),
+        home,
+        "W1 C5 unavailable control is not the same reachable directory"
+    );
+    assert_ne!(
+        verbatim.to_str().unwrap().as_bytes().get(1),
+        Some(&b':'),
+        "W1 C5 unavailable control still supplies a drive-letter spelling"
+    );
+    let mut receipts = Vec::new();
+    run_windows_alias_receipts(&verbatim, &mut |receipt| receipts.push(receipt.to_owned()));
+    for receipt in &receipts {
+        println!("{receipt}");
+    }
+    assert!(receipts
+        .iter()
+        .any(|receipt| receipt
+            == "W1 P4 drive-alias NOT CHECKED: fixture has no drive-letter spelling"));
+    assert!(
+        receipts
+            .iter()
+            .all(|receipt| !receipt.contains("drive spelling PASS")
+                && !receipt.contains("case/drive spelling PASS")),
+        "W1 C5 unavailable drive received false PASS credit"
+    );
+    assert!(receipts.iter().any(|receipt| receipt
+        == "W1 P4 case spelling PASS: OS comparison converges; original cwd key retained"));
+    println!("W1 C5 unavailable control PASS: reachable non-drive spelling; NOT CHECKED; no drive or combined PASS");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_alias_receipts_available_drive_has_separate_passes() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = crate::agents::support_tests::platform_spelling(temp.path());
+    let mut receipts = Vec::new();
+    run_windows_alias_receipts(&home, &mut |receipt| receipts.push(receipt.to_owned()));
+    for receipt in &receipts {
+        println!("{receipt}");
+    }
+    let case_pass = receipts.iter().position(|receipt| {
+        receipt == "W1 P4 case spelling PASS: OS comparison converges; original cwd key retained"
+    });
+    if receipts
+        .iter()
+        .any(|receipt| receipt.contains("drive-alias NOT CHECKED"))
+    {
+        assert!(case_pass.is_some());
+        assert!(receipts
+            .iter()
+            .all(|receipt| !receipt.contains("drive spelling PASS")
+                && !receipt.contains("case/drive spelling PASS")));
+        println!("W1 C5 available control NOT CHECKED: fixture supplies no distinct drive witness");
+        return;
+    }
+    let drive_pass = receipts.iter().position(|receipt| receipt
+        == "W1 P4 drive spelling PASS: distinct drive spelling exercised; OS comparison converges; original cwd key retained");
+    assert!(
+        matches!((case_pass, drive_pass), (Some(case), Some(drive)) if case < drive),
+        "W1 C5 available witnesses lack separate case and drive receipts"
+    );
+    assert!(receipts
+        .iter()
+        .all(|receipt| !receipt.contains("case/drive spelling PASS")));
+    println!("W1 C5 available control PASS: separate witnessed case and drive receipts");
 }
 
 #[cfg(windows)]
