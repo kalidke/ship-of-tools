@@ -450,6 +450,10 @@ mod tests {
         capsule_exe: PathBuf,
     }
 
+    /// The lease is a named mutex on Windows (named by the fixture and the process
+    /// id), so tests running in parallel each need a name of their own.
+    static NEXT_FIXTURE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().to_path_buf();
@@ -475,7 +479,7 @@ mod tests {
         Fixture {
             _dir: dir,
             config,
-            lease: LegLease::create("transitions-test").unwrap(),
+            lease: LegLease::create(&format!("transitions-test-{}", NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::SeqCst))).unwrap(),
             authority,
             capsule_exe: PathBuf::from("unused"),
         }
