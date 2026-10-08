@@ -22,9 +22,8 @@ the pane paints while that happens.
 
 ## Rules
 - Input reaches only the selected row's client or is counted as discarded (`send_pane_input`).
-- Never two pane clients alive: the old one is shut down off the UI thread before the new attach
-  (`spawn_pane_attach_term`).
-- The pane never paints a new client's empty screen before its checkpoint (`pane_screen_choice`).
+- The active pane slot holds at most one client. Departing live checkpointed clients may remain alive in the warm pool with viewed=false; clients selected for retirement are shut down off the UI thread, and replacement attachment does not wait for shutdown or worker exit (`spawn_pane_attach_term`, `park_warm_attach`, `shutdown_detached`).
+- While a new client is awaiting its checkpoint, a held departing screen is retained when available; without a hold the pane may paint the client's initially empty screen, which does not count as attach completion.
 - The warm pool keeps at most the host's row count, capped at `WARM_ATTACH_CAP`, per host (`WarmAttachPool::park`).
 - The reason overlay never reads the shared status line (`pane_terminal_reason_text`).
 - A presentation receipt requires the current live attached client's checkpoint, a nonempty painted pane and a known request origin, and is emitted once only after frame presentation.

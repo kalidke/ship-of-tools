@@ -197,43 +197,14 @@ impl State {
     /// drawer's 80×24 default — a freshly-selected row should show at
     /// its real size on the very first paint, not resize a frame later.
     ///
-    /// ADR 0042 slice L1b fix 1: unconditionally drops any existing
-    /// `pane_attach_term` BEFORE constructing the new one — the single
-    /// enforcement point for "never two clients alive," independent of
-    /// caller discipline. Constructing first and only then overwriting
-    /// the field would briefly hold two live clients (two connections,
-    /// two controller ids) against possibly the same lane, which is what
-    /// let `attach_session_to_bl`'s own pre-drop and the
-    /// `PtyAttachDirect` handler (which had no pre-drop of its own)
-    /// disagree before this fix.
+    /// Replacement takes the old client out of the active pane slot before installing another. This slot owns at most one client; the warm pool may hold other live clients. Retirement runs asynchronously and does not establish an exit-before-replacement ordering.
     ///
     /// ADR 0042 slice L1b fix 2: returns whether the client actually
     /// started — every caller must check this rather than assume success,
     /// so a spawn failure's `self.status` (set here) is never immediately
     /// overwritten by an "attached" message.
     ///
-    /// Switch-latency Phase 1, item 2: a bare `self.pane_attach_term =
-    /// None` only runs `Drop`, which SENDS the old client's `Shutdown` but
-    /// never waits for its worker thread to act on it — the departing
-    /// worker can keep talking to the daemon for an unbounded time after,
-    /// overlapping the replacement client's own connection on the SAME
-    /// capsule lane. `FeAttachClient::shutdown(wait)` is the fix already
-    /// on offer here (same send, then blocks polling the worker's
-    /// `JoinHandle` up to `wait`) — but calling it inline, synchronously,
-    /// would stall every capsule switch by up to `wait`, directly working
-    /// against the keypress→paint metric this lane exists to shrink,
-    /// which is why the wait is moved to a detached helper thread rather
-    /// than paid for on the switch path. Only the SEND has to happen
-    /// before the replacement client dials in, and it effectively does:
-    /// a thread spawn plus one channel send costs low-single-digit
-    /// microseconds, versus the real pipe connect + handshake
-    /// `FeAttachClient::attach` below has to do — in practice `Shutdown`
-    /// reaches the old worker well before the new one could plausibly
-    /// finish connecting, without formally blocking this thread on it. If
-    /// the old worker is unusually slow to exit, `shutdown`'s own 250ms
-    /// timeout just warns (on the helper thread) and moves on — the
-    /// worker is not joined, but per its own doc that never leaks the
-    /// thread, it just finishes on its own.
+    /// An old client taken here is handed to a helper thread that calls shutdown with a 250 ms wait. This UI thread does not wait for the helper to start, send Shutdown or finish; the replacement may dial while the old worker is still alive. A shutdown timeout warns and may return before worker exit. Departing live checkpointed clients can instead be parked with viewed=false and reused.
     pub(in crate::ui) fn spawn_pane_attach_term(&mut self, host: &HostKey, target: &str, cols: u16, rows: u16) -> bool {
         if let Some(mut old) = self.pane_attach_term.take() {
             std::thread::spawn(move || {

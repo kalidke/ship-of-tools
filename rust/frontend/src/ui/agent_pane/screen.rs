@@ -181,14 +181,8 @@ impl State {
         // platform since ADR 0045 decision 1 (a capsule row attaches
         // through its own daemon everywhere).
         //
-        // LU6a: which source actually wins is `pane_screen_choice`'s
-        // call, not an unconditional `pane_attach_term`-if-present — a
-        // live but not-yet-checkpointed client (or a still-`Pending`
-        // feed) defers to `pane_hold` so a capsule switch never paints
-        // the new client's empty parser. Coordinator amendment: a client
-        // that went terminal before ever checkpointing falls all the way
-        // through to blank instead (`pane_screen_choice`'s own doc) —
-        // three separate `let`s (rather than inlining each as a call
+        // While awaiting a checkpoint, prefer the departing screen when a hold exists. With no hold a live client's initially empty parser can be selected; it cannot produce a presentation receipt. A client that becomes terminal before its first checkpoint falls through to blank.
+        // Three separate `let`s (rather than inlining each as a call
         // argument) so the one `&mut` read (`is_dead`) never overlaps
         // the `&ref` reads around it.
         let pane_attach_has_client = self.pane_attach_term.is_some();
