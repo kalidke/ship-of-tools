@@ -592,7 +592,7 @@ fn ready_voyage(endpoint: &DaemonLaneEndpoint, supervisor: &sot_protocol::topolo
     ready.voyage.expect("the private Ready supervisor supplies the voyage")
 }
 
-/// Observe private admission expiry, then require the first voyage call to reap the expired spare and succeed through one fresh login before any attach worker can retry.
+/// Observe private admission expiry and report the single first-voyage typed result, fresh-start count and expired-child reap before assertions or worker recovery.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_expired_spare_uses_a_fresh_voyage_login() {
     use sot_log::lane::client::Endpoint;
@@ -608,10 +608,14 @@ async fn an_expired_spare_uses_a_fresh_voyage_login() {
     let pids = Arc::new(Mutex::new(Vec::new()));
     let observed = pids.clone();
     let spawn_guard = guard.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let admitted = attempts.clone();
     let path = dir.path().join("ssh");
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
-    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |command| {
+    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None).with_test_ssh_spawner(Arc::new(move |command| {
         spawn_guard.observe("at spawn");
+        admitted.fetch_add(1, Ordering::SeqCst);
         let child = std::process::Command::new(&path).args(command.get_args())
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
             .spawn()?;
@@ -632,18 +636,32 @@ async fn an_expired_spare_uses_a_fresh_voyage_login() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     // Exactly one first-voyage attempt settles before any recovery worker exists.
+    let attempts_before = attempts.load(Ordering::SeqCst);
     let first = endpoint.connect_voyage_unchallenged(&target, &voyage);
-    let authenticated = first.as_ref().ok().is_some_and(|client| matches!(endpoint.authenticate_server(client), sot_log::identity::challenge::PeerAuthOutcome::Authenticated(_)));
+    let attempts_after = attempts.load(Ordering::SeqCst);
     let started = pids.lock().unwrap().clone();
-    let reaped = !Path::new(&stat).exists();
+    let reap = match std::fs::metadata(&stat) { Ok(_) => Some(false), Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true), Err(_) => None };
+    let replacement = started.get(2).map(|pid| if *pid != spare { "distinct" } else { "same" }).unwrap_or("missing");
+    let gate_state = if gate.is_up() { "up" } else { "down" };
+    super::diagnostics::expiry_result(first.as_ref().err());
+    println!("T2 expiry fallback: attempts={attempts_after} starts={} expired=true reaped={} replacement={replacement} gate={gate_state}", started.len(), reap.map(|value| if value { "true" } else { "false" }).unwrap_or("unknown"));
+    let reaped = reap == Some(true);
+    let replacement_distinct = replacement == "distinct";
+    let outcome_ok = match &first {
+        Ok(client) => matches!(endpoint.authenticate_server(client), sot_log::identity::challenge::PeerAuthOutcome::Authenticated(_)),
+        Err(sot_log::lane::transport::TransportError::Unreachable(error)) =>
+            error.kind() == std::io::ErrorKind::TimedOut && error.to_string().starts_with("lane.connect: handshake timed out"),
+        _ => false,
+    };
     guard.observe("after result");
     drop(first); drop(supervisor); drop(endpoint);
     env.kill_daemon_bounded().await;
     guard.finish();
-    assert!(authenticated, "the single first voyage must succeed through fresh fallback before worker recovery");
-    assert!(reaped, "the expired owned child was reaped before first-voyage fallback");
+    assert_eq!(attempts_after, attempts_before + 1, "exactly one ordinary gated fresh first-voyage attempt must occur before worker recovery");
     assert_eq!(started.len(), 3, "two initial logins plus exactly one fresh first-voyage login");
-    assert_ne!(started[2], spare, "the first-voyage fallback child differs from the expired spare");
+    assert!(reaped, "the expired owned child was reaped before first-voyage fallback");
+    assert!(replacement_distinct, "the first-voyage fallback child differs from the expired spare");
+    assert!(outcome_ok, "the single fresh first voyage must return a peer report or a typed handshake timeout before worker recovery");
 }
 
 /// A fixed spare-entry delay and bounded rendezvous; entry order never establishes a lane role.

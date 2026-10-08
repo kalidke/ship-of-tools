@@ -70,7 +70,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `endpoint.rs` `local_endpoint` for how a process finds its own daemon.
 
 ## Rules
-- The admission witness observes contention or completed close before releasing child creation, and records completion at the owner's down transition. Both delayed-release teardown witnesses arm from the child owner's own start and deadline, never from fixture setup.
+- The admission witness pauses one contested start, observes actual close-lock contention or completed close before release, and records every admitted child start against the owner's down transition; channel rendezvous use the existing hosted job hang guard, not a product timing claim. Both delayed-release teardown witnesses arm from the child owner's own start and deadline, never from fixture setup.
 - `relay_units.rs` lives here, not in the backend, because the backend's relay_refresh test calls
   `relay_command_line()` and sot-backend has no library target.
 - Read hosts.toml only through `locate`, `load` and `parse`; build an ssh login only through `SshRecipe`.

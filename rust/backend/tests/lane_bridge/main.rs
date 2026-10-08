@@ -258,6 +258,7 @@ fn daemon_lane_endpoint(relay: &Relay) -> DaemonLaneEndpoint {
     DaemonLaneEndpoint::new(LaneDial::Local(relay.path.clone()), None)
 }
 
+mod diagnostics;
 mod dial;
 mod outage;
 mod pane;
