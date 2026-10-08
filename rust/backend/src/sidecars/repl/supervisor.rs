@@ -31,6 +31,7 @@ pub(super) fn spawn_supervisor(
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
     lifecycle: SharedLifecycle,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) -> Result<mpsc::Sender<Submission>> {
     let repl_project = Repl::repl_project();
     let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
@@ -49,7 +50,7 @@ pub(super) fn spawn_supervisor(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut contained = crate::lifecycle::child_signal::process()
+    let mut contained = sig
         .spawn(&mut cmd)
         .with_context(|| format!("spawn {julia_bin} --project={}", repl_project.display()))?;
 
@@ -67,7 +68,7 @@ pub(super) fn spawn_supervisor(
     let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
 
     tokio::spawn(supervisor_task(
-        contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
+        contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen, sig,
     ));
     Ok(submit_tx)
 }
@@ -90,6 +91,7 @@ pub(super) fn spawn_supervisor_with_project(
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
     lifecycle: SharedLifecycle,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) -> Result<mpsc::Sender<Submission>> {
     let repl_project = Repl::repl_project();
     let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
@@ -131,7 +133,7 @@ pub(super) fn spawn_supervisor_with_project(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut contained = crate::lifecycle::child_signal::process().spawn(&mut cmd).with_context(|| {
+    let mut contained = sig.spawn(&mut cmd).with_context(|| {
         format!(
             "spawn {julia_bin} --project={} (JULIA_LOAD_PATH={load_path})",
             user_project.display()
@@ -150,7 +152,7 @@ pub(super) fn spawn_supervisor_with_project(
     let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
 
     tokio::spawn(supervisor_task(
-        contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
+        contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen, sig,
     ));
     Ok(submit_tx)
 }
@@ -191,6 +193,7 @@ async fn supervisor_task(
     stderr_tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
     lifecycle: SharedLifecycle,
     my_gen: u64,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) {
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight: eval_id recorded at submit,
@@ -211,7 +214,7 @@ async fn supervisor_task(
             biased;
             // The daemon is shutting down: the signal has already killed the
             // child's tree.
-            _ = crate::lifecycle::child_signal::fired() => {
+            _ = sig.fired() => {
                 break;
             }
             sub = submit_rx.recv() => {
@@ -525,7 +528,7 @@ mod interrupt_guard_tests {
     #[tokio::test]
     async fn request_if_running_never_spawns() {
         let (tx, _rx) = broadcast::channel(8);
-        let repl = Repl::new(tx, None, None);
+        let repl = Repl::new(tx, None, None, crate::lifecycle::child_signal::process());
         let res = repl
             .request_if_running("repl.interrupt", serde_json::json!({}))
             .await

@@ -24,6 +24,7 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
   opens only after `.spawn()` succeeds (`lifecycle_begin_starting`).
 - A child's browser ports are recorded as its `browser` frames pass (`route_line`) and revoked when a new generation
   starts or the current one dies.
+- `Repl` keeps its constructor's `Signal` and passes it to each supervisor's spawn and shutdown wait.
 - The child's exit ends the supervisor, not its pipes: `supervisor_task`'s `child.wait()` branch is polled last.
 - On death each streamed eval in flight gets a synthetic `error` and `done` frame.
 - The REPL project is resolved at every spawn (`Repl::repl_project`), never cached.

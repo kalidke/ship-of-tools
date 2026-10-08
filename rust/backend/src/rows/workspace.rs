@@ -379,7 +379,7 @@ impl Workspace {
                     .join("Project.toml")
                     .is_file()
                     .then(|| self.project_root.clone());
-                Repl::new(frame_tx, Some(self.workspace_id.clone()), user_project)
+                Repl::new(frame_tx, Some(self.workspace_id.clone()), user_project, crate::lifecycle::child_signal::process())
             })
             .clone()
     }

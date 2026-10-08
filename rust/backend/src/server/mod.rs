@@ -103,7 +103,7 @@ pub async fn run(opts: Opts) -> Result<()> {
 
     // Lazily-spawned MathJax sidecar. Cheap to construct (no child process
     // until the first math.render call); cloning the handle is cheap.
-    let mathjax = MathJax::new(MathJax::default_script_path());
+    let mathjax = MathJax::new(MathJax::default_script_path(), crate::lifecycle::child_signal::process());
 
     // Lazily-spawned Pluto sidecar. One shared Pluto server per backend,
     // preferring 127.0.0.1:1234 (ephemeral fallback when taken — the daemon
