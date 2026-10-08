@@ -293,7 +293,8 @@ updater, and the automatic update through the real stage, prepare and arm, exit 
 capsule, and the automatic one waits while a window is attached; a close and an update in either order keep the first one's
 exit; an update the daemon may not take leaves it serving; the updater's discovery and prepare commands end with the
 daemon. The macOS and Windows legs run the native launcher and fence-claim premises and the crate's own lifecycle tests
-(the macOS group recognition, the Windows per-child jobs).
+(the macOS group recognition; on Windows the per-child kill-on-close jobs, including that a killed daemon's contained tree
+ends with it).
 
 Not tested, and stated as limits: macOS after an abrupt end of the daemon (by decision, above); Windows console events
 (CTRL_C, CTRL_BREAK, CTRL_CLOSE), logoff and shutdown; the interval on Windows between a child's creation and its

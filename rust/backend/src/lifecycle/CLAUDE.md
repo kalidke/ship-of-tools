@@ -154,7 +154,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `start_tests.rs`: tests of child creation against the fire, checked termination requests and partial births (an error
   or an unwind between creation and registration), on real processes. They are in-crate because they reach `Signal` and
   `contain`; the daemon-lifetime harness is a separate test binary and cannot.
-- `start_tests_windows.rs`: the Windows half: a suspended start cannot be outwaited and job requests are checked.
+- `start_tests_windows.rs`: the Windows half: a suspended start cannot be outwaited, job requests are checked, and a killed daemon's contained tree ends with it (a re-run of the test binary plays the daemon).
 - `start_tests_macos.rs`: the macOS half: the recognition of a finished group before the reap, with injected observation faults.
 - `startup.rs`: the start's decision from `held.json` and acting on it.
 - `test_gates.rs`: the held points of the daemon-lifetime harness (feature `daemon-lifetime-faults`, `SOT_TEST_GATES`): a point waits until the case creates its file; an installed binary has none.

@@ -21,8 +21,11 @@ impl Watched {
         Self(handle as usize)
     }
     pub(crate) fn dead(&self) -> bool {
+        self.dead_within(3000)
+    }
+    pub(crate) fn dead_within(&self, ms: u32) -> bool {
         // SAFETY: wait on this object's retained handle, rather than a potentially reused PID.
-        unsafe { WaitForSingleObject(self.0 as _, 3000) == WAIT_OBJECT_0 }
+        unsafe { WaitForSingleObject(self.0 as _, ms) == WAIT_OBJECT_0 }
     }
 }
 
@@ -257,4 +260,81 @@ fn adoption_failure_cleans_std_and_async_suspended_children() {
 fn unwind_cleans_std_and_async_suspended_children() {
     partial_start_cleanup(false, true);
     partial_start_cleanup(true, true);
+}
+
+/// The role a re-run of this test binary plays for [`a_killed_daemon_takes_its_contained_tree`]: start a tree through a
+/// private signal as the daemon does, say who is in it and wait to be killed. A no-op in an ordinary run.
+#[test]
+fn contained_tree_role() {
+    let Some(dir) = std::env::var_os("SOT_L2_ROLE_DIR").map(std::path::PathBuf::from) else {
+        return;
+    };
+    sot_log::test_isolated::enter("lifecycle::start_tests::windows::contained_tree_role");
+    let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-Command",
+        &format!(
+            "$p = Start-Process -PassThru -NoNewWindow ping -ArgumentList '-n','600','127.0.0.1'; \
+             Set-Content -Path '{}' -Value $p.Id; Start-Sleep 600",
+            dir.join("grandchild.pid").display()
+        ),
+    ]);
+    let child = signal.spawn_std(&mut cmd).expect("start the tree");
+    std::fs::write(dir.join("child.pid"), child.id().to_string()).unwrap();
+    std::thread::sleep(Duration::from_secs(600));
+    drop(child);
+}
+
+/// The kernel closes a dead daemon's handles, and a contained tree's job closes with them: the daemon (a re-run of this
+/// binary that holds the tree through a private signal) is ended by the case, which spawned it, and the tree it started
+/// ends with it though nothing in the daemon ran. The tree's processes are watched through handles opened while they
+/// lived; the case ends only the role it started.
+#[test]
+fn a_killed_daemon_takes_its_contained_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut command, entry) = sot_log::test_isolated::test_command(
+        "lifecycle::start_tests::windows::contained_tree_role",
+    );
+    let mut role = command
+        .env("SOT_L2_ROLE_DIR", dir.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the role");
+    let pid_of = |name: &str| -> u32 {
+        let began = Instant::now();
+        loop {
+            if let Some(pid) = std::fs::read_to_string(dir.path().join(name))
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                return pid;
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(60),
+                "the role never wrote {name}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let child = Watched::open(pid_of("child.pid"));
+    let grandchild = Watched::open(pid_of("grandchild.pid"));
+    assert!(!child.dead_within(0), "the tree's leader was not running");
+    assert!(
+        !grandchild.dead_within(0),
+        "the tree's descendant was not running"
+    );
+    role.kill().expect("end the role");
+    role.wait().expect("reap the role");
+    let child_ended = child.dead_within(10_000);
+    let grandchild_ended = grandchild.dead_within(10_000);
+    entry.assert_once(role.id());
+    assert!(child_ended, "the killed daemon's tree leader outlived it");
+    assert!(
+        grandchild_ended,
+        "the killed daemon's tree descendant outlived it"
+    );
 }
