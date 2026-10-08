@@ -12,6 +12,8 @@ mod exit_process_tests;
 pub(super) mod tests;
 #[cfg(all(test, feature = "test-window-close"))]
 pub(super) mod native_exit_tests;
+#[cfg(all(test, feature = "test-window-close", windows))]
+mod native_eventlog;
 
 pub(in crate::ui) use exit::*;
 

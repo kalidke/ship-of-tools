@@ -72,16 +72,7 @@ fn window_entry<T>(startup: impl FnOnce() -> Result<T>) -> Result<T> {
     startup()
 }
 
-#[cfg(all(test, feature = "test-window-close"))]
-fn main() -> Result<()> {
-    window_entry(ui::run_native_window_close)
-}
-
-#[cfg(all(
-    test,
-    feature = "test-window-progress",
-    not(feature = "test-window-close")
-))]
+#[cfg(all(test, feature = "test-window-progress"))]
 fn main() -> Result<()> {
     window_entry(ui::run_native_window_progress)
 }

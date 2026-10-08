@@ -267,39 +267,58 @@ fn assert_backstop(scenario: &str, barrier: &str, code: i32) {
     println!("backstop {scenario}: exit {code} after {elapsed:?}");
 }
 
+/// The proof validator's two witnesses: this body entered, and its named assertion held.
+fn entered(test: &str) { println!("T1 body entered: ui::app::exit_process_tests::{test}"); }
+fn held(assertion: &str) { println!("T1 assertion passed: {assertion}"); }
+
 #[test]
 fn second_close_arms_before_delivery() {
-    if run_isolated("ui::app::exit_process_tests::second_close_arms_before_delivery") { assert_backstop("second-close", "delivery", 76); }
+    if run_isolated("ui::app::exit_process_tests::second_close_arms_before_delivery") {
+        entered("second_close_arms_before_delivery");
+        assert_backstop("second-close", "delivery", 76);
+        held("the owned process survived past its 4.5s bound in scenario second-close");
+    }
 }
 #[test]
 fn nonzero_finish_arms_before_the_direct_exit() {
     if run_isolated("ui::app::exit_process_tests::nonzero_finish_arms_before_the_direct_exit") {
+        entered("nonzero_finish_arms_before_the_direct_exit");
         assert_backstop("direct-75", "direct", 75);
         assert_backstop("direct-76", "direct", 76);
+        held("the owned process survived past its 4.5s bound in scenario direct-75");
     }
 }
 #[test]
 fn finish_exit_arms_before_the_loop_returns() {
-    if run_isolated("ui::app::exit_process_tests::finish_exit_arms_before_the_loop_returns") { assert_backstop("callback-ok", "returned", 0); }
+    if run_isolated("ui::app::exit_process_tests::finish_exit_arms_before_the_loop_returns") {
+        entered("finish_exit_arms_before_the_loop_returns");
+        assert_backstop("callback-ok", "returned", 0);
+        held("the owned process survived past its 4.5s bound in scenario callback-ok");
+    }
 }
 #[test]
 fn unarmed_return_arms_the_fallback() {
     if run_isolated("ui::app::exit_process_tests::unarmed_return_arms_the_fallback") {
+        entered("unarmed_return_arms_the_fallback");
         assert_backstop("fallback-ok", "fallback", 0);
         assert_backstop("fallback-err", "fallback", 1);
+        held("the owned process survived past its 4.5s bound in scenario fallback-ok");
     }
 }
 #[test]
 fn first_arm_fixes_the_code_and_one_thread() {
     if run_isolated("ui::app::exit_process_tests::first_arm_fixes_the_code_and_one_thread") {
+        entered("first_arm_fixes_the_code_and_one_thread");
         let (status, _, out) = run_scenario("latch", None, Duration::from_millis(4500));
         assert_eq!(status, Some(7), "a later arm changed the fixed code");
         assert_eq!(out.matches(BACKSTOP_EVENT).count(), 1, "repeated arms started another backstop: {out}");
+        held("repeated arms started another backstop");
     }
 }
 #[test]
 fn nonterminal_time_and_ordinary_close_do_not_trip_the_backstop() {
     if run_isolated("ui::app::exit_process_tests::nonterminal_time_and_ordinary_close_do_not_trip_the_backstop") {
+        entered("nonterminal_time_and_ordinary_close_do_not_trip_the_backstop");
         let (status, _, out) = run_scenario("idle", None, Duration::from_secs(6));
         assert!(status == Some(0) && out.contains("idle: still alive") && !out.contains(BACKSTOP_EVENT), "idle past three seconds tripped it: {out}");
         let (status, elapsed, out) = run_scenario("ordinary", None, Duration::from_millis(2500));
@@ -307,5 +326,6 @@ fn nonterminal_time_and_ordinary_close_do_not_trip_the_backstop() {
         assert!(elapsed < Duration::from_millis(2500), "ordinary close took {elapsed:?}");
         let (status, _, out) = run_scenario("direct-exit", None, Duration::from_millis(2500));
         assert!(status == Some(76) && !out.contains(BACKSTOP_EVENT), "an unstalled direct exit keeps its code: {out}");
+        held("idle past three seconds tripped it");
     }
 }
