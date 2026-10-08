@@ -145,6 +145,17 @@ impl Supervisor {
     }
 }
 
+/// Private test leaves in the closeout: a gate the retirement waits on before the checked termination (a join delay),
+/// and a one-shot flag that turns the retirement's result into an error.
+#[cfg(test)]
+pub(super) mod seams {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    pub(crate) static CLOSEOUT_GATE: Mutex<Option<Arc<tokio::sync::Semaphore>>> = Mutex::new(None);
+    pub(crate) static FAIL_RETIREMENT: AtomicBool = AtomicBool::new(false);
+}
+
 /// Spawn the stderr reader: per-line DEBUG (healthy julia is chatty), plus a
 /// bounded tail the supervisor dumps at WARN when the child DIES — the
 /// 2026-07-03 stale-Manifest incident died with its only evidence at debug
@@ -398,7 +409,19 @@ async fn supervisor_task(
     // Retirement: request the tree's termination and check the direct
     // child's reap. The result is the owner's join value.
     drop(stdin);
-    contained.kill().await.map(|_| ()).map_err(|e| e.to_string())
+    #[cfg(test)]
+    {
+        let gate = seams::CLOSEOUT_GATE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(gate) = gate {
+            let _ = gate.acquire().await;
+        }
+    }
+    let reaped = contained.kill().await.map(|_| ()).map_err(|e| e.to_string());
+    #[cfg(test)]
+    if seams::FAIL_RETIREMENT.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err("injected termination error".to_string());
+    }
+    reaped
 }
 
 /// Route one stdout line off the REPL child. A `repl.frame` evt is fanned out

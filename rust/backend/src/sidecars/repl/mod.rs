@@ -28,7 +28,7 @@ mod supervisor;
 #[cfg(test)]
 mod project_tests;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod restart_tests;
 
 use lifecycle::ReplLifecycle;
