@@ -6,6 +6,7 @@
 //! reported as unconfirmed. Direct fixtures retain child/entry and separate stream observations on failure.
 //! Regression proofs validate observed role/pid prerequisites and exact causes before accepting a red.
 //! Both output streams are captured as bytes; invalid UTF-8 is rendered as explicit uppercase byte escapes.
+//! Wrapped native fixtures select their PID from a complete stdout witness, independently of exact entry.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -33,6 +34,21 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// The explicitly named ISO assignment; wrapped recipes transfer only this entry path.
+    pub fn environment_assignment(&self) -> (&'static str, &std::ffi::OsStr) {
+        (ENTERED, self.path.as_os_str())
+    }
+
+    /// Create the test-owned record before elevation so its owner can remove it afterward.
+    pub fn prepare_wrapped_record(&self) -> std::io::Result<()> {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.path)
+            .map(|_| ())
+    }
+
     /// Fails unless the child `pid` entered this test's body exactly once.
     pub fn assert_once(mut self, pid: u32) {
         self.checked = true;
@@ -209,6 +225,8 @@ fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
 /// All mandatory observations, including secondary failures, survive a readiness/work failure.
 pub struct FixtureOutcome<T> {
     pub child: u32,
+    /// A wrapped native PID comes from stdout, independently of the entry file.
+    pub native: Option<Result<u32, String>>,
     pub work: Result<T, FixtureFailure>,
     pub wait: Result<ExitStatus, ChildWaitError>,
     pub termination: Result<(), String>,
@@ -261,7 +279,80 @@ impl<T> FixtureOutcome<T> {
 pub fn supervise_fixture_until<T>(
     child: Child,
     entry: Entry,
+    deadline: Instant,
+    work: impl FnOnce(&mut Child, &Entry, &mut Instant) -> Result<T, FixtureFailure>,
+) -> FixtureOutcome<T> {
+    supervise_selected(child, entry, deadline, None, work)
+}
+
+/// A wrapped spawn failure retains its original cause and attempted entry check.
+#[derive(Debug)]
+pub struct WrappedSpawnFailure {
+    pub error: std::io::Error,
+    pub entry: Result<(), String>,
+}
+
+/// The wrapped native fixture uses the direct owner's wait, independent streams and finalization.
+pub fn supervise_wrapped_fixture_until(
+    mut command: Command,
+    entry: Entry,
+    deadline: Instant,
+    role: &str,
+) -> Result<FixtureOutcome<()>, WrappedSpawnFailure> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    match command.spawn() {
+        Ok(child) => Ok(supervise_selected(
+            child,
+            entry,
+            deadline,
+            Some(role),
+            |child, _, _| {
+                eprintln!("native-launcher test={role} launcher={}", child.id());
+                std::io::stderr().flush().map_err(|error| {
+                    FixtureFailure::Error(format!("flush launcher observation: {error}"))
+                })
+            },
+        )),
+        Err(error) => {
+            let entry =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| entry.assert_once(0)))
+                    .map_err(panic_text);
+            Err(WrappedSpawnFailure { error, entry })
+        }
+    }
+}
+
+fn native_pid(streams: &FixtureOutput, role: &str) -> Result<u32, String> {
+    let text = match &streams.stdout {
+        Ok(text) => text.as_str(),
+        Err(error) => error.captured.as_str(),
+    };
+    let records: Vec<_> = text
+        .split_inclusive('\n')
+        .filter_map(|line| line.find("native-start ").map(|at| &line[at..]))
+        .collect();
+    if records.len() != 1 {
+        return Err(format!(
+            "native start witness count {}, expected one",
+            records.len()
+        ));
+    }
+    let line = records[0];
+    let prefix = format!("native-start test={role} native=");
+    let pid = line
+        .strip_prefix(&prefix)
+        .and_then(|s| s.strip_suffix('\n'))
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|pid| *pid != 0)
+        .ok_or_else(|| "native start witness partial, wrong role or invalid PID".to_string())?;
+    Ok(pid)
+}
+
+fn supervise_selected<T>(
+    child: Child,
+    entry: Entry,
     mut deadline: Instant,
+    role: Option<&str>,
     work: impl FnOnce(&mut Child, &Entry, &mut Instant) -> Result<T, FixtureFailure>,
 ) -> FixtureOutcome<T> {
     let mut draining = drain(child);
@@ -279,12 +370,22 @@ pub fn supervise_fixture_until<T>(
         Ok(None) => Err("owned child termination unconfirmed".into()),
         Err(error) => Err(format!("confirming owned child termination: {error}")),
     };
-    let entry = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| entry.assert_once(pid)))
-        .map_err(panic_text);
     let streams = draining.observe_output_until(deadline);
+    let native = role.map(|role| native_pid(&streams, role));
+    let expected = native
+        .as_ref()
+        .map_or(pid, |native| *native.as_ref().unwrap_or(&0));
+    let entry =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| entry.assert_once(expected)))
+            .map_err(panic_text);
+    let entry = match &native {
+        Some(Err(error)) => Err(format!("{error}; exact entry: {entry:?}")),
+        _ => entry,
+    };
     let output = streams.combined();
     FixtureOutcome {
         child: pid,
+        native,
         work,
         wait,
         termination,

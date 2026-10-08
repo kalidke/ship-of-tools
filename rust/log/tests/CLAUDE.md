@@ -25,7 +25,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `pipe_win/`: `PipeServer` and the same-connection challenge over real pipes, process-isolated: connect, teardown, close, challenge modules; Windows only.
 - `reconcile_matrix.rs`: every row of the startup reconciliation table (`reconcile`) entered by file surgery, then `verify_voyage`; Unix and Windows.
 - `isolation_guards.rs`: remaining ADR 0049 source guards for Julia/Node listener spellings, browser/argument spellings and the macOS peer-token reader; Rust listener admission is proved at its native owners, not by an allowance catalog.
-- `socket_unix/`: real Unix socket connect, teardown, close and client contracts, process-isolated with named waits and progress diagnostics (`diagnostics.rs`); Unix.
+- `socket_unix/`: real Unix connect, close, teardown and client contracts; named waits and captured diagnostics, one bounded-read phase path (`read.rs`), and supervised native-account fixtures with retained failure causes (`privileged.rs`); Unix.
 - `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules; Linux and Windows.
 - `support/`: helpers shared by several binaries: `capsule_guard.rs` (a spawned `sot-capsule` no test can leave behind) and `transports.rs` (`NoopTransport` and `TestTransport`).
 - `winhandle_windows.rs`: `winhandle::harden_own_stdio` clears handle inheritance; Windows only, alone in its binary because it mutates the process's real std handles.
@@ -48,3 +48,4 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `claude_e2e` skips unless `SOT_HELPER_E2E=1`; rust.yml's `p2-e2e` job sets it against rust/log/claude-sdk-helper.
 - scripts/tests/rc-gate.sh names `fe_client/supervisor_word::unresponsive_supervisor_expires_the_health_window` by path, so moving that test edits rc-gate.sh in the same commit.
 - A lower-bound timing check takes its clock origin before the action that starts the product's timer.
+- Bounded socket reads distinguish deadline setup from read outcomes under the original context; capacity rejection still requires EOF. Native-account socket fixtures fail with retained status/output on missing entry or unavailable prerequisites; launcher completion alone proves no native body or denial.

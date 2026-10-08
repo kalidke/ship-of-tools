@@ -101,6 +101,7 @@ struct WaitContext {
     deadline: Instant,
     caller: String,
     completed: std::cell::Cell<bool>,
+    attempts: std::cell::Cell<u32>,
 }
 
 impl WaitContext {
@@ -146,6 +147,7 @@ impl WaitContext {
             deadline,
             caller: format!("{file}:{}", at.line()),
             completed: Default::default(),
+            attempts: Default::default(),
         };
         wait.record("begin");
         wait
@@ -249,33 +251,6 @@ impl WaitContext {
         }
     }
 
-    fn read_attempt(
-        &self,
-        server: Option<&SocketServer>,
-        stream: &mut UnixStream,
-        bytes: &mut [u8],
-    ) -> std::io::Result<usize> {
-        let left = self.remaining_io(server)?;
-        let result = stream
-            .set_read_timeout(Some(left))
-            .and_then(|()| stream.read(bytes));
-        if result.is_err() {
-            self.io_outcome(&result, true, server);
-        }
-        result
-    }
-
-    fn read(
-        &self,
-        server: Option<&SocketServer>,
-        stream: &mut UnixStream,
-        bytes: &mut [u8],
-    ) -> std::io::Result<usize> {
-        let result = self.read_attempt(server, stream, bytes);
-        self.io_outcome(&result, true, server);
-        result
-    }
-
     fn write_all(
         &self,
         server: Option<&SocketServer>,
@@ -336,15 +311,6 @@ impl WaitContext {
         let result = sot_log::test_isolated::run_isolated_until(&self.test, self.deadline);
         self.child_outcome(&result);
         result.unwrap_or_else(|error| panic!("{error}"))
-    }
-
-    fn child(
-        &self,
-        child: &mut std::process::Child,
-    ) -> Result<std::process::ExitStatus, sot_log::test_isolated::ChildWaitError> {
-        let result = sot_log::test_isolated::wait_until(child, self.deadline);
-        self.child_outcome(&result);
-        result
     }
 
     fn child_outcome<T>(&self, result: &Result<T, sot_log::test_isolated::ChildWaitError>) {
@@ -798,3 +764,6 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 }
 
 mod diagnostics;
+
+mod privileged;
+mod read;

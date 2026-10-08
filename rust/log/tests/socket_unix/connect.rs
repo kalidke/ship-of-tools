@@ -323,7 +323,7 @@ fn capacity_excess_connection_is_closed_immediately() {
 #[test]
 fn foreign_account_cannot_reach_the_lane() {
     let test = "connect::foreign_account_cannot_reach_the_lane";
-    if foreign_client_role(test) {
+    if privileged::foreign_client_role(test) {
         return;
     }
     if !WaitContext::new(
@@ -366,7 +366,7 @@ fn foreign_account_cannot_reach_the_lane() {
                 & 0o777,
             0o700
         );
-        observe_foreign_denial(test, &path, foreign, &server);
+        privileged::observe_foreign_denial(test, &path, foreign, current_uid(), &server);
         let mut owner = UnixStream::connect(&path).unwrap();
         let conn = expect_accepted(&server, test, "owner.accept", TIMEOUT);
         server.send(conn, b"m".to_vec(), Some(1)).unwrap();
@@ -397,120 +397,5 @@ fn foreign_account_cannot_reach_the_lane() {
     assert!(
         SocketServer::bind_supervisor(&fresh_voyage_id(), 1).is_err(),
         "nonprivate supervisor root was admitted"
-    );
-}
-
-fn foreign_client_role(test: &str) -> bool {
-    if std::env::var_os("SOT_TEST_FOREIGN_SOCKET").is_some() {
-        sot_log::test_isolated::enter(test);
-        let path = std::env::var_os("SOT_TEST_FOREIGN_SOCKET").unwrap();
-        let foreign: u32 = std::env::var("SOT_TEST_FOREIGN_UID")
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_eq!(
-            unsafe { libc::geteuid() },
-            0,
-            "native privilege prerequisite unavailable"
-        );
-        assert_eq!(unsafe { libc::setgroups(0, std::ptr::null()) }, 0);
-        assert_eq!(unsafe { libc::setgid(foreign) }, 0);
-        assert_eq!(unsafe { libc::setuid(foreign) }, 0);
-        assert_eq!(unsafe { libc::geteuid() }, foreign);
-        let error =
-            UnixStream::connect(path).expect_err("foreign account connected to private lane");
-        assert_eq!(
-            error.kind(),
-            std::io::ErrorKind::PermissionDenied,
-            "native private-socket refusal was not observed"
-        );
-        println!(
-            "native-client child={} foreign=true denied=true bodies=1",
-            std::process::id()
-        );
-        return true;
-    }
-    false
-}
-
-fn observe_foreign_denial(test: &str, path: &std::path::Path, foreign: u32, server: &SocketServer) {
-    let (command, entry) = sot_log::test_isolated::test_command(test);
-    let mut elevated = std::process::Command::new("sudo");
-    elevated.args(["-n", "--", "env"]);
-    // sudo sanitizes its environment: pass only the test-owned ISO entry and role explicitly.
-    for (name, value) in command.get_envs() {
-        if let Some(value) = value {
-            // Create the ISO record as this account; the privileged child appends before dropping privilege.
-            std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(value)
-                .unwrap();
-            let mut assignment = name.to_os_string();
-            assignment.push("=");
-            assignment.push(value);
-            elevated.arg(assignment);
-        }
-    }
-    for (name, value) in [
-        ("SOT_TEST_FOREIGN_SOCKET", path.as_os_str().to_os_string()),
-        ("SOT_TEST_FOREIGN_UID", foreign.to_string().into()),
-    ] {
-        let mut assignment = std::ffi::OsString::from(name);
-        assignment.push("=");
-        assignment.push(value);
-        elevated.arg(assignment);
-    }
-    elevated.arg(command.get_program()).args(command.get_args());
-    let entered = command
-        .get_envs()
-        .find_map(|(_, value)| value.map(std::path::PathBuf::from))
-        .unwrap();
-    let output_file = tempfile::NamedTempFile::new().unwrap();
-    let capture = output_file.reopen().unwrap();
-    let wait = WaitContext::new(
-        test,
-        "foreign.child.wait",
-        "native refusal and child completion",
-        None,
-        TIMEOUT,
-    );
-    let mut child = elevated
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::from(capture.try_clone().unwrap()))
-        .stderr(std::process::Stdio::from(capture))
-        .spawn()
-        .expect("native privilege prerequisite unavailable");
-    let status = wait.child(&mut child).unwrap();
-    let output = std::fs::read_to_string(output_file.path()).unwrap();
-    let pid: u32 = std::fs::read_to_string(entered)
-        .unwrap()
-        .split_whitespace()
-        .last()
-        .expect("native body pid missing")
-        .parse()
-        .unwrap();
-    entry.assert_once(pid);
-    eprintln!(
-        "body-proof test={test} child={pid} bodies=1 completed={} cleanup=confirmed",
-        status.success()
-    );
-    assert!(
-        status.success(),
-        "native foreign-account prerequisite/proof failed: {output}"
-    );
-    assert!(output.contains("foreign=true denied=true bodies=1"));
-    assert!(
-        WaitContext::new(
-            test,
-            "foreign.no.event",
-            "no lane event",
-            None,
-            Duration::from_millis(100)
-        )
-        .receive(server, Duration::from_millis(100))
-        .is_err(),
-        "foreign client supplied lane events"
     );
 }

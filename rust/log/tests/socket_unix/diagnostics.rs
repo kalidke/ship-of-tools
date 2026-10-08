@@ -155,7 +155,7 @@ fn checked_history(capture: &Captured, test: &str) {
     );
 }
 
-fn server(test: &str) -> (RuntimeDirGuard, SocketServer, UnixStream, ConnId, String) {
+pub(super) fn server(test: &str) -> (RuntimeDirGuard, SocketServer, UnixStream, ConnId, String) {
     let root = isolated_runtime_dir();
     let id = fresh_voyage_id();
     let server = SocketServer::bind(&id, 2).unwrap();
@@ -302,18 +302,9 @@ fn io_timeout_with_server_reports_snapshot() {
     let captured = capture(test, TIMEOUT + Duration::from_secs(2), None);
     assert!(!captured.expired, "a.eof did not finish at its read bound");
     record(&captured, test, "a.eof", "timeout");
+    read::check_timeout(&captured, test, "a.eof");
     assert!(captured.text.contains("socket-error step=a.eof error="));
-    assert!(
-        (captured
-            .text
-            .contains("transport-progress snapshot records=")
-            || (captured
-                .text
-                .contains("transport-progress snapshot unavailable skipped=")
-                && (captured.text.contains("reason=busy")
-                    || captured.text.contains("reason=poisoned")))),
-        "I/O timeout missing emitted progress snapshot"
-    );
+    read::check_snapshot(&captured);
 }
 
 #[test]
