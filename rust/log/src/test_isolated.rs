@@ -30,6 +30,8 @@ static NEXT: AtomicU32 = AtomicU32::new(0);
 pub struct Entry {
     name: String,
     path: PathBuf,
+    /// A private folder holding the record of a wrapped fixture (see [`Entry::prepare_wrapped_record`]).
+    folder: Option<PathBuf>,
     checked: bool,
 }
 
@@ -39,8 +41,22 @@ impl Entry {
         (ENTERED, self.path.as_os_str())
     }
 
-    /// Create the test-owned record before elevation so its owner can remove it afterward.
-    pub fn prepare_wrapped_record(&self) -> std::io::Result<()> {
+    /// Create the test-owned record before elevation, in a private folder made for it. A wrapped fixture's native child
+    /// may run as another account (root), and the kernel (`fs.protected_regular`) refuses `O_CREAT` of a file another
+    /// account owns in a world-writable sticky folder such as the system temp folder. So the record is never there:
+    /// its folder is not sticky and not writable by others, and the child's `enter` opens an existing file.
+    pub fn prepare_wrapped_record(&mut self) -> std::io::Result<()> {
+        let folder = std::env::temp_dir().join(format!(
+            "sot-entered-dir-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&folder)?;
+        self.folder = Some(folder.clone());
+        self.path = folder.join("entered");
         std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -70,6 +86,9 @@ impl Entry {
 impl Drop for Entry {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+        if let Some(folder) = &self.folder {
+            let _ = std::fs::remove_dir(folder);
+        }
         if !self.checked && !std::thread::panicking() {
             panic!("the entry record for {} was dropped without assert_once: its body was never checked", self.name);
         }
@@ -95,6 +114,7 @@ pub fn test_command(test_name: &str) -> (Command, Entry) {
         Entry {
             name: test_name.to_string(),
             path,
+            folder: None,
             checked: false,
         },
     )
@@ -730,6 +750,48 @@ mod tests {
 
     /// Which job `a_role` does in a child; unset in an ordinary run.
     const ROLE: &str = "SOT_TEST_ISOLATED_ROLE";
+
+    /// A wrapped fixture's record is where a root child can create it: not in the world-writable sticky system temp
+    /// folder, whose `fs.protected_regular` refuses `O_CREAT` of a file another account owns. The record's folder is
+    /// owned by the caller, private, not sticky, and goes away with the entry.
+    #[cfg(unix)]
+    #[test]
+    fn a_wrapped_record_lives_in_a_private_non_sticky_folder() {
+        use std::os::unix::fs::MetadataExt;
+        let (_, mut entry) = test_command(
+            "test_isolated::tests::a_wrapped_record_lives_in_a_private_non_sticky_folder",
+        );
+        entry.prepare_wrapped_record().unwrap();
+        let (name, record) = entry.environment_assignment();
+        assert_eq!(name, ENTERED);
+        let record = PathBuf::from(record);
+        let folder = record.parent().unwrap().to_path_buf();
+        assert_ne!(
+            folder,
+            std::env::temp_dir(),
+            "the record sits directly in the shared temp folder"
+        );
+        let meta = std::fs::metadata(&folder).unwrap();
+        assert_eq!(
+            meta.mode() & 0o7777,
+            0o700,
+            "the record's folder is sticky or open to others"
+        );
+        // SAFETY: geteuid has no preconditions.
+        assert_eq!(meta.uid(), unsafe { libc::geteuid() });
+        assert_eq!(std::fs::metadata(&record).unwrap().len(), 0);
+        // What `enter` does in the child, in the child's own account: append to the existing record.
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&record)
+            .unwrap();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| entry.assert_once(0)))
+                .is_err()
+        );
+        assert!(!folder.exists(), "the record's folder outlived its entry");
+    }
 
     /// The control: a real body, selected by its exact name, enters exactly once, and the test passes.
     #[test]

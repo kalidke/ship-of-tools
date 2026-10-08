@@ -32,7 +32,7 @@ fn recipe(
     launcher: Launcher,
     assignments: &[(&str, OsString)],
 ) -> Result<(Command, sot_log::test_isolated::Entry), WrappedSpawnFailure> {
-    let (mut direct, entry) = test_command(role);
+    let (mut direct, mut entry) = test_command(role);
     if let Err(error) = entry.prepare_wrapped_record() {
         let entry = std::panic::catch_unwind(|| entry.assert_once(0)).map_err(panic_message);
         return Err(WrappedSpawnFailure { error, entry });
@@ -40,6 +40,7 @@ fn recipe(
     let (entry_name, entry_path) = entry.environment_assignment();
     let mut command = match launcher {
         Launcher::Direct => {
+            direct.env(entry_name, entry_path);
             for (name, value) in assignments {
                 direct.env(name, value);
             }
