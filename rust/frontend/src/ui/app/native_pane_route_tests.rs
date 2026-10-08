@@ -136,6 +136,7 @@ struct Relay {
     thread: Option<std::thread::JoinHandle<()>>,
     hop2: Arc<Mutex<Vec<std::process::Child>>>,
     hub_dir: PathBuf,
+    socket: PathBuf,
 }
 
 #[cfg(unix)]
@@ -143,6 +144,8 @@ impl Relay {
     fn stop(mut self) -> Result<()> {
         let mut problems = Vec::new();
         self.stop.store(true, Ordering::SeqCst);
+        // One connection to the relay's own socket wakes the blocking accept; it starts no hop 2.
+        let _ = std::os::unix::net::UnixStream::connect(&self.socket);
         if let Some(thread) = self.thread.take() {
             if thread.join().is_err() {
                 problems.push("relay acceptor panicked".to_string());
@@ -179,7 +182,6 @@ mod unix {
         println!("pane-timing roots hub={}", hub.display());
         let socket = hub.join(format!("sot-host-{host}.sock"));
         let listener = UnixListener::bind(&socket).context("bind the relay socket")?;
-        listener.set_nonblocking(true)?;
         let accepts = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let hop2 = Arc::new(Mutex::new(Vec::new()));
@@ -201,7 +203,7 @@ mod unix {
             host: host.to_string(),
             program: "ssh".into(),
             args,
-            relay: Some(Relay { accepts, stop, thread: Some(thread), hop2, hub_dir: hub }),
+            relay: Some(Relay { accepts, stop, thread: Some(thread), hop2, hub_dir: hub, socket: socket.clone() }),
         })
     }
 
@@ -214,8 +216,10 @@ mod unix {
         while !stop.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((stream, _)) => {
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
                     accepts.fetch_add(1, Ordering::SeqCst);
-                    let _ = stream.set_nonblocking(false);
                     let spawned = (|| -> std::io::Result<std::process::Child> {
                         let input = OwnedFd::from(stream.try_clone()?);
                         let output = OwnedFd::from(stream);
@@ -233,7 +237,6 @@ mod unix {
                         Err(e) => eprintln!("pane-timing relay hop 2 could not start: {e}"),
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(20)),
                 Err(e) => {
                     eprintln!("pane-timing relay accept: {e}");
                     std::thread::sleep(Duration::from_millis(20));

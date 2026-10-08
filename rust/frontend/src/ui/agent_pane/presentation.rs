@@ -19,7 +19,7 @@ pub(in crate::ui) struct PresentationCandidate {
 /// The outcome of offering a candidate after its frame.
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::ui) enum Presentation {
-    Receipt { generation: u64, elapsed: Duration },
+    Receipt { elapsed: Duration },
     /// The request has no known origin: there is no latency to report.
     NoOrigin,
     /// An older request's candidate, or one already consumed.
@@ -58,7 +58,7 @@ impl PanePresentation {
             return Presentation::NoOrigin;
         };
         let elapsed = now.saturating_duration_since(origin);
-        Presentation::Receipt { generation: candidate.generation, elapsed }
+        Presentation::Receipt { elapsed }
     }
 }
 

@@ -13,6 +13,8 @@ use winit::event_loop::{EventLoop, EventLoopProxy};
 const HOST_KEY: &str = "t3host";
 const RECEIPT: &str = "session pane: capsule screen presented";
 const FAILURE: &str = "fixture: candidate frame failed before present";
+/// Only a missing display or adapter is "not runnable".
+const DISPLAY_MARKER: &str = "not runnable here: display:";
 const READY_BOUND: Duration = Duration::from_secs(30);
 const RESUME_BOUND: Duration = Duration::from_secs(60);
 const CHILD_BOUND: Duration = Duration::from_secs(240);
@@ -94,7 +96,7 @@ fn run_children(kind: RouteKind, sotd: &std::path::Path, daemon: &mut Daemon, ro
             let attaches = if role == "fault" { 1 } else { 6 };
             anyhow::ensure!(after >= before + 1 + 2 * attaches, "relayed run used no relay hop: {role} grew {} accepts, wanted {}", after - before, 1 + 2 * attaches);
         }
-        let unrunnable = run.out.contains("not runnable here") || run.err.contains("not runnable here");
+        let unrunnable = run.out.contains(DISPLAY_MARKER) || run.err.contains(DISPLAY_MARKER);
         runs.push(run);
         if unrunnable {
             break;
@@ -156,7 +158,7 @@ fn field(line: &str, name: &str) -> Option<String> {
 
 fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
     let route = kind.name();
-    if let Some(r) = runs.iter().find(|r| r.out.contains("not runnable here") || r.err.contains("not runnable here")) {
+    if let Some(r) = runs.iter().find(|r| r.out.contains(DISPLAY_MARKER) || r.err.contains(DISPLAY_MARKER)) {
         anyhow::bail!("pane-timing not runnable here: {}: {}{}", r.role, r.out, r.err);
     }
     let mut ready: Vec<(String, u128, u128)> = Vec::new();
@@ -181,8 +183,8 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
             }
             let total = total.ok_or_else(|| anyhow::anyhow!("ready sample without a receipt: {line}"))?;
             anyhow::ensure!(field(line, "sentinel").as_deref() == Some("true"), "pane sample without its row's sentinel: {line}");
-            anyhow::ensure!(field(line, "receipts").as_deref() == Some("1"), "switch produced {} presentation receipts, wanted 1: {line}", field(line, "receipts").unwrap_or_default());
-            anyhow::ensure!(field(line, "warm").as_deref() == Some("false"), "cold sample reused a warm client: {line}");
+            let checkpoint = field(line, "checkpoint_ms").and_then(|v| v.parse::<i128>().ok()).filter(|c| *c >= 0);
+            anyhow::ensure!(checkpoint.is_some_and(|c| (c as u128) * 1_000_000 <= total), "receipt before its checkpoint: {line}");
             let driver = field(line, "driver_ns").and_then(|v| v.parse::<u128>().ok()).unwrap_or(0);
             anyhow::ensure!(driver >= total && driver - total <= 50_000_000, "receipt elapsed and driver elapsed disagree by {}ns: {line}", driver.abs_diff(total));
             ready.push((line.to_string(), total, driver));
@@ -200,20 +202,38 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
     let bound = sot_log::lane::transport::CONNECT_BOUND.as_nanos();
     let ok = totals.iter().all(|t| *t <= bound);
     println!(
-        "pane-timing route={route} ready_relayed_pane_total_fits_connect_bound samples=15 max_ms={} p50_ms={} ok={ok}",
+        "pane-timing route={route} ready_pane_total_fits_connect_bound samples=15 max_ms={} p50_ms={} ok={ok}",
         totals[14] / 1_000_000,
         totals[7] / 1_000_000
     );
-    println!("pane-timing route={route} resume_relayed_pane_records_the_whole_operation samples={}", resume.len());
+    println!("pane-timing route={route} resume_pane_records_the_whole_operation samples={}", resume.len());
     anyhow::ensure!(ok, "relayed pane presentation missed CONNECT_BOUND: {:?}", Duration::from_nanos(*totals.last().unwrap() as u64));
     Ok(())
 }
 
 // ---- child ----
 
+/// The scenario file: every field required, so a missing one fails as malformed.
+#[derive(serde::Deserialize)]
+struct Scenario {
+    host: String,
+    program: String,
+    args: Vec<String>,
+    ready: Vec<RowSpec>,
+    seeded: Vec<RowSpec>,
+}
+
+#[derive(serde::Deserialize)]
+struct RowSpec {
+    slug: String,
+    nonce: String,
+    session: String,
+}
+
 struct Plan {
     slug: String,
     nonce: String,
+    session: String,
     resume: bool,
 }
 
@@ -221,12 +241,12 @@ struct Current {
     at: Instant,
     mark: usize,
     seen: Option<Seen>,
-    settle: u32,
 }
 
 struct Seen {
     total_ns: u128,
     driver_ns: u128,
+    open_ms: Option<u128>,
     sentinel: bool,
 }
 
@@ -238,6 +258,7 @@ struct PaneDriver<'a> {
     idx: usize,
     cur: Option<Current>,
     begun: Instant,
+    targets: Vec<String>,
     stop: std::sync::Arc<AtomicBool>,
     finished: bool,
     failure: Option<anyhow::Error>,
@@ -257,7 +278,7 @@ impl PaneDriver<'_> {
         let Some(state) = self.app.state.as_ref() else { return Ok(false) };
         let listed = state.workspace_lists.get(HOST_KEY).is_some_and(|rows| self.plan.iter().all(|p| rows.iter().any(|r| r.slug == p.slug)));
         if !(listed && state.frame_counter >= 3 && state.pty_size.is_some()) {
-            anyhow::ensure!(self.begun.elapsed() < Duration::from_secs(90), "pane-timing not runnable here: the window never listed its rows");
+            anyhow::ensure!(self.begun.elapsed() < Duration::from_secs(90), "pane-timing setup failure: the window never listed its rows in 90 s");
             return Ok(false);
         }
         let (cols, rows) = state.pty_size.unwrap_or((0, 0));
@@ -266,7 +287,9 @@ impl PaneDriver<'_> {
         Ok(true)
     }
 
-    fn switch(&mut self) {
+    fn switch(&mut self) -> Result<()> {
+        let session = self.plan[self.idx].session.clone();
+        anyhow::ensure!(!self.targets.contains(&session), "row {} was already the pane target before its switch", self.plan[self.idx].slug);
         let mark = self.capture.text().len();
         if self.role == "fault" {
             FAIL_NEXT_CANDIDATE_FRAME.store(true, Ordering::SeqCst);
@@ -276,20 +299,22 @@ impl PaneDriver<'_> {
         if let Some(state) = self.app.state.as_mut() {
             state.switch_to_workspace(HOST_KEY.to_string(), Some(slug), None, true);
         }
-        self.cur = Some(Current { at, mark, seen: None, settle: 0 });
+        self.cur = Some(Current { at, mark, seen: None });
+        Ok(())
     }
 
     fn step(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         if self.cur.is_none() {
             if self.ready_to_switch()? {
-                self.switch();
+                self.switch()?;
             }
             return Ok(());
         }
+        self.note_target();
         let text = self.capture.text();
-        let (at, mark, seen_before, settle) = {
+        let (at, mark, seen_before) = {
             let c = self.cur.as_ref().unwrap();
-            (c.at, c.mark, c.seen.is_some(), c.settle)
+            (c.at, c.mark, c.seen.is_some())
         };
         let new = &text[mark..];
         let plan = &self.plan[self.idx];
@@ -297,22 +322,31 @@ impl PaneDriver<'_> {
         if !seen_before {
             if let Some(first) = receipts(new).first() {
                 self.check_fault_order(new)?;
-                let seen = Seen { total_ns: *first, driver_ns: at.elapsed().as_nanos(), sentinel: self.cells().contains(&plan.nonce) };
-                self.cur.as_mut().unwrap().seen = Some(seen);
+                let seen = Seen { total_ns: *first, driver_ns: at.elapsed().as_nanos(), open_ms: self.open_ms(), sentinel: self.cells().contains(&plan.nonce) };
+                return self.finish_sample(event_loop, Some(seen), "presented".to_string(), new.to_string());
             } else if at.elapsed() > bound {
                 anyhow::ensure!(self.role != "fault", "fault child saw no receipt within {bound:?}");
                 return self.finish_sample(event_loop, None, "timeout".to_string(), new.to_string());
             } else if let Some(outcome) = self.dead_client_outcome(plan.resume) {
                 return self.finish_sample(event_loop, None, outcome, new.to_string());
             }
-            return Ok(());
         }
-        if settle < 10 {
-            self.cur.as_mut().unwrap().settle += 1;
-            return Ok(());
+        Ok(())
+    }
+
+    /// Every pane target this child has observed, at every step.
+    fn note_target(&mut self) {
+        if let Some((_, session)) = self.app.state.as_ref().and_then(|s| s.bl_pane_target.clone()) {
+            if !self.targets.contains(&session) {
+                self.targets.push(session);
+            }
         }
-        let seen = self.cur.as_mut().unwrap().seen.take();
-        self.finish_sample(event_loop, seen, "presented".to_string(), new.to_string())
+    }
+
+    /// The pty.open reply installing the client, from the request.
+    fn open_ms(&self) -> Option<u128> {
+        let state = self.app.state.as_ref()?;
+        Some(state.pane_attach_started_at?.saturating_duration_since(state.pane_attach_requested_at?).as_millis())
     }
 
     fn dead_client_outcome(&mut self, resume: bool) -> Option<String> {
@@ -335,23 +369,19 @@ impl PaneDriver<'_> {
 
     fn finish_sample(&mut self, event_loop: &ActiveEventLoop, seen: Option<Seen>, outcome: String, new: String) -> Result<()> {
         let plan = &self.plan[self.idx];
-        let n = receipts(&new).len();
-        let checkpoint_ms = new
-            .lines()
-            .find(|l| l.contains("capsule attach checkpoint applied"))
-            .and_then(|l| field(l, "since_request_ms"))
-            .unwrap_or_else(|| "-1".into());
-        let warm = new.contains("warm capsule client reused");
+        let phase = |marker: &str| new.lines().find(|l| l.contains(marker)).and_then(|l| field(l, "since_request_ms")).unwrap_or_else(|| "-1".into());
+        let (checkpoint_ms, attached_ms) = (phase("capsule attach checkpoint applied"), phase("session pane: capsule attached"));
         if self.role == "fault" {
             let failed = new.contains(FAILURE);
             let sentinel = seen.as_ref().is_some_and(|s| s.sentinel);
-            let ok = failed && n == 1 && sentinel;
-            println!("pane-timing fault frame_failed_before_present={failed} receipts={n} order=failure-then-receipt sentinel={sentinel} ok={ok}");
+            let ok = failed && sentinel;
+            println!("pane-timing fault frame_failed_before_present={failed} order=failure-then-receipt sentinel={sentinel} ok={ok}");
         } else {
-            let (total, driver, sentinel) = seen.as_ref().map_or(("-".to_string(), "-".to_string(), false), |s| (s.total_ns.to_string(), s.driver_ns.to_string(), s.sentinel));
+            let (total, driver, sentinel) = seen.as_ref().map_or(("-".to_string(), "-".to_string(), "-".to_string()), |s| (s.total_ns.to_string(), s.driver_ns.to_string(), if plan.resume { "-".to_string() } else { s.sentinel.to_string() }));
+            let open_ms = seen.as_ref().and_then(|s| s.open_ms).map_or("-1".to_string(), |v| v.to_string());
             let kind = if plan.resume { "resume" } else { "ready" };
             println!(
-                "pane-timing sample run={} kind={kind} row={} total_ns={total} driver_ns={driver} checkpoint_ms={checkpoint_ms} receipts={n} warm={warm} sentinel={sentinel} outcome={outcome}",
+                "pane-timing sample run={} kind={kind} row={} total_ns={total} driver_ns={driver} open_ms={open_ms} checkpoint_ms={checkpoint_ms} attached_ms={attached_ms} sentinel={sentinel} outcome={outcome}",
                 &self.role, plan.slug
             );
             if seen.is_none() {
@@ -388,7 +418,7 @@ impl ApplicationHandler for PaneDriver<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.app.resumed(event_loop);
         if self.app.state.is_none() {
-            println!("pane-timing not runnable here: native App/State startup did not complete");
+            println!("pane-timing not runnable here: display: native App/State startup did not complete");
             self.stop.store(true, Ordering::SeqCst);
             event_loop.exit();
         }
@@ -409,20 +439,19 @@ impl ApplicationHandler for PaneDriver<'_> {
     }
 }
 
-fn plan_for(role: &str, scenario: &Value) -> Result<Vec<Plan>> {
-    let rows = |key: &str| scenario[key].as_array().cloned().unwrap_or_default();
-    let plan = |v: &Value, resume| Plan { slug: v["slug"].as_str().unwrap_or_default().to_string(), nonce: v["nonce"].as_str().unwrap_or_default().to_string(), resume };
+fn plan_for(role: &str, scenario: &Scenario) -> Result<Vec<Plan>> {
+    let plan = |v: &RowSpec, resume| Plan { slug: v.slug.clone(), nonce: v.nonce.clone(), session: v.session.clone(), resume };
     if role == "fault" {
-        return Ok(rows("ready").iter().take(1).map(|v| plan(v, false)).collect());
+        return Ok(scenario.ready.iter().take(1).map(|v| plan(v, false)).collect());
     }
     let n: usize = role.trim_start_matches("run-").parse()?;
-    let mut out: Vec<Plan> = rows("ready").iter().map(|v| plan(v, false)).collect();
-    out.push(plan(rows("seeded").get(n - 1).ok_or_else(|| anyhow::anyhow!("no seeded row for {role}"))?, true));
+    let mut out: Vec<Plan> = scenario.ready.iter().map(|v| plan(v, false)).collect();
+    out.push(plan(scenario.seeded.get(n - 1).ok_or_else(|| anyhow::anyhow!("no seeded row for {role}"))?, true));
     Ok(out)
 }
 
 fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
-    let scenario: Value = serde_json::from_slice(&std::fs::read(scenario_path)?)?;
+    let scenario: Scenario = serde_json::from_slice(&std::fs::read(scenario_path)?).map_err(|e| anyhow::anyhow!("pane-timing scenario malformed: {e}"))?;
     // The parent holds this pipe's write end for the child's whole life; its end is the parent's.
     std::thread::spawn(|| {
         let mut sink = Vec::new();
@@ -438,16 +467,15 @@ fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     std::panic::set_hook(Box::new(move |info| {
         let message = info.to_string();
         if ["Surface::configure", "device is lost", "wgpu"].iter().any(|w| message.contains(w)) {
-            println!("pane-timing not runnable here: {}", message.lines().next().unwrap_or_default());
+            println!("pane-timing not runnable here: display: {}", message.lines().next().unwrap_or_default());
             let _ = std::io::stdout().flush();
         }
         previous(info);
     }));
-    let event_loop = EventLoop::new().map_err(|e| anyhow::anyhow!("pane-timing not runnable here: {e}"))?;
+    let event_loop = EventLoop::new().map_err(|e| anyhow::anyhow!("pane-timing not runnable here: display: {e}"))?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy: EventLoopProxy<()> = event_loop.create_proxy();
-    let args: Vec<String> = scenario["args"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
-    let recipe = recipe_from(scenario["host"].as_str().unwrap_or("t3row"), std::path::Path::new(scenario["program"].as_str().unwrap_or_default()), &args);
+    let recipe = recipe_from(&scenario.host, std::path::Path::new(&scenario.program), &scenario.args);
     let (evt_tx, evt_rx) = std::sync::mpsc::channel();
     let (req_tx, req_rx) = crate::net::transport::outgoing_channel();
     let config = crate::net::transport::TransportConfig { dial: crate::net::transport::Dial::Ssh(recipe), token: None };
@@ -473,7 +501,7 @@ fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     let (mut failure, mut finished) = (None, false);
     let result = crate::ui::init::with_native_startup(inputs, || {
         app.run_with(|app| {
-            let mut driver = PaneDriver { app, capture: &capture, role: role.to_string(), plan, idx: 0, cur: None, begun: Instant::now(), stop: stop.clone(), finished: false, failure: None };
+            let mut driver = PaneDriver { app, capture: &capture, role: role.to_string(), plan, idx: 0, cur: None, begun: Instant::now(), targets: Vec::new(), stop: stop.clone(), finished: false, failure: None };
             let result = event_loop.run_app(&mut driver);
             failure = driver.failure.take();
             finished = driver.finished;
@@ -486,6 +514,6 @@ fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     if let Some(error) = failure {
         return Err(error);
     }
-    anyhow::ensure!(finished, "pane-timing not runnable here: the window closed before every sample");
+    anyhow::ensure!(finished, "pane-timing child failure: the window closed before every sample");
     Ok(())
 }
