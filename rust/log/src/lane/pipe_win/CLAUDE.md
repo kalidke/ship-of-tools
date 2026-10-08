@@ -4,7 +4,7 @@ Moves bytes and reports completions for `\\.\pipe\sot-voyage-<id>` and `\\.\pipe
 frame or opcode. Windows only (`mod.rs` is `#![cfg(windows)]`). Part of capsule; charter: rust/log/CLAUDE.md.
 
 ## Files
-- `mod.rs`: the module doc, pipe-name helpers, shared types (`SendableHandle`, `WriteCmd`, `ConnHandle`, `AcceptState`, `ReaperMsg`, `ServerShared`), the re-exports and the `join_within` tests
+- `mod.rs`: the module doc, pipe-name helpers, shared types (`SendableHandle`, `WriteCmd`, `ConnHandle`, `AcceptState`, `ServerShared`), the re-exports and the `join_within` tests
 - `slot.rs`: `IoSlot`, the overlapped I/O slot state machine, and `wait_overlapped`
 - `registry.rs`: `create_pipe_instance`, `InstanceRegistry` and `LiveHandle`, the one closer of instance handles
 - `server.rs`: `PipeServer` and its `LaneServer` impl

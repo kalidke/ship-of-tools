@@ -204,11 +204,11 @@ use crate::host::wide_null;
 use crate::lane::client::{Client, Endpoint};
 use crate::lane::attach_proto::ConnId;
 use crate::lane::test_progress::{Controls, Progress, Role};
+use crate::lane::pending::{self, report_server_teardown_failed, Claimed, ReaperMsg, REAPER_INBOX_SLACK};
 use crate::lane::transport::{
-    join_within, report_server_teardown_failed, validate_voyage_id, worker_label, ClosedReason, JoinPoll,
-    LaneEvent, LaneServer, OutboundBudget, PendingJoins, SendMarker, StartGate, TransportError, Worker,
-    BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL, JOIN_POLL_INTERVAL,
-    READ_BUF_LEN, REAPER_INBOX_SLACK, TEARDOWN_AGGREGATE_DEADLINE,
+    join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget, SendMarker, StartGate,
+    TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL, JOIN_POLL_INTERVAL, READ_BUF_LEN,
+    TEARDOWN_AGGREGATE_DEADLINE,
 };
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
@@ -333,17 +333,6 @@ struct AcceptState {
     /// finding a `DisconnectNamedPipe` failure while tearing down an
     /// unrelated connection).
     current: Option<(u64, SendableHandle, Arc<IoSlot>)>,
-}
-
-/// A message to [`reaper_loop`] -- the only thread that ever claims a registered connection or joins its threads.
-enum ReaperMsg {
-    /// A connection ended (natural EOF/error, or a caller's `close`).
-    Torn(ConnId, ClosedReason),
-    /// Phase one cancelled every registered connection: claim them (sent without blocking, at most once).
-    Sweep,
-    /// Shutdown applies the caller's one absolute deadline to all registered and pending pairs; dropping suppresses
-    /// lifecycle publication. Unfinished pairs remain owned by the reaper.
-    Shutdown(Instant),
 }
 
 struct ServerShared {

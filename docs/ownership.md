@@ -158,7 +158,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | lease holder and reader tasks | thread | lifecycle | `rust/frontend/src/lease.rs` `spawn_holder`, `Leases` |
 | attach worker, reader, supervisor probe threads | thread | capsule | `rust/log/src/attach_client/worker/mod.rs`; `rust/log/src/attach_client/worker/steady.rs`; `rust/log/src/supervisor/probe/mod.rs` |
 | supervisor worker per operation | thread | capsule | `rust/log/src/supervisor/lifecycle.rs` `Lifecycle`; `rust/log/src/supervisor/oneshot.rs` `endrun_inner`, `reset_inner` |
-| lane accept and reaper threads | thread | capsule | `rust/log/src/lane/socket_unix/accept.rs`; `rust/log/src/lane/socket_unix/conn.rs`; `rust/log/src/lane/pipe_win/accept.rs`; `rust/log/src/lane/pipe_win/conn.rs`; `rust/log/src/lane/transport.rs` `PendingJoins` |
+| lane accept and reaper threads | thread | capsule | `rust/log/src/lane/socket_unix/accept.rs`; `rust/log/src/lane/socket_unix/conn.rs`; `rust/log/src/lane/pipe_win/accept.rs`; `rust/log/src/lane/pipe_win/conn.rs`; `rust/log/src/lane/pending.rs` `PendingJoins`, `Claimed` |
 | frame format, codec, 1 MiB cap | wire | wire | `rust/protocol/src/lib.rs` `Frame`; `rust/protocol/src/codec.rs` `read_frame`, `write_frame`, `MAX_ENVELOPE_BYTES` |
 | `PROTOCOL_VERSION` | wire | wire | `rust/protocol/src/lib.rs` `PROTOCOL_VERSION` (the shell literal in `comm/lib/comm-lib-client.sh` `sot_hello_frame`, held to it by `the_shell_hello_is_this_protocols_hello`, which runs it) |
 | product version, `is_release_build` | wire | wire | `rust/protocol/src/version.rs` `app_version`, `is_release_build`; `rust/protocol/build.rs` |

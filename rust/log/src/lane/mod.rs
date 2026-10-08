@@ -3,6 +3,7 @@
 //! that the platform's lane server rides on.
 pub mod attach_proto;
 pub mod client;
+pub(crate) mod pending;
 pub mod pipe_win;
 pub mod platform_transport;
 #[cfg(test)]

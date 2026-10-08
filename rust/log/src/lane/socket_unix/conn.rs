@@ -70,7 +70,7 @@ fn notify_wake(shared: &Arc<ServerShared>) {
 /// could ever call `events()` again. Identical contract to
 /// `pipe_win::send_lifecycle_event`.
 pub(super) fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
-    let checkpoint = enqueue_checkpoint(&evt);
+    let checkpoint = pending::enqueue_checkpoint(&evt);
     let mut item = evt;
     loop {
         if let Some((id, step, detail)) = &checkpoint {
@@ -104,19 +104,6 @@ pub(super) fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
                 thread::sleep(EVENTS_RETRY_INTERVAL);
             }
         }
-    }
-}
-
-/// The checkpoint of a lifecycle event's enqueue: its connection, step and the marker identity of a `Sent`.
-fn enqueue_checkpoint(evt: &LaneEvent) -> Option<(Option<ConnId>, &'static str, String)> {
-    match evt {
-        LaneEvent::Accepted(id) => Some((Some(*id), "accepted.enqueue", String::new())),
-        LaneEvent::Closed(id, _) => Some((Some(*id), "closed.enqueue", String::new())),
-        LaneEvent::Sent(id, marker) => {
-            Some((Some(*id), "sent.enqueue", format!(" marker={marker}")))
-        }
-        LaneEvent::AcceptError(_) => Some((None, "accept_error.enqueue", String::new())),
-        LaneEvent::Bytes(..) => None,
     }
 }
 
@@ -208,34 +195,33 @@ pub(super) fn report_registration_failure(
     );
 }
 
-/// Signal the reaper to shut down against `deadline`, once and without blocking: a repeat call never extends the first
-/// deadline or queues a second message. The inbox keeps a slot for it beyond the live connections' `Torn` messages.
+/// Signal the reaper to shut down against `deadline` (see [`pending::signal_shutdown`]).
 pub(super) fn signal_shutdown(shared: &ServerShared, deadline: Instant) {
-    if !shared.shutdown_sent.swap(true, Ordering::AcqRel) {
-        let _ = shared.reaper_tx.try_send(ReaperMsg::Shutdown(deadline));
-        shared.progress.note(None, "reaper.shutdown", "signalled");
-    }
+    pending::signal_shutdown(
+        &shared.shutdown_sent,
+        &shared.reaper_tx,
+        &shared.progress,
+        deadline,
+    );
 }
 
-/// The most messages one reaper pass takes before it polls the pending pairs, so continuous inbox traffic cannot
-/// starve a pair that is already being joined.
-const INTAKE_BATCH: usize = 32;
-
-/// A claimed connection: its workers being joined, then its `Closed` waiting for room in the events channel. It stays
-/// charged against the connection bound (`ServerShared::pending`) until both are done.
+/// A claimed connection and the stream kept open through both joins.
 struct Pending {
-    id: ConnId,
-    /// `None` is a shutdown claim: nothing is published for it.
-    reason: Option<ClosedReason>,
-    claimed_at: Instant,
-    joins: PendingJoins,
-    panicked: bool,
-    /// The `Closed` retained after both joins until the channel has room (or the consumer is gone).
-    closed: Option<LaneEvent>,
-    /// The last result noted for that `Closed`'s enqueue; empty before the first attempt.
-    last_enqueue: &'static str,
+    claimed: Claimed,
     /// Keeps the stream open through both joins.
     _stream: Arc<UnixStream>,
+}
+
+/// What a reaper pass reads of this server.
+fn reaper_ctx(shared: &ServerShared) -> pending::Ctx<'_> {
+    pending::Ctx {
+        prefix: "sot-sock",
+        progress: &shared.progress,
+        events_tx: &shared.events_tx,
+        dropping: &shared.dropping,
+        teardown_failed: &shared.teardown_failed,
+        wake: shared.activity_wake.get().map(|wake| &**wake as _),
+    }
 }
 
 /// Claim `conn_id` if it is still registered, once: under the `conns` lock, cancel both directions, release the writer
@@ -278,106 +264,9 @@ fn claim(
     let own = Instant::now() + shared.controls.teardown_deadline();
     let deadline = shutdown.map_or(own, |shutdown| own.min(shutdown));
     Some(Pending {
-        id: conn_id,
-        reason,
-        claimed_at: Instant::now(),
-        joins: PendingJoins::new(reader_jh, writer_jh, deadline),
-        panicked: false,
-        closed: None,
-        last_enqueue: "",
+        claimed: Claimed::new(conn_id, reason, reader_jh, writer_jh, deadline),
         _stream: stream,
     })
-}
-
-/// One pass over a pending connection: join the workers that finished, report a completed panic or an expiry (once
-/// each, latching the failed teardown), and once both are joined try to publish its `Closed` without blocking.
-/// True when the record is retired and no longer charged.
-fn poll_pending(shared: &Arc<ServerShared>, pending: &mut Pending, now: Instant) -> bool {
-    let id = pending.id;
-    if pending.closed.is_none() {
-        let poll = pending.joins.poll(now);
-        note_poll(shared, pending, &poll);
-        if !poll.done {
-            return false;
-        }
-        shared.progress.note(Some(id), "pending.done", "joined");
-        let Some(reason) = pending.reason.take() else {
-            return true;
-        };
-        let reason = if pending.panicked {
-            ClosedReason::Error("connection worker panicked".into())
-        } else {
-            reason
-        };
-        pending.closed = Some(LaneEvent::Closed(id, reason));
-    }
-    publish_closed(shared, pending)
-}
-
-fn note_poll(shared: &Arc<ServerShared>, pending: &mut Pending, poll: &JoinPoll) {
-    let id = pending.id;
-    for (worker, ok) in &poll.joined {
-        let step = match worker {
-            Worker::Reader => "reader.join.end",
-            Worker::Writer => "writer.join.end",
-        };
-        shared
-            .progress
-            .note(Some(id), step, if *ok { "ok" } else { "panic" });
-        if !ok {
-            pending.panicked = true;
-            shared.progress.note(
-                Some(id),
-                "pending.panicked",
-                format_args!("worker={}", worker.name()),
-            );
-        }
-    }
-    if let Some(unfinished) = &poll.expired {
-        shared.progress.note(
-            Some(id),
-            "pending.expired",
-            format_args!("worker={}", worker_label(unfinished)),
-        );
-    }
-    if poll.failed() {
-        shared.teardown_failed.store(true, Ordering::Release);
-        poll.report("sot-sock", id, pending.claimed_at.elapsed());
-    }
-}
-
-/// Try the retained `Closed` once: retire on success or when nothing could ever read it (consumer gone, or the server
-/// dropping); retain it on a full channel.
-fn publish_closed(shared: &Arc<ServerShared>, pending: &mut Pending) -> bool {
-    let id = pending.id;
-    let event = pending.closed.take().expect("a ready close");
-    if pending.last_enqueue.is_empty() {
-        shared.progress.note(Some(id), "closed.enqueue", "begin");
-    }
-    let sent = shared.events_tx.try_send(event);
-    let result = match &sent {
-        Ok(()) => "ok",
-        Err(TrySendError::Full(_)) => "full",
-        Err(TrySendError::Disconnected(_)) => "disconnected",
-    };
-    if result != pending.last_enqueue {
-        shared.progress.note(Some(id), "closed.enqueue", result);
-    }
-    pending.last_enqueue = result;
-    match sent {
-        Ok(()) => {
-            notify_wake(shared);
-            true
-        }
-        Err(TrySendError::Disconnected(_)) => true,
-        Err(TrySendError::Full(event)) => {
-            if shared.dropping.load(Ordering::Acquire) {
-                return true;
-            }
-            pending.closed = Some(event);
-            false
-        }
-    }
 }
 
 /// The reaper claims registered connections once, cancels both directions and polls every pending pair, joining only
@@ -393,33 +282,22 @@ pub(super) fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
     let mut shutdown: Option<Instant> = None;
     loop {
         let idle = pending.is_empty() && shutdown.is_none();
-        let mut message = if idle {
-            match rx.recv() {
-                Ok(message) => Some(message),
-                Err(_) => return,
+        let open = pending::intake(&rx, idle, |message| match message {
+            ReaperMsg::Torn(id, reason) => {
+                shared.progress.note(Some(id), "teardown.dequeue", "ok");
+                pending.extend(claim(&shared, id, Some(reason), shutdown));
             }
-        } else {
-            rx.recv_timeout(JOIN_POLL_INTERVAL).ok()
-        };
-        for taken in 1..=INTAKE_BATCH {
-            let Some(next) = message.take() else { break };
-            match next {
-                ReaperMsg::Torn(id, reason) => {
-                    shared.progress.note(Some(id), "teardown.dequeue", "ok");
-                    pending.extend(claim(&shared, id, Some(reason), shutdown));
-                }
-                ReaperMsg::Sweep => {}
-                ReaperMsg::Shutdown(deadline) => {
-                    shutdown.get_or_insert(deadline);
-                }
+            ReaperMsg::Sweep => {}
+            ReaperMsg::Shutdown(deadline) => {
+                shutdown.get_or_insert(deadline);
             }
-            if taken < INTAKE_BATCH {
-                message = rx.try_recv().ok();
-            }
+        });
+        if !open {
+            return;
         }
         if let Some(deadline) = shutdown {
             for record in &mut pending {
-                record.joins.tighten(deadline);
+                record.claimed.tighten(deadline);
             }
         }
         if shutdown.is_some() || shared.dropping.load(Ordering::Acquire) {
@@ -429,8 +307,9 @@ pub(super) fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
             }
         }
         let now = Instant::now();
+        let ctx = reaper_ctx(&shared);
         pending.retain_mut(|record| {
-            let retired = poll_pending(&shared, record, now);
+            let retired = record.claimed.poll(&ctx, now);
             if retired {
                 shared.pending.fetch_sub(1, Ordering::AcqRel);
             }

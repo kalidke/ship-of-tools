@@ -5,7 +5,7 @@ The twin of the Windows pipe transport by property, not mechanism: a server for 
 `sot-sock-reaper`, `sot-sock-r-<id>`, `sot-sock-w-<id>`). Unix only. Part of capsule; charter: rust/log/CLAUDE.md.
 
 ## Files
-- `mod.rs`: module doc, the socket paths, and the server's shared types (`ServerShared`, `ConnHandle`, `WriteCmd`, `ReaperMsg`, `Probes`)
+- `mod.rs`: module doc, the socket paths, and the server's shared types (`ServerShared`, `ConnHandle`, `WriteCmd`, `Probes`)
 - `server.rs`: `SocketServer`: bind, events, send, close, and the `LaneServer` impl
 - `listener.rs`: the private runtime dir, the fd-anchored bind, and the socket flag helpers
 - `accept.rs`: the accept loop thread and admission of one new connection

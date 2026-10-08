@@ -1,6 +1,6 @@
 //! `PendingJoins` against real threads: completion, panic, once-only expiry and ownership after expiry.
 
-use super::transport::{PendingJoins, Worker};
+use super::pending::{PendingJoins, Worker};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
