@@ -107,6 +107,11 @@ are forgotten, their registration deleted and its directory synced before the fi
 record clears `closing`; rows not ended stay registered and running, and are counted. The product
 never runs `pkill` or `tmux kill-server`.
 
+`gio trash` uses the contained blocking wait with a 5 s wait budget; a successful timeout cleanup means termination requests
+succeeded and the direct child was reaped before the recoverable workspace-trash fallback. Request and reap failures are
+diagnosed and take that fallback without claiming cleanup succeeded; descendant death before the fallback is not promised.
+The budget imposes no wall-clock ceiling on an OS termination or reap.
+
 Exit codes: 0 is a requested shutdown and stays down; 75 is an update restart and starts
 again, taken only while no shutdown is under way, so a shutdown's own exit always stands;
 1 is a failure (lock timeout or refuse-live). The bounds chain is

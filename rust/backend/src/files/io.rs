@@ -141,24 +141,80 @@ pub fn write_file(abs: &Path, content: &str, expected: Option<&str>) -> Result<W
     })
 }
 
+/// Wait budget for the system-trash leader, not a ceiling on OS termination or reap.
+const TRASH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Move `abs` to trash — never hard-unlinks (the file.delete v1 contract:
 /// every delete is recoverable). System trash first (`gio trash`); a missing
-/// gio or non-zero exit routes to the in-workspace fallback. Returns `None`
-/// for system trash, `Some(destination)` for the fallback — the caller
+/// gio, a non-zero exit or a wait past [`TRASH_WAIT`] routes to the in-workspace
+/// fallback, and the reason is logged. Only a confirmed zero exit returns `None`
+/// (system trash); `Some(destination)` is the fallback — the caller
 /// surfaces which path was taken (no quiet substitution).
 pub fn trash_file(abs: &Path, workspace_root: &Path) -> Result<Option<std::path::PathBuf>> {
-    let mut cmd = std::process::Command::new("gio");
+    trash_with_command(
+        crate::lifecycle::child_signal::process(),
+        &mut trash_command("gio", abs),
+        abs,
+        workspace_root,
+        TRASH_WAIT,
+        |_| {},
+    )
+}
+
+/// The system-trash command: `program trash <abs>`. The daemon's own standard handles are not the program's, so all
+/// three are null.
+fn trash_command(program: impl AsRef<std::ffi::OsStr>, abs: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
     cmd.arg("trash")
         .arg(abs)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    if let Ok(mut c) = crate::lifecycle::child_signal::process().spawn_std(&mut cmd) {
-        if c.wait().is_ok_and(|status| status.success()) {
-            return Ok(None);
+    cmd
+}
+
+/// The absolute-command seam keeps fixtures independent of the process PATH. The observer runs before fallback;
+/// production supplies a no-op, and tests inspect the contained owner's confirmed reap without a reusable PID probe.
+fn trash_with_command(
+    signal: &'static crate::lifecycle::child_signal::Signal,
+    command: &mut std::process::Command,
+    abs: &Path,
+    workspace_root: &Path,
+    wait_budget: std::time::Duration,
+    observe: impl FnOnce(&crate::lifecycle::child_signal::ContainedStd),
+) -> Result<Option<std::path::PathBuf>> {
+    match signal.spawn_std(command) {
+        Ok(mut child) => {
+            let waited = child.wait_within(wait_budget);
+            match &waited {
+                Ok(Some(status)) if status.success() => {}
+                Ok(Some(status)) => {
+                    tracing::warn!(%status, "system trash exited unsuccessfully; taking recoverable fallback")
+                }
+                Ok(None) => {
+                    tracing::warn!(?wait_budget, "system trash timed out; termination requests succeeded and direct child reaped; taking recoverable fallback")
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "system trash wait or cleanup failed; cleanup success unconfirmed; taking recoverable fallback")
+                }
+            }
+            observe(&child);
+            if waited.is_ok_and(|status| status.is_some_and(|status| status.success())) {
+                return Ok(None);
+            }
+        }
+        Err(error) => tracing::warn!(%error, "system trash spawn failed; taking recoverable fallback"),
+    }
+    match trash_file_fallback(abs, workspace_root) {
+        Ok(destination) => {
+            tracing::info!(destination = %destination.display(), "recoverable trash fallback succeeded");
+            Ok(Some(destination))
+        }
+        Err(error) => {
+            tracing::error!(%error, "recoverable trash fallback failed");
+            Err(error)
         }
     }
-    trash_file_fallback(abs, workspace_root).map(Some)
 }
 
 /// The no-gio path: move into `<workspace_root>/.sot-trash/<unix-ts>-<name>`,
@@ -192,31 +248,6 @@ fn trash_file_fallback(abs: &Path, workspace_root: &Path) -> Result<std::path::P
 mod tests {
     use super::*;
     use std::path::PathBuf;
-
-    /// The daemon's own standard handles are not `gio`'s: it is handed null ones. Read as text through the production
-    /// view, from the signature through the function's closing brace. Every contiguous `.stdin`, `.stdout` and
-    /// `.stderr` in the function's text, a method call (however the text between the name and its parenthesis is spaced
-    /// or commented) or a field read, is the null setting; a call spelled `Command::stdin(...)`, or with a space or
-    /// comment between the dot and the name, is outside this check.
-    #[test]
-    fn gio_gets_no_inherited_stdio() {
-        let source = sot_log::test_scan::without_test_modules(include_str!("io.rs"));
-        let mut body = String::new();
-        for line in source.lines().skip_while(|l| !l.starts_with("pub fn trash_file(")) {
-            body.push_str(line);
-            body.push('\n');
-            if line == "}" {
-                break;
-            }
-        }
-        assert!(!body.is_empty(), "trash_file was not found");
-        assert_eq!(body.matches("Command::new(\"gio\")").count(), 1);
-        for handle in ["stdin", "stdout", "stderr"] {
-            let setting = format!(".{handle}(std::process::Stdio::null())");
-            assert_eq!(body.matches(&setting).count(), 1, "gio's {handle} is not null");
-            assert_eq!(body.matches(&format!(".{handle}")).count(), 1, "gio's {handle} has a setter other than the null one");
-        }
-    }
 
     /// Per-test scratch dir under the OS temp dir, removed on drop. Named by the
     /// test so parallel tests in this binary don't collide.
@@ -356,3 +387,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&d2).unwrap(), "two");
     }
 }
+
+#[cfg(test)]
+#[path = "io_trash_tests.rs"]
+mod trash_tests;

@@ -53,6 +53,9 @@ computer's sessions end (ADR 0050).
   on an error or an unwind too. `fire` attempts every registered tree, reports every failed request and waits for no
   death and no child count; the shutdown has no grace period. An OS creation or adoption that never returns holds the
   mutex and so delays `fire`: that is the stated kernel limit.
+- `ContainedStd::wait_within` bounds the wait for a live leader. At the bound `Ok(None)` confirms successful
+  tree-termination requests and a direct-child reap; it does not confirm descendant death. Probe, request and reap errors
+  are returned, both reasons kept when a probe and a cleanup both fail. An OS termination or reap has no wall-clock ceiling.
 - A request is checked: a group and its unreaped leader are asked independently, only ESRCH counts as already gone,
   and the owner reaps the leader only after the requests succeed. On macOS alone a group request refused with EPERM
   counts as no live member only when the retained leader is seen exited unreaped and a complete libproc membership and
@@ -113,7 +116,7 @@ computer's sessions end (ADR 0050).
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `startup::begin`, `lease::ticker`,
 `Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
 `Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::while_open`, `Signal::spawn`, `Signal::spawn_std`,
-`Signal::output`, `daemon_children::guard`, `guard_pid`, `Contained`, `ContainedStd`, `Signal`, `child_signal::fired`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
+`Signal::output`, `daemon_children::guard`, `guard_pid`, `Contained`, `ContainedStd`, `ContainedStd::wait_within`, `Signal`, `child_signal::fired`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
 `reject`, `write_frame_within`, `write_frame_to`, `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`,
 `close_gate_and_settle`, `remove_row_files`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `deploy/sotd.service`, `sot-apply.sh`, Dial.

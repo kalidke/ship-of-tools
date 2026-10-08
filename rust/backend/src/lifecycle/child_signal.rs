@@ -539,7 +539,7 @@ impl ContainedStd {
         }
     }
 
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
     pub(crate) fn confirmed_reaped(&self) -> bool {
         self.reaped.is_some()
     }
