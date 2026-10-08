@@ -25,8 +25,8 @@
 # sotd.exe is a FAIL -- that job already built one, so its absence means
 # something upstream broke, not "nothing to test here"; off CI (a dev box
 # that hasn't built anything) it SKIPs instead, so this file stays runnable
-# without a build. Section 6 additionally only runs ON CI even when a real
-# sotd.exe IS present -- see its own comment for why.
+# without a build. Section 6 runs under a USERNAME of its own, so the pipe
+# it derives is never this box's own daemon's -- see its own comment.
 # Sections 9-11 and 16 live in test-launcher-leases.ps1.
 # Sections 4b, 4c and 5b2 live in test-local-daemon-own.ps1, dot-sourced after 5b in this scope.
 # Section 5c's cases (iii)-(viii), the session pipe under load, live in test-local-daemon-pipe.ps1, dot-sourced there.
@@ -329,21 +329,28 @@ try {
         Write-Host "`n=== 6. pipe name comes from 'sotd session-socket-path local', not a hardcoded guess ===" -ForegroundColor Cyan
         # ADR 0042 L2b design C: no -PipeName override here -- the script
         # must resolve $daemonExe itself and query IT for the pipe path,
-        # exactly the path every real launch takes. CI-only: this exercises
-        # the REAL per-user pipe (`\\.\pipe\sot-<the CI user>-local`, since
-        # only HOME/USERPROFILE/LOCALAPPDATA/XDG_* are redirected above, not
-        # USERNAME) -- safe on an ephemeral CI runner, but skipped on a dev
-        # box where it could collide with a genuinely running local daemon.
-        # (Also the only section that can exercise the -Stop/complete-pair
-        # split below: that needs the daemon actually listening on the
-        # SAME pipe -Stop will derive, which -PipeName-isolated sections
-        # deliberately avoid.)
-        if (-not $env:CI) {
-            Note-Skip '6. derive pipe name from sotd session-socket-path' 'only run on CI -- exercises the REAL per-user pipe name'
-        } else {
+        # exactly the path every real launch takes. That path is the per-user
+        # pipe `\\.\pipe\sot-<USERNAME>-local`, this box's own daemon's, and
+        # only USERNAME moves it, so the section runs under a USERNAME of its
+        # own, named as this suite names its pipes (New-TestPipeName), by which
+        # the outer cleanup also finds its daemon. Nothing starts unless the
+        # derived pipe differs from the one this box's own daemon derives and
+        # no sotd.exe serves it yet. (Also the only section that can exercise
+        # the -Stop/complete-pair split below: that needs the daemon actually
+        # listening on the SAME pipe -Stop will derive, which
+        # -PipeName-isolated sections deliberately avoid.)
+        $livePipe = (& $realSotd session-socket-path local | Select-Object -First 1)
+        if ($livePipe) { $livePipe = $livePipe.ToString().Trim() }
+        $savedUser6 = $env:USERNAME
+        $env:USERNAME = New-TestPipeName
+        try {
             $expectedPipe = (& $realSotd session-socket-path local | Select-Object -First 1)
             if ($expectedPipe) { $expectedPipe = $expectedPipe.ToString().Trim() }
             Check 'sotd itself derives a Windows named-pipe path' ($expectedPipe -like '\\.\pipe\sot-*-local') "got: $expectedPipe"
+            $served6 = @(Get-DaemonProcs $expectedPipe).Count
+            $own6 = ($expectedPipe -like '\\.\pipe\sot-*-local') -and ($livePipe -like '\\.\pipe\sot-*-local') -and ($expectedPipe -ne $livePipe) -and ($served6 -eq 0)
+            Check "6: the derived pipe is this section's own" $own6 "derived '$expectedPipe', this box's own daemon's '$livePipe', sotd.exe already on it: $served6"
+            if (-not $own6) { throw "6: the derived pipe is not this section's own; nothing was started" }
             $pipeName6 = $expectedPipe.Substring(9)   # strip '\\.\pipe\'
             $p6 = Join-Path $root 'p6'
             New-Fixture -Prefix $p6 -WithCapsule -SotdSource $realSotd
@@ -355,6 +362,7 @@ try {
                 Check 'derived pipe answers' (Wait-Pipe $pipeName6) 'pipe never opened'
                 $procs6 = @(Get-DaemonProcs $expectedPipe)
                 Check 'exactly one sotd.exe on the derived pipe' ($procs6.Count -eq 1) "found $($procs6.Count)"
+                Write-Host ("  6: own daemon pid {0} on {1}" -f (($procs6 | ForEach-Object { $_.ProcessId }) -join ','), $expectedPipe)
 
                 # ADR 0042 L2b codex follow-up: sot-capsule.exe is a START
                 # requirement, not a -Stop one. Remove it AFTER the daemon
@@ -380,6 +388,8 @@ try {
                 Get-DaemonProcs $expectedPipe | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
             }
             Check 'derived pipe gone after stop' (Wait-PipeGone $pipeName6) 'pipe still answering after -Stop'
+        } finally {
+            $env:USERNAME = $savedUser6
         }
         } catch { Check '6: section ran' $false $_.Exception.Message }
     }
