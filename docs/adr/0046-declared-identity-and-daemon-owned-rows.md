@@ -423,12 +423,12 @@ tmux; a capsule-capable install needs no tmux.
    `check` validated (`set_account_on`): a row replaced while the reauth waits for its guard is refused. A conversation
    belongs to the row it was started in, and `workspace.create` gives a
    directory to one of a daemon's rows, so no client can make a daemon resume
-   one of its rows' conversations in another of its rows. That holds within
-   one daemon only: the gate is per daemon and `projects` is one per home, so
-   a transcript started in the row's directory by anything else passes: a row
-   of another daemon sharing the home, a terminal or headless claude run
-   there, a row from a toml older than the gate, or the same directory through
-   a bind mount. The cost, stated: a row whose conversation was started in another
+   one of its rows' conversations in another of its rows. That holds only for
+   rows the one-root gate kept apart: the gate is per daemon and `projects` is
+   one per home, so a transcript started in the row's directory by anything
+   else passes: a row of another daemon sharing the home, a terminal or
+   headless claude run there, a row from a toml older than the gate, or the
+   same directory through a bind mount. The cost, stated: a row whose conversation was started in another
    directory (a project moved by hand with its transcripts) cannot be
    reauthed. `sot-fe reauth` still names only the row it runs in: a row's
    live conversation id is known only inside the row, and the daemon cannot
