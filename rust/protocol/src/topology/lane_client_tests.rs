@@ -191,10 +191,7 @@ fn a_relay_dial_waits_for_its_gate_then_uses_the_local_connector() {
     let daemon = FakeDaemon::new();
     let gate = crate::topology::ssh_bridge::LinkGate::default();
     gate.set_up(false);
-    let endpoint = DaemonLaneEndpoint {
-        dial: LaneDial::Relay(daemon.path.clone(), gate.clone()),
-        token: None,
-    };
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Relay(daemon.path.clone(), gate.clone()), None);
     assert!(!endpoint.link_up());
     let result = endpoint.dial("row-1", "supervisor", None);
     assert!(
