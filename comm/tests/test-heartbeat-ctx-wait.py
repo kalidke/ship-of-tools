@@ -591,12 +591,14 @@ def readiness_control(work, bash):
     certified = certify(root, rows, observation, [])
     (root / "acquire").touch()
     await_fact(lambda: ready_rows(events(root, root.name)))
+    if WINDOWS:  # Only pids this harness recorded: its own child and the fixture's ready record.
+        for pid in (observation.pid, int(ready_rows(events(root, root.name))[0][2])):
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True, timeout=30)
     observation.child.terminate()  # Directly created/recorded, now execed fixture.
     assert observation.cleanup(time.monotonic() + CLEANUP), "readiness cleanup unconfirmed"
     final = events(root, root.name)
     assert fixture_finished(root, final) and certify(root, [[root.name, "launch"]] + final, observation, []), "ready lifetime cleanup unconfirmed"
-    # Windows cannot end the native fixture from here: it runs to its own finite expiry and writes the marker.
-    assert WINDOWS or not any(r[1] == "completed" for r in final), "ready killed fixture unexpectedly wrote a final marker"
+    assert not any(r[1] == "completed" for r in final), "ready killed fixture unexpectedly wrote a final marker"
     assert not premature and not certified, "missing readiness was certified as cleanup"
 
 
