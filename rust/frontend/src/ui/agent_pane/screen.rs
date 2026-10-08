@@ -171,7 +171,7 @@ pub(in crate::ui) fn pane_discard_notice(pane: usize, client: usize) -> Option<S
 
 
 impl State {
-    pub(in crate::ui) fn session_pane_view(&mut self) -> (PaneScreen, Vec<String>) {
+    pub(in crate::ui) fn session_pane_view(&mut self) -> (PaneScreen, Vec<String>, Option<PaneFacts>) {
         // Borrow the LLM terminal screen for the duration of the draw.
         // `pane_attach_term`'s `vt100-ctt` `screen()` returns a `&Screen`
         // tied to the client; since `terminal.draw` borrows a different
@@ -251,13 +251,10 @@ impl State {
         // new client's own screen (`PaneScreen::Client`) rather than the
         // held prior content or the tmux fallback. One-shot per attach,
         // same edge-triggered pattern as the other attach-outcome lines.
-        if pane_screen == PaneScreen::Client {
-            let facts = PaneFacts { checkpointed: pane_attach_checkpointed, attached: pane_attach_is_attached, live: !pane_attach_is_dead };
-            if let Some(c) = self.pane_presentation.candidate(facts, (u16::MAX, u16::MAX)) {
-                self.log_presentation(c);
-            }
-        }
-        (pane_screen, pane_overlay)
+        // Choosing a screen does not complete presentation. The frame carries a qualified candidate to the presentation owner and completes it only after submit/present.
+        let facts = (pane_screen == PaneScreen::Client)
+            .then_some(PaneFacts { checkpointed: pane_attach_checkpointed, attached: pane_attach_is_attached, live: !pane_attach_is_dead });
+        (pane_screen, pane_overlay, facts)
     }
 
     /// Offers a candidate to the owner and logs its outcome.

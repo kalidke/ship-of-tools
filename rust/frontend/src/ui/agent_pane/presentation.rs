@@ -1,4 +1,4 @@
-//! Pane presentation ownership; the compatibility path retains the legacy selection-time completion until the fix lands.
+//! A current attach request's one-shot receipt after its checkpointed pane frame is submitted and presented.
 
 use std::time::{Duration, Instant};
 
@@ -42,8 +42,11 @@ impl PanePresentation {
         self.completed = false;
     }
 
-    pub(in crate::ui) fn candidate(&self, _facts: PaneFacts, _area: (u16, u16)) -> Option<PresentationCandidate> {
-        (!self.completed).then_some(PresentationCandidate { generation: self.generation })
+    /// A candidate for a client that is checkpointed, attached and live, drawn into a pane with area.
+    /// Offering it completes nothing: only `complete`, after the frame is presented, does.
+    pub(in crate::ui) fn candidate(&self, facts: PaneFacts, area: (u16, u16)) -> Option<PresentationCandidate> {
+        let eligible = facts.checkpointed && facts.attached && facts.live && area.0 > 0 && area.1 > 0;
+        (eligible && !self.completed).then_some(PresentationCandidate { generation: self.generation })
     }
 
     pub(in crate::ui) fn complete(&mut self, candidate: PresentationCandidate, now: Instant) -> Presentation {
@@ -51,7 +54,10 @@ impl PanePresentation {
             return Presentation::Stale;
         }
         self.completed = true;
-        let elapsed = self.origin.map(|o| now.saturating_duration_since(o)).unwrap_or_default();
+        let Some(origin) = self.origin else {
+            return Presentation::NoOrigin;
+        };
+        let elapsed = now.saturating_duration_since(origin);
         Presentation::Receipt { generation: candidate.generation, elapsed }
     }
 }

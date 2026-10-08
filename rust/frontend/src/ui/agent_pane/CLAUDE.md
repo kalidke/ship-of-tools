@@ -6,7 +6,7 @@ rust/frontend/src/ui/CLAUDE.md. Record: ADR 0042 and 0045.
 
 ## Files
 - `mod.rs`: declares the agent-pane modules and re-exports their items to `ui`.
-- `presentation.rs`: the private attach presentation owner and its candidate/receipt; until the presentation fix lands, its compatibility path retains the legacy selection-time marker.
+- `presentation.rs`: the private request-owned candidate and one-shot receipt for a checkpointed current pane after its frame is submitted and presented.
 - `presentation_tests.rs`: checkpoint, visible-area, origin and one-shot presentation behavior.
 - `screen.rs`: which screen the pane paints (`PaneFeed`, `HeldPaneScreen`, `PaneScreen`, `pane_screen_choice`), the
   reason overlay and the discard notice, and the frame's work for it: `State::session_pane_view` and `State::sync_pane_pty_size`.
@@ -27,6 +27,6 @@ the pane paints while that happens.
 - The pane never paints a new client's empty screen before its checkpoint (`pane_screen_choice`).
 - The warm pool keeps at most the host's row count, capped at `WARM_ATTACH_CAP`, per host (`WarmAttachPool::park`).
 - The reason overlay never reads the shared status line (`pane_terminal_reason_text`).
-- The first frame that paints a new client's own screen marks it presented, once per attach (`session_pane_view`).
+- A presentation receipt requires the current live attached client's checkpoint, a nonempty painted pane and a known request origin, and is emitted once only after frame presentation.
 - Only a live client is resized with the pane, and a resize snaps its scrollback to live (`sync_pane_pty_size`).
 - A cold pane constructs its one `DaemonLaneEndpoint` with `new`; a warm hit reuses the existing client (`spawn_pane_attach_term`).

@@ -1102,7 +1102,7 @@ struct State {
     /// otherwise only ever logged "attaching"). Reset to 0 on every new
     /// spawn.
     pane_attach_episode_warnings: u32,
-    /// Owns the current attach request's presentation generation and its origin; until the presentation fix it completes at screen selection.
+    /// Owns the current attach request's presentation generation and immutable origin; only its submitted and presented checkpoint frame can consume its receipt.
     pane_presentation: PanePresentation,
     /// ADR 0042 slice L1b fix 2: which state the session pane's input
     /// routes to right now — see `PaneFeed`'s own doc for why this can't

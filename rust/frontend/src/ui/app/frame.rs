@@ -7,7 +7,7 @@ impl State {
     pub(in crate::ui) fn redraw(&mut self) -> Result<()> {
         self.frame_upkeep();
         let (preview_cells, repl_cells, repl_scrollback_cells, repl_window, llm_selection, owed, owed_line,
-            owed_drawn, leaving_drawn) = self.draw_chrome()?;
+            owed_drawn, leaving_drawn, presentation_candidate) = self.draw_chrome()?;
         let (lines, border_rects_by_color, strip_logo_rects) = self.project_chrome()?;
         // Compute pixel rects from ratatui's cell rects, then letterbox each
         // image inside its rect.
@@ -89,6 +89,9 @@ impl State {
         let (readback, capture_target, capture_now, selfie_target) = self.stage_frame_capture(&mut encoder, &frame);
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+        if let Some(candidate) = presentation_candidate {
+            self.log_presentation(candidate);
+        }
         self.acknowledge_presented_result();
         self.ack_presented_lines(owed_drawn, owed, owed_line, leaving_drawn);
         self.text.trim();
