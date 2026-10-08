@@ -139,9 +139,10 @@ pub fn is_plain_host_name(s: &str) -> bool {
 /// to dial a pipe name nothing listens on. The precedence: `$SOT_SOCKET`, a
 /// bare path, beats a label, as in the daemon's own arg parsing (`main.rs`);
 /// else `session_socket_path($SOT_BACKEND_LABEL)` when that is set, a step
-/// of this function alone, since the daemon reads its label only from
-/// `--label` (a client's `SOT_BACKEND_LABEL` finds a daemon started at that
-/// label); else
+/// of a client: the daemon reads no environment variable for its label, and
+/// this function and the shell's `sot_daemon_endpoint` take that step
+/// (`scripts/restart-backend.sh` passes the variable to the daemon as
+/// `--label`); else
 /// `session_socket_path(`[`crate::local_daemon_label`]`())`, byte-for-byte
 /// what this returned before the overrides existed. **Never** the literal
 /// `sot` as a default — on Windows the daemon's label is `local`, and

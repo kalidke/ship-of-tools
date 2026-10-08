@@ -360,8 +360,7 @@ fn daemon_said(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| format!("<its stderr is unreadable: {e}>")).trim().to_string()
 }
 
-/// Linux-only for the same reason `status_integration.rs` is: it spawns a
-/// real `sotd` and waits for it to bind. Everything the bridge itself does
+/// Linux-only: it spawns a real `sotd` and waits for it to bind. Everything the bridge itself does
 /// is covered above on every Unix.
 #[cfg(target_os = "linux")]
 #[test]

@@ -71,7 +71,8 @@ shows the shape.
 - A suite never reaches the live box: `Env` points its daemon at its own folders (`comm_isolation_dirs`). A daemon a
   suite starts by label, and every `sotd` client that finds it through `local_endpoint()`, come from
   `support::sotd_daemon_at` and `sotd_client_of` at a label of the test's own (`own_label`), and the suite dials the
-  endpoint `label_endpoint` returns; each refuses, before anything starts, a label that derives this box's own daemon's
+  endpoint `label_endpoint` returns, other than `stdio_bridge.rs`'s two daemons at the default label, the no-argument
+  bridge's subject (below); each refuses, before anything starts, a label that derives this box's own daemon's
   endpoint (on Windows the per-user pipe `\\.\pipe\sot-<user>-<label>`, which no folder moves). `stdio_bridge.rs`'s
   no-argument form reads no label, so it runs only on Unix, under the private `XDG_RUNTIME_DIR` its `runtime_root`
   makes, which panics on an endpoint outside that folder before anything binds, dials or starts.

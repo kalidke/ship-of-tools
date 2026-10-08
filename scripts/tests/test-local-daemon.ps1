@@ -162,6 +162,12 @@ try {
             XDG_STATE_HOME  = $env:XDG_STATE_HOME
             XDG_CONFIG_HOME = $env:XDG_CONFIG_HOME
         }
+        # No SOT_* variable of the runner's reaches a daemon this suite starts: a SOT_COMM_HOME would beat the
+        # redirected HOME and open the live comm home. Restored by the same outer finally.
+        foreach ($v in @(Get-ChildItem Env:SOT_*)) {
+            $envSaved[$v.Name] = $v.Value
+            Remove-Item "Env:\$($v.Name)" -ErrorAction SilentlyContinue
+        }
         $env:HOME = $fixtureHome
         $env:USERPROFILE = $fixtureHome
         $env:LOCALAPPDATA = $fixtureLocalAppData

@@ -1,9 +1,8 @@
 //! The one place a suite builds a command for `sotd`: the built binary (`sotd_command`), or a copy or link of it for a
 //! suite that tests how the daemon was started (`sotd_command_at`). Either inherits no `SOT_` variable the runner
 //! holds, so a daemon reads only the variables its test sets. The built binary's path (`sotd_exe`) is private here.
-//! A daemon a suite starts by label, and every client that finds it through `local_endpoint()`, come from
-//! `sotd_daemon_at` and `sotd_client_of` at a label of the test's own (`own_label`); both refuse this box's own
-//! daemon's endpoint before anything starts.
+//! `sotd_daemon_at` and `sotd_client_of` start a daemon, or a client that finds one through `local_endpoint()`, at a
+//! label given by the caller; both refuse this box's own daemon's endpoint before anything starts.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

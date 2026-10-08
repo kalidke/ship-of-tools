@@ -57,6 +57,8 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
     // binds it and every dial below reaches it.
     let label = support::own_label("status");
     let socket_path = support::label_endpoint(&label);
+    #[cfg(unix)]
+    assert!(socket_path.starts_with(env._runtime_tmp.path()), "the test daemon's socket must sit in this env's private runtime dir, never the developer's: {socket_path:?}");
 
     // A one-host topology: this box is both the hub and its only daemon.
     let hosts_toml = env._tmp.path().join("hosts.toml");
