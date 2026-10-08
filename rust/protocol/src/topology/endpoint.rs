@@ -136,10 +136,12 @@ pub fn is_plain_host_name(s: &str) -> bool {
 /// spelling the comm scripts and the frontend already speak. The label is
 /// never a caller's: every caller here means the one local daemon, and a
 /// `label` parameter they all passed `"sot"` to was how a Windows box came
-/// to dial a pipe name nothing listens on. The daemon's own precedence
-/// (`main.rs`'s own arg parsing): `$SOT_SOCKET`, a bare path, beats a
-/// label; else `session_socket_path($SOT_BACKEND_LABEL)` when that is set
-/// (the shell-side spelling of `--label`); else
+/// to dial a pipe name nothing listens on. The precedence: `$SOT_SOCKET`, a
+/// bare path, beats a label, as in the daemon's own arg parsing (`main.rs`);
+/// else `session_socket_path($SOT_BACKEND_LABEL)` when that is set, a step
+/// of this function alone, since the daemon reads its label only from
+/// `--label` (a client's `SOT_BACKEND_LABEL` finds a daemon started at that
+/// label); else
 /// `session_socket_path(`[`crate::local_daemon_label`]`())`, byte-for-byte
 /// what this returned before the overrides existed. **Never** the literal
 /// `sot` as a default — on Windows the daemon's label is `local`, and

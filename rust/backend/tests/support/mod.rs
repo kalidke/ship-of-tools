@@ -68,6 +68,8 @@ mod registry;
 mod sotd;
 #[allow(unused_imports)] // likewise
 pub use registry::write_registry;
+#[allow(unused_imports)] // only some suites start a daemon by label
+pub use sotd::{label_endpoint, own_label, sotd_client_of, sotd_daemon_at};
 pub use sotd::{sotd_command, sotd_command_at, sotd_program};
 /// Copy of `rust/log/tests/fe_client/`'s own `wake_flag` helper (a separate test
 /// binary; not worth a shared dependency for four lines).

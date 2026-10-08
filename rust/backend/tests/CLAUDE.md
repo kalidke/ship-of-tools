@@ -42,7 +42,10 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `lane_bridge/`: rows and topology; a frontend attach client reaching a capsule row through a daemon and a test-owned relay, plus explicitly spawned SSH stand-ins
 - `switch_latency/`: server; a slow request does not block a later cheap reply on one connection; its `dead_kernel` module is sidecars
 - `window_lease/`: lifecycle; the close lifecycle's daemon half, one daemon per state root
-- `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs` (`sotd_command` and `sotd_command_at`, also loaded alone by suites that need nothing else), `registry.rs` (`write_registry`), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the process count)
+- `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs`
+  (`sotd_command` and `sotd_command_at`; for a daemon a suite starts by label, `own_label`, `label_endpoint`,
+  `sotd_daemon_at` and `sotd_client_of`; also loaded alone by suites that need nothing else), `registry.rs`
+  (`write_registry`), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the process count)
 - `fixtures/`: data read by the backend's own unit tests (`comm/wake/screen_tests.rs`, `sidecars/monitor_tests.rs`) by path, not suites
 
 ## Start here
@@ -65,7 +68,13 @@ shows the shape.
   thread's result, never by a read timeout on the accepted socket: Darwin refuses `SO_RCVTIMEO` there (EINVAL;
   rust/log/tests/macos_kernel_facts/peertoken.rs).
 - A suite that re-runs a test binary is listed in `sot_log::test_isolated`'s pin with its own proof that the selected body ran (`comm_file.rs`, `window_lease/`). `comm_file.rs` drains and waits on its child with `sot_log::test_isolated::drain(..).wait_within(..)`.
-- A suite never reaches the live box: `Env` points its daemon at its own folders (`comm_isolation_dirs`).
+- A suite never reaches the live box: `Env` points its daemon at its own folders (`comm_isolation_dirs`). A daemon a
+  suite starts by label, and every `sotd` client that finds it through `local_endpoint()`, come from
+  `support::sotd_daemon_at` and `sotd_client_of` at a label of the test's own (`own_label`), and the suite dials the
+  endpoint `label_endpoint` returns; each refuses, before anything starts, a label that derives this box's own daemon's
+  endpoint (on Windows the per-user pipe `\\.\pipe\sot-<user>-<label>`, which no folder moves). `stdio_bridge.rs`'s
+  no-argument form reads no label, so it runs only on Unix, under the private `XDG_RUNTIME_DIR` its `runtime_root`
+  makes, which panics on an endpoint outside that folder before anything binds, dials or starts.
 - A binary over 800 lines is `<name>/main.rs` plus modules, loading `#[path = "../support/mod.rs"] mod support;`.
 - window_lease's `lease_holder_child` stays at its binary's root: `Window::open` runs it by exact name.
 - scripts/tests/rc-gate.sh names binaries in `SPLIT` (capsule_workspaces, comm_wake, lane_bridge, fe_client) and some

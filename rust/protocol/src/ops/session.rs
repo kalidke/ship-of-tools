@@ -116,7 +116,7 @@ pub struct HelloRes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_root: Option<String>,
     /// Optional human-friendly label passed to the backend via `--label`
-    /// (or the env var). Sessions mode uses this to match the running
+    /// (no environment variable sets it). Sessions mode uses this to match the running
     /// daemon to its `~/.config/sot/sessions/<id>.toml` entry per ADR
     /// 0013. Absent when the backend was launched the old way without a
     /// label.
