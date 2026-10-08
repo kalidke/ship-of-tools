@@ -16,7 +16,7 @@ platform; charter: rust/log/src/host/CLAUDE.md.
 - `challenge_macos.rs`: macOS steps 1-3 and `peer_euid_pid_created`, the one macOS reader of a connected peer (its euid from `getpeereid`, its pid and pidversion from one `LOCAL_PEERTOKEN` read), which the daemon's accept-time admission also calls; `ChallengedProcess`.
 - `exit_watch_macos.rs`: the macOS kqueue `NOTE_EXIT` death watch, shared with `supervisor/probe/macos.rs`.
 - `challenge_win.rs`: Windows steps 1-3: the pipe server's token SID and process handle.
-- `connect_own.rs`: the one rule for a local endpoint reached by name: `own_pipe` (Windows, now private) and
+- `connect_own.rs`: the one rule for a local endpoint reached by name: `own_pipe` (Windows, private) and
   `connect_own`, which checks on Unix the account that listens on the connected socket.
 - `impersonation_probe.rs`: test support (Windows, `test-support` feature): the impersonation level a pipe's server gets over a client's handle.
 - `exchange.rs`: the identity request and reply codec for the wire round trip (`feed`).
@@ -46,9 +46,10 @@ Read `challenge.rs` (`exchange_identity`, `ChallengeOutcome`) first, then the pl
   methods" step (`disallowed_methods`) fails on one. It cannot see `std::fs::OpenOptions::open` of a pipe path; the
   daemon's start probe (`socket_answers` in `rust/backend/src/server/listen.rs`) opens the name it is about to bind,
   serving nothing through it. The behavior tests in `rust/backend/src/topology/dial.rs` and
-  `rust/frontend/src/net/transport/tests.rs` exercise the production topology `connect` (now through `connect_own`) and
+  `rust/frontend/src/net/transport/tests.rs` exercise the production topology `connect` (through `connect_own`) and
   window `connect_pipe` entries and require each Unix and Windows arm to refuse another account's endpoint, with an
-  additional zero-received-byte observation in the Unix fixtures; this covers those exercised entries.
+  additional zero-received-byte observation in the Unix fixtures; this covers those exercised entries, and any other
+  opener of a pipe path is a question for review.
 - A client that reaches this box's daemon or a relay socket by name speaks to it only after `connect_own`'s rule passes,
   after the connect and before the first byte. The connector uses a fixed `CONNECT_BOUND` retry budget. An attempt or
   wait already in progress finishes first: Unix includes a 20 ms retry sleep, Windows a 200 ms named-pipe wait. This is
@@ -59,5 +60,5 @@ Read `challenge.rs` (`exchange_identity`, `ChallengeOutcome`) first, then the pl
   (`/proc/sys/kernel/overflowuid`), so on Linux `connect_own` refuses a listener at that uid when its own uid is
   unmapped in `/proc/self/uid_map` (`overflow_uid_is_ambiguous`). The daemon's bind check is by pathname and covers the
   folders from the runtime folder down for a derived path, not the folders above. Every Rust client of a Windows daemon
-  pipe opens it at identification level (`SECURITY_IDENTIFICATION`): `connect_own` (which `topology/dial.rs` now uses)
+  pipe opens it at identification level (`SECURITY_IDENTIFICATION`): `connect_own` (which `topology/dial.rs` uses)
   and the daemon's own start probe (`socket_answers`).
