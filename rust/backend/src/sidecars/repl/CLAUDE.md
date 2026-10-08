@@ -7,7 +7,7 @@ rust/backend/src/sidecars/CLAUDE.md.
 
 ## Files
 - `execute.rs`: repl.execute, the whole-report run
-- `execute_tests.rs`: repl.execute against a stub child: every reply and drawer frame pinned
+- `execute_tests.rs`: native `repl.execute` submit-failure and res-only drawer completion, plus the existing Unix shell reply/frame table.
 - `ops.rs`: repl.eval, repl.run_file, repl.interrupt
 - `mod.rs`: the handle (`Repl`): submit, execute, interrupt and restart, the frame bus message and `ExecAccum`.
 - `lifecycle.rs`: the child's state (`ReplLifecycle`), spawn generations and the `lifecycle` frames.
@@ -31,4 +31,5 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
   starts or the current one dies.
 - `Repl` keeps its constructor's `Signal` and passes it to each supervisor's spawn and shutdown wait.
 - The shim project is resolved at every spawn (`Repl::repl_project`), never cached. `spawn_supervisor` is the only REPL spawn recipe: user code's active project and cwd are the selected user directory, even before it has a `Project.toml`; the shim is a fallback on `JULIA_LOAD_PATH`, never the bare-workspace active project.
+- Once `repl.execute` announces `Started`, every returned report closes that run: a submit failure or collected result without `Done` gets a synthetic `Done`; an already completed result gets no duplicate from the handler. Validation before `Started` creates no drawer run.
 - `repl.execute` output is collected loss-free per eval, text capped at `EXEC_TEXT_CAP` (`ExecAccum`).
