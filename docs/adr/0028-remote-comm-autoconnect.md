@@ -245,6 +245,8 @@ basename:*
     - `repo=` absent (ancient one-line) → discard; it carries no
       evidence of its own to check against.
 
+0.6.6: unpinned self slots use the daemon's declared host. A missing canonical slot may migrate only the exact raw-host slot for this workspace through the existing project validation, under the registry lock; successful publication retires that validated legacy slot. Current self writers share that lock; legacy recovery requires a matching registry handle/workspace/root, so a leftover raw slot cannot revive an absent handle. Explicit self-file pins remain verbatim. Derived handle host text keeps the raw component. The one slot formatter validates native representability of the complete leaf before layout repair, publication or destroy. Failure leaves files unchanged and issues no destructive request; accepted declared-host text is never rewritten to make a filename.
+
 Only a name that comes from **derivation** (nothing else was supplied) runs
 the disambiguation algorithm. A name from `--name`, `$SOT_COMM_NAME`, or an
 already-joined self-file identity is always used **verbatim** — no

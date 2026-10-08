@@ -9,7 +9,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `admission.rs`: server; every connection starts with an accepted hello (every op of `sot_protocol::op` as a first frame is refused), and two OS accounts on one host are refused (ADR 0049 `## User isolation`)
 - `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
 - `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with
-- `comm_file.rs`: messaging; the inbox lock held by the daemon's filer and by the scripts' `sot_inbox_append`
+- `comm_file.rs`: messaging; the inbox lock held by the daemon's filer and by the scripts' `sot_inbox_append`. It also executes declared-host join/self-slot agreement, unread activation and destroyed-handle prune in disposable homes.
 - `comm_send.rs`: messaging; the staged `comm-send.sh` against a real `sotd`: `filed` only for a live handle, nothing appended for a gone one, and an idle row's daemon keeps it live, so a send is filed while that daemon is down
 - `comm_wake.rs`: messaging; the comm wake tick on a real capsule row whose agent is a stub `claude`
 - `control_session.rs`: server; a control session's replies pinned over the wire: unknown op, `monitor.*`, `pty.open` refusals, the off-loop ops, the evt skip and the refused hellos

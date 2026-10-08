@@ -53,7 +53,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `comm/lib/comm-lib-base.sh`, `host_name`, `comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`,
 `agents/spawn/comm-probe.sh`, `agents/spawn/comm-bootstrap.sh`, `fe.command.send`, `fe.command`,
 `agents/sot-fe/sot-fe-request.sh`, `sot_ui`, `agent.message`, `agents/sot-fe/sot-nav.sh`, `comm-relay.sh send --all`,
-`install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`, `sot_sanitize_component`, `_sot_handle_host`.
+`install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`, `sot_sanitize_component`, `_sot_handle_host`. Uses also: HOST, HANDLE_HOST and _sot_self_slot from the messaging context/library.
 
 ## Folders
 - `spawn/`: the four row-lifecycle CLIs (see its page).
