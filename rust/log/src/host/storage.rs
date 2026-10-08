@@ -1,6 +1,5 @@
 //! Which native errors mean the volume or quota is full.
 
-use crate::lane::transport::TransportError;
 use crate::Error;
 
 /// The one table: the native storage-exhaustion codes of this platform.
@@ -10,19 +9,25 @@ pub(crate) fn native_storage_code(e: &std::io::Error) -> Option<i32> {
     let full = [libc::ENOSPC, libc::EDQUOT];
     #[cfg(windows)]
     let full = {
-        use windows_sys::Win32::Foundation::{ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL};
-        [ERROR_DISK_FULL as i32, ERROR_HANDLE_DISK_FULL as i32]
+        use windows_sys::Win32::Foundation::{
+            ERROR_DISK_FULL, ERROR_DISK_QUOTA_EXCEEDED, ERROR_HANDLE_DISK_FULL,
+        };
+        [
+            ERROR_DISK_FULL as i32,
+            ERROR_HANDLE_DISK_FULL as i32,
+            ERROR_DISK_QUOTA_EXCEEDED as i32,
+        ]
     };
     full.contains(&code).then_some(code)
 }
 
 /// The native code when `e` is storage exhaustion, read from the `io::Error`
-/// an `Error::Io` or a transport error carries, never from text.
+/// an `Error::Io` carries, never from text. A transport error is not read: a
+/// full runtime folder (where sockets live) is not the state root's volume
+/// being full.
 pub fn storage_exhaustion(e: &Error) -> Option<i32> {
     match e {
-        Error::Io(io)
-        | Error::Transport(TransportError::Io { source: io, .. })
-        | Error::Transport(TransportError::RuntimeDir(io)) => native_storage_code(io),
+        Error::Io(io) => native_storage_code(io),
         _ => None,
     }
 }
@@ -30,23 +35,25 @@ pub fn storage_exhaustion(e: &Error) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lane::transport::TransportError;
 
     #[test]
     fn storage_codes_are_recognized_by_native_code_only() {
         #[cfg(unix)]
         let (full, other) = ([libc::ENOSPC, libc::EDQUOT], [libc::EIO, libc::EACCES]);
         #[cfg(windows)]
-        let (full, other) = ([112, 39], [5, 1117]);
+        let (full, other) = ([112, 39, 1295], [5, 1117]);
         for code in full {
             let io = || std::io::Error::from_raw_os_error(code);
             assert_eq!(storage_exhaustion(&Error::Io(io())), Some(code));
+            // A transport error carrying the same code is not storage exhaustion.
             let transport = TransportError::Io {
                 op: "write",
                 source: io(),
             };
-            assert_eq!(storage_exhaustion(&Error::Transport(transport)), Some(code));
+            assert_eq!(storage_exhaustion(&Error::Transport(transport)), None);
             let runtime = TransportError::RuntimeDir(io());
-            assert_eq!(storage_exhaustion(&Error::Transport(runtime)), Some(code));
+            assert_eq!(storage_exhaustion(&Error::Transport(runtime)), None);
         }
         for code in other {
             let io = std::io::Error::from_raw_os_error(code);

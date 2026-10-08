@@ -34,7 +34,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   (`lock_writer`).
 - Kernel file locks are taken only inside two guards whose `Drop` unlocks: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`. rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
-- Storage exhaustion is recognized by its native code only: ENOSPC and EDQUOT, on Windows ERROR_DISK_FULL and ERROR_HANDLE_DISK_FULL, read from the `io::Error` an `Error::Io` or a transport error carries, never from text (`storage_exhaustion`). `preflight_volume` and Windows `io_ctx` return such an error as itself, with its code, instead of their refusal or context text.
+- Storage exhaustion is recognized by its native code only: ENOSPC and EDQUOT, on Windows ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL and ERROR_DISK_QUOTA_EXCEEDED, read from the `io::Error` an `Error::Io` carries, never from text and never from a transport error (a full runtime folder is not storage exhaustion) (`storage_exhaustion`). `preflight_volume` and Windows `io_ctx` return such an error as itself, with its code, instead of their refusal or context text.
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot_state_dir`, `sot_config_dir`,

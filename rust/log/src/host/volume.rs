@@ -5,8 +5,6 @@ use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
 #[cfg(unix)]
-use super::storage::native_storage_code;
-#[cfg(unix)]
 use super::{fsync_dir, rename_noreplace_raw, storage_exhaustion};
 #[cfg(windows)]
 use super::{io_ctx, open_dir_handle};
@@ -181,16 +179,6 @@ fn full_or(e: Error, refusal: impl FnOnce(Error) -> Error) -> Error {
     }
 }
 
-/// [`full_or`] for a failure that is still a bare `io::Error`.
-#[cfg(unix)]
-fn full_or_io(e: std::io::Error, refusal: impl FnOnce(std::io::Error) -> Error) -> Error {
-    if native_storage_code(&e).is_some() {
-        Error::Io(e)
-    } else {
-        refusal(e)
-    }
-}
-
 /// Which kind of filesystem entry a probe pair creates — a directory pair
 /// and a file pair are both required (decision 23: "a temp directory pair
 /// AND a temp file pair"), since a store publishes both kinds and a
@@ -263,7 +251,7 @@ fn probe_rename_noreplace_pair(dir: &Path, kind: PreflightEntryKind, nonce: &str
     let mut own_b = false;
     let result = (|| -> Result<()> {
         kind.create(&a, first).map_err(|e| {
-            full_or_io(e, |e| preflight_refusal(dir, format_args!("could not create the {} probe entry ({e})", kind.label())))
+            full_or(Error::Io(e), |e| preflight_refusal(dir, format_args!("could not create the {} probe entry ({e})", kind.label())))
         })?;
         rename_noreplace_raw(&a, &b).map_err(|e| {
             full_or(e, |e| {
@@ -272,7 +260,7 @@ fn probe_rename_noreplace_pair(dir: &Path, kind: PreflightEntryKind, nonce: &str
         })?;
         own_b = true;
         kind.create(&a, second).map_err(|e| {
-            full_or_io(e, |e| {
+            full_or(Error::Io(e), |e| {
                 preflight_refusal(dir, format_args!("could not recreate a colliding {} probe entry ({e})", kind.label()))
             })
         })?;

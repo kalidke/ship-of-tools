@@ -506,7 +506,8 @@ mod tests {
         let io = |code| std::io::Error::from_raw_os_error(code);
         let transport = sot_log::lane::transport::TransportError::RuntimeDir(io(full));
         assert_eq!(leg_exit_code(&Err(sot_log::Error::Io(io(full)))), 71);
-        assert_eq!(leg_exit_code(&Err(sot_log::Error::Transport(transport))), 71);
+        // A full runtime folder is not the state root's volume being full.
+        assert_eq!(leg_exit_code(&Err(sot_log::Error::Transport(transport))), 1);
         assert_eq!(leg_exit_code(&Err(sot_log::Error::Io(io(other)))), 1);
         assert_eq!(leg_exit_code(&summary(Some(ExitStatus::Code(71)))), 1);
         assert_eq!(leg_exit_code(&summary(Some(ExitStatus::Code(3)))), 3);

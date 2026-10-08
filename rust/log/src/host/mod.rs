@@ -123,14 +123,12 @@ mod tests {
         assert!(msg.contains("a") && msg.contains("b.tmp"), "{msg}");
     }
 
-    /// No path at all in `what` (e.g. `OpenProcessToken`): the separator
-    /// must not leave a dangling `": "` with nothing after it.
     /// A full volume keeps its native code through the context wrapper:
     /// the caller reads `raw_os_error`, not the text.
     #[test]
     #[cfg(windows)]
     fn io_ctx_keeps_disk_full_codes() {
-        for code in [112, 39] {
+        for code in [112, 39, 1295] {
             let wrapped = io_ctx(std::io::Error::from_raw_os_error(code), format_args!("MoveFileExW {:?}", r"C:\a"));
             match wrapped {
                 Error::Io(e) => assert_eq!(e.raw_os_error(), Some(code)),
@@ -139,6 +137,8 @@ mod tests {
         }
     }
 
+    /// No path at all in `what` (e.g. `OpenProcessToken`): the separator
+    /// must not leave a dangling `": "` with nothing after it.
     #[test]
     #[cfg(windows)]
     fn io_ctx_with_no_path_in_what_has_no_dangling_separator() {
