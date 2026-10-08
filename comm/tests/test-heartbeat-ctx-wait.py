@@ -436,7 +436,25 @@ def cleanup_case(root, home, mode, observation):
     return rows
 
 
-def run_case(work, stage, bash, label, mode, ticks, delay=0):
+def fixture_too_slow(f):
+    # The release is scheduled at entry + delay; a fixture body that is ready later never
+    # gets to prove the release inside its budget, whatever the product does.
+    if f["mode"] != "release" or not f["delay"] or f["ready_at"] is None:
+        return False
+    origin = f["stamps"].get("entry", f["started"])
+    return f["ready_at"] - origin >= f["delay"]
+
+
+def run_case(work, stage, bash, label, mode, ticks, delay=0, attempts=4):
+    for attempt in range(1, attempts + 1):
+        f = run_case_once(work, stage, bash, label, mode, ticks, delay, attempt == attempts)
+        if not f.get("retry"):
+            return f
+        print(f"RETRY {label}: fixture ready {f['ready_at'] - f['stamps'].get('entry', f['started']):.3f}s after "
+              f"entry, not before the {delay}s release; attempt {attempt} of {attempts} says nothing about the product", flush=True)
+
+
+def run_case_once(work, stage, bash, label, mode, ticks, delay, last):
     root = work / uuid.uuid4().hex
     root.mkdir()
     home, flat, env = seed(root, stage, mode, root.name, bash)
@@ -465,6 +483,9 @@ def run_case(work, stage, bash, label, mode, ticks, delay=0):
         assert events(root, root.name) == final, "repeat key started context"
     f["cleanup"] = True
     f["failure"] = failure
+    if failure and not last and fixture_too_slow(f):
+        f["retry"] = True
+        return f
     print(f"{label} nonce={root.name} entry={f['entries']} exit={f['facts'][0]} stdout-EOF={f['facts'][1]} stderr-EOF={f['facts'][2]} cleanup=True", flush=True)
     print(f"{label} timing={dict(invocation=f['started'], readiness=f['ready_at'], release_send=f['released_at'], cutoff=f['cutoff'], events=f['stamps'])} events={','.join(r[1] for r in f['rows'])}", flush=True)
     if failure:
@@ -560,6 +581,12 @@ def sensitivity(work, bash):
     f = timing_control()
     rejected(lambda: release_valid(f), "FIXTURE: actual release exhausted the rounded head budget")
     print("PASS sensitivity actual-release: timing assertion rejected actual late release")
+    slow = copy.deepcopy(BUDGET_COMPANION)
+    slow["ready_at"] = slow["stamps"].get("entry", slow["started"]) + slow["delay"] + 0.1
+    assert fixture_too_slow(slow), "slow fixture readiness was not recognised"
+    slow["ready_at"] = slow["stamps"].get("entry", slow["started"]) + slow["delay"] / 2
+    assert not fixture_too_slow(slow), "prompt fixture readiness treated as slow"
+    print("PASS sensitivity slow-fixture: only a body ready after its scheduled release is retried")
     readiness_control(work, bash)
     print("PASS sensitivity missing-readiness: cleanup assertion rejected unconfirmed launched fixture")
 
@@ -629,6 +656,13 @@ def lf_control(work, stage, bash):
     restored = root / "restored.sh"
     executable(restored, "#!/usr/bin/env bash\nprintf 'restored-token\\n'\n")
     restoration = subprocess.run([bash, str(restored)], capture_output=True, timeout=10)
+    # Read back what the writers published: a Bash that skips CR must not hide a text-mode writer.
+    for written in (flat / "comm-lib.sh", flat / "comm-context.sh", restored):
+        assert b"\r" not in written.read_bytes(), f"Bash fixture or protocol did not preserve LF bytes: {written.name} holds CR"
+    crlf = root / "crlf.sh"
+    crlf.write_bytes(b"printf 'crlf-token\\n'\r\n")
+    tolerated = subprocess.run([bash, str(crlf)], capture_output=True, timeout=10).stdout == b"crlf-token\n"
+    print(f"C3-H1 info: this Bash {'ignores' if tolerated else 'keeps'} CR in scripts", flush=True)
     assert (consumer.returncode == 0 and consumer.stdout == f"NAME={NAME}\n".encode() and
             consumer.stderr == b"completed-diagnostic-token\n" and native.stdout == b"NAME=heartbeat-fixture\n" and
             native.stderr == b"protocol-token\n" and restoration.stdout == b"restored-token\n"), "Bash fixture or protocol did not preserve LF bytes"
@@ -778,7 +812,8 @@ def main():
              ("B1-0", "zero", "0"), ("B1-000", "zero", "000"),
              ("B2-10", "release", "10", 0.7), ("B2-0010", "release", "0010", 0.7),
              ("B3-21", "release", "21", 1.5), ("B4", "overflow", "999999999999999999999999999999999999")]
-    cases += [(mode, mode, "20") for mode in ("success", "nonzero", "exit-one", "repeat", "artifact-create", "artifact-create-stderr", "fallback", "real", "empty-name", "missing", "off", "no-registry", "child-gate", "throttle", "no-row", "absent-floor", "empty-floor")]
+    cases += [(mode, mode, "20") for mode in ("success", "nonzero", "exit-one", "repeat", "artifact-create", "artifact-create-stderr", "fallback", "empty-name", "missing", "off", "no-registry", "child-gate", "throttle", "no-row", "absent-floor", "empty-floor")]
+    cases += [("real", "real", "200")]
     cases += [("budget-" + label, "release", ticks, 1.5) for label, ticks in (("unset", None), ("200", "200"), ("empty", ""), ("invalid", "invalid"))]
     cases += [("budget-" + ticks, "success", ticks) for ticks in ("20", "020", "9223372036854775807")]
     cases += [("deadline-" + label, "default-timeout", ticks) for label, ticks in (("unset", None), ("200", "200"), ("empty", ""), ("invalid", "invalid"))]
