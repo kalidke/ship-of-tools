@@ -178,13 +178,13 @@ fn next_backoff_ms(current: u64, dial: &Dial) -> u64 {
 /// until the connection drops or the runtime shuts down. The task asks the
 /// window to redraw whenever a new IncomingEvt is published so the GPU
 /// thread sees state updates without polling.
-pub fn spawn(
+pub(crate) fn spawn<Wn: Redraw + Clone + Send + Sync + 'static>(
     rt: &tokio::runtime::Runtime,
     host: HostKey,
     config: TransportConfig,
     evt_tx: StdSender<(HostKey, IncomingEvt)>,
     out_rx: UnboundedReceiver<OutgoingReq>,
-    window: Arc<Window>,
+    window: Wn,
     reconnect_now: Arc<tokio::sync::Notify>,
     gate: sot_protocol::topology::ssh_bridge::LinkGate,
     leases: Arc<crate::lease::Leases>,
@@ -264,12 +264,12 @@ pub fn spawn(
 /// pipe failure fell through to ssh, but `Dial` makes that unconstructible
 /// now, so each arm either connects and hands off or returns its own
 /// `Err`.
-async fn connect_and_run(
+async fn connect_and_run<Wn: Redraw>(
     host: HostKey,
     config: TransportConfig,
     evt_tx: StdSender<(HostKey, IncomingEvt)>,
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
-    window: Arc<Window>,
+    window: Wn,
     backoff_ms: &mut u64,
     gate: &sot_protocol::topology::ssh_bridge::LinkGate,
     leases: &crate::lease::Leases,
@@ -428,7 +428,7 @@ fn ping_interval_duration() -> std::time::Duration {
 
 /// What `run_protocol` needs of the window: a redraw request. A trait so a
 /// test can run the protocol without a real window.
-trait Redraw {
+pub(crate) trait Redraw {
     fn request_redraw(&self);
 }
 
