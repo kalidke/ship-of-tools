@@ -70,3 +70,49 @@ fn a_distributed_worker_starts_in_a_session_of_its_own() {
         "the worker shares the master's session: {worker_row:?} (master {master_row:?})"
     );
 }
+
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+#[tokio::test]
+#[ignore = "needs Julia 1.12 and Pluto's environment (SOT_JULIA_BIN, SOT_L2_PLUTO_MANIFEST) and, for its Quarto half, Quarto 1.7.31; run by the harness job with --ignored"]
+async fn every_descendant_of_a_killed_daemon_ends() {
+    use crate::done::{
+        assert_oracle, hold_pluto, hold_quarto, hold_row, save_oracle, save_successor,
+        supervisor_of, Held, Inputs, Wire,
+    };
+    use crate::guard::Run;
+    let _serial = crate::SERIAL.lock().await;
+    let mut fx = Fixture::new("every_descendant_of_a_killed_daemon_ends");
+    let inputs = Inputs::new();
+    let env = inputs.env_pairs();
+    let mut run = Run::start("gdone", &env, false).await;
+    let mut wire = Wire::connect(&run).await;
+    let mut held = Held::default();
+
+    hold_row(&mut fx, &run, &mut wire, &inputs, &mut held).await;
+    hold_pluto(&mut fx, &run, &mut wire, &inputs, &mut held).await;
+    hold_quarto(&mut fx, &run, &mut wire, &inputs, &mut held).await;
+    let supervisor = supervisor_of(&run, &held.state_dir)
+        .await
+        .expect("the capsule's supervisor answers");
+    let supervisor_id = fx
+        .adopt(supervisor.0, Some(supervisor.1), "the capsule's supervisor")
+        .expect("authority over the reported supervisor");
+
+    // The stimulus: SIGKILL to the daemon, through a pidfd of the process the case's own control connection reported.
+    let daemon = fx
+        .adopt(run.daemon, None, "the daemon")
+        .expect("authority over the daemon");
+    if let Some(spin) = held.repl_spin.take() {
+        spin.abort();
+    }
+    fx.identity(daemon).kill().expect("SIGKILL the daemon");
+    let status = run.status_within(std::time::Duration::from_secs(60)).await;
+
+    fx.save("launched_status", format!("{status:?}"));
+    save_oracle(&mut fx, &held, supervisor_id);
+    save_successor(&mut fx, &mut run, &env, &held, supervisor).await;
+    let said = run.said();
+    let cleanup = fx.cleanup();
+    assert!(cleanup.complete(), "{cleanup:?}");
+    assert_oracle(&fx, status, &said);
+}

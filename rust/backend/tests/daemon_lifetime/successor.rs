@@ -18,7 +18,6 @@ use crate::support::{
     call, connect_and_hello, find_row, poll_until, sot_capsule_exe, Conn, Env, BOUND,
     CAPSULE_EXE_NAME,
 };
-use base64::Engine as _;
 use sot_protocol::op;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -226,46 +225,10 @@ impl Case {
         let births = self.births();
         self.fx.save("births_in_all", births);
 
-        let nonce = format!("l2-nonce-{}", std::process::id());
-        let input = call(
-            conn,
-            next_id,
-            op::PTY_INPUT,
-            serde_json::json!({
-                "workspace_id": workspace_id,
-                "data_b64": base64::engine::general_purpose::STANDARD.encode(format!("echo {nonce}")),
-                "enter": true,
-                "origin": "l2-successor-test",
-            }),
-        )
-        .await;
-        next_id += 1;
-        let echo_deadline = Instant::now() + BOUND;
-        let echoed = loop {
-            let id = next_id;
-            next_id += 1;
-            let screen = call(
-                conn,
-                id,
-                op::PTY_SCREEN,
-                serde_json::json!({ "workspace_id": workspace_id }),
-            )
-            .await
-            .payload;
-            let seen = screen["lines"].as_array().is_some_and(|lines| {
-                lines
-                    .iter()
-                    .any(|line| line.as_str().is_some_and(|l| l.trim_end() == nonce))
-            });
-            if seen || Instant::now() >= echo_deadline {
-                break seen;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        };
-        self.fx.save(
-            "nonce_round_trip",
-            format!("{echoed} (pty.input answered {})", input.payload),
-        );
+        let outcome =
+            crate::guard::nonce_round_trip(conn, &mut next_id, workspace_id, "l2-successor-test")
+                .await;
+        self.fx.save("nonce_round_trip", outcome);
     }
 
     /// Cleanup comes after everything the product did is saved, and uses only the fixture's identities.

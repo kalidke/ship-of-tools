@@ -1,0 +1,17 @@
+---
+title: "daemon-lifetime render fixture"
+engine: julia
+---
+
+This document is the real input of the daemon-lifetime harness's Quarto half (rust/backend/tests/daemon_lifetime):
+its one chunk runs in the Julia engine's worker, reports its own pid and its parent's (the engine server's), ignores TERM
+and HUP and starts a process tree detached. `@DIR@` and `@TREE@` are replaced with the case's folders when the case writes the document.
+
+```{julia}
+ccall(:signal, Ptr{Cvoid}, (Cint, Ptr{Cvoid}), 15, Ptr{Cvoid}(1))
+ccall(:signal, Ptr{Cvoid}, (Cint, Ptr{Cvoid}), 1, Ptr{Cvoid}(1))
+write(joinpath("@DIR@", "worker.pid"), string(getpid()))
+write(joinpath("@DIR@", "server.pid"), string(ccall(:getppid, Cint, ())))
+run(detach(`sh @TREE@ @DIR@`); wait = false)
+"started"
+```

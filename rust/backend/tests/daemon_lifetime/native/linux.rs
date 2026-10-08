@@ -82,6 +82,28 @@ impl Identity {
         }
     }
 
+    /// `sig` through the pidfd: it names the process it opened, never a later holder of the number.
+    pub fn signal(&self, sig: i32) -> io::Result<()> {
+        // SAFETY: pidfd_send_signal on a descriptor this value owns, with no siginfo.
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.pidfd.as_raw_fd(),
+                sig,
+                0,
+                0,
+            )
+        };
+        if rc == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        Err(err)
+    }
+
     /// SIGKILL through the pidfd: it names the process it opened, never a later holder of the number.
     pub fn kill(&self) -> io::Result<()> {
         // SAFETY: pidfd_send_signal on a descriptor this value owns, with no siginfo.

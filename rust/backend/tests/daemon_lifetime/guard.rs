@@ -1,0 +1,811 @@
+//! The Linux lifetime guard on real daemons (`lifecycle::daemon_children::guard`): the launched process is the guard and the
+//! daemon is its child, the guard ends as the daemon did and forwards what it is sent, a lost guard ends the daemon at once,
+//! the boot refuses a second thread, and the relay refresh follows the guard's pid. Every process these cases end is one
+//! this test spawned (the launched guard), or the daemon the case's own control connection reports through `SO_PEERCRED`
+//! and holds as a pidfd (`native::Identity`); nothing found by walking parent links or reading `ps` is ever signalled.
+
+use crate::fixture_owner::Fixture;
+use crate::support::{call, handoff, poll_until, sotd_command, Env, BOUND, TEST_STATE_HOST};
+use crate::SERIAL;
+use sot_protocol::ops::{op, FeLeaseReq};
+use sot_protocol::{codec, Frame};
+use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixStream;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
+
+/// A real guarded daemon: its launched process (the guard), the daemon the control connection reported, and its log.
+pub struct Run {
+    pub env: Env,
+    pub log: PathBuf,
+    launched: Option<Child>,
+    pub daemon: i32,
+}
+
+/// The pid `SO_PEERCRED` reports for the process that listens on `socket`: the daemon.
+fn peer_pid(socket: &Path) -> Option<i32> {
+    let stream = UnixStream::connect(socket).ok()?;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: SO_PEERCRED fills one ucred of the stated length for the connected socket.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut cred as *mut libc::ucred).cast(),
+            &mut len,
+        )
+    };
+    (rc == 0 && cred.pid > 0).then_some(cred.pid)
+}
+
+/// A process's parent, from `/proc/<pid>/stat`.
+pub fn parent_of(pid: i32) -> Option<i32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+impl Run {
+    /// The command for a daemon on `env`, its output in `log`. `extra` is set last.
+    fn command(env: &Env, log: &Path, extra: &[(&str, &str)]) -> std::process::Command {
+        let file = std::fs::File::create(log).expect("create the daemon log");
+        let mut cmd = sotd_command();
+        cmd.arg("--socket")
+            .arg(&env.socket_path)
+            .arg("--project-root")
+            .arg(&env.daemon_project_root)
+            .env("LOCALAPPDATA", &env.state_root)
+            .env("XDG_STATE_HOME", &env.state_root)
+            .env("XDG_CONFIG_HOME", &env.config_root)
+            .env("SOT_SELF_HOST", TEST_STATE_HOST)
+            .env("SOT_RUNTIME_DIR", env._runtime_tmp.path())
+            .env("HOME", &env.home_root)
+            .env("USERPROFILE", &env.home_root)
+            .env("SOT_COMM_HOME", &env.comm_root)
+            .env("RUST_LOG", "info")
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(file.try_clone().expect("clone the log")))
+            .stderr(Stdio::from(file));
+        for (k, v) in extra {
+            cmd.env(k, v);
+        }
+        cmd
+    }
+
+    /// Start a daemon and wait until it answers; `own_group` puts the launched process in a process group of its own.
+    pub async fn start(tag: &str, extra: &[(&str, &str)], own_group: bool) -> Run {
+        Self::boot(Env::new(tag), extra, own_group).await
+    }
+
+    /// Start a daemon on `env` and wait until it answers: its launched process, the daemon it reported and its log.
+    async fn spawn_daemon(
+        env: &Env,
+        extra: &[(&str, &str)],
+        own_group: bool,
+    ) -> (Child, i32, PathBuf) {
+        let log = env._tmp.path().join(format!(
+            "daemon-{}.log",
+            std::time::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_nanos())
+        ));
+        let mut cmd = Self::command(env, &log, extra);
+        if own_group {
+            cmd.process_group(0);
+        }
+        let launched = cmd.spawn().expect("spawn sotd");
+        let socket = env.socket_path.clone();
+        let daemon = poll_until(
+            || {
+                let s = socket.clone();
+                async move { peer_pid(&s) }
+            },
+            BOUND,
+            "the daemon to answer",
+        )
+        .await;
+        (launched, daemon, log)
+    }
+
+    pub async fn boot(env: Env, extra: &[(&str, &str)], own_group: bool) -> Run {
+        let (launched, daemon, log) = Self::spawn_daemon(&env, extra, own_group).await;
+        let run = Run {
+            env,
+            log,
+            launched: Some(launched),
+            daemon,
+        };
+        run
+    }
+
+    /// The daemon this run started ended (its launched process has been seen to end): start another on the same roots, as
+    /// a successor does.
+    pub async fn successor(&mut self, extra: &[(&str, &str)]) {
+        assert!(
+            self.status_within(Duration::from_secs(60)).await.is_some(),
+            "the predecessor's launched process has not ended"
+        );
+        let (launched, daemon, log) = Self::spawn_daemon(&self.env, extra, false).await;
+        self.launched = Some(launched);
+        self.daemon = daemon;
+        self.log = log;
+    }
+
+    /// The daemon is the child of the launched process, which is the guard.
+    pub fn assert_guarded(&self) {
+        assert_eq!(
+            parent_of(self.daemon),
+            Some(self.guard_pid()),
+            "the daemon is not the child of the launched process: {}",
+            self.said()
+        );
+    }
+
+    pub fn guard_pid(&self) -> i32 {
+        self.launched.as_ref().expect("the launched process").id() as i32
+    }
+
+    pub fn said(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
+    /// The launched process's wait status, once it has ended within `bound`.
+    pub async fn status_within(&mut self, bound: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + bound;
+        loop {
+            if let Some(status) = self
+                .launched
+                .as_mut()?
+                .try_wait()
+                .expect("try_wait the launched process")
+            {
+                return Some(status);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// SIGKILL to the launched guard: a process this test spawned.
+    pub fn kill_guard(&mut self) {
+        let _ = self.launched.as_mut().expect("the launched process").kill();
+    }
+}
+
+impl Drop for Run {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.launched.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// The row's supervisor as the product's lane reports it: its pid and creation time. The lane is found through `env`'s
+/// runtime folder, which this call makes the process's own.
+pub async fn supervisor_in(env: &Env, state_dir: &Path) -> Option<(i32, u64)> {
+    std::env::set_var("SOT_RUNTIME_DIR", env._runtime_tmp.path());
+    let dir = state_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        sot_log::attach_client::supervisor_client::query_status(&dir)
+            .ok()
+            .map(|(report, _)| (report.pid as i32, report.created))
+    })
+    .await
+    .unwrap()
+}
+
+/// A lease from this process, then the window's close: the daemon shuts down and exits 0.
+async fn close_by_lease(env: &Env) {
+    let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
+    let lease = FeLeaseReq {
+        boot: me.boot,
+        pid: me.pid,
+        created: me.created,
+        token: None,
+    };
+    let mut conn = handoff(
+        &env.socket_path,
+        &Frame::req(1, op::FE_LEASE, serde_json::to_value(&lease).unwrap()),
+    )
+    .await;
+    let (reply, _) = codec::read_frame(&mut conn).await.expect("the lease reply");
+    assert_eq!(reply.payload["outcome"], "granted", "{:?}", reply.payload);
+    // The daemon may end before it answers (the backstop case), so the frame is written and no reply is read.
+    let _ = codec::write_frame(
+        &mut conn,
+        &Frame::req(2, op::FE_LEAVING, serde_json::json!({ "intent": "close" })),
+        None,
+    )
+    .await;
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Stimulus {
+    /// The window closes: the daemon exits 0.
+    Close,
+    /// The window closes with a one-millisecond shutdown bound and a ready row to end: the backstop exits 1.
+    Backstop,
+    /// A signal to the daemon, through the pidfd the case holds.
+    ToDaemon(i32),
+    /// A signal to the launched guard alone.
+    ToGuard(i32),
+    /// A signal to the launched process's group: both receive it.
+    ToGroup(i32),
+}
+
+#[tokio::test]
+async fn the_guard_mirrors_the_daemon_and_forwards_signals() {
+    let _serial = SERIAL.lock().await;
+    for stimulus in [
+        Stimulus::Close,
+        Stimulus::Backstop,
+        Stimulus::ToDaemon(libc::SIGKILL),
+        Stimulus::ToDaemon(libc::SIGABRT),
+        Stimulus::ToGuard(libc::SIGTERM),
+        Stimulus::ToGuard(libc::SIGINT),
+        Stimulus::ToGuard(libc::SIGHUP),
+        Stimulus::ToGroup(libc::SIGTERM),
+    ] {
+        let extra: &[(&str, &str)] = match stimulus {
+            Stimulus::Backstop => &[("SOT_TEST_SHUTDOWN_BOUND_MS", "1")],
+            _ => &[],
+        };
+        let mut run = Run::start("gmir", extra, matches!(stimulus, Stimulus::ToGroup(_))).await;
+        run.assert_guarded();
+        let mut fx = Fixture::new(&format!("guard_mirrors::{stimulus:?}"));
+        let daemon = fx
+            .adopt(run.daemon, None, "the daemon")
+            .expect("authority over the daemon, reported by its control connection");
+        match stimulus {
+            Stimulus::Close => close_by_lease(&run.env).await,
+            Stimulus::Backstop => {
+                // A ready row gives the close real work, so the bound passes before it finishes. The capsule is outside the
+                // daemon's lifetime and outlives the exit, so the fixture holds the supervisor the product reports.
+                let (mut conn, mut next_id) = connect_and_hello(&run.env.socket_path).await;
+                let (_, state_dir) = ready_row(&run.env, &mut conn, &mut next_id, "backstop").await;
+                drop(conn);
+                let (pid, created) = supervisor_in(&run.env, &state_dir)
+                    .await
+                    .expect("the capsule's supervisor answers");
+                fx.adopt(pid, Some(created), "the capsule's supervisor")
+                    .expect("authority over the reported supervisor");
+                close_by_lease(&run.env).await;
+            }
+            Stimulus::ToDaemon(sig) => {
+                // SAFETY: pidfd_send_signal is the fixture identity's own kill for SIGKILL; for another signal the same call over the held pidfd.
+                fx.identity(daemon)
+                    .signal(sig)
+                    .expect("signal the daemon through its pidfd");
+            }
+            // SAFETY: a signal to the guard this test spawned.
+            Stimulus::ToGuard(sig) => unsafe {
+                libc::kill(run.guard_pid(), sig);
+            },
+            // SAFETY: a signal to the group of the guard this test spawned and put in a group of its own.
+            Stimulus::ToGroup(sig) => unsafe {
+                libc::killpg(run.guard_pid(), sig);
+            },
+        }
+        let status = run.status_within(Duration::from_secs(60)).await;
+        fx.save("status", format!("{status:?}"));
+        fx.save(
+            "daemon_gone",
+            fx.identity(daemon).exited(Duration::from_secs(2)),
+        );
+        let said = run.said();
+        let cleanup = fx.cleanup();
+        drop(run);
+        assert!(cleanup.complete(), "{cleanup:?}");
+        let status = status
+            .unwrap_or_else(|| panic!("{stimulus:?}: the launched process did not end:\n{said}"));
+        assert_eq!(
+            fx.saved("daemon_gone"),
+            Some("true"),
+            "{stimulus:?}: the daemon outlived its guard's end"
+        );
+        match stimulus {
+            Stimulus::Close => assert_eq!(status.code(), Some(0), "Close: {status:?}\n{said}"),
+            Stimulus::Backstop => {
+                assert_eq!(status.code(), Some(1), "the backstop: {status:?}\n{said}")
+            }
+            Stimulus::ToDaemon(sig) | Stimulus::ToGuard(sig) | Stimulus::ToGroup(sig) => {
+                assert_eq!(status.signal(), Some(sig), "{stimulus:?}: the launched process did not end as the daemon did: {status:?}\n{said}")
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn losing_the_guard_ends_the_daemon_at_once() {
+    let _serial = SERIAL.lock().await;
+    let mut run = Run::start("glost", &[], false).await;
+    run.assert_guarded();
+    let mut fx = Fixture::new("losing_the_guard");
+    let daemon = fx
+        .adopt(run.daemon, None, "the daemon")
+        .expect("authority over the daemon");
+    run.kill_guard();
+    fx.save(
+        "daemon_gone_within_1s",
+        fx.identity(daemon).exited(Duration::from_secs(1)),
+    );
+    let said = run.said();
+    let cleanup = fx.cleanup();
+    drop(run);
+    assert!(cleanup.complete(), "{cleanup:?}");
+    assert_eq!(
+        fx.saved("daemon_gone_within_1s"),
+        Some("true"),
+        "the daemon kept serving after its guard was killed:\n{said}"
+    );
+}
+
+#[tokio::test]
+async fn the_prologue_refuses_a_second_thread() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("gthr");
+    let log = env._tmp.path().join("daemon.log");
+    let mut cmd = Run::command(&env, &log, &[("SOT_TEST_PROLOGUE_THREAD", "1")]);
+    let mut launched = cmd.spawn().expect("spawn sotd");
+    let began = Instant::now();
+    let status = loop {
+        if let Some(status) = launched.try_wait().expect("try_wait") {
+            break status;
+        }
+        if began.elapsed() > BOUND {
+            let _ = launched.kill();
+            let _ = launched.wait();
+            panic!(
+                "the boot with a second thread did not end:\n{}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(status.code(), Some(1), "{status:?}\n{said}");
+    assert!(
+        said.contains("threads"),
+        "the refusal does not name the thread count:\n{said}"
+    );
+    assert!(
+        peer_pid(&env.socket_path).is_none(),
+        "a daemon answers after a refused boot"
+    );
+}
+
+/// A systemctl stand-in for the relay refresh: it logs each call, answers `list-unit-files` with one enabled relay socket
+/// and answers `show -p MainPID` with the pid in the file `main-pid-of`: `guard` (its grandparent: the daemon's parent) or
+/// `daemon` (its parent). The stub runs as a child of the daemon, so `$PPID` is the daemon.
+const STUB_SYSTEMCTL: &str = "#!/bin/sh\nd=${0%/*}\necho \"$*\" >> \"$d/calls\"\ncase \"$*\" in\n  *show*MainPID*) if [ \"$(cat \"$d/main-pid-of\")\" = guard ]; then read -r _ _ _ pp _ < \"/proc/$PPID/stat\"; echo \"$pp\"; else echo \"$PPID\"; fi ;;\n  *list-unit-files*) echo 'sot-host-relay-remote-a.socket enabled enabled' ;;\nesac\nexit 0\n";
+
+/// Start a hub-configured daemon whose `systemctl` is the stub and report the stub's calls after the daemon has had time to
+/// refresh. `main_pid_of` is what the stub reports as the unit's MainPID.
+async fn refresh_calls(main_pid_of: &str) -> String {
+    let env = Env::new("grel");
+    let bin = env._tmp.path().join("stub-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    crate::native_stub_systemctl(&bin, STUB_SYSTEMCTL);
+    std::fs::write(bin.join("main-pid-of"), main_pid_of).unwrap();
+    let hosts = env._tmp.path().join("hosts.toml");
+    std::fs::write(
+        &hosts,
+        "hub = \"hub-box\"\n[host.hub-box]\ndaemon = true\n[host.remote-a]\ndaemon = true\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(env.config_root.join("systemd/user")).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let log = env._tmp.path().join("daemon.log");
+    let extra = [
+        ("SOT_HOSTS", hosts.to_str().unwrap()),
+        ("SOT_SELF_HOST", "hub-box"),
+        ("PATH", path.as_str()),
+    ];
+    let mut launched = Run::command(&env, &log, &extra)
+        .spawn()
+        .expect("spawn sotd");
+    let socket = env.socket_path.clone();
+    poll_until(
+        || {
+            let s = socket.clone();
+            async move { peer_pid(&s) }
+        },
+        BOUND,
+        "the daemon to answer",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let calls = std::fs::read_to_string(bin.join("calls")).unwrap_or_default();
+    let _ = launched.kill();
+    let _ = launched.wait();
+    calls
+}
+
+#[tokio::test]
+async fn the_relay_refresh_follows_the_guard() {
+    let _serial = SERIAL.lock().await;
+    let acted = refresh_calls("guard").await;
+    assert!(
+        acted.contains("list-unit-files"),
+        "the refresh did not run when the unit's MainPID was the guard:\n{acted}"
+    );
+    let skipped = refresh_calls("daemon").await;
+    assert!(
+        skipped.contains("MainPID"),
+        "the daemon did not ask for the unit's MainPID:\n{skipped}"
+    );
+    assert!(
+        !skipped.contains("list-unit-files"),
+        "the refresh ran when the unit's MainPID was the daemon, not the guard:\n{skipped}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Ephemerals started through the daemon's real routes, and their end
+// ---------------------------------------------------------------------------------------------------------------------
+
+use crate::support::{connect_and_hello, find_row, Conn};
+use crate::tree::{session_members, Tree};
+
+/// A Julia the REPL can run: `SOT_JULIA_BIN` of this test's own environment, else `julia` found on its PATH.
+pub fn julia_bin() -> String {
+    if let Some(bin) = std::env::var_os("SOT_JULIA_BIN") {
+        return bin.to_string_lossy().into_owned();
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("julia"))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| panic!("no julia: set SOT_JULIA_BIN or put julia on the PATH"))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// A capsule row, created through the daemon and waited to `ready`; its id and its state folder.
+pub async fn ready_row(
+    env: &Env,
+    conn: &mut Conn,
+    next_id: &mut u64,
+    label: &str,
+) -> (String, PathBuf) {
+    let req = serde_json::json!({ "label": label, "project_root": env.workspace_project_root.to_string_lossy(), "runtime": "capsule" });
+    let res = call(conn, *next_id, op::WORKSPACE_CREATE, req).await;
+    *next_id += 1;
+    assert!(
+        res.payload.get("error").is_none(),
+        "workspace.create failed: {:?}",
+        res.payload
+    );
+    let id = res.payload["workspace_id"]
+        .as_str()
+        .expect("workspace_id")
+        .to_string();
+    let began = Instant::now();
+    loop {
+        let listed = call(conn, *next_id, op::WORKSPACE_LIST, serde_json::json!({}))
+            .await
+            .payload;
+        *next_id += 1;
+        if let Some(row) = find_row(&listed, &id).filter(|row| row["phase"] == "ready") {
+            return (
+                id,
+                PathBuf::from(row["state_dir"].as_str().expect("the row's state folder")),
+            );
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(90),
+            "the row {label} never reached ready"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Run a cell in the row's REPL on a connection of its own. The call does not answer while the cell spins, so it runs in a
+/// task that the caller aborts; the reply, if one ever comes, is of no interest.
+pub async fn spin_in_repl(
+    socket: &Path,
+    workspace_id: &str,
+    cell: String,
+) -> tokio::task::JoinHandle<()> {
+    let (mut conn, next_id) = connect_and_hello(socket).await;
+    let workspace_id = workspace_id.to_string();
+    tokio::spawn(async move {
+        let _ = call_long(
+            &mut conn,
+            next_id,
+            op::REPL_EXECUTE,
+            serde_json::json!({ "workspace_id": workspace_id, "input": { "kind": "eval", "code": cell }, "timeout_ms": 600_000 }),
+            Duration::from_secs(3600),
+        )
+        .await;
+    })
+}
+
+/// The identities of a tree once it has reported, each opened while it lives.
+pub async fn adopt_tree(fx: &mut Fixture, tree: &Tree, forking: bool, what: &str) -> Vec<usize> {
+    let pids = poll_until(
+        || async { tree.pids(forking) },
+        Duration::from_secs(120),
+        &format!("the {what} tree to report"),
+    )
+    .await;
+    pids.into_iter()
+        .map(|(name, pid)| {
+            fx.adopt(pid, None, &format!("{what} {name}"))
+                .expect("authority over a process the tree reported")
+        })
+        .collect()
+}
+
+/// Whether every identity has ended, within `bound`.
+pub fn all_ended(fx: &Fixture, ids: &[usize], bound: Duration) -> bool {
+    let deadline = Instant::now() + bound;
+    ids.iter().all(|i| {
+        fx.identity(*i)
+            .exited(deadline.saturating_duration_since(Instant::now()))
+    })
+}
+
+/// A daemon with a ready row whose REPL has started a tree detached and spins; the tree's identities are held.
+pub struct Spinning {
+    pub run: Run,
+    pub state_dir: PathBuf,
+    pub ids: Vec<usize>,
+    pub task: tokio::task::JoinHandle<()>,
+}
+
+pub async fn start_spinning(tag: &str, fx: &mut Fixture, forking: bool) -> Spinning {
+    let julia = julia_bin();
+    let run = Run::start(tag, &[("SOT_JULIA_BIN", julia.as_str())], false).await;
+    run.assert_guarded();
+    let (mut conn, mut next_id) = connect_and_hello(&run.env.socket_path).await;
+    let (workspace_id, state_dir) = ready_row(&run.env, &mut conn, &mut next_id, "repl").await;
+    drop(conn);
+    let tree = Tree::new(run.env._tmp.path(), "repl-tree");
+    let task = spin_in_repl(
+        &run.env.socket_path,
+        &workspace_id,
+        tree.julia_cell(forking),
+    )
+    .await;
+    let ids = adopt_tree(fx, &tree, forking, "the REPL's").await;
+    Spinning {
+        run,
+        state_dir,
+        ids,
+        task,
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --ignored"]
+async fn the_drain_outlasts_a_forking_child() {
+    let _serial = SERIAL.lock().await;
+    let mut fx = Fixture::new("drain_outlasts_a_forking_child");
+    let spinning = start_spinning("gdrn", &mut fx, true).await;
+    let leader = fx.identity(spinning.ids[0]).pid;
+    let alive_before = session_members(leader).len();
+    let daemon = fx
+        .adopt(spinning.run.daemon, None, "the daemon")
+        .expect("authority over the daemon");
+    spinning.task.abort();
+    fx.identity(daemon)
+        .kill()
+        .expect("SIGKILL the daemon through its pidfd");
+    fx.save(
+        "leader_gone",
+        all_ended(&fx, &spinning.ids, Duration::from_secs(10)),
+    );
+    // Every process of the leader's session, young children included.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !session_members(leader).is_empty() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    fx.save("session_left", format!("{:?}", session_members(leader)));
+    let cleanup = fx.cleanup();
+    assert!(cleanup.complete(), "{cleanup:?}");
+    assert!(alive_before >= 1, "the forking tree never ran");
+    assert_eq!(
+        fx.saved("leader_gone"),
+        Some("true"),
+        "the forking tree's leader outlived the daemon"
+    );
+    assert_eq!(
+        fx.saved("session_left"),
+        Some("[]"),
+        "processes of the forking tree's session outlived the daemon"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --ignored"]
+async fn the_guard_ends_only_its_own_subtree() {
+    let _serial = SERIAL.lock().await;
+    let mut fx = Fixture::new("guard_ends_only_its_own_subtree");
+    let a = start_spinning("gsua", &mut fx, false).await;
+    let b = start_spinning("gsub", &mut fx, false).await;
+    // A process the case starts outside both daemons: a child of this test, ended through its own handle.
+    let mut outside = std::process::Command::new("sleep")
+        .arg("3160")
+        .stdin(Stdio::null())
+        .spawn()
+        .expect("start the outside process");
+    // The capsule's supervisor, as daemon A's own lane reports it (the lane is found through A's runtime folder).
+    let supervisor = supervisor_in(&a.run.env, &a.state_dir)
+        .await
+        .expect("daemon A's supervisor answers");
+    let capsule = fx
+        .adopt(
+            supervisor.0,
+            Some(supervisor.1),
+            "daemon A's capsule supervisor",
+        )
+        .expect("authority over the reported supervisor");
+
+    let daemon = fx
+        .adopt(a.run.daemon, None, "daemon A")
+        .expect("authority over daemon A");
+    a.task.abort();
+    fx.identity(daemon)
+        .kill()
+        .expect("SIGKILL daemon A through its pidfd");
+    fx.save(
+        "a_tree_ended",
+        all_ended(&fx, &a.ids, Duration::from_secs(10)),
+    );
+    fx.save(
+        "b_tree_alive",
+        b.ids
+            .iter()
+            .all(|i| !fx.identity(*i).exited(Duration::ZERO)),
+    );
+    // `try_wait` reaps a process that has ended, so a zombie does not read as alive.
+    fx.save(
+        "outside_alive",
+        outside
+            .try_wait()
+            .expect("try_wait the outside process")
+            .is_none(),
+    );
+    fx.save(
+        "capsule_alive",
+        !fx.identity(capsule).exited(Duration::from_secs(1)),
+    );
+    let cleanup = fx.cleanup();
+    let _ = outside.kill();
+    let _ = outside.wait();
+    assert!(cleanup.complete(), "{cleanup:?}");
+    assert_eq!(
+        fx.saved("a_tree_ended"),
+        Some("true"),
+        "daemon A's tree outlived it"
+    );
+    assert_eq!(
+        fx.saved("b_tree_alive"),
+        Some("true"),
+        "daemon A's guard ended daemon B's tree"
+    );
+    assert_eq!(
+        fx.saved("outside_alive"),
+        Some("true"),
+        "daemon A's guard ended a process outside its subtree"
+    );
+    assert_eq!(
+        fx.saved("capsule_alive"),
+        Some("true"),
+        "daemon A's guard ended the capsule it started"
+    );
+}
+
+/// A fresh nonce typed into the row's agent through the daemon and read back from its screen: the answer is `"true ..."`
+/// when it came back, with what `pty.input` said.
+pub async fn nonce_round_trip(
+    conn: &mut Conn,
+    next_id: &mut u64,
+    workspace_id: &str,
+    origin: &str,
+) -> String {
+    use base64::Engine as _;
+    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let nonce = format!(
+        "l2-nonce-{}-{}",
+        std::process::id(),
+        COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    );
+    let input = call(
+        conn,
+        *next_id,
+        op::PTY_INPUT,
+        serde_json::json!({
+            "workspace_id": workspace_id,
+            "data_b64": base64::engine::general_purpose::STANDARD.encode(format!("echo {nonce}")),
+            "enter": true,
+            "origin": origin,
+        }),
+    )
+    .await;
+    *next_id += 1;
+    let deadline = Instant::now() + BOUND;
+    let echoed = loop {
+        let id = *next_id;
+        *next_id += 1;
+        let screen = call(
+            conn,
+            id,
+            op::PTY_SCREEN,
+            serde_json::json!({ "workspace_id": workspace_id }),
+        )
+        .await
+        .payload;
+        let seen = screen["lines"].as_array().is_some_and(|lines| {
+            lines
+                .iter()
+                .any(|line| line.as_str().is_some_and(|l| l.trim_end() == nonce))
+        });
+        if seen || Instant::now() >= deadline {
+            break seen;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    format!("{echoed} (pty.input answered {})", input.payload)
+}
+
+/// [`call`] with a bound of the caller's: the first start of Pluto or a Quarto render takes longer than `BOUND`.
+pub async fn call_long(
+    conn: &mut Conn,
+    id: u64,
+    op: &str,
+    payload: serde_json::Value,
+    bound: Duration,
+) -> Frame {
+    let body = async {
+        codec::write_frame(conn, &Frame::req(id, op, payload), None)
+            .await
+            .expect("write_frame");
+        loop {
+            let (frame, _blob) = codec::read_frame(conn).await.expect("read_frame");
+            if frame.id == id && frame.kind != sot_protocol::Kind::Evt {
+                return frame;
+            }
+        }
+    };
+    tokio::time::timeout(bound, body)
+        .await
+        .unwrap_or_else(|_| panic!("{op} (id {id}) did not reply within {bound:?}"))
+}
+
+/// The pids whose parent is `pid`, from `/proc` (observed): the children list of a process the case holds.
+pub fn children_of(pid: i32) -> Vec<i32> {
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    dir.filter_map(|entry| {
+        let child: i32 = entry.ok()?.file_name().to_str()?.parse().ok()?;
+        (parent_of(child) == Some(pid)).then_some(child)
+    })
+    .collect()
+}
+
+/// A process's command line, words joined by spaces (observed, to tell a daemon's children apart).
+pub fn command_line(pid: i32) -> String {
+    std::fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|b| String::from_utf8_lossy(&b).replace('\0', " "))
+        .unwrap_or_default()
+}

@@ -194,13 +194,20 @@ connection is the only handle.
    macOS has no such container at all. On Windows the leg's job permits no breakaway (ruling (g)); see residual 7.
 6. Closed: a row's remembered scopes are the durable file `row-scopes` in its state dir,
    read by every end, a startup Cleanup included, so a daemon restart no longer loses them.
-7. A daemon child's tree is killed with it, but a process can leave. Unix: a descendant that moves to another
-   process group is outside it, by `setpgid` (a shell's job control does this) or by `setsid`; this covers Julia's
-   `detach` (a `run(detach(cmd))` child has pgid = sid = its own pid), so Pluto's notebook workers, which Malt starts
-   detached, and quarto's julia server, which quarto starts detached (measured with quarto 1.7.31). Under the systemd
-   unit the daemon's cgroup ends them when the daemon exits; started without systemd, an idle worker exits when its
-   server socket closes and a busy one when its cell ends. Every ssh the daemon starts (its two bridges and the monitor's
-   sampler) sets `ControlMaster=no`, `ControlPath=none` and `ControlPersist=no`, so none leaves a master behind. Windows: nothing started inside a daemon child's job or a
+7. A daemon child's tree is killed with it, and no process can leave it, except as stated here. Linux: every serving
+   daemon is the child of a guard that is a subreaper (the 0.6.6 update below), so a process the daemon starts stays a
+   descendant of the guard through `setpgid`, `setsid`, Julia's `detach` (Pluto's notebook workers, which Malt starts
+   detached, and quarto's julia server, which quarto starts detached, measured with quarto 1.7.31) or a double fork,
+   and ends within `DRAIN_BOUND` (10 s) of the daemon's end, however that end came, a SIGKILL included. Outside it:
+   a process a broker starts; a SIGKILL of the guard itself, after which the daemon ends at once but what it started
+   does not (under the systemd unit the unit's cgroup ends the rest within the unit's stop timeout); and a process in an
+   uninterruptible kernel call, which has SIGKILL pending and ends when the call returns (the guard logs it). Every ssh
+   the daemon starts (its two bridges and the monitor's sampler) sets `ControlMaster=no`, `ControlPath=none` and
+   `ControlPersist=no`, so none leaves a master behind. macOS has
+   no guard, no subreaper and no cgroup: a controlled end of the daemon (Close, the update restart, the backstop, a
+   handled signal, a returned error) kills each child's tree, and after SIGKILL, abort or a crash nothing ends the
+   children; each ends on its own, an idle Julia child when its input closes, a busy one when its work ends, quarto's
+   engine server after 300 s idle. Windows: nothing started inside a daemon child's job or a
    row's job can leave it. Outside it are a process a broker starts (WMI, COM activation, the task scheduler, a
    service) and a program started through an app-execution alias, which the Store install of juliaup makes `julia`: a
    julia started that way ran, with what it started, outside the starting process's job (measured 2026-10-03; the
@@ -256,3 +263,25 @@ Foreign reports a refused boot, pid or creation-time claim and does not by itsel
 The Ctrl+Q prompt reads Tab and Enter by key identity; other non-repeat keys cancel and repeats do nothing. Final window teardown starts after the leave acknowledgement and any required notice presentation, or at an explicit second-close decision. Queued writes share a one-second OS-monotonic deadline, returning event loops use a one-second runtime shutdown timeout, and one independent three-second std-thread backstop bounds final process teardown. These intervals do not shorten the Close acknowledgement wait. A timed-out blocking task can continue until process termination; tests separately observe cleanup of a yielding task's owned child. The existing nonzero handover exit remains immediate.
 
 The macOS default menu remains enabled. Earlier T1 review recorded native Cmd+Q bypassing the Ctrl+Q prompt; this lane does not re-test or change that native menu route.
+
+## Update (0.6.6): the Linux lifetime guard
+
+A process the daemon starts is contained by ancestry on Linux. `main`'s serving prologue starts the durable parent (a
+capsule's birth parent, outside the daemon's tree), then `lifecycle::daemon_children::guard::install` forks: the
+launched process becomes the guard, a subreaper that blocks every catchable signal and reads them from a signalfd, and
+the daemon is its child with `PR_SET_PDEATHSIG` set to SIGKILL. The guard forwards every signal but SIGCHLD to the
+daemon and reaps. When the daemon is reaped it kills and reaps its own children until `waitpid` answers ECHILD, within
+`DRAIN_BOUND` (10 s), then exits as the daemon did: the daemon's code, or its signal with the default disposition and no
+core. A process the daemon started that moved to a group or session of its own is still a descendant, and an orphan goes
+to its nearest living subreaper ancestor, so it is a child of the guard when its parent ends. An unreaped child's pid is
+never reused, so the drain's kill cannot reach another process. The durable parent is born before the guard and never
+descends from it, so a capsule's supervisor is never drained: capsules stay outside the daemon's lifetime.
+
+On Linux, then, a process the daemon starts ends with the daemon, and a process a row's agent starts belongs to the row
+and survives (a capsule is outside the daemon's lifetime by design). Known limits: the guard's own loss ends the daemon at once and leaves its processes to the unit's
+cgroup or to end on their own; a brokered start and an uninterruptible kernel call are outside it (residual 7).
+
+macOS after an abrupt daemon end (SIGKILL, abort, a crash): nothing in 0.6.6 ends the daemon's children. macOS has no
+subreaper and no cgroup, a process group is left by `setsid` and Pluto's and Quarto's workers leave it, and macOS installs
+as experimental without service-manager wiring. This is a limit of an experimental platform, decided by the maintainer;
+every controlled end still kills each child's tree.

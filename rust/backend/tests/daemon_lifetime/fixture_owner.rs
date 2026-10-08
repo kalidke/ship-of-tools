@@ -16,6 +16,8 @@ pub const CLEANUP_RESERVE: Duration = Duration::from_secs(10);
 pub struct Fixture {
     case: String,
     identities: Vec<Identity>,
+    /// Processes reached by walking up from one the case holds: seen through a pidfd, never signalled by cleanup.
+    observed: Vec<Identity>,
     saved: Vec<(String, String)>,
     cleaned: bool,
     _alone: MutexGuard<'static, ()>,
@@ -44,6 +46,7 @@ impl Fixture {
         Fixture {
             case: case.to_string(),
             identities: Vec::new(),
+            observed: Vec::new(),
             saved: Vec::new(),
             cleaned: false,
             _alone: alone,
@@ -59,6 +62,17 @@ impl Fixture {
 
     pub fn identity(&self, index: usize) -> &Identity {
         &self.identities[index]
+    }
+
+    /// Look at `pid` through a pidfd without taking authority over it: cleanup never signals it. For a process reached
+    /// by walking parent links upward, or any other the case did not start and was not told of.
+    pub fn observe(&mut self, pid: i32, label: &str) -> std::io::Result<usize> {
+        self.observed.push(Identity::acquire(pid, None, label)?);
+        Ok(self.observed.len() - 1)
+    }
+
+    pub fn observed(&self, index: usize) -> &Identity {
+        &self.observed[index]
     }
 
     /// Record an observation of the product, to be asserted on after cleanup.

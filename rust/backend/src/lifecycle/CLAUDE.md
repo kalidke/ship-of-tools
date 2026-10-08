@@ -17,6 +17,7 @@ computer's sessions end (ADR 0050).
   `exited`, `exited_pid`.
 - Which process starts stand outside the containment: the process-spawns group of `rust/clippy.toml` and each
   exception's allow.
+- The Linux lifetime guard: `daemon_children::guard` (`install`, `drain`, `guard_pid`).
 - The bounds and exit codes in `sot_protocol::ops::lease`.
 - The window's half, rust/frontend/src/lease.rs.
 
@@ -37,6 +38,11 @@ computer's sessions end (ADR 0050).
   ended, and a backstop thread exits 1 at `bounds::SHUTDOWN_BOUND` (`shutdown::run`, step 0).
 - A close that finishes exits 0 (`bounds::EXIT_REQUESTED_SHUTDOWN`); the update restart exits 75 and only while no
   shutdown has begun (`Leases::while_open`, called by update.rs).
+- On Linux a process the daemon starts, at any depth, ends within `DRAIN_BOUND` of the daemon's end, however the daemon
+  ends, unless a broker started it, the guard itself was killed, or a kernel call is uninterruptible: every serving
+  daemon is the child of a guard that is a subreaper and kills its own children until it has none, then exits as the
+  daemon did (`daemon_children::guard`). A capsule is outside it by design, and the durable parent is born before the
+  guard, so it never descends from it.
 - `fire()` is permanent: the signal is never reset for the life of the process (`Signal::fire`).
 - A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything it started when its owner
   kills, waits for or drops its `Contained` or `ContainedStd`, or the signal fires; its leader is reaped only after
@@ -103,7 +109,7 @@ computer's sessions end (ADR 0050).
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `startup::begin`, `lease::ticker`,
 `Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
 `Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::while_open`, `Signal::spawn`, `Signal::spawn_std`,
-`Signal::output`, `Contained`, `ContainedStd`, `Signal`, `child_signal::fired`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
+`Signal::output`, `daemon_children::guard`, `guard_pid`, `Contained`, `ContainedStd`, `Signal`, `child_signal::fired`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
 `reject`, `write_frame_within`, `write_frame_to`, `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`,
 `close_gate_and_settle`, `remove_row_files`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `deploy/sotd.service`, `sot-apply.sh`, Dial.
@@ -115,10 +121,11 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ## Files
 - `child_signal.rs`: the process-wide signal, the registry of contained trees, the contained children (`Contained`,
   `ContainedStd`) and the live-child count.
+- `daemon_children/`: what ends with a daemon: the Linux lifetime guard (see its page).
 - `contain.rs`: the platform half of containment: the process group or job, adopting a child, the kill.
 - `lease.rs`: the window lease: `Leases`, the grant rule, the lease connection (`hold`), `held.json` and the start plan.
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.
-- `mod.rs`: declares the five modules.
+- `mod.rs`: declares the six modules.
 - `shutdown.rs`: the close, its backstop and the row ends.
 - `startup.rs`: the start's decision from `held.json` and acting on it.
 

@@ -109,6 +109,13 @@ down. Each agent session runs in its own **capsule** supervisor, which the
 daemon starts and lists but does not hold up, so sessions survive frontend relaunches and
 daemon restarts alike (closing the window ends this computer's sessions; see ADR 0050) — see [Sessions and persistence](../concepts/sessions.md).
 
+On Linux the daemon runs as the child of a small guard process, which is the process the launcher or the unit starts.
+The kernel, the REPL, Pluto and every other process the daemon starts, at any depth and however they detach, end
+within a few seconds of the daemon's end, even when the daemon is killed; a capsule does not, by design. The guard
+exits with the daemon's own status. A process a broker starts, the loss of the guard itself and a process stuck in an
+uninterruptible kernel call are outside it, and macOS has no guard: only a controlled end of the daemon ends its
+children there (ADR 0050).
+
 ## Where to go next
 
 - [Modes](modes.md) — the switchable nav-tree roots over the same code.

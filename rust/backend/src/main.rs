@@ -463,6 +463,21 @@ fn main() -> Result<()> {
         tracing::warn!(error = %e, "durable parent: not started; capsule rows cannot start until the daemon is restarted");
     }
 
+    // On Linux this daemon becomes the child of a guard that ends everything the daemon starts when the daemon ends
+    // (`lifecycle::daemon_children::guard`). It needs a process with one thread, so it comes after the durable parent
+    // and before the runtime, the relay refresh and every other thread.
+    #[cfg(target_os = "linux")]
+    {
+        #[cfg(feature = "daemon-lifetime-faults")]
+        if std::env::var_os("SOT_TEST_PROLOGUE_THREAD").is_some() {
+            std::thread::spawn(|| std::thread::sleep(std::time::Duration::from_secs(3600)));
+        }
+        if let Err(e) = lifecycle::daemon_children::guard::install() {
+            eprintln!("sotd: {e} -- refusing to start");
+            std::process::exit(1);
+        }
+    }
+
     tracing::info!(
         socket = ?opts.socket,
         project_root = ?opts.project_root,
