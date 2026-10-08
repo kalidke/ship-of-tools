@@ -7,6 +7,7 @@ them each belong to one other subsystem, named below. Part of fe-ui; charter: ru
 
 ## Files
 - `Cargo.toml`: the crate and its one `[[bin]]`, `sot`; Windows-only dependencies for the foreground and taskbar calls.
+- `Cargo.toml`'s window_close test target: feature-gated (`test-window-close`, which also enables the progress seam), harness=false main-thread native close proof, implemented by src/main.rs and ui/app/native_exit_tests.rs; it reuses the progress target's in-memory startup and bypasses ordinary configuration discovery.
 - `Cargo.toml`'s window_minimized test target: feature-gated, harness=false main-thread native progress proof, implemented by src/main.rs and ui/app/tests.rs; ordinary startup is not run by that target.
 - `build.rs`: on Windows, embeds the logo as sot.exe's icon resource (a no-op elsewhere).
 - `queries/`: the Julia highlight query that `ui/preview/markdown/highlight.rs` embeds (fe-ui).

@@ -2870,6 +2870,9 @@ mod result_tests {
 #[cfg(all(test, feature = "test-window-progress"))]
 pub(crate) use app::tests::NativeProgressLedger;
 
+#[cfg(all(test, feature = "test-window-close"))]
+pub(crate) use app::native_exit_tests::run_native_window_close;
+
 #[cfg(all(test, feature = "test-window-progress"))]
 pub(crate) fn run_native_window_progress() -> Result<()> {
     app::tests::minimized_window_drains_events_for_ten_minutes()

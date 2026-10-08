@@ -82,6 +82,42 @@ jobs:
       - name: Prove native minimized workload and progress
         run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
 
+  window-close-windows:
+    name: native window close (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Prove native window close and the teardown backstop
+        run: cargo test -p sot-frontend --test window_close --features test-window-close --locked
+
+  window-close-macos:
+    name: native window close (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Prove native window close and the teardown backstop
+        run: cargo test -p sot-frontend --test window_close --features test-window-close --locked
+
   test:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

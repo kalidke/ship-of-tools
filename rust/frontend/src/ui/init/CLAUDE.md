@@ -23,4 +23,5 @@ flags. Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
   (`initial_active_workspace_id`, `initial_pending_resume_nav`, `apply_startup_font_scale`).
 - `State::from_parts` is the one function here over 100 lines: one line per `State` field, under 300 until `State`
   is split into parts.
+- The opt-in window_close target consumes the same in-memory startup seam as window_minimized, with test-owned resume, topology, settings and keybindings; it adds no second startup route.
 - The opt-in window_minimized test target injects resume, topology, settings and keybindings in memory through its test-only startup seam; ordinary startup keeps its existing loaders and the native fixture reads no user configuration.
