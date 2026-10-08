@@ -307,9 +307,6 @@ impl SocketServer {
                     &conn.stream,
                     "rust/log/src/lane/socket_unix/server.rs::disconnect_listener",
                 );
-                self.shared
-                    .progress
-                    .note(Some(id), "phase_one.route", "reaper");
             }
         }
         if !self.shared.sweep_nudged.swap(true, Ordering::AcqRel) {

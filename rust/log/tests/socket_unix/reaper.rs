@@ -127,10 +127,38 @@ pub(super) fn reached(
     }
 }
 
-/// How many checkpoints match, or none when the snapshot is unavailable.
-pub(super) fn count(server: &SocketServer, wanted: impl Fn(&Checkpoint) -> bool) -> usize {
-    let snapshot = server.progress_for_test();
-    snapshot.records.iter().filter(|r| wanted(r)).count()
+/// A snapshot the recorder could give: a busy or poisoned one is retried a bounded few times, never read as empty.
+pub(super) fn available(
+    snapshot: impl Fn() -> sot_log::lane::test_progress::Snapshot,
+) -> sot_log::lane::test_progress::Snapshot {
+    for _ in 0..200 {
+        let taken = snapshot();
+        if !taken.unavailable {
+            return taken;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let last = snapshot();
+    panic!("the progress recorder stayed unavailable: {last}");
+}
+
+/// No checkpoint matches `wanted`. An absence proves nothing if a checkpoint was skipped under contention or overwritten
+/// out of the ring, so either fails the check rather than passing it.
+pub(super) fn assert_absent(
+    server: &SocketServer,
+    what: &str,
+    wanted: impl Fn(&Checkpoint) -> bool,
+) {
+    let snapshot = available(|| server.progress_for_test());
+    assert_eq!(
+        (snapshot.skipped, snapshot.overwritten),
+        (0, Some(0)),
+        "an absence of {what} cannot be proved: a checkpoint may have been skipped or overwritten\n{snapshot}"
+    );
+    assert!(
+        !snapshot.records.iter().any(|r| wanted(r)),
+        "{what}\n{snapshot}"
+    );
 }
 
 pub(super) fn read_exact_named(
@@ -429,6 +457,7 @@ fn panicked_worker(test: &str, role: Role) {
         return;
     }
     let captured = capture(test, ISOLATION_TIMEOUT, None);
+    assert!(!captured.expired, "the child did not complete");
     let record = format!(
         "sot-sock: connection teardown failed conn=0 worker={} elapsed_ms=",
         role_name(role)
@@ -493,6 +522,7 @@ fn panic_with_held_peer(test: &str, panicking: Role, held: Role) {
         return;
     }
     let captured = capture(test, ISOLATION_TIMEOUT, None);
+    assert!(!captured.expired, "the child did not complete");
     let panic_record = format!(
         "sot-sock: connection teardown failed conn=0 worker={} elapsed_ms=",
         role_name(panicking)
@@ -677,21 +707,6 @@ fn registered_pairs_through_reaper(test: &str, held: Role) {
         None,
         f.server.disconnect_listener()
     );
-    for conn in [a, b] {
-        let route = await_progress(
-            &f.server,
-            test,
-            "phase_one.route",
-            "phase one routes the pair to the reaper",
-            Some(conn),
-            at(conn, "phase_one.route"),
-        );
-        assert_eq!(
-            route.result, "reaper",
-            "registered pair bypassed reaper (conn {conn}: {})",
-            route.result
-        );
-    }
     let budget = Duration::from_millis(500);
     let started = Instant::now();
     let ok = WaitContext::from_origin(

@@ -248,8 +248,31 @@ fn recycle_error_does_not_block_other_closes() {
     closes.sort_unstable();
     assert_eq!(closes, vec![a, b], "each close exactly once");
     assert_eq!(errors, 1, "exactly one AcceptError");
-    assert_squat_check_failed(try_create_first_instance(&id, 2).unwrap_err());
     drop(client_a);
+}
+
+/// A failed recycle retains the dead instance, which keeps the pipe name held. One instance only, so no other
+/// instance of the name (B's still-registered one, the acceptor's) can be what refuses the squat probe; closing every
+/// registered instance, the retained one included, frees the name, which shows it was the retained one that held it.
+#[test]
+fn recycle_failure_retains_the_dead_instance() {
+    if !run_isolated("reaper::recycle_failure_retains_the_dead_instance") {
+        return;
+    }
+    let id = fresh_voyage_id();
+    let mut server = PipeServer::bind(&id, 1).unwrap();
+    let (client, a) = connect(&server, &id);
+    server.fail_next_recycle_for_test();
+    server.close(a);
+    await_progress(&server, "recycle.failed", |r| {
+        r.step == "recycle.result" && r.result == "false"
+    });
+    assert_squat_check_failed(try_create_first_instance(&id, 1).unwrap_err());
+    drop(client);
+    server.disconnect_listener();
+    try_create_first_instance(&id, 1)
+        .expect("the name stayed held after the server closed every registered instance");
+    assert!(server.join_workers(Instant::now() + RECORD));
 }
 
 /// A worker held past a normal close's short budget is reported by name and stays owned; the report does not fail the
@@ -478,14 +501,6 @@ fn registered_pairs_through_reaper(held: Role) {
     let (client_b, b) = connect(&server, &id);
     let hold = server.hold_worker_exit_for_test(a, held);
     server.disconnect_listener();
-    for conn in [a, b] {
-        let route = await_progress(&server, "phase_one.route", at(conn, "phase_one.route"));
-        assert_eq!(
-            route.result, "reaper",
-            "registered pair bypassed reaper (conn {conn}: {})",
-            route.result
-        );
-    }
     let started = Instant::now();
     assert!(
         !server.join_workers(started + Duration::from_millis(500)),

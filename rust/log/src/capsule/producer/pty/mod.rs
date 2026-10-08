@@ -816,14 +816,19 @@ mod flag_plan {
         PLAN.with(|plan| std::mem::take(&mut *plan.borrow_mut()).seen)
     }
 
-    pub(super) fn fails(end: &'static str, fd: RawFd, cmd: libc::c_int) -> bool {
+    /// The factory owns `fd` as `end`, before any flag call: a test sees both ends even when the first call fails.
+    pub(super) fn born(end: &'static str, fd: RawFd) {
         PLAN.with(|plan| {
             let mut plan = plan.borrow_mut();
             if !plan.seen.contains(&(end, fd)) {
                 plan.seen.push((end, fd));
             }
-            plan.fail == Some((end, cmd))
-        })
+        });
+    }
+
+    pub(super) fn fails(end: &'static str, fd: RawFd, cmd: libc::c_int) -> bool {
+        born(end, fd);
+        PLAN.with(|plan| plan.borrow().fail == Some((end, cmd)))
     }
 }
 
@@ -852,9 +857,9 @@ mod flag_tests {
             "PTY flag failure was not returned ({end} {cmd})"
         );
         assert_eq!(
-            seen.len().min(2),
-            seen.len(),
-            "the factory flagged only its two ends: {seen:?}"
+            seen.iter().map(|(e, _)| *e).collect::<Vec<_>>(),
+            ["master", "slave"],
+            "the factory owned exactly its two ends: {seen:?}"
         );
         assert!(
             seen.iter().any(|(e, _)| *e == end),

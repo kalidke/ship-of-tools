@@ -111,6 +111,10 @@ impl Producer for PtyProducer {
         }
         let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
         let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
+        #[cfg(test)]
+        for (end, fd) in [("master", master_fd), ("slave", slave_fd)] {
+            super::flag_plan::born(end, fd);
+        }
         // Both PTY ends are already owned. Check close-on-exec before publication; either flag-call failure closes both
         // ends. The openpty-to-flagging inheritance window remains on Linux and macOS. Our child's pre_exec installs
         // slave stdio and closes its inherited PTY copies; the parent keeps its slave for the run.

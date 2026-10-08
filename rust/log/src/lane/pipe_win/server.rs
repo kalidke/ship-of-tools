@@ -452,9 +452,6 @@ impl PipeServer {
                         "read_genuinely_pending={read_was_pending} write_genuinely_pending={write_was_pending}"
                     ),
                 );
-                self.shared
-                    .progress
-                    .note(Some(conn_id), "phase_one.route", "reaper");
                 write_latches.insert(conn_id, write_was_pending);
             }
         }

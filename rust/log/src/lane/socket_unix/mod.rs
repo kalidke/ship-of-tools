@@ -78,8 +78,8 @@
 //! # Reliable lifecycle delivery, byte-bounded both directions
 //!
 //! Lifecycle events remain reliable until consumer-gone or dropping. Accepted, Sent and acceptor errors use their retry
-//! sender; the reaper retains blocked Closed and recycle-error records and tries them nonblockingly while polling every
-//! pending pair. Bytes abandonment still forces Closed. Outbound bytes remain reserved until the physical write returns.
+//! sender; the reaper retains a blocked Closed and tries it nonblockingly while polling every pending pair. Bytes
+//! abandonment still forces Closed. Outbound bytes remain reserved until the physical write returns.
 //!
 //! # Security: the runtime dir's ancestors are not trusted
 //!

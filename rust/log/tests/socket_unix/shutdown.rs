@@ -70,21 +70,13 @@ fn registration_after_shutdown_is_rejected() {
         Some(conn),
         at(conn, "shutdown.result"),
     );
-    assert_eq!(
-        count(&f.server, |r| r.step == "registered"),
-        0,
-        "late insertion"
-    );
-    assert_eq!(
-        count(&f.server, |r| r.conn == Some(conn) && r.step == "gate.open"),
-        0,
-        "late gate-open"
-    );
-    assert_eq!(
-        count(&f.server, |r| r.step == "accepted.enqueue"),
-        0,
-        "late Accepted"
-    );
+    assert_absent(&f.server, "a late insertion", |r| r.step == "registered");
+    assert_absent(&f.server, "a late gate-open", |r| {
+        r.conn == Some(conn) && r.step == "gate.open"
+    });
+    assert_absent(&f.server, "a late Accepted", |r| {
+        r.step == "accepted.enqueue"
+    });
     assert!(matches!(
         f.server.events().try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty)
@@ -246,7 +238,7 @@ fn shutdown_records_reaper_result() {
         expect_closed(&f.server, test, "a.closed", a, TIMEOUT),
         ClosedReason::Closed
     );
-    let snapshot = f.server.progress_for_test();
+    let snapshot = available(|| f.server.progress_for_test());
     shutdown_result(&snapshot, Some(a), "conn.rs::reaper_loop");
     named!(test, "client.drop", None, drop(client));
     named!(test, "server.drop", None, drop(f));
@@ -367,7 +359,7 @@ fn shutdown_records_client_cancel_result() {
     wait.complete("ok", None, Some(&f.server));
     eprintln!("fixture-proof test={test} write-failure={failed}");
     for (label, (client, _)) in ["direct", "trait", "write-failure"].iter().zip(&clients) {
-        let snapshot = client.progress_for_test();
+        let snapshot = available(|| client.progress_for_test());
         let record = shutdown_result(&snapshot, None, "client.rs::cancel");
         eprintln!("fixture-proof test={test} client={label} {record}");
     }
