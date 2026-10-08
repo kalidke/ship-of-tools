@@ -323,7 +323,8 @@ fn first_arm_fixes_the_code_and_one_thread() {
         entered("first_arm_fixes_the_code_and_one_thread");
         let (status, _, out) = run_scenario("latch", None, Duration::from_millis(4500));
         assert_eq!(status, Some(7), "a later arm changed the fixed code");
-        assert_eq!(out.matches(BACKSTOP_EVENT).count(), 1, "repeated arms started another backstop: {out}");
+        let events = out.matches(BACKSTOP_EVENT).count();
+        assert_eq!(events, 1, "repeated arms started another backstop");
         held("repeated arms started another backstop");
     }
 }
