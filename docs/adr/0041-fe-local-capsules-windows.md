@@ -1241,6 +1241,8 @@ store never opened — never a second counter.
 
 **Amendment (2026-10-08, 0.6.6): the leg's exit channel.** `sot-capsule run` exits 71 only when its run failed with storage exhaustion; a producer that itself exits 71 is recorded with 71 and its leg exits 1. The supervisor keeps a leg it spawned as its child (`LegProcess`) until its one reap, so an owned leg's exit status reaches the lifecycle; an adopted leg's status is unknown. This amendment changes no accounting.
 
+**Amendment (2026-10-08, 0.6.6): the storage wait.** A leg exit 71, a recovery, end_run or reset worker failing with storage exhaustion, and a leg death of unknown status whose immediate durable probe meets storage exhaustion hold the authority in one storage wait instead of charging `consecutive_unstable_legs` or entering Terminal. The wait probes the state root (a new 4 KiB file written, synced and removed) after 1, 2, 4, 8 and 16 s and then every 30 s. A success respawns the same voyage with its full argv, or re-runs startup recovery, which finishes an interrupted end_run or reset from its journal. The backoff continues through a storage exit that follows a successful probe and restarts when a leg is judged stable. Before the lane binds, a storage failure retries in place. Status reports `starting` while waiting.
+
 **Supervisor exit codes are the launcher's contract.** `0` = clean end
 (the run ended by request, or a stop was requested) — DO NOT restart.
 `69` = terminal (three consecutive unstable legs, a foreign server, a

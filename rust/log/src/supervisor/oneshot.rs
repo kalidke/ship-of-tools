@@ -222,7 +222,10 @@ pub(super) fn reset_inner(state_dir: &Path, voyage: Option<String>) -> crate::Re
             eprintln!("sot-capsule reset: reset_done {{new_voyage: {new_voyage}}}");
             Ok(EXIT_CLEAN)
         }
-        ResetWorkerResult::Fatal(detail) => {
+        // A storage failure leaves the operation active in the journal: the
+        // next authority's startup recovery (or this command, run again)
+        // finishes it. No `Failed` record was written.
+        ResetWorkerResult::Storage(detail) | ResetWorkerResult::Fatal(detail) => {
             eprintln!("sot-capsule reset: {detail}");
             Ok(EXIT_TERMINAL)
         }

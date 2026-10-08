@@ -284,7 +284,7 @@ jobs:
           capacity=$(df -B1 --output=size "$volume_mount" | tail -n 1 | tr -d ' ')
           [ "$capacity" -gt 0 ] && [ "$capacity" -le 67108864 ]
           printf 'L3 hosted ext4 setup=ok declared-bytes=67108864 capacity=%s mount=validated\n' "$capacity"
-          L3_HOSTED_VOLUME_ROOT="$volume_mount" L3_HOSTED_VOLUME_BYTES=67108864 \
+          L3_HOSTED_VOLUME_ROOT="$volume_mount" L3_HOSTED_VOLUME_BYTES=67108864 TMPDIR="$RUNNER_TEMP" \
             CARGO_NET_OFFLINE=true CARGO_PROFILE_DEV_DEBUG=line-tables-only \
             nice timeout 40m cargo test -p sot-log --test fault_storage -j 8 --locked -- --include-ignored --nocapture --test-threads=1
 

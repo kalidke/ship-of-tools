@@ -20,7 +20,7 @@ scope is closed.
 - The daemon never creates a row's state dir: it passes the path to `sot-capsule supervise`, which creates it
   (`spawn_detached_supervisor`).
 - The state root is qualified before every launch (`qualified_state_root`), and a state dir never lies inside its
-  project (`state_root_inside_project`).
+  project (`state_root_inside_project`). A full volume still qualifies: a preflight failure that is storage exhaustion is not a refusal, and the supervisor waits for storage (`preflight_verdict`).
 - The account half of the spawn env comes from `agents::env::account_spawn_env`, which refuses a missing account
   folder; the spawner passes its error on at once (`spawn_detached_supervisor`).
 - Every spawn holds a run-gate permit: `StartPermit` is `spawn_detached_supervisor`'s first parameter.

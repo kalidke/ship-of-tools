@@ -246,6 +246,7 @@ use crate::supervisor::probe::classify::{self, ProbeOutcome};
 use crate::supervisor::probe::leg_process::LegProcess;
 use crate::lane::client::{Endpoint, PlatformEndpoint};
 use crate::host;
+use crate::host::storage_exhaustion;
 use crate::supervisor::journal::pointer::{self, PointerState};
 #[cfg(windows)]
 use crate::supervisor::probe::win::RealProbeOps;
@@ -287,6 +288,7 @@ mod leg;
 mod lifecycle;
 mod main_loop;
 mod oneshot;
+mod storage;
 mod transitions;
 pub mod lease_win;
 pub mod probe;

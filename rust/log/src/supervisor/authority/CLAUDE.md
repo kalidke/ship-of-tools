@@ -16,3 +16,4 @@ Part of the capsule; charter: rust/log/CLAUDE.md.
 - At most `LANE_EVENT_QUOTA` events are serviced per tick (`service_lane`).
 - A refusal or stop reply closes only after `Sent` plus a flush grace (`PendingClose`).
 - Stop severity only accumulates (`handle_lane_bytes`).
+- An operation whose `.active` record carries this digest but which no worker in this process runs (a `journal::begin` that failed after its rename, or a resubmit of such an id while it reads Accepted) is admitted from that record, with the record's own voyage, epoch and aside; nothing is minted again (`handle_command`).

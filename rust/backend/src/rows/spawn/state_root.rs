@@ -108,8 +108,21 @@ pub fn qualified_state_root() -> Result<PathBuf, String> {
             ));
         }
     }
-    sot_log::host::state_dir::preflight_volume(&root).map_err(|e| e.to_string())?;
+    preflight_verdict(sot_log::host::state_dir::preflight_volume(&root))?;
     Ok(root)
+}
+
+/// A full volume still qualifies: a preflight failure that is storage
+/// exhaustion (ENOSPC, EDQUOT) says the volume has no room right now, not
+/// that it cannot hold the store, so the supervisor is let to start and waits
+/// for storage (`sot_log::supervisor`'s storage wait). Every other failure is
+/// the refusal, with its words.
+fn preflight_verdict(r: sot_log::Result<()>) -> Result<(), String> {
+    match r {
+        Ok(()) => Ok(()),
+        Err(e) if sot_log::host::storage_exhaustion(&e).is_some() => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// The invariant [`qualified_state_root`] alone cannot enforce (it never
@@ -237,6 +250,22 @@ pub(crate) mod macos_only {
 
 #[cfg(test)]
 mod tests {
+    use super::preflight_verdict;
+
+    /// A preflight that fails with storage exhaustion still qualifies; any
+    /// other failure stays a refusal.
+    #[test]
+    fn a_full_volume_still_qualifies() {
+        #[cfg(unix)]
+        let full = std::io::Error::from_raw_os_error(libc::ENOSPC);
+        #[cfg(windows)]
+        let full = std::io::Error::from_raw_os_error(112);
+        assert_eq!(preflight_verdict(Err(sot_log::Error::Io(full))), Ok(()));
+        assert_eq!(preflight_verdict(Ok(())), Ok(()));
+        let unsupported = std::io::Error::new(std::io::ErrorKind::Unsupported, "incompatible volume");
+        assert!(preflight_verdict(Err(sot_log::Error::Io(unsupported))).is_err());
+    }
+
     use super::*;
 
     #[test]

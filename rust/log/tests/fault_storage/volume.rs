@@ -251,7 +251,7 @@ impl NativeVolume {
             .collect::<Vec<_>>()
             .join("\n");
         let text = scrub(&text);
-        let logs = scratch().parent().unwrap().join("logs");
+        let logs = scratch().join("logs");
         std::fs::create_dir_all(&logs).unwrap();
         let log = logs.join(format!("l3-diskpart-{}-{name}.log", self.transaction));
         let transcript = format!(

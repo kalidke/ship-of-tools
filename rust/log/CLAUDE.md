@@ -25,6 +25,7 @@ lanes. The crate is `sot-log`, the workspace's bottom crate, so it also carries 
 - Output is published only after its fsync; attach is ground-gated (`writer_loop::output_path`), so a viewer joins
   only at a parser ground boundary.
 - `sot-capsule supervise` exits 0 (clean), 69 (`EXIT_TERMINAL`) or 70 (`EXIT_CONTENDED`, the fence was already held).
+- Storage exhaustion never ends a row: the leg exits 71, and its supervisor holds without charging its crash counter, probes the state root with a real durable write, and resumes the same voyage when a probe succeeds (`supervisor/storage/`).
 - Only linux, macos and windows build: `host::durable::rename_noreplace_raw` has exactly those three arms.
 - A reply on a local connection is trusted only after the challenge in `src/identity/`.
 

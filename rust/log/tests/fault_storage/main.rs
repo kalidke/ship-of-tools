@@ -3,6 +3,8 @@
 
 mod boundaries;
 mod exits;
+#[cfg(any(windows, target_os = "linux"))]
+mod scenario;
 #[allow(dead_code)]
 #[path = "../support/transports.rs"]
 mod transports;
@@ -13,16 +15,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+/// The fixtures' scratch folder, under the system temp folder: the
+/// supervisor tests' process guard accepts only roots below it.
 fn scratch() -> PathBuf {
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../target"));
-    let target = if target.is_absolute() {
-        target
-    } else {
-        std::env::current_dir().unwrap().join(target)
-    };
-    let scratch = target.join("scratch");
+    let scratch = std::env::temp_dir().join("sot-l3-scratch");
     std::fs::create_dir_all(&scratch).unwrap();
     scratch
 }

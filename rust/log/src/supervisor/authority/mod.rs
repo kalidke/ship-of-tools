@@ -173,6 +173,22 @@ fn reset_refusal_detail(lifecycle: &Lifecycle) -> &'static str {
         Lifecycle::Resetting { .. } => "a reset is already in progress",
         Lifecycle::EndedNoRespawn => "reset is admissible here — this refusal should be unreachable",
         Lifecycle::Terminal { .. } => "the authority is in a terminal state",
+        Lifecycle::StorageFull(_) => "the authority is waiting for storage",
+    }
+}
+
+/// Publishes `record`, or, when that fails, admits the `.active` record
+/// already on disk with the same digest: a `journal::begin` can fail after its
+/// rename took (a directory flush on a full volume), and the record then
+/// exists with no worker behind it. Returns the record the operation runs
+/// from; nothing is minted again.
+fn begin_or_readback(state_dir: &Path, operation_id: &str, record: journal::ActiveRecord) -> crate::Result<journal::ActiveRecord> {
+    match journal::begin(state_dir, operation_id, &record) {
+        Ok(()) => Ok(record),
+        Err(e) => match journal::read_active(state_dir, operation_id) {
+            Ok(Some(existing)) if existing.digest == record.digest => Ok(existing),
+            _ => Err(e),
+        },
     }
 }
 
@@ -227,19 +243,33 @@ impl AuthorityState {
         // entry with a matching digest, or an id that has reached ANY
         // OTHER journal state at all, answers idempotently from that
         // state; only a genuinely UNKNOWN id ever reaches fencing.
+        let mut from_record = None;
         match journal::read_active(&self.state_dir, &operation_id) {
             Ok(Some(existing)) if existing.digest != digest => {
                 return Err(SupervisorOperationState::Refused { reason: wire::SupervisorRefusedReason::IdConflict });
             }
-            Ok(Some(_)) => return Err(self.query_state(&operation_id)), // idempotent resubmit, still active
+            // An active entry with this digest: answered from its state, unless
+            // it is still Accepted and no worker in this process runs it (its
+            // `begin` failed after the rename took, or a worker's storage
+            // failure left it active): then it is admitted from its record.
+            Ok(Some(existing)) => {
+                let state = self.query_state(&operation_id);
+                if matches!(state, SupervisorOperationState::Accepted) && !self.worker_runs(lifecycle, &operation_id, &existing.op) {
+                    from_record = Some(existing);
+                } else {
+                    return Err(state);
+                }
+            }
             Ok(None) => {}
             Err(e) => {
                 return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("journal unreadable: {e}")) })
             }
         }
-        let existing = self.query_state(&operation_id);
-        if !matches!(existing, SupervisorOperationState::UnknownOperation) {
-            return Err(existing); // idempotent resubmit, already terminal/closed
+        if from_record.is_none() {
+            let existing = self.query_state(&operation_id);
+            if !matches!(existing, SupervisorOperationState::UnknownOperation) {
+                return Err(existing); // idempotent resubmit, already terminal/closed
+            }
         }
 
         // Voyage-fencing (ADR 0041): a mismatch is `refused
@@ -259,54 +289,112 @@ impl AuthorityState {
         }
 
         match op {
-            SupervisorOp::EndRun { reason, .. } => {
-                if !matches!(lifecycle, Lifecycle::Ready { .. }) {
-                    return Err(SupervisorOperationState::Failed { detail: bounded_detail("no leg is currently running") });
-                }
-                let voyage_id = self.voyage_id.clone().expect("fenced_ok already confirmed a voyage_id");
-                let epoch = leg_epoch_of(&self.state_dir, &voyage_id);
-                let record = journal::ActiveRecord {
-                    operation_id: operation_id.clone(),
-                    digest,
-                    op: journal::ActiveOp::EndRun { voyage: voyage_id, epoch },
-                };
-                if let Err(e) = journal::begin(&self.state_dir, &operation_id, &record) {
-                    return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("journal begin failed: {e}")) });
-                }
-                Ok(CommandEffect::EndRun { operation_id, epoch, reason })
+            SupervisorOp::EndRun { reason, .. } => self.admit_end_run(lifecycle, operation_id, digest, reason, from_record),
+            SupervisorOp::Reset { .. } => self.admit_reset(lifecycle, operation_id, digest, from_record),
+            SupervisorOp::Stop => self.admit_stop(operation_id, digest, from_record),
+        }
+    }
+
+    /// Whether a worker in THIS process runs `operation_id`: its `end_run` or
+    /// reset is the one the lifecycle carries, or a stop was accepted. An
+    /// operation with an active record and no worker is admitted from it.
+    fn worker_runs(&self, lifecycle: &Lifecycle, operation_id: &str, op: &journal::ActiveOp) -> bool {
+        match (op, lifecycle) {
+            (journal::ActiveOp::EndRun { .. }, Lifecycle::Ending { operation_id: running, .. })
+            | (journal::ActiveOp::Reset { .. }, Lifecycle::Resetting { operation_id: running, .. }) => {
+                running == operation_id
             }
-            SupervisorOp::Reset { .. } => {
-                if !matches!(lifecycle, Lifecycle::EndedNoRespawn) {
-                    return Err(SupervisorOperationState::Failed { detail: bounded_detail(reset_refusal_detail(lifecycle)) });
-                }
+            (journal::ActiveOp::Stop, _) => self.stop_requested.is_some(),
+            _ => false,
+        }
+    }
+
+    /// Publishes `record` for a new operation, or hands back the active record
+    /// this operation is admitted from (`from_record`, or the one a failed
+    /// `journal::begin` left on disk with this digest).
+    fn admit(
+        &self,
+        operation_id: &str,
+        record: journal::ActiveRecord,
+        from_record: Option<journal::ActiveRecord>,
+    ) -> Result<journal::ActiveRecord, SupervisorOperationState> {
+        match from_record {
+            Some(existing) => Ok(existing),
+            None => begin_or_readback(&self.state_dir, operation_id, record).map_err(|e| {
+                SupervisorOperationState::Failed { detail: bounded_detail(format!("journal begin failed: {e}")) }
+            }),
+        }
+    }
+
+    fn admit_end_run(
+        &self,
+        lifecycle: &Lifecycle,
+        operation_id: String,
+        digest: String,
+        reason: String,
+        from_record: Option<journal::ActiveRecord>,
+    ) -> Result<CommandEffect, SupervisorOperationState> {
+        if !matches!(lifecycle, Lifecycle::Ready { .. }) {
+            return Err(SupervisorOperationState::Failed { detail: bounded_detail("no leg is currently running") });
+        }
+        let voyage_id = self.voyage_id.clone().expect("fenced_ok already confirmed a voyage_id");
+        let epoch = leg_epoch_of(&self.state_dir, &voyage_id);
+        let record = journal::ActiveRecord {
+            operation_id: operation_id.clone(),
+            digest,
+            op: journal::ActiveOp::EndRun { voyage: voyage_id, epoch },
+        };
+        match self.admit(&operation_id, record, from_record)?.op {
+            journal::ActiveOp::EndRun { epoch, .. } => Ok(CommandEffect::EndRun { operation_id, epoch, reason }),
+            _ => Err(record_mismatch(&operation_id)),
+        }
+    }
+
+    fn admit_reset(
+        &self,
+        lifecycle: &Lifecycle,
+        operation_id: String,
+        digest: String,
+        from_record: Option<journal::ActiveRecord>,
+    ) -> Result<CommandEffect, SupervisorOperationState> {
+        if !matches!(lifecycle, Lifecycle::EndedNoRespawn) {
+            return Err(SupervisorOperationState::Failed { detail: bounded_detail(reset_refusal_detail(lifecycle)) });
+        }
+        let admitted = match from_record {
+            Some(existing) => existing,
+            None => {
                 let new_voyage = uuid::Uuid::now_v7().to_string();
-                let old_voyage = self.voyage_id.clone();
                 let aside = Some(mint_aside_name().map_err(|e| SupervisorOperationState::Failed {
                     detail: bounded_detail(format!("{e}")),
                 })?);
                 let record = journal::ActiveRecord {
                     operation_id: operation_id.clone(),
                     digest,
-                    op: journal::ActiveOp::Reset { old_voyage, new_voyage: new_voyage.clone(), aside: aside.clone() },
+                    op: journal::ActiveOp::Reset { old_voyage: self.voyage_id.clone(), new_voyage, aside },
                 };
-                if let Err(e) = journal::begin(&self.state_dir, &operation_id, &record) {
-                    return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("journal begin failed: {e}")) });
-                }
-                Ok(CommandEffect::Reset { operation_id, new_voyage, aside })
+                self.admit(&operation_id, record, None)?
             }
-            SupervisorOp::Stop => {
-                let record = journal::ActiveRecord { operation_id: operation_id.clone(), digest, op: journal::ActiveOp::Stop };
-                if let Err(e) = journal::begin(&self.state_dir, &operation_id, &record) {
-                    return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("journal begin failed: {e}")) });
-                }
-                let t = journal::TerminalRecord::Stopping;
-                match journal::finish(&self.state_dir, &operation_id, &t) {
-                    Ok(()) => Ok(CommandEffect::Stop { reply: terminal_to_wire(t) }),
-                    Err(e) => Ok(CommandEffect::Stop {
-                        reply: SupervisorOperationState::Failed { detail: bounded_detail(format!("journal finish failed: {e}")) },
-                    }),
-                }
-            }
+        };
+        match admitted.op {
+            journal::ActiveOp::Reset { new_voyage, aside, .. } => Ok(CommandEffect::Reset { operation_id, new_voyage, aside }),
+            _ => Err(record_mismatch(&operation_id)),
+        }
+    }
+
+    fn admit_stop(
+        &self,
+        operation_id: String,
+        digest: String,
+        from_record: Option<journal::ActiveRecord>,
+    ) -> Result<CommandEffect, SupervisorOperationState> {
+        let record = journal::ActiveRecord { operation_id: operation_id.clone(), digest, op: journal::ActiveOp::Stop };
+        self.admit(&operation_id, record, from_record)?;
+        let t = journal::TerminalRecord::Stopping;
+        match journal::finish(&self.state_dir, &operation_id, &t) {
+            Ok(()) => Ok(CommandEffect::Stop { reply: terminal_to_wire(t) }),
+            Err(e) => Ok(CommandEffect::Stop {
+                reply: SupervisorOperationState::Failed { detail: bounded_detail(format!("journal finish failed: {e}")) },
+            }),
         }
     }
 
@@ -326,6 +414,13 @@ impl AuthorityState {
             Ok(None) => SupervisorOperationState::UnknownOperation,
             Err(e) => SupervisorOperationState::Failed { detail: bounded_detail(format!("journal unreadable: {e}")) },
         }
+    }
+}
+
+/// An active record whose digest matches but whose operation is another kind: a corrupt journal.
+fn record_mismatch(operation_id: &str) -> SupervisorOperationState {
+    SupervisorOperationState::Failed {
+        detail: bounded_detail(format!("the active record of {operation_id} is not this operation's kind")),
     }
 }
 
@@ -380,7 +475,7 @@ mod tests {
     #[test]
     fn reset_refusal_detail_names_the_reason_for_every_busy_state() {
         let (_tx, rx) = mpsc::channel::<RecoveryOutcome>();
-        let recovering = Lifecycle::Recovering { rx, handle: std::thread::spawn(|| {}), started_at: Instant::now() };
+        let recovering = Lifecycle::Recovering { rx, handle: std::thread::spawn(|| {}), started_at: Instant::now(), first_leg: true };
         assert!(reset_refusal_detail(&recovering).contains("recovering"));
 
         let terminal = Lifecycle::Terminal { detail: "x".into(), entered_at: Instant::now() };
@@ -396,6 +491,42 @@ mod tests {
             stop_requested: None,
             retired_legs: Vec::new(),
         }
+    }
+
+    /// A reset whose `.active` record was published but which no worker here
+    /// runs (a `journal::begin` that failed after its rename took, or a
+    /// worker's storage failure that left it active) is admitted from that
+    /// record: its own voyage and aside, nothing minted again.
+    #[test]
+    fn a_published_reset_without_its_worker_is_admitted_from_its_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_voyage = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap();
+        let mut authority = test_authority(dir.path());
+        authority.voyage_id = Some(old_voyage.clone());
+
+        let op = SupervisorOp::Reset { voyage: Some(old_voyage.clone()) };
+        let new_voyage = uuid::Uuid::now_v7().to_string();
+        let aside = "drawer.voyage.reset-aaaaaaaaaaaaaaaa".to_string();
+        let record = journal::ActiveRecord {
+            operation_id: "reset-x".into(),
+            digest: digest_of(&op).unwrap(),
+            op: journal::ActiveOp::Reset {
+                old_voyage: Some(old_voyage),
+                new_voyage: new_voyage.clone(),
+                aside: Some(aside.clone()),
+            },
+        };
+        journal::begin(dir.path(), "reset-x", &record).unwrap();
+
+        let effect = authority
+            .handle_command(&Lifecycle::EndedNoRespawn, "reset-x".into(), op)
+            .expect("an active reset with no worker is admitted from its record");
+        let CommandEffect::Reset { operation_id, new_voyage: admitted, aside: admitted_aside } = effect else {
+            panic!("expected a Reset effect");
+        };
+        assert_eq!(operation_id, "reset-x");
+        assert_eq!(admitted, new_voyage, "the record's own voyage, not a newly minted one");
+        assert_eq!(admitted_aside.as_deref(), Some(aside.as_str()));
     }
 
     /// a SUCCESSFUL Reset's own operation id,

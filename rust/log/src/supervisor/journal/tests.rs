@@ -365,3 +365,30 @@ fn a_journal_file_over_the_size_cap_is_a_loud_error() {
     std::fs::write(dir.path().join(JOURNAL_DIR_NAME).join(format!("{key}.active")), oversized).unwrap();
     assert!(read_active(dir.path(), "op-1").is_err());
 }
+
+/// A publication that fails leaves no `.tmp-*` file behind. The failure is a
+/// write cut short by a 16-byte file-size limit, set in an isolated child
+/// because the limit is the whole process's.
+#[cfg(unix)]
+#[test]
+fn a_failed_publication_leaves_no_temp_file() {
+    if !crate::test_isolated::run_isolated("supervisor::journal::tests::a_failed_publication_leaves_no_temp_file") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    // SAFETY: plain libc calls in a child process of its own: ignore SIGXFSZ
+    // so an over-limit write returns EFBIG instead of killing the child, then
+    // lower this process's file-size limit.
+    unsafe {
+        libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+        let limit = libc::rlimit { rlim_cur: 16, rlim_max: 16 };
+        assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &limit), 0);
+    }
+    let record = end_run("op-1", &a_voyage(), None);
+    assert!(begin(dir.path(), "op-1", &record).is_err(), "a write past the limit fails the publication");
+    let leftover: Vec<_> = std::fs::read_dir(journal_dir(dir.path()))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(leftover.is_empty(), "a failed publication left {leftover:?}");
+}

@@ -137,6 +137,7 @@ root; lanes edit only their own folder's page.
 @rust/log/src/supervisor/authority/CLAUDE.md
 @rust/log/src/supervisor/journal/CLAUDE.md
 @rust/log/src/supervisor/probe/CLAUDE.md
+@rust/log/src/supervisor/storage/CLAUDE.md
 @rust/log/tests/CLAUDE.md
 @rust/protocol/CLAUDE.md
 @rust/protocol/src/ops/CLAUDE.md

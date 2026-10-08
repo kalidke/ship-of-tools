@@ -15,7 +15,7 @@ pub(in crate::supervisor) fn reset_pointer(state_dir: &Path, new_voyage: &str, a
     let live = pointer::pointer_path(state_dir);
     if live.exists() {
         crate::host::fsync_file(&live).map_err(|e| {
-            err_state(format!("reset_pointer: flushing the live pointer {live:?} before renaming it aside: {e}"))
+            state_unless_full(e, |e| format!("reset_pointer: flushing the live pointer {live:?} before renaming it aside: {e}"))
         })?;
         let owned;
         let name: &str = match aside_name {
@@ -27,19 +27,32 @@ pub(in crate::supervisor) fn reset_pointer(state_dir: &Path, new_voyage: &str, a
         };
         let aside = state_dir.join(name);
         crate::host::publish_noreplace(&live, &aside).map_err(|e| {
-            err_state(format!("reset_pointer: renaming {live:?} aside to {aside:?}: {e}"))
+            state_unless_full(e, |e| format!("reset_pointer: renaming {live:?} aside to {aside:?}: {e}"))
         })?;
     }
-    std::fs::create_dir_all(voyages_dir(state_dir))
-        .map_err(|e| err_state(format!("reset_pointer: creating {:?}: {e}", voyages_dir(state_dir))))?;
+    std::fs::create_dir_all(voyages_dir(state_dir)).map_err(|e| {
+        state_unless_full(e.into(), |e| format!("reset_pointer: creating {:?}: {e}", voyages_dir(state_dir)))
+    })?;
     let root = voyage_root_path(state_dir, new_voyage);
     if !root.exists() {
         VoyageStore::bootstrap(&root, new_voyage, RetentionClass::Archive)
-            .map_err(|e| err_state(format!("reset_pointer: bootstrapping {root:?}: {e}")))?;
+            .map_err(|e| state_unless_full(e, |e| format!("reset_pointer: bootstrapping {root:?}: {e}")))?;
     }
-    pointer::publish(state_dir, new_voyage)
-        .map_err(|e| err_state(format!("reset_pointer: publishing the new pointer for {new_voyage:?}: {e}")))?;
+    pointer::publish(state_dir, new_voyage).map_err(|e| {
+        state_unless_full(e, |e| format!("reset_pointer: publishing the new pointer for {new_voyage:?}: {e}"))
+    })?;
     Ok(())
+}
+
+/// A failed step of a reset is a `State` error with its words, except
+/// storage exhaustion, which is returned as itself so the authority waits for
+/// storage instead of failing the reset (`do_reset`).
+fn state_unless_full(e: crate::Error, text: impl FnOnce(&crate::Error) -> String) -> crate::Error {
+    if storage_exhaustion(&e).is_some() {
+        e
+    } else {
+        err_state(text(&e))
+    }
 }
 
 pub(in crate::supervisor) fn reconcile_reset(

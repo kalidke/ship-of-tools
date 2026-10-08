@@ -59,7 +59,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `rust/backend/src/rows/run/headless.rs`, `rust/frontend/src/ui/agent_pane/attach.rs`, `drawer.voyage`, `writer.lock`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `durable::write`, `durable::remove`,
 `rust/backend/src/durable.rs`, `remove_comm_agents_for_workspace`, `FilesMode`, `ConceptStore`,
-`rust/backend/src/rows/workspace.rs`, `Watcher`, `rust/backend/src/rows/registry.rs`, `Kernel`, `Repl`, `Signal::spawn_std`, `ContainedStd`, `child_signal::process`.
+`rust/backend/src/rows/workspace.rs`, `Watcher`, `rust/backend/src/rows/registry.rs`, `Kernel`, `Repl`, `Signal::spawn_std`, `ContainedStd`, `child_signal::process`, `storage_exhaustion`.
 
 ## Folders
 - `ops/`: the row ops clients call

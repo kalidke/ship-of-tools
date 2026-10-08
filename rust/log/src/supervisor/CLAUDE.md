@@ -12,6 +12,7 @@ Part of the capsule; charter: rust/log/CLAUDE.md.
 - `transitions.rs`: one tick of each `Lifecycle` state, called by the main loop
 - `oneshot.rs`: `endrun_inner` and `reset_inner`, the fence-acquiring in-process callers
 - `probe/`: is a leg there, and is it this user's: the `ProbeOps` seam, the classifier and the three OS implementations
+- `storage/`: the storage wait: which leg deaths are storage, the durable state-root probe, its backoff and the bootstrap retry
 - `lease_win.rs`: the Windows parent-death lease: a named mutex the supervisor owns for its whole life and the leg opens; abandoned means broken
 - `journal/`: the durable records: operation journal, voyage pointer, authority fence
 - `authority/`: the SOSV lane's server side: the authority's state and command handling, and the lane's connections
@@ -28,3 +29,6 @@ Part of the capsule; charter: rust/log/CLAUDE.md.
 - A leg dies with its supervisor (`LegLease`).
 - On Unix SIGCHLD is reset first in `supervise_inner` and each leg is reaped once (`retire_leg`, `reap_retired_legs`).
 - One write per diagnostic line (`note`).
+- Storage exhaustion never charges `consecutive_unstable_legs` and never enters Terminal. A leg exit 71, a recovery, end_run or reset worker failing with it, and a leg death of unknown status whose immediate probe meets it all hold the authority in `Lifecycle::StorageFull` (`storage/`); status reports `starting` meanwhile. Before the lane binds, the directory, fence and bind steps retry in place (`retry_bootstrap`).
+- `first_leg_without` strips only the first leg this process spawns: `Recovering` and `InitialProbe` carry `first_leg`, which is false when recovery is re-run after a storage wait.
+- A reset that fails with storage exhaustion records no Failed terminal; its operation stays active and the re-run recovery finishes it (`reset_failure`).

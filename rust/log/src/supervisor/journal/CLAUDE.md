@@ -22,3 +22,5 @@ startup-recovery code that writes them. Part of the capsule; charter: rust/log/C
 - A run-end marker alone never proves the writer gone: `probe_writer_liveness` runs before `reconcile_via_marker` (`finish_end_run_without_process`).
 - Reset renames the old pointer aside without replacing and deletes nothing (`reset_pointer`).
 - Every active entry is finished before the pointer is read (`reconcile_journal_on_startup`).
+- A publication creates its temp file exclusively and removes it on any write, sync or rename failure (`publish_json`).
+- `reset_pointer` returns a storage-exhaustion error as itself through flush, rename, bootstrap and pointer publication; other errors keep their `State` text.

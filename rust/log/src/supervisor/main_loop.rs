@@ -9,10 +9,16 @@ use super::*;
 pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     init_process_globals(&config)?;
 
-    std::fs::create_dir_all(voyages_dir(&config.state_dir))?;
+    // The first steps run before the lane binds, so there is nothing to hold
+    // yet: a full volume retries them in place (`storage::retry_bootstrap`).
+    storage::retry_bootstrap("creating the voyages folder", || {
+        std::fs::create_dir_all(voyages_dir(&config.state_dir)).map_err(crate::Error::Io)
+    })?;
 
     // ONE AUTHORITY.
-    let _fence = match crate::supervisor::journal::fence::lock_supervisor(&config.state_dir) {
+    let _fence = match storage::retry_bootstrap("taking the authority fence", || {
+        crate::supervisor::journal::fence::lock_supervisor(&config.state_dir)
+    }) {
         Ok(f) => f,
         // `Error::State` is the ONE error `lock_supervisor` can return for
         // "already held" (see `EXIT_CONTENDED`'s own doc for why this is
@@ -31,7 +37,10 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     let h = crate::host::state_dir::state_dir_hash(&config.state_dir);
 
     // The lane: bound AFTER the fence, BEFORE any adopt or spawn.
-    let lane = match Lane::bind_supervisor(&h, MAX_LANE_INSTANCES) {
+    // The fence stays held while a full volume holds the bind.
+    let lane = match storage::retry_bootstrap("binding the supervisor lane", || {
+        Lane::bind_supervisor(&h, MAX_LANE_INSTANCES).map_err(crate::Error::Transport)
+    }) {
         Ok(l) => l,
         Err(e) => {
             note(format_args!("could not bind the supervisor lane: {e}"));
@@ -67,9 +76,12 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     // background worker — the lane is already up and serviced from the
     // very first loop iteration below, well before either concludes.
     let (rx, handle) = spawn_recovery(config.state_dir.clone(), config.mode);
-    let mut lifecycle = Lifecycle::Recovering { rx, handle, started_at: Instant::now() };
+    let mut lifecycle = Lifecycle::Recovering { rx, handle, started_at: Instant::now(), first_leg: true };
 
     let mut consecutive_unstable_legs: u32 = 0;
+    // The storage wait's backoff step: carried across a storage exit that
+    // follows a successful probe, and back to 0 when a leg is judged stable.
+    let mut storage_step: u32 = 0;
 
     // Switch-latency Phase 1: the event this loop's own tail wait
     // ([`Lane::events`]'s `recv_timeout`, replacing an unconditional
@@ -97,11 +109,12 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             Lifecycle::Terminal { detail: "transitioning".into(), entered_at: now },
         );
         lifecycle = match current {
-            Lifecycle::Recovering { rx, handle, started_at } => advance_recovering(rx, handle, started_at, &config, &mut authority, now),
-            Lifecycle::InitialProbe { rx, handle, started_at } => advance_initial_probe(rx, handle, started_at, &capsule_exe, &config, &lease, &authority, now),
+            Lifecycle::Recovering { rx, handle, started_at, first_leg } => advance_recovering(rx, handle, started_at, first_leg, &config, &mut authority, now),
+            Lifecycle::InitialProbe { rx, handle, started_at, first_leg } => advance_initial_probe(rx, handle, started_at, first_leg, &capsule_exe, &config, &lease, &authority, now),
             Lifecycle::Spawning { rx, handle, started_at } => advance_spawning(rx, handle, started_at, &mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, now),
-            Lifecycle::Ready { process } => advance_ready(process, &mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, now),
-            Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply, process } => advance_ending(operation_id, rx, handle, started_at, pending_reply, process, &lane, &conns, &mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &mut authority, now),
+            Lifecycle::Ready { process } => advance_ready(process, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &authority, now),
+            Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply, process } => advance_ending(operation_id, rx, handle, started_at, pending_reply, process, &lane, &conns, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &mut authority, now),
+            Lifecycle::StorageFull(wait) => advance_storage_full(wait, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &authority, now),
             Lifecycle::Resetting { operation_id, rx, handle, started_at } => advance_resetting(operation_id, rx, handle, started_at, &capsule_exe, &config, &lease, &mut authority, now),
             other @ (Lifecycle::EndedNoRespawn | Lifecycle::Terminal { .. }) => other,
         };
@@ -200,7 +213,7 @@ fn should_exit_now(lifecycle: &Lifecycle, authority: &AuthorityState, conns: &Ha
         (Lifecycle::Terminal { entered_at, .. }, None) => {
             now.saturating_duration_since(*entered_at) >= TERMINAL_EXIT_GRACE
         }
-        (Lifecycle::Ready { .. } | Lifecycle::EndedNoRespawn, Some(stop)) => !conns.contains_key(&stop.primary_conn),
+        (Lifecycle::Ready { .. } | Lifecycle::EndedNoRespawn | Lifecycle::StorageFull(_), Some(stop)) => !conns.contains_key(&stop.primary_conn),
         _ => false,
     }
 }
