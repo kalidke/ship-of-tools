@@ -393,7 +393,8 @@ struct ServerShared {
     write_cancel_observed_genuine_pending: Mutex<HashMap<ConnId, bool>>,
     /// Transport-local checkpoints (zero-sized outside a test build).
     progress: Progress,
-    /// Latched by a completed worker panic or a thread unfinished at the shutdown deadline, and never cleared.
+    /// Latched, and never cleared, by a completed worker panic, a panicked acceptor or reaper, a thread unfinished at the
+    /// shutdown deadline, or a reaper pass at or after that deadline that finds a claimed pair's worker unfinished.
     teardown_failed: AtomicBool,
     /// The phase-one wake has been sent (or refused) once.
     sweep_nudged: AtomicBool,

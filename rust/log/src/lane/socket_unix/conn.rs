@@ -220,6 +220,7 @@ fn reaper_ctx(shared: &ServerShared) -> pending::Ctx<'_> {
         events_tx: &shared.events_tx,
         dropping: &shared.dropping,
         teardown_failed: &shared.teardown_failed,
+        shutdown: shared.shutdown.get().copied(),
         wake: shared.activity_wake.get().map(|wake| &**wake as _),
     }
 }
@@ -318,6 +319,7 @@ pub(super) fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
             !retired
         });
         if shutdown.is_some() && pending.is_empty() && shared.conns.lock().unwrap().is_empty() {
+            shared.progress.note(None, "reaper.exit", "ok");
             return;
         }
     }

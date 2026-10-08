@@ -130,7 +130,7 @@ impl PipeServer {
 
         // Spawn the reaper FIRST. If the accept thread then fails to
         // spawn, unwind the reaper (it has nothing queued yet, so its
-        // own `Shutdown` drain is instant) rather than leave it running
+        // own shutdown pass is instant) rather than leave it running
         // forever with no accept thread able to feed it. No `JoinHandle`
         // is ever dropped while its thread could still run.
         let reaper_jh = thread::Builder::new()
@@ -328,6 +328,17 @@ impl PipeServer {
         self.shared.controls.arm_exit_panic(conn, role);
     }
 
+    /// The server's recorder alone, so a test can watch checkpoints while another thread holds `&mut PipeServer`.
+    pub fn progress_view_for_test(&self) -> ProgressView {
+        ProgressView(Arc::clone(&self.shared))
+    }
+
+    /// Stop `join_workers` after it signalled shutdown and joined the acceptor, before it samples the reaper, until
+    /// released: the sample then sees whatever the reaper did meanwhile.
+    pub fn pause_join_for_test(&self) -> crate::lane::test_progress::Pause {
+        crate::lane::test_progress::Pause::new(self.shared.controls.arm_barrier("join.reaper"))
+    }
+
     /// Make the reaper panic at its next pass that follows an intake, outside every transport lock.
     pub fn inject_reaper_panic_for_test(&self) {
         self.shared.controls.arm_panic("reaper.pass");
@@ -463,7 +474,8 @@ impl PipeServer {
             st.retained_dead.clear();
         }
         if !self.shared.sweep_nudged.swap(true, Ordering::AcqRel) {
-            // Nonblocking: a full inbox already has the reaper awake, and the slack keeps the one `Shutdown` a slot.
+            // Nonblocking: a full inbox already has the reaper awake, and `REAPER_INBOX_SLACK` keeps a slot for this wake
+            // and the shutdown one so `close()`'s blocking send under the `conns` lock cannot deadlock.
             let _ = self.shared.reaper_tx.try_send(ReaperMsg::Wake);
         }
     }
@@ -480,6 +492,9 @@ impl PipeServer {
         if let Some(jh) = self.accept_jh.take() {
             joins.record("sot-pipe", "acceptor", join_checked(jh, deadline));
         }
+        self.shared
+            .controls
+            .barrier_point(&self.shared.progress, None, "join.reaper");
         if let Some(jh) = self.reaper_jh.take() {
             joins.record("sot-pipe", "reaper", join_checked(jh, deadline));
         }
@@ -492,6 +507,17 @@ impl PipeServer {
             .progress
             .note(None, "server.join.end", joins.result(failed));
         !failed
+    }
+}
+
+/// A server's recorder, readable without the server.
+#[cfg(any(test, feature = "test-support"))]
+pub struct ProgressView(Arc<ServerShared>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl ProgressView {
+    pub fn snapshot(&self) -> crate::lane::test_progress::Snapshot {
+        self.0.progress.snapshot()
     }
 }
 

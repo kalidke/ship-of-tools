@@ -615,6 +615,40 @@ impl fmt::Display for Snapshot {
     }
 }
 
+/// A snapshot the recorder could give: a busy or poisoned one is retried a bounded few times (200 x 5 ms), never read as
+/// empty, and a recorder that stays unavailable fails the caller loudly.
+#[cfg(any(test, feature = "test-support"))]
+pub fn available(take: impl Fn() -> Snapshot) -> Snapshot {
+    for _ in 0..200 {
+        let taken = take();
+        if !taken.unavailable {
+            return taken;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("the progress recorder stayed unavailable: {}", take());
+}
+
+/// No checkpoint matches `wanted`. An absence proves nothing if a checkpoint was skipped under contention or
+/// overwritten out of the ring, so either fails the check rather than passing it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn assert_absent(
+    take: impl Fn() -> Snapshot,
+    what: &str,
+    wanted: impl Fn(&Checkpoint) -> bool,
+) {
+    let snapshot = available(take);
+    assert_eq!(
+        (snapshot.skipped, snapshot.overwritten),
+        (0, Some(0)),
+        "an absence of {what} cannot be proved: a checkpoint may have been skipped or overwritten\n{snapshot}"
+    );
+    assert!(
+        !snapshot.records.iter().any(|r| wanted(r)),
+        "{what}\n{snapshot}"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

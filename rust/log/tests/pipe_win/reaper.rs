@@ -2,7 +2,7 @@
 //! never stalls another connection's close or the server's shutdown.
 
 use super::*;
-use sot_log::lane::test_progress::{Checkpoint, Pause, Role};
+use sot_log::lane::test_progress::{assert_absent, available, Checkpoint, Pause, Role};
 
 /// The short per-connection teardown budget a test gives a server it expects to expire.
 const SHORT: Duration = Duration::from_millis(200);
@@ -267,8 +267,9 @@ fn recycle_failure_retains_the_dead_instance() {
     await_progress(&server, "recycle.failed", |r| {
         r.step == "recycle.result" && r.result == "false"
     });
-    assert_squat_check_failed(try_create_first_instance(&id, 1).unwrap_err());
+    // The client goes first, so the probe below does not depend on whether an open client handle keeps the name held.
     drop(client);
+    assert_squat_check_failed(try_create_first_instance(&id, 1).unwrap_err());
     server.disconnect_listener();
     try_create_first_instance(&id, 1)
         .expect("the name stayed held after the server closed every registered instance");
@@ -575,14 +576,11 @@ fn registration_after_shutdown_is_rejected() {
     server.disconnect_listener();
     barrier.release();
     let ok = server.join_workers(Instant::now() + RECORD);
-    let snapshot = server.progress_for_test();
-    let inserted = snapshot
-        .records
-        .iter()
-        .any(|r| r.step == "registration.cutoff" && r.result == "inserted");
-    assert!(
-        !inserted,
-        "registration crossed shutdown cutoff\n{snapshot}"
+    let snapshot = available(|| server.progress_for_test());
+    assert_absent(
+        || server.progress_for_test(),
+        "a registration across the shutdown cutoff",
+        |r| r.step == "registration.cutoff" && r.result == "inserted",
     );
     assert!(
         ok,
@@ -595,15 +593,83 @@ fn registration_after_shutdown_is_rejected() {
             .any(|r| r.step == "registration.cutoff" && r.result == "rejected"),
         "late registration was not rejected\n{snapshot}"
     );
-    assert!(
-        !snapshot
-            .records
-            .iter()
-            .any(|r| r.step == "accepted.enqueue"),
-        "late Accepted\n{snapshot}"
+    assert_absent(
+        || server.progress_for_test(),
+        "a late Accepted",
+        |r| r.step == "accepted.enqueue",
     );
     assert!(server.events().try_recv().is_err());
     drop(client);
+}
+
+/// A reaper pass at or after the shutdown deadline that finds a pair's worker unfinished fails the teardown even if the
+/// worker finishes just after that pass and the reaper has exited before `join_workers` samples it.
+fn deadline_pass_latches_without_the_reaper_sample(role: Role) {
+    let id = fresh_voyage_id();
+    let mut server = PipeServer::bind(&id, 1).unwrap();
+    let (client, a) = connect(&server, &id);
+    let hold = server.hold_worker_exit_for_test(a, role);
+    let join = server.pause_join_for_test();
+    let view = server.progress_view_for_test();
+    server.close(a);
+    reached(&server, "a.held", &hold);
+    server.disconnect_listener();
+    let seen = |step: &str, conn: Option<ConnId>| {
+        let deadline = Instant::now() + RECORD;
+        loop {
+            let snapshot = available(|| view.snapshot());
+            if snapshot
+                .records
+                .iter()
+                .any(|r| r.step == step && r.conn == conn)
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "pipe wait {step}: not observed within {RECORD:?}\n{snapshot}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let ok = std::thread::scope(|scope| {
+        let joining =
+            scope.spawn(|| server.join_workers(Instant::now() + Duration::from_millis(300)));
+        assert!(
+            join.wait_reached(RECORD),
+            "join_workers never reached its reaper sample"
+        );
+        seen("pending.deadline", Some(a));
+        hold.release();
+        seen("reaper.exit", None);
+        join.release();
+        joining.join().unwrap()
+    });
+    assert!(
+        !ok,
+        "a pair unfinished at the shutdown deadline pass left a clean teardown"
+    );
+    drop(client);
+}
+
+#[test]
+fn deadline_pass_fails_teardown_though_the_reaper_exits_first_reader_held() {
+    if !run_isolated(
+        "reaper::deadline_pass_fails_teardown_though_the_reaper_exits_first_reader_held",
+    ) {
+        return;
+    }
+    deadline_pass_latches_without_the_reaper_sample(Role::Reader);
+}
+
+#[test]
+fn deadline_pass_fails_teardown_though_the_reaper_exits_first_writer_held() {
+    if !run_isolated(
+        "reaper::deadline_pass_fails_teardown_though_the_reaper_exits_first_writer_held",
+    ) {
+        return;
+    }
+    deadline_pass_latches_without_the_reaper_sample(Role::Writer);
 }
 
 /// A server thread that panicked fails the teardown for good: a panicked reaper leaves its pending pairs unjoined, and

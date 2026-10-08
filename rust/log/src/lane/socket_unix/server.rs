@@ -110,7 +110,7 @@ impl SocketServer {
 
         // Spawn the reaper FIRST -- if the accept thread then fails to
         // spawn, unwind the reaper (nothing queued yet, so its own
-        // `Shutdown` drain is instant) rather than leave it running
+        // shutdown pass is instant) rather than leave it running
         // forever with no accept thread able to feed it. Mirrors
         // `pipe_win::PipeServer::bind_named`'s own ordering.
         let reaper_jh = match thread::Builder::new()
@@ -310,7 +310,8 @@ impl SocketServer {
             }
         }
         if !self.shared.sweep_nudged.swap(true, Ordering::AcqRel) {
-            // Nonblocking: a full inbox already has the reaper awake, and the slack keeps the one `Shutdown` a slot.
+            // Nonblocking: a full inbox already has the reaper awake, and `REAPER_INBOX_SLACK` keeps a slot for this wake
+            // and the shutdown one so `close()`'s blocking send under the `conns` lock cannot deadlock.
             let _ = self.shared.reaper_tx.try_send(ReaperMsg::Wake);
         }
         self.shared.progress.note(None, "listener.disconnect", "ok");
@@ -329,6 +330,9 @@ impl SocketServer {
             let joined = Self::join_with_progress(&self.shared, jh, deadline);
             joins.record("sot-sock", "acceptor", joined);
         }
+        self.shared
+            .controls
+            .barrier_point(&self.shared.progress, None, "join.reaper");
         if let Some(jh) = self.reaper_jh.take() {
             let joined = Self::join_with_progress(&self.shared, jh, deadline);
             joins.record("sot-sock", "reaper", joined);
@@ -456,6 +460,17 @@ impl SocketServer {
         self.shared.controls.arm_exit_panic(conn, role);
     }
 
+    /// The server's recorder alone, so a test can watch checkpoints while another thread holds `&mut SocketServer`.
+    pub fn progress_view_for_test(&self) -> ProgressView {
+        ProgressView(Arc::clone(&self.shared))
+    }
+
+    /// Stop `join_workers` after it signalled shutdown and joined the acceptor, before it samples the reaper, until
+    /// released: the sample then sees whatever the reaper did meanwhile.
+    pub fn pause_join_for_test(&self) -> crate::lane::test_progress::Pause {
+        crate::lane::test_progress::Pause::new(self.shared.controls.arm_barrier("join.reaper"))
+    }
+
     /// Make the reaper panic at its next pass that follows an intake, outside every transport lock.
     pub fn inject_reaper_panic_for_test(&self) {
         self.shared.controls.arm_panic("reaper.pass");
@@ -511,6 +526,17 @@ impl Drop for SocketServer {
         if !self.join_workers(deadline) {
             report_server_teardown_failed("sot-sock");
         }
+    }
+}
+
+/// A server's recorder, readable without the server.
+#[cfg(any(test, feature = "test-support"))]
+pub struct ProgressView(Arc<ServerShared>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl ProgressView {
+    pub fn snapshot(&self) -> crate::lane::test_progress::Snapshot {
+        self.0.progress.snapshot()
     }
 }
 

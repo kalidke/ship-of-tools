@@ -64,7 +64,7 @@ fn a_completed_panic_is_reported_apart_from_the_unfinished_peer_expiry() {
         Some(vec![Worker::Reader]),
         "only the unfinished peer is named"
     );
-    assert!(poll.failed() && !poll.done);
+    assert!(poll.panicked() && !poll.done);
     release.send(()).unwrap();
 }
 
@@ -99,7 +99,7 @@ fn a_worker_that_finished_by_the_deadline_is_not_an_expiry() {
     ended_when_polled(&writer);
     let mut joins = PendingJoins::new(reader, writer, Instant::now() - Duration::from_secs(1));
     let poll = joins.poll(Instant::now());
-    assert!(poll.done && poll.expired.is_none() && !poll.failed());
+    assert!(poll.done && poll.expired.is_none() && !poll.panicked());
 }
 
 #[test]

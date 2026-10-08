@@ -120,7 +120,6 @@ pub(super) fn signal_shutdown(shared: &ServerShared, deadline: Instant) {
 
 /// A claimed connection: its slots stay owned through completion; the registry stays the only closer of its handle.
 struct Pending {
-    id: ConnId,
     claimed: Claimed,
     registry_id: u64,
     raw: SendableHandle,
@@ -142,6 +141,7 @@ fn reaper_ctx(shared: &ServerShared) -> pending::Ctx<'_> {
         events_tx: &shared.events_tx,
         dropping: &shared.dropping,
         teardown_failed: &shared.teardown_failed,
+        shutdown: shared.shutdown.get().copied(),
         wake: shared.activity_wake.get().map(|wake| &**wake as _),
     }
 }
@@ -203,7 +203,6 @@ fn claim(
         .get()
         .map_or(own, |shutdown| own.min(*shutdown));
     Some(Pending {
-        id: conn_id,
         claimed: Claimed::new(conn_id, reason, reader_jh, writer_jh, deadline),
         registry_id,
         raw,
@@ -227,9 +226,11 @@ fn poll_pending(
     if staged.error.is_some() {
         return false;
     }
-    shared
-        .controls
-        .barrier_point(&shared.progress, Some(pending.id), "recycle.barrier");
+    shared.controls.barrier_point(
+        &shared.progress,
+        Some(pending.claimed.id()),
+        "recycle.barrier",
+    );
     if let Err(message) = recycle_checked(shared, pending.registry_id, pending.raw) {
         stop_accept_loop(shared);
         shared.accept_cv.notify_all();
@@ -297,6 +298,7 @@ pub(super) fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
             && staged.error.is_none()
             && shared.conns.lock().unwrap().is_empty()
         {
+            shared.progress.note(None, "reaper.exit", "ok");
             return;
         }
     }

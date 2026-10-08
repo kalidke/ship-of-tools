@@ -53,27 +53,14 @@ impl JoinPoll {
         self.joined.iter().any(|(_, ok)| !ok)
     }
 
-    /// True for a poll that found a completed panic or an expiry: both are reported.
-    pub(crate) fn failed(&self) -> bool {
-        self.expired.is_some() || self.panicked()
-    }
-
-    /// Print this poll's runtime records, one line per fact: each completed panic, then the expiry naming only the
-    /// unfinished workers. `prefix` is the transport's (`sot-sock`, `sot-pipe`); the workers stay owned either way.
-    pub(crate) fn report(&self, prefix: &str, conn: ConnId, elapsed: Duration) {
+    /// Print one record per completed panic. `prefix` is the transport's (`sot-sock`, `sot-pipe`).
+    pub(crate) fn report_panics(&self, prefix: &str, conn: ConnId, elapsed: Duration) {
         let ms = elapsed.as_millis();
         for (worker, _) in self.joined.iter().filter(|(_, ok)| !ok) {
             eprintln!(
                 "{prefix}: connection teardown failed conn={conn} worker={} elapsed_ms={ms} reason=worker-panicked \
                  outcome=panicked; worker join completed",
                 worker.name()
-            );
-        }
-        if let Some(unfinished) = &self.expired {
-            let which = worker_label(unfinished);
-            eprintln!(
-                "{prefix}: connection teardown failed conn={conn} worker={which} elapsed_ms={ms} \
-                 reason=deadline-expired; unfinished workers remain owned"
             );
         }
     }
@@ -110,6 +97,18 @@ impl PendingJoins {
         self.deadline = self.deadline.min(deadline);
     }
 
+    /// The workers not yet joined.
+    pub(crate) fn unfinished(&self) -> Vec<Worker> {
+        [
+            (Worker::Reader, &self.reader),
+            (Worker::Writer, &self.writer),
+        ]
+        .into_iter()
+        .filter(|(_, slot)| slot.is_some())
+        .map(|(worker, _)| worker)
+        .collect()
+    }
+
     pub(crate) fn poll(&mut self, now: Instant) -> JoinPoll {
         let mut poll = JoinPoll::default();
         for (worker, slot) in [
@@ -124,16 +123,7 @@ impl PendingJoins {
         poll.done = self.reader.is_none() && self.writer.is_none();
         if !poll.done && now >= self.deadline && !self.expiry_reported {
             self.expiry_reported = true;
-            poll.expired = Some(
-                [
-                    (Worker::Reader, &self.reader),
-                    (Worker::Writer, &self.writer),
-                ]
-                .into_iter()
-                .filter(|(_, slot)| slot.is_some())
-                .map(|(worker, _)| worker)
-                .collect(),
-            );
+            poll.expired = Some(self.unfinished());
         }
         poll
     }
@@ -143,17 +133,25 @@ impl PendingJoins {
 /// ceiling -- a connection's own at-most-once teardown flag already caps live
 /// `Torn` messages at one per open connection, so the only other traffic this
 /// inbox ever carries is the single phase-one wake and the single shutdown
-/// wake, each sent without blocking at most once. Correctness does not rest on
-/// them: a wake carries no state (see [`ReaperMsg::Wake`]), and a send that
-/// finds the inbox full leaves the reaper with messages to take anyway.
+/// wake, each sent without blocking at most once.
+///
+/// The invariant this keeps: `close()` sends its `Torn` with a BLOCKING send
+/// while holding the `conns` lock, and the reaper's `claim` takes that lock. If
+/// the inbox could fill, the reaper would take a message, a worker's own
+/// teardown send would take the freed slot, and the reaper would block on
+/// `conns` while `close()` held it waiting for a slot: a deadlock. At most one
+/// `Torn` per connection plus at most two wakes never fills it. No wake carries
+/// state (see [`ReaperMsg::Wake`]), so a wake that cannot be queued loses
+/// nothing; the slack is for `close()`, not for the wakes' correctness.
 pub(super) const REAPER_INBOX_SLACK: usize = 2;
 
 /// How long a normal (not shutdown) close may leave a connection's workers unfinished before the reaper reports it,
 /// once. Twenty seconds is the aggregate shutdown deadline's number, but this is a separate budget: it is a
 /// per-connection report threshold, not an absolute deadline. A stalled consumer can hold a writer in its reliable
 /// `Sent` delivery that long and the worker still finishes whenever the consumer drains, so expiry is loud but does not
-/// fail the run-end teardown; the pair stays reaper-owned, and a pair still unfinished at the shutdown deadline keeps
-/// the reaper running and fails `join_workers` there.
+/// fail the run-end teardown; the pair stays reaper-owned. A reaper pass at or after the shutdown deadline that finds
+/// the pair still unfinished latches the failed teardown (`Claimed::note_poll`), and the reaper cannot exit while it
+/// owns one, so `join_workers` fails there too.
 pub(crate) const NORMAL_CLOSE_BUDGET: Duration = Duration::from_secs(20);
 
 /// What `join_workers` found of a server's own threads (the acceptor and the reaper). Both fail the teardown for good:
@@ -273,6 +271,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) events_tx: &'a SyncSender<LaneEvent>,
     pub(crate) dropping: &'a AtomicBool,
     pub(crate) teardown_failed: &'a AtomicBool,
+    /// The shutdown deadline, once `join_workers` has set it.
+    pub(crate) shutdown: Option<Instant>,
     pub(crate) wake: Option<&'a (dyn Fn() + Send + Sync)>,
 }
 
@@ -339,6 +339,8 @@ pub(crate) struct Claimed {
     stage: Stage,
     joins: PendingJoins,
     panicked: bool,
+    /// The record for a pair found unfinished at the shutdown deadline has been printed (and the teardown latched).
+    deadline_reported: bool,
     /// The `Closed` retained after both joins until the channel has room (or the consumer is gone).
     closed: Option<LaneEvent>,
     /// The last result noted for that `Closed`'s enqueue; empty before the first attempt.
@@ -360,9 +362,14 @@ impl Claimed {
             stage: Stage::Joining,
             joins: PendingJoins::new(reader, writer, deadline),
             panicked: false,
+            deadline_reported: false,
             closed: None,
             last_enqueue: "",
         }
+    }
+
+    pub(crate) fn id(&self) -> ConnId {
+        self.id
     }
 
     /// Bring the absolute deadline forward to `deadline`; it never moves back.
@@ -370,16 +377,16 @@ impl Claimed {
         self.joins.tighten(deadline);
     }
 
-    /// One pass: join the workers that finished, report a completed panic or an expiry (once each; a panic latches the
-    /// failed teardown), and once both are joined try to publish its `Closed` without blocking. True when it is retired.
+    /// One pass: join the workers that finished and report what the pass found (see `note_poll`), and once both are
+    /// joined try to publish its `Closed` without blocking. True when it is retired.
     pub(crate) fn poll(&mut self, ctx: &Ctx, now: Instant) -> bool {
         if let Stage::Joining = self.stage {
             let poll = self.joins.poll(now);
-            self.note_poll(ctx, &poll);
+            self.note_poll(ctx, &poll, now);
             if !poll.done {
                 return false;
             }
-            ctx.progress.note(Some(self.id), "pending.done", "joined");
+            ctx.progress.note(Some(self.id()), "pending.done", "joined");
             self.stage = Stage::Closing;
             if let Some(reason) = self.reason.take() {
                 let reason = if self.panicked {
@@ -404,8 +411,13 @@ impl Claimed {
         true
     }
 
-    fn note_poll(&mut self, ctx: &Ctx, poll: &JoinPoll) {
+    /// Note and report one poll. A completed worker panic latches the failed teardown. A close that outlives its normal
+    /// budget before shutdown is reported once and fails nothing: the workers stay owned. A pass at or after the
+    /// shutdown deadline that finds a worker still unfinished latches the failed teardown and reports it once, whether
+    /// or not the budget expiry was reported earlier; a worker that finishes after that pass does not undo it.
+    fn note_poll(&mut self, ctx: &Ctx, poll: &JoinPoll, now: Instant) {
         let id = self.id;
+        let elapsed = self.claimed_at.elapsed();
         for (worker, ok) in &poll.joined {
             let step = match worker {
                 Worker::Reader => "reader.join.end",
@@ -422,20 +434,36 @@ impl Claimed {
                 );
             }
         }
-        if let Some(unfinished) = &poll.expired {
-            ctx.progress.note(
-                Some(id),
-                "pending.expired",
-                format_args!("worker={}", worker_label(unfinished)),
-            );
-        }
-        // A completed panic latches the failed teardown; an expiry is reported only. Whether the pair is still
-        // unfinished at the shutdown deadline is decided by `join_workers`: the reaper cannot end while it owns one.
         if poll.panicked() {
             ctx.teardown_failed.store(true, Ordering::Release);
+            poll.report_panics(ctx.prefix, id, elapsed);
         }
-        if poll.failed() {
-            poll.report(ctx.prefix, id, self.claimed_at.elapsed());
+        let at_shutdown = ctx.shutdown.is_some_and(|deadline| now >= deadline);
+        if let Some(unfinished) = &poll.expired {
+            let which = worker_label(unfinished);
+            ctx.progress
+                .note(Some(id), "pending.expired", format_args!("worker={which}"));
+            if !at_shutdown {
+                eprintln!(
+                    "{}: connection close outlived its budget conn={id} worker={which} elapsed_ms={} \
+                     reason=close-budget-expired; unfinished workers remain owned",
+                    ctx.prefix,
+                    elapsed.as_millis()
+                );
+            }
+        }
+        if at_shutdown && !poll.done && !self.deadline_reported {
+            self.deadline_reported = true;
+            ctx.teardown_failed.store(true, Ordering::Release);
+            let which = worker_label(&self.joins.unfinished());
+            ctx.progress
+                .note(Some(id), "pending.deadline", format_args!("worker={which}"));
+            eprintln!(
+                "{}: connection teardown failed conn={id} worker={which} elapsed_ms={} \
+                 reason=deadline-expired; unfinished workers remain owned",
+                ctx.prefix,
+                elapsed.as_millis()
+            );
         }
     }
 }

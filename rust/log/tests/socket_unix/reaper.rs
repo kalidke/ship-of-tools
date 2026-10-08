@@ -127,40 +127,6 @@ pub(super) fn reached(
     }
 }
 
-/// A snapshot the recorder could give: a busy or poisoned one is retried a bounded few times, never read as empty.
-pub(super) fn available(
-    snapshot: impl Fn() -> sot_log::lane::test_progress::Snapshot,
-) -> sot_log::lane::test_progress::Snapshot {
-    for _ in 0..200 {
-        let taken = snapshot();
-        if !taken.unavailable {
-            return taken;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let last = snapshot();
-    panic!("the progress recorder stayed unavailable: {last}");
-}
-
-/// No checkpoint matches `wanted`. An absence proves nothing if a checkpoint was skipped under contention or overwritten
-/// out of the ring, so either fails the check rather than passing it.
-pub(super) fn assert_absent(
-    server: &SocketServer,
-    what: &str,
-    wanted: impl Fn(&Checkpoint) -> bool,
-) {
-    let snapshot = available(|| server.progress_for_test());
-    assert_eq!(
-        (snapshot.skipped, snapshot.overwritten),
-        (0, Some(0)),
-        "an absence of {what} cannot be proved: a checkpoint may have been skipped or overwritten\n{snapshot}"
-    );
-    assert!(
-        !snapshot.records.iter().any(|r| wanted(r)),
-        "{what}\n{snapshot}"
-    );
-}
-
 pub(super) fn read_exact_named(
     server: &SocketServer,
     test: &str,
@@ -375,7 +341,7 @@ fn expired_worker(test: &str, role: Role) {
     let captured = capture(test, ISOLATION_TIMEOUT, None);
     assert!(!captured.expired, "the child did not complete");
     let record = format!(
-        "sot-sock: connection teardown failed conn=0 worker={} elapsed_ms=",
+        "sot-sock: connection close outlived its budget conn=0 worker={} elapsed_ms=",
         role_name(role)
     );
     let line = captured
@@ -383,11 +349,16 @@ fn expired_worker(test: &str, role: Role) {
         .lines()
         .find(|line| line.contains(&record))
         .unwrap_or_else(|| panic!("expiry record missing: {}", captured.text));
-    assert!(line.ends_with("reason=deadline-expired; unfinished workers remain owned"));
+    assert!(line.ends_with("reason=close-budget-expired; unfinished workers remain owned"));
     assert_eq!(
-        captured.text.matches("reason=deadline-expired").count(),
+        captured.text.matches("reason=close-budget-expired").count(),
         1,
         "expiry is reported once: {}",
+        captured.text
+    );
+    assert!(
+        !captured.text.contains("connection teardown failed"),
+        "a close that outlived its budget before shutdown failed nothing: {}",
         captured.text
     );
     assert!(
@@ -469,6 +440,7 @@ fn panicked_worker(test: &str, role: Role) {
         .unwrap_or_else(|| panic!("worker-panicked record missing: {}", captured.text));
     assert!(line.ends_with("reason=worker-panicked outcome=panicked; worker join completed"));
     assert!(!captured.text.contains("reason=deadline-expired"));
+    assert!(!captured.text.contains("reason=close-budget-expired"));
     assert!(captured
         .text
         .contains("sot-sock: server teardown failed; see worker panic and deadline records"));
@@ -528,13 +500,13 @@ fn panic_with_held_peer(test: &str, panicking: Role, held: Role) {
         role_name(panicking)
     );
     let expiry_record = format!(
-        "sot-sock: connection teardown failed conn=0 worker={} elapsed_ms=",
+        "sot-sock: connection close outlived its budget conn=0 worker={} elapsed_ms=",
         role_name(held)
     );
     assert!(captured.text.lines().any(|l| l.contains(&panic_record)
         && l.ends_with("reason=worker-panicked outcome=panicked; worker join completed")));
     assert!(captured.text.lines().any(|l| l.contains(&expiry_record)
-        && l.ends_with("reason=deadline-expired; unfinished workers remain owned")));
+        && l.ends_with("reason=close-budget-expired; unfinished workers remain owned")));
     assert!(!captured.text.contains("worker=both"));
 }
 

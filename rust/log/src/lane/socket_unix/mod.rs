@@ -375,7 +375,8 @@ struct ServerShared {
     /// Claimed connections still charged against `max_connections`: workers unjoined or their close unretired.
     /// Raised under the `conns` lock at the claim, so live plus pending never exceeds the bound.
     pending: AtomicUsize,
-    /// Latched by a completed worker panic or a thread unfinished at the shutdown deadline, and never cleared.
+    /// Latched, and never cleared, by a completed worker panic, a panicked acceptor or reaper, a thread unfinished at the
+    /// shutdown deadline, or a reaper pass at or after that deadline that finds a claimed pair's worker unfinished.
     teardown_failed: AtomicBool,
     /// The phase-one wake has been sent (or refused) once.
     sweep_nudged: AtomicBool,
