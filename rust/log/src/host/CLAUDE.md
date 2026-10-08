@@ -23,6 +23,8 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 
 ## Promises
 - `host_name` returns `Err`, never a guessed name.
+- `dir_identity` opens only a directory (`O_DIRECTORY` on Unix), so a path that names a FIFO or any other non-directory
+  fails at once and never waits.
 - `preflight_volume` refuses a root the store cannot make durable: a network filesystem (NFS answers EINVAL to every
   `renameat2` flag the store publishes with), so a state root on a network home must point `XDG_STATE_HOME` at local
   disk.
