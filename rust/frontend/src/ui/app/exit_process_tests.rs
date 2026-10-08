@@ -1,5 +1,6 @@
 //! Headless proofs through App's actual returned-loop continuation, never resumed().
 use super::*;
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use sot_log::test_isolated::{enter, run_isolated, test_command};
@@ -248,11 +249,22 @@ fn run_scenario(scenario: &str, barrier: Option<&str>, bound: Duration) -> (Opti
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     match barrier { Some(b) => command.env(BARRIER, b), None => command.env_remove(BARRIER) };
     let start = Instant::now();
-    let child = command.spawn().expect("start the owned scenario process");
+    let mut child = command.spawn().expect("start the owned scenario process");
     let pid = child.id();
-    let drained = sot_log::test_isolated::drain(child);
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drained.wait_within(bound)));
-    let (status, out, _err) = outcome.unwrap_or_else(|_| panic!("the owned process survived past its {bound:?} bound in scenario {scenario}"));
+    let read = |pipe: Option<Box<dyn std::io::Read + Send>>| std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(mut pipe) = pipe { let _ = pipe.read_to_string(&mut text); }
+        text
+    });
+    let out_reader = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let err_reader = read(child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let waited = sot_log::test_isolated::wait_until(&mut child, start + bound);
+    // A survivor is killed by the wait; its pipes then end and the readers finish.
+    let (out, _err) = (out_reader.join().unwrap(), err_reader.join().unwrap());
+    let status = match waited {
+        Ok(status) => status,
+        Err(e) => panic!("the owned process survived past its {bound:?} bound in scenario {scenario}: {e}"),
+    };
     let elapsed = start.elapsed();
     entry.assert_once(pid);
     (status.code(), elapsed, out)
