@@ -276,9 +276,14 @@ pub fn relay_endpoint(topo: &Topology, self_host: &str) -> Result<String, String
 }
 
 /// The directory the hub's sockets live in: the runtime dir's PARENT
-/// (`/run/user/<uid>`), not the `sot/` subdirectory under it — the place
-/// `sot-relay-tunnel@` has always landed `sot-relay.sock`, and now also
-/// the hub's per-host sockets ([`relay_socket_path`]).
+/// (`/run/user/<uid>`), not the `sot/` subdirectory under it — where
+/// `sot-relay-tunnel@` lands `sot-relay.sock` (its command binds
+/// `/run/user/$(id -u)/sot-relay.sock`), and the hub's per-host sockets
+/// ([`relay_socket_path`]). On `runtime_sot_dir`'s last tier, `/tmp/sot-<uid>`
+/// (no private runtime dir; macOS), the parent is the shared `/tmp`: nothing
+/// of ours binds there, since the tunnel cannot land and the socket units
+/// need a user manager, and every client dial goes through `connect_own`,
+/// which refuses another account's listener before it writes a byte.
 fn runtime_relay_dir() -> PathBuf {
     let run = crate::runtime_sot_dir();
     run.parent().map(PathBuf::from).unwrap_or(run)
