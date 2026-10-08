@@ -78,6 +78,15 @@ impl Tree {
         )
     }
 
+    /// The same cell without the spin: it starts the tree detached and returns, so the REPL is idle and no request is open.
+    pub fn julia_cell_returning(&self, forking: bool) -> String {
+        let spinning = self.julia_cell(forking);
+        spinning
+            .strip_suffix("; while true end")
+            .expect("the cell ends in its spin")
+            .to_string()
+    }
+
     /// The pids the tree's processes reported, named, once every one of them has.
     pub fn pids(&self, forking: bool) -> Option<Vec<(&'static str, i32)>> {
         let names: &[&'static str] = if forking {

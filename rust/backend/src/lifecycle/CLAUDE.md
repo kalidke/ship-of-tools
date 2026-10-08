@@ -148,7 +148,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   macOS the recognition of a finished group.
 - `lease.rs`: the window lease: `Leases`, the grant rule, the lease connection (`hold`), `held.json` and the start plan.
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.
-- `mod.rs`: declares the seven modules and the test module.
+- `mod.rs`: declares the seven modules, the held points (feature `daemon-lifetime-faults`) and the test module.
 - `shutdown.rs`: the close, its backstop, the row ends and the daemon's one terminal exit.
 - `signal_exit.rs`: the thread that catches INT and TERM and ends the daemon through the terminal as 130 and 143.
 - `start_tests.rs`: tests of child creation against the fire, checked termination requests and partial births (an error
@@ -157,6 +157,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `start_tests_windows.rs`: the Windows half: a suspended start cannot be outwaited and job requests are checked.
 - `start_tests_macos.rs`: the macOS half: the recognition of a finished group before the reap, with injected observation faults.
 - `startup.rs`: the start's decision from `held.json` and acting on it.
+- `test_gates.rs`: the held points of the daemon-lifetime harness (feature `daemon-lifetime-faults`, `SOT_TEST_GATES`): a point waits until the case creates its file; an installed binary has none.
 
 ## Start here
 `startup::begin` for what a start does; `shutdown::run` for the close and its order; `child_signal.rs` before a change

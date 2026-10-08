@@ -65,6 +65,17 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 
 // ─── Config ─────────────────────────────────────────────────────────────
 
+/// The wait before the first automatic check: two minutes, or, in the daemon-lifetime harness, the held point
+/// `update-check-go` that the case opens when it is ready (`lifecycle::test_gates`).
+async fn first_check_wait() {
+    #[cfg(feature = "daemon-lifetime-faults")]
+    if crate::lifecycle::test_gates::enabled() {
+        crate::lifecycle::test_gates::wait("update-check-go").await;
+        return;
+    }
+    tokio::time::sleep(FIRST_CHECK_DELAY).await;
+}
+
 /// Update behavior from `SOT_UPDATE_MODE` (ADR 0030 §4). `notify` (default):
 /// stage + prepare + arm in the background, apply at next launch. `auto`:
 /// additionally exit for the apply owner once armed, but ONLY while no
@@ -112,6 +123,10 @@ impl Updater {
         // own by construction, so `contains("-dev")` used to pass it through
         // as a release install (ADR 0030 §8 decision 31c).
         let dev = !sot_protocol::is_release_build();
+        // The daemon-lifetime harness drives the real update ops on a dev binary: the fault feature, and nothing else, lets
+        // `SOT_TEST_RELEASE_BUILD` stand for a release build. An installed binary is built without the feature.
+        #[cfg(feature = "daemon-lifetime-faults")]
+        let dev = dev && std::env::var_os("SOT_TEST_RELEASE_BUILD").is_none();
         Self {
             dev,
             mode: mode_from_env(),
@@ -359,7 +374,7 @@ pub fn spawn_periodic(
         "auto-update active; first check in ~2min, then daily"
     );
     tokio::spawn(async move {
-        tokio::time::sleep(FIRST_CHECK_DELAY).await;
+        first_check_wait().await;
         loop {
             run_check_once(&updater, &fe_command_tx, &clients, &leases).await;
             tokio::time::sleep(CHECK_INTERVAL).await;
@@ -587,6 +602,8 @@ pub async fn handle_update_apply(
     let leases = leases.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(1500)).await;
+        #[cfg(feature = "daemon-lifetime-faults")]
+        crate::lifecycle::test_gates::held("update-go").await;
         exit_for_update(&leases, |code| {
             tracing::info!("update.apply: exiting now");
             crate::lifecycle::shutdown::exit(code)
@@ -610,6 +627,9 @@ pub async fn handle_update_apply(
 /// the child fire holds no lease. Once a shutdown has begun its own exit stands and the update's is skipped (ruling f).
 fn exit_for_update(leases: &Leases, exit: impl FnOnce(i32)) {
     if leases.commit_update() {
+        tracing::info!("update committed: exiting 75 for the apply owner");
+        #[cfg(feature = "daemon-lifetime-faults")]
+        crate::lifecycle::test_gates::hold("update-committed");
         exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART);
     } else {
         tracing::info!("update exit skipped: a shutdown is under way, and its own exit stands");

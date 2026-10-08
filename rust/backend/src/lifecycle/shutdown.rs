@@ -62,6 +62,8 @@ pub(crate) async fn run(
     });
     leases.begin_close();
     tracing::info!("shutting down: ending this computer's sessions");
+    #[cfg(feature = "daemon-lifetime-faults")]
+    super::test_gates::held("close-go").await;
 
     let rows_deadline = decided + bound.saturating_sub(bounds::SHUTDOWN_TAIL);
     let gate = workspaces.clone();

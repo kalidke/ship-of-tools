@@ -1,11 +1,14 @@
 //! The Linux lifetime guard on real daemons (`lifecycle::daemon_children::guard`): the launched process is the guard and the
 //! daemon is its child, the guard ends as the daemon did and forwards what it is sent, a lost guard ends the daemon at once,
 //! the boot refuses a second thread, and the relay refresh follows the guard's pid. Every process these cases end is one
-//! this test spawned (the launched guard), or the daemon the case's own control connection reports through `SO_PEERCRED`
-//! and holds as a pidfd (`native::Identity`); nothing found by walking parent links or reading `ps` is ever signalled.
+//! this test spawned (the launched guard); the daemon the case's own control connection reports through `SO_PEERCRED` is
+//! only watched through a pidfd (`native::Identity`), and a case that needs it to die asks it to signal itself
+//! (`Run::daemon_does`). Nothing found by walking parent links or reading `ps` is ever signalled.
 
 use crate::fixture_owner::Fixture;
-use crate::support::{handoff, poll_until, sotd_command, Env, BOUND, TEST_STATE_HOST};
+use crate::support::{
+    handoff, poll_until, sotd_command, sotd_command_at, Env, BOUND, TEST_STATE_HOST,
+};
 use crate::SERIAL;
 use sot_protocol::ops::{op, FeLeaseReq};
 use sot_protocol::{codec, Frame};
@@ -59,9 +62,17 @@ pub fn parent_of(pid: i32) -> Option<i32> {
 
 impl Run {
     /// The command for a daemon on `env`, its output in `log`. `extra` is set last.
-    fn command(env: &Env, log: &Path, extra: &[(&str, &str)]) -> std::process::Command {
+    fn command(
+        env: &Env,
+        log: &Path,
+        extra: &[(&str, &str)],
+        program: Option<&Path>,
+    ) -> std::process::Command {
         let file = std::fs::File::create(log).expect("create the daemon log");
-        let mut cmd = sotd_command();
+        let mut cmd = match program {
+            Some(program) => sotd_command_at(program),
+            None => sotd_command(),
+        };
         cmd.arg("--socket")
             .arg(&env.socket_path)
             .arg("--project-root")
@@ -90,12 +101,25 @@ impl Run {
         Self::boot(Env::new(tag), extra, own_group, false).await
     }
 
+    /// [`boot`](Self::boot) for the daemon binary at `program`, a copy of the built `sotd` in an install-shaped folder.
+    pub async fn boot_at(env: Env, program: &Path, extra: &[(&str, &str)]) -> Run {
+        let (launched, daemon, log) =
+            Self::spawn_daemon(&env, extra, false, false, Some(program)).await;
+        Run {
+            env,
+            log,
+            launched: Some(launched),
+            daemon,
+        }
+    }
+
     /// Start a daemon on `env` and wait until it answers: its launched process, the daemon it reported and its log.
     async fn spawn_daemon(
         env: &Env,
         extra: &[(&str, &str)],
         own_group: bool,
         masked: bool,
+        program: Option<&Path>,
     ) -> (Child, i32, PathBuf) {
         let log = env._tmp.path().join(format!(
             "daemon-{}.log",
@@ -103,7 +127,7 @@ impl Run {
         ));
         // A successor reads the same outcome file as its predecessor: an outcome asked of one is not asked of the next.
         let _ = std::fs::remove_file(env._tmp.path().join("outcome"));
-        let mut cmd = Self::command(env, &log, extra);
+        let mut cmd = Self::command(env, &log, extra, program);
         if own_group {
             cmd.process_group(0);
         }
@@ -136,7 +160,8 @@ impl Run {
     }
 
     pub async fn boot(env: Env, extra: &[(&str, &str)], own_group: bool, masked: bool) -> Run {
-        let (launched, daemon, log) = Self::spawn_daemon(&env, extra, own_group, masked).await;
+        let (launched, daemon, log) =
+            Self::spawn_daemon(&env, extra, own_group, masked, None).await;
         let run = Run {
             env,
             log,
@@ -153,7 +178,8 @@ impl Run {
             self.status_within(Duration::from_secs(60)).await.is_some(),
             "the predecessor's launched process has not ended"
         );
-        let (launched, daemon, log) = Self::spawn_daemon(&self.env, extra, false, false).await;
+        let (launched, daemon, log) =
+            Self::spawn_daemon(&self.env, extra, false, false, None).await;
         self.launched = Some(launched);
         self.daemon = daemon;
         self.log = log;
@@ -224,6 +250,23 @@ impl Drop for Run {
 
 /// A lease from this process, then the window's close: the daemon shuts down and exits 0.
 pub async fn close_by_lease(env: &Env) {
+    let mut conn = lease(env).await;
+    leave_with_close(&mut conn).await;
+}
+
+/// The window's close on a lease connection: the frame is written and no reply is read, since the daemon may end before it
+/// answers (the backstop case).
+pub async fn leave_with_close(conn: &mut crate::support::Conn) {
+    let _ = codec::write_frame(
+        conn,
+        &Frame::req(2, op::FE_LEAVING, serde_json::json!({ "intent": "close" })),
+        None,
+    )
+    .await;
+}
+
+/// A lease from this process, granted: the connection is the lease and holds it while it is open.
+pub async fn lease(env: &Env) -> crate::support::Conn {
     let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
     let lease = FeLeaseReq {
         boot: me.boot,
@@ -238,13 +281,7 @@ pub async fn close_by_lease(env: &Env) {
     .await;
     let (reply, _) = codec::read_frame(&mut conn).await.expect("the lease reply");
     assert_eq!(reply.payload["outcome"], "granted", "{:?}", reply.payload);
-    // The daemon may end before it answers (the backstop case), so the frame is written and no reply is read.
-    let _ = codec::write_frame(
-        &mut conn,
-        &Frame::req(2, op::FE_LEAVING, serde_json::json!({ "intent": "close" })),
-        None,
-    )
-    .await;
+    conn
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -372,7 +409,7 @@ async fn the_prologue_refuses_a_second_thread() {
     let _serial = SERIAL.lock().await;
     let env = Env::new("gthr");
     let log = env._tmp.path().join("daemon.log");
-    let mut cmd = Run::command(&env, &log, &[("SOT_TEST_PROLOGUE_THREAD", "1")]);
+    let mut cmd = Run::command(&env, &log, &[("SOT_TEST_PROLOGUE_THREAD", "1")], None);
     let mut launched = cmd.spawn().expect("spawn sotd");
     let began = Instant::now();
     let status = loop {
@@ -432,7 +469,7 @@ async fn refresh_calls(main_pid_of: &str) -> String {
         ("SOT_SELF_HOST", "hub-box"),
         ("PATH", path.as_str()),
     ];
-    let mut launched = Run::command(&env, &log, &extra)
+    let mut launched = Run::command(&env, &log, &extra, None)
         .spawn()
         .expect("spawn sotd");
     let socket = env.socket_path.clone();
@@ -498,22 +535,45 @@ pub async fn start_spinning_with(
     forking: bool,
     extra: &[(&str, &str)],
 ) -> Spinning {
+    start_spinning_at(tag, fx, forking, extra, None, true).await
+}
+
+/// [`start_spinning_with`] for the daemon binary at `program` (a copy in an install-shaped folder) when it is given. With
+/// `spin` false the REPL's cell starts the tree and returns, so the REPL is idle and no request stays open on the daemon.
+pub async fn start_spinning_at(
+    tag: &str,
+    fx: &mut Fixture,
+    forking: bool,
+    extra: &[(&str, &str)],
+    program: Option<&Path>,
+    spin: bool,
+) -> Spinning {
     let julia = julia_bin();
     let mut vars = vec![("SOT_JULIA_BIN", julia.as_str())];
     vars.extend_from_slice(extra);
-    let run = Run::start(tag, &vars, false).await;
+    let run = match program {
+        Some(program) => Run::boot_at(Env::new(tag), program, &vars).await,
+        None => Run::start(tag, &vars, false).await,
+    };
     run.assert_guarded();
     let (mut conn, mut next_id) = connect_and_hello(&run.env.socket_path).await;
     let (workspace_id, state_dir) = ready_row(&run.env, &mut conn, &mut next_id, "repl").await;
     drop(conn);
     let tree = Tree::new(run.env._tmp.path(), "repl-tree");
-    let task = spin_in_repl(
-        &run.env.socket_path,
-        &workspace_id,
-        tree.julia_cell(forking),
-    )
-    .await;
+    let cell = if spin {
+        tree.julia_cell(forking)
+    } else {
+        tree.julia_cell_returning(forking)
+    };
+    let mut task = spin_in_repl(&run.env.socket_path, &workspace_id, cell).await;
     let ids = watch_tree(fx, &tree, forking, "the REPL's").await;
+    if !spin {
+        // The cell returns once it has started the tree: the request ends and its connection with it.
+        tokio::time::timeout(Duration::from_secs(60), &mut task)
+            .await
+            .expect("the cell did not return")
+            .expect("the cell's task");
+    }
     Spinning {
         run,
         state_dir,

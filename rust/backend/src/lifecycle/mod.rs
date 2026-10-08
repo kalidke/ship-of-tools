@@ -8,6 +8,8 @@ pub(crate) mod lease;
 pub(crate) mod shutdown;
 pub(crate) mod signal_exit;
 pub(crate) mod startup;
+#[cfg(feature = "daemon-lifetime-faults")]
+pub(crate) mod test_gates;
 
 #[cfg(test)]
 pub(crate) mod start_tests;
