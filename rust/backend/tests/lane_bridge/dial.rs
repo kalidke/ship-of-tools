@@ -257,6 +257,8 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
+    // The window starts before attach, which starts the client's own health clock.
+    let window_deadline = Instant::now() + Duration::from_secs(10);
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
         daemon_lane_endpoint(&relay),
         target,
@@ -277,7 +279,6 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
     // keeps answering absent (never attaches, never goes dead on its
     // own), the row's phase never moves off "stopped", and no supervise
     // process for it ever exists.
-    let window_deadline = Instant::now() + Duration::from_secs(10);
     let mut saw_absent_answer = false;
     loop {
         client.pump();
