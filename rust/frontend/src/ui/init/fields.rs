@@ -252,7 +252,7 @@ impl State {
             nav_spill_until: None,
             nav_spill_segments: Vec::new(),
             nav_spill_cursor: None,
-            bindings: KeyBindings::load_layered(),
+            bindings: load_keybindings(),
             settings,
             upload: None,
             upload_batch: None,
@@ -280,6 +280,8 @@ impl State {
             fe_commands: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             fe_state_sig: None,
             focus_on_first_frame: true,
+            #[cfg(all(test, feature = "test-window-progress"))]
+            native_progress: native_progress_ledger(),
             edit_state: None,
             preview_edit: None,
             help: help::Help::default(),

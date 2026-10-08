@@ -8,6 +8,14 @@ impl State {
     #[allow(clippy::too_many_lines, reason = "drains the daemon-event queue, one arm per event; predates the 100-line limit")]
     pub(super) fn drain_events(&mut self) {
         while let Ok((event_host, evt)) = self.evt_rx.try_recv() {
+            // Native progress observation only; the fixture never drains this queue itself.
+            #[cfg(all(test, feature = "test-window-progress"))]
+            if let Some(ledger) = &self.native_progress {
+                ledger
+                    .lock()
+                    .expect("native progress ledger")
+                    .dequeued(&event_host, &evt);
+            }
             // ADR 0046 decision 1: `HostKey` is never re-homed —
             // `event_host` (the dial label) stays the key for everything
             // below, unshadowed. The declared host is recorded for
