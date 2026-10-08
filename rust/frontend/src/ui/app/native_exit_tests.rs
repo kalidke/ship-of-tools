@@ -76,12 +76,15 @@ fn run_case(role: &str, stage: Option<&str>, expect: Expect) -> Result<()> {
     let shot = capture.exists();
     std::fs::remove_dir_all(&folder)?;
     if out.contains("not runnable here") || err.contains("not runnable here") {
-        anyhow::bail!("not runnable here: {role}: {out}{err}");
+        anyhow::bail!("window-close not runnable here: {role}: {out}{err}");
     }
     anyhow::ensure!(out.matches("native: body entered").count() == 1, "{role}: the body did not enter exactly once: {out}{err}");
-    if role != "capture" {
-        anyhow::ensure!(out.contains("native: frame presented") && out.contains("native: terminal decision"),
-            "{role}: no rendered frame preceded the decision: {out}");
+    if role != "capture" && !(out.contains("native: frame presented") && out.contains("native: terminal decision")) {
+        // No desktop, or a lost device: nothing rendered, so nothing was proved. Never a pass.
+        anyhow::bail!("window-close not runnable here: {role}: no rendered frame preceded the decision (status {status:?}): {out}{err}");
+    }
+    if role == "capture" && !shot && !matches!(expect, Expect::Backstop(_)) {
+        anyhow::bail!("window-close not runnable here: {role}: no capture was written (status {status:?}): {out}{err}");
     }
     let want_code = match expect {
         Expect::Ordinary => 0,

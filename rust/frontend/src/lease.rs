@@ -799,6 +799,7 @@ pub(crate) mod grant_tests;
 pub(crate) mod leave_tests;
 
 #[cfg(test)]
+#[cfg_attr(feature = "test-window-progress", allow(unused_imports, reason = "the harness=false native targets run none of these tests"))]
 mod delivery_tests {
     use super::*;
     use sot_log::test_isolated::run_isolated;

@@ -6,6 +6,7 @@ mod exit;
 mod frame;
 mod handler;
 #[cfg(test)]
+#[cfg_attr(feature = "test-window-progress", allow(unused_imports, reason = "the harness=false native targets run none of these tests"))]
 mod exit_process_tests;
 
 #[cfg(all(test, feature = "test-window-progress"))]
