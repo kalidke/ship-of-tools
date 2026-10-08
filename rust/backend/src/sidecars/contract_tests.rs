@@ -55,6 +55,17 @@ pub(crate) fn executable(name: &str) -> PathBuf {
         .unwrap_or_else(|| panic!("setup: required native executable {name} missing"))
 }
 
+/// The MathJax helper's npm modules must be installed (`npm ci` in `rust/backend/sidecars/mathjax`); their absence is
+/// a setup failure, never a skip.
+pub(crate) fn require_mathjax_modules() {
+    let modules = MathJax::default_script_path().with_file_name("node_modules").join("mathjax-full");
+    assert!(
+        modules.is_dir(),
+        "setup: the MathJax helper's modules are missing at {}; run `npm ci` in rust/backend/sidecars/mathjax",
+        modules.display()
+    );
+}
+
 pub(crate) fn copy_folder(source: &Path, destination: &Path) {
     std::fs::create_dir_all(destination).expect("create owned fixture folder");
     for entry in std::fs::read_dir(source).expect("read fixture source") {
@@ -172,6 +183,7 @@ async fn mathjax_uses_private_signal() {
     }
     let sig = private_signal();
     // The node binary is read at construction.
+    require_mathjax_modules();
     std::env::set_var("SOT_NODE_BIN", executable("node"));
     let mathjax = MathJax::new(MathJax::default_script_path(), sig);
     let svg = tokio::time::timeout(Duration::from_secs(30), mathjax.render("x^2", false))
@@ -253,6 +265,7 @@ async fn mathjax_helper_tree_listens_nowhere() {
         return;
     }
     let sig = private_signal();
+    require_mathjax_modules();
     std::env::set_var("SOT_NODE_BIN", executable("node"));
     let mathjax = MathJax::new(MathJax::default_script_path(), sig);
     tokio::time::timeout(Duration::from_secs(30), mathjax.render("x^2", false))

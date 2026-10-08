@@ -138,6 +138,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+      # The MathJax helper's tests render through the real node script, which needs its npm modules.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: rust/backend/sidecars/mathjax/package-lock.json
+      - name: Install the MathJax helper's modules
+        working-directory: rust/backend/sidecars/mathjax
+        run: npm ci
       - name: Build workspace
         run: cargo build --workspace --locked
       # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
