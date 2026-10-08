@@ -348,6 +348,20 @@ sot_sanitize_component() {
     printf '%s' "$s"
 }
 
+# _sot_handle_host RAW_HOST — the host piece of a derived handle: sanitized
+# and clamped to 12, with a -<hash6> of the raw host when that changed it, so
+# two long hosts that differ past the clamp stay distinct. The one rule for
+# sot_derive_handle and ccx's default handle.
+_sot_handle_host() {
+    local raw="$1" host digest
+    host="$(sot_sanitize_component "$raw" 12)" || return 1
+    if [ "$host" != "$raw" ]; then
+        digest="$(sot_hash6 "$raw")" || return 1
+        host="${host}-${digest}"
+    fi
+    printf '%s' "$host"
+}
+
 # _sot_tier_claimable MODE ROOT STATUS HELD_ROOT — true if a tier whose
 # registry status is STATUS/HELD_ROOT (from sot_registry_entry_status) can
 # be claimed under MODE:
@@ -425,7 +439,7 @@ _sot_tier_claimable() {
 # handle: `NAME="$(sot_derive_handle reclaim "$ROOT" "$HOST" | head -n1)"`.
 sot_derive_handle() {
     local mode="$1" root="$2" raw_host="$3"
-    local base parent hash6 tier1 tier2 tier3 host host_digest
+    local base parent hash6 tier1 tier2 tier3 host
     local status1 held1 status2 held2 status3 held3 shown1 shown2 shown3
     local unreadable="comm: the registry could not be read, so no handle was derived; nothing was written"
 
@@ -435,11 +449,7 @@ sot_derive_handle() {
     esac
 
     base="$(sot_sanitize_component "$(basename "$root")")"
-    host="$(sot_sanitize_component "$raw_host" 12)"
-    if [ "$host" != "$raw_host" ]; then
-        host_digest="$(sot_hash6 "$raw_host")" || return 1
-        host="${host}-${host_digest}"
-    fi
+    host="$(_sot_handle_host "$raw_host")" || return 1
 
     tier1="${base}-${host}"
     IFS=$'\t' read -r status1 held1 <<< "$(sot_registry_entry_status "$tier1")"

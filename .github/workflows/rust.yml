@@ -307,6 +307,8 @@ jobs:
           bash test-sot-fe-version.sh
           # reauth moves only the row it runs in; a second argument or a missing row id sends nothing.
           bash test-sot-fe-reauth.sh
+          # ccx's default handle is built from the comm library's safe pieces; a failed derivation stops the launch.
+          bash test-ccx-launch.sh
           # The carriage-return rule for the token: a \r kept on it is a token
           # GitHub rejects. Hermetic, under a second.
           bash test-crlf-gh-auth.sh

@@ -28,6 +28,7 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
 - Every claude launcher passes `--permission-mode auto`, never `--dangerously-skip-permissions`: `claude_recipe` in the
   daemon's `argv.rs`; `ccb` execs `sotd agent-exec claude`, which carries the same recipe; the sot-setup skill's
   `resume_command` names the flag.
+- ccx's default handle `<repo>-cx-<host>` is built from the comm library's safe pieces (`sot_sanitize_component`, `_sot_handle_host`), so it is always a name `workspace.create` accepts; a derivation that cannot run stops the launch before the join and before codex (`agents/tests/test-ccx-launch.sh`).
 - Folder trust is written only for a row root under `[trust] root_prefix` in the user-level settings file
   (`ensure_folder_trusted`); an entry already accepted is never rewritten.
 - A launcher the daemon spawns full-paths its binaries: its environment lacks `~/.local/bin`. `ccb` resolves `sotd`
@@ -52,7 +53,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `comm/lib/comm-lib-base.sh`, `host_name`, `comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`,
 `agents/spawn/comm-probe.sh`, `agents/spawn/comm-bootstrap.sh`, `fe.command.send`, `fe.command`,
 `agents/sot-fe/sot-fe-request.sh`, `sot_ui`, `agent.message`, `agents/sot-fe/sot-nav.sh`, `comm-relay.sh send --all`,
-`install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`.
+`install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`, `sot_sanitize_component`, `_sot_handle_host`.
 
 ## Folders
 - `spawn/`: the four row-lifecycle CLIs (see its page).

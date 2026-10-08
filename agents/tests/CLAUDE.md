@@ -6,6 +6,7 @@ does (`working-directory: agents/tests`).
 
 ## Files
 - `test-ccb-agent-exec.sh`: `ccb` execs `sotd agent-exec claude` with the caller's flags in order
+- `test-ccx-launch.sh`: `ccx`'s default handle is built from the comm library's safe pieces and a failed derivation stops the launch
 - `test-ccx-resume-default.sh`: `ccx` resumes by default on its `--capsule` flag alone, never an inherited variable
 - `test-crlf-gh-auth.sh`: `sot-gh-auth.sh` reads JSON values correctly under a jq that writes CRLF
 - `test-despawn-resolve.sh`: `comm-despawn.sh` resolves first, fails and changes nothing on an unknown name, removes a registry row only after a confirmed destroy; `comm-worktree-clean.sh` despawns once
