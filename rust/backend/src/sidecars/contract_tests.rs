@@ -35,8 +35,14 @@ pub(crate) fn isolated(name: &str, bound: Duration) -> bool {
     false
 }
 
-/// A verified native executable on the search path; a missing one is a setup failure, never a skip.
+/// A verified native executable on the search path; a missing one is a setup failure, never a skip. `julia` is the
+/// one the daemon itself would run (`julia::resolve_bin`), never a bare search hit: on Windows the first `julia.exe`
+/// on the search path can be an app-execution alias, which runs outside the fixture's containment.
 pub(crate) fn executable(name: &str) -> PathBuf {
+    if name == "julia" {
+        let (bin, _) = crate::sidecars::julia::resolve_bin().unwrap_or_else(|e| panic!("setup: no real julia: {e}"));
+        return PathBuf::from(bin);
+    }
     let search = std::env::var_os("PATH").expect("setup: executable search unavailable");
     let filename = if cfg!(windows) {
         format!("{name}.exe")
