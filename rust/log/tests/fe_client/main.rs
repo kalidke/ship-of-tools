@@ -128,7 +128,7 @@ fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> CapsuleGuard
         .args(argv)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise"), state_dir)
+    CapsuleGuard::spawn(&mut cmd)
 }
 
 /// [`spawn_supervisor`] with an explicit initial pty size — ADR 0042
@@ -148,7 +148,7 @@ fn spawn_supervisor_sized(state_dir: &Path, mode: &str, cols: u16, rows: u16, ar
         .args(argv)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise (sized)"), state_dir)
+    CapsuleGuard::spawn(&mut cmd)
 }
 
 fn wait_for_exit(child: &mut CapsuleGuard, timeout: Duration) -> std::process::ExitStatus {

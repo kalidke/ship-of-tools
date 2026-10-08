@@ -67,9 +67,8 @@ impl Row {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        let child = command.spawn().expect("start sot-capsule supervise");
         Row {
-            guard: Some(CapsuleGuard::new(child, &state_dir)),
+            guard: Some(CapsuleGuard::spawn(&mut command)),
             state_dir,
             voyage: None,
         }

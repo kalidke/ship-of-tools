@@ -123,11 +123,7 @@ fn a_leg_spawned_after_the_binary_is_renamed_runs_the_supervisors_own_inode() {
         .args(SHELL)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let mut guard = CapsuleGuard::new_for_exe(
-        cmd.spawn().expect("spawn sot-capsule supervise from the copy"),
-        &copy_path,
-        &state_dir,
-    );
+    let mut guard = CapsuleGuard::spawn(&mut cmd);
     let supervisor_pid = guard.id();
 
     let conn = wait_for_lane(&h, Duration::from_secs(30));
@@ -229,7 +225,7 @@ fn first_leg_without_strips_a_token_from_the_first_leg_and_an_unstable_respawn()
         .arg("--continue")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let mut guard = CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise"), &state_dir);
+    let mut guard = CapsuleGuard::spawn(&mut cmd);
     let supervisor_pid = guard.id();
 
     let read_lines = |path: &Path| -> Option<Vec<String>> {
@@ -411,7 +407,7 @@ fn first_leg_without_does_not_exempt_a_real_crash_loop_from_the_anti_flap_bound(
         .arg("--continue")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let mut guard = CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise"), &state_dir);
+    let mut guard = CapsuleGuard::spawn(&mut cmd);
 
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     poll_until(

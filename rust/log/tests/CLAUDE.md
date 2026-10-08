@@ -37,8 +37,8 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `socket_unix/`: real Unix connect, close, teardown and client contracts; named waits and captured diagnostics, one
   bounded-read phase path (`read.rs`), and supervised native-account fixtures with retained failure causes
   (`privileged.rs`; the foreign-account case needs passwordless `sudo -n` and skips without it except on CI); Unix.
-- `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules; Linux and Windows.
-- `support/`: helpers shared by several binaries: `capsule_guard.rs` (a spawned `sot-capsule` no test can leave behind) and `transports.rs` (`NoopTransport` and `TestTransport`).
+- `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules, and the killed- and panicking-test proofs that no capsule process outlives its test (`main.rs`); Linux and Windows.
+- `support/`: helpers shared by several binaries: `capsule_guard.rs` (`CapsuleGuard::spawn`: a spawned `sot-capsule` ends with its test process, killed or panicking, through a watcher-led process group on Linux and a kill-on-close job on Windows; a leg still outlives a killed supervisor) and `transports.rs` (`NoopTransport` and `TestTransport`).
 - `winhandle_windows.rs`: `winhandle::harden_own_stdio` clears handle inheritance; Windows only, alone in its binary because it mutates the process's real std handles.
 - `wire/`: the `wire` frame codec through its public API, with arbitrary chunking and fuzzing (`main.rs`), and the supervisor and attach lane bytes pinned against committed fixtures (`pinned.rs`); every platform.
 
