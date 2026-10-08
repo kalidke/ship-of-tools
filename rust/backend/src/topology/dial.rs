@@ -17,12 +17,45 @@ enum Conn {
     #[cfg(unix)]
     Unix(std::os::unix::net::UnixStream),
     #[cfg(windows)]
-    Pipe(std::fs::File),
+    Pipe(std::sync::Arc<sot_log::lane::pipe_win::PipeClient>),
     /// An `ssh:` endpoint's connection IS the spawned child (C2/C3,
     /// `sot_protocol::topology::ssh_bridge`) -- there is no separate "connect" step
     /// the way a socket has one, so this variant holds the not-yet-split
     /// [`ContainedStd`](crate::lifecycle::child_signal::ContainedStd) rather than a stream.
     Bridged(crate::lifecycle::child_signal::ContainedStd),
+}
+
+/// A blocking `Read`/`Write` view of a connected `PipeClient`, for `dial_and_call`'s `BufReader` and writer. Both halves
+/// share one `Arc<PipeClient>`; `read` and `write_all` are blocking from the caller's view and reject a concurrent
+/// same-direction submission, so the writer and the reply reader never share one slot.
+#[cfg(windows)]
+struct PipeIo(std::sync::Arc<sot_log::lane::pipe_win::PipeClient>);
+
+#[cfg(windows)]
+impl std::io::Read for PipeIo {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.0.read(buf).map_err(std::io::Error::other)
+    }
+}
+
+#[cfg(windows)]
+impl std::io::Write for PipeIo {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.0
+            .write_all(buf)
+            .map(|()| buf.len())
+            .map_err(std::io::Error::other)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Kills and reaps the ssh child `Conn::Bridged` hands to [`Conn::split`]
@@ -115,7 +148,8 @@ impl Conn {
     /// child alive for as long as those halves are in use. A socket or
     /// pipe's two halves are the stream and its `try_clone()`, exactly
     /// what `try_clone()` + the old `Read`/`Write` impls gave
-    /// `dial_and_call` before; `Bridged` takes the child's own stdin and
+    /// `dial_and_call` before (a connected pipe's two halves are two `PipeIo`
+    /// views of one client); `Bridged` takes the child's own stdin and
     /// stdout out of the `Child` instead of dialing anything.
     fn split(self) -> std::io::Result<(Box<dyn std::io::Write + Send>, Box<dyn std::io::Read + Send>, Option<ChildGuard>)> {
         match self {
@@ -125,10 +159,11 @@ impl Conn {
                 Ok((Box::new(s), Box::new(r), None))
             }
             #[cfg(windows)]
-            Conn::Pipe(f) => {
-                let r = f.try_clone()?;
-                Ok((Box::new(f), Box::new(r), None))
-            }
+            Conn::Pipe(client) => Ok((
+                Box::new(PipeIo(std::sync::Arc::clone(&client))),
+                Box::new(PipeIo(client)),
+                None,
+            )),
             Conn::Bridged(mut child) => {
                 let stdin = child.stdin.take().expect("the ssh command pipes stdin");
                 let stdout = child.stdout.take().expect("the ssh command pipes stdout");
@@ -179,19 +214,11 @@ fn connect(endpoint: &str, sig: &'static crate::lifecycle::child_signal::Signal)
     if let Some(p) = endpoint.strip_prefix("pipe:") {
         #[cfg(windows)]
         {
-            use std::os::windows::fs::OpenOptionsExt;
-            use std::os::windows::io::AsHandle;
-            // Identification level: whatever serves the pipe can read who this is but never act as this account, so
-            // nothing it does before the check below can use this account's rights.
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .security_qos_flags(windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION)
-                .open(p)
+            // ADR 0049, User isolation: `connect_own` opens the pipe at identification level and checks the serving
+            // process's account before a byte is written.
+            let client = sot_log::identity::connect_own::connect_own(std::path::Path::new(p))
                 .map_err(|e| format!("{endpoint}: {e}"))?;
-            // ADR 0049, User isolation: only a pipe this account serves, checked before a byte is written.
-            sot_log::identity::connect_own::own_pipe(file.as_handle(), std::path::Path::new(p)).map_err(|e| format!("{endpoint}: {e}"))?;
-            return Ok(Conn::Pipe(file));
+            return Ok(Conn::Pipe(std::sync::Arc::new(client)));
         }
         #[cfg(not(windows))]
         {
