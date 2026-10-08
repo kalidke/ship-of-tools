@@ -43,10 +43,10 @@ pub(super) enum Lifecycle {
     Recovering { rx: mpsc::Receiver<RecoveryOutcome>, handle: JoinHandle<()>, started_at: Instant },
     /// The ONE initial placement decision (adopt if live, else consult
     /// the start-mode table).
-    InitialProbe { rx: mpsc::Receiver<ProbeOutcome<Process>>, handle: JoinHandle<()>, started_at: Instant },
+    InitialProbe { rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant },
     /// A fresh owned-spawn attempt in flight — every respawn reaches
     /// this, never `InitialProbe` again.
-    Spawning { rx: mpsc::Receiver<ProbeOutcome<Process>>, handle: JoinHandle<()>, started_at: Instant },
+    Spawning { rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, handle: JoinHandle<()>, started_at: Instant },
     /// A live leg. Stability is judged by [`leg_was_stable`] reading the
     /// leg's OWN recorded `producer_uptime_ms`, never by a
     /// wall-clock `ready_at` this variant no longer carries — an
@@ -54,7 +54,7 @@ pub(super) enum Lifecycle {
     /// own observation window, which a slow capsule teardown could
     /// inflate past the stability interval with nothing to do with how
     /// long the producer itself actually ran.
-    Ready { process: Process },
+    Ready { process: LegProcess },
     /// An `end_run` is in flight. `pending_reply` is the connection
     /// awaiting the DEFERRED reply at `record_closed` — `None` once
     /// delivered, or if that connection disconnected first (fine: the
@@ -92,7 +92,7 @@ pub(super) enum Lifecycle {
         handle: JoinHandle<()>,
         started_at: Instant,
         pending_reply: Option<ConnId>,
-        process: Process,
+        process: LegProcess,
     },
     /// A `reset` is in flight — admissible ONLY from `EndedNoRespawn`.
     Resetting { operation_id: String, rx: mpsc::Receiver<ResetWorkerResult>, handle: JoinHandle<()>, started_at: Instant },
@@ -103,10 +103,18 @@ pub(super) enum Lifecycle {
     /// AT ALL (see [`AuthorityState::stop_requested`] and the module
     /// doc's own "Stop no longer owns a Lifecycle state" section).
     Terminal { detail: String, entered_at: Instant },
+    /// The state root's storage is exhausted (a leg exited 71, a leg died
+    /// with no status and its probe met it, or a recovery, end_run or reset
+    /// worker failed with it). The authority probes the root on a backoff
+    /// and resumes when a probe succeeds; the crash counter is untouched and
+    /// the wait never goes Terminal for storage (`storage/`). Status reports
+    /// it as `starting`.
+    StorageFull(storage::Wait),
 }
 
 pub(super) enum RecoveryOutcome {
     Done { voyage_id: String, ended: bool },
+    Storage(String),
     Fatal { detail: String },
 }
 
@@ -123,20 +131,26 @@ pub(super) enum EndRunWorkerResult {
     /// absorbs every `PendingWriter` attempt into its OWN bounded retry
     /// loop and never surfaces it as a final result.
     PreBarrierFailed,
+    /// The worker's error was storage exhaustion: the operation stays active
+    /// and startup recovery finishes it once storage clears.
+    Storage(String),
     Fatal(String),
 }
 
 pub(super) enum ResetWorkerResult {
     Done { new_voyage: String },
+    /// As [`EndRunWorkerResult::Storage`]: no `Failed` record is written.
+    Storage(String),
     Fatal(String),
 }
 
 impl Lifecycle {
     pub(super) fn wire_phase(&self) -> SupervisorPhase {
         match self {
-            Lifecycle::Recovering { .. } | Lifecycle::InitialProbe { .. } | Lifecycle::Spawning { .. } => {
-                SupervisorPhase::Starting
-            }
+            Lifecycle::Recovering { .. }
+            | Lifecycle::InitialProbe { .. }
+            | Lifecycle::Spawning { .. }
+            | Lifecycle::StorageFull(_) => SupervisorPhase::Starting,
             Lifecycle::Ready { .. } => SupervisorPhase::Ready,
             Lifecycle::Ending { .. } => SupervisorPhase::Ending,
             // Reset produces a not-yet-started new voyage; no dedicated
@@ -168,7 +182,7 @@ impl Lifecycle {
 /// used to paper over. [`retire_leg`] reaps it immediately if already
 /// exited, otherwise moves it into `retired_legs` rather than dropping it
 /// — see `AuthorityState::retired_legs`'s own doc.
-fn take_worker_handle(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>) -> Option<JoinHandle<()>> {
+fn take_worker_handle(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<LegProcess>) -> Option<JoinHandle<()>> {
     match std::mem::replace(lifecycle, Lifecycle::EndedNoRespawn) {
         Lifecycle::Recovering { handle, .. }
         | Lifecycle::InitialProbe { handle, .. }
@@ -182,6 +196,7 @@ fn take_worker_handle(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>
             retire_leg(retired_legs, process);
             None
         }
+        Lifecycle::StorageFull(mut wait) => wait.take_worker_handle(),
         Lifecycle::EndedNoRespawn | Lifecycle::Terminal { .. } => None,
     }
 }
@@ -196,34 +211,24 @@ fn take_worker_handle(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>
 /// state is left used to have no owner left at all). See
 /// `AuthorityState::retired_legs`'s own doc for the full rationale and
 /// [`reap_retired_legs`] for the other half (the main loop's own poll).
-pub(super) fn retire_leg(retired_legs: &mut Vec<Process>, process: Process) {
-    // `cfg(unix)` rather than `linux`: see `finish_end_run_with_process`'s
-    // own reap comment — the gate names "this OS has zombies", and
-    // spelling it `linux` made macOS silently skip the reap entirely.
-    #[cfg(unix)]
+pub(super) fn retire_leg(retired_legs: &mut Vec<LegProcess>, process: LegProcess) -> Option<ExitStatus> {
     if matches!(process.wait(Duration::ZERO), Ok(true)) {
-        process.reap();
-        return;
-    }
-    #[cfg(windows)]
-    if matches!(process.wait(Duration::ZERO), Ok(true)) {
-        return;
+        return process.reap();
     }
     retired_legs.push(process);
+    None
 }
 
 /// The other half of [`retire_leg`]: called once per main-loop tick
 /// (`supervise_inner`'s own `MAIN_LOOP_POLL` cadence — no new timer) to
 /// give every leg that outlived its own Lifecycle state a chance to be
 /// observed dead and reaped. A non-blocking `wait` per entry; a confirmed
-/// exit reaps it (Linux) and removes it from the vector, everything else
-/// stays for the next tick.
-pub(super) fn reap_retired_legs(retired_legs: &mut Vec<Process>) {
+/// exit reaps it and removes it from the vector, everything else stays for
+/// the next tick.
+pub(super) fn reap_retired_legs(retired_legs: &mut Vec<LegProcess>) {
     retired_legs.retain(|process| {
         let exited = matches!(process.wait(Duration::ZERO), Ok(true));
         if exited {
-            // `cfg(unix)`, not `linux` — same reason as `retire_leg`'s.
-            #[cfg(unix)]
             process.reap();
         }
         !exited
@@ -256,7 +261,10 @@ pub(super) fn spawn_recovery(state_dir: PathBuf, mode: StartMode) -> (mpsc::Rece
             let ended = summary.ended_voyages.contains(&voyage_id);
             Ok(RecoveryOutcome::Done { voyage_id, ended })
         })()
-        .unwrap_or_else(|e| RecoveryOutcome::Fatal { detail: bounded_detail(format!("{e}")) });
+        .unwrap_or_else(|e| match storage_exhaustion(&e) {
+            Some(_) => RecoveryOutcome::Storage(bounded_detail(format!("{e}"))),
+            None => RecoveryOutcome::Fatal { detail: bounded_detail(format!("{e}")) },
+        });
         let _ = tx.send(outcome);
     });
     (rx, handle)
@@ -265,7 +273,7 @@ pub(super) fn spawn_recovery(state_dir: PathBuf, mode: StartMode) -> (mpsc::Rece
 pub(super) fn spawn_initial_probe(
     voyage_id: String,
     voyage_root: PathBuf,
-) -> (mpsc::Receiver<ProbeOutcome<Process>>, JoinHandle<()>) {
+) -> (mpsc::Receiver<ProbeOutcome<LegProcess>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
         let episode_deadline = Instant::now() + PROBE_EPISODE;
@@ -292,7 +300,7 @@ pub(super) fn spawn_owned_spawn_attempt(
     lease: SpawnLease,
     survival: Survival,
     producer_argv: Vec<String>,
-) -> (mpsc::Receiver<ProbeOutcome<Process>>, JoinHandle<()>) {
+) -> (mpsc::Receiver<ProbeOutcome<LegProcess>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
         let readiness_cutoff = Instant::now() + READINESS_CUTOFF;
@@ -443,6 +451,7 @@ pub(super) fn spawn_end_run(
             Ok(EndRunReconciliation::PendingWriter) => {
                 unreachable!("retry_until_writer_resolved only returns once result is no longer PendingWriter")
             }
+            Err(e) if storage_exhaustion(&e).is_some() => EndRunWorkerResult::Storage(bounded_detail(format!("{e}"))),
             Err(e) => EndRunWorkerResult::Fatal(bounded_detail(format!("{e}"))),
         };
         let _ = tx.send(EndingProgress::Final(final_result));
@@ -460,31 +469,39 @@ pub(super) fn do_reset(state_dir: &Path, operation_id: &str, new_voyage: &str, a
             let t = journal::TerminalRecord::ResetDone { new_voyage: new_voyage.to_string() };
             match journal::finish(state_dir, operation_id, &t) {
                 Ok(()) => ResetWorkerResult::Done { new_voyage: new_voyage.to_string() },
+                Err(e) if storage_exhaustion(&e).is_some() => {
+                    ResetWorkerResult::Storage(bounded_detail(format!("journal finish failed: {e}")))
+                }
                 Err(e) => ResetWorkerResult::Fatal(bounded_detail(format!("journal finish failed: {e}"))),
             }
         }
-        Err(e) => {
-            // a FAILED reset_pointer is Terminal -- a half-mutated
-            // pointer is the same "operator must investigate" condition
-            // this module's own recovery refusal already names for a
-            // third, unexplained identity. This journal::finish's OWN
-            // failure is never silently
-            // ignored either -- logged loud, even though the overall
-            // SEVERITY is unchanged either way (Fatal -> Terminal
-            // regardless): an operator investigating this failure
-            // deserves to know the journal record itself may be missing
-            // too.
-            let detail = bounded_detail(format!("{e}"));
-            let t = journal::TerminalRecord::Failed { detail: detail.clone() };
-            if let Err(finish_err) = journal::finish(state_dir, operation_id, &t) {
-                note(format_args!(
-                    "reset {operation_id} failed ({detail}), and recording that failure in the \
-                     journal ALSO failed ({finish_err})"
-                ));
-            }
-            ResetWorkerResult::Fatal(detail)
-        }
+        Err(e) => reset_failure(state_dir, operation_id, e),
     }
+}
+
+/// A FAILED reset_pointer is Terminal -- a half-mutated pointer is the same
+/// "operator must investigate" condition this module's own recovery refusal
+/// already names for a third, unexplained identity. Storage exhaustion is
+/// not that: the operation stays active, no `Failed` record is written, and
+/// startup recovery finishes it from its journal when storage clears. Every
+/// other failure writes `Failed`; this journal::finish's OWN failure is
+/// never silently ignored either -- logged loud, even though the overall
+/// SEVERITY is unchanged either way (Fatal -> Terminal regardless): an
+/// operator investigating this failure deserves to know the journal record
+/// itself may be missing too.
+pub(super) fn reset_failure(state_dir: &Path, operation_id: &str, e: crate::Error) -> ResetWorkerResult {
+    let detail = bounded_detail(format!("{e}"));
+    if storage_exhaustion(&e).is_some() {
+        return ResetWorkerResult::Storage(detail);
+    }
+    let t = journal::TerminalRecord::Failed { detail: detail.clone() };
+    if let Err(finish_err) = journal::finish(state_dir, operation_id, &t) {
+        note(format_args!(
+            "reset {operation_id} failed ({detail}), and recording that failure in the \
+             journal ALSO failed ({finish_err})"
+        ));
+    }
+    ResetWorkerResult::Fatal(detail)
 }
 
 pub(super) fn spawn_reset(
@@ -523,7 +540,7 @@ pub(super) fn spawn_reset(
 /// [`take_worker_handle`] also reaps a retained leg `process` (`Ready`/
 /// `Ending`) the SAME jump would otherwise silently drop unreaped — see
 /// its own doc.
-pub(super) fn force_terminal(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>, detail: String) {
+pub(super) fn force_terminal(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<LegProcess>, detail: String) {
     if let Some(handle) = take_worker_handle(lifecycle, retired_legs) {
         note(format_args!(
             "abandoning an in-flight worker thread while forcing a terminal state ({detail}) — its \
@@ -576,11 +593,7 @@ pub(super) fn respawn_or_terminal(
     };
     let voyage_id = authority.voyage_id.clone().expect("respawn is only reachable once voyage_id is Some");
     let voyage_root = voyage_root_path(&authority.state_dir, &voyage_id);
-    let argv = if unstable {
-        strip_first_leg_tokens(&config.producer_argv, &config.first_leg_without)
-    } else {
-        config.producer_argv.clone()
-    };
+    let argv = leg_argv(config, authority.producer_ran, unstable);
     let (rx, handle) = spawn_owned_spawn_attempt(
         capsule_exe.to_path_buf(),
         voyage_root,
@@ -598,6 +611,28 @@ pub(super) fn respawn_or_terminal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reset that fails with storage exhaustion writes no `Failed` record:
+    /// its operation stays active for startup recovery to finish. Any other
+    /// failure still writes `Failed` and is fatal.
+    #[test]
+    fn a_storage_reset_failure_records_nothing() {
+        #[cfg(unix)]
+        let full = std::io::Error::from_raw_os_error(libc::ENOSPC);
+        #[cfg(windows)]
+        let full = std::io::Error::from_raw_os_error(112);
+        let dir = tempfile::tempdir().unwrap();
+        let result = reset_failure(dir.path(), "op-full", crate::Error::Io(full));
+        assert!(matches!(result, ResetWorkerResult::Storage(_)));
+        assert_eq!(journal::read_terminal(dir.path(), "op-full").unwrap(), None, "no terminal record for storage");
+
+        let result = reset_failure(dir.path(), "op-state", crate::Error::State("pointer unreadable".into()));
+        assert!(matches!(result, ResetWorkerResult::Fatal(_)));
+        assert!(matches!(
+            journal::read_terminal(dir.path(), "op-state").unwrap(),
+            Some(journal::TerminalRecord::Failed { .. })
+        ));
+    }
 
     #[test]
     fn wire_phase_maps_every_state_to_the_adr_s_five_values() {

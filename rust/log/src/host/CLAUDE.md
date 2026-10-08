@@ -20,6 +20,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - The retry deadline and error context every file here shares (`mod.rs`: `RETRY_DEADLINE_MS`, `io_ctx`,
   `duration_to_wait_ms`).
 - The peer challenge in `rust/log/src/identity/` (a sibling folder; see Folders).
+- Storage-exhaustion recognition (`storage.rs`: `storage_exhaustion`, `native_storage_code`).
 
 ## Promises
 - `host_name` returns `Err`, never a guessed name.
@@ -35,6 +36,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   (`lock_writer`).
 - Kernel file locks are taken only inside two guards whose `Drop` unlocks: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`. rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
+- Storage exhaustion is recognized by its native code only: ENOSPC and EDQUOT, on Windows ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL and ERROR_DISK_QUOTA_EXCEEDED, read from the `io::Error` an `Error::Io` carries, never from text and never from a transport error (a full runtime folder is not storage exhaustion) (`storage_exhaustion`). `preflight_volume` and Windows `io_ctx` return such an error as itself, with its code, instead of their refusal or context text.
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot_state_dir`, `sot_config_dir`,
@@ -42,7 +44,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `dir_identity`,
 `rust/log/src/host/pinned_dir.rs`, `resource_dir`, `rust/backend/src/paths.rs`,
-`sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`. Uses: none.
+`sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`, `storage_exhaustion`. Uses: none.
 
 ## Folders
 - `rust/log/src/host/` (here) and `rust/log/src/identity/` (the peer challenge).
@@ -54,6 +56,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `lock.rs`: the writer fence, the supervisor fence and the daemon's single-instance lock, held by the kernel.
 - `pinned_dir.rs`: a directory's kernel identity and a handle that pins it.
 - `state_dir.rs`: where a file lives, and the host name.
+- `storage.rs`: which native errors are storage exhaustion.
 - `volume.rs`: the preflight that proves a volume supports the store's primitives.
 - `winhandle.rs`: Windows-only hardening of a process's own inherited stdio handles.
 - `winsec.rs`: Windows-only owner-only security descriptors and SID lookups, and `wide_null`, the UTF-16 form of a non-path string.

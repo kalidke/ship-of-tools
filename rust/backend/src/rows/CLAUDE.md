@@ -60,7 +60,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `durable::write`, `durable::remove`,
 `rust/backend/src/durable.rs`, `dir_identity`, `rust/log/src/host/pinned_dir.rs`,
 `remove_comm_agents_for_workspace`, `FilesMode`, `ConceptStore`,
-`rust/backend/src/rows/workspace.rs`, `Watcher`, `rust/backend/src/rows/registry.rs`, `Kernel`, `Repl`, `Signal::spawn_std`, `ContainedStd`, `child_signal::process`.
+`rust/backend/src/rows/workspace.rs`, `Watcher`, `rust/backend/src/rows/registry.rs`, `Kernel`, `Repl`, `Signal::spawn_std`, `ContainedStd`, `child_signal::process`, `storage_exhaustion`.
 
 ## Folders
 - `ops/`: the row ops clients call

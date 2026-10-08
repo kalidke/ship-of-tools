@@ -56,6 +56,7 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         self_pid: self_ids.0,
         self_created: self_ids.1,
         stop_requested: None,
+        producer_ran: false,
         retired_legs: Vec::new(),
     };
     let mut conns: HashMap<ConnId, Conn> = HashMap::new();
@@ -70,6 +71,9 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     let mut lifecycle = Lifecycle::Recovering { rx, handle, started_at: Instant::now() };
 
     let mut consecutive_unstable_legs: u32 = 0;
+    // The storage wait's backoff step: carried across a storage exit that
+    // follows a successful probe, and back to 0 when a leg is judged stable.
+    let mut storage_step: u32 = 0;
 
     // Switch-latency Phase 1: the event this loop's own tail wait
     // ([`Lane::events`]'s `recv_timeout`, replacing an unconditional
@@ -98,10 +102,11 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         );
         lifecycle = match current {
             Lifecycle::Recovering { rx, handle, started_at } => advance_recovering(rx, handle, started_at, &config, &mut authority, now),
-            Lifecycle::InitialProbe { rx, handle, started_at } => advance_initial_probe(rx, handle, started_at, &capsule_exe, &config, &lease, &authority, now),
-            Lifecycle::Spawning { rx, handle, started_at } => advance_spawning(rx, handle, started_at, &mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, now),
-            Lifecycle::Ready { process } => advance_ready(process, &mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, now),
-            Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply, process } => advance_ending(operation_id, rx, handle, started_at, pending_reply, process, &lane, &conns, &mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &mut authority, now),
+            Lifecycle::InitialProbe { rx, handle, started_at } => advance_initial_probe(rx, handle, started_at, &capsule_exe, &config, &lease, &mut authority, now),
+            Lifecycle::Spawning { rx, handle, started_at } => advance_spawning(rx, handle, started_at, &mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &mut authority, now),
+            Lifecycle::Ready { process } => advance_ready(process, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &authority, now),
+            Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply, process } => advance_ending(operation_id, rx, handle, started_at, pending_reply, process, &lane, &conns, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &mut authority, now),
+            Lifecycle::StorageFull(wait) => advance_storage_full(wait, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &authority, now),
             Lifecycle::Resetting { operation_id, rx, handle, started_at } => advance_resetting(operation_id, rx, handle, started_at, &capsule_exe, &config, &lease, &mut authority, now),
             other @ (Lifecycle::EndedNoRespawn | Lifecycle::Terminal { .. }) => other,
         };
@@ -200,7 +205,7 @@ fn should_exit_now(lifecycle: &Lifecycle, authority: &AuthorityState, conns: &Ha
         (Lifecycle::Terminal { entered_at, .. }, None) => {
             now.saturating_duration_since(*entered_at) >= TERMINAL_EXIT_GRACE
         }
-        (Lifecycle::Ready { .. } | Lifecycle::EndedNoRespawn, Some(stop)) => !conns.contains_key(&stop.primary_conn),
+        (Lifecycle::Ready { .. } | Lifecycle::EndedNoRespawn | Lifecycle::StorageFull(_), Some(stop)) => !conns.contains_key(&stop.primary_conn),
         _ => false,
     }
 }

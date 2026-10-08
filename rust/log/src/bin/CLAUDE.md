@@ -19,8 +19,8 @@ test fixtures that the suites in `rust/log/tests` launch. Part of capsule; chart
 ## Rules
 - Only `sot-capsule` ships: release.yml builds it with `sotd`, and install.sh copies `sot`, `sotd` and `sot-capsule`.
   The other four binaries are never packaged.
-- `sot-capsule run` exits with the agent's code: `cmd_run` maps `ExitStatus::Code(c)` to c and `Signal(n)` to 128+n.
+- `sot-capsule run` exits 71 (`sot_log::capsule::EXIT_LEG_STORAGE_FULL`) only when its run failed with storage exhaustion (`storage_exhaustion`); otherwise `leg_exit_code` maps `ExitStatus::Code(c)` to c (a producer's own 71 becomes 1; the voyage still records 71), `Signal(n)` to 128+n, and any other run error to 1.
   `supervise` exits with the code `sot_log::supervisor::supervise` returns (0, 69 `EXIT_TERMINAL` or 70
-  `EXIT_CONTENDED`), or 2 on a usage error. These codes are an interface with the daemon.
+  `EXIT_CONTENDED`), or 2 on a usage error. These codes are an interface with the daemon and the supervisor.
 - The two pty helpers emit identical bytes because both `#[path]`-include `support/helper_common.rs`.
 - The helpers and the fault writer are reached by `rust/log/tests` through `CARGO_BIN_EXE_*` only.

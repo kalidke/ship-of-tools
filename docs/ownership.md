@@ -31,6 +31,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | durable write (fsync, no-clobber rename, publish) | primitive | platform | `rust/log/src/host/durable.rs` `publish_noreplace`, `fsync_dir`, `ensure_container`; `rust/backend/src/durable.rs` `write` |
 | bounded file locks | primitive | platform | `rust/log/src/host/lock.rs` `lock_writer`, `lock_supervisor`, `try_lock_daemon` |
 | volume preflight | primitive | platform | `rust/log/src/host/volume.rs` `preflight_volume` |
+| storage-exhaustion recognition | primitive | platform | `rust/log/src/host/storage.rs` `storage_exhaustion` |
 | Windows SDDL/SID helpers | primitive | platform | `rust/log/src/host/winsec.rs` `owner_protected_descriptor`, `sid_string_from_process` |
 | peer challenge (OS peer, then wire identity) | primitive | platform | `rust/log/src/identity/challenge.rs` `exchange_identity`; `rust/log/src/identity/exchange.rs`; `rust/log/src/identity/deadline.rs` `run_with_deadline`; per-OS `rust/log/src/identity/challenge_unix.rs`, `rust/log/src/identity/challenge_win.rs`, `rust/log/src/identity/challenge_macos.rs` |
 | private-dir and socket-dir checks | primitive | platform | `rust/backend/src/paths.rs` `ensure_private_dir`, `secure_private_dir`, `secure_socket_dir` |
@@ -158,6 +159,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | lease holder and reader tasks | thread | lifecycle | `rust/frontend/src/lease.rs` `spawn_holder`, `Leases` |
 | attach worker, reader, supervisor probe threads | thread | capsule | `rust/log/src/attach_client/worker/mod.rs`; `rust/log/src/attach_client/worker/steady.rs`; `rust/log/src/supervisor/probe/mod.rs` |
 | supervisor worker per operation | thread | capsule | `rust/log/src/supervisor/lifecycle.rs` `Lifecycle`; `rust/log/src/supervisor/oneshot.rs` `endrun_inner`, `reset_inner` |
+| storage wait: durable state-root probe and its backoff | state, thread | capsule | `rust/log/src/supervisor/storage/mod.rs` `Wait`, `advance`, `probe` |
 | lane accept and reaper threads | thread | capsule | `rust/log/src/lane/socket_unix/accept.rs`; `rust/log/src/lane/pipe_win/accept.rs` |
 | frame format, codec, 1 MiB cap | wire | wire | `rust/protocol/src/lib.rs` `Frame`; `rust/protocol/src/codec.rs` `read_frame`, `write_frame`, `MAX_ENVELOPE_BYTES` |
 | `PROTOCOL_VERSION` | wire | wire | `rust/protocol/src/lib.rs` `PROTOCOL_VERSION` (the shell literal in `comm/lib/comm-lib-client.sh` `sot_hello_frame`, held to it by `the_shell_hello_is_this_protocols_hello`, which runs it) |
@@ -247,7 +249,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | sotd exit 0 (requested shutdown) | exit code | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `REASON`; `rust/protocol/src/ops/lease.rs` `EXIT_REQUESTED_SHUTDOWN` |
 | sotd exit 75 (update restart) | exit code | distribution | `rust/backend/src/update.rs` `exit_for_update`; `rust/protocol/src/ops/lease.rs` `EXIT_UPDATE_RESTART` |
 | sot exit 75/76 (relaunch, converge) | exit code | distribution | `rust/frontend/src/lease.rs` `exit_intent`, `close_now`; `rust/frontend/src/relaunch.rs` |
-| sot-capsule exit 0/69/70 | exit code | capsule | `rust/log/src/supervisor/mod.rs`; `rust/log/src/bin/sot-capsule.rs` |
+| sot-capsule exit 0/69/70 (supervise) and 71 (run: storage exhaustion) | exit code | capsule | `rust/log/src/supervisor/mod.rs`; `rust/log/src/capsule/mod.rs` `EXIT_LEG_STORAGE_FULL`; `rust/log/src/bin/sot-capsule.rs` `leg_exit_code` |
 | `SOT_SOCKET`, `SOT_SESSION`, `SOT_WORKSPACE`, `SOT_WORKSPACE_ID`, `SOT_WORKSPACE_ROOT`, `SOT_MANUAL` | env | agents | `rust/backend/src/agents/awareness.rs` `awareness_env` |
 | `SOT_COMM_NAME`, `SOT_COMM_SELF_FILE` (issued at spawn) | env | messaging | `rust/backend/src/agents/env.rs` `agent_env`; read `comm/registry/comm-context.sh`; `comm/registry/comm-join.sh` |
 | `SOT_COMM_HOOKS`, `SOT_LOCK_WAIT_SECS`, `SOT_INBOX_LOCK_WAIT_SECS`, `SOT_INBOX_READ_WAIT_SECS`, `SOT_INBOX_READ_WARNING`, `SOT_SEND_TIMEOUT`, `SOT_COMM_ASKQ_ID`, `SOT_COMM_EXPERTISE`, `SOT_HB_CTX_TIMEOUT_TICKS`, `SOT_TURN_AUDITOR`, `SOT_AUDITOR_*` | env | messaging | `comm/lib/comm-lib-base.sh`; `comm/lib/comm-lib-inbox.sh`; `comm/work_state/hooks/comm-status-heartbeat.sh`; `comm/work_state/comm-turn-auditor.sh` |

@@ -188,7 +188,7 @@ pub(crate) fn spawn_detached_supervisor(
     agent_kind: &str,
     account: &str,
 ) -> std::io::Result<Child> {
-    super::qualified_state_root().map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
+    super::qualified_state_root(Some(state_dir)).map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
     if super::state_root_inside_project(state_dir, cwd) {
         return Err(std::io::Error::new(
             ErrorKind::Unsupported,

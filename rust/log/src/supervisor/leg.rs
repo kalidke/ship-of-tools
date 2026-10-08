@@ -311,6 +311,19 @@ pub(super) fn build_run_command(
     command
 }
 
+/// The argv of the next leg: `first_leg_without` is stripped while no producer
+/// has run in this process (`producer_ran`) and after an unstable leg, so a
+/// first leg that exited before running anything (a storage exit, say) is
+/// respawned with its first-leg argv, and a healthy row that restarts keeps the
+/// argv it was never wrong to keep.
+pub(super) fn leg_argv(config: &SuperviseConfig, producer_ran: bool, unstable: bool) -> Vec<String> {
+    if unstable || !producer_ran {
+        strip_first_leg_tokens(&config.producer_argv, &config.first_leg_without)
+    } else {
+        config.producer_argv.clone()
+    }
+}
+
 /// `producer_argv` with every element equal to one of `tokens` removed —
 /// called at the very first leg this process ever spawns (unconditionally)
 /// and, via `respawn_or_terminal`, at any later leg that follows one

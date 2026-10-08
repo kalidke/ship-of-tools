@@ -22,12 +22,20 @@ impl Drop for ShutdownGuard<'_> {
         // unwind/return), so a `false` here can only be reported
         // loudly (stderr), never turned into `run`'s result.
         if !self.0.shutdown_all(Instant::now() + TEARDOWN_AGGREGATE_DEADLINE) {
-            eprintln!(
+            leg_note(format_args!(
                 "sot-capsule: ShutdownGuard's fallback teardown did not complete within its \
                  aggregate deadline; a worker thread may still be running"
-            );
+            ));
         }
     }
+}
+
+/// One diagnostic line, as one write that never panics: `eprintln!` panics
+/// when stderr cannot take the line, and a full volume under the leg's log
+/// would then turn a diagnostic into a crash of the leg.
+fn leg_note(args: std::fmt::Arguments<'_>) {
+    let line = format!("{args}\n");
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
 }
 
 /// The leg's writer-loop state from `start` to `seal_run`: every value two or more of

@@ -16,4 +16,5 @@ capsule; charter: rust/log/CLAUDE.md.
 
 ## Rules
 - Output reaches an attach subscriber only after the commit that covers it is fsynced (`flush_output`).
+- Each diagnostic is one write that never panics (`leg_note`), so a full volume under the log does not turn into a crash.
 - `Leg`'s last six fields drop in declaration order: the budget is cancelled first and the writer lock released last, after the transport shuts down (`Leg` in mod.rs; test `shutdown_guard_runs_while_the_writer_lock_is_held`).
