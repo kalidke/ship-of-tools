@@ -402,6 +402,50 @@ fn announced_address(frames: &[Value]) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The observer rejects a deliberate leak: an owned process whose command line carries the needle is found, and one
+/// that does not carry it is passed.
+async fn observer_rejects_a_deliberate_leak() {
+    let sig: &'static crate::lifecycle::child_signal::Signal =
+        Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let mut probe =
+        tokio::process::Command::new(crate::sidecars::contract_tests::executable("julia"));
+    probe
+        .args([
+            "--startup-file=no",
+            "-e",
+            "println(getpid()); flush(stdout); sleep(60)",
+            "probe-needle-5d1e",
+        ])
+        .stdout(std::process::Stdio::piped());
+    let mut owned = sig.spawn(&mut probe).expect("start the owned leak probe");
+    let mut first = tokio::io::BufReader::new(owned.stdout.take().expect("probe stdout"));
+    let mut line = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        tokio::io::AsyncBufReadExt::read_line(&mut first, &mut line),
+    )
+    .await
+    .expect("the probe reports its pid")
+    .expect("read the probe pid");
+    let pid: u32 = line.trim().parse().expect("probe pid");
+    within(
+        Duration::from_secs(30),
+        "the probe's command line is observable",
+        || tree_argv_leaks(pid, &["probe-needle-5d1e"]),
+    )
+    .await;
+    assert!(
+        tree_argv_leaks(pid, &["probe-needle-5d1e"]),
+        "the observer must reject a leaking command line"
+    );
+    assert!(
+        !tree_argv_leaks(pid, &["a-needle-it-does-not-carry"]),
+        "the observer must pass a clean one"
+    );
+    let _ = owned.kill().await;
+    sig.fire();
+}
+
 /// A page served by the real `wglshow` path never puts its secret, or the address that carries it, on a command
 /// line of the REPL's tree, before or after the page exists, on every spawn route; a deliberately leaking process is
 /// rejected by the same observer, and a sentinel proves the observation sees a value the child really has.
@@ -436,48 +480,7 @@ async fn repl_page_secret_never_reaches_command_line() {
             .join(" ")
     );
 
-    // The observer rejects a deliberate leak: an owned process whose command line carries the needle.
-    {
-        let sig: &'static crate::lifecycle::child_signal::Signal =
-            Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
-        let mut probe =
-            tokio::process::Command::new(crate::sidecars::contract_tests::executable("julia"));
-        probe
-            .args([
-                "--startup-file=no",
-                "-e",
-                "println(getpid()); flush(stdout); sleep(60)",
-                "probe-needle-5d1e",
-            ])
-            .stdout(std::process::Stdio::piped());
-        let mut owned = sig.spawn(&mut probe).expect("start the owned leak probe");
-        let mut first = tokio::io::BufReader::new(owned.stdout.take().expect("probe stdout"));
-        let mut line = String::new();
-        tokio::time::timeout(
-            Duration::from_secs(60),
-            tokio::io::AsyncBufReadExt::read_line(&mut first, &mut line),
-        )
-        .await
-        .expect("the probe reports its pid")
-        .expect("read the probe pid");
-        let pid: u32 = line.trim().parse().expect("probe pid");
-        within(
-            Duration::from_secs(30),
-            "the probe's command line is observable",
-            || tree_argv_leaks(pid, &["probe-needle-5d1e"]),
-        )
-        .await;
-        assert!(
-            tree_argv_leaks(pid, &["probe-needle-5d1e"]),
-            "the observer must reject a leaking command line"
-        );
-        assert!(
-            !tree_argv_leaks(pid, &["a-needle-it-does-not-carry"]),
-            "the observer must pass a clean one"
-        );
-        let _ = owned.kill().await;
-        sig.fire();
-    }
+    observer_rejects_a_deliberate_leak().await;
 
     for (route, base) in [
         ("initial start", 100u64),
