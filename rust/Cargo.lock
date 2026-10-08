@@ -3860,6 +3860,7 @@ dependencies = [
  "sot-updater",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -3946,6 +3947,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sot-log",
+ "tempfile",
  "tokio",
 ]
 

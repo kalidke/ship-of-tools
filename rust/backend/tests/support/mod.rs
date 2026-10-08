@@ -68,7 +68,7 @@ mod registry;
 mod sotd;
 #[allow(unused_imports)] // likewise
 pub use registry::write_registry;
-pub use sotd::{sotd_command, sotd_program};
+pub use sotd::{sotd_command, sotd_command_at, sotd_program};
 /// Copy of `rust/log/tests/fe_client/`'s own `wake_flag` helper (a separate test
 /// binary; not worth a shared dependency for four lines).
 #[allow(dead_code)]

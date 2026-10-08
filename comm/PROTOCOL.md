@@ -26,7 +26,7 @@ all clients are mutually addressable through the same registry and inboxes.
   inbox/<name>.jsonl       # durable per-recipient inbox (append-only)
   inbox/<name>.lock        # that inbox's lock file
   read/<name>.cursor       # per-recipient read cursor (`<count> <crc>-<len>`: lines shown, and a hash of the last)
-  self/<host>__<pane>.txt  # this pane's declared agent name (identity recovery)
+  self/<host>__<pane>.txt  # unpinned declared-host slot; complete native leaf validated before mutation, explicit pins retained
   state/                   # per-session scratch; the end-of-turn check keeps mail-<key>.tick,
                            # lock-fault-<handle>.<key>.tick and stop-feedback-<key>.jsonl here.
                            # Nothing removes a mail tick, so every session ever held on mail
@@ -49,7 +49,7 @@ deployment, one `~/.sot-comm` serves every host sharing that home.
   "protocol_version": 1,
   "agents": {
     "<name>": {
-      "host":       "myhost",                      // hostname -s; used for same-host delivery
+      "host":       "<host>",                      // daemon's declared host; exact accepted override, otherwise the declared-host default
       "workspace_id": "ws-…",                      // the row this session runs in (SOT_WORKSPACE_ID); "" in a bare shell
       "repo":       "Ship of Tools",
       "expertise":  ["files", "rust-backend"],
@@ -63,6 +63,8 @@ deployment, one `~/.sot-comm` serves every host sharing that home.
   }
 }
 ```
+
+Registry host facts and unpinned self-slot keys use the daemon's declared host. Raw host text is a derived-handle component and validated legacy-slot input only; explicit identity pins retain their text.
 
 **Liveness** is one fact, `last_seen`: a handle is *live* when its `last_seen` is a
 `YYYY-MM-DDTHH:MM:SSZ` stamp under 600 seconds old (`COMM_LIVE_SECS`, `LIVE_SECS`). The
@@ -455,6 +457,8 @@ the receipt exits 1. A broadcast (`send --all`) still goes this way and prints
 ack's error>` or `FAILED -> <all>: hello refused: <the daemon's own words>`.
 With no daemon found at all a wire send prints
 `FAILED -> @h: no sotd daemon found; …` and exits 1.
+
+Known limit (B2): the hub's comm folder has not been shown to list every live row on every attached box. At the 2026-10-06 premise check, two attached boxes had no session; one of them had no frontend connected, so those two boxes were unobserved. A handle absent from that folder still uses the broadcast filer route and may end NOT CONFIRMED. Full B2 removal is blocked on the live-row registry premise; this checkout does not promise a binary verdict for that route.
 
 Nothing is queued anywhere, and a failed send is not retried by another
 route. To get an answer, send, end the turn, and be woken.

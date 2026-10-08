@@ -4,7 +4,7 @@
 use super::*;
 
 impl State {
-    pub(super) fn redraw(&mut self) -> Result<()> {
+    pub(in crate::ui) fn redraw(&mut self) -> Result<()> {
         self.frame_upkeep();
         let (preview_cells, repl_cells, repl_scrollback_cells, repl_window, llm_selection, owed, owed_line,
             owed_drawn, leaving_drawn) = self.draw_chrome()?;
@@ -89,6 +89,7 @@ impl State {
         let (readback, capture_target, capture_now, selfie_target) = self.stage_frame_capture(&mut encoder, &frame);
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+        self.acknowledge_presented_result();
         self.ack_presented_lines(owed_drawn, owed, owed_line, leaving_drawn);
         self.text.trim();
         self.finish_frame_capture(readback, capture_target, capture_now, selfie_target);

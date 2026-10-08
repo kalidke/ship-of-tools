@@ -93,7 +93,7 @@ try {
     if ($compiled) {
         try {
         Write-Host "`n=== 11. ConvergeLeaseHandover: the hello and lease lines, the handover line, the refusal warnings ===" -ForegroundColor Cyan
-        foreach ($fname in @('Get-SotBootId', 'Get-SotHelloHost', 'ConvertTo-SotJsonString', 'Open-SotLease', 'Close-SotLeases')) {
+        foreach ($fname in @('Get-SotBootId', 'Get-SotHelloHost', 'ConvertTo-SotJsonString', 'Open-SotLease', 'Start-SotBridge', 'Close-SotLeases')) {
             $fn = $leaseAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)
             Check "11: $fname is defined" ($null -ne $fn) 'function not found'
             if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
@@ -120,26 +120,52 @@ try {
             try {
                 Check '11a: the fake pipe is up' (Wait-Pipe $pipe11a) 'pipe never answered'
                 $script:supLines = @()
-                $streams = @(Open-SotLease (Get-PipePath $pipe11a))
+                $streams = @(Open-SotLease (Get-PipePath $pipe11a) $realSotd)
                 Check '11a: one stream comes back' ($streams.Count -eq 1) "got $($streams.Count)"
                 $global:SotLeases = $streams
                 Check '11a: logged the grant' (($script:supLines -join ' ') -match 'lease granted') "log: $($script:supLines -join ' | ')"
                 $regOut = (& reg query 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters' /v BootId) -join ' '
                 $bootDec = ''
                 if ($regOut -match 'BootId\s+REG_DWORD\s+0x([0-9a-fA-F]+)') { $bootDec = [string][Convert]::ToUInt32($Matches[1], 16) }
-                $created11 = [System.Diagnostics.Process]::GetCurrentProcess().StartTime.ToFileTimeUtc()
-                $golden = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + $bootDec + '","created":' + $created11 + ',"pid":' + $PID + '}}'
+                $goldenPrefix = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + $bootDec + '","created":'
                 # The hello that precedes it (ADR 0049, User isolation): a handoff naming this computer and the OS account.
                 $helloHost11 = if ($env:SOT_SELF_HOST) { $env:SOT_SELF_HOST } else { ([System.Net.Dns]::GetHostName().Split('.')[0]).ToLowerInvariant() }
                 $sid11 = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
                 $goldenHello = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":3,"app_version":"launcher","host":"' + $helloHost11 + '","os_user":"' + $sid11 + '","role":"handoff"}}'
-                Start-Sleep -Milliseconds 300
-                $lines11a = @(Get-Content -LiteralPath $log11a -ErrorAction SilentlyContinue)
+                $wait11a = [System.Diagnostics.Stopwatch]::StartNew()
+                do {
+                    $lines11a = @(Get-Content -LiteralPath $log11a -ErrorAction SilentlyContinue)
+                    if ($lines11a.Count -ge 2) { break }
+                    Start-Sleep -Milliseconds 50
+                } while ($wait11a.ElapsedMilliseconds -lt 10000)
+                Check '11a: at least 2 log lines arrive within 10 s' ($lines11a.Count -ge 2) "lines: $($lines11a -join ' | ')"
                 Check '11a: the first logged line is the golden hello line' (($lines11a.Count -ge 1) -and ($lines11a[0] -ceq $goldenHello)) "got: $($lines11a[0]) want: $goldenHello"
-                Check '11a: the second logged line is the golden lease line' (($lines11a.Count -ge 2) -and ($lines11a[1] -ceq $golden)) "got: $($lines11a[1]) want: $golden"
+                $leaseChild11 = $null
+                $heldByChild11 = $false
+                if ($lines11a.Count -ge 2 -and $lines11a[1].StartsWith($goldenPrefix) -and $lines11a[1].Contains(',"pid":')) {
+                    $payload11 = ($lines11a[1] | ConvertFrom-Json).payload
+                    $leaseChild11 = Get-Process -Id $payload11.pid -ErrorAction SilentlyContinue
+                    $heldByChild11 = ($payload11.boot -ceq $bootDec) -and ($payload11.pid -ne $PID) -and
+                        $leaseChild11 -and ($leaseChild11.ProcessName -eq 'sotd') -and
+                        ($leaseChild11.StartTime.ToFileTimeUtc() -eq $payload11.created)
+                }
+                Check '11a: the second logged line is the lease, held by the bridge child' $heldByChild11 "lines: $($lines11a -join ' | ')"
+                # The lease line speaks the protocol its own hello declares: the real daemon's gate holds that hello to
+                # PROTOCOL_VERSION, and reads the lease's fields into its FeLeaseReq, granting only the bridge's own
+                # boot, pid and creation time (5b, 5b2).
+                $sameProtocol11 = $false
+                if ($lines11a.Count -ge 2) {
+                    $sameProtocol11 = (($lines11a[1] | ConvertFrom-Json).v -eq ($lines11a[0] | ConvertFrom-Json).payload.protocol)
+                }
+                Check '11a: the lease line speaks the protocol its hello declares' $sameProtocol11 "lines: $($lines11a -join ' | ')"
                 Close-SotLeases
-                Start-Sleep -Milliseconds 500
-                $lines11a = @(Get-Content -LiteralPath $log11a -ErrorAction SilentlyContinue)
+                $wait11a = [System.Diagnostics.Stopwatch]::StartNew()
+                do {
+                    $lines11a = @(Get-Content -LiteralPath $log11a -ErrorAction SilentlyContinue)
+                    if ($lines11a.Count -ge 4) { break }
+                    Start-Sleep -Milliseconds 50
+                } while ($wait11a.ElapsedMilliseconds -lt 10000)
+                Check '11a: at least 4 log lines arrive within 10 s' ($lines11a.Count -ge 4) "lines: $($lines11a -join ' | ')"
                 $handover = '{"v":3,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
                 Check '11a: the handover line follows' (($lines11a.Count -ge 3) -and ($lines11a[2] -ceq $handover)) "lines: $($lines11a -join ' | ')"
                 Check '11a: then eof' (($lines11a.Count -ge 4) -and ($lines11a[3] -ceq 'eof')) "lines: $($lines11a -join ' | ')"
@@ -159,7 +185,7 @@ try {
             try {
                 Check '11b: the fake pipe is up' (Wait-Pipe $pipe11b) 'pipe never answered'
                 $script:supLines = @()
-                $streams11b = @(Open-SotLease (Get-PipePath $pipe11b))
+                $streams11b = @(Open-SotLease (Get-PipePath $pipe11b) $realSotd)
                 Check '11b: no stream comes back' ($streams11b.Count -eq 0) "got $($streams11b.Count)"
                 Check '11b: the warning names the 60 s bound' ((@($script:supLines | Where-Object { $_ -like '*60 s*' })).Count -ge 1) "log: $($script:supLines -join ' | ')"
             } finally {
@@ -175,12 +201,62 @@ try {
             try {
                 Check '11d: the fake pipe is up' (Wait-Pipe $pipe11d) 'pipe never answered'
                 $script:supLines = @()
-                $streams11d = @(Open-SotLease (Get-PipePath $pipe11d))
+                $streams11d = @(Open-SotLease (Get-PipePath $pipe11d) $realSotd)
                 Check '11d: no stream comes back' ($streams11d.Count -eq 0) "got $($streams11d.Count)"
                 Check '11d: the warning names the refused hello and its code' ((@($script:supLines | Where-Object { $_ -like '*hello refused: os_user_conflict*' })).Count -ge 1) "log: $($script:supLines -join ' | ')"
             } finally {
                 if ($fake11d -and -not $fake11d.HasExited) { Stop-Process -Id $fake11d.Id -Force -ErrorAction SilentlyContinue }
                 Clear-FakeEnv
+            }
+
+            # (e) a lease is never opened on a pipe another account serves (ADR 0049)
+            $script:supLines = @()
+            $streams11e = @(Open-SotLease '\\.\pipe\epmapper' $realSotd)
+            Check '11e: no stream comes back' ($streams11e.Count -eq 0) "got $($streams11e.Count)"
+            Check '11e: the warning names not connecting' ((@($script:supLines | Where-Object { $_ -like '*not connecting*' })).Count -ge 1) "log: $($script:supLines -join ' | ')"
+
+            # (f) a bridge that ends before the lease is written still says why (ADR 0049)
+            Clear-FakeEnv
+            $go11f = Join-Path $root 'bridge-go-11f'
+            $env:FAKE_SOTD_BRIDGE_EARLY_EXIT = $go11f
+            $script:child11f = $null
+            $input11f = [Console]::InputEncoding
+            $realBoot11f = ${function:Get-SotBootId}
+            function Get-SotBootId {
+                $bridge11f = Get-Variable -Name bridge -Scope 1 -ValueOnly -ErrorAction SilentlyContinue
+                if ($bridge11f) {
+                    # A process object of the test's own for the cleanup below: Open-SotLease disposes its own when the
+                    # lease is not granted. Its handle is taken now, while the child still runs.
+                    $script:child11f = [System.Diagnostics.Process]::GetProcessById($bridge11f.Id)
+                    $null = $script:child11f.Handle
+                    # Only now may the fake read its input: the test holds its own handle, whatever the input holds.
+                    Set-Content -LiteralPath $go11f -Value 'go' -Encoding ASCII
+                    $bridge11f.StandardInput.Close()
+                    if (-not $bridge11f.WaitForExit(10000)) { throw 'the fake bridge did not exit within 10 s' }
+                    if ($bridge11f.ExitCode -ne 1) { throw "the fake bridge exited $($bridge11f.ExitCode), expected 1" }
+                }
+                & $realBoot11f
+            }
+            try {
+                # 11f is about the warning, not the bytes a bridge reads (7c is): its fixture fails on any input byte,
+                # so while it runs the console's input encoding has no preamble, whatever Start-SotBridge does.
+                [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+                $script:supLines = @()
+                $streams11f = @(Open-SotLease (Get-PipePath (New-TestPipeName)) $fakeExe)
+                Check '11f: no stream comes back' ($streams11f.Count -eq 0) "got $($streams11f.Count)"
+                Check '11f: the warning names the bridge''s own line' ((@($script:supLines | Where-Object { $_ -like '*not connecting: test refusal*' })).Count -ge 1) "log: $($script:supLines -join ' | ')"
+            } finally {
+                [Console]::InputEncoding = $input11f
+                ${function:Get-SotBootId} = $realBoot11f
+                Clear-FakeEnv
+                if ($script:child11f) {
+                    if (-not $script:child11f.HasExited) {
+                        $script:child11f.Kill()
+                        if (-not $script:child11f.WaitForExit(10000)) { throw 'the fake bridge did not stop within 10 s' }
+                    }
+                    $script:child11f.Dispose()
+                }
+                $script:child11f = $null
             }
 
             # (c) the boot identity is stable and numeric
@@ -264,7 +340,7 @@ try {
         -not $ok })
     Check '16d: $global:SotLeases is set only when unset, or by Close-SotLeases' (($sets16.Count -ge 2) -and ($bad16.Count -eq 0)) "assignments $($sets16.Count), unguarded $($bad16.Count): $(@($bad16 | ForEach-Object { $_.Extent.Text }) -join ' | ')"
     if ($compiled) {
-        foreach ($fname in @('Get-SotBootId', 'Open-SotLease')) {
+        foreach ($fname in @('Get-SotBootId', 'Open-SotLease', 'Start-SotBridge')) {
             $fn = $leaseAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)
             if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
         }
@@ -280,7 +356,7 @@ try {
         try {
             Check '16e: the fake pipe is up' (Wait-Pipe $pipe16) 'pipe never answered'
             $global:SotLeases = @()
-            $global:SotLeases += @(Open-SotLease (Get-PipePath $pipe16))
+            $global:SotLeases += @(Open-SotLease (Get-PipePath $pipe16) $realSotd)
             Check '16e: the caller holds one lease' ($global:SotLeases.Count -eq 1) "count $($global:SotLeases.Count)"
             # The re-invoked launcher, reduced to what this test is about: its
             # own Close-SotLeases, run from another script in this process.

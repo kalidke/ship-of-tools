@@ -8,8 +8,9 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
 - `Cargo.toml`: the crate; one `[[bin]]` named `sotd` at `src/main.rs`
 - `sidecars/`: `mathjax/`, the MathJax renderer (`render.mjs` and its npm lock) that `src/sidecars/mathjax.rs` runs
 - `tests/`: the integration suites, each a real `sotd` over the real wire (own page)
-- `src/main.rs`: boot: argv, umask, directory checks, the tee log, then `server::run`
-- `src/clients.rs`: the roster of connected frontends (`Clients`, `ClientGuard`) and the `fe.*` and `version.query` ops that read it
+- `src/main.rs`: subcommand routing, offline trust declaration, then daemon boot: umask, directory checks, the tee log and `server::run`.
+- `src/clients.rs`: the connected-frontend roster and fe.* and version.query handlers; fe.command.send logs optional forwarded workspace/path plus target and delivery count.
+- `src/clients_relay_tests.rs`: the relay log of fe.command.send: forwarded workspace and path, target and delivery count
 - `src/clients_tests.rs`: unit tests of the roster
 - `src/session.rs`: the revision counter and the bounded event ring a reconnecting client replays from (`Session::bump`)
 - `src/paths.rs`: the platform helpers: state and socket paths, `resource_dir`, the private-directory checks
@@ -29,10 +30,10 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
 `main` in `src/main.rs` for boot; `src/server/` for a connection; the owning folder for an op.
 
 ## Rules
-- `main` answers `--help` first (`help_for`), then the early subcommand block, before any side effect: no log file or
-  state directory exists yet, and `session-socket-path` and `--version` only print.
-- Nothing is created before the umask and the directory checks: `apply_umask` (077), then `rows::store::check_config_dir`,
-  then `paths::secure_private_dir` (refuses a state directory that is not private), then `open_private_log_file`.
+- `main` answers help before any side effect. Query/bridge subcommands keep their existing contracts; `trust declare`
+  is an offline settings mutation and returns before daemon initialization.
+- Daemon boot creates nothing before the umask and directory checks. Offline trust declaration applies the private umask
+  before its own writes and creates no daemon log, state, row or listener.
 - The log is `<state>/sotd.log` (mirrored to stdout by `TeeWriter`); nothing bounds or rotates it.
 - An op's handler lives with the state it reads or writes; `server/dispatch.rs` (`dispatch`) only routes.
 - Integration tests need `cargo build -p sot-log --bin sot-capsule` first.

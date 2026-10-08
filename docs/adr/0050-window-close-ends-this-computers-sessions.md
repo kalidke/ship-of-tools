@@ -242,3 +242,11 @@ connection is the only handle.
   an accept-loop failure (`server::run` returning an error) and a termination signal (SIGTERM, SIGINT), which the
   daemon does not handle. Under the systemd unit its cgroup ends them.
 - Window: see the release notes.
+
+## Update (0.6.6): hub relay locality
+
+A generated hub relay socket is physically local transport to a remote daemon. The window carries that distinction from endpoint parsing to control, page and lane consumers and never acquires a local-window lease through it. Relay unit target/path overrides and local daemon leases retain their existing behavior.
+
+## Update (0.6.6): Foreign notice
+
+Foreign reports a refused boot, pid or creation-time claim and does not by itself prove another OS account. Without a granted or pending lease, the window names the known cause: unknown verification, then unsupported backend, then a refused identity claim, then unreached or absent backend.

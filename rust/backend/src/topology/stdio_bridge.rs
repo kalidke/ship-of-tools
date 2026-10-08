@@ -1,19 +1,21 @@
-//! `sotd stdio-bridge [--host <host>]` — the last inch of a cross-host
-//! dial. With no argument it resolves THIS box's own control endpoint, at
-//! the label this box resolves for itself (`local_daemon_label()`), never
-//! one a caller names; `--host <host>` resolves the hub's own relay
-//! socket for that host instead. Either way the connect
-//! (`paths::session_socket_path`, whatever shape that endpoint has here —
-//! Unix socket or Windows named pipe) uses the same bounded connector
-//! `LaneDial::Local` uses, and copies bytes both ways until either side
-//! reaches EOF.
+//! `sotd stdio-bridge [--host <host> | --endpoint <unix:PATH|pipe:PATH>]` —
+//! the last inch of a cross-host dial, and a byte shuttle to a local
+//! endpoint for a caller on this box. With no argument it
+//! resolves THIS box's own control endpoint, at the label this box resolves
+//! for itself (`local_daemon_label()`), never one a caller names; `--host
+//! <host>` resolves the hub's own relay socket for that host instead;
+//! `--endpoint` takes the local endpoint a caller on this box already holds.
+//! Every form connects through `connect_own` (whatever shape the endpoint has
+//! here — Unix socket or Windows named pipe), and copies bytes both ways until
+//! either side reaches EOF.
 //!
 //! Why a process and not a port forward: the endpoint's shape is the
 //! owning box's own business. A caller elsewhere forwards a byte stream to
 //! this process (an ssh channel, today) and never learns whether the last
-//! inch was a socket or a pipe. That is also why there is no `--socket`
-//! override here: the path is DERIVED on the box that owns it, never
-//! carried across the wire.
+//! inch was a socket or a pipe. That is also why the two forms a caller elsewhere
+//! uses carry no path: the path is DERIVED on the box that owns it, never carried
+//! across the wire. `--endpoint` is for a caller on this box that already holds a
+//! local endpoint; the ssh forms never pass it.
 //!
 //! Three rules, each a correctness requirement rather than a style note:
 //!
@@ -46,7 +48,7 @@ use std::sync::Arc;
 use sot_log::lane::transport::TransportError;
 
 /// The usage line, printed on a bad argument and for `--help`.
-pub(crate) const USAGE: &str = "Usage: sotd stdio-bridge [--host <host>]";
+pub(crate) const USAGE: &str = "Usage: sotd stdio-bridge [--host <host> | --endpoint <unix:PATH|pipe:PATH>]";
 /// The one failure code. It says "this did not work" and nothing more —
 /// the stderr line says which thing.
 const EXIT_FAILED: i32 = 1;
@@ -68,6 +70,16 @@ fn connect(path: &Path) -> Result<Bridged, TransportError> {
     sot_log::identity::connect_own::connect_own(path)
 }
 
+/// The one local scheme on this platform: a Unix socket here, a named pipe on Windows.
+const LOCAL_SCHEME: &str = if cfg!(windows) { "pipe:" } else { "unix:" };
+
+/// The path a `--endpoint` value names: this platform's scheme and a nonempty path after it.
+/// A bare name without the scheme, or the other platform's scheme, is refused; a Windows caller supplies
+/// `pipe:\\.\pipe\<name>`.
+fn local_endpoint(endpoint: &str) -> Option<std::path::PathBuf> {
+    endpoint.strip_prefix(LOCAL_SCHEME).filter(|p| !p.is_empty()).map(std::path::PathBuf::from)
+}
+
 pub fn run(args: &[String]) -> i32 {
     let path = match args {
         // This box's own daemon, at the label it resolves for itself —
@@ -79,6 +91,15 @@ pub fn run(args: &[String]) -> i32 {
         // The hub's own relay socket for `<name>`, derived on the hub —
         // never carried over the wire.
         [flag, host] if flag == "--host" => sot_protocol::topology::relay_socket_path(host),
+        // A local endpoint a caller on this box already holds: the same connect below, so it reaches only
+        // what this OS account serves (ADR 0049, User isolation).
+        [flag, endpoint] if flag == "--endpoint" => match local_endpoint(endpoint) {
+            Some(path) => path,
+            None => {
+                eprintln!("sotd stdio-bridge: {endpoint}: not a local endpoint here ({LOCAL_SCHEME}<path>)");
+                return EXIT_FAILED;
+            }
+        },
         _ => {
             eprintln!("{USAGE}");
             return EXIT_FAILED;

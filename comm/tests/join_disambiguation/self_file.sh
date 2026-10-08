@@ -518,18 +518,27 @@ case_nopane_selffile_from_non_repo_cwd_not_healed_and_send_refuses() {
 
 
 case_context_host_part_follows_the_raw_host_rule() {
-    # The self file's host part: SOT_COMM_TEST_HOST when non-empty, else
-    # `hostname -s` (case kept), else a plain `hostname`.
+    # HANDLE_HOST, the derived handle's host component and the old slot's key, is the raw host:
+    # SOT_COMM_TEST_HOST when non-empty, else `hostname -s` (case kept), else a plain `hostname`.
+    # HOST, the registry's and the unpinned slot's host, is the declared host (sot_host): SOT_SELF_HOST, else the
+    # lowercased first label of the same hostname.
     local bin="$WORK/rawhost-bin" self="$WORK/rawhost-self.txt" out
     mkdir -p "$bin" "$WORK/rawhost-cwd"
     printf '#!/bin/sh\nif [ "${1:-}" = "-s" ]; then echo Raw-Host; else echo plain-host; fi\n' > "$bin/hostname"
     chmod +x "$bin/hostname"
-    out="$(cd "$WORK/rawhost-cwd" && env -u SOT_COMM_TEST_HOST PATH="$bin:$PATH" SOT_COMM_SELF_FILE="$self" "$CONTEXT" 2>/dev/null | sed -n 's/^HOST=//p')"
-    [ "$out" = "Raw-Host" ] || { echo "  unset: HOST=$out, want Raw-Host"; return 1; }
+    ctx_field() {  # FIELD [ENV...] : one comm-context.sh field under the fake hostname
+        local f="$1"; shift
+        (cd "$WORK/rawhost-cwd" && env -u SOT_COMM_TEST_HOST -u SOT_SELF_HOST PATH="$bin:$PATH" SOT_COMM_SELF_FILE="$self" "$@" "$CONTEXT" 2>/dev/null | sed -n "s/^$f=//p")
+    }
+    out="$(ctx_field HANDLE_HOST)"; [ "$out" = "Raw-Host" ] || { echo "  unset: HANDLE_HOST=$out, want Raw-Host"; return 1; }
+    out="$(ctx_field HOST)"; [ "$out" = "raw-host" ] || { echo "  unset: HOST=$out, want the declared raw-host"; return 1; }
+    out="$(ctx_field HOST SOT_SELF_HOST=Declared-Box)"; [ "$out" = "Declared-Box" ] || { echo "  override: HOST=$out, want Declared-Box verbatim"; return 1; }
     printf '#!/bin/sh\nif [ "${1:-}" = "-s" ]; then exit 1; else echo plain-host; fi\n' > "$bin/hostname"
-    out="$(cd "$WORK/rawhost-cwd" && env -u SOT_COMM_TEST_HOST PATH="$bin:$PATH" SOT_COMM_SELF_FILE="$self" "$CONTEXT" 2>/dev/null | sed -n 's/^HOST=//p')"
-    [ "$out" = "plain-host" ] || { echo "  failing -s: HOST=$out, want plain-host"; return 1; }
-    out="$(cd "$WORK/rawhost-cwd" && env PATH="$bin:$PATH" SOT_COMM_TEST_HOST=pinned SOT_COMM_SELF_FILE="$self" "$CONTEXT" 2>/dev/null | sed -n 's/^HOST=//p')"
-    [ "$out" = "pinned" ] || { echo "  pinned: HOST=$out, want pinned"; return 1; }
+    out="$(ctx_field HANDLE_HOST)"; [ "$out" = "plain-host" ] || { echo "  failing -s: HANDLE_HOST=$out, want plain-host"; return 1; }
+    out="$(ctx_field HOST)"; [ "$out" = "plain-host" ] || { echo "  failing -s: HOST=$out, want plain-host"; return 1; }
+    out="$(ctx_field HANDLE_HOST SOT_COMM_TEST_HOST=pinned)"; [ "$out" = "pinned" ] || { echo "  pinned: HANDLE_HOST=$out, want pinned"; return 1; }
+    printf '#!/bin/sh\nexit 1\n' > "$bin/hostname"
+    (cd "$WORK/rawhost-cwd" && env -u SOT_COMM_TEST_HOST -u SOT_SELF_HOST PATH="$bin:$PATH" SOT_COMM_SELF_FILE="$self" "$CONTEXT" >/dev/null 2>&1) \
+        && { echo "  a failing hostname still produced an identity"; return 1; }
     return 0
 }

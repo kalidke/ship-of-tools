@@ -8,11 +8,14 @@ use tokio::net::TcpStream;
 
 const READ_CHUNK: usize = 64 * 1024;
 
-/// Content-Type by extension: the static-site table plus the video rows.
+/// Content-Type by extension: the static-site table, with a video named as `video_mime` decides.
 /// Shared with `pages::site`; falls back to a generic stream type so the
 /// browser still treats an unknown file as opaque bytes. Serving a video type
 /// is still gated by `is_servable_video`, so this table serves nothing new.
 pub(crate) fn content_type(path: &Path) -> &'static str {
+    if let Some(mime) = path.to_str().and_then(sot_protocol::video_path::video_mime) {
+        return mime;
+    }
     match path
         .extension()
         .and_then(|e| e.to_str())
@@ -38,10 +41,6 @@ pub(crate) fn content_type(path: &Path) -> &'static str {
         Some("pdf") => "application/pdf",
         Some("txt") => "text/plain; charset=utf-8",
         Some("xml") => "application/xml; charset=utf-8",
-        Some("mp4") | Some("m4v") => "video/mp4",
-        Some("webm") => "video/webm",
-        Some("mov") => "video/quicktime",
-        Some("mkv") => "video/x-matroska",
         _ => "application/octet-stream",
     }
 }

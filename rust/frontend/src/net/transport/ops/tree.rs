@@ -3,6 +3,83 @@
 
 use super::*;
 
+fn tree_children_frame(id: u64, parent_id: String, workspace_id: Option<String>) -> Result<Frame> {
+    Ok(Frame::req(
+        id,
+        op::TREE_CHILDREN,
+        serde_json::to_value(TreeChildrenReq {
+            node_id: parent_id,
+            workspace_id,
+        })?,
+    ))
+}
+
+fn tree_root_frame(id: u64, mode: String, workspace_id: Option<String>) -> Result<Frame> {
+    Ok(Frame::req(
+        id,
+        op::TREE_ROOT,
+        serde_json::to_value(TreeRootReq { mode, workspace_id })?,
+    ))
+}
+
+pub(crate) async fn send_result_tree<W: AsyncWrite + Unpin>(
+    tx: &mut W,
+    pending: &mut HashMap<u64, PendingKind>,
+    id: u64,
+    attempt: ResultAttemptId,
+    request: ResultTreeRequest,
+) -> Result<()> {
+    pending.insert(
+        id,
+        PendingKind::ResultTree {
+            attempt: attempt.clone(),
+            request: request.clone(),
+        },
+    );
+    let workspace_id = Some(attempt.workspace_id);
+    let frame = match request {
+        ResultTreeRequest::Root => tree_root_frame(id, "files".into(), workspace_id)?,
+        ResultTreeRequest::Children { parent_id } => {
+            tree_children_frame(id, parent_id, workspace_id)?
+        }
+    };
+    codec::write_frame(tx, &frame, None).await?;
+    Ok(())
+}
+
+pub(crate) fn on_result_tree(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+    attempt: ResultAttemptId,
+    request: ResultTreeRequest,
+) {
+    let parsed = if let Some(error) = frame.payload.get("error") {
+        Err(error
+            .as_str()
+            .unwrap_or("result tree request failed")
+            .to_string())
+    } else {
+        match &request {
+            ResultTreeRequest::Root => serde_json::from_value::<TreeRootRes>(frame.payload)
+                .map(|res| ResultTreeReply::Root {
+                    root: res.node,
+                    children: res.children,
+                })
+                .map_err(|error| format!("malformed result tree root: {error}")),
+            ResultTreeRequest::Children { parent_id } => {
+                serde_json::from_value::<TreeChildrenRes>(frame.payload)
+                    .map(|res| ResultTreeReply::Children {
+                        parent_id: parent_id.clone(),
+                        children: res.children,
+                    })
+                    .map_err(|error| format!("malformed result tree children: {error}"))
+            }
+        }
+    };
+    let reply = parsed.unwrap_or_else(|error| ResultTreeReply::Failed { request, error });
+    emit(IncomingEvt::ResultTree { attempt, reply });
+}
+
 /// One row of the `directory.list` response, mirrored here so the
 /// chrome doesn't have to depend on `sot_protocol::DirectoryEntry`
 /// directly.

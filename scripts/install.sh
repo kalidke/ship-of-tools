@@ -25,9 +25,7 @@
 #      manual and the resource tree; blobless partial clone = full history
 #      for blame, only the tag's tree downloaded; supersedes the curated
 #      julia bundle) + juliaup + Pkg.instantiate inside the checkout
-#   5. config in ~/.config/sot: settings.toml stub if missing, plus this
-#      box's folder-trust declaration ([trust] root_prefix = the home
-#      folder) if it has none;
+#   5. config: delegate this box's folder-trust declaration to the offline owner;
 #      hosts.toml is read (role) and, with --hub, fetched — never written here
 #   6. agent comm resources: ~/.sot-comm plus Claude/Codex skills
 #   7. backend roles: install+enable the systemd --user sotd unit
@@ -59,8 +57,7 @@ sot_install_copy() {  # <src> <dst> [mode]
 
 # Refuse characters a shell-embedded path (systemd unit ExecStart, JSON
 # manifest, sed substitution, launcher heredocs) cannot carry safely, plus
-# a newline, which turns one generated line into two — a second
-# `root_prefix =` in section 6, where the daemon's reader takes the last.
+# a newline, which turns one generated service or manifest line into two.
 # Explicit rejection over silent corruption. Shared by --prefix and the
 # project root ($HOME) — deploy/sotd.service's ExecStart now embeds both
 # inside a shell string, where a stray quote breaks the unit.
@@ -379,6 +376,28 @@ installer_render_wrapper() {  # <prefix> <target> <be-alias-or-empty> <dest>
     fi
 }
 
+# Both installer paths delegate folder-trust declaration to the agents-owned offline command;
+# a failure is reported and never described as a successful declaration.
+installer_declare_trust() {  # <absolute-sotd-path> <prefix>
+    local binary="$1" prefix="$2" output result
+    case "$binary" in
+        /*) ;;
+        *) say "WARN: folder trust not declared - sotd path is not absolute"; return 0 ;;
+    esac
+    if output="$("$binary" trust declare "$prefix" 2>&1)"; then
+        case "$output" in
+            Declared) say "folder trust declared" ;;
+            Kept) say "folder trust kept" ;;
+            *) say "WARN: folder trust not declared - unexpected command outcome" ;;
+        esac
+    else
+        result=$?
+        say "WARN: folder trust not declared (exit $result)"
+        [ -z "$output" ] || printf '%s\n' "$output" >&2
+    fi
+    return 0
+}
+
 # scripts/tests/installer-state.sh sources this file to exercise the
 # functions above in isolation. Nothing else sets this, `curl | bash`
 # included.
@@ -454,23 +473,6 @@ case "$PREFIX" in
 esac
 reject_unsafe_path_chars "prefix" "$PREFIX"
 reject_unsafe_path_chars 'project root ($HOME)' "$HOME"
-
-# The home folder is also the folder-trust scope written in section 6, so it
-# has to be a prefix that can only ever match rows underneath it. The daemon
-# compares path components as written, so a relative prefix matches nothing,
-# a `..` segment matches nothing either (`/h/u/..` is not a prefix of
-# `/h/u/repo`), and a prefix of nothing but slashes is a prefix of every
-# absolute path on the box.
-case "$HOME" in
-    /*) ;;
-    *) die "the home folder is '$HOME', which is not an absolute path — the daemon refuses a relative trust prefix and would trust nothing" ;;
-esac
-case "${HOME#/}" in
-    ''|/*) die "the home folder is '$HOME', which names no folder under the root — declaring it would declare the whole filesystem trusted" ;;
-esac
-case "$HOME" in
-    */../*|*/..) die "the home folder is '$HOME', which carries a '..' segment — the daemon matches components as written, so it would trust nothing" ;;
-esac
 
 # ---- 1. preflight ------------------------------------------------------------
 OS="$(uname -s)"
@@ -873,31 +875,8 @@ fi
 # hosts.toml is never written here — see "what this box knows about itself"
 # above.
 installer_retire_local_service "$WANT_DAEMON"
-[ -f "$CONFIG/settings.toml" ] || printf '# Ship of Tools settings — see .sot/settings.toml.example in the repo\n' > "$CONFIG/settings.toml"
-
-# Folder trust. A row the daemon spawns must reach its task without stopping
-# at the agent's folder-trust dialog on a folder nobody has opened on this box
-# before. The daemon reads ONE declared absolute prefix from this file; the
-# repo itself ships no default and names no path, because a path committed
-# there would be true on nobody's machine. So the declaration is made HERE, at
-# install time, on the box it applies to: the home folder. Written once — an
-# existing [trust] table is the owner's own answer, never rewritten, and
-# commenting the key out restores the dialog. The guard matches the table the
-# way the daemon's parser does (trim the line, strip the brackets, trim the
-# name), so `[ trust ]` counts as the table it is and never earns a second one
-# — two tables and the reader would take the last.
-if ! grep -q '^[[:space:]]*\[[[:space:]]*trust[[:space:]]*\][[:space:]]*$' "$CONFIG/settings.toml" 2>/dev/null; then
-    {
-        printf '\n[trust]\n'
-        printf '# Every session root under this absolute prefix counts as already\n'
-        printf '# trusted, so an agent the daemon spawns there never stops at its\n'
-        printf '# folder-trust dialog. Narrow it to the parent your repos live under,\n'
-        printf '# or comment it out to answer that dialog by hand. Roots outside it\n'
-        printf '# are left untouched.\n'
-        printf 'root_prefix = "%s"\n' "$HOME"
-    } >> "$CONFIG/settings.toml"
-    say "folder trust declared for everything under $HOME ($CONFIG/settings.toml, [trust] root_prefix)"
-fi
+# The owner creates or upgrades settings and keeps any existing trust answer.
+installer_declare_trust "$PREFIX/bin/sotd" "$HOME"
 
 # ---- 7. backend service --------------------------------------------------------
 if [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 1 ]; then

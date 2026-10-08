@@ -63,7 +63,9 @@ done
 # A second agent inside a session never binds a handle: refuse before the context
 # call (which can heal a self file or create the registry) and any later write.
 _why="$(sot_require_agent)" || { echo "comm-join.sh: REFUSING to bind: $_why" >&2; exit 1; }
-eval "$("$SCRIPT_DIR/comm-context.sh")"
+# A context that cannot name this session (an unusable declared host) has already said why: nothing is written.
+_ctx="$("$SCRIPT_DIR/comm-context.sh")" || exit 1
+eval "$_ctx"
 # The folder is made private, an older one tightened, before this script writes in it (ensure_home).
 ensure_home
 
@@ -147,7 +149,7 @@ if [ "$NEED_DERIVE" = true ]; then
     # makes a derivation failure (all three tiers taken by other roots;
     # Codex review F6) abort here with sot_derive_handle's own clear
     # stderr reason, rather than continuing with an empty/invalid NAME.
-    claim_derived_handle reclaim "$PROJECT_ROOT" "$HOST" "$obj"
+    claim_derived_handle reclaim "$PROJECT_ROOT" "$HANDLE_HOST" "$obj"
     NAME="$CLAIMED_NAME"
 
     # Stranding guard (field regression): escalating AWAY from the bare

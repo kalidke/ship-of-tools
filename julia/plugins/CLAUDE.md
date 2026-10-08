@@ -21,6 +21,7 @@ json-doc for the minimal shape; pdf-file for params and extras.
 - A missing external tool gives a text/markdown note, never a throw (the `preview` methods of ShipToolsPDFFile and
   ShipToolsVideoFile).
 - julia-source's spans concatenate to the file byte for byte.
+- The video-file matches tests execute ConceptExplorerCore.matches against the five-suffix corpus, including leading-dot and mixed-case filenames; classification assertions do not require ffmpeg.
 - A new plugin brings kernel `[deps]`, `[sources]`, a `using` line, and a test CI.yml runs (today only pdf-file and
   video-file have tests).
 

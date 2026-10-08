@@ -8,6 +8,10 @@ fallback for a handle its folder does not list (`agent.send`, ending `NOT CONFIR
 B2. The rest lands in stages, and the per-session watcher, listener and bridge machinery it
 replaces stays in place until each stage does.
 
+2026-10-06: B2 premise amendment for 0.6.6.
+
+Known limit (B2): the hub's comm folder has not been shown to list every live row on every attached box. At the 2026-10-06 premise check, two attached boxes had no session; one of them had no frontend connected, so those two boxes were unobserved. A handle absent from that folder still uses the broadcast filer route and may end NOT CONFIRMED. Full B2 removal is blocked on the live-row registry premise; this checkout does not promise a binary verdict for that route.
+
 2026-10-04: User isolation added (release captain's ruling); decision 0031 holds the
 guarantees, this ADR the design.
 
@@ -115,7 +119,19 @@ frontend, its lease, `sotd stdio-bridge`, the lane client and `sotd topology` sp
 only to an endpoint their own OS account serves, a pipe whose serving process runs as
 this account on Windows and a socket in a folder private to this account on Unix
 (`rust/log/src/identity/connect_own.rs`); a client opens that pipe at identification level, so
-its server cannot act as the account before the check. The Unix check covers the socket's own folder only. The
+its server cannot act as the account before the check. Built by lane M1c: no product script opens a socket or pipe
+itself; a shell or PowerShell script reaches one on this computer only through `sotd stdio-bridge --endpoint`, so the
+same check applies (comm's `sot_dial`, the launch scripts' probes, and the launcher's lease, which names its bridge
+child). Each of those paths is shown by running it: `rust/backend/tests/shell_dial.rs` runs comm's `sot_dial`, with and
+without its bound, `sot_oneshot_request` and the launch scripts' `sot_socket_open` (which `restart-backend.sh` also
+runs) against a socket outside a private folder, which each refuses without connecting, and `sot_dial`, with and without
+its bound, and `sot_socket_open` reach this account's own (`sot_oneshot_request` sends through the bounded `sot_dial`);
+on Windows it runs `sot_dial` against SYSTEM's `epmapper` pipe and this account's own. The launcher suites do the same
+for the PowerShell probe and lease (sections 4b and 11e), and comm's ssh path is shown to run the far box's own bridge.
+No test reads the scripts for a dial outside these paths: a script that adds one is caught in review. Isolation holds
+between ordinary
+accounts: root, and on Windows SYSTEM and the Administrators group, can read any account's files and processes and are
+outside it. The Unix check covers the socket's own folder only. The
 daemon's bind check covers more for a derived path (the runtime folder and every folder below it down to the socket's)
 and the same single folder for a custom one; neither covers the folders above: a custom `SOT_SOCKET`, `SOT_RUNTIME_DIR`
 or `XDG_RUNTIME_DIR` under another account's writable, non-sticky folder is not covered. The video, site and site-pool servers, the frontend's page proxy and the one-use redirect listener that opens a page

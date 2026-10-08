@@ -171,3 +171,7 @@ fixed here).
   `NavPrompt`), so FE cost is low.
 - A wrong sidecar/annotation silently mislabels scale — the bar is only as
   trustworthy as its source; live-authored sidecars are explicit user intent.
+
+## Update (0.6.6): shared validity before tier selection
+
+Rust preview reads, writes and display use one physical-scale parser. The unit and every axis name are strings, axes are nonempty, and nm_per_px is finite and positive. Invalid sidecars or existing extras are absent for tier selection, preserving unrelated extras and allowing a valid PNG pHYs fallback. This does not tighten the existing acceptance of empty string names or units.

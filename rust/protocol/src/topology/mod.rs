@@ -39,7 +39,7 @@
 //! so the reader is ~100 lines and pulls in no TOML crate.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub mod endpoint;
 pub mod lane_client;
@@ -300,6 +300,22 @@ fn runtime_relay_dir() -> PathBuf {
 /// completed hello ever proves the latter.
 pub fn relay_socket_path(host: &str) -> PathBuf {
     runtime_relay_dir().join(format!("sot-host-{host}.sock"))
+}
+
+/// The host a generated hub-relay socket path serves: the path is exactly [`relay_socket_path`] of a plain host
+/// name, directory included. Nothing else decides it: not a dial label, a basename alone, a file's presence or a
+/// setting. The socket is a route to that host's daemon, so a window that reaches it locally still treats the
+/// daemon as remote.
+pub fn relay_host_for_path(path: &Path) -> Option<String> {
+    relay_host_in(&runtime_relay_dir(), path)
+}
+
+/// [`relay_host_for_path`] with the relay directory given: a path counts when joining that directory with the
+/// name it carries gives the path back.
+fn relay_host_in(dir: &Path, path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let host = name.strip_prefix("sot-host-")?.strip_suffix(".sock")?;
+    (endpoint::is_plain_host_name(host) && dir.join(name) == path).then(|| host.to_string())
 }
 
 /// `sotd topology plan --self <host>` — plain lines, one fact per line,

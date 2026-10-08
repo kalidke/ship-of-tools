@@ -10,6 +10,7 @@ hand-over it serves.
 - `exit.rs`: the Ctrl+Q prompt's key table, `request_quit`, `leave` and `finish_exit`, and `redraw_exits`.
 - `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `new_events`.
 - `frame.rs`: `State::redraw`, one frame's sequence, its upkeep (`frame_upkeep`) and `ack_presented_lines`.
+- `tests.rs`: the native minimized-window event-progress harness; test-owned inputs, no daemon or user settings. It first runs the native-only State fixtures of the result-routing, badge and account commits, printing one `state-fixture name=... ok=...` line each.
 
 ## Start here
 `redraw` in frame.rs for the order of one frame; `window_event` in handler.rs for which winit event goes where and for
@@ -28,3 +29,4 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 - While the quit prompt is open, non-repeat Tab toggles and Enter confirms by logical key identity, every other non-repeat key cancels, and repeats do nothing; input routing consumes the event before modifier-only suppression and later dispatch.
 - A second close resolves close_now's code and makes one bounded deliver_queued attempt before the window finishes; a write timeout is reported and is not a daemon acknowledgement.
 - Every return from run_app, including an error or capture completion, takes the transport runtime once and calls shutdown_timeout(LEAVE_WRITE_WAIT) before App drops. Timed-out blocking work may continue; the yielding-child cleanup proof does not promise cancellation of arbitrary synchronous work.
+- Native progress evidence separates producer workload validity from UI queue progress; counters are taken at successful fan-in enqueue and actual State dequeue, and the fixture never drains the queue.

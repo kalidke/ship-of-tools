@@ -27,3 +27,4 @@ the pane paints while that happens.
 - The reason overlay never reads the shared status line (`pane_terminal_reason_text`).
 - The first frame that paints a new client's own screen marks it presented, once per attach (`session_pane_view`).
 - Only a live client is resized with the pane, and a resize snaps its scrollback to live (`sync_pane_pty_size`).
+- A cold pane constructs its one `DaemonLaneEndpoint` with `new`; a warm hit reuses the existing client (`spawn_pane_attach_term`).

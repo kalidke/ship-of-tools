@@ -42,7 +42,46 @@ concurrency:
   group: rust-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  RUST_BACKTRACE: "1"
+
 jobs:
+  window-minimized-windows:
+    name: native minimized window (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 18
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Prove native minimized workload and progress
+        run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
+
+  window-minimized-macos:
+    name: native minimized window (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 18
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Prove native minimized workload and progress
+        run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
+
   test:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -85,6 +124,56 @@ jobs:
       # hit counts on stderr — captured output would hide them from CI logs,
       # making the sweeps' actual coverage invisible (review finding).
       # --no-fail-fast: one failing test binary must not hide the others.
+      - name: Build selected-body fixture
+        shell: bash
+        run: |
+          mkdir -p ../dev/output
+          cargo test -p sot-log --test test_body_fixture --locked --no-run --message-format=json > ../dev/output/iso-sh-ci-artifacts.json
+          python3 - <<'PYFIXTURE'
+          import json, os
+          rows = [json.loads(line) for line in open('../dev/output/iso-sh-ci-artifacts.json') if line.startswith('{')]
+          paths = [row['executable'] for row in rows if row.get('target', {}).get('name') == 'test_body_fixture' and row.get('executable')]
+          if len(paths) != 1:
+              raise SystemExit('expected exactly one compiled selected-body fixture')
+          path = os.path.abspath(paths[0]).replace('\\', '/')
+          with open('../dev/output/iso-sh-ci-path', 'w') as output:
+              output.write(path + '\n')
+          PYFIXTURE
+      - name: Test selected Rust bodies
+        shell: bash
+        run: |
+          python3 - <<'PYCARGO'
+          import json, os, pathlib, subprocess
+          manifest = pathlib.Path('Cargo.toml').resolve()
+          root = pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve()
+          root.mkdir()
+          environment = {k: v for k, v in os.environ.items() if not k.startswith('SOT_')}
+          runner = root / 'runner.py'
+          runner.write_text('import os, subprocess, sys\nos.chdir(sys.argv[1])\nsys.exit(subprocess.run(sys.argv[2:]).returncode)\n')
+          environment.setdefault('CARGO_HOME', str(pathlib.Path.home() / '.cargo'))
+          environment.setdefault('RUSTUP_HOME', str(pathlib.Path.home() / '.rustup'))
+          home = root / 'home'
+          home.mkdir()
+          for name in ('HOME', 'USERPROFILE', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME'):
+              environment[name] = str(home)
+          for key, name, flags in [('normal', 'ordinary', ['--exact']), ('ignored', 'qualified::ignored_positive', ['--ignored', '--exact']), ('absent', 'absent', ['--exact']), ('substring', 'near', [])]:
+              directory = root / key
+              directory.mkdir()
+              (directory / 'iso-sh-fixture-request').touch()
+              (directory / 'go').touch()
+              with (directory / 'cargo.log').open('w') as output:
+                  subprocess.run(['cargo', 'test', '--config', 'target."cfg(all())".runner=' + json.dumps(['python3', str(runner), str(directory)]), '--manifest-path', str(manifest), '-p', 'sot-log', '--test', 'test_body_fixture', '--locked', name, '--'] + flags + ['--format', 'pretty', '--color', 'never', '--show-output', '--test-threads=1'], cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=True)
+          PYCARGO
+          proof_mode=--portable
+          if [ '${{ matrix.os }}' = ubuntu-latest ]; then proof_mode=--all; fi
+          ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh "$proof_mode" "$(cat ../dev/output/iso-sh-ci-path)"
+
+      - name: Folder trust premises (Windows and macOS)
+        if: matrix.os != 'ubuntu-latest'
+        run: |
+          cargo test -p sot-backend --bin sotd trust_declaration --locked -- --nocapture
+          cargo test -p sot-backend --bin sotd agents::folder_trust --locked -- --nocapture
+          cargo test -p sot-backend --test trust_declare --test trust_premises --locked -- --nocapture
       - name: Test workspace
         run: cargo test --workspace --locked --no-fail-fast -- --nocapture
 
@@ -223,6 +312,14 @@ jobs:
 
       # PR #148 Codex review F10: hermetic + fast, so it rides along in this
       # existing ubuntu leg rather than a dedicated job.
+      # The context deadline covers foreground children and the final wait.
+      # Fixtures are finite, isolated, and require entry and completion evidence.
+      - name: Test heartbeat context deadline (hermetic)
+        shell: bash
+        timeout-minutes: 5
+        working-directory: .
+        run: bash comm/tests/test-heartbeat-ctx-wait.sh
+
       - name: Test sot-comm disambiguation (hermetic)
         if: matrix.os == 'ubuntu-latest'
         working-directory: comm/tests
@@ -254,10 +351,10 @@ jobs:
           # The read cursor is a line count with the hash of the last line
           # read, so a cut-back steps back one line and nothing is shown twice.
           bash test-comm-poll-cursor.sh
-          # A delete rooted in a variable is written ${VAR:?} in every
-          # tracked shell file, so an empty one aborts instead of deleting
-          # from /.
+          # Suite bootstrap policy and executed shared-await controls.
           bash test-rm-guard.sh
+          # Staging publishes each file whole by a sibling rename, copying no source permissions.
+          bash test-stage-bin.sh
           # 0031 B1's caller: a registry miss goes to the wire and one lap ends
           # in one verdict; the acceptance matrix's classifier keys on that
           # verdict.
@@ -267,10 +364,6 @@ jobs:
           # ADR 0049, User isolation: every writer makes the comm folder 0700/0600 under umask 022,
           # a folder an older release left is tightened at join, user files keep the caller's umask.
           bash test-comm-private.sh
-          # The heartbeat waits on its context call in 50 ms ticks under a
-          # 10 s bound, so a call that ends at once costs 50 ms, not a whole
-          # second. Timed against a stub, hermetic, about two seconds.
-          bash test-heartbeat-ctx-wait.sh
           # A session may declare its handle only into the row its own
           # identity names. Until this suite ran here, the one thing that
           # proves it was a suite nobody ran but by hand -- and the defect it
@@ -307,6 +400,8 @@ jobs:
           bash test-sot-fe-version.sh
           # reauth moves only the row it runs in; a second argument or a missing row id sends nothing.
           bash test-sot-fe-reauth.sh
+          # ccx's default handle is built from the comm library's safe pieces; a failed derivation stops the launch.
+          bash test-ccx-launch.sh
           # The carriage-return rule for the token: a \r kept on it is a token
           # GitHub rejects. Hermetic, under a second.
           bash test-crlf-gh-auth.sh

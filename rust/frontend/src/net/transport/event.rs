@@ -2,9 +2,29 @@
 
 use super::*;
 
+#[derive(Debug)]
+pub(crate) enum ResultTreeReply {
+    Root {
+        root: TreeNode,
+        children: Vec<TreeNode>,
+    },
+    Children {
+        parent_id: String,
+        children: Vec<TreeNode>,
+    },
+    Failed {
+        request: ResultTreeRequest,
+        error: String,
+    },
+}
+
 /// Messages the transport task pushes back to the GPU thread.
 #[derive(Debug)]
 pub enum IncomingEvt {
+    ResultTree {
+        attempt: ResultAttemptId,
+        reply: ResultTreeReply,
+    },
     Connected {
         session_id: String,
         revision: u64,
@@ -25,7 +45,8 @@ pub enum IncomingEvt {
         proxy: bool,
         /// C3 as amended §5: which transport actually connected —
         /// `ResolvedDial::Local` for the pipe, `ResolvedDial::Ssh(recipe)`
-        /// for the ssh child, carrying the exact recipe it spawned. The
+        /// for the ssh child, carrying the exact recipe it spawned, and
+        /// `ResolvedDial::Relay(path)` for a generated hub relay socket. The
         /// proxy arms on `proxy && !matches!(resolved, ResolvedDial::Local)`
         /// (`ui/events.rs`) — keyed on the transport that CONNECTED, not the CLI
         /// shape.

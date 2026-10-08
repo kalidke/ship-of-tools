@@ -12,6 +12,7 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh" || exit 2
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -24,6 +25,8 @@ fi
 export SOT_COMM_HOME="$WORK/home"
 guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
+export SOTD_BIN="$(guard_bridge_stub "$WORK/bridge")"
+[ -x "$SOTD_BIN" ] || exit 2
 JOIN="$SCRIPTS_DIR/comm-join.sh"
 mkdir -p "$SOT_COMM_HOME"
 # Hermetic host: comm-context.sh reads $SOT_COMM_TEST_HOST exactly as
@@ -103,11 +106,7 @@ start_stub_daemon() {
     done ) &
     STUB_WATCHER_PID=$!
 
-    local deadline=$((SECONDS + 5))
-    while [ ! -S "$SOCK" ]; do
-        [ "$SECONDS" -lt "$deadline" ] || { echo "stub daemon socket never appeared: $SOCK" >&2; break; }
-        sleep 0.05
-    done
+    await test -S "$SOCK" || echo "stub daemon socket never appeared: $SOCK" >&2
 }
 
 stop_stub_daemon() {

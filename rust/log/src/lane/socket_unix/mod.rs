@@ -149,14 +149,14 @@ use crate::lane::client::Endpoint;
 // for the account and one `LOCAL_PEERTOKEN` audit token carrying the peer's
 // pid AND the kernel's own reuse generation together (see either module's
 // own doc). No other Unix has one, which is what the gate above says.
-#[cfg(target_os = "linux")]
-use crate::identity::challenge_unix as challenge_os;
 #[cfg(target_os = "macos")]
 use crate::identity::challenge_macos as challenge_os;
+#[cfg(target_os = "linux")]
+use crate::identity::challenge_unix as challenge_os;
 use crate::lane::attach_proto::ConnId;
 use crate::lane::transport::{
-    join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget, SendMarker,
-    StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
+    join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget,
+    SendMarker, StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
     EVENTS_RETRY_INTERVAL, READ_BUF_LEN, REAPER_INBOX_SLACK, TEARDOWN_AGGREGATE_DEADLINE,
 };
 use std::collections::HashMap;
@@ -166,9 +166,9 @@ use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -399,6 +399,7 @@ struct ServerShared {
     /// TEST-SUPPORT ONLY (see [`Probes`]'s own doc) — zero-size, zero-cost
     /// outside a test build.
     probes: Probes,
+    progress: crate::lane::test_progress::Progress,
 }
 
 mod accept;

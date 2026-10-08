@@ -8,12 +8,12 @@ messaging; charter: comm/CLAUDE.md.
 
 ## Files
 - `comm-lib.sh`: the loader; sources the seven parts below, in this order, and holds nothing else
-- `comm-lib-base.sh`: the platform test, the comm folder's paths (`COMM_HOME`, `REGISTRY`, the lock path), the clock, tool checks, jq and host helpers, ages, and `COMM_LIVE_SECS` (how old a `last_seen` may be and still be live)
+- `comm-lib-base.sh`: the platform test, the comm folder's paths (`COMM_HOME`, `REGISTRY`, the lock path), the clock, tool checks, the command bound (`sot_bounded`), jq and host helpers, ages, and `COMM_LIVE_SECS` (how old a `last_seen` may be and still be live)
 - `comm-lib-client.sh`: the shell client of the daemon's wire: endpoints, the ssh bridge, the hello frame, `_sot_os_user` (this shell's OS account, on Windows the SID `_sot_windows_sid` reads), `sot_oneshot_request`, pty input and screen
 - `comm-lib-registry-lock.sh`: the registry lock: `with_lock` and the lock record's take, judge and fail steps
 - `comm-lib-registry.sh`: the registry file: `ensure_home`, the writers, the reads, a row's status and `sot_heartbeat_fresh` (is a `last_seen` live)
 - `comm-lib-inbox.sh`: the inbox append and its lock, `sot_comm_file`, the read cursor, the line counts and `sot_unread` (the unread count)
-- `comm-lib-identity.sh`: the self file, the routable-identity gate, slugs and derived handles (`claim_derived_handle`)
+- `comm-lib-identity.sh`: the self file and _sot_self_slot, validated raw-slot migration and the locked self writer, the routable-identity gate, slugs, derived handles (`claim_derived_handle`) and the shared host piece of a handle (`_sot_handle_host`)
 - `comm-lib-agent-layers.sh`: the agent-layer check (`sot_require_agent`): which agents lie between a script and its row
 
 `comm-lib-client.sh` is the agents subsystem's code (agents/CLAUDE.md), housed here because the library calls it
@@ -25,6 +25,7 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
 `sot_oneshot_request` for a request to the daemon.
 
 ## Rules
+- Agent-layer input opens establish stderr redirection first; vanished process files preserve the existing chain/refusal result without a shell input-open diagnostic. The test table covers stat, cmdline and both winpid reads.
 - `comm-lib.sh` only sources its parts, and a part calls nothing while it is sourced: outside function bodies there are
   assignments only, and comm-lib-base.sh's `umask 077`, which reads nothing, so the order of the parts changes no
   behaviour. A new part is a new file here and a new line
@@ -57,12 +58,27 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   the wake's rule; a count that cannot be made returns 1, never 0).
 - One rule for a live `last_seen` (`sot_heartbeat_fresh`, `COMM_LIVE_SECS`), the twin of the filer's `heartbeat_fresh`.
 - Every endpoint leaves through `_sot_emit_endpoint`.
+- Every connection the library and its callers open goes through `sot_dial` or `sot_ssh_bridge`: a `unix:` or
+  `pipe:` endpoint through `sotd stdio-bridge --endpoint`, which connects only to an endpoint this OS account serves,
+  and an `ssh:` one through `sot_ssh_bridge`, whose far end is that box's own bridge (ADR 0049 `## User isolation`).
+  A caller keeps the bridge's input open until it has read what it waits for.
 - A value that may start with `/` goes through `sot_jq_rawfile`, never `jq --arg`.
 - A rule written in both shell and Rust changes in both in one commit (the lock record, the cursor, the lock identity, the unread count, the heartbeat).
-- The host part `comm-context.sh` gives an unpinned self file, and `comm-despawn.sh`'s match of it, come from `sot_raw_host`
-  (raw `hostname -s`, case kept, a non-empty `SOT_COMM_TEST_HOST` first), not `sot_host`. A capsule's pinned self file is
-  named by the daemon with its declared host, which is `sot_host`'s rule.
+- The host piece of a derived handle is `_sot_handle_host` (sanitized to 12, plus a digest of the raw host when that changed it): `sot_derive_handle` and ccx's default `<repo>-cx-<host>` both build it, so a Codex default is always a name `workspace.create` accepts. ccx sources this library in a subshell (it sets `umask 077`) and stops the launch when the derivation fails.
+- HOST, registry host facts and unpinned self-slot keys use sot_host, the declared-host twin. HANDLE_HOST is the raw host component (`sot_raw_host`: raw `hostname -s`, case kept, a non-empty `SOT_COMM_TEST_HOST` first) used only for derived handles and validated legacy-slot migration; an explicit self-file or name pin is kept verbatim. Context and despawn format slots through _sot_self_slot. Despawn cleans the admitted target daemon's slot only after confirmed destroy.
+- The one slot formatter validates native representability of the complete leaf before layout repair, publication or destroy. Failure leaves files unchanged and issues no destructive request; accepted declared-host text is never rewritten to make a filename.
 - bash 3.2 and git-bash.
+- The bounded comm calls run under `sot_bounded` (comm-lib-base.sh), never under `timeout`: `sot_ssh_bridge`'s `ssh`,
+  `sot_dial`'s bridge, comm-list.sh's `sot-fe version`, comm-turn-auditor.sh's headless claude, and the PostToolUse heartbeat's comm-context.sh. One perl process owns
+  the deadline and the command's process group until the command has exited and no member of the group is left, so a
+  descendant still holding the output after the command exits is ended at the bound too, and the call's status is then
+  the bound's, with the command's own on stderr. At the bound, or when that perl is itself sent TERM, INT or HUP, it
+  signals the group and the command itself, KILLs them a second later by the clock if any is left, and returns a second
+  after that in any case, naming on stderr what still ran; the bound holds when the caller is killed. With no perl, no
+  process group or a bound that is not a whole number above 0, the call does not run (125). Outside it: a descendant
+  that leaves the command's group (setsid, as ssh's ControlPersist master does), and on Windows a native program and its
+  children (`sot_dial`'s sotd.exe, the auditor's claude), since Git Bash emulates the group and its signals for its own
+  programs only, and the tests run only those. The heartbeat stores context stdout and stderr in regular files, replays a finite diagnostic snapshot after the bounded return, discards context stdout on a bound, setup or cancellation failure, and adds no final wait of its own.
 - The installer publishes this folder before every script (comm/bin-folders.txt), so during an install the previous
   release's scripts source this library: a release removes or changes a function or global only once no script of the
   previous release uses it.

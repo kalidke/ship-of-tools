@@ -8,7 +8,7 @@ operation is a method on `State` or a pure function beside it. Part of fe-ui; ch
 - `mod.rs`: declares the files below and re-exports their names to `ui`.
 - `prompt.rs`: `NavPrompt`, `CreateOutcome`, the new-entry id builder, and `State`'s begin, push, backspace and confirm of the create and delete prompts.
 - `keys.rs`: File keys from the tree: the tree's text prompts and the file row actions (open, docs, download, upload, run).
-- `reveal.rs`: `ancestor_rels` and `State::drive_same_ws_open`, `drive_reveal_step`, which open the tree down to a driven path.
+- `reveal.rs`: `ancestor_rels` and `State::drive_same_ws_open`, `drive_result_reveal`, `drive_reveal_step`, which open the tree down to a driven path.
 - `paths.rs`: `parent_files_node_id` and `State`'s project root, cursored and previewed file paths, path copy and `backend_abs_path`.
 - `transfer.rs`: `UploadState`, `UploadBatch`, and `State`'s `start_download`, `start_upload` and the chunk loop.
 - `listing.rs`: `expanded_files_dirs` and `State`'s hidden-files toggle and directory refreshes.
@@ -27,3 +27,5 @@ prompt.rs `NavPrompt` for a new nav-pane prompt; transfer.rs `State::start_uploa
 - A watcher refresh only re-lists a directory already shown expanded (`refresh_tree_dir_if_expanded`).
 - Directories are refused before the delete prompt opens (`is_directory_row`).
 - The quit prompt flips its choice with Tab, confirms with Enter by key identity, cancels on every other non-repeat key, and ignores repeats.
+- A result belongs to the producing host's listed canonical row. Removal or identity replacement invalidates its entry and attempts; while the row remains listed, only its matching cursor, installed preview and successful presentation acknowledge it. Late completion cannot affect a successor.
+- A replacement result or restarted attempt gets fresh local serials. Result-owned root/children requests retain them through pending entries and tagged events; stale successes and failures are rejected before tree or reveal mutation. Ordinary tree replies cannot complete or abort a result-owned reveal. Preview generations and presentation certificates are bound to the same issuing attempt.

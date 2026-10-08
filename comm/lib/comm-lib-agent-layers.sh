@@ -94,7 +94,7 @@ _SOT_PROC=/proc
 # The caller checks that pp is a number.
 _sot_proc_ppid() {
     local line
-    IFS= read -r line < "$_SOT_PROC/$1/stat" 2>/dev/null || return 1
+    IFS= read -r line 2>/dev/null < "$_SOT_PROC/$1/stat" || return 1
     line="${line##*) }"; line="${line#* }"; pp="${line%% *}"
 }
 
@@ -120,7 +120,7 @@ _sot_ancestor_chain() {
             rec=""
             # A newline would end the record: it becomes \x1c, never a space (an argument
             # that differs only by one must not look equal to the host's).
-            while IFS= read -r -d '' a; do rec="$rec${a//$'\n'/$'\034'}$us"; done < "$_SOT_PROC/$p/cmdline" 2>/dev/null
+            while IFS= read -r -d '' a; do rec="$rec${a//$'\n'/$'\034'}$us"; done 2>/dev/null < "$_SOT_PROC/$p/cmdline"
             if [ -z "$rec" ]; then echo '!truncated'; break; fi
             printf '%s\n' "${rec%"$us"}"
             n=$((n + 1))
@@ -128,14 +128,14 @@ _sot_ancestor_chain() {
             if [ "$pp" -gt 1 ]; then p="$pp"; continue; fi
             _sot_is_windows || { echo '!end'; break; }
             # Windows: p's parent is native, so sotd.exe walks on from p's Windows process.
-            IFS= read -r w < "$_SOT_PROC/$p/winpid" 2>/dev/null || { echo '!truncated'; break; }
+            IFS= read -r w 2>/dev/null < "$_SOT_PROC/$p/winpid" || { echo '!truncated'; break; }
             if [ -z "$scanned" ]; then
                 # Cygwin's processes by winpid, read once and before any sotd snapshot: a
                 # process sotd prints is an ancestor, so it was created before this scan and
                 # is alive at the snapshot, and the pid it holds there names it here too.
                 local -A cyg; scanned=1
                 for f in "$_SOT_PROC"/[0-9]*/winpid; do
-                    IFS= read -r a < "$f" 2>/dev/null && [ -n "$a" ] || continue
+                    IFS= read -r a 2>/dev/null < "$f" && [ -n "$a" ] || continue
                     f="${f%/winpid}"; cyg[$a]="${f##*/}"
                 done
             fi

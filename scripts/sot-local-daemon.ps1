@@ -26,11 +26,15 @@
 # that file can create workspaces that immediately fail to spawn. Refuse to
 # start rather than run degraded.
 #
-# -Stop is different (codex follow-up): it only needs a resolvable
-# sotd.exe, not the complete pair, to query the pipe name from -- stopping
-# never spawns a capsule, so a missing/moved sot-capsule.exe is irrelevant
-# to it, and the daemon being stopped is presumably already running with
-# its own sotd.exe still resolvable at that same location regardless.
+# One resolver (Resolve-SotdExe, below) chooses the sotd.exe for everything
+# that reaches the local daemon: its start, the pipe-name query, every probe,
+# and, through -Resolve, launch-sot.ps1's own query and lease. -Stop takes
+# the same choice first and only then falls back to a lone sotd.exe, dev
+# first: it needs a binary to query the pipe name from, and stopping never
+# spawns a capsule, so a missing or moved sot-capsule.exe is irrelevant to
+# it. A lone dev sotd.exe beside a complete install pair is never chosen: the
+# daemon runs the install's, and a bridge from another build may not speak
+# the form the probe and the lease use.
 #
 # Pipe naming (ADR 0042 L2b design C): resolved FIRST (the section above),
 # THEN queried from the daemon itself -- `& $daemonExe session-socket-path
@@ -53,10 +57,11 @@
 # Liveness = a bounded named-pipe CONNECT probe, not a namespace listing. A
 # pipe NAME persists under \\.\pipe\ while any dead client still holds a
 # handle to it (and is listed even when every real instance is busy) --
-# presence there is not health. Connecting (then immediately closing) is
-# what proves a server is actually there to accept; the daemon treats an
-# early close as a normal EOF (server/conn.rs), so this probe is harmless to a
-# live daemon. Used for the idempotency check, the readiness wait, AND stop
+# presence there is not health. Connecting (then immediately closing),
+# through sotd's own bridge, which connects only to a pipe this OS account
+# serves (ADR 0049, User isolation), is what proves this daemon is actually
+# there to accept; the daemon treats an early close as a normal EOF
+# (server/conn.rs), so this probe is harmless to a live daemon. Used for the idempotency check, the readiness wait, AND stop
 # confirmation (probe fails AND the matched process is gone -- a process
 # that's still exiting can leave the pipe briefly unconnectable without
 # actually being gone yet).
@@ -145,6 +150,10 @@
 [CmdletBinding()]
 param(
     [switch]$Stop,
+    # Print the sotd.exe a start runs (Resolve-SotdExe, below) and exit: 0 with its path, 1 with nothing when no
+    # complete pair exists. Starts, stops, probes and logs nothing. launch-sot.ps1 runs its pipe-name query and its
+    # lease's bridge with this binary, so both are always the daemon's own.
+    [switch]$Resolve,
     # Install prefix override (tests). Default: %LOCALAPPDATA%\sot, matching
     # sot-apply.ps1's own default and the install layout (ADR 0030 Sec 4).
     [string]$Prefix,
@@ -179,6 +188,9 @@ if (-not $DevBinDir) {
     $DevBinDir = Join-Path $repo 'rust\target\release'
 }
 if (-not $ProjectRoot) { $ProjectRoot = $env:USERPROFILE }
+
+# Start-SotBridge, the one way a launch script starts the bridge (sot-lease.ps1 defines functions only).
+. (Join-Path $PSScriptRoot 'sot-lease.ps1')
 
 function Write-LocalDaemonLog {
     param([string]$Message)
@@ -225,19 +237,21 @@ function Remove-OldDaemonLogs {
     }
 }
 
-# Bounded connect probe (500ms) -- see the header for why this replaces a
-# namespace listing. Always closes/disposes, so a live daemon just sees one
-# harmless connect-then-EOF.
+# Bounded connect probe -- see the header for why this replaces a namespace listing. sotd's own bridge makes the
+# connection (`stdio-bridge --endpoint`, started by Start-SotBridge, so its input carries no byte this script did not
+# write): it opens the pipe at identification level and connects only to a pipe this OS account serves, so a pipe
+# another account holds under this name is never this daemon. Its input is closed at once, so a live daemon sees one
+# harmless connect-then-EOF. No runnable sotd.exe: not open.
 function Test-SotPipeOpen {
     param([string]$Name)
-    $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $Name, [System.IO.Pipes.PipeDirection]::InOut)
+    if (-not $daemonExe -or -not (Test-Path -LiteralPath $daemonExe -PathType Leaf)) { return $false }
     try {
-        $client.Connect(500)
-        return $true
+        $p = Start-SotBridge $daemonExe ('\\.\pipe\' + $Name)
+        $p.StandardInput.Close()
+        if (-not $p.WaitForExit(5000)) { try { $p.Kill() } catch { }; return $false }
+        return ($p.ExitCode -eq 0)
     } catch {
         return $false
-    } finally {
-        $client.Dispose()
     }
 }
 
@@ -246,34 +260,32 @@ function Test-CompletePair {
     (Test-Path (Join-Path $Dir 'sotd.exe')) -and (Test-Path (Join-Path $Dir 'sot-capsule.exe'))
 }
 
-function Find-SotdExe {
-    param([string]$Dir)
-    $exe = Join-Path $Dir 'sotd.exe'
-    if (Test-Path $exe) { return $exe }
+# ---- resolve the binary FIRST: the one resolver (see the header) ----------
+# The complete dev pair, else the complete install pair. Only -Stop then takes
+# a lone sotd.exe, dev first: the daemon it stops is presumably already
+# running, with whatever sotd.exe it started from still resolvable at that
+# same location (a running process pins its own binary as a mapped image), and
+# requiring a sibling sot-capsule.exe would refuse to stop a daemon whose
+# capsule binary was since removed or moved, for no safety benefit.
+function Resolve-SotdExe {
+    param([string]$DevBinDir, [string]$InstallBinDir, [switch]$Stop)
+    foreach ($dir in @($DevBinDir, $InstallBinDir)) {
+        if (Test-CompletePair $dir) { return (Join-Path $dir 'sotd.exe') }
+    }
+    if ($Stop) {
+        foreach ($dir in @($DevBinDir, $InstallBinDir)) {
+            $exe = Join-Path $dir 'sotd.exe'
+            if (Test-Path $exe) { return $exe }
+        }
+    }
     return $null
 }
 
-# ---- resolve the binary FIRST (unchanged dev-then-install preference) ------
-# Codex follow-up: -Stop only needs a resolvable sotd.exe to query the pipe
-# name from -- sot-capsule.exe is a START requirement (a daemon that can't
-# spawn capsule workspaces should never be started fresh), not a stop one.
-# The daemon -Stop is trying to reach is presumably already running, with
-# whatever sotd.exe it started from still resolvable at that same location
-# (a running process pins its own binary as a mapped image) -- requiring
-# the CURRENT resolution to also find a sibling sot-capsule.exe would
-# refuse to stop a daemon whose capsule binary was since removed/moved,
-# for no safety benefit (stopping never spawns a capsule).
 $installBinDir = Join-Path $Prefix 'bin'
-$daemonExe = $null
-if ($Stop) {
-    $daemonExe = Find-SotdExe $DevBinDir
-    if (-not $daemonExe) { $daemonExe = Find-SotdExe $installBinDir }
-} else {
-    if (Test-CompletePair $DevBinDir) {
-        $daemonExe = Join-Path $DevBinDir 'sotd.exe'
-    } elseif (Test-CompletePair $installBinDir) {
-        $daemonExe = Join-Path $installBinDir 'sotd.exe'
-    }
+$daemonExe = Resolve-SotdExe -DevBinDir $DevBinDir -InstallBinDir $installBinDir -Stop:$Stop
+if ($Resolve) {
+    if ($daemonExe) { Write-Output $daemonExe; exit 0 }
+    exit 1
 }
 
 # ---- pipe path: queried from the daemon, not constructed here (design C) ---
@@ -342,10 +354,17 @@ if (-not $PipePath -or -not $PipeName) {
     exit 1
 }
 
+# Whether $Proc (a Win32_Process) belongs to the account $Sid names (ADR 0049, User isolation): another account's
+# sotd.exe is never this daemon, to stop or to wait for. An owner that cannot be read is not this account's.
+function Test-SotOwnProcess($Proc, [string]$Sid) {
+    try { return ((Invoke-CimMethod -InputObject $Proc -MethodName GetOwnerSid -ErrorAction Stop).Sid -eq $Sid) } catch { return $false }
+}
+
 function Get-LocalDaemonProcess {
     $pat = '(?i)--socket\s+"?' + [regex]::Escape($PipePath) + '"?(\s|$)'
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     Get-CimInstance Win32_Process -Filter "Name='sotd.exe'" |
-        Where-Object { $_.CommandLine -and ($_.CommandLine -match $pat) }
+        Where-Object { $_.CommandLine -and ($_.CommandLine -match $pat) -and (Test-SotOwnProcess $_ $sid) }
 }
 
 # How long -Stop waits for the daemon's own shutdown, in ms, from held.json:

@@ -438,7 +438,19 @@ fn no_lease_status_line() {
     assert_eq!(lease_notice(false, &[Pending]), None);
     assert_eq!(lease_notice(false, &[Undetermined]), Some(NOTICE_UNDETERMINED));
     assert_eq!(lease_notice(false, &[Unsupported]), Some(NOTICE_UNSUPPORTED));
-    assert_eq!(lease_notice(false, &[Foreign]), Some(NOTICE_NO_BACKEND));
+    const FOREIGN: &str = "closing will not end sessions: this computer's backend refused this window's identity claim";
+    assert_eq!(lease_notice(false, &[Foreign]), Some(FOREIGN));
+    assert_eq!(lease_notice(false, &[Foreign, Unreached]), Some(FOREIGN));
+    assert_eq!(lease_notice(false, &[Unreached, Foreign]), Some(FOREIGN));
+    assert_eq!(
+        lease_notice(false, &[Foreign, Unsupported]),
+        Some(NOTICE_UNSUPPORTED)
+    );
+    assert_eq!(
+        lease_notice(false, &[Foreign, Undetermined]),
+        Some(NOTICE_UNDETERMINED)
+    );
+    assert_eq!(lease_notice(false, &[Foreign, Pending]), None);
     assert_eq!(lease_notice(false, &[Unreached]), Some(NOTICE_NO_BACKEND));
     assert_eq!(lease_notice(false, &[]), Some(NOTICE_NO_BACKEND));
     assert_eq!(lease_notice(false, &[Undetermined, Unsupported]), Some(NOTICE_UNDETERMINED));

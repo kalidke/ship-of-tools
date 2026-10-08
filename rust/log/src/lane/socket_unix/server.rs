@@ -1,9 +1,12 @@
 //! The server: `SocketServer`, its bind constructors, send/close and two-phase teardown.
 
-use super::*;
 use super::accept::accept_loop;
 use super::conn::{reaper_loop, request_teardown};
-use super::listener::{create_and_bind_listener, ensure_private_runtime_dir, open_verified_dir_fd, set_cloexec, set_nonblocking};
+use super::listener::{
+    create_and_bind_listener, ensure_private_runtime_dir, open_verified_dir_fd, set_cloexec,
+    set_nonblocking,
+};
+use super::*;
 
 /// The server side of one voyage's (or the supervisor lane's) socket:
 /// [`SocketServer::bind`] creates the listener and starts accepting;
@@ -71,10 +74,14 @@ impl SocketServer {
             .expect("a socket path built by socket_path() always has a file name");
         let file_name = CString::new(file_name.as_bytes()).map_err(|_| TransportError::Io {
             op: "CString::new(socket file name)",
-            source: io::Error::new(io::ErrorKind::InvalidInput, "socket file name contains a NUL byte"),
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "socket file name contains a NUL byte",
+            ),
         })?;
 
-        let listener = create_and_bind_listener(dir_fd.as_raw_fd(), &file_name, &path, max_connections)?;
+        let listener =
+            create_and_bind_listener(dir_fd.as_raw_fd(), &file_name, &path, max_connections)?;
 
         // The wake self-pipe (module doc: "the accept loop wakes via
         // poll(2) over a self-pipe"). O_NONBLOCK on both ends: the
@@ -132,6 +139,7 @@ impl SocketServer {
             file_name,
             wake_write,
             probes: Probes::default(),
+            progress: crate::lane::test_progress::Progress::default(),
         });
 
         // Spawn the reaper FIRST -- if the accept thread then fails to
@@ -165,7 +173,7 @@ impl SocketServer {
             Ok(jh) => jh,
             Err(e) => {
                 let _ = shared.reaper_tx.send(ReaperMsg::Shutdown);
-                reaper_jh.join().ok();
+                Self::observe_bind_join(&shared, reaper_jh);
                 unsafe { libc::unlinkat(shared.dir_fd.as_raw_fd(), shared.file_name.as_ptr(), 0) };
                 return Err(TransportError::Io {
                     op: "spawn accept thread",
@@ -181,6 +189,16 @@ impl SocketServer {
             reaper_jh: Some(reaper_jh),
             detached_workers: Vec::new(),
         })
+    }
+
+    fn observe_bind_join(shared: &ServerShared, reaper: JoinHandle<()>) {
+        shared.progress.note(None, "server.join.begin", "begin");
+        let joined = reaper.join();
+        shared.progress.note(
+            None,
+            "server.join.end",
+            if joined.is_ok() { "ok" } else { "panic" },
+        );
     }
 
     /// The event stream: `Accepted`/`Bytes`/`Sent`/`Closed`/`AcceptError`,
@@ -280,6 +298,9 @@ impl SocketServer {
     /// threads into `detached_workers` for [`Self::join_workers`] to join
     /// later.
     pub fn disconnect_listener(&mut self) {
+        self.shared
+            .progress
+            .note(None, "listener.disconnect", "begin");
         let unlink_once = self
             .shared
             .dropping
@@ -292,7 +313,11 @@ impl SocketServer {
             // removes only the entry named `file_name` inside THAT
             // directory, never re-resolving any path.
             unsafe {
-                libc::unlinkat(self.shared.dir_fd.as_raw_fd(), self.shared.file_name.as_ptr(), 0);
+                libc::unlinkat(
+                    self.shared.dir_fd.as_raw_fd(),
+                    self.shared.file_name.as_ptr(),
+                    0,
+                );
             }
         }
         let wake_byte = [0u8; 1];
@@ -308,21 +333,22 @@ impl SocketServer {
                 1,
             )
         };
-        let drained: Vec<ConnHandle> = {
+        let drained: Vec<(ConnId, ConnHandle)> = {
             let mut map = self.shared.conns.lock().unwrap();
-            map.drain().map(|(_, conn)| conn).collect()
+            map.drain().collect()
         };
-        for conn in drained {
+        for (id, conn) in drained {
             // Fast-exits a reader stuck retrying `deliver_bytes` against
             // a saturated events channel -- the same role `pipe_win`'s
             // own `IoSlot::is_closing` plays there once its own
             // `cancel_registered` latches `Closing`.
             conn.torn_down_requested.store(true, Ordering::Release);
-            unsafe { libc::shutdown(conn.stream.as_raw_fd(), libc::SHUT_RDWR) };
+            super::conn::observe_shutdown(&self.shared, id, &conn.stream);
             drop(conn.sender); // unblocks a writer idle-waiting on `recv`
             self.detached_workers.push(conn.reader_jh);
             self.detached_workers.push(conn.writer_jh);
         }
+        self.shared.progress.note(None, "listener.disconnect", "ok");
     }
 
     /// Phase two: tell the reaper to drain (a no-op for any connection
@@ -335,17 +361,53 @@ impl SocketServer {
     /// method does not call it, so the two phases stay independently
     /// observable (and independently testable).
     pub fn join_workers(&mut self, deadline: Instant) -> bool {
+        self.shared
+            .progress
+            .note(None, "server.join.begin", "begin");
         let mut ok = true;
         if let Some(jh) = self.accept_jh.take() {
-            ok = join_within(jh, deadline) && ok;
+            ok = self.join_observed(jh, deadline) && ok;
         }
         let _ = self.shared.reaper_tx.send(ReaperMsg::Shutdown);
         if let Some(jh) = self.reaper_jh.take() {
-            ok = join_within(jh, deadline) && ok;
+            ok = self.join_observed(jh, deadline) && ok;
         }
+        let shared = &self.shared;
         for jh in self.detached_workers.drain(..) {
-            ok = join_within(jh, deadline) && ok;
+            ok = Self::join_with_progress(shared, jh, deadline) && ok;
         }
+        self.shared.progress.note(None, "server.join.end", ok);
+        ok
+    }
+
+    fn join_observed(&self, jh: JoinHandle<()>, deadline: Instant) -> bool {
+        Self::join_with_progress(&self.shared, jh, deadline)
+    }
+
+    fn join_with_progress(shared: &ServerShared, jh: JoinHandle<()>, deadline: Instant) -> bool {
+        #[cfg(any(test, feature = "test-support"))]
+        let (id, role) = {
+            let name = jh.thread().name().unwrap_or("pending");
+            let id = name.rsplit('-').next().and_then(|n| n.parse().ok());
+            let role = if name.starts_with("sot-sock-r-") {
+                "reader"
+            } else if name.starts_with("sot-sock-w-") {
+                "writer"
+            } else {
+                "server"
+            };
+            shared
+                .progress
+                .note(id, "worker.join.begin", format_args!("role={role}"));
+            (id, role)
+        };
+        let ok = join_within(jh, deadline);
+        #[cfg(any(test, feature = "test-support"))]
+        shared
+            .progress
+            .note(id, "worker.join.end", format_args!("role={role} ok={ok}"));
+        #[cfg(not(any(test, feature = "test-support")))]
+        let _ = shared;
         ok
     }
 }
@@ -364,7 +426,12 @@ impl LaneServer for SocketServer {
         SocketServer::events(self)
     }
 
-    fn send(&self, conn: ConnId, bytes: Vec<u8>, marker: Option<u64>) -> Result<(), TransportError> {
+    fn send(
+        &self,
+        conn: ConnId,
+        bytes: Vec<u8>,
+        marker: Option<u64>,
+    ) -> Result<(), TransportError> {
         SocketServer::send(self, conn, bytes, marker)
     }
 
@@ -390,6 +457,30 @@ impl LaneServer for SocketServer {
 /// count — Codex review round 2's own critique of the first fix pass.
 #[cfg(any(test, feature = "test-support"))]
 impl SocketServer {
+    /// Opaque fixture hold of this recorder, with no connection-state lock.
+    pub fn hold_progress_for_test(&self) -> ProgressHold {
+        let shared = Arc::clone(&self.shared);
+        let (ready, observed) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let holder = thread::spawn(move || {
+            let _held = shared.progress.hold();
+            ready.send(()).expect("observe the recorder holder");
+            let _ = released.recv();
+        });
+        observed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("recorder holder did not become ready");
+        ProgressHold {
+            release,
+            holder: Some(holder),
+        }
+    }
+
+    /// Server-local checkpoints, retained after connection removal; never locks connection state.
+    pub fn progress_for_test(&self) -> crate::lane::test_progress::Snapshot {
+        self.shared.progress.snapshot()
+    }
+
     /// How many times a `Bytes` delivery attempt has observed the events
     /// channel full (`TrySendError::Full`) since this server was bound.
     pub fn probe_events_full_bytes(&self) -> usize {
@@ -423,5 +514,96 @@ impl Drop for SocketServer {
                  aggregate deadline; a worker thread may still be running"
             );
         }
+    }
+}
+
+/// Opaque test fixture: owns the observed holder of only this server's recorder.
+#[cfg(any(test, feature = "test-support"))]
+pub struct ProgressHold {
+    release: mpsc::Sender<()>,
+    holder: Option<JoinHandle<()>>,
+}
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for ProgressHold {
+    fn drop(&mut self) {
+        let _ = self.release.send(());
+        self.holder
+            .take()
+            .unwrap()
+            .join()
+            .expect("recorder holder panicked");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_progresses_while_recorder_is_busy() {
+        let test = "lane::socket_unix::server::tests::transport_progresses_while_recorder_is_busy";
+        if !crate::test_isolated::run_isolated(test) {
+            return;
+        }
+        let root = tempfile::Builder::new()
+            .prefix("sot-busy-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::env::set_var("SOT_RUNTIME_DIR", root.path());
+        let id = uuid::Uuid::now_v7().to_string();
+        let server = SocketServer::bind(&id, 1).unwrap();
+        let path = voyage_socket_path(&id).unwrap();
+        let before = server.progress_for_test().skipped;
+        let held = server.hold_progress_for_test();
+        let (done, observed) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                use std::io::{Read, Write};
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let event = || {
+                    server
+                        .events()
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                        .unwrap()
+                };
+                let mut client = UnixStream::connect(path).unwrap();
+                let LaneEvent::Accepted(conn) = event() else {
+                    panic!("expected Accepted");
+                };
+                client
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                client
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                client.write_all(b"a").unwrap();
+                assert!(matches!(event(), LaneEvent::Bytes(_, ref bytes) if bytes == b"a"));
+                server.send(conn, b"b".to_vec(), Some(7)).unwrap();
+                let mut byte = [0];
+                client.read_exact(&mut byte).unwrap();
+                assert_eq!(byte, *b"b");
+                assert!(matches!(event(), LaneEvent::Sent(_, 7)));
+                server.close(conn);
+                assert!(matches!(
+                    event(),
+                    LaneEvent::Closed(_, ClosedReason::Closed)
+                ));
+                assert!(server.progress_for_test().skipped > before);
+            }));
+            done.send(result.is_ok()).unwrap();
+            (server, result)
+        });
+        let completed_while_held = observed.recv_timeout(Duration::from_secs(6));
+        drop(held); // Always release before joining or ordinary server cleanup, including a red.
+        let (server, result) = producer.join().unwrap();
+        drop(server);
+        assert!(
+            completed_while_held == Ok(true),
+            "transport stopped while recorder was busy"
+        );
+        result.unwrap();
+        eprintln!("recorder-proof test={test} progress=while-held skipped=increased bodies=1");
     }
 }

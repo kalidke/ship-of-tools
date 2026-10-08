@@ -7,6 +7,7 @@ them each belong to one other subsystem, named below. Part of fe-ui; charter: ru
 
 ## Files
 - `Cargo.toml`: the crate and its one `[[bin]]`, `sot`; Windows-only dependencies for the foreground and taskbar calls.
+- `Cargo.toml`'s window_minimized test target: feature-gated, harness=false main-thread native progress proof, implemented by src/main.rs and ui/app/tests.rs; ordinary startup is not run by that target.
 - `build.rs`: on Windows, embeds the logo as sot.exe's icon resource (a no-op elsewhere).
 - `queries/`: the Julia highlight query that `ui/preview/markdown/highlight.rs` embeds (fe-ui).
 - `src/main.rs`: `main`, the process entry: tracing, the connection set, the transport runtime, then `ui::App` (fe-ui;
@@ -19,7 +20,7 @@ them each belong to one other subsystem, named below. Part of fe-ui; charter: ru
 - `src/lease_grant_tests.rs`: lease grant tests and the shared test-only private listener/handoff fixture; its directory guard is created immediately after directory creation, before any fallible setup or binding, and behavioral tests cover bind-failure and successful-listener-drop cleanup.
 - `src/lease_leave_tests.rs`: lease leave tests and the shared test-only recording leave peer and bounded log/finish helpers.
 - `src/pages.rs`: the window's page proxy, loopback listeners that pipe each browser connection to the owning
-  daemon's `proxy.connect` (pages; charter rust/backend/src/pages/CLAUDE.md).
+  daemon's `proxy.connect`. The window's page proxy opens a dedicated SSH or generated-relay connection using the owning host's resolved control selection; handoff hello and proxy.connect share one write. (pages; charter rust/backend/src/pages/CLAUDE.md).
 - `src/selfupdate.rs`: startup self-update staging and `--update-status` (distribution; charter scripts/CLAUDE.md).
 - `src/relaunch.rs`: the relaunch sentinel, its watcher thread, and the Windows foreground handover (distribution;
   charter scripts/CLAUDE.md).
@@ -36,7 +37,8 @@ charter in src/ui/; for a connection or a request, to src/net/.
 - `--ephemeral`, `--capture` and `--no-lease` never take a lease (`lease_exempt` in lease.rs).
 - Only `sot_protocol::is_release_build()` self-updates (`guard` in selfupdate.rs); a dev build never stages anything.
 - The state directory has one resolution rule, sot-log's, which the window calls directly.
-- The window clears its own inherited standard handles first thing in `main` (`sot_log::host::winhandle::harden_own_stdio`), as
-  the daemon does, and the browser opener's child gets null ones (`spawn_opener`); every other start the window makes
-  set its three standard handles when read on 2026-10-05, so no child it starts holds its log files open
-  (`the_window_clears_its_inherited_stdio_first`, `the_opener_hands_its_child_no_inherited_stdio`).
+- window_entry hardens the window's inherited Windows standard handles before its startup continuation. The Windows startup test observes the three inheritance flags and its first owned child's file handles; browser-opener stdio remains separately owned and unchanged.
+- A Foreign lease outcome names a refused identity claim, not an absent backend or a proved different OS account; notice precedence is Undetermined, Unsupported, Foreign, then Unreached after granted/pending/exempt suppression.
+- The hosted minimized-window check runs the actual winit application for ten minutes on Windows and macOS, confirms a minimized native window and reports event entry/progress/completion counts; unavailable GUI sessions are not passes.
+- Minimized completion requires 12,000 actual fan-in events over the scheduled ten-minute workload, accepted-send timing/rate within the stated tolerance and matching actual dequeues. A short stalled-producer native control must fail the same workload validator before a queue-bound result is accepted.
+- The native progress driver feeds a synthetic peer through transport's gated run_native_progress_transport entry, which executes the existing steady_loop and actual reply-to-fan-in send; its real App/State receiver supplies the dequeue evidence.

@@ -24,7 +24,9 @@ use anyhow::{Context, Result};
 /// No test takes the system folders out of the process `PATH` or changes `SHELL`, so a bare program name always
 /// resolves; code under test takes both from its caller (`agents::argv::AgentEnv`, `sidecars::julia::resolve_bin_on`).
 /// The one `PATH` writer left, `topology::dial::tests::prepend_to_path`, puts a stub `ssh` first under this lock, and
-/// only the tests that call it run a bare `ssh` (`sot_log::test_scan::tests::no_test_changes_the_process_path_or_shell`).
+/// only the tests that call it run a bare `ssh`. The SSH fixtures' behavior test,
+/// `ssh_fixtures_preserve_parent_path_and_shell` in `tests/lane_bridge/dial.rs`, observes the parent `PATH` and
+/// `SHELL` around every fixture run.
 #[cfg(test)]
 pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

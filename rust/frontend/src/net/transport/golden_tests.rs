@@ -90,6 +90,24 @@ fn every_request_kind(download_dest: &std::path::Path) -> Vec<OutgoingReq> {
         OutgoingReq::MonitorUnsubscribe,
         OutgoingReq::AgentSend { from: s("as.from"), to: s("as.to"), text: s("as.text") },
         OutgoingReq::MonitorHistory { window_s: 2.5, points: 119, until: Some(3.5), host: o("mh.host") },
+        OutgoingReq::ResultTree {
+            attempt: ResultAttemptId {
+                workspace_id: s("rt.ws"),
+                result_serial: 201,
+                attempt_serial: 202,
+            },
+            request: ResultTreeRequest::Root,
+        },
+        OutgoingReq::ResultTree {
+            attempt: ResultAttemptId {
+                workspace_id: s("rc.ws"),
+                result_serial: 203,
+                attempt_serial: 204,
+            },
+            request: ResultTreeRequest::Children {
+                parent_id: s("rc.parent"),
+            },
+        },
     ]
 }
 

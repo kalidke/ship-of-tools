@@ -1,4 +1,4 @@
-# comm-lib-base.sh: the library's base: platform test, the comm folder's paths, clock, tool checks, jq and host helpers, ages.
+# comm-lib-base.sh: the library's base: platform test, the comm folder's paths, clock, tool checks, the command bound, jq and host helpers, ages.
 # Sourced by comm-lib.sh; defines functions and globals only, and sets the umask.
 
 # _sot_is_windows — the ONE shared platform test (Codex review, PR1 round 2
@@ -62,6 +62,76 @@ sot_require_tools() {
         rc=1
     done
     return "$rc"
+}
+
+# sot_bounded SECS CMD [ARG...] — runs the program CMD (not a shell function) with this shell's stdin, stdout and
+# stderr, and ends it SECS seconds (a whole number above 0) after it starts.
+# The bounded comm calls run under it: sot_ssh_bridge's ssh, sot_dial's bridge,
+# comm-list.sh's `sot-fe version`, comm-turn-auditor.sh's headless claude, and
+# the PostToolUse heartbeat's comm-context.sh.
+# One perl process owns the deadline and CMD's process group, which CMD gets before it runs, or it does not
+# run. The call returns when CMD has exited and no member of its group is left; until then the deadline holds, so a
+# descendant still holding CMD's output after CMD exits is ended at the bound too. At the bound, or when that perl is
+# itself sent TERM, INT or HUP, it signals the group and CMD itself (TERM, or the signal it got), so CMD is reached
+# even if it left its group; a second later by the clock it KILLs what is left, and a second after that it returns in
+# any case, naming on stderr whatever still runs; it also names CMD's own status when CMD had exited before its group
+# was ended. Status: CMD's own when CMD and its group end by themselves; 124 at the bound, 137 when that took KILL;
+# 128+N when the bound itself was sent signal N; 127 when CMD could not start; 125 when nothing ran (no perl, no
+# process group, or a bound that is not a whole number above 0). Outside it: a descendant that leaves CMD's group
+# (setsid, as ssh's ControlPersist master does). On Windows, Git Bash emulates the group and its signals for its own
+# programs; whether the bound ends a native Windows program (sot_dial's sotd.exe, the auditor's claude) or its
+# children is not established. Not GNU timeout: it returns once its own child ends, leaving a TERM-ignoring
+# descendant holding the output, and macOS has none.
+sot_bounded() {
+    command -v perl >/dev/null 2>&1 || {
+        echo "sot_bounded: no perl to bound $2 with" >&2
+        return 125
+    }
+    perl -e '
+        use POSIX ();
+        my ($secs, @cmd) = @ARGV;
+        if ($secs !~ /^[1-9][0-9]*$/) { print STDERR "sot_bounded: the bound is a whole number of seconds above 0, not $secs\n"; exit 125; }
+        my %num = (TERM => POSIX::SIGTERM(), INT => POSIX::SIGINT(), HUP => POSIX::SIGHUP());
+        my $pid = fork;
+        if (!defined $pid) { print STDERR "sot_bounded: fork: $!\n"; exit 125; }
+        if (!$pid) {
+            if (!setpgrp(0, 0)) { print STDERR "sot_bounded: no process group for $cmd[0]: $!\n"; POSIX::_exit(125); }
+            exec { $cmd[0] } @cmd;
+            print STDERR "sot_bounded: $cmd[0]: $!\n";
+            POSIX::_exit(127);
+        }
+        setpgrp($pid, $pid);
+        my ($why, $late, $st) = ("", 0, undef);
+        $SIG{ALRM} = sub { $late = 1 };
+        $SIG{$_} = sub { $why ||= $_[0] } for qw(TERM INT HUP);
+        my $code = sub { $_[0] & 127 ? 128 + ($_[0] & 127) : $_[0] >> 8 };
+        my $left = sub {
+            $st = $? if !defined $st && waitpid($pid, POSIX::WNOHANG()) == $pid;
+            !defined $st || kill(0, -$pid);
+        };
+        my $wait = sub {
+            $late = 0;
+            alarm 1;
+            select(undef, undef, undef, 0.01) while $left->() && !$late;
+            alarm 0;
+            $left->();
+        };
+        alarm $secs;
+        select(undef, undef, undef, 0.01) while $left->() && !$why && !$late;
+        alarm 0;
+        exit($code->($st)) if !$left->();
+        $SIG{$_} = "IGNORE" for qw(TERM INT HUP);
+        my $own = $st;
+        my $end = sub { kill($_[0], -$pid); kill($_[0], $pid) if !defined $st };
+        $end->($why || "TERM");
+        my $hard = $wait->();
+        if ($hard) {
+            $end->("KILL");
+            print STDERR "sot_bounded: $cmd[0] or a member of its group was still running a second after KILL\n" if $wait->();
+        }
+        print STDERR "sot_bounded: $cmd[0] exited with status " . $code->($own) . " while its group ran on; the bound ended the group\n" if defined $own;
+        exit($why ? 128 + $num{$why} : $hard ? 137 : 124);
+    ' "$@"
 }
 
 # sot_jq ARGS... — run jq, but normalise ITS OWN OUTPUT so a caller that
@@ -154,11 +224,10 @@ sot_jq_rawfile() {
 # the SSH target a remote frontend dials, `scripts/launch-sot.ps1`/
 # `launch-sot.sh` — reusing it here would silently rename a frontend's
 # declared identity to whatever it dials), else the first `.`-label of
-# `hostname -s`, lowercased. Feeds ONLY `sot_hello_frame`'s wire `host`
-# field and display/logs — never an address or on-disk namespace: no
-# on-disk namespace changes this sprint (S1), so comm-context.sh's own
-# `HOST` (the self-file key, handle derivation) does NOT call this;
-# `hostname -s` there stays completely independent, exactly as on main.
+# `hostname -s`, lowercased. Feeds `sot_hello_frame`'s wire `host` field,
+# display/logs, and comm-context.sh's `HOST`, which keys the registry row and
+# the unpinned self slot.
+# The declared host owns registry facts and self-slot keys; raw host text is only the derived-handle component and validated legacy-slot input. Local defaults use HANDLE_HOST; remote defaults use the admitted target's declared host.
 # Fails loudly (S19) rather than printing empty when neither source
 # resolves — a hello with an empty declared host is worse than a hello
 # that never sent one at all.

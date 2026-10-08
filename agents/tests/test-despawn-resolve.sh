@@ -10,6 +10,7 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-wait.sh" || exit 2
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -21,8 +22,12 @@ fi
 
 guard_fresh_home "$WORK"; guard_refuse_live_home "$HOME/.sot-comm"
 SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
+export SOTD_BIN="$(guard_bridge_stub "$WORK/bridge")"
+[ -x "$SOTD_BIN" ] || exit 2
 
 export SOT_COMM_TEST_HOST="test-host"
+# This box's declared host (sot_host): the registry rows seeded here and the stub daemon's version reply carry it.
+export SOT_SELF_HOST="test-host"
 unset SOT_WORKSPACE_ID
 
 STUB_NC_PID=""; STUB_WATCHER_PID=""
@@ -64,7 +69,8 @@ start_stub_daemon() {
     mkfifo "$fifo"
     : > "$REQLOG"
 
-    local hello_reply list_reply destroy_reply
+    local hello_reply list_reply destroy_reply version_reply
+    version_reply="{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"version.query\",\"payload\":{\"daemon\":{\"host\":\"${STUB_DECLARED_HOST-test-host}\"}}}"
     hello_reply='{"v":1,"id":1,"kind":"res","op":"hello","payload":{"session_id":"s1","revision":0,"snapshot_pending":false}}'
     list_reply="{\"v\":1,\"id\":1,\"kind\":\"res\",\"op\":\"workspace.list\",\"payload\":$LIST_PAYLOAD}"
     destroy_reply="{\"v\":1,\"id\":2,\"kind\":\"res\",\"op\":\"workspace.destroy\",\"payload\":$DESTROY_PAYLOAD}"
@@ -78,15 +84,12 @@ start_stub_daemon() {
             hello) printf '%s\n' "$hello_reply" >&3 ;;
             workspace.list) printf '%s\n' "$list_reply" >&3 ;;
             workspace.destroy) printf '%s\n' "$destroy_reply" >&3 ;;
+            version.query) printf '%s\n' "$version_reply" >&3 ;;
         esac
       done ) &
     STUB_WATCHER_PID=$!
 
-    local deadline=$((SECONDS + 5))
-    while [ ! -S "$SOCK" ]; do
-        [ "$SECONDS" -lt "$deadline" ] || { echo "stub daemon socket never appeared: $SOCK" >&2; break; }
-        sleep 0.05
-    done
+    await test -S "$SOCK" || echo "stub daemon socket never appeared: $SOCK" >&2
 }
 
 stop_stub_daemon() {
@@ -131,7 +134,7 @@ reg_has() { jq -e --arg n "$1" '.agents | has($n)' "$CH/registry.json" >/dev/nul
 run_despawn() {
     local who="$1"
     DESPAWN_OUT="$(env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_RELAY_ENDPOINT -u SOT_SESSION \
-        ${DESPAWN_PATH:+PATH="$DESPAWN_PATH"} SOT_TOKEN="dummy-test-token" XDG_CONFIG_HOME="$CH/xdg" \
+        ${DESPAWN_PATH:+PATH="$DESPAWN_PATH"} XDG_CONFIG_HOME="$CH/xdg" \
         SOT_COMM_HOME="$CH" SOT_COMM_SELF_FILE="$CH/self.txt" \
         timeout 30 "$SCRIPTS_DIR/comm-despawn.sh" "$who" --endpoint "${DESPAWN_EP:-unix:$SOCK}" 2>"$CH/stderr.tmp")"
     DESPAWN_RC=$?
@@ -161,28 +164,97 @@ case_row_without_workspace_id() {
     contains "$DESPAWN_ERR" "comm-leave.sh --name orphan" || { echo "  no comm-leave hint: $DESPAWN_ERR"; return 1; }
 }
 
-# LOCAL_HOST names the same self-file host part as comm-context.sh: raw
-# `hostname -s`, case kept. With the pin unset, a row from "test-host" is this
-# host's only when the fake prints exactly that.
-case_local_host_rule_keeps_case() {
-    local bin="$WORK/fakehost-bin" saved="$SOT_COMM_TEST_HOST" name rc=0
+# LOCAL_HOST is this box's declared host (sot_host), the fact a registry row's host carries: with the override
+# unset, a hostname Test-Host is the declared test-host, so a row from "test-host" is this host's and a row from
+# any other host is not.
+case_local_host_rule_is_the_declared_host() {
+    local bin="$WORK/fakehost-bin" saved="$SOT_SELF_HOST" name rc=0
     mkdir -p "$bin"
-    unset SOT_COMM_TEST_HOST
-    for name in test-host Test-Host; do
+    unset SOT_SELF_HOST
+    for name in Test-Host other-host; do
         printf '#!/bin/sh\nif [ "${1:-}" = "-s" ]; then echo %s; else echo %s; fi\n' "$name" "$name" > "$bin/hostname"
         chmod +x "$bin/hostname"
         new_home; seed_row orphan ""
         local before; before="$(reg_hash)"
         start_stub_daemon; DESPAWN_PATH="$bin:$PATH" run_despawn orphan; stop_stub_daemon
         assert_unresolved orphan "its registry row records no workspace_id" "$before" || rc=1
-        if [ "$name" = test-host ]; then
+        if [ "$name" = Test-Host ]; then
             contains "$DESPAWN_ERR" "comm-leave.sh --name orphan" || { echo "  no comm-leave hint for $name: $DESPAWN_ERR"; rc=1; }
         else
-            ! contains "$DESPAWN_ERR" "comm-leave" || { echo "  comm-leave hint for $name (case must be kept): $DESPAWN_ERR"; rc=1; }
+            ! contains "$DESPAWN_ERR" "comm-leave" || { echo "  comm-leave hint for $name (a row of another host): $DESPAWN_ERR"; rc=1; }
         fi
     done
-    export SOT_COMM_TEST_HOST="$saved"
+    export SOT_SELF_HOST="$saved"
     return "$rc"
+}
+
+# The destroyed row's identity slot is named by the TARGET daemon's declared host (version.query), which differs
+# from this box's raw hostname and from its declared host here; only that exact slot goes, after the destroy.
+seed_slots() {  # WSID DECLARED : the target's slot, a same-id slot of this box's host, another host's, another id's
+    mkdir -p "$CH/self"
+    printf 'target\n' > "$CH/self/$2__$1.txt"
+    printf 'raw\n' > "$CH/self/test-host__$1.txt"
+    printf 'elsewhere\n' > "$CH/self/other-box__$1.txt"
+    printf 'sibling\n' > "$CH/self/$2__$1-fix.txt"
+}
+slots_survive() {  # WSID DECLARED
+    [ -f "$CH/self/test-host__$1.txt" ] && [ -f "$CH/self/other-box__$1.txt" ] && [ -f "$CH/self/$2__$1-fix.txt" ]
+}
+queries_before_destroy() {
+    local q d
+    q="$(grep -n '"op":"version.query"' "$REQLOG" | head -n1 | cut -d: -f1)"; d="$(grep -n '"op":"workspace.destroy"' "$REQLOG" | head -n1 | cut -d: -f1)"
+    [ -n "$q" ] && [ -n "$d" ] && [ "$q" -lt "$d" ]
+}
+
+case_declared_host_slot_with_no_registry_row() {
+    new_home; seed_slots ws-e1 Remote-Box
+    LIST_PAYLOAD="{\"workspaces\":[$(ws_entry ws-e1 e1slug e1label)]}"
+    DESTROY_PAYLOAD='{"workspace_id":"ws-e1"}'
+    STUB_DECLARED_HOST="Remote-Box" start_stub_daemon; run_despawn e1slug; local rc=$DESPAWN_RC; queries_before_destroy; local order=$?; stop_stub_daemon
+    [ "$rc" -eq 0 ] || { echo "  exited $rc: $DESPAWN_ERR"; return 1; }
+    [ ! -e "$CH/self/Remote-Box__ws-e1.txt" ] || { echo "  the target's declared-host slot survived the destroy"; return 1; }
+    slots_survive ws-e1 Remote-Box || { echo "  an unrelated slot was removed: $(ls "$CH/self" | tr '\n' ' ')"; return 1; }
+    [ "$order" -eq 0 ] || { echo "  the host was not asked before the destroy"; return 1; }
+}
+
+case_declared_host_slot_with_a_registry_row() {
+    local how
+    for how in handle slug id; do
+        new_home; seed_row hd-$how ws-e4; seed_slots ws-e4 Remote-Box
+        LIST_PAYLOAD="{\"workspaces\":[$(ws_entry ws-e4 e4slug e4label)]}"
+        DESTROY_PAYLOAD='{"workspace_id":"ws-e4"}'
+        STUB_DECLARED_HOST="Remote-Box" start_stub_daemon
+        case "$how" in handle) run_despawn hd-handle ;; slug) run_despawn e4slug ;; id) run_despawn ws-e4 ;; esac
+        local rc=$DESPAWN_RC; stop_stub_daemon
+        [ "$rc" -eq 0 ] || { echo "  by $how: exited $rc: $DESPAWN_ERR"; return 1; }
+        [ ! -e "$CH/self/Remote-Box__ws-e4.txt" ] || { echo "  by $how: the declared-host slot survived"; return 1; }
+        slots_survive ws-e4 Remote-Box || { echo "  by $how: an unrelated slot was removed"; return 1; }
+        if [ "$how" = handle ]; then ! reg_has hd-handle || { echo "  the registry row survived a confirmed destroy"; return 1; }; fi
+    done
+}
+
+case_no_declared_host_or_an_unusable_one_destroys_nothing() {
+    local host
+    for host in "" "a/b" "$(printf 'a%.0s' $(seq 1 300))"; do
+        new_home; seed_row hd-none ws-e2; seed_slots ws-e2 Remote-Box
+        LIST_PAYLOAD="{\"workspaces\":[$(ws_entry ws-e2 e2slug e2label)]}"
+        DESTROY_PAYLOAD='{"workspace_id":"ws-e2"}'
+        local before; before="$(reg_hash)"
+        STUB_DECLARED_HOST="$host" start_stub_daemon; run_despawn hd-none; stop_stub_daemon
+        [ "$DESPAWN_RC" -eq 1 ] || { echo "  host '${host:0:12}': exited $DESPAWN_RC (want 1): $DESPAWN_ERR"; return 1; }
+        [ "$(destroys)" -eq 0 ] || { echo "  host '${host:0:12}': a workspace.destroy was sent"; return 1; }
+        [ "$(reg_hash)" = "$before" ] || { echo "  host '${host:0:12}': the registry changed"; return 1; }
+        [ -f "$CH/self/Remote-Box__ws-e2.txt" ] || { echo "  host '${host:0:12}': a slot was removed"; return 1; }
+    done
+}
+
+case_a_refused_destroy_keeps_the_declared_host_slot() {
+    new_home; seed_row hd-keep ws-e5; seed_slots ws-e5 Remote-Box
+    LIST_PAYLOAD="{\"workspaces\":[$(ws_entry ws-e5 e5slug e5label)]}"
+    local before; before="$(reg_hash)"
+    STUB_DECLARED_HOST="Remote-Box" start_stub_daemon; run_despawn hd-keep; stop_stub_daemon
+    [ "$DESPAWN_RC" -eq 1 ] || { echo "  exited $DESPAWN_RC (want 1)"; return 1; }
+    [ -f "$CH/self/Remote-Box__ws-e5.txt" ] && [ "$(reg_hash)" = "$before" ] || { echo "  a refused destroy changed the slot or the registry"; return 1; }
 }
 
 case_row_names_unlisted_workspace() {
@@ -237,7 +309,7 @@ case_confirmed_destroy_deregisters() {
 }
 
 # A Windows box's daemon listens only on a named pipe: the request goes
-# through powershell.exe (stubbed by a script that carries stdin to the stub
+# through the stand-in bridge (stubbed by a script that carries stdin to the stub
 # daemon's socket and its replies back).
 case_confirmed_destroy_over_pipe_endpoint() {
     new_home; seed_row h9 ws-9
@@ -245,9 +317,7 @@ case_confirmed_destroy_over_pipe_endpoint() {
     DESTROY_PAYLOAD='{"workspace_id":"ws-9"}'
     start_stub_daemon
     mkdir -p "$WORK/bin"
-    printf '#!/usr/bin/env bash\nexec nc -U "%s"\n' "$SOCK" > "$WORK/bin/powershell.exe"
-    chmod +x "$WORK/bin/powershell.exe"
-    DESPAWN_EP='pipe:\\.\pipe\sot-stub' DESPAWN_PATH="$WORK/bin:$PATH" run_despawn h9
+    GUARD_PIPE_SOCKET="$SOCK" DESPAWN_EP='pipe:\\.\pipe\sot-stub' DESPAWN_PATH="$WORK/bin:$PATH" run_despawn h9
     stop_stub_daemon
     [ "$DESPAWN_RC" -eq 0 ] || { echo "  exited $DESPAWN_RC: $DESPAWN_ERR"; return 1; }
     contains "$DESPAWN_OUT" "Destroyed workspace" || { echo "  stdout: $DESPAWN_OUT"; return 1; }
@@ -299,7 +369,7 @@ make_worktree() {
 run_clean() {  # [flag] — --force unless given ("" for none)
     local opt="${1---force}"
     CLEAN_OUT="$(cd "$WORK/wt/proj" && env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_RELAY_ENDPOINT -u SOT_SESSION -u SOT_SPAWN_ENDPOINT \
-        SOT_SPAWN_ENDPOINT="unix:$SOCK" SOT_TOKEN="dummy-test-token" XDG_CONFIG_HOME="$CH/xdg" \
+        SOT_SPAWN_ENDPOINT="unix:$SOCK" XDG_CONFIG_HOME="$CH/xdg" \
         SOT_COMM_HOME="$CH" SOT_COMM_SELF_FILE="$CH/self.txt" \
         timeout 60 "$SCRIPTS_DIR/comm-worktree-clean.sh" x $opt 2>&1)"
     CLEAN_RC=$?
@@ -381,7 +451,11 @@ case_worktree_clean_dirty_keeps_the_session() {
 }
 
 check "D1 registry row without a workspace_id: refused, row kept, comm-leave hint" case_row_without_workspace_id
-check "D1b LOCAL_HOST is raw hostname -s with case kept: the comm-leave hint follows it" case_local_host_rule_keeps_case
+check "D1b LOCAL_HOST is the declared host: the comm-leave hint follows it" case_local_host_rule_is_the_declared_host
+check "D10 the target's declared-host slot goes after a confirmed destroy, with no registry row" case_declared_host_slot_with_no_registry_row
+check "D11 the same with a registry row, by handle, slug and id" case_declared_host_slot_with_a_registry_row
+check "D12 no declared host, or one that cannot name a slot, destroys nothing" case_no_declared_host_or_an_unusable_one_destroys_nothing
+check "D13 a refused destroy keeps the slot and the row" case_a_refused_destroy_keeps_the_declared_host_slot
 check "D2 registry row names an unlisted workspace: refused, row kept" case_row_names_unlisted_workspace
 check "D3 no row and no workspace: refused, no comm-leave hint" case_no_row_no_workspace
 check "D4 workspace.list is not a workspace list: refused, row kept, no comm-leave hint" case_list_is_not_a_workspace_list
@@ -389,7 +463,7 @@ check "D5 destroy refused: exit 1, row kept" case_refused_destroy_keeps_the_row
 check "D6 confirmed destroy: row removed afterwards" case_confirmed_destroy_deregisters
 check "D7 despawn removes only its own self-file, by exact name" case_self_file_exact_name
 check "D8 despawn destroys the registry's recorded workspace first" case_recorded_workspace_first
-check "D9 pipe: endpoint (Windows local daemon): destroy succeeds through powershell.exe" case_confirmed_destroy_over_pipe_endpoint
+check "D9 pipe: endpoint (Windows local daemon): destroy succeeds through the stand-in bridge" case_confirmed_destroy_over_pipe_endpoint
 check "W1 worktree-clean despawns once, by handle" case_worktree_clean_despawns_once
 check "W2 worktree-clean falls back to the label with no registry row" case_worktree_clean_label_fallback
 check "W3 label fallback also deregisters the handle" case_worktree_clean_label_deregisters

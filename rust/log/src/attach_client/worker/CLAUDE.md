@@ -13,7 +13,7 @@ checkpoint and runs the steady state, reporting to the caller's event sink. Part
 - `steady.rs`: `QueuedBytes`, the attach reader and the steady-state frame and input handlers
 - `support_tests.rs`: test doubles shared by the three test files (`TestClient`, `TestProcess`, `TestEndpoint`)
 - `ingress_tests.rs`: tests of bounded ingress, checkpoint deadlines and `QueuedBytes` wakeups
-- `converge_tests.rs`: tests of the health probe, absence clock, first attach, link-down pause, dial backoff and attach refusal
+- `converge_tests.rs`: tests of the health probe, absence clock, first attach, link-down pause, dial backoff, attach refusal and abandoned-supervisor spare cleanup
 - `steady_tests.rs`: tests of held inputs, take-queue drops, the status-probe keystroke and the held-handshake gate
 
 ## Start here
@@ -25,3 +25,4 @@ checkpoint and runs the steady state, reporting to the caller's event sink. Part
 - Ingress bounds accumulation, not one send: `AttachWorker::send_input` admits an input whenever nothing is reserved, and `IngressReservation` releases its bytes in `Drop` however the message is disposed of.
 - An attach refusal reaches the caller with words (`attach_refused_text`), the subscriber cap included.
 - A dial whose host link is down waits until the link is up and the client is viewed (`pause_for_link`).
+- An unproven supervisor hello or failed Status abandons the endpoint's spare before returning (`connect_supervisor_lane`, `converge_on_ready`, `Endpoint::drop_spare`).

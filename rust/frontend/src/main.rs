@@ -64,12 +64,26 @@ fn log_subscriber<W: std::io::Write + 'static>(
         .finish()
 }
 
-fn main() -> Result<()> {
+fn window_entry<T>(startup: impl FnOnce() -> Result<T>) -> Result<T> {
     #[cfg(windows)]
     if let Err(e) = sot_log::host::winhandle::harden_own_stdio(true) {
         eprintln!("sot-fe: could not harden inherited stdio ({e}); continuing");
     }
+    startup()
+}
 
+#[cfg(all(test, feature = "test-window-progress"))]
+fn main() -> Result<()> {
+    window_entry(ui::run_native_window_progress)
+}
+
+#[cfg(not(all(test, feature = "test-window-progress")))]
+fn main() -> Result<()> {
+    window_entry(ordinary_startup)
+}
+
+#[cfg(not(all(test, feature = "test-window-progress")))]
+fn ordinary_startup() -> Result<()> {
     // Parse before tracing init so `--version` exits with clean stdout —
     // the updater and scripts parse it (ADR 0030 §1).
     let cli = cli::Cli::parse();
@@ -197,20 +211,152 @@ mod tests {
         assert!(!written.contains('\u{1b}'), "the file carries ANSI escapes: {written:?}");
     }
 
-    /// ADR 0049's twin of the daemon's rule: the window clears its own inherited standard handles first thing in `main`
-    /// (on Windows the launcher hands it log files), so no child it starts holds them open. Read as text through the
-    /// production view, which blanks comments and this module and keeps every line in place.
+    #[cfg(windows)]
+    fn stdio_flags() -> [u32; 3] {
+        use windows_sys::Win32::Foundation::GetHandleInformation;
+        use windows_sys::Win32::System::Console::{
+            GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE].map(|which| {
+            let mut flags = 0;
+            assert_ne!(
+                unsafe { GetHandleInformation(GetStdHandle(which), &mut flags) },
+                0
+            );
+            flags
+        })
+    }
+
+    #[cfg(windows)]
+    fn owned_startup_probe(
+        root: &std::path::Path,
+    ) -> Result<(std::process::Child, sot_log::test_isolated::Entry)> {
+        use std::process::{Command, Stdio};
+        let program = root.join("startup-probe.exe");
+        sot_log::test_exec::write_executable(&program, std::fs::read(std::env::current_exe()?)?);
+        let (recipe, entry) =
+            sot_log::test_isolated::test_command("tests::window_startup_owned_probe");
+        let mut command = Command::new(program);
+        command.args(recipe.get_args());
+        for (name, value) in recipe.get_envs() {
+            if let Some(value) = value {
+                command.env(name, value);
+            } else {
+                command.env_remove(name);
+            }
+        }
+        let probe = command
+            .env("SOT_TEST_WINDOW_STARTUP_PROBE", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        Ok((probe, entry))
+    }
+
+    #[cfg(windows)]
     #[test]
-    fn the_window_clears_its_inherited_stdio_first() {
-        let source = sot_log::test_scan::without_test_modules(include_str!("main.rs"));
-        let lines: Vec<&str> = source.lines().collect();
-        let at: Vec<usize> = (0..lines.len()).filter(|&n| lines[n] == "fn main() -> Result<()> {").collect();
-        assert_eq!(at.len(), 1, "expected exactly one `fn main`, found {at:?}");
-        let after: Vec<&str> = lines[at[0] + 1..].iter().map(|l| l.trim()).filter(|l| !l.is_empty()).take(2).collect();
-        assert_eq!(
-            after,
-            ["#[cfg(windows)]", "if let Err(e) = sot_log::host::winhandle::harden_own_stdio(true) {"],
-            "main does not clear the window's inherited stdio first"
+    fn window_startup_hardens_handles_before_starting_children() {
+        use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+        use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+        use windows_sys::Win32::System::Console::{
+            GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        if !sot_log::test_isolated::run_isolated(
+            "tests::window_startup_hardens_handles_before_starting_children",
+        ) {
+            return;
+        }
+        let _home = crate::net::state::test_env::set_test_env();
+        let root = std::path::PathBuf::from(
+            std::env::var_os("XDG_STATE_HOME").expect("fixture state root"),
         );
+        let paths = ["input", "output", "error"].map(|name| root.join(name));
+        let files = paths.each_ref().map(|path| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap()
+        });
+        let which = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
+        let saved = which.map(|handle| unsafe { GetStdHandle(handle) });
+        struct Restore([windows_sys::Win32::Foundation::HANDLE; 3]);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (which, handle) in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]
+                    .into_iter()
+                    .zip(self.0)
+                {
+                    unsafe {
+                        SetStdHandle(which, handle);
+                    }
+                }
+            }
+        }
+        let restore = Restore(saved);
+        for (which, file) in which.into_iter().zip(&files) {
+            assert_ne!(
+                unsafe {
+                    SetHandleInformation(
+                        file.as_raw_handle() as _,
+                        HANDLE_FLAG_INHERIT,
+                        HANDLE_FLAG_INHERIT,
+                    )
+                },
+                0
+            );
+            assert_ne!(unsafe { SetStdHandle(which, file.as_raw_handle() as _) }, 0);
+        }
+        assert!(stdio_flags()
+            .iter()
+            .all(|flags| flags & HANDLE_FLAG_INHERIT != 0));
+        let (flags, mut probe, entry) = window_entry(|| {
+            let flags = stdio_flags();
+            let (probe, entry) = owned_startup_probe(&root)?;
+            Ok((flags, probe, entry))
+        })
+        .unwrap();
+        drop(restore);
+        drop(files);
+        let exclusive = paths.each_ref().map(|path| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(0)
+                .open(path)
+        });
+        probe.stdin.take();
+        let pid = probe.id();
+        let (status, stdout, stderr) =
+            sot_log::test_isolated::drain(probe).wait_within(std::time::Duration::from_secs(5));
+        assert!(status.success(), "owned startup probe failed: {stderr}");
+        entry.assert_once(pid);
+        assert!(
+            stdout.contains("startup-probe entered"),
+            "the owned startup probe never entered"
+        );
+        assert!(
+            flags.iter().all(|flags| flags & HANDLE_FLAG_INHERIT == 0),
+            "window_entry left inherited standard handles before its startup continuation"
+        );
+        assert!(
+            exclusive.iter().all(Result::is_ok),
+            "the first owned child retained a fixture standard file"
+        );
+        println!("window-startup flags_cleared=3 child_retained_files=0 entered_bodies=1 completed_bodies=1");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn window_startup_owned_probe() {
+        if std::env::var("SOT_TEST_WINDOW_STARTUP_PROBE").as_deref() != Ok("1") {
+            return;
+        }
+        sot_log::test_isolated::enter("tests::window_startup_owned_probe");
+        use std::io::{Read, Write};
+        println!("startup-probe entered");
+        std::io::stdout().flush().unwrap();
+        let _ = std::io::stdin().read_to_end(&mut Vec::new()).unwrap();
     }
 }

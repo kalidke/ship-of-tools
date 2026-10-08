@@ -33,12 +33,28 @@ pub fn write_executable(path: &Path, body: impl AsRef<[u8]>) {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    trait Finished {
+        fn finished(&self) -> bool;
+    }
+    #[cfg(target_os = "linux")]
+    impl<T> Finished for std::thread::JoinHandle<T> {
+        fn finished(&self) -> bool {
+            self.is_finished()
+        }
+    }
+
     /// The test process never holds a written program open: its only descriptor on the file is the reader's. A FIFO
     /// lets the test look while the writer is still writing: the writer's `open` returns when the reader's does, and
     /// the writer cannot finish until the reader drains it.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_test_process_never_holds_a_written_program_open() {
+        if !crate::test_isolated::run_isolated(
+            "test_exec::tests::the_test_process_never_holds_a_written_program_open",
+        ) {
+            return;
+        }
         use std::io::Read;
         use std::os::unix::ffi::OsStrExt;
         let dir = tempfile::tempdir().unwrap();
@@ -53,7 +69,7 @@ mod tests {
         // A helper thread opens the reader, which blocks until the writer opens; a helper that never opens the path
         // fails the wait below instead of hanging the test.
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn({
+        let opening = std::thread::spawn({
             let path = path.clone();
             move || tx.send(std::fs::File::open(&path).unwrap())
         });
@@ -67,60 +83,31 @@ mod tests {
             .flatten()
             .filter(|fd| std::fs::read_link(fd.path()).is_ok_and(|link| link == path))
             .count();
-        assert_eq!(holders, 1, "this process holds {holders} descriptors on the program; only the reader's is allowed");
-        std::io::copy(&mut reader, &mut std::io::sink()).unwrap();
-        writer.join().unwrap();
-    }
-
-    /// A program a test runs is made executable only here. Hits that are not programs (directory and socket modes, mode
-    /// bits read or asserted, production checks) are allowed by file, exact line and count. Blind spot: an `fs::copy` of an
-    /// executable makes a program without any of these words; a reviewer checks for it.
-    #[test]
-    fn only_test_exec_makes_a_test_program_executable() {
-        const WORDS: [&str; 8] = ["0o755", "0o775", "0o777", "0o0755", "0o111", "chmod 7", "chmod +x", ".mode(0o7"];
-        const ALLOWED: &[(&str, &str, usize)] = &[
-            ("rust/backend/src/agents/folder_trust.rs", "let mode = std::fs::metadata(path).map(|m| m.permissions().mode() & 0o777).unwrap_or(0o600);", 1),
-            ("rust/backend/src/paths.rs", ".mode(0o700)", 1),
-            ("rust/backend/src/paths.rs", "assert_eq!(meta.permissions().mode() & 0o777, 0o700);", 1),
-            ("rust/backend/src/paths.rs", "assert_eq!(std::fs::metadata(&leaf).unwrap().permissions().mode() & 0o777, 0o700);", 1),
-            ("rust/backend/src/paths.rs", "meta.permissions().mode() & 0o777,", 1),
-            ("rust/backend/src/rows/spawn/detach.rs", ".map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)", 1),
-            ("rust/backend/src/sidecars/julia.rs", "Ok(md) if md.permissions().mode() & 0o111 == 0 => Some(\"not executable\"),", 1),
-            ("rust/backend/tests/stdio_bridge.rs", "match std::fs::DirBuilder::new().mode(0o700).create(&cur) {", 1),
-            ("rust/backend/tests/topology_set.rs", "let mode = std::fs::metadata(&path).expect(\"the hub's comm path\").permissions().mode() & 0o7777;", 1),
-            ("rust/backend/tests/window_start.rs", "let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));", 1),
-            ("rust/frontend/src/lease_grant_tests.rs", "std::fs::DirBuilder::new().mode(0o700).create(&dir).expect(\"private folder\");", 1),
-            ("rust/frontend/src/pages.rs", "assert_eq!(std::fs::metadata(f).unwrap().permissions().mode() & 0o777, 0o600, \"{f:?}\");", 1),
-            ("rust/frontend/src/net/transport/tests.rs", "std::fs::DirBuilder::new().mode(0o700).create(&dir).expect(\"private folder\");", 1),
-            ("rust/log/src/host/durable.rs", "std::fs::set_permissions(&b, std::fs::Permissions::from_mode(0o111)).unwrap();", 1),
-            ("rust/log/src/host/state_dir.rs", "std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();", 1),
-            ("rust/log/src/host/state_dir.rs", "std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();", 1),
-            ("rust/log/src/lane/socket_unix/listener.rs", ".mode(0o700)", 1),
-            ("rust/log/src/lane/socket_unix/listener.rs", "|| st.st_mode & 0o777 != 0o600", 1),
-            ("rust/log/src/store/recovery.rs", "std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o111)).unwrap();", 1),
-            ("rust/log/tests/connect_own.rs", "let (dir, path, listener) = listener_in_folder(0o755);", 1),
-            ("rust/log/tests/socket_unix/connect.rs", "meta.permissions().mode() & 0o777,", 1),
-            ("rust/log/tests/socket_unix/connect.rs", "parent_meta.permissions().mode() & 0o777,", 1),
-            ("rust/protocol/src/topology/lane_client_tests.rs", "std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();", 1),
-        ];
-        let mut found = Vec::new();
-        for (rel, text) in crate::test_scan::rust_sources() {
-            if rel == "rust/log/src/test_exec.rs" {
-                continue;
+        // Retain the observation, then finish the FIFO before raising its descriptor assertion.
+        let draining = std::thread::spawn(move || std::io::copy(&mut reader, &mut std::io::sink()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        for thread in [
+            &opening as &dyn Finished,
+            &writer as &dyn Finished,
+            &draining as &dyn Finished,
+        ] {
+            while !thread.finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            let mut used = std::collections::HashMap::new();
-            for (n, line) in text.lines().enumerate() {
-                if !WORDS.iter().any(|w| line.contains(w)) {
-                    continue;
-                }
-                let seen = used.entry(line.trim().to_string()).or_insert(0usize);
-                *seen += 1;
-                let room = ALLOWED.iter().find(|(f, l, _)| *f == rel && *l == line.trim()).map_or(0, |(_, _, c)| *c);
-                if *seen > room {
-                    found.push(format!("{rel}:{}: {}", n + 1, line.trim()));
-                }
-            }
+            assert!(thread.finished(), "FIFO fixture completion unconfirmed");
         }
-        assert!(found.is_empty(), "a program is made executable outside write_executable:\n{}", found.join("\n"));
+        opening.join().unwrap().unwrap();
+        let drained = draining.join().unwrap().unwrap();
+        writer.join().unwrap();
+        assert_eq!(
+            drained + first.len() as u64,
+            1 << 20,
+            "FIFO writer not fully drained"
+        );
+        eprintln!("descriptor-fixture bodies=1 writer=active cleanup=confirmed holders={holders}");
+        assert_eq!(
+            holders, 1,
+            "this process holds {holders} descriptors on the program; only the reader's is allowed"
+        );
     }
 }

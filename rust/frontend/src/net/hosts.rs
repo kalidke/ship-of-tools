@@ -75,11 +75,16 @@ pub(crate) fn lane_dial(
                 sot_protocol::topology::lane_client::LaneDial::Local(path.clone()),
                 config.token.clone(),
             )),
-            crate::net::transport::Dial::Ssh(_) => None,
+            crate::net::transport::Dial::Relay(_) | crate::net::transport::Dial::Ssh(_) => None,
         },
-        ResolvedDial::Ssh(recipe) => {
-            Some((sot_protocol::topology::lane_client::LaneDial::Ssh(recipe, gate.clone()), config.token.clone()))
-        }
+        ResolvedDial::Relay(path) => Some((
+            sot_protocol::topology::lane_client::LaneDial::Relay(path, gate.clone()),
+            config.token.clone(),
+        )),
+        ResolvedDial::Ssh(recipe) => Some((
+            sot_protocol::topology::lane_client::LaneDial::Ssh(recipe, gate.clone()),
+            config.token.clone(),
+        )),
     }
 }
 
@@ -182,7 +187,11 @@ mod tests {
                 assert_eq!(path, std::path::PathBuf::from("/tmp/sock"));
                 assert_eq!(token.as_deref(), Some("tok"));
             }
-            Some((sot_protocol::topology::lane_client::LaneDial::Ssh(..), _)) => {
+            Some((
+                sot_protocol::topology::lane_client::LaneDial::Ssh(..)
+                | sot_protocol::topology::lane_client::LaneDial::Relay(..),
+                _,
+            )) => {
                 panic!("must follow the resolved Local selection, not guess ssh")
             }
             None => panic!("a resolved+configured pipe must dial, got None"),
@@ -199,11 +208,34 @@ mod tests {
                 assert_eq!(got, recipe);
                 assert_eq!(token.as_deref(), Some("tok"));
             }
-            Some((sot_protocol::topology::lane_client::LaneDial::Local(_), _)) => {
+            Some((
+                sot_protocol::topology::lane_client::LaneDial::Local(_)
+                | sot_protocol::topology::lane_client::LaneDial::Relay(..),
+                _,
+            )) => {
                 panic!("must follow the resolved Ssh selection, not guess local")
             }
             None => panic!("a resolved ssh connection must dial, got None"),
         }
+        // A generated hub relay: the lane dial follows the control connection's exact relay path behind the
+        // host's gate, and a relay-configured host whose control connection resolved Local dials nothing.
+        let relay_path = std::path::PathBuf::from("/run/user/1000/sot-host-far.sock");
+        let relay_config = crate::net::transport::TransportConfig {
+            dial: crate::net::transport::Dial::Relay(relay_path.clone()),
+            token: Some("tok".to_string()),
+        };
+        match lane_dial(
+            &relay_config,
+            ResolvedDial::Relay(relay_path.clone()),
+            &Default::default(),
+        ) {
+            Some((sot_protocol::topology::lane_client::LaneDial::Relay(got, _), token)) => {
+                assert_eq!(got, relay_path);
+                assert_eq!(token.as_deref(), Some("tok"));
+            }
+            _ => panic!("a resolved relay must dial the relay path"),
+        }
+        assert!(lane_dial(&relay_config, ResolvedDial::Local, &Default::default()).is_none());
         // Resolved Local but `config.dial` holds Ssh (shouldn't happen —
         // the control connection could not have resolved Local without a
         // configured pipe) degrades to no dial rather than panicking.

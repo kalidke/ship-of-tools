@@ -5,6 +5,7 @@ public surface: the store and its recovery, the capsule runtime, the lane transp
 client, several of them against a real `sot-capsule` process. Part of the capsule subsystem; charter: rust/log/CLAUDE.md.
 
 ## Files
+- `test_body_fixture.rs`: harmless real libtest bodies, including ignored and near-named controls, for the shell selected-test proofs.
 - `attach_worker.rs`: `AttachWorker` against a real `sot-capsule supervise` and capsule: bounded ingress and a real multi-chunk checkpoint transfer; Linux and Windows (the multi-chunk test Linux only).
 - `capsule/`: `capsule::run` driven with a test transport and fake or real producers (attach, group commit, early output end, shutdown paths; `unix_only.rs` and `windows_only.rs` hold the platform mechanism); Linux, macOS and Windows.
 - `challenge_macos.rs`: the macOS identity challenge and the `SocketClient` connect path it authenticates, and the two credential-transition tests that pin a peer's account to the credential the kernel cached (their helper runs as root through `sudo -n`); macOS only.
@@ -24,8 +25,8 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `other_account.rs`: a client run as `sudo -n -u nobody` gets no byte from a `serve_own` listener, a client of this account does (ADR 0049, User isolation); Unix, skipped where passwordless sudo is not available.
 - `pipe_win/`: `PipeServer` and the same-connection challenge over real pipes, process-isolated: connect, teardown, close, challenge modules; Windows only.
 - `reconcile_matrix.rs`: every row of the startup reconciliation table (`reconcile`) entered by file surgery, then `verify_voyage`; Unix and Windows.
-- `isolation_guards.rs`: the source guards of ADR 0049, User isolation, that a lint cannot make, over the production source (`sot_log::test_scan::production_sources()`): every accept of the Rust processes is a listed listener; the listeners the Julia children and Node helpers open in their source are listed; no browser opener outside `browser_open.rs`; no secret, token or address as a command-line argument; macOS's `LOCAL_PEERTOKEN` has one reader, and the source pin permits only pid/pidversion `.val` accesses in its private `AuditToken` module, pinning indices 5/7; the guard covers production source spellings, not arbitrary equivalent Rust, numeric socket-option calls or test-only token reads; every platform.
-- `socket_unix/`: `SocketServer` and `SocketClient` over real Unix sockets, process-isolated: connect, teardown, close, client modules; Unix.
+- `isolation_guards.rs`: remaining ADR 0049 source guards for Julia/Node listener spellings, browser/argument spellings and the macOS peer-token reader; Rust listener admission is proved at its native owners, not by an allowance catalog.
+- `socket_unix/`: real Unix connect, close, teardown and client contracts; named waits and captured diagnostics, one bounded-read phase path (`read.rs`), and supervised native-account fixtures with retained failure causes (`privileged.rs`); Unix.
 - `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules; Linux and Windows.
 - `support/`: helpers shared by several binaries: `capsule_guard.rs` (a spawned `sot-capsule` no test can leave behind) and `transports.rs` (`NoopTransport` and `TestTransport`).
 - `winhandle_windows.rs`: `winhandle::harden_own_stdio` clears handle inheritance; Windows only, alone in its binary because it mutates the process's real std handles.
@@ -39,11 +40,13 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - The Claude adapter: `claude_rig`; `claude_e2e` only for the real helper.
 
 ## Rules
+- Socket tests use named contexts and original deadlines; diagnostics captures available prerequisite history separately from each immediate timeout snapshot, whose busy/poisoned accounting is valid, and polls availability only for pre-expiry history/retention checks.
 - A test file over 800 lines becomes `<name>/main.rs` plus subject modules under the same binary name; each module opens with `use super::*;`, so a helper two or more modules share stays in `main.rs`.
-- A test that must run in a process of its own starts with `if !run_isolated("<name>") { return; }` (`sot_log::test_isolated`). `<name>` is its exact libtest name, with its module in a multi-module binary (`close::...` in `pipe_win/`); a name that runs no body fails. A test that re-runs its binary another way is listed in that module's pin with its own proof that the body ran.
+- Process-isolated tests use exact qualified names through `test_isolated`; direct fixtures finish owned-child checks before raising readiness/output errors. Readiness proofs require the observed role/pid start and exact selected failure; UTF-8 red requires independent child status/end checks and the specific stderr decoder cause. Wrong-failure controls exercise the same proof verifier; no source catalog proves these outcomes.
 - `support/` files are shared with `#[path = "support/<f>.rs"] mod <f>;` (`../support/` from a binary folder); each binary includes only what it uses.
 - `fixtures/` holds committed bytes read by `include_bytes!` or through `CARGO_MANIFEST_DIR`; the four golden `.sotseg` files are also read by julia/sotlog/test/runtests.jl, so a fixture is never rewritten, only added.
 - CI runs the Windows binaries by name in the `conpty-windows-2022` job of rust.yml: `conpty`, `capsule`, `pipe_win`, `e2e_pipe`, `supervisor`, `fe_client`.
 - `claude_e2e` skips unless `SOT_HELPER_E2E=1`; rust.yml's `p2-e2e` job sets it against rust/log/claude-sdk-helper.
 - scripts/tests/rc-gate.sh names `fe_client/supervisor_word::unresponsive_supervisor_expires_the_health_window` by path, so moving that test edits rc-gate.sh in the same commit.
 - A lower-bound timing check takes its clock origin before the action that starts the product's timer.
+- Bounded socket reads distinguish deadline setup from read outcomes under the original context; capacity rejection still requires EOF. Native-account socket fixtures fail with retained status/output on missing entry or unavailable prerequisites; launcher completion alone proves no native body or denial.

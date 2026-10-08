@@ -50,8 +50,8 @@ if [ "$reg_rc" -eq 0 ]; then
     AGENT_WSID="$(printf '%s' "$ROW" | sot_jq -r '.workspace_id // ""' 2>/dev/null || true)"
     ROW_HOST="$(printf '%s' "$ROW" | sot_jq -r '.host // ""' 2>/dev/null || true)"
 fi
-# The host part of a self-file name, by the rule comm-context.sh uses.
-sot_raw_host LOCAL_HOST
+# This box's declared host, for the hint below; the destroyed row's slot is named by the TARGET daemon's host.
+LOCAL_HOST="$(sot_host 2>/dev/null)" || LOCAL_HOST=""
 
 # WHO names no workspace: refuse loudly, having changed nothing. The
 # comm-leave hint is printed only when a successful workspace.list proved the
@@ -96,14 +96,18 @@ if [ -z "$WSID" ]; then
         _unresolved "its registry row names workspace '$AGENT_WSID', which the daemon does not list, and no workspace slug, label or id matches it"
     fi
 fi
+# The target daemon's declared host names the slot to remove. It is asked, over the endpoint already resolved,
+# before anything is destroyed: a reply without a host destroys nothing, and a host that cannot name a slot does too.
+VRESP="$(sot_send '{"v":1,"id":3,"kind":"req","op":"version.query","payload":{}}' version.query || true)"
+TARGET_HOST="$(printf '%s' "$VRESP" | sot_jq -r '.payload.daemon.host // empty' 2>/dev/null || true)"
+[ -n "$TARGET_HOST" ] || { echo "FAILED: the daemon at $ENDPOINT declared no host, so the identity slot of '$WHO' cannot be named; nothing was despawned." >&2; exit 1; }
+SLOT_LEAF="$(_sot_self_slot "$TARGET_HOST" "$WSID")" || { echo "FAILED: nothing was despawned." >&2; exit 1; }
 DESTROY="$(jq -nc --arg id "$WSID" '{v:1,id:2,kind:"req",op:"workspace.destroy",payload:{workspace_id:$id}}')"
 RESP="$(sot_send "$DESTROY" workspace.destroy || true)"
 if printf '%s' "$RESP" | jq -e '.payload.workspace_id' >/dev/null 2>&1; then
     echo "Destroyed workspace: $(printf '%s' "$RESP" | jq -c '.payload')"
-    # The destroyed workspace's own identity slot, by its exact name (the
-    # writer's sanitisation, comm-context.sh): never a substring match.
-    WS_SAFE="$(printf '%s' "$WSID" | tr -c 'A-Za-z0-9._-' '_')"
-    rm -f "${SELF_DIR:?}/${ROW_HOST:-$LOCAL_HOST}__${WS_SAFE:?}.txt" 2>/dev/null || true
+    # The destroyed workspace's identity slot, by its exact name on the daemon's declared host.
+    rm -f "${SELF_DIR:?}/${SLOT_LEAF:?}" 2>/dev/null || true
     if [ "$HAS_ROW" = true ]; then
         with_lock registry_del "$WHO"
         echo "Removed @$WHO from sot-comm registry"

@@ -19,8 +19,9 @@ others are short. The events the Claude hooks are wired to are `_COMM_STATE_HOOK
 ## Rules
 - A hook never blocks a session that is not a joined comm agent and never wedges a turn: each exits 0 on every path,
   and the Stop hook holds a turn only by printing a block decision.
-- The four Claude hooks stand down on `SOT_COMM_HOOKS=off`. The Codex hook has no such check.
+- All four Claude hooks and the Codex permission hook stand down on SOT_COMM_HOOKS=off before reading input, resolving paths or stamping a row.
 - Only the row's own agent stamps: every stamp goes through `comm-status.sh`, and `comm-status-idle.sh` and
   `comm-status-heartbeat.sh` also call `sot_require_agent` themselves.
 - This folder holds hooks only. Installed, the Stop hook finds the auditor beside it in the bin; in the tree it must
   not, so a suite can run it with no live model (`comm/tests/test-status-floor.sh`).
+- Heartbeat context resolution uses the library's `sot_bounded` owner. A context timeout, setup failure or cancellation discards its entire output and skips the stamp; the hook adds no separate child wait. Its stdout and stderr files are removed after the bounded invocation; diagnostics are replayed from a finite stderr snapshot, and an ordinary completed context call retains its stdout even when it exits nonzero.

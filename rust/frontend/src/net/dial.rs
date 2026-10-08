@@ -66,8 +66,16 @@ pub fn parse_dial_arg(arg: &str) -> Result<(HostKey, crate::net::transport::Tran
         if path.is_empty() {
             return Err(format!("`--dial {arg}`: empty socket path"));
         }
+        // Unix parsing classifies a generated hub-relay path once; everything else keeps the local socket's policy.
+        let path = PathBuf::from(path);
+        let relay = endpoint.starts_with("unix:")
+            && sot_protocol::topology::relay_host_for_path(&path).is_some();
         crate::net::transport::TransportConfig {
-            dial: crate::net::transport::Dial::Pipe(PathBuf::from(path)),
+            dial: if relay {
+                crate::net::transport::Dial::Relay(path)
+            } else {
+                crate::net::transport::Dial::Pipe(path)
+            },
             token: None,
         }
     } else if let Some(rest) = endpoint.strip_prefix("ssh:") {
@@ -338,5 +346,50 @@ mod tests {
     fn resolve_connections_no_dial_no_cli_is_empty() {
         let out = resolve_connections(&[], &CliOverride::default());
         assert!(out.is_empty(), "no --dial and no --socket/--tcp must yield no connections at all");
+    }
+
+    /// A hub's generated relay sockets lead to remote daemons: parsing keeps them out of the lease hosts, whatever
+    /// the dial label, while this computer's own endpoint and other local sockets stay leased.
+    #[test]
+    fn hub_relay_is_remote_at_every_consumer() {
+        let topo = sot_protocol::topology::parse(
+            "hub = \"alpha\"\n[host.alpha]\ndaemon = true\n[host.beta]\ndaemon = true\n[host.gamma]\ndaemon = true\nfrontend = true\n",
+        )
+        .unwrap();
+        let plan = sot_protocol::topology::dial_endpoints(&topo, "alpha");
+        let beta_relay = sot_protocol::topology::relay_socket_path("beta");
+        let mut conns = Vec::new();
+        for (host, endpoint) in &plan {
+            conns.push(
+                parse_dial_arg(&format!("{host}={endpoint}")).expect("a planned dial parses"),
+            );
+        }
+        // An aliased label for the same generated path, an ordinary local socket and a relay-looking path in
+        // another folder.
+        for arg in [
+            format!("gpu=unix:{}", beta_relay.display()),
+            // The generated name in a folder below the relay folder: on a host whose relay folder is /tmp this
+            // is the one place a fixed /tmp path would itself be the generated path.
+            format!(
+                "scratch=unix:{}",
+                beta_relay
+                    .parent()
+                    .unwrap()
+                    .join("elsewhere")
+                    .join("sot-host-beta.sock")
+                    .display()
+            ),
+            "plain=unix:/run/user/1/sot/sessions/other.sock".to_string(),
+        ] {
+            conns.push(parse_dial_arg(&arg).expect("valid"));
+        }
+        assert_eq!(
+            crate::lease::pipe_hosts(&conns),
+            vec![
+                "alpha".to_string(),
+                "scratch".to_string(),
+                "plain".to_string()
+            ]
+        );
     }
 }

@@ -2,11 +2,29 @@
 
 use super::*;
 
+/// Frontend-only issuing identity; the connection supplies its host and the daemon sees only its canonical workspace id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResultAttemptId {
+    pub(crate) workspace_id: String,
+    pub(crate) result_serial: u64,
+    pub(crate) attempt_serial: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResultTreeRequest {
+    Root,
+    Children { parent_id: String },
+}
+
 /// Requests the GPU thread asks the transport task to send. Kept narrow: only
 /// the ops the interactive UI currently triggers. Adding a new op means a new
 /// variant + a new arm in `send_request` and `handle_response_frame`.
 #[derive(Debug)]
 pub enum OutgoingReq {
+    ResultTree {
+        attempt: ResultAttemptId,
+        request: ResultTreeRequest,
+    },
     TreeChildren {
         parent_id: String,
         /// ADR 0014: tags this request with a workspace so the backend
@@ -395,6 +413,9 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
     req: OutgoingReq,
 ) -> Result<()> {
     match req {
+        OutgoingReq::ResultTree { attempt, request } => {
+            send_result_tree(&mut tx, pending, id, attempt, request).await?;
+        }
         OutgoingReq::TreeChildren { parent_id, workspace_id } => send_tree_children(&mut tx, pending, id, parent_id, workspace_id).await?,
         OutgoingReq::TreeRoot { mode, workspace_id } => send_tree_root(&mut tx, pending, id, mode, workspace_id).await?,
         OutgoingReq::ToggleHidden { workspace_id } => send_toggle_hidden(&mut tx, id, workspace_id).await?,

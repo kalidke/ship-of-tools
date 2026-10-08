@@ -29,6 +29,8 @@ impl State {
     /// armed and `drive_reveal_step` expands ancestor dirs asynchronously until
     /// the row materializes (the deep-path case the old code left body-only).
     pub(in crate::ui) fn drive_same_ws_open(&mut self, path: &str) {
+        // An in-place open takes over the reveal state; a result attempt no longer owns it.
+        self.result_reveal = None;
         // Through the store seam (a direct `self.mode =` would leave another
         // mode's rows on screen as "the Files tree").
         self.force_files_mode();
@@ -156,6 +158,95 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// Arm the reveal of a result attempt's file in the entered row's Files tree: land the cursor now when
+    /// its rows are present, else wait on the attempt's own root reply.
+    pub(in crate::ui) fn drive_result_reveal(
+        &mut self,
+        attempt: crate::net::transport::ResultAttemptId,
+        node_id: String,
+        path: String,
+        slug: String,
+        restored: bool,
+    ) {
+        self.preview_node_id_fired = Some(node_id.clone());
+        self.preview_anchor_line = None;
+        self.result_reveal = Some(attempt.clone());
+        // The active view is THIS workspace's Files tree by
+        // construction (force_files_mode swapped it in by key);
+        // the only remaining question is whether it has rows yet
+        // (a first visit's slot is empty until tree.root lands).
+        let files_tree_usable = self
+            .tree
+            .rows
+            .iter()
+            .any(|r| r.node.id.starts_with("files:"));
+        // #4: land the nav cursor on the driven file so cursor +
+        // preview stay in sync. Two cases, keyed on `restored`:
+        if restored && files_tree_usable {
+            // Revisit: restore_workspace_ui put the snapshot tree
+            // back and sent NO tree.root, so a tree.root-gated reveal would never fire —
+            // the original #4 gap, and exactly the maintainer's case (his was
+            // a revisit). The rows are present now, so reveal
+            // immediately: `drive_reveal_step` lands a visible row or
+            // expands a collapsed ancestor, overriding the stale
+            // restored cursor.
+            // Hold the per-frame preview-follow off the stale cursor
+            // row while a deep (async) reveal lands, so
+            // `maybe_fire_preview` can't clobber the driven badge
+            // preview with the cursor's file (the post-relaunch
+            // badge-consume race). Mirrors `drive_same_ws_open`;
+            // `drive_reveal_step` clears the hold when it lands.
+            if !self.tree.rows.iter().any(|r| r.node.id == node_id) {
+                self.driven_preview_hold_cursor = self
+                    .tree
+                    .rows
+                    .get(self.tree.selected)
+                    .map(|r| r.node.id.clone());
+            }
+            self.pending_reveal = Some(node_id.clone());
+            self.reveal_awaiting = None;
+            self.reveal_refetched = None;
+            self.drive_reveal_step(None);
+        } else {
+            // First visit (a tree.root was requested but its rows
+            // aren't in yet), a restored-but-FOREIGN tree, or a
+            // restored MODULES tree. The rows we want don't exist yet, so arm a
+            // one-shot reveal consumed on the incoming reply (see the
+            // result-tree handler). The attempt asks for its own root: an
+            // ordinary root reply cannot complete a result's reveal.
+            self.pending_switch_reveal = Some(node_id.clone());
+            if let Err(e) = self.send(crate::net::transport::OutgoingReq::ResultTree {
+                attempt: attempt.clone(),
+                request: crate::net::transport::ResultTreeRequest::Root,
+            }) {
+                tracing::warn!(error = %e,
+                    "badge consume: drop tree.root — channel closed");
+                self.pending_switch_reveal = None;
+                self.abandon_result_attempt(&attempt);
+            }
+        }
+        self.status = format!("nav ← agent (pending) · {path}");
+        tracing::info!(%node_id, ws = %slug,
+            "pending nav.preview driven on workspace switch");
+    }
+
+    /// The children request a reveal step sends for `anc_id`: tagged with the result attempt when the
+    /// reveal is a result's, so only that attempt's own reply can advance it.
+    fn reveal_children_request(&self, anc_id: &str) -> crate::net::transport::OutgoingReq {
+        match &self.result_reveal {
+            Some(attempt) => crate::net::transport::OutgoingReq::ResultTree {
+                attempt: attempt.clone(),
+                request: crate::net::transport::ResultTreeRequest::Children {
+                    parent_id: anc_id.to_string(),
+                },
+            },
+            None => crate::net::transport::OutgoingReq::TreeChildren {
+                parent_id: anc_id.to_string(),
+                workspace_id: self.active_workspace_id.clone(),
+            },
+        }
+    }
+
     /// Advance an in-flight deep-path reveal (`pending_reveal`). No-op when no
     /// reveal is armed, so it's safe to call unconditionally after every
     /// `tree.children` splice. When the target row is now visible it lands the
@@ -175,6 +266,7 @@ impl State {
             self.reveal_awaiting = None;
             self.reveal_refetched = None;
             self.driven_preview_hold_cursor = None;
+            self.result_cursor_landed(&target_id);
             // Re-anchor the header/preview onto the landed row. The body was
             // already fetched (preview_node_id_fired == target_id), so this
             // doesn't re-fetch — it just keeps header + body in sync.
@@ -237,10 +329,7 @@ impl State {
                     self.reveal_refetched = None;
                     return;
                 }
-                if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeChildren {
-                    parent_id: anc_id.clone(),
-                    workspace_id: self.active_workspace_id.clone(),
-                }) {
+                if let Err(e) = self.send(self.reveal_children_request(&anc_id)) {
                     tracing::warn!(error = %e, %anc_id,
                         "reveal: drop tree.children refresh — channel closed");
                     self.pending_reveal = None;
@@ -264,10 +353,7 @@ impl State {
             if self.reveal_awaiting.as_deref() == Some(anc_id.as_str()) {
                 return;
             }
-            if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeChildren {
-                parent_id: anc_id.clone(),
-                workspace_id: self.active_workspace_id.clone(),
-            }) {
+            if let Err(e) = self.send(self.reveal_children_request(&anc_id)) {
                 tracing::warn!(error = %e, %anc_id,
                     "reveal: drop tree.children — channel closed");
                 self.pending_reveal = None;

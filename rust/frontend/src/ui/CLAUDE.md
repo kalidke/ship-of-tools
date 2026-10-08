@@ -25,9 +25,8 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
   closure in agent_pane/attach.rs, page_proxy.rs).
 - An action resolves only if `help::Context::allows` it (input/keypress.rs passes it to the resolver), so help and
   dispatch cannot disagree.
-- A reply counts only if its generation, host and workspace are current: `reply_is_current` (preview/fetch.rs) for
-  the preview and concept slots; nav replies go into the tree their key names (`State::swap_active_tree`).
-- Workspace maps key on `WsKey` = (host, id) (mod.rs; keys built in session/workspace_key.rs), never a bare slug.
+- Preview and concept replies require the current generation, host and workspace. Result-owned tree replies also require the currently listed canonical row and issuing result/attempt before active or parked tree installation and reveal effects; ordinary nav replies retain their tree-key routing.
+- Workspace view maps use WsKey = (host, normalized slug); strip keys use the listed (host, slug). Canonical ids are resolved through workspace.list before command effects.
 - `State::set_focus` (chrome/panes.rs) is the one write of `focus`; scan_tests.rs (`focus_written_only_by_set_focus`)
   fails any other.
 - Input reaches only the selected row's client or is counted: `State::send_pane_input` (agent_pane/input.rs) bumps
@@ -59,7 +58,7 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `video.open`, `docs.open`, `quarto.open`,
 `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`,
 `OutgoingReq`, `IncomingEvt`, `HostTable`, `lane_dial`, `ResolvedDial`, `--socket`, `--dial`, `--relaunched`,
-`relaunch.request`, `spawn_watcher`, `rust/frontend/src/relaunch.rs`.
+`relaunch.request`, `spawn_watcher`, `rust/frontend/src/relaunch.rs`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against, sot_protocol::physical_scale::PhysicalScale, sot_protocol::physical_scale::parse_physical_scale, sot_protocol::video_path::video_mime, lease_notice, handle_fe_command_send relay diagnostics.
 
 ## Folders
 - `app/`: the winit application (`App`), event-loop callbacks, one frame (`frame.rs`) and the quit prompt and exit.
@@ -87,7 +86,7 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 
 ## Files
 - `mod.rs`: `State` and the module declarations (over 800 lines under standing exemption E11).
-- `events.rs`: `drain_events`, which applies each daemon event (`IncomingEvt`) to the window by variant.
+- `events.rs`: drain_events routes each IncomingEvt variant to its owner, forwarding result-tree attempt identities unchanged to the navigation reply handler; event-service scheduling remains owned by the app.
 - `connections.rs`: the window's view of its connection set: `send`, `send_to`, `default_host`, `ordered_hosts`.
 - `page_proxy.rs`: arming a local listener so a remote daemon's page opens (`ensure_proxy_for_url`).
 - `scan_tests.rs`: the remaining inherited focus-write and ROI-paste source scans; the leave contract is tested behaviorally by the inline begin_leave tests in app/exit.rs.

@@ -18,11 +18,13 @@
 # has a 1200 s end (the builds do not). CARGO_TARGET_DIR must be the gate's
 # alone while it runs: any new process started from it counts as a leftover.
 # ALLDONE means every rc line is 0; the rc lines say which job failed.
-# Known limit: socket_unix's and challenge_unix's self-re-exec children share
-# their stdout and can glue result lines together, so raw `test result` counts
-# vary between runs; compare the test names seen and the FAILED lines instead.
+# A selected Rust job's result is zero only when its exact body completed successfully. A missing,
+# ignored-only or mismatched body produces a failed result even if the executable exited zero.
+# Ignored names from split binaries are reported as skipped and are not ordinary jobs. Aggregate
+# raw test counts are informational; the checked job results decide ALLDONE or ALLDONE FAILED.
 
 SELF=$(readlink -f "$0")
+source "$(dirname "$SELF")/lib-test-body.sh" || exit 2
 TO=(timeout -k 10 1200)
 SPLIT=(capsule_workspaces comm_wake lane_bridge fe_client)
 JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/video-file julia/sotlog)
@@ -76,7 +78,7 @@ job_cargo_chain() {
 job_shell() {
   local b
   b=$(basename "$1" .sh)
-  "${TO[@]}" "${SE[@]}" bash "$1" > "$L/$b.log" 2>&1
+  "${TO[@]}" "${SE[@]}" bash "$@" > "$L/$b.log" 2>&1
   fin "$b" $?
 }
 
@@ -85,8 +87,12 @@ job_test() {
   local key=$1 exe=$2 pkg=$3 t=${4:-} log r
   log=$L/rust/$key.log
   echo "     Running ($exe) load $(cut -d' ' -f1 /proc/loadavg)" > "$log"
-  (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" ${t:+--exact "$t"}) >> "$log" 2>&1
+  (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" \
+    ${t:+--exact "$t" --format pretty --color never --show-output --test-threads=1}) >> "$log" 2>&1
   r=$?
+  if [ -n "$t" ]; then
+    if test_body_check "$t" "$r" "$log"; then r=0; else r=$?; fi
+  fi
   echo "$r" > "$L/rust/$key.rc"
 }
 
@@ -116,11 +122,11 @@ emit_one() {
 }
 emit_shell() {
   local name; name=$(basename "$1" .sh)
-  emit "shell:$1" "$(printf 'shell\t%s\t%s' "$name" "$1")" "$L/steps/$name.rc"
+  emit "shell:$1" "$(printf 'shell\t%s' "$name"; printf '\t%s' "$@")" "$L/steps/$name.rc"
 }
 
 producer() {
-  local k tgt t n exe pkg f s found out lrc
+  local k tgt t n exe pkg f s found out lrc ignored irc prc
   local -A LISTED SPLIT_EXE SPLIT_PKG
   local SHELL_ALL=()
   local SLOW_FIRST=(
@@ -143,7 +149,7 @@ producer() {
       *) SHELL_ALL+=("$f") ;;
     esac
   done
-  SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/installer-apply.sh" "$D/scripts/tests/test-topology-plan.sh")
+  SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/installer-apply.sh" "$D/scripts/tests/test-topology-plan.sh" "$D/scripts/tests/test-test-body.sh")
 
   for s in julia-root "${JULIA_PKGS[@]/#/julia-}"; do echo unrun > "$L/steps/${s//\//-}.rc"; done
   emit julia julia
@@ -156,14 +162,48 @@ producer() {
   # list the four slow binaries; a split binary runs only per test
   if [ "$BUILD_RC" -eq 0 ]; then
     for n in "${SPLIT[@]}"; do
-      if ! row_for "$n"; then echo "split-missing $n" >> "$L/summary.txt"; continue; fi
-      out=$(cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --format terse 2> "$L/$n.list.log")
-      lrc=$?
-      out=$(grep ': test$' <<< "$out")
-      if [ "$lrc" -ne 0 ] || [ -z "$out" ]; then echo "split-missing $n" >> "$L/summary.txt"; continue; fi
-      LISTED[$n]=${out//: test/}
-      SPLIT_EXE[$n]=$exe SPLIT_PKG[$n]=$pkg
+      if ! row_for "$n"; then
+        echo "split-missing $n" >> "$L/summary.txt"; fin "split-$n" 101; continue
+      fi
       EMITTED["bin:$exe"]=1
+      (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --format terse) \
+        > "$L/$n.all.list" 2> "$L/$n.list.log"
+      lrc=$?
+      (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --ignored --format terse) \
+        > "$L/$n.ignored.list" 2>> "$L/$n.list.log"
+      irc=$?
+      if [ "$lrc" -ne 0 ] || [ "$irc" -ne 0 ]; then
+        echo "split-missing $n: list exits $lrc/$irc" >> "$L/summary.txt"; fin "split-$n" 101; continue
+      fi
+      out=$(python3 - "$L/$n.all.list" "$L/$n.ignored.list" <<'PYLIST'
+import sys
+
+def names(path):
+    rows = [line[:-6] for line in open(path).read().splitlines() if line.endswith(': test')]
+    if len(rows) != len(set(rows)):
+        raise ValueError('duplicate listed test')
+    return rows
+
+try:
+    complete, ignored = (names(path) for path in sys.argv[1:])
+    if not complete or not set(ignored).issubset(complete):
+        raise ValueError('empty or inconsistent complete/ignored lists')
+    print('\n'.join(name for name in complete if name not in set(ignored)))
+except (OSError, ValueError) as error:
+    print('split listing: ' + str(error), file=sys.stderr)
+    sys.exit(101)
+PYLIST
+      )
+      prc=$?
+      if [ "$prc" -ne 0 ]; then
+        echo "split-missing $n: invalid listing" >> "$L/summary.txt"; fin "split-$n" 101; continue
+      fi
+      while IFS= read -r ignored; do
+        [[ $ignored = *': test' ]] || continue
+        echo "split-skipped $n/${ignored%: test}" >> "$L/summary.txt"
+      done < "$L/$n.ignored.list"
+      LISTED[$n]=$out
+      SPLIT_EXE[$n]=$exe SPLIT_PKG[$n]=$pkg
     done
   fi
 
@@ -174,7 +214,7 @@ producer() {
         for f in "${SHELL_ALL[@]}"; do
           if [ "$(basename "$f" .sh)" = "$k" ]; then found=$f; fi
         done
-        if [ -z "$found" ]; then echo "slow-first-missing $k" >> "$L/summary.txt"; continue; fi
+        if [ -z "$found" ]; then echo "slow-first-missing $k" >> "$L/summary.txt"; fin "missing-${k//[:\/]/_}" 101; continue; fi
         emit_shell "$found"
         ;;
       */*)
@@ -184,17 +224,26 @@ producer() {
           emit_one "${SPLIT_EXE[$tgt]}" "${SPLIT_PKG[$tgt]}" "$t"
         else
           echo "slow-first-missing $k" >> "$L/summary.txt"
+          fin "missing-${k//[:\/]/_}" 101
         fi
         ;;
       *)
         [ "$BUILD_RC" -eq 0 ] || continue
-        if row_for "$k"; then emit_bin "$exe" "$pkg"; else echo "slow-first-missing $k" >> "$L/summary.txt"; fi
+        if row_for "$k"; then emit_bin "$exe" "$pkg"; else echo "slow-first-missing $k" >> "$L/summary.txt"; fin "missing-${k//[:\/]/_}" 101; fi
         ;;
     esac
   done
   st shell-suites
   for f in "${SHELL_ALL[@]}"; do
-    emit_shell "$f"
+    if [ "$(basename "$f")" = test-test-body.sh ]; then
+      if [ "$BUILD_RC" -eq 0 ] && row_for test_body_fixture; then
+        emit_shell "$f" --all "$exe"
+      else
+        fin test-test-body 101
+      fi
+    else
+      emit_shell "$f"
+    fi
   done
   [ "$BUILD_RC" -eq 0 ] || return 0
   for n in "${SPLIT[@]}"; do
@@ -214,7 +263,7 @@ if [ "${1:-}" = --job ]; then
   case $kind in
     julia) job_julia ;;
     cargo-chain) job_cargo_chain ;;
-    shell) job_shell "$b" ;;
+    shell) job_shell "$b" ${c:+"$c" "$d"} ;;
     bin) job_test "$a" "$b" "$c" ;;
     one) job_test "$a" "$b" "$c" "$d" ;;
   esac

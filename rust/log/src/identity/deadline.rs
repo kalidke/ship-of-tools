@@ -150,18 +150,23 @@ pub(crate) fn run_with_deadline_traced<T>(
         // let it past this frame until the watchdog thread has been
         // joined, and the watchdog only stops polling once `state`
         // leaves `PENDING`). `SettleOnPanic`'s `Drop` runs during that
-        // unwind, before `thread::scope`'s own join, and does nothing on
-        // a normal return (`std::thread::panicking()` is false then) —
-        // the explicit post-`body()` logic below is what settles the
-        // NORMAL-return case, unchanged.
+        // unwind, before `thread::scope`'s own join. It is disarmed the
+        // moment `body` returns, so it settles exactly the runs whose
+        // `body` did not return, whatever the thread was doing before:
+        // a run made during another panic's unwind (a `Drop`'s cleanup)
+        // that returns is judged by `body` like any other, and one whose
+        // `body` panics, even inside a `catch_unwind` in such a cleanup,
+        // settles at once. It never reads `std::thread::panicking()`. The
+        // explicit post-`body()` logic below settles every normal return.
         struct SettleOnPanic<'a> {
             state: &'a AtomicU8,
             on_timeout: &'a (dyn Fn() + Sync),
             notify_watchdog: &'a dyn Fn(),
+            armed: bool,
         }
         impl Drop for SettleOnPanic<'_> {
             fn drop(&mut self) {
-                if std::thread::panicking()
+                if self.armed
                     && self
                         .state
                         .compare_exchange(PENDING, TIMED_OUT, Ordering::AcqRel, Ordering::Acquire)
@@ -176,9 +181,15 @@ pub(crate) fn run_with_deadline_traced<T>(
             }
         }
         let result = {
-            let _settle =
-                SettleOnPanic { state: &state, on_timeout: &on_timeout, notify_watchdog: &notify_watchdog };
-            body()
+            let mut settle = SettleOnPanic {
+                state: &state,
+                on_timeout: &on_timeout,
+                notify_watchdog: &notify_watchdog,
+                armed: true,
+            };
+            let result = body();
+            settle.armed = false;
+            result
         };
 
         let claimed_completed = state
@@ -359,6 +370,110 @@ mod tests {
             started.elapsed()
         );
         assert_eq!(cancels.load(Ordering::SeqCst), 1, "a panicking body must still settle+cancel exactly once");
+    }
+
+    /// A run made from a `Drop` while its thread unwinds a panic that began outside the run (a guard's cleanup, a
+    /// test's teardown) is judged by its own body: a body that returns in time is accepted, and nothing is cancelled.
+    /// The settle-on-panic guard acts only on a panic that began inside `body`.
+    #[test]
+    fn a_run_from_a_drop_during_an_unwind_is_judged_by_its_own_body() {
+        struct RunsOnDrop<'a> {
+            result: &'a std::sync::Mutex<Option<Option<u32>>>,
+            cancels: &'a AtomicUsize,
+        }
+        impl Drop for RunsOnDrop<'_> {
+            fn drop(&mut self) {
+                let run = run_with_deadline(
+                    Instant::now() + Duration::from_secs(30),
+                    || {
+                        self.cancels.fetch_add(1, Ordering::SeqCst);
+                    },
+                    || 7,
+                );
+                *self
+                    .result
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(run);
+            }
+        }
+        let result = std::sync::Mutex::new(None);
+        let cancels = AtomicUsize::new(0);
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _cleanup = RunsOnDrop {
+                result: &result,
+                cancels: &cancels,
+            };
+            panic!("a panic outside the run, which the cleanup's run happens during");
+        }));
+        assert!(unwound.is_err(), "the closure's own panic propagates");
+        let run = *result
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(
+            run,
+            Some(Some(7)),
+            "a run made during an unwind is judged by its own body"
+        );
+        assert_eq!(
+            cancels.load(Ordering::SeqCst),
+            0,
+            "and an on-time body is never cancelled"
+        );
+    }
+
+    /// A body that panics is settled at once even when its run is made during an unwind and its panic is caught there
+    /// (a cleanup that catches its own failure): the guard settles every run whose body did not return, whatever the
+    /// thread was doing before, so the caller does not wait out the deadline.
+    #[test]
+    fn a_caught_panic_in_a_run_made_during_an_unwind_settles_promptly() {
+        struct CatchesOnDrop<'a> {
+            seen: &'a std::sync::Mutex<Option<(bool, Duration)>>,
+            cancels: &'a AtomicUsize,
+        }
+        impl Drop for CatchesOnDrop<'_> {
+            fn drop(&mut self) {
+                let started = Instant::now();
+                let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_with_deadline(
+                        Instant::now() + Duration::from_secs(10),
+                        || {
+                            self.cancels.fetch_add(1, Ordering::SeqCst);
+                        },
+                        || -> u32 { panic!("the body's own panic, caught by the cleanup") },
+                    )
+                }));
+                let seen = (caught.is_err(), started.elapsed());
+                *self
+                    .seen
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(seen);
+            }
+        }
+        let seen = std::sync::Mutex::new(None);
+        let cancels = AtomicUsize::new(0);
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _cleanup = CatchesOnDrop {
+                seen: &seen,
+                cancels: &cancels,
+            };
+            panic!("a panic outside the run, which the cleanup's run happens during");
+        }));
+        assert!(unwound.is_err(), "the closure's own panic propagates");
+        let seen = *seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (caught, took) = seen.expect("the cleanup ran");
+        assert!(
+            caught,
+            "the body's panic reaches the cleanup's catch_unwind"
+        );
+        assert!(
+            took < Duration::from_secs(5),
+            "the run waited {took:?} for a deadline its panicked body never met"
+        );
+        assert_eq!(
+            cancels.load(Ordering::SeqCst),
+            1,
+            "the run is settled, and cancelled, exactly once"
+        );
     }
 
     /// Round-2 finding 4: a panic inside `on_timeout`, running on the

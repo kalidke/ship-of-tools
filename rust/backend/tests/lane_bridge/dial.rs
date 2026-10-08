@@ -113,7 +113,7 @@ async fn attach_to_a_daemon_that_answers(reply: Frame) -> (String, usize) {
 
     let (_woke, wake) = wake_flag_for_test();
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
-        DaemonLaneEndpoint { dial: LaneDial::Local(path), token: None },
+        DaemonLaneEndpoint::new(LaneDial::Local(path), None),
         "row-old-daemon".to_string(),
         80,
         24,
@@ -314,59 +314,80 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
     env.kill_daemon_bounded().await;
 }
 
-// -----------------------------------------------------------------------
-// C3 as amended (isolation-plan.md §3, dev/output/c3-second-connection-
-// amendment.md §7): `LaneDial::Ssh` reaches the SAME daemon-in-the-middle
-// as `LaneDial::Local` above, through a spawned child instead of an
-// already-open socket. A stub `ssh` first on `PATH` stands in for the
-// real binary — it ignores every option/command argv `ssh_bridge::argv`
-// builds and instead relays its stdin/stdout to the harness's own
-// `Relay`, which is the "far end" both real ssh and a real daemon would
-// otherwise be.
-// -----------------------------------------------------------------------
+// Explicitly spawned SSH stand-ins exercise the real endpoint; parent PATH and SHELL preservation is observed through setup, execution and teardown.
 
-/// Writes an executable `ssh` (no extension: this is the Linux-only half
-/// of this file, `#![cfg(target_os = "linux")]` at the top) into a fresh
-/// temp dir that relays stdin/stdout to the Unix socket at `socket` via `nc -U`
-/// (`comm-relay.sh`'s own `nc -U` path is the shell twin). The caller
-/// prepends the returned dir to `$PATH`.
-fn stub_ssh_relaying_to(dir: &Path, socket: &Path) {
-    let script = format!("#!/bin/sh\nexec nc -U {}\n", socket.display());
-    let path = dir.join("ssh");
-    sot_log::test_exec::write_executable(&path, script);
+/// Writes the executable that the caller explicitly spawns to relay its pipes to the test-owned socket.
+
+// Parent values are compared as Option<OsString>; diagnostics never format either value.
+struct ParentSshEnvironment {
+    values: [Option<std::ffi::OsString>; 2],
+    failures: std::sync::Mutex<Vec<String>>,
+}
+impl ParentSshEnvironment {
+    fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self { values: [std::env::var_os("PATH"), std::env::var_os("SHELL")], failures: Default::default() })
+    }
+    fn observe(&self, phase: &str) {
+        for (key, before) in ["PATH", "SHELL"].into_iter().zip(&self.values) {
+            if std::env::var_os(key) != *before { self.failures.lock().unwrap().push(format!("{key} at {phase} in SSH fixture")); }
+        }
+    }
+    fn finish(&self) {
+        self.observe("after teardown");
+        let failures = self.failures.lock().unwrap();
+        assert!(failures.is_empty(), "ssh_fixtures_preserve_parent_path_and_shell: {}", failures.join("; "));
+    }
 }
 
-/// The dying twin: exits nonzero before ever touching a socket, with one
-/// stderr line — the diagnosis `BridgedClient` surfaces in place of a
-/// generic broken-pipe message (this module's own doc; C3 as amended §6).
-fn stub_ssh_dying_with(dir: &Path, stderr_line: &str) {
+fn stub_ssh_relaying_to(dir: &Path, socket: &Path, guard: &ParentSshEnvironment) {
+    let script = format!(r#"#!/usr/bin/env python3
+import os, socket, sys, threading
+peer = socket.socket(socket.AF_UNIX)
+peer.connect({socket:?})
+def upload():
+    while True:
+        data = os.read(0, 65536)
+        if not data:
+            peer.shutdown(socket.SHUT_WR)
+            return
+        peer.sendall(data)
+threading.Thread(target=upload, daemon=True).start()
+while True:
+    data = peer.recv(65536)
+    if not data:
+        break
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+"#, socket = socket.to_string_lossy());
+    sot_log::test_exec::write_executable(&dir.join("ssh"), script);
+    guard.observe("after preparing relay");
+}
+
+fn stub_endpoint(path: PathBuf, guard: Arc<ParentSshEnvironment>) -> DaemonLaneEndpoint {
+    guard.observe("after preparing endpoint");
+    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
+    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |command| {
+        guard.observe("at spawn");
+        let spawned = std::process::Command::new(&path).args(command.get_args())
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+            .spawn();
+        guard.observe("child active");
+        spawned
+    }))
+}
+
+/// Exits before connecting, with one stderr line; the lane status keeps the transport error and adds this diagnosis once.
+fn stub_ssh_dying_with(dir: &Path, stderr_line: &str, guard: &ParentSshEnvironment) {
     let script = format!("#!/bin/sh\necho '{stderr_line}' >&2\nexit 255\n");
     let path = dir.join("ssh");
     sot_log::test_exec::write_executable(&path, script);
-}
-
-/// Prepends `dir` to this PROCESS's `$PATH` — global, like the `SERIAL`
-/// mutex above already accounts for (`SOT_RUNTIME_DIR`) — and returns a
-/// guard that restores the exact original value on drop, so a later test
-/// in this same binary never inherits a stub.
-struct PathGuard(String);
-impl PathGuard {
-    fn prepend(dir: &Path) -> Self {
-        let original = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{}", dir.display(), original);
-        std::env::set_var("PATH", new_path);
-        PathGuard(original)
-    }
-}
-impl Drop for PathGuard {
-    fn drop(&mut self) {
-        std::env::set_var("PATH", &self.0);
-    }
+    guard.observe("after preparing dying fixture");
 }
 
 #[tokio::test]
 async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
     let _serial = SERIAL.lock().await;
+    let guard = ParentSshEnvironment::new();
     assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-log --bin sot-capsule)");
 
     let env = Env::new("lb-ssh1");
@@ -376,11 +397,9 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let stub_dir = tempfile::Builder::new().prefix("sot-stub-ssh-").tempdir().expect("tempdir");
-    stub_ssh_relaying_to(stub_dir.path(), &relay.path);
-    let _path_guard = PathGuard::prepend(stub_dir.path());
+    stub_ssh_relaying_to(stub_dir.path(), &relay.path, &guard);
 
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, Default::default()), token: None };
+    let endpoint = stub_endpoint(stub_dir.path().join("ssh"), guard.clone());
     let (_woke, wake) = wake_flag_for_test();
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
         endpoint,
@@ -412,6 +431,7 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
         client.notice()
     );
 
+    guard.observe("after result");
     client.request_quit("lane bridge ssh-stub test quit");
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut exited = false;
@@ -427,17 +447,17 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
 
     drop(client);
     env.kill_daemon_bounded().await;
+    guard.finish();
 }
 
 #[tokio::test]
 async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
     let _serial = SERIAL.lock().await;
+    let guard = ParentSshEnvironment::new();
     let stub_dir = tempfile::Builder::new().prefix("sot-stub-ssh-dying-").tempdir().expect("tempdir");
-    stub_ssh_dying_with(stub_dir.path(), "Permission denied (publickey).");
-    let _path_guard = PathGuard::prepend(stub_dir.path());
+    stub_ssh_dying_with(stub_dir.path(), "Permission denied (publickey).", &guard);
 
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, Default::default()), token: None };
+    let endpoint = stub_endpoint(stub_dir.path().join("ssh"), guard.clone());
     let (_woke, wake) = wake_flag_for_test();
     // `attach()`'s only `Err` is a failed OS thread spawn (`attach_inner`,
     // `sot-log/src/attach_client/client.rs`) — the dial itself runs on the worker
@@ -471,4 +491,283 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    guard.observe("after result");
+    client.shutdown(Duration::from_secs(5)); drop(client);
+    guard.finish();
+}
+
+/// Both children record their start; the hello is read first and the lane.connect request determines the role. The supervisor observes the spare before answering, regardless of which child started first.
+fn ordering_fixture(dir: &Path, guard: &ParentSshEnvironment) -> PathBuf {
+    let path = dir.join("ordering-ssh");
+    let script = format!(r#"#!/usr/bin/env python3
+import json, os, pathlib, sys, time
+root = pathlib.Path({root:?})
+(root / ('start-' + str(os.getpid()))).write_text('started\n')
+hello = json.loads(sys.stdin.readline())
+request = json.loads(sys.stdin.readline())
+assert hello['op'] == 'hello' and hello['payload']['role'] == 'handoff'
+assert request['op'] == 'lane.connect'
+if request['payload']['lane'] == 'supervisor':
+    (root / 'supervisor-pid').write_text(str(os.getpid()))
+    deadline = time.monotonic() + 1.5
+    while len(list(root.glob('start-*'))) < 2 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    if len(list(root.glob('start-*'))) >= 2:
+        (root / 'ordered').write_text('spare before supervisor answer\n')
+    for frame, payload in [(hello, {{'ok': True}}), (request, {{'error': 'ordering fixture refused', 'code': 'unknown_workspace'}})]:
+        print(json.dumps({{'v': frame['v'], 'id': frame['id'], 'kind': 'res', 'op': frame['op'], 'payload': payload}}), flush=True)
+else:
+    sys.stdin.buffer.read()
+"#, root = dir.to_string_lossy());
+    sot_log::test_exec::write_executable(&path, script);
+    guard.observe("after preparing ordering fixture");
+    path
+}
+
+#[test]
+fn the_spare_login_starts_before_the_supervisor_handshake_completes() {
+    let _serial = SERIAL.blocking_lock();
+    let guard = ParentSshEnvironment::new();
+    use sot_log::lane::client::Endpoint;
+    let dir = tempfile::tempdir().unwrap();
+    let endpoint = stub_endpoint(ordering_fixture(dir.path(), &guard), guard.clone());
+    let result = endpoint.connect_supervisor_unchallenged("row-ordering");
+    assert!(dir.path().join("ordered").is_file(), "the spare login must start before the supervisor handshake completes");
+    assert!(matches!(result, Err(sot_log::lane::transport::TransportError::Refused { .. })), "ordering fixture returned {:?}", result.err());
+    guard.observe("after result");
+    drop(endpoint);
+    guard.finish();
+}
+
+#[test]
+fn a_failed_supervisor_handshake_drops_the_spare() {
+    let _serial = SERIAL.blocking_lock();
+    let guard = ParentSshEnvironment::new();
+    use sot_log::lane::client::Endpoint;
+    let dir = tempfile::tempdir().unwrap();
+    let endpoint = stub_endpoint(ordering_fixture(dir.path(), &guard), guard.clone());
+    let result = endpoint.connect_supervisor_unchallenged("row-abandoned");
+    assert!(dir.path().join("ordered").is_file(), "both owned children started before refusal");
+    assert!(matches!(result, Err(sot_log::lane::transport::TransportError::Refused { .. })));
+    let supervisor = std::fs::read_to_string(dir.path().join("supervisor-pid")).unwrap();
+    let mut spares = 0;
+    for entry in std::fs::read_dir(dir.path()).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(pid) = name.strip_prefix("start-").filter(|pid| *pid != supervisor) {
+            spares += 1;
+            assert!(!Path::new(&format!("/proc/{pid}/stat")).exists(), "a failed supervisor handshake must reap its spare while the endpoint is alive");
+        }
+    }
+    assert_eq!(spares, 1, "one owned spare was observed");
+    guard.observe("after result");
+    drop(endpoint);
+    guard.finish();
+}
+
+// Status travels over the retained, challenged supervisor connection; the wire supplies the Ready voyage.
+fn ready_voyage(endpoint: &DaemonLaneEndpoint, supervisor: &sot_protocol::topology::lane_client::DaemonLaneClient) -> String {
+    use sot_log::identity::exchange::{IdentityExchange, ExchangeDecode, SupervisorLaneExchange, SUPERVISOR_LANE_BUILD_ID};
+    use sot_log::identity::challenge::ChallengeOutcome;
+    use sot_log::lane::{client::Endpoint, wire::{self, DecodedFrame, SupervisorRequest, SupervisorReply, SupervisorPhase}};
+    let mut hello = SupervisorLaneExchange::new(SUPERVISOR_LANE_BUILD_ID.to_string());
+    assert!(matches!(endpoint.challenge(supervisor, &mut hello, Instant::now() + Duration::from_secs(2)), ChallengeOutcome::Proven(_)), "private supervisor identity must be proven");
+    struct Ready { splitter: wire::FrameSplitter, voyage: Option<String> }
+    impl IdentityExchange for Ready {
+        fn encode_request(&self) -> Vec<u8> { wire::encode_supervisor_request(&SupervisorRequest::Status).unwrap() }
+        fn feed(&mut self, bytes: &[u8]) -> ExchangeDecode {
+            let (frames, error) = self.splitter.feed(bytes);
+            if error.is_some() || frames.len() > 1 { return ExchangeDecode::Foreign; }
+            let Some(frame) = frames.into_iter().next() else { return ExchangeDecode::Incomplete; };
+            if self.splitter.has_pending_bytes() { return ExchangeDecode::Foreign; }
+            match frame {
+                DecodedFrame::SupervisorReply(SupervisorReply::StatusOk { pid, created, voyage: Some(voyage), phase: SupervisorPhase::Ready, .. }) => {
+                    self.voyage = Some(voyage); ExchangeDecode::Identity { pid, created }
+                }
+                _ => ExchangeDecode::Foreign,
+            }
+        }
+    }
+    let mut ready = Ready { splitter: wire::FrameSplitter::new(), voyage: None };
+    assert!(matches!(endpoint.challenge(supervisor, &mut ready, Instant::now() + Duration::from_secs(5)), ChallengeOutcome::Proven(_)), "Ready Status must agree with the retained supervisor identity");
+    ready.voyage.expect("the private Ready supervisor supplies the voyage")
+}
+
+/// Observe private admission expiry and report the single first-voyage typed result, fresh-start count and expired-child reap before assertions or worker recovery.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_expired_spare_uses_a_fresh_voyage_login() {
+    use sot_log::lane::client::Endpoint;
+    let _serial = SERIAL.lock().await;
+    let guard = ParentSshEnvironment::new();
+    let env = Env::new("lb-expired-spare");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let (_, target) = create_ready_capsule_row(&env, &mut conn, &mut next_id, "lb-expired-row").await;
+    let relay = Relay::start(env.socket_path.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    stub_ssh_relaying_to(dir.path(), &relay.path, &guard);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let observed = pids.clone();
+    let spawn_guard = guard.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let admitted = attempts.clone();
+    let path = dir.path().join("ssh");
+    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
+    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None).with_test_ssh_spawner(Arc::new(move |command| {
+        spawn_guard.observe("at spawn");
+        admitted.fetch_add(1, Ordering::SeqCst);
+        let child = std::process::Command::new(&path).args(command.get_args())
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+            .spawn()?;
+        spawn_guard.observe("child active");
+        observed.lock().unwrap().push(child.id());
+        Ok(child)
+    }));
+    let supervisor = endpoint.connect_supervisor_unchallenged(&target).unwrap();
+    let voyage = ready_voyage(&endpoint, &supervisor);
+    assert_eq!(pids.lock().unwrap().len(), 2, "the initial pair started");
+    let spare = pids.lock().unwrap()[1];
+    let stat = format!("/proc/{spare}/stat");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let text = std::fs::read_to_string(&stat).expect("the retained child stays unreaped until consumption");
+        if text.rsplit_once(") ").unwrap().1.starts_with('Z') { break; }
+        assert!(Instant::now() < deadline, "the private daemon never closed the idle bridge at admission expiry");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // Exactly one first-voyage attempt settles before any recovery worker exists.
+    let attempts_before = attempts.load(Ordering::SeqCst);
+    let first = endpoint.connect_voyage_unchallenged(&target, &voyage);
+    let attempts_after = attempts.load(Ordering::SeqCst);
+    let started = pids.lock().unwrap().clone();
+    let reap = match std::fs::metadata(&stat) { Ok(_) => Some(false), Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true), Err(_) => None };
+    let replacement = started.get(2).map(|pid| if *pid != spare { "distinct" } else { "same" }).unwrap_or("missing");
+    let gate_state = if gate.is_up() { "up" } else { "down" };
+    super::diagnostics::expiry_result(first.as_ref().err());
+    println!("T2 expiry fallback: attempts={attempts_after} starts={} expired=true reaped={} replacement={replacement} gate={gate_state}", started.len(), reap.map(|value| if value { "true" } else { "false" }).unwrap_or("unknown"));
+    let reaped = reap == Some(true);
+    let replacement_distinct = replacement == "distinct";
+    let outcome_ok = match &first {
+        Ok(client) => matches!(endpoint.authenticate_server(client), sot_log::identity::challenge::PeerAuthOutcome::Authenticated(_)),
+        Err(sot_log::lane::transport::TransportError::Unreachable(error)) =>
+            error.kind() == std::io::ErrorKind::TimedOut && error.to_string().starts_with("lane.connect: handshake timed out"),
+        _ => false,
+    };
+    guard.observe("after result");
+    drop(first); drop(supervisor); drop(endpoint);
+    env.kill_daemon_bounded().await;
+    guard.finish();
+    assert_eq!(attempts_after, attempts_before + 1, "exactly one ordinary gated fresh first-voyage attempt must occur before worker recovery");
+    assert_eq!(started.len(), 3, "two initial logins plus exactly one fresh first-voyage login");
+    assert!(reaped, "the expired owned child was reaped before first-voyage fallback");
+    assert!(replacement_distinct, "the first-voyage fallback child differs from the expired spare");
+    assert!(outcome_ok, "the single fresh first voyage must return a peer report or a typed handshake timeout before worker recovery");
+}
+
+/// A fixed spare-entry delay and bounded rendezvous; entry order never establishes a lane role.
+fn rendezvous_endpoint(dir: &Path, delay: u64, reversed: bool, guard: Arc<ParentSshEnvironment>) -> DaemonLaneEndpoint {
+    let path = dir.join("rendezvous.py");
+    let script = format!(r#"import json, os, pathlib, sys, time
+root = pathlib.Path({root:?})
+slot = int(sys.argv[1])
+reverse = {reverse}
+deadline = time.monotonic() + 30
+if slot == 1:
+    time.sleep({delay})
+wait_for = 'start-1' if reverse and slot == 0 else ('start-0' if not reverse and slot == 1 else None)
+while wait_for and not (root / wait_for).exists():
+    assert time.monotonic() < deadline, 'fixture entry rendezvous timed out'
+    time.sleep(0.005)
+with (root / 'entry-order').open('a') as entries:
+    entries.write(str(slot) + '\n')
+(root / ('start-' + str(slot))).write_text(str(os.getpid()))
+hello = json.loads(sys.stdin.readline())
+request = json.loads(sys.stdin.readline())
+assert hello['kind'] == 'req' and hello['op'] == 'hello' and hello['payload']['role'] == 'handoff'
+assert request['kind'] == 'req' and request['op'] == 'lane.connect'
+role = request['payload']['lane']
+if role == 'supervisor':
+    while not (root / 'start-0').exists() or not (root / 'start-1').exists():
+        assert time.monotonic() < deadline, 'fixture spare rendezvous timed out'
+        time.sleep(0.005)
+    (root / 'ordered').write_text('supervisor observed spare before answering')
+    print('Permission denied (fixture).', file=sys.stderr, flush=True)
+    sys.exit(255)
+sys.stdin.buffer.read()
+"#, root=dir.to_string_lossy(), reverse=if reversed { "True" } else { "False" });
+    sot_log::test_exec::write_executable(&path, script);
+    guard.observe("after preparing rendezvous fixture");
+    let slots = Arc::new(AtomicUsize::new(0));
+    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
+    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |command| {
+        guard.observe("at spawn");
+        let spawned = std::process::Command::new("python3").arg("-u").arg(&path).arg(slots.fetch_add(1, Ordering::SeqCst).to_string()).args(command.get_args())
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+            .spawn();
+        guard.observe("child active");
+        spawned
+    }))
+}
+
+#[test]
+fn the_slow_fixture_uses_its_own_handshake_bound() {
+    let _serial = SERIAL.blocking_lock();
+    let guard = ParentSshEnvironment::new();
+    use sot_log::lane::client::Endpoint;
+    let dir = tempfile::tempdir().unwrap();
+    let endpoint = rendezvous_endpoint(dir.path(), 3, false, guard.clone()).with_test_handshake_bound(Duration::from_secs(60));
+    let result = endpoint.connect_supervisor_unchallenged("row-slow-fixture");
+    let error = result.err().expect("the fixture deliberately refuses the login").to_string();
+    assert!(error.contains("Permission denied"), "the slow fixture must reach its intended Permission denied result: {error}");
+    assert!(dir.path().join("ordered").exists(), "the delayed spare arrived before the fixture answered");
+    guard.observe("after result");
+    drop(endpoint); guard.finish();
+}
+
+#[test]
+fn fixture_bounds_are_local_to_the_endpoint() {
+    let _serial = SERIAL.blocking_lock();
+    let guard = ParentSshEnvironment::new();
+    use sot_log::lane::client::Endpoint;
+    let configured = tempfile::tempdir().unwrap();
+    let slow = rendezvous_endpoint(configured.path(), 3, false, guard.clone()).with_test_handshake_bound(Duration::from_secs(60));
+    let ordinary = tempfile::tempdir().unwrap();
+    let default = rendezvous_endpoint(ordinary.path(), 3, false, guard.clone());
+    let started = Instant::now();
+    let error = default.connect_supervisor_unchallenged("row-default").err().unwrap().to_string();
+    assert!(error.contains("handshake timed out"), "an unconfigured endpoint retains CONNECT_BOUND: {error}");
+    assert!(started.elapsed() >= sot_log::lane::transport::CONNECT_BOUND);
+    assert!(!ordinary.path().join("ordered").exists(), "the ordinary endpoint stopped before the three-second spare entry");
+    let error = slow.connect_supervisor_unchallenged("row-configured").err().unwrap().to_string();
+    assert!(error.contains("Permission denied"), "only the configured endpoint waits for its slow peer: {error}");
+    guard.observe("after result");
+    drop(default); drop(slow); guard.finish();
+}
+
+#[test]
+fn fixture_roles_follow_the_second_frame_in_both_start_orders() {
+    let _serial = SERIAL.blocking_lock();
+    let guard = ParentSshEnvironment::new();
+    use sot_log::lane::client::Endpoint;
+    for reversed in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = rendezvous_endpoint(dir.path(), 0, reversed, guard.clone());
+        let error = endpoint.connect_supervisor_unchallenged("row-role-order").err().unwrap().to_string();
+        assert!(error.contains("Permission denied"), "the second frame identifies the supervisor in either entry order: reversed={reversed}: {error}");
+        assert!(dir.path().join("ordered").exists(), "the supervisor must observe the spare before answering");
+        guard.observe("after result");
+        let entries = std::fs::read_to_string(dir.path().join("entry-order")).unwrap();
+        assert_eq!(entries, if reversed { "1\n0\n" } else { "0\n1\n" }, "the fixture must force both entry orders");
+    }
+    guard.finish();
+}
+
+#[test]
+fn ssh_fixtures_preserve_parent_path_and_shell() {
+    the_spare_login_starts_before_the_supervisor_handshake_completes();
+    a_failed_supervisor_handshake_drops_the_spare();
+    fixture_roles_follow_the_second_frame_in_both_start_orders();
+    the_slow_fixture_uses_its_own_handshake_bound();
+    fixture_bounds_are_local_to_the_endpoint();
+    a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status();
 }

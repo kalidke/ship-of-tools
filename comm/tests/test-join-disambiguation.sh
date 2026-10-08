@@ -38,6 +38,8 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh" || exit 2
+not_running() { ! kill -0 "$1" 2>/dev/null; }   # for await: the background child has ended
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -55,13 +57,13 @@ fi
 export SOT_COMM_HOME="$WORK/home"
 guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
+export SOTD_BIN="$(guard_bridge_stub "$WORK/bridge")"
+[ -x "$SOTD_BIN" ] || exit 2
 # Re-point SCRIPT_DIR at the real scripts dir (it starts out as THIS test
-# file's own dir, comm/tests) — LU6e's pipe: cases below call
-# sot_oneshot_request directly, and that function looks up
-# comm-pipe-request.ps1 next to it via ${SCRIPT_DIR:-.}, exactly like every
-# real caller (sot-fe, comm-relay.sh) does after their own
-# `SCRIPT_DIR="$(cd "$(dirname ...)" && pwd)"`. Not read again after this
-# point for anything else in this file.
+# file's own dir, comm/tests): LU6e's pipe: cases below call
+# sot_oneshot_request directly, with SCRIPT_DIR set as every real caller
+# (sot-fe, comm-relay.sh) sets it. Not read again after this point for
+# anything else in this file.
 SCRIPT_DIR="$SCRIPTS_DIR"
 JOIN="$SCRIPTS_DIR/comm-join.sh"
 SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
@@ -96,10 +98,8 @@ ensure_home
 LOCKDIR="$SOT_COMM_HOME/.registry.lock"
 # comm-spawn.sh always goes through the daemon: pin a dead endpoint so no
 # case in this suite can ever reach a real sotd (a case that needs a daemon
-# starts the stub below and points at it explicitly). A dummy token keeps
-# the hello frame off the real token file.
+# starts the stub below and points at it explicitly).
 export SOT_SPAWN_ENDPOINT="unix:$WORK/no-daemon.sock"
-export SOT_TOKEN="dummy-test-token"
 unset SOT_SOCKET SOT_WORKSPACE_ID
 trap 'stop_stub_daemon; rm -rf "${WORK:?}"' EXIT
 
@@ -111,6 +111,9 @@ trap 'stop_stub_daemon; rm -rf "${WORK:?}"' EXIT
 # regardless of what machine or CI runner executes this script.
 HOST="testhost"
 export SOT_COMM_TEST_HOST="$HOST"
+# The declared host (sot_host) is the registry's and the unpinned self slot's host; pinned to the same string, so
+# every case that does not test the difference sees one host. The declared-host cases below override it.
+export SOT_SELF_HOST="$HOST"
 
 PASS=0
 FAIL=0
@@ -254,8 +257,7 @@ start_stub_daemon() {  # WSID SLUG ROOT [HANDLE]
         esac
       done ) &
     STUB_WATCHER_PID=$!
-    local deadline=$((SECONDS + 5))
-    while [ ! -S "$STUB_SOCK" ]; do [ "$SECONDS" -lt "$deadline" ] || break; sleep 0.05; done
+    await test -S "$STUB_SOCK" || echo "stub daemon socket never appeared: $STUB_SOCK" >&2
 }
 stop_stub_daemon() {
     [ -n "$STUB_WATCHER_PID" ] && pkill -TERM -P "$STUB_WATCHER_PID" >/dev/null 2>&1
@@ -305,6 +307,7 @@ contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
 . "$(dirname "${BASH_SOURCE[0]}")/join_disambiguation/derive.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/join_disambiguation/self_file.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/join_disambiguation/declared_host.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/join_disambiguation/send_identity.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/join_disambiguation/spawn_and_lock.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/join_disambiguation/jq_args.sh"
@@ -332,7 +335,13 @@ check "legacy self-file + an unknown-root registry row: still heals on repo matc
 check "ancient one-line self-file WITH a matching-root registry row: heals" case_ancient_oneline_with_matching_registry_heals
 check "ancient one-line self-file WITHOUT registry corroboration: discarded" case_ancient_oneline_without_registry_match_discarded
 check "self-heal write failure is reported loudly, file left intact (round-1 F3)" case_self_heal_write_failure_reported_loudly_file_intact
-check "comm-context.sh host part: pinned, raw hostname -s with case kept, plain hostname fallback" case_context_host_part_follows_the_raw_host_rule
+check "comm-context.sh: HOST is the declared host, HANDLE_HOST the raw hostname -s (case kept, pin first, plain fallback)" case_context_host_part_follows_the_raw_host_rule
+check "a join under a distinct declared host: registry host and unpinned slot are the declared host, the derived handle keeps the raw one" case_join_uses_the_declared_host_and_the_raw_handle_component
+check "a declared host that cannot name a whole slot leaf is refused before any write" case_unrepresentable_declared_host_is_refused_before_any_write
+check "the slot formatter validates the complete leaf: separators, controls, length, and the Windows rules" case_self_slot_formatter_validates_the_whole_leaf
+check "a raw-host slot of this workspace migrates to the declared-host slot only on a matching registry row" case_legacy_raw_host_slot_migrates_only_on_registry_proof
+check "a migration never overwrites a populated canonical slot, and a failed publication keeps the legacy slot" case_legacy_migration_conflict_and_failure_keep_the_old_slot
+check "an explicit self-file pin keeps its text whatever the declared host is" case_explicit_pin_ignores_the_declared_host
 check "nopane self-file shared across repos: mismatched read discarded, never healed" case_nopane_selffile_shared_across_repos_not_healed
 check "nopane + same-basename DIFFERENT root: basename alone must not heal (round-2 F-A)" case_nopane_same_basename_different_root_discarded
 check "nopane + same-basename NON-repo cwd: basename alone must not heal (round-2 F-A)" case_nopane_same_basename_non_repo_cwd_discarded
@@ -366,11 +375,13 @@ check "comm-self-audit.sh flags a slot naming another project and no suffixed/ke
 check "the audit slugs a repo name with the daemon's own rule, not a second copy" case_self_audit_uses_the_daemons_own_slug_rule
 check "the audit does not excuse a repo that suffixes the label (the other direction)" case_self_audit_does_not_excuse_a_repo_suffixing_the_label
 check "a slot claimed during the join is refused by the writer with exit 3, not 1" case_slot_guard_refusal_in_the_write_gap_exits_three
-check "sot_oneshot_request over a pipe: endpoint dispatches to the stub powershell.exe and returns its matching reply (LU6e)" case_pipe_endpoint_oneshot_request_matches_reply
-check "sot_oneshot_request over a pipe: endpoint fails cleanly with no powershell.exe on PATH (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_powershell
-check "sot_oneshot_request over a pipe: endpoint fails cleanly with comm-pipe-request.ps1 missing (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_missing_ps1
+check "sot_oneshot_request over a pipe: endpoint hands the bridge pipe:\\\\.\\pipe\\<name> and returns its matching reply (LU6e)" case_pipe_endpoint_oneshot_request_matches_reply
+check "sot_oneshot_request over a pipe: endpoint fails cleanly with no sotd to open it (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_sotd
+check "sot_oneshot_request over a pipe: endpoint names the bridge's own refusal (ADR 0049)" case_pipe_endpoint_oneshot_request_names_the_bridges_refusal
 check "sot_daemon_endpoint on a simulated Windows host returns pipe: first and never calls pgrep (LU6e)" case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep
 check "sot_relay_endpoint on a simulated Windows host returns the binary's own answer, never the pipe the shell itself probed (C10)" case_windows_relay_endpoint_is_never_the_pipe_the_shell_probed
+
+check "on Windows the sotd binary is SOTD_BIN or the install path, never a listed process's (ADR 0049)" case_windows_sotd_exe_is_never_a_listed_process
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

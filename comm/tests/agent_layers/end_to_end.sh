@@ -1,5 +1,6 @@
 # Part of ../test-agent-layers.sh: section 2 to the matrix runner's private copy; sourced where it stood.
 # --- 2. end to end --------------------------------------------------------------
+. "$(dirname "${BASH_SOURCE[0]}")/../lib-wait.sh" || exit 2
 printf '%s\n' 'n=$1; shift; exec -a "$n" bash "$@"' > "$WORK/fake.sh"
 printf '%s\n' '"$@"; exit $?' > "$WORK/hold.sh"
 # An npm codex: the host script forwards its own arguments to the native process.
@@ -382,9 +383,12 @@ has "row rule: the Stop hook shows a systemMessage" "$OUT" '"systemMessage"'
 has "row rule: the Stop hook names the cause" "$OUT" "$R_ROW_TEXT"
 eq  "row rule: the Stop hook leaves the registry alone" "$(sum "$REG")" "$reg0"
 # An orphan: its shell exits at once, so no ws-a capsule is above it.
-ORC="$WORK/orphan.rc"; rm -f "${ORC:?}"
-( cd "$WORK" && export SOT_COMM_SELF_FILE="$SELF_WA" RCF && in_row ws-a bash -c '( sleep 1; "$@" > "$0.out" 2>&1; echo $? > "$0" ) < /dev/null > /dev/null 2>&1 & exit 0' "$ORC" "$POLL" ) > /dev/null 2>&1
-for ((i = 0; i < 100; i++)); do [ -s "$ORC" ] && break; sleep 0.1; done
+ORC="$WORK/orphan.rc"; ORPHAN_GO="$WORK/orphan.go"; rm -f "${ORC:?}" "${ORPHAN_GO:?}"; mkfifo "$ORPHAN_GO"
+( cd "$WORK" && export SOT_COMM_SELF_FILE="$SELF_WA" RCF ORPHAN_GO && in_row ws-a bash -c '( read -r _ < "$ORPHAN_GO"; "$@" > "$0.out" 2>&1; echo $? > "$0" ) < /dev/null > /dev/null 2>&1 & exit 0' "$ORC" "$POLL" ) > /dev/null 2>&1
+# The shell above has exited, so the orphan has lost its capsule; release it now, then wait for its result.
+printf 'go\n' > "$ORPHAN_GO" & go_pid=$!
+await test -s "$ORC"
+kill "$go_pid" 2>/dev/null; wait "$go_pid" 2>/dev/null
 eq  "row rule: an orphan naming ws-a, reparented away from its capsule, exits 1 (the library's rc 2)" "$(cat "$ORC" 2>/dev/null)" 1
 has "row rule: the orphan's refusal names the cause" "$(cat "$ORC.out" 2>/dev/null)" "$R_ROW_TEXT"
 

@@ -8,6 +8,7 @@
 # Usage: comm/tests/test-comm-deps.sh     Exit: 0 if every case PASSes.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh" || exit 2
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS_DIR="$(cd "$SCRIPT_DIR/../work_state/hooks" && pwd)"
@@ -160,16 +161,14 @@ mkdir -p "$WORK/bridge"
 sleep 30 & TETHER=$!
 bash -c "$OLD_LOOP" sot-bridge "$SCRIPTS_DIR/comm-relay.sh" h "$TETHER" "" </dev/null >"$WORK/bridge/a.log" 2>&1 &
 LOOPA=$!
-sleep 3
+logged_a() { grep -qF "$RETIRED" "$WORK/bridge/a.log"; }
+await logged_a
 check "retired bridge, tethered: the line is logged once" "$(grep -cF "$RETIRED" "$WORK/bridge/a.log")" "1"
 CHILDA="$(command -p pgrep -P "$LOOPA" | head -n1)"
 kill "$TETHER" 2>/dev/null; wait "$TETHER" 2>/dev/null
-gone=0
-for _ in $(seq 1 50); do
-    if ! kill -0 "$LOOPA" 2>/dev/null && { [ -z "$CHILDA" ] || ! kill -0 "$CHILDA" 2>/dev/null; }; then gone=1; break; fi
-    sleep 0.1
-done
-check "retired bridge, tethered: loop and child gone within 5 s of the tether" "$gone" "1"
+loop_a_gone() { ! kill -0 "$LOOPA" 2>/dev/null && { [ -z "$CHILDA" ] || ! kill -0 "$CHILDA" 2>/dev/null; }; }
+gone=0; await loop_a_gone && gone=1
+check "retired bridge, tethered: loop and child gone after the tether" "$gone" "1"
 if [ "$gone" != 1 ]; then kill "$LOOPA" $CHILDA 2>/dev/null; fi
 
 # (b) untethered: no retry, the child is a sleep; the test then cleans up its own fixtures.

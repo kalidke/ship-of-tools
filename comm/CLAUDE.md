@@ -20,7 +20,7 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 - Housed here, not messaging: the shell daemon client in `lib/comm-lib-client.sh` (`sot_oneshot_request`) and the agent adapters under
   `adapters/`. The CLIs that start, end, probe and bootstrap rows moved to `agents/spawn/`, the `/worktree` scripts to
   `agents/worktree/`, and `sot-fe` and `sot-nav.sh` to `agents/sot-fe/`, installed into the same bin. The launchers, the
-  non-messaging skills, `sot-gh-auth.sh` and `comm-pipe-request.ps1` moved to `agents/`.
+  non-messaging skills, `sot-gh-auth.sh` moved to `agents/`.
 
 ## Promises
 - `filed` is printed only on the appender's word: a local append that synced, a daemon's `comm.file` answer `ok`, or a
@@ -39,6 +39,7 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
   (`sot_jq_rawfile`).
 - A change to locking states its writer set and is proven by concurrent appends from two hosts to one inbox; there is
   no lease-lock fallback. A script change is tested through `tests/` from the staged bin, never against the live home.
+- Registry host facts and unpinned self-file keys agree with the daemon's declared host; the raw hostname remains a derived-handle component. A successful destroy retires only the admitted target daemon's slot.
 - Not built: ADR 0049's stage B6 (`comm-join.sh` still accepts `--name`). A newer `agent.join` moves a handle off the
   row that held it (B5, `set_agent_handle`), but nothing tells that row's session: its self-file still names the
   handle, so its scripts still act as it, read its inbox and move its cursor.
@@ -48,13 +49,15 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `remove_comm_agents_for_workspace`, `handle_agent_join`, `comm_handle_for_workspace`, `clear_comm_unread`,
 `read_comm_agents`, `host_matches`, `last_joiner`, `spawn_registry_poll`, `workspace.changed`, `workspace.list`,
 `comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`, `agents/spawn/comm-probe.sh`,
-`agents/spawn/comm-bootstrap.sh`. Uses: `SshRecipe`, `recipe_for`, `dial_and_call_tracked`, `dispatch`, `LinkGate`, `Signal::spawn`,
+`agents/spawn/comm-bootstrap.sh`, `sot_sanitize_component`, `_sot_handle_host`. Provides also: HOST (the declared host), HANDLE_HOST (the raw handle component), and _sot_self_slot for the agents shell edge. Uses: `SshRecipe`, `recipe_for`, `dial_and_call_tracked`, `dispatch`, `LinkGate`, `Signal::spawn`,
 `Contained`, `Signal`, `child_signal::fired`, `child_signal::process`, `Workspace::agent_handle`, `set_agent_handle`, `attach`,
 `send_text`, `send_enter`, `rust/backend/src/rows/run/headless.rs`, `Workspaces::resolve`, `row_or_reply`,
 `capsule_guard`, `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`,
-`sot_pty_input`, `capsule_supervisor_env`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot_state_dir`,
-`sot_config_dir`, `host_name`, `state_dir_hash`, `sot_host`, `comm/lib/comm-lib-base.sh`, `install_comm`,
-`update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`.
+`sot_pty_input`, `sot_dial`, `capsule_supervisor_env`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`,
+`sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `sot_host`, `comm/lib/comm-lib-base.sh`,
+`install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`.
+
+`handle_agent_join` is provided to server dispatch; rows consume the registry binding/read/prune functions.
 
 ## Folders
 - `adapters/`: what is installed into Claude Code and Codex: hooks, the messaging skills, the Codex skills and plugin.

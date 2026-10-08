@@ -56,7 +56,10 @@
 //! that process at all — see its own doc for the trust this implies.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+
+#[path = "lane_child.rs"]
+mod lane_child;
+use lane_child::BridgedClient;
 use std::time::Instant;
 
 use sot_log::identity::challenge::{ChallengeOutcome, PeerAuthOutcome, PeerAuthenticated, StatusFailure};
@@ -75,6 +78,8 @@ use crate::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
 /// exactly once — never duplicated onto the dial value itself.
 pub enum LaneDial {
     Local(PathBuf),
+    /// A generated hub relay, remote for policy; its link gate precedes the existing protected local connector.
+    Relay(PathBuf, crate::topology::ssh_bridge::LinkGate),
     /// The recipe and its host's link gate: a down gate makes the dial
     /// fail with `TransportError::LinkDown` and start no ssh.
     Ssh(crate::topology::ssh_bridge::SshRecipe, crate::topology::ssh_bridge::LinkGate),
@@ -93,10 +98,44 @@ pub enum LaneDial {
 /// daemon this client already trusts to control the row is the one
 /// thing standing behind that report; nothing here re-verifies it
 /// independently, by design (decision 3's split).
+///
+/// Select another route by constructing another endpoint:
+///
+/// ```no_run
+/// use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
+/// use sot_log::lane::client::Endpoint;
+/// fn dial(route: LaneDial) {
+///     let ep = DaemonLaneEndpoint::new(route, None);
+///     let _ = ep.connect_supervisor_unchallenged("row");
+/// }
+/// ```
+///
+/// The route is fixed at construction:
+///
+/// ```compile_fail,E0616
+/// use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
+/// fn retarget(mut ep: DaemonLaneEndpoint, route: LaneDial) {
+///     ep.dial = route;
+/// }
+/// ```
 pub struct DaemonLaneEndpoint {
-    pub dial: LaneDial,
+    dial: LaneDial,
     pub token: Option<String>,
+    spare: std::sync::Mutex<VoyageSpare>,
+    #[cfg(any(test, feature = "test-handshake-bound"))]
+    test_ssh_spawner: Option<TestSshSpawner>,
+    #[cfg(any(test, feature = "test-handshake-bound"))]
+    test_handshake_bound: Option<std::time::Duration>,
 }
+
+enum VoyageSpare {
+    Unused,
+    Parked(BridgedClient),
+    Spent,
+}
+
+#[cfg(any(test, feature = "test-handshake-bound"))]
+type TestSshSpawner = std::sync::Arc<dyn Fn(std::process::Command) -> std::io::Result<std::process::Child> + Send + Sync>;
 
 /// The lane peer's identity, exactly as the DAEMON'S OWN dial observed
 /// it — deliberately the same two fields as `sot_log::identity::challenge::
@@ -115,159 +154,6 @@ impl PeerIdentity for BridgedPeer {
     }
     fn created(&self) -> u64 {
         self.created
-    }
-}
-
-/// The `Ssh` dial's client: a spawned `ssh … sotd stdio-bridge`
-/// child whose stdin/stdout carry the lane bridge's own frames.
-/// `ChildStdout`/`ChildStdin` are converted to `File` through `OwnedFd`
-/// (unix) / `OwnedHandle` (windows) at construction, so `read`/
-/// `write_all` go through `&self`.
-///
-/// A pipe has no `set_read_timeout`, so `cancel()` sets the flag and
-/// **kills the child**; the kill closes the child's stdout, which EOFs a
-/// parked read on both platforms. `Drop` kills and waits, so no ssh child
-/// outlives its client.
-///
-/// No new trust claim: `DaemonLaneEndpoint`'s own doc already states
-/// that it holds no kernel handle on the peer and that every identity
-/// claim traces to the daemon's own observation.
-struct BridgedClient {
-    child: std::sync::Mutex<std::process::Child>,
-    out: std::fs::File,
-    inp: std::fs::File,
-    cancelled: AtomicBool,
-    /// The child's last non-empty stderr line, kept by a drainer thread
-    /// spawned at construction — ssh's own complaint ("Permission
-    /// denied", or `unrecognised argument: --host` from a hub whose
-    /// `sotd` predates C1) is the diagnosis a caller surfaces on
-    /// failure, the same rule `stdio_bridge.rs` already sets for the far
-    /// end.
-    last_stderr: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-}
-
-impl BridgedClient {
-    fn spawn(recipe: &crate::topology::ssh_bridge::SshRecipe, gate: &crate::topology::ssh_bridge::LinkGate) -> Result<Self, TransportError> {
-        #[allow(clippy::disallowed_methods, reason = "the lane dial's ssh, owned by the window's attach client")]
-        let spawned = gate.spawn_sync(recipe);
-        match spawned {
-            Ok(child) => Self::wrap(child).map_err(TransportError::Unreachable),
-            Err(crate::topology::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
-            Err(crate::topology::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),
-        }
-    }
-
-    /// The shared construction path — real `ssh` child ([`spawn`] above)
-    /// or, in tests, any other piped-stdio child that stands in for one
-    /// (so `cancel()`'s kill→EOF property is exercised without a real
-    /// `ssh` on `PATH`).
-    fn wrap(mut child: std::process::Child) -> std::io::Result<Self> {
-        let stdin = child.stdin.take().expect("spawned with a piped stdin");
-        let stdout = child.stdout.take().expect("spawned with a piped stdout");
-        let stderr = child.stderr.take().expect("spawned with a piped stderr");
-
-        let last_stderr = std::sync::Arc::new(std::sync::Mutex::new(None));
-        {
-            let last_stderr = std::sync::Arc::clone(&last_stderr);
-            std::thread::spawn(move || {
-                use std::io::BufRead;
-                let reader = std::io::BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
-                    if !line.trim().is_empty() {
-                        if let Ok(mut guard) = last_stderr.lock() {
-                            *guard = Some(line);
-                        }
-                    }
-                }
-            });
-        }
-
-        #[cfg(unix)]
-        let (inp, out) = {
-            use std::os::fd::OwnedFd;
-            (std::fs::File::from(OwnedFd::from(stdin)), std::fs::File::from(OwnedFd::from(stdout)))
-        };
-        #[cfg(windows)]
-        let (inp, out) = {
-            use std::os::windows::io::OwnedHandle;
-            (std::fs::File::from(OwnedHandle::from(stdin)), std::fs::File::from(OwnedHandle::from(stdout)))
-        };
-
-        Ok(Self { child: std::sync::Mutex::new(child), out, inp, cancelled: AtomicBool::new(false), last_stderr })
-    }
-
-    /// A short bounded poll for the child's last stderr line (this is the
-    /// error path only, never the hot path). Stdout and stderr are
-    /// separate pipes with no ordering guarantee between them, so a
-    /// child that writes a diagnosis to stderr and closes stdout in the
-    /// same instant can otherwise be observed here before its line
-    /// lands.
-    fn poll_last_stderr(&self) -> Option<String> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        loop {
-            if let Some(line) = self.last_stderr.lock().ok().and_then(|g| g.clone()) {
-                return Some(line);
-            }
-            if std::time::Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
-
-    /// The io error, with the child's last stderr line after it when one was captured: a dead child's own "Permission
-    /// denied" explains the generic "broken pipe" its closed pipe leaves behind, and the error keeps its own words.
-    fn diagnose(&self, source: std::io::Error) -> std::io::Error {
-        match self.poll_last_stderr() {
-            Some(line) => std::io::Error::new(source.kind(), format!("{source}: {line}")),
-            None => source,
-        }
-    }
-}
-
-impl Client for BridgedClient {
-    fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
-        if self.cancelled.load(Ordering::SeqCst) {
-            return Err(TransportError::Cancelled);
-        }
-        use std::io::Write;
-        (&self.inp).write_all(bytes).map_err(|source| {
-            if self.cancelled.load(Ordering::SeqCst) {
-                TransportError::Cancelled
-            } else {
-                TransportError::Io { op: "lane write", source: self.diagnose(source) }
-            }
-        })
-    }
-
-    fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
-        use std::io::Read;
-        if self.cancelled.load(Ordering::SeqCst) {
-            return Err(TransportError::Cancelled);
-        }
-        (&self.out).read(buf).map_err(|source| {
-            if self.cancelled.load(Ordering::SeqCst) {
-                TransportError::Cancelled
-            } else {
-                TransportError::Io { op: "lane read", source: self.diagnose(source) }
-            }
-        })
-    }
-
-    fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-        }
-    }
-}
-
-impl Drop for BridgedClient {
-    fn drop(&mut self) {
-        self.cancel();
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.wait();
-        }
     }
 }
 
@@ -381,11 +267,21 @@ impl Endpoint for DaemonLaneEndpoint {
         PeerAuthOutcome::Authenticated(conn.peer)
     }
 
+    fn drop_spare(&self) {
+        let abandoned = {
+            let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
+            if matches!(*state, VoyageSpare::Parked(_)) {
+                Some(std::mem::replace(&mut *state, VoyageSpare::Unused))
+            } else { None }
+        };
+        drop(abandoned);
+    }
+
     /// The host's link gate for an ssh dial; every other dial is local.
     fn link_up(&self) -> bool {
         match &self.dial {
-            LaneDial::Ssh(_, gate) => gate.is_up(),
-            _ => true,
+            LaneDial::Relay(_, gate) | LaneDial::Ssh(_, gate) => gate.is_up(),
+            LaneDial::Local(_) => true,
         }
     }
 }
@@ -568,19 +464,89 @@ fn with_ssh_line(stream: &LaneStream, e: std::io::Error) -> std::io::Error {
 
 /// The handshake over a connected stream: the hello and the `lane.connect` request, the replies classified, and the
 /// client that holds the stream and the peer the daemon reported.
-fn handshake(stream: LaneStream, hello: &Frame, req: &Frame) -> Result<DaemonLaneClient, TransportError> {
-    let (pid, created) = run_handshake(&stream, hello, req, Instant::now() + CONNECT_BOUND)?;
+fn handshake(stream: LaneStream, hello: &Frame, req: &Frame, bound: std::time::Duration) -> Result<DaemonLaneClient, TransportError> {
+    let (pid, created) = run_handshake(&stream, hello, req, Instant::now() + bound)?;
     Ok(DaemonLaneClient { stream, peer: PeerAuthenticated { pid, created } })
 }
 
 impl DaemonLaneEndpoint {
-    /// The blocking dial: connect (2 s bound, each transport's own
-    /// hardened connector — see [`LaneStream`]'s own doc), write the
-    /// `lane.connect` request and read ONE reply under a SEPARATE 2 s
-    /// bound ([`run_handshake`]), then classify it.  `row` is the row's
-    /// `session_name` name (`LaneConnectReq::target`, required for both
-    /// lane kinds); `kind` is `"supervisor"` or `"voyage"`
-    /// (`LaneConnectReq::lane`).
+    pub fn new(dial: LaneDial, token: Option<String>) -> Self {
+        Self {
+            dial,
+            token,
+            spare: std::sync::Mutex::new(VoyageSpare::Unused),
+            #[cfg(any(test, feature = "test-handshake-bound"))]
+            test_ssh_spawner: None,
+            #[cfg(any(test, feature = "test-handshake-bound"))]
+            test_handshake_bound: None,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-handshake-bound"))]
+    pub fn with_test_ssh_spawner(mut self, spawner: TestSshSpawner) -> Self {
+        self.test_ssh_spawner = Some(spawner);
+        self
+    }
+
+    #[cfg(any(test, feature = "test-handshake-bound"))]
+    pub fn with_test_handshake_bound(mut self, bound: std::time::Duration) -> Self {
+        self.test_handshake_bound = Some(bound);
+        self
+    }
+
+    fn spawn_ssh(&self, recipe: &crate::topology::ssh_bridge::SshRecipe, gate: &crate::topology::ssh_bridge::LinkGate) -> Result<BridgedClient, TransportError> {
+        #[cfg(any(test, feature = "test-handshake-bound"))]
+        if let Some(spawn) = &self.test_ssh_spawner {
+            let command = gate.command(recipe).map_err(|error| match error {
+                crate::topology::ssh_bridge::SpawnError::LinkDown => TransportError::LinkDown,
+                crate::topology::ssh_bridge::SpawnError::Io(error) => TransportError::Unreachable(error),
+            })?;
+            return match gate.admit(command, |command| spawn(command)) {
+                Ok(child) => BridgedClient::wrap(child).map_err(TransportError::Unreachable),
+                Err(crate::topology::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
+                Err(crate::topology::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),
+            };
+        }
+        BridgedClient::spawn(recipe, gate)
+    }
+
+    fn ssh_client(&self, kind: &str, recipe: &crate::topology::ssh_bridge::SshRecipe, gate: &crate::topology::ssh_bridge::LinkGate) -> Result<BridgedClient, TransportError> {
+        if kind == "voyage" {
+            if let Some(spare) = self.take_spare() {
+                if gate.is_up() {
+                    return Ok(spare);
+                }
+            }
+            return self.spawn_ssh(recipe, gate);
+        }
+        let client = self.spawn_ssh(recipe, gate)?;
+        if kind == "supervisor" {
+            self.start_spare(|| self.spawn_ssh(recipe, gate));
+        }
+        Ok(client)
+    }
+
+    fn start_spare(&self, spawn: impl FnOnce() -> Result<BridgedClient, TransportError>) {
+        let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(*state, VoyageSpare::Unused) {
+            if let Ok(client) = spawn() {
+                *state = VoyageSpare::Parked(client);
+            }
+        }
+    }
+
+    fn take_spare(&self) -> Option<BridgedClient> {
+        let previous = {
+            let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::replace(&mut *state, VoyageSpare::Spent)
+        };
+        match previous {
+            VoyageSpare::Parked(client) if !client.exited() => Some(client),
+            _ => None,
+        }
+    }
+
+    // Complete the lane handshake according to `handshake`'s contract.
     fn dial(&self, row: &str, kind: &str, voyage_id: Option<String>) -> Result<DaemonLaneClient, TransportError> {
         let req = LaneConnectReq {
             target: row.to_string(),
@@ -593,9 +559,15 @@ impl DaemonLaneEndpoint {
         let hello = Frame::req(1, op::HELLO, serde_json::to_value(&hello).expect("HelloReq always serializes"));
         let frame = Frame::req(2, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
 
+        // A down link starts no dial, ssh or relay: the connect itself waits for the gate.
+        if let LaneDial::Relay(_, gate) = &self.dial {
+            if !gate.is_up() {
+                return Err(TransportError::LinkDown);
+            }
+        }
         let stream = match &self.dial {
             #[cfg(unix)]
-            LaneDial::Local(path) => {
+            LaneDial::Local(path) | LaneDial::Relay(path, _) => {
                 // `connect_own`: the folder rule (ADR 0049, User
                 // isolation), then `sot_log::lane::socket_unix`'s own
                 // bounded, non-blocking connector rather than a blocking
@@ -608,7 +580,7 @@ impl DaemonLaneEndpoint {
                 LaneStream::Unix(client)
             }
             #[cfg(windows)]
-            LaneDial::Local(path) => {
+            LaneDial::Local(path) | LaneDial::Relay(path, _) => {
                 // `connect_own`: `sot_log::lane::pipe_win`'s bounded pipe
                 // connector, then the check that this OS account serves the
                 // pipe (ADR 0049, User isolation), before the first byte.
@@ -616,12 +588,20 @@ impl DaemonLaneEndpoint {
                 LaneStream::Pipe(client)
             }
             LaneDial::Ssh(recipe, gate) => {
-                let client = BridgedClient::spawn(recipe, gate)?;
+                let client = self.ssh_client(kind, recipe, gate)?;
                 LaneStream::Bridged(client)
             }
         };
 
-        handshake(stream, &hello, &frame)
+        #[cfg(any(test, feature = "test-handshake-bound"))]
+        let bound = self.test_handshake_bound.unwrap_or(CONNECT_BOUND);
+        #[cfg(not(any(test, feature = "test-handshake-bound")))]
+        let bound = CONNECT_BOUND;
+        let result = handshake(stream, &hello, &frame, bound);
+        if kind == "supervisor" && result.is_err() {
+            self.drop_spare();
+        }
+        result
     }
 }
 
@@ -643,3 +623,7 @@ fn unwrap_connect_io(e: TransportError) -> std::io::Error {
 #[cfg(test)]
 #[path = "lane_client_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "lane_client_ownership_tests.rs"]
+mod ownership_tests;

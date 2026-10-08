@@ -46,6 +46,60 @@ fn capsule_comm_home_str() -> Option<String> {
     Some(crate::comm::sot_comm_home()?.to_string_lossy().replace('\\', "/"))
 }
 
+/// The `SOTD_BIN` value for a session: the path this daemon was started by, made absolute the way its start found it,
+/// without following a link. A path (absolute, relative, or drive-relative such as `C:sotd.exe`) is made absolute by
+/// `std::path::absolute`: against the working folder, and a drive-relative one against that drive's. A bare name is
+/// looked up as a start looks it up: on Windows in the working folder and then each `PATH` entry, with `.exe` added to
+/// a name that has no extension; elsewhere in each `PATH` entry. The first runnable file is the value. Forward slashes
+/// on Windows, where a git-bash/MSYS shell reads it, as with `SOT_COMM_HOME`. The start path, never the resolved one: a
+/// session outlives its daemon, and an update replaces the file at that path. `None` for an empty start path, or a bare
+/// name found nowhere; the session's shell then finds `sotd` by its own ladder.
+fn sotd_bin_value(start: &std::ffi::OsStr, path_var: Option<&std::ffi::OsStr>) -> Option<String> {
+    if start.is_empty() {
+        return None;
+    }
+    let start = Path::new(start);
+    let mut parts = start.components();
+    let found = if matches!(
+        (parts.next(), parts.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) {
+        let name = match start.extension() {
+            None if cfg!(windows) => start.with_extension("exe"),
+            _ => start.to_path_buf(),
+        };
+        cfg!(windows)
+            .then(PathBuf::new)
+            .into_iter()
+            .chain(path_var.into_iter().flat_map(std::env::split_paths))
+            .filter_map(|dir| std::path::absolute(dir.join(&name)).ok())
+            .find(|candidate| crate::rows::spawn::detach::runnable_file(candidate))?
+    } else {
+        std::path::absolute(start).ok()?
+    };
+    let text = found.to_string_lossy();
+    Some(if cfg!(windows) {
+        text.replace('\\', "/")
+    } else {
+        text.into_owned()
+    })
+}
+
+static OWN_SOTD_BIN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// This daemon's `SOTD_BIN` value ([`sotd_bin_value`] of its argv[0] and `PATH`), made once: `main` calls this at
+/// startup, before it serves anything.
+pub fn own_sotd_bin() -> Option<&'static str> {
+    OWN_SOTD_BIN
+        .get_or_init(|| {
+            sotd_bin_value(
+                &std::env::args_os().next()?,
+                std::env::var_os("PATH").as_deref(),
+            )
+        })
+        .as_deref()
+}
+
 /// The `SOT_*` awareness env a capsule supervisor spawn stamps on its
 /// producer — capsule-comm-identity fix: a capsule has no tmux pane, so
 /// `comm-context.sh`'s pane-keyed self-file slot never applies to it, and
@@ -79,6 +133,8 @@ fn capsule_comm_home_str() -> Option<String> {
 /// that same file (`comm::registry::registry::capsule_comm_handle`) stays as the
 /// FALLBACK for a row with no declaration yet (manager review, S5) —
 /// deleted only with family H once every row has cycled onto `agent.join`.
+/// `SOTD_BIN` is this daemon's own start path ([`own_sotd_bin`]), so the session's comm shell bridges with the daemon's
+/// own binary.
 pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
     let mut env = crate::agents::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
     if !agent_name.is_empty() {
@@ -89,6 +145,11 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
         let self_file = format!("{}/self/{}__{}.txt", comm_home.trim_end_matches('/'), host, workspace_id);
         env.push(("SOT_COMM_HOME".to_string(), comm_home));
         env.push(("SOT_COMM_SELF_FILE".to_string(), self_file));
+    }
+    // The comm shell in the session bridges with SOTD_BIN first, so it is this daemon's own binary, over any value the
+    // daemon inherited (detach.rs applies these pairs with `Command::env`).
+    if let Some(sotd) = own_sotd_bin() {
+        env.push(("SOTD_BIN".to_string(), sotd.to_string()));
     }
     // Claude Code's feedback survey is a modal panel that holds a row's
     // session until someone answers it, so no row's agent shows it, on
@@ -152,19 +213,33 @@ pub(crate) fn account_spawn_env(
             // before this existed, and a row that will not start is
             // worse. Claude rows only -- no other agent has this dialog.
             if agent_kind == "claude" {
-                if let Err(msg) = crate::agents::folder_trust::ensure_folder_trusted(
-                    &home,
-                    account,
-                    cwd,
-                    crate::agents::folder_trust::trusted_root_prefix().as_deref(),
-                ) {
-                    tracing::warn!(
-                        workspace_id,
-                        cwd = ?cwd,
-                        error = %msg,
-                        "capsule spawn: folder trust not recorded; the agent starts anyway and \
-                         may stop at the folder-trust dialog"
-                    );
+                use crate::agents::folder_trust::TrustOutcome;
+                let prepared = effective_claude_trust_file(&home, &extra).and_then(|file| {
+                    crate::agents::folder_trust::trusted_root_prefix().and_then(|prefix| {
+                        crate::agents::folder_trust::ensure_folder_trusted(
+                            &file,
+                            cwd,
+                            prefix.as_deref(),
+                        )
+                        .map(|outcome| (outcome, prefix, file))
+                    })
+                });
+                match prepared {
+                    Ok((TrustOutcome::Outside, prefix, _)) => tracing::warn!(
+                        workspace_id, cwd = ?cwd, prefix = ?prefix,
+                        outcome = ?TrustOutcome::Outside, "folder trust preparation skipped"
+                    ),
+                    Ok((TrustOutcome::NotDeclared, _, _)) => tracing::warn!(
+                        workspace_id, declaration = ?crate::agents::trust_declaration::declaration_file(),
+                        outcome = ?TrustOutcome::NotDeclared, "folder trust preparation skipped"
+                    ),
+                    Ok((outcome, _, file)) => {
+                        tracing::debug!(workspace_id, cwd = ?cwd, outcome = ?outcome, trust_file = ?file, "folder trust preparation")
+                    }
+                    Err(msg) => tracing::warn!(
+                        workspace_id, cwd = ?cwd, error = %msg,
+                        "folder trust not recorded; the agent starts anyway"
+                    ),
                 }
             }
             Ok(extra)
@@ -177,6 +252,27 @@ pub(crate) fn account_spawn_env(
             ));
         }
     }
+}
+
+/// Select only the effective child's file; unsupported forms never guess another destination.
+fn effective_claude_trust_file(
+    home: &Path,
+    additions: &[(String, String)],
+) -> Result<PathBuf, String> {
+    let config = additions
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "CLAUDE_CONFIG_DIR")
+        .map(|(_, value)| std::ffi::OsString::from(value))
+        .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR"));
+    let Some(config) = config else {
+        return Ok(home.join(".claude.json"));
+    };
+    let directory = PathBuf::from(config);
+    if !directory.is_absolute() || directory.to_str().is_none() {
+        return Err("CLAUDE_CONFIG_DIR form has no proven trust-file destination; nothing recorded and child configuration unchanged".into());
+    }
+    Ok(directory.join(".claude.json"))
 }
 
 /// `~/.local/bin` on `PATH`, prepended once — the ONE copy of this rule
@@ -317,6 +413,11 @@ mod tests {
             get("SOT_COMM_SELF_FILE"),
             Some("/fake-home/.sot-comm/self/testhost__ws-myrepo-1a2b.txt")
         );
+        assert_eq!(
+            get("SOTD_BIN"),
+            own_sotd_bin(),
+            "SOTD_BIN is this process's own start path, made once"
+        );
     }
 
     #[test]
@@ -389,5 +490,397 @@ mod tests {
         std::env::remove_var("HOME");
         std::env::remove_var("USERPROFILE");
         assert_eq!(capsule_comm_home_str(), None);
+    }
+
+    #[test]
+    fn sotd_bin_value_makes_the_start_path_absolute_as_its_start_found_it() {
+        use std::ffi::OsStr;
+        let work = tempfile::tempdir().expect("a work folder");
+        let bin = work.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("mkdir bin");
+        // The program as the platform names it: on Windows a bare name gets `.exe` added, so the file has it.
+        let name = "sotd-start-probe";
+        let file = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        };
+        sot_log::test_exec::write_executable(&bin.join(&file), "#!/bin/sh\n");
+        let cwd = std::env::current_dir().expect("the working folder");
+        let shown = |p: &Path| {
+            let text = p.to_string_lossy().into_owned();
+            if cfg!(windows) {
+                text.replace('\\', "/")
+            } else {
+                text
+            }
+        };
+        let path_var =
+            std::env::join_paths([work.path().join("empty"), bin.clone()]).expect("a PATH");
+        // Absolute: itself.
+        assert_eq!(
+            sotd_bin_value(bin.join(&file).as_os_str(), None),
+            Some(shown(&bin.join(&file)))
+        );
+        // Relative: against the working folder, with no lookup.
+        let relative = Path::new("target").join("release").join(&file);
+        assert_eq!(
+            sotd_bin_value(relative.as_os_str(), None),
+            Some(shown(&cwd.join(&relative)))
+        );
+        // Bare: the first PATH entry holding it, by the name with `.exe` added on Windows, or as given.
+        assert_eq!(
+            sotd_bin_value(OsStr::new(name), Some(&path_var)),
+            Some(shown(&bin.join(&file)))
+        );
+        assert_eq!(
+            sotd_bin_value(OsStr::new(&file), Some(&path_var)),
+            Some(shown(&bin.join(&file)))
+        );
+        // Bare, found nowhere, or with no PATH; and an empty start path.
+        assert_eq!(
+            sotd_bin_value(OsStr::new("no-such-sotd"), Some(&path_var)),
+            None
+        );
+        assert_eq!(sotd_bin_value(OsStr::new(name), None), None);
+        assert_eq!(sotd_bin_value(OsStr::new(""), Some(&path_var)), None);
+        // Windows: a drive-relative start (`D:sotd.exe`) is against that drive's working folder, here this process's.
+        #[cfg(windows)]
+        {
+            let drive = cwd
+                .to_string_lossy()
+                .chars()
+                .next()
+                .filter(char::is_ascii_alphabetic);
+            let drive = drive.expect("a working folder on a lettered drive");
+            assert_eq!(
+                sotd_bin_value(OsStr::new(&format!("{drive}:{file}")), None),
+                Some(shown(&cwd.join(&file)))
+            );
+        }
+        // Unix: a link on PATH is the path given, never its target.
+        #[cfg(unix)]
+        {
+            let link = work.path().join("link");
+            std::fs::create_dir_all(&link).expect("mkdir link");
+            std::os::unix::fs::symlink(bin.join(name), link.join(name)).expect("link the probe");
+            let link_path = std::env::join_paths([link.clone()]).expect("a PATH");
+            assert_eq!(
+                sotd_bin_value(OsStr::new(name), Some(&link_path)),
+                Some(shown(&link.join(name)))
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod trust_declaration_controls {
+    use super::*;
+    use crate::agents::support_tests::{platform_spelling, self_file_env_guarded};
+
+    fn preparation_case(invalid: bool) {
+        let _guard = self_file_env_guarded();
+        let temp = tempfile::tempdir().unwrap();
+        let home = platform_spelling(temp.path());
+        std::env::set_var("HOME", &home);
+        std::env::set_var("USERPROFILE", &home);
+        std::env::set_var("XDG_CONFIG_HOME", home.join("config"));
+        std::env::set_var("LOCALAPPDATA", home.join("local"));
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        let config = crate::rows::store::app_config_dir();
+        assert!(config.starts_with(&home));
+        std::fs::create_dir_all(&config).unwrap();
+        let cwd = home.join("projects").join("repo");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let settings = config.join("settings.toml");
+        let trust = home.join(".claude.json");
+        let prefix = home.join("projects").to_string_lossy().replace('\\', "/");
+        let text = if invalid {
+            "[trust]\nroot_prefix = 7\n".to_owned()
+        } else {
+            format!(
+                "[trust] # declaration\nroot_prefix = '{}' # scope\n",
+                prefix
+            )
+        };
+        std::fs::write(&settings, text).unwrap();
+        let capture = sot_log::test_log::capture();
+        let additions = account_spawn_env("claude", "default", &cwd, "fixture-row").unwrap();
+        assert!(
+            additions.is_empty(),
+            "W1 preparation changed the account env"
+        );
+        if invalid {
+            assert!(!trust.exists(), "W1 invalid declaration wrote trust");
+            let logged = capture.text();
+            assert!(
+                logged.contains("settings.toml") && logged.contains("error="),
+                "W1 invalid declaration lacked a file-specific diagnostic"
+            );
+        } else {
+            let bytes = std::fs::read(&trust).expect("W1 commented declaration recorded no trust");
+            let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let key = cwd.to_string_lossy().replace('\\', "/");
+            assert_eq!(
+                doc["projects"][key]["hasTrustDialogAccepted"], true,
+                "W1 commented declaration missed the child cwd key"
+            );
+        }
+    }
+
+    #[test]
+    fn toml_declaration_handles_comments_and_literals() {
+        if !sot_log::test_isolated::run_isolated(
+            "agents::env::trust_declaration_controls::toml_declaration_handles_comments_and_literals") { return; }
+        preparation_case(false);
+        println!("W1 C1 commented declaration PASS");
+    }
+
+    #[test]
+    fn invalid_declaration_is_diagnostic_and_writes_nothing() {
+        if !sot_log::test_isolated::run_isolated(
+            "agents::env::trust_declaration_controls::invalid_declaration_is_diagnostic_and_writes_nothing") { return; }
+        preparation_case(true);
+        println!("W1 C1 invalid declaration diagnostic PASS");
+    }
+}
+
+#[cfg(test)]
+mod trust_scope_controls {
+    use super::*;
+    use crate::agents::support_tests::{platform_spelling, self_file_env_guarded};
+
+    fn scope_case(kind: &str) {
+        let _guard = self_file_env_guarded();
+        let temp = tempfile::tempdir().unwrap();
+        let home = platform_spelling(temp.path());
+        std::env::set_var("HOME", &home);
+        std::env::set_var("USERPROFILE", &home);
+        std::env::set_var("XDG_CONFIG_HOME", home.join("config"));
+        std::env::set_var("LOCALAPPDATA", home.join("local"));
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        let prefix = home.join("projects");
+        let inside = prefix.join("repo");
+        let outside = home.join("outside");
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let config = crate::rows::store::app_config_dir();
+        std::fs::create_dir_all(&config).unwrap();
+        if kind != "undeclared" {
+            let text = toml::to_string(
+                &serde_json::json!({"trust": {"root_prefix": prefix.to_str().unwrap()}}),
+            )
+            .unwrap();
+            std::fs::write(config.join("settings.toml"), text).unwrap();
+        }
+        let cwd = match kind {
+            "parent" => prefix.join("..").join("outside"),
+            #[cfg(unix)]
+            "symlink" => {
+                let link = prefix.join("escape");
+                std::os::unix::fs::symlink(&outside, &link).unwrap();
+                assert!(!platform_spelling(&link).starts_with(platform_spelling(&prefix)));
+                link
+            }
+            "outside" => outside,
+            _ => inside,
+        };
+        let capture = sot_log::test_log::capture();
+        let extra = account_spawn_env("claude", "default", &cwd, "fixture-row").unwrap();
+        assert!(extra.is_empty());
+        assert!(
+            !home.join(".claude.json").exists(),
+            "W1 scope violation: resolved escape wrote a trust file"
+        );
+        let log = capture.text();
+        if kind == "undeclared" {
+            assert!(
+                log.contains("outcome=NotDeclared")
+                    && log.contains("declaration=")
+                    && log.contains("settings.toml"),
+                "W1 undeclared outcome lacks declaration field"
+            );
+        } else {
+            assert!(
+                log.contains("outcome=Outside") && log.contains("cwd=") && log.contains("prefix="),
+                "W1 outside outcome lacks scope fields"
+            );
+        }
+    }
+
+    #[test]
+    fn parent_component_escape_records_nothing() {
+        if !sot_log::test_isolated::run_isolated(
+            "agents::env::trust_scope_controls::parent_component_escape_records_nothing",
+        ) {
+            return;
+        }
+        scope_case("parent");
+        println!("W1 C2 parent-component PASS: no write; Outside with cwd and prefix");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn symlink_escape_records_nothing() {
+        if !sot_log::test_isolated::run_isolated(
+            "agents::env::trust_scope_controls::symlink_escape_records_nothing",
+        ) {
+            return;
+        }
+        scope_case("symlink");
+        println!("W1 C2 symlink PASS: no write; Outside with cwd and prefix");
+    }
+    #[test]
+    fn outside_is_observable_and_preserves_the_account_env() {
+        if !sot_log::test_isolated::run_isolated("agents::env::trust_scope_controls::outside_is_observable_and_preserves_the_account_env") { return; }
+        scope_case("outside");
+        println!("W1 C2 Outside PASS: cwd and prefix fields; account env unchanged");
+    }
+    #[test]
+    fn absent_declaration_is_observable_and_preserves_the_account_env() {
+        if !sot_log::test_isolated::run_isolated("agents::env::trust_scope_controls::absent_declaration_is_observable_and_preserves_the_account_env") { return; }
+        scope_case("undeclared");
+        println!("W1 C2 NotDeclared PASS: declaration file field; account env unchanged");
+    }
+}
+
+#[cfg(test)]
+mod trust_config_controls {
+    use super::*;
+    use crate::agents::support_tests::{platform_spelling, self_file_env_guarded};
+
+    fn config_case(kind: &str) {
+        let _guard = self_file_env_guarded();
+        let temp = tempfile::tempdir().unwrap();
+        let home = platform_spelling(temp.path());
+        std::env::set_var("HOME", &home);
+        std::env::set_var("USERPROFILE", &home);
+        std::env::set_var("XDG_CONFIG_HOME", home.join("config"));
+        std::env::set_var("LOCALAPPDATA", home.join("local"));
+        let prefix = home.join("projects");
+        let cwd = prefix.join("exact child spelling");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let inherited = home.join("inherited config");
+        std::fs::create_dir_all(&inherited).unwrap();
+        if kind == "unset" {
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
+        } else {
+            std::env::set_var("CLAUDE_CONFIG_DIR", &inherited);
+        }
+        let account = if kind == "named" {
+            "fixture"
+        } else {
+            "default"
+        };
+        let named = home
+            .join(crate::agents::accounts::CLAUDE_ACCOUNTS_DIR)
+            .join("fixture");
+        std::fs::create_dir_all(&named).unwrap();
+        let selected = match kind {
+            "unset" => home.join(".claude.json"),
+            "named" => named.join(".claude.json"),
+            _ => inherited.join(".claude.json"),
+        };
+        let parent_key = prefix.to_string_lossy().replace('\\', "/");
+        let original = serde_json::to_vec(&serde_json::json!({"sentinel": "preserved", "projects": {&parent_key: {"hasTrustDialogAccepted": true}}})).unwrap();
+        for file in [
+            home.join(".claude.json"),
+            inherited.join(".claude.json"),
+            named.join(".claude.json"),
+        ] {
+            std::fs::write(file, &original).unwrap();
+        }
+        let config = crate::rows::store::app_config_dir();
+        std::fs::create_dir_all(&config).unwrap();
+        let declaration = toml::to_string(
+            &serde_json::json!({"trust": {"root_prefix": prefix.to_str().unwrap()}}),
+        )
+        .unwrap();
+        std::fs::write(config.join("settings.toml"), declaration).unwrap();
+        let expected_env = crate::agents::accounts::account_env("claude", account, &home).unwrap();
+        let capture = sot_log::test_log::capture();
+        assert_eq!(
+            account_spawn_env("claude", account, &cwd, "fixture-row").unwrap(),
+            expected_env
+        );
+        let bytes = std::fs::read(&selected).unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let child_key = cwd.to_string_lossy().replace('\\', "/");
+        assert_eq!(
+            doc["projects"][&child_key]["hasTrustDialogAccepted"], true,
+            "W1 effective child config missed the separate exact-cwd key"
+        );
+        assert_eq!(doc["projects"][parent_key]["hasTrustDialogAccepted"], true);
+        assert_eq!(doc["sentinel"], "preserved");
+        assert_eq!(doc["projects"].as_object().unwrap().len(), 2);
+        for file in [
+            home.join(".claude.json"),
+            inherited.join(".claude.json"),
+            named.join(".claude.json"),
+        ] {
+            if file != selected {
+                assert_eq!(
+                    std::fs::read(file).unwrap(),
+                    original,
+                    "W1 preparation changed an unselected trust file"
+                );
+            }
+        }
+        account_spawn_env("claude", account, &cwd, "fixture-row").unwrap();
+        assert_eq!(
+            std::fs::read(&selected).unwrap(),
+            bytes,
+            "W1 accepted selected entry was rewritten"
+        );
+        let log = capture.text();
+        assert!(log.contains("outcome=Recorded") && log.contains("outcome=AlreadyTrusted"));
+        println!("W1 C3 destination PASS: {kind}; exact child key; parent and unselected bytes preserved; account env unchanged");
+    }
+
+    #[test]
+    fn inherited_absolute_config_receives_the_record() {
+        if !sot_log::test_isolated::run_isolated(
+            "agents::env::trust_config_controls::inherited_absolute_config_receives_the_record",
+        ) {
+            return;
+        }
+        config_case("inherited");
+    }
+    #[test]
+    fn unset_config_uses_the_home_level_file() {
+        if !sot_log::test_isolated::run_isolated(
+            "agents::env::trust_config_controls::unset_config_uses_the_home_level_file",
+        ) {
+            return;
+        }
+        config_case("unset");
+    }
+    #[test]
+    fn named_addition_overrides_inherited_config() {
+        if !sot_log::test_isolated::run_isolated(
+            "agents::env::trust_config_controls::named_addition_overrides_inherited_config",
+        ) {
+            return;
+        }
+        config_case("named");
+    }
+    #[test]
+    fn config_guard_restores_config_directories_on_unwind() {
+        if !sot_log::test_isolated::run_isolated("agents::env::trust_config_controls::config_guard_restores_config_directories_on_unwind") { return; }
+        let before = ["XDG_CONFIG_HOME", "LOCALAPPDATA", "CLAUDE_CONFIG_DIR"].map(std::env::var_os);
+        let temp = tempfile::tempdir().unwrap();
+        let result = std::panic::catch_unwind(|| {
+            let _guard = self_file_env_guarded();
+            for key in ["XDG_CONFIG_HOME", "LOCALAPPDATA", "CLAUDE_CONFIG_DIR"] {
+                std::env::set_var(key, temp.path());
+            }
+            panic!("fixture unwind");
+        });
+        assert!(result.is_err());
+        let after = ["XDG_CONFIG_HOME", "LOCALAPPDATA", "CLAUDE_CONFIG_DIR"].map(std::env::var_os);
+        assert!(
+            before == after,
+            "W1 config guard did not restore configuration directories"
+        );
+        println!("W1 C3 restoration PASS: configuration directories restored on unwind");
     }
 }

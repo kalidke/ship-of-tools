@@ -14,6 +14,21 @@ const V = ShipToolsVideoFile.VideoFile
         end
     end
 
+    @testset "matches suffix corpus" begin
+        for suffix in ("mp4", "webm", "mov", "mkv", "m4v")
+            for spelling in (suffix, uppercase(suffix), uppercasefirst(suffix))
+                for path in ("clip.$spelling", ".$spelling",
+                             "many.dots.clip.$spelling", joinpath("folder", ".$spelling"))
+                    @test ConceptExplorerCore.matches(ShipToolsVideoFile.VideoFile, path)
+                end
+            end
+        end
+        for path in ("", "noext", ".", ".txt", "clip.mp4.txt",
+                     "dir.mp4/clip.txt", "clip.mp4/")
+            @test !ConceptExplorerCore.matches(ShipToolsVideoFile.VideoFile, path)
+        end
+    end
+
     @testset "preview poster" begin
         sample = joinpath(@__DIR__, "..", "..", "..", "..", "examples", "preview", "sample.mp4")
         if Sys.which("ffmpeg") !== nothing && isfile(sample)

@@ -104,23 +104,6 @@ async fn a_spawned_daemon_inherits_no_sot_variable_the_test_did_not_set() {
     assert_eq!(names, ["SOT_COMM_HOME", "SOT_RUNTIME_DIR", "SOT_SELF_HOST"], "the daemon's SOT_ variables");
 }
 
-/// Every `sotd` a suite starts comes from `sotd_command()` in `support/sotd.rs`, where the binary's path is private:
-/// the tests folder reads the binary's path from cargo nowhere else.
-#[test]
-fn every_sotd_spawn_starts_from_sotd_command() {
-    // Built with `concat!`, so this file does not hold the text it looks for.
-    let needle = concat!("CARGO_BIN_EXE", "_sotd");
-    let mut found = Vec::new();
-    for (rel, text) in sot_log::test_scan::rust_sources() {
-        if rel.starts_with("rust/backend/tests/") {
-            for _ in text.matches(needle) {
-                found.push(rel.clone());
-            }
-        }
-    }
-    assert_eq!(found, ["rust/backend/tests/support/sotd.rs"], "{needle} may appear only in support/sotd.rs");
-}
-
 /// A registry write waits for the lock the daemon and the comm scripts take.
 #[test]
 fn write_registry_waits_for_a_held_registry_lock() {

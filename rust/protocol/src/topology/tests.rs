@@ -244,3 +244,50 @@ fn locate_honours_sot_hosts() {
     assert_eq!(locate(), Some(PathBuf::from("/nowhere/hosts.toml")));
     std::env::remove_var("SOT_HOSTS");
 }
+
+#[test]
+fn only_the_complete_generated_path_is_a_hub_relay() {
+    let dir = Path::new("/run/user/1000");
+    let host = |p: &str| relay_host_in(dir, Path::new(p));
+    assert_eq!(
+        host("/run/user/1000/sot-host-beta.sock").as_deref(),
+        Some("beta")
+    );
+    assert_eq!(
+        host("/run/user/1000/sot-host-gpu-2.sock").as_deref(),
+        Some("gpu-2")
+    );
+    assert_eq!(
+        relay_host_in(
+            &relay_socket_path("x").parent().unwrap().to_path_buf(),
+            &relay_socket_path("x")
+        )
+        .as_deref(),
+        Some("x")
+    );
+    for other in [
+        "/run/user/1000/sot-relay.sock",
+        "/run/user/1000/sot-host-.sock",
+        "/run/user/1000/sot-host-Beta.sock",
+        "/run/user/1000/sot-host-a b.sock",
+        "/run/user/1000/sot-host-beta.sock.bak",
+        "/run/user/1000/sot/sot-host-beta.sock",
+        "/run/user/1000/sot/sessions/sot.sock",
+        "/tmp/sot-host-beta.sock",
+        "sot-host-beta.sock",
+        "",
+    ] {
+        assert_eq!(host(other), None, "{other}");
+    }
+}
+
+#[test]
+fn a_planned_relay_dial_is_recognized_and_the_hubs_own_is_not() {
+    let t = parse(V2).unwrap();
+    for (host, endpoint) in dial_endpoints(&t, "alpha") {
+        let path = endpoint.strip_prefix("unix:").map(Path::new);
+        let class = path.and_then(relay_host_for_path);
+        assert_eq!(class.is_some(), host != "alpha", "{host} {endpoint}");
+        assert_eq!(class.as_deref().unwrap_or(&host), host);
+    }
+}

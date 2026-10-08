@@ -1,4 +1,41 @@
 # Part of ../test-status-floor.sh: new mail at the turn boundary, closing markers, effort against exchange.
+# The permission hook must leave the caller's open input untouched when disabled.
+case_codex_hook_input_and_stamps() {
+    local mode="$1" d="$WORK/codex-hook-$1" rc rest expected
+    mkdir -p "$d/bin"
+    cat > "$d/bin/comm-status.sh" <<'RECORDER'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SOT_COMM_HOME/calls"
+RECORDER
+    chmod +x "$d/bin/comm-status.sh"
+    printf '{"tool_name":"fixture-tool"}\n' > "$d/input"
+    exec 7< "$d/input"
+    if [ "$mode" = unset ]; then
+        env -u SOT_COMM_HOOKS SOT_COMM_HOME="$d" bash "$HOOKS_DIR/codex-status-blocked.sh" <&7 > "$d/out" 2> "$d/err"
+    else
+        SOT_COMM_HOOKS="$mode" SOT_COMM_HOME="$d" bash "$HOOKS_DIR/codex-status-blocked.sh" <&7 > "$d/out" 2> "$d/err"
+    fi
+    rc=$?; rest="$(cat <&7)"; exec 7<&-
+    [ "$rc" -eq 0 ] && [ ! -s "$d/out" ] && [ ! -s "$d/err" ] || return 1
+    if [ "$mode" = off ]; then
+        [ "$rest" = '{"tool_name":"fixture-tool"}' ] || { echo "    off hook consumed caller input"; return 1; }
+        [ ! -e "$d/calls" ] || { echo "    off hook called status"; return 1; }
+    else
+        expected=$'blocked codex permission request: fixture-tool\nstop'
+        [ -z "$rest" ] && [ "$(cat "$d/calls")" = "$expected" ] || { echo "    $mode hook did not consume input and stamp blocked then stop"; return 1; }
+    fi
+}
+case_codex_hook_off_without_home() {
+    local rc
+    env -u HOME -u SOT_COMM_HOME SOT_COMM_HOOKS=off bash "$HOOKS_DIR/codex-status-blocked.sh" < /dev/null > "$WORK/codex-no-home.out" 2> "$WORK/codex-no-home.err"
+    rc=$?
+    [ "$rc" -eq 0 ] && [ ! -s "$WORK/codex-no-home.err" ] || { echo "    off hook expanded HOME before standing down"; return 1; }
+}
+check "Codex off hook leaves input and status untouched" case_codex_hook_input_and_stamps off
+check "Codex off hook exits before HOME expansion" case_codex_hook_off_without_home
+check "Codex unset hook consumes input and stamps blocked then stop" case_codex_hook_input_and_stamps unset
+check "Codex on hook consumes input and stamps blocked then stop" case_codex_hook_input_and_stamps on
+
 # ---- new mail at the turn boundary (messaging ruling, 2026-09-26) ----
 # The inbox IS the delivery path, so a turn must not end while directed mail
 # sits unread: the hook reads this handle's own inbox and blocks with "run
@@ -248,4 +285,3 @@ case_turn_with_a_block_is_never_nudged_twice() {
     [ -z "$out" ] || { echo "    nudged a turn that had its block: '$out'"; return 1; }
     expect waiting/-/-/w/- stamped
 }
-

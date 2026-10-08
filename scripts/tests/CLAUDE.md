@@ -4,9 +4,11 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 `sotd` under a temp folder and touches no live daemon. Part of distribution; charter: scripts/CLAUDE.md.
 
 ## Files
+- `lib-test-body.sh`: the shared completion verdict for one selected Rust test; ordered, unambiguous capture closure precedes the outer result; missing, ignored, mismatched and failed bodies cannot pass.
+- `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners, including combined captured-summary/truncation and scratch-path controls; accepts a compiled fixture executable by absolute path and validates its shell scratch root before cleanup.
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
-  and the pinned bounds and copies. Runs in the `rust.yml` step "Test installer state (bash)" (ubuntu leg) and in
-  `rc-gate.sh`.
+  and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies, and executed trust declaration delegation (`--trust-only`). Runs in the `rust.yml`
+  step "Test installer state (bash)" (ubuntu leg) and in `rc-gate.sh`.
 - `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper and the network refusal. Runs in the
   `rust.yml` step "Test installer apply (bash)" (ubuntu leg) and in `rc-gate.sh`.
 - `installer-support.sh`: the setup both installer suites source: install.sh and lib/sot-daemon.sh, `check`,
@@ -20,22 +22,29 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `on-host.sh`: `on-host.sh HOST DIR -- CMD [ARG...]` runs CMD in DIR on a second host through `ssh HOST bash -s`, with
   the host's SOT_ variables, XDG_STATE_HOME, JULIA_LOAD_PATH and JULIA_PROJECT unset first; prints nothing of its own.
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
-- `rc-gate.sh`: the local candidate gate: the Rust workspace tests, doc tests, windows-gnu and darwin cross checks,
-  every Julia suite and the shell suites, as concurrent jobs under one cap. Linux only, run by hand.
+- `rc-gate.sh`: the Linux candidate gate; a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
-  `Set-SotFolderTrust` (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test install layout
+  `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test install layout
   (pinned-checkout predicate)".
 - `test-local-daemon.ps1`: scripts/sot-local-daemon.ps1 start, stop and wait behaviour (sections 0-8 and 12-15: the
   refusal, the pipe name, a late bind, `-Stop`, log retention, `Get-StopWaitMs`). Runs in the `rust.yml` step "Test
   local daemon launcher".
 - `test-launcher-leases.ps1`: launch-sot.ps1's ensure and lease order in the supervisor loop and the converge lease
   (sections 9-11 and 16 of the old suite), read as syntax trees and run against the fake `sotd.exe`. Runs in the
-  `rust.yml` step "Test launcher leases".
+  `rust.yml` step "Test launcher leases", and a bridge that ends before the lease is written (11f).
 - `test-local-daemon-fake.ps1`: dot-sourced by both local-daemon suites: compiles the fake `sotd.exe` and defines
   `Clear-FakeEnv`, `New-FakePrefix` and `Stop-FakeOn`.
+- `test-local-daemon-own.ps1`: dot-sourced by test-local-daemon.ps1 after section 5b, in its scope: the bridge's
+  own-account pipe probe (4b), the daemon finder's account filter and its process controls (4c), and the real
+  daemon's bridge-held lease handover (5b2).
 - `test-local-daemon-pipe.ps1`: dot-sourced by test-local-daemon.ps1 inside section 5c, in its scope: the session pipe
   under load (cases (iii)-(viii): large requests behind an accepted and a refused hello, the inbound buffer's memory, a
   peer the daemon gives up on, a session that ends on a frame the daemon will not read).
+- `test-local-daemon-binary.ps1`: dot-sourced by test-local-daemon.ps1 right after the fake daemon's compilation is attempted, in its
+  scope: the local daemon's one binary, shared by the daemon, `-Stop` and the launcher's query and lease (2c), and the
+  bytes the lease's and the probe's bridges read in a hidden console, which are only their callers' (7c, only when the fake compiled).
+- `pipe-request.ps1`: the local-daemon suites' raw pipe client (5c, 5d): a hello and one request into a named pipe,
+  the reply whose op matches printed. Test code; it checks no account.
 - `test-local-daemon-support.ps1`: dot-sourced by both local-daemon suites: `Check`, the fixture and pipe helpers, the
   test root and `Complete-LocalDaemonTest`, their cleanup.
 - `test-sot-apply.ps1`: scripts/sot-apply.ps1 against a synthetic staged update: apply, damaged stage, rollback,
@@ -134,16 +143,26 @@ Last line: `violations: n, allowed: m, exempt: e, unused-allow: u, folders check
 behaviour it pins. For a Windows script change, the `.ps1` suite named for it above.
 
 ## Rules
+- The checker accepts the outer result only after complete, unambiguous captured-output boundaries; a captured summary or truncated capture cannot supply that result.
+- The proof binds its shell scratch root to a validated absolute directory before installing cleanup; behavior controls observe the driver and cleanup paths under relative TMPDIR.
+- A shell owner that selects one Rust body consumes the completion verdict from lib-test-body.sh; a listed name, child exit zero or a zero-test summary alone is not execution proof.
 - The five `.ps1` suites run only on the windows-latest leg of `rust.yml`, under Windows PowerShell 5.1; `rc-gate.sh`
   and a Linux box never run them. The step "Parse PowerShell scripts" globs `scripts/*.ps1` without recursion, so each
   `.ps1` suite parses itself and its siblings in its section 0.
 - A suite runs only if a step of `.github/workflows/rust.yml` or a job of `rc-gate.sh` names it; a new suite is added
-  to the step list in the commit that adds it. `rc-gate.sh` lists only the three shell suites here by name
+  to the step list in the commit that adds it. `rc-gate.sh` lists the three installer/topology shell suites and the finite selected-body proof here by name
   (`SHELL_ALL` in `producer`).
 - `installer-support.sh` sources `install.sh` with `SOT_INSTALL_SOURCE_ONLY=1` and `lib/sot-daemon.sh` for both installer
   suites; `installer-state.sh` reads `rust/protocol/src/ops/lease.rs` for the pinned bounds (`launcher_bounds_match_ops`), so a
   rename there breaks it.
-- The suites stub `sotd` (and `systemctl`, `nc` in `installer-support.sh`); none needs a network. `test-local-daemon.ps1`
-  sections 3 to 6 need a real `sotd.exe`: a failure on CI when absent, a skip elsewhere.
+- The suites stub `sotd`, its `stdio-bridge` arm included (and `systemctl` in `installer-support.sh`); none needs a
+  network. `test-local-daemon.ps1` sections 3 to 6 need a real `sotd.exe`: a failure on CI when absent, a skip elsewhere.
+- A fixture never shares a process object with the code under test: a suite that ends a child keeps a `Process` of its
+  own for it, its handle taken while the child runs (`GetProcessById`), since production disposes its own. A timed fake
+  starts its timer at the test's own origin, the arm file the test writes as it starts measuring
+  (`FAKE_SOTD_EXIT_ARM_FILE`), never at its own start.
 - `rc-gate.sh` needs `CARGO_TARGET_DIR` to itself while it runs; its verdict ends `<logdir>/summary.txt` as `ALLDONE` or
   `ALLDONE FAILED`.
+
+- Trust tests execute the real declaration owner and installer entry; emitted-byte assertions and native exit-status
+  observations establish behavior, never source membership or statement offsets.

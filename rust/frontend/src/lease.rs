@@ -27,6 +27,8 @@ const NOTICE_UNDETERMINED: &str =
     "closing will not end sessions: this computer's backend could not verify this window";
 const NOTICE_UNSUPPORTED: &str =
     "closing will not end sessions: this computer's backend is older than this window";
+const NOTICE_FOREIGN: &str =
+    "closing will not end sessions: this computer's backend refused this window's identity claim";
 const NOTICE_NO_BACKEND: &str =
     "closing will not end sessions: there is no backend on this computer";
 const LEAVE_UNCONFIRMED_CLOSE: &str =
@@ -314,7 +316,7 @@ impl Leases {
             }
             LeaseOutcome::Foreign => {
                 self.set(host, Standing::Foreign, None);
-                tracing::warn!(%host, "window lease: another user's backend");
+                tracing::warn!(%host, "window lease: the backend refused this window's identity claim");
                 Ok(0)
             }
             LeaseOutcome::Undetermined => {
@@ -616,6 +618,8 @@ pub fn lease_notice(exempt: bool, standings: &[Standing]) -> Option<&'static str
         Some(NOTICE_UNDETERMINED)
     } else if standings.contains(&Standing::Unsupported) {
         Some(NOTICE_UNSUPPORTED)
+    } else if standings.contains(&Standing::Foreign) {
+        Some(NOTICE_FOREIGN)
     } else {
         Some(NOTICE_NO_BACKEND)
     }

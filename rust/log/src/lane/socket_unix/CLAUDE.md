@@ -17,6 +17,7 @@ The twin of the Windows pipe transport by property, not mechanism: a server for 
 `server.rs` `SocketServer::bind_named` for how a server starts; `client.rs` `connect_voyage_socket` for how a client dials.
 
 ## Rules
+- Test-support checkpoints never wait for the recorder; snapshots report skipped admissions and retain admitted records after connection removal until overwritten, without taking the connection-state lock.
 - The runtime dir must be private (`ensure_private_runtime_dir`); every later file step is anchored to the verified directory fd (`open_verified_dir_fd`), and the socket's mode is set and verified before `listen` (`create_and_bind_listener`; on Linux `bind` itself goes through the fd, on macOS by path).
 - A socket path is checked against `max_sun_path_bytes` before binding (`socket_path`).
 - A raw connect (`connect_voyage_socket_unchallenged`, `connect_supervisor_socket_unchallenged`) stays `pub(crate)`; `connect_voyage_socket` authenticates the server through `challenge_os::authenticate_server` before returning.

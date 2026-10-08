@@ -6,13 +6,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=comm-lib.sh
 source "$SCRIPT_DIR/comm-lib.sh"
-# Two writes in this script (the comm home's directories and registry skeleton
-# here, the legacy self-file heal below) are an agent's own to make: a second
-# agent inside the session (sot_require_agent) skips them and reads on. A comm
-# home that is already whole writes nothing, so that case costs no ancestry walk.
-if [ -f "$REGISTRY" ] && [ -d "$INBOX_DIR" ] && [ -d "$SELF_DIR" ] && [ -d "$READ_DIR" ]; then :
-elif sot_require_agent >/dev/null 2>&1; then ensure_home; fi
-
 # SOT_COMM_TEST_HOST lets a caller pin HOST directly, bypassing `hostname -s`
 # — mirrors the $SOT_COMM_SELF_FILE test seam below. A test must be hermetic
 # in HOST exactly as it is in HOME: the real host's name is unpredictable
@@ -27,7 +20,14 @@ elif sot_require_agent >/dev/null 2>&1; then ensure_home; fi
 # hostname is longer than a dev box's. Pinning through this seam removes
 # the dependency entirely, on both the scripts' side and the test's own
 # host-3. Unset in normal use.
-sot_raw_host HOST
+# HOST is the daemon's declared host (sot_host): the registry row's `host` and the self-file key must be the one
+# fact the daemon binds a handle by. HANDLE_HOST is the raw `hostname -s` (or the pin above), kept only as a
+# derived handle's host component and as the old slot's key for the migration below.
+sot_raw_host HANDLE_HOST
+if ! HOST="$(sot_host)"; then
+    echo "comm-context: could not establish this box's declared host (see the reason above); aborting rather than proceeding with an unknown identity" >&2
+    exit 1
+fi
 
 # The workspace row this shell runs in, stamped into the capsule leg's env
 # by the daemon; empty in a bare shell. It keys the self-file slot.
@@ -55,11 +55,33 @@ fi
 # to key on (every simulated session would collapse to the same "nopane"
 # slot), so this is the seam that lets it give each its own identity slot.
 # Unset in normal use; mirrors the existing $SOT_COMM_HOME override.
+LEGACY_SELF_FILE=""
 if [ -n "${SOT_COMM_SELF_FILE:-}" ]; then
     SELF_FILE="$SOT_COMM_SELF_FILE"
 else
-    WS_SAFE="$(printf '%s' "$WORKSPACE_ID" | tr -c 'A-Za-z0-9._-' '_')"
-    SELF_FILE="$SELF_DIR/${HOST}__${WS_SAFE:-nopane}.txt"
+    # The whole leaf is validated before anything below writes (a join, a heal, ensure_home).
+    if ! SELF_LEAF="$(_sot_self_slot "$HOST" "$WORKSPACE_ID")"; then
+        echo "comm-context: aborting before any write: no self slot can be named for host '$HOST'" >&2
+        exit 1
+    fi
+    SELF_FILE="$SELF_DIR/$SELF_LEAF"
+    # The slot this script keyed by the raw hostname before: read only for this workspace, by the migration below.
+    if [ "$HANDLE_HOST" != "$HOST" ] && [ -n "$WORKSPACE_ID" ] && SELF_LEAF="$(_sot_self_slot "$HANDLE_HOST" "$WORKSPACE_ID" 2>/dev/null)"; then
+        LEGACY_SELF_FILE="$SELF_DIR/$SELF_LEAF"
+    fi
+fi
+# Slot validated: only now may the comm home be made or tightened.
+# Two writes in this script (the comm home's directories and registry skeleton
+# here, the legacy self-file heal below) are an agent's own to make: a second
+# agent inside the session (sot_require_agent) skips them and reads on. A comm
+# home that is already whole writes nothing, so that case costs no ancestry walk.
+if [ -f "$REGISTRY" ] && [ -d "$INBOX_DIR" ] && [ -d "$SELF_DIR" ] && [ -d "$READ_DIR" ]; then :
+elif sot_require_agent >/dev/null 2>&1; then ensure_home; fi
+
+# An old raw-host slot for this same workspace moves to the declared-host slot when the registry proves it is
+# ours (sot_self_slot_migrate); anything else about it is ignored.
+if [ -n "$LEGACY_SELF_FILE" ] && [ ! -e "$SELF_FILE" ] && [ -f "$LEGACY_SELF_FILE" ] && sot_require_agent >/dev/null 2>&1; then
+    sot_self_slot_migrate "$LEGACY_SELF_FILE" "$SELF_FILE" "$WORKSPACE_ID" "$PROJECT_ROOT" "$REPO" || true
 fi
 # The self-file is keyed by WORKSPACE ID; a row can be re-created for a
 # different project, so a fresh session in a reused slot can otherwise
@@ -165,6 +187,7 @@ fi
 emit() { if [ -n "$2" ]; then printf '%s=%q\n' "$1" "$2"; else printf '%s=\n' "$1"; fi; }
 
 emit HOST        "$HOST"
+emit HANDLE_HOST "$HANDLE_HOST"
 emit WORKSPACE_ID "$WORKSPACE_ID"
 emit REPO        "$REPO"
 emit PROJECT_ROOT "$PROJECT_ROOT"

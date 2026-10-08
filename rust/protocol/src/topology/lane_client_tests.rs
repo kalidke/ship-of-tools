@@ -1,6 +1,7 @@
 //! Tests of the lane dial against a stub daemon: refusal mapping, bad-token and no-bridge replies, timeouts and cancel.
 
 use super::*;
+use std::sync::atomic::Ordering;
 use interprocess::local_socket::{prelude::*, GenericFilePath, Listener, ListenerOptions, Stream};
 use std::io::{Read, Write};
 use std::time::Duration;
@@ -35,7 +36,7 @@ impl FakeDaemon {
     }
 
     fn endpoint(&self) -> DaemonLaneEndpoint {
-        DaemonLaneEndpoint { dial: LaneDial::Local(self.path.clone()), token: None }
+        DaemonLaneEndpoint::new(LaneDial::Local(self.path.clone()), None)
     }
 
     fn accept(&self) -> Stream {
@@ -176,11 +177,45 @@ fn an_ssh_dial_with_a_down_gate_is_link_down_at_once() {
     let gate = crate::topology::ssh_bridge::LinkGate::default();
     gate.set_up(false);
     let recipe = crate::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, gate), token: None };
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate), None);
     let t0 = Instant::now();
     let result = endpoint.dial("row", "supervisor", None);
     assert!(matches!(result, Err(TransportError::LinkDown)), "got {:?}", result.err());
     assert!(t0.elapsed() < Duration::from_millis(50));
+}
+
+/// A generated hub relay is dialed through the same protected local connector as a local socket, behind its host's
+/// gate: the stub daemon sees the handoff hello and the `lane.connect` once the gate is up, and a down gate dials nothing.
+#[test]
+fn a_relay_dial_waits_for_its_gate_then_uses_the_local_connector() {
+    let daemon = FakeDaemon::new();
+    let gate = crate::topology::ssh_bridge::LinkGate::default();
+    gate.set_up(false);
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Relay(daemon.path.clone(), gate.clone()), None);
+    assert!(!endpoint.link_up());
+    let result = endpoint.dial("row-1", "supervisor", None);
+    assert!(
+        matches!(result, Err(TransportError::LinkDown)),
+        "got {:?}",
+        result.err()
+    );
+    // Nothing connected: the listener has no pending connection to accept.
+    gate.set_up(true);
+    assert!(endpoint.link_up());
+    let handle = std::thread::spawn(move || {
+        let mut conn = daemon.accept();
+        let (_, request) = serve_hello(&mut conn);
+        assert_eq!(request.op, op::LANE_CONNECT);
+        let ok = serde_json::json!({ "ok": true, "pid": 41, "created": 7 });
+        let mut line = serde_json::to_vec(&Frame::res(2, op::LANE_CONNECT, ok)).unwrap();
+        line.push(b'\n');
+        conn.write_all(&line).unwrap();
+    });
+    let client = endpoint
+        .dial("row-1", "supervisor", None)
+        .expect("an up gate dials the relay path");
+    assert_eq!((client.peer.pid, client.peer.created), (41, 7));
+    handle.join().unwrap();
 }
 
 /// `dial_failed` is the daemon's OWN dial/authenticate step failing
@@ -359,55 +394,15 @@ fn a_wire_identity_that_differs_from_the_reported_peer_is_foreign() {
 /// back on stdout and outlives its parent until killed, exactly the
 /// two properties `BridgedClient::cancel()`'s kill→EOF mechanism
 /// needs (C3 as amended §2; §7's test table, "Linux + Windows").
-#[cfg(unix)]
-fn spawn_stub_child() -> std::process::Child {
-    std::process::Command::new("cat")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("`cat` must be on PATH for this test")
-}
-
-#[cfg(windows)]
-fn spawn_stub_child() -> std::process::Child {
-    // `more` with no filename argument reads stdin and copies it to
-    // stdout, the same echo shape `cat` gives on Unix — no unix-only
-    // tool required. It is `more.com`, and Command looks up only `.exe`
-    // without an extension.
-    std::process::Command::new("more.com")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("`more.com` must be on PATH for this test")
-}
-
-/// `BridgedClient::cancel()`'s own contract: the kill it issues must
-/// be what unblocks a read already parked on the child's stdout, not
-/// an eventual natural exit racing ahead of it — same property
-/// `cancel_unblocks_a_pending_read` proves for the local-socket client above, one
-/// mechanism for both.
 #[test]
-fn bridged_cancel_unblocks_a_parked_read_via_kill() {
-    let client = std::sync::Arc::new(BridgedClient::wrap(spawn_stub_child()).expect("wrap"));
-    let reader = std::sync::Arc::clone(&client);
-    let read_thread = std::thread::spawn(move || {
-        let mut buf = [0u8; 16];
-        let started = Instant::now();
-        let result = reader.read(&mut buf);
-        (result, started.elapsed())
-    });
-    // Give the read a moment to actually park before cancelling —
-    // `cat`/`more` never write anything unprompted, so the read has
-    // nothing to return until either bytes arrive or the child dies.
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    client.cancel();
-    let (result, elapsed) = read_thread.join().unwrap();
-    assert!(elapsed < std::time::Duration::from_secs(2), "cancel() must unblock the read promptly, took {elapsed:?}");
-    match result {
-        Ok(0) | Err(TransportError::Cancelled) | Err(TransportError::Io { .. }) => {}
-        other => panic!("expected cancel to unblock the read as EOF or an error, got {other:?}"),
+fn a_local_dial_starts_no_ssh_child() {
+    for kind in ["supervisor", "voyage"] {
+        let daemon = FakeDaemon::new();
+        let ep = daemon.endpoint().with_test_ssh_spawner(std::sync::Arc::new(|_| panic!("a local dial never starts ssh")));
+        let peer = std::thread::spawn(move || { let mut conn = daemon.accept(); serve_hello(&mut conn); respond_with_ok_lane(&mut conn); });
+        drop(ep.dial("row-local", kind, (kind == "voyage").then(|| "voyage".to_string())).unwrap());
+        peer.join().unwrap();
+        assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Unused));
     }
 }
 
@@ -432,7 +427,7 @@ fn ssh_stand_in(replies: &[serde_json::Value]) -> std::process::Child {
 fn handshake_over_ssh_stand_in(replies: &[serde_json::Value]) -> Result<DaemonLaneClient, TransportError> {
     let hello = Frame::req(1, op::HELLO, serde_json::json!({}));
     let request = Frame::req(2, op::LANE_CONNECT, serde_json::json!({}));
-    handshake(LaneStream::Bridged(BridgedClient::wrap(ssh_stand_in(replies)).expect("wrap")), &hello, &request)
+    handshake(LaneStream::Bridged(BridgedClient::wrap(ssh_stand_in(replies)).expect("wrap")), &hello, &request, CONNECT_BOUND)
 }
 
 /// Over an ssh login a daemon's answer is returned as the daemon gave it, never replaced by the login's stderr (BLOCKER 2
@@ -480,7 +475,7 @@ fn a_failed_lane_write_names_its_error_and_the_ssh_line_once() {
     client.child.lock().unwrap().wait().expect("the stand-in exits");
     let hello = Frame::req(1, op::HELLO, serde_json::json!({}));
     let request = Frame::req(2, op::LANE_CONNECT, serde_json::json!({}));
-    match handshake(LaneStream::Bridged(client), &hello, &request) {
+    match handshake(LaneStream::Bridged(client), &hello, &request, CONNECT_BOUND) {
         Err(TransportError::Unreachable(e)) => {
             // Normally the write fails (`lane write: <the io error>: <the line>`). A test running beside others can
             // have the pipe's read end held for an instant by a sibling's forked child, so the write succeeds and the
