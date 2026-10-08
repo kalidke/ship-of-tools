@@ -639,7 +639,7 @@ async fn the_drain_outlasts_a_forking_child() {
 async fn the_guard_ends_only_its_own_subtree() {
     let _serial = SERIAL.lock().await;
     let mut fx = Fixture::new("guard_ends_only_its_own_subtree");
-    let a = start_spinning("gsua", &mut fx, false).await;
+    let mut a = start_spinning("gsua", &mut fx, false).await;
     let b = start_spinning("gsub", &mut fx, false).await;
     // A process the case starts outside both daemons: a child of this test, ended through its own handle.
     let mut outside = std::process::Command::new("sleep")
@@ -670,6 +670,11 @@ async fn the_guard_ends_only_its_own_subtree() {
         "a_tree_ended",
         all_ended(&fx, &a.ids, Duration::from_secs(10)),
     );
+    // The guard ends after its drain, so what it was going to end is ended by now.
+    fx.save(
+        "a_guard_ended",
+        a.run.status_within(Duration::from_secs(60)).await.is_some(),
+    );
     fx.save(
         "b_tree_alive",
         b.ids
@@ -696,6 +701,11 @@ async fn the_guard_ends_only_its_own_subtree() {
         fx.saved("a_tree_ended"),
         Some("true"),
         "daemon A's tree outlived it"
+    );
+    assert_eq!(
+        fx.saved("a_guard_ended"),
+        Some("true"),
+        "daemon A's guard did not end after its drain"
     );
     assert_eq!(
         fx.saved("b_tree_alive"),

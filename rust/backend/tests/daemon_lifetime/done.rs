@@ -164,7 +164,6 @@ pub struct Held {
     pub repl_ids: Vec<usize>,
     pub repl_spin: Option<tokio::task::JoinHandle<()>>,
     pub pluto_ids: Vec<usize>,
-    pub pluto_seen: Vec<usize>,
     pub quarto_ids: Vec<usize>,
     pub quarto_seen: Vec<usize>,
 }
@@ -237,7 +236,7 @@ pub async fn hold_row(
 }
 
 /// Pluto: a notebook opened through the daemon; its worker starts the case's tree from its startup expression. Pluto's
-/// server is a child of the daemon (its children list), and only looked at.
+/// server is a child of the daemon (its children list).
 pub async fn hold_pluto(
     fx: &mut Fixture,
     run: &Run,
@@ -271,9 +270,10 @@ pub async fn hold_pluto(
         .into_iter()
         .find(|pid| command_line(*pid).contains("start.jl"))
         .expect("the Pluto server is a child of the daemon");
-    held.pluto_seen.push(
-        fx.observe(server, "Pluto's server")
-            .expect("observe the Pluto server"),
+    // The daemon's own child, found in the children list of the process the case holds, so the case may end it.
+    held.pluto_ids.push(
+        fx.adopt(server, None, "Pluto's server")
+            .expect("authority over the daemon's child"),
     );
 }
 
@@ -333,12 +333,7 @@ pub async fn supervisor_of(run: &Run, state_dir: &Path) -> Option<(i32, u64)> {
 pub fn save_oracle(fx: &mut Fixture, held: &Held, supervisor_id: usize) {
     let within = Duration::from_secs(10);
     fx.save("repl_ended", all_ended(fx, &held.repl_ids, within));
-    let pluto = all_ended(fx, &held.pluto_ids, within)
-        && held
-            .pluto_seen
-            .iter()
-            .all(|i| fx.observed(*i).exited(within));
-    fx.save("pluto_ended", pluto);
+    fx.save("pluto_ended", all_ended(fx, &held.pluto_ids, within));
     let quarto = all_ended(fx, &held.quarto_ids, within)
         && held
             .quarto_seen
