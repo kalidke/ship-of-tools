@@ -34,9 +34,9 @@ pub enum Launched {
     Child(DurableChild),
 }
 
-/// Start the daemon's durable parent now, if it is not already running.
-pub fn start_parent() -> std::io::Result<()> {
-    proxy::client().map(|_| ())
+/// Take the daemon's end of the channel to the parent started before the runtime (see [`proxy::start_before_runtime`]).
+pub fn connect_parent() -> std::io::Result<()> {
+    proxy::connect_parent()
 }
 
 /// Launch `spec` through the daemon's durable parent, with `stderr` as the supervisor's standard error.

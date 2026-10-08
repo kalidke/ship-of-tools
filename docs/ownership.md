@@ -109,7 +109,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | starting this computer's daemon (`sot_daemon_ensure`, `sot-local-daemon.ps1`) | process | distribution | `scripts/lib/sot-daemon.sh` `sot_daemon_ensure`; `scripts/sot-local-daemon.ps1` |
 | window supervisor (respawn on 75/76, crash-loop rollback) | process | distribution | `scripts/launch-sot.ps1`; `scripts/lib/sot-daemon.sh` `render_sot_launch` |
 | process `sot-capsule supervise` (spawned by rows) | process | capsule | `rust/log/src/bin/sot-capsule.rs`; `rust/log/src/supervisor/mod.rs` `supervise`; spawn `rust/backend/src/rows/spawn/detach.rs` `spawn_detached_supervisor`, forked by the durable parent `rust/backend/src/rows/spawn/durable/accept.rs` `accept` (Windows: created by `spawn_detached`) |
-| process `sotd durable-parent` (the capsule-only birth parent, one per daemon, started at boot and again if lost) | process | rows | `rust/backend/src/rows/spawn/durable/parent.rs` `run`; start `rust/backend/src/rows/spawn/durable/proxy.rs` `Client::start` |
+| process `sotd durable-parent` (the capsule-only birth parent, one per daemon, started once in `main`'s prologue before the runtime, never restarted) | process | rows | `rust/backend/src/rows/spawn/durable/parent.rs` `run`; start `rust/backend/src/rows/spawn/durable/proxy.rs` `start_before_runtime` |
 | a capsule birth's claim on `<sd>/supervisor.lock`, carried from acceptance to the supervisor's first act | disk, lock | capsule | `rust/log/src/supervisor/birth_claim.rs` `BirthClaim`; `rust/log/src/host/lock.rs` `HandoverLock`; adoption `rust/log/src/supervisor/main_loop.rs` `take_authority`; taken by `rust/backend/src/rows/spawn/durable/accept.rs` `accept` |
 | process `sot-capsule run` (leg) | process | capsule | `rust/log/src/supervisor/leg.rs` `build_run_command`; `rust/log/src/capsule/writer_loop/mod.rs` `run` |
 | the agent program (claude, codex): the launch recipe (the leg runs it) | process | agents | `rust/backend/src/agents/argv.rs` `agent_argv`; `rust/log/src/capsule/producer/pty/mod.rs`; `rust/log/src/capsule/producer/conpty/producer.rs` |
@@ -134,7 +134,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | updater children (curl, gh, tar, julia instantiate, npm) | process | distribution | `rust/updater/src/fetch/mod.rs`; `rust/updater/src/fetch/archive.rs`; `rust/updater/src/prepare.rs` |
 | `systemctl` calls of the relay refresh | process | topology | `rust/backend/src/topology/relay_units.rs` `run_systemctl` |
 | turn auditor (`claude -p`) | process | messaging | `comm/work_state/comm-turn-auditor.sh` |
-| sotd tokio runtime and accept loop | thread | server | `rust/backend/src/main.rs` `main`; `rust/backend/src/server/listen.rs` `run_local` |
+| sotd tokio runtime and accept loop | thread | server | `rust/backend/src/main.rs` `main`, `runtime` (built after the serving prologue); `rust/backend/src/server/listen.rs` `run_local` |
 | per-connection task and writer | thread | server | `rust/backend/src/server/conn.rs` `handle_connection`, `serve_control`; `rust/backend/src/server/reply.rs` `write_frame_within` |
 | off-loop job pool (4 per connection) | thread, lock | server | `rust/backend/src/server/reply.rs` `spawn_job`, `OFFLOOP_CONCURRENCY` |
 | lease ticker (1 s) | thread | lifecycle | `rust/backend/src/lifecycle/lease.rs` `ticker`, `tick` |

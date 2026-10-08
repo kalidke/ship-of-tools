@@ -1,8 +1,12 @@
 # rust/backend/src/rows/spawn/durable: the capsule-only birth parent (rows)
 
 A capsule's supervisor is forked by a process that is not the daemon, after the row's authority fence is claimed. The
-daemon starts one parent (`sotd durable-parent`, over a private socketpair that is the parent's standard input) the first
-time a capsule is launched and again if it was lost; the parent lives in a session of its own. For each launch the
+daemon starts one parent (`sotd durable-parent`, over a private socketpair that is the parent's standard input) once,
+in `main`'s serving prologue before the runtime and before any thread, from the image it started from: an intermediate
+is forked, starts the parent through std and exits, and the daemon reaps it, so the parent descends from nothing the
+daemon starts later. The parent lives in a session of its own and, before its hello, moves into a user scope of its
+own (`systemd-run --user --scope`, an exec that keeps its pid and channel) when the user manager grants one; its hello
+carries its control group and the daemon logs a parent that shares its own as degraded. It is never started again. For each launch the
 parent creates the row's state dir, takes the row's `supervisor.lock` (`BirthClaim`), forks the supervisor with the
 native launcher held at its gate, and tells the daemon it is born. The daemon publishes the birth (the run-gate permit
 and the row's guard it already holds) and asks the parent to release it. The supervisor inherits the claim's descriptor,
@@ -14,8 +18,8 @@ the fence at its first act.
 ## Files
 - `mod.rs`: `Spec` (one supervisor launch), `launch` and `Launched` (started, or contended)
 - `wire.rs`: `Channel` (length-prefixed JSON over a socketpair, descriptors by `SCM_RIGHTS`) and the `Request` and `Reply` messages
-- `proxy.rs`: the daemon's end: `Client` starts the parent, routes its replies, `DurableChild` waits for the supervisor's exit
-- `parent.rs`: the parent's loop (`run`): accepted launches, the takeover channels, the exit reports, the daemon's loss
+- `proxy.rs`: the daemon's end: `start_before_runtime` (the prologue's fork), `connect_parent` and `client` (built once, never replaced), the reply routing, `DurableChild` waits for the supervisor's exit
+- `parent.rs`: the parent's loop (`run`): the move into a user scope, accepted launches, the takeover channels, the exit reports, the daemon's loss
 - `accept.rs`: one launch's acceptance (`accept`): validate, create the state dir, claim the fence, fork gated
 
 ## Start here
@@ -37,3 +41,5 @@ the parent's hold on a claim.
   parent exits when the daemon is gone and no accepted birth is waiting for its takeover.
 - The supervisor's exit is reported to the daemon only while it lives; `DurableChild::wait` errs when the parent is
   lost first, which the watchdog treats as a crash and rechecks (`watchdog_may_act`).
+- The client is built once from the prologue's channel and never replaced: after the parent's loss every capsule start
+  fails with "the durable parent is gone; restart the daemon", logged once (`proxy::client`).

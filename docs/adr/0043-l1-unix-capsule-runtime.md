@@ -984,8 +984,10 @@ rule D's claim and the contention re-probe; decision 34 is superseded into ADR
 
 37. **A birth claims the row's authority fence before it is accepted and carries it to the supervisor's first act
     (2026-10-08, lane L2, release 0.6.6; amends decision 25's and decision 33's spawn by the daemon).** On Unix the
-    daemon no longer forks the supervisor. A durable parent (`sotd durable-parent`, in a session of its own, started at boot over
-    a private socketpair, from the image the daemon started from, so an in-place update does not change it) creates the row's state dir, takes `supervisor.lock`, forks `sot-capsule
+    daemon no longer forks the supervisor. A durable parent (`sotd durable-parent`, in a session of its own, started once in the daemon's
+    prologue before the runtime and before any thread, through an intermediate that exits so that it descends from
+    nothing the daemon starts later, from the image the daemon started from so that an in-place update does not change
+    it; it moves into a user scope of its own before it accepts anything and is never restarted) creates the row's state dir, takes `supervisor.lock`, forks `sot-capsule
     supervise` held at a gate by the native launcher (`setsid` is the launcher's, not a pre-exec hook), and tells the
     daemon; the daemon releases the gate once the birth is published under its run-gate permit and the row's guard. The
     supervisor is born holding the claim's descriptor (`--claim-fd`, `--takeover-fd`), adopts it as its authority
@@ -995,9 +997,9 @@ rule D's claim and the contention re-probe; decision 34 is superseded into ADR
     original is never replaced and never loses the fence to a later birth. If the daemon dies first, the parent finishes
     the accepted launch under the claim it holds. A start that finds the fence claimed waits, bounded and with the
     row's guard released, then reports `PENDING_AUTHORITY`; a watchdog restart treats it like exit 70. Windows is
-    unchanged: the daemon creates the supervisor, which takes the fence at its first act. Not built here: the parent is
-    started inside the daemon's own service cgroup, so under `sotd.service` a service stop in the moment between the
-    fork and the supervisor's move into its scope ends that birth.
+    unchanged: the daemon creates the supervisor, which takes the fence at its first act. The parent's scope is entered before it
+    accepts a launch, so no accepted birth is inside the daemon's service cgroup; where the user manager grants no
+    scope the parent shares the daemon's group, which the daemon logs as degraded.
 
 ## What this deletes
 

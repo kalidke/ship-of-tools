@@ -64,27 +64,8 @@ impl DurableChild {
 }
 
 impl Client {
-    /// Start a parent from this executable and wait for its hello.
-    pub fn start() -> io::Result<Arc<Client>> {
-        let (ours, theirs) = Channel::pair()?;
-        // The daemon's own path as it started (`own_sotd_bin`), not `current_exe`: after an in-place update the running
-        // image's link reads `(deleted)`, while the path still names the installed `sotd`.
-        let exe = match crate::agents::env::own_sotd_bin() {
-            Some(own) => std::path::PathBuf::from(own),
-            None => std::env::current_exe()?,
-        };
-        let mut command = std::process::Command::new(exe);
-        command
-            .arg("durable-parent")
-            .stdin(Stdio::from(theirs.into_owned()))
-            .stdout(Stdio::null())
-            .stderr(crate::rows::spawn::detach::supervisor_stderr_std());
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "the durable parent outlives the daemon by design: it finishes an accepted capsule launch (rows/spawn/durable)"
-        )]
-        let spawned = command.spawn();
-        let mut child = spawned?;
+    /// Take the daemon's end of the channel to a parent started by [`start_before_runtime`] and wait for its hello.
+    fn connect(ours: Channel) -> io::Result<Arc<Client>> {
         let reader = ours.try_clone()?;
         let client = Arc::new(Client {
             channel: Mutex::new(ours),
@@ -97,14 +78,14 @@ impl Client {
         let router = client.clone();
         std::thread::Builder::new()
             .name("sot-durable-reader".into())
-            .spawn(move || {
-                router.route(reader);
-                // The parent is the daemon's child: reap it when it ends.
-                let _ = child.wait();
-            })?;
+            .spawn(move || router.route(reader))?;
         match hello_rx.recv_timeout(HELLO_BOUND) {
-            Ok(Reply::Hello { pid }) => {
-                tracing::info!(pid, "durable parent: started");
+            Ok(Reply::Hello { pid, cgroup }) => {
+                if cgroup == own_cgroup() {
+                    tracing::warn!(pid, "durable parent: started in the daemon's own control group (degraded): a capsule's birth in flight dies with the daemon's service");
+                } else {
+                    tracing::info!(pid, "durable parent: started");
+                }
                 Ok(client)
             }
             _ => Err(io::Error::new(
@@ -244,15 +225,113 @@ impl Client {
     }
 }
 
-/// The daemon's one durable parent, started on first use and again if it was lost.
-static CLIENT: Mutex<Option<Arc<Client>>> = Mutex::new(None);
+/// The daemon's control group as `/proc/self/cgroup` names it (empty where there is none).
+pub(crate) fn own_cgroup() -> String {
+    std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default()
+}
 
-pub fn client() -> io::Result<Arc<Client>> {
-    let mut slot = CLIENT.lock().unwrap();
-    if let Some(client) = slot.as_ref().filter(|c| c.is_alive()) {
-        return Ok(client.clone());
+/// The daemon's end of the channel to the parent [`start_before_runtime`] started, until the async body takes it.
+static PROLOGUE: Mutex<Option<io::Result<Channel>>> = Mutex::new(None);
+/// The one client, built once from the prologue's channel and never replaced.
+static CLIENT: std::sync::OnceLock<Result<Arc<Client>, String>> = std::sync::OnceLock::new();
+/// Whether the loss of the parent has been logged.
+static LOSS_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Start the durable parent: before the runtime, before any thread, once. The channel is made close-on-exec; an
+/// intermediate process is forked, starts the parent through std and exits at once, and this process reaps it, so the
+/// parent's own parent is never this process or anything it starts later: it goes to the nearest subreaper above this
+/// process, or init. The parent's end of the channel is its standard input; ours is kept for [`connect_parent`].
+pub fn start_before_runtime() -> io::Result<()> {
+    let started = start_parent_process();
+    let outcome = match &started {
+        Ok(_) => Ok(()),
+        Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
+    };
+    *PROLOGUE.lock().unwrap() = Some(started);
+    outcome
+}
+
+fn start_parent_process() -> io::Result<Channel> {
+    let (ours, theirs) = Channel::pair()?;
+    // The daemon's own path as it started (`own_sotd_bin`), not `current_exe`: after an in-place update the running
+    // image's link reads `(deleted)`, while the path still names the installed `sotd`.
+    let exe = match crate::agents::env::own_sotd_bin() {
+        Some(own) => std::path::PathBuf::from(own),
+        None => std::env::current_exe()?,
+    };
+    let mut command = std::process::Command::new(exe);
+    command
+        .arg("durable-parent")
+        .stdin(Stdio::from(theirs.into_owned()))
+        .stdout(Stdio::null())
+        .stderr(crate::rows::spawn::detach::supervisor_stderr_std());
+    // SAFETY: this process has one thread (the caller runs before the runtime exists). The child does nothing but start
+    // the parent through std and leave with `_exit`, which runs no destructor and flushes nothing of this process.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the durable parent is forked through an intermediate so that it descends from nothing this daemon starts (rows/spawn/durable)"
+    )]
+    let intermediate = unsafe { libc::fork() };
+    if intermediate < 0 {
+        return Err(io::Error::last_os_error());
     }
-    let started = Client::start()?;
-    *slot = Some(started.clone());
-    Ok(started)
+    if intermediate == 0 {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the durable parent outlives the daemon by design: it finishes an accepted capsule launch (rows/spawn/durable)"
+        )]
+        let spawned = command.spawn();
+        // SAFETY: the intermediate leaves without unwinding or flushing.
+        unsafe { libc::_exit(i32::from(spawned.is_err())) };
+    }
+    // Our copy of the parent's end closes with the command, or the parent would never see this process die.
+    drop(command);
+    let mut status = 0;
+    loop {
+        // SAFETY: a wait on the one child this function forked.
+        let rc = unsafe { libc::waitpid(intermediate, &mut status, 0) };
+        if rc == intermediate {
+            break;
+        }
+        let err = io::Error::last_os_error();
+        if rc < 0 && err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+    if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+        return Err(io::Error::other("the durable parent could not be started"));
+    }
+    Ok(ours)
+}
+
+/// Build the client from the prologue's channel and wait for the parent's hello. Once; the async body calls it.
+pub fn connect_parent() -> io::Result<()> {
+    let channel = PROLOGUE
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap_or_else(|| Err(io::Error::other("the durable parent was not started")));
+    let built = channel.and_then(Client::connect).map_err(|e| e.to_string());
+    let outcome = built
+        .as_ref()
+        .map(|_| ())
+        .map_err(|e| io::Error::other(e.clone()));
+    let _ = CLIENT.set(built);
+    outcome
+}
+
+/// The daemon's durable parent. After its loss every capsule start fails, saying so; it is never started again.
+pub fn client() -> io::Result<Arc<Client>> {
+    let gone = || io::Error::other("the durable parent is gone; restart the daemon");
+    match CLIENT.get() {
+        Some(Ok(client)) if client.is_alive() => Ok(client.clone()),
+        _ => {
+            if !LOSS_LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                tracing::error!(
+                    "durable parent: gone; capsule rows cannot start until the daemon is restarted"
+                );
+            }
+            Err(gone())
+        }
+    }
 }

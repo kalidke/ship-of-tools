@@ -42,8 +42,8 @@ pub struct LaunchSpec {
 /// What the parent tells the daemon.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Reply {
-    /// The parent is up (first message).
-    Hello { pid: u32 },
+    /// The parent is up (first message), with the control group it runs in (empty where there is none).
+    Hello { pid: u32, cgroup: String },
     /// The row's fence is held by another claim or authority: nothing was accepted and nothing was forked.
     Contended { id: u64 },
     /// The launch was refused before any child was left alive.

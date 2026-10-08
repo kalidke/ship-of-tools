@@ -262,9 +262,20 @@ mod help_tests {
     }
 }
 
-#[tokio::main]
-#[allow(clippy::too_many_lines, reason = "the daemon entry: startup checks, boot and the serve loop in one function; predates the 100-line limit")]
-async fn main() -> Result<()> {
+/// The runtime `#[tokio::main]` built before this entry was synchronous: main builds it itself, after the serving
+/// prologue, so that what must exist before any thread (the durable parent, on Linux the lifetime guard) can.
+fn runtime() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("building the tokio runtime")
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the daemon entry: startup checks, boot and the serve loop in one function; predates the 100-line limit"
+)]
+fn main() -> Result<()> {
     #[cfg(unix)]
     lifecycle::child_signal::reset_child_signal();
     // Pure query subcommands (security review): checked against raw argv
@@ -314,7 +325,7 @@ async fn main() -> Result<()> {
             #[cfg(unix)]
             "durable-parent" => {
                 apply_umask();
-                std::process::exit(rows::spawn::durable::parent::run());
+                std::process::exit(rows::spawn::durable::parent::run(&args[1..]));
             }
             // The last inch of a cross-host dial: connect to THIS box's
             // own endpoint for a label and shuttle stdin/stdout. Sits in
@@ -335,12 +346,11 @@ async fn main() -> Result<()> {
             }
             // `sotd status` (topology plan §E): declared + LIVE, fanned out
             // to every reachable daemon concurrently — unlike `topology`
-            // above this needs the runtime we're already inside (`sotd` is
-            // `#[tokio::main]`), so it's awaited here rather than called as
-            // a plain synchronous query.
+            // above this needs a runtime, so main builds one here and blocks on it
+            // rather than calling a plain synchronous query.
             "status" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(topology::status::run(&args).await);
+                std::process::exit(runtime()?.block_on(topology::status::run(&args)));
             }
             "--version" | "-V" => {
                 println!("{}", sot_protocol::version_line("sotd"));
@@ -445,12 +455,12 @@ async fn main() -> Result<()> {
     // Every session's SOTD_BIN is this start's own path, made absolute once, now (agents::env::own_sotd_bin).
     let _ = agents::env::own_sotd_bin();
 
-    // The capsule-only birth parent, started now from the image this daemon started from: an in-place update replaces
-    // that file later, and a parent started after it would run the replacement. A failure here is not fatal; the
-    // first capsule launch tries again and reports its own.
+    // The capsule-only birth parent, started once, here, before the runtime and before any thread: it is forked through
+    // an intermediate that exits, so it descends from nothing this daemon starts later, and it is never started again.
+    // A failure is logged and every capsule start then says so (`rows::spawn::durable::proxy`).
     #[cfg(unix)]
-    if let Err(e) = rows::spawn::durable::start_parent() {
-        tracing::warn!(error = %e, "durable parent: not started at boot; the first capsule launch will try again");
+    if let Err(e) = rows::spawn::durable::proxy::start_before_runtime() {
+        tracing::warn!(error = %e, "durable parent: not started; capsule rows cannot start until the daemon is restarted");
     }
 
     tracing::info!(
@@ -465,7 +475,13 @@ async fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     topology::relay_units::spawn_refresh_at_start();
 
-    server::run(opts).await
+    runtime()?.block_on(async move {
+        #[cfg(unix)]
+        if let Err(e) = rows::spawn::durable::connect_parent() {
+            tracing::warn!(error = %e, "durable parent: no answer; capsule rows cannot start until the daemon is restarted");
+        }
+        server::run(opts).await
+    })
 }
 
 #[derive(Debug, Clone)]

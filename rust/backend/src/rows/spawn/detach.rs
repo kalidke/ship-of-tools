@@ -316,7 +316,7 @@ struct Line {
 
 /// `systemd-run` found on the daemon's own `PATH`, as an absolute path (a launch execs by path, never by search).
 #[cfg(unix)]
-fn systemd_run_path() -> Option<PathBuf> {
+pub(crate) fn systemd_run_path() -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|dir| dir.join("systemd-run"))
         .find(|path| runnable_file(path))
@@ -453,7 +453,7 @@ fn drain_stderr_bounded(mut pipe: impl std::io::Read + Send + 'static, bound: Du
 /// where there is any, drained under its own separate bound
 /// ([`drain_stderr_bounded`]).
 #[cfg(target_os = "linux")]
-fn user_scope_available() -> std::io::Result<()> {
+pub(crate) fn user_scope_available() -> std::io::Result<()> {
     let mut command = std::process::Command::new("systemd-run");
     command
         .args(["--user", "--scope", "--quiet", "--", "/bin/true"])

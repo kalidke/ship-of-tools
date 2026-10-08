@@ -30,6 +30,8 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
 `main` in `src/main.rs` for boot; `src/server/` for a connection; the owning folder for an op.
 
 ## Rules
+- `main` is synchronous and builds its runtime itself (`runtime`) after the serving prologue, so that what must exist before
+  any thread can: on Unix the durable parent (`rows::spawn::durable::proxy::start_before_runtime`), once, never restarted.
 - `main` answers help before any side effect. Query/bridge subcommands keep their existing contracts; `trust declare`
   is an offline settings mutation and returns before daemon initialization.
 - Daemon boot creates nothing before the umask and directory checks. Offline trust declaration applies the private umask

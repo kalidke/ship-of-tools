@@ -7,6 +7,7 @@ of the backend's tests; the suites span subsystems, so this page names no charte
 
 ## Files
 - `main.rs`: the module list and how to build the barrier variants the held-process cases need
+- `durable.rs`: the durable parent's place in a real daemon's process tree: it descends from nothing the daemon started (feature `daemon-lifetime-faults`)
 - `fixture_owner.rs`: `Fixture`, the outside owner: authority over every process a case starts, saved results, bounded cleanup
 - `observations.rs`: `wait_for`, and `BarrierDir`, the folder a process held at a phase barrier reports to
 - `native/`: the per-OS process authority (an identity opened while alive; death read from it)

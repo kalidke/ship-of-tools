@@ -16,6 +16,8 @@
 //! tests run from, then `cargo test -p sot-backend --features daemon-lifetime-faults --test daemon_lifetime`.
 
 mod fixture_owner;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod durable;
 mod native;
 mod native_premises;
 mod observations;
@@ -29,3 +31,7 @@ mod successor;
 #[path = "../support/mod.rs"]
 mod support;
 mod workers;
+
+/// The cases that start a daemon take this first: `Env::new` points this process's `SOT_RUNTIME_DIR` at its own folder.
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+pub static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

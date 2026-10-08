@@ -23,7 +23,7 @@ use sot_protocol::op;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+use crate::SERIAL;
 
 /// How long the successor's activation of the held row is watched for a second birth after it has answered.
 const ACTIVATION_WINDOW: Duration = Duration::from_secs(3);

@@ -42,22 +42,63 @@ struct Parent {
 }
 
 /// The mode's entry: the channel is this process's standard input. Returns the exit status.
-pub fn run() -> i32 {
+pub fn run(args: &[String]) -> i32 {
     // A session of its own: the daemon's terminal, group and containment are not this process's.
     // SAFETY: setsid takes no arguments; it fails (and changes nothing) only if this process already leads a group.
     unsafe { libc::setsid() };
+    // Into a user scope of its own, before it accepts anything, when the user manager grants one: a birth in flight is
+    // then never inside the daemon's service cgroup. The exec keeps this pid and the channel; a refusal runs on here.
+    #[cfg(target_os = "linux")]
+    if !args.iter().any(|a| a == "--scoped") {
+        move_into_scope();
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = args;
     // SAFETY: the daemon started this process with the channel as its standard input and nothing else owns it.
     let channel = Channel::from_owned(unsafe { OwnedFd::from_raw_fd(0) });
     let mut parent = Parent {
         channel: Some(channel),
         slots: HashMap::new(),
     };
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
     if !parent.say(&Reply::Hello {
         pid: std::process::id(),
+        cgroup,
     }) {
         return 1;
     }
     parent.serve()
+}
+
+/// Re-exec under `systemd-run --user --scope` when the manager answers; returns only if it did not.
+#[cfg(target_os = "linux")]
+fn move_into_scope() {
+    use super::super::detach::{systemd_run_path, user_scope_available};
+    use std::os::unix::process::CommandExt as _;
+    let (Some(systemd_run), Ok(exe)) = (systemd_run_path(), std::env::current_exe()) else {
+        return;
+    };
+    if let Err(e) = user_scope_available() {
+        eprintln!(
+            "sotd durable-parent: no user scope ({e}); staying in the daemon's control group"
+        );
+        return;
+    }
+    #[allow(clippy::disallowed_methods, reason = "the durable parent replaces itself with systemd-run, which execs the same parent in a scope of its own; no child is started")]
+    let error = std::process::Command::new(systemd_run)
+        .args([
+            "--user",
+            "--scope",
+            "--quiet",
+            "--collect",
+            "--description",
+            "sot durable parent",
+            "--",
+        ])
+        .arg(exe)
+        .args(["durable-parent", "--scoped"])
+        .exec();
+    eprintln!("sotd durable-parent: could not enter a user scope ({error})");
 }
 
 impl Parent {
