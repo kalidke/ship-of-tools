@@ -98,20 +98,22 @@ pub(crate) mod unix {
         }
     }
 
-    fn start_race(asynchronous: bool, adopted: bool) {
-        let dir = tempfile::tempdir().unwrap();
-        let ready = dir.path().join("ready");
-        let program = dir.path().join("tree");
-        sot_log::test_exec::write_executable(
-            &program,
-            "#!/bin/sh\n/bin/sh -c 'echo $$ > \"$1\"; exec sleep 600' sh \"$1\" &\nwait\n",
-        );
-        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
-        let (entered, arrived) = mpsc::channel();
-        let released = Arc::new(Barrier::new(2));
-        let (hook_entered, hook_released) = (entered, released.clone());
-        let hook_ready = ready.clone();
-        let hook = Box::new(move |pid: u32| {
+    /// What the hook reports when the child is created or adopted: the leader's identity and, when the descendant is ready,
+    /// its identity (both opened while they live).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    type Entered = (Watched, Option<Watched>);
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    type Entered = ();
+
+    /// The hook that runs right after the child is created (or adopted): it opens the identities the case watches, reports
+    /// them and stops until the case releases it, so the shutdown's fire lands in that window.
+    fn race_hook(
+        adopted: bool,
+        hook_ready: std::path::PathBuf,
+        hook_entered: mpsc::Sender<Entered>,
+        hook_released: Arc<Barrier>,
+    ) -> Box<dyn FnMut(u32) + Send> {
+        Box::new(move |pid: u32| {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             let leader = Watched::open(pid);
             if adopted {
@@ -148,14 +150,19 @@ pub(crate) mod unix {
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             hook_entered.send(()).unwrap();
             hook_released.wait();
-        });
-        if adopted {
-            *signal.after_adopt.lock().unwrap() = Some(hook);
-        } else {
-            *signal.after_create.lock().unwrap() = Some(hook);
-        }
-        let (cleanup, after_fire) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
+        })
+    }
+
+    /// Start the child through `signal` on a thread of its own, blocking or async, and end it once the fire has answered.
+    fn start_on_a_thread(
+        signal: &'static Signal,
+        asynchronous: bool,
+        adopted: bool,
+        program: std::path::PathBuf,
+        ready: std::path::PathBuf,
+        after_fire: mpsc::Receiver<()>,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
             if asynchronous {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -194,7 +201,28 @@ pub(crate) mod unix {
                     child.kill().unwrap();
                 }
             }
-        });
+        })
+    }
+
+    fn start_race(asynchronous: bool, adopted: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let program = dir.path().join("tree");
+        sot_log::test_exec::write_executable(
+            &program,
+            "#!/bin/sh\n/bin/sh -c 'echo $$ > \"$1\"; exec sleep 600' sh \"$1\" &\nwait\n",
+        );
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let (entered, arrived) = mpsc::channel();
+        let released = Arc::new(Barrier::new(2));
+        let hook = race_hook(adopted, ready.clone(), entered, released.clone());
+        if adopted {
+            *signal.after_adopt.lock().unwrap() = Some(hook);
+        } else {
+            *signal.after_create.lock().unwrap() = Some(hook);
+        }
+        let (cleanup, after_fire) = mpsc::channel();
+        let worker = start_on_a_thread(signal, asynchronous, adopted, program, ready, after_fire);
         let watched = arrived
             .recv_timeout(Duration::from_secs(10))
             .expect("the child was not created");
