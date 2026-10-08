@@ -40,3 +40,4 @@ charter in src/ui/; for a connection or a request, to src/net/.
   the daemon does, and the browser opener's child gets null ones (`spawn_opener`); every other start the window makes
   set its three standard handles when read on 2026-10-05, so no child it starts holds its log files open
   (`the_window_clears_its_inherited_stdio_first`, `the_opener_hands_its_child_no_inherited_stdio`).
+- A Foreign lease outcome names a refused identity claim, not an absent backend or a proved different OS account; notice precedence is Undetermined, Unsupported, Foreign, then Unreached after granted/pending/exempt suppression.
