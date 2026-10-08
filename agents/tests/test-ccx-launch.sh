@@ -53,7 +53,7 @@ done
 run_ccx() {
     local proj="$WORK/projects/$1" host="$2" front="${3:-}"
     mkdir -p "$proj"
-    rm -f "$CODEX_LOG" "$JOIN_LOG"
+    rm -f "${CODEX_LOG:?}" "${JOIN_LOG:?}"
     (
         cd "$proj" || exit 1
         CODEX_LOG_PATH="$CODEX_LOG" JOIN_LOG_PATH="$JOIN_LOG" \
@@ -104,7 +104,7 @@ case_the_host_piece_is_the_one_derive_handle_uses() {
 }
 
 case_an_explicit_pin_wins_verbatim() {
-    local proj="$WORK/projects/pin"; mkdir -p "$proj"; rm -f "$CODEX_LOG" "$JOIN_LOG"
+    local proj="$WORK/projects/pin"; mkdir -p "$proj"; rm -f "${CODEX_LOG:?}" "${JOIN_LOG:?}"
     (
         cd "$proj" || exit 1
         CODEX_LOG_PATH="$CODEX_LOG" JOIN_LOG_PATH="$JOIN_LOG" PATH="$STUB_DIR:$PATH" \
