@@ -173,14 +173,14 @@ pub fn resume_if_absent(
 /// that deadline -- accepted rather than a second counter, since the
 /// fallback is always the honest "still unacted-on" report this
 /// function already gives, never a wrong decision.
-const ACTIVATION_MAX_REPROBES: u32 = 50;
+pub(super) const ACTIVATION_MAX_REPROBES: u32 = 50;
 
 /// How often [`ensure_started`] re-probes a transient phase while
 /// waiting. No progress signal to race against it (Codex review
 /// round 8: a `Notify` here saved at most one interval's worth of
 /// latency, never correctness, and cost a real subscription-ordering
 /// hazard to close properly -- deleted).
-const ACTIVATION_REPROBE_INTERVAL: Duration = Duration::from_millis(200);
+pub(super) const ACTIVATION_REPROBE_INTERVAL: Duration = Duration::from_millis(200);
 
 /// The ONE shared activation boundary for every caller: guard, inert-anchor refusal, then start/resume/(Selection-only) retire+reset. BLOCKING.
 pub fn ensure_started(

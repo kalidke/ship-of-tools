@@ -36,4 +36,5 @@ destroy proof. `observer.rs::ensure_running` for how a row's phase is polled; `h
 - Every run start passes the gate (`start::start_supervisor`, `start::reset_run`).
 - Every change to a row's supervisor holds the row's guard (`activation::ensure_started`, `activation::resume_if_absent`,
   `watchdog::install_watchdog`).
+- `end_run` waits out an authority reporting `starting` for activation's bound (50 re-probes 200 ms apart); one still starting is stopped and judged by `absence_proof`, as a terminal one is (`settle_starting`, `end_still_starting`). A destroy or a window's close therefore ends a row held for storage.
 - Boot resume spawns nothing for a live authority (`resume::resume_all` through `activation::resume_locked`).

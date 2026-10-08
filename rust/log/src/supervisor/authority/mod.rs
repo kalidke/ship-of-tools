@@ -243,33 +243,19 @@ impl AuthorityState {
         // entry with a matching digest, or an id that has reached ANY
         // OTHER journal state at all, answers idempotently from that
         // state; only a genuinely UNKNOWN id ever reaches fencing.
-        let mut from_record = None;
         match journal::read_active(&self.state_dir, &operation_id) {
             Ok(Some(existing)) if existing.digest != digest => {
                 return Err(SupervisorOperationState::Refused { reason: wire::SupervisorRefusedReason::IdConflict });
             }
-            // An active entry with this digest: answered from its state, unless
-            // it is still Accepted and no worker in this process runs it (its
-            // `begin` failed after the rename took, or a worker's storage
-            // failure left it active): then it is admitted from its record.
-            Ok(Some(existing)) => {
-                let state = self.query_state(&operation_id);
-                if matches!(state, SupervisorOperationState::Accepted) && !self.worker_runs(lifecycle, &operation_id, &existing.op) {
-                    from_record = Some(existing);
-                } else {
-                    return Err(state);
-                }
-            }
+            Ok(Some(_)) => return Err(self.query_state(&operation_id)), // idempotent resubmit, still active
             Ok(None) => {}
             Err(e) => {
                 return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("journal unreadable: {e}")) })
             }
         }
-        if from_record.is_none() {
-            let existing = self.query_state(&operation_id);
-            if !matches!(existing, SupervisorOperationState::UnknownOperation) {
-                return Err(existing); // idempotent resubmit, already terminal/closed
-            }
+        let existing = self.query_state(&operation_id);
+        if !matches!(existing, SupervisorOperationState::UnknownOperation) {
+            return Err(existing); // idempotent resubmit, already terminal/closed
         }
 
         // Voyage-fencing (ADR 0041): a mismatch is `refused
@@ -289,41 +275,19 @@ impl AuthorityState {
         }
 
         match op {
-            SupervisorOp::EndRun { reason, .. } => self.admit_end_run(lifecycle, operation_id, digest, reason, from_record),
-            SupervisorOp::Reset { .. } => self.admit_reset(lifecycle, operation_id, digest, from_record),
-            SupervisorOp::Stop => self.admit_stop(operation_id, digest, from_record),
+            SupervisorOp::EndRun { reason, .. } => self.admit_end_run(lifecycle, operation_id, digest, reason),
+            SupervisorOp::Reset { .. } => self.admit_reset(lifecycle, operation_id, digest),
+            SupervisorOp::Stop => self.admit_stop(operation_id, digest),
         }
     }
 
-    /// Whether a worker in THIS process runs `operation_id`: its `end_run` or
-    /// reset is the one the lifecycle carries, or a stop was accepted. An
-    /// operation with an active record and no worker is admitted from it.
-    fn worker_runs(&self, lifecycle: &Lifecycle, operation_id: &str, op: &journal::ActiveOp) -> bool {
-        match (op, lifecycle) {
-            (journal::ActiveOp::EndRun { .. }, Lifecycle::Ending { operation_id: running, .. })
-            | (journal::ActiveOp::Reset { .. }, Lifecycle::Resetting { operation_id: running, .. }) => {
-                running == operation_id
-            }
-            (journal::ActiveOp::Stop, _) => self.stop_requested.is_some(),
-            _ => false,
-        }
-    }
-
-    /// Publishes `record` for a new operation, or hands back the active record
-    /// this operation is admitted from (`from_record`, or the one a failed
-    /// `journal::begin` left on disk with this digest).
-    fn admit(
-        &self,
-        operation_id: &str,
-        record: journal::ActiveRecord,
-        from_record: Option<journal::ActiveRecord>,
-    ) -> Result<journal::ActiveRecord, SupervisorOperationState> {
-        match from_record {
-            Some(existing) => Ok(existing),
-            None => begin_or_readback(&self.state_dir, operation_id, record).map_err(|e| {
-                SupervisorOperationState::Failed { detail: bounded_detail(format!("journal begin failed: {e}")) }
-            }),
-        }
+    /// Publishes the operation's `.active` record (or reads back the one a
+    /// failed `journal::begin` left with this digest) and maps a failure to the
+    /// wire's `Failed`.
+    fn admit(&self, operation_id: &str, record: journal::ActiveRecord) -> Result<journal::ActiveRecord, SupervisorOperationState> {
+        begin_or_readback(&self.state_dir, operation_id, record).map_err(|e| {
+            SupervisorOperationState::Failed { detail: bounded_detail(format!("journal begin failed: {e}")) }
+        })
     }
 
     fn admit_end_run(
@@ -332,7 +296,6 @@ impl AuthorityState {
         operation_id: String,
         digest: String,
         reason: String,
-        from_record: Option<journal::ActiveRecord>,
     ) -> Result<CommandEffect, SupervisorOperationState> {
         if !matches!(lifecycle, Lifecycle::Ready { .. }) {
             return Err(SupervisorOperationState::Failed { detail: bounded_detail("no leg is currently running") });
@@ -344,7 +307,7 @@ impl AuthorityState {
             digest,
             op: journal::ActiveOp::EndRun { voyage: voyage_id, epoch },
         };
-        match self.admit(&operation_id, record, from_record)?.op {
+        match self.admit(&operation_id, record)?.op {
             journal::ActiveOp::EndRun { epoch, .. } => Ok(CommandEffect::EndRun { operation_id, epoch, reason }),
             _ => Err(record_mismatch(&operation_id)),
         }
@@ -355,46 +318,34 @@ impl AuthorityState {
         lifecycle: &Lifecycle,
         operation_id: String,
         digest: String,
-        from_record: Option<journal::ActiveRecord>,
     ) -> Result<CommandEffect, SupervisorOperationState> {
         if !matches!(lifecycle, Lifecycle::EndedNoRespawn) {
             return Err(SupervisorOperationState::Failed { detail: bounded_detail(reset_refusal_detail(lifecycle)) });
         }
-        let admitted = match from_record {
-            Some(existing) => existing,
-            None => {
-                let new_voyage = uuid::Uuid::now_v7().to_string();
-                let aside = Some(mint_aside_name().map_err(|e| SupervisorOperationState::Failed {
-                    detail: bounded_detail(format!("{e}")),
-                })?);
-                let record = journal::ActiveRecord {
-                    operation_id: operation_id.clone(),
-                    digest,
-                    op: journal::ActiveOp::Reset { old_voyage: self.voyage_id.clone(), new_voyage, aside },
-                };
-                self.admit(&operation_id, record, None)?
-            }
+        let new_voyage = uuid::Uuid::now_v7().to_string();
+        let aside = Some(mint_aside_name().map_err(|e| SupervisorOperationState::Failed {
+            detail: bounded_detail(format!("{e}")),
+        })?);
+        let record = journal::ActiveRecord {
+            operation_id: operation_id.clone(),
+            digest,
+            op: journal::ActiveOp::Reset { old_voyage: self.voyage_id.clone(), new_voyage, aside },
         };
-        match admitted.op {
+        match self.admit(&operation_id, record)?.op {
             journal::ActiveOp::Reset { new_voyage, aside, .. } => Ok(CommandEffect::Reset { operation_id, new_voyage, aside }),
             _ => Err(record_mismatch(&operation_id)),
         }
     }
 
-    fn admit_stop(
-        &self,
-        operation_id: String,
-        digest: String,
-        from_record: Option<journal::ActiveRecord>,
-    ) -> Result<CommandEffect, SupervisorOperationState> {
+    /// A Stop is honored even when storage exhaustion keeps its record from
+    /// being written (its `begin` or its `finish`): a held row must always be
+    /// endable, and the process exiting is the effect the record only reports.
+    fn admit_stop(&self, operation_id: String, digest: String) -> Result<CommandEffect, SupervisorOperationState> {
         let record = journal::ActiveRecord { operation_id: operation_id.clone(), digest, op: journal::ActiveOp::Stop };
-        self.admit(&operation_id, record, from_record)?;
-        let t = journal::TerminalRecord::Stopping;
-        match journal::finish(&self.state_dir, &operation_id, &t) {
-            Ok(()) => Ok(CommandEffect::Stop { reply: terminal_to_wire(t) }),
-            Err(e) => Ok(CommandEffect::Stop {
-                reply: SupervisorOperationState::Failed { detail: bounded_detail(format!("journal finish failed: {e}")) },
-            }),
+        match begin_or_readback(&self.state_dir, &operation_id, record) {
+            Ok(_) => Ok(stop_effect(journal::finish(&self.state_dir, &operation_id, &journal::TerminalRecord::Stopping))),
+            Err(e) if storage_exhaustion(&e).is_some() => Ok(stop_effect(Err(e))),
+            Err(e) => Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("journal begin failed: {e}")) }),
         }
     }
 
@@ -421,6 +372,21 @@ impl AuthorityState {
 fn record_mismatch(operation_id: &str) -> SupervisorOperationState {
     SupervisorOperationState::Failed {
         detail: bounded_detail(format!("the active record of {operation_id} is not this operation's kind")),
+    }
+}
+
+/// The effect of a Stop whose `Stopping` record was written (or not): `Ok`, or a
+/// failure that is storage exhaustion, answers `Stopping`; any other failure
+/// answers `Failed`.
+fn stop_effect(written: crate::Result<()>) -> CommandEffect {
+    match written {
+        Ok(()) => CommandEffect::Stop { reply: terminal_to_wire(journal::TerminalRecord::Stopping) },
+        Err(e) if storage_exhaustion(&e).is_some() => {
+            CommandEffect::Stop { reply: terminal_to_wire(journal::TerminalRecord::Stopping) }
+        }
+        Err(e) => CommandEffect::Stop {
+            reply: SupervisorOperationState::Failed { detail: bounded_detail(format!("journal finish failed: {e}")) },
+        },
     }
 }
 
@@ -493,40 +459,90 @@ mod tests {
         }
     }
 
-    /// A reset whose `.active` record was published but which no worker here
-    /// runs (a `journal::begin` that failed after its rename took, or a
-    /// worker's storage failure that left it active) is admitted from that
-    /// record: its own voyage and aside, nothing minted again.
+    fn reset_record(op: &SupervisorOp, old_voyage: &str, new_voyage: &str, aside: &str) -> journal::ActiveRecord {
+        journal::ActiveRecord {
+            operation_id: "reset-x".into(),
+            digest: digest_of(op).unwrap(),
+            op: journal::ActiveOp::Reset {
+                old_voyage: Some(old_voyage.into()),
+                new_voyage: new_voyage.into(),
+                aside: Some(aside.into()),
+            },
+        }
+    }
+
+    /// A `journal::begin` that fails after its rename took leaves the record
+    /// on disk with no worker behind it: the operation is admitted from that
+    /// record, with its own voyage and aside, and nothing is minted again.
     #[test]
-    fn a_published_reset_without_its_worker_is_admitted_from_its_record() {
+    fn a_begin_that_failed_after_its_rename_is_admitted_from_its_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = uuid::Uuid::now_v7().to_string();
+        let op = SupervisorOp::Reset { voyage: Some(old.clone()) };
+        let published = reset_record(&op, &old, &uuid::Uuid::now_v7().to_string(), "drawer.voyage.reset-aaaaaaaaaaaaaaaa");
+        journal::begin(dir.path(), "reset-x", &published).unwrap();
+
+        // Another attempt at the same operation (same digest, another new voyage) gets the published record back.
+        let again = reset_record(&op, &old, &uuid::Uuid::now_v7().to_string(), "drawer.voyage.reset-bbbbbbbbbbbbbbbb");
+        assert_eq!(begin_or_readback(dir.path(), "reset-x", again).unwrap(), published);
+
+        // A record with another digest is no admission: the begin's own error stands.
+        let mut other = reset_record(&op, &old, &uuid::Uuid::now_v7().to_string(), "drawer.voyage.reset-cccccccccccccccc");
+        other.digest = digest_of(&SupervisorOp::Stop).unwrap();
+        assert!(begin_or_readback(dir.path(), "reset-x", other).is_err());
+
+        // Nothing on disk: the record is published as given.
+        let empty = tempfile::tempdir().unwrap();
+        let fresh = reset_record(&op, &old, &uuid::Uuid::now_v7().to_string(), "drawer.voyage.reset-dddddddddddddddd");
+        assert_eq!(begin_or_readback(empty.path(), "reset-x", fresh.clone()).unwrap(), fresh);
+        assert_eq!(journal::read_active(empty.path(), "reset-x").unwrap(), Some(fresh));
+    }
+
+    /// A published operation with no worker, resubmitted, is answered from its
+    /// state (Accepted): nothing admits it a second time.
+    #[test]
+    fn a_resubmitted_active_operation_is_answered_from_its_state() {
         let dir = tempfile::tempdir().unwrap();
         let old_voyage = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap();
         let mut authority = test_authority(dir.path());
         authority.voyage_id = Some(old_voyage.clone());
-
         let op = SupervisorOp::Reset { voyage: Some(old_voyage.clone()) };
-        let new_voyage = uuid::Uuid::now_v7().to_string();
-        let aside = "drawer.voyage.reset-aaaaaaaaaaaaaaaa".to_string();
-        let record = journal::ActiveRecord {
-            operation_id: "reset-x".into(),
-            digest: digest_of(&op).unwrap(),
-            op: journal::ActiveOp::Reset {
-                old_voyage: Some(old_voyage),
-                new_voyage: new_voyage.clone(),
-                aside: Some(aside.clone()),
-            },
-        };
+        let record = reset_record(&op, &old_voyage, &uuid::Uuid::now_v7().to_string(), "drawer.voyage.reset-aaaaaaaaaaaaaaaa");
         journal::begin(dir.path(), "reset-x", &record).unwrap();
 
-        let effect = authority
-            .handle_command(&Lifecycle::EndedNoRespawn, "reset-x".into(), op)
-            .expect("an active reset with no worker is admitted from its record");
-        let CommandEffect::Reset { operation_id, new_voyage: admitted, aside: admitted_aside } = effect else {
-            panic!("expected a Reset effect");
+        match authority.handle_command(&Lifecycle::EndedNoRespawn, "reset-x".into(), op) {
+            Err(SupervisorOperationState::Accepted) => {}
+            Ok(_) => panic!("a resubmitted active operation must not be admitted again"),
+            Err(other) => panic!("expected Accepted, got {other:?}"),
+        }
+    }
+
+    /// A Stop answers `Stopping` when storage exhaustion keeps its record from
+    /// being written, and `Failed` for any other write failure.
+    #[test]
+    fn a_stop_is_honored_when_storage_keeps_its_record_from_being_written() {
+        #[cfg(unix)]
+        let full = || crate::Error::Io(std::io::Error::from_raw_os_error(libc::ENOSPC));
+        #[cfg(windows)]
+        let full = || crate::Error::Io(std::io::Error::from_raw_os_error(112));
+        #[cfg(unix)]
+        let eio = || crate::Error::Io(std::io::Error::from_raw_os_error(libc::EIO));
+        #[cfg(windows)]
+        let eio = || crate::Error::Io(std::io::Error::from_raw_os_error(5));
+        let reply = |effect| match effect {
+            CommandEffect::Stop { reply } => reply,
+            _ => panic!("expected a Stop effect"),
         };
-        assert_eq!(operation_id, "reset-x");
-        assert_eq!(admitted, new_voyage, "the record's own voyage, not a newly minted one");
-        assert_eq!(admitted_aside.as_deref(), Some(aside.as_str()));
+        assert_eq!(reply(stop_effect(Err(full()))), SupervisorOperationState::Stopping);
+        assert_eq!(reply(stop_effect(Ok(()))), SupervisorOperationState::Stopping);
+        assert!(matches!(reply(stop_effect(Err(eio()))), SupervisorOperationState::Failed { .. }));
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut authority = test_authority(dir.path());
+        let effect = authority
+            .handle_command(&Lifecycle::EndedNoRespawn, "stop-ok".into(), SupervisorOp::Stop)
+            .expect("a Stop on a healthy journal is admitted");
+        assert_eq!(reply(effect), SupervisorOperationState::Stopping);
     }
 
     /// a SUCCESSFUL Reset's own operation id,

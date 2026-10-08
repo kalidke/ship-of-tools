@@ -163,8 +163,8 @@ async fn an_end_run_that_cannot_run_spawns_nothing_and_rolls_the_record_back() {
     assert!(toml.contains("account       = \"\""), "{toml}");
 }
 
-// `end_run` can SUCCEED and still leave the run unended: `Starting` means
-// the authority had not reached the lifecycle where an end takes. Nothing
+// `end_run` can SUCCEED and still leave the run unended: `NotEnded` means
+// the authority did not end the run. Nothing
 // else pins that `restart_blocking` consults that judgement — the fake's
 // only scripted outcome is the healthy one, so without this the guard at
 // `run_ended` could be deleted with every other test still green. An
@@ -178,7 +178,7 @@ async fn an_end_run_that_did_not_end_the_run_spawns_nothing_and_rolls_the_record
 
     let (_payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
     let mut fake = FakeSupervisor::healthy();
-    fake.end_run = Ok(crate::rows::run::end_run::EndRunOutcome::Starting);
+    fake.end_run = Ok(crate::rows::run::end_run::EndRunOutcome::NotEnded("the authority is still starting".to_string()));
     restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
 
     assert_eq!(
@@ -363,7 +363,7 @@ fn only_an_ended_run_licenses_a_replacement_spawn() {
     for over in [O::RecordVerified, O::RecordClosed, O::AlreadyEnded, O::Terminal, O::Unheld, O::Orphaned] {
         assert!(run_ended(&over).is_ok(), "{over:?}");
     }
-    assert!(run_ended(&O::Starting).is_err());
+    assert!(run_ended(&O::NotEnded("starting".to_string())).is_err());
     match run_ended(&O::NotEnded("a leg is running".to_string())) {
         Err(detail) => assert_eq!(detail, "a leg is running"),
         Ok(()) => panic!("a run that did not end must never license a spawn"),

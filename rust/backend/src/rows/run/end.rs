@@ -45,10 +45,6 @@ pub(crate) fn capsule_destroy_outcome_of(o: crate::rows::run::end_run::EndRunOut
         O::Terminal => CapsuleDestroyOutcome::Removable(
             "the run was terminal; the supervisor was stopped".to_string(),
         ),
-        // A `Starting` lane is NOT "not running" -- retryable.
-        O::Starting => CapsuleDestroyOutcome::Kept {
-            detail: "supervisor is starting; retry".to_string(),
-        },
         O::NotEnded(detail) => CapsuleDestroyOutcome::Kept { detail },
         // The lane was unreachable but the supervisor lock itself was
         // free to take -- nobody holds this row (see `EndRunOutcome::
@@ -353,22 +349,6 @@ fn remove_registration(paths: &[std::path::PathBuf]) -> bool {
 #[cfg(test)]
 mod destroy_outcome_tests {
     use super::*;
-
-    // A lane still `Starting` is never "not running" -- retryable
-    // `Kept`, never a fabricated "was not running" success.
-    #[test]
-    fn starting_outcome_maps_to_a_retryable_kept_not_not_running() {
-        let outcome = capsule_destroy_outcome_of(crate::rows::run::end_run::EndRunOutcome::Starting);
-        match outcome {
-            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
-            CapsuleDestroyOutcome::Kept { detail } => {
-                assert_eq!(detail, "supervisor is starting; retry");
-            }
-            CapsuleDestroyOutcome::Removable(detail) => {
-                panic!("Starting must never be reported Removable (\"ended\"): {detail}");
-            }
-        }
-    }
 
     // An authority found ALREADY resting in `EndedNoRespawn` is
     // `AlreadyEnded`, not a fabricated `RecordVerified` -- still
