@@ -130,7 +130,8 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
     }
     let mut ready: Vec<(String, u128, u128)> = Vec::new();
     let mut resume = Vec::new();
-    for run in runs {
+    // The fault child first: its order assertion is the cause when a timing run's attribution also breaks.
+    for run in runs.iter().filter(|r| r.role == "fault").chain(runs.iter().filter(|r| r.role != "fault")) {
         anyhow::ensure!(run.ok, "pane-timing child {} failed:\n{}{}", run.role, run.out, run.err);
         anyhow::ensure!(run.out.matches("pane-timing: body entered").count() == 1, "pane timing body did not enter exactly once: {}", run.role);
         if run.role == "fault" {
