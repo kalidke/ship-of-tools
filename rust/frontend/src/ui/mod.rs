@@ -2863,6 +2863,8 @@ pub(crate) use app::tests::NativeProgressLedger;
 
 #[cfg(all(test, feature = "test-window-close"))]
 pub(crate) use app::native_exit_tests::run_native_window_close;
+#[cfg(all(test, feature = "test-pane-timing"))]
+pub(crate) use app::native_pane_tests::run_native_pane_timing;
 
 #[cfg(all(test, feature = "test-window-progress"))]
 pub(crate) fn run_native_window_progress() -> Result<()> {

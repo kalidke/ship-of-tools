@@ -12,6 +12,9 @@ hand-over it serves.
 - `frame.rs`: `State::redraw`, one frame's sequence, its upkeep (`frame_upkeep`) and `ack_presented_lines`.
 - `native_eventlog.rs`: Windows only: the Application log's Application Hang events (1002) for one fixture child; an unreadable log is an error.
 - `native_exit_tests.rs`: the opt-in main-thread native window-close fixture, using the actual App callbacks and test-owned inputs; the parent runs each close case as a child of its binary.
+- `native_pane_daemon_tests.rs`: the pane_timing parent's private daemon: its own roots, rows created Ready or seeded with no supervisor, planted screen sentinels, and teardown by `workspace.destroy` and the recorded daemon pid.
+- `native_pane_route_tests.rs`: the pane_timing routes: a `sotd stdio-bridge` stand-in, or two real ssh logins through a test-owned stand-in for the hub's relay unit; and the preflight that proves the route reaches the private daemon.
+- `native_pane_tests.rs`: the opt-in native relayed-attach timing fixture: the parent runs three timing children and one fault child of its binary; each timing child switches once to every row through the real App and reports each attach's presentation receipt and the cells of that frame.
 - `tests.rs`: the native minimized-window event-progress harness; test-owned inputs, no daemon or user settings. It first runs the native-only State fixtures of the result-routing, badge and account commits, printing one `state-fixture name=... ok=...` line each.
 
 ## Start here
@@ -37,3 +40,5 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 - Ordinary native close must exit 0 before 2.5 seconds without the backstop; deliberate stalled teardown must end under the three-second backstop with the decided code. The native cases are OS close, Ctrl+Q then No, a second close during a held Close, a Close whose acknowledgement is held past three seconds and whose not-ended notice is presented, relaunch 75 and 76, capture through a real State, and closes held at the loop return, before delivery and before the direct exit. On Windows each ordinary case also requires no Application Hang event correlated to the fixture's image and process id.
 - Native progress evidence separates producer workload validity from UI queue progress; counters are taken at successful fan-in enqueue and actual State dequeue, and the fixture never drains the queue.
 - A frame consumes its local pane presentation candidate only after submit and present; an earlier frame error drops the candidate without completing the attach.
+- A pane timing sample is the presentation receipt's own `since_request_ns` for a cold attach, counted only when that frame's drawn cells hold the row's planted sentinel and exactly one receipt follows the switch; every Ready sample must be within `CONNECT_BOUND`, and resume samples are recorded apart and not held to it.
+- Under `test-pane-timing` only, `redraw` can fail the first frame that carries a presentation candidate before submit (the pane_timing fault child); that frame completes nothing and the next one completes the attach. Ordinary builds have no such hook.

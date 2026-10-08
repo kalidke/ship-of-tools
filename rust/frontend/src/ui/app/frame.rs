@@ -86,6 +86,10 @@ impl State {
             self.paint_chrome_text(&mut rpass, border_rects_by_color)?;
             self.paint_overlays(&mut rpass, help_overlay_rect, overlay_lines)?;
         }
+        #[cfg(all(test, feature = "test-pane-timing"))]
+        if presentation_candidate.is_some() && super::native_pane_tests::take_candidate_frame_failure() {
+            return Err(anyhow::anyhow!("fixture: candidate frame failed before present"));
+        }
         let (readback, capture_target, capture_now, selfie_target) = self.stage_frame_capture(&mut encoder, &frame);
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();

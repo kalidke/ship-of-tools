@@ -124,6 +124,8 @@ winresource = "0.1"
 test-window-progress = []
 # The window_close target reuses the in-memory startup seam of the progress target.
 test-window-close = ["test-window-progress", "windows-sys/Win32_System_EventLog"]
+# The pane_timing target reuses the progress target's in-memory startup and the protocol's test-only ssh fixture command.
+test-pane-timing = ["test-window-progress", "sot-protocol/test-handshake-bound"]
 
 [[test]]
 name = "window_minimized"
@@ -136,3 +138,9 @@ name = "window_close"
 path = "src/window_close_test.rs"
 harness = false
 required-features = ["test-window-close"]
+
+[[test]]
+name = "pane_timing"
+path = "src/pane_timing_test.rs"
+harness = false
+required-features = ["test-pane-timing"]

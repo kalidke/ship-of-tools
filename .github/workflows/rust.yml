@@ -118,6 +118,50 @@ jobs:
       - name: Prove native window close and the teardown backstop
         run: cargo test -p sot-frontend --test window_close --features test-window-close --locked
 
+  pane-timing-windows:
+    name: native relayed pane timing (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build the private daemon
+        run: cargo build -p sot-backend --bin sotd --locked
+      - name: Build the capsule
+        run: cargo build -p sot-log --bin sot-capsule --locked
+      - name: Time relayed cold attaches to the presented pane
+        run: cargo test -p sot-frontend --test pane_timing --features test-pane-timing --locked -- stand-in
+
+  pane-timing-macos:
+    name: native relayed pane timing (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build the private daemon
+        run: cargo build -p sot-backend --bin sotd --locked
+      - name: Build the capsule
+        run: cargo build -p sot-log --bin sot-capsule --locked
+      - name: Time relayed cold attaches to the presented pane
+        run: cargo test -p sot-frontend --test pane_timing --features test-pane-timing --locked -- stand-in
+
   test:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

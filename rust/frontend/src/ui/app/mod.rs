@@ -15,6 +15,12 @@ pub(super) mod tests;
 pub(super) mod native_exit_tests;
 #[cfg(all(test, feature = "test-window-close", windows))]
 mod native_eventlog;
+#[cfg(all(test, feature = "test-pane-timing"))]
+pub(super) mod native_pane_tests;
+#[cfg(all(test, feature = "test-pane-timing"))]
+mod native_pane_daemon_tests;
+#[cfg(all(test, feature = "test-pane-timing"))]
+mod native_pane_route_tests;
 
 pub(in crate::ui) use exit::*;
 
