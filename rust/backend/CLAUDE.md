@@ -34,7 +34,10 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
   any thread can, in this order: on Unix the durable parent (`rows::spawn::durable::proxy::start_before_runtime`), once,
   never restarted; then on Linux the lifetime guard (`lifecycle::daemon_children::guard::install`), which forks the
   daemon as the child of a process that kills what the daemon started when it ends, and refuses the boot unless the
-  process has one thread. The runtime, the relay refresh and every other thread come after both.
+  process has one thread; then the thread that catches INT and TERM (`lifecycle::signal_exit::install`), which refuses the
+  boot if it cannot be installed. The runtime, the relay refresh and every other thread come after these. `main` blocks on
+  `server::run` through `complete_main`, which turns the main future's result into its exit code (Ok 0, an error 1, a
+  panic 101) while the runtime still exists, and every exit of the serving daemon takes `lifecycle::shutdown::exit`.
 - `main` answers help before any side effect. Query/bridge subcommands keep their existing contracts; `trust declare`
   is an offline settings mutation and returns before daemon initialization.
 - Daemon boot creates nothing before the umask and directory checks. Offline trust declaration applies the private umask
