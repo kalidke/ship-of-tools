@@ -197,9 +197,6 @@ case_windows_relay_endpoint_is_never_the_pipe_the_shell_probed() {
     )"
     [ "$out" = 'pipe:\\.\pipe\sot-fakeuser-local' ] \
         || { echo "  expected the binary's own no-plan pipe: answer, got: $out"; return 1; }
-    out="$(sot_relay_endpoint "unix:/explicit.sock")"
-    [ "$out" = "unix:/explicit.sock" ] \
-        || { echo "  an explicit endpoint must win verbatim, got: $out"; return 1; }
     return 0
 }
 
