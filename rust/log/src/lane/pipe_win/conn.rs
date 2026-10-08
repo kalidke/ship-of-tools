@@ -18,9 +18,32 @@ pub(super) fn notify_wake(shared: &Arc<ServerShared>) {
 /// RELIABLY — see the module doc's "Reliable lifecycle delivery" section
 /// for the full contract this implements.
 pub(super) fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
+    let checkpoint = pending::enqueue_checkpoint(&evt);
     let mut item = evt;
+    let mut last = "";
     loop {
-        match shared.events_tx.try_send(item) {
+        if let Some((id, step, detail)) = &checkpoint {
+            if last.is_empty() {
+                shared
+                    .progress
+                    .note(*id, step, format_args!("begin{detail}"));
+            }
+        }
+        let sent = shared.events_tx.try_send(item);
+        let result = match &sent {
+            Ok(()) => "ok",
+            Err(TrySendError::Full(_)) => "full",
+            Err(TrySendError::Disconnected(_)) => "disconnected",
+        };
+        if let Some((id, step, detail)) = &checkpoint {
+            if result != last {
+                shared
+                    .progress
+                    .note(*id, step, format_args!("{result}{detail}"));
+            }
+        }
+        last = result;
+        match sent {
             Ok(()) => {
                 notify_wake(shared);
                 return;
@@ -53,7 +76,15 @@ pub(super) fn request_teardown(
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        let _ = shared.reaper_tx.send(ReaperMsg::Torn(conn_id, reason));
+        shared
+            .progress
+            .note(Some(conn_id), "teardown.enqueue", "begin");
+        let sent = shared.reaper_tx.send(ReaperMsg::Torn(conn_id, reason));
+        shared.progress.note(
+            Some(conn_id),
+            "teardown.enqueue",
+            if sent.is_ok() { "ok" } else { "disconnected" },
+        );
     }
 }
 
@@ -64,7 +95,11 @@ pub(super) fn request_teardown(
 /// created and discarded cleanly rather than never learning this
 /// connection existed. Not terminal to the accept loop — the next
 /// connection attempt is unaffected.
-pub(super) fn report_registration_failure(shared: &Arc<ServerShared>, what: &str, e: impl std::fmt::Display) {
+pub(super) fn report_registration_failure(
+    shared: &Arc<ServerShared>,
+    what: &str,
+    e: impl std::fmt::Display,
+) {
     let conn_id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     send_lifecycle_event(shared, LaneEvent::Accepted(conn_id));
     send_lifecycle_event(
@@ -73,53 +108,198 @@ pub(super) fn report_registration_failure(shared: &Arc<ServerShared>, what: &str
     );
 }
 
-/// Tear down `conn_id` if it is still present — called EXCLUSIVELY from
-/// [`reaper_loop`], which processes messages strictly one at a time, so
-/// this never runs concurrently with itself and the `conns.remove` below
-/// is the single, uncontested point of truth for "who claims this
-/// connection." `reason: None` is `Drop`'s shutdown pass — no event is
-/// emitted (nothing could ever observe it).
-pub(super) fn teardown_if_present(shared: &Arc<ServerShared>, conn_id: ConnId, reason: Option<ClosedReason>) {
-    let conn = shared.conns.lock().unwrap().remove(&conn_id);
-    let Some(conn) = conn else { return };
-    conn.read_slot.cancel_registered(&shared.instances, conn.registry_id);
-    conn.write_slot.cancel_registered(&shared.instances, conn.registry_id);
-    drop(conn.sender); // unblocks a writer idle-waiting on `recv` with nothing queued
-    conn.reader_jh.join().ok();
-    conn.writer_jh.join().ok();
-    // Codex round-3/4 discharge: this connection's instance HANDLE is
-    // closed entirely through `InstanceRegistry` (`conn.registry_id`
-    // stayed registered this whole connection's life, independent of
-    // `conns` map membership) -- `disconnect_listener`'s own
-    // `close_all` finds and closes it correctly regardless of whether
-    // that runs before, during, or after THIS function, and regardless
-    // of whether the reaper (here) or `disconnect_listener`'s own drain
-    // is what removed the `ConnHandle` from `conns`. `recycle_instance`
-    // itself now checks liveness before touching the handle (round-4),
-    // so calling it unconditionally is safe -- it is a no-op if
-    // `close_all` already claimed this id.
-    recycle_instance(shared, conn.registry_id, conn.raw);
-    if let Some(reason) = reason {
-        send_lifecycle_event(shared, LaneEvent::Closed(conn_id, reason));
+/// Signal the reaper to shut down against `deadline` (see [`pending::signal_shutdown`]).
+pub(super) fn signal_shutdown(shared: &ServerShared, deadline: Instant) {
+    pending::signal_shutdown(
+        &shared.shutdown,
+        &shared.reaper_tx,
+        &shared.progress,
+        deadline,
+    );
+}
+
+/// A claimed connection: its slots stay owned through completion; the registry stays the only closer of its handle.
+struct Pending {
+    claimed: Claimed,
+    registry_id: u64,
+    raw: SendableHandle,
+    _slots: (Arc<IoSlot>, Arc<IoSlot>),
+}
+
+/// The at most one reaper-origin terminal `AcceptError` not yet published, with its last noted result.
+#[derive(Default)]
+struct Staged {
+    error: Option<LaneEvent>,
+    last: &'static str,
+}
+
+/// What a reaper pass reads of this server.
+fn reaper_ctx(shared: &ServerShared) -> pending::Ctx<'_> {
+    pending::Ctx {
+        prefix: "sot-pipe",
+        progress: &shared.progress,
+        events_tx: &shared.events_tx,
+        dropping: &shared.dropping,
+        teardown_failed: &shared.teardown_failed,
+        shutdown: shared.shutdown.get().copied(),
+        wake: shared.activity_wake.get().map(|wake| &**wake as _),
     }
 }
 
-/// The reaper: the only thread that ever removes a registered connection
-/// from `conns` or joins its reader/writer (see the module doc's
-/// "Reaping" section — `handle_new_connection`'s local join of an
-/// ABORTED, never-registered reader is the one correct exception).
-/// Processes [`ReaperMsg`]s strictly one at a time.
+/// Claim `conn_id` if it is still registered, once: under the `conns` lock, cancel both slots (so the cancellation
+/// precedes any `close_all`) and move the pair to a pending record. Only the reaper calls this. `reason: None` is a
+/// shutdown claim; once a shutdown deadline was signalled every pair is held to it.
+fn claim(
+    shared: &Arc<ServerShared>,
+    conn_id: ConnId,
+    reason: Option<ClosedReason>,
+) -> Option<Pending> {
+    let conn = {
+        let mut conns = shared.conns.lock().unwrap();
+        let live = conns.get(&conn_id)?;
+        let read_pending = live
+            .read_slot
+            .cancel_registered(&shared.instances, live.registry_id);
+        let write_pending = live
+            .write_slot
+            .cancel_registered(&shared.instances, live.registry_id);
+        shared.progress.note(
+            Some(conn_id),
+            "claim",
+            match &reason {
+                Some(reason) => format!("reaper reason={reason:?}"),
+                None => "reaper reason=shutdown".to_string(),
+            },
+        );
+        shared.progress.note(
+            Some(conn_id),
+            "cancel.registered",
+            format_args!(
+                "read_genuinely_pending={read_pending} write_genuinely_pending={write_pending}"
+            ),
+        );
+        conns.remove(&conn_id)?
+    };
+    let ConnHandle {
+        raw,
+        registry_id,
+        read_slot,
+        write_slot,
+        sender,
+        reader_jh,
+        writer_jh,
+        ..
+    } = conn;
+    drop(sender); // unblocks a writer idle-waiting on `recv` with nothing queued
+    shared
+        .progress
+        .note(Some(conn_id), "reader.join.begin", "begin");
+    shared
+        .progress
+        .note(Some(conn_id), "writer.join.begin", "begin");
+    let own = Instant::now() + shared.controls.close_budget();
+    let deadline = shared
+        .shutdown
+        .get()
+        .map_or(own, |shutdown| own.min(*shutdown));
+    Some(Pending {
+        claimed: Claimed::new(conn_id, reason, reader_jh, writer_jh, deadline),
+        registry_id,
+        raw,
+        _slots: (read_slot, write_slot),
+    })
+}
+
+/// One pass over a pending connection. True when it is retired and its instance is no longer charged.
+fn poll_pending(
+    shared: &Arc<ServerShared>,
+    pending: &mut Pending,
+    staged: &mut Staged,
+    now: Instant,
+) -> bool {
+    if !pending.claimed.poll(&reaper_ctx(shared), now) {
+        return false;
+    }
+    // The instance remains registered through pending teardown. Close-event retirement precedes recycling; deferred
+    // recycling retains its capacity charge. Recycle failure retains the dead instance and stages AcceptError without
+    // blocking other worker polls. Every handle operation still checks registry liveness after close_all.
+    if staged.error.is_some() {
+        return false;
+    }
+    shared.controls.barrier_point(
+        &shared.progress,
+        Some(pending.claimed.id()),
+        "recycle.barrier",
+    );
+    if let Err(message) = recycle_checked(shared, pending.registry_id, pending.raw) {
+        stop_accept_loop(shared);
+        shared.accept_cv.notify_all();
+        staged.error = Some(LaneEvent::AcceptError(message));
+        staged.last = "";
+    }
+    true
+}
+
+/// Publish the staged terminal `AcceptError` without blocking; it stays staged while the channel is full.
+fn publish_staged(shared: &Arc<ServerShared>, staged: &mut Staged) {
+    if let Some(event) = staged.error.take() {
+        let mut slot = None;
+        let mut last = staged.last;
+        pending::try_publish(&reaper_ctx(shared), event, &mut slot, &mut last);
+        staged.error = slot;
+        staged.last = last;
+    }
+}
+
+/// The reaper claims registered connections once, cancels both directions and polls every pending pair, joining only
+/// finished workers. Expiry reports unfinished workers still owned; panic reports a completed panicked join, and only a
+/// panic latches failed teardown. Phase-one registered pairs use this same owner; only never-registered gated workers
+/// may be joined locally. Closed follows both joins.
+///
+/// Each pass takes a bounded batch of messages, claims every live connection once phase one or a shutdown was
+/// signalled, then polls every pending pair -- so one stuck pair, or a channel too full for one `Closed`, never stalls
+/// another connection's teardown.
 pub(super) fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
-    for msg in rx.iter() {
-        match msg {
-            ReaperMsg::Torn(id, reason) => teardown_if_present(&shared, id, Some(reason)),
-            ReaperMsg::Shutdown => {
-                let ids: Vec<ConnId> = shared.conns.lock().unwrap().keys().copied().collect();
-                for id in ids {
-                    teardown_if_present(&shared, id, None);
-                }
-                return;
+    let mut pending: Vec<Pending> = Vec::new();
+    let mut staged = Staged::default();
+    loop {
+        let idle = pending.is_empty() && shared.shutdown.get().is_none() && staged.error.is_none();
+        let open = pending::intake(&rx, idle, |message| match message {
+            ReaperMsg::Torn(id, reason) => {
+                shared.progress.note(Some(id), "teardown.dequeue", "ok");
+                pending.extend(claim(&shared, id, Some(reason)));
             }
+            ReaperMsg::Wake => {}
+        });
+        if !open {
+            return;
+        }
+        shared
+            .controls
+            .barrier_point(&shared.progress, None, "reaper.pass");
+        let shutdown = shared.shutdown.get().copied();
+        if let Some(deadline) = shutdown {
+            for record in &mut pending {
+                record.claimed.tighten(deadline);
+            }
+        }
+        if shutdown.is_some() || shared.dropping.load(Ordering::Acquire) {
+            let ids: Vec<ConnId> = shared.conns.lock().unwrap().keys().copied().collect();
+            for id in ids {
+                pending.extend(claim(&shared, id, None));
+            }
+        }
+        publish_staged(&shared, &mut staged);
+        let now = Instant::now();
+        pending.retain_mut(|record| !poll_pending(&shared, record, &mut staged, now));
+        publish_staged(&shared, &mut staged);
+        if shutdown.is_some()
+            && pending.is_empty()
+            && staged.error.is_none()
+            && shared.conns.lock().unwrap().is_empty()
+        {
+            shared.progress.note(None, "reaper.exit", "ok");
+            return;
         }
     }
 }
@@ -140,7 +320,17 @@ pub(super) fn deliver_bytes(
     let mut item = LaneEvent::Bytes(conn_id, bytes);
     let deadline = Instant::now() + BYTES_ABANDON_AFTER;
     loop {
-        match shared.events_tx.try_send(item) {
+        let sent = shared.events_tx.try_send(item);
+        shared.progress.note(
+            Some(conn_id),
+            "bytes.enqueue",
+            match &sent {
+                Ok(()) => "ok",
+                Err(TrySendError::Full(_)) => "full",
+                Err(TrySendError::Disconnected(_)) => "disconnected",
+            },
+        );
+        match sent {
             Ok(()) => {
                 notify_wake(shared);
                 return true;
@@ -187,7 +377,13 @@ pub(super) fn reader_loop(
             &shared.instances,
             registry_id,
             |h, ov| unsafe {
-                ReadFile(h, buf.as_mut_ptr(), buf.len() as u32, std::ptr::null_mut(), ov)
+                ReadFile(
+                    h,
+                    buf.as_mut_ptr(),
+                    buf.len() as u32,
+                    std::ptr::null_mut(),
+                    ov,
+                )
             },
             |_| false,
         );
@@ -220,6 +416,10 @@ pub(super) fn reader_loop(
         }
     };
     request_teardown(&shared, conn_id, &torn_down_requested, reason);
+    shared.progress.note(Some(conn_id), "reader.exit", "ok");
+    shared
+        .controls
+        .exit_point(&shared.progress, conn_id, Role::Reader);
 }
 
 /// One connection's write side: drains queued sends in order, one
@@ -247,7 +447,13 @@ pub(super) fn writer_loop(
             &shared.instances,
             registry_id,
             |h, ov| unsafe {
-                WriteFile(h, cmd.bytes.as_ptr(), cmd.bytes.len() as u32, std::ptr::null_mut(), ov)
+                WriteFile(
+                    h,
+                    cmd.bytes.as_ptr(),
+                    cmd.bytes.len() as u32,
+                    std::ptr::null_mut(),
+                    ov,
+                )
             },
             |_| false,
         );
@@ -287,4 +493,8 @@ pub(super) fn writer_loop(
             }
         }
     }
+    shared.progress.note(Some(conn_id), "writer.exit", "ok");
+    shared
+        .controls
+        .exit_point(&shared.progress, conn_id, Role::Writer);
 }

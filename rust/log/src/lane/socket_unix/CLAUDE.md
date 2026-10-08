@@ -5,11 +5,11 @@ The twin of the Windows pipe transport by property, not mechanism: a server for 
 `sot-sock-reaper`, `sot-sock-r-<id>`, `sot-sock-w-<id>`). Unix only. Part of capsule; charter: rust/log/CLAUDE.md.
 
 ## Files
-- `mod.rs`: module doc, the socket paths, and the server's shared types (`ServerShared`, `ConnHandle`, `WriteCmd`, `ReaperMsg`, `Probes`)
+- `mod.rs`: module doc, the socket paths, and the server's shared types (`ServerShared`, `ConnHandle`, `WriteCmd`, `Probes`)
 - `server.rs`: `SocketServer`: bind, events, send, close, and the `LaneServer` impl
 - `listener.rs`: the private runtime dir, the fd-anchored bind, and the socket flag helpers
 - `accept.rs`: the accept loop thread and admission of one new connection
-- `conn.rs`: the reaper, reader and writer threads, lifecycle events and teardown requests
+- `conn.rs`: per-connection workers and the polling reaper's charged pending teardown
 - `client.rs`: `SocketClient`, its `Client` and `Endpoint` impls, and the unchallenged and challenged connects
 - `connect.rs`: the bounded, non-blocking `connect(2)` attempt over a fresh socket
 
@@ -17,10 +17,12 @@ The twin of the Windows pipe transport by property, not mechanism: a server for 
 `server.rs` `SocketServer::bind_named` for how a server starts; `client.rs` `connect_voyage_socket` for how a client dials.
 
 ## Rules
-- Test-support checkpoints never wait for the recorder; snapshots report skipped admissions and retain admitted records after connection removal until overwritten, without taking the connection-state lock.
+- Test-support checkpoints never block on the recorder: a momentarily busy ring is retried a bounded few times (`ADMIT_ATTEMPTS`), then the checkpoint is skipped and counted; snapshots report skipped admissions and retain admitted records after connection removal until overwritten, without taking the connection-state lock.
 - The runtime dir must be private (`ensure_private_runtime_dir`); every later file step is anchored to the verified directory fd (`open_verified_dir_fd`), and the socket's mode is set and verified before `listen` (`create_and_bind_listener`; on Linux `bind` itself goes through the fd, on macOS by path).
 - A socket path is checked against `max_sun_path_bytes` before binding (`socket_path`).
 - A raw connect (`connect_voyage_socket_unchallenged`, `connect_supervisor_socket_unchallenged`) stays `pub(crate)`; `connect_voyage_socket` authenticates the server through `challenge_os::authenticate_server` before returning.
 - A connect uses a fresh socket per attempt and retries a busy listener only until `CONNECT_BOUND` has passed; the
   attempt or 20 ms sleep in progress finishes first (`connect_unix_socket_unchallenged`).
 - A change to one server's accept or teardown is made to the Windows twin, `pipe_win`, too.
+- Live and pending records share the admission bound; `Closed` follows both joins. Shutdown errno alone preserves close reason and failure state.
+- Linux creates explicit listener/connector sockets with `SOCK_CLOEXEC` and the wake pipe with `pipe2(O_CLOEXEC | O_NONBLOCK)`; macOS uses immediate checked flags with a remaining creation-to-flagging inheritance window.

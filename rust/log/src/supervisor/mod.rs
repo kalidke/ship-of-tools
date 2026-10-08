@@ -197,9 +197,7 @@
 //!
 //! The parent-death lease (`LegLease`/[`SpawnLease`], replacing the
 //! Windows-only `lease_win` module here) is a close-on-exec pipe
-//! (`pipe2(O_CLOEXEC)` where that call exists, `pipe` plus `fcntl` on
-//! macOS, which has none — see [`LegLease::create`] for why the
-//! difference is not a race): this
+//! (pipe2(O_CLOEXEC) on Linux; pipe plus checked fcntl on macOS, whose creation-to-flagging window remains): this
 //! process holds the WRITE end for its whole life and never writes to
 //! it; the read end reaches the leg as `--parent-lease-fd 3`, installed
 //! by [`build_run_command`]'s own `pre_exec` (a `dup2` onto the fixed fd,
@@ -239,23 +237,23 @@
 
 #![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 
-use crate::lane::attach_proto::ConnId;
-use crate::identity::challenge::ChallengeOutcome;
 use crate::capsule::producer::ExitStatus;
-use crate::supervisor::probe::classify::{self, ProbeOutcome};
-use crate::supervisor::probe::leg_process::LegProcess;
-use crate::lane::client::{Endpoint, PlatformEndpoint};
 use crate::host;
 use crate::host::storage_exhaustion;
-use crate::supervisor::journal::pointer::{self, PointerState};
-#[cfg(windows)]
-use crate::supervisor::probe::win::RealProbeOps;
-#[cfg(target_os = "linux")]
-use crate::supervisor::probe::unix::RealProbeOps;
-#[cfg(target_os = "macos")]
-use crate::supervisor::probe::macos::RealProbeOps;
+use crate::identity::challenge::ChallengeOutcome;
+use crate::lane::attach_proto::ConnId;
+use crate::lane::client::{Endpoint, PlatformEndpoint};
 use crate::store::recovery::{self, LatestLegState};
 use crate::store::segment::RetentionClass;
+use crate::supervisor::journal::pointer::{self, PointerState};
+use crate::supervisor::probe::classify::{self, ProbeOutcome};
+use crate::supervisor::probe::leg_process::LegProcess;
+#[cfg(target_os = "macos")]
+use crate::supervisor::probe::macos::RealProbeOps;
+#[cfg(target_os = "linux")]
+use crate::supervisor::probe::unix::RealProbeOps;
+#[cfg(windows)]
+use crate::supervisor::probe::win::RealProbeOps;
 // L1-unix LU3b: the client-side supervisor-lane helpers (and the shared
 // error constructor) now live in `supervisor_client` -- the dependency
 // points server -> client-helpers, the right way round (ADR 0043
@@ -263,19 +261,19 @@ use crate::store::segment::RetentionClass;
 // `err_state(..)` bare, unchanged at every call site.
 use crate::attach_client::supervisor_client::err_state;
 use crate::lane::transport::{LaneEvent, PlatformLaneServer, CONNECT_BOUND};
+use crate::lane::wire::{
+    self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
+    SupervisorRequest, Survival,
+};
 use crate::store::verify;
 use crate::store::voyage::VoyageStore;
-use crate::lane::wire::{
-    self, DecodedFrame, Survival, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
-    SupervisorRequest,
-};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Write as _;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::OnceLock;
@@ -284,19 +282,19 @@ use std::time::{Duration, Instant};
 
 mod authority;
 pub mod journal;
+pub mod lease_win;
 mod leg;
 mod lifecycle;
 mod main_loop;
 mod oneshot;
+pub mod probe;
 mod storage;
 mod transitions;
-pub mod lease_win;
-pub mod probe;
+use authority::lane::*;
 use authority::*;
 use journal::end_run::*;
 use journal::recover::*;
 use journal::reset::*;
-use authority::lane::*;
 use leg::*;
 use lifecycle::*;
 use main_loop::*;
@@ -423,7 +421,8 @@ const RECOVERY_WATCHDOG: Duration = Duration::from_secs(
         + KILL_WAIT_BOUND.as_secs()
         + WATCHDOG_BUFFER.as_secs(),
 );
-const INITIAL_PROBE_WATCHDOG: Duration = Duration::from_secs(PROBE_EPISODE.as_secs() + WATCHDOG_BUFFER.as_secs());
+const INITIAL_PROBE_WATCHDOG: Duration =
+    Duration::from_secs(PROBE_EPISODE.as_secs() + WATCHDOG_BUFFER.as_secs());
 const SPAWNING_WATCHDOG: Duration = Duration::from_secs(
     READINESS_CUTOFF.as_secs() + KILL_WAIT_BOUND.as_secs() + WATCHDOG_BUFFER.as_secs(),
 );
@@ -529,7 +528,9 @@ pub fn supervise(config: SuperviseConfig) -> i32 {
     // past its own, intentionally-shared stderr (decision 25). Non-fatal.
     #[cfg(windows)]
     if let Err(e) = crate::host::winhandle::harden_own_stdio(false) {
-        note(format_args!("could not harden inherited stdin/stdout ({e}); continuing"));
+        note(format_args!(
+            "could not harden inherited stdin/stdout ({e}); continuing"
+        ));
     }
     if !config.assume_no_rollback_target {
         note(format_args!(
@@ -577,7 +578,11 @@ pub fn connect_and_challenge_with_build_for_test(
 ) -> crate::Result<(Client, ChallengeOutcome<Process>)> {
     let conn = PlatformEndpoint::default().connect_supervisor_unchallenged(h)?;
     let mut exchange = crate::identity::exchange::SupervisorLaneExchange::new(build.to_string());
-    let outcome = PlatformEndpoint::default().challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
+    let outcome = PlatformEndpoint::default().challenge(
+        &conn,
+        &mut exchange,
+        Instant::now() + Duration::from_secs(2),
+    );
     Ok((conn, outcome))
 }
 
@@ -591,9 +596,15 @@ pub fn connect_and_challenge_with_proto_for_test(
     proto: u32,
 ) -> crate::Result<(Client, ChallengeOutcome<Process>)> {
     let conn = PlatformEndpoint::default().connect_supervisor_unchallenged(h)?;
-    let mut exchange =
-        crate::identity::exchange::SupervisorLaneExchange::with_proto_for_test(crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID, proto);
-    let outcome = PlatformEndpoint::default().challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
+    let mut exchange = crate::identity::exchange::SupervisorLaneExchange::with_proto_for_test(
+        crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID,
+        proto,
+    );
+    let outcome = PlatformEndpoint::default().challenge(
+        &conn,
+        &mut exchange,
+        Instant::now() + Duration::from_secs(2),
+    );
     Ok((conn, outcome))
 }
 
@@ -670,7 +681,11 @@ fn digest_of(op: &SupervisorOp) -> crate::Result<String> {
     let bytes = wire::canonical_supervisor_op_bytes(op).map_err(|e| err_state(format!("{e}")))?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
-    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 fn mint_aside_name() -> crate::Result<String> {
@@ -701,11 +716,13 @@ static NOTE_PREFIX: OnceLock<String> = OnceLock::new();
 /// this instead of `eprintln!`. Best-effort (a write failure here has no
 /// further fallback — the same posture `eprintln!` itself has).
 fn note(args: fmt::Arguments<'_>) {
-    let prefix = NOTE_PREFIX.get().map(String::as_str).unwrap_or("sot-capsule supervise");
+    let prefix = NOTE_PREFIX
+        .get()
+        .map(String::as_str)
+        .unwrap_or("sot-capsule supervise");
     let line = format!("{prefix}: {args}\n");
     let _ = std::io::stderr().write_all(line.as_bytes());
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -721,7 +738,10 @@ mod tests {
     fn digest_of_is_stable_and_distinguishes_ops() {
         let a = SupervisorOp::Stop;
         let b = SupervisorOp::Stop;
-        let c = SupervisorOp::EndRun { reason: "r".into(), voyage: "v".into() };
+        let c = SupervisorOp::EndRun {
+            reason: "r".into(),
+            voyage: "v".into(),
+        };
         assert_eq!(digest_of(&a).unwrap(), digest_of(&b).unwrap());
         assert_ne!(digest_of(&a).unwrap(), digest_of(&c).unwrap());
     }
@@ -742,7 +762,10 @@ mod tests {
     #[test]
     fn bounded_detail_does_not_panic_when_a_char_straddles_byte_128() {
         let long: String = "€".repeat(50); // 3 bytes each = 150 bytes
-        assert!(!long.is_char_boundary(wire::MAX_SUPERVISOR_STRING_LEN), "test setup must actually straddle byte 128");
+        assert!(
+            !long.is_char_boundary(wire::MAX_SUPERVISOR_STRING_LEN),
+            "test setup must actually straddle byte 128"
+        );
         let truncated = bounded_detail(long);
         assert!(truncated.len() <= wire::MAX_SUPERVISOR_STRING_LEN);
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());

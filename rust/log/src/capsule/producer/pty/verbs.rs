@@ -12,7 +12,10 @@ impl Producer for PtyProducer {
         json!({})
     }
 
-    #[allow(clippy::too_many_lines, reason = "spawns the pty child at the given size; predates the 100-line limit")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "spawns the pty child at the given size; predates the 100-line limit"
+    )]
     fn spawn(argv: &[String], cols: u16, rows: u16) -> Result<Self> {
         if argv.is_empty() {
             return Err(Error::State("capsule argv is empty".into()));
@@ -108,18 +111,16 @@ impl Producer for PtyProducer {
         }
         let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
         let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
-        // `openpty` hands back plain (non-CLOEXEC) descriptors: mark both
-        // BEFORE the fork, so no other spawn from this process --
-        // concurrent or later -- can inherit the pair. Our own child is
-        // unaffected: `pre_exec` below `dup2`s the slave onto 0..=2 (which
-        // clears the flag on those) and `close_range` severs its
-        // inherited copies anyway. The parent keeps the slave open for
-        // the whole run (decision 12).
-        for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
-            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-            if flags >= 0 {
-                unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
-            }
+        #[cfg(test)]
+        for (end, fd) in [("master", master_fd), ("slave", slave_fd)] {
+            super::flag_plan::born(end, fd);
+        }
+        // Both PTY ends are already owned. Check close-on-exec before publication; either flag-call failure closes both
+        // ends. The openpty-to-flagging inheritance window remains on Linux and macOS. Our child's pre_exec installs
+        // slave stdio and closes its inherited PTY copies; the parent keeps its slave for the run.
+        for (end, fd) in [("master", master.as_raw_fd()), ("slave", slave.as_raw_fd())] {
+            let flags = flag_fcntl(end, fd, libc::F_GETFD, 0).map_err(Error::Io)?;
+            flag_fcntl(end, fd, libc::F_SETFD, flags | libc::FD_CLOEXEC).map_err(Error::Io)?;
         }
 
         let mut cmd = Command::new(&argv[0]);
@@ -238,7 +239,10 @@ impl Producer for PtyProducer {
                 Ok(())
             });
         }
-        #[allow(clippy::disallowed_methods, reason = "the capsule starts the row's agent inside the capsule's own containment (ADR 0041, ADR 0043)")]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the capsule starts the row's agent inside the capsule's own containment (ADR 0041, ADR 0043)"
+        )]
         let child = cmd.spawn().map_err(Error::Io)?;
         let pid = child.id() as libc::pid_t;
         // From here on this producer tracks the leader ITSELF, via raw
@@ -260,7 +264,10 @@ impl Producer for PtyProducer {
     }
 
     fn take_output(&mut self) -> Self::Output {
-        let fd = self.reader_fd.take().expect("PtyProducer::take_output called twice");
+        let fd = self
+            .reader_fd
+            .take()
+            .expect("PtyProducer::take_output called twice");
         File::from(fd)
     }
 
@@ -301,7 +308,9 @@ impl Producer for PtyProducer {
             if Instant::now() >= deadline {
                 return Ok(false);
             }
-            std::thread::sleep(Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())));
+            std::thread::sleep(
+                Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
+            );
         }
     }
 
@@ -318,7 +327,9 @@ impl Producer for PtyProducer {
             *guard = self.observe_exit_without_reaping()?;
         }
         guard.ok_or_else(|| {
-            Error::State("PtyProducer: exit status requested before the leader's exit was confirmed".into())
+            Error::State(
+                "PtyProducer: exit status requested before the leader's exit was confirmed".into(),
+            )
         })
     }
 
@@ -379,11 +390,19 @@ impl Producer for PtyProducer {
             // A process may have exited between `read_dir`'s own listing
             // and this read -- that is simply one fewer member to find,
             // not a failure.
-            let Ok(stat) = std::fs::read(format!("/proc/{name}/stat")) else { continue };
-            let Some(mut fields) = stat_fields_from_field_3(&stat) else { continue };
-            let Some(_state) = fields.next() else { continue }; // field 3 -- NOT trusted alone, see below
+            let Ok(stat) = std::fs::read(format!("/proc/{name}/stat")) else {
+                continue;
+            };
+            let Some(mut fields) = stat_fields_from_field_3(&stat) else {
+                continue;
+            };
+            let Some(_state) = fields.next() else {
+                continue;
+            }; // field 3 -- NOT trusted alone, see below
             let Some(_ppid) = fields.next() else { continue }; // field 4
-            let Some(pgrp) = fields.next().and_then(parse_pid_field) else { continue }; // field 5
+            let Some(pgrp) = fields.next().and_then(parse_pid_field) else {
+                continue;
+            }; // field 5
             if pgrp != self.pid {
                 continue;
             }

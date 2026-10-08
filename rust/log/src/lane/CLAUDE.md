@@ -8,18 +8,21 @@ program against. Part of capsule; charter: rust/log/CLAUDE.md.
 - `attach_proto/`: the attach and mgmt lanes' connection and role state machine (decides; the leg executes)
 - `client.rs`: the dialing seam: `Client`, `PeerIdentity`, `PeerProcess`, `Endpoint`, `PlatformEndpoint`, `map_peer_auth_outcome` (the peer-authentication mapping both connects use)
 - `mod.rs`: declares the lane modules; each file gates itself by platform
+- `pending.rs`: what both reapers share: `ReaperMsg` and its bounded intake, `Claimed` (one connection's joins and its `Closed`), the nonblocking `try_publish`, and the owned nonblocking `PendingJoins`
 - `pipe_win/`: the Windows named-pipe transport, server and client
 - `platform_transport.rs`: `PlatformTransport`, the capsule's `Transport` over `PlatformLaneServer`
 - `socket_unix/`: the Unix domain-socket transport, server and client
-- `test_progress.rs`: Unix-only server-local socket checkpoints; nonwaiting admission counts skipped records, and test/support snapshots retain bounded history.
-- `transport.rs`: `Transport`, `TransportEvent`, `LaneServer`, `LaneEvent`, `TransportError`, the teardown bound and the servers' shared helpers
+- `test_progress.rs`: test-only socket/client and pipe progress, ownership/enqueue observations and scoped regression controls
+- `reaper_tests.rs`: real-thread pending-join completion, panic, expiry and ownership tests
+- `transport.rs`: transport contracts and bounds
 - `wire/`: the frame layouts of the three lanes, pure encode and decode
 
 ## Start here
 `transport.rs` for the contract every lane server implements; `client.rs` for how a client dials one.
 
 ## Rules
-- Every worker join is bounded: `join_within` polls `is_finished` against one deadline, and a teardown spends one `TEARDOWN_AGGREGATE_DEADLINE` across all its joins.
+- Reapers poll every pending pair, retaining unfinished workers after expiry (`PendingJoins`); `join_workers` and the capsule's closer and reader joins use the caller's absolute deadline (`join_within`, `join_checked`), and only a never-registered gated pair (the acceptor's partial-registration unwind) or a bind's own failure unwind is joined with a blocking `join()`. Phase-one registered pairs use the reaper, and `join_workers` reports latched failure, including a panicked acceptor or reaper (`join_checked`).
+- A normal close has its own report budget, `NORMAL_CLOSE_BUDGET` (20 s, separate from `TEARDOWN_AGGREGATE_DEADLINE`, the one absolute shutdown deadline): a pair unfinished past it is reported once ("connection close outlived its budget") and stays reaper-owned without failing the teardown, and a completed worker panic still does; a reaper pass at or after the shutdown deadline that finds a pair unfinished latches the failed teardown ("connection teardown failed") even if the worker finishes right after, and `join_workers` fails there too while the reaper still owns it.
 - `TransportError::is_endpoint_absent` is the one absence predicate on every platform.
 - The platform is chosen once, by `client::PlatformEndpoint` and `transport::PlatformLaneServer`.
 - A connection's outbound bytes are reserved in `OutboundBudget` before queueing and released when the write returns.

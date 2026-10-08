@@ -44,19 +44,17 @@
 //!
 //! # Reaping: one thread owns every join
 //!
-//! A single dedicated REAPER thread (started in [`PipeServer::bind`],
-//! alongside the accept thread) is the only code in this module that ever
-//! removes an entry from `conns` or joins a REGISTERED connection's
-//! reader/writer — for any reason. [`PipeServer::close`], a reader's own
-//! natural-EOF signal, and a writer's own `WriteFile`-error signal all
-//! route through [`request_teardown`], which enqueues at most once per
-//! connection (see "Bounded reaper inbox" below); [`teardown_if_present`]
-//! is the one function that does the real work, called exclusively from
-//! [`reaper_loop`], processing messages strictly one at a time. The one
-//! correct exception: `handle_new_connection`'s own partial-spawn-failure
-//! unwind directly `join`s an aborted reader that was NEVER registered
-//! into `conns` — the reaper has nothing to reap because that connection
-//! never had a lifecycle for it to know about.
+//! A single dedicated REAPER thread (started in [`PipeServer::bind`], alongside the accept thread) is the only code in
+//! this module that ever claims a registered connection or joins its reader/writer, for any reason. [`PipeServer::close`],
+//! a reader's own natural-EOF signal, and a writer's own `WriteFile`-error signal all route through [`request_teardown`],
+//! which enqueues at most once per connection (see "Bounded reaper inbox" below); phase one leaves every registered
+//! pair for the reaper to claim.
+//!
+//! The reaper claims registered connections once, cancels both directions and polls every pending pair, joining only
+//! finished workers. Expiry reports unfinished workers still owned; panic reports a completed panicked join, and only a
+//! panic latches failed teardown. Phase-one registered pairs use this same owner; only never-registered gated workers may be joined
+//! locally (`handle_new_connection`'s partial-spawn-failure unwind and its refused late registration). Closed follows
+//! both joins.
 //!
 //! Registration is ordered so that a client which connects and
 //! disconnects instantly can never let a reader reach the reaper before
@@ -67,35 +65,11 @@
 //!
 //! # Reliable lifecycle delivery
 //!
-//! `Accepted`, `Sent`, `Closed`, and `AcceptError` must be delivered, not
-//! merely attempted — a dropped `Accepted` lets `Bytes` arrive for a
-//! connection the consumer was never told exists; a dropped `Sent`
-//! violates the ADR's physical-write barrier; a dropped `Closed` leaves a
-//! stream gap the consumer's `FrameSplitter` can never detect.
-//! [`send_lifecycle_event`] retries against a full `events()` channel
-//! indefinitely, with exactly ONE escape: [`ServerShared::dropping`], set
-//! only by [`PipeServer::drop`] — once true, nothing could ever call
-//! `events()` again (its `Receiver` lives inside the `PipeServer` being
-//! dropped), so continuing would be pure busywork. `dropping` is set at
-//! the very START of `drop`, before anything else, INCLUDING before the
-//! accept-thread join: any thread (the accept thread's own `AcceptError`/
-//! `Accepted` publishes included) can be inside this retry loop when
-//! `Drop` runs, and joining it first would deadlock `Drop` behind the
-//! very escape hatch meant to unblock it. Memory-bounded by construction
-//! (exactly one event is ever "in hand" being retried per caller, never
-//! accumulated); time-bounded otherwise ONLY by the CONSUMER's own
-//! contract — it must keep draining `events()`, which the future
-//! capsule's one ordered loop does by construction. That contract is this
-//! mechanism's other half; this module cannot enforce it, only document
-//! it.
-//!
-//! ONLY `Bytes` may still be abandoned — the transport is the read-ahead
-//! producer and must not let a stalled consumer grow memory without
-//! bound. [`deliver_bytes`] retries for up to [`BYTES_ABANDON_AFTER`]
-//! against a full channel (or until its own slot is independently
-//! cancelled); abandoning always forces this ONE connection closed with a
-//! GUARANTEED `Closed` (through the same reliable path), never a silent
-//! stream gap with nothing to mark it.
+//! Lifecycle events remain reliable until consumer-gone or dropping. Accepted, Sent and acceptor errors use their retry
+//! sender; the reaper retains blocked Closed and recycle-error records and tries them nonblockingly while polling every
+//! pending pair. Bytes abandonment still forces Closed. Outbound bytes remain reserved until the physical write returns.
+//! [`deliver_bytes`] retries for up to [`BYTES_ABANDON_AFTER`] against a full channel (or until its own slot is
+//! independently cancelled); abandoning always forces this ONE connection closed with a GUARANTEED `Closed`.
 //!
 //! # Bounded reaper inbox
 //!
@@ -108,8 +82,8 @@
 //! the writer's own error signal can all race for the same connection,
 //! but at most one of them ever reaches the channel. The inbox can
 //! therefore never hold more than one live `Torn` message per
-//! currently-open connection (≤ `max_instances`) plus `Drop`'s own single
-//! `Shutdown`.
+//! currently-open connection (≤ `max_instances`) plus the single phase-one `Wake` and the single shutdown `Wake`. A wake
+//! carries no state: the shutdown deadline lives in `ServerShared::shutdown`, so a wake the full inbox refuses loses nothing.
 //!
 //! # Continuous name hold
 //!
@@ -177,12 +151,9 @@
 //! `disconnect_listener`'s "never blocks" contract survives — see
 //! `LiveHandle`'s own doc.
 //!
-//! Every remaining `ServerShared::dropping` check in
-//! `recycle_instance`/`accept_loop` is now a pure CLEANLINESS
-//! optimization (skip a pointless `DisconnectNamedPipe`/`ConnectNamedPipe`
-//! follow-up and a possible spurious `AcceptError` once teardown is under
-//! way) — never a safety decision; a stale read there can at worst waste
-//! one OS call, never leak, double-close, or use-after-close a handle.
+//! The early dropping check avoids unnecessary work. The final registration check and shutdown cutoff share the
+//! connection-state lock; registration after that cutoff is refused. Registry liveness separately protects every handle
+//! operation.
 //!
 //! This is also what makes the pipe NAME actually disappear promptly on
 //! teardown (ADR 0041 Lifecycle: "the pipe NAME disappears before any
@@ -231,15 +202,17 @@
 #![cfg(windows)]
 
 use crate::host::wide_null;
-use crate::lane::client::{Client, Endpoint};
 use crate::lane::attach_proto::ConnId;
-use crate::lane::transport::{
-    join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget, SendMarker,
-    StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
-    EVENTS_RETRY_INTERVAL, READ_BUF_LEN, REAPER_INBOX_SLACK, TEARDOWN_AGGREGATE_DEADLINE,
+use crate::lane::client::{Client, Endpoint};
+use crate::lane::pending::{
+    self, report_server_teardown_failed, Claimed, ReaperMsg, ThreadJoins, REAPER_INBOX_SLACK,
 };
-#[cfg(any(test, feature = "test-support"))]
-use crate::lane::transport::JOIN_POLL_INTERVAL;
+use crate::lane::test_progress::{Controls, Progress, Role};
+use crate::lane::transport::{
+    join_checked, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget,
+    SendMarker, StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
+    EVENTS_RETRY_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
+};
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
@@ -250,10 +223,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA,
-    ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
-    GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_OPERATION_ABORTED,
+    ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GENERIC_READ, GENERIC_WRITE,
+    HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
@@ -310,14 +282,9 @@ struct WriteCmd {
     marker: Option<SendMarker>,
 }
 
-/// One live connection's threads, handles, and slots — owned by the
-/// `conns` map for the connection's whole life; removed and torn down
-/// exclusively by [`teardown_if_present`], called exclusively from
-/// [`reaper_loop`]. The underlying instance HANDLE's own closing is
-/// entirely [`InstanceRegistry`]'s job (`registry_id` is this
-/// connection's persistent id there, registered once at creation and
-/// never released individually) — this struct's own `raw` is a
-/// non-owning reference, usable only through a [`LiveHandle`].
+/// A registered connection moves from the live map to a charged reaper pending record. Its slots remain owned through
+/// completion. InstanceRegistry is the sole handle closer; raw references require LiveHandle liveness proof, including
+/// after close_all.
 struct ConnHandle {
     raw: SendableHandle,
     registry_id: u64,
@@ -370,17 +337,6 @@ struct AcceptState {
     current: Option<(u64, SendableHandle, Arc<IoSlot>)>,
 }
 
-/// A message to [`reaper_loop`] — the only thread that ever removes a
-/// registered connection from `conns` or joins its threads.
-enum ReaperMsg {
-    /// A connection ended (natural EOF/error, or a caller's `close`).
-    Torn(ConnId, ClosedReason),
-    /// The server is being dropped: drain and tear down every connection
-    /// still in `conns` (no `Closed` event for these — nothing could ever
-    /// observe it), then stop.
-    Shutdown,
-}
-
 struct ServerShared {
     conns: Mutex<HashMap<ConnId, ConnHandle>>,
     /// The next connection id: assigned sequentially; never reused.
@@ -411,11 +367,9 @@ struct ServerShared {
     /// because it is the one escape for [`send_lifecycle_event`]'s
     /// otherwise-indefinite retry loop, and that loop can be running on
     /// the very thread `drop` is about to join. See the module doc's
-    /// "Reliable lifecycle delivery" section. `recycle_instance`/
-    /// `accept_loop` also read it, purely as a CLEANLINESS optimization
-    /// (skip a pointless OS call once teardown is under way) — never a
-    /// safety decision; see [`InstanceRegistry`]'s own doc for why actual
-    /// instance closing/use no longer depends on this flag at all.
+    /// "Reliable lifecycle delivery" section. The early dropping check avoids unnecessary work. The final
+    /// registration check and shutdown cutoff share the connection-state lock; registration after that cutoff is
+    /// refused. Registry liveness separately protects every handle operation.
     dropping: AtomicBool,
     /// Every pipe-instance handle this server has ever created, and the
     /// SOLE mechanism that ever closes one or proves one live — see
@@ -437,6 +391,17 @@ struct ServerShared {
     /// as `accept_cancel_observed_genuine_pending`, scoped per
     /// connection since several can be torn down at once.
     write_cancel_observed_genuine_pending: Mutex<HashMap<ConnId, bool>>,
+    /// Transport-local checkpoints (zero-sized outside a test build).
+    progress: Progress,
+    /// Latched, and never cleared, by a completed worker panic, a panicked acceptor or reaper, a thread unfinished at the
+    /// shutdown deadline, or a reaper pass at or after that deadline that finds a claimed pair's worker unfinished.
+    teardown_failed: AtomicBool,
+    /// The phase-one wake has been sent (or refused) once.
+    sweep_nudged: AtomicBool,
+    /// The one absolute shutdown deadline, set by the first `join_workers`; the reaper reads it each pass.
+    shutdown: OnceLock<Instant>,
+    /// Scoped regression controls (zero-sized outside a test build).
+    controls: Controls,
 }
 
 mod accept;
@@ -448,16 +413,18 @@ mod slot;
 
 use accept::*;
 pub(crate) use client::connect_pipe_path_unchallenged;
-pub use client::{connect_voyage_pipe, PipeClient, PipeEndpoint};
 pub(crate) use client::connect_voyage_pipe_unchallenged;
+pub use client::{connect_voyage_pipe, PipeClient, PipeEndpoint};
 use conn::*;
-pub use server::PipeServer;
 use registry::*;
+pub use server::PipeServer;
 use slot::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::lane::transport::join_within;
 
     // -- join_within: the ADR 0041 step 6 U1b teardown-deadline mechanism,
     // proven directly against plain `std::thread::spawn` closures this
@@ -507,7 +474,10 @@ mod tests {
         let deadline = Instant::now() + budget;
 
         let jh1 = thread::spawn(move || thread::sleep(Duration::from_millis(100)));
-        assert!(join_within(jh1, deadline), "the first join should still fit its share");
+        assert!(
+            join_within(jh1, deadline),
+            "the first join should still fit its share"
+        );
 
         let (tx, rx) = mpsc::channel::<()>();
         let jh2 = thread::spawn(move || {
@@ -530,7 +500,8 @@ mod tests {
     /// proves the DECISION itself (`false`), captured once, is never
     /// revisited by the thread's later completion.
     #[test]
-    fn expiry_with_a_genuinely_unfinished_thread_is_terminal_even_though_it_finishes_moments_later() {
+    fn expiry_with_a_genuinely_unfinished_thread_is_terminal_even_though_it_finishes_moments_later()
+    {
         let (tx, rx) = mpsc::channel::<()>();
         let jh = thread::spawn(move || {
             let _ = rx.recv(); // blocks until released below, AFTER the decision is made
@@ -545,7 +516,10 @@ mod tests {
             "the thread must be genuinely unfinished at the deadline for this test to mean              anything -- confirmed BEFORE join_within is ever called"
         );
         let decision = join_within(jh, deadline);
-        assert!(!decision, "an unfinished thread at expiry must be terminal (false)");
+        assert!(
+            !decision,
+            "an unfinished thread at expiry must be terminal (false)"
+        );
         // Release the thread now, strictly AFTER the decision was made --
         // it finishing here must not (and structurally cannot: `decision`
         // is a plain bool already captured) retroactively flip anything.

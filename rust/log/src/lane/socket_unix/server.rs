@@ -1,10 +1,9 @@
 //! The server: `SocketServer`, its bind constructors, send/close and two-phase teardown.
 
 use super::accept::accept_loop;
-use super::conn::{reaper_loop, request_teardown};
+use super::conn::{reaper_loop, request_teardown, signal_shutdown};
 use super::listener::{
-    create_and_bind_listener, ensure_private_runtime_dir, open_verified_dir_fd, set_cloexec,
-    set_nonblocking,
+    create_and_bind_listener, create_wake_pipe, ensure_private_runtime_dir, open_verified_dir_fd,
 };
 use super::*;
 
@@ -23,13 +22,6 @@ pub struct SocketServer {
     events_rx: Receiver<LaneEvent>,
     accept_jh: Option<JoinHandle<()>>,
     reaper_jh: Option<JoinHandle<()>>,
-    /// Reader/writer `JoinHandle`s for every connection
-    /// [`SocketServer::disconnect_listener`] closed directly — their
-    /// `ConnHandle` never reaches the reaper (it drained `shared.conns`
-    /// itself), so nothing else would ever join them.
-    /// [`SocketServer::join_workers`] joins every entry here under the
-    /// SAME shared deadline as the acceptor and reaper.
-    detached_workers: Vec<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for SocketServer {
@@ -83,44 +75,13 @@ impl SocketServer {
         let listener =
             create_and_bind_listener(dir_fd.as_raw_fd(), &file_name, &path, max_connections)?;
 
-        // The wake self-pipe (module doc: "the accept loop wakes via
-        // poll(2) over a self-pipe"). O_NONBLOCK on both ends: the
-        // accept loop's own drain read must never block, and a write
-        // from `disconnect_listener` must never block either (its own
-        // "never blocks" contract) -- one byte always fits in a fresh
-        // pipe's buffer, but non-blocking costs nothing and removes any
-        // doubt.
-        //
-        // `pipe(2)` + `fcntl` (not Linux's own combined-flag `pipe2(2)`):
-        // macOS/BSD has no `pipe2` at all, so this crate sets CLOEXEC and
-        // NONBLOCK as two ordinary, portable `fcntl` calls per fd instead
-        // -- identical end state, one extra syscall pair, and it now
-        // compiles (and behaves identically) on every Unix target this
-        // workspace's CI checks, not only Linux.
-        let mut fds: [RawFd; 2] = [-1, -1];
-        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
-        if rc != 0 {
-            let err = TransportError::Io {
-                op: "pipe(wake)",
-                source: io::Error::last_os_error(),
-            };
-            unsafe { libc::unlinkat(dir_fd.as_raw_fd(), file_name.as_ptr(), 0) };
-            return Err(err);
-        }
-        // SAFETY: `pipe` just returned these two fds; each is valid,
-        // open, and not owned by anything else yet.
-        let wake_read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-        let wake_write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
-        for fd in [wake_read.as_raw_fd(), wake_write.as_raw_fd()] {
-            if let Err(e) = set_cloexec(fd).and_then(|()| set_nonblocking(fd)) {
-                let err = TransportError::Io {
-                    op: "fcntl(wake pipe)",
-                    source: e,
-                };
+        let (wake_read, wake_write) = match create_wake_pipe() {
+            Ok(ends) => ends,
+            Err(err) => {
                 unsafe { libc::unlinkat(dir_fd.as_raw_fd(), file_name.as_ptr(), 0) };
                 return Err(err);
             }
-        }
+        };
 
         let (events_tx, events_rx) = mpsc::sync_channel(EVENTS_CHANNEL_CAP);
         let (reaper_tx, reaper_rx) =
@@ -140,11 +101,16 @@ impl SocketServer {
             wake_write,
             probes: Probes::default(),
             progress: crate::lane::test_progress::Progress::default(),
+            pending: AtomicUsize::new(0),
+            teardown_failed: AtomicBool::new(false),
+            sweep_nudged: AtomicBool::new(false),
+            shutdown: OnceLock::new(),
+            controls: crate::lane::test_progress::Controls::default(),
         });
 
         // Spawn the reaper FIRST -- if the accept thread then fails to
         // spawn, unwind the reaper (nothing queued yet, so its own
-        // `Shutdown` drain is instant) rather than leave it running
+        // shutdown pass is instant) rather than leave it running
         // forever with no accept thread able to feed it. Mirrors
         // `pipe_win::PipeServer::bind_named`'s own ordering.
         let reaper_jh = match thread::Builder::new()
@@ -172,7 +138,7 @@ impl SocketServer {
         let accept_jh = match accept_jh {
             Ok(jh) => jh,
             Err(e) => {
-                let _ = shared.reaper_tx.send(ReaperMsg::Shutdown);
+                signal_shutdown(&shared, Instant::now() + TEARDOWN_AGGREGATE_DEADLINE);
                 Self::observe_bind_join(&shared, reaper_jh);
                 unsafe { libc::unlinkat(shared.dir_fd.as_raw_fd(), shared.file_name.as_ptr(), 0) };
                 return Err(TransportError::Io {
@@ -187,7 +153,6 @@ impl SocketServer {
             events_rx,
             accept_jh: Some(accept_jh),
             reaper_jh: Some(reaper_jh),
-            detached_workers: Vec::new(),
         })
     }
 
@@ -262,11 +227,8 @@ impl SocketServer {
         Ok(())
     }
 
-    /// Request that `conn_id` be torn down: cancelled (`shutdown(2)`),
-    /// both threads joined. Fire-and-forget — this enqueues the request
-    /// at most once for the reaper thread; completion is observed as
-    /// [`LaneEvent::Closed`]. A no-op if `conn_id` is already gone or
-    /// already has a teardown in flight.
+    /// Request cancellation and reaper-owned joins at most once. Closed is queued after both joins. An
+    /// already-claimed connection is a no-op.
     pub fn close(&self, conn_id: ConnId) {
         let map = self.shared.conns.lock().unwrap();
         if let Some(conn) = map.get(&conn_id) {
@@ -291,12 +253,10 @@ impl SocketServer {
     /// of this (already torn-down) one's. Unlinking is therefore anchored
     /// via `unlinkat` to `dir_fd`/`file_name` (module doc "Security"),
     /// never a fresh by-path lookup, and gated on actually WINNING the
-    /// `dropping` transition — every other step below stays unconditional
-    /// and idempotent, matching before: wake the accept loop out of
-    /// `poll(2)`, then `shutdown(SHUT_RDWR)` every currently-live
-    /// connection's stream (property 12) and move its reader/writer
-    /// threads into `detached_workers` for [`Self::join_workers`] to join
-    /// later.
+    /// `dropping` transition.
+    ///
+    /// Wake the acceptor and cancel every registered connection. Its worker pair remains available for the reaper to
+    /// claim; phase one never creates a caller-owned join list.
     pub fn disconnect_listener(&mut self) {
         self.shared
             .progress
@@ -333,58 +293,62 @@ impl SocketServer {
                 1,
             )
         };
-        let drained: Vec<(ConnId, ConnHandle)> = {
-            let mut map = self.shared.conns.lock().unwrap();
-            map.drain().collect()
-        };
-        for (id, conn) in drained {
-            // Fast-exits a reader stuck retrying `deliver_bytes` against
-            // a saturated events channel -- the same role `pipe_win`'s
-            // own `IoSlot::is_closing` plays there once its own
-            // `cancel_registered` latches `Closing`.
-            conn.torn_down_requested.store(true, Ordering::Release);
-            super::conn::observe_shutdown(&self.shared, id, &conn.stream);
-            drop(conn.sender); // unblocks a writer idle-waiting on `recv`
-            self.detached_workers.push(conn.reader_jh);
-            self.detached_workers.push(conn.writer_jh);
+        {
+            let conns = self.shared.conns.lock().unwrap();
+            for (&id, conn) in conns.iter() {
+                // Fast-exits a reader stuck retrying `deliver_bytes`
+                // against a saturated events channel -- the same role
+                // `pipe_win`'s own `IoSlot::is_closing` plays there once its
+                // own `cancel_registered` latches `Closing`.
+                conn.torn_down_requested.store(true, Ordering::Release);
+                super::conn::observe_shutdown(
+                    &self.shared.progress,
+                    Some(id),
+                    &conn.stream,
+                    "rust/log/src/lane/socket_unix/server.rs::disconnect_listener",
+                );
+            }
+        }
+        if !self.shared.sweep_nudged.swap(true, Ordering::AcqRel) {
+            // Nonblocking: a full inbox already has the reaper awake, and `REAPER_INBOX_SLACK` keeps a slot for this wake
+            // and the shutdown one so `close()`'s blocking send under the `conns` lock cannot deadlock.
+            let _ = self.shared.reaper_tx.try_send(ReaperMsg::Wake);
         }
         self.shared.progress.note(None, "listener.disconnect", "ok");
     }
 
-    /// Phase two: tell the reaper to drain (a no-op for any connection
-    /// `disconnect_listener` already claimed), then wait for the accept
-    /// thread, the reaper thread, AND every detached connection worker
-    /// `disconnect_listener` stashed — ALL sharing ONE absolute
-    /// `deadline`. `true` iff every one finished within budget; `false`
-    /// (LOUD — the caller MUST treat this as terminal) on expiry. Call
-    /// [`disconnect_listener`](Self::disconnect_listener) first — this
-    /// method does not call it, so the two phases stay independently
-    /// observable (and independently testable).
+    /// Phase two signals the reaper with the caller's absolute deadline and waits for aggregate completion. Every
+    /// registered pair is reaper-owned, including phase-one shutdown. False means expiry or latched teardown failure.
+    /// Call disconnect_listener first; the phases remain separately observable.
     pub fn join_workers(&mut self, deadline: Instant) -> bool {
         self.shared
             .progress
             .note(None, "server.join.begin", "begin");
-        let mut ok = true;
+        signal_shutdown(&self.shared, deadline);
+        let mut joins = ThreadJoins::default();
         if let Some(jh) = self.accept_jh.take() {
-            ok = self.join_observed(jh, deadline) && ok;
+            let joined = Self::join_with_progress(&self.shared, jh, deadline);
+            joins.record("sot-sock", "acceptor", joined);
         }
-        let _ = self.shared.reaper_tx.send(ReaperMsg::Shutdown);
+        self.shared
+            .controls
+            .barrier_point(&self.shared.progress, None, "join.reaper");
         if let Some(jh) = self.reaper_jh.take() {
-            ok = self.join_observed(jh, deadline) && ok;
+            let joined = Self::join_with_progress(&self.shared, jh, deadline);
+            joins.record("sot-sock", "reaper", joined);
         }
-        let shared = &self.shared;
-        for jh in self.detached_workers.drain(..) {
-            ok = Self::join_with_progress(shared, jh, deadline) && ok;
+        if joins.failed() {
+            // A server thread unfinished at the deadline, or one that panicked, fails this teardown for good.
+            self.shared.teardown_failed.store(true, Ordering::Release);
         }
-        self.shared.progress.note(None, "server.join.end", ok);
-        ok
+        let failed = self.shared.teardown_failed.load(Ordering::Acquire);
+        self.shared
+            .progress
+            .note(None, "server.join.end", joins.result(failed));
+        !failed
     }
 
-    fn join_observed(&self, jh: JoinHandle<()>, deadline: Instant) -> bool {
-        Self::join_with_progress(&self.shared, jh, deadline)
-    }
-
-    fn join_with_progress(shared: &ServerShared, jh: JoinHandle<()>, deadline: Instant) -> bool {
+    fn join_with_progress(shared: &ServerShared, jh: JoinHandle<()>, deadline: Instant) -> Joined {
         #[cfg(any(test, feature = "test-support"))]
         let (id, role) = {
             let name = jh.thread().name().unwrap_or("pending");
@@ -401,14 +365,16 @@ impl SocketServer {
                 .note(id, "worker.join.begin", format_args!("role={role}"));
             (id, role)
         };
-        let ok = join_within(jh, deadline);
+        let joined = join_checked(jh, deadline);
         #[cfg(any(test, feature = "test-support"))]
-        shared
-            .progress
-            .note(id, "worker.join.end", format_args!("role={role} ok={ok}"));
+        shared.progress.note(
+            id,
+            "worker.join.end",
+            format_args!("role={role} ok={}", joined != Joined::Unfinished),
+        );
         #[cfg(not(any(test, feature = "test-support")))]
         let _ = shared;
-        ok
+        joined
     }
 }
 
@@ -476,6 +442,57 @@ impl SocketServer {
         }
     }
 
+    /// Stop `conn`'s `role` worker at its exit point (after its last I/O and teardown request) until released.
+    pub fn hold_worker_exit_for_test(
+        &self,
+        conn: ConnId,
+        role: crate::lane::test_progress::Role,
+    ) -> crate::lane::test_progress::Pause {
+        crate::lane::test_progress::Pause::new(self.shared.controls.arm_exit_hold(conn, role))
+    }
+
+    /// Make `conn`'s `role` worker panic at its exit point.
+    pub fn inject_worker_panic_for_test(
+        &self,
+        conn: ConnId,
+        role: crate::lane::test_progress::Role,
+    ) {
+        self.shared.controls.arm_exit_panic(conn, role);
+    }
+
+    /// The server's recorder alone, so a test can watch checkpoints while another thread holds `&mut SocketServer`.
+    pub fn progress_view_for_test(&self) -> ProgressView {
+        ProgressView(Arc::clone(&self.shared))
+    }
+
+    /// Stop `join_workers` after it signalled shutdown and joined the acceptor, before it samples the reaper, until
+    /// released: the sample then sees whatever the reaper did meanwhile.
+    pub fn pause_join_for_test(&self) -> crate::lane::test_progress::Pause {
+        crate::lane::test_progress::Pause::new(self.shared.controls.arm_barrier("join.reaper"))
+    }
+
+    /// Make the reaper panic at its next pass that follows an intake, outside every transport lock.
+    pub fn inject_reaper_panic_for_test(&self) {
+        self.shared.controls.arm_panic("reaper.pass");
+    }
+
+    /// Make the acceptor panic immediately before it registers its next connection.
+    pub fn inject_acceptor_panic_for_test(&self) {
+        self.shared.controls.arm_panic("registration.barrier");
+    }
+
+    /// Stop the acceptor immediately before it registers its next connection, workers still gated, until released.
+    pub fn pause_registration_for_test(&self) -> crate::lane::test_progress::Pause {
+        crate::lane::test_progress::Pause::new(
+            self.shared.controls.arm_barrier("registration.barrier"),
+        )
+    }
+
+    /// Shorten the per-connection teardown budget (and the one `Drop` uses) for this server.
+    pub fn set_teardown_deadline_for_test(&self, deadline: Duration) {
+        self.shared.controls.set_teardown_deadline(deadline);
+    }
+
     /// Server-local checkpoints, retained after connection removal; never locks connection state.
     pub fn progress_for_test(&self) -> crate::lane::test_progress::Snapshot {
         self.shared.progress.snapshot()
@@ -500,20 +517,26 @@ impl SocketServer {
 }
 
 impl Drop for SocketServer {
-    /// The two teardown phases in order, with a FRESH pinned 20 s
-    /// budget computed here — mirrors `pipe_win::PipeServer`'s own
-    /// `Drop`. This is the SAFETY-NET path; the designed path computes
-    /// ONE deadline in the capsule's own run loop and calls both methods
-    /// explicitly with it.
+    /// Drop invokes both teardown phases with the existing aggregate budget without extending an earlier shutdown
+    /// deadline. Failure is reported loudly; completed panic and unfinished expiry are distinct. The continuing reaper
+    /// retains unfinished registered pairs until completion or process exit.
     fn drop(&mut self) {
         self.disconnect_listener();
-        let deadline = Instant::now() + TEARDOWN_AGGREGATE_DEADLINE;
+        let deadline = Instant::now() + self.shared.controls.teardown_deadline();
         if !self.join_workers(deadline) {
-            eprintln!(
-                "sot-sock: teardown did not complete within its {TEARDOWN_AGGREGATE_DEADLINE:?} \
-                 aggregate deadline; a worker thread may still be running"
-            );
+            report_server_teardown_failed("sot-sock");
         }
+    }
+}
+
+/// A server's recorder, readable without the server.
+#[cfg(any(test, feature = "test-support"))]
+pub struct ProgressView(Arc<ServerShared>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl ProgressView {
+    pub fn snapshot(&self) -> crate::lane::test_progress::Snapshot {
+        self.0.progress.snapshot()
     }
 }
 

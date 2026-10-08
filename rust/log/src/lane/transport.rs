@@ -197,22 +197,18 @@ pub trait Transport {
     /// real transport must issue cancellation to every worker it owns
     /// FIRST (so the listener name and every connection are gone before
     /// any blocking wait), THEN join everything against `deadline` rather
-    /// than a budget it invents itself. Returns `true` iff every one of
-    /// ITS OWN joins finished within `deadline`; `false` — LOUD, and the
-    /// caller MUST treat this as terminal (no seal, no fence release past
-    /// it), since this crate cannot force an OS thread to stop. A
-    /// synthetic test transport with nothing to bound returns `true`
-    /// unconditionally.
+    /// than a budget it invents itself. True requires every owned join
+    /// complete and no latched teardown failure. False is loud and terminal
+    /// on expiry, a completed-worker panic or a panicked acceptor or reaper (no
+    /// seal, no fence release past it), and unfinished registered pairs remain
+    /// reaper-owned. A synthetic
+    /// transport with no joins or failure returns true.
     fn shutdown_all(&mut self, deadline: Instant) -> bool;
 }
 
-/// ADR 0041 Lifecycle "the pipe NAME disappears before any blocking
-/// join" / the bounds table's "teardown aggregate": 20 s TOTAL after the
-/// listener is gone, one absolute deadline shared by every join
-/// (acceptor, reaper, and — inside the reaper's own drain — every
-/// connection worker), loud on expiry. Shared by every platform's
-/// transport and by the capsule writer loop's closer/reader joins — one
-/// constant, one mechanism.
+/// The existing 20 s aggregate budget is shared by acceptor, reaper and all registered pending worker joins. Expiry is
+/// loud and unfinished registered pairs remain reaper-owned. The capsule's closer/reader joins use the same caller
+/// deadline. A normal close's own report budget is separate (`pending::NORMAL_CLOSE_BUDGET`).
 pub const TEARDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_secs(20);
 
 /// L1-unix LU1b (ADR 0043 "Bounds are the same numbers on both
@@ -272,14 +268,32 @@ pub(crate) const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// decision, made exactly once, from the caller's own single call site —
 /// nothing later re-evaluates or overturns it, whether the answer was
 /// `true` or `false`.
+///
+/// A thread that panicked still counts as finished here; a caller that must tell the two apart uses [`join_checked`].
 pub(crate) fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
+    join_checked(jh, deadline) != Joined::Unfinished
+}
+
+/// How [`join_checked`] found a thread at its deadline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Joined {
+    Ended,
+    Panicked,
+    Unfinished,
+}
+
+/// [`join_within`] with the joined thread's panic kept: the same poll and the same boundary semantic.
+pub(crate) fn join_checked(jh: JoinHandle<()>, deadline: Instant) -> Joined {
     loop {
         if jh.is_finished() {
-            let _ = jh.join();
-            return true;
+            return if jh.join().is_ok() {
+                Joined::Ended
+            } else {
+                Joined::Panicked
+            };
         }
         if Instant::now() >= deadline {
-            return false;
+            return Joined::Unfinished;
         }
         thread::sleep(JOIN_POLL_INTERVAL);
     }
@@ -309,12 +323,6 @@ pub(crate) const OUTBOUND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 /// `Bytes` deliveries caps buffered inbound at roughly the same order of
 /// magnitude as [`OUTBOUND_BUDGET_BYTES`].
 pub(crate) const EVENTS_CHANNEL_CAP: usize = OUTBOUND_BUDGET_BYTES / READ_BUF_LEN;
-
-/// Extra capacity on a server's bounded reaper inbox beyond its connection
-/// ceiling — a connection's own at-most-once teardown flag already caps live
-/// `Torn` messages at one per open connection, so the only other traffic
-/// this inbox ever carries is `Drop`'s own single `Shutdown` message.
-pub(super) const REAPER_INBOX_SLACK: usize = 1;
 
 /// How long a stalled delivery (lifecycle retry, or one `Bytes` attempt)
 /// sleeps between retries against a full `events` channel.
@@ -629,7 +637,12 @@ pub trait LaneServer: Sized {
     /// Queue `bytes` for `conn`, tagged with `marker` if the caller wants
     /// a [`LaneEvent::Sent`] once the OS write physically completes.
     /// Non-blocking.
-    fn send(&self, conn: ConnId, bytes: Vec<u8>, marker: Option<u64>) -> std::result::Result<(), TransportError>;
+    fn send(
+        &self,
+        conn: ConnId,
+        bytes: Vec<u8>,
+        marker: Option<u64>,
+    ) -> std::result::Result<(), TransportError>;
     /// Request that `conn` be torn down. Fire-and-forget; a no-op if
     /// already gone or already tearing down.
     fn close(&self, conn: ConnId);
@@ -638,8 +651,10 @@ pub trait LaneServer: Sized {
     /// join.
     fn disconnect_listener(&mut self);
     /// Phase two: wait for every thread this transport owns, against one
-    /// shared absolute `deadline`. `true` iff every one finished within
-    /// budget; `false` — LOUD, terminal — on expiry.
+    /// shared absolute `deadline`. True requires every owned join complete and
+    /// no latched teardown failure. False is loud and terminal on expiry, a
+    /// completed-worker panic or a panicked acceptor or reaper; unfinished
+    /// registered pairs remain reaper-owned.
     fn join_workers(&mut self, deadline: Instant) -> bool;
 }
 

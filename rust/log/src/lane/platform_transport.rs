@@ -202,17 +202,10 @@ impl Transport for PlatformTransport {
     }
 
     fn shutdown_all(&mut self, deadline: Instant) -> bool {
-        // Explicit cancellation-first teardown against the SHARED
-        // `deadline` -- `disconnect_listener` makes the endpoint name (and
-        // every live connection's handle) gone synchronously, THEN
-        // `join_workers` waits out every thread this transport owns
-        // against `deadline`, never a budget it invents itself. Dropping
-        // the server afterward (its own `Drop`) is then a documented
-        // no-op: both methods are idempotent, and everything is already
-        // joined/cleared. The closing latch is cleared with it: shutdown
-        // emits no Closed events to clear entries, and a later bind's
-        // fresh server restarts conn ids at zero -- a stale latch would
-        // silently drop the new server's sends.
+        // Phase one removes the endpoint name and requests cancellation; Unix streams may remain owned while workers
+        // finish. join_workers uses the shared deadline and reports expiry or latched failure. Dropping the server does
+        // not extend an earlier deadline or abandon registered worker ownership. Clear the closing latch because a
+        // fresh bind restarts connection ids.
         let ok = if let Some(server) = &mut self.server {
             server.disconnect_listener();
             server.join_workers(deadline)
