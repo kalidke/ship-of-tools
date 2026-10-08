@@ -117,15 +117,16 @@ or the user's SID on Windows), so the refusal catches two accounts sharing one h
 account through Ship of Tools' own clients; a client changed to name another account
 is not caught, and for a connection from another computer the boundary is the ssh login
 to the hub account. Built by lane M1b: the
-frontend, its lease, `sotd stdio-bridge`, the lane client and `sotd topology` speak
-only to an endpoint their own OS account serves, a pipe whose serving process runs as
-this account on Windows and on Unix a socket this account listens on (lane F3-OWN's
-check, below) (`rust/log/src/identity/connect_own.rs`); a client opens that pipe at
-identification level, so its server cannot act as the account before the check. Built by lane M1c: no product script
-opens a socket or pipe
-itself; a shell or PowerShell script reaches one on this computer only through `sotd stdio-bridge --endpoint`, so the
-same check applies (comm's `sot_dial`, the launch scripts' probes, and the launcher's lease, which names its bridge
-child). Each of those paths is shown by running it: `rust/backend/tests/shell_dial.rs` runs comm's `sot_dial`, with and
+frontend, its lease, `sotd stdio-bridge`, the lane client and `sotd topology` speak only to an endpoint their own OS
+account serves, a pipe whose serving process runs as this account on Windows and on Unix a socket this account listens
+on (lane F3-OWN's check, below) (`rust/log/src/identity/connect_own.rs`); a client opens that pipe at identification
+level, so its server cannot act as the account before the check. On Windows the check identifies the pipe's server by
+the process id the kernel reports for the pipe and reads that process's account; whether that id always names the
+process serving the pipe when the check runs is not established, and no test here shows it. Built by lane M1c: no
+product script opens a socket or pipe itself; a shell or PowerShell script reaches one on this computer only through
+`sotd stdio-bridge --endpoint`, so the same check applies (comm's `sot_dial`, the launch scripts' probes, and the
+launcher's lease, which names its bridge child). Each of those paths is shown by running it:
+`rust/backend/tests/shell_dial.rs` runs comm's `sot_dial`, with and
 without its bound, `sot_oneshot_request` and the launch scripts' `sot_socket_open` (which `restart-backend.sh` also
 runs) against a socket another OS account listens on, which each refuses before writing a byte, and `sot_dial`, with and
 without its bound, and `sot_socket_open` reach this account's own (`sot_oneshot_request` sends through the bounded
