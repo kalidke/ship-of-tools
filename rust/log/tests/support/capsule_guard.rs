@@ -5,7 +5,10 @@
 //! supervisor by design, so killing the supervise child is not enough: the
 //! guard also sweeps every `supervise` and `run` process anchored on the
 //! test's OWN state root (its tempdir path), the sweep the backend's test
-//! `Env::drop` does, with the pattern's end anchored. Included by each test
+//! `Env::drop` does, with the pattern's end anchored. Windows has no such
+//! sweep: there the supervise child is put in a kill-on-close job right after
+//! it starts, so its legs (which inherit the job) end when the guard drops,
+//! however the test ended. Included by each test
 //! file with `#[path = "support/capsule_guard.rs"] mod capsule_guard;`.
 
 use std::path::{Path, PathBuf};
@@ -15,6 +18,48 @@ pub struct CapsuleGuard {
     child: Option<Child>,
     exe: PathBuf,
     state_root: PathBuf,
+    /// Windows: the job the supervisor and everything it starts run in; the
+    /// kernel ends them all when this handle closes, after the explicit kill
+    /// and wait in `drop`.
+    #[cfg(windows)]
+    _job: Option<job::KillOnClose>,
+}
+
+/// A job object that kills everything in it when its last handle closes.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub struct KillOnClose(OwnedHandle);
+
+    impl KillOnClose {
+        /// A new job holding `child`; `None` when the OS refuses (the guard then only kills the child, as before).
+        pub fn holding(child: &std::process::Child) -> Option<KillOnClose> {
+            // SAFETY: plain Win32 calls on handles this function creates or borrows.
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return None;
+                }
+                let job = KillOnClose(OwnedHandle::from_raw_handle(handle as RawHandle));
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let set = SetInformationJobObject(
+                    job.0.as_raw_handle() as HANDLE,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const std::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                let assigned = AssignProcessToJobObject(job.0.as_raw_handle() as HANDLE, child.as_raw_handle() as HANDLE);
+                (set != 0 && assigned != 0).then_some(job)
+            }
+        }
+    }
 }
 
 /// Whether `root` is safe to build a kill pattern from: absolute, no `..`,
@@ -70,7 +115,15 @@ impl CapsuleGuard {
             sweep_root_ok(&state_root),
             "CapsuleGuard refuses root {state_root:?}: it must be absolute, free of `..`, strictly below a temp dir that is not `/`, and outside the production state dirs"
         );
-        Self { child: Some(child), exe: exe.into(), state_root }
+        #[cfg(windows)]
+        let job = job::KillOnClose::holding(&child);
+        Self {
+            child: Some(child),
+            exe: exe.into(),
+            state_root,
+            #[cfg(windows)]
+            _job: job,
+        }
     }
 
     #[allow(dead_code)]
