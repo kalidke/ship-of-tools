@@ -685,7 +685,7 @@ mod tests {
             let task = tokio::spawn(async move { UpdaterSpawner(signal).output(&mut command).await });
             pid_written(&file).await;
             let grandchild = Leftover::of_file(&file);
-            signal.fire();
+            signal.fire().expect("fire");
             assert!(grandchild.gone(), "the fired signal left the grandchild running");
             let _ = tokio::time::timeout(Duration::from_secs(10), task).await.expect("the command outlived the fire");
             let mut late = tokio::process::Command::new("sh");

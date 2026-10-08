@@ -27,9 +27,6 @@ const RETRY_EVERY: Duration = Duration::from_secs(1);
 /// The end-run reason a window's close records.
 const REASON: &str = "window closed";
 
-/// How long step 4 waits for the daemon's own children.
-const CHILDREN_WAIT: Duration = Duration::from_secs(3);
-
 /// `SOT_TEST_SHUTDOWN_BOUND_MS` overrides [`bounds::SHUTDOWN_BOUND`] for
 /// tests, read once per process; unset in every real deployment.
 pub(crate) fn shutdown_bound() -> Duration {
@@ -86,13 +83,8 @@ pub(crate) async fn run(
         }
     };
 
-    fire();
-    let children = Instant::now() + CHILDREN_WAIT;
-    while live_children() > 0 && Instant::now() < children {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    if live_children() > 0 {
-        tracing::warn!(live = live_children(), "shutdown: the daemon's own children were still alive after {CHILDREN_WAIT:?}");
+    if let Err(error) = fire() {
+        tracing::error!(%error, "shutdown child fire failed");
     }
 
     if let Err(e) = leases.finish_shutdown(report.not_ended, report.forget.clone()) {
@@ -355,7 +347,7 @@ where
     }
 }
 
-use super::child_signal::{fire, live_children};
+use super::child_signal::fire;
 
 #[cfg(test)]
 mod tests {

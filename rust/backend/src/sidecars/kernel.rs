@@ -583,7 +583,7 @@ mod tests {
     }
 
     /// The shutdown signal kills the kernel child and the loop neither
-    /// respawns nor leaves a guard counted.
+    /// respawns nor leaves a registered tree.
     #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_kills_the_kernel_child_and_never_respawns() {
@@ -598,19 +598,19 @@ mod tests {
         let (status, _keep) = watch::channel(Status::Starting);
         let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig));
         let began = std::time::Instant::now();
-        // The guard counts the child at its spawn, before the stub's first line has run; fire only once
+        // Spawn completes before the stub's first line has run; fire only once
         // that line has written the counter, so the one-spawn precondition is true.
         while std::fs::read_to_string(&counter).map_or(0, |s| s.lines().count()) == 0 {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub child never ran");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(sig.live() > 0, "the stub child exited before the fire");
-        sig.fire();
+        assert!(!task.is_finished(), "the ready owner finished before the fire");
+        sig.fire().expect("fire");
         tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .expect("the supervisor loop outlived the shutdown")
             .expect("supervisor task");
-        assert_eq!(sig.live(), 0);
+        assert!(sig.held_groups().is_empty());
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1, "respawned after the fire");
     }
@@ -659,13 +659,13 @@ mod tests {
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(tx.capacity() < tx.max_capacity(), "the supervisor was not blocked on a full pipe");
-        sig.fire();
+        sig.fire().expect("fire");
         tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .expect("the supervisor loop outlived the shutdown")
             .expect("supervisor task");
         assert!(gc.gone(), "the kernel's grandchild survived the shutdown");
-        assert_eq!(sig.live(), 0);
+        assert!(sig.held_groups().is_empty());
         drop(replies);
     }
 

@@ -13,7 +13,7 @@ computer's sessions end (ADR 0050).
 - The start plan Resume, Pending or Cleanup: `startup::begin`, `lease::startup_plan`.
 - The close and its backstop `exit(1)`: `shutdown::run`, `shutdown::end_rows`.
 - The child signal and the containment: `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`,
-  `Contained`, `ContainedStd`, `fire`, `fired`, `live_children`, `reset_child_signal`; contain.rs `Tree`, `prepare`, `adopt`,
+  `Contained`, `ContainedStd`, `fire`, `fired`, `reset_child_signal`; contain.rs `Tree`, `prepare`, `adopt`,
   `exited`, `exited_pid`.
 - Which process starts stand outside the containment: the process-spawns group of `rust/clippy.toml` and each
   exception's allow.
@@ -47,13 +47,17 @@ computer's sessions end (ADR 0050).
 - A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything it started when its owner
   kills, waits for or drops its `Contained` or `ContainedStd`, or the signal fires; its leader is reaped only after
   that kill, and neither type hands its caller the child to reap (`Contained::wait`, `ContainedStd::wait`;
-  `exited_pid` uses `WNOWAIT`); a start is refused before anything is created
-  once the signal has fired, and a child created while it fires is counted from before its creation and killed when it
-  registers, so the shutdown's 3 s wait for its children (`CHILDREN_WAIT`) covers it (`Signal::reserve`, `Held::fill`);
-  a start that stalls longer than that between creation and registration is counted but can outlive the exit: on Unix
-  its group is not registered yet; on Windows a pause before job assignment leaves it suspended outside any job, while
-  a pause after it (`contain::adopt` assigns, then resumes) leaves it running inside its kill-on-close job, whose last
-  handle the daemon holds, so the daemon's exit ends it.
+  `exited_pid` uses `WNOWAIT`). Creation through adoption and registration holds the registry mutex that `fire` takes
+  (`Signal::reserve`, `Provisional`, `Held::fill`): a start is refused before anything is created once the signal has
+  fired, and a child created while it fires is either registered and requested or cleaned up by its provisional owner,
+  on an error or an unwind too. `fire` attempts every registered tree, reports every failed request and waits for no
+  death and no child count; the shutdown has no grace period. An OS creation or adoption that never returns holds the
+  mutex and so delays `fire`: that is the stated kernel limit.
+- A request is checked: a group and its unreaped leader are asked independently, only ESRCH counts as already gone,
+  and the owner reaps the leader only after the requests succeed. On macOS alone a group request refused with EPERM
+  counts as no live member only when the retained leader is seen exited unreaped and a complete libproc membership and
+  status query, taken twice, finds every member a zombie of that group (`contain::macos::checked_no_live_group`); a live
+  member, a failed or an ambiguous observation keeps the original error.
 - `main` resets `SIGCHLD` to its default and unblocks it in the main thread before anything else (`reset_child_signal`),
   so neither an ignored nor a blocked one inherited from the parent can make the kernel reap a contained leader early or
   keep `Contained::wait` from seeing its exit; the main thread lives as long as the daemon, so the signal always has a
@@ -119,14 +123,19 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `rust/frontend/src/lease.rs`: a file, the window's half.
 
 ## Files
-- `child_signal.rs`: the process-wide signal, the registry of contained trees, the contained children (`Contained`,
-  `ContainedStd`) and the live-child count.
+- `child_signal.rs`: the process-wide signal, the registry of contained trees and its creation mutex, the provisional
+  owner of a created child, and the contained children (`Contained`, `ContainedStd`).
 - `daemon_children/`: what ends with a daemon: the Linux lifetime guard (see its page).
-- `contain.rs`: the platform half of containment: the process group or job, adopting a child, the kill.
+- `contain.rs`: the platform half of containment: the process group or job, adopting a child, the checked kill, and on
+  macOS the recognition of a finished group.
 - `lease.rs`: the window lease: `Leases`, the grant rule, the lease connection (`hold`), `held.json` and the start plan.
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.
-- `mod.rs`: declares the six modules.
+- `mod.rs`: declares the six modules and the test module.
 - `shutdown.rs`: the close, its backstop and the row ends.
+- `start_tests.rs`: tests of child creation against the fire, checked termination requests, partial births (an error or an
+  unwind between creation and registration), the Windows suspended start and the macOS group recognition, on real
+  processes. It is in-crate because it reaches `Signal` and `contain`; the daemon-lifetime harness is a separate test
+  binary and cannot.
 - `startup.rs`: the start's decision from `held.json` and acting on it.
 
 ## Start here
