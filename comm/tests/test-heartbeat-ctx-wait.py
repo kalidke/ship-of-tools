@@ -239,7 +239,7 @@ def responsive(root, nonce, invoke):
                f"while [ \"$SECONDS\" -lt {LIFETIME} ]; do\n"
                f"  if [ -f {q(root / 'release')} ]; then {emit('released')}; "
                f"printf '%s\\n' NAME={NAME}; {emit('completed')}; exit 0; fi\n"
-               f"  sleep 0.01\ndone\n{emit('self-expired')}; {emit('completed')}\n")
+               f"done\n{emit('self-expired')}; {emit('completed')}\n")
     (root / "lifetime-perl").touch()
     program = ("use Fcntl qw(:flock F_SETFD); open(my $f, '+<', $ARGV[0]) or die $!; "
                "flock($f, LOCK_EX) or die $!; fcntl($f, F_SETFD, 0) or die $!; "
@@ -595,7 +595,8 @@ def readiness_control(work, bash):
     assert observation.cleanup(time.monotonic() + CLEANUP), "readiness cleanup unconfirmed"
     final = events(root, root.name)
     assert fixture_finished(root, final) and certify(root, [[root.name, "launch"]] + final, observation, []), "ready lifetime cleanup unconfirmed"
-    assert not any(r[1] == "completed" for r in final), "ready killed fixture unexpectedly wrote a final marker"
+    # Windows cannot end the native fixture from here: it runs to its own finite expiry and writes the marker.
+    assert WINDOWS or not any(r[1] == "completed" for r in final), "ready killed fixture unexpectedly wrote a final marker"
     assert not premature and not certified, "missing readiness was certified as cleanup"
 
 
