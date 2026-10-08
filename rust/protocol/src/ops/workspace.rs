@@ -85,8 +85,13 @@ pub struct WorkspaceCreateRes {
 /// refusal, not a fallback. The caller reads the id out of its own
 /// environment (`CLAUDE_CODE_SESSION_ID`); nothing persists it.
 /// The daemon refuses an id whose transcript was not started in this row's
-/// root (`resume_not_this_row`), so no client can resume one row's
-/// conversation in another.
+/// root (`resume_not_this_row`), so no client can make a daemon resume one
+/// of its rows' conversations in another of its rows. That holds within one
+/// daemon only: a transcript started in this row's directory by anything
+/// else passes (a row of another daemon sharing this home's `projects`, a
+/// terminal or headless claude run there, a row from a toml older than
+/// `workspace.create`'s one-root gate, or the same directory through a bind
+/// mount).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceReauthReq {
     pub workspace_id: String,
