@@ -42,6 +42,9 @@ concurrency:
   group: rust-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  RUST_BACKTRACE: "1"
+
 jobs:
   test:
     name: build+test (${{ matrix.os }})

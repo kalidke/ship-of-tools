@@ -1,7 +1,7 @@
 //! The accept loop thread and admission of one new connection.
 
-use super::*;
 use super::conn::{reader_loop, report_registration_failure, send_lifecycle_event, writer_loop};
+use super::*;
 
 /// The accept loop, one dedicated thread for the server's whole life:
 /// blocks in `libc::poll` over `{listener, wake_read}` (module doc: "the
@@ -29,9 +29,16 @@ pub(super) fn accept_loop(shared: Arc<ServerShared>, listener: UnixListener, wak
                 revents: 0,
             },
         ];
+        shared.progress.note(None, "poll.enter", "begin");
         let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+        let poll_error = (rc < 0).then(io::Error::last_os_error);
+        shared.progress.note(
+            None,
+            "poll.result",
+            format_args!("rc={rc} error={poll_error:?}"),
+        );
         if rc < 0 {
-            let err = io::Error::last_os_error();
+            let err = poll_error.expect("failed poll has an error");
             if err.kind() == io::ErrorKind::Interrupted {
                 continue;
             }
@@ -45,9 +52,7 @@ pub(super) fn accept_loop(shared: Arc<ServerShared>, listener: UnixListener, wak
             // `accept_stopping` check.
             let mut discard = [0u8; 64];
             loop {
-                let n = unsafe {
-                    libc::read(wake_fd, discard.as_mut_ptr().cast(), discard.len())
-                };
+                let n = unsafe { libc::read(wake_fd, discard.as_mut_ptr().cast(), discard.len()) };
                 if n <= 0 {
                     break;
                 }
@@ -68,8 +73,20 @@ pub(super) fn accept_loop(shared: Arc<ServerShared>, listener: UnixListener, wak
         if fds[0].revents & libc::POLLIN == 0 {
             continue; // nothing to accept yet
         }
-        #[allow(clippy::disallowed_methods, reason = "listener: capsule lane socket: a private runtime folder, then the identity challenge")]
+        shared.progress.note(None, "accept.enter", "begin");
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "listener: capsule lane socket: a private runtime folder, then the identity challenge"
+        )]
         let accepted = listener.accept();
+        shared.progress.note(
+            None,
+            "accept.result",
+            format_args!(
+                "{:?}",
+                accepted.as_ref().map(|_| ()).map_err(|e| e.to_string())
+            ),
+        );
         match accepted {
             Ok((stream, _addr)) => {
                 if shared.conns.lock().unwrap().len() >= shared.max_connections as usize {
@@ -130,7 +147,7 @@ fn handle_new_connection(shared: &Arc<ServerShared>, stream: UnixStream) {
         thread::Builder::new()
             .name(format!("sot-sock-r-{conn_id}"))
             .spawn(move || {
-                if !gate2.wait_for_start() {
+                if !observe_gate(&shared2, conn_id, &gate2, "reader") {
                     return;
                 }
                 reader_loop(stream2, conn_id, shared2, torn)
@@ -153,7 +170,7 @@ fn handle_new_connection(shared: &Arc<ServerShared>, stream: UnixStream) {
         thread::Builder::new()
             .name(format!("sot-sock-w-{conn_id}"))
             .spawn(move || {
-                if !gate2.wait_for_start() {
+                if !observe_gate(&shared2, conn_id, &gate2, "writer") {
                     return;
                 }
                 writer_loop(stream2, conn_id, rx, shared2, outbound2, torn)
@@ -167,7 +184,7 @@ fn handle_new_connection(shared: &Arc<ServerShared>, stream: UnixStream) {
             // here (NOT through the reaper: it was never registered) is
             // bounded.
             gate.abort();
-            reader_jh.join().ok();
+            observe_join(shared, conn_id, reader_jh, "reader");
             report_registration_failure(shared, "writer thread spawn failed", e);
             return;
         }
@@ -201,10 +218,10 @@ fn handle_new_connection(shared: &Arc<ServerShared>, stream: UnixStream) {
         // failure path above. `shutdown` first anyway, defensively, in
         // case either thread is somehow already past the gate (it is
         // not, by construction) -- costs nothing, removes any doubt.
-        unsafe { libc::shutdown(stream.as_raw_fd(), libc::SHUT_RDWR) };
+        super::conn::observe_shutdown(shared, conn_id, &stream);
         gate.abort();
-        reader_jh.join().ok();
-        writer_jh.join().ok();
+        observe_join(shared, conn_id, reader_jh, "reader");
+        observe_join(shared, conn_id, writer_jh, "writer");
         return; // no event: this connection was never told to exist.
     }
     conns.insert(
@@ -219,9 +236,41 @@ fn handle_new_connection(shared: &Arc<ServerShared>, stream: UnixStream) {
         },
     );
     drop(conns); // never hold this lock while sending on the events channel
+    shared.progress.note(Some(conn_id), "registered", "ok");
     // RELIABLE, not best-effort: retries until the consumer actually has
     // room, so the gate below can never open onto a connection the
     // consumer was never told exists.
     send_lifecycle_event(shared, LaneEvent::Accepted(conn_id));
+    shared.progress.note(Some(conn_id), "gate.open", "begin");
     gate.open(); // ONLY now may the reader/writer threads touch the stream.
+    shared.progress.note(Some(conn_id), "gate.open", "ok");
+}
+
+// Passive wrappers keep every gate/join call and its original ordering.
+fn observe_gate(shared: &ServerShared, id: ConnId, gate: &StartGate, role: &str) -> bool {
+    let (wait, result, exit) = if role == "reader" {
+        ("reader.gate.wait", "reader.gate.result", "reader.exit")
+    } else {
+        ("writer.gate.wait", "writer.gate.result", "writer.exit")
+    };
+    shared.progress.note(Some(id), wait, "begin");
+    let started = gate.wait_for_start();
+    shared.progress.note(Some(id), result, started);
+    if !started {
+        shared.progress.note(Some(id), exit, "aborted");
+    }
+    started
+}
+
+fn observe_join(shared: &ServerShared, id: ConnId, jh: JoinHandle<()>, role: &str) {
+    let (begin, end) = if role == "reader" {
+        ("reader.join.begin", "reader.join.end")
+    } else {
+        ("writer.join.begin", "writer.join.end")
+    };
+    shared.progress.note(Some(id), begin, "begin");
+    let joined = jh.join();
+    shared
+        .progress
+        .note(Some(id), end, if joined.is_ok() { "ok" } else { "panic" });
 }

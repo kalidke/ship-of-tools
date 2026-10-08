@@ -58,8 +58,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/lib.rs`: the module tree, the crate's facades (`lock_writer`, `owner_protected_pipe_descriptor`) and `Error`/`Result`.
 - `src/claude.rs`: the dormant Claude SDK producer.
 - `src/secret.rs`: `redact` and `RedactingWriter`, the masking of page secrets in both binaries' logs.
-- `src/test_exec.rs`: `write_executable`, how a test writes a program it will run (feature `test-support`), and its source scan.
-- `src/test_isolated.rs`: `run_isolated`, `test_command`, `enter` and `drain`: the one way a test re-runs its binary for a named test and waits on it within a bound, failing a child whose body did not enter exactly once (feature `test-support`).
+- `src/test_exec.rs`: `write_executable`, the test-program writer (feature `test-support`); its Linux FIFO proof observes actual parent descriptors while the child writer is active, without a permission-spelling catalog.
+- `src/test_isolated.rs`: shared exact-body isolation, scoped direct-fixture supervision and bounded child/output waits (feature `test-support`); readiness errors retain termination/entry checks, and byte-captured output renders invalid UTF-8 with explicit byte escapes. Wrapped fixtures retain launcher status and both streams, validate the native role/PID witness against exact entry, and share direct fixtures' wait/drain/finalization implementation.
 - `src/test_log.rs`: timestamp-free `capture()` and formatting-preserving `install()` (feature `test-support`), with behavioral tests of the capture format, first-callsite routing, parallel isolation and guard restoration.
 - `src/store/`: the voyage store.
 - `src/capsule/`: the leg's runtime and producers.
@@ -81,8 +81,8 @@ the leg. For the record's format read `src/store/record.rs` and `src/store/segme
 - A change to a wire tag, magic or limit, or to an exit code, is an interface change with other processes and versions.
 - No test takes the system folders out of the process `PATH` or changes `SHELL`; code under test takes them from its caller (`test_scan::tests::no_test_changes_the_process_path_or_shell`).
 - Every subscriber a test installs goes through `test_log`: `capture()` reads this thread's events without formatter timestamps or colour; `install()` preserves the supplied subscriber's formatting and timer. Behavioral tests exercise first-callsite routing, parallel captures and guard restoration; new callers use this owner. The two binaries' `main` functions install production subscribers.
-- A test writes a program it will run only through `test_exec::write_executable`, so no process holds it open for writing when it runs (`test_exec::tests::only_test_exec_makes_a_test_program_executable`).
-- A test re-runs a test binary by name through `test_isolated` (`run_isolated`, or `test_command` with `enter` and `Entry::assert_once`), or at a site its pin lists with that site's own proof that the body ran (`test_isolated::tests::no_test_reruns_a_binary_outside_this_module`).
+- Test-program writers use `test_exec::write_executable`; its separate Unix writer leaves no writable program descriptor in the test process. The retained real descriptor test proves this owner property; review checks callers, without a source-spelling inventory.
+- Named test reruns use `test_isolated`; direct fixtures retain child wait/status, termination, entry and separate output observations before raising failures. Regression proofs require observed prerequisites and the selected failure's exact cause; wrong-cause controls use the same verifier. Duration/deadline APIs share one wait implementation; byte output preserves valid text and escapes invalid UTF-8. Wrapped fixtures retain launcher status and both streams, validate the native role/PID witness against exact entry, and share direct fixtures' wait/drain/finalization implementation; ordinary direct fixtures still validate their spawned child PID.
 - Every Rust source-text scan reads through `test_scan`, and none cuts a file at its first `#[cfg(test)]` (`test_scan::tests::no_scan_cuts_a_file_at_its_first_cfg_test`).
 - Helper binaries `sot-pty-helper`, `sot-conpty-helper` and `sot-fault-writer` are test fixtures and never ship.
 - Another crate can reach the processes this crate starts (the capsule's agent, the supervisor's legs, the Claude

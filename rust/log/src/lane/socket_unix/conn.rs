@@ -17,7 +17,8 @@ impl std::fmt::Display for TeardownRequestedMarker {
 impl std::error::Error for TeardownRequestedMarker {}
 
 fn is_teardown_requested(e: &io::Error) -> bool {
-    e.get_ref().is_some_and(|inner| inner.is::<TeardownRequestedMarker>())
+    e.get_ref()
+        .is_some_and(|inner| inner.is::<TeardownRequestedMarker>())
 }
 
 /// The POSIX disconnect family for a stream socket's read/write errors —
@@ -66,9 +67,26 @@ fn notify_wake(shared: &Arc<ServerShared>) {
 /// could ever call `events()` again. Identical contract to
 /// `pipe_win::send_lifecycle_event`.
 pub(super) fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
+    let checkpoint = match &evt {
+        LaneEvent::Accepted(id) => Some((*id, "accepted.enqueue")),
+        LaneEvent::Closed(id, _) => Some((*id, "closed.enqueue")),
+        _ => None,
+    };
     let mut item = evt;
     loop {
-        match shared.events_tx.try_send(item) {
+        if let Some((id, step)) = checkpoint {
+            shared.progress.note(Some(id), step, "begin");
+        }
+        let sent = shared.events_tx.try_send(item);
+        if let Some((id, step)) = checkpoint {
+            let result = match &sent {
+                Ok(()) => "ok",
+                Err(TrySendError::Full(_)) => "full",
+                Err(TrySendError::Disconnected(_)) => "disconnected",
+            };
+            shared.progress.note(Some(id), step, result);
+        }
+        match sent {
             Ok(()) => {
                 notify_wake(shared);
                 return;
@@ -135,7 +153,15 @@ pub(super) fn request_teardown(
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        let _ = shared.reaper_tx.send(ReaperMsg::Torn(conn_id, reason));
+        shared
+            .progress
+            .note(Some(conn_id), "teardown.enqueue", "begin");
+        let sent = shared.reaper_tx.send(ReaperMsg::Torn(conn_id, reason));
+        shared.progress.note(
+            Some(conn_id),
+            "teardown.enqueue",
+            if sent.is_ok() { "ok" } else { "disconnected" },
+        );
     }
 }
 
@@ -143,7 +169,11 @@ pub(super) fn request_teardown(
 /// registered (a worker's `thread::Builder::spawn` failed) — `Accepted`
 /// then an immediate `Closed(Error(..))`, both via the reliable path.
 /// Identical contract to `pipe_win::report_registration_failure`.
-pub(super) fn report_registration_failure(shared: &Arc<ServerShared>, what: &str, e: impl std::fmt::Display) {
+pub(super) fn report_registration_failure(
+    shared: &Arc<ServerShared>,
+    what: &str,
+    e: impl std::fmt::Display,
+) {
     let conn_id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     send_lifecycle_event(shared, LaneEvent::Accepted(conn_id));
     send_lifecycle_event(
@@ -164,10 +194,26 @@ pub(super) fn report_registration_failure(shared: &Arc<ServerShared>, what: &str
 fn teardown_if_present(shared: &Arc<ServerShared>, conn_id: ConnId, reason: Option<ClosedReason>) {
     let conn = shared.conns.lock().unwrap().remove(&conn_id);
     let Some(conn) = conn else { return };
-    unsafe { libc::shutdown(conn.stream.as_raw_fd(), libc::SHUT_RDWR) };
+    observe_shutdown(shared, conn_id, &conn.stream);
     drop(conn.sender); // unblocks a writer idle-waiting on `recv` with nothing queued
-    conn.reader_jh.join().ok();
-    conn.writer_jh.join().ok();
+    shared
+        .progress
+        .note(Some(conn_id), "reader.join.begin", "begin");
+    let joined = conn.reader_jh.join();
+    shared.progress.note(
+        Some(conn_id),
+        "reader.join.end",
+        if joined.is_ok() { "ok" } else { "panic" },
+    );
+    shared
+        .progress
+        .note(Some(conn_id), "writer.join.begin", "begin");
+    let joined = conn.writer_jh.join();
+    shared.progress.note(
+        Some(conn_id),
+        "writer.join.end",
+        if joined.is_ok() { "ok" } else { "panic" },
+    );
     if let Some(reason) = reason {
         send_lifecycle_event(shared, LaneEvent::Closed(conn_id, reason));
     }
@@ -179,7 +225,10 @@ fn teardown_if_present(shared: &Arc<ServerShared>, conn_id: ConnId, reason: Opti
 pub(super) fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
     for msg in rx.iter() {
         match msg {
-            ReaperMsg::Torn(id, reason) => teardown_if_present(&shared, id, Some(reason)),
+            ReaperMsg::Torn(id, reason) => {
+                shared.progress.note(Some(id), "teardown.dequeue", "ok");
+                teardown_if_present(&shared, id, Some(reason));
+            }
             ReaperMsg::Shutdown => {
                 let ids: Vec<ConnId> = shared.conns.lock().unwrap().keys().copied().collect();
                 for id in ids {
@@ -201,9 +250,17 @@ pub(super) fn reader_loop(
     shared: Arc<ServerShared>,
     torn_down_requested: Arc<AtomicBool>,
 ) {
+    shared.progress.note(Some(conn_id), "reader.enter", "ok");
     let mut buf = vec![0u8; READ_BUF_LEN];
     let reason = loop {
-        match (&*stream).read(&mut buf) {
+        shared
+            .progress
+            .note(Some(conn_id), "reader.io.enter", "begin");
+        let read = (&*stream).read(&mut buf);
+        shared
+            .progress
+            .note(Some(conn_id), "reader.io.result", format_args!("{read:?}"));
+        match read {
             Ok(0) => break ClosedReason::Eof, // ordered EOF (property 13), never reaches classify_terminal_error
             Ok(n) => {
                 if !deliver_bytes(&shared, conn_id, buf[..n].to_vec(), &torn_down_requested) {
@@ -218,6 +275,7 @@ pub(super) fn reader_loop(
         }
     };
     request_teardown(&shared, conn_id, &torn_down_requested, reason);
+    shared.progress.note(Some(conn_id), "reader.exit", "ok");
 }
 
 /// `write(2)` in a partial-progress loop, checking `torn_down_requested`
@@ -228,12 +286,23 @@ fn write_all_checking_teardown(
     stream: &UnixStream,
     mut bytes: &[u8],
     torn_down_requested: &AtomicBool,
+    shared: &ServerShared,
+    conn_id: ConnId,
 ) -> io::Result<()> {
     while !bytes.is_empty() {
         if torn_down_requested.load(Ordering::Acquire) {
             return Err(io::Error::other(TeardownRequestedMarker));
         }
-        match (&*stream).write(bytes) {
+        shared
+            .progress
+            .note(Some(conn_id), "writer.io.enter", "begin");
+        let written = (&*stream).write(bytes);
+        shared.progress.note(
+            Some(conn_id),
+            "writer.io.result",
+            format_args!("{written:?}"),
+        );
+        match written {
             Ok(0) => {
                 return Err(io::Error::new(
                     io::ErrorKind::WriteZero,
@@ -266,9 +335,30 @@ pub(super) fn writer_loop(
     outbound: Arc<OutboundBudget>,
     torn_down_requested: Arc<AtomicBool>,
 ) {
-    while let Ok(cmd) = rx.recv() {
+    shared.progress.note(Some(conn_id), "writer.enter", "ok");
+    loop {
+        shared
+            .progress
+            .note(Some(conn_id), "writer.queue.wait", "begin");
+        let received = rx.recv();
+        shared.progress.note(
+            Some(conn_id),
+            "writer.queue.result",
+            if received.is_ok() {
+                "ok"
+            } else {
+                "disconnected"
+            },
+        );
+        let Ok(cmd) = received else { break };
         let len = cmd.bytes.len();
-        let result = write_all_checking_teardown(&stream, &cmd.bytes, &torn_down_requested);
+        let result = write_all_checking_teardown(
+            &stream,
+            &cmd.bytes,
+            &torn_down_requested,
+            &shared,
+            conn_id,
+        );
         outbound.release(len);
         match result {
             Ok(()) => {
@@ -277,9 +367,32 @@ pub(super) fn writer_loop(
                 }
             }
             Err(e) => {
-                request_teardown(&shared, conn_id, &torn_down_requested, classify_terminal_error(e));
+                request_teardown(
+                    &shared,
+                    conn_id,
+                    &torn_down_requested,
+                    classify_terminal_error(e),
+                );
                 break;
             }
         }
     }
+    shared.progress.note(Some(conn_id), "writer.exit", "ok");
+}
+
+/// Observe the existing shutdown without changing its error handling or cancellation policy.
+pub(super) fn observe_shutdown(shared: &ServerShared, id: ConnId, stream: &UnixStream) {
+    shared.progress.note(Some(id), "shutdown.enter", "begin");
+    let rc = unsafe { libc::shutdown(stream.as_raw_fd(), libc::SHUT_RDWR) };
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        let error = (rc != 0).then(io::Error::last_os_error);
+        shared.progress.note(
+            Some(id),
+            "shutdown.result",
+            format_args!("rc={rc} error={error:?}"),
+        );
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = rc;
 }
