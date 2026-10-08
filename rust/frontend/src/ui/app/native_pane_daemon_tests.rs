@@ -189,8 +189,6 @@ impl Daemon {
         }
         let anchor = projects.join("anchor");
         std::fs::create_dir_all(&anchor)?;
-        #[cfg(target_os = "linux")]
-        std::env::set_var("sot_t3_case", "1");
         let mut command = Command::new(sotd);
         for (name, _) in std::env::vars_os().filter(|(n, _)| n.to_string_lossy().to_uppercase().starts_with("SOT_")) {
             command.env_remove(name);
