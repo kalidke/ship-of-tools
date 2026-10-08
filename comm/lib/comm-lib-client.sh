@@ -240,7 +240,7 @@ sot_ssh_bridge() {
 
 # sot_dial ENDPOINT [TIMEOUT_SECS] — stdin to the daemon at ENDPOINT, its replies to stdout (ADR 0049, User isolation):
 # every `unix:` or `pipe:` connection this library opens is `sot_dial`'s. A `unix:` or `pipe:` endpoint is opened by
-# `sotd stdio-bridge --endpoint`, whose connect is `connect_own`: a socket only in a folder private to this OS account,
+# `sotd stdio-bridge --endpoint`, whose connect is `connect_own`: a socket only when this OS account listens on it,
 # a pipe only when this account serves it, else exit 1 and one stderr line saying why. A bare `pipe:<name>` is written
 # `pipe:\\.\pipe\<name>`. An `ssh:` endpoint is `sot_ssh_bridge`, whose far end is that box's own bridge. The bridge
 # closes the connection when its input ends, so a caller keeps stdin open until it has read what it waits for. The bound

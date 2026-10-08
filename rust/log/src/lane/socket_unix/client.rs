@@ -81,6 +81,11 @@ impl std::fmt::Debug for SocketClient {
 }
 
 impl SocketClient {
+    /// The connected socket, for a check that reads it without I/O (`identity::connect_own`'s account check).
+    pub(crate) fn socket_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.stream)
+    }
+
     /// Blocking write of the whole buffer, cancellable from another
     /// thread via [`cancel`](Self::cancel). `bytes` must be non-empty. A
     /// concurrent SECOND `write_all` call from another thread returns
@@ -410,9 +415,13 @@ impl Endpoint for SocketEndpoint {
 /// ADR 0045 decision 3: the lane bridge dials a socket PATH handed to it
 /// on the wire (`LaneDial::Local`), never a name this crate derives from a
 /// voyage id or a state-dir hash itself. Crate-private: other crates
-/// (`sot-protocol`'s `DaemonLaneEndpoint`, `sotd stdio-bridge`) reach a
-/// socket by name only through `identity::connect_own::connect_own`, which
-/// runs the private-folder rule first (ADR 0049, User isolation). Reused
+/// (`sot-protocol`'s `DaemonLaneEndpoint`, `sotd stdio-bridge`, `sotd
+/// topology`'s dial, the window) reach a socket by name only through
+/// `identity::connect_own::connect_own`, which checks the listener's account
+/// after this connect, before client I/O (ADR 0049, User isolation). The
+/// retry budget is fixed at `CONNECT_BOUND`; an attempt or wait in progress
+/// finishes first, including the 20 ms retry sleep, so it is not an exact
+/// elapsed-time limit. Reused
 /// rather than reimplemented: this is the SAME bounded,
 /// non-blocking, pid-anchored connector every other Unix caller gets —
 /// a caller that rolled its own blocking `UnixStream::connect` wrapped
@@ -491,10 +500,11 @@ pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketCl
 /// every ordinary caller uses, mirroring `pipe_win::connect_voyage_pipe`'s
 /// own doc almost verbatim: a raw successful `connect(2)` proves nothing
 /// about who is listening, so this runs
-/// the platform's own `authenticate_server` (same-user identity only —
-/// NOT the full five-step `challenge()`, which additionally binds a
-/// reply's own pid/creation and needs a lane-specific request this layer
-/// must not consume) before returning `Ok(_)`. A failed authentication is
+/// the platform's own `authenticate_server` (the account the kernel
+/// recorded for the connection only — NOT the full five-step `challenge()`,
+/// which also matches an honest reply's own pid/creation and needs a
+/// lane-specific request this layer must not consume) before returning
+/// `Ok(_)`. A failed authentication is
 /// a loud, typed [`TransportError::Foreign`] or
 /// [`TransportError::Undetermined`] — never a silent retry.
 ///

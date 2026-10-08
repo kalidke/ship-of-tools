@@ -6,7 +6,8 @@ the CLI commands dial the daemon with. Part of topology.
 
 ## Files
 - `cli.rs`: `sotd topology`, the verbs a box runs for itself: argv, `sync`, `set`, status's cache line and the edit parser.
-- `dial.rs`: the one-shot blocking daemon client; its `connect` applies `connect_own`'s rule (`own_socket`, `own_pipe`) to a `unix:` or `pipe:` endpoint.
+- `dial.rs`: the one-shot blocking daemon client; its `connect` reaches a `unix:` endpoint through `connect_own` and
+  applies `own_pipe` to a `pipe:` one.
 - `mod.rs`: declares the seven modules below.
 - `relay_units.rs`: `sotd topology apply` and `refresh`, the hub's systemd --user relay units and drop-ins, and the hub's relay-refresh thread (`spawn_refresh_at_start`).
 - `set.rs`: `handle_topology_set`, the daemon side of op `topology.set`.

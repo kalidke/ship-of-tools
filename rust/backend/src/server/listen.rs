@@ -90,15 +90,31 @@ pub(super) async fn take_daemon_lock(
     })
 }
 
-/// Whether a daemon answers on the session socket: on Unix a connect
-/// succeeds, on Windows a client open of the pipe name succeeds.
+/// Whether nothing listens on the socket at `path`, from what a probe's `connect_own` returned: the socket is missing
+/// (`NotFound`) or its file is stale (`ConnectionRefused`, the kernel's answer when nobody calls `accept`). Anything
+/// else, an answer from this account, another account's listener, a listener whose backlog is full (the connector
+/// gave up at `CONNECT_BOUND`) or an error that cannot tell, is a listener or is not known to be none.
+#[cfg(unix)]
+fn nobody_listens(
+    result: &Result<
+        sot_log::lane::socket_unix::SocketClient,
+        sot_log::lane::transport::TransportError,
+    >,
+) -> bool {
+    use sot_log::lane::transport::TransportError;
+    matches!(
+        result,
+        Err(TransportError::Io { op: "connect", source })
+            if matches!(source.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused)
+    )
+}
+
+/// Whether a daemon answers on the session socket: on Unix a socket something listens on (this account's, another
+/// account's or one with a full backlog; `nobody_listens` is the rest), on Windows a client open of the pipe name
+/// succeeds. The Unix probe is `connect_own`, bounded by `CONNECT_BOUND` and writing nothing.
 fn socket_answers(path: &std::path::Path) -> bool {
     #[cfg(unix)]
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "the daemon probes the path it is about to bind; an answer refuses the start and nothing is written"
-    )]
-    return std::os::unix::net::UnixStream::connect(path).is_ok();
+    return !nobody_listens(&sot_log::identity::connect_own::connect_own(path));
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
@@ -114,30 +130,22 @@ fn socket_answers(path: &std::path::Path) -> bool {
 
 /// Refuses when a daemon still answers on the socket at `path`. Unlinking
 /// a live daemon's socket leaves it running on a deleted file that no
-/// client can reach until it restarts. Only a socket nobody answers on
-/// (ECONNREFUSED), or none at all, is stale; any other connect error
-/// refuses too, because it cannot tell.
+/// client can reach until it restarts. The probe is `connect_own`, bounded by `CONNECT_BOUND`, so another account's
+/// listener and a listener with a full backlog refuse the start within that bound instead of hanging it. Only a
+/// socket nobody answers on (ECONNREFUSED), or none at all, is stale (`nobody_listens`); any other result refuses too,
+/// because it cannot tell.
 #[cfg(unix)]
 pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "the daemon probes the path it is about to bind; an answer refuses the start and nothing is written"
-    )]
-    let attempt = std::os::unix::net::UnixStream::connect(path);
+    let attempt = sot_log::identity::connect_own::connect_own(path);
+    if nobody_listens(&attempt) {
+        return Ok(());
+    }
     match attempt {
         Ok(_) => anyhow::bail!(
             "another daemon is already listening on {}; refusing to start on its socket \
              (stop that daemon first, or pass a different --socket)",
             path.display()
         ),
-        Err(e)
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-            ) =>
-        {
-            Ok(())
-        }
         Err(e) => anyhow::bail!(
             "cannot tell whether a daemon is listening on {}: {e}; refusing to unlink its socket",
             path.display()
@@ -320,9 +328,11 @@ fn dispatch_admitted(
     observe: impl FnOnce(&LocalStream) -> Option<PeerAuthenticated>,
     handle: impl FnOnce(LocalStream, PeerAuthenticated),
 ) -> bool {
+    // Admission one: a connection whose account, as the OS recorded it at the connect, is another's, or that the
+    // OS cannot read, is dropped before a byte is read.
     let Some(peer) = observe(&stream) else {
         tracing::warn!(
-            "refused a connection: its process is not this account's, or could not be read"
+            "refused a connection: the account the OS recorded for it is not this one, or could not be read"
         );
         return false;
     };
@@ -395,9 +405,120 @@ mod tests {
     #[cfg(windows)]
     use interprocess::local_socket::{GenericFilePath, ListenerOptions};
 
+    /// A fresh private folder and a socket path in it, short enough for macOS's `sun_path`.
+    #[cfg(unix)]
+    fn probe_socket_path() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix("sotls-")
+            .tempdir_in("/tmp")
+            .expect("a folder under /tmp");
+        let path = dir.path().join("s.sock");
+        (dir, path)
+    }
+
+    /// The daemon's start probes read a missing socket and a stale socket file (nobody calls `accept`) as nothing
+    /// listening, so a crashed daemon's leftover does not block a restart, and a listener this account serves as one.
+    #[cfg(unix)]
+    #[test]
+    fn the_start_probes_tell_missing_and_stale_from_live() {
+        let (_dir, path) = probe_socket_path();
+        assert!(
+            refuse_live_socket(&path).is_ok(),
+            "a missing socket is not a listener"
+        );
+        assert!(!socket_answers(&path));
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        let refusal = refuse_live_socket(&path)
+            .expect_err("a live listener refuses the start")
+            .to_string();
+        assert!(
+            refusal.contains("another daemon is already listening on"),
+            "{refusal}"
+        );
+        assert!(socket_answers(&path));
+        drop(listener);
+        assert!(path.exists(), "the stale socket file is still there");
+        assert!(
+            refuse_live_socket(&path).is_ok(),
+            "a stale socket file is not a listener"
+        );
+        assert!(!socket_answers(&path));
+    }
+
+    /// One nonblocking `connect(2)` to `path`: a queued connection is returned; `None` is the full-backlog `EAGAIN`.
+    #[cfg(target_os = "linux")]
+    fn nonblocking_connect(path: &std::path::Path) -> Option<std::os::fd::OwnedFd> {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::ffi::OsStrExt;
+        // SAFETY: plain syscalls on a socket this function creates and either returns or closes.
+        unsafe {
+            let fd = libc::socket(
+                libc::AF_UNIX,
+                libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+                0,
+            );
+            assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+            let mut addr: libc::sockaddr_un = std::mem::zeroed();
+            addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+            let bytes = path.as_os_str().as_bytes();
+            for (dst, &b) in addr.sun_path.iter_mut().zip(bytes) {
+                *dst = b as libc::c_char;
+            }
+            let len =
+                (std::mem::size_of::<libc::sa_family_t>() + bytes.len() + 1) as libc::socklen_t;
+            if libc::connect(fd, std::ptr::addr_of!(addr).cast(), len) == 0 {
+                return Some(std::os::fd::OwnedFd::from_raw_fd(fd));
+            }
+            let err = std::io::Error::last_os_error();
+            libc::close(fd);
+            assert_eq!(
+                err.raw_os_error(),
+                Some(libc::EAGAIN),
+                "connect while filling the backlog: {err}"
+            );
+            None
+        }
+    }
+
+    /// ADR 0049 `## User isolation`: a start probe of a socket this account listens on whose backlog is full returns
+    /// within `CONNECT_BOUND` plus slack instead of hanging, and refuses the start (`refuse_live_socket`) and counts as
+    /// an answer (`socket_answers`). Linux: a full backlog makes a connect wait there, where macOS refuses it at once.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_start_probe_of_a_full_backlog_returns_within_the_bound_and_refuses() {
+        use std::os::fd::AsRawFd;
+        let (_dir, path) = probe_socket_path();
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        // SAFETY: `listener` owns a valid listening socket for this call; `listen(2)` sets its backlog again.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 1) }, 0);
+        let mut queued = Vec::new();
+        while let Some(fd) = nonblocking_connect(&path) {
+            queued.push(fd);
+            assert!(queued.len() < 64, "the backlog never filled");
+        }
+        let probe_path = path.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send((
+                refuse_live_socket(&probe_path).map_err(|e| e.to_string()),
+                socket_answers(&probe_path),
+            ));
+        });
+        let bound = sot_log::lane::transport::CONNECT_BOUND * 2 + std::time::Duration::from_secs(3);
+        let (refusal, answers) = rx
+            .recv_timeout(bound)
+            .expect("a start probe did not return within its bound");
+        let refusal = refusal.expect_err("a full backlog refuses the start");
+        assert!(
+            refusal.contains("cannot tell whether a daemon is listening on"),
+            "{refusal}"
+        );
+        assert!(answers, "a listener with a full backlog answers");
+    }
+
     /// ADR 0049 `## User isolation`: a Unix connection is admitted only when its kernel-recorded effective uid is this
-    /// account's; foreign or missing records are refused. On macOS this checks cached connection provenance, without
-    /// establishing the holder's current euid or binding it to the live token's observed process.
+    /// account's; foreign or missing records are refused. On Linux and macOS this is the account recorded at the
+    /// connect, not the holder's current euid; on macOS the pid is the live token's observation.
     #[cfg(unix)]
     #[test]
     fn same_account_table() {

@@ -164,11 +164,10 @@ fn connect(endpoint: &str, sig: &'static crate::lifecycle::child_signal::Signal)
     if let Some(p) = endpoint.strip_prefix("unix:") {
         #[cfg(unix)]
         {
-            // ADR 0049, User isolation: only a socket in this account's private folder.
-            sot_log::identity::connect_own::own_socket(std::path::Path::new(p)).map_err(|e| format!("{endpoint}: {e}"))?;
-            #[allow(clippy::disallowed_methods, reason = "own_socket runs first, above")]
-            return std::os::unix::net::UnixStream::connect(p)
-                .map(Conn::Unix)
+            // ADR 0049, User isolation: `connect_own` checks the listener's cached account after its fixed-budget
+            // connect, before client I/O.
+            return sot_log::identity::connect_own::connect_own(std::path::Path::new(p))
+                .map(|client| Conn::Unix(client.into_stream()))
                 .map_err(|e| format!("{endpoint}: {e}"));
         }
         #[cfg(not(unix))]
@@ -545,5 +544,86 @@ pub(crate) mod tests {
         assert!(err.contains("unix:/pipe:/ssh:"), "error should name all three schemes, got: {err}");
         let tcp = connect("tcp:127.0.0.1:1", crate::lifecycle::child_signal::process()).err().expect("a tcp endpoint is not dialable");
         assert!(tcp.contains("unrecognised endpoint spelling"), "{tcp}");
+    }
+
+    /// ADR 0049, User isolation: `connect`'s `unix:` arm refuses a socket another OS account listens on, and that
+    /// listener gets no byte.
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_another_account_listens_on_is_refused() {
+        if !sot_log::test_isolated::run_isolated(
+            "topology::dial::tests::a_socket_another_account_listens_on_is_refused",
+        ) {
+            return;
+        }
+        let Some(foreign) = sot_log::test_foreign::ForeignListener::start(false) else {
+            return;
+        };
+        let refused = match connect(
+            &format!("unix:{}", foreign.path.display()),
+            crate::lifecycle::child_signal::process(),
+        ) {
+            Ok(_) => String::from("connected"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            foreign.finish(),
+            0,
+            "the dial sent another account's listener bytes"
+        );
+        assert!(
+            refused.contains("another OS account listens on this socket"),
+            "{refused}"
+        );
+    }
+
+    /// ADR 0049, User isolation: `connect`'s `pipe:` arm refuses a pipe another account serves (`epmapper`, SYSTEM's).
+    #[cfg(windows)]
+    #[test]
+    fn a_pipe_another_account_serves_is_refused() {
+        let refused = match connect(
+            r"pipe:\\.\pipe\epmapper",
+            crate::lifecycle::child_signal::process(),
+        ) {
+            Ok(_) => String::from("connected"),
+            Err(e) => e,
+        };
+        assert!(refused.contains("not connecting"), "{refused}");
+    }
+
+    /// ADR 0049, User isolation: a dial to a socket whose backlog another account has filled returns within
+    /// `CONNECT_BOUND` plus 2 s of slack, and its error is not the account refusal, so the backlog was full.
+    #[cfg(unix)]
+    #[test]
+    fn a_full_foreign_backlog_ends_the_dial_within_its_bound() {
+        if !sot_log::test_isolated::run_isolated(
+            "topology::dial::tests::a_full_foreign_backlog_ends_the_dial_within_its_bound",
+        ) {
+            return;
+        }
+        let Some(foreign) = sot_log::test_foreign::ForeignListener::start(true) else {
+            return;
+        };
+        let endpoint = format!("unix:{}", foreign.path.display());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ =
+                tx.send(connect(&endpoint, crate::lifecycle::child_signal::process()).map(|_| ()));
+        });
+        let result = rx
+            .recv_timeout(
+                sot_log::lane::transport::CONNECT_BOUND + std::time::Duration::from_secs(2),
+            )
+            .expect("the dial did not end within its bound");
+        let err = result.expect_err("connected through a full backlog");
+        assert!(
+            !err.contains("not connecting"),
+            "the connect went through, so the backlog was not full: {err}"
+        );
+        assert_eq!(
+            foreign.finish(),
+            0,
+            "the dial sent another account's listener bytes"
+        );
     }
 }

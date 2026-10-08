@@ -234,21 +234,74 @@ fn dash_dash_endpoint_reaches_a_socket_in_a_private_folder() {
     round_trip(&socket, &["--endpoint", &endpoint]);
 }
 
-/// ADR 0049, User isolation: a socket outside this account's private folder is never connected to.
+/// ADR 0049, User isolation: `--endpoint` to a socket another account listens on is refused, and the listener gets none
+/// of the bridge's input. A zero count is evidence of no write on Linux only: macOS may refuse the accept of a client
+/// that has closed.
 #[test]
-fn dash_dash_endpoint_refuses_a_socket_outside_a_private_folder() {
+fn dash_dash_endpoint_refuses_a_socket_another_account_listens_on() {
+    if !sot_log::test_isolated::run_isolated(
+        "dash_dash_endpoint_refuses_a_socket_another_account_listens_on",
+    ) {
+        return;
+    }
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let socket = std::path::PathBuf::from(format!("/tmp/sotbr-open-{}.sock", std::process::id()));
-    let listener = UnixListener::bind(&socket).expect("bind the public-folder listener");
-    listener.set_nonblocking(true).expect("nonblocking listener");
-    let endpoint = format!("unix:{}", socket.display());
-    let (status, stdout, stderr) = run_bridge(&["--endpoint", &endpoint]);
-    std::fs::remove_file(&socket).expect("remove the test's socket");
-    assert!(!status.success(), "a socket outside a private folder is refused");
-    assert!(stderr.contains("is not a private folder of this OS account"), "{stderr:?}");
+    let Some(foreign) = sot_log::test_foreign::ForeignListener::start(false) else {
+        return;
+    };
+    let endpoint = format!("unix:{}", foreign.path.display());
+    let mut child = spawn_bridge(&["--endpoint", &endpoint]);
+    let mut stdin = child.stdin.take().expect("bridge stdin");
+    // A bridge that has already exited refuses the write; its stderr says why.
+    let _ = stdin.write_all(b"ping\n").and_then(|()| stdin.flush());
+    drop(stdin);
+    let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    assert_eq!(
+        foreign.finish(),
+        0,
+        "the bridge sent another account's listener bytes"
+    );
+    assert!(
+        !status.success(),
+        "a socket another account listens on is refused"
+    );
+    assert!(
+        stderr.contains("another OS account listens on this socket"),
+        "{stderr:?}"
+    );
     assert!(stdout.is_empty(), "a refusal writes nothing to stdout");
-    assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
-        "the bridge connected to a socket outside a private folder");
+}
+
+/// ADR 0049, User isolation: the bridge returns within `CONNECT_BOUND` plus 5 s of slack against a socket whose backlog
+/// another OS account has filled, and its error is not the account refusal, so the backlog was full.
+#[test]
+fn a_full_foreign_backlog_ends_the_bridge_within_its_bound() {
+    if !sot_log::test_isolated::run_isolated(
+        "a_full_foreign_backlog_ends_the_bridge_within_its_bound",
+    ) {
+        return;
+    }
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(foreign) = sot_log::test_foreign::ForeignListener::start(true) else {
+        return;
+    };
+    let endpoint = format!("unix:{}", foreign.path.display());
+    let mut child = spawn_bridge(&["--endpoint", &endpoint]);
+    drop(child.stdin.take());
+    let (status, _, stderr) = sot_log::test_isolated::drain(child)
+        .wait_within(sot_log::lane::transport::CONNECT_BOUND + Duration::from_secs(5));
+    assert!(
+        !status.success(),
+        "the bridge connected through a full backlog"
+    );
+    assert!(
+        !stderr.contains("not connecting"),
+        "the connect went through, so the backlog was not full: {stderr:?}"
+    );
+    assert_eq!(
+        foreign.finish(),
+        0,
+        "the bridge sent another account's listener bytes"
+    );
 }
 
 /// ADR 0049, User isolation: the endpoint form accepts only this platform's local scheme.

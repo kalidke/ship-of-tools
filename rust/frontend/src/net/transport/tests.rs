@@ -191,8 +191,8 @@ async fn a_tree_root_error_reply_does_not_end_the_session() {
 async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
     use interprocess::local_socket::{tokio::prelude::*, GenericFilePath, ListenerOptions};
 
-    // A named-pipe path on Windows, a socket file elsewhere -- both go
-    // through `GenericFilePath`, exactly the route `connect_pipe` takes.
+    // A named-pipe path on Windows, a socket file elsewhere, each bound by
+    // its path (`GenericFilePath`).
     #[cfg(windows)]
     let unique = format!(
         "sot-transport-test-{}-{}",
@@ -204,8 +204,8 @@ async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
     );
     #[cfg(windows)]
     let sock_path = std::path::PathBuf::from(format!(r"\\.\pipe\{unique}"));
-    // `connect_pipe` refuses a socket outside a private folder (ADR 0049, User isolation), so the socket gets its own,
-    // at a short path (macOS's `sun_path` is 104 bytes).
+    // A private folder of the test's own, so no other account on a shared host reaches the socket, at a short path
+    // (macOS's `sun_path` is 104 bytes).
     #[cfg(not(windows))]
     let sock_path = {
         use std::os::unix::fs::DirBuilderExt;
@@ -301,6 +301,77 @@ async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
     let _ = std::fs::remove_file(&sock_path);
     #[cfg(not(windows))]
     let _ = std::fs::remove_dir(sock_path.parent().unwrap());
+}
+
+/// ADR 0049, User isolation: `connect_pipe` returns within `CONNECT_BOUND` plus 2 s of slack against a socket whose
+/// backlog another OS account has filled, and its error is not the account refusal, so the backlog was full.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_full_foreign_backlog_ends_connect_pipe_within_its_bound() {
+    if !sot_log::test_isolated::run_isolated(
+        "net::transport::tests::a_full_foreign_backlog_ends_connect_pipe_within_its_bound",
+    ) {
+        return;
+    }
+    let Some(foreign) = sot_log::test_foreign::ForeignListener::start(true) else {
+        return;
+    };
+    let result = tokio::time::timeout(
+        sot_log::lane::transport::CONNECT_BOUND + std::time::Duration::from_secs(2),
+        connect_pipe(&foreign.path),
+    )
+    .await
+    .expect("connect_pipe did not end within its bound");
+    let err = result.err().expect("connected through a full backlog");
+    let text = format!("{err:#}");
+    assert!(
+        !text.contains("not connecting"),
+        "the connect went through, so the backlog was not full: {text}"
+    );
+    assert_eq!(
+        foreign.finish(),
+        0,
+        "connect_pipe sent another account's listener bytes"
+    );
+}
+
+/// ADR 0049, User isolation: `connect_pipe` refuses a socket another OS account listens on, and that listener gets no
+/// byte.
+#[cfg(unix)]
+#[tokio::test]
+async fn connect_pipe_refuses_a_socket_another_account_listens_on() {
+    if !sot_log::test_isolated::run_isolated(
+        "net::transport::tests::connect_pipe_refuses_a_socket_another_account_listens_on",
+    ) {
+        return;
+    }
+    let Some(foreign) = sot_log::test_foreign::ForeignListener::start(false) else {
+        return;
+    };
+    let refused = match connect_pipe(&foreign.path).await {
+        Ok(_) => String::from("connected"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert_eq!(
+        foreign.finish(),
+        0,
+        "connect_pipe sent another account's listener bytes"
+    );
+    assert!(
+        refused.contains("another OS account listens on this socket"),
+        "{refused}"
+    );
+}
+
+/// ADR 0049, User isolation: `connect_pipe` refuses a pipe another account serves (`epmapper`, SYSTEM's).
+#[cfg(windows)]
+#[tokio::test]
+async fn connect_pipe_refuses_a_pipe_another_account_serves() {
+    let refused = match connect_pipe(std::path::Path::new(r"\\.\pipe\epmapper")).await {
+        Ok(_) => String::from("connected"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(refused.contains("not connecting"), "{refused}");
 }
 
 #[tokio::test]

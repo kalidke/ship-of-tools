@@ -28,12 +28,16 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
 ## Promises
 - One daemon per state root: `lock_daemon` fails at once when a daemon answers on the socket, and waits up to
   `daemon_lock_wait` for a predecessor that is still shutting down.
-- A socket a live daemon answers on is never unlinked: `refuse_live_socket`, called from `run_local`.
+- A socket a live daemon answers on is never unlinked: `refuse_live_socket`, called from `run_local`. Both start
+  probes (`refuse_live_socket`, `socket_answers`) connect through `connect_own`, within `CONNECT_BOUND`: another
+  account's listener and a listener with a full backlog refuse the start, and only a missing socket or a stale file
+  (`ConnectionRefused`) is nobody listening. macOS refuses a full backlog with that same error, so there it reads as
+  stale.
 - At accept, a Unix connection is dropped before a byte is read if its recorded effective uid is foreign or the peer
-  read fails (`admit_peer`, called from `run_local`; Linux and macOS compare with `same_account`). On macOS this
-  authenticates cached connection provenance and returns a live token process observation; it establishes neither the
-  holder's current euid nor a binding to that process. Credential transitions and descriptor transfers leave the cached
-  account unchanged. Windows uses the pipe's owner-only descriptor.
+  read fails (`admit_peer`, called from `run_local`; Linux and macOS compare with `same_account`). On Linux and macOS
+  this is the account recorded at the connect, not the holder's current euid: credential transitions and descriptor
+  transfers leave it unchanged. On macOS the pid and creation time are a live token observation. Windows uses the pipe's
+  owner-only descriptor.
 - A connection whose first frame is not a hello that parses and passes `admit_hello` gets one reply (`unauthenticated`,
   `protocol_mismatch`, `identity_missing` or `os_user_conflict`) and is closed; nothing else is served or sent to it
   (`handle_connection`). A first frame that declares a blob is refused `unauthenticated` before a byte of its blob is

@@ -1,5 +1,6 @@
 //! `connect_own`, the one rule for a local endpoint reached by name: a client speaks to this box's daemon socket or pipe
-//! only when this OS account serves it. Unix tests pin the folder check; Windows tests pin the serving-process check.
+//! only when this OS account serves it. Unix tests pin the listener's account and the connect's retry budget; Windows
+//! tests pin the serving-process check and the connect's retry budget.
 
 use sot_log::identity::connect_own::connect_own;
 use sot_log::lane::transport::TransportError;
@@ -7,10 +8,14 @@ use sot_log::lane::transport::TransportError;
 #[cfg(unix)]
 mod unix {
     use super::*;
+    use sot_log::lane::transport::CONNECT_BOUND;
+    use sot_log::test_foreign::ForeignListener;
+    use sot_log::test_isolated::run_isolated;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
 
     static NEXT: AtomicU32 = AtomicU32::new(0);
 
@@ -25,56 +30,180 @@ mod unix {
         (dir, path, listener)
     }
 
-    /// ADR 0049, User isolation: a socket whose folder another account could write in may be another account's; the
-    /// client refuses it before it connects, so the listener never sees a connection.
+    /// ADR 0049, User isolation: a socket this account listens on is reached in a folder every account can read: the
+    /// check is the listener's account, not the folder's mode.
     #[test]
-    fn a_socket_whose_folder_is_not_private_is_refused() {
+    fn a_socket_this_account_listens_on_is_reached_wherever_it_is() {
         let (dir, path, listener) = listener_in_folder(0o755);
-        listener.set_nonblocking(true).unwrap();
-        let err = match connect_own(&path) {
-            Ok(_) => panic!("connected to {}", path.display()),
+        let _client =
+            connect_own(&path).unwrap_or_else(|e| panic!("refused {}: {e}", path.display()));
+        listener.accept().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ADR 0049, User isolation: a socket another account listens on, in a folder private to this account, is
+    /// refused before a byte is written, by the account the kernel recorded at `listen()`.
+    #[test]
+    fn a_socket_another_account_listens_on_is_refused() {
+        if !run_isolated("unix::a_socket_another_account_listens_on_is_refused") {
+            return;
+        }
+        let Some(foreign) = ForeignListener::start(false) else {
+            return;
+        };
+        let err = match connect_own(&foreign.path) {
+            Ok(_) => panic!("connected to {}", foreign.path.display()),
             Err(e) => e,
         };
         let TransportError::Io { op, source } = err else {
             panic!("not an Io error: {err}");
         };
-        assert_eq!(op, "connect_own");
-        assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(op, "connect_own", "{source}");
+        assert_eq!(
+            source.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "{source}"
+        );
         assert_eq!(
             source.to_string(),
             format!(
-                "{}: not connecting: {} is not a private folder of this OS account",
-                path.display(),
-                dir.display()
+                "{}: not connecting: another OS account listens on this socket",
+                foreign.path.display()
             )
         );
-        match listener.accept() {
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            other => panic!("the listener saw a connection: {other:?}"),
+        assert_eq!(
+            foreign.finish(),
+            0,
+            "connect_own sent another account's listener bytes"
+        );
+    }
+
+    /// ADR 0049, User isolation: a connect to a socket whose backlog another account has filled returns within
+    /// `CONNECT_BOUND` plus 2 s of slack without connecting, so no caller of `connect_own` hangs on it.
+    #[test]
+    fn a_full_backlog_ends_the_connect_within_its_bound() {
+        if !run_isolated("unix::a_full_backlog_ends_the_connect_within_its_bound") {
+            return;
         }
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
+        let Some(foreign) = ForeignListener::start(true) else {
+            return;
+        };
+        let started = Instant::now();
+        let err = connect_own(&foreign.path)
+            .err()
+            .expect("connected through a full backlog");
+        assert!(
+            started.elapsed() < CONNECT_BOUND + Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+        let TransportError::Io { op, source } = err else {
+            panic!("not an Io error: {err}");
+        };
+        assert_ne!(
+            op, "connect_own",
+            "the connect went through, so the backlog was not full: {source}"
+        );
+        assert_eq!(
+            foreign.finish(),
+            0,
+            "connect_own sent another account's listener bytes"
+        );
     }
 
-    /// ADR 0049, User isolation: the same socket in a private folder of this account is connected to.
+    /// The environment variable that makes `a_client_in_an_unmapped_user_namespace` do its work in the child.
+    #[cfg(target_os = "linux")]
+    const USERNS_SOCKET: &str = "SOT_TEST_USERNS_SOCKET";
+
+    /// ADR 0049, User isolation: a process in a user namespace that maps no uid of its own reads its own uid and every
+    /// listener's as the overflow uid (65534), so `connect_own` cannot tell this account's listener from another's and
+    /// refuses it. The listener here is this account's own, reached through `unshare -U`.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn a_socket_in_a_private_folder_is_accepted() {
+    fn a_listener_seen_from_an_unmapped_user_namespace_is_refused() {
+        use std::process::{Command, Stdio};
+        let unshare = Command::new("unshare")
+            .args(["-U", "true"])
+            .stdin(Stdio::null())
+            .status();
+        if !matches!(unshare, Ok(status) if status.success()) {
+            eprintln!("skipped: `unshare -U` cannot create a user namespace here: {unshare:?}");
+            return;
+        }
         let (dir, path, listener) = listener_in_folder(0o700);
-        let _client = connect_own(&path).unwrap_or_else(|e| panic!("refused {}: {e}", path.display()));
-        listener.accept().unwrap();
+        let mut child = Command::new("unshare")
+            .arg("-U")
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::a_client_in_an_unmapped_user_namespace",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(USERNS_SOCKET, &path)
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        let status =
+            sot_log::test_isolated::wait_within(&mut child, CONNECT_BOUND + Duration::from_secs(5));
+        // `connect_own` connects before it refuses, so a child whose body ran left a connection queued here; a name
+        // that matches no test runs nothing, exits 0 and leaves none.
+        listener.set_nonblocking(true).unwrap();
+        let queued = listener.accept().map(|_| ());
+        drop(listener);
         std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            status.success(),
+            "the client in the unmapped namespace failed: {status}"
+        );
+        assert!(
+            queued.is_ok(),
+            "the client in the unmapped namespace never connected: its body did not run ({queued:?})"
+        );
     }
 
-    /// ADR 0049, User isolation: a folder that is missing keeps the kind a connect to a missing socket gives, so a
-    /// caller that treats "no daemon yet" as NotFound is unchanged.
+    /// The body of the test above, run by `unshare -U`: a no-op in an ordinary run.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn a_missing_folder_is_not_found() {
-        let path = std::env::temp_dir().join(format!("sot-co-{}-missing", std::process::id())).join("s.sock");
+    fn a_client_in_an_unmapped_user_namespace() {
+        let Some(path) = std::env::var_os(USERNS_SOCKET) else {
+            return;
+        };
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        assert_eq!(
+            euid, 65534,
+            "the namespace maps no uid, so this process reads itself as the overflow uid"
+        );
+        let err = connect_own(std::path::Path::new(&path))
+            .err()
+            .expect("connected to a listener nobody can name");
+        let TransportError::Io { op, source } = err else {
+            panic!("not an Io error: {err}");
+        };
+        assert_eq!(op, "connect_own", "{source}");
+        assert_eq!(
+            source.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "{source}"
+        );
+        assert!(
+            source
+                .to_string()
+                .contains("not connecting: cannot tell which OS account listens"),
+            "{source}"
+        );
+    }
+
+    /// A missing socket keeps the connector's NotFound, so a caller that treats "no daemon yet" as NotFound is
+    /// unchanged.
+    #[test]
+    fn a_missing_socket_is_not_found() {
+        let path = PathBuf::from(format!("/tmp/sot-co-{}-missing.sock", std::process::id()));
         let TransportError::Io { source, .. } = connect_own(&path).err().expect("refused") else {
             panic!("not an Io error");
         };
-        assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
-        assert!(source.to_string().contains("does not exist"), "{source}");
+        assert_eq!(source.kind(), std::io::ErrorKind::NotFound, "{source}");
     }
 }
 
@@ -82,8 +211,11 @@ mod unix {
 mod windows {
     use super::*;
     use sot_log::host::wide_null;
+    use sot_log::lane::transport::CONNECT_BOUND;
+    use sot_log::test_isolated::run_isolated;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
     use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT};
@@ -147,34 +279,52 @@ mod windows {
         unsafe { CloseHandle(server) };
         result.unwrap_or_else(|e| panic!("refused {name}: {e}"));
     }
-}
 
-/// Files that keep their own stream type and so apply the rule around their one dial; each must contain the names listed.
-/// Every connector rust/clippy.toml names is a compile error in rust.yml's "Disallowed methods" step unless it sits at
-/// an `#[allow]` with its reason; the allow at these two sites is what this test holds to the rule. It checks that the
-/// names appear on a non-comment line of the file: not their order, not that they sit in the dialing function, and not
-/// any other file. `std::fs::OpenOptions::open` cannot be disallowed, since it opens every file, so a third opener of a
-/// pipe path would pass both checks.
-const WRAPPED: &[(&str, &[&str])] = &[
-    // `connect_pipe`: the window's transport and lease dial; its Windows arm goes through `connect_own`.
-    ("frontend/src/net/transport/mod.rs", &["own_socket(", "connect_own("]),
-    // `connect`: `sotd topology`'s dial; its `pipe:` arm opens a file.
-    ("backend/src/topology/dial.rs", &["own_socket(", "own_pipe("]),
-];
-
-/// ADR 0049, User isolation: the two files whose dial the lint allows, and the one whose pipe the lint cannot see, still
-/// call the rule on both platforms (both the Unix and the Windows arm sit in the source text).
-#[test]
-fn the_files_that_wrap_their_own_dial_call_the_rule() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
-    let mut failures = Vec::new();
-    for (rel, rules) in WRAPPED {
-        let src = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
-        for rule in *rules {
-            if !src.lines().any(|l| !l.trim_start().starts_with("//") && l.contains(rule)) {
-                failures.push(format!("{rel}: never calls {rule}"));
-            }
+    /// ADR 0049, User isolation: a pipe whose one instance is taken returns from the connect within `CONNECT_BOUND`
+    /// plus 2 s of slack, so no caller of `connect_own` hangs on it.
+    #[test]
+    fn a_busy_pipe_ends_the_connect_within_its_bound() {
+        if !run_isolated("windows::a_busy_pipe_ends_the_connect_within_its_bound") {
+            return;
         }
+        let name = format!(
+            r"\\.\pipe\sot-connect-own-busy-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        );
+        let wide = wide_null(&name);
+        let server = unsafe {
+            CreateNamedPipeW(
+                wide.as_ptr(),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                1,
+                4096,
+                4096,
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert_ne!(
+            server,
+            INVALID_HANDLE_VALUE,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        let path = PathBuf::from(&name);
+        let first = connect_own(&path);
+        let started = Instant::now();
+        let second = connect_own(&path);
+        let took = started.elapsed();
+        unsafe { CloseHandle(server) };
+        first.unwrap_or_else(|e| panic!("refused {name}: {e}"));
+        assert!(
+            second.is_err(),
+            "connected to a pipe whose one instance is taken"
+        );
+        assert!(
+            took < CONNECT_BOUND + Duration::from_secs(2),
+            "took {took:?}"
+        );
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
