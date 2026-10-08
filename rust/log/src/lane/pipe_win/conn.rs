@@ -198,7 +198,7 @@ fn claim(
     shared
         .progress
         .note(Some(conn_id), "writer.join.begin", "begin");
-    let own = Instant::now() + shared.controls.teardown_deadline();
+    let own = Instant::now() + shared.controls.close_budget();
     let deadline = shutdown.map_or(own, |shutdown| own.min(shutdown));
     Some(Pending {
         id: conn_id,
@@ -249,9 +249,9 @@ fn publish_staged(shared: &Arc<ServerShared>, staged: &mut Staged) {
 }
 
 /// The reaper claims registered connections once, cancels both directions and polls every pending pair, joining only
-/// finished workers. Expiry reports unfinished workers still owned; panic reports a completed panicked join. Both latch
-/// failed teardown. Phase-one registered pairs use this same owner; only never-registered gated workers may be joined
-/// locally. Closed follows both joins.
+/// finished workers. Expiry reports unfinished workers still owned; panic reports a completed panicked join, and only a
+/// panic latches failed teardown. Phase-one registered pairs use this same owner; only never-registered gated workers
+/// may be joined locally. Closed follows both joins.
 ///
 /// Each pass takes a bounded batch of messages, claims every live connection once phase one or a shutdown was
 /// signalled, then polls every pending pair -- so one stuck pair, or a channel too full for one `Closed`, never stalls

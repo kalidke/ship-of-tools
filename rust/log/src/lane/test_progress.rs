@@ -89,7 +89,7 @@ impl Progress {
     }
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(all(windows, not(any(test, feature = "test-support"))))]
 impl Progress {
     #[inline]
     pub(crate) fn new(_transport: &'static str) -> Self {
@@ -163,7 +163,7 @@ impl Progress {
     ) {
     }
 
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(all(unix, not(any(test, feature = "test-support"))))]
     #[inline]
     pub(crate) fn note_with(
         &self,
@@ -361,7 +361,16 @@ impl Controls {
         self.state.lock().unwrap().teardown = Some(deadline);
     }
 
-    /// The per-connection teardown budget: a test's short one, else the production aggregate.
+    /// A normal close's report budget: a test's short one, else the production budget.
+    pub(crate) fn close_budget(&self) -> Duration {
+        self.state
+            .lock()
+            .unwrap()
+            .teardown
+            .unwrap_or(crate::lane::pending::NORMAL_CLOSE_BUDGET)
+    }
+
+    /// The shutdown deadline `Drop` uses: a test's short one, else the production aggregate.
     pub(crate) fn teardown_deadline(&self) -> Duration {
         self.state
             .lock()
@@ -420,6 +429,10 @@ impl Controls {
 
 #[cfg(not(any(test, feature = "test-support")))]
 impl Controls {
+    #[inline]
+    pub(crate) fn close_budget(&self) -> std::time::Duration {
+        crate::lane::pending::NORMAL_CLOSE_BUDGET
+    }
     #[inline]
     pub(crate) fn teardown_deadline(&self) -> std::time::Duration {
         crate::lane::transport::TEARDOWN_AGGREGATE_DEADLINE

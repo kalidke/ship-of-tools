@@ -207,7 +207,7 @@ pub trait Transport {
 
 /// The existing 20 s aggregate budget is shared by acceptor, reaper and all registered pending worker joins. Expiry is
 /// loud and unfinished registered pairs remain reaper-owned. The capsule's closer/reader joins use the same caller
-/// deadline.
+/// deadline. A normal close's own report budget is separate (`pending::NORMAL_CLOSE_BUDGET`).
 pub const TEARDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_secs(20);
 
 /// L1-unix LU1b (ADR 0043 "Bounds are the same numbers on both

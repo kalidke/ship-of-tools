@@ -47,9 +47,14 @@ pub(crate) struct JoinPoll {
 }
 
 impl JoinPoll {
-    /// True for a poll that found a completed panic or an expiry.
+    /// True for a poll that joined a worker that had panicked.
+    pub(crate) fn panicked(&self) -> bool {
+        self.joined.iter().any(|(_, ok)| !ok)
+    }
+
+    /// True for a poll that found a completed panic or an expiry: both are reported.
     pub(crate) fn failed(&self) -> bool {
-        self.expired.is_some() || self.joined.iter().any(|(_, ok)| !ok)
+        self.expired.is_some() || self.panicked()
     }
 
     /// Print this poll's runtime records, one line per fact: each completed panic, then the expiry naming only the
@@ -139,6 +144,14 @@ impl PendingJoins {
 /// inbox ever carries is the single phase-one `Sweep` nudge and the single
 /// `Shutdown`, each sent without blocking at most once.
 pub(super) const REAPER_INBOX_SLACK: usize = 2;
+
+/// How long a normal (not shutdown) close may leave a connection's workers unfinished before the reaper reports it,
+/// once. Twenty seconds is the aggregate shutdown deadline's number, but this is a separate budget: it is a
+/// per-connection report threshold, not an absolute deadline. A stalled consumer can hold a writer in its reliable
+/// `Sent` delivery that long and the worker still finishes whenever the consumer drains, so expiry is loud but does not
+/// fail the run-end teardown; the pair stays reaper-owned, and a pair still unfinished at the shutdown deadline keeps
+/// the reaper running and fails `join_workers` there.
+pub(crate) const NORMAL_CLOSE_BUDGET: Duration = Duration::from_secs(20);
 
 /// A message to a reaper -- the only thread that ever claims a registered connection or joins its workers.
 pub(crate) enum ReaperMsg {
@@ -315,8 +328,8 @@ impl Claimed {
         self.joins.tighten(deadline);
     }
 
-    /// One pass: join the workers that finished, report a completed panic or an expiry (once each, latching the failed
-    /// teardown), and once both are joined try to publish its `Closed` without blocking. True when it is retired.
+    /// One pass: join the workers that finished, report a completed panic or an expiry (once each; a panic latches the
+    /// failed teardown), and once both are joined try to publish its `Closed` without blocking. True when it is retired.
     pub(crate) fn poll(&mut self, ctx: &Ctx, now: Instant) -> bool {
         if let Stage::Joining = self.stage {
             let poll = self.joins.poll(now);
@@ -374,8 +387,12 @@ impl Claimed {
                 format_args!("worker={}", worker_label(unfinished)),
             );
         }
-        if poll.failed() {
+        // A completed panic latches the failed teardown; an expiry is reported only. Whether the pair is still
+        // unfinished at the shutdown deadline is decided by `join_workers`: the reaper cannot end while it owns one.
+        if poll.panicked() {
             ctx.teardown_failed.store(true, Ordering::Release);
+        }
+        if poll.failed() {
             poll.report(ctx.prefix, id, self.claimed_at.elapsed());
         }
     }

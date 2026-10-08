@@ -51,8 +51,8 @@
 //! pair for the reaper to claim.
 //!
 //! The reaper claims registered connections once, cancels both directions and polls every pending pair, joining only
-//! finished workers. Expiry reports unfinished workers still owned; panic reports a completed panicked join. Both latch
-//! failed teardown. Phase-one registered pairs use this same owner; only never-registered gated workers may be joined
+//! finished workers. Expiry reports unfinished workers still owned; panic reports a completed panicked join, and only a
+//! panic latches failed teardown. Phase-one registered pairs use this same owner; only never-registered gated workers may be joined
 //! locally (`handle_new_connection`'s partial-spawn-failure unwind and its refused late registration). Closed follows
 //! both joins.
 //!
@@ -210,7 +210,7 @@ use crate::lane::test_progress::{Controls, Progress, Role};
 use crate::lane::transport::{
     join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget,
     SendMarker, StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
-    EVENTS_RETRY_INTERVAL, JOIN_POLL_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
+    EVENTS_RETRY_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
 };
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
@@ -392,7 +392,7 @@ struct ServerShared {
     write_cancel_observed_genuine_pending: Mutex<HashMap<ConnId, bool>>,
     /// Transport-local checkpoints (zero-sized outside a test build).
     progress: Progress,
-    /// Latched by a completed worker panic or an unfinished worker at its deadline, and never cleared.
+    /// Latched by a completed worker panic or a thread unfinished at the shutdown deadline, and never cleared.
     teardown_failed: AtomicBool,
     /// The phase-one `Sweep` nudge and the one `Shutdown` have each been sent (or refused) once.
     sweep_nudged: AtomicBool,

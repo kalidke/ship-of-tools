@@ -22,6 +22,7 @@ program against. Part of capsule; charter: rust/log/CLAUDE.md.
 
 ## Rules
 - Reapers poll every pending pair, retaining unfinished workers after expiry (`PendingJoins`); other joins use `join_within` and the caller's absolute deadline. Phase-one registered pairs use the reaper, and `join_workers` reports latched failure.
+- A normal close has its own report budget, `NORMAL_CLOSE_BUDGET` (20 s, separate from `TEARDOWN_AGGREGATE_DEADLINE`, the one absolute shutdown deadline): a pair unfinished past it is reported once and stays reaper-owned without failing the teardown, and a completed worker panic still does; a pair unfinished at the shutdown deadline fails `join_workers`.
 - `TransportError::is_endpoint_absent` is the one absence predicate on every platform.
 - The platform is chosen once, by `client::PlatformEndpoint` and `transport::PlatformLaneServer`.
 - A connection's outbound bytes are reserved in `OutboundBudget` before queueing and released when the write returns.

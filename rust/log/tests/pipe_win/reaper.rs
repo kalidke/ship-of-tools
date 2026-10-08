@@ -252,7 +252,8 @@ fn recycle_error_does_not_block_other_closes() {
     drop(client_a);
 }
 
-/// A worker held past its short budget is reported by name and stays owned; the failure outlives the release.
+/// A worker held past a normal close's short budget is reported by name and stays owned; the report does not fail the
+/// run-end teardown once the worker has finished.
 fn expired_worker(role: Role) {
     let id = fresh_voyage_id();
     let mut server = PipeServer::bind(&id, 1).unwrap();
@@ -280,8 +281,8 @@ fn expired_worker(role: Role) {
     assert_eq!(closes[0].1, ClosedReason::Closed);
     server.disconnect_listener();
     assert!(
-        !server.join_workers(Instant::now() + RECORD),
-        "expiry latch lost after the worker was released"
+        server.join_workers(Instant::now() + RECORD),
+        "a normal close that expired before shutdown failed the run-end teardown"
     );
     drop(client);
 }
@@ -300,6 +301,52 @@ fn expired_writer_is_reported_and_remains_owned() {
         return;
     }
     expired_worker(Role::Writer);
+}
+
+/// A pair that expired its normal-close budget earlier and is still unfinished at the shutdown deadline fails the
+/// teardown: the reaper cannot end while it owns the pair.
+fn expired_then_unfinished_at_shutdown(role: Role) {
+    let id = fresh_voyage_id();
+    let mut server = PipeServer::bind(&id, 1).unwrap();
+    server.set_teardown_deadline_for_test(SHORT);
+    let (client, a) = connect(&server, &id);
+    let hold = server.hold_worker_exit_for_test(a, role);
+    server.close(a);
+    let want = format!(
+        "worker={}",
+        if role == Role::Reader {
+            "reader"
+        } else {
+            "writer"
+        }
+    );
+    await_progress(&server, "expiry.record", |r| {
+        r.conn == Some(a) && r.step == "pending.expired" && r.result == want
+    });
+    server.disconnect_listener();
+    assert!(
+        !server.join_workers(Instant::now() + Duration::from_millis(300)),
+        "shutdown reported success with A still unfinished"
+    );
+    hold.release();
+    await_progress(&server, "a.done", at(a, "pending.done"));
+    drop(client);
+}
+
+#[test]
+fn expired_pair_unfinished_at_shutdown_fails_teardown_reader_held() {
+    if !run_isolated("reaper::expired_pair_unfinished_at_shutdown_fails_teardown_reader_held") {
+        return;
+    }
+    expired_then_unfinished_at_shutdown(Role::Reader);
+}
+
+#[test]
+fn expired_pair_unfinished_at_shutdown_fails_teardown_writer_held() {
+    if !run_isolated("reaper::expired_pair_unfinished_at_shutdown_fails_teardown_writer_held") {
+        return;
+    }
+    expired_then_unfinished_at_shutdown(Role::Writer);
 }
 
 /// An injected worker panic is reported as a completed panic and closes the connection with an error.

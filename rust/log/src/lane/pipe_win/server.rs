@@ -1,6 +1,8 @@
 //! The pipe server: `PipeServer` and its `LaneServer` seam.
 
 use super::*;
+#[cfg(any(test, feature = "test-support"))]
+use crate::lane::transport::JOIN_POLL_INTERVAL;
 
 /// The server side of one voyage's pipe: `bind` creates the pipe (with the
 /// squat-detecting first instance) and starts accepting; connections and

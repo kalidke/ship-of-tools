@@ -293,7 +293,8 @@ fn full_events_do_not_stop_pending_polls() {
     named!(test, "server.drop", None, drop(f));
 }
 
-/// A worker held past its short budget is reported by name and stays owned; the failure outlives the release.
+/// A worker held past a normal close's short budget is reported by name and stays owned; the report does not fail the
+/// run-end teardown once the worker has finished.
 fn expired_worker(test: &str, role: Role) {
     if child_role(test) {
         let mut f = fixture(test, 1);
@@ -330,17 +331,21 @@ fn expired_worker(test: &str, role: Role) {
         let ok = WaitContext::new(
             test,
             "workers.join",
-            "permanent failed teardown",
+            "teardown succeeds after the expired worker finished",
             None,
             RECORD,
         )
         .workers(&mut f.server);
-        assert!(!ok, "expiry latch lost after the worker was released");
+        assert!(
+            ok,
+            "a normal close that expired before shutdown failed the run-end teardown"
+        );
         named!(test, "client.drop", None, drop(client));
         named!(test, "server.drop", None, drop(f));
         return;
     }
     let captured = capture(test, ISOLATION_TIMEOUT, None);
+    assert!(!captured.expired, "the child did not complete");
     let record = format!(
         "sot-sock: connection teardown failed conn=0 worker={} elapsed_ms=",
         role_name(role)
@@ -351,9 +356,17 @@ fn expired_worker(test: &str, role: Role) {
         .find(|line| line.contains(&record))
         .unwrap_or_else(|| panic!("expiry record missing: {}", captured.text));
     assert!(line.ends_with("reason=deadline-expired; unfinished workers remain owned"));
-    assert!(captured
-        .text
-        .contains("sot-sock: server teardown failed; see worker panic and deadline records"));
+    assert_eq!(
+        captured.text.matches("reason=deadline-expired").count(),
+        1,
+        "expiry is reported once: {}",
+        captured.text
+    );
+    assert!(
+        !captured.text.contains("sot-sock: server teardown failed"),
+        "the server teardown was reported failed: {}",
+        captured.text
+    );
 }
 
 #[test]
@@ -370,6 +383,68 @@ fn expired_writer_is_reported_and_remains_owned() {
         "reaper::expired_writer_is_reported_and_remains_owned",
         Role::Writer,
     );
+}
+
+/// A pair that expired its normal-close budget earlier and is still unfinished at the shutdown deadline fails the
+/// teardown: the reaper cannot end while it owns the pair.
+fn expired_then_unfinished_at_shutdown(test: &str, role: Role) {
+    let mut f = fixture(test, 1);
+    f.server.set_teardown_deadline_for_test(SHORT);
+    let (client, a) = connect(&f, test, "a");
+    let hold = f.server.hold_worker_exit_for_test(a, role);
+    named!(test, "a.close", Some(a), f.server.close(a));
+    let want = format!("worker={}", role_name(role));
+    await_progress(
+        &f.server,
+        test,
+        "expiry.record",
+        "expiry reported before shutdown",
+        Some(a),
+        |r| r.conn == Some(a) && r.step == "pending.expired" && r.result == want,
+    );
+    named!(
+        test,
+        "listener.disconnect",
+        None,
+        f.server.disconnect_listener()
+    );
+    let budget = Duration::from_millis(300);
+    let started = Instant::now();
+    let ok = WaitContext::from_origin(
+        test,
+        "workers.join",
+        "false while A is still unfinished",
+        None,
+        started,
+        started + budget,
+    )
+    .workers(&mut f.server);
+    assert!(!ok, "shutdown reported success with A still unfinished");
+    named!(test, "a.release", Some(a), hold.release());
+    await_progress(
+        &f.server,
+        test,
+        "a.done",
+        "A retired after release",
+        Some(a),
+        at(a, "pending.done"),
+    );
+    named!(test, "client.drop", None, drop(client));
+    named!(test, "server.drop", None, drop(f));
+}
+
+#[test]
+fn expired_pair_unfinished_at_shutdown_fails_teardown_reader_held() {
+    let test = "reaper::expired_pair_unfinished_at_shutdown_fails_teardown_reader_held";
+    isolated!(test);
+    expired_then_unfinished_at_shutdown(test, Role::Reader);
+}
+
+#[test]
+fn expired_pair_unfinished_at_shutdown_fails_teardown_writer_held() {
+    let test = "reaper::expired_pair_unfinished_at_shutdown_fails_teardown_writer_held";
+    isolated!(test);
+    expired_then_unfinished_at_shutdown(test, Role::Writer);
 }
 
 /// An injected worker panic is reported as a completed panic and closes the connection with an error.
