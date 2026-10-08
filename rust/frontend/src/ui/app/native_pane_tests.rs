@@ -182,9 +182,9 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
                 continue;
             }
             let total = total.ok_or_else(|| anyhow::anyhow!("ready sample without a receipt: {line}"))?;
-            anyhow::ensure!(field(line, "sentinel").as_deref() == Some("true"), "pane sample without its row's sentinel: {line}");
             let checkpoint = field(line, "checkpoint_ms").and_then(|v| v.parse::<i128>().ok()).filter(|c| *c >= 0);
             anyhow::ensure!(checkpoint.is_some_and(|c| (c as u128) * 1_000_000 <= total), "receipt before its checkpoint: {line}");
+            anyhow::ensure!(field(line, "sentinel").as_deref() == Some("true"), "pane sample without its row's sentinel: {line}");
             let driver = field(line, "driver_ns").and_then(|v| v.parse::<u128>().ok()).unwrap_or(0);
             anyhow::ensure!(driver >= total && driver - total <= 50_000_000, "receipt elapsed and driver elapsed disagree by {}ns: {line}", driver.abs_diff(total));
             ready.push((line.to_string(), total, driver));

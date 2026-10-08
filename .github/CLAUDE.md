@@ -45,7 +45,7 @@ scripts/CLAUDE.md.
 - Function length is gated: the `rust.yml` step "Function length" runs clippy's `too_many_lines` (more than 100 code
   lines) as an error, `vt100-ctt` excluded because it denies `clippy::all` in its own source. A function over the limit
   carries `#[allow(clippy::too_many_lines, reason = "...")]`, and the step "Function length allowances can only fall"
-  pins how many such allows `rust/` holds (not `rust/vt100`); removing one means lowering that number in the same commit.
+  pins how many such allows `rust/` holds (not `rust/vt100`); removing one means lowering that number in the same commit. It also reads the feature-gated native targets (test-pane-timing, test-window-close).
 - Disallowed methods are gated: the `rust.yml` step "Disallowed methods" runs clippy's `disallowed_methods` over every
   library, binary and build script on all three legs. `rust/clippy.toml` holds one array in labelled groups, each
   opening with its rule. A sanctioned site carries `#[allow(clippy::disallowed_methods, reason = "...")]` on the one

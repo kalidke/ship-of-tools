@@ -238,13 +238,6 @@ impl State {
                 self.pane_attach_term.as_ref().map_or(0, |t| t.inputs_discarded()),
             ),
         );
-        // Switch-latency Phase 1, item 3: the acceptance metric itself
-        // (keypress → current screen visible), not merely the client's
-        // own parser being ready (`pump_pane_attach_term`'s "checkpoint
-        // applied") — this is the first REDRAW that actually paints the
-        // new client's own screen (`PaneScreen::Client`) rather than the
-        // held prior content or the tmux fallback. One-shot per attach,
-        // same edge-triggered pattern as the other attach-outcome lines.
         // Choosing a screen does not complete presentation. The frame carries a qualified candidate to the presentation owner and completes it only after submit/present.
         let facts = (pane_screen == PaneScreen::Client)
             .then_some(PaneFacts { checkpointed: pane_attach_checkpointed, attached: pane_attach_is_attached, live: !pane_attach_is_dead });
