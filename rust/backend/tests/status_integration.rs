@@ -5,10 +5,10 @@
 //! never touch a daemon at all). `mod support;` reuses `Env` for the tmp
 //! dirs and bounded teardown; the daemon itself is spawned BY HAND here
 //! (not `Env::spawn_sotd`) because it must listen on the socket the box's
-//! OWN daemon label derives — the exact endpoint `sotd status`'s own
-//! `topology::endpoint::local_endpoint()` dials, and the reason both spell that label
-//! `local_daemon_label()` rather than a literal — rather than
-//! `spawn_sotd`'s arbitrary per-test `--socket` path.
+//! label derives — the exact endpoint `sotd status`'s own
+//! `topology::endpoint::local_endpoint()` dials — rather than `spawn_sotd`'s arbitrary per-test `--socket` path. The
+//! label is private to this run (`SOT_BACKEND_LABEL` for the status child, `--label` for the daemon), never the box's
+//! default one: on Windows the default label derives the per-user pipe the box's live daemon holds.
 
 mod support;
 
@@ -37,10 +37,16 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
     // bind unlinked the live daemon's socket. This process and both
     // children use this env's private runtime dir instead.
     std::env::set_var("XDG_RUNTIME_DIR", env._runtime_tmp.path());
-    // This process derives the identical path the daemon below binds from
-    // the same label, the one `sotd status`'s own `local_endpoint()` dials;
-    // checked BEFORE the spawn, so a regression never reaches a real socket.
-    let socket_path = sot_protocol::session_socket_path(sot_protocol::local_daemon_label());
+    // A label no other daemon on this box holds. This process derives the identical path the daemon below binds
+    // from it, the one `sotd status`'s own `local_endpoint()` dials, and refuses anything that is the default
+    // label's endpoint on any OS: checked BEFORE the spawn, so a regression never reaches a real socket or pipe.
+    let label = format!("status-it-{}", std::process::id());
+    let socket_path = sot_protocol::session_socket_path(&label);
+    assert_ne!(
+        socket_path,
+        sot_protocol::session_socket_path(sot_protocol::local_daemon_label()),
+        "the test daemon's endpoint must not be the default label's, which a live daemon on this box may hold: {socket_path:?}"
+    );
     #[cfg(unix)]
     assert!(
         socket_path.starts_with(env._runtime_tmp.path()),
@@ -53,7 +59,7 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
 
     let child = support::sotd_command()
         .arg("--label")
-        .arg(sot_protocol::local_daemon_label())
+        .arg(&label)
         .arg("--project-root")
         .arg(&env.daemon_project_root)
         .env("LOCALAPPDATA", &env.state_root)
@@ -78,6 +84,10 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn sotd");
+    eprintln!(
+        "status_integration: private label {label}, endpoint {socket_path:?}, daemon pid {}",
+        child.id()
+    );
     env.daemon.borrow_mut().replace(child);
 
     let stream = poll_until(|| async { try_connect(&socket_path).await }, BOUND, "sotd's own-label socket to accept a connection").await;
@@ -114,10 +124,11 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
         .env("SOT_RUNTIME_DIR", env._runtime_tmp.path())
         .env("SOT_HOSTS", &hosts_toml)
         // `sotd status`'s own `local_endpoint()` call — see the daemon
-        // spawn's comment above; this is the OTHER of the two spawns that
-        // must not inherit either variable.
+        // spawn's comment above. It must not inherit `SOT_SOCKET`, and
+        // `SOT_BACKEND_LABEL` is this run's private label: status still
+        // reaches the label-derived endpoint, not an explicit `--socket`.
         .env_remove("SOT_SOCKET")
-        .env_remove("SOT_BACKEND_LABEL")
+        .env("SOT_BACKEND_LABEL", &label)
         .stdin(Stdio::null());
     let out = tokio::time::timeout(BOUND, status_cmd.output()).await.expect("sotd status did not exit within BOUND").expect("spawn sotd status");
     assert!(out.status.success(), "sotd status exited {:?}: stderr {}", out.status, String::from_utf8_lossy(&out.stderr));
