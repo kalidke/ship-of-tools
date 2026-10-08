@@ -258,6 +258,8 @@ jobs:
           # tracked shell file, so an empty one aborts instead of deleting
           # from /.
           bash test-rm-guard.sh
+          # Staging publishes each file whole by a sibling rename, copying no source permissions.
+          bash test-stage-bin.sh
           # 0031 B1's caller: a registry miss goes to the wire and one lap ends
           # in one verdict; the acceptance matrix's classifier keys on that
           # verdict.

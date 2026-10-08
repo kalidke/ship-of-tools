@@ -327,6 +327,7 @@ for d in comm/adapters/claude/sot-comm agents/claude/sot-install; do
   cp -f "$REPO/$d/SKILL.md" ~/.claude/skills/"$(basename "$d")"/SKILL.md
 done
 ```
+The fallback publishes each completed file by a sibling temporary and rename, without preserving source permissions; failure stops it. It stages the repository loader-and-parts form, and does not publish a whole bin generation atomically.
 Note this XDG `$HOME` may be **per-machine**, so its registry is local to the
 box; the relay still bridges sessions across machines over the tunnel.
 

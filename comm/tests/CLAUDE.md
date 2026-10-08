@@ -14,7 +14,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `join_disambiguation/`: parts of `test-join-disambiguation.sh`: derived handles, self-files, `jq_args.sh`, pipe endpoints, send identity, slot guard, spawn and lock
 - `lib-home-guard.sh`: the guard every suite sources first; drops the host's comm identity and daemon routes, and gives `guard_fresh_home`, `guard_refuse_live_home`, `guard_stage_bin`, `in_row`, and `guard_bridge_stub`, the suites' stand-in for `sotd stdio-bridge --endpoint`
 - `lib-wait.sh`: the waits the suites share: `await` (a check every 50 ms, a 30 s hang guard), `stopped` (a holder that stopped itself), `sleep_log` (the logging sleep that counts a command's waits)
-- `stage-bin.sh`: lays the files of the folders in `comm/bin-folders.txt` flat into a destination, in the repo's form
+- `stage-bin.sh`: validates the flat bin source and publishes each completed destination by exclusive sibling temporary and rename, without preserving source permissions
 - `status_floor/`: parts of `test-status-floor.sh`: `reduction.sh`, `markers.sh`, `audit_and_races.sh`
 - `test-agent-join.sh`: `comm-join.sh` declares the row's handle to its daemon over the owner endpoint, never the relay
 - `test-agent-layers.sh`: a process acts as a handle only with at most one agent between it and its row's capsule
@@ -37,6 +37,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-relay-file-first.sh`: the relay's ack means the frame is filed; a listed handle never touches the wire
 - `test-rm-guard.sh`: every delete rooted in a variable is written `${VAR:?}`, and every comm and agents suite sources the guard first; its executing controls hold `await` to stopping at the poll that sees its predicate ready and returning 1 when it never is; no lexical clock/sleep catalog
 - `test-send-routes-to-relay.sh`: a registry miss goes to the wire; a listed handle that is not live is FAILED with nothing appended and no daemon asked, a live one files locally, never both; every script append, inbox redirection and `last_seen` file in the tracked tree is on a pinned list
+- `test-stage-bin.sh`: complete old/new staged bytes, chosen modes, visible failures and owned-temp cleanup through absolute fixture programs
 - `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks, closing markers and the turn auditor
 
 ## Start here
@@ -48,6 +49,7 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
 - The Codex off-hook fixture must prove no input read and no status call, as well as exit 0; unset/on retains blocked then stop.
 - Each suite sources `lib-home-guard.sh` before any command but `set`; `test-rm-guard.sh` fails a suite that does not,
   and fails if it finds fewer than 29 suites under `comm/` and `agents/`.
+- Staging is atomic per file, not per bin generation. A failed copy, mode change or rename stops staging and leaves the existing public destination intact.
 - Scripts run from the copy `guard_stage_bin` makes in the suite's work directory (`stage-bin.sh` fails on a missing or
   empty bin folder or a name two folders ship). Hooks and launchers run in-tree: the Stop hook runs
   `comm-turn-auditor.sh` when it sits beside it, so a suite that must not call a live model runs the hook from
