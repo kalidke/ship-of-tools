@@ -191,7 +191,7 @@ fn resolve_juliaup_julia_from_config(
     // normalize a literal `./` component away).
     let rel_path = rel_path.strip_prefix("./").unwrap_or(rel_path);
     let bin = juliaup_dir.join(rel_path).join("bin").join(JULIA_EXE);
-    if bin.is_file() {
+    if is_present_file(&bin) {
         Ok(bin)
     } else {
         Err(format!("resolved binary missing on disk: {}", bin.display()))
@@ -330,6 +330,17 @@ fn looks_like_fake_julia(path: &Path) -> Option<String> {
     alias_refusal(path)
 }
 
+/// Whether a file is there to be chosen. On Windows a link to an app-execution alias cannot be followed by a
+/// metadata query, so `is_file` calls it missing and the alias would be skipped unseen instead of refused; the
+/// link itself, not what it leads to, is what is looked for.
+fn is_present_file(path: &Path) -> bool {
+    if cfg!(windows) {
+        std::fs::symlink_metadata(path).is_ok_and(|m| !m.is_dir())
+    } else {
+        path.is_file()
+    }
+}
+
 /// Every `julia`/`julia.exe` reachable via `PATH`, in PATH order, without
 /// relying on the OS's own single-candidate lookup (`Command::new` spawning
 /// straight off PATH can't skip a rejected first match and try the next
@@ -339,7 +350,7 @@ fn candidates_on(path: Option<&std::ffi::OsStr>, exe_name: &str) -> Vec<PathBuf>
         .map(|p| {
             std::env::split_paths(p)
                 .map(|dir| dir.join(exe_name))
-                .filter(|c| c.is_file())
+                .filter(|c| is_present_file(c))
                 .collect()
         })
         .unwrap_or_default()

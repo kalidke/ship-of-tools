@@ -13,7 +13,7 @@ use tokio::sync::watch;
 
 /// One shutdown signal, the count of children still alive under it, and the
 /// trees it will kill when it fires. The process has one ([`fire`],
-/// [`fired`], [`process`]).
+/// [`process`]).
 pub(crate) struct Signal {
     fired: watch::Sender<bool>,
     live: AtomicUsize,
@@ -411,11 +411,6 @@ pub(crate) fn process() -> &'static Signal {
 /// Fire the shutdown: every contained child's tree is killed. It stays fired for the life of the process.
 pub(crate) fn fire() {
     process().fire()
-}
-
-/// Resolves once the shutdown has fired; at once if it already has.
-pub(crate) async fn fired() {
-    process().fired().await
 }
 
 /// Children whose [`Held`] is alive.
