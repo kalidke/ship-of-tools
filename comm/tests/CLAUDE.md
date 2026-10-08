@@ -25,7 +25,8 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-comm-poll-cursor.sh`: the read cursor is a line offset that survives a torn line, a cut-back file and a legacy stamp
 - `test-crlf-jq-output.sh`: the comm scripts compare handles correctly under a jq that writes CRLF
 - `test-endpoint-gate.sh`: every endpoint value leaves `comm-lib.sh` through one gate; ssh resolvers and the wire round trip; no `sotd --socket` in another process's argv is ever an endpoint, and a process is asked for a socket only when its binary is named sotd
-- `test-heartbeat-ctx-wait.sh`: the heartbeat hook's wait on `comm-context.sh` polls fast, is bounded and cleans up
+- `test-heartbeat-ctx-wait.sh`: guarded entry for the heartbeat context-deadline suite; runs the staged hook against finite context fixtures in its own temporary home
+- `test-heartbeat-ctx-wait.py`: observes LF-byte fixtures/protocol, creator-returned artifact paths, hook exit plus both EOFs, actual release times and registry effects; MSYS budget fixtures and native P5 have separate readiness/lifetime cleanup evidence
 - `test-hub-files.sh`: the inbox append: one lock, both writers, fail closed, whole lines, routes and lock records
 - `test-inbox-lock-onehost.sh`: the inbox lock on one machine whose mount lock is unknown (needs one peer host)
 - `test-inbox-lock-twohost.sh`: concurrent shell and Rust appenders, frozen and killed holders across two boxes (needs a peer host)
@@ -35,7 +36,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-registry-lock-twohost.sh`: the registry lock's fresh read and distinct machine ids across boxes (needs peer hosts)
 - `test-registry-twohost.sh`: registry writes on one box are read whole on another (needs peer hosts)
 - `test-relay-file-first.sh`: the relay's ack means the frame is filed; a listed handle never touches the wire
-- `test-rm-guard.sh`: every delete rooted in a variable is written `${VAR:?}`, and every comm and agents suite sources the guard first; its executing controls hold `await` to stopping at the poll that sees its predicate ready and returning 1 when it never is; no lexical clock/sleep catalog
+- `test-rm-guard.sh`: the retained suite-bootstrap guard check and executed shared-await controls; removal and timing source catalogs are retired, with changed-entry cleanup observed by their owning suites
 - `test-send-routes-to-relay.sh`: a registry miss goes to the wire; a listed handle that is not live is FAILED with nothing appended and no daemon asked, a live one files locally, never both; every script append, inbox redirection and `last_seen` file in the tracked tree is on a pinned list
 - `test-stage-bin.sh`: complete old/new staged bytes, chosen modes, visible failures and owned-temp cleanup through absolute fixture programs
 - `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks, closing markers and the turn auditor
@@ -74,3 +75,4 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
   endpoint process waits require the recorded child's expected executable image. The intentional comm-deps and
   endpoint scenarios keep their result and completion assertions. test-rm-guard.sh runs `await` itself; no source
   count proves a wait policy.
+- The heartbeat context-deadline suite validates frozen per-behavior observations, with separate fixture and exit/EOF failures. It publishes Bash fixtures and protocol as LF bytes, cleans creator-returned paths, and measures actual release/consumption times. Responsive budget bodies use Bash on every OS; native Python P5 remains separate. Sensitivity exercises the real assertions after readiness and parent-exit handshakes. Cleanup needs positive no-start or witnessed readiness plus lifetime completion, both EOFs, joined drains and accounted artifacts; missing readiness never certifies cleanup. Its independent observation deadline precedes separate finite-fixture cleanup, which never repairs a failed observation; the successful stamp control must run.

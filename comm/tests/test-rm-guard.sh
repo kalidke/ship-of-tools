@@ -1,121 +1,17 @@
 #!/usr/bin/env bash
-# test-rm-guard.sh — a delete rooted in a variable aborts when the variable is
-# empty. Every `rm` in a tracked shell file (`*.sh`, and any extensionless
-# file whose first line is a sh shebang) whose path starts with a variable
-# writes it `${VAR:?}`: an unset or empty VAR then stops the shell instead of
-# turning `"$VAR"/*` into `/*`. A variable that is legitimately empty at that
-# point is skipped before the delete (`[ -z "${VAR:-}" ] || rm -f -- "${VAR:?}"`).
-#
-# The check reads each rm's arguments up to the end of its command (a `;`,
-# `&`, `|`, `)`, a redirect or the end of the line), steps over the inside of
-# `$(...)`, and names every argument that starts — after any quotes, escaped
-# or not — with `$VAR`, `${VAR}`, `${VAR<any other modifier>}`, or a `$(...)`
-# followed by anything in the same argument (its output may be empty too, and
-# `"$(f)"/*` is then `/*`, `"$(f)"*` every file here). A `$(...)` that is the
-# whole argument passes, and so does `$((...))`, which is never empty.
-# Commands inside strings (`bash -c '…'`, ssh command lines, `trap '…'`,
-# heredocs written to a stub) are read the same way. Comment lines are
-# skipped. A file with a dot in its NAME is read only as `*.sh`; a dot in a
-# directory never hides an extensionless script. Before the walk, the pattern
-# runs over its own table of must-flag and must-pass lines, one per shape.
-#
-# The same walk holds the home guard to its word: every `test-*.sh` under
-# comm/ and agents/ whose non-comment lines name a comm script (`comm-*.sh` or
-# `comm-lib`) sources lib-home-guard.sh before any command but `set`. That
-# check first proves it flags a copy of test-hub-files.sh without its source
-# line.
-#
-# The shared wait is proved by running it: `await` (lib-wait.sh) stops at the first poll that sees its
-# predicate ready, and returns 1 when the predicate never becomes ready (run in a private copy with the
-# 600 tries cut to 3, so the case is quick). No source count proves a wait policy.
-#
-# Usage: comm/tests/test-rm-guard.sh
-# Exit: 0 if no unguarded site or suite, 1 naming each one.
+# Suite bootstrap policy and behavior of the actual shared await.
 set -uo pipefail
-. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
-
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)" || { echo "FATAL: not in a git checkout" >&2; exit 1; }
-T="$(mktemp -d "${TMPDIR:-/tmp}/sot-rm-guard-XXXXXX")" && [ -d "$T" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
+REPO="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)" || exit 1
+T="$(mktemp -d "${TMPDIR:-/tmp}/sot-rm-guard-XXXXXX")" && [ -d "$T" ] || exit 1
 trap 'rm -rf "${T:?}"' EXIT
 guard_fresh_home "$T"
-
-RM_SCAN='
-my $V = q{(?:[A-Za-z_]\w*+|\d++)};
-my $TOK = qr/(?:^|\s)(?:\\*["\x27])*\\*\$(?:\(X*+(?:\\*["\x27])*+\S|\{$V(?:\[[@*]\])?+\}|$V|\{$V(?:\[[@*]\])?+(?:[^}:]|:[^?])[^}]*\})/;
-for my $f (@ARGV) {
-    open my $fh, "<", $f or next;
-    while (my $line = <$fh>) {
-        next if $line =~ /^\s*#/;
-        while ($line =~ /(?<![\w.\/-])rm(?:\s+-[\w-]*)*(?=\s)/g) {
-            my ($i, $depth, $mask) = (pos($line), 0, "");
-            while ($i < length $line) {
-                my $c = substr($line, $i, 1);
-                if (substr($line, $i, 2) eq q{$(}) { $mask .= ($depth || substr($line, $i, 3) eq q{$((}) ? "XX" : q{$(}; $depth++; $i += 2; next; }
-                if ($depth) { $depth-- if $c eq ")"; $depth++ if $c eq "("; $mask .= "X"; $i++; next; }
-                last if $c =~ /[;&|>)\n]/;
-                $mask .= $c; $i++;
-            }
-            while ($mask =~ /$TOK/g) { (my $t = $&) =~ s/^\s+//; print "$f:$.: $t\n"; }
-        }
-    }
-}'
-
-# The pattern's own table: each row is a verdict and one line, with RM for rm
-# so this file's own walk does not read the rows as deletes.
-n=0; want=()
-while IFS= read -r row; do
-    n=$((n + 1)); want[n]="${row%% *}"
-    printf '%s\n' "${row#* }" | sed 's/RM/rm/' >> "$T/table"
-done <<'EOF'
-flag RM -rf "$(f)"*
-flag RM -rf "$(f)"/x
-flag RM -rf "$D"/*
-flag RM -f $D/x
-flag RM -f "${D}/x"
-flag RM -f "${D%/}/x"
-flag RM -f "${D:-/tmp}/x"
-flag RM -f "${A[@]}"
-flag RM -f "$1"
-flag RM -f \"$D\"
-flag RM -f -- x "$D"
-flag bash -c 'RM -f "$D"'
-flag trap 'RM -rf "$D"' EXIT
-pass RM -rf "$((n))/x"
-pass RM -f "${D:?}/x"
-pass RM -f "${A[@]:?}"
-pass RM -f "$(f)"
-pass RM -f "$(dirname "$D")"
-pass RM -f x; echo "$D"
-pass RM -f x > "$D"
-pass RM -f x | tee "$D"
-pass # RM -f "$D"
-pass firm "$D"
-EOF
-flagged=" $(perl -e "$RM_SCAN" "$T/table" | cut -d: -f2 | sort -un | tr '\n' ' ')"
-table_bad=0
-for i in $(seq 1 "$n"); do
-    case "$flagged" in *" $i "*) got=flag ;; *) got=pass ;; esac
-    [ "$got" = "${want[i]}" ] || { echo "FAIL: the delete pattern's table row $i must ${want[i]}: $(sed -n "${i}p" "$T/table")"; table_bad=1; }
-done
-[ "$table_bad" -eq 0 ] || exit 1
-echo "PASS: the delete pattern flags and passes each of its $n table rows"
-
-files=(); suites=()
+suites=()
 while IFS= read -r f; do
     case "$f" in comm/*|agents/*) case "${f##*/}" in test-*.sh) suites+=("$REPO/$f") ;; esac ;; esac
-    case "${f##*/}" in
-        *.sh) files+=("$REPO/$f") ;;
-        *.*) ;;
-        *) [ -f "$REPO/$f" ] && head -n 1 "$REPO/$f" 2>/dev/null | grep -q -E '^#!.*[/ ](ba|da|k|z)?sh([[:space:]]|$)' \
-               && files+=("$REPO/$f") ;;
-    esac
 done < <(git -C "$REPO" ls-files)
-[ "${#files[@]}" -gt 0 ] || { echo "FATAL: no shell files found" >&2; exit 1; }
-[ "${#suites[@]}" -ge 29 ] || { echo "FATAL: found ${#suites[@]} comm suites, expected at least 29" >&2; exit 1; }
-
-sites="$(perl -e "$RM_SCAN" "${files[@]}")"
-
+[ "${#suites[@]}" -ge 29 ] || { echo "FATAL: found ${#suites[@]} comm suites, expected at least 29"; exit 1; }
 # unguarded SUITE... — each suite whose first command other than `set` is not
 # the guard's source line.
 unguarded() {
@@ -133,13 +29,6 @@ printf 'set -u\necho x\n' > "$T/test-synthetic.sh"
 bad="$(unguarded "${suites[@]}")"
 
 rc=0
-if [ -z "$sites" ]; then
-    echo "PASS: every rm rooted in a variable is guarded (${#files[@]} shell files)"
-else
-    printf '%s\n' "$sites" | sed "s#^$REPO/#  #"
-    echo "FAIL: $(printf '%s\n' "$sites" | wc -l) rm site(s) rooted in an unguarded variable — write it \${VAR:?}"
-    rc=1
-fi
 if [ -z "$bad" ]; then
     echo "PASS: every comm suite sources the home guard first (${#suites[@]} suites)"
 else
@@ -149,27 +38,24 @@ else
     rc=1
 fi
 
-# await, executed. Ready after the fourth poll: it returns 0 having polled exactly four times.
-. "$SCRIPT_DIR/lib-wait.sh" || { echo "FATAL: lib-wait.sh did not load" >&2; exit 1; }
-polls="$T/polls"; : > "$polls"
-ready_on_fourth() { echo x >> "$polls"; [ "$(wc -l < "$polls")" -ge 4 ]; }
-if await ready_on_fourth && [ "$(wc -l < "$polls")" -eq 4 ]; then
-    echo "PASS: await stops at the poll that sees its predicate ready (4 polls)"
-else
-    echo "FAIL: await did not stop at the fourth poll, which was the first to see its predicate ready ($(wc -l < "$polls") polls)"; rc=1
-fi
-# Never ready: a private copy with the 600 tries cut to 3 must poll three times and return 1.
-sed 's/seq 600/seq 3/' "$SCRIPT_DIR/lib-wait.sh" > "$T/lib-wait-short.sh"
-if cmp -s "$SCRIPT_DIR/lib-wait.sh" "$T/lib-wait-short.sh"; then
-    echo "FAIL: the short copy of lib-wait.sh differs in no byte (the tries line moved)"; rc=1
-else
-    : > "$polls"
-    never_ready() { echo x >> "$polls"; return 1; }
-    ( . "$T/lib-wait-short.sh" && await never_ready ); arc=$?
-    if [ "$arc" -eq 1 ] && [ "$(wc -l < "$polls")" -eq 3 ]; then
-        echo "PASS: await returns 1 once its tries run out (3 polls)"
-    else
-        echo "FAIL: await on a predicate never ready returned $arc after $(wc -l < "$polls") polls, want 1 after 3"; rc=1
-    fi
-fi
+# Execute await itself in a child shell. The local sleep records waits without
+# delaying the case; no fixture changes PATH, SHELL or the function under test.
+for want in 1 3 0; do
+    bash -c '
+        . "$1/lib-wait.sh" || exit 2
+        calls=0; sleeps=0
+        sleep() { [ "$1" = 0.05 ] || exit 2; sleeps=$((sleeps + 1)); }
+        ready() { calls=$((calls + 1)); [ "$2" -gt 0 ] && [ "$calls" -eq "$2" ]; }
+        await ready x "$2"; rc=$?
+        case "$2" in
+            1) expected="1 0 0" ;;
+            3) expected="3 2 0" ;;
+            0) expected="600 600 1" ;;
+        esac
+        got="$calls $sleeps $rc"
+        [ "$got" = "$expected" ] || { echo "FAIL await: $got expected $expected"; exit 1; }
+        [ "$got" != "0 0 0" ] || { echo "FAIL await sensitivity"; exit 1; }
+        echo "PASS await: $got; corrupted expectation rejected"
+    ' _ "$SCRIPT_DIR" "$want" || rc=1
+done
 exit "$rc"

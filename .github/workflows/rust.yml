@@ -270,6 +270,14 @@ jobs:
 
       # PR #148 Codex review F10: hermetic + fast, so it rides along in this
       # existing ubuntu leg rather than a dedicated job.
+      # The context deadline covers foreground children and the final wait.
+      # Fixtures are finite, isolated, and require entry and completion evidence.
+      - name: Test heartbeat context deadline (hermetic)
+        shell: bash
+        timeout-minutes: 5
+        working-directory: .
+        run: bash comm/tests/test-heartbeat-ctx-wait.sh
+
       - name: Test sot-comm disambiguation (hermetic)
         if: matrix.os == 'ubuntu-latest'
         working-directory: comm/tests
@@ -301,9 +309,7 @@ jobs:
           # The read cursor is a line count with the hash of the last line
           # read, so a cut-back steps back one line and nothing is shown twice.
           bash test-comm-poll-cursor.sh
-          # A delete rooted in a variable is written ${VAR:?} in every
-          # tracked shell file, so an empty one aborts instead of deleting
-          # from /.
+          # Suite bootstrap policy and executed shared-await controls.
           bash test-rm-guard.sh
           # Staging publishes each file whole by a sibling rename, copying no source permissions.
           bash test-stage-bin.sh
@@ -316,10 +322,6 @@ jobs:
           # ADR 0049, User isolation: every writer makes the comm folder 0700/0600 under umask 022,
           # a folder an older release left is tightened at join, user files keep the caller's umask.
           bash test-comm-private.sh
-          # The heartbeat waits on its context call in 50 ms ticks under a
-          # 10 s bound, so a call that ends at once costs 50 ms, not a whole
-          # second. Timed against a stub, hermetic, about two seconds.
-          bash test-heartbeat-ctx-wait.sh
           # A session may declare its handle only into the row its own
           # identity names. Until this suite ran here, the one thing that
           # proves it was a suite nobody ran but by hand -- and the defect it

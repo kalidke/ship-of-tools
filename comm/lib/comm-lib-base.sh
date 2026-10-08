@@ -65,9 +65,11 @@ sot_require_tools() {
 }
 
 # sot_bounded SECS CMD [ARG...] — runs the program CMD (not a shell function) with this shell's stdin, stdout and
-# stderr, and ends it SECS seconds (a whole number above 0) after it starts. The four timed comm calls run under it:
-# sot_ssh_bridge's ssh, sot_dial's bridge, comm-list.sh's `sot-fe version` and comm-turn-auditor.sh's headless
-# claude. One perl process owns the deadline and CMD's process group, which CMD gets before it runs, or it does not
+# stderr, and ends it SECS seconds (a whole number above 0) after it starts.
+# The bounded comm calls run under it: sot_ssh_bridge's ssh, sot_dial's bridge,
+# comm-list.sh's `sot-fe version`, comm-turn-auditor.sh's headless claude, and
+# the PostToolUse heartbeat's comm-context.sh.
+# One perl process owns the deadline and CMD's process group, which CMD gets before it runs, or it does not
 # run. The call returns when CMD has exited and no member of its group is left; until then the deadline holds, so a
 # descendant still holding CMD's output after CMD exits is ended at the bound too. At the bound, or when that perl is
 # itself sent TERM, INT or HUP, it signals the group and CMD itself (TERM, or the signal it got), so CMD is reached
