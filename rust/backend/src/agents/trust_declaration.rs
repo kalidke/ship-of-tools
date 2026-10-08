@@ -59,7 +59,7 @@ fn validate_prefix(prefix: &Path) -> Result<(), String> {
             .any(|c| matches!(c, Component::Normal(_)))
         || prefix
             .components()
-            .any(|c| matches!(c, Component::ParentDir))
+            .any(|c| matches!(c, Component::ParentDir) || c.as_os_str() == "..")
     {
         return Err(
             "declaration requires an absolute non-root prefix without parent components".into(),
