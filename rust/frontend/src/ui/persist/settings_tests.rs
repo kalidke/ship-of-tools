@@ -279,3 +279,30 @@
             assert_eq!(s.new_session_root, want_root, "merge_text({input:?})");
         }
     }
+
+    #[test]
+    fn quoted_hash_is_data_in_every_supported_setting() {
+        let mut s = Settings::default();
+        s.merge_text(concat!(
+            "[downloads]\ndir = \"/data/#42/dl\" # keep the first\n",
+            "[sessions]\nnew_session_root = '/work/#root' # and the second\n",
+            "[terminal]\nshell = \"C:\\tools\\sh#\" # and the third\n",
+        ));
+        assert_eq!(s.downloads_dir, Some(PathBuf::from("/data/#42/dl")));
+        assert_eq!(s.new_session_root.as_deref(), Some("/work/#root"));
+        assert_eq!(s.terminal_shell.as_deref(), Some("C:\\tools\\sh#"));
+
+        // An escaped double quote does not end the string, so the hash after it is still data.
+        let mut s = Settings::default();
+        s.merge_text("[downloads]\ndir = \"/a\\\"#b\" # comment\n");
+        assert_eq!(s.downloads_dir, Some(PathBuf::from("/a\\\"#b")));
+
+        // A bare comment line, a comment after a bare value and an empty value stay what they were.
+        let mut s = Settings::default();
+        s.merge_text("# [downloads]\n[terminal]\n# shell = \"x\"\nshell = pwsh.exe # bare\n");
+        assert_eq!(s.terminal_shell.as_deref(), Some("pwsh.exe"));
+        s.merge_text("[terminal]\nshell = \"\" # unset\n");
+        assert!(s.terminal_shell.is_none());
+        s.merge_text("[terminal]\nshell = # nothing\n");
+        assert!(s.terminal_shell.is_none());
+    }

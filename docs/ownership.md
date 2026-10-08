@@ -51,7 +51,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `<config>/workspaces-<host>/<slug>.toml` | disk | rows | `rust/backend/src/rows/store/mod.rs` `workspaces_dir`, `toml_path_for`, `save` |
 | `<config>/sessions-<host>/<label>.toml` (the older row-file shape) | disk | rows | `rust/backend/src/rows/store/mod.rs` `sessions_dir`, `scan_disk` |
 | boot migrations of the row store (Windows config dir, unsuffixed fold, sessions read) | disk | rows | `rust/backend/src/rows/store/migrate.rs` `migrate_legacy_state_dirs`; `rust/backend/src/rows/store/mod.rs` `scan_disk` |
-| `<config>/settings.toml`: the file and every section but `[trust]` | disk, setting | fe-ui | `rust/frontend/src/ui/persist/settings.rs` `Settings`, `load_layered`; `rust/frontend/src/ui/persist/discover.rs` `find_config_file` |
+| `<config>/settings.toml`: the file and every section but `[trust]` | disk, setting | fe-ui | `rust/frontend/src/ui/persist/settings.rs` `Settings`, `load_layered`, `merge_text`, `strip_comment`; `rust/frontend/src/ui/persist/discover.rs` `find_config_file` |
 | `[trust] root_prefix` in settings.toml | setting | agents | `rust/backend/src/agents/folder_trust.rs` `declared_root_prefix`, `TRUSTED_ROOT_PREFIX_SECTION`; writers `scripts/install.sh`, `scripts/sot-install-layout.ps1` |
 | `<config>/keybindings.toml` | disk, setting | fe-ui | `rust/frontend/src/ui/input/keybindings.rs` `KeyBindings`, `load_layered` |
 | `<config>/hosts.toml`, `SOT_HOSTS` | disk, setting | topology | `rust/protocol/src/topology/mod.rs` `locate`, `load`, `parse` |
