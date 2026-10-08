@@ -2506,6 +2506,48 @@ mod result_tests {
             self.finish_probe_attempt(label, &a, &second.previews, &target_id)
         }
 
+        /// The picker sends its selected account by name, wherever "default" sits in the list.
+        pub(in crate::ui) fn first_named_account_is_sent(&mut self) -> Result<()> {
+            println!("account-choice phase=body-entered entered_bodies=1");
+            let (a, mut rx, _events) = self.prepare_lifetime_probe("<host-account>", "id-account");
+            while rx.try_recv().is_ok() {}
+            let cases: [(&str, &[&str], usize, Option<&str>); 7] = [
+                ("no default", &["team", "other"], 0, Some("team")),
+                ("default first, default chosen", &["default", "team"], 0, None),
+                ("default first, second chosen", &["default", "team"], 1, Some("team")),
+                ("default later, first chosen", &["team", "default"], 0, Some("team")),
+                ("default later, default chosen", &["team", "default"], 1, None),
+                ("empty list", &[], 0, None),
+                ("stale index", &["default", "team"], 5, None),
+            ];
+            for (label, names, selected, want) in cases {
+                self.begin_create_session(a.clone());
+                let accounts = names
+                    .iter()
+                    .map(|name| crate::net::transport::AccountInfo {
+                        name: name.to_string(),
+                        kinds: Vec::new(),
+                        logged_in: Default::default(),
+                    })
+                    .collect();
+                let picker = self.workspace_picker.as_mut().ok_or_else(|| anyhow::anyhow!("{label}: no picker"))?;
+                picker.accounts = accounts;
+                picker.account_selected = selected;
+                self.picker_confirm_selected("claude");
+                self.picker_cancel();
+                let sent = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|request| match request {
+                    OutgoingReq::WorkspaceCreate { account, .. } => Some(account),
+                    _ => None,
+                });
+                anyhow::ensure!(
+                    sent == Some(want.map(str::to_string)),
+                    "first_named_account_is_sent: {label}: sent {sent:?}, wanted {want:?}"
+                );
+            }
+            println!("account-choice phase=completed ok=true entered_bodies=1 completed_bodies=1");
+            Ok(())
+        }
+
         pub(in crate::ui) fn passing_a_result_row_keeps_its_badge(&mut self) -> Result<()> {
             println!("result-badge phase=body-entered entered_bodies=1");
             let (a, mut rx, events) = self.prepare_lifetime_probe("<host-badge>", "id-badge");
