@@ -10,26 +10,69 @@ use super::accounts::claude_config_dir;
 const CLAUDE_TRUST_FILE: &str = ".claude.json";
 /// This box's own settings file, in the daemon's config directory --
 /// where the installed declaration lives (see below).
-#[cfg(test)]
 const SETTINGS_FILE: &str = "settings.toml";
 /// The bool inside a `projects` entry that means "this folder's trust
 /// dialog is answered" -- claude's own key name, not ours.
 const TRUST_ACCEPTED_KEY: &str = "hasTrustDialogAccepted";
-/// Read the typed user-level declaration at each spawn.
-pub fn trusted_root_prefix() -> Result<Option<PathBuf>, String> {
-    super::trust_declaration::read_trust_declaration(&super::trust_declaration::declaration_file())
+/// Where the owner DECLARES which folders he has already trusted: one
+/// absolute path prefix, and every row root under it counts as declared.
+/// It lives in THIS BOX's own config -- `[trust] root_prefix` in the
+/// user-level `settings.toml` -- and the installer writes it there for the
+/// box it runs on, which is the only place a real path belongs. NOT
+/// `hosts.toml`, and NOT a repo's project-level `.sot/settings.toml`,
+/// which a checkout could use to declare itself trusted -- the user-level
+/// file only. Absent or empty means NOTHING is declared and nothing is
+/// ever written.
+const TRUSTED_ROOT_PREFIX_SECTION: &str = "trust";
+const TRUSTED_ROOT_PREFIX_KEY: &str = "root_prefix";
+
+/// The declared prefix for this daemon, or `None` when nothing is declared
+/// -- in which case the folder-trust dialog is answered by hand exactly as
+/// it was before this existed. The table above is the ONLY source: no
+/// environment override, no default, no path named in this repo, because
+/// a second source is a second answer to "which tree is trusted" and the
+/// wrong one of the two is always the wider one. A daemon with no config
+/// therefore trusts nothing, which is the safe and visible direction --
+/// every session simply gets the dialog. A daemon that needs a different
+/// answer writes its own `[trust]` table in its own config directory.
+pub fn trusted_root_prefix() -> Option<PathBuf> {
+    declared_root_prefix(&crate::rows::store::app_config_dir())
 }
 
-#[cfg(test)]
+/// Read the declaration out of `<config_dir>/settings.toml`. Read at every
+/// spawn rather than cached at boot, so an install -- or the owner editing
+/// the line -- takes effect on the next row without restarting the daemon.
+/// Unreadable or absent declares nothing, exactly as an empty value does.
 fn declared_root_prefix(config_dir: &Path) -> Option<PathBuf> {
-    super::trust_declaration::read_trust_declaration(&config_dir.join(SETTINGS_FILE)).unwrap()
+    let text = std::fs::read_to_string(config_dir.join(SETTINGS_FILE)).ok()?;
+    parse_declared_root_prefix(&text)
 }
-#[cfg(test)]
+
+/// Pick the one key out of that file by hand, the way every other `.toml`
+/// in this workspace is read (there is no toml dependency anywhere here --
+/// see the frontend's own `settings` parser). Section headers and
+/// `key = value`, quotes stripped; every other key belongs to somebody
+/// else and is ignored, and the last declaration wins as it does there.
 fn parse_declared_root_prefix(text: &str) -> Option<PathBuf> {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(SETTINGS_FILE);
-    std::fs::write(&path, text).unwrap();
-    super::trust_declaration::read_trust_declaration(&path).unwrap()
+    let mut section = String::new();
+    let mut declared = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            section = name.trim().to_string();
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else { continue };
+        if section != TRUSTED_ROOT_PREFIX_SECTION || key.trim() != TRUSTED_ROOT_PREFIX_KEY {
+            continue;
+        }
+        let value = value.trim().trim_matches('"').trim();
+        declared = (!value.is_empty()).then(|| PathBuf::from(value));
+    }
+    declared
 }
 
 /// Which `.claude.json` records trust for `account`. NOT
@@ -499,7 +542,10 @@ mod tests {
         );
     }
 
-    // TOML table whitespace does not change the declaration schema.
+    /// `install.sh` only writes its declaration when the file has no [trust]
+    /// table yet, so its guard has to recognise every header shape THIS
+    /// parser accepts -- one it missed would earn the file a second table,
+    /// and the loop above takes the last declaration.
     #[test]
     fn a_spaced_trust_header_is_the_same_table() {
         assert_eq!(
