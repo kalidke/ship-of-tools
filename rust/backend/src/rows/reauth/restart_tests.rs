@@ -116,7 +116,7 @@ async fn a_revival_is_the_identity_then_end_run_then_spawn_then_the_settle_then_
     let scratch = tempfile::tempdir().unwrap();
     let (reg, id, _slug) = accept_fixture(home.path(), scratch.path());
 
-    let (payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+    let (payload, restart) = reauth(&reg, &id, "team", &sid(7)).await;
     assert_eq!(payload["code"], ACCEPTED_CODE);
     let fake = FakeSupervisor::healthy();
     restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
@@ -135,7 +135,7 @@ async fn a_revival_is_the_identity_then_end_run_then_spawn_then_the_settle_then_
     // would select by recency instead.
     let argv = fake.spawned_argv();
     assert!(argv.iter().any(|a| a == "--resume"), "{argv:?}");
-    assert!(argv.iter().any(|a| a == "sid-7"), "{argv:?}");
+    assert!(argv.iter().any(|a| *a == sid(7)), "{argv:?}");
     assert!(!argv.iter().any(|a| a == "--continue"), "{argv:?}");
 }
 
@@ -148,7 +148,7 @@ async fn an_end_run_that_cannot_run_spawns_nothing_and_rolls_the_record_back() {
     let scratch = tempfile::tempdir().unwrap();
     let (reg, id, slug) = accept_fixture(home.path(), scratch.path());
 
-    let (_payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+    let (_payload, restart) = reauth(&reg, &id, "team", &sid(7)).await;
     let mut fake = FakeSupervisor::healthy();
     fake.end_run = Err("the lane never answered".to_string());
     restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
@@ -176,7 +176,7 @@ async fn an_end_run_that_did_not_end_the_run_spawns_nothing_and_rolls_the_record
     let scratch = tempfile::tempdir().unwrap();
     let (reg, id, slug) = accept_fixture(home.path(), scratch.path());
 
-    let (_payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+    let (_payload, restart) = reauth(&reg, &id, "team", &sid(7)).await;
     let mut fake = FakeSupervisor::healthy();
     fake.end_run = Ok(crate::rows::run::end_run::EndRunOutcome::Starting);
     restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
@@ -207,7 +207,7 @@ async fn a_spawn_that_fails_leaves_the_record_on_the_new_account() {
     let scratch = tempfile::tempdir().unwrap();
     let (reg, id, slug) = accept_fixture(home.path(), scratch.path());
 
-    let (_payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+    let (_payload, restart) = reauth(&reg, &id, "team", &sid(7)).await;
     let mut fake = FakeSupervisor::healthy();
     fake.spawn = Err("the capsule binary is missing".to_string());
     restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
@@ -234,7 +234,7 @@ async fn a_replacement_that_rests_with_a_leg_live_is_never_minted_on() {
     let scratch = tempfile::tempdir().unwrap();
     let (reg, id, _slug) = accept_fixture(home.path(), scratch.path());
 
-    let (_payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+    let (_payload, restart) = reauth(&reg, &id, "team", &sid(7)).await;
     let fake = FakeSupervisor::healthy();
     fake.status_reads((1111, 800, P::EndedNoRespawn), (4242, 900, P::Ready));
     restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
@@ -260,7 +260,7 @@ async fn a_leaked_retire_is_never_minted_on_end_to_end() {
     let scratch = tempfile::tempdir().unwrap();
     let (reg, id, _slug) = accept_fixture(home.path(), scratch.path());
 
-    let (_payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+    let (_payload, restart) = reauth(&reg, &id, "team", &sid(7)).await;
     let fake = FakeSupervisor::healthy();
     fake.status_reads((1111, 800, P::EndedNoRespawn), (1111, 800, P::EndedNoRespawn));
     restart_blocking(restart.expect("the fixture reaches the accept"), &fake);

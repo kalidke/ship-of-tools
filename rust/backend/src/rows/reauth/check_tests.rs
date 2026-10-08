@@ -13,7 +13,7 @@ fn refusal_of(
     home: &Path,
 ) -> Refusal {
     let accounts = crate::agents::accounts::discover_accounts(home);
-    check(runtime, agent_kind, current_account, account, resume, home, &accounts)
+    check(runtime, agent_kind, current_account, account, resume, &project_root(home, "reauth-row"), home, &accounts)
         .err()
         .expect("this case must be refused")
 }
@@ -90,27 +90,30 @@ fn an_empty_resume_is_refused_rather_than_meaning_continue() {
 #[test]
 fn a_transcript_the_target_account_cannot_see_is_refused() {
     let home = home_with(true, &[("team", true)]);
+    let root = project_root(home.path(), "reauth-row");
     // The conversation exists — under the DEFAULT folder only, which is
     // exactly what an account folder carrying its own REAL `projects`
     // looks like from the target's side.
-    seed_transcript(&claude_config_dir(home.path(), ""), "sid");
-    let r = refusal_of("capsule", "claude", "", "team", "sid", home.path());
+    seed_transcript(&claude_config_dir(home.path(), ""), &sid(1), &[&root]);
+    let r = refusal_of("capsule", "claude", "", "team", &sid(1), home.path());
     assert_eq!(r.code, "resume_unreachable");
-    assert!(r.error.contains("sid.jsonl"), "{}", r.error);
+    let named = format!("{}.jsonl", sid(1));
+    assert!(r.error.contains(&named), "{}", r.error);
     // …and an id that is simply not this conversation's is the same
     // refusal, even with the folder fully shared.
-    seed_transcript(&claude_config_dir(home.path(), "team"), "sid");
-    let r = refusal_of("capsule", "claude", "", "team", "stale-id", home.path());
+    seed_transcript(&claude_config_dir(home.path(), "team"), &sid(1), &[&root]);
+    let r = refusal_of("capsule", "claude", "", "team", &sid(2), home.path());
     assert_eq!(r.code, "resume_unreachable");
 }
 
 #[test]
 fn a_logged_in_account_on_a_claude_capsule_row_is_accepted() {
     let home = home_with(true, &[("team", true)]);
-    seed_transcript(&claude_config_dir(home.path(), "team"), "sid");
-    seed_transcript(&claude_config_dir(home.path(), ""), "sid");
+    let root = project_root(home.path(), "reauth-row");
+    seed_transcript(&claude_config_dir(home.path(), "team"), &sid(1), &[&root]);
+    seed_transcript(&claude_config_dir(home.path(), ""), &sid(1), &[&root]);
     let accounts = crate::agents::accounts::discover_accounts(home.path());
-    assert!(check("capsule", "claude", "", "team", "sid", home.path(), &accounts).is_ok());
+    assert!(check("capsule", "claude", "", "team", &sid(1), &root, home.path(), &accounts).is_ok());
     // …and back to the default login, which is an account like any other.
-    assert!(check("capsule", "claude", "team", "default", "sid", home.path(), &accounts).is_ok());
+    assert!(check("capsule", "claude", "team", "default", &sid(1), &root, home.path(), &accounts).is_ok());
 }

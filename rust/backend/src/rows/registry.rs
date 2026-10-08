@@ -304,6 +304,23 @@ impl Workspaces {
         Some(ws)
     }
 
+    /// [`set_account`](Self::set_account), but only while `row` is still the
+    /// registered row for its id: the check and the write hold the registry's
+    /// lock, which `insert` needs to replace the row, so nothing replaces it
+    /// in between. `false` when it was replaced or removed; nothing is
+    /// written then.
+    pub fn set_account_on(&self, row: &Arc<Workspace>, account: &str) -> bool {
+        let g = self.inner.read().expect("workspaces lock");
+        let registered = g
+            .by_id
+            .get(&row.workspace_id)
+            .is_some_and(|w| Arc::ptr_eq(w, row));
+        if registered {
+            *row.account.lock().unwrap_or_else(|e| e.into_inner()) = account.to_string();
+        }
+        registered
+    }
+
     /// Resolve an optional workspace_id to a workspace handle. `None`
     /// → default. A non-default id that's missing is `None` (caller's
     /// responsibility to error). The returned `Arc` shares the same
