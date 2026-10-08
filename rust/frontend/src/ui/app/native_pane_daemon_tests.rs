@@ -203,12 +203,12 @@ impl Daemon {
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         daemon.child = Some(command.spawn().context("start the private daemon")?);
         let pid = daemon.child.as_ref().map_or(0, Child::id);
+        println!("pane-timing daemon pid={pid} endpoint={} state={} roots={},{}", endpoint.display(), state.display(), root.display(), runtime.display());
         let (control, session) = daemon.open_control()?;
         daemon.control = Some(control);
         daemon.session_id = session;
         daemon.check_inherited_env(pid)?;
         daemon.take_lease()?;
-        println!("pane-timing daemon pid={pid} endpoint={} state={} roots={},{}", endpoint.display(), state.display(), root.display(), runtime.display());
         daemon.check_control_deadline(&runtime)?;
         Ok(daemon)
     }
@@ -482,7 +482,7 @@ pub(super) fn kill_proof() -> Result<()> {
             break;
         }
     }
-    std::thread::sleep(Duration::from_secs(2));
+    // Killed while the child is still silent (it has listed no rows yet): only its stdin watch can end it.
     let snapshot = process_tree(ppid);
     parent.kill()?;
     parent.wait()?;

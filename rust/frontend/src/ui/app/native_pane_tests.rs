@@ -124,16 +124,17 @@ fn read_all(pipe: Option<impl std::io::Read + Send + 'static>) -> std::sync::mps
     rx
 }
 
-/// Runs one child to its end or its bound; an orphaned child ends at its next print, when its stdout pipe is gone.
+/// Runs one child with its stdin held open until it has exited, so a parent that dies takes the child with it.
 fn run_child(role: &str, scenario: &std::path::Path) -> Result<ChildRun> {
     let mut child = std::process::Command::new(std::env::current_exe()?)
         .args(["child", role])
         .arg(scenario)
-        .stdin(std::process::Stdio::null())
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
     println!("pane-timing child {role} started pid={}", child.id());
+    let _stdin = child.stdin.take();
     let (out_rx, err_rx) = (read_all(child.stdout.take()), read_all(child.stderr.take()));
     let waited = sot_log::test_isolated::wait_until(&mut child, Instant::now() + CHILD_BOUND);
     let out = out_rx.recv_timeout(Duration::from_secs(10)).unwrap_or_default();
@@ -206,7 +207,7 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
         totals[7] / 1_000_000
     );
     println!("pane-timing route={route} resume_pane_records_the_whole_operation samples={}", resume.len());
-    anyhow::ensure!(ok, "relayed pane presentation missed CONNECT_BOUND: {:?}", Duration::from_nanos(*totals.last().unwrap() as u64));
+    anyhow::ensure!(ok, "pane presentation missed CONNECT_BOUND: {:?}", Duration::from_nanos(*totals.last().unwrap() as u64));
     Ok(())
 }
 
@@ -303,13 +304,13 @@ impl PaneDriver<'_> {
     }
 
     fn step(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        self.note_target();
         if self.cur.is_none() {
             if self.ready_to_switch()? {
                 self.switch()?;
             }
             return Ok(());
         }
-        self.note_target();
         let text = self.capture.text();
         let (at, mark, seen_before) = {
             let c = self.cur.as_ref().unwrap();
@@ -451,13 +452,21 @@ fn plan_for(role: &str, scenario: &Scenario) -> Result<Vec<Plan>> {
 
 fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     let scenario: Scenario = serde_json::from_slice(&std::fs::read(scenario_path)?).map_err(|e| anyhow::anyhow!("pane-timing scenario malformed: {e}"))?;
+    // The parent holds this pipe's write end for the child's whole life; its end is the parent's.
+    std::thread::spawn(|| {
+        let mut sink = Vec::new();
+        let _ = std::io::stdin().lock().read_to_end(&mut sink);
+        // The parent's reader is gone too, so this write may fail; it must not panic before the abort.
+        let _ = writeln!(std::io::stdout(), "pane-timing parent gone");
+        std::process::exit(70);
+    });
     println!("pane-timing: body entered");
     let _home = FixtureHome::enter()?;
     let capture = sot_log::test_log::capture();
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let message = info.to_string();
-        if ["Surface::configure", "device is lost", "wgpu"].iter().any(|w| message.contains(w)) {
+        if ["Surface::configure", "device is lost", "adapter"].iter().any(|w| message.contains(w)) {
             println!("pane-timing not runnable here: display: {}", message.lines().next().unwrap_or_default());
             let _ = std::io::stdout().flush();
         }
