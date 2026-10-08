@@ -278,6 +278,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | REPL `OUT_LOCK` | lock | sidecars | `julia/repl/src/ShipToolsRepl.jl` |
 | the shell `with_lock` | lock | messaging | `comm/lib/comm-lib-registry-lock.sh` `with_lock` |
 | result target resolution and row attachment names | rule | fe-ui | `rust/frontend/src/ui/session/workspace_key.rs` `resolve_listed_workspace`; row facts from `workspace.list` |
+| pending-result lifetime and acknowledgement | state, rule | fe-ui | `rust/frontend/src/ui/session/badge.rs` `PendingNav`, result/attempt serials and admission; authoritative list/destroy invalidation, cursor, preview and presentation hooks; fe-net carries the saved attempt through its existing pending entry and event |
 
 ## Two owners today
 

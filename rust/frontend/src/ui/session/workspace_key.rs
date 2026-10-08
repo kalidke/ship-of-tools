@@ -4,8 +4,8 @@ use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::ui) struct ResultRowIdentity {
-    host: HostKey,
-    workspace_id: String,
+    pub(in crate::ui) host: HostKey,
+    pub(in crate::ui) workspace_id: String,
 }
 
 #[derive(Clone, Debug)]

@@ -7,14 +7,14 @@ rust/frontend/src/ui/CLAUDE.md. The record is ADR 0042, 0044 and 0025.
 ## Files
 - `mod.rs`: declares the files below and re-exports their names to `ui`.
 - `workspace_key.rs`: row/view key helpers, private ResultRowIdentity/ResolvedWorkspace, and resolve_listed_workspace over the producing host's listed canonical row facts.
-- `workspace_list.rs`: `workspace.list` into the strip: `fresh_workspace_caches`, `declared_sessions_from`, `activity_order`, and `State`'s `rebuild_workspace_caches`, `resort_strip`.
+- `workspace_list.rs`: workspace-list projections, canonical pending-result reconciliation before cache rebuild, and activity ordering of live badges.
 - `snapshot.rs`: `WorkspaceUiSnapshot` and `WorkspaceReplSnapshot`, saved and restored by `State`'s snapshot and restore methods.
 - `switch.rs`: switch_to_workspace and cycle_workspace; attachment uses the row's stored session_name.
 - `keys.rs`: Session keys from the tree: the workspace picker, Enter on a Sessions row, and the two-press destroy.
 - `picker.rs`: `WorkspacePicker` and its start directory, and `State`'s `begin_create_session` through `commit_workspace_create`.
 - `presence.rs`: `ReadMark`, `read_mark_decision`, and `State`'s `report_presence` and `fire_due_read_mark`.
-- `badge.rs`: the badge floor: `pending_nav_status`, `State::mark_pending_nav` and `badged_keys`.
-- `replies.rs`: a host's connect and disconnect, and the workspace and picker replies
+- `badge.rs`: canonical-row PendingNav and its replace/start/invalidate/cursor/preview/presentation transitions, pending_nav_status, mark_pending_nav and live badged_keys.
+- `replies.rs`: host and workspace replies; authoritative lists and successful non-kept destruction invalidate removed canonical result identities before view effects.
 
 ## Start here
 `State::switch_to_workspace` in switch.rs, for any change to what happens when the window moves to another row.
@@ -31,3 +31,6 @@ rust/frontend/src/ui/CLAUDE.md. The record is ADR 0042, 0044 and 0025.
 - A badged result never switches the view (`mark_pending_nav`).
 - Strip keys retain the listed (host, slug); view keys normalize that host's default. A command never inserts its unresolved spelling as a row key.
 - A listed row is attached by its session_name from workspace.list; neither a slug nor a session name is derived from the other.
+- A result belongs to the producing host's listed canonical row. Removal or identity replacement invalidates its entry and attempts; while the row remains listed, only its matching cursor, installed preview and successful presentation acknowledge it. Late completion cannot affect a successor.
+- Reconcile canonical pending-result identities before rebuilding workspace caches from an authoritative host list. A disconnect is not removal, and a kept default row retains its identity.
+- A replacement result or restarted attempt gets fresh local serials. Result-owned root/children requests retain them through pending entries and tagged events; stale successes and failures are rejected before tree or reveal mutation. Ordinary tree replies cannot complete or abort a result-owned reveal. Preview generations and presentation certificates are bound to the same issuing attempt.

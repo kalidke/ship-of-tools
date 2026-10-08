@@ -47,6 +47,9 @@ impl State {
                 crate::net::transport::IncomingEvt::HelloRefused { message } => {
                     self.on_hello_refused(event_host, message)
                 }
+                crate::net::transport::IncomingEvt::ResultTree { attempt, reply } => {
+                    self.on_result_tree(event_host, attempt, reply)
+                }
                 crate::net::transport::IncomingEvt::TreeRoot {
                     workspace_id,
                     root,

@@ -2,9 +2,29 @@
 
 use super::*;
 
+#[derive(Debug)]
+pub(crate) enum ResultTreeReply {
+    Root {
+        root: TreeNode,
+        children: Vec<TreeNode>,
+    },
+    Children {
+        parent_id: String,
+        children: Vec<TreeNode>,
+    },
+    Failed {
+        request: ResultTreeRequest,
+        error: String,
+    },
+}
+
 /// Messages the transport task pushes back to the GPU thread.
 #[derive(Debug)]
 pub enum IncomingEvt {
+    ResultTree {
+        attempt: ResultAttemptId,
+        reply: ResultTreeReply,
+    },
     Connected {
         session_id: String,
         revision: u64,

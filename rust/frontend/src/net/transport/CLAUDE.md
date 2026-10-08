@@ -4,13 +4,13 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
 `OutgoingReq` and `IncomingEvt`. Part of fe-net; charter: rust/frontend/src/net/CLAUDE.md.
 
 ## Files
-- `event.rs`: `IncomingEvt`, every event a connection hands the UI thread
-- `request.rs`: `OutgoingReq`, every request the UI can send a host, and `send_request`, which writes one
+- `event.rs`: `IncomingEvt` and ResultTreeReply; result-tree successes and failures retain the issuing attempt under the connection's dial HostKey.
+- `request.rs`: OutgoingReq, ResultAttemptId and ResultTreeRequest; send_request writes ordinary requests and locally tagged result-tree requests through the existing codec.
 - `mod.rs`: declares the parts and names the transport's interface to the window; holds the per-host connection task
   (`spawn`, `connect_and_run`, `run_protocol`, `run_session`, `steady_loop`, `spawn_stderr_drain`) and the rest no
-  other file here holds
+  other file here holds. It re-exports the local result-tree vocabulary and provides a cfg(test) ResultTreeTestDriver that delegates injected writes and replies to the real sender, PendingGuard and response dispatcher.
 - `reply.rs`: reply matching: the pending entry per request id (`PendingKind`), `PendingGuard`, and
-  `handle_response_frame`, which turns each reply into an `IncomingEvt`
+  `handle_response_frame`, which turns each reply into an `IncomingEvt`. Result-tree pending entries retain the issuing attempt and request step; matching replies and connection-loss failures emit that tag once. Inline tests execute the sender, pending dispatcher and decoder with reordered responses.
 - `tests.rs`: the connection task's tests: backoff, the link gate, a tree.root error reply, a closed local connection,
   the stderr drain
 - `golden_tests.rs`: every request kind's wire line and the events its error reply yields, against the golden file
@@ -29,8 +29,9 @@ after). A new request or reply goes through `ops/`.
 - In `steady_loop`, read frames only through the one held read future (`read_owned`); `codec::read_frame` is not
   cancel-safe. The hello and the preamble read plainly, before any request can race them, and so does the drain after
   the outgoing channel closes.
-- A request whose loss must be reported inserts its `PendingKind` before its write (`send_figure_get`).
+- send_figure_get and send_result_tree register their pending entry before writing; PendingGuard reports their outstanding failures when the connection ends.
 - The link gate goes up at any hello reply (`read_hello`) and down when the session ends, except after a hello refusal
   (`run_protocol`).
 - The local socket or pipe is dialled only through `connect_pipe`, which applies `sot_log::identity::connect_own`'s rule: `own_socket` before the connect on Unix; on Windows `connect_own` itself, which opens the pipe at identification level and checks the serving process before any byte is written, bounded by `CONNECT_BOUND`, run on a blocking thread, its handle adopted as the stream.
 - Every event is tagged with the dial `HostKey`; the daemon's declared host is display only.
+- ResultTree carries frontend-only canonical workspace, result and attempt identities through the existing request-id pending map; its wire payload remains tree.root or tree.children. Every matched success, backend error, malformed reply or pending connection loss returns the saved tag, never the current view's attempt.

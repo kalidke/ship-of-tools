@@ -12,6 +12,7 @@ mod switch;
 mod workspace_key;
 mod workspace_list;
 
+pub(in crate::ui) use badge::PendingResults;
 pub(in crate::ui) use picker::*;
 pub(in crate::ui) use presence::*;
 pub(in crate::ui) use snapshot::*;

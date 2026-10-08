@@ -409,6 +409,9 @@ impl State {
                 self.window.request_redraw();
             }
             Ok(info) => {
+                // The destroyed row's owed result and attempts die with it,
+                // before the bounce or any cache cleanup can touch them.
+                self.invalidate_result_row(&event_host, &info.workspace_id);
                 // If the active workspace was the one we
                 // just destroyed, bounce to default. The
                 // backend already refused to destroy the
@@ -500,6 +503,8 @@ impl State {
         // showing its rows, greyed, rather than vanishing),
         // then rebuild every workspace-scoped cache from the
         // whole union in one pass.
+        // Reconcile canonical pending-result identities before rebuilding workspace caches from an authoritative host list.
+        self.reconcile_pending_results(&event_host, &workspaces);
         self.workspace_lists.insert(event_host.clone(), workspaces);
         self.rebuild_workspace_caches();
         self.prune_warm_attach(&event_host);

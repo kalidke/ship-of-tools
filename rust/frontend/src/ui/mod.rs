@@ -788,26 +788,15 @@ struct State {
     /// (`lifecycle_key_of`'s `host` param), never trusted from the
     /// entry's own value.
     workspace_id_slugs: HashMap<(HostKey, String), WsKey>,
-    /// Badge floor (ADR 0025 §1): `WsKey` (host, slug) → workspace-relative
-    /// path of a `nav.preview` result that arrived for a workspace the FE
-    /// wasn't viewing. Instead of silently dropping the off-workspace
-    /// result (the bug §1 fixes — a backend session pushes a result to a FE
-    /// looking at another workspace and it vanishes), we record it here
-    /// ("result pending") and badge that workspace's row/strip name
-    /// non-disruptively. Latest-wins per workspace. When the user later
-    /// *switches* to the workspace, `switch_to_workspace` drives the
-    /// pending preview and clears the entry, so a result always reaches
-    /// the user — never dropped. `dispatch_fe_command`'s `Preview`/`Reveal`
-    /// arms reuse `mark_pending_nav` too.
-    /// ADR 0042 L2a codex review, item E: keyed by `WsKey`, not a bare
-    /// slug. The `nav.preview` ENVELOPE itself carries no host field, but
-    /// the EVENT delivering it does (`event_host`, tagged by whichever
-    /// connection received the `agent.message` push) — the same slug on
-    /// two hosts is exactly the collision `WsKey` exists to prevent
-    /// everywhere else, and a bare-slug compare here let a same-slug
-    /// nav.preview from a NON-active host be mistaken for one targeting
-    /// our active workspace.
-    pending_nav: HashMap<WsKey, String>,
+    /// Results owed to current listed canonical rows; authoritative removal or identity replacement invalidates their entries and attempts.
+    pending_nav: PendingResults,
+    /// Serial of the newest result recorded; never reset, so a replacement is told from the result it replaced.
+    result_serial: u64,
+    /// Serial of the newest attempt started; never reset.
+    attempt_serial: u64,
+    /// The attempt the in-flight reveal (`pending_reveal` or `pending_switch_reveal`) works for, when it
+    /// is a result's; ordinary tree replies neither advance nor abort a reveal while it is set.
+    result_reveal: Option<crate::net::transport::ResultAttemptId>,
     /// `(host, slug)` → the *previous* work-state string we last saw, so
     /// the `workspace_states` update site can tell a real transition (a
     /// slug that had a known, different prior state) from a first-ever
@@ -1670,7 +1659,7 @@ mod result_tests {
             default_b.is_default = true;
             self.on_workspaces(a.clone(), vec![row_a, default_a]);
             self.on_workspaces(b.clone(), vec![row_b, default_b]);
-            self.pending_nav.clear();
+            self.pending_nav = PendingResults::default();
             while a_rx.try_recv().is_ok() {}
             while b_rx.try_recv().is_ok() {}
             (a, b, a_rx, b_rx)
@@ -1696,7 +1685,7 @@ mod result_tests {
                     caption: Some("from b".into()),
                 },
             );
-            anyhow::ensure!(self.pending_nav.get(&(b.clone(), "project".into())).map(String::as_str) == Some("same.png")
+            anyhow::ensure!(self.pending_result_path(b, "project").as_deref() == Some("same.png")
                 && a_rx.try_recv().is_err(), "result_target_uses_host_and_listed_identity: another host's same slug rendered in the active view");
             Ok(())
         }
@@ -1717,10 +1706,7 @@ mod result_tests {
                 },
             );
             anyhow::ensure!(
-                self.pending_nav
-                    .get(&(b.clone(), "project".into()))
-                    .map(String::as_str)
-                    == Some("by-id.png")
+                self.pending_result_path(b, "project").as_deref() == Some("by-id.png")
                     && !self.pending_nav.contains_key(&(b.clone(), "id-b".into())),
                 "canonical spelling created a phantom strip key"
             );
@@ -1818,10 +1804,7 @@ mod result_tests {
             .unwrap();
             self.handle_nav_envelope(b, &envelope);
             anyhow::ensure!(
-                self.pending_nav
-                    .get(&(b.clone(), "project".into()))
-                    .map(String::as_str)
-                    == Some("envelope.png"),
+                self.pending_result_path(b, "project").as_deref() == Some("envelope.png"),
                 "envelope failed listed id resolution"
             );
             let mut selected = node("sessions:selected", "selected", false);
@@ -1983,6 +1966,854 @@ mod result_tests {
                 self.paint_preview_png(&mut pass, Some(rect), rect)?;
             }
             self.queue.submit([encoder.finish()]);
+            Ok(())
+        }
+    }
+
+    // ---- canonical result lifetime and attempt admission (ADR 0025) ----
+
+    type ProbeRx = tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>;
+    type ProbeEvents = std::sync::mpsc::Sender<(HostKey, crate::net::transport::IncomingEvt)>;
+
+    /// How a probe answers the tree requests State sends.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Hold {
+        Nothing,
+        Children,
+        Everything,
+    }
+
+    /// A tree request State sent, written through the real sender and pending map.
+    #[derive(Debug)]
+    struct WiredTree {
+        id: u64,
+        op: String,
+        node_id: Option<String>,
+        /// Sent as a result's own request, so its reply is the result's to complete.
+        owned: bool,
+    }
+
+    struct Served {
+        held: Vec<WiredTree>,
+        previews: Vec<(String, u64)>,
+    }
+
+    /// The real request sender and response dispatcher, kept across the steps of one probe.
+    struct TreeWire<'a> {
+        runtime: tokio::runtime::Runtime,
+        driver: crate::net::transport::ResultTreeTestDriver<'a>,
+        next_id: u64,
+    }
+
+    fn tree_json(paths: &[&str], parent: &str) -> Vec<serde_json::Value> {
+        let prefix = if parent.is_empty() {
+            String::new()
+        } else {
+            format!("{parent}/")
+        };
+        let mut dirs = std::collections::BTreeSet::new();
+        let mut files = std::collections::BTreeSet::new();
+        for path in paths {
+            if let Some(rest) = path.strip_prefix(&prefix) {
+                match rest.split_once('/') {
+                    Some((dir, _)) => {
+                        dirs.insert(dir.to_string());
+                    }
+                    None => {
+                        files.insert(rest.to_string());
+                    }
+                }
+            }
+        }
+        let entry = |name: &str, has_children: bool| {
+            serde_json::json!({
+                "id": format!("files:{prefix}{name}"),
+                "label": name,
+                "kind": "files",
+                "has_children": has_children,
+            })
+        };
+        dirs.iter()
+            .map(|name| entry(name, true))
+            .chain(files.iter().map(|name| entry(name, false)))
+            .collect()
+    }
+
+    impl<'a> TreeWire<'a> {
+        fn new(host: &HostKey, events: &'a ProbeEvents) -> Result<Self> {
+            Ok(Self {
+                runtime: tokio::runtime::Builder::new_current_thread().build()?,
+                driver: crate::net::transport::ResultTreeTestDriver::new(host.clone(), events),
+                next_id: 100,
+            })
+        }
+
+        /// Send a State-emitted tree request through the real sender; `None` for any other request.
+        fn register(&mut self, request: OutgoingReq) -> Result<Option<WiredTree>> {
+            let shape = format!("{request:?}");
+            if !["ResultTree", "TreeRoot", "TreeChildren"]
+                .iter()
+                .any(|kind| shape.starts_with(kind))
+            {
+                return Ok(None);
+            }
+            self.next_id += 1;
+            let id = self.next_id;
+            let mut wire = Vec::new();
+            self.runtime
+                .block_on(self.driver.send(&mut wire, id, request))?;
+            let (frame, _) = self.runtime.block_on(sot_protocol::codec::read_frame(
+                &mut sot_protocol::codec::buffered(&wire[..]),
+            ))?;
+            Ok(Some(WiredTree {
+                id,
+                op: frame.op.clone(),
+                node_id: frame
+                    .payload
+                    .get("node_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                owned: shape.starts_with("ResultTree"),
+            }))
+        }
+
+        fn reply_with(&mut self, tree: &WiredTree, payload: serde_json::Value) {
+            self.driver
+                .reply(sot_protocol::Frame::res(tree.id, &tree.op, payload));
+        }
+
+        fn reply(&mut self, tree: &WiredTree, paths: &[&str]) {
+            let payload = if tree.op == "tree.root" {
+                serde_json::json!({
+                    "node": {"id": "files:", "label": "project", "kind": "files", "has_children": true},
+                    "children": tree_json(paths, ""),
+                })
+            } else {
+                let parent = tree
+                    .node_id
+                    .as_deref()
+                    .and_then(|id| id.strip_prefix("files:"))
+                    .unwrap_or("");
+                serde_json::json!({ "children": tree_json(paths, parent) })
+            };
+            self.reply_with(tree, payload);
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum OldReply {
+        Success,
+        Error,
+        Malformed,
+    }
+
+    /// One replacement case: the first and second result, whether a new result replaces the first, and how the first attempt's reply arrives.
+    struct AttemptCase {
+        label: &'static str,
+        first: &'static str,
+        second: &'static str,
+        replace: bool,
+        old_reply: OldReply,
+        parked: bool,
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Gone {
+        Listing,
+        Destroy,
+        Replacement,
+    }
+
+    /// One removal case: how the row goes, whether an attempt is in flight when it goes, and the successor's result.
+    struct LifeCase {
+        label: &'static str,
+        gone: Gone,
+        inflight: bool,
+        successor: &'static str,
+    }
+
+    type WorkspaceInfoRow = crate::net::transport::WorkspaceInfo;
+
+    fn destroyed_info(id: &str) -> crate::net::transport::WorkspaceDestroyedInfo {
+        crate::net::transport::WorkspaceDestroyedInfo {
+            workspace_id: id.into(),
+            slug: "project".into(),
+            label: "project".into(),
+            tmux_killed: true,
+            toml_removed: true,
+            kept: None,
+        }
+    }
+
+    fn probe_row(
+        slug: &str,
+        workspace_id: &str,
+        default: bool,
+    ) -> crate::net::transport::WorkspaceInfo {
+        let mut row = ws_info(slug, &format!("{slug}-session"));
+        row.workspace_id = workspace_id.into();
+        row.is_default = default;
+        row
+    }
+
+    fn show_command(path: &str) -> FeCommand {
+        FeCommand::Preview {
+            workspace: "project".into(),
+            path: path.into(),
+            urgent: false,
+            roi: None,
+            caption: None,
+        }
+    }
+
+    fn goto_command(slug: &str) -> FeCommand {
+        FeCommand::Workspace {
+            slug: Some(slug.into()),
+            boot: false,
+        }
+    }
+
+    impl State {
+        /// A fresh host with a default row and a `project` row, routed through the fixture's own channels.
+        fn prepare_lifetime_probe(
+            &mut self,
+            host: &str,
+            project_id: &str,
+        ) -> (HostKey, ProbeRx, ProbeEvents) {
+            let host = host.to_string();
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            self.conns.push((host.clone(), tx));
+            let (events, receiver) = std::sync::mpsc::channel();
+            self.evt_rx = receiver;
+            self.active_host = host.clone();
+            self.active_workspace_id = None;
+            self.on_workspaces(
+                host.clone(),
+                vec![
+                    probe_row("base", &format!("id-base-{host}"), true),
+                    probe_row("project", project_id, false),
+                ],
+            );
+            (host, rx, events)
+        }
+
+        /// Answer root requests at once; hold or answer the rest. Returns what is still held and the previews asked for.
+        fn serve_result_requests(
+            &mut self,
+            wire: &mut TreeWire<'_>,
+            rx: &mut ProbeRx,
+            paths: &[&str],
+            hold: Hold,
+        ) -> Result<Served> {
+            let mut served = Served {
+                held: Vec::new(),
+                previews: Vec::new(),
+            };
+            for _ in 0..8 {
+                let requests: Vec<OutgoingReq> =
+                    std::iter::from_fn(|| rx.try_recv().ok()).collect();
+                if requests.is_empty() {
+                    break;
+                }
+                for request in requests {
+                    if let OutgoingReq::PreviewGet {
+                        node_id,
+                        generation,
+                        ..
+                    } = &request
+                    {
+                        served.previews.push((node_id.clone(), *generation));
+                        continue;
+                    }
+                    let Some(tree) = wire.register(request)? else {
+                        continue;
+                    };
+                    let held = match hold {
+                        Hold::Everything => true,
+                        Hold::Children => tree.op == "tree.children",
+                        Hold::Nothing => false,
+                    };
+                    if held {
+                        served.held.push(tree);
+                    } else {
+                        wire.reply(&tree, paths);
+                    }
+                }
+                self.drain_events();
+            }
+            Ok(served)
+        }
+
+        fn probe_sees_badge(&self, host: &HostKey) -> bool {
+            self.badged_keys()
+                .contains(&(host.clone(), "project".into()))
+        }
+
+        fn probe_selected_id(&self) -> Option<String> {
+            self.tree
+                .rows
+                .get(self.tree.selected)
+                .map(|row| row.node.id.clone())
+        }
+
+        fn probe_install_preview(&mut self, host: &HostKey, node_id: &str, generation: u64) {
+            self.on_preview(
+                host.clone(),
+                Some(node_id.to_string()),
+                self.active_workspace_id.clone(),
+                "text/plain".into(),
+                b"fn shown() {}\n".to_vec(),
+                None,
+                generation,
+            );
+        }
+
+        /// Everything an obsolete completion must leave alone.
+        fn probe_effects(
+            &self,
+            host: &HostKey,
+        ) -> (Vec<String>, usize, String, bool, bool, Option<String>, bool) {
+            (
+                self.tree
+                    .rows
+                    .iter()
+                    .map(|row| row.node.id.clone())
+                    .collect(),
+                self.tree.selected,
+                self.status.clone(),
+                self.pending_reveal.is_some(),
+                self.pending_switch_reveal.is_some(),
+                self.reveal_awaiting.clone(),
+                self.probe_sees_badge(host),
+            )
+        }
+
+        fn parked_project_rows(&mut self, host: &HostKey) -> Vec<String> {
+            let key: TreeKey = (
+                Mode::Files,
+                TreeScope::Workspace((host.clone(), "project".into())),
+            );
+            self.tree_store
+                .slot_mut(key)
+                .view
+                .rows
+                .iter()
+                .map(|row| row.node.id.clone())
+                .collect()
+        }
+
+        /// The newest attempt's preview arrives and a frame is presented: that clears the badge, and nothing earlier did.
+        fn finish_probe_attempt(
+            &mut self,
+            label: &str,
+            host: &HostKey,
+            previews: &[(String, u64)],
+            target_id: &str,
+        ) -> Result<()> {
+            let (node, generation) = previews
+                .last()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("{label}: the replacement asked for no preview"))?;
+            anyhow::ensure!(
+                node == target_id,
+                "{label}: the replacement previewed {node}"
+            );
+            self.probe_install_preview(host, &node, generation);
+            anyhow::ensure!(
+                self.probe_sees_badge(host),
+                "{label}: the badge cleared before any presentation"
+            );
+            self.redraw()?;
+            anyhow::ensure!(
+                !self.probe_sees_badge(host),
+                "{label}: the matching presentation did not clear the badge"
+            );
+            Ok(())
+        }
+
+        pub(in crate::ui) fn replaced_result_rejects_old_tree_attempt_before_effects(
+            &mut self,
+        ) -> Result<()> {
+            println!("result-attempt phase=body-entered entered_bodies=1");
+            let case = |label, first, second, replace, old_reply, parked| AttemptCase {
+                label,
+                first,
+                second,
+                replace,
+                old_reply,
+                parked,
+            };
+            for case in [
+                case(
+                    "sibling",
+                    "src/a.rs",
+                    "src/b.rs",
+                    true,
+                    OldReply::Success,
+                    false,
+                ),
+                case(
+                    "same-node",
+                    "src/b.rs",
+                    "src/b.rs",
+                    true,
+                    OldReply::Success,
+                    false,
+                ),
+                case(
+                    "retry",
+                    "src/b.rs",
+                    "src/b.rs",
+                    false,
+                    OldReply::Success,
+                    false,
+                ),
+                case(
+                    "error",
+                    "src/a.rs",
+                    "src/b.rs",
+                    true,
+                    OldReply::Error,
+                    false,
+                ),
+                case(
+                    "malformed",
+                    "src/a.rs",
+                    "src/b.rs",
+                    true,
+                    OldReply::Malformed,
+                    false,
+                ),
+                case(
+                    "parked",
+                    "src/a.rs",
+                    "src/b.rs",
+                    true,
+                    OldReply::Success,
+                    true,
+                ),
+            ] {
+                self.replacement_case(&case)?;
+                println!(
+                    "result-attempt case={} admitted_once=true entered_bodies=1",
+                    case.label
+                );
+            }
+            println!("result-attempt phase=completed ok=true entered_bodies=1 completed_bodies=1");
+            Ok(())
+        }
+
+        /// The old attempt's reply arrives; whatever the replacement shows must not move.
+        fn deliver_old_reply(
+            &mut self,
+            wire: &mut TreeWire<'_>,
+            old: &WiredTree,
+            case: &AttemptCase,
+            paths: &[&str],
+        ) {
+            match case.old_reply {
+                OldReply::Success => wire.reply(old, paths),
+                OldReply::Error => wire.reply_with(
+                    old,
+                    serde_json::json!({"error": "old attempt failed", "code": "x"}),
+                ),
+                OldReply::Malformed => wire.reply_with(old, serde_json::json!({"nonsense": 1})),
+            }
+            self.drain_events();
+        }
+
+        fn replacement_case(&mut self, case: &AttemptCase) -> Result<()> {
+            const REJECTED: &str =
+                "obsolete result tree completion changed the replacement attempt before admission";
+            let label = case.label;
+            let paths = ["src/a.rs", "src/b.rs"];
+            let (a, mut rx, events) =
+                self.prepare_lifetime_probe(&format!("<host-attempt-{label}>"), "id-attempt");
+            let mut wire = TreeWire::new(&a, &events)?;
+            // The first attempt waits on the children of src.
+            self.dispatch_fe_command(Some(&a), show_command(case.first));
+            self.dispatch_fe_command(Some(&a), goto_command("project"));
+            let mut first =
+                self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Children)?;
+            anyhow::ensure!(
+                first.held.len() == 1 && first.held[0].node_id.as_deref() == Some("files:src"),
+                "{label}: the first attempt did not wait on the children of src"
+            );
+            let old = first.held.remove(0);
+            // The row is left, then shown again for the same or a replacing result, on the same parent.
+            self.switch_to_workspace(a.clone(), None, None, false);
+            self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Nothing)?;
+            if case.replace {
+                self.dispatch_fe_command(Some(&a), show_command(case.second));
+            }
+            if case.parked {
+                let before = (
+                    self.parked_project_rows(&a),
+                    self.tree.rows.len(),
+                    self.status.clone(),
+                );
+                self.deliver_old_reply(&mut wire, &old, case, &paths);
+                let after = (
+                    self.parked_project_rows(&a),
+                    self.tree.rows.len(),
+                    self.status.clone(),
+                );
+                anyhow::ensure!(before == after, "{REJECTED}");
+            }
+            self.dispatch_fe_command(Some(&a), goto_command("project"));
+            let second = self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Children)?;
+            let same_parent = |tree: &&WiredTree| tree.node_id.as_deref() == Some("files:src");
+            anyhow::ensure!(
+                second.held.iter().filter(same_parent).count() == 2
+                    && second.held.last().is_some_and(|tree| same_parent(&tree)),
+                "{label}: the replacement did not ask for the same parent: {:?}",
+                second.held
+            );
+            let (own, refreshes) = second.held.split_last().expect("held is not empty");
+            let target_id = format!("files:{}", case.second);
+            // The old completion arrives while the replacement waits on the same parent.
+            if !case.parked {
+                let before = self.probe_effects(&a);
+                self.deliver_old_reply(&mut wire, &old, case, &paths);
+                anyhow::ensure!(
+                    before == self.probe_effects(&a)
+                        && std::iter::from_fn(|| rx.try_recv().ok()).next().is_none(),
+                    "{REJECTED}"
+                );
+            }
+            anyhow::ensure!(
+                self.probe_sees_badge(&a),
+                "{label}: the badge was cleared when the attempt started"
+            );
+            // The ordinary refreshes of the revisited tree install their rows and finish nothing of the result's.
+            for refresh in refreshes {
+                wire.reply(refresh, &paths);
+            }
+            self.drain_events();
+            anyhow::ensure!(
+                self.probe_selected_id().as_deref() != Some(target_id.as_str())
+                    && self.probe_sees_badge(&a),
+                "{label}: an ordinary tree reply completed a result-owned reveal"
+            );
+            // Only the replacement's own reply lands the cursor.
+            wire.reply(own, &paths);
+            self.drain_events();
+            anyhow::ensure!(
+                self.probe_selected_id().as_deref() == Some(target_id.as_str())
+                    && self.probe_sees_badge(&a),
+                "{label}: the attempt's own reply did not land the cursor, or cleared the badge"
+            );
+            self.finish_probe_attempt(label, &a, &second.previews, &target_id)
+        }
+
+        pub(in crate::ui) fn passing_a_result_row_keeps_its_badge(&mut self) -> Result<()> {
+            println!("result-badge phase=body-entered entered_bodies=1");
+            let (a, mut rx, events) = self.prepare_lifetime_probe("<host-badge>", "id-badge");
+            let mut wire = TreeWire::new(&a, &events)?;
+            let paths = ["top.rs", "other.rs"];
+            // Preview first, cursor second: neither alone clears the badge.
+            self.dispatch_fe_command(Some(&a), show_command("top.rs"));
+            self.dispatch_fe_command(Some(&a), goto_command("project"));
+            let served =
+                self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Everything)?;
+            anyhow::ensure!(
+                self.probe_sees_badge(&a),
+                "passing_a_result_row_keeps_its_badge: the badge was cleared when the attempt started"
+            );
+            let (node, generation) = served
+                .previews
+                .last()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no preview asked for"))?;
+            self.probe_install_preview(&a, &node, generation);
+            self.redraw()?;
+            anyhow::ensure!(
+                self.probe_sees_badge(&a),
+                "a matching preview without its cursor cleared the badge"
+            );
+            for tree in &served.held {
+                wire.reply(tree, &paths);
+            }
+            self.drain_events();
+            self.redraw()?;
+            anyhow::ensure!(
+                !self.probe_sees_badge(&a),
+                "cursor and preview with a presentation did not clear the badge"
+            );
+            self.redraw()?;
+            anyhow::ensure!(
+                !self.probe_sees_badge(&a),
+                "a later frame brought the badge back"
+            );
+            // A failed preview, a stale generation and another row's frame keep the next attempt's badge.
+            self.switch_to_workspace(a.clone(), None, None, false);
+            self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Nothing)?;
+            self.dispatch_fe_command(Some(&a), show_command("top.rs"));
+            self.dispatch_fe_command(Some(&a), goto_command("project"));
+            let served = self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Nothing)?;
+            let (node, generation) = served
+                .previews
+                .last()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no preview asked for"))?;
+            self.redraw()?;
+            anyhow::ensure!(
+                self.probe_sees_badge(&a),
+                "a cursor without its preview cleared the badge"
+            );
+            self.on_preview_get_failed(
+                a.clone(),
+                Some(node.clone()),
+                self.active_workspace_id.clone(),
+                generation,
+                "kernel_unavailable".into(),
+            );
+            self.redraw()?;
+            anyhow::ensure!(
+                self.probe_sees_badge(&a),
+                "a failed preview cleared the badge"
+            );
+            self.probe_install_preview(&a, &node, generation.saturating_sub(1));
+            self.redraw()?;
+            anyhow::ensure!(
+                self.probe_sees_badge(&a),
+                "a stale preview generation cleared the badge"
+            );
+            self.switch_to_workspace(a.clone(), None, None, false);
+            self.redraw()?;
+            anyhow::ensure!(
+                self.probe_sees_badge(&a),
+                "another row's presented frame cleared the badge"
+            );
+            self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Nothing)?;
+            // Returning retries with the replacing result and clears it once presented.
+            self.dispatch_fe_command(Some(&a), show_command("other.rs"));
+            self.dispatch_fe_command(Some(&a), goto_command("project"));
+            let served = self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Nothing)?;
+            let (node, generation) = served
+                .previews
+                .last()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no preview asked for"))?;
+            anyhow::ensure!(
+                node == "files:other.rs",
+                "the retry previewed {node}, not the replacing result"
+            );
+            self.probe_install_preview(&a, &node, generation);
+            self.redraw()?;
+            anyhow::ensure!(
+                !self.probe_sees_badge(&a),
+                "the retry's presentation did not clear the badge"
+            );
+            println!("result-badge phase=completed ok=true entered_bodies=1 completed_bodies=1");
+            Ok(())
+        }
+
+        /// The successor's own completions acknowledge it once.
+        fn finish_probe_successor(
+            &mut self,
+            label: &str,
+            host: &HostKey,
+            wire: &mut TreeWire<'_>,
+            rx: &mut ProbeRx,
+            paths: &[&str],
+            new: &Served,
+        ) -> Result<()> {
+            for tree in &new.held {
+                wire.reply(tree, paths);
+            }
+            self.drain_events();
+            self.serve_result_requests(wire, rx, paths, Hold::Nothing)?;
+            let (node, generation) = new
+                .previews
+                .last()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("{label}: no preview"))?;
+            self.probe_install_preview(host, &node, generation);
+            self.redraw()?;
+            anyhow::ensure!(
+                !self.probe_sees_badge(host),
+                "{label}: the successor's presentation did not clear its result"
+            );
+            Ok(())
+        }
+
+        pub(in crate::ui) fn pending_result_dies_with_its_canonical_row(&mut self) -> Result<()> {
+            println!("result-lifetime phase=body-entered entered_bodies=1");
+            let case = |label, gone, inflight, successor| LifeCase {
+                label,
+                gone,
+                inflight,
+                successor,
+            };
+            for case in [
+                case("listing", Gone::Listing, false, "other.rs"),
+                case("replacement", Gone::Replacement, false, "other.rs"),
+                case("listing-inflight", Gone::Listing, true, "other.rs"),
+                case(
+                    "listing-inflight-same-path",
+                    Gone::Listing,
+                    true,
+                    "src/a.rs",
+                ),
+                case("destroy-inflight", Gone::Destroy, true, "other.rs"),
+                case("replacement-inflight", Gone::Replacement, true, "src/a.rs"),
+            ] {
+                self.removal_case(&case)?;
+                println!("result-lifetime case={} entered_bodies=1", case.label);
+            }
+            self.pending_result_controls()?;
+            println!("result-lifetime phase=completed ok=true entered_bodies=1 completed_bodies=1");
+            Ok(())
+        }
+
+        /// The row goes (by a list, a destroy or a same-slug replacement) with its result owed or in flight.
+        fn remove_probe_row(
+            &mut self,
+            case: &LifeCase,
+            host: &HostKey,
+            base: &WorkspaceInfoRow,
+        ) -> Result<()> {
+            let label = case.label;
+            match case.gone {
+                Gone::Destroy => {
+                    self.on_workspace_destroyed(host.clone(), Err("refused".into()));
+                    anyhow::ensure!(
+                        self.pending_reveal.is_some() || self.pending_switch_reveal.is_some(),
+                        "{label}: a failed destroy aborted the attempt"
+                    );
+                    self.on_workspace_destroyed(host.clone(), Ok(destroyed_info("old-id")));
+                }
+                Gone::Listing => self.on_workspaces(host.clone(), vec![base.clone()]),
+                Gone::Replacement => self.on_workspaces(
+                    host.clone(),
+                    vec![base.clone(), probe_row("project", "new-id", false)],
+                ),
+            }
+            let gone = "removed canonical row retained its pending result or same-slug successor inherited it";
+            anyhow::ensure!(
+                !self
+                    .badged_keys()
+                    .contains(&(host.clone(), "project".into()))
+                    && !(case.inflight
+                        && (self.pending_reveal.is_some() || self.pending_switch_reveal.is_some())),
+                "{gone}"
+            );
+            // A successor row with the same slug is listed.
+            if case.gone != Gone::Replacement {
+                self.on_workspaces(
+                    host.clone(),
+                    vec![base.clone(), probe_row("project", "new-id", false)],
+                );
+            }
+            anyhow::ensure!(!self.probe_sees_badge(host), "{gone}");
+            Ok(())
+        }
+
+        fn removal_case(&mut self, case: &LifeCase) -> Result<()> {
+            let label = case.label;
+            let paths = ["src/a.rs", "other.rs"];
+            let host = format!("<host-life-{label}>");
+            let (a, mut rx, events) = self.prepare_lifetime_probe(&host, "old-id");
+            let mut wire = TreeWire::new(&a, &events)?;
+            let base = probe_row("base", &format!("id-base-{host}"), true);
+            self.dispatch_fe_command(Some(&a), show_command("src/a.rs"));
+            anyhow::ensure!(
+                self.probe_sees_badge(&a),
+                "{label}: the result was not owed"
+            );
+            let mut old = Served {
+                held: Vec::new(),
+                previews: Vec::new(),
+            };
+            if case.inflight {
+                self.dispatch_fe_command(Some(&a), goto_command("project"));
+                old = self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Everything)?;
+                anyhow::ensure!(
+                    !old.held.is_empty(),
+                    "{label}: the first attempt did not start"
+                );
+            }
+            self.remove_probe_row(case, &a, &base)?;
+            self.switch_to_workspace(a.clone(), None, None, false);
+            self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Nothing)?;
+            self.dispatch_fe_command(Some(&a), show_command(case.successor));
+            self.dispatch_fe_command(Some(&a), goto_command("project"));
+            let new = self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Everything)?;
+            anyhow::ensure!(
+                self.probe_sees_badge(&a),
+                "{label}: the successor's result was not owed"
+            );
+            // Everything the removed row's attempt still had in flight arrives now.
+            let before = self.probe_effects(&a);
+            for tree in old.held.iter().filter(|tree| tree.owned) {
+                wire.reply(tree, &paths);
+            }
+            self.drain_events();
+            if let Some((old_node, old_generation)) = old.previews.last() {
+                self.probe_install_preview(&a, old_node, *old_generation);
+            }
+            self.redraw()?;
+            let after = self.probe_effects(&a);
+            anyhow::ensure!(
+                before.0 == after.0
+                    && before.1 == after.1
+                    && self.probe_sees_badge(&a)
+                    && std::iter::from_fn(|| rx.try_recv().ok()).next().is_none(),
+                "{label}: a late completion of the removed row changed its successor"
+            );
+            self.finish_probe_successor(label, &a, &mut wire, &mut rx, &paths, &new)
+        }
+
+        /// What leaves an owed result alone: an unchanged list, another host's row with the same id, a
+        /// disconnect, a kept default row and a late destroy of a replaced id.
+        fn pending_result_controls(&mut self) -> Result<()> {
+            let (a, _rx_a, _events_a) =
+                self.prepare_lifetime_probe("<host-control-a>", "shared-id");
+            let (b, _rx_b, _events_b) =
+                self.prepare_lifetime_probe("<host-control-b>", "shared-id");
+            self.dispatch_fe_command(Some(&a), show_command("one.rs"));
+            self.dispatch_fe_command(Some(&b), show_command("two.rs"));
+            anyhow::ensure!(
+                self.probe_sees_badge(&a) && self.probe_sees_badge(&b),
+                "control: results were not owed"
+            );
+            let rows = |host: &str, id: &str| {
+                vec![
+                    probe_row("base", &format!("id-base-{host}"), true),
+                    probe_row("project", id, false),
+                ]
+            };
+            self.on_workspaces(a.clone(), rows("<host-control-a>", "shared-id"));
+            self.on_disconnected(a.clone(), "link lost".into());
+            self.on_workspace_destroyed(
+                a.clone(),
+                Ok(crate::net::transport::WorkspaceDestroyedInfo {
+                    workspace_id: "id-base-<host-control-a>".into(),
+                    slug: "base".into(),
+                    label: "base".into(),
+                    tmux_killed: false,
+                    toml_removed: false,
+                    kept: Some("run ended".into()),
+                }),
+            );
+            anyhow::ensure!(
+                self.probe_sees_badge(&a) && self.probe_sees_badge(&b),
+                "control: an unchanged list, a disconnect or a kept default row removed an owed result"
+            );
+            // The same slug and id on one host is replaced; the other host's row keeps its result.
+            self.on_workspaces(a.clone(), rows("<host-control-a>", "second-id"));
+            anyhow::ensure!(
+                !self.probe_sees_badge(&a) && self.probe_sees_badge(&b),
+                "control: replacing a row on one host touched the other host's row with the same id"
+            );
+            self.dispatch_fe_command(Some(&a), show_command("three.rs"));
+            self.on_workspace_destroyed(a.clone(), Ok(destroyed_info("shared-id")));
+            anyhow::ensure!(
+                self.probe_sees_badge(&a) && self.probe_sees_badge(&b),
+                "control: a late destroy of the replaced id removed its successor's result"
+            );
+            println!("result-lifetime controls=true entered_bodies=1");
             Ok(())
         }
     }

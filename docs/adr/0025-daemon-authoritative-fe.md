@@ -294,3 +294,7 @@ command-channel half (§1–§5).
 ## Update (0.6.6): host-qualified result targets
 
 Goto, preview, reveal and nav envelopes resolve the producing host and its listed workspace before any effect. Unknown targets are visibly refused. Captions and ROI aims carry that host-qualified row identity, so equal slugs and paths on two hosts cannot share result state.
+
+## Update (0.6.6): canonical result lifetime and presentation
+
+A pending result belongs to the producing host's listed canonical workspace id. Switching starts an attempt and does not clear its badge. The matching cursor and installed preview must land before a successful presentation acknowledges that row and file. Removal or canonical-id replacement invalidates its entry and active or parked attempts. Failure, switching away and stale work retain a surviving row's current result, while late completion cannot recreate a removed entry or acknowledge its successor. The canonical row and fresh result/attempt serials are saved at issuance and carried locally through the existing request-id pending entry and event. Stale root/children successes and failures are rejected before tree installation or reveal effects, including replacement within one surviving canonical row.

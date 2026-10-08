@@ -64,14 +64,47 @@ use request::send_request;
 
 // The transport's interface: what code outside this folder names.
 pub(crate) use self::{
-    event::IncomingEvt,
+    event::{IncomingEvt, ResultTreeReply},
     ops::{
         AccountInfo, ConceptWriteResult, DefinitionInfo, DirCreateResult, DirEntry,
         FileDeleteResult, FileWriteResult, MarkdownToken, MethodInfo, ReplRunFileInfo,
         ScanModule, ScanType, WorkspaceCreatedInfo, WorkspaceDestroyedInfo, WorkspaceInfo,
     },
-    request::OutgoingReq,
+    request::{OutgoingReq, ResultAttemptId, ResultTreeRequest},
 };
+
+#[cfg(test)]
+pub(crate) struct ResultTreeTestDriver<'a> {
+    pending: PendingGuard<'a>,
+}
+
+#[cfg(test)]
+impl<'a> ResultTreeTestDriver<'a> {
+    pub(crate) fn new(host: HostKey, evt_tx: &'a StdSender<(HostKey, IncomingEvt)>) -> Self {
+        Self {
+            pending: PendingGuard {
+                map: HashMap::new(),
+                evt_tx,
+                host,
+            },
+        }
+    }
+
+    pub(crate) async fn send<W: AsyncWrite + Unpin>(
+        &mut self,
+        writer: W,
+        id: u64,
+        request: OutgoingReq,
+    ) -> Result<()> {
+        send_request(writer, &mut self.pending, id, request).await
+    }
+
+    pub(crate) fn reply(&mut self, frame: Frame) {
+        let host = self.pending.host.clone();
+        let evt_tx = self.pending.evt_tx;
+        handle_response_frame(frame, None, &mut self.pending, evt_tx, &host);
+    }
+}
 
 /// What the transport task should dial: a local socket/named pipe, or an
 /// ssh child's stdio (C3). Exactly one, never neither and never both —

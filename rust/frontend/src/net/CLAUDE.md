@@ -26,6 +26,7 @@ through the channel types below.
 - A hello reply arrives within 30 s or the attempt ends (`HELLO_TIMEOUT`, `read_hello_reply` in transport/hello.rs).
 - No frame is half-read across a `select!`: reads go through one held future (`read_owned`).
 - Every `figure.get` ends in exactly one result (`send_figure_get` records its `PendingKind` before it writes).
+- A result-tree completion carries the canonical workspace id and result/attempt serials saved at issuance through the request-id pending entry; the existing fan-in envelope supplies its dial HostKey. These identities are local and change no daemon payload.
 - A down ssh host costs at most two logins a minute (`next_backoff_ms`).
 - A burst of replies costs one reconnect-memory write per 2 s, and the last revision is flushed when the session ends
   (`StateSaveGate`, `SessionState`'s drop).

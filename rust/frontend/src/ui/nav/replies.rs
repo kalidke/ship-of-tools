@@ -12,6 +12,79 @@ impl State {
         root: sot_protocol::TreeNode,
         children: Vec<sot_protocol::TreeNode>,
     ) {
+        self.install_tree_root(event_host, workspace_id, root, children, false);
+    }
+
+    /// A result's tree reply. The issuing attempt must still be the one the active view works for:
+    /// an obsolete success or failure is dropped before it touches a tree or the reveal.
+    pub(crate) fn on_result_tree(
+        &mut self,
+        event_host: HostKey,
+        attempt: crate::net::transport::ResultAttemptId,
+        reply: crate::net::transport::ResultTreeReply,
+    ) {
+        use crate::net::transport::{ResultTreeReply, ResultTreeRequest};
+        // Reject an obsolete result attempt before installing a tree or changing reveal state.
+        if !self.admits_result_attempt(&event_host, &attempt) {
+            tracing::debug!(workspace = %attempt.workspace_id, result = attempt.result_serial,
+                attempt = attempt.attempt_serial, "result tree reply dropped — obsolete attempt");
+            return;
+        }
+        let awaited = |state: &Self, request: &ResultTreeRequest| match request {
+            ResultTreeRequest::Root => state.pending_switch_reveal.is_some(),
+            ResultTreeRequest::Children { parent_id } => {
+                state.pending_reveal.is_some()
+                    && (state.reveal_awaiting.as_deref() == Some(parent_id.as_str())
+                        || state
+                            .reveal_refetched
+                            .as_ref()
+                            .is_some_and(|(_, anc)| anc == parent_id))
+            }
+        };
+        let workspace_id = self.active_workspace_id.clone();
+        match reply {
+            ResultTreeReply::Root { root, children } => {
+                if awaited(self, &ResultTreeRequest::Root) {
+                    self.install_tree_root(event_host, workspace_id, root, children, true);
+                }
+            }
+            ResultTreeReply::Children {
+                parent_id,
+                children,
+            } => {
+                if awaited(
+                    self,
+                    &ResultTreeRequest::Children {
+                        parent_id: parent_id.clone(),
+                    },
+                ) {
+                    self.install_tree_children(event_host, workspace_id, parent_id, children, true);
+                }
+            }
+            ResultTreeReply::Failed { request, error } => {
+                if awaited(self, &request) {
+                    tracing::info!(?request, %error, "result tree request FAILED — reveal aborted");
+                    self.status = format!("result tree failed · {error}");
+                    self.pending_reveal = None;
+                    self.pending_switch_reveal = None;
+                    self.reveal_awaiting = None;
+                    self.reveal_refetched = None;
+                    self.driven_preview_hold_cursor = None;
+                    self.result_reveal = None;
+                    self.window.request_redraw();
+                }
+            }
+        }
+    }
+
+    fn install_tree_root(
+        &mut self,
+        event_host: HostKey,
+        workspace_id: Option<String>,
+        root: sot_protocol::TreeNode,
+        children: Vec<sot_protocol::TreeNode>,
+        result_owned: bool,
+    ) {
         // Route by the REPLY's key. Every tree.root this chrome
         // fires is a Files root, so the reply keys as
         // (Files, reply workspace). A reply for a key we're not
@@ -86,6 +159,7 @@ impl State {
                     .rows
                     .get(self.tree.selected)
                     .map(|r| r.node.id.clone());
+                self.result_reveal = None;
                 self.pending_reveal = Some(sel);
                 self.reveal_awaiting = None;
                 self.reveal_refetched = None;
@@ -135,10 +209,10 @@ impl State {
                 self.tree.selected = idx;
             }
         }
-        self.consume_files_root_one_shots();
+        self.consume_files_root_one_shots(result_owned);
     }
 
-    fn consume_files_root_one_shots(&mut self) {
+    fn consume_files_root_one_shots(&mut self, result_owned: bool) {
         // Only consume the start-selected one-shot if this
         // event matches our startup mode; otherwise the files-
         // mode `tree.root` that always fires at connect would
@@ -181,6 +255,10 @@ impl State {
             // top-level row directly and expands ancestors for a
             // nested one. Runs after the resume/README cursor
             // defaults above so the explicit switch-reveal wins.
+            // A result's one-shot is consumed only by its own attempt's root reply.
+            if self.result_reveal.is_some() != result_owned {
+                return;
+            }
             if let Some(node_id) = self.pending_switch_reveal.take() {
                 // Hold the per-frame preview-follow off the just-applied
                 // README/default cursor while this deep reveal lands, so
@@ -209,6 +287,17 @@ impl State {
         workspace_id: Option<String>,
         parent_id: String,
         children: Vec<sot_protocol::TreeNode>,
+    ) {
+        self.install_tree_children(event_host, workspace_id, parent_id, children, false);
+    }
+
+    fn install_tree_children(
+        &mut self,
+        event_host: HostKey,
+        workspace_id: Option<String>,
+        parent_id: String,
+        children: Vec<sot_protocol::TreeNode>,
+        result_owned: bool,
     ) {
         // Route by the reply's key, like TreeRoot: a lazy-expand
         // reply for a (workspace, mode) we're no longer viewing
@@ -242,7 +331,10 @@ impl State {
         if self.pending_reveal.is_some() {
             tracing::info!(%parent_id, "reveal: re-entering after children splice");
         }
-        self.drive_reveal_step(Some(&parent_id));
+        // A result's reveal advances only on its own attempt's reply, and an in-place one never on a result's.
+        if self.result_reveal.is_some() == result_owned {
+            self.drive_reveal_step(Some(&parent_id));
+        }
     }
 
     pub(crate) fn on_tree_children_failed(
@@ -279,7 +371,8 @@ impl State {
             .reveal_refetched
             .as_ref()
             .is_some_and(|(_, anc)| anc == &parent_id);
-        if self.reveal_awaiting.as_deref() == Some(parent_id.as_str()) || refetch_gated
+        if self.result_reveal.is_none()
+            && (self.reveal_awaiting.as_deref() == Some(parent_id.as_str()) || refetch_gated)
         {
             // Covers BOTH wait states (codex round 4): a failed
             // reply for the awaited level OR for the force-

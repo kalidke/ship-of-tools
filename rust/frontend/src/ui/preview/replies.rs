@@ -269,6 +269,7 @@ impl State {
             }
         }
         self.render_preview_source(&mime, &bytes);
+        self.result_preview_installed(generation, node_id.as_deref());
         // ADR 0025 `preview --roi`: certify a pending aim once its
         // image is the INSTALLED quad. A preview reply installs
         // whatever arrived last (node-unchecked above), so the

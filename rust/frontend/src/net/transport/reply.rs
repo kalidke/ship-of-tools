@@ -7,6 +7,10 @@ use super::*;
 /// reply id arrives.
 #[derive(Debug)]
 pub(super) enum PendingKind {
+    ResultTree {
+        attempt: ResultAttemptId,
+        request: ResultTreeRequest,
+    },
     TreeChildren {
         parent_id: String,
         workspace_id: Option<String>,
@@ -164,18 +168,19 @@ impl std::ops::DerefMut for PendingGuard<'_> {
 
 impl Drop for PendingGuard<'_> {
     fn drop(&mut self) {
-        let urls: Vec<String> = self
-            .map
-            .drain()
-            .filter_map(|(_, kind)| match kind {
-                PendingKind::FigureGet { url } => Some(url),
-                _ => None,
-            })
-            .collect();
-        for url in urls {
-            let _ = self
-                .evt_tx
-                .send((self.host.clone(), IncomingEvt::FigureGetFailed { url }));
+        for (_, kind) in self.map.drain() {
+            let event = match kind {
+                PendingKind::FigureGet { url } => IncomingEvt::FigureGetFailed { url },
+                PendingKind::ResultTree { attempt, request } => IncomingEvt::ResultTree {
+                    attempt,
+                    reply: ResultTreeReply::Failed {
+                        request,
+                        error: "connection ended before result tree completion".into(),
+                    },
+                },
+                _ => continue,
+            };
+            let _ = self.evt_tx.send((self.host.clone(), event));
         }
     }
 }
@@ -199,7 +204,13 @@ pub(super) fn handle_response_frame(
     };
     if let Some(kind) = pending.remove(&frame.id) {
         match kind {
-            PendingKind::TreeChildren { parent_id, workspace_id } => on_tree_children(frame, &emit, parent_id, workspace_id),
+            PendingKind::ResultTree { attempt, request } => {
+                on_result_tree(frame, &emit, attempt, request)
+            }
+            PendingKind::TreeChildren {
+                parent_id,
+                workspace_id,
+            } => on_tree_children(frame, &emit, parent_id, workspace_id),
             PendingKind::TreeRoot { workspace_id } => on_tree_root(frame, &emit, workspace_id),
             PendingKind::ProjectScan { workspace_id, generation } => on_project_scan(frame, &emit, workspace_id, generation),
             PendingKind::MarkdownTokenize { lang, source_hash } => on_markdown_tokenize(frame, &emit, lang, source_hash),
@@ -678,5 +689,232 @@ mod tests {
             }
             other => panic!("expected PreviewGetFailed, got {other:?}"),
         }
+    }
+
+    struct RefusingWriter;
+    impl AsyncWrite for RefusingWriter {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("refused")))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    fn attempt(workspace_id: &str, result_serial: u64, attempt_serial: u64) -> ResultAttemptId {
+        ResultAttemptId {
+            workspace_id: workspace_id.to_string(),
+            result_serial,
+            attempt_serial,
+        }
+    }
+
+    fn tree_node(id: &str) -> serde_json::Value {
+        serde_json::json!({ "id": id, "label": id, "kind": "file", "has_children": false })
+    }
+
+    fn children(parent: &str) -> OutgoingReq {
+        OutgoingReq::ResultTree {
+            attempt: attempt("id-a", 1, 1),
+            request: ResultTreeRequest::Children {
+                parent_id: parent.to_string(),
+            },
+        }
+    }
+
+    async fn written(
+        request_id: u64,
+        request: OutgoingReq,
+        driver: &mut ResultTreeTestDriver<'_>,
+    ) -> Frame {
+        let mut wire = Vec::new();
+        driver.send(&mut wire, request_id, request).await.unwrap();
+        codec::read_frame(&mut codec::buffered(&wire[..]))
+            .await
+            .unwrap()
+            .0
+    }
+
+    /// Two requests for the same row and parent differ only in the attempt that issued them: each
+    /// reply carries back the tag saved for its own request id, whatever order the replies arrive in.
+    #[tokio::test]
+    async fn result_tree_replies_preserve_the_issuing_attempt() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let host = "test-host".to_string();
+        let mut driver = ResultTreeTestDriver::new(host.clone(), &evt_tx);
+        let first = written(7, children("files:src"), &mut driver).await;
+        let second = written(
+            8,
+            OutgoingReq::ResultTree {
+                attempt: attempt("id-a", 2, 2),
+                request: ResultTreeRequest::Children {
+                    parent_id: "files:src".to_string(),
+                },
+            },
+            &mut driver,
+        )
+        .await;
+        let ordinary = written(
+            9,
+            OutgoingReq::TreeChildren {
+                parent_id: "files:src".to_string(),
+                workspace_id: Some("id-a".to_string()),
+            },
+            &mut driver,
+        )
+        .await;
+        for frame in [&first, &second] {
+            assert_eq!(frame.op, op::TREE_CHILDREN);
+            assert_eq!(
+                frame.payload, ordinary.payload,
+                "a result request is the ordinary tree request on the wire"
+            );
+        }
+        // The same payload answers both, in the reverse order.
+        let reply = |id: u64| {
+            Frame::res(
+                id,
+                op::TREE_CHILDREN,
+                serde_json::json!({ "children": [tree_node("files:src/a.rs")] }),
+            )
+        };
+        driver.reply(reply(8));
+        driver.reply(reply(7));
+        driver.reply(reply(8));
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
+        let tagged: Vec<(&ResultAttemptId, &ResultTreeReply)> = events
+            .iter()
+            .filter_map(|(_, evt)| match evt {
+                IncomingEvt::ResultTree { attempt, reply } => Some((attempt, reply)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tagged.len(),
+            2,
+            "one terminal tagged event per pending result request: {events:?}"
+        );
+        assert_eq!(*tagged[0].0, attempt("id-a", 2, 2));
+        assert_eq!(*tagged[1].0, attempt("id-a", 1, 1));
+        for (_, reply) in &tagged {
+            assert!(
+                matches!(reply, ResultTreeReply::Children { parent_id, children }
+                if parent_id == "files:src" && children.len() == 1)
+            );
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|(_, evt)| matches!(evt, IncomingEvt::TreeChildren { .. })),
+            "a repeated response id became a tree installation: {events:?}"
+        );
+    }
+
+    /// Backend errors and malformed replies fail the saved request, root and children alike.
+    #[tokio::test]
+    async fn result_tree_failures_return_the_saved_tag() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let host = "test-host".to_string();
+        let mut driver = ResultTreeTestDriver::new(host.clone(), &evt_tx);
+        let root = OutgoingReq::ResultTree {
+            attempt: attempt("id-a", 3, 3),
+            request: ResultTreeRequest::Root,
+        };
+        written(10, root, &mut driver).await;
+        written(11, children("files:lib"), &mut driver).await;
+        written(
+            12,
+            OutgoingReq::ResultTree {
+                attempt: attempt("id-a", 3, 4),
+                request: ResultTreeRequest::Root,
+            },
+            &mut driver,
+        )
+        .await;
+        driver.reply(Frame::res(
+            10,
+            op::TREE_ROOT,
+            serde_json::json!({ "error": "boom", "code": "x" }),
+        ));
+        driver.reply(Frame::res(
+            11,
+            op::TREE_CHILDREN,
+            serde_json::json!({ "nonsense": 1 }),
+        ));
+        driver.reply(Frame::res(
+            12,
+            op::TREE_ROOT,
+            serde_json::json!({ "nonsense": 1 }),
+        ));
+        let failures: Vec<(ResultAttemptId, ResultTreeRequest, String)> = evt_rx
+            .try_iter()
+            .filter_map(|(_, evt)| match evt {
+                IncomingEvt::ResultTree {
+                    attempt,
+                    reply: ResultTreeReply::Failed { request, error },
+                } => Some((attempt, request, error)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(failures.len(), 3);
+        assert_eq!(failures[0].0, attempt("id-a", 3, 3));
+        assert_eq!(failures[0].1, ResultTreeRequest::Root);
+        assert_eq!(failures[0].2, "boom");
+        assert_eq!(failures[1].0, attempt("id-a", 1, 1));
+        assert_eq!(
+            failures[1].1,
+            ResultTreeRequest::Children {
+                parent_id: "files:lib".to_string()
+            }
+        );
+        assert_eq!(failures[2].0, attempt("id-a", 3, 4));
+        assert_eq!(failures[2].1, ResultTreeRequest::Root);
+    }
+
+    /// A refused write and a connection that ends both fail what is still pending, once each.
+    #[tokio::test]
+    async fn result_tree_loss_fails_pending_requests_once() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let host = "test-host".to_string();
+        let mut driver = ResultTreeTestDriver::new(host.clone(), &evt_tx);
+        let mut refusing = RefusingWriter;
+        assert!(driver
+            .send(
+                &mut refusing,
+                13,
+                OutgoingReq::ResultTree {
+                    attempt: attempt("id-a", 4, 5),
+                    request: ResultTreeRequest::Root
+                }
+            )
+            .await
+            .is_err());
+        written(14, children("files:docs"), &mut driver).await;
+        drop(driver);
+        let mut lost: Vec<ResultAttemptId> = evt_rx
+            .try_iter()
+            .filter_map(|(_, evt)| match evt {
+                IncomingEvt::ResultTree {
+                    attempt,
+                    reply: ResultTreeReply::Failed { .. },
+                } => Some(attempt),
+                _ => None,
+            })
+            .collect();
+        lost.sort_by_key(|a| a.result_serial);
+        assert_eq!(lost, vec![attempt("id-a", 1, 1), attempt("id-a", 4, 5)]);
     }
 }
