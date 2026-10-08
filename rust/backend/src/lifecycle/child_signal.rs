@@ -423,7 +423,8 @@ pub(crate) mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// A pid is gone once a probe fails, polled for up to 3 s.
+    /// A pid is gone once a probe fails, polled for up to 3 s (where there is no pidfd to read).
+    #[cfg(not(target_os = "linux"))]
     fn gone(pid: i32) -> bool {
         (0..150).any(|_| {
             std::thread::sleep(Duration::from_millis(20));
@@ -432,54 +433,191 @@ pub(crate) mod tests {
         })
     }
 
-    /// A process a test started that is a descendant of a child, so the test holds no handle to it: dropped, it is
-    /// SIGKILLed unless the test saw it gone. A child the test holds ends through its handle, and a leader whose
-    /// handle the code under test owns is shown dead by that code's own tree kill, not here. Each one is seen gone
-    /// once, but a process alive at the test's end by design. Its pid is a number, not an identity: in the moment
-    /// between the process's death and the next probe, the number can be reused once init has reaped it, and then the
-    /// probe reads a stranger as alive and a failed test's drop signals it. A retained process identity would close
-    /// that, as the Windows tests' `Watched` handle (contain.rs) does for them; `Leftover` keeps only the number. Built
-    /// from its pid, or from a file the stub wrote the pid to, read when the pid is first needed.
+    /// A process a test started that is a descendant of a child, so the test holds no handle to it. A leftover is
+    /// built from its pid, or from a file the stub wrote the pid to, read when the pid is first needed; on Linux
+    /// the process is opened then as a pidfd, and from then on its end is read from that identity and never from the
+    /// number, which the OS may give to a stranger once init has reaped the process. The test must see it gone
+    /// ([`gone`](Self::gone)), or say it is alive at the test's end by design ([`kept_alive`](Self::kept_alive)); a
+    /// leftover dropped with neither fails the test, after ending the process through its identity, so a test that
+    /// forgot to check the process it started cannot pass.
     pub(crate) struct Leftover {
         pid: std::cell::Cell<Option<i32>>,
         file: Option<std::path::PathBuf>,
-        seen_gone: std::cell::Cell<bool>,
+        state: std::cell::Cell<Seen>,
+        #[cfg(target_os = "linux")]
+        identity: std::cell::RefCell<Option<std::os::fd::OwnedFd>>,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Seen {
+        Unchecked,
+        Gone,
+        KeptAlive,
     }
 
     impl Leftover {
         pub(crate) fn of_pid(pid: i32) -> Self {
-            Leftover { pid: std::cell::Cell::new(Some(pid)), file: None, seen_gone: std::cell::Cell::new(false) }
+            let leftover = Self::empty(Some(pid), None);
+            leftover.open_identity(pid);
+            leftover
         }
 
         pub(crate) fn of_file(file: impl Into<std::path::PathBuf>) -> Self {
-            Leftover { pid: std::cell::Cell::new(None), file: Some(file.into()), seen_gone: std::cell::Cell::new(false) }
+            Self::empty(None, Some(file.into()))
         }
+
+        fn empty(pid: Option<i32>, file: Option<std::path::PathBuf>) -> Self {
+            Leftover {
+                pid: std::cell::Cell::new(pid),
+                file,
+                state: std::cell::Cell::new(Seen::Unchecked),
+                #[cfg(target_os = "linux")]
+                identity: std::cell::RefCell::new(None),
+            }
+        }
+
+        /// Open the process as an identity while it is alive. A process already gone has none to open: it is seen gone.
+        #[cfg(target_os = "linux")]
+        fn open_identity(&self, pid: i32) {
+            use std::os::fd::FromRawFd;
+            // SAFETY: pidfd_open takes a pid and flags and returns a descriptor or -1.
+            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+            if fd >= 0 {
+                // SAFETY: a fresh descriptor nothing else owns.
+                *self.identity.borrow_mut() = Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) });
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        fn open_identity(&self, _pid: i32) {}
 
         fn pid(&self) -> Option<i32> {
             if let (None, Some(file)) = (self.pid.get(), &self.file) {
-                self.pid.set(std::fs::read_to_string(file).ok().and_then(|text| text.trim().parse().ok()));
+                let pid = std::fs::read_to_string(file).ok().and_then(|text| text.trim().parse().ok());
+                self.pid.set(pid);
+                if let Some(pid) = pid {
+                    self.open_identity(pid);
+                }
             }
             self.pid.get()
         }
 
-        /// Whether the process is gone, polled as [`gone`] does. Once it is, the drop signals nothing, so a pid the
-        /// OS may have reused is never signalled.
+        /// Whether the process is gone, polled for up to 3 s. On Linux this reads the identity (a pidfd readable at
+        /// the exit, reaped or not); a process whose pid was never readable, or that was gone before it could be
+        /// opened, counts as gone only in the second case.
         pub(crate) fn gone(&self) -> bool {
-            let gone = self.pid().is_some_and(gone);
+            let gone = match self.pid() {
+                None => false,
+                #[cfg(target_os = "linux")]
+                Some(_) => self.identity.borrow().as_ref().map_or(true, |fd| {
+                    use std::os::fd::AsRawFd;
+                    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                    loop {
+                        let left = deadline.saturating_duration_since(std::time::Instant::now());
+                        let mut pfd = libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                        // SAFETY: one valid pollfd; a pidfd is readable once its process has exited.
+                        let rc = unsafe { libc::poll(&mut pfd, 1, left.as_millis() as libc::c_int) };
+                        // A child's SIGCHLD interrupts the wait: it goes on for what is left of the bound.
+                        if rc < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                            continue;
+                        }
+                        break rc > 0;
+                    }
+                }),
+                #[cfg(not(target_os = "linux"))]
+                Some(pid) => gone(pid),
+            };
             if gone {
-                self.seen_gone.set(true);
+                self.state.set(Seen::Gone);
             }
             gone
+        }
+
+        /// This process is alive at the test's end by design; the drop ends it.
+        pub(crate) fn kept_alive(&self) {
+            self.state.set(Seen::KeptAlive);
+        }
+
+        fn end(&self) {
+            #[cfg(target_os = "linux")]
+            if let Some(fd) = self.identity.borrow().as_ref() {
+                use std::os::fd::AsRawFd;
+                // SAFETY: pidfd_send_signal on a descriptor this value owns, with no siginfo.
+                unsafe { libc::syscall(libc::SYS_pidfd_send_signal, fd.as_raw_fd(), libc::SIGKILL, 0, 0) };
+                return;
+            }
+            #[cfg(not(target_os = "linux"))]
+            if let Some(pid) = self.pid.get() {
+                // SAFETY: a plain signal to a process this test started and has not seen gone.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
         }
     }
 
     impl Drop for Leftover {
         fn drop(&mut self) {
-            if let (false, Some(pid)) = (self.seen_gone.get(), self.pid()) {
-                // SAFETY: a plain signal to a process this test started and has not seen gone.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
+            if self.state.get() == Seen::Gone {
+                return;
+            }
+            let pid = self.pid();
+            self.end();
+            if self.state.get() == Seen::Unchecked && pid.is_some() && !std::thread::panicking() {
+                panic!("a Leftover (pid {}) was dropped without its end observed: the test never checked that the process it started is gone", pid.unwrap_or_default());
             }
         }
+    }
+
+    /// A leftover records the process the test started, from the file the process wrote its own pid to, and holds
+    /// the test to observing its end: one that is gone is seen gone, one dropped unobserved ends the test with a
+    /// failure after the process is ended, and one declared alive at the end is ended quietly.
+    #[test]
+    fn leftover_records_its_child_and_requires_the_end_observation() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = |name: &str| {
+            let mut child = std::process::Command::new("sh")
+                .args(["-c", "echo $$ > \"$1\"; exec sleep 3120", "sh"])
+                .arg(dir.path().join(name))
+                .spawn()
+                .unwrap();
+            let file = dir.path().join(name);
+            let began = std::time::Instant::now();
+            while std::fs::read_to_string(&file).map(|t| t.trim().is_empty()).unwrap_or(true) {
+                assert!(began.elapsed() < Duration::from_secs(5), "the child never wrote its pid");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // The child's pid is its own until it is waited for: reading it from its file is what the leftovers do.
+            assert!(child.try_wait().unwrap().is_none());
+            (child, file)
+        };
+
+        // Observed gone: the child is killed and reaped, and the leftover reads the exit from its identity.
+        let (mut child, file) = start("seen");
+        let leftover = Leftover::of_file(file);
+        assert!(leftover.pid().is_some());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(leftover.gone(), "a reaped child was not seen gone");
+        drop(leftover);
+
+        // Unobserved: the drop ends the process through its identity, then fails the test.
+        let (mut child, file) = start("unseen");
+        let leftover = Leftover::of_file(file);
+        assert!(leftover.pid().is_some());
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(leftover)));
+        assert!(failed.is_err(), "a leftover dropped without its end observed did not fail the test");
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&child.wait().unwrap()),
+            Some(libc::SIGKILL),
+            "the unobserved leftover's process was not ended"
+        );
+
+        // Alive at the end by design: ended quietly.
+        let (mut child, file) = start("kept");
+        let leftover = Leftover::of_file(file);
+        assert!(leftover.pid().is_some());
+        leftover.kept_alive();
+        drop(leftover);
+        assert_eq!(std::os::unix::process::ExitStatusExt::signal(&child.wait().unwrap()), Some(libc::SIGKILL));
     }
 
     /// An owner stuck writing to a child that never reads cannot poll the
@@ -770,37 +908,5 @@ pub(crate) mod tests {
         );
         drop(c);
         assert_eq!(signal.live(), 0);
-    }
-
-    /// Every leftover built from a pid parses it from text, so a held child's own `.id()` is not one; a held child's
-    /// pid written out and read back would pass, which no test does. Per file there are as many seen-gone checks as
-    /// leftovers built, but those alive at the test's end by design, listed by file and count. The count is per file,
-    /// so a check on something else in the same file can hide an unchecked one. Comment lines are not counted.
-    #[test]
-    fn each_file_checks_as_many_leftovers_as_it_builds_and_parses_their_pids() {
-        // Built with `concat!`, so this file does not hold the texts it counts.
-        let (made, seen, of_pid) = (concat!("Leftover::", "of_"), concat!(".gone", "()"), concat!("Leftover::", "of_pid("));
-        const ALIVE_AT_END: [(&str, usize); 1] = [("rust/backend/src/pages/ops.rs", 1)];
-        let mut found = Vec::new();
-        for (rel, text) in sot_log::test_scan::rust_sources() {
-            // Comment lines are not counted, as rust/log/tests/connect_own.rs reads them: a comment that names a counted
-            // text must not hide an unchecked Leftover.
-            let code = || text.lines().filter(|l| !l.trim_start().starts_with("//"));
-            for (n, line) in text.lines().enumerate() {
-                if !line.trim_start().starts_with("//") && line.contains(of_pid) && !line.contains(".parse(") {
-                    found.push(format!("{rel}:{}: a Leftover whose pid is not parsed from what the process wrote: {}", n + 1, line.trim()));
-                }
-            }
-            let built: usize = code().map(|l| l.matches(made).count()).sum();
-            if built == 0 {
-                continue;
-            }
-            let checked: usize = code().map(|l| l.matches(seen).count()).sum();
-            let alive = ALIVE_AT_END.iter().find(|(f, _)| *f == rel).map_or(0, |(_, c)| *c);
-            if built != checked + alive {
-                found.push(format!("{rel}: {built} Leftovers, {checked} seen gone, {alive} alive at the end by design"));
-            }
-        }
-        assert!(found.is_empty(), "a Leftover not seen gone, or one whose pid is not read from the process:\n{}", found.join("\n"));
     }
 }

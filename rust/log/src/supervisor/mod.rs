@@ -280,6 +280,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 mod authority;
+#[cfg(unix)]
+pub mod birth_claim;
 pub mod journal;
 mod leg;
 mod lifecycle;

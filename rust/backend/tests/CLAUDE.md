@@ -30,6 +30,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `subcommand_help.rs`: server; every `sotd` subcommand's `--help` prints usage and dials nothing
 - `topology_set.rs`: topology; `topology.set` and `topology.changed` over the wire; a hub daemon started from umask 022 creates its comm files owner-only
 - `window_start.rs`: lifecycle; a daemon's start from `held.json`, resumed or ended rows
+- `daemon_lifetime/`: lifecycle; the harness of lane L2: native launcher and fence-claim premises on real children, and a successor daemon against a held capsule birth (own page; needs the barrier build)
 - `capsule_workspaces/`: rows; a real `sotd` and a real detached `sot-capsule` over a real local socket (`main.rs` plus modules); `session_env.rs`: a session's `SOTD_BIN` is the daemon's own start path, over an inherited value and, on Linux, after an in-place update; each test's row ends through its own supervisor, and its folders are kept, with a report, when that end is not confirmed
 - `lane_bridge/`: rows and topology; a frontend attach client reaching a capsule row through a daemon and a test-owned relay, plus explicitly spawned SSH stand-ins
 - `switch_latency/`: server; a slow request does not block a later cheap reply on one connection; its `dead_kernel` module is sidecars

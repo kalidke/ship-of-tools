@@ -877,7 +877,8 @@ mod quarto_shutdown_tests {
         let dir = tempfile::tempdir().unwrap();
         let _pin = JuliaPin::new(&dir.path().join("julia"), None);
         let sleeper = dir.path().join("sleeper");
-        let _leftover = Leftover::of_file(sleeper.clone());
+        let leftover = Leftover::of_file(sleeper.clone());
+        leftover.kept_alive();
         let stub = dir.path().join("stub-quarto");
         // The pid is written once the sleeper has its own session: until then a kill of the launcher's group takes it too.
         let body = "setsid sleep 3106 &\np=$!\nwhile [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$(cut -d' ' -f6 /proc/$$/stat)\" ]; do sleep 0.02; done\n";

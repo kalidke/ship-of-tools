@@ -16,6 +16,8 @@ pub mod lane;
 pub mod secret;
 pub mod store;
 pub mod supervisor;
+#[cfg(all(unix, feature = "native-barrier"))]
+pub mod test_barrier;
 #[cfg(feature = "test-support")]
 pub mod test_log;
 #[cfg(feature = "test-support")]

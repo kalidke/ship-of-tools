@@ -6,6 +6,7 @@ Part of the capsule; charter: rust/log/CLAUDE.md.
 
 ## Files
 - `mod.rs`: entry points (`supervise`, `endrun`, `reset`), exit codes and bounds, config, voyage paths, `note`
+- `birth_claim.rs`: `BirthClaim`, the row's own supervisor fence taken before a capsule birth and carried to the new supervisor (Unix)
 - `leg.rs`: the leg: voyage pointer discovery or mint, the spawn decision, `SpawnLease`, `LegLease`, `build_run_command`
 - `lifecycle.rs`: the `Lifecycle` state machine, its recovery, end-run and reset worker threads, leg retirement, `force_terminal`
 - `main_loop.rs`: `supervise_inner`, the authority's main loop

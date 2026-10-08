@@ -11,6 +11,10 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
 
     std::fs::create_dir_all(voyages_dir(&config.state_dir))?;
 
+    // The harness's barrier before the fence is claimed (only a build with `native-barrier`).
+    #[cfg(all(unix, feature = "native-barrier"))]
+    crate::test_barrier::hold("pre_fence");
+
     // ONE AUTHORITY.
     let _fence = match crate::supervisor::journal::fence::lock_supervisor(&config.state_dir) {
         Ok(f) => f,

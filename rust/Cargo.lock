@@ -3920,6 +3920,7 @@ dependencies = [
 name = "sot-log"
 version = "0.6.6-rc9.12"
 dependencies = [
+ "cc",
  "crc32c",
  "gethostname 0.5.0",
  "getrandom 0.3.4",

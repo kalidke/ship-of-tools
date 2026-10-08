@@ -5,7 +5,7 @@ behind them and the one control socket every client reaches it through. This fol
 the crate folder and `src/`, and each folder under `src/` has its own page.
 
 ## Files
-- `Cargo.toml`: the crate; one `[[bin]]` named `sotd` at `src/main.rs`
+- `Cargo.toml`: the crate; one `[[bin]]` named `sotd` at `src/main.rs`, and the test-only feature `daemon-lifetime-faults` (phase barriers for `tests/daemon_lifetime`; no installed build has it)
 - `sidecars/`: `mathjax/`, the MathJax renderer (`render.mjs` and its npm lock) that `src/sidecars/mathjax.rs` runs
 - `tests/`: the integration suites, each a real `sotd` over the real wire (own page)
 - `src/main.rs`: subcommand routing, offline trust declaration, then daemon boot: umask, directory checks, the tee log and `server::run`.

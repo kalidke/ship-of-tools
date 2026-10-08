@@ -10,7 +10,9 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   `state_dir_hash`, `host_name`).
 - Publication and fsync (`durable.rs`: `publish_noreplace`, `finish_publication`, `rename_noreplace_raw`, `fsync_dir`,
   `fsync_file`, `ensure_container`, `create_dir_protected`).
-- Kernel locks (`lock.rs`: `lock_writer`, `lock_supervisor`).
+- Kernel locks (`lock.rs`: `lock_writer`, `lock_supervisor`, and for a fence handed to a child `lock_supervisor_for_handover`,
+  `HandoverLock`).
+- The native process-birth primitives (`process_tree/`, its own page): the two-phase launcher.
 - The daemon's single-instance lock (`lock.rs`: `daemon_lock_path`, `try_lock_daemon`, `DaemonLock`), reached by the backend
   as `sot_log::host::daemon_lock_path`, `try_lock_daemon` and `DaemonLock`.
 - The volume preflight (`volume.rs`: `preflight_volume`).
@@ -31,7 +33,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   (`publish_noreplace`, `finish_publication`).
 - A lock is kernel-held: a dropped guard unlocks it at once (`WriterLock`'s Drop), the kernel releases it on any death, and no exec'd child holds it; a contended one fails within `RETRY_DEADLINE_MS` as "lock held"
   (`lock_writer`).
-- Kernel file locks are taken only inside two guards whose `Drop` unlocks: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`. rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
+- Kernel file locks are taken only inside three guards: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`, whose `Drop` unlocks, and `HandoverLock` in `lock.rs`, whose drop only closes, so a copy of its descriptor in a child keeps the lock held (a birth's claim on a row's fence). rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
 
 ## Connections
@@ -49,8 +51,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mod.rs`: the module list, the shared retry constants, `io_ctx`, `duration_to_wait_ms`
   and the glob re-exports of the files below.
 - `durable.rs`: durable publication, fsync, no-clobber rename, container creation.
-- `lock.rs`: the writer fence, the supervisor fence and the daemon's single-instance lock, held by the kernel.
+- `lock.rs`: the writer fence, the supervisor fence, the supervisor fence taken to be handed to a child, and the daemon's single-instance lock, held by the kernel.
 - `pinned_dir.rs`: a directory's kernel identity and a handle that pins it.
+- `process_tree/`: the native process-birth primitives (own page).
 - `state_dir.rs`: where a file lives, and the host name.
 - `volume.rs`: the preflight that proves a volume supports the store's primitives.
 - `winhandle.rs`: Windows-only hardening of a process's own inherited stdio handles.

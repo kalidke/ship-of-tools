@@ -87,6 +87,8 @@ root; lanes edit only their own folder's page.
 @rust/backend/src/sidecars/repl/CLAUDE.md
 @rust/backend/src/topology/CLAUDE.md
 @rust/backend/tests/CLAUDE.md
+@rust/backend/tests/daemon_lifetime/CLAUDE.md
+@rust/backend/tests/daemon_lifetime/native/CLAUDE.md
 @rust/frontend/CLAUDE.md
 @rust/frontend/src/net/CLAUDE.md
 @rust/frontend/src/net/transport/CLAUDE.md
@@ -124,6 +126,7 @@ root; lanes edit only their own folder's page.
 @rust/log/src/capsule/producer/pty/CLAUDE.md
 @rust/log/src/capsule/writer_loop/CLAUDE.md
 @rust/log/src/host/CLAUDE.md
+@rust/log/src/host/process_tree/CLAUDE.md
 @rust/log/src/identity/CLAUDE.md
 @rust/log/src/identity/peer_owner/CLAUDE.md
 @rust/log/src/lane/CLAUDE.md
