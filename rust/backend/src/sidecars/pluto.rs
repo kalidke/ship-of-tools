@@ -512,10 +512,12 @@ exit(0)
     }
 
     const READY_LOCAL: &str = r#""READY http://127.0.0.1:$port""#;
+    /// On Windows libuv puts every child it starts in a job that dies with its parent, so the descendant is detached
+    /// there to outlive the child (it stays in the daemon's containment job); on Unix it stays in the child's group.
     /// A descendant that holds only the child's stdout.
-    const KEEP_STDOUT: &str = r#"p = run(pipeline(`$(Base.julia_cmd()) --startup-file=no -e "sleep(300)"`, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
+    const KEEP_STDOUT: &str = r#"cmd = `$(Base.julia_cmd()) --startup-file=no -e "sleep(300)"`; p = run(pipeline(Sys.iswindows() ? detach(cmd) : cmd, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
     /// A descendant that holds the read end of the child's stdin and the write end of its stdout, reading nothing.
-    const KEEP_PIPES: &str = r#"p = run(pipeline(`$(Base.julia_cmd()) --startup-file=no -e "sleep(300)"`, stdin=stdin, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
+    const KEEP_PIPES: &str = r#"cmd = `$(Base.julia_cmd()) --startup-file=no -e "sleep(300)"`; p = run(pipeline(Sys.iswindows() ? detach(cmd) : cmd, stdin=stdin, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
 
     struct Harness {
         dir: PathBuf,
