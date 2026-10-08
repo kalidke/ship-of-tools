@@ -76,8 +76,9 @@ async fn the_record_carries_the_new_account_before_the_replacement_is_spawned() 
     let scratch = tempfile::tempdir().unwrap();
     pin_home(home.path(), scratch.path());
     seed_claude_binary(home.path());
-    seed_transcript(&claude_config_dir(home.path(), "team"), "sid-7");
-    let (reg, id, slug) = seed_capsule_row("", "row-declared-handle");
+    let root = project_root(home.path(), "reauth-row");
+    seed_transcript(&claude_config_dir(home.path(), "team"), "sid-7", &[&root]);
+    let (reg, id, slug) = seed_capsule_row(&root, "", "row-declared-handle");
 
     let (payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
     assert!(payload.get("error").is_none(), "must be accepted: {payload:?}");
@@ -112,8 +113,9 @@ async fn the_accept_is_answered_before_the_leg_is_touched() {
     let scratch = tempfile::tempdir().unwrap();
     pin_home(home.path(), scratch.path());
     seed_claude_binary(home.path());
-    seed_transcript(&claude_config_dir(home.path(), "team"), "sid-7");
-    let (reg, id, _slug) = seed_capsule_row("", "row-declared-handle");
+    let root = project_root(home.path(), "reauth-row");
+    seed_transcript(&claude_config_dir(home.path(), "team"), "sid-7", &[&root]);
+    let (reg, id, _slug) = seed_capsule_row(&root, "", "row-declared-handle");
 
     let (payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
     assert_eq!(payload["code"], ACCEPTED_CODE);
@@ -205,8 +207,9 @@ async fn switching_to_the_default_account_answers_with_its_name_not_an_empty_str
     let scratch = tempfile::tempdir().unwrap();
     pin_home(home.path(), scratch.path());
     seed_claude_binary(home.path());
-    seed_transcript(&claude_config_dir(home.path(), ""), "sid-7");
-    let (reg, id, _slug) = seed_capsule_row("team", "row-declared-handle");
+    let root = project_root(home.path(), "reauth-row");
+    seed_transcript(&claude_config_dir(home.path(), ""), "sid-7", &[&root]);
+    let (reg, id, _slug) = seed_capsule_row(&root, "team", "row-declared-handle");
 
     let (payload, restart) = reauth(&reg, &id, "default", "sid-7").await;
     assert_eq!(payload["code"], ACCEPTED_CODE);
@@ -231,14 +234,15 @@ async fn a_row_whose_toml_cannot_be_written_is_refused_with_the_accounts_and_the
     let scratch = tempfile::tempdir().unwrap();
     pin_home(home.path(), scratch.path());
     seed_claude_binary(home.path());
-    seed_transcript(&claude_config_dir(home.path(), "team"), "sid-7");
+    let root = project_root(home.path(), "reauth-row");
+    seed_transcript(&claude_config_dir(home.path(), "team"), "sid-7", &[&root]);
     // A config root that is a FILE: nothing can create the row's toml
     // under it, so `save` fails where every other step has succeeded.
     let blocked = scratch.path().join("not-a-directory");
     std::fs::write(&blocked, b"").unwrap();
     std::env::set_var("XDG_CONFIG_HOME", &blocked);
     std::env::set_var("LOCALAPPDATA", &blocked);
-    let (reg, id, _slug) = seed_capsule_row("", "row-declared-handle");
+    let (reg, id, _slug) = seed_capsule_row(&root, "", "row-declared-handle");
 
     let (payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
     assert!(restart.is_none(), "a refusal hands back no restart");

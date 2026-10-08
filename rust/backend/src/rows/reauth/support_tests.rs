@@ -83,16 +83,40 @@ pub(super) fn seed_claude_binary(home: &Path) {
 #[cfg(windows)]
 pub(super) fn seed_claude_binary(_home: &Path) {}
 
+/// A row's project root: a real directory under the pinned home, because
+/// a transcript's start directory is compared with it by identity.
+pub(super) fn project_root(home: &Path, label: &str) -> PathBuf {
+    let root = home.join("proj").join(label);
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+/// One transcript at `path` in the shape Claude Code writes: a first line
+/// that records no `cwd` (a `queue-operation`), then one `user` line per entry
+/// of `cwds`, each recording that working directory. The first of them is
+/// where the session started; an empty `cwds` records none.
+pub(super) fn write_transcript(path: &Path, id: &str, cwds: &[&Path]) {
+    let head = serde_json::json!({"type": "queue-operation", "sessionId": id});
+    let mut text = format!("{head}\n");
+    for cwd in cwds {
+        let cwd = cwd.to_str().expect("a UTF-8 path");
+        let line = serde_json::json!({"type": "user", "cwd": cwd, "sessionId": id});
+        text.push_str(&format!("{line}\n"));
+    }
+    std::fs::write(path, text).unwrap();
+}
+
 /// One transcript the account owning `config_dir` can open:
 /// `projects/<project>/<id>.jsonl`, the shape `check` globs for. In the
 /// real tree a named account reaches the very same file through the
 /// shared `projects` symlink (`accounts::SHARED_ENTRIES`); these tests
 /// seed the folder being asked about directly, which is what the glob
-/// resolves to either way.
-pub(super) fn seed_transcript(config_dir: &Path, id: &str) {
+/// resolves to either way. Every transcript goes in one project folder:
+/// the folder's name decides nothing.
+pub(super) fn seed_transcript(config_dir: &Path, id: &str, cwds: &[&Path]) {
     let project = config_dir.join("projects").join("-a-project-root");
     std::fs::create_dir_all(&project).unwrap();
-    std::fs::write(project.join(format!("{id}.jsonl")), b"{}\n").unwrap();
+    write_transcript(&project.join(format!("{id}.jsonl")), id, cwds);
 }
 
 /// Pins HOME, the config root and the state root at scratch dirs and
@@ -105,11 +129,18 @@ pub(super) fn pin_home(home: &Path, scratch: &Path) {
     std::env::set_var("LOCALAPPDATA", scratch);
 }
 
-pub(super) fn seed_capsule_row(account: &str, handle: &str) -> (Workspaces, String, String) {
-    let reg = Workspaces::new();
+/// A capsule claude row named `label` at `root` on `account`, declared as
+/// `handle`, inserted into `reg`. Returns its id and slug.
+pub(super) fn seed_row_into(
+    reg: &Workspaces,
+    label: &str,
+    root: &Path,
+    account: &str,
+    handle: &str,
+) -> (String, String) {
     let mut ws = Workspace::from_label(
-        "reauth-row",
-        std::path::PathBuf::from("/p/reauth-row"),
+        label,
+        root.to_path_buf(),
         true,
         "claude".into(),
         "row-agent".into(),
@@ -121,6 +152,16 @@ pub(super) fn seed_capsule_row(account: &str, handle: &str) -> (Workspaces, Stri
     let slug = ws.slug.clone();
     reg.insert(ws);
     reg.set_agent_handle(&id, handle);
+    (id, slug)
+}
+
+pub(super) fn seed_capsule_row(
+    root: &Path,
+    account: &str,
+    handle: &str,
+) -> (Workspaces, String, String) {
+    let reg = Workspaces::new();
+    let (id, slug) = seed_row_into(&reg, "reauth-row", root, account, handle);
     (reg, id, slug)
 }
 
@@ -145,6 +186,7 @@ pub(super) async fn reauth(reg: &Workspaces, id: &str, account: &str, resume: &s
 pub(super) fn accept_fixture(home: &Path, scratch: &Path) -> (Workspaces, String, String) {
     pin_home(home, scratch);
     seed_claude_binary(home);
-    seed_transcript(&claude_config_dir(home, "team"), "sid-7");
-    seed_capsule_row("", "row-declared-handle")
+    let root = project_root(home, "reauth-row");
+    seed_transcript(&claude_config_dir(home, "team"), "sid-7", &[&root]);
+    seed_capsule_row(&root, "", "row-declared-handle")
 }
