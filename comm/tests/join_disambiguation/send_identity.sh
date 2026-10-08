@@ -4,17 +4,13 @@ case_comm_relay_send_refuses_with_no_identity() {
     # Caller-audit follow-up (ruling 5): comm-send.sh's identity refusal is
     # covered above, but comm-relay.sh's OWN refusal (send_frame — a
     # SEPARATE code path) was never
-    # exercised. Setting SOT_RELAY_ENDPOINT to a well-formed-but-bogus unix
-    # endpoint lets comm-relay.sh resolve an endpoint with no live daemon
-    # (sot_daemon_endpoint returns an EXPLICIT endpoint verbatim, no probe)
-    # — the identity check inside send_frame fires before any socket is
-    # ever touched, so no real daemon is needed to prove this refusal.
+    # exercised. comm-relay.sh checks the identity before it resolves any
+    # endpoint, so no daemon and no endpoint are needed to prove this refusal.
     local self scratch out err rc errfile
     next_self_file; self="$NEXT_SELF_FILE"   # never created -> no identity
     scratch="$(realpath "$WORK")"
     errfile="$WORK/relay-refusal.err"
     out="$(cd "$scratch" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
-        SOT_RELAY_ENDPOINT="unix:$WORK/no-such-daemon.sock" \
         "$SCRIPTS_DIR/comm-relay.sh" send @somebody "hello" 2>"$errfile")"
     rc=$?
     err="$(cat "$errfile" 2>/dev/null || true)"
@@ -98,8 +94,10 @@ case_relay_send_fails_loudly_with_no_reachable_daemon() {
     contains "$JOIN_OUT" "Joined sot-comm as @$h" || { echo "  setup join stdout: $JOIN_OUT"; return 1; }
 
     errfile="$WORK/relay-noack.err"
-    out="$(cd "$root" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
-        SOT_RELAY_ENDPOINT="unix:$WORK/no-such-daemon-anywhere.sock" \
+    # This box's relay endpoint, a stub `sotd`'s answer to `topology relay-endpoint`, is a socket nothing listens on.
+    printf '#!/bin/sh\n[ "$1 $2" = "topology relay-endpoint" ] && { echo "unix:%s/no-such-daemon-anywhere.sock"; exit 0; }\nexit 97\n' \
+        "$WORK" > "$WORK/relay-noack/sotd"; chmod +x "$WORK/relay-noack/sotd"
+    out="$(cd "$root" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" SOTD_BIN="$WORK/relay-noack/sotd" \
         "$SCRIPTS_DIR/comm-relay.sh" send @somebody "hello" 2>"$errfile")"
     rc=$?
     err="$(cat "$errfile" 2>/dev/null || true)"

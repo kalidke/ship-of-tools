@@ -139,7 +139,7 @@ the one way anything reads it. Neither the frontend nor the PowerShell
 launcher parses `hosts.toml` itself any more: the launcher runs
 `sotd topology plan --self <host>` and renders its plain-line output into
 `--dial <host>=<endpoint>` flags for the frontend (each an ssh child the
-frontend spawns itself, or a local socket/pipe) and `SOT_RELAY_ENDPOINT`;
+frontend spawns itself, or a local socket/pipe);
 the frontend reads no config file for hosts at all
 (see `--dial` under [CLI flags](../start/setup.md), and
 `rust/protocol/src/topology/mod.rs`'s `plan` doc comment for the exact

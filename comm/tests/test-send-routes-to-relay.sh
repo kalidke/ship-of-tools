@@ -176,15 +176,18 @@ case_a_hostless_row_terminates_instead_of_ping_ponging() {
     # for "can this box file and poke it". While those two questions were
     # asked by different doors, comm-send.sh handed this to the relay, the
     # relay handed it straight back, and the pair span forever (leaking one
-    # temp file per lap). The endpoint below is a socket nothing listens on,
-    # so the ONE honest lap ends in the relay's no-answer FAILED line.
+    # temp file per lap). The relay endpoint below (a stub `sotd`'s answer to
+    # `topology relay-endpoint`) is a socket nothing listens on, so the ONE
+    # honest lap ends in the relay's no-answer FAILED line.
     jq --arg t "$LOCAL_PEER" '.agents[$t] = {}' "$SOT_COMM_HOME/registry.json" \
         > "$SOT_COMM_HOME/registry.json.tmp" \
         && mv "$SOT_COMM_HOME/registry.json.tmp" "$SOT_COMM_HOME/registry.json"
     local out rc
+    mkdir -p "$WORK/relay-answer"
+    printf '#!/bin/sh\n[ "$1 $2" = "topology relay-endpoint" ] && { echo "unix:%s/no-such-daemon.sock"; exit 0; }\nexit 97\n' \
+        "$WORK" > "$WORK/relay-answer/sotd"; chmod +x "$WORK/relay-answer/sotd"
     out="$(cd "$WORK" && SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$SENDER_HOST" \
-        SOT_RELAY_ENDPOINT="unix:$WORK/no-such-daemon.sock" \
-        timeout 5 "$SEND_REAL" "@$LOCAL_PEER" "round and round" 2>&1)"
+        SOTD_BIN="$WORK/relay-answer/sotd" timeout 5 "$SEND_REAL" "@$LOCAL_PEER" "round and round" 2>&1)"
     rc=$?
     [ "$rc" -ne 124 ] || { echo "  the two verbs ping-ponged until the timeout killed them"; return 1; }
     [ "$rc" -eq 1 ] || { echo "  exited $rc, want 1 (out: '$out')"; return 1; }

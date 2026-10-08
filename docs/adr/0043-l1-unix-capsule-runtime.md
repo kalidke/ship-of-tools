@@ -164,6 +164,13 @@ submissions.
    a mismatch shows up as "endpoint not found", loud, never as a silent second
    endpoint. `sun_path` is 108 bytes on Linux including the NUL: a path longer
    than 107 bytes fails loudly (`PathTooLong`) rather than truncating.
+   **Amendment (2026-10-08, 0.6.6).** The propagation above was never built:
+   no production code sets `SOT_RUNTIME_DIR`, only tests and an operator do.
+   `runtime_dir` reads it, for the capsule lane sockets alone; the session
+   socket, the relay base and the socket-directory check use discovery
+   (`runtime_sot_dir`) in every process, so "every derivation prefers it" and
+   "discovery is only the fallback" do not hold. Each process resolves the
+   runtime dir itself.
 2. **Endpoint ownership is the lifetime lock's, not the filename's.** A
    connect probe cannot tell a dead owner from a live one that has bound but
    not yet listened (`ECONNREFUSED` either way), and two reclaimers can unlink

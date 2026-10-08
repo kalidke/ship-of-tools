@@ -72,7 +72,7 @@ cat >> "$BIN/comm-lib.sh" <<'STUB'
 
 # ---- no daemon, a fixture inbox mount (test only) ----------------------------
 sot_daemon_endpoint() { return 1; }
-sot_relay_endpoint() { [ -n "${1:-}" ] || return 1; printf '%s\n' "$1"; }
+sot_relay_endpoint() { return 1; }
 _sot_findmnt() { printf '%s\n' "nfs4 rw,vers=4.2,local_lock=none filer.example:/export/home"; }
 _sot_machine_id() { printf '0123456789abcdef0123456789abcdef'; }
 STUB

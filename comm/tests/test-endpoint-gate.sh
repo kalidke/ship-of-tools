@@ -133,24 +133,6 @@ EOF
     return 0
 }
 
-case_relay_endpoint_pre_upgrade_stale_env_value_is_discarded_not_used() {
-    # A session holding a stale SOT_RELAY_ENDPOINT=tcp:... from before the
-    # upgrade: the explicit arm refuses it (a miss, not a death, for THIS
-    # resolver) and the planned endpoint is used instead.
-    local dir
-    dir="$(fake_bin_dir)"
-    cat > "$dir/sotd" <<'EOF'
-#!/bin/sh
-[ "$1" = "topology" ] && [ "$2" = "relay-endpoint" ] && { echo "ssh:hub"; exit 0; }
-exit 1
-EOF
-    chmod +x "$dir/sotd"
-    local out
-    out="$(SOTD_BIN="$dir/sotd" sot_relay_endpoint "tcp:127.0.0.1:18743" 2>/dev/null)"
-    [ "$out" = "ssh:hub" ] || { echo "  expected the stale value discarded and the planned answer used, got: $out"; return 1; }
-    return 0
-}
-
 # =========================================================================
 # 3. The daemonless server box — all three answers the binary can give.
 # =========================================================================
@@ -219,23 +201,6 @@ case_daemon_endpoint_explicit_good_value_passes_through() {
     local out
     out="$(sot_daemon_endpoint "unix:/tmp/explicit.sock")"
     [ "$out" = "unix:/tmp/explicit.sock" ] || { echo "  expected verbatim pass-through, got: $out"; return 1; }
-    return 0
-}
-
-case_relay_endpoint_explicit_refused_is_a_miss_not_a_death() {
-    # The mirror of the fatal case above: sot_relay_endpoint's explicit
-    # arm continues to its next source on a refusal (main's ruling).
-    local dir
-    dir="$(fake_bin_dir)"
-    cat > "$dir/sotd" <<'EOF'
-#!/bin/sh
-[ "$1" = "topology" ] && [ "$2" = "relay-endpoint" ] && { echo "ssh:hub"; exit 0; }
-exit 1
-EOF
-    chmod +x "$dir/sotd"
-    local out
-    out="$(SOTD_BIN="$dir/sotd" sot_relay_endpoint "tcp:stale:1" 2>/dev/null)"
-    [ "$out" = "ssh:hub" ] || { echo "  expected the refusal to fall through to the planned endpoint, got: $out"; return 1; }
     return 0
 }
 
@@ -385,13 +350,11 @@ check "the gate treats an empty value as a silent nonzero" case_gate_empty_value
 check "the gate rejects an ssh: value whose target or host is not a plain host name" case_gate_rejects_malformed_ssh_halves
 check "_sot_planned_relay_endpoint reaches sotd via SOTD_BIN with no live socket required" case_planned_relay_endpoint_uses_sotd_bin_with_no_live_socket_needed
 check "sot_relay_endpoint discards a scripts-newer-than-binary stale tcp: answer" case_relay_endpoint_scripts_newer_than_binary_discards_stale_tcp_answer
-check "sot_relay_endpoint discards a pre-upgrade stale env value and uses the planned answer" case_relay_endpoint_pre_upgrade_stale_env_value_is_discarded_not_used
 check "a daemonless box with no sotd on PATH resolves no endpoint" case_daemonless_box_no_sotd_on_path_is_no_endpoint
 check "a daemonless box with no hosts.toml file gets its own socket back verbatim" case_daemonless_box_no_file_answers_its_own_socket
 check "a box not listed in an existing hosts.toml resolves no endpoint, with the binary's own line" case_daemonless_box_not_a_listed_host_is_no_endpoint_with_the_binarys_own_line
 check "sot_daemon_endpoint's explicit arm is fatal on a refused value and names the variable" case_daemon_endpoint_explicit_refused_is_fatal_and_names_the_variable
 check "sot_daemon_endpoint's explicit arm passes a good value through verbatim" case_daemon_endpoint_explicit_good_value_passes_through
-check "sot_relay_endpoint's explicit arm treats a refusal as a miss, not a death" case_relay_endpoint_explicit_refused_is_a_miss_not_a_death
 check "sot_ssh_bridge carries a frame to a stub daemon over a stub ssh and back" case_ssh_bridge_carries_the_frame_to_a_stub_daemon_and_back
 check "a dying stub ssh yields no reply, never a hang" case_ssh_bridge_dying_child_yields_no_reply
 check "sot_ssh_bridge's third arg bounds the call, and an empty one stays unbounded" case_ssh_bridge_third_arg_bounds_it_and_an_empty_one_stays_unbounded

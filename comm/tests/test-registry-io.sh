@@ -87,7 +87,7 @@ done
 ROOT="$(realpath "$WORK/proj")"
 export SOT_COMM_TEST_HOST="testhost"
 export SOT_COMM_SELF_FILE="$WORK/self"
-export SOT_SPAWN_ENDPOINT="unix:$WORK/no-daemon.sock" SOT_RELAY_ENDPOINT="unix:$WORK/no-daemon.sock"
+export SOT_SPAWN_ENDPOINT="unix:$WORK/no-daemon.sock"
 printf 'me\nrepo=proj\nroot=%s\n' "$ROOT" > "$SOT_COMM_SELF_FILE"
 
 # shellcheck source=../scripts/comm-lib.sh
