@@ -232,7 +232,8 @@ def responsive(root, nonce, invoke):
     record = f"printf '%s %s %s %s\\n' {q(nonce)}"
     destination = q(root / "events")
     emit = lambda kind: f"{record} {kind} \"$$\" \"$SECONDS\" >> {destination}"
-    cancellation = f"printf '%s cancelled %s %s\\n%s completed %s %s\\n' {q(nonce)} \"$$\" \"$SECONDS\" {q(nonce)} \"$$\" \"$SECONDS\" >> {destination}; exit 143"
+    # The bound may deliver TERM to the leader and the group; the trap must record once.
+    cancellation = f"[ -n \"$C\" ] && exit 143; C=1; printf '%s cancelled %s %s\\n%s completed %s %s\\n' {q(nonce)} \"$$\" \"$SECONDS\" {q(nonce)} \"$$\" \"$SECONDS\" >> {destination}; exit 143"
     executable(body, f"#!/usr/bin/env bash\n"
                f"trap {q(cancellation)} TERM\n"
                f"{emit('ready-msys' if WINDOWS else 'ready-bash')}\n"
