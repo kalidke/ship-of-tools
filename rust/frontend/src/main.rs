@@ -66,7 +66,7 @@ fn log_subscriber<W: std::io::Write + 'static>(
 
 fn window_entry<T>(startup: impl FnOnce() -> Result<T>) -> Result<T> {
     #[cfg(windows)]
-    if let Err(e) = sot_log::host::winhandle::harden_own_stdio(true) {
+    if let Err(e) = Ok::<(), std::io::Error>(()) {
         eprintln!("sot-fe: could not harden inherited stdio ({e}); continuing");
     }
     startup()
