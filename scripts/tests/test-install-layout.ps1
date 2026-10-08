@@ -15,8 +15,17 @@
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\test-install-layout.ps1
 
+param([string]$SotdPath)
+
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+if (-not $SotdPath) {
+    $testTarget = $env:CARGO_TARGET_DIR
+    if (-not $testTarget) { $testTarget = Join-Path $repoRoot 'rust\target' }
+    $SotdPath = Join-Path $testTarget 'debug\sotd.exe'
+}
+if (-not (Test-Path -LiteralPath $SotdPath)) { throw 'W1 real offline declaration binary is required' }
+$SotdPath = (Resolve-Path -LiteralPath $SotdPath).Path
 $script = Join-Path $repoRoot 'scripts\sot-install-layout.ps1'
 $root = Join-Path $env:TEMP ("sot-install-layout-test-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $root | Out-Null
@@ -99,51 +108,90 @@ try {
         Check '3: a missing file gives an empty id' ((Get-SotLauncherCodeId -ScriptsDir (Join-Path $tagB 'scripts')) -ceq '') 'a partial scripts dir got an id'
     } catch { Check '3: section ran' $false $_.Exception.Message }
 
-    Write-Host "`n=== 4. Set-SotFolderTrust: published only when settings.toml does not exist ===" -ForegroundColor Cyan
+    Write-Host "`n=== 4. executed offline trust delegation ===" -ForegroundColor Cyan
+    $trustKeys = @('HOME', 'USERPROFILE', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'CLAUDE_CONFIG_DIR')
+    $savedTrustEnv = @{}
+    foreach ($key in $trustKeys) { $savedTrustEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+    $savedSot = @{}
+    Get-ChildItem Env: | Where-Object { $_.Name.StartsWith('SOT_') } | ForEach-Object {
+        $savedSot[$_.Name] = $_.Value
+        [Environment]::SetEnvironmentVariable($_.Name, $null, 'Process')
+    }
     try {
-        # Ordered equality: same length, then every byte in order.
         function Test-SameBytes([byte[]]$A, [byte[]]$B) {
             if ($A.Length -ne $B.Length) { return $false }
             for ($k = 0; $k -lt $A.Length; $k++) { if ($A[$k] -ne $B[$k]) { return $false } }
             return $true
         }
-        $homeDir = 'C:\Users\someone'
-        $cfgNew = Join-Path $root 'cfg-new'
-        Check '4: no file: returns declared' ((Set-SotFolderTrust -ConfigDir $cfgNew -HomeDir $homeDir) -ceq 'declared') 'did not return declared'
-        $f = Join-Path $cfgNew 'settings.toml'
-        $bytes = [System.IO.File]::ReadAllBytes($f)
-        $text = [System.Text.Encoding]::UTF8.GetString($bytes)
-        Check '4: root_prefix is the home with / separators' ($text -match '(?m)^root_prefix = "C:/Users/someone"\r?$') $text
-        Check '4: no BOM' (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) 'file starts with a BOM'
-        Check '4: no temp file left' (@(Get-ChildItem -LiteralPath $cfgNew -Filter '*.tmp').Count -eq 0) 'a .tmp file remains'
-        Check '4: a second call returns kept' ((Set-SotFolderTrust -ConfigDir $cfgNew -HomeDir $homeDir) -ceq 'kept') 'did not return kept'
-        Check '4: a second call leaves the file byte-identical' (Test-SameBytes $bytes ([System.IO.File]::ReadAllBytes($f))) 'bytes changed'
+        function Write-SupLog([string]$Text) { $script:trustLog.Add($Text) | Out-Null }
+        function Invoke-TrustFixture {
+            $script:trustLog = New-Object 'System.Collections.Generic.List[string]'
+            Initialize-InstallLayout
+        }
+        $homeDir = Join-Path $root ("home # ' " + [char]0x03BC)
+        New-Item -ItemType Directory -Force -Path $homeDir | Out-Null
+        $env:HOME = $homeDir; $env:USERPROFILE = $homeDir
+        $env:LOCALAPPDATA = Join-Path $root 'local'
+        $env:XDG_CONFIG_HOME = Join-Path $root 'config'
+        $env:XDG_STATE_HOME = Join-Path $root 'state'
+        [Environment]::SetEnvironmentVariable('CLAUDE_CONFIG_DIR', $null, 'Process')
+        $prefixDir = Join-Path $env:LOCALAPPDATA 'sot'
+        $cfg = Join-Path $prefixDir 'config'
+        New-Item -ItemType Directory -Force -Path $cfg | Out-Null
+        $f = Join-Path $cfg 'settings.toml'
+        $repoCurrent = Join-Path $prefixDir 'repo\current'
+        $repo = Join-Path $root 'fixture-checkout'
+        $backendExe = $SotdPath
         $utf8 = New-Object System.Text.UTF8Encoding($false)
-        $cases = [ordered]@{
-            'UTF-8 without [trust]'                    = $utf8.GetBytes("[display]`nx = 1`n")
-            'UTF-16 with BOM, no trust header'         = ([System.Text.Encoding]::Unicode.GetPreamble() + [System.Text.Encoding]::Unicode.GetBytes("[display]`r`nx = 1`r`n"))
-            '[trust] # comment and a commented key'    = $utf8.GetBytes("[trust] # mine`n# root_prefix = `"C:/x`"`n")
+        $headerless = $utf8.GetBytes("# retained`n[layout]`npreset = 'auto'`n")
+        [System.IO.File]::WriteAllBytes($f, $headerless)
+        Invoke-TrustFixture
+        $after = [System.IO.File]::ReadAllBytes($f)
+        $text = $utf8.GetString($after)
+        Check 'W1 C4 Windows headerless declaration' ($text -match '(?m)^root_prefix = ') 'owner added no declaration'
+        Check 'W1 C4 Windows dev return follows declaration' (($script:trustLog -join "`n") -match 'folder trust declared' -and ($script:trustLog -join "`n") -match 'dev box') 'declaration did not precede dev return'
+        Check 'W1 C4 Windows byte prefix retained' (Test-SameBytes $headerless ([byte[]]$after[0..($headerless.Length - 1)])) 'original byte prefix changed'
+        Check 'W1 C4 Windows no BOM' (-not ($after.Length -ge 3 -and $after[0] -eq 0xEF -and $after[1] -eq 0xBB -and $after[2] -eq 0xBF)) 'BOM added'
+        foreach ($table in @('[trust] # kept', 'trust = { root_prefix = "/kept" }', 'trust.root_prefix = "/kept"', '[ trust ]')) {
+            $before = $utf8.GetBytes($table + "`n")
+            [System.IO.File]::WriteAllBytes($f, $before)
+            Invoke-TrustFixture
+            Check 'W1 C4 Windows table form kept' (Test-SameBytes $before ([System.IO.File]::ReadAllBytes($f))) 'existing trust answer changed'
+            Check 'W1 C4 Windows Kept reported' (($script:trustLog -join "`n") -match 'folder trust kept') 'Kept was not reported'
         }
-        $i = 0
-        foreach ($name in $cases.Keys) {
-            $i++
-            $cfg = Join-Path $root "cfg-own$i"
-            New-Item -ItemType Directory -Force -Path $cfg | Out-Null
-            $own = Join-Path $cfg 'settings.toml'
-            [System.IO.File]::WriteAllBytes($own, [byte[]]$cases[$name])
-            $before = [System.IO.File]::ReadAllBytes($own)
-            $r = Set-SotFolderTrust -ConfigDir $cfg -HomeDir $homeDir
-            Check "4: existing file ($name): returns no-header" ($r -ceq 'no-header') "returned $r"
-            Check "4: existing file ($name): byte-identical" (Test-SameBytes $before ([System.IO.File]::ReadAllBytes($own))) 'the owner''s file was changed'
+        foreach ($invalid in @($utf8.GetBytes('[layout'), ([System.Text.Encoding]::Unicode.GetPreamble() + [System.Text.Encoding]::Unicode.GetBytes('[layout]')))) {
+            [System.IO.File]::WriteAllBytes($f, [byte[]]$invalid)
+            Invoke-TrustFixture
+            Check 'W1 C4 Windows invalid bytes unchanged' (Test-SameBytes ([byte[]]$invalid) ([System.IO.File]::ReadAllBytes($f))) 'invalid document changed'
+            Check 'W1 C4 Windows failure visible' (($script:trustLog -join "`n") -match 'folder trust not declared.*exit') 'native failure was not reported'
         }
-        # The race: the destination appears after the temp file is closed, before the move.
-        $cfgRace = Join-Path $root 'cfg-race'
-        $raceFile = Join-Path $cfgRace 'settings.toml'
-        $r = Set-SotFolderTrust -ConfigDir $cfgRace -HomeDir $homeDir -BeforePublish { [System.IO.File]::WriteAllText($raceFile, 'owner') }
-        Check '4: race: returns kept' ($r -ceq 'kept') "returned $r"
-        Check '4: race: the owner''s file is untouched' (([System.IO.File]::ReadAllText($raceFile)) -ceq 'owner') 'the winner''s file was replaced'
-        Check '4: race: no temp file left' (@(Get-ChildItem -LiteralPath $cfgRace -Filter '*.tmp').Count -eq 0) 'a .tmp file remains'
-    } catch { Check '4: section ran' $false $_.Exception.Message }
+        $backendExe = Join-Path $root 'missing-sotd.exe'
+        Invoke-TrustFixture
+        Check 'W1 C4 Windows missing binary failure visible' (($script:trustLog -join "`n") -match 'folder trust not declared') 'missing binary was quiet'
+        $backendExe = ''
+        New-Item -ItemType Directory -Force -Path (Join-Path $prefixDir 'bin') | Out-Null
+        Copy-Item -LiteralPath $SotdPath -Destination (Join-Path $prefixDir 'bin\sotd.exe')
+        $kernel = Join-Path $repoCurrent 'julia\kernel'
+        New-Item -ItemType Directory -Force -Path $kernel | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $kernel 'Manifest.toml'), '# fixture')
+        [System.IO.File]::WriteAllBytes($f, $headerless)
+        Invoke-TrustFixture
+        Check 'W1 C4 Windows staged binary choice' (($script:trustLog -join "`n") -match 'folder trust declared') 'staged owner was not invoked'
+        $old = Join-Path $root 'older-sotd.exe'
+        Add-Type -TypeDefinition 'public class W1OldBinary { public static int Main(string[] args) { System.Console.Error.WriteLine("unknown subcommand trust"); return 64; } }' -OutputAssembly $old -OutputType ConsoleApplication
+        $backendExe = $old
+        $before = [System.IO.File]::ReadAllBytes($f)
+        Invoke-TrustFixture
+        Check 'W1 C4 Windows older binary failure visible' (($script:trustLog -join "`n") -match 'folder trust not declared \(exit 64\)') 'older binary failure was not reported'
+        Check 'W1 C4 Windows older binary bytes unchanged' (Test-SameBytes $before ([System.IO.File]::ReadAllBytes($f))) 'older binary caused a declaration'
+        Check 'W1 C4 Windows caller restores error preference' ($ErrorActionPreference -ceq 'Stop') 'error preference changed'
+        if ($fail -eq 0) { Write-Host 'W1 C4 Windows delegation PASS: real owner; dev/staged choices; preservation; encoding; visible compatibility failures' }
+    } catch { Check 'W1 C4 Windows section ran' $false $_.Exception.Message }
+    finally {
+        foreach ($key in $trustKeys) { [Environment]::SetEnvironmentVariable($key, $savedTrustEnv[$key], 'Process') }
+        foreach ($key in $savedSot.Keys) { [Environment]::SetEnvironmentVariable($key, $savedSot[$key], 'Process') }
+    }
+
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

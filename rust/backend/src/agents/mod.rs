@@ -7,6 +7,7 @@ pub(crate) mod env;
 pub(crate) mod folder_trust;
 pub(crate) mod memory;
 pub(super) mod ops;
+pub(crate) mod trust_declaration;
 
 #[cfg(test)]
 mod support_tests;

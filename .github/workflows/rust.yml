@@ -132,6 +132,12 @@ jobs:
           if [ '${{ matrix.os }}' = ubuntu-latest ]; then proof_mode=--all; fi
           ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh "$proof_mode" "$(cat ../dev/output/iso-sh-ci-path)"
 
+      - name: Folder trust premises (Windows and macOS)
+        if: matrix.os != 'ubuntu-latest'
+        run: |
+          cargo test -p sot-backend --bin sotd trust_declaration --locked -- --nocapture
+          cargo test -p sot-backend --bin sotd agents::folder_trust --locked -- --nocapture
+          cargo test -p sot-backend --test trust_declare --test trust_premises --locked -- --nocapture
       - name: Test workspace
         run: cargo test --workspace --locked --no-fail-fast -- --nocapture
 

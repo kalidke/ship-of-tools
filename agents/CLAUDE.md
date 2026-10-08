@@ -8,6 +8,7 @@ using the tools and skills installed from the repository. This folder is the she
 and the GitHub sign-in live here; the rest of the shell client is still under `comm/` and moves in later units of the organize pass.
 
 ## Owns
+- The offline trust declaration command and its typed schema.
 - The CLIs that start, end, probe and bootstrap rows: `spawn/`.
 - The /worktree scripts, one parallel session per git worktree: `worktree/`.
 - The CLI that drives the frontend and its REPL, and the nav broadcast: `sot-fe/`.
@@ -29,8 +30,7 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
   daemon's `argv.rs`; `ccb` execs `sotd agent-exec claude`, which carries the same recipe; the sot-setup skill's
   `resume_command` names the flag.
 - ccx's default handle `<repo>-cx-<host>` is built from the comm library's safe pieces (`sot_sanitize_component`, `_sot_handle_host`), so it is always a name `workspace.create` accepts; a derivation that cannot run stops the launch before the join and before codex (`agents/tests/test-ccx-launch.sh`).
-- Folder trust is written only for a row root under `[trust] root_prefix` in the user-level settings file
-  (`ensure_folder_trusted`); an entry already accepted is never rewritten.
+- Folder trust is recorded only when the OS-resolved root lies under the OS-resolved declared prefix. The key uses the child cwd's spelling; an already accepted entry is not rewritten. Outside, undeclared and failed preparation are observable and the agent still starts. The trust file follows the child's effective `CLAUDE_CONFIG_DIR`: account additions override inheritance; with no config override it is the home-level file. Automated evidence establishes preparation; actual child-config consumption remains a human done-test proof limit. Interactive trust recognition, parent coverage and no-dialog behavior remain outside the headless proof.
 - A launcher the daemon spawns full-paths its binaries: its environment lacks `~/.local/bin`. `ccb` resolves `sotd`
   from `SOTD_BIN`, `PATH`, then the install paths; the daemon resolves `claude` and `ccx` to absolute paths on Unix.
 - Every endpoint leaves the shell client through `_sot_emit_endpoint` (a whitelist of `unix:`, `pipe:` and `ssh:`);
@@ -42,7 +42,7 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
   `BASH_SOURCE`, not `$0`. No test enforces the rule.
 
 ## Connections
-Each connection is one row of docs/integration.md, owned by its provider. Provides: `agent_argv`, `agent_exec_argv`,
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `sotd trust declare <absolute-prefix>`, `agent_argv`, `agent_exec_argv`,
 `claude_recipe`, `account_env`, `account_spawn_env`, `ensure_folder_trusted`, `capsule_supervisor_env`,
 `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input`,
 `sot_dial`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot-fe preview`, `docs/tools/docs-media.sh`. Uses:
