@@ -7,10 +7,12 @@ rust/backend/src/sidecars/CLAUDE.md.
 
 ## Files
 - `execute.rs`: repl.execute, the whole-report run
-- `execute_tests.rs`: repl.execute against a stub child: every reply and drawer frame pinned
+- `execute_tests.rs`: native `repl.execute` submit-failure and res-only drawer completion, plus the existing Unix shell reply/frame table.
 - `ops.rs`: repl.eval, repl.run_file, repl.interrupt
 - `mod.rs`: the handle (`Repl`): submit, execute, interrupt and restart, the frame bus message and `ExecAccum`.
 - `lifecycle.rs`: the child's state (`ReplLifecycle`), spawn generations and the `lifecycle` frames.
+- `project_tests.rs`: real Julia bare/project workspace, package-write destination and all-entry spawn controls in isolated resource/depot fixtures. Real owned-child argv/environment and WGL page-secret exclusion controls, with a deliberate-leak sensitivity probe; no source-text assertions.
+- `restart_tests.rs`: noncooperative restart, retained senders, channel close, retired-generation grants and selected-project respawn, with owned child observations.
 - `supervisor.rs`: spawning the child and `supervisor_task`, its life: wire, routing and close-out on death.
 
 ## Start here
@@ -19,14 +21,15 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
 ## Rules
 - Liveness is the child's state, not the channel's: `Repl::ensure_supervisor` respawns unless the sender is open and
   the state is not `Dead`.
+- `Repl` retains the current selected project and one supervisor owner: submission, explicit stop and checked retirement join. No replacement starts before successful retirement; a cleanup error or `REPL_RESTART_WAIT` join timeout is visible and retains the retiring owner for reconciliation.
+- Stop, channel close, child exit, pipe failure and shutdown share pending/streamed closeout and browser-grant revocation. Contained-tree termination requests are checked and the direct child is confirmed reaped before successful retirement; escaped descendants remain ADR 0050 residual 7.
+- A supervisor is joined before a replacement generation opens, so its retired output cannot restore a revoked browser grant. The existing lifecycle generation guard still bounds state transitions. The child's exit ends supervision independently of inherited pipes.
 - `Repl::request_if_running` never spawns (`repl.interrupt` must not pay a spawn to answer "not running").
 - A lifecycle transition applies only for the current spawn generation (`lifecycle_transition`), and a generation
   opens only after `.spawn()` succeeds (`lifecycle_begin_starting`).
 - A child's browser ports are recorded as its `browser` frames pass (`route_line`) and revoked when a new generation
   starts or the current one dies.
-- The child's exit ends the supervisor, not its pipes: `supervisor_task`'s `child.wait()` branch is polled last.
-- On death each streamed eval in flight gets a synthetic `error` and `done` frame.
-- The REPL project is resolved at every spawn (`Repl::repl_project`), never cached.
-- With a workspace project, user code runs in it with the shim on `JULIA_LOAD_PATH` and the project as cwd
-  (`spawn_supervisor_with_project`).
+- `Repl` keeps its constructor's `Signal` and passes it to each supervisor's spawn and shutdown wait.
+- The shim project is resolved at every spawn (`Repl::repl_project`), never cached. `spawn_supervisor` is the only REPL spawn recipe: user code's active project and cwd are the selected user directory, even before it has a `Project.toml`; the shim is a fallback on `JULIA_LOAD_PATH`, never the bare-workspace active project.
+- Once `repl.execute` announces `Started`, every returned report closes that run: a submit failure or collected result without `Done` gets a synthetic `Done`; an already completed result gets no duplicate from the handler. Validation before `Started` creates no drawer run.
 - `repl.execute` output is collected loss-free per eval, text capped at `EXEC_TEXT_CAP` (`ExecAccum`).

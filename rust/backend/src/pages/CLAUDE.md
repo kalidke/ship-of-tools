@@ -19,6 +19,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 - Every listener binds 127.0.0.1 and falls back to an ephemeral port when the preferred one is taken. URLs and the
   allowlist read the bound port (`bound_video_port`, `bound_site_port`, `pool_assigned_ports`, `bound_pluto_port`),
   never the preferred one.
+- Pluto contributes only its current supervisor's READY grant to `allowed_proxy_ports`; after that owner releases the grant, a new proxy request cannot use it. Existing pipes and the lookup-to-connect race are not listener-identity proofs.
 - Nothing is served that an op did not grant: video by token (`register_video`), a prefix site by nonce (`set_root`),
   a pool site by its per-open secret and then an HttpOnly cookie (`assign_pool_port`).
 - The video, site and pool listeners are bound non-inheritable (`bind_page_listener`), so no child process holds one,
@@ -44,7 +45,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `quarto.open`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `record_browser_port`, `revoke_browser_ports`,
 `is_servable_video`, `start_page_servers`, `remove_root`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`.
 Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`,
-`dispatch`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `ContainedStd`, `Signal`, `child_signal::fired`, `child_signal::process`, `resolve_bin`,
+`dispatch`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `ContainedStd`, `Signal`, `child_signal::process`, `resolve_bin`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `bound_pluto_port`, `allowed_proxy_ports`, `lane_dial`, `ResolvedDial`, `sot_protocol::video_path::video_mime`.
 
 ## Folders

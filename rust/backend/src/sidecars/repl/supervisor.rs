@@ -27,55 +27,10 @@ struct WireEnvelope {
     payload: Value,
 }
 
-pub(super) fn spawn_supervisor(
-    frame_tx: broadcast::Sender<ReplFrameMsg>,
-    workspace_id: Option<String>,
-    lifecycle: SharedLifecycle,
-) -> Result<mpsc::Sender<Submission>> {
-    let repl_project = Repl::repl_project();
-    let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
-    if !repl_project.exists() {
-        return Err(anyhow!(
-            "repl project missing at {}",
-            repl_project.display()
-        ));
-    }
-    let julia_src = "using ShipToolsRepl; ShipToolsRepl.serve(stdin, stdout)";
-
-    let mut cmd = Command::new(&julia_bin);
-    cmd.arg(format!("--project={}", repl_project.display()))
-        .arg("-e")
-        .arg(julia_src)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut contained = crate::lifecycle::child_signal::process()
-        .spawn(&mut cmd)
-        .with_context(|| format!("spawn {julia_bin} --project={}", repl_project.display()))?;
-
-    let stdin = contained.stdin.take().context("repl child stdin missing")?;
-    let stdout = contained.stdout.take().context("repl child stdout missing")?;
-    let stderr = contained.stderr.take().context("repl child stderr missing")?;
-
-    let (submit_tx, submit_rx) = mpsc::channel::<Submission>(16);
-
-    let stderr_tail = spawn_stderr_tail(stderr);
-
-    // Child exists: open a new spawn generation (state -> Starting, announce).
-    // Deliberately after `.spawn()` succeeds — a failed spawn leaves the prior
-    // state (NotStarted/Dead) intact, which is the truthful reading.
-    let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
-
-    tokio::spawn(supervisor_task(
-        contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
-    ));
-    Ok(submit_tx)
-}
-
-/// Like `spawn_supervisor` but activates `user_project` for user code while
-/// keeping `ShipToolsRepl` reachable for the dispatch loop. Used by
-/// `Repl::restart_with_project` to bounce the persistent REPL into the
-/// project closest to a `.jl` file the user is about to run.
+/// The one REPL spawn recipe: activates `user_project` for user code (even a
+/// bare workspace with no `Project.toml`) while keeping `ShipToolsRepl`
+/// reachable for the dispatch loop. Initial start, death respawn and
+/// `Repl::restart_with_project` all spawn through it.
 ///
 /// We can't pass `--project=<user_project>` *and* expect `using ShipToolsRepl`
 /// to resolve — the REPL shim isn't in the user's manifest. The standard
@@ -85,12 +40,13 @@ pub(super) fn spawn_supervisor(
 /// `ShipToolsRepl` lives) as a fallback for the shim's own deps, then the
 /// default load path (stdlib, etc.) via the trailing colon so `using` of
 /// standard packages still works inside the user code.
-pub(super) fn spawn_supervisor_with_project(
+pub(super) fn spawn_supervisor(
     user_project: &Path,
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
     lifecycle: SharedLifecycle,
-) -> Result<mpsc::Sender<Submission>> {
+    sig: &'static crate::lifecycle::child_signal::Signal,
+) -> Result<Supervisor> {
     let repl_project = Repl::repl_project();
     let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
     if !repl_project.exists() {
@@ -131,7 +87,7 @@ pub(super) fn spawn_supervisor_with_project(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut contained = crate::lifecycle::child_signal::process().spawn(&mut cmd).with_context(|| {
+    let mut contained = sig.spawn(&mut cmd).with_context(|| {
         format!(
             "spawn {julia_bin} --project={} (JULIA_LOAD_PATH={load_path})",
             user_project.display()
@@ -143,16 +99,61 @@ pub(super) fn spawn_supervisor_with_project(
     let stderr = contained.stderr.take().context("repl child stderr missing")?;
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(16);
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
 
     let stderr_tail = spawn_stderr_tail(stderr);
 
     // Child exists: open a new spawn generation (state -> Starting, announce).
     let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
 
-    tokio::spawn(supervisor_task(
-        contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
+    let join = tokio::spawn(supervisor_task(
+        contained, stdin, stdout, submit_rx, stop_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen, sig,
     ));
-    Ok(submit_tx)
+    Ok(Supervisor {
+        tx: submit_tx,
+        stop: Some(stop_tx),
+        join,
+    })
+}
+
+/// One running REPL supervisor and its owner's three controls: the submission sender, the explicit stop and the
+/// task's join handle, whose result is the checked retirement (the tree's termination was requested and the direct
+/// child reaped).
+pub(super) struct Supervisor {
+    pub(super) tx: mpsc::Sender<Submission>,
+    stop: Option<oneshot::Sender<()>>,
+    join: tokio::task::JoinHandle<std::result::Result<(), String>>,
+}
+
+impl Supervisor {
+    /// Ask the task to close out, then wait up to `wait` for its checked retirement. A timeout leaves the task
+    /// owned, so a later call waits for it again; any other result leaves nothing to wait for (`is_done`).
+    pub(super) async fn retire(&mut self, wait: std::time::Duration) -> Result<()> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        match tokio::time::timeout(wait, &mut self.join).await {
+            Err(_) => Err(anyhow!("repl retirement not finished within {wait:?}; it stays owned")),
+            Ok(Err(e)) => Err(anyhow!("repl supervisor task failed: {e}")),
+            Ok(Ok(Err(e))) => Err(anyhow!("repl retirement failed: {e}")),
+            Ok(Ok(Ok(()))) => Ok(()),
+        }
+    }
+
+    pub(super) fn is_done(&self) -> bool {
+        self.join.is_finished()
+    }
+}
+
+/// Private test leaves in the closeout: a gate the retirement waits on before the checked termination (a join delay),
+/// and a one-shot flag that turns the retirement's result into an error.
+#[cfg(test)]
+pub(super) mod seams {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    pub(crate) static CLOSEOUT_GATE: Mutex<Option<Arc<tokio::sync::Semaphore>>> = Mutex::new(None);
+    pub(crate) static FAIL_RETIREMENT: AtomicBool = AtomicBool::new(false);
 }
 
 /// Spawn the stderr reader: per-line DEBUG (healthy julia is chatty), plus a
@@ -186,12 +187,14 @@ async fn supervisor_task(
     mut stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
+    mut stop_rx: oneshot::Receiver<()>,
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
     stderr_tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
     lifecycle: SharedLifecycle,
     my_gen: u64,
-) {
+    sig: &'static crate::lifecycle::child_signal::Signal,
+) -> std::result::Result<(), String> {
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight: eval_id recorded at submit,
     // cleared when its `done` frame routes. On child death each survivor gets
@@ -211,30 +214,19 @@ async fn supervisor_task(
             biased;
             // The daemon is shutting down: the signal has already killed the
             // child's tree.
-            _ = crate::lifecycle::child_signal::fired() => {
+            _ = sig.fired() => {
+                break;
+            }
+            // The owner retires this supervisor (restart, or its handle is
+            // gone): independent of the submit senders and of Julia reading
+            // stdin.
+            _ = &mut stop_rx => {
                 break;
             }
             sub = submit_rx.recv() => {
+                // Every sender is gone: the same closeout as a stop.
                 let Some(sub) = sub else {
-                    drop(stdin);
-                    let _ = contained.wait().await;
-                    // Intentional teardown (sender dropped — restart or
-                    // shutdown). Gen-guarded: when a restart has already
-                    // opened the next generation this is a no-op, so the
-                    // fresh child's `Starting` isn't stomped to `Dead` — and
-                    // its proxy grants aren't revoked out from under it
-                    // (an applied Dead means WE were the current child, so
-                    // our browser-served ports die with us).
-                    if lifecycle_transition(
-                        &lifecycle,
-                        my_gen,
-                        ReplLifecycle::Dead,
-                        &frame_tx,
-                        &workspace_id,
-                    ) {
-                        crate::pages::proxy::revoke_browser_ports(browser_ports_key(&workspace_id));
-                    }
-                    return;
+                    break;
                 };
                 let id = next_id;
                 next_id += 1;
@@ -245,7 +237,7 @@ async fn supervisor_task(
                     op: &sub.op,
                     payload: &sub.payload,
                 };
-                let line = match serde_json::to_string(&req) {
+                let mut line = match serde_json::to_string(&req) {
                     Ok(s) => s,
                     Err(e) => {
                         if let Some(reply) = sub.reply {
@@ -254,21 +246,25 @@ async fn supervisor_task(
                         continue;
                     }
                 };
-                if let Err(e) = stdin.write_all(line.as_bytes()).await {
+                line.push('\n');
+                // The write and flush give way to a stop or the signal, so a
+                // child that reads nothing cannot hold the owner. The
+                // submission stays ours until it is written; a cancelled one
+                // is closed out with the rest and never resent.
+                let written = tokio::select! {
+                    biased;
+                    _ = sig.fired() => Err("repl shutting down".to_string()),
+                    _ = &mut stop_rx => Err("repl stopped".to_string()),
+                    r = async {
+                        stdin.write_all(line.as_bytes()).await?;
+                        stdin.flush().await
+                    } => r.map_err(|e| format!("repl stdin: {e}")),
+                };
+                if let Err(why) = written {
                     if let Some(reply) = sub.reply {
-                        let _ = reply.send(Err(anyhow!("repl stdin: {e}")));
-                    }
-                    break;
-                }
-                if let Err(e) = stdin.write_all(b"\n").await {
-                    if let Some(reply) = sub.reply {
-                        let _ = reply.send(Err(anyhow!("repl stdin: {e}")));
-                    }
-                    break;
-                }
-                if let Err(e) = stdin.flush().await {
-                    if let Some(reply) = sub.reply {
-                        let _ = reply.send(Err(anyhow!("repl stdin flush: {e}")));
+                        let _ = reply.send(Err(anyhow!(why)));
+                    } else if let Some(eid) = sub.payload.get("eval_id").and_then(Value::as_u64) {
+                        streaming.insert(eid);
                     }
                     break;
                 }
@@ -371,6 +367,16 @@ async fn supervisor_task(
     for (_id, reply) in pending.drain() {
         let _ = reply.send(Err(anyhow!("repl terminated")));
     }
+    // Accepted but unwritten submissions close out with the rest: no new one
+    // is admitted, each reply fails, each streamed eval gets its close.
+    submit_rx.close();
+    while let Ok(sub) = submit_rx.try_recv() {
+        if let Some(reply) = sub.reply {
+            let _ = reply.send(Err(anyhow!("repl terminated")));
+        } else if let Some(eid) = sub.payload.get("eval_id").and_then(Value::as_u64) {
+            streaming.insert(eid);
+        }
+    }
     // The child is gone: make the failure VISIBLE (stderr tail at WARN — its
     // death cry was previously debug-only) and CLOSED-OUT (synthetic
     // error+done frames per in-flight streamed eval, so the FE's entries
@@ -400,7 +406,22 @@ async fn supervisor_task(
             frame: serde_json::json!({ "kind": "done", "eval_id": eid, "elapsed_ms": 0 }),
         });
     }
-    let _ = contained.kill().await;
+    // Retirement: request the tree's termination and check the direct
+    // child's reap. The result is the owner's join value.
+    drop(stdin);
+    #[cfg(test)]
+    {
+        let gate = seams::CLOSEOUT_GATE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(gate) = gate {
+            let _ = gate.acquire().await;
+        }
+    }
+    let reaped = contained.kill().await.map(|_| ()).map_err(|e| e.to_string());
+    #[cfg(test)]
+    if seams::FAIL_RETIREMENT.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err("injected termination error".to_string());
+    }
+    reaped
 }
 
 /// Route one stdout line off the REPL child. A `repl.frame` evt is fanned out
@@ -525,7 +546,7 @@ mod interrupt_guard_tests {
     #[tokio::test]
     async fn request_if_running_never_spawns() {
         let (tx, _rx) = broadcast::channel(8);
-        let repl = Repl::new(tx, None, None);
+        let repl = Repl::new(tx, None, std::env::temp_dir(), crate::lifecycle::child_signal::process());
         let res = repl
             .request_if_running("repl.interrupt", serde_json::json!({}))
             .await
