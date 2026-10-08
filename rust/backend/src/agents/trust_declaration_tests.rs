@@ -101,10 +101,11 @@ fn failed_publication_cleans_only_the_owned_temp() {
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
 }
 
-#[cfg(windows)]
 #[test]
-fn a_verbatim_prefix_with_a_parent_name_is_refused() {
-    // Rust yields `..` as a normal name after a verbatim prefix, so the component kind alone misses it.
-    assert!(validate_prefix(Path::new(r"\\?\C:\scope\..\escape")).is_err());
-    assert!(validate_prefix(Path::new(r"\\?\C:\scope\inside")).is_ok());
+fn a_prefix_with_no_name_is_refused() {
+    assert!(validate_prefix(Path::new("/")).is_err());
+    #[cfg(windows)]
+    for root in [r"C:\", r"\\?\C:\", r"\\?\UNC\host\share\", r"\\host\share\"] {
+        assert!(validate_prefix(Path::new(root)).is_err(), "{root}");
+    }
 }

@@ -139,7 +139,9 @@ fn offline_cli_matrix_creates_keeps_and_rejects_without_startup() {
         assert!(!fresh.run(&args).0);
         assert!(!fresh.config.exists());
     }
-    let parent_components = fresh.prefix.join("..").join("escape");
+    // Built as text: `Path::join` folds `..` away on a verbatim (`\\?\`) path, which would declare a clean prefix.
+    let sep = std::path::MAIN_SEPARATOR;
+    let parent_components = PathBuf::from(format!("{}{sep}..{sep}escape", fresh.prefix.display()));
     let filesystem_root: PathBuf = fresh
         .prefix
         .components()
