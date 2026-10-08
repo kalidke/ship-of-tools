@@ -34,7 +34,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `supervisor_client`, `FeAttachClient`, `rust/backend/src/rows/run/headless.rs`,
 `rust/frontend/src/ui/agent_pane/attach.rs`, `drawer.voyage`, `writer.lock`, `Endpoint`, `DaemonLaneEndpoint`, `AnonymousJob`. Uses:
 `DaemonLaneEndpoint`, `lane.connect`, `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`,
-`owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`, `storage_exhaustion`.
+`owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`, `storage_exhaustion`,
+`Redial`, `STABLE`.
 
 ## Folders
 - `src/store/`: the voyage store, its record codec, recovery and verifier.

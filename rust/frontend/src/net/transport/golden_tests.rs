@@ -150,7 +150,6 @@ async fn every_request_kind_and_its_error_reply_match_the_golden() {
     }
     let session = tokio::spawn(async move {
         let (rx, tx) = tokio::io::split(near);
-        let mut backoff_ms = 200;
         run_protocol(
             "golden".to_string(),
             codec::buffered(rx),
@@ -159,7 +158,6 @@ async fn every_request_kind_and_its_error_reply_match_the_golden() {
             &evt_tx,
             &mut out_rx,
             &GoldenWindow,
-            &mut backoff_ms,
             ResolvedDial::Local,
             None,
         )

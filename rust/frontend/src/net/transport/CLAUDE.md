@@ -11,7 +11,8 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
 - `reply.rs`: PendingKind, PendingGuard and handle_response_frame; the opt-in native progress fixture observes the actual successful fan-in send through a test-only scoped observer, installed through the gated observe_native_fan_in registration re-export in mod.rs. Result-tree pending entries retain the issuing attempt and request step; matching replies and connection-loss failures emit that tag once. Inline tests execute the sender, pending dispatcher and decoder with reordered responses.
 - `steady.rs`: steady_loop and its held read/write futures, encoded-request correlation and orderly outgoing-close drain.
 - `steady_tests.rs`: the steady loop over small in-memory streams: upload and download progress, blocked pings, fairness, partial frames, early replies, failures, close and cancellation.
-- `tests.rs`: the connection task's tests: backoff, the link gate, a tree.root error reply, a closed local connection,
+- `tests.rs`: the connection task's tests: backoff, the redial pace against a daemon that answers the hello and drops
+  (the real reconnect loop, a window-free `Redraw`), the link gate, a tree.root error reply, a closed local connection,
   the stderr drain, and the two `connect_pipe` cases with another account's listener (refusal, full backlog), which
   need passwordless `sudo -n` and skip without it except on CI
 - `golden_tests.rs`: every request kind's wire line and the events its error reply yields, against the golden file

@@ -1,10 +1,11 @@
-//! The platform subsystem: state dirs, durable publication, kernel locks.
+//! The platform subsystem: state dirs, durable publication, kernel locks, the redial pace.
 //! The glob re-exports below are the module's interface: callers name
 //! `sot_log::host::wide_null`, `sot_log::host::daemon_lock_path` and so on.
 
 mod durable;
 mod lock;
 mod pinned_dir;
+pub mod redial;
 pub mod state_dir;
 mod storage;
 mod volume;

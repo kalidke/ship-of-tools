@@ -2,7 +2,7 @@
 
 ## Idea
 One answer per machine fact and one primitive per platform mechanism: where state lives, what the host is called, how a
-file is published durably, how a lock is held, and what a volume must support. It lives in sot-log because that is the
+file is published durably, how a lock is held, what a volume must support, and how soon a dropped connection to a daemon is dialed again. It lives in sot-log because that is the
 workspace's bottom crate: every other Rust crate can reach it and it reaches none of them.
 
 ## Owns
@@ -21,6 +21,8 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   `duration_to_wait_ms`).
 - The peer challenge in `rust/log/src/identity/` (a sibling folder; see Folders).
 - Storage-exhaustion recognition (`storage.rs`: `storage_exhaustion`, `native_storage_code`).
+- The redial pace of a long-lived connection to a daemon (`redial.rs`: `Redial`, `STABLE`), which the window's control
+  transport, the hub link and the attach worker share.
 
 ## Promises
 - `host_name` returns `Err`, never a guessed name.
@@ -36,6 +38,9 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   (`lock_writer`).
 - Kernel file locks are taken only inside two guards whose `Drop` unlocks: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`. rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
+- A connection redialed through `Redial` waits from its caller's floor, doubling to its cap, and starts over only after
+  a connection that lasted `STABLE` (60 s); an answered hello, a completed attach or a bare connect alone does not
+  restart it.
 - Storage exhaustion is recognized by its native code only: ENOSPC and EDQUOT, on Windows ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL and ERROR_DISK_QUOTA_EXCEEDED, read from the `io::Error` an `Error::Io` carries, never from text and never from a transport error (a full runtime folder is not storage exhaustion) (`storage_exhaustion`). `preflight_volume` and Windows `io_ctx` return such an error as itself, with its code, instead of their refusal or context text.
 
 ## Connections
@@ -44,7 +49,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `dir_identity`,
 `rust/log/src/host/pinned_dir.rs`, `resource_dir`, `rust/backend/src/paths.rs`,
-`sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`, `storage_exhaustion`. Uses: none.
+`sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`, `storage_exhaustion`,
+`Redial`, `STABLE`. Uses: none.
 
 ## Folders
 - `rust/log/src/host/` (here) and `rust/log/src/identity/` (the peer challenge).
@@ -55,6 +61,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `durable.rs`: durable publication, fsync, no-clobber rename, container creation.
 - `lock.rs`: the writer fence, the supervisor fence and the daemon's single-instance lock, held by the kernel.
 - `pinned_dir.rs`: a directory's kernel identity and a handle that pins it.
+- `redial.rs`: `Redial` and `STABLE`, the wait before a long-lived connection to a daemon is dialed again.
 - `state_dir.rs`: where a file lives, and the host name.
 - `storage.rs`: which native errors are storage exhaustion.
 - `volume.rs`: the preflight that proves a volume supports the store's primitives.

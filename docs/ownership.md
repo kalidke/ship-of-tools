@@ -29,6 +29,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | host name `host_name()`, `SOT_SELF_HOST` | machine fact | platform | `rust/log/src/host/state_dir.rs` `host_name` (copies: `rust/backend/src/comm/mail/filer.rs` `comm_self_host`, `rust/frontend/src/ui/persist/resume.rs` `state_path`, `comm/lib/comm-lib-base.sh` `sot_host`, `comm/registry/comm-context.sh`, `agents/spawn/comm-despawn.sh`) |
 | `state_dir_hash` (lane socket names) | machine fact | platform | `rust/log/src/host/state_dir.rs` `state_dir_hash` |
 | durable write (fsync, no-clobber rename, publish) | primitive | platform | `rust/log/src/host/durable.rs` `publish_noreplace`, `fsync_dir`, `ensure_container`; `rust/backend/src/durable.rs` `write` |
+| redial pace of a long-lived connection to a daemon (`Redial`, `STABLE`) | rule | platform | `rust/log/src/host/redial.rs` `Redial`, `STABLE`; callers `rust/frontend/src/net/transport/mod.rs` `spawn`, `redial_for`; `rust/backend/src/comm/mail/hub_link.rs` `hold_link`; `rust/log/src/attach_client/rules/reconnect.rs` `ReconnectState`; `rust/log/src/attach_client/worker/converge.rs` `probe_supervisor_lane` |
 | bounded file locks | primitive | platform | `rust/log/src/host/lock.rs` `lock_writer`, `lock_supervisor`, `try_lock_daemon` |
 | volume preflight | primitive | platform | `rust/log/src/host/volume.rs` `preflight_volume` |
 | storage-exhaustion recognition | primitive | platform | `rust/log/src/host/storage.rs` `storage_exhaustion` |

@@ -795,6 +795,11 @@ before the supervisor publishes it is terminal, not slow.
     (250 ms → 4 s, reset by an attach), before or after the first attach, because over an
     ssh lane every dial is a login. The "pre-attach backoff" this ADR's "Deleted here"
     lists name was a local-pipe dial, where the fixed interval cost nothing.
+    **AMENDED 2026-10-08 (FE-BACKOFF), only a lasting attach restarts the backoff.** The backoff
+    starts over at 250 ms only after an attach that lasted `STABLE` (60 s), platform's `Redial`
+    rule that the window's control transport and the hub link share; an attach that drops sooner
+    keeps the doubling. The steady-state supervisor re-dial (2 s to 30 s) follows the same rule:
+    a bare connect no longer restarts its wait.
 
 29. **A process spawn never runs on a Tokio worker.** `start_supervisor` (the create
     handler and `resume_all`) and the watchdog's restart spawn run under `spawn_blocking`.

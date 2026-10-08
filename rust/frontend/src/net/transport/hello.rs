@@ -152,12 +152,11 @@ pub(super) async fn read_hello<R: tokio::io::AsyncBufRead + Unpin, Wn: Redraw>(
     Ok(frame)
 }
 
-/// Record the accepted hello: session id, backoff floor, and the Connected event.
+/// Record the accepted hello: session id and the Connected event.
 pub(super) fn accept_hello<Wn: Redraw>(
     frame: Frame,
     host: &HostKey,
     session: &mut SessionState,
-    backoff_ms: &mut u64,
     resolved: ResolvedDial,
     emit: &impl Fn(IncomingEvt),
     window: &Wn,
@@ -178,12 +177,6 @@ pub(super) fn accept_hello<Wn: Redraw>(
         session.memory.session_id = Some(hello_res.session_id.clone());
     }
     crate::net::state::save(host, &session.memory).ok();
-    // Hello round-trip succeeded — reset backoff to the floor so any
-    // *future* disconnect in this session restarts the exponential
-    // climb from 200ms rather than picking up wherever the previous
-    // unrelated reconnect cycle left it (e.g. wifi flicker followed
-    // by months of stable session).
-    *backoff_ms = 200;
     // ADR 0046 decision 1: the daemon's declared host travels on this
     // event for display only (see `State::record_declared_host` and
     // `crate::ui::nav::hosts_tree::host_label`) — the DIAL label (`host`) stays this

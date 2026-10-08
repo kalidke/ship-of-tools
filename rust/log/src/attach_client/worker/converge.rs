@@ -85,23 +85,26 @@ pub(super) fn probe_supervisor_lane<E: Endpoint>(endpoint: &E, h: &str, lane: &m
     let answered = supervisor_status::<E>(&lane.conn, &mut lane.reader).map(|(_, _, phase)| phase);
     if answered.is_ok() {
         lane.redial_at = None;
-        lane.redial_backoff = SUPERVISOR_REDIAL_INITIAL;
-    } else if lane.redial_at.is_none_or(|t| now >= t) {
-        // The probe's own deadline shut this socket down (`cancel` is
-        // `shutdown(SHUT_RDWR)`), so the lane is dead from here on whatever
-        // the supervisor does next -- one stalled link would otherwise
-        // leave every later probe failing and the header lying until the
-        // next reattach. Re-dial now; the next answered probe restores
-        // "attached".
-        if let Ok((c, _)) = connect_supervisor_lane::<E>(endpoint, h) {
-            lane.conn = c;
-            lane.reader = FrameReader::new();
-            lane.redial_at = None;
-            lane.redial_backoff = SUPERVISOR_REDIAL_INITIAL;
-        } else {
-            lane.redial_at = Some(now + lane.redial_backoff);
-            lane.redial_backoff = (lane.redial_backoff * 2).min(SUPERVISOR_REDIAL_MAX);
-        }
+        return answered;
+    }
+    // The probe's own deadline shut this socket down (`cancel` is
+    // `shutdown(SHUT_RDWR)`), so the lane is dead from here on whatever
+    // the supervisor does next -- one stalled link would otherwise
+    // leave every later probe failing and the header lying until the
+    // next reattach. Re-dial once the wait its lifetime earned has passed
+    // (`Redial`: a lane that lasted `STABLE` re-dials at once); the next
+    // answered probe restores "attached".
+    let due = *lane.redial_at.get_or_insert_with(|| lane.dialed_at + lane.redial.after(now.saturating_duration_since(lane.dialed_at)));
+    if now >= due {
+        lane.dialed_at = now;
+        lane.redial_at = match connect_supervisor_lane::<E>(endpoint, h) {
+            Ok((c, _)) => {
+                lane.conn = c;
+                lane.reader = FrameReader::new();
+                None
+            }
+            Err(_) => Some(now + lane.redial.after(Duration::ZERO)),
+        };
     }
     answered
 }
@@ -129,8 +132,7 @@ pub(super) fn probe_supervisor_lane<E: Endpoint>(endpoint: &E, h: &str, lane: &m
 /// nothing to probe with, so this cannot distinguish "the capsule
 /// survives headless" from "nothing exists yet" — both retry under the
 /// same clock); an answered `Status` on a later round still clears the
-/// unresponsive count via `ReconnectState::attached` or
-/// `clear_unresponsive`, whichever path reaches it.
+/// unresponsive count via `clear_unresponsive`.
 pub(super) fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
     endpoint: &E,
     reconnect: &mut ReconnectState,

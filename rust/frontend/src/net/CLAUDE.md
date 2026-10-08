@@ -9,8 +9,8 @@ through the channel types below.
 - The connection set, from `--dial <host>=<endpoint>` and `--socket` only (`dial::parse_dial_arg`,
   `dial::resolve_connections`).
 - One task per host on the one-worker `sot-transport` runtime that `main.rs` builds (`transport::spawn`, then
-  `connect_and_run`, `run_protocol`, `run_session`, and `steady_loop` in transport/steady.rs): connect, hello, a 30 s ping, reconnect with a
-  doubling wait (`next_backoff_ms`: cap 5 s on a pipe, 30 s on ssh), and an ssh host's control child.
+  `connect_and_run`, `run_protocol`, `run_session`, and `steady_loop` in transport/steady.rs): connect, hello, a 30 s ping, reconnect on
+  platform's `Redial` (`redial_for`: from 200 ms, cap 5 s on a pipe, 30 s on ssh), and an ssh host's control child.
 - Request ids and reply matching (`PendingKind`); the typed edges `OutgoingReq` (UI to daemon) and `IncomingEvt`
   (daemon to UI).
 - The reconnect memory, `session-<host>.json` (`state::state_path`, `load`, `save`), and the throttle that writes it
@@ -27,7 +27,8 @@ through the channel types below.
 - No frame is half-read across a `select!`: reads go through one held future (`read_owned`).
 - Every `figure.get` ends in exactly one result (`send_figure_get` records its `PendingKind` before it writes).
 - A result-tree completion carries the canonical workspace id and result/attempt serials saved at issuance through the request-id pending entry; the existing fan-in envelope supplies its dial HostKey. These identities are local and change no daemon payload.
-- A down ssh host costs at most two logins a minute (`next_backoff_ms`).
+- A down ssh host costs at most two logins a minute, and a daemon that answers the hello and then drops costs no more:
+  the wait starts over only after a session that lasted `STABLE` (`redial_for`, `Redial`).
 - A burst of replies costs one reconnect-memory write per 2 s, and the last revision is flushed when the session ends
   (`StateSaveGate`, `SessionState`'s drop).
 - A pipe host is leased before its data connection (`connect_and_run` calls `Leases::before_data_connection`).
@@ -39,7 +40,7 @@ through the channel types below.
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `OutgoingReq`, `IncomingEvt`,
 `HostTable`, `lane_dial`, `ResolvedDial`, Dial::Relay, ResolvedDial::Relay. Uses: sot_protocol::topology::relay_host_for_path, `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`,
 `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `version_line`, `--version`,
-`SshRecipe::new`, `is_plain_host_name`, `LinkGate`, `Leases::before_data_connection`, `sot_state_dir`,
+`SshRecipe::new`, `is_plain_host_name`, `LinkGate`, `Redial`, `STABLE`, `Leases::before_data_connection`, `sot_state_dir`,
 `sot_config_dir`, `host_name`, `state_dir_hash`, `tree.root`, `tree.children`, `directory.list`, `nav.toggle_hidden`,
 `preview.get`, `preview.set_scale`, `image.crop`, `concept.read`, `concept.write`, `concept.list`, `file.read`,
 `file.write`, `file.delete`, `file.download`, `file.upload`, `dir.create`, `repl.eval`, `repl.run_file`,

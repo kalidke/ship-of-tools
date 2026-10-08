@@ -221,8 +221,9 @@ pub(super) fn run_steady_state<E: Endpoint + Sync>(
     let sup_lane = Mutex::new(SupLane {
         conn: supervisor_conn,
         reader: sup_reader,
+        dialed_at: Instant::now(),
         redial_at: None,
-        redial_backoff: SUPERVISOR_REDIAL_INITIAL,
+        redial: crate::host::redial::Redial::new(SUPERVISOR_REDIAL_INITIAL, SUPERVISOR_REDIAL_MAX),
     });
     // Scoped: a probe still in flight when this returns is joined, within
     // its own budgets, before the lane drops.

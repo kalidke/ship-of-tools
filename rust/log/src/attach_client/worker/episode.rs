@@ -294,7 +294,6 @@ pub(super) fn attach_voyage<E: Endpoint>(
 pub(super) fn announce_attach(
     checkpoint: Vec<u8>,
     attach_identity: (u32, u64),
-    reconnect: &mut ReconnectState,
     take: &mut TakeTransaction,
     discarded: &AtomicUsize,
     fe_down: &mut FeDownBaseline,
@@ -303,7 +302,6 @@ pub(super) fn announce_attach(
 ) {
     emit(WorkerEvent::Checkpoint(checkpoint));
     emit(WorkerEvent::Status("attached".to_string()));
-    reconnect.attached();
 
     // The attach notice names the leg from the attach connection's own
     // daemon-authenticated identity (ADR 0045: the daemon's OS-level

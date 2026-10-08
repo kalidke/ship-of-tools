@@ -6,11 +6,11 @@ use super::*;
 #[test]
 fn a_down_ssh_host_costs_the_hub_at_most_two_logins_a_minute() {
     let count = |dial: &Dial| {
-        let (mut t, mut b, mut n) = (0u64, 200u64, 0u32);
-        while t < 3_600_000 {
+        let mut redial = redial_for(dial);
+        let (mut t, mut n) = (std::time::Duration::ZERO, 0u32);
+        while t < std::time::Duration::from_secs(3_600) {
             n += 1;
-            t += b;
-            b = next_backoff_ms(b, dial);
+            t += redial.after(std::time::Duration::ZERO);
         }
         n
     };
@@ -28,8 +28,75 @@ fn a_down_ssh_host_costs_the_hub_at_most_two_logins_a_minute() {
     assert!(n >= 700, "a local socket keeps its 5 s cap, got {n} probes per hour");
 }
 
+/// A daemon that answers every hello and then closes is redialed on the doubling wait, not every 200 ms: an answered
+/// hello is not a working connection. The reconnect loop `spawn` runs dials a generated-relay endpoint this test serves
+/// (an in-process Unix socket, or a named pipe on Windows); each accepted connection is one dial. The waits are lower
+/// bounds, so a slow machine can only lower the count.
+#[test]
+fn a_daemon_that_answers_the_hello_and_drops_is_redialed_on_the_doubling_wait() {
+    use interprocess::local_socket::{tokio::prelude::*, GenericFilePath, ListenerOptions};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    const WINDOW: std::time::Duration = std::time::Duration::from_millis(2_500);
+    let _env = crate::net::state::test_env::set_test_env();
+    #[cfg(windows)]
+    let sock_path = std::path::PathBuf::from(format!(r"\\.\pipe\sot-redial-test-{}", std::process::id()));
+    #[cfg(not(windows))]
+    let sock_path = {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = std::path::PathBuf::from(format!("/tmp/sot-redial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).expect("private folder");
+        dir.join("s.sock")
+    };
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let dials = Arc::new(AtomicUsize::new(0));
+    let counted = rt.block_on(async {
+        let name = sock_path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new().name(name).create_tokio().expect("bind test endpoint");
+        let accepted = Arc::clone(&dials);
+        tokio::spawn(async move {
+            while let Ok(conn) = listener.accept().await {
+                accepted.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let (rx, mut tx) = conn.split();
+                    let mut rx = codec::buffered(rx);
+                    if let Ok((hello, _)) = codec::read_frame(&mut rx).await {
+                        let reply = Frame::res(hello.id, op::HELLO, hello_ok()).with_rev(0);
+                        let _ = codec::write_frame(&mut tx, &reply, None).await;
+                    }
+                    // Both halves drop here: the daemon closes right after its answer.
+                });
+            }
+        });
+        let (evt_tx, _evt_rx) = std::sync::mpsc::channel();
+        let (_out_tx, out_rx) = outgoing_channel();
+        let config = TransportConfig { dial: Dial::Relay(sock_path.clone()), token: None };
+        spawn(
+            &rt,
+            "redial-test".to_string(),
+            config,
+            evt_tx,
+            out_rx,
+            NoWindow,
+            Arc::new(tokio::sync::Notify::new()),
+            sot_protocol::topology::ssh_bridge::LinkGate::default(),
+            crate::lease::Leases::new(true, Vec::new()),
+        );
+        tokio::time::sleep(WINDOW).await;
+        dials.load(Ordering::SeqCst)
+    });
+    rt.shutdown_timeout(std::time::Duration::from_secs(2));
+    #[cfg(not(windows))]
+    let _ = std::fs::remove_dir_all(sock_path.parent().unwrap());
+    println!("redial: {counted} dials in {WINDOW:?} to a daemon that answers the hello and closes");
+    // The doubling wait from 200 ms dials at 0, 0.2, 0.6 and 1.4 s, then not before 3 s.
+    assert!(counted >= 1, "the loop never dialed the test endpoint");
+    assert!(counted <= 4, "{counted} dials in {WINDOW:?}: an answered hello restarted the wait");
+}
+
 // --- ADR 0045 decision 4: the link gate. ---
 
+#[derive(Clone, Copy)]
 struct NoWindow;
 impl Redraw for NoWindow {
     fn request_redraw(&self) {}
@@ -71,7 +138,6 @@ async fn run_against_fake_daemon(
     let session = tokio::spawn(async move {
         let (rx, tx) = tokio::io::split(near);
         let (_out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut backoff_ms = 200;
         let result = run_protocol(
             host.clone(),
             codec::buffered(rx),
@@ -80,7 +146,6 @@ async fn run_against_fake_daemon(
             &evt_tx,
             &mut out_rx,
             &NoWindow,
-            &mut backoff_ms,
             ResolvedDial::Local,
             Some(&gate),
         )
