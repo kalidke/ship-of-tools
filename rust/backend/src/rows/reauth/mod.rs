@@ -172,25 +172,102 @@ fn discovery_name(account: &str) -> &str {
     }
 }
 
-/// Whether `account` can actually open transcript `resume`: one
-/// `projects/<project>/<resume>.jsonl` under its own config dir
-/// ([`crate::agents::accounts::claude_config_dir`]). Globbed over `projects`'
-/// children rather than rebuilding claude's own cwd-to-directory mangling
-/// — the id is unique across that tree, and a rule this daemon copied
-/// would be a rule it could get wrong.
-fn resume_reachable(home: &Path, account: &str, resume: &str) -> bool {
-    let transcript = format!("{resume}.jsonl");
-    let projects = crate::agents::accounts::claude_config_dir(home, account).join("projects");
-    let Ok(entries) = std::fs::read_dir(projects) else {
-        return false;
-    };
-    entries.flatten().any(|e| e.path().join(&transcript).is_file())
+/// How far into a transcript its start directory is looked for. The first
+/// line that records a `cwd` ended within 104 KB of the file's start in every
+/// one of 11,628 transcripts Claude Code 2.1.278 to 2.1.288 wrote; a
+/// transcript that records none in its first MiB is not provably any row's.
+const HEAD_SCAN_BYTES: u64 = 1 << 20;
+
+/// The directory transcript `path` was started in: the `cwd` of its first
+/// line that records one. Only the first: later lines record wherever the
+/// session's shell has `cd`'d since, and a `--resume` run in another
+/// directory appends lines that record THAT directory to this same file.
+fn started_in(path: &Path) -> Option<PathBuf> {
+    use std::io::{BufRead, Read};
+    #[derive(serde::Deserialize)]
+    struct Line {
+        cwd: Option<String>,
+    }
+    let file = std::fs::File::open(path).ok()?;
+    std::io::BufReader::new(file.take(HEAD_SCAN_BYTES))
+        .split(b'\n')
+        .map_while(std::result::Result::ok)
+        .find_map(|line| serde_json::from_slice::<Line>(&line).ok()?.cwd)
+        .map(PathBuf::from)
 }
 
-/// Every refusal this op owns, decided BEFORE anything is touched, pure
-/// over the row's own facts plus the home the accounts live in — the same
-/// reason [`crate::agents::accounts::account_env`] is pure: the check and the real
-/// spawn share ONE rule instead of a copy each could drift from.
+/// The refusal, if any, for resuming transcript `resume` as `account` in the
+/// row rooted at `root`. In order: `resume` must be a plain id, so
+/// `projects/*/<id>.jsonl` names one transcript under the account's own
+/// `projects` and nothing outside it; the account must be able to open that
+/// transcript, found by globbing `projects`' children rather than by
+/// rebuilding claude's own cwd-to-directory mangling (a rule this daemon
+/// copied would be a rule it could get wrong); and the transcript must have
+/// been started in THIS row's root. The last is the row's claim on its
+/// conversation: Claude Code's `--resume <id>` opens a transcript from any
+/// project folder and appends to it, so an id from another row would restart
+/// this row on that row's conversation, two legs writing one file.
+/// Directories compare by kernel identity, so spelling, case, separators and
+/// symlinks do not matter.
+fn transcript_refusal(
+    home: &Path,
+    account: &str,
+    resume: &str,
+    root: &Path,
+) -> Option<(&'static str, String)> {
+    let plain = resume.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if !plain {
+        return Some((
+            "resume_unreachable",
+            format!("{resume:?} is not a transcript id: an id is ASCII letters, digits and '-'"),
+        ));
+    }
+    let name = format!("{resume}.jsonl");
+    let projects = crate::agents::accounts::claude_config_dir(home, account).join("projects");
+    let transcript = std::fs::read_dir(projects).ok().and_then(|entries| {
+        entries
+            .flatten()
+            .map(|e| e.path().join(&name))
+            .find(|p| p.is_file())
+    });
+    // The refusal that protects the kill, and the reason it lives HERE:
+    // `claude --resume <id>` on an id the target cannot see exits at once,
+    // the supervisor flaps the row to `Terminal`, and the conversation is
+    // reachable again only by reauthing back — so the only actor that can
+    // read both accounts' folders proves reachability BEFORE the accept,
+    // rather than asking the leg to check its own grave.
+    let Some(transcript) = transcript else {
+        return Some((
+            "resume_unreachable",
+            format!(
+                "account {:?} cannot see transcript {resume:?}: no projects/*/{resume}.jsonl under its config dir — either that is not this conversation's id, or that account folder has its own REAL `projects` instead of the shared symlink, in which case the resume would land in a fresh, empty conversation",
+                discovery_name(account)
+            ),
+        ));
+    };
+    let identity = |dir: &Path| sot_log::host::dir_identity(dir).ok();
+    let started = started_in(&transcript);
+    let root_identity = identity(root);
+    if root_identity.is_some() && started.as_deref().and_then(identity) == root_identity {
+        return None;
+    }
+    let records = started.map_or_else(
+        || format!("no working directory in its first {HEAD_SCAN_BYTES} bytes"),
+        |dir| format!("{dir:?}"),
+    );
+    Some((
+        "resume_not_this_row",
+        format!(
+            "transcript {resume:?} was not started in this row's root {root:?} (it records {records}): a reauth resumes only the row's own conversation, so run `sot-fe reauth <account>` inside the row being moved"
+        ),
+    ))
+}
+
+/// Every refusal this op owns, decided BEFORE anything is touched, over the
+/// row's own facts (its runtime, agent, account and root) plus the home the
+/// accounts live in — the same reason [`crate::agents::accounts::account_env`]
+/// is pure: the check and the real spawn share ONE rule instead of a copy each
+/// could drift from.
 ///
 /// `resume` is required with no default: `--continue` resolves "the most
 /// recent conversation" from a per-account `.claude.json` that is never
@@ -203,6 +280,7 @@ pub(crate) fn check(
     current_account: &str,
     account: &str,
     resume: &str,
+    root: &Path,
     home: &Path,
     accounts: &[DiscoveredAccount],
 ) -> Result<(), Refusal> {
@@ -263,20 +341,10 @@ pub(crate) fn check(
             "resume is required: name the transcript id to resume (the row's own CLAUDE_CODE_SESSION_ID) — there is no \"most recent conversation\" to fall back to on another login".to_string(),
         );
     }
-    // The refusal that protects the kill, and the reason it lives HERE:
-    // `claude --resume <id>` on an id the target cannot see exits at once,
-    // the supervisor flaps the row to `Terminal`, and the conversation is
-    // reachable again only by reauthing back — so the only actor that can
-    // read both accounts' folders proves reachability BEFORE the accept,
-    // rather than asking the leg to check its own grave.
-    if !resume_reachable(home, want, resume) {
-        return refuse(
-            "resume_unreachable",
-            format!(
-                "account {:?} cannot see transcript {resume:?}: no projects/*/{resume}.jsonl under its config dir — either that is not this conversation's id, or that account folder has its own REAL `projects` instead of the shared symlink, in which case the resume would land in a fresh, empty conversation",
-                discovery_name(want)
-            ),
-        );
+    // The refusals that guard the replacement's `--resume`: an id the target
+    // account cannot open, and a conversation that is not this row's own.
+    if let Some((code, error)) = transcript_refusal(home, want, resume, root) {
+        return refuse(code, error);
     }
     Ok(())
 }
@@ -344,6 +412,7 @@ pub async fn handle_workspace_reauth(
         &ws.account(),
         &req.account,
         &req.resume,
+        &ws.project_root,
         &home,
         &accounts,
     ) {
@@ -481,3 +550,5 @@ mod support_tests;
 mod check_tests;
 #[cfg(test)]
 mod accept_tests;
+#[cfg(test)]
+mod own_transcript_tests;

@@ -38,7 +38,8 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot_state_dir`, `sot_config_dir`,
 `host_name`, `state_dir_hash`, `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`,
 `owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`,
-`durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `resource_dir`, `rust/backend/src/paths.rs`,
+`durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `dir_identity`,
+`rust/log/src/host/pinned_dir.rs`, `resource_dir`, `rust/backend/src/paths.rs`,
 `sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`. Uses: none.
 
 ## Folders

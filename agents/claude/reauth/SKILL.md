@@ -38,11 +38,15 @@ Each failure below is a refusal with the reason, not a workaround.
 
 Everything else belongs to the daemon: whether the account is discovered,
 whether it is logged in, whether the name is valid, whether this row's agent
-is switchable, and **whether the target account can actually open this
+is switchable, **whether the target account can actually open this
 transcript** (it reads both folders, so it proves that itself — a miss means
 that account folder has its own REAL `projects` instead of the shared
-symlink, or that the id is not this conversation's). It refuses with the
-exact fix command and lists the accounts it can see. Print that verbatim.
+symlink, or that the id is not this conversation's), and **whether that
+transcript was started in this row's root** (a conversation belongs to the
+row it began in: another row's id is refused, `resume_not_this_row`, and so
+is a conversation this row took over from another directory). It refuses
+with the exact fix command and lists the accounts it can see. Print that
+verbatim.
 **Never create the account folder to make the refusal go away** — an empty
 folder is a valid account with no login, and the switch would strand the
 conversation behind a login prompt.

@@ -408,6 +408,25 @@ tmux; a capsule-capable install needs no tmux.
    Surface: one op, one `sot-fe reauth` verb, one skill; no new shared entry, no new
    persisted field.
 
+   **Update 2026-10-08 (0.6.6): the resumed transcript must be the row's
+   own.** Claude Code's `--resume <id>` opens a transcript from any project
+   folder and appends to it, so an id from another row restarted this row on
+   that row's conversation, two legs writing one file: an older
+   `sot-fe reauth <workspace> <account>`, run in one row against another,
+   sent its own session's id. `check` now also refuses a `resume` that is not
+   a plain id (ASCII letters, digits and `-`; `resume_unreachable`) and one
+   whose transcript was not started in the row's root (`resume_not_this_row`):
+   the first `cwd` the transcript records must be the same directory as
+   `project_root`, compared by kernel identity (`sot_log::host::dir_identity`),
+   so spelling, case, separators and symlinks do not matter. A conversation
+   belongs to the row it was started in, and `workspace.create` gives a
+   directory to one row, so no client can resume one row's conversation in
+   another. The cost, stated: a row whose conversation was started in another
+   directory (a project moved by hand with its transcripts) cannot be
+   reauthed. `sot-fe reauth` still names only the row it runs in: a row's
+   live conversation id is known only inside the row, and the daemon cannot
+   tell it from the root's other transcripts.
+
 ## Consequences
 
 - **Wire, additive.** `HelloReq {host, role, instance, name}` alongside

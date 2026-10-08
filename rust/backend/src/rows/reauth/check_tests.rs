@@ -13,7 +13,7 @@ fn refusal_of(
     home: &Path,
 ) -> Refusal {
     let accounts = crate::agents::accounts::discover_accounts(home);
-    check(runtime, agent_kind, current_account, account, resume, home, &accounts)
+    check(runtime, agent_kind, current_account, account, resume, &project_root(home, "reauth-row"), home, &accounts)
         .err()
         .expect("this case must be refused")
 }
@@ -112,7 +112,7 @@ fn a_logged_in_account_on_a_claude_capsule_row_is_accepted() {
     seed_transcript(&claude_config_dir(home.path(), "team"), "sid", &[&root]);
     seed_transcript(&claude_config_dir(home.path(), ""), "sid", &[&root]);
     let accounts = crate::agents::accounts::discover_accounts(home.path());
-    assert!(check("capsule", "claude", "", "team", "sid", home.path(), &accounts).is_ok());
+    assert!(check("capsule", "claude", "", "team", "sid", &root, home.path(), &accounts).is_ok());
     // …and back to the default login, which is an account like any other.
-    assert!(check("capsule", "claude", "team", "default", "sid", home.path(), &accounts).is_ok());
+    assert!(check("capsule", "claude", "team", "default", "sid", &root, home.path(), &accounts).is_ok());
 }

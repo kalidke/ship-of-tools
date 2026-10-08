@@ -84,6 +84,9 @@ pub struct WorkspaceCreateRes {
 /// per-account, never-shared `.claude.json`), so an absent one is a
 /// refusal, not a fallback. The caller reads the id out of its own
 /// environment (`CLAUDE_CODE_SESSION_ID`); nothing persists it.
+/// The daemon refuses an id whose transcript was not started in this row's
+/// root (`resume_not_this_row`), so no client can resume one row's
+/// conversation in another.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceReauthReq {
     pub workspace_id: String,
