@@ -237,7 +237,16 @@ fn leased(delay: Duration) -> Result<(tokio::runtime::Runtime, std::sync::Arc<cr
 
 fn child(role: &str) -> Result<()> {
     println!("native: body entered");
+    // The fixture removes every SOT_ variable; the test's own two control values are read first and put back.
+    let controls: Vec<_> = [CAPTURE, "SOT_TEST_T1_BARRIER"].iter().map(|n| (*n, std::env::var_os(n))).collect();
     let _home = FixtureHome::enter()?;
+    for (name, value) in controls {
+        if let Some(value) = value {
+            std::env::set_var(name, value);
+        }
+    }
+    // The backstop thread logs its event to the sink the arming thread logs to; the parent reads it from stdout.
+    let _log = sot_log::test_log::install(tracing_subscriber::fmt().with_ansi(false).with_writer(std::io::stdout).finish());
     let event_loop = EventLoop::new().map_err(|e| anyhow::anyhow!("not runnable here: {e}"))?;
     let capture = role == "capture";
     event_loop.set_control_flow(if capture { ControlFlow::Poll } else { ControlFlow::Wait });
