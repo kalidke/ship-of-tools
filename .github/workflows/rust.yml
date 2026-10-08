@@ -110,7 +110,7 @@ jobs:
           root.mkdir()
           environment = {k: v for k, v in os.environ.items() if not k.startswith('SOT_')}
           runner = root / 'runner.py'
-          runner.write_text('import os, sys\nos.chdir(sys.argv[1])\nos.execv(sys.argv[2], sys.argv[2:])\n')
+          runner.write_text('import os, subprocess, sys\nos.chdir(sys.argv[1])\nsys.exit(subprocess.run(sys.argv[2:]).returncode)\n')
           environment.setdefault('CARGO_HOME', str(pathlib.Path.home() / '.cargo'))
           environment.setdefault('RUSTUP_HOME', str(pathlib.Path.home() / '.rustup'))
           home = root / 'home'

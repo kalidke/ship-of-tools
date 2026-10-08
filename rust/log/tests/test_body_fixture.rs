@@ -68,7 +68,13 @@ fn ignored_panic() {
 fn t11_rust_appends_200() {
     if let Some(root) = witness("appender") {
         std::fs::write(root.join("rust.ready"), "ready").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while !root.join("go").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "go never appeared in {}",
+                root.display()
+            );
             std::thread::yield_now();
         }
         assert!(

@@ -177,7 +177,7 @@ def adapter(p):
         + ' if skip: skip=False; continue\n'
         + ' if arg in ("-p","--test","--manifest-path"): skip=True; continue\n'
         + ' if not arg.startswith("-"): names.append(arg)\n'
-        + 'os.execv(fixture,[fixture]+names+after)\n')
+        + 'import subprocess\nsys.exit(subprocess.run([fixture]+names+after).returncode)\n')
     a.chmod(0o755); return a
 
 def checker_controls():
