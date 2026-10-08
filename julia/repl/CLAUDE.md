@@ -19,6 +19,7 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md (not yet writ
 `serve` for an op; `stream_eval_frames` for output; `wglshow` for browser artifacts.
 
 ## Rules
+- The Rust spawn recipe activates the user directory, including a bare workspace, and places this shim behind it on `JULIA_LOAD_PATH`; user package commands do not edit the installed shim project.
 - `repl.ready` is the first envelope, and every envelope is written under `OUT_LOCK` (`serve`, `write_envelope`).
 - One eval at a time, and a second gets error then done (`handle_eval`).
 - Text frames precede value or error, and done is last (`stream_eval_frames`).

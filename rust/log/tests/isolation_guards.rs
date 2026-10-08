@@ -52,28 +52,6 @@ fn no_browser_opener_outside_browser_open() {
     );
 }
 
-/// ADR 0049, User isolation: no page secret is put on a command line. Pluto's and `wglshow`'s secrets are minted
-/// inside their Julia children, so no argument that spawns one may name a secret, token, nonce or address, and the
-/// opener (the one place an address is passed) is `browser_open.rs`'s, which hands the browser only its own redirect.
-#[test]
-fn no_secret_is_passed_as_a_command_line_argument() {
-    let breaches: Vec<String> = production_source()
-        .into_iter()
-        .filter(|(rel, _, line)| {
-            let lower = line.to_ascii_lowercase();
-            rel != OPENER_HOME
-                && (lower.contains(".arg(") || lower.contains(".args("))
-                && ["secret", "token", "nonce", "url"].iter().any(|word| lower.contains(word))
-        })
-        .map(|(rel, n, line)| format!("{rel}:{n}: {}", line.trim()))
-        .collect();
-    assert!(
-        breaches.is_empty(),
-        "a command-line argument that names a secret, token, nonce or address (ADR 0049, User isolation):\n{}",
-        breaches.join("\n")
-    );
-}
-
 /// ADR 0049, User isolation (MAC-ID): macOS reads a peer's account only from the credential the kernel cached for the
 /// connection. Pin the production `LOCAL_PEERTOKEN`/`TOK_EUID` spellings and every whitespace-normalized `.val`
 /// access in the private `AuditToken` module to pid/pidversion, including the index constants. This is a source

@@ -27,56 +27,10 @@ struct WireEnvelope {
     payload: Value,
 }
 
-pub(super) fn spawn_supervisor(
-    frame_tx: broadcast::Sender<ReplFrameMsg>,
-    workspace_id: Option<String>,
-    lifecycle: SharedLifecycle,
-    sig: &'static crate::lifecycle::child_signal::Signal,
-) -> Result<mpsc::Sender<Submission>> {
-    let repl_project = Repl::repl_project();
-    let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
-    if !repl_project.exists() {
-        return Err(anyhow!(
-            "repl project missing at {}",
-            repl_project.display()
-        ));
-    }
-    let julia_src = "using ShipToolsRepl; ShipToolsRepl.serve(stdin, stdout)";
-
-    let mut cmd = Command::new(&julia_bin);
-    cmd.arg(format!("--project={}", repl_project.display()))
-        .arg("-e")
-        .arg(julia_src)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut contained = sig
-        .spawn(&mut cmd)
-        .with_context(|| format!("spawn {julia_bin} --project={}", repl_project.display()))?;
-
-    let stdin = contained.stdin.take().context("repl child stdin missing")?;
-    let stdout = contained.stdout.take().context("repl child stdout missing")?;
-    let stderr = contained.stderr.take().context("repl child stderr missing")?;
-
-    let (submit_tx, submit_rx) = mpsc::channel::<Submission>(16);
-
-    let stderr_tail = spawn_stderr_tail(stderr);
-
-    // Child exists: open a new spawn generation (state -> Starting, announce).
-    // Deliberately after `.spawn()` succeeds — a failed spawn leaves the prior
-    // state (NotStarted/Dead) intact, which is the truthful reading.
-    let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
-
-    tokio::spawn(supervisor_task(
-        contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen, sig,
-    ));
-    Ok(submit_tx)
-}
-
-/// Like `spawn_supervisor` but activates `user_project` for user code while
-/// keeping `ShipToolsRepl` reachable for the dispatch loop. Used by
-/// `Repl::restart_with_project` to bounce the persistent REPL into the
-/// project closest to a `.jl` file the user is about to run.
+/// The one REPL spawn recipe: activates `user_project` for user code (even a
+/// bare workspace with no `Project.toml`) while keeping `ShipToolsRepl`
+/// reachable for the dispatch loop. Initial start, death respawn and
+/// `Repl::restart_with_project` all spawn through it.
 ///
 /// We can't pass `--project=<user_project>` *and* expect `using ShipToolsRepl`
 /// to resolve — the REPL shim isn't in the user's manifest. The standard
@@ -86,7 +40,7 @@ pub(super) fn spawn_supervisor(
 /// `ShipToolsRepl` lives) as a fallback for the shim's own deps, then the
 /// default load path (stdlib, etc.) via the trailing colon so `using` of
 /// standard packages still works inside the user code.
-pub(super) fn spawn_supervisor_with_project(
+pub(super) fn spawn_supervisor(
     user_project: &Path,
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
@@ -528,7 +482,7 @@ mod interrupt_guard_tests {
     #[tokio::test]
     async fn request_if_running_never_spawns() {
         let (tx, _rx) = broadcast::channel(8);
-        let repl = Repl::new(tx, None, None, crate::lifecycle::child_signal::process());
+        let repl = Repl::new(tx, None, std::env::temp_dir(), crate::lifecycle::child_signal::process());
         let res = repl
             .request_if_running("repl.interrupt", serde_json::json!({}))
             .await

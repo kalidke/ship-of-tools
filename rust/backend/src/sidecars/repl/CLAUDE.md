@@ -11,6 +11,7 @@ rust/backend/src/sidecars/CLAUDE.md.
 - `ops.rs`: repl.eval, repl.run_file, repl.interrupt
 - `mod.rs`: the handle (`Repl`): submit, execute, interrupt and restart, the frame bus message and `ExecAccum`.
 - `lifecycle.rs`: the child's state (`ReplLifecycle`), spawn generations and the `lifecycle` frames.
+- `project_tests.rs`: real Julia bare/project workspace, package-write destination and all-entry spawn controls in isolated resource/depot fixtures. Real owned-child argv/environment and WGL page-secret exclusion controls, with a deliberate-leak sensitivity probe; no source-text assertions.
 - `supervisor.rs`: spawning the child and `supervisor_task`, its life: wire, routing and close-out on death.
 
 ## Start here
@@ -27,7 +28,5 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
 - `Repl` keeps its constructor's `Signal` and passes it to each supervisor's spawn and shutdown wait.
 - The child's exit ends the supervisor, not its pipes: `supervisor_task`'s `child.wait()` branch is polled last.
 - On death each streamed eval in flight gets a synthetic `error` and `done` frame.
-- The REPL project is resolved at every spawn (`Repl::repl_project`), never cached.
-- With a workspace project, user code runs in it with the shim on `JULIA_LOAD_PATH` and the project as cwd
-  (`spawn_supervisor_with_project`).
+- The shim project is resolved at every spawn (`Repl::repl_project`), never cached. `spawn_supervisor` is the only REPL spawn recipe: user code's active project and cwd are the selected user directory, even before it has a `Project.toml`; the shim is a fallback on `JULIA_LOAD_PATH`, never the bare-workspace active project.
 - `repl.execute` output is collected loss-free per eval, text capped at `EXEC_TEXT_CAP` (`ExecAccum`).

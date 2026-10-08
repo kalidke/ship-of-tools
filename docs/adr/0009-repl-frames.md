@@ -41,6 +41,10 @@ ways. What is actually shipped:
 
 The Decision section below is kept as-written for the historical record.
 
+## Update (0.6.6): one user-project spawn
+
+Initial REPL start, death respawn and explicit project restart share one Rust spawn recipe. The selected user directory is the active project and cwd even when it has no Project.toml; the freshly resolved ShipToolsRepl project is a fallback load-path entry. User package operations belong to the user project rather than the installed shim. This does not change the stdio frame format.
+
 ## Context
 
 The REPL produces multi-modal output: stdout text, stderr text, return values (which may have multiple MIME representations), images (CairoMakie figures, PNGs), and structured errors with stacktraces. The frontend needs ordered, typed frames to render each correctly.

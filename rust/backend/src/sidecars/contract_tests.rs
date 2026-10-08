@@ -105,7 +105,9 @@ async fn repl_uses_private_signal() {
     owned_julia_env(&root);
     let sig = private_signal();
     let (frames, _keep) = broadcast::channel(64);
-    let repl = Repl::new(frames, Some("ws".into()), None, sig);
+    let workspace = root.join("workspace");
+    std::fs::create_dir(&workspace).expect("create the workspace");
+    let repl = Repl::new(frames, Some("ws".into()), workspace, sig);
 
     let (reply, collector) = repl
         .execute(

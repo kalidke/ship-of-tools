@@ -25,9 +25,12 @@ pub(crate) mod lifecycle;
 pub(crate) mod ops;
 mod supervisor;
 
+#[cfg(test)]
+mod project_tests;
+
 use lifecycle::ReplLifecycle;
 use lifecycle::{LifecycleCell, SharedLifecycle};
-use supervisor::{spawn_supervisor, spawn_supervisor_with_project};
+use supervisor::spawn_supervisor;
 
 /// One streamed REPL frame relayed off the supervisor onto the per-backend
 /// broadcast bus. The supervisor reads each `repl.frame` evt line off the
@@ -91,13 +94,12 @@ pub struct Repl {
 }
 
 struct ReplInner {
-    /// The workspace's own project (its `Project.toml` dir), activated as the
-    /// DEFAULT env for the persistent REPL so user code runs in the session
-    /// package's environment — not the `ShipToolsRepl` shim project. `None`
-    /// when the workspace has no `Project.toml` (fall back to the shim-only
-    /// spawn). `ShipToolsRepl` stays reachable
-    /// via `JULIA_LOAD_PATH` (see `spawn_supervisor_with_project`).
-    user_project: Option<PathBuf>,
+    /// The workspace directory, activated as the DEFAULT env for the
+    /// persistent REPL so user code runs in the session package's
+    /// environment — never the `ShipToolsRepl` shim project, even before the
+    /// directory holds a `Project.toml`. `ShipToolsRepl` stays reachable via
+    /// `JULIA_LOAD_PATH` (see `spawn_supervisor`).
+    user_project: PathBuf,
     /// The shutdown signal every supervisor of this REPL is started under and watches; supplied by the owner of
     /// this handle, never chosen inside supervision.
     sig: &'static crate::lifecycle::child_signal::Signal,
@@ -135,7 +137,7 @@ impl Repl {
     pub fn new(
         frame_tx: broadcast::Sender<ReplFrameMsg>,
         workspace_id: Option<String>,
-        user_project: Option<PathBuf>,
+        user_project: PathBuf,
         sig: &'static crate::lifecycle::child_signal::Signal,
     ) -> Self {
         Self {
@@ -270,27 +272,15 @@ impl Repl {
                 return Ok(tx.clone());
             }
         }
-        // Default the persistent REPL into the WORKSPACE's own project so user
+        // Default the persistent REPL into the WORKSPACE directory so user
         // code runs in the session package's env (not the ShipToolsRepl shim).
-        // `spawn_supervisor_with_project` sets `--project=<workspace>` and keeps
-        // the shim reachable via `JULIA_LOAD_PATH`. Only when the workspace has
-        // no `Project.toml` (user_project == None) do we fall back to the
-        // shim-only spawn.
-        let tx = match self.inner.user_project.as_deref() {
-            Some(user_project) => spawn_supervisor_with_project(
-                user_project,
-                self.inner.frame_tx.clone(),
-                self.inner.workspace_id.clone(),
-                self.inner.lifecycle.clone(),
-                self.inner.sig,
-            )?,
-            None => spawn_supervisor(
-                self.inner.frame_tx.clone(),
-                self.inner.workspace_id.clone(),
-                self.inner.lifecycle.clone(),
-                self.inner.sig,
-            )?,
-        };
+        let tx = spawn_supervisor(
+            &self.inner.user_project,
+            self.inner.frame_tx.clone(),
+            self.inner.workspace_id.clone(),
+            self.inner.lifecycle.clone(),
+            self.inner.sig,
+        )?;
         *guard = Some(tx.clone());
         Ok(tx)
     }
@@ -316,7 +306,7 @@ impl Repl {
         // asynchronously and the next request will go to the new child via
         // the freshly-installed sender below.
         guard.take();
-        let tx = spawn_supervisor_with_project(
+        let tx = spawn_supervisor(
             user_project,
             self.inner.frame_tx.clone(),
             self.inner.workspace_id.clone(),
@@ -362,7 +352,7 @@ mod respawn_after_death_tests {
         sot_log::test_exec::write_executable(
             path,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{body}\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$* LP=$JULIA_LOAD_PATH\" >> '{}'\n{body}\n",
                 log.display()
             ),
         );
@@ -448,7 +438,7 @@ mod respawn_after_death_tests {
         let _pin = pin_env(&julia, &root);
 
         let (frame_tx, _frame_rx) = broadcast::channel(64);
-        let repl = Repl::new(frame_tx, Some("ws".to_string()), None, crate::lifecycle::child_signal::process());
+        let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), crate::lifecycle::child_signal::process());
 
         for attempt in 1..=3u64 {
             settle(&repl, attempt)
@@ -482,7 +472,7 @@ mod respawn_after_death_tests {
         let _pin = pin_env(&julia, &root);
 
         let (frame_tx, _frame_rx) = broadcast::channel(64);
-        let repl = Repl::new(frame_tx, Some("ws".to_string()), None, crate::lifecycle::child_signal::process());
+        let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), crate::lifecycle::child_signal::process());
 
         settle(&repl, 1)
             .await
@@ -502,7 +492,7 @@ mod respawn_after_death_tests {
         let _pin = pin_env(&missing, &root);
 
         let (frame_tx, _frame_rx) = broadcast::channel(64);
-        let repl = Repl::new(frame_tx, Some("ws".to_string()), None, crate::lifecycle::child_signal::process());
+        let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), crate::lifecycle::child_signal::process());
 
         for attempt in 1..=2u64 {
             let submitted = tokio::time::timeout(
@@ -541,7 +531,7 @@ mod respawn_after_death_tests {
         let _pin = pin_env(&julia, &broken);
 
         let (frame_tx, _frame_rx) = broadcast::channel(64);
-        let repl = Repl::new(frame_tx, Some("ws".to_string()), None, crate::lifecycle::child_signal::process());
+        let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), crate::lifecycle::child_signal::process());
 
         // First attempt: the root has no `julia/repl`, so resolution falls
         // through to this checkout's own copy — NOT the fixed root.
@@ -583,7 +573,7 @@ mod respawn_after_death_tests {
         let _pin = pin_env(&julia, &root);
 
         let (frame_tx, _frame_rx) = broadcast::channel(64);
-        let repl = Repl::new(frame_tx, Some("ws".to_string()), None, crate::lifecycle::child_signal::process());
+        let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), crate::lifecycle::child_signal::process());
 
         let (reply_rx, _collector) = repl
             .execute("repl.eval", serde_json::json!({ "eval_id": 1 }))

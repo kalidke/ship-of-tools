@@ -7,7 +7,7 @@ over stdin/stdout (see `serve`).
 
 **Invariant: `[deps]` is stdlib only.** The daemon launches this package
 STACKED under the user's own project via `JULIA_LOAD_PATH=@:<repl_project>:`
-(`rust/backend/src/sidecars/repl/supervisor.rs`, `spawn_supervisor_with_project`; ADR 0032 §2) so
+(`rust/backend/src/sidecars/repl/supervisor.rs`, `spawn_supervisor`; ADR 0032 §2) so
 `using ShipToolsRepl` resolves even though `--project` points at the user's
 env. Julia resolves a package's own dependencies by walking that same load
 path, so a registered dependency of THIS package can be shadowed by whatever
