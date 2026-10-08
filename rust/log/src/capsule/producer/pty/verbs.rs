@@ -108,18 +108,12 @@ impl Producer for PtyProducer {
         }
         let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
         let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
-        // `openpty` hands back plain (non-CLOEXEC) descriptors: mark both
-        // BEFORE the fork, so no other spawn from this process --
-        // concurrent or later -- can inherit the pair. Our own child is
-        // unaffected: `pre_exec` below `dup2`s the slave onto 0..=2 (which
-        // clears the flag on those) and `close_range` severs its
-        // inherited copies anyway. The parent keeps the slave open for
-        // the whole run (decision 12).
+        // Both PTY ends are already owned. Check close-on-exec before publication; either flag-call failure closes both
+        // ends. The openpty-to-flagging inheritance window remains on Linux and macOS. Our child's pre_exec installs
+        // slave stdio and closes its inherited PTY copies; the parent keeps its slave for the run.
         for (end, fd) in [("master", master.as_raw_fd()), ("slave", slave.as_raw_fd())] {
-            let flags = flag_fcntl(end, fd, libc::F_GETFD, 0);
-            if flags >= 0 {
-                flag_fcntl(end, fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
-            }
+            let flags = flag_fcntl(end, fd, libc::F_GETFD, 0).map_err(Error::Io)?;
+            flag_fcntl(end, fd, libc::F_SETFD, flags | libc::FD_CLOEXEC).map_err(Error::Io)?;
         }
 
         let mut cmd = Command::new(&argv[0]);

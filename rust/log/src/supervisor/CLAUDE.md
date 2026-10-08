@@ -28,3 +28,4 @@ Part of the capsule; charter: rust/log/CLAUDE.md.
 - A leg dies with its supervisor (`LegLease`).
 - On Unix SIGCHLD is reset first in `supervise_inner` and each leg is reaped once (`retire_leg`, `reap_retired_legs`).
 - One write per diagnostic line (`note`).
+- `LegLease::create` is atomic on Linux through `pipe2(O_CLOEXEC)`; its checked macOS fallback retains a creation-to-flagging window. Lane binding starts threads before lease creation.

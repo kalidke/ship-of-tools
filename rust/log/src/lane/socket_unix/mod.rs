@@ -54,18 +54,9 @@
 //! # The accept loop wakes via `poll(2)` over a self-pipe, never a
 //! connect-to-self
 //!
-//! [`SocketServer::disconnect_listener`] must wake a blocked acceptor
-//! without ever dialing the socket itself (a connect-to-self is a real,
-//! observable client from the outside — exactly what a rival-bind test
-//! must never see). The acceptor instead blocks in `libc::poll` over TWO
-//! fds: the listener, and the read end of a `libc::pipe(2)` (CLOEXEC and
-//! NONBLOCK applied via `fcntl` — portable across Linux and macOS/BSD,
-//! unlike Linux's own combined-flag `pipe2(2)`) pair
-//! this server owns. `disconnect_listener` writes one byte to the write
-//! end; the poll wakes, the accept loop's own `accept_stopping` check (set
-//! by the SAME call, under the same store-then-notify ordering `pipe_win`
-//! uses for its own `AcceptState::accept_stopping`) fires, and the loop
-//! returns without ever accepting the wake byte as a client.
+//! disconnect_listener wakes the acceptor through its nonblocking self-pipe, never by dialing the listener. Linux creates
+//! both wake ends with pipe2(O_CLOEXEC | O_NONBLOCK); macOS immediately owns and checks both ends with fcntl before
+//! publication. The macOS creation-to-flagging inheritance window remains.
 //!
 //! # Two distinct "stop" signals — the same split `pipe_win` makes
 //!

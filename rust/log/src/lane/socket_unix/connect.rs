@@ -1,7 +1,9 @@
 //! The bounded, non-blocking connect(2) attempt over a fresh socket.
 
 use super::*;
-use super::listener::{set_cloexec, set_nonblocking};
+#[cfg(not(target_os = "linux"))]
+use super::listener::set_cloexec;
+use super::listener::set_nonblocking;
 
 // ---------------------------------------------------------------------
 // Connect (ADR 0043 decision 4, property 18): a bounded, non-blocking
@@ -70,7 +72,11 @@ fn set_blocking(fd: RawFd) -> io::Result<()> {
 /// deadline must not be able to overrun it by another whole
 /// `CONNECT_BOUND`.
 pub(super) fn one_connect_attempt(addr_bytes: &[u8], deadline: Instant) -> Result<UnixStream, ConnectAttempt> {
-    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    #[cfg(target_os = "linux")]
+    let socket_type = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+    #[cfg(not(target_os = "linux"))]
+    let socket_type = libc::SOCK_STREAM;
+    let raw = unsafe { libc::socket(libc::AF_UNIX, socket_type, 0) };
     if raw < 0 {
         return Err(ConnectAttempt::Fatal(io::Error::last_os_error()));
     }
@@ -78,6 +84,7 @@ pub(super) fn one_connect_attempt(addr_bytes: &[u8], deadline: Instant) -> Resul
     // Wrapped immediately so every early return below closes it.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
     crate::lane::test_progress::birth("connector", fd.as_raw_fd());
+    #[cfg(not(target_os = "linux"))]
     if let Err(e) = set_cloexec(fd.as_raw_fd()) {
         return Err(ConnectAttempt::Fatal(e));
     }

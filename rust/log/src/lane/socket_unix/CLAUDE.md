@@ -25,3 +25,4 @@ The twin of the Windows pipe transport by property, not mechanism: a server for 
   attempt or 20 ms sleep in progress finishes first (`connect_unix_socket_unchallenged`).
 - A change to one server's accept or teardown is made to the Windows twin, `pipe_win`, too.
 - Live and pending records share the admission bound; `Closed` follows both joins. Shutdown errno alone preserves close reason and failure state.
+- Linux creates explicit listener/connector sockets with `SOCK_CLOEXEC` and the wake pipe with `pipe2(O_CLOEXEC | O_NONBLOCK)`; macOS uses immediate checked flags with a remaining creation-to-flagging inheritance window.

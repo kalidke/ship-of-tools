@@ -136,11 +136,13 @@ pub(super) fn create_and_bind_listener(
         }
     }
 
-    // Plain `SOCK_STREAM`, not Linux's own `SOCK_STREAM | SOCK_CLOEXEC`:
-    // `SOCK_CLOEXEC` as a `socket(2)` type flag is a Linux (and some BSD)
-    // extension macOS lacks entirely -- `set_cloexec` below is the
-    // portable two-call equivalent, same end state on every target.
-    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    // Linux creates this socket with SOCK_STREAM | SOCK_CLOEXEC. macOS uses SOCK_STREAM followed immediately by checked
+    // fcntl before publication; that creation-to-flagging window is not atomic.
+    #[cfg(target_os = "linux")]
+    let socket_type = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+    #[cfg(not(target_os = "linux"))]
+    let socket_type = libc::SOCK_STREAM;
+    let raw = unsafe { libc::socket(libc::AF_UNIX, socket_type, 0) };
     if raw < 0 {
         return Err(TransportError::Io {
             op: "socket(AF_UNIX)",
@@ -151,6 +153,7 @@ pub(super) fn create_and_bind_listener(
     // Wrapped immediately so every early return below closes it.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
     crate::lane::test_progress::birth("listener", fd.as_raw_fd());
+    #[cfg(not(target_os = "linux"))]
     set_cloexec(fd.as_raw_fd()).map_err(|e| TransportError::Io {
         op: "fcntl(FD_CLOEXEC socket)",
         source: e,
@@ -284,10 +287,8 @@ pub(super) fn create_and_bind_listener(
     Ok(unsafe { UnixListener::from_raw_fd(fd.into_raw_fd()) })
 }
 
-/// Set `FD_CLOEXEC` on `fd` — the portable (Linux AND macOS/BSD)
-/// two-call equivalent of Linux's own combined `SOCK_CLOEXEC`/`O_CLOEXEC`
-/// creation flags (not available uniformly across this crate's Unix
-/// targets — see the call sites' own doc).
+/// Set the descriptor flag with checked fcntl. This is a post-creation operation, not atomic descriptor creation.
+#[cfg(not(target_os = "linux"))]
 pub(super) fn set_cloexec(fd: RawFd) -> io::Result<()> {
     if let Some(injected) = crate::lane::test_progress::flag_call() {
         return Err(injected);
@@ -299,9 +300,7 @@ pub(super) fn set_cloexec(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-/// Set `O_NONBLOCK` on `fd` via a read-modify-write `fcntl` pair — the
-/// portable equivalent of Linux's own `pipe2(O_NONBLOCK)` (see the wake
-/// pipe's own construction).
+/// Set O_NONBLOCK with a checked read-modify-write fcntl pair.
 pub(super) fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     if let Some(injected) = crate::lane::test_progress::flag_call() {
         return Err(injected);

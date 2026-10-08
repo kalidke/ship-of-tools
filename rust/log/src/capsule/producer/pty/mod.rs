@@ -65,44 +65,12 @@
 //!   because it is a KERNEL property of the process that outlives `exec`
 //!   and asks the child for no cooperation whatsoever; a lease would
 //!   need a monitor process wedged between this one and the agent, which
-//!   is a new process in every capsule tree. SECOND, and the reason the
-//!   first does not matter: macOS already HAS a kernel property covering
-//!   exactly this relation. This process is the only holder of a MASTER
-//!   descriptor — `openpty` hands back exactly two fds, both marked
-//!   `CLOEXEC` above BEFORE any fork (so no other spawn of ours can
-//!   carry one past its own `exec`), and `pre_exec` below severs this
-//!   child's own inherited copies with `close_range`/the bounded close
-//!   loop before `exec`. So the LAST master fd in existence closes
-//!   exactly when THIS process's descriptor table is torn down — which
-//!   the kernel does on EVERY exit path, `SIGKILL` included, with no
-//!   destructor of ours involved (`Drop`'s `killpg` is the graceful
-//!   path's belt, not this one's). The kernel then hangs the pty up and
-//!   signals the session that took it as its controlling terminal: this
-//!   child, which `setsid` + `TIOCSCTTY` two steps below made the leader
-//!   of that session. `tests/macos_kernel_facts/` pins that on a real
-//!   Mac and prints the latency it measured, in BOTH configurations that
-//!   matter: its fact 2
-//!   (`closing_the_pty_master_hangs_up_and_reaps_the_child`) drops the
-//!   parent's slave right after the spawn, and its fact 2b
-//!   (`..._with_the_slave_held`) holds a slave across the master close —
-//!   which is the shape THIS crate actually runs, because decision 12
-//!   holds one for the whole run. Only fact 2b speaks for the shipped
-//!   configuration; until it has run green on a real Mac, the shipped
-//!   shape's half of this paragraph is an INFERENCE (a well-founded one:
-//!   the hangup is a carrier drop on the MASTER's last close and is not
-//!   gated on how many openers the slave side has, which is exactly what
-//!   fact 2b exists to confirm). An OS that stops doing either reports
-//!   itself as a named red test, which is the moment to revisit this
-//!   paragraph. Nothing needs ordering
-//!   FIRST here the way PDEATHSIG does, because there is no fork-to-arm
-//!   window to guard: the pty is created before the fork and the child
-//!   is attached to it by `pre_exec` itself. The one honest narrowing
-//!   versus Linux: `SIGHUP` is catchable, `SIGKILL` is not, so a
-//!   producer that deliberately ignores `SIGHUP` outlives the hangup —
-//!   holding a revoked terminal, its stdio at EOF, unable to talk to
-//!   anyone. Reaping THAT belongs to whatever sweeps an orphaned process
-//!   group (the supervisor's own domain), never to a mechanism at this
-//!   site, and it is the only difference this deletion leaves standing.
+//!   is a new process in every capsule tree. On macOS, closing the last master hangs up the controlling terminal and sends SIGHUP to its session. Our child
+//!   takes that terminal with setsid and TIOCSCTTY. Both PTY ends receive checked close-on-exec flags, but concurrent
+//!   creation-to-flagging inheritance remains possible; this producer is not unconditionally the sole master holder.
+//!   The kernel-fact tests exercise last-master close with the slave released and held; neither proves absence of
+//!   concurrent inheritance. SIGHUP is catchable, so a child ignoring it may outlive the hangup; reaping an orphaned
+//!   group belongs to the supervisor.
 //! - **Exit is OBSERVED without reaping; the leader is reaped EXACTLY ONCE,
 //!   LAST, in `Drop`; domain emptiness is judged by LIVE members, never by
 //!   reaped-ness (decision 13/14).**
@@ -183,14 +151,18 @@ const REAP_BOUND: Duration = Duration::from_secs(2);
 
 /// One of the PTY factory's close-on-exec flag calls. A test may make it fail for real (the factory's own path then
 /// runs) and learns which descriptors the factory flagged.
-fn flag_fcntl(end: &'static str, fd: RawFd, cmd: libc::c_int, arg: libc::c_int) -> libc::c_int {
+fn flag_fcntl(end: &'static str, fd: RawFd, cmd: libc::c_int, arg: libc::c_int) -> io::Result<libc::c_int> {
     #[cfg(test)]
     if flag_plan::fails(end, fd, cmd) {
-        return -1;
+        return Err(io::Error::from_raw_os_error(libc::EPERM));
     }
     #[cfg(not(test))]
     let _ = end;
-    unsafe { libc::fcntl(fd, cmd, arg) }
+    let rc = unsafe { libc::fcntl(fd, cmd, arg) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(rc)
 }
 
 /// `PtyProducer::spawn`'s own pre-flight check (see that call site's own

@@ -154,25 +154,12 @@ impl LegLease {
     /// scope; kept as a parameter so both platforms share one call site
     /// in `supervise_inner`.
     ///
-    /// `O_CLOEXEC` on BOTH ends is the whole correctness of the lease:
-    /// a write end leaked past an `exec` into ANY child keeps the pipe
-    /// open after this process dies, and the leg then never sees its
-    /// parent go. Linux gets that flag inside the one `pipe2` call;
-    /// macOS has no `pipe2` at all, so there the pipe exists for a
-    /// moment WITHOUT the flag. **What recovers `pipe2`'s atomicity
-    /// here is placement, not a flag**: this runs at `supervise_inner`'s
-    /// top — after the fence and the lane bind, neither of which spawns
-    /// a thread, and before `spawn_recovery`, which is this process's
-    /// FIRST thread of any kind; the first fork+exec is a leg spawn,
-    /// later still. So while the pipe is briefly flagless there is no
-    /// second thread in existence to `fork` from it, and the window
-    /// `pipe2` closes is a window nothing can enter. Keep this call
-    /// where it is; moving it below `spawn_recovery` would reopen it.
-    /// The `FD_CLOEXEC` pass below is therefore written unconditionally
-    /// rather than `cfg`-split: on Linux it re-asserts what `pipe2`
-    /// already did (two syscalls per end, once per supervisor life), so
-    /// the invariant is checked in code on every platform instead of
-    /// being claimed by a flag on one of them.
+    /// The parent-death lease uses pipe2(O_CLOEXEC) on Linux and checked pipe plus fcntl on macOS. The macOS
+    /// creation-to-flagging window remains; lane binding already started transport threads, so placement does not
+    /// prove single-threaded creation. `O_CLOEXEC` on BOTH ends is the whole correctness of the lease: a write end
+    /// leaked past an `exec` into ANY child keeps the pipe open after this process dies, and the leg then never sees
+    /// its parent go. The `FD_CLOEXEC` pass below is written unconditionally rather than `cfg`-split: on Linux it
+    /// re-asserts what `pipe2` already did, so the invariant is checked in code on every platform.
     #[cfg(unix)]
     pub(super) fn create(_h: &str) -> std::io::Result<Self> {
         use std::os::fd::{AsRawFd, FromRawFd};

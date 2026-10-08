@@ -16,3 +16,4 @@ subsystem; charter: rust/log/CLAUDE.md.
   would hide a real exec failure.
 - `Drop` kills the group and reaps within `REAP_BOUND`; a task stuck in an uninterruptible wait is left, not waited on.
 - A closed or unreadable lease fd counts as broken (`parent_lease_fd_broken`).
+- The PTY factory checks both flag calls on both already-owned ends; an error closes both before spawn. Its creation-to-flagging inheritance window remains on Linux and macOS (`verbs.rs`).
