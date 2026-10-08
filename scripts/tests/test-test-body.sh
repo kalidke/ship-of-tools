@@ -321,6 +321,10 @@ def async_results():
     check(not errors,'; '.join(errors))
 case('twohost_each_async_result_is_required',async_results)
 
+def bind_cargo(code, command):
+    # The command is inserted literally: a Windows path holds backslash sequences re.sub would read as escapes.
+    return re.sub(r'\bcargo(?= test)', lambda _: q(command), code)
+
 def wake_script():
     return re.search(r'cat > "\$E/wake.sh" <<\x27EOF\x27\n(.*?)\nEOF',e2e,re.S)[1]
 
@@ -339,7 +343,7 @@ def wake_completion():
     p=fresh('staged wake'); (p/'log').mkdir(); e=p/'e2e'; e.mkdir()
     (e/'lib-test-body.sh').write_bytes(helper.read_bytes()); a=adapter(p)
     # Bind only the external command word; preserve generated selector and verdict logic.
-    code=re.sub(r'\bcargo(?= test)',q(a),wake_script()); (e/'wake.sh').write_text(code)
+    code=bind_cargo(wake_script(),a); (e/'wake.sh').write_text(code)
     r=run([native_bash,str(e/'wake.sh'),str(p),'fixture','here'],p,{'SOT_E2E_MANIFEST':str(p/'unused-manifest')})
     observe('generated wake',r,p)
     check((p/'witness-wake').exists() and not (p/'witness-nested-wake').exists(),'substring ran extra wake body')
@@ -351,12 +355,18 @@ def wake_completion():
         if broken=='panic':
             (p/'iso-sh-panic-request').touch()
             (e/'lib-test-body.sh').write_bytes(helper.read_bytes())
-        a=adapter(p); (e/'wake.sh').write_text(re.sub(r'\bcargo(?= test)',q(a),wake_script()))
+        a=adapter(p); (e/'wake.sh').write_text(bind_cargo(wake_script(),a))
         r=run([native_bash,str(e/'wake.sh'),str(p),'fixture','here'],p,{'SOT_E2E_MANIFEST':str(p/'unused-manifest')})
         print(f'generated wake {broken}: exit {r.returncode}',flush=True)
         check(r.returncode!=0,'broken generated control accepted')
         if broken=='panic': check((p/'log/wake-result-here').read_text(encoding='utf-8', errors='strict')=='101\n','failed control status lost')
 case('wake_exact_selection',wake_completion)
+
+def wake_binding_is_literal():
+    for path in [r'C:\Users\x\cargo-adapter', r'D:\a\1\g\b\cargo-adapter', '/tmp/a b/\\n']:
+        got = bind_cargo('cargo test --exact one\n', path)
+        check(got == q(path) + ' test --exact one\n', f'path altered by binding: {got!r}')
+case('wake_binding_keeps_a_path_literal',wake_binding_is_literal)
 
 def wake_decisions():
     for ping,result in [(False,True),(True,False),(False,False),(True,True)]:
