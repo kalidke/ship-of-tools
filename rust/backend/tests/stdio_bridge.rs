@@ -360,8 +360,7 @@ fn daemon_said(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| format!("<its stderr is unreadable: {e}>")).trim().to_string()
 }
 
-/// Linux-only for the same reason `status_integration.rs` is: it spawns a
-/// real `sotd` and waits for it to bind. Everything the bridge itself does
+/// Linux-only: it spawns a real `sotd` and waits for it to bind. Everything the bridge itself does
 /// is covered above on every Unix.
 #[cfg(target_os = "linux")]
 #[test]
@@ -395,12 +394,6 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
         .env("SOT_COMM_HOME", &env.comm_root)
         .env("XDG_RUNTIME_DIR", runtime_root())
         .env("SOT_HOSTS", &hosts_toml)
-        // `SOT_SOCKET` outranks `--label` in the daemon's own arg parsing,
-        // and a suite run from inside a Ship of Tools session inherits one
-        // — which would point this "spawned daemon" at the live daemon's
-        // socket instead of the temporary endpoint below.
-        .env_remove("SOT_SOCKET")
-        .env_remove("SOT_PROJECT_ROOT")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(std::fs::File::create(&daemon_stderr).expect("create the daemon's stderr file")))
@@ -491,8 +484,6 @@ fn lease_through_stdio_bridge_refused() {
         .env("SOT_COMM_HOME", &env.comm_root)
         .env("XDG_RUNTIME_DIR", runtime_root())
         .env("SOT_HOSTS", &hosts_toml)
-        .env_remove("SOT_SOCKET")
-        .env_remove("SOT_PROJECT_ROOT")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(std::fs::File::create(&daemon_stderr).expect("create the daemon's stderr file")))
