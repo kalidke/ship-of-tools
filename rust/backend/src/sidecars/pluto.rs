@@ -399,12 +399,16 @@ async fn supervisor_task(
 
 #[cfg(test)]
 mod port_parse_tests {
-    use super::{bound_pluto_port, seams, spawn_supervisor, Submission};
-    use crate::lifecycle::child_signal::Signal;
-    use crate::sidecars::contract_tests::{executable, isolated, within};
-    use std::path::{Path, PathBuf};
+    use super::spawn_supervisor;
     use std::time::Duration;
-    use tokio::sync::{mpsc, oneshot};
+    #[cfg(target_os = "linux")]
+    use {
+        super::{bound_pluto_port, seams, Submission},
+        crate::lifecycle::child_signal::Signal,
+        crate::sidecars::contract_tests::{executable, isolated, within},
+        std::path::{Path, PathBuf},
+        tokio::sync::{mpsc, oneshot},
+    };
 
     /// The shutdown signal kills a Pluto child that has not yet said READY,
     /// and the child is counted from spawn.
@@ -462,11 +466,14 @@ mod port_parse_tests {
         assert!(gone, "the Pluto grandchild survived the shutdown");
     }
 
+    #[cfg(target_os = "linux")]
     /// The longest an isolated body here may take.
     const BODY: Duration = Duration::from_secs(180);
+    #[cfg(target_os = "linux")]
     /// How long a fixture waits for the supervisor to react to the child's exit or the Signal.
     const REACT: Duration = Duration::from_secs(30);
 
+    #[cfg(target_os = "linux")]
     /// An owned `start.jl` standing in for Pluto's: it binds a real loopback listener, says READY, records its pid,
     /// optionally starts a descendant that keeps the child's pipes, and exits when the test creates `gate`.
     fn start_script(dir: &Path, ready_url: &str, descendant: &str) -> PathBuf {
@@ -490,18 +497,23 @@ exit(0)
         script
     }
 
+    #[cfg(target_os = "linux")]
     const READY_LOCAL: &str = r#""READY http://127.0.0.1:$port""#;
+    #[cfg(target_os = "linux")]
     /// A descendant that holds only the child's stdout.
     const KEEP_STDOUT: &str = r#"p = run(pipeline(`sleep 300`, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
+    #[cfg(target_os = "linux")]
     /// A descendant that holds the read end of the child's stdin and the write end of its stdout, reading nothing.
     const KEEP_PIPES: &str = r#"p = run(pipeline(`sleep 300`, stdin=stdin, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
 
+    #[cfg(target_os = "linux")]
     struct Harness {
         dir: PathBuf,
         sig: &'static Signal,
         tx: mpsc::Sender<Submission>,
     }
 
+    #[cfg(target_os = "linux")]
     impl Harness {
         async fn start(ready_url: &str, descendant: &str) -> Harness {
             let dir = tempfile::tempdir().expect("owned fixture root").keep();
@@ -539,6 +551,7 @@ exit(0)
         }
     }
 
+    #[cfg(target_os = "linux")]
     /// Whether the process has exited and not been reaped (Linux), or is gone.
     fn exited(pid: u32) -> bool {
         match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
@@ -547,16 +560,19 @@ exit(0)
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn alive(pid: u32) -> bool {
         // SAFETY: signal 0 only probes.
         unsafe { libc::kill(pid as libc::pid_t, 0) == 0 && !exited(pid) }
     }
 
+    #[cfg(target_os = "linux")]
     async fn errors(rx: oneshot::Receiver<anyhow::Result<String>>, what: &str) {
         let got = tokio::time::timeout(REACT, rx).await.unwrap_or_else(|_| panic!("{what}: no answer"));
         assert!(matches!(got, Ok(Err(_))), "{what}: must end with an error");
     }
 
+    #[cfg(target_os = "linux")]
     fn granted(port: u16) -> bool {
         bound_pluto_port() == Some(port) || crate::pages::proxy::allowed_proxy_ports().contains(&port)
     }
@@ -601,7 +617,7 @@ exit(0)
     }
 
     /// A READY line that is not a loopback page address grants nothing.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn nonloopback_ready_grants_nothing() {
         if !isolated("sidecars::pluto::port_parse_tests::nonloopback_ready_grants_nothing", BODY) {
@@ -614,6 +630,7 @@ exit(0)
         h.finish().await;
     }
 
+    #[cfg(target_os = "linux")]
     /// A stdin write that cannot complete: three requests are in flight (one answered by nobody, one mid-write, one
     /// queued) when the child exits with a descendant holding both pipes.
     async fn blocked_write_scenario(h: &Harness) -> (u16, u32, u32, Vec<oneshot::Receiver<anyhow::Result<String>>>) {
