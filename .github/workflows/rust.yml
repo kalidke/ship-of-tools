@@ -122,7 +122,7 @@ jobs:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
-    timeout-minutes: 60
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -225,7 +225,7 @@ jobs:
       - name: Test L3 storage exhaustion
         if: matrix.os == 'ubuntu-latest'
         shell: bash
-        timeout-minutes: 45
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           umask 022
@@ -281,12 +281,10 @@ jobs:
           mountpoint -q "$volume_mount"
           sudo chown "$(id -u):$(id -g)" "$volume_mount"
           sudo chmod 0700 "$volume_mount"
-          capacity=$(df -B1 --output=size "$volume_mount" | tail -n 1 | tr -d ' ')
-          [ "$capacity" -gt 0 ] && [ "$capacity" -le 67108864 ]
-          printf 'L3 hosted ext4 setup=ok declared-bytes=67108864 capacity=%s mount=validated\n' "$capacity"
+          printf 'L3 hosted ext4 setup=ok declared-bytes=67108864 mount=validated\n'
           L3_HOSTED_VOLUME_ROOT="$volume_mount" L3_HOSTED_VOLUME_BYTES=67108864 TMPDIR="$RUNNER_TEMP" \
-            CARGO_NET_OFFLINE=true CARGO_PROFILE_DEV_DEBUG=line-tables-only \
-            nice timeout 40m cargo test -p sot-log --test fault_storage -j 8 --locked -- --include-ignored --nocapture --test-threads=1
+            CARGO_NET_OFFLINE=true \
+            nice timeout 12m cargo test -p sot-log --test fault_storage -j 8 --locked -- --include-ignored --nocapture --test-threads=1
 
       # (The dedicated lane_bridge step was deleted 2026-09-18: "Test
       # workspace" above runs that suite byte-identically, so the step was

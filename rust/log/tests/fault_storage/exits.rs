@@ -55,14 +55,45 @@ fn run_leg(voyage_root: &Path, voyage_id: &str, producer: &[String]) -> i32 {
     }
 }
 
+/// The `exit_code` the leg's sealed `producer_dead` frame recorded.
+fn recorded_producer_exit(voyage_root: &Path) -> Option<u64> {
+    use sot_log::store::segment::{SegmentReader, SegmentState};
+    let seg = voyage_root.join("seg");
+    for entry in std::fs::read_dir(&seg).unwrap() {
+        let path = entry.unwrap().path();
+        let sealed = path.extension().and_then(|e| e.to_str()) == Some(SegmentState::Sealed.ext());
+        if !sealed {
+            continue;
+        }
+        let reader = SegmentReader::read(&path, true).unwrap();
+        for frame in reader
+            .frames
+            .iter()
+            .filter(|f| f.class == sot_log::Class::Lifecycle)
+        {
+            let payload = frame.payload.as_ref()?;
+            if payload.get("kind").and_then(|k| k.as_str()) == Some("producer_dead") {
+                return payload.get("detail")?.get("exit_code")?.as_u64();
+            }
+        }
+    }
+    None
+}
+
 #[test]
 fn a_producer_exit_71_leaves_its_leg_exit_1() {
     let dir = tempfile::tempdir().unwrap();
     let voyage = uuid::Uuid::now_v7().to_string();
-    let code = run_leg(&dir.path().join("voyage"), &voyage, &exit_with(71));
+    let voyage_root = dir.path().join("voyage");
+    let code = run_leg(&voyage_root, &voyage, &exit_with(71));
     assert_eq!(
         code, 1,
         "a producer's own 71 must not become the storage code"
+    );
+    assert_eq!(
+        recorded_producer_exit(&voyage_root),
+        Some(71),
+        "the voyage still records the producer's own 71"
     );
     println!("L3 exits producer-71 leg-exit={code}");
 }

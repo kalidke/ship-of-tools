@@ -50,5 +50,6 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `claude_e2e` skips unless `SOT_HELPER_E2E=1`; rust.yml's `p2-e2e` job sets it against rust/log/claude-sdk-helper.
 - scripts/tests/rc-gate.sh names `fe_client/supervisor_word::unresponsive_supervisor_expires_the_health_window` by path, so moving that test edits rc-gate.sh in the same commit.
 - A `fault_storage` volume test fails, never skips, when its volume cannot be made; it fills only its own volume, one volume at a time. On Linux it is `#[ignore]` and runs only in rust.yml's "Test L3 storage exhaustion" step, which sets `L3_HOSTED_VOLUME_ROOT` and passes `--include-ignored`.
+- The `fault_storage` volume tests show the candidate's behavior on a real full volume, nothing more: the failing case before each storage fix is shown by unit tests with injected native errors, not on a real volume, because no host a builder may use has a bounded filesystem.
 - A lower-bound timing check takes its clock origin before the action that starts the product's timer.
 - Bounded socket reads distinguish deadline setup from read outcomes under the original context; capacity rejection still requires EOF. Native-account socket fixtures fail with retained status/output on missing entry or unavailable prerequisites; launcher completion alone proves no native body or denial.
