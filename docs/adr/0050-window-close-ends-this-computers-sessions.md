@@ -239,11 +239,10 @@ connection is the only handle.
   may resume them.
 - (k) A startup Cleanup's count reaches a window granted before the Cleanup finished only
   at the next window; it stays in the record until acknowledged.
-- (n) Every process `rust/updater` starts inside the daemon runs outside containment, with at most `kill_on_drop`,
-  which does not run at the daemon's exit. The daemon reaches them through the updater's four entries, each called in
-  update.rs under a `clippy::disallowed_methods` allow naming this limit: `check_release` (in `check`), `stage` and
-  `prepare::prepare` (in `stage_prepare_arm_inner`), and `PreparedState::matches` (in `handle_update_check`). A shutdown
-  or exit while one runs leaves it and what it started to end on their own; under the systemd unit its cgroup ends them.
+- (n) Closed (0.6.6): the updater takes its spawner from its caller (`sot_updater::Spawner`). The daemon's
+  `UpdaterSpawner` runs every discovery, stage, prepare and prepared-state command through the child signal, so what the
+  update pipeline starts is contained like any other daemon child; the window's `WindowSpawner` keeps its explicit
+  kill-on-drop policy, which does not contain descendants.
 - (p) Only the requested shutdown fires the child signal. Every other exit leaves the contained trees to end on
   their own, for example the update restart (exit 75, update.rs `exit_for_update`), the shutdown's backstop (exit 1),
   an accept-loop failure (`server::run` returning an error) and a termination signal (SIGTERM, SIGINT), which the

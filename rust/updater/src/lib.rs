@@ -29,7 +29,9 @@ pub mod platform;
 pub mod prepare;
 pub mod select;
 pub mod semver;
+pub mod spawn;
 pub mod unique;
+pub use spawn::Spawner;
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -105,7 +107,12 @@ fn outcome_err(status: String) -> CheckOutcome {
 /// this platform's identity. Deliberately takes no staging root: a check
 /// must work (and report availability) even on hosts where no updates root
 /// resolves.
-pub async fn check_release(repo: &str, current_version: &str, fetcher: &Fetcher) -> CheckOutcome {
+pub async fn check_release(
+    spawner: &dyn Spawner,
+    repo: &str,
+    current_version: &str,
+    fetcher: &Fetcher,
+) -> CheckOutcome {
     let Some(target) = platform::this_platform() else {
         return outcome_err(format!(
             "platform {}-{} is not in the release matrix",
@@ -113,7 +120,7 @@ pub async fn check_release(repo: &str, current_version: &str, fetcher: &Fetcher)
             platform::TARGET_ARCH
         ));
     };
-    let latest = match fetcher.latest(repo, current_version).await {
+    let latest = match fetcher.latest(spawner, repo, current_version).await {
         Ok(Some(l)) => l,
         // Nothing in this install's channel beats `current_version` — a
         // normal, non-error "already current" outcome, not a fetch failure.
@@ -200,18 +207,26 @@ pub async fn partial_asset_bytes(updates_root: &Path, id: &ReleaseIdentity) -> O
 /// machine. Idempotent (a matching completed stage short-circuits) and
 /// serialized across processes via the filesystem lock. Returns `Ok(true)`
 /// when the stage is present afterward.
-pub async fn stage(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool> {
+pub async fn stage(
+    spawner: &dyn Spawner,
+    cfg: &UpdaterConfig,
+    id: &ReleaseIdentity,
+) -> Result<bool> {
     id.validate()?;
     if is_staged(&cfg.updates_root, id).await {
         return Ok(true);
     }
     let lock = lock::StageLock::acquire(&cfg.updates_root, LOCK_WAIT).await?;
-    let result = stage_locked(cfg, id).await;
+    let result = stage_locked(spawner, cfg, id).await;
     lock.release();
     result
 }
 
-async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool> {
+async fn stage_locked(
+    spawner: &dyn Spawner,
+    cfg: &UpdaterConfig,
+    id: &ReleaseIdentity,
+) -> Result<bool> {
     // Re-check under the lock: a concurrent stager may have finished while we
     // waited.
     if is_staged(&cfg.updates_root, id).await {
@@ -250,7 +265,7 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
         } else {
             let _ = tokio::fs::remove_file(&archive_path).await;
             cfg.fetcher
-                .download(&id.repo, &id.tag, &id.asset, &archive_path)
+                .download(spawner, &id.repo, &id.tag, &id.asset, &archive_path)
                 .await
                 .context("downloading release asset")?;
             let got = fetch::hash::sha256_file(&archive_path).await?;
@@ -268,7 +283,7 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
         // carries no digest of its own, so nothing could tell it apart from a
         // complete one.
         let _ = tokio::fs::remove_dir_all(tmp.join(&top)).await;
-        fetch::archive::extract_validated(&archive_path, &tmp, &top)
+        fetch::archive::extract_validated(spawner, &archive_path, &tmp, &top)
             .await
             .context("extracting release archive")?;
 
@@ -291,7 +306,7 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
         // pin the source commit the binaries were built from; prepare later
         // refuses a tag whose commit disagrees (moved-tag defense). Legacy
         // releases without one stage with a warning.
-        let source_commit = fetch_source_commit(cfg, id, &tmp).await?;
+        let source_commit = fetch_source_commit(spawner, cfg, id, &tmp).await?;
 
         ReadyManifest::new(id.clone(), source_commit).write(&tmp).await?;
         Ok::<(), anyhow::Error>(())
@@ -330,13 +345,14 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
 /// that predate commit publishing; a listed-but-unverifiable COMMIT is an
 /// error (the stage retries next cycle).
 async fn fetch_source_commit(
+    spawner: &dyn Spawner,
     cfg: &UpdaterConfig,
     id: &ReleaseIdentity,
     tmp: &Path,
 ) -> Result<Option<String>> {
     let sums_path = tmp.join("SHA256SUMS");
     cfg.fetcher
-        .download(&id.repo, &id.tag, "SHA256SUMS", &sums_path)
+        .download(spawner, &id.repo, &id.tag, "SHA256SUMS", &sums_path)
         .await
         .context("downloading tag-pinned SHA256SUMS")?;
     let sums_text = tokio::fs::read_to_string(&sums_path).await?;
@@ -356,14 +372,17 @@ async fn fetch_source_commit(
     };
     let commit_path = tmp.join("COMMIT");
     cfg.fetcher
-        .download(&id.repo, &id.tag, "COMMIT", &commit_path)
+        .download(spawner, &id.repo, &id.tag, "COMMIT", &commit_path)
         .await
         .context("downloading COMMIT")?;
     let got = fetch::hash::sha256_file(&commit_path).await?;
     if got != commit_digest {
         bail!("COMMIT file digest mismatch — refusing");
     }
-    let commit = tokio::fs::read_to_string(&commit_path).await?.trim().to_string();
+    let commit = tokio::fs::read_to_string(&commit_path)
+        .await?
+        .trim()
+        .to_string();
     if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
         bail!("COMMIT file does not contain a commit hash: {commit:?}");
     }
@@ -490,6 +509,30 @@ where
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::spawn::tests::{output, RecordingSpawner};
+
+    fn archive_spawner(fixture_build: PathBuf, fixture_top: String) -> impl Spawner {
+        RecordingSpawner(move |command: &tokio::process::Command| {
+            let cmd = command.as_std();
+            assert_eq!(cmd.get_program(), "tar", "unexpected stage command");
+            let args: Vec<_> = cmd
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            if args[0] == "-tzf" {
+                return Ok(output(0, format!("{fixture_top}/\n{fixture_top}/sot\n{fixture_top}/sotd\n{fixture_top}/sot-capsule\n")));
+            }
+            assert_eq!(args[0], "-xzf");
+            assert_eq!(args[2], "-C");
+            let dest = Path::new(&args[3]).join(&fixture_top);
+            std::fs::create_dir_all(&dest)?;
+            for entry in std::fs::read_dir(&fixture_build)? {
+                let entry = entry?;
+                std::fs::copy(entry.path(), dest.join(entry.file_name()))?;
+            }
+            Ok(output(0, Vec::new()))
+        })
+    }
 
     /// Build a fake release dir (SHA256SUMS + one platform archive) and run
     /// the full check → stage flow against it via the Dir fetcher.
@@ -509,40 +552,38 @@ mod tests {
         // Assemble the archive exactly like release CI does.
         let build = base.join("build").join(&top);
         tokio::fs::create_dir_all(&build).await.unwrap();
-        tokio::fs::write(build.join("sot"), b"fe-binary").await.unwrap();
-        tokio::fs::write(build.join("sotd"), b"be-binary").await.unwrap();
+        tokio::fs::write(build.join("sot"), b"fe-binary")
+            .await
+            .unwrap();
+        tokio::fs::write(build.join("sotd"), b"be-binary")
+            .await
+            .unwrap();
         // ADR 0042 slice L1a: `sot-capsule` is a required file in every
         // release archive now (see `archive.rs`'s own `validate_tree`).
-        tokio::fs::write(build.join("sot-capsule"), b"capsule-binary").await.unwrap();
-        tokio::fs::write(build.join("sotd.service"), b"unit").await.unwrap();
-        let archive = release.join(&asset);
-        let st = std::process::Command::new("tar")
-            .args([
-                "-czf",
-                &archive.to_string_lossy(),
-                "-C",
-                &base.join("build").to_string_lossy(),
-                &top,
-            ])
-            .status()
+        tokio::fs::write(build.join("sot-capsule"), b"capsule-binary")
+            .await
             .unwrap();
-        assert!(st.success());
+        tokio::fs::write(build.join("sotd.service"), b"unit")
+            .await
+            .unwrap();
+        let archive = release.join(&asset);
+        tokio::fs::write(&archive, b"synthetic archive")
+            .await
+            .unwrap();
+        let spawner = archive_spawner(build.clone(), top.clone());
         let digest = fetch::hash::sha256_file(&archive).await.unwrap();
-        tokio::fs::write(
-            release.join("SHA256SUMS"),
-            format!("{digest}  {asset}\n"),
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(release.join("SHA256SUMS"), format!("{digest}  {asset}\n"))
+            .await
+            .unwrap();
 
         let cfg = UpdaterConfig {
-            repo: "kalidke/ship-of-tools".into(),
+            repo: "example/project".into(),
             current_version: "0.1.0".into(),
             fetcher: Fetcher::Dir(release.clone()),
             updates_root: updates.clone(),
         };
 
-        let out = check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher).await;
+        let out = check_release(&spawner, &cfg.repo, &cfg.current_version, &cfg.fetcher).await;
         assert_eq!(out.status, "ok");
         assert!(out.update_available);
         let id = out.identity.unwrap();
@@ -552,18 +593,20 @@ mod tests {
         // A wrong pinned digest refuses to stage and leaves nothing ready.
         let mut bad = id.clone();
         bad.asset_sha256 = "0".repeat(64);
-        assert!(stage(&cfg, &bad).await.is_err());
+        assert!(stage(&spawner, &cfg, &bad).await.is_err());
         assert!(!is_staged(&updates, &bad).await);
 
         assert!(!is_staged(&updates, &id).await);
-        assert!(stage(&cfg, &id).await.unwrap());
+        assert!(stage(&spawner, &cfg, &id).await.unwrap());
         assert!(is_staged(&updates, &id).await);
         // Idempotent.
-        assert!(stage(&cfg, &id).await.unwrap());
+        assert!(stage(&spawner, &cfg, &id).await.unwrap());
 
         let staged_bin = stage_dir(&updates, &id).join(&top).join("sot");
         assert_eq!(tokio::fs::read(&staged_bin).await.unwrap(), b"fe-binary");
-        let manifest = ReadyManifest::read(&stage_dir(&updates, &id)).await.unwrap();
+        let manifest = ReadyManifest::read(&stage_dir(&updates, &id))
+            .await
+            .unwrap();
         assert_eq!(manifest.identity, id);
 
         // A running check against the staged version reports no update.
@@ -571,7 +614,13 @@ mod tests {
             current_version: version.into(),
             ..cfg.clone()
         };
-        let out2 = check_release(&cfg_current.repo, &cfg_current.current_version, &cfg_current.fetcher).await;
+        let out2 = check_release(
+            &spawner,
+            &cfg_current.repo,
+            &cfg_current.current_version,
+            &cfg_current.fetcher,
+        )
+        .await;
         assert_eq!(out2.status, "ok");
         assert!(!out2.update_available);
 
@@ -583,22 +632,30 @@ mod tests {
 
         // Bytes that are NOT this release's are discarded, not trusted — the
         // truncated-download case, which a size or existence test would pass.
-        tokio::fs::remove_dir_all(stage_dir(&updates, &id)).await.unwrap();
+        tokio::fs::remove_dir_all(stage_dir(&updates, &id))
+            .await
+            .unwrap();
         tokio::fs::create_dir_all(&partial).await.unwrap();
-        tokio::fs::write(partial.join(&asset), b"half a download").await.unwrap();
-        assert!(stage(&cfg, &id).await.unwrap());
+        tokio::fs::write(partial.join(&asset), b"half a download")
+            .await
+            .unwrap();
+        assert!(stage(&spawner, &cfg, &id).await.unwrap());
         assert!(is_staged(&updates, &id).await);
         assert_eq!(tokio::fs::read(&staged_bin).await.unwrap(), b"fe-binary");
 
         // The verified asset IS reused. Proven by making a download
         // impossible: the asset is removed from the source the fetcher pulls
         // from, so an attempt that started again instead of continuing fails.
-        tokio::fs::remove_dir_all(stage_dir(&updates, &id)).await.unwrap();
+        tokio::fs::remove_dir_all(stage_dir(&updates, &id))
+            .await
+            .unwrap();
         tokio::fs::create_dir_all(&partial).await.unwrap();
-        tokio::fs::copy(&archive, partial.join(&asset)).await.unwrap();
+        tokio::fs::copy(&archive, partial.join(&asset))
+            .await
+            .unwrap();
         tokio::fs::remove_file(&archive).await.unwrap();
         assert_eq!(partial_asset_bytes(&updates, &id).await, Some(asset_len));
-        assert!(stage(&cfg, &id).await.unwrap());
+        assert!(stage(&spawner, &cfg, &id).await.unwrap());
         assert!(is_staged(&updates, &id).await);
         assert_eq!(tokio::fs::read(&staged_bin).await.unwrap(), b"fe-binary");
         // Committing consumes the partial dir: nothing is left claiming to be
@@ -725,7 +782,10 @@ mod commit_retry_tests {
         let err = result.expect_err("every attempt failed — must not report success");
         assert!(err.to_string().contains("Access is denied"), "{err}");
         // One initial attempt plus one retry per backoff entry.
-        assert_eq!(attempts.load(Ordering::SeqCst), FAST_BACKOFF.len() as u32 + 1);
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            FAST_BACKOFF.len() as u32 + 1
+        );
         assert!(!dest.exists());
 
         tokio::fs::remove_dir_all(&root).await.unwrap();

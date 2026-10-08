@@ -23,7 +23,7 @@ them each belong to one other subsystem, named below. Part of fe-ui; charter: ru
 - `src/lease_leave_tests.rs`: lease leave tests and the shared test-only recording leave peer and bounded log/finish helpers.
 - `src/pages.rs`: the window's page proxy, loopback listeners that pipe each browser connection to the owning
   daemon's `proxy.connect`. The window's page proxy opens a dedicated SSH or generated-relay connection using the owning host's resolved control selection; handoff hello and proxy.connect share one write. (pages; charter rust/backend/src/pages/CLAUDE.md).
-- `src/selfupdate.rs`: startup self-update staging and `--update-status` (distribution; charter scripts/CLAUDE.md).
+- `src/selfupdate.rs`: startup self-update staging, `--update-status` and `WindowSpawner`, the window's native async-output policy (distribution; charter scripts/CLAUDE.md).
 - `src/relaunch.rs`: the relaunch sentinel, its watcher thread, and the Windows foreground handover (distribution;
   charter scripts/CLAUDE.md).
 - `src/net/`: the window's connections to daemons (fe-net; charter rust/frontend/src/net/CLAUDE.md).
@@ -38,6 +38,7 @@ charter in src/ui/; for a connection or a request, to src/net/.
   or 76 when the sentinel's content is `converge`, and the window exits with it.
 - `--ephemeral`, `--capture` and `--no-lease` never take a lease (`lease_exempt` in lease.rs).
 - Only `sot_protocol::is_release_build()` self-updates (`guard` in selfupdate.rs); a dev build never stages anything.
+- The shared updater starts commands only through its caller's `Spawner`. `WindowSpawner` keeps native output's kill-on-drop lifetime; it does not promise daemon-style tree containment.
 - The state directory has one resolution rule, sot-log's, which the window calls directly.
 - window_entry hardens the window's inherited Windows standard handles before its startup continuation. The Windows startup test observes the three inheritance flags and its first owned child's file handles; browser-opener stdio remains separately owned and unchanged.
 - A Foreign lease outcome names a refused identity claim, not an absent backend or a proved different OS account; notice precedence is Undetermined, Unsupported, Foreign, then Unreached after granted/pending/exempt suppression.

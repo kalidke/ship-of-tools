@@ -32,6 +32,33 @@ use sot_updater::{CheckOutcome, Fetcher, InstallManifest, ReleaseIdentity, Updat
 use crate::server::reply::HandlerOutput;
 use crate::lifecycle::lease::Leases;
 
+/// Daemon policy: every updater command belongs to this signal's contained tree registry.
+pub(crate) struct UpdaterSpawner(pub(crate) &'static crate::lifecycle::child_signal::Signal);
+
+impl sot_updater::Spawner for UpdaterSpawner {
+    fn output<'a>(
+        &'a self,
+        command: &'a mut tokio::process::Command,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<std::process::Output>> + Send + 'a>> {
+        Box::pin(async move {
+            use tokio::io::AsyncReadExt;
+            command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+            let mut child = self.0.spawn(command)?;
+            let mut stdout = child.stdout.take().expect("piped stdout");
+            let mut stderr = child.stderr.take().expect("piped stderr");
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let (status, _, _) =
+                tokio::try_join!(child.wait(), stdout.read_to_end(&mut out), stderr.read_to_end(&mut err))?;
+            Ok(std::process::Output { status, stdout: out, stderr: err })
+        })
+    }
+}
+
+/// The updater's spawner: the process's one signal.
+fn updater_spawner() -> UpdaterSpawner {
+    UpdaterSpawner(crate::lifecycle::child_signal::process())
+}
+
 /// Delay before the first automatic check after boot, then the steady cadence.
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(120);
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 3600);
@@ -121,9 +148,7 @@ impl Updater {
         if self.mode == Mode::Off {
             return disabled("disabled: update mode off");
         }
-        #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
-        let checked = sot_updater::check_release(&self.repo, &self.current, &Fetcher::from_env()).await;
-        checked
+        sot_updater::check_release(&updater_spawner(), &self.repo, &self.current, &Fetcher::from_env()).await
     }
 }
 
@@ -193,8 +218,7 @@ async fn stage_prepare_arm(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
 }
 
 async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
-    #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
-    let staged = sot_updater::stage(cfg, id).await;
+    let staged = sot_updater::stage(&updater_spawner(), cfg, id).await;
     if let Err(e) = staged {
         // The whole chain, not just the outermost context: the OS error is the
         // thing that names the fault, and `%e` drops it.
@@ -222,8 +246,7 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
             return;
         }
     };
-    #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
-    let state = match sot_updater::prepare::prepare(&spec).await {
+    let state = match sot_updater::prepare::prepare(&updater_spawner(), &spec).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(tag = %id.tag, error = %e, "preparing update failed — not arming");
@@ -441,8 +464,7 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
             let stage_dir = sot_updater::stage_dir(&cfg.updates_root, id);
             let probes = async {
                 let staged = sot_updater::is_staged(&cfg.updates_root, id).await;
-                #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
-                let prepared = PreparedState::matches(&stage_dir, id).await;
+                let prepared = PreparedState::matches(&updater_spawner(), &stage_dir, id).await;
                 (
                     staged,
                     prepared,
@@ -597,6 +619,80 @@ fn exit_for_update(leases: &Leases, exit: impl FnOnce(i32)) {
 mod tests {
     use super::*;
     use sot_updater::identity::DEFAULT_REPO;
+
+    /// Every updater command is a contained child of the signal: its two streams and its status come back whole, and a
+    /// command its caller drops or a fire ends the command's whole tree.
+    #[cfg(unix)]
+    mod spawner {
+        use super::*;
+        use crate::lifecycle::child_signal::{tests::Leftover, Signal};
+        use sot_updater::Spawner;
+        use std::time::{Duration, Instant};
+
+        fn a_signal() -> &'static Signal {
+            Box::leak(Box::new(Signal::new()))
+        }
+
+        /// A command that starts a grandchild, writes its pid to `pid_file` and waits for it.
+        fn tree_command(pid_file: &std::path::Path) -> tokio::process::Command {
+            let mut command = tokio::process::Command::new("sh");
+            command.args(["-c", "sleep 3180 & echo $! > \"$1\"; wait", "sh"]).arg(pid_file);
+            command
+        }
+
+        async fn pid_written(file: &std::path::Path) {
+            let began = Instant::now();
+            while std::fs::read_to_string(file).map_or(true, |t| t.trim().is_empty()) {
+                assert!(began.elapsed() < Duration::from_secs(10), "the updater command never started its child");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        #[tokio::test]
+        async fn the_spawner_returns_both_streams_and_the_status() {
+            let signal = a_signal();
+            let mut command = tokio::process::Command::new("sh");
+            command.args(["-c", "echo out; echo err >&2; exit 3"]);
+            let output = UpdaterSpawner(signal).output(&mut command).await.expect("the command ran");
+            assert_eq!(output.status.code(), Some(3));
+            assert_eq!(output.stdout, b"out\n");
+            assert_eq!(output.stderr, b"err\n");
+            assert!(signal.held_groups().is_empty(), "a finished command's tree is still held");
+        }
+
+        #[tokio::test]
+        async fn a_dropped_updater_command_ends_its_tree() {
+            let signal = a_signal();
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("pid");
+            let mut command = tree_command(&file);
+            let task = tokio::spawn(async move { UpdaterSpawner(signal).output(&mut command).await });
+            pid_written(&file).await;
+            let grandchild = Leftover::of_file(&file);
+            assert_eq!(signal.held_groups().len(), 1, "the running command's tree is not held");
+            task.abort();
+            let _ = task.await;
+            assert!(grandchild.gone(), "the dropped command's grandchild outlived it");
+            assert!(signal.held_groups().is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_fire_ends_a_running_updater_command_tree() {
+            let signal = a_signal();
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("pid");
+            let mut command = tree_command(&file);
+            let task = tokio::spawn(async move { UpdaterSpawner(signal).output(&mut command).await });
+            pid_written(&file).await;
+            let grandchild = Leftover::of_file(&file);
+            signal.fire();
+            assert!(grandchild.gone(), "the fired signal left the grandchild running");
+            let _ = tokio::time::timeout(Duration::from_secs(10), task).await.expect("the command outlived the fire");
+            let mut late = tokio::process::Command::new("sh");
+            late.args(["-c", "exit 0"]);
+            assert!(UpdaterSpawner(signal).output(&mut late).await.is_err(), "a command started after the fire");
+        }
+    }
 
     /// The daemon's release repo: the default when the variable is unset, empty
     /// or blank, the trimmed value otherwise; the prior value is restored.

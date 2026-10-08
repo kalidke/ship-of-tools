@@ -63,7 +63,7 @@ computer's sessions end (ADR 0050).
   "Disallowed methods" step fails on any other. The group holds every way std and tokio start a process, portable-pty's
   `spawn_command`, libc's `fork`, `vfork`, `posix_spawn`, `posix_spawnp`, `execv`, `execve`, `execvp` and `system`,
   windows-sys's `CreateProcessW`, `CreateProcessA`, `CreateProcessAsUserW` and `CreateProcessAsUserA`, `LinkGate`'s
-  `spawn_sync`, `spawn_async` and `probe`, and the updater's four entries (rust/updater/CLAUDE.md). Not held:
+  `spawn_sync`, `spawn_async` and `probe`, and no updater entry: the updater requires its caller's `Spawner` and starts no process itself (rust/updater/CLAUDE.md). Not held:
   - other process starts in libc and windows-sys, among them libc's other exec, fork and spawn functions and `popen`,
     and windows-sys's `CreateProcessWithLogonW`, `CreateProcessWithTokenW`, `WinExec`, `ShellExecute*`,
     `SHCreateProcessAsUserW` and `SHOpenWithDialog`, called nowhere in the workspace today (libc:

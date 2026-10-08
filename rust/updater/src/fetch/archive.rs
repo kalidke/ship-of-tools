@@ -11,6 +11,8 @@
 use std::path::Path;
 use std::time::Duration;
 
+use crate::Spawner;
+
 use anyhow::{bail, Context, Result};
 
 const EXTRACT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -58,13 +60,14 @@ pub fn validate_entry_name(entry: &str, top: &str) -> Result<()> {
 
 /// List entry names for a `.tar.gz` (via `tar -tzf`) or `.zip` (via
 /// `zipinfo -1` / PowerShell on Windows).
-pub(crate) async fn list_entries(archive: &Path) -> Result<Vec<String>> {
+pub(crate) async fn list_entries(spawner: &dyn Spawner, archive: &Path) -> Result<Vec<String>> {
     let name = archive
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or_default();
     let stdout = if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
         run(
+            spawner,
             tokio::process::Command::new("tar").args(["-tzf", &archive.to_string_lossy()]),
             "tar -t",
         )
@@ -74,7 +77,7 @@ pub(crate) async fn list_entries(archive: &Path) -> Result<Vec<String>> {
         {
             // -EncodedCommand is overkill; entry names come from ZipFile, not
             // string-interpolated shell.
-            run(
+            run(spawner,
                 tokio::process::Command::new("powershell").args([
                     "-NoProfile",
                     "-Command",
@@ -91,6 +94,7 @@ pub(crate) async fn list_entries(archive: &Path) -> Result<Vec<String>> {
         #[cfg(not(windows))]
         {
             run(
+                spawner,
                 tokio::process::Command::new("zipinfo").args(["-1", &archive.to_string_lossy()]),
                 "zipinfo",
             )
@@ -110,8 +114,13 @@ pub(crate) async fn list_entries(archive: &Path) -> Result<Vec<String>> {
 /// Extract a verified archive into `dest`: entry names are validated against
 /// `top` first, extraction is bounded, and the resulting tree is re-validated
 /// (no symlinks, only allowlisted files under `dest/top/`).
-pub(crate) async fn extract_validated(archive: &Path, dest: &Path, top: &str) -> Result<()> {
-    let entries = list_entries(archive).await?;
+pub(crate) async fn extract_validated(
+    spawner: &dyn Spawner,
+    archive: &Path,
+    dest: &Path,
+    top: &str,
+) -> Result<()> {
+    let entries = list_entries(spawner, archive).await?;
     if entries.is_empty() {
         bail!("archive lists no entries");
     }
@@ -119,7 +128,10 @@ pub(crate) async fn extract_validated(archive: &Path, dest: &Path, top: &str) ->
     // listing beyond this is malformed or hostile — refuse before extraction
     // can fill the filesystem.
     if entries.len() > 64 {
-        bail!("archive lists {} entries — far beyond a release's shape", entries.len());
+        bail!(
+            "archive lists {} entries — far beyond a release's shape",
+            entries.len()
+        );
     }
     for e in &entries {
         validate_entry_name(e, top)?;
@@ -131,6 +143,7 @@ pub(crate) async fn extract_validated(archive: &Path, dest: &Path, top: &str) ->
         .unwrap_or_default();
     if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
         run(
+            spawner,
             tokio::process::Command::new("tar").args([
                 "-xzf",
                 &archive.to_string_lossy(),
@@ -143,7 +156,7 @@ pub(crate) async fn extract_validated(archive: &Path, dest: &Path, top: &str) ->
     } else if name.ends_with(".zip") {
         #[cfg(windows)]
         {
-            run(
+            run(spawner,
                 tokio::process::Command::new("powershell").args([
                     "-NoProfile",
                     "-Command",
@@ -163,6 +176,7 @@ pub(crate) async fn extract_validated(archive: &Path, dest: &Path, top: &str) ->
         #[cfg(not(windows))]
         {
             run(
+                spawner,
                 tokio::process::Command::new("unzip").args([
                     "-o",
                     &archive.to_string_lossy(),
@@ -238,11 +252,14 @@ async fn validate_tree(dir: &Path, top: &str) -> Result<()> {
     Ok(())
 }
 
-async fn run(cmd: &mut tokio::process::Command, what: &str) -> Result<Vec<u8>> {
+async fn run(
+    spawner: &dyn Spawner,
+    cmd: &mut tokio::process::Command,
+    what: &str,
+) -> Result<Vec<u8>> {
     cmd.stdin(std::process::Stdio::null());
     cmd.kill_on_drop(true);
-    #[allow(clippy::disallowed_methods, reason = "an updater step; started inside the daemon it is ADR 0050 known limit (n)")]
-    let out = match tokio::time::timeout(EXTRACT_TIMEOUT, cmd.output()).await {
+    let out = match tokio::time::timeout(EXTRACT_TIMEOUT, spawner.output(cmd)).await {
         Err(_) => bail!("{what} timed out after {}s", EXTRACT_TIMEOUT.as_secs()),
         Ok(r) => r.with_context(|| format!("spawning {what}"))?,
     };
@@ -256,6 +273,33 @@ async fn run(cmd: &mut tokio::process::Command, what: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spawn::tests::{output, RecordingSpawner};
+
+    fn archive_spawner(build: std::path::PathBuf) -> impl Spawner {
+        RecordingSpawner(move |command: &tokio::process::Command| {
+            let cmd = command.as_std();
+            assert_eq!(cmd.get_program(), "tar", "unexpected archive command");
+            let args: Vec<_> = cmd
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            if args[0] == "-tzf" {
+                return Ok(output(
+                    0,
+                    format!("{TOP}/\n{TOP}/sot\n{TOP}/sotd\n{TOP}/sot-capsule\n"),
+                ));
+            }
+            assert_eq!(args[0], "-xzf");
+            assert_eq!(args[2], "-C");
+            let dest = Path::new(&args[3]).join(TOP);
+            std::fs::create_dir_all(&dest)?;
+            for entry in std::fs::read_dir(build.join(TOP))? {
+                let entry = entry?;
+                std::fs::copy(entry.path(), dest.join(entry.file_name()))?;
+            }
+            Ok(output(0, Vec::new()))
+        })
+    }
 
     const TOP: &str = "sot-0.6.0-linux-x86_64";
 
@@ -299,27 +343,26 @@ mod tests {
         // `validate_tree`'s own comment) -- omitting it here would make
         // this "complete archive" fixture fail its own success assertion
         // below.
-        tokio::fs::write(stage.join("sot-capsule"), b"cap").await.unwrap();
-        tokio::fs::write(stage.join("sotd.service"), b"unit").await.unwrap();
-        let archive = base.join(format!("{TOP}.tar.gz"));
-        let st = std::process::Command::new("tar")
-            .args([
-                "-czf",
-                &archive.to_string_lossy(),
-                "-C",
-                &base.join("build").to_string_lossy(),
-                TOP,
-            ])
-            .status()
+        tokio::fs::write(stage.join("sot-capsule"), b"cap")
+            .await
             .unwrap();
-        assert!(st.success());
+        tokio::fs::write(stage.join("sotd.service"), b"unit")
+            .await
+            .unwrap();
+        let archive = base.join(format!("{TOP}.tar.gz"));
+        tokio::fs::write(&archive, b"synthetic archive")
+            .await
+            .unwrap();
+        let spawner = archive_spawner(base.join("build"));
 
-        let entries = list_entries(&archive).await.unwrap();
+        let entries = list_entries(&spawner, &archive).await.unwrap();
         assert!(entries.iter().any(|e| e.trim_end_matches('/') == TOP));
 
         let dest = base.join("out");
         tokio::fs::create_dir_all(&dest).await.unwrap();
-        extract_validated(&archive, &dest, TOP).await.unwrap();
+        extract_validated(&spawner, &archive, &dest, TOP)
+            .await
+            .unwrap();
         assert_eq!(
             tokio::fs::read(dest.join(TOP).join("sot")).await.unwrap(),
             b"fe"
@@ -330,20 +373,14 @@ mod tests {
             .await
             .unwrap();
         let bad = base.join("bad.tar.gz");
-        let st = std::process::Command::new("tar")
-            .args([
-                "-czf",
-                &bad.to_string_lossy(),
-                "-C",
-                &base.join("build").to_string_lossy(),
-                TOP,
-            ])
-            .status()
+        tokio::fs::write(&bad, b"synthetic incomplete archive")
+            .await
             .unwrap();
-        assert!(st.success());
         let dest2 = base.join("out2");
         tokio::fs::create_dir_all(&dest2).await.unwrap();
-        let err = extract_validated(&bad, &dest2, TOP).await.unwrap_err();
+        let err = extract_validated(&spawner, &bad, &dest2, TOP)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("missing required file"), "{err}");
 
         tokio::fs::remove_dir_all(&base).await.unwrap();

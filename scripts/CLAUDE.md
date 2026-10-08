@@ -35,12 +35,12 @@ and the launch path fails open: no update step can stop a window from starting.
   and never described as a successful declaration.
 
 ## Connections
-Each connection is one row of docs/integration.md, owned by its provider. Provides: `--socket`, `--dial`,
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot_updater::Spawner`, `--socket`, `--dial`,
 `--relaunched`, `relaunch.request`, `spawn_watcher`, `rust/frontend/src/relaunch.rs`, `deploy/sotd.service`,
 `sot-apply.sh`, `install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`,
 `scripts/install.sh`, `docs/INSTALL-AGENT.md`, `v*`, `.github/workflows/release.yml`, `rust/updater`, `SHA256SUMS`,
 `scripts/release.sh`, `compare_versions`, `updates/pending-<target>.json`, `updates/.lock`, `sot-apply.ps1`,
-`ExecStartPre=-`, `sot-launch`, `Invoke-PendingApply`, `render_sot_launch`, `launch-sot.ps1`. Uses: `fe.lease`,
+`ExecStartPre=-`, `sot-launch`, `Invoke-PendingApply`, `render_sot_launch`, `launch-sot.ps1`. Uses: `UpdaterSpawner`, `WindowSpawner`, `Signal::spawn`, `fe.lease`,
 `fe.leaving`, `scripts/sot-lease.ps1`, `launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`,
 `is_release_build`, `rust/backend/src/update.rs`, `rust/frontend/src/selfupdate.rs`, `version_line`, `--version`,
 `sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,

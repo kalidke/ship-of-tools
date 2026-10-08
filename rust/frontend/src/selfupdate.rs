@@ -34,6 +34,23 @@ use sot_protocol::app_version;
 use sot_updater::prepare::{PrepareSpec, PreparedState};
 use sot_updater::{Fetcher, InstallManifest, UpdaterConfig};
 
+/// Window policy: native async output kills its direct child on cancellation; it does not contain descendants.
+struct WindowSpawner;
+
+impl sot_updater::Spawner for WindowSpawner {
+    fn output<'a>(
+        &'a self,
+        command: &'a mut tokio::process::Command,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<std::process::Output>> + Send + 'a>> {
+        command.kill_on_drop(true);
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the window's explicit native updater policy; kill-on-drop covers its direct child, without daemon tree containment"
+        )]
+        Box::pin(command.output())
+    }
+}
+
 /// The guard chain, as a value: the install to act on, or the one sentence
 /// saying why this box does nothing. A value rather than four early returns
 /// because `--update-status` has to answer the same question, and a guard
@@ -170,8 +187,7 @@ async fn phase(cfg: &UpdaterConfig, id: &sot_updater::ReleaseIdentity) -> Option
     let probes = async {
         let partial_bytes = sot_updater::partial_asset_bytes(&cfg.updates_root, id).await;
         let staged = sot_updater::is_staged(&cfg.updates_root, id).await;
-        #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
-        let prepared = PreparedState::matches(&sot_updater::stage_dir(&cfg.updates_root, id), id).await;
+        let prepared = PreparedState::matches(&WindowSpawner, &sot_updater::stage_dir(&cfg.updates_root, id), id).await;
         Phase {
             partial_bytes,
             staged,
@@ -195,8 +211,7 @@ async fn run(install: InstallManifest, current: String) {
             return;
         }
     };
-    #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
-    let out = sot_updater::check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher).await;
+    let out = sot_updater::check_release(&WindowSpawner, &cfg.repo, &cfg.current_version, &cfg.fetcher).await;
     if !out.update_available {
         tracing::info!(status = %out.status, current = %cfg.current_version, "fe self-update: no newer release — nothing to do");
         return;
@@ -223,8 +238,7 @@ async fn run(install: InstallManifest, current: String) {
         partial_bytes = at.partial_bytes.unwrap_or(0),
         "fe self-update: newer release found — continuing from what is already on disk"
     );
-    #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
-    let staged = sot_updater::stage(&cfg, &id).await;
+    let staged = sot_updater::stage(&WindowSpawner, &cfg, &id).await;
     if let Err(e) = staged {
         tracing::warn!(tag = %id.tag, error = %e, "fe self-update: staging failed");
         return;
@@ -240,8 +254,7 @@ async fn run(install: InstallManifest, current: String) {
         julia_bin: None,
         npm: false,
     };
-    #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
-    let state = match sot_updater::prepare::prepare(&spec).await {
+    let state = match sot_updater::prepare::prepare(&WindowSpawner, &spec).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(tag = %id.tag, error = %e, "fe self-update: prepare failed — not arming");
@@ -299,8 +312,7 @@ pub fn print_status() -> ! {
     let code = rt.block_on(async {
         // Same 45 s ceiling the daemon's handler uses: a wedged network path
         // must degrade to a printed status, not hang at the keyboard.
-        #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
-        let check = sot_updater::check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher);
+        let check = sot_updater::check_release(&WindowSpawner, &cfg.repo, &cfg.current_version, &cfg.fetcher);
         let Ok(out) = tokio::time::timeout(std::time::Duration::from_secs(45), check).await else {
             println!("  release        check unavailable: timed out");
             return 1;

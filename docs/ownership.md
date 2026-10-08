@@ -132,7 +132,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | page-proxy ssh per browser connection | process | pages | `rust/frontend/src/pages.rs` `pipe_one`, `dial` |
 | browser opener | process | pages | `rust/frontend/src/pages.rs` `open_url_in_browser`, `open_html_in_browser` |
 | drawer shell (portable-pty) | process | fe-ui | `rust/frontend/src/ui/drawer/terminal/pty.rs` `LocalTerminal`, `spawn` |
-| updater children (curl, gh, tar, julia instantiate, npm) | process | distribution | `rust/updater/src/fetch/mod.rs`; `rust/updater/src/fetch/archive.rs`; `rust/updater/src/prepare.rs` |
+| updater children (curl, gh, tar, zipinfo, unzip, PowerShell, git, julia instantiate, npm) | process | distribution | `rust/updater/src/fetch/mod.rs`; `rust/updater/src/fetch/archive.rs`; `rust/updater/src/prepare.rs`; daemon lifetime through `rust/backend/src/update.rs` `UpdaterSpawner`, window lifetime through `rust/frontend/src/selfupdate.rs` `WindowSpawner` |
+| updater caller spawning policy, `Spawner` | interface | distribution | `rust/updater/src/spawn.rs` `Spawner`; `rust/backend/src/update.rs` `UpdaterSpawner`; `rust/frontend/src/selfupdate.rs` `WindowSpawner` |
 | `systemctl` calls of the relay refresh | process | topology | `rust/backend/src/topology/relay_units.rs` `run_systemctl` |
 | turn auditor (`claude -p`) | process | messaging | `comm/work_state/comm-turn-auditor.sh` |
 | sotd tokio runtime and accept loop | thread | server | `rust/backend/src/main.rs` `main`, `runtime` (built after the serving prologue); `rust/backend/src/server/listen.rs` `run_local` |
