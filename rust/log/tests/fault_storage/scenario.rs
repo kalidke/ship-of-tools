@@ -142,7 +142,10 @@ fn await_writer_free(state_dir: &Path, voyage: &str, within: Duration) {
     let lock = voyage_root_path(state_dir, voyage).join("writer.lock");
     let deadline = Instant::now() + within;
     while sot_log::lock_writer(&lock).is_err() {
-        assert!(Instant::now() < deadline, "L3 the leg still holds its voyage after {within:?}");
+        assert!(
+            Instant::now() < deadline,
+            "L3 the leg still holds its voyage after {within:?}"
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -242,8 +245,15 @@ fn three_rows_hold_and_resume_on_a_full_volume() {
         sot_log::attach_client::supervisor_client::stop(&stopped.state_dir)
             .expect("L3 a held row must accept a Stop while storage is full");
         let status = stopped.guard.as_mut().unwrap().child_mut().wait().unwrap();
-        assert_eq!(status.code(), Some(0), "a stopped, held supervisor exits clean");
-        drop(sot_log::supervisor::journal::fence::lock_supervisor(&stopped.state_dir).expect("the fence is free"));
+        assert_eq!(
+            status.code(),
+            Some(0),
+            "a stopped, held supervisor exits clean"
+        );
+        drop(
+            sot_log::supervisor::journal::fence::lock_supervisor(&stopped.state_dir)
+                .expect("the fence is free"),
+        );
         await_writer_free(&stopped.state_dir, stopped_voyage, Duration::from_secs(30));
 
         volume::free_and_sync(root);
@@ -294,7 +304,11 @@ fn a_new_rows_supervisor_on_a_full_volume_exits_at_once() {
             );
             std::thread::sleep(Duration::from_millis(100));
         };
-        assert_eq!(status.code(), Some(69), "a new row's supervisor exits terminal");
+        assert_eq!(
+            status.code(),
+            Some(69),
+            "a new row's supervisor exits terminal"
+        );
 
         volume::free_and_sync(root);
         println!("L3 scenario new-row fill-code={filled} exited=69");
@@ -314,7 +328,8 @@ fn an_existing_row_restarted_on_a_full_volume_holds_then_resumes() {
         // A row that has run, stopped and gone: its fence file and voyage exist.
         let mut first = Row::start(state_dir.clone());
         let (pid, voyage) = first.ready(Duration::from_secs(90), "start");
-        sot_log::attach_client::supervisor_client::stop(&state_dir).expect("stop the first supervisor");
+        sot_log::attach_client::supervisor_client::stop(&state_dir)
+            .expect("stop the first supervisor");
         drop(first);
         await_writer_free(&state_dir, &voyage, Duration::from_secs(60));
 
@@ -327,7 +342,10 @@ fn an_existing_row_restarted_on_a_full_volume_holds_then_resumes() {
             if let Some((new_pid, _, _)) = row.status() {
                 break new_pid;
             }
-            assert!(Instant::now() < deadline, "L3 the restarted supervisor never answered on a full volume");
+            assert!(
+                Instant::now() < deadline,
+                "L3 the restarted supervisor never answered on a full volume"
+            );
             std::thread::sleep(Duration::from_millis(250));
         };
         assert_ne!(new_pid, pid, "a new supervisor process");
@@ -337,9 +355,14 @@ fn an_existing_row_restarted_on_a_full_volume_holds_then_resumes() {
         );
         let until = Instant::now() + Duration::from_secs(20);
         while Instant::now() < until {
-            let (_, _, phase) = row.answer().expect("L3 a holding supervisor must keep answering status");
+            let (_, _, phase) = row
+                .answer()
+                .expect("L3 a holding supervisor must keep answering status");
             assert!(
-                !matches!(phase, SupervisorPhase::Terminal | SupervisorPhase::EndedNoRespawn),
+                !matches!(
+                    phase,
+                    SupervisorPhase::Terminal | SupervisorPhase::EndedNoRespawn
+                ),
                 "L3 the restarted row left its voyage for {phase:?} while storage was full"
             );
             std::thread::sleep(Duration::from_secs(1));
