@@ -4,8 +4,8 @@
 use crate::fixture_owner::Fixture;
 use crate::guard::Run;
 use crate::routes::{
-    adopt_tree, all_ended, call_long, children_of, command_line, julia_bin, nonce_round_trip,
-    ready_row, spin_in_repl, supervisor_in,
+    all_ended, call_long, children_of, command_line, julia_bin, nonce_round_trip, ready_row,
+    spin_in_repl, supervisor_in, watch_tree,
 };
 use crate::support::{call, connect_and_hello, poll_until, Conn, BOUND};
 use crate::tree::Tree;
@@ -230,8 +230,8 @@ pub async fn hold_row(
         )
         .await,
     );
-    held.capsule_ids = adopt_tree(fx, &inputs.capsule_tree, false, "the capsule's").await;
-    held.repl_ids = adopt_tree(fx, &inputs.repl_tree, false, "the REPL's").await;
+    held.capsule_ids = watch_tree(fx, &inputs.capsule_tree, false, "the capsule's").await;
+    held.repl_ids = watch_tree(fx, &inputs.repl_tree, false, "the REPL's").await;
     held.workspace_id = workspace_id;
     held.state_dir = state_dir;
 }
@@ -256,7 +256,7 @@ pub async fn hold_pluto(
         serde_json::json!({ "path": notebook.to_string_lossy() }),
     )
     .await;
-    held.pluto_ids = adopt_tree(fx, &inputs.pluto_tree, false, "Pluto's").await;
+    held.pluto_ids = watch_tree(fx, &inputs.pluto_tree, false, "Pluto's").await;
     let worker = poll_until(
         || async { read_pid(inputs.pluto_tree.report_path("worker")) },
         Duration::from_secs(120),
@@ -264,8 +264,8 @@ pub async fn hold_pluto(
     )
     .await;
     held.pluto_ids.push(
-        fx.adopt(worker, None, "Pluto's worker")
-            .expect("authority over the worker that reported itself"),
+        fx.watch(worker, None, "Pluto's worker")
+            .expect("an identity for the worker that reported itself"),
     );
     let server = children_of(run.daemon)
         .into_iter()
@@ -273,8 +273,8 @@ pub async fn hold_pluto(
         .expect("the Pluto server is a child of the daemon");
     // The daemon's own child, found in the children list of the process the case holds, so the case may end it.
     held.pluto_ids.push(
-        fx.adopt(server, None, "Pluto's server")
-            .expect("authority over the daemon's child"),
+        fx.watch(server, None, "Pluto's server")
+            .expect("an identity for the daemon's child"),
     );
 }
 
@@ -308,7 +308,7 @@ pub async fn hold_quarto(
         serde_json::json!({ "path": doc.to_string_lossy(), "execute": true }),
     )
     .await;
-    held.quarto_ids = adopt_tree(fx, tree, false, "Quarto's").await;
+    held.quarto_ids = watch_tree(fx, tree, false, "Quarto's").await;
     let server = poll_until(
         || async { read_pid(tree.report_path("server")) },
         Duration::from_secs(60),
@@ -316,12 +316,12 @@ pub async fn hold_quarto(
     )
     .await;
     held.quarto_seen.push(
-        fx.observe(server, "Quarto's engine server")
+        fx.watch(server, None, "Quarto's engine server")
             .expect("observe the engine server"),
     );
     if let Some(worker) = read_pid(tree.report_path("worker")) {
         held.quarto_seen
-            .extend(fx.observe(worker, "Quarto's worker").ok());
+            .extend(fx.watch(worker, None, "Quarto's worker").ok());
     }
 }
 
@@ -339,7 +339,7 @@ pub fn save_oracle(fx: &mut Fixture, held: &Held, supervisor_id: usize) {
         && held
             .quarto_seen
             .iter()
-            .all(|i| fx.observed(*i).exited(within));
+            .all(|i| fx.identity(*i).exited(within));
     fx.save("quarto_ended", quarto);
     let alive = held
         .capsule_ids

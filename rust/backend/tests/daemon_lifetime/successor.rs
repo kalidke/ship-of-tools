@@ -2,8 +2,8 @@
 //! supervisor fence is taken before a capsule birth is accepted and is carried unbroken to the supervisor's first
 //! act, so a successor that activates the row while the original is held finds the claim, starts no second
 //! supervisor, and later attaches to the original. Real `sotd` and `sot-capsule` on real roots; the original is held
-//! by a phase barrier (`sot_log::test_barrier`) with the fixture's authority over the held process acknowledged
-//! first, the predecessor is ended by SIGKILL, and nothing the product does is used to clean up.
+//! by a phase barrier (`sot_log::test_barrier`) with the held process watched through an identity first, the
+//! predecessor (a process the case spawned) is ended by SIGKILL, and nothing the product does is used to clean up.
 //!
 //! The barrier is one of five places on the birth's way to its first act: in the durable parent after the claim and
 //! before the fork (`parent_accepted`), with the supervisor forked and set up (`parent_ready`), before the gate
@@ -80,10 +80,8 @@ impl Case {
         }
         let held = barriers.reached(phase, 0, BOUND);
         let held_index = fx
-            .adopt(held.pid, Some(held.created), "held process")
-            .expect(
-                "the fixture's authority over the held process, before anything else happens to it",
-            );
+            .watch(held.pid, Some(held.created), "held process")
+            .expect("an identity for the held process, before anything else happens to it");
         fx.save(
             "held_source_domain",
             format!("pgid {} sid {} ppid {}", held.pgid, held.sid, held.ppid),
@@ -174,12 +172,12 @@ impl Case {
         tokio::time::sleep(ACTIVATION_WINDOW).await;
         let births = self.births();
         self.fx.save("births_while_held", births);
-        // A birth beyond the original is the product's failure; it is adopted so that cleanup can end it.
+        // A birth beyond the original is the product's failure; it is watched, and the sweep of the case's roots ends it.
         for n in usize::from(original_is_born(self.phase))..births {
             let second = self.barriers.reached("pre_fence", n, BOUND);
             let _ = self
                 .fx
-                .adopt(second.pid, Some(second.created), "an extra supervisor");
+                .watch(second.pid, Some(second.created), "an extra supervisor");
         }
         let answering = status_of(&state_dir).await;
         self.fx
@@ -211,8 +209,8 @@ impl Case {
         .await;
         let original = self.barriers.reached("pre_fence", 0, BOUND);
         if !original_is_born(self.phase) {
-            // The original was born only now: the fixture takes authority over it for the cleanup.
-            let _ = self.fx.adopt(
+            // The original was born only now: the fixture watches it too.
+            let _ = self.fx.watch(
                 original.pid,
                 Some(original.created),
                 "the original supervisor",

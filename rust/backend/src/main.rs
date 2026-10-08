@@ -534,8 +534,9 @@ fn complete_main<T>(
 }
 
 /// Under the daemon-lifetime fault feature a case ends the main future with a result the product would reach only through a
-/// defect: the file named by `SOT_TEST_MAIN_OUTCOME` holds `ok`, `err`, `panic` or `stall` (every runtime worker blocked) once the case is ready. The control selects
-/// an outcome and performs no cleanup.
+/// defect: the file named by `SOT_TEST_MAIN_OUTCOME` holds `ok`, `err`, `panic`, `stall` (every runtime worker blocked) or
+/// `raise:<signal>` (the daemon sends that signal to itself, as an outside sender's would arrive, so no case names the
+/// daemon's pid) once the case is ready. The control selects an outcome and performs no cleanup.
 #[cfg(feature = "daemon-lifetime-faults")]
 async fn injected_outcome() -> Result<()> {
     let Some(path) = std::env::var_os("SOT_TEST_MAIN_OUTCOME") else {
@@ -546,6 +547,12 @@ async fn injected_outcome() -> Result<()> {
             Ok("ok") => return Ok(()),
             Ok("err") => anyhow::bail!("injected main error"),
             Ok("panic") => panic!("injected main panic"),
+            Ok(raise) if raise.starts_with("raise:") => {
+                let signal: i32 = raise["raise:".len()..].parse().expect("a signal number");
+                // SAFETY: a signal to this process, sent by itself.
+                unsafe { libc::kill(libc::getpid(), signal) };
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
             // Every runtime worker blocked at once: nothing the runtime runs makes progress for two minutes.
             Ok("stall") => {
                 let workers = std::thread::available_parallelism().map_or(8, |n| n.get()) * 2;

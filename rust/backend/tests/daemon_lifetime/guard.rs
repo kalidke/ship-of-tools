@@ -74,6 +74,7 @@ impl Run {
             .env("HOME", &env.home_root)
             .env("USERPROFILE", &env.home_root)
             .env("SOT_COMM_HOME", &env.comm_root)
+            .env("SOT_TEST_MAIN_OUTCOME", env._tmp.path().join("outcome"))
             .env("RUST_LOG", "info")
             .stdin(Stdio::null())
             .stdout(Stdio::from(file.try_clone().expect("clone the log")))
@@ -100,6 +101,8 @@ impl Run {
             "daemon-{}.log",
             std::time::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_nanos())
         ));
+        // A successor reads the same outcome file as its predecessor: an outcome asked of one is not asked of the next.
+        let _ = std::fs::remove_file(env._tmp.path().join("outcome"));
         let mut cmd = Self::command(env, &log, extra);
         if own_group {
             cmd.process_group(0);
@@ -193,6 +196,17 @@ impl Run {
         }
     }
 
+    /// The file the daemon reads its injected outcome from (feature `daemon-lifetime-faults`).
+    pub fn outcome_file(&self) -> PathBuf {
+        self.env._tmp.path().join("outcome")
+    }
+
+    /// Ask the daemon for an outcome (`ok`, `err`, `panic`, `stall`, `raise:<signal>`). A signal reaches it from itself,
+    /// so no case signals a pid it did not get back from its own spawn.
+    pub fn daemon_does(&self, what: &str) {
+        std::fs::write(self.outcome_file(), what).expect("write the injected outcome");
+    }
+
     /// SIGKILL to the launched guard: a process this test spawned.
     pub fn kill_guard(&mut self) {
         let _ = self.launched.as_mut().expect("the launched process").kill();
@@ -239,7 +253,7 @@ enum Stimulus {
     Close,
     /// The window closes with a one-millisecond shutdown bound and a ready row to end: the backstop exits 1.
     Backstop,
-    /// A signal to the daemon, through the pidfd the case holds.
+    /// A signal the daemon sends itself, as an outside sender's would arrive.
     ToDaemon(i32),
     /// A signal to the launched guard alone.
     ToGuard(i32),
@@ -268,8 +282,8 @@ async fn the_guard_mirrors_the_daemon_and_forwards_signals() {
         run.assert_guarded();
         let mut fx = Fixture::new(&format!("guard_mirrors::{stimulus:?}"));
         let daemon = fx
-            .adopt(run.daemon, None, "the daemon")
-            .expect("authority over the daemon, reported by its control connection");
+            .watch(run.daemon, None, "the daemon")
+            .expect("an identity for the daemon, reported by its control connection");
         match stimulus {
             Stimulus::Close => close_by_lease(&run.env).await,
             Stimulus::Backstop => {
@@ -281,16 +295,11 @@ async fn the_guard_mirrors_the_daemon_and_forwards_signals() {
                 let (pid, created) = supervisor_in(&run.env, &state_dir)
                     .await
                     .expect("the capsule's supervisor answers");
-                fx.adopt(pid, Some(created), "the capsule's supervisor")
-                    .expect("authority over the reported supervisor");
+                fx.watch(pid, Some(created), "the capsule's supervisor")
+                    .expect("an identity for the reported supervisor");
                 close_by_lease(&run.env).await;
             }
-            Stimulus::ToDaemon(sig) => {
-                // SAFETY: pidfd_send_signal is the fixture identity's own kill for SIGKILL; for another signal the same call over the held pidfd.
-                fx.identity(daemon)
-                    .signal(sig)
-                    .expect("signal the daemon through its pidfd");
-            }
+            Stimulus::ToDaemon(sig) => run.daemon_does(&format!("raise:{sig}")),
             // SAFETY: a signal to the guard this test spawned.
             Stimulus::ToGuard(sig) => unsafe {
                 libc::kill(run.guard_pid(), sig);
@@ -340,8 +349,8 @@ async fn losing_the_guard_ends_the_daemon_at_once() {
     run.assert_guarded();
     let mut fx = Fixture::new("losing_the_guard");
     let daemon = fx
-        .adopt(run.daemon, None, "the daemon")
-        .expect("authority over the daemon");
+        .watch(run.daemon, None, "the daemon")
+        .expect("an identity for the daemon");
     run.kill_guard();
     fx.save(
         "daemon_gone_within_1s",
@@ -466,7 +475,7 @@ async fn the_relay_refresh_follows_the_guard() {
 // Ephemerals started through the daemon's real routes, and their end
 // ---------------------------------------------------------------------------------------------------------------------
 
-use crate::routes::{adopt_tree, all_ended, julia_bin, ready_row, spin_in_repl, supervisor_in};
+use crate::routes::{all_ended, julia_bin, ready_row, spin_in_repl, supervisor_in, watch_tree};
 use crate::support::connect_and_hello;
 use crate::tree::{session_members, Tree};
 
@@ -504,7 +513,7 @@ pub async fn start_spinning_with(
         tree.julia_cell(forking),
     )
     .await;
-    let ids = adopt_tree(fx, &tree, forking, "the REPL's").await;
+    let ids = watch_tree(fx, &tree, forking, "the REPL's").await;
     Spinning {
         run,
         state_dir,
@@ -522,12 +531,10 @@ async fn the_drain_outlasts_a_forking_child() {
     let leader = fx.identity(spinning.ids[0]).pid;
     let alive_before = session_members(leader).len();
     let daemon = fx
-        .adopt(spinning.run.daemon, None, "the daemon")
-        .expect("authority over the daemon");
+        .watch(spinning.run.daemon, None, "the daemon")
+        .expect("an identity for the daemon");
     spinning.task.abort();
-    fx.identity(daemon)
-        .kill()
-        .expect("SIGKILL the daemon through its pidfd");
+    spinning.run.daemon_does("raise:9");
     fx.save(
         "leader_gone",
         all_ended(&fx, &spinning.ids, Duration::from_secs(10)),
@@ -571,20 +578,22 @@ async fn the_guard_ends_only_its_own_subtree() {
         .await
         .expect("daemon A's supervisor answers");
     let capsule = fx
-        .adopt(
+        .watch(
             supervisor.0,
             Some(supervisor.1),
             "daemon A's capsule supervisor",
         )
-        .expect("authority over the reported supervisor");
+        .expect("an identity for the reported supervisor");
 
     let daemon = fx
-        .adopt(a.run.daemon, None, "daemon A")
-        .expect("authority over daemon A");
+        .watch(a.run.daemon, None, "daemon A")
+        .expect("an identity for daemon A");
     a.task.abort();
-    fx.identity(daemon)
-        .kill()
-        .expect("SIGKILL daemon A through its pidfd");
+    a.run.daemon_does("raise:9");
+    assert!(
+        fx.identity(daemon).exited(Duration::from_secs(10)),
+        "daemon A did not end by its own SIGKILL"
+    );
     fx.save(
         "a_tree_ended",
         all_ended(&fx, &a.ids, Duration::from_secs(10)),

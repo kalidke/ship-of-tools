@@ -619,8 +619,10 @@ pub(crate) mod tests {
     /// the process is opened then as a pidfd, and from then on its end is read from that identity and never from the
     /// number, which the OS may give to a stranger once init has reaped the process. The test must see it gone
     /// ([`gone`](Self::gone)), or say it is alive at the test's end by design ([`kept_alive`](Self::kept_alive)); a
-    /// leftover dropped with neither fails the test, after ending the process through its identity, so a test that
-    /// forgot to check the process it started cannot pass.
+    /// leftover dropped with neither fails the test, so a test that forgot to check the process it started cannot pass.
+    /// A leftover only watches: the pid came from a file a process wrote or from a descendant, not from this test's own
+    /// spawn, so the test never signals it. What a failing run leaves alive ends with the fixture's own bound (each stub
+    /// ends itself) or with the container the suite runs in.
     pub(crate) struct Leftover {
         pid: std::cell::Cell<Option<i32>>,
         file: Option<std::path::PathBuf>,
@@ -725,32 +727,9 @@ pub(crate) mod tests {
             gone
         }
 
-        /// This process is alive at the test's end by design; the drop ends it.
+        /// This process is alive at the test's end by design: its stub ends itself.
         pub(crate) fn kept_alive(&self) {
             self.state.set(Seen::KeptAlive);
-        }
-
-        fn end(&self) {
-            #[cfg(target_os = "linux")]
-            if let Some(fd) = self.identity.borrow().as_ref() {
-                use std::os::fd::AsRawFd;
-                // SAFETY: pidfd_send_signal on a descriptor this value owns, with no siginfo.
-                unsafe {
-                    libc::syscall(
-                        libc::SYS_pidfd_send_signal,
-                        fd.as_raw_fd(),
-                        libc::SIGKILL,
-                        0,
-                        0,
-                    )
-                };
-                return;
-            }
-            #[cfg(not(target_os = "linux"))]
-            if let Some(pid) = self.pid.get() {
-                // SAFETY: a plain signal to a process this test started and has not seen gone.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-            }
         }
     }
 
@@ -760,7 +739,6 @@ pub(crate) mod tests {
                 return;
             }
             let pid = self.pid();
-            self.end();
             if self.state.get() == Seen::Unchecked && pid.is_some() && !std::thread::panicking() {
                 panic!("a Leftover (pid {}) was dropped without its end observed: the test never checked that the process it started is gone", pid.unwrap_or_default());
             }
@@ -769,7 +747,7 @@ pub(crate) mod tests {
 
     /// A leftover records the process the test started, from the file the process wrote its own pid to, and holds
     /// the test to observing its end: one that is gone is seen gone, one dropped unobserved ends the test with a
-    /// failure after the process is ended, and one declared alive at the end is ended quietly.
+    /// failure, and one declared alive at the end is left alone. Nothing here signals the process.
     #[test]
     fn leftover_records_its_child_and_requires_the_end_observation() {
         let dir = tempfile::tempdir().unwrap();
@@ -805,7 +783,7 @@ pub(crate) mod tests {
         assert!(leftover.gone(), "a reaped child was not seen gone");
         drop(leftover);
 
-        // Unobserved: the drop ends the process through its identity, then fails the test.
+        // Unobserved: the drop fails the test and signals nothing; the test ends its own child.
         let (mut child, file) = start("unseen");
         let leftover = Leftover::of_file(file);
         assert!(leftover.pid().is_some());
@@ -814,22 +792,25 @@ pub(crate) mod tests {
             failed.is_err(),
             "a leftover dropped without its end observed did not fail the test"
         );
-        assert_eq!(
-            std::os::unix::process::ExitStatusExt::signal(&child.wait().unwrap()),
-            Some(libc::SIGKILL),
-            "the unobserved leftover's process was not ended"
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the unobserved leftover's process was signalled"
         );
+        child.kill().unwrap();
+        child.wait().unwrap();
 
-        // Alive at the end by design: ended quietly.
+        // Alive at the end by design: dropped quietly, and not signalled.
         let (mut child, file) = start("kept");
         let leftover = Leftover::of_file(file);
         assert!(leftover.pid().is_some());
         leftover.kept_alive();
         drop(leftover);
-        assert_eq!(
-            std::os::unix::process::ExitStatusExt::signal(&child.wait().unwrap()),
-            Some(libc::SIGKILL)
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the kept-alive leftover's process was signalled"
         );
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 
     /// An owner stuck writing to a child that never reads cannot poll the

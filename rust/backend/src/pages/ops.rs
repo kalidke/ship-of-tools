@@ -881,7 +881,7 @@ mod quarto_shutdown_tests {
         leftover.kept_alive();
         let stub = dir.path().join("stub-quarto");
         // The pid is written once the sleeper has its own session: until then a kill of the launcher's group takes it too.
-        let body = "setsid sleep 3106 &\np=$!\nwhile [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$(cut -d' ' -f6 /proc/$$/stat)\" ]; do sleep 0.02; done\n";
+        let body = "setsid sleep 120 &\np=$!\nwhile [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$(cut -d' ' -f6 /proc/$$/stat)\" ]; do sleep 0.02; done\n";
         sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\n{body}echo $p > {}\nexit 0\n", sleeper.display()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());

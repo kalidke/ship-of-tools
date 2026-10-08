@@ -34,7 +34,7 @@ fn error_of(err: &std::io::Error) -> &BirthError {
 fn gated(fx: &mut Fixture, launch: Launch, label: &str) -> (Birth, usize) {
     let birth = launch.begin().expect("begin returns the owned child");
     let index = fx
-        .adopt(birth.pid(), None, label)
+        .own(birth.pid(), label)
         .expect("authority over the gated child");
     (birth, index)
 }
@@ -388,7 +388,12 @@ fn claim_parent_role() {
     };
     sot_log::test_isolated::enter("native_premises::claim_parent_role");
     let claim = BirthClaim::take(&dir.join("state")).expect("the role takes the claim");
-    let mut launch = sh("exec sleep 600");
+    // The child ends when the case writes `stop` (the case never signals a pid it did not spawn); it ends by itself
+    // after ten minutes otherwise.
+    let mut launch = sh(&format!(
+        "n=0; while [ ! -e '{}' ] && [ $n -lt 6000 ]; do sleep 0.1; n=$((n+1)); done",
+        dir.join("stop").display()
+    ));
     launch.inherit_across_exec(claim.as_raw_fd());
     let mut birth = launch.begin().expect("begin");
     birth.ready(BOUND).expect("ready");
@@ -428,7 +433,7 @@ fn the_claim_outlives_its_parents_death() {
     let mut parts = text.split_whitespace().map(|n| n.parse::<u64>().unwrap());
     let (pid, created) = (parts.next().unwrap() as i32, parts.next().unwrap());
     let index = fx
-        .adopt(pid, Some(created), "the dead parent's child")
+        .watch(pid, Some(created), "the dead parent's child")
         .expect("authority over the orphan");
     assert!(
         !fx.identity(index).exited(Duration::from_millis(100)),
@@ -439,7 +444,7 @@ fn the_claim_outlives_its_parents_death() {
         "the fence was released by the parent's death while its child lived"
     );
 
-    fx.identity(index).kill().unwrap();
+    std::fs::write(dir.path().join("stop"), b"stop").unwrap();
     assert!(fx.identity(index).exited(BOUND));
     wait_for(BOUND, "the fence to be free after the child's end", || {
         BirthClaim::take(&state).ok()
@@ -495,7 +500,13 @@ fn source_group_role() {
         return;
     };
     sot_log::test_isolated::enter("native_premises::source_group_role");
-    let mut birth = sh("exec sleep 600").begin().expect("begin");
+    // The child ends when the case writes `stop` in the role's folder, and by itself after ten minutes.
+    let mut birth = sh(&format!(
+        "n=0; while [ ! -e '{}' ] && [ $n -lt 6000 ]; do sleep 0.1; n=$((n+1)); done",
+        dir.join("stop").display()
+    ))
+    .begin()
+    .expect("begin");
     let ready = birth.ready(BOUND).expect("ready");
     birth.release().expect("release");
     birth.exec_result(BOUND).expect("exec");
@@ -505,7 +516,7 @@ fn source_group_role() {
         format!("{} {created} {}", birth.pid(), ready.pgid),
     )
     .unwrap();
-    std::mem::forget(birth); // the child outlives this role; the fixture ends it
+    std::mem::forget(birth); // the child outlives this role; the case ends it by the stop file
     std::thread::sleep(Duration::from_secs(600));
 }
 
@@ -514,6 +525,7 @@ fn a_child_forks_into_its_parents_group_unless_the_parent_has_its_own_session() 
     let mut fx = Fixture::new("source_group");
     let mut swept_group = 0;
     let mut children = Vec::new();
+    let mut folders = Vec::new();
     for (label, own_session) in [
         ("parent in the swept group", false),
         ("parent with its own session", true),
@@ -536,7 +548,7 @@ fn a_child_forks_into_its_parents_group_unless_the_parent_has_its_own_session() 
         }
         let mut parent = launch.begin().expect("begin the parent role");
         let ready = parent.ready(BOUND).unwrap();
-        let parent_index = fx.adopt(parent.pid(), None, label).unwrap();
+        let parent_index = fx.own(parent.pid(), label).unwrap();
         parent.release().unwrap();
         parent.exec_result(BOUND).unwrap();
         let text = wait_for(BOUND, "the role to report its child", || {
@@ -549,7 +561,7 @@ fn a_child_forks_into_its_parents_group_unless_the_parent_has_its_own_session() 
             .map(|n| n.parse().unwrap())
             .collect();
         let child = fx
-            .adopt(nums[0] as i32, Some(nums[1]), &format!("child of: {label}"))
+            .watch(nums[0] as i32, Some(nums[1]), &format!("child of: {label}"))
             .unwrap();
         // The child is in the group of the parent that forked it: the parent's own, its pid.
         assert_eq!(
@@ -562,6 +574,7 @@ fn a_child_forks_into_its_parents_group_unless_the_parent_has_its_own_session() 
         children.push((label, child, parent_index));
         std::mem::forget(entry); // the role's entry record is not this test's to check
         std::mem::forget(parent);
+        folders.push(dir);
     }
     // The sweep of the first parent's group: the child that forked inside it dies, the one that did not, lives.
     // SAFETY: a signal to a group the fixture created and still has a member of (its identity is unreaped).
@@ -575,6 +588,9 @@ fn a_child_forks_into_its_parents_group_unless_the_parent_has_its_own_session() 
             .exited(Duration::from_millis(300)),
         "a child forked from a parent with its own session died in the sweep"
     );
+    for folder in &folders {
+        std::fs::write(folder.path().join("stop"), b"stop").unwrap();
+    }
     assert!(fx.cleanup().complete());
 }
 
@@ -677,4 +693,34 @@ fn a_pause_whose_go_end_closes_ends_the_child_before_its_target() {
     assert!(fx.identity(index).exited(BOUND));
     assert!(!mark.exists());
     assert!(fx.cleanup().complete());
+}
+
+/// A process the case learned of (a pid a product printed, a fixture wrote, a peer credential reported) is watched, never
+/// signalled: its identity refuses a signal and cleanup leaves it alone. The case ends the process it spawned itself.
+#[test]
+fn a_watched_identity_is_never_signalled() {
+    let mut fx = Fixture::new("watched_never_signalled");
+    let mut sleeper = std::process::Command::new("sleep")
+        .arg("120")
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .expect("start the sleeper");
+    let watched = fx
+        .watch(sleeper.id() as i32, None, "a watched sleeper")
+        .expect("an identity to watch");
+    let refused = fx
+        .identity(watched)
+        .kill()
+        .expect_err("a watched identity was signalled");
+    assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
+    let cleanup = fx.cleanup();
+    assert!(cleanup.complete(), "{cleanup:?}");
+    assert_eq!(cleanup.watched_alive.len(), 1, "{cleanup:?}");
+    assert!(
+        sleeper.try_wait().unwrap().is_none(),
+        "cleanup signalled a watched process"
+    );
+    // The case ends the process it spawned itself.
+    sleeper.kill().unwrap();
+    sleeper.wait().unwrap();
 }

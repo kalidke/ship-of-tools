@@ -24,14 +24,27 @@ pub struct Identity {
     pub pid: i32,
     pub created: u64,
     pub label: String,
+    /// Whether this case's own code got the pid back from its own spawn. Only such an identity can be signalled.
+    own: bool,
     pidfd: OwnedFd,
 }
 
 impl Identity {
-    /// Open `pid` as an identity. With `created` (the process's own report of its start time) the pidfd is kept only
-    /// if the process it opened has that start time, so a number that already named another process is refused. A
-    /// process the fixture itself started and has not reaped needs none: its number cannot have been reused.
+    /// Open `pid` as an identity to watch: the process is observed and never signalled (a pid a product printed, a peer
+    /// credential reported, /proc showed or a parent link reached is not one this case started). With `created` (the
+    /// process's own report of its start time) the pidfd is kept only if the process it opened has that start time, so
+    /// a number that already named another process is refused.
     pub fn acquire(pid: i32, created: Option<u64>, label: &str) -> io::Result<Identity> {
+        Self::open(pid, created, label, false)
+    }
+
+    /// Open the pid this case's own code got back from its own spawn and has not reaped: its number cannot have been
+    /// reused, and the identity can be signalled.
+    pub fn acquire_own(pid: i32, label: &str) -> io::Result<Identity> {
+        Self::open(pid, None, label, true)
+    }
+
+    fn open(pid: i32, created: Option<u64>, label: &str, own: bool) -> io::Result<Identity> {
         // SAFETY: pidfd_open takes a pid and flags and returns a descriptor or -1.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
         if fd < 0 {
@@ -51,6 +64,7 @@ impl Identity {
             pid,
             created: found,
             label: label.to_string(),
+            own,
             pidfd,
         })
     }
@@ -82,8 +96,23 @@ impl Identity {
         }
     }
 
-    /// `sig` through the pidfd: it names the process it opened, never a later holder of the number.
+    /// Whether this case started the process (the only kind it may signal).
+    pub fn is_own(&self) -> bool {
+        self.own
+    }
+
+    /// `sig` through the pidfd: it names the process it opened, never a later holder of the number. Refused for a
+    /// process this case did not start.
     pub fn signal(&self, sig: i32) -> io::Result<()> {
+        if !self.own {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} (pid {}) was not started by this case: it is watched, never signalled",
+                    self.label, self.pid
+                ),
+            ));
+        }
         // SAFETY: pidfd_send_signal on a descriptor this value owns, with no siginfo.
         let rc = unsafe {
             libc::syscall(
@@ -104,25 +133,8 @@ impl Identity {
         Err(err)
     }
 
-    /// SIGKILL through the pidfd: it names the process it opened, never a later holder of the number.
+    /// SIGKILL through the pidfd, for a process this case started.
     pub fn kill(&self) -> io::Result<()> {
-        // SAFETY: pidfd_send_signal on a descriptor this value owns, with no siginfo.
-        let rc = unsafe {
-            libc::syscall(
-                libc::SYS_pidfd_send_signal,
-                self.pidfd.as_raw_fd(),
-                libc::SIGKILL,
-                0,
-                0,
-            )
-        };
-        if rc == 0 {
-            return Ok(());
-        }
-        let err = io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(());
-        }
-        Err(err)
+        self.signal(libc::SIGKILL)
     }
 }

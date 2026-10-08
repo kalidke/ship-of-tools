@@ -20,6 +20,14 @@ impl Identity {
         Err(unavailable())
     }
 
+    pub fn acquire_own(_pid: i32, _label: &str) -> io::Result<Identity> {
+        Err(unavailable())
+    }
+
+    pub fn is_own(&self) -> bool {
+        false
+    }
+
     pub fn exited(&self, _bound: Duration) -> bool {
         false
     }

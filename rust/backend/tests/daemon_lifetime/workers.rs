@@ -35,9 +35,9 @@ fn a_distributed_worker_starts_in_a_session_of_its_own() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("start julia");
-    // Authority over the master first; the worker is learned from what the master reports and adopted while it lives.
-    fx.adopt(master.id() as i32, None, "julia master")
-        .expect("authority over the master");
+    // Authority over the master first; the worker is learned from what the master reports and only watched.
+    fx.own(master.id() as i32, "julia master")
+        .expect("an identity for the master");
     let out = master.wait_with_output().expect("the script ends");
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
@@ -95,17 +95,15 @@ async fn every_descendant_of_a_killed_daemon_ends() {
         .await
         .expect("the capsule's supervisor answers");
     let supervisor_id = fx
-        .adopt(supervisor.0, Some(supervisor.1), "the capsule's supervisor")
-        .expect("authority over the reported supervisor");
+        .watch(supervisor.0, Some(supervisor.1), "the capsule's supervisor")
+        .expect("an identity for the reported supervisor");
 
-    // The stimulus: SIGKILL to the daemon, through a pidfd of the process the case's own control connection reported.
-    let daemon = fx
-        .adopt(run.daemon, None, "the daemon")
-        .expect("authority over the daemon");
+    // The stimulus: SIGKILL, which the daemon sends itself on the case's word (the case never signals a pid it did not
+    // get back from its own spawn).
     if let Some(spin) = held.repl_spin.take() {
         spin.abort();
     }
-    fx.identity(daemon).kill().expect("SIGKILL the daemon");
+    run.daemon_does("raise:9");
     let status = run.status_within(std::time::Duration::from_secs(60)).await;
 
     fx.save("launched_status", format!("{status:?}"));

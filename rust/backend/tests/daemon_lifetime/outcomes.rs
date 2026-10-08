@@ -10,26 +10,17 @@ use crate::routes::{all_ended, ready_row, supervisor_in};
 use crate::support::{connect_and_hello, Env};
 use crate::SERIAL;
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
 use std::time::Duration;
 
-/// A guarded daemon with a ready capsule row whose supervisor the fixture holds, and the file a case writes its injected
-/// outcome to.
+/// A guarded daemon with a ready capsule row whose supervisor the fixture watches.
 struct Ready {
     run: Run,
-    outcome: PathBuf,
     supervisor: usize,
 }
 
 async fn ready(tag: &str, fx: &mut Fixture, masked: bool, extra: &[(&str, &str)]) -> Ready {
     let env = Env::new(tag);
-    let outcome = env._tmp.path().join("outcome");
-    let mut vars = vec![(
-        "SOT_TEST_MAIN_OUTCOME",
-        outcome.to_str().expect("a utf-8 path"),
-    )];
-    vars.extend_from_slice(extra);
-    let run = Run::boot(env, &vars, false, masked).await;
+    let run = Run::boot(env, extra, false, masked).await;
     run.assert_guarded();
     let (mut conn, mut next_id) = connect_and_hello(&run.env.socket_path).await;
     let (_, state_dir) = ready_row(&run.env, &mut conn, &mut next_id, "outcome").await;
@@ -38,13 +29,9 @@ async fn ready(tag: &str, fx: &mut Fixture, masked: bool, extra: &[(&str, &str)]
         .await
         .expect("the capsule's supervisor answers");
     let supervisor = fx
-        .adopt(pid, Some(created), "the capsule's supervisor")
-        .expect("authority over the reported supervisor");
-    Ready {
-        run,
-        outcome,
-        supervisor,
-    }
+        .watch(pid, Some(created), "the capsule's supervisor")
+        .expect("an identity for the reported supervisor");
+    Ready { run, supervisor }
 }
 
 #[tokio::test]
@@ -57,7 +44,7 @@ async fn a_main_outcome_becomes_the_launched_status() {
     ] {
         let mut fx = Fixture::new(&format!("main_outcome::{outcome}"));
         let mut case = ready("mout", &mut fx, false, &[]).await;
-        std::fs::write(&case.outcome, outcome).expect("write the injected outcome");
+        case.run.daemon_does(outcome);
         let status = case.run.status_within(Duration::from_secs(60)).await;
         fx.save("status", format!("{status:?}"));
         fx.save(
@@ -101,7 +88,7 @@ async fn int_and_term_end_a_stalled_daemon_whatever_mask_it_inherited() {
     ] {
         let mut fx = Fixture::new(&format!("stalled_signal::{signal}::{masked}"));
         let mut case = ready("msig", &mut fx, masked, &[]).await;
-        std::fs::write(&case.outcome, "stall").expect("write the injected outcome");
+        case.run.daemon_does("stall");
         // The injected stall takes effect within a poll of the outcome file: it has taken effect once a new connection's
         // hello goes unanswered.
         let mut stalled = false;

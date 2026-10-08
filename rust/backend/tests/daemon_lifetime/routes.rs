@@ -100,7 +100,7 @@ pub async fn spin_in_repl(
 }
 
 /// The identities of a tree once it has reported, each opened while it lives.
-pub async fn adopt_tree(fx: &mut Fixture, tree: &Tree, forking: bool, what: &str) -> Vec<usize> {
+pub async fn watch_tree(fx: &mut Fixture, tree: &Tree, forking: bool, what: &str) -> Vec<usize> {
     let pids = poll_until(
         || async { tree.pids(forking) },
         Duration::from_secs(120),
@@ -109,8 +109,8 @@ pub async fn adopt_tree(fx: &mut Fixture, tree: &Tree, forking: bool, what: &str
     .await;
     pids.into_iter()
         .map(|(name, pid)| {
-            fx.adopt(pid, None, &format!("{what} {name}"))
-                .expect("authority over a process the tree reported")
+            fx.watch(pid, None, &format!("{what} {name}"))
+                .expect("an identity for a process the tree reported")
         })
         .collect()
 }
