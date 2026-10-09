@@ -47,9 +47,6 @@ end
         @test Bonito.HTTP.header(page, "Referrer-Policy") == "no-referrer"
         @test occursin("data:", body)                 # the file travels inside the page
         @test !occursin("/assets/", body)             # and no asset route is named
-        # PAGE-PORT: a remote frontend opens the page at a port of its own computer, so the page's websocket must follow
-        # the page's own origin. Bonito's websocket setup takes `relative_url(server, "")`, and "./" names no origin.
-        @test Bonito.HTTPServer.relative_url(server, "") == "./"
 
         # Bonito's asset route would answer with the file to any account that can compute this key from the file's path.
         asset_key = bytes2hex(sha1(abspath(file))) * "-" * basename(file)

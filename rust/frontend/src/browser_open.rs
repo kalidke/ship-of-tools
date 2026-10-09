@@ -6,7 +6,8 @@
 //! ([`sot_log::identity::peer_owner::serve_own`]) with a `302` to the page, then closes. Another account's connection
 //! is closed before a byte is read, and anything but a `GET` is closed unanswered and does not spend the redirect; with
 //! no browser after [`REDIRECT_TTL`] the listener closes. A remote frontend's page proxy (`pages.rs`) already holds the
-//! page's port when this runs, so one `Location` serves a local and a remote frontend.
+//! page's port when this runs, and the address it is handed is the one its caller opens: the daemon's on a local
+//! frontend, the page proxy's on a remote one (`ensure_proxy_for_url`).
 
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::Arc;

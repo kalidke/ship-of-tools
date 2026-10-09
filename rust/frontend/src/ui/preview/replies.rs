@@ -488,7 +488,7 @@ impl State {
     pub(crate) fn on_pluto_opened(&mut self, event_host: HostKey, result: Result<String, String>) {
         match result {
             Ok(url) => {
-                if let Some(url) = self.ensure_proxy_for_url(&event_host, &url) {
+                if let Some(url) = self.ensure_proxy_for_url(&event_host, &url, crate::ui::page_proxy::PageSource::Served) {
                     let origin = crate::browser_open::origin_of(&url);
                     if let Err(e) = crate::browser_open::open_page(&url) {
                         tracing::warn!(error = %e, page = %origin,
@@ -511,7 +511,7 @@ impl State {
     pub(crate) fn on_docs_opened(&mut self, event_host: HostKey, result: Result<String, String>) {
         match result {
             Ok(url) => {
-                if let Some(url) = self.ensure_proxy_for_url(&event_host, &url) {
+                if let Some(url) = self.ensure_proxy_for_url(&event_host, &url, crate::ui::page_proxy::PageSource::Served) {
                     let origin = crate::browser_open::origin_of(&url);
                     if let Err(e) = crate::browser_open::open_page(&url) {
                         tracing::warn!(error = %e, page = %origin,
@@ -534,7 +534,7 @@ impl State {
     pub(crate) fn on_video_opened(&mut self, event_host: HostKey, result: Result<String, String>) {
         match result {
             Ok(url) => {
-                if let Some(url) = self.ensure_proxy_for_url(&event_host, &url) {
+                if let Some(url) = self.ensure_proxy_for_url(&event_host, &url, crate::ui::page_proxy::PageSource::Served) {
                     let origin = crate::browser_open::origin_of(&url);
                     if let Err(e) = crate::browser_open::open_page(&url) {
                         tracing::warn!(error = %e, page = %origin,

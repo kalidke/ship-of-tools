@@ -18,8 +18,9 @@ daemon's page serving; charter: rust/backend/src/pages/CLAUDE.md.
 - A connection holds one prefix site, named by a fresh nonce at every open; a re-open drops the old nonce, so a stale
   link 404s (`set_root`).
 - A connection holds at most one pool port and every open mints a new secret; the first request authenticates by
-  `?secret=` and gets an HttpOnly, SameSite=Strict cookie named for the port, and anything else is 403 (`handle_conn`,
-  secrets compared with `ct_eq`).
+  `?secret=` and gets an HttpOnly, SameSite=Strict cookie named for the open, not the port (`pool_cookie_name`: one
+  browser can hold two sites at one pool port number), and anything else is 403 (`handle_conn`, secrets compared with
+  `ct_eq`).
 - Once `spawn_pool` ran, a pool port is assigned only from the ports it bound (`assign_pool_port`).
 - A request resolves by `resolve_and_open` in the order R0-R6: ordinary files only under the content root; a link only
   when git tracks it, a data root is declared, its target lies under one and the file stays inside it; the final open

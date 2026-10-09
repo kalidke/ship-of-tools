@@ -35,9 +35,10 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   since quarto runs `QUARTO_JULIA` for an `engine: julia` document even then; so a host without julia renders no
   document through quarto. The site's `git` child runs through `Signal::spawn_std` (`run_git`).
 - A window's relay page proxy opens the same generated relay endpoint as its control connection, with a handoff hello and proxy.connect before the existing byte splice.
-- A remote window serves a daemon's page on a loopback port the OS assigns it, one per host and daemon port, and opens
-  the daemon's URL with only the port replaced; `proxy.connect` names the daemon's port (`bind_proxy_listener`,
-  `with_loopback_port`, `PageListener`). A port number held on the window's computer never stops a page (ADR 0035,
+- A remote window serves a page a daemon op returned (`docs.open`, `video.open`, `pluto.open`) on a loopback port the
+  OS assigns it, one per host and daemon port, and opens the URL with only the port replaced; `proxy.connect` names the
+  daemon's port (`bind_proxy_listener`, `with_loopback_port`, `PageListener`, `armed_url`). A URL user code announced
+  or `open_url` named keeps the daemon's number and is refused when that number is taken (`PageSource`; ADR 0035,
   PAGE-PORT update).
 - `.git` and `..` are never served, and a link is followed only when git tracks it and its target lies under a
   declared data root (`site/` `resolve_and_open`).

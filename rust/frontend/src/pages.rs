@@ -9,9 +9,9 @@
 //! listener carries its OWN target (never one baked-in default-host
 //! address for every port — that was the cross-host figure defect: a page
 //! served by a non-default host's daemon had nowhere to proxy through). The
-//! browser still opens a plain `http://127.0.0.1:<port>/…` URL, whose port is
-//! this window's listener's, bound where the OS assigns it, not the daemon's
-//! (PAGE-PORT); the listener pipes
+//! browser still opens a plain `http://127.0.0.1:<port>/…` URL; for a page a
+//! daemon op served its port is this window's listener's, bound where the OS
+//! assigns it, not the daemon's (PAGE-PORT, `PageSource`); the listener pipes
 //! each browser connection to the right daemon, which dials the real service
 //! (the daemon half validates the port + does the dialing —
 //! `backend/src/pages/proxy.rs`).
@@ -114,13 +114,6 @@ pub fn spawn_proxy_manager(rt: &tokio::runtime::Runtime, mut listener_rx: Unboun
     rt.spawn(async move {
         while let Some(armed) = listener_rx.recv().await {
             let PageListener { listener: std_listener, daemon_port: port, dial: target, token, gate, arm } = armed;
-            let local = match std_listener.local_addr() {
-                Ok(a) => a.port(),
-                Err(e) => {
-                    tracing::warn!(port, error = %e, "proxy: listener with no local_addr; dropping");
-                    continue;
-                }
-            };
             // The GPU thread already set it non-blocking; from_std needs that.
             let listener = match tokio::net::TcpListener::from_std(std_listener) {
                 Ok(l) => l,
@@ -129,7 +122,7 @@ pub fn spawn_proxy_manager(rt: &tokio::runtime::Runtime, mut listener_rx: Unboun
                     continue;
                 }
             };
-            tracing::info!(port, local, %target, "proxy: accepting browser connections for backend port");
+            tracing::info!(port, %target, "proxy: accepting browser connections for backend port");
             tokio::spawn(serve_page_listener(listener, port, target, token, gate, arm));
         }
         tracing::debug!("proxy: listener channel closed; manager exiting");

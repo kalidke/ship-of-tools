@@ -52,6 +52,16 @@ mod pool_tests {
         assert_eq!(p5, p3);
         reset();
     }
+
+    /// PAGE-PORT: one browser can hold two sites at one pool port number (two daemons' pools through a remote window's
+    /// page proxy), and cookies are not separated by port, so each open's cookie has a name of its own and a second
+    /// site's first response never overwrites the first's cookie.
+    #[test]
+    fn two_opens_of_one_pool_port_number_name_their_cookies_apart() {
+        let (a, b) = ("0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210");
+        assert_ne!(pool_cookie_name(a), pool_cookie_name(b));
+        assert_eq!(pool_cookie_name(a), "sot_pool_0123456789abcdef");
+    }
 }
 
 #[cfg(test)]

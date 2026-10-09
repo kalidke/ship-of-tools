@@ -15,6 +15,16 @@ pub(in crate::ui) enum ProxyTarget {
     Dial(crate::pages::PageDial, Option<String>),
 }
 
+/// Where a page URL came from, which decides the port this window may serve it on (PAGE-PORT). `Served`: the reply of a
+/// daemon page op (`docs.open`, `video.open`, `pluto.open`), whose servers name no origin of their own, so the page opens
+/// at any port. `Announced`: a URL user code announced (`wglshow`, a `BrowserView`) or an `open_url` command named; such
+/// a page may name its own address, so it is reached at the daemon's port number or not at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ui) enum PageSource {
+    Served,
+    Announced,
+}
+
 impl State {
     /// Where (if anywhere) a proxy listener for `host`'s pages should dial.
     /// Pulled out of `ensure_proxy_for_url` so the decision is unit-tested
@@ -57,18 +67,40 @@ impl State {
         }
     }
 
-    /// This window's listener for the daemon page `url`, its port, and the URL the browser opens to reach it. The listener is
-    /// 127.0.0.1 at a port the OS assigns, never the URL's own port number: that number names a port on the daemon's
-    /// computer, and a window box that runs its own daemon holds the same preferred page ports (PAGE-PORT). The URL
-    /// keeps everything but its port. Non-blocking, as the manager's `from_std` needs.
-    pub(in crate::ui) fn bind_proxy_listener(url: &str) -> std::io::Result<(std::net::TcpListener, u16, String)> {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    /// This window's listener for the daemon page `url`, its port, and the URL the browser opens to reach it. A `Served`
+    /// page's listener is 127.0.0.1 at a port the OS assigns, since the URL's own number names a port on the daemon's
+    /// computer and a window box that runs its own daemon holds the same preferred page ports; its URL keeps everything
+    /// but the port. An `Announced` page's listener takes the URL's own number, so a taken number is an `AddrInUse`
+    /// error. Non-blocking, as the manager's `from_std` needs.
+    pub(in crate::ui) fn bind_proxy_listener(
+        url: &str,
+        source: PageSource,
+    ) -> std::io::Result<(std::net::TcpListener, u16, String)> {
+        let not_a_page = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a loopback page URL");
+        let daemon_port = sot_protocol::page_url::loopback_port_from_url(url).ok_or_else(not_a_page)?;
+        let port = match source {
+            PageSource::Served => 0,
+            PageSource::Announced => daemon_port,
+        };
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
         listener.set_nonblocking(true)?;
         let local = listener.local_addr()?.port();
-        let opened = sot_protocol::page_url::with_loopback_port(url, local).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a loopback page URL")
-        })?;
+        let opened = sot_protocol::page_url::with_loopback_port(url, local).ok_or_else(not_a_page)?;
         Ok((listener, local, opened))
+    }
+
+    /// The URL to open for a page this window already armed a listener for, by (`host`, `daemon_port`), re-arming that
+    /// listener since the daemon may have refused the port since; `None` when nothing is armed for the pair. Keyed by
+    /// host as well as port: two daemons serving one port number reach two listeners.
+    pub(in crate::ui) fn armed_url(
+        ensured: &HashMap<(HostKey, u16), (u16, std::sync::Arc<crate::pages::Arm>)>,
+        host: &HostKey,
+        daemon_port: u16,
+        url: &str,
+    ) -> Option<String> {
+        let (local, arm) = ensured.get(&(host.clone(), daemon_port))?;
+        arm.reopen();
+        sot_protocol::page_url::with_loopback_port(url, *local)
     }
 
     /// ADR 0035: before opening a backend-served loopback URL in the browser,
@@ -81,17 +113,24 @@ impl State {
     /// `host` is the row's OWNING host (every call site already carries this
     /// — `event_host` off the announcement, or the `OpenUrl` command's
     /// `from_host`), so a figure served by a non-default host's daemon is
-    /// proxied against THAT daemon, not silently skipped.
+    /// proxied against THAT daemon, not silently skipped. `source` says where
+    /// the URL came from, which decides the listener's port (`PageSource`).
     ///
     /// Returns the URL the caller opens in the browser, or `None` when it must
-    /// not open one. A proxied page's URL names this frontend's listener
-    /// (`bind_proxy_listener`), so it differs from the daemon's in its port alone;
-    /// any other URL is returned as given. Every path that returns `None` has
-    /// already written why to `self.status`, or logged it.
-    /// `#[must_use]` so a new call site can't open the daemon's URL, whose port
-    /// on this computer is someone else's.
+    /// not open one. A proxied `Served` page's URL names this frontend's
+    /// listener, so it differs from the daemon's in its port alone; any other
+    /// URL is returned as given. Every path that returns `None` has already
+    /// written why to `self.status`, or logged it: opening anyway at a port
+    /// held by an unknown local listener renders someone else's page looking
+    /// entirely normal. `#[must_use]` so a new call site can't open the
+    /// daemon's URL after a refusal.
     #[must_use]
-    pub(in crate::ui) fn ensure_proxy_for_url(&mut self, host: &HostKey, url: &str) -> Option<String> {
+    pub(in crate::ui) fn ensure_proxy_for_url(
+        &mut self,
+        host: &HostKey,
+        url: &str,
+        source: PageSource,
+    ) -> Option<String> {
         let target = Self::resolve_proxy_target(
             host,
             &self.proxy_capable_hosts,
@@ -109,17 +148,32 @@ impl State {
             ProxyTarget::Dial(dial, token) => (dial, token),
         };
         let gate = self.hosts.link_gates.entry(host.clone()).or_default().clone();
-        let tx = self.proxy_listener_tx.as_ref()?; // past NotNeeded a proxy IS needed, and there's no manager to arm one
+        let Some(tx) = self.proxy_listener_tx.as_ref() else {
+            tracing::warn!(%host, "proxy: no listener manager to arm one; not opening");
+            return None;
+        };
         let Some(daemon_port) = sot_protocol::page_url::loopback_port_from_url(url) else {
             return Some(url.to_string()); // nothing to proxy, so nothing to arm
         };
-        let key = (host.clone(), daemon_port);
-        if let Some((local, arm)) = self.proxy_ensured.get(&key) {
-            arm.reopen(); // dial again: the daemon may have refused the port since
-            return sot_protocol::page_url::with_loopback_port(url, *local);
+        if let Some(opened) = Self::armed_url(&self.proxy_ensured, host, daemon_port, url) {
+            return Some(opened);
         }
-        let (listener, local, opened) = match Self::bind_proxy_listener(url) {
+        let (listener, local, opened) = match Self::bind_proxy_listener(url, source) {
             Ok(bound) => bound,
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                // An Announced page keeps the daemon's number, and something here already holds it. Occupancy is not
+                // ownership: opening would render whatever that is, looking like the page meant. Not cached, so the
+                // next open binds if the holder has gone.
+                tracing::warn!(
+                    daemon_port,
+                    "proxy: port already bound by an UNKNOWN local listener — not ours; not opening"
+                );
+                self.status = format!(
+                    "port {daemon_port} is held by another local process — not opening (could be the wrong page)"
+                );
+                self.window.request_redraw();
+                return None;
+            }
             Err(e) => {
                 tracing::warn!(daemon_port, error = %e, "proxy: bind failed; not opening");
                 self.status = format!("page proxy: could not bind a local port · {e}");
@@ -140,8 +194,8 @@ impl State {
             tracing::warn!(daemon_port, "proxy: manager gone; not arming");
             return None;
         }
-        self.proxy_ensured.insert(key, (local, arm));
-        tracing::info!(daemon_port, local, %dial, "proxy: bound local listener for backend page");
+        self.proxy_ensured.insert((host.clone(), daemon_port), (local, arm));
+        tracing::info!(daemon_port, local, ?source, %dial, "proxy: bound local listener for backend page");
         Some(opened)
     }
 }
@@ -266,19 +320,54 @@ mod tests {
         );
     }
 
-    /// PAGE-PORT: the daemon's page port held on this computer (as a window box's own daemon holds 1235 and 1236) no
-    /// longer stops the page: the window's listener takes a port of its own, and the URL it opens differs from the
+    /// PAGE-PORT: a Served page whose daemon port is held on this computer (as a window box's own daemon holds 1235
+    /// and 1236) still opens: the window's listener takes a port of its own, and the URL it opens differs from the
     /// daemon's in that port alone.
     #[test]
-    fn a_page_whose_port_is_held_here_opens_at_the_windows_own_port() {
+    fn a_served_page_whose_port_is_held_here_opens_at_the_windows_own_port() {
         let holder = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let held = holder.local_addr().unwrap().port();
         let url = format!("http://127.0.0.1:{held}/site/index.html?secret=s#top");
-        let (listener, local, opened) =
-            State::bind_proxy_listener(&url).expect("a held daemon port must not stop the page");
+        let (listener, local, opened) = State::bind_proxy_listener(&url, PageSource::Served)
+            .expect("a held daemon port must not stop a served page");
         assert_eq!(listener.local_addr().unwrap().port(), local);
         assert_ne!(local, held);
         assert_eq!(opened, format!("http://127.0.0.1:{local}/site/index.html?secret=s#top"));
-        assert!(State::bind_proxy_listener("http://192.0.2.5:1236/").is_err(), "only a loopback page URL is rewritten");
+        assert!(
+            State::bind_proxy_listener("http://192.0.2.5:1236/", PageSource::Served).is_err(),
+            "only a loopback page URL is rewritten"
+        );
+    }
+
+    /// An Announced page may name its own address, so it is reached at the daemon's port number or not at all: a held
+    /// number is `AddrInUse` (which `ensure_proxy_for_url` refuses visibly), and a free one is bound as is.
+    #[test]
+    fn an_announced_page_keeps_the_daemons_port_number() {
+        let holder = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let held = holder.local_addr().unwrap().port();
+        let refused = State::bind_proxy_listener(&format!("http://127.0.0.1:{held}/"), PageSource::Announced);
+        assert_eq!(refused.err().map(|e| e.kind()), Some(std::io::ErrorKind::AddrInUse));
+        drop(holder);
+        let url = format!("http://127.0.0.1:{held}/app");
+        let (_listener, local, opened) = State::bind_proxy_listener(&url, PageSource::Announced).unwrap();
+        assert_eq!((local, opened), (held, url));
+    }
+
+    /// Two daemons serving one port number reach two listeners: the reuse path is keyed by host and daemon port, and
+    /// it re-arms the listener it finds.
+    #[test]
+    fn two_hosts_on_one_daemon_port_reach_two_listeners() {
+        let arm_a = std::sync::Arc::new(crate::pages::Arm::default());
+        let arm_b = std::sync::Arc::new(crate::pages::Arm::default());
+        let ensured = HashMap::from([
+            (("host-a".to_string(), 1236), (50001, std::sync::Arc::clone(&arm_a))),
+            (("host-b".to_string(), 1236), (50002, std::sync::Arc::clone(&arm_b))),
+        ]);
+        let url = "http://127.0.0.1:1236/n/index.html";
+        let open = |host: &str| State::armed_url(&ensured, &host.to_string(), 1236, url);
+        assert_eq!(open("host-a").as_deref(), Some("http://127.0.0.1:50001/n/index.html"));
+        assert_eq!(open("host-b").as_deref(), Some("http://127.0.0.1:50002/n/index.html"));
+        assert_eq!(open("host-c"), None);
+        assert_eq!(State::armed_url(&ensured, &"host-a".to_string(), 1235, url), None);
     }
 }

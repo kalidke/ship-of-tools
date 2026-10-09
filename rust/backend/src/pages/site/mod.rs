@@ -417,6 +417,14 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The pool cookie's name for one open: `sot_pool_` and the first half of the open's secret. Cookies are not separated
+/// by port, and one browser can hold two sites at one pool port number (two daemons' pools, reached through a remote
+/// window's page proxy at two ports of its own; PAGE-PORT), so the name follows the open, never the port. The name
+/// carries nothing the cookie's value does not.
+fn pool_cookie_name(secret: &str) -> String {
+    format!("sot_pool_{}", secret.get(..secret.len() / 2).unwrap_or(secret))
+}
+
 /// Look up `name`'s value in a `Cookie:` header value (`name1=val1; name2=val2`).
 /// Used by the pool-port auth check above.
 fn cookie_value<'a>(cookie_hdr: &'a str, name: &str) -> Option<&'a str> {
@@ -496,12 +504,11 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
             // way the shared `:1236` server does (a root-relative site needs
             // the WHOLE path space). So the ONE-TIME secret `docs.open` put
             // in the URL's query string authenticates the FIRST request; that
-            // response sets an HttpOnly cookie (name includes the port —
-            // cookies aren't port-scoped, so distinct sites on different pool
-            // ports need distinct cookie names) so every later same-page
+            // response sets an HttpOnly cookie named for this open
+            // (`pool_cookie_name`) so every later same-page
             // asset fetch — which can't carry a query string — authenticates
             // via the cookie instead. Neither present or valid: 403.
-            let cookie_name = format!("sot_pool_secret_{port}");
+            let cookie_name = pool_cookie_name(&secret);
             let cookie_ok = cookie_hdr
                 .as_deref()
                 .and_then(|c| cookie_value(c, &cookie_name))
