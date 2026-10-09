@@ -20,7 +20,9 @@ nothing after an abrupt end (ADR 0050). Part of lifecycle; charter: rust/backend
   descendant of the guard, and a capsule supervisor it starts is never drained.
 - The guard is the launched process and the daemon is its child: the guard is a subreaper with all catchable signals
   blocked, forwards all but SIGCHLD to the daemon through a signalfd (made in `install` before the fork, so its failure
-  refuses the boot), stops itself after forwarding TSTP, TTIN or TTOU (a shell then sees the job stopped), reaps, and
+  refuses the boot), stops itself only when it sees the daemon stopped by TSTP, TTIN or TTOU (a shell then sees the job
+  stopped; a daemon the signal cannot stop, because it ignores it or its process group is orphaned, runs on, and the guard
+  with it) and continues the daemon when it is itself continued, reaps, and
   after the daemon is reaped kills and reaps its own children until `waitpid` says ECHILD, within `DRAIN_BOUND`. It exits
   as the daemon did, so the launcher, systemd and a test see the daemon's status at the launched pid.
 - The drain lists only the guard's own children (`PPid:` is the guard) and only the guard reaps them, so a listed pid is

@@ -21,6 +21,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+/// What a launcher leaves the launched process beyond the defaults.
+#[derive(Clone, Copy)]
+enum Launch {
+    Defaults,
+    /// INT, TERM and HUP blocked, as a launcher's mask can leave them.
+    Masked,
+    /// TSTP ignored, as a launcher can leave it; the daemon inherits the ignore.
+    TstpIgnored,
+    /// A session of its own, as a service has: its process group is orphaned, so the kernel discards a TSTP to the daemon.
+    NewSession,
+}
+
 /// A real guarded daemon: its launched process (the guard), the daemon the control connection reported, and its log.
 pub struct Run {
     pub env: Env,
@@ -55,15 +67,21 @@ fn peer_pid(socket: &Path) -> Option<i32> {
     (rc == 0 && cred.pid > 0).then_some(cred.pid)
 }
 
+/// Field `n` after the command name in `/proc/<pid>/stat` (0 is the state, 1 the parent): an observation, never a signal.
+fn stat_field(pid: i32, n: usize) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    Some(
+        stat.rsplit_once(')')?
+            .1
+            .split_whitespace()
+            .nth(n)?
+            .to_string(),
+    )
+}
+
 /// A process's parent, from `/proc/<pid>/stat`.
 pub fn parent_of(pid: i32) -> Option<i32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    stat.rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .nth(1)?
-        .parse()
-        .ok()
+    stat_field(pid, 1)?.parse().ok()
 }
 
 impl Run {
@@ -110,7 +128,7 @@ impl Run {
     /// [`boot`](Self::boot) for the daemon binary at `program`, a copy of the built `sotd` in an install-shaped folder.
     pub async fn boot_at(env: Env, program: &Path, extra: &[(&str, &str)]) -> Run {
         let (launched, daemon, log) =
-            Self::spawn_daemon(&env, extra, false, false, Some(program)).await;
+            Self::spawn_daemon(&env, extra, false, Launch::Defaults, Some(program)).await;
         Run {
             env,
             log,
@@ -126,7 +144,7 @@ impl Run {
         env: &Env,
         extra: &[(&str, &str)],
         own_group: bool,
-        masked: bool,
+        launch: Launch,
         program: Option<&Path>,
     ) -> (Child, i32, PathBuf) {
         let log = env._tmp.path().join(format!(
@@ -139,9 +157,10 @@ impl Run {
         if own_group {
             cmd.process_group(0);
         }
-        if masked {
+        match launch {
+            Launch::Defaults => {}
             // SAFETY: the closure runs between fork and exec and makes one async-signal-safe mask call over a local set.
-            unsafe {
+            Launch::Masked => unsafe {
                 cmd.pre_exec(|| {
                     let mut set: libc::sigset_t = std::mem::zeroed();
                     libc::sigemptyset(&mut set);
@@ -151,7 +170,23 @@ impl Run {
                     libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
                     Ok(())
                 });
-            }
+            },
+            // SAFETY: the closure runs between fork and exec and makes one async-signal-safe disposition call.
+            Launch::TstpIgnored => unsafe {
+                cmd.pre_exec(|| {
+                    libc::signal(libc::SIGTSTP, libc::SIG_IGN);
+                    Ok(())
+                });
+            },
+            // SAFETY: the closure runs between fork and exec and makes one async-signal-safe call.
+            Launch::NewSession => unsafe {
+                cmd.pre_exec(|| {
+                    if libc::setsid() < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            },
         }
         let launched = cmd.spawn().expect("spawn sotd");
         let socket = env.socket_path.clone();
@@ -168,8 +203,17 @@ impl Run {
     }
 
     pub async fn boot(env: Env, extra: &[(&str, &str)], own_group: bool, masked: bool) -> Run {
+        let launch = if masked {
+            Launch::Masked
+        } else {
+            Launch::Defaults
+        };
+        Self::launch(env, extra, own_group, launch).await
+    }
+
+    async fn launch(env: Env, extra: &[(&str, &str)], own_group: bool, launch: Launch) -> Run {
         let (launched, daemon, log) =
-            Self::spawn_daemon(&env, extra, own_group, masked, None).await;
+            Self::spawn_daemon(&env, extra, own_group, launch, None).await;
         let run = Run {
             env,
             log,
@@ -189,7 +233,7 @@ impl Run {
             "the predecessor's launched process has not ended"
         );
         let (launched, daemon, log) =
-            Self::spawn_daemon(&self.env, extra, false, false, None).await;
+            Self::spawn_daemon(&self.env, extra, false, Launch::Defaults, None).await;
         self.launched = Some(launched);
         self.daemon = daemon;
         self.log = log;
@@ -487,12 +531,13 @@ fn stopped(pid: i32) -> bool {
     }
 }
 
-/// A terminal's Ctrl-Z (TSTP to the launched process) stops the daemon and the guard with it, so a shell sees the job
-/// stopped; a continue resumes both and the daemon serves again.
+/// A terminal's Ctrl-Z (TSTP to the launched process of a shell's job, a process group of its own) stops the daemon and
+/// the guard with it, so a shell sees the job stopped; a continue of the guard alone resumes both, even with a SIGCHLD
+/// pending before it, and the daemon serves again.
 #[tokio::test]
 async fn a_stop_of_the_guard_stops_the_daemon_with_it() {
     let _serial = SERIAL.lock().await;
-    let mut run = Run::start("gstop", &[], false).await;
+    let mut run = Run::start("gstop", &[], true).await;
     run.assert_guarded();
     let guard = run.guard_pid();
     // SAFETY: a signal to the guard this test spawned.
@@ -506,8 +551,12 @@ async fn a_stop_of_the_guard_stops_the_daemon_with_it() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // SAFETY: a signal to the guard this test spawned.
-    unsafe { libc::kill(guard, libc::SIGCONT) };
+    let daemon_stopped = stat_field(run.daemon, 0).as_deref() == Some("T");
+    // SAFETY: signals to the guard this test spawned. The guard reads the SIGCHLD first (the lower number).
+    unsafe {
+        libc::kill(guard, libc::SIGCHLD);
+        libc::kill(guard, libc::SIGCONT);
+    }
     let serving = tokio::time::timeout(
         Duration::from_secs(10),
         connect_and_hello(&run.env.socket_path),
@@ -518,6 +567,10 @@ async fn a_stop_of_the_guard_stops_the_daemon_with_it() {
     assert!(
         guard_stopped,
         "the guard did not stop with its daemon:\n{said}"
+    );
+    assert!(
+        daemon_stopped,
+        "the daemon was not stopped while its guard was:\n{said}"
     );
     assert!(
         serving,
@@ -532,6 +585,61 @@ async fn a_stop_of_the_guard_stops_the_daemon_with_it() {
         Some(0),
         "the close after the continue: {status:?}"
     );
+}
+
+/// A TSTP that cannot stop the daemon stops neither: the guard stops only when it sees its daemon stopped, and goes on
+/// reaping, so the close that follows ends both with no continue. Two launches leave a TSTP unable to stop the daemon: a
+/// shell's job whose launcher left TSTP ignored (the daemon inherits the ignore), and a service's own session, whose
+/// process group is orphaned, so the kernel discards the TSTP the guard forwards.
+#[tokio::test]
+async fn a_tstp_that_cannot_stop_the_daemon_stops_neither() {
+    let _serial = SERIAL.lock().await;
+    let mut wrong = Vec::new();
+    for (tag, own_group, launch) in [
+        ("gtstpi", true, Launch::TstpIgnored),
+        ("gtstps", false, Launch::NewSession),
+    ] {
+        let mut run = Run::launch(Env::new(tag), &[], own_group, launch).await;
+        run.assert_guarded();
+        let guard = run.guard_pid();
+        // SAFETY: a signal to the guard this test spawned.
+        unsafe { libc::kill(guard, libc::SIGTSTP) };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut guard_stopped = false;
+        while Instant::now() < deadline && !guard_stopped {
+            guard_stopped = stopped(guard);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let serving = tokio::time::timeout(
+            Duration::from_secs(10),
+            connect_and_hello(&run.env.socket_path),
+        )
+        .await
+        .is_ok();
+        close_by_lease(&run.env).await;
+        let status = run.status_within(Duration::from_secs(30)).await;
+        if status.is_none() {
+            // SAFETY: a signal to the guard this test spawned; a stopped guard reaps nothing until it is continued.
+            unsafe { libc::kill(guard, libc::SIGCONT) };
+        }
+        if !serving {
+            wrong.push(format!(
+                "{tag}: the daemon did not serve after a TSTP that cannot stop it"
+            ));
+        }
+        if guard_stopped {
+            wrong.push(format!("{tag}: the guard stopped while its daemon ran on"));
+        }
+        if status.and_then(|s| s.code()) != Some(0) {
+            wrong.push(format!(
+                "{tag}: the close after the TSTP, with no continue, ended {status:?}"
+            ));
+        }
+        if !wrong.is_empty() {
+            wrong.push(format!("{tag}: the daemon said:\n{}", run.said()));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 #[tokio::test]

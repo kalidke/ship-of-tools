@@ -131,13 +131,23 @@ fn close_descriptors_above_stderr_but(keep: i32) {
     }
 }
 
-/// Read the blocked signals until the daemon is reaped; forward all but SIGCHLD to the daemon, and stop with it on a
-/// job-control stop (a terminal's Ctrl-Z, `kill -TSTP`) so the shell sees the job stopped; the continue that resumes the
-/// guard is forwarded too. Returns the daemon's wait status.
+/// Read the blocked signals until the daemon is reaped and forward all but SIGCHLD to the daemon. The guard stops only
+/// when it sees the daemon stopped by a job-control signal (a terminal's Ctrl-Z, `kill -TSTP`, a background read or
+/// write), so a shell sees the job stopped; a daemon the signal cannot stop (it ignores it, or its process group is
+/// orphaned, as a service's is) runs on, and so does the guard, reaping.
+/// Only a continue resumes the guard, so it continues the daemon first, whatever else is pending. Returns the daemon's wait
+/// status.
 fn wait_for_daemon(daemon: libc::pid_t, sfd: i32) -> libc::c_int {
     loop {
         if let (Some(status), _) = reap(daemon) {
             return status;
+        }
+        if stopped_by_job_control(daemon) {
+            // SAFETY: the guard's own stop, then a continue to its unreaped child, whose pid is still its own.
+            unsafe {
+                libc::raise(libc::SIGSTOP);
+                libc::kill(daemon, libc::SIGCONT);
+            }
         }
         let mut info = std::mem::MaybeUninit::<libc::signalfd_siginfo>::zeroed();
         // SAFETY: one read of one signalfd_siginfo into a buffer of that size, from the signalfd just made.
@@ -154,14 +164,29 @@ fn wait_for_daemon(daemon: libc::pid_t, sfd: i32) -> libc::c_int {
         // SAFETY: the read filled the whole structure.
         let signo = unsafe { info.assume_init() }.ssi_signo as libc::c_int;
         if signo != libc::SIGCHLD {
-            // SAFETY: the daemon is this guard's unreaped child, so its pid is still its own; the stop is the guard's own.
-            unsafe {
-                libc::kill(daemon, signo);
-                if matches!(signo, libc::SIGTSTP | libc::SIGTTIN | libc::SIGTTOU) {
-                    libc::raise(libc::SIGSTOP);
-                }
-            }
+            // SAFETY: the daemon is this guard's unreaped child, so its pid is still its own.
+            unsafe { libc::kill(daemon, signo) };
         }
+    }
+}
+
+/// Whether the daemon is stopped by TSTP, TTIN or TTOU. The daemon's stop sends the guard a SIGCHLD, so the loop asks
+/// after it; the report stays for a later wait (`WNOWAIT`).
+fn stopped_by_job_control(daemon: libc::pid_t) -> bool {
+    // SAFETY: a non-blocking, non-consuming wait on this guard's own child into a local siginfo.
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        libc::waitid(
+            libc::P_PID,
+            daemon as libc::id_t,
+            &mut info,
+            libc::WSTOPPED | libc::WNOHANG | libc::WNOWAIT,
+        ) == 0
+            && info.si_pid() == daemon
+            && matches!(
+                info.si_status(),
+                libc::SIGTSTP | libc::SIGTTIN | libc::SIGTTOU
+            )
     }
 }
 
