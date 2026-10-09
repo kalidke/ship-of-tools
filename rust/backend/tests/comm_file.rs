@@ -86,7 +86,10 @@ fn holder(inbox: &Path, h: &str, body: &str) -> Child {
 /// Whether process `pid` is stopped: its state, `T`, is the first field after the paren that closes its command name.
 fn stopped(pid: u32) -> bool {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-    stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().next()) == Some("T")
+    let state = stat
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().next());
+    state == Some("T")
 }
 
 /// Sourced after `comm-lib.sh`: the script arm's daemon is one that is not
