@@ -246,37 +246,35 @@ fn nonzero_and_missing_commands_take_recoverable_fallback() {
     }
 }
 
-/// A trash that moves the file and then outlives its budget: the file is in the system trash, not an error and not a
-/// fallback of a file that is no longer there.
+/// A trash that does not confirm and leaves no file is reported as exactly that: neither system trash nor a fallback of a
+/// file that is no longer there. The command removes the file (another process's delete) or moves it into its own trash
+/// folder (a trash stopped after its move), and then outlives its budget; the two are the same to the caller.
 #[cfg(unix)]
 #[test]
-fn a_trash_that_moved_the_file_before_its_bound_is_system_trash() {
-    let fixture = Fixture::new(
-        "#!/bin/sh\nD=${1%/*}\nmkdir -p \"$D/system-trash\"\nmv \"$D/source.txt\" \"$D/system-trash/\"\nwhile [ ! -e \"$2\" ]; do sleep 0.02; done\n",
-    );
-    let log = sot_log::test_log::capture();
-    let result = trash_with_command(
-        signal(),
-        &mut fixture.command(),
-        &fixture.source(),
-        fixture.dir.path(),
-        Duration::from_millis(500),
-        |child| assert!(child.confirmed_reaped()),
-    );
-    assert!(
-        result.expect("a moved file is not an error").is_none(),
-        "a moved file was reported as a fallback"
-    );
-    assert!(!fixture.source().exists());
-    assert_eq!(
-        std::fs::read(fixture.dir.path().join("system-trash/source.txt")).unwrap(),
-        b"recoverable bytes"
-    );
-    assert!(
-        log.text().contains("the file is already gone"),
-        "{}",
-        log.text()
-    );
+fn an_unconfirmed_trash_that_left_no_file_is_not_reported_as_trashed() {
+    for (what, body) in [
+        ("removed", "#!/bin/sh\nrm \"${1%/*}/source.txt\"\nwhile [ ! -e \"$2\" ]; do sleep 0.02; done\n"),
+        ("moved", "#!/bin/sh\nD=${1%/*}\nmkdir -p \"$D/system-trash\"\nmv \"$D/source.txt\" \"$D/system-trash/\"\nwhile [ ! -e \"$2\" ]; do sleep 0.02; done\n"),
+    ] {
+        let fixture = Fixture::new(body);
+        let log = sot_log::test_log::capture();
+        let result = trash_with_command(
+            signal(),
+            &mut fixture.command(),
+            &fixture.source(),
+            fixture.dir.path(),
+            Duration::from_millis(500),
+            |child| assert!(child.confirmed_reaped()),
+        );
+        let error = match result {
+            Ok(trashed) => panic!("{what}: a file already gone was reported as trashed: {trashed:?}"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(error.contains("whether the system trash holds it is not known"), "{what}: {error}");
+        assert!(!fixture.source().exists(), "{what}");
+        assert!(!fixture.dir.path().join(".sot-trash").exists(), "{what}: the fallback ran");
+        assert!(log.text().contains("not reported as trashed"), "{what}: {}", log.text());
+    }
 }
 
 #[test]

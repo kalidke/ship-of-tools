@@ -149,7 +149,9 @@ const TRASH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// gio, a non-zero exit or a wait past [`TRASH_WAIT`] routes to the in-workspace
 /// fallback, and the reason is logged. Only a confirmed zero exit returns `None`
 /// (system trash); `Some(destination)` is the fallback — the caller
-/// surfaces which path was taken (no quiet substitution).
+/// surfaces which path was taken (no quiet substitution). An unconfirmed trash
+/// after which the file is gone is an error that says so: where the file went
+/// is not confirmed.
 pub fn trash_file(abs: &Path, workspace_root: &Path) -> Result<Option<std::path::PathBuf>> {
     trash_with_command(
         crate::lifecycle::child_signal::process(),
@@ -202,13 +204,16 @@ fn trash_with_command(
             if waited.is_ok_and(|status| status.is_some_and(|status| status.success())) {
                 return Ok(None);
             }
-            // A trash that did not confirm may still have moved the file before it was stopped: a file already gone is
-            // in the system trash, and there is nothing left for the fallback to move.
+            // A trash that did not confirm may have moved the file before it was stopped, or another process removed it:
+            // a file already gone is neither confirmed in the system trash nor left for the fallback to move.
             if std::fs::symlink_metadata(abs)
                 .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
             {
-                tracing::warn!("system trash did not confirm, and the file is already gone: it is in the system trash");
-                return Ok(None);
+                tracing::warn!("system trash did not confirm, and the file is already gone: not reported as trashed");
+                return Err(anyhow!(
+                    "the system trash did not confirm, and {} is already gone: whether the system trash holds it is not known",
+                    abs.display()
+                ));
             }
         }
         Err(error) => tracing::warn!(%error, "system trash spawn failed; taking recoverable fallback"),
