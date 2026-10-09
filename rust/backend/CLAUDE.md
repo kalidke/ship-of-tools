@@ -31,10 +31,11 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
 
 ## Rules
 - `main` is synchronous and builds its runtime itself (`runtime`) after the serving prologue, so that what must exist before
-  any thread can, in this order: on Unix the durable parent (`rows::spawn::durable::proxy::start_before_runtime`), once,
-  never restarted; then on Linux the lifetime guard (`lifecycle::daemon_children::guard::install`), which forks the
-  daemon as the child of a process that kills what the daemon started when it ends, and refuses the boot unless the
-  process has one thread; then the thread that catches INT and TERM (`lifecycle::signal_exit::install`), which refuses the
+  any thread can, in this order: on Linux the check that the process has one thread
+  (`lifecycle::daemon_children::guard::require_one_thread`), which refuses the boot otherwise; on Unix the durable parent
+  (`rows::spawn::durable::proxy::start_before_runtime`), once, never restarted; then on Linux the lifetime guard
+  (`lifecycle::daemon_children::guard::install`), which forks the daemon as the child of a process that kills what the
+  daemon started when it ends; then the thread that catches INT and TERM (`lifecycle::signal_exit::install`), which refuses the
   boot if it cannot be installed. The runtime, the relay refresh and every other thread come after these. `main` blocks on
   `server::run` through `complete_main`, which turns the main future's result into its exit code (Ok 0, an error 1, a
   panic 101) while the runtime still exists, and every exit of the serving daemon takes `lifecycle::shutdown::exit`.

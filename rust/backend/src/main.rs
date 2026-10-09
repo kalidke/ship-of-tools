@@ -455,6 +455,20 @@ fn main() -> Result<()> {
     // Every session's SOTD_BIN is this start's own path, made absolute once, now (agents::env::own_sotd_bin).
     let _ = agents::env::own_sotd_bin();
 
+    // The prologue's forks below (the durable parent's intermediate, then the guard) need a process with one thread: a
+    // boot with a second one is refused before either fork.
+    #[cfg(target_os = "linux")]
+    {
+        #[cfg(feature = "daemon-lifetime-faults")]
+        if std::env::var_os("SOT_TEST_PROLOGUE_THREAD").is_some() {
+            std::thread::spawn(|| std::thread::sleep(std::time::Duration::from_secs(3600)));
+        }
+        if let Err(e) = lifecycle::daemon_children::guard::require_one_thread() {
+            eprintln!("sotd: {e} -- refusing to start");
+            lifecycle::shutdown::exit(1);
+        }
+    }
+
     // The capsule-only birth parent, started once, here, before the runtime and before any thread: it is forked through
     // an intermediate that exits, so it descends from nothing this daemon starts later, and it is never started again.
     // A failure is logged and every capsule start then says so (`rows::spawn::durable::proxy`).
@@ -467,15 +481,9 @@ fn main() -> Result<()> {
     // (`lifecycle::daemon_children::guard`). It needs a process with one thread, so it comes after the durable parent
     // and before the runtime, the relay refresh and every other thread.
     #[cfg(target_os = "linux")]
-    {
-        #[cfg(feature = "daemon-lifetime-faults")]
-        if std::env::var_os("SOT_TEST_PROLOGUE_THREAD").is_some() {
-            std::thread::spawn(|| std::thread::sleep(std::time::Duration::from_secs(3600)));
-        }
-        if let Err(e) = lifecycle::daemon_children::guard::install() {
-            eprintln!("sotd: {e} -- refusing to start");
-            lifecycle::shutdown::exit(1);
-        }
+    if let Err(e) = lifecycle::daemon_children::guard::install() {
+        eprintln!("sotd: {e} -- refusing to start");
+        lifecycle::shutdown::exit(1);
     }
 
     // INT and TERM take the fire every other controlled exit takes and then end the daemon by the signal itself, from a

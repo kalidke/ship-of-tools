@@ -34,13 +34,23 @@ fn errno() -> io::Error {
     io::Error::last_os_error()
 }
 
-/// Fork the guard. Returns in the daemon (the child); the guard (the parent) never returns. An error means no guard
-/// exists and the boot must stop.
-pub fn install() -> io::Result<()> {
+/// Refuse unless this process has exactly one thread. The serving prologue's forks (the durable parent's intermediate,
+/// then the guard) run ordinary code in the child, which is safe only when no other thread can hold a lock at the fork, so
+/// `main` asks this once, before the first of them.
+pub fn require_one_thread() -> io::Result<()> {
     let threads = thread_count()?;
     if threads != 1 {
-        return Err(io::Error::other(format!("the lifetime guard needs a single-threaded process, and this one has {threads} threads")));
+        return Err(io::Error::other(format!(
+            "the serving prologue needs a single-threaded process, and this one has {threads} threads"
+        )));
     }
+    Ok(())
+}
+
+/// Fork the guard. Returns in the daemon (the child); the guard (the parent) never returns. An error means no guard
+/// exists and the boot must stop. The process has one thread (`require_one_thread`, asked by `main` before the durable
+/// parent's fork, and nothing in between starts one).
+pub fn install() -> io::Result<()> {
     // An inherited SIG_IGN on SIGCHLD would let the kernel reap the guard's children and void the drain's pid safety.
     // The guard's signal source is made here, before the fork, so a failure refuses the boot with no guard and no daemon.
     // SAFETY: plain signal-disposition, mask and signalfd calls over locally owned values, in a single-threaded process.

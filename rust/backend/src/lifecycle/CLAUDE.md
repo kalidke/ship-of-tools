@@ -21,7 +21,7 @@ computer's sessions end (ADR 0050).
   `exited`, `exited_pid`.
 - Which process starts stand outside the containment: the process-spawns group of `rust/clippy.toml` and each
   exception's allow.
-- The Linux lifetime guard: `daemon_children::guard` (`install`, `drain`, `guard_pid`).
+- The Linux lifetime guard: `daemon_children::guard` (`require_one_thread`, `install`, `drain`, `guard_pid`).
 - The bounds and exit codes in `sot_protocol::ops::lease`.
 - The window's half, rust/frontend/src/lease.rs.
 

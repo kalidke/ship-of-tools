@@ -15,8 +15,9 @@ nothing after an abrupt end (ADR 0050). Part of lifecycle; charter: rust/backend
 
 ## Rules
 - The guard is a process, never a thread: `install` runs in the serving prologue after the durable parent's start and
-  before the runtime, and refuses the boot unless the process has exactly one thread. The durable parent is therefore
-  never a descendant of the guard, and a capsule supervisor it starts is never drained.
+  before the runtime. `main` asks `require_one_thread` before the durable parent's fork and refuses the boot unless the
+  process has exactly one thread, so both forks run in a single-threaded process. The durable parent is therefore never a
+  descendant of the guard, and a capsule supervisor it starts is never drained.
 - The guard is the launched process and the daemon is its child: the guard is a subreaper with all catchable signals
   blocked, forwards all but SIGCHLD to the daemon through a signalfd (made in `install` before the fork, so its failure
   refuses the boot), stops itself after forwarding TSTP, TTIN or TTOU (a shell then sees the job stopped), reaps, and

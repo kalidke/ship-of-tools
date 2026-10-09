@@ -559,12 +559,31 @@ async fn losing_the_guard_ends_the_daemon_at_once() {
     );
 }
 
+/// A boot with a second thread is refused before the prologue's first fork: no durable parent is started (its first act,
+/// the scope probe, would call the stub `systemd-run` on the case's PATH) and no daemon answers.
 #[tokio::test]
 async fn the_prologue_refuses_a_second_thread() {
     let _serial = SERIAL.lock().await;
     let env = Env::new("gthr");
     let log = env._tmp.path().join("daemon.log");
-    let mut cmd = Run::command(&env, &log, &[("SOT_TEST_PROLOGUE_THREAD", "1")], None);
+    let bin = env._tmp.path().join("stub-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let calls = bin.join("calls");
+    sot_log::test_exec::write_executable(
+        &bin.join("systemd-run"),
+        format!("#!/bin/sh\necho \"$*\" >> '{}'\nexit 1\n", calls.display()),
+    );
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut cmd = Run::command(
+        &env,
+        &log,
+        &[("SOT_TEST_PROLOGUE_THREAD", "1"), ("PATH", &path)],
+        None,
+    );
     let mut launched = cmd.spawn().expect("spawn sotd");
     let began = Instant::now();
     let status = loop {
@@ -590,6 +609,13 @@ async fn the_prologue_refuses_a_second_thread() {
     assert!(
         peer_pid(&env.socket_path).is_none(),
         "a daemon answers after a refused boot"
+    );
+    // A durable parent started before the refusal probes for its scope at once; give it the time it would need.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        !calls.exists(),
+        "a durable parent was started before the boot was refused: {}",
+        std::fs::read_to_string(&calls).unwrap_or_default()
     );
 }
 
