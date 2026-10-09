@@ -1,76 +1,145 @@
-//! A spawned `sot-capsule` that no panicking test can leave behind.
+//! A spawned `sot-capsule` that no test, panicking or killed, can leave behind.
 //!
-//! A plain `std::process::Child` is not killed when an assert panics before
-//! the test's own kill, and a `--survival normal` `run` leg outlives its
-//! supervisor by design, so killing the supervise child is not enough: the
-//! guard also sweeps every `supervise` and `run` process anchored on the
-//! test's OWN state root (its tempdir path), the sweep the backend's test
-//! `Env::drop` does, with the pattern's end anchored. Included by each test
-//! file with `#[path = "support/capsule_guard.rs"] mod capsule_guard;`.
+//! A `--survival normal` `run` leg outlives its supervisor by design (ADR 0041's adoption), so ending the
+//! supervisor is not enough, and a `Drop` never runs in a test process that is killed. The capsule therefore runs
+//! in something the kernel ends with the TEST PROCESS:
+//! - Unix: the capsule joins a process group led by a watcher, a shell that reads its stdin to EOF and then
+//!   SIGKILLs its own group. Its stdin is a pipe whose write end the guard holds; the kernel closes that end when
+//!   the test process dies by any means, so the watcher kills the group, itself last. A leg inherits the group
+//!   (nothing in `rust/log/src` sets another), so it ends with the test process, though not with its supervisor;
+//!   the producer has its own session and dies with its leg through `PR_SET_PDEATHSIG`. `Drop` closes the same
+//!   end and reaps the watcher. The group id cannot be reused before the kill: the watcher is reaped only after
+//!   it. No binary that includes this file builds on macOS, so nothing is claimed for it there.
+//! - Windows: the supervise child is put in a kill-on-close job right after it starts, and its legs, which
+//!   inherit the job, end when the test process's last handle to it closes.
+//! "Ends" means signalled: `Drop` returns once the kill is sent, so a leg may still hold its writer lock for a few
+//! milliseconds; a test that restarts on the same state folder waits on `writer.lock`. A leg adopted by a second
+//! guard's supervisor stays in the FIRST guard's group (or job), so it ends when the first guard drops.
+//! Included by each test file with `#[path = "support/capsule_guard.rs"] mod capsule_guard;`.
 
-use std::path::{Path, PathBuf};
-use std::process::Child;
+use std::process::{Child, Command};
+use std::time::{Duration, Instant};
 
 pub struct CapsuleGuard {
     child: Option<Child>,
-    exe: PathBuf,
-    state_root: PathBuf,
+    /// Unix: the process-group leader that SIGKILLs the capsule's group once its lifeline closes; see the module doc.
+    #[cfg(unix)]
+    watcher: Option<watcher::Watcher>,
+    /// Windows: the job the supervisor and everything it starts run in; the
+    /// kernel ends them all when this handle closes, after the explicit kill
+    /// and wait in `drop`. `Some` in every guard `spawn` returns.
+    #[cfg(windows)]
+    _job: Option<job::KillOnClose>,
 }
 
-/// Whether `root` is safe to build a kill pattern from: absolute, no `..`,
-/// STRICTLY below a temp dir that is not `/`, and outside the production
-/// state dirs. An empty or unanchored pattern would match every process, a
-/// production daemon included.
-pub fn sweep_root_ok(root: &Path) -> bool {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let xdg = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-    sweep_root_ok_in(root, &std::env::temp_dir(), home.as_deref(), xdg.as_deref())
+#[cfg(unix)]
+mod watcher {
+    use std::io::PipeWriter;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command, Stdio};
+
+    /// The `sh` that kills its own process group once `lifeline`'s write end is closed.
+    pub struct Watcher {
+        pub child: Child,
+        /// Held until the guard drops or the test process dies; closing it is the kill order.
+        pub lifeline: PipeWriter,
+    }
+
+    impl Watcher {
+        pub fn start() -> Watcher {
+            let (read, lifeline) = std::io::pipe().expect("make the watcher's lifeline pipe");
+            let child = Command::new("/bin/sh")
+                .args(["-c", "read _; kill -9 0"])
+                .process_group(0)
+                .stdin(read)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("start the capsule watcher");
+            Watcher { child, lifeline }
+        }
+    }
 }
 
-/// [`sweep_root_ok`] with the environment passed in. Also refuses a temp dir
-/// with no normal component (TMPDIR=`/`) and any root at or under the
-/// production state dirs.
-pub fn sweep_root_ok_in(root: &Path, tmp: &Path, home: Option<&Path>, xdg: Option<&Path>) -> bool {
-    use std::path::Component;
-    if root.as_os_str().is_empty() || !root.is_absolute() {
-        return false;
+/// A job object that kills everything in it when its last handle closes.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub struct KillOnClose(OwnedHandle);
+
+    impl KillOnClose {
+        /// A new job holding `child`, or the OS error that refused it.
+        pub fn holding(child: &std::process::Child) -> std::io::Result<KillOnClose> {
+            // SAFETY: plain Win32 calls on handles this function creates or borrows.
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let job = KillOnClose(OwnedHandle::from_raw_handle(handle as RawHandle));
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let set = SetInformationJobObject(
+                    job.0.as_raw_handle() as HANDLE,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const std::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if set == 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if AssignProcessToJobObject(job.0.as_raw_handle() as HANDLE, child.as_raw_handle() as HANDLE) == 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(job)
+            }
+        }
     }
-    if root.components().any(|c| matches!(c, Component::ParentDir)) {
-        return false;
-    }
-    if !tmp.components().any(|c| matches!(c, Component::Normal(_))) {
-        return false;
-    }
-    let mut protected = vec![PathBuf::from("/run/user")];
-    if let Some(home) = home {
-        protected.push(home.join(".local/share/sot"));
-        protected.push(home.join(".sot-comm"));
-    }
-    if let Some(xdg) = xdg {
-        protected.push(xdg.to_path_buf());
-    }
-    if protected.iter().any(|p| root.starts_with(p)) {
-        return false;
-    }
-    root.starts_with(tmp) && root != tmp
 }
 
 impl CapsuleGuard {
-    /// `state_root` is the exact path the process was given on its argv.
-    /// Panics when `sweep_root_ok` is false, so no guard with a bad root
-    /// can exist.
-    pub fn new(child: Child, state_root: impl Into<PathBuf>) -> Self {
-        Self::new_for_exe(child, env!("CARGO_BIN_EXE_sot-capsule"), state_root)
-    }
-
-    /// As [`new`], for a process launched from a copy of the binary.
-    pub fn new_for_exe(child: Child, exe: impl Into<PathBuf>, state_root: impl Into<PathBuf>) -> Self {
-        let state_root = state_root.into();
-        assert!(
-            sweep_root_ok(&state_root),
-            "CapsuleGuard refuses root {state_root:?}: it must be absolute, free of `..`, strictly below a temp dir that is not `/`, and outside the production state dirs"
-        );
-        Self { child: Some(child), exe: exe.into(), state_root }
+    /// Starts `command` (a `sot-capsule` invocation) under the guard. Panics when the capsule cannot be bound to
+    /// the test process's life; the unwind drops the guard, which ends the supervisor and, through the group or the
+    /// job, any leg already started, so no guard whose capsule could outlive its test is ever returned. Two windows,
+    /// both before any leg exists, are not covered: on Windows between the process start and its assignment to the
+    /// job, on Unix when the watcher is found dead (only the supervisor is then ended).
+    pub fn spawn(command: &mut Command) -> Self {
+        let mut guard = Self {
+            child: None,
+            #[cfg(unix)]
+            watcher: None,
+            #[cfg(windows)]
+            _job: None,
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let watcher = watcher::Watcher::start();
+            command.process_group(watcher.child.id() as i32);
+            guard.watcher = Some(watcher);
+        }
+        let started = command.spawn();
+        guard.child = Some(started.unwrap_or_else(|e| panic!("CapsuleGuard could not start {:?}: {e}", command.get_program())));
+        #[cfg(unix)]
+        {
+            // A watcher that is already gone leaves the group unwatched without a sign.
+            let alive = matches!(guard.watcher.as_mut().map(|w| w.child.try_wait()), Some(Ok(None)));
+            assert!(alive, "CapsuleGuard: the watcher of the capsule's process group ended before the capsule started");
+        }
+        #[cfg(windows)]
+        {
+            match job::KillOnClose::holding(guard.child.as_ref().expect("capsule child still held")) {
+                Ok(job) => guard._job = Some(job),
+                Err(e) => panic!("CapsuleGuard could not put the capsule in a kill-on-close job: {e}"),
+            }
+        }
+        guard
     }
 
     #[allow(dead_code)]
@@ -84,100 +153,39 @@ impl CapsuleGuard {
     }
 }
 
+/// Waits for `child` to exit, bounded: a process stuck in uninterruptible sleep must not hang the binary. `None`
+/// when it did not exit in time or could not be waited on.
+fn reap_within_bound(child: &mut Child) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Err(_) => return None,
+            Ok(None) if Instant::now() >= deadline => return None,
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
 impl Drop for CapsuleGuard {
     fn drop(&mut self) {
+        // Never panic here: a panic during unwinding aborts the process.
         if let Some(mut c) = self.child.take() {
             let _ = c.kill();
-            // Bounded: a capsule stuck in uninterruptible sleep must not hang the binary.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            while !matches!(c.try_wait(), Ok(Some(_)) | Err(_)) && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+            let _ = reap_within_bound(&mut c);
         }
-        // Never panic here: a panic during unwinding aborts the process.
-        if !sweep_root_ok(&self.state_root) {
-            return;
-        }
-        #[cfg(target_os = "linux")]
-        {
-            use std::process::{Command, Stdio};
-            use std::time::{Duration, Instant};
-            // Supervisors first each pass, so no new leg is spawned after
-            // this pass's supervisor-kill lands; repeat until a pass finds
-            // nothing or 2 s pass.
-            // The supervise child carries the exe as spawned, its legs the
-            // canonical one: sweep both spellings.
-            let mut exes = vec![self.exe.clone()];
-            if let Ok(canon) = std::fs::canonicalize(&self.exe) {
-                if canon != self.exe {
-                    exes.push(canon);
-                }
-            }
-            let sweeps: Vec<String> = exes
-                .iter()
-                .flat_map(|e| {
-                    ["supervise", "run"].map(|sub| build_leg_pgrep_pattern(e, sub, &self.state_root))
-                })
-                .collect();
-            let combined: Vec<String> = exes
-                .iter()
-                .map(|e| build_leg_pgrep_pattern(e, "(supervise|run)", &self.state_root))
-                .collect();
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                for pattern in &sweeps {
-                    let _ = Command::new("pkill")
-                        .arg("-9")
-                        .arg("-f")
-                        .arg(pattern)
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
-                }
-                if !combined.iter().any(|p| any_process_matches(p)) || Instant::now() >= deadline {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
+        #[cfg(unix)]
+        if let Some(watcher) = self.watcher.take() {
+            use std::os::unix::process::ExitStatusExt;
+            // The watcher kills the group, legs included, once the write end closes; reaping it after is what
+            // keeps the group id from being reused before that kill.
+            let watcher::Watcher { mut child, lifeline } = watcher;
+            drop(lifeline);
+            // It ends only through its own SIGKILL of the group; any other end means the group was not killed.
+            match reap_within_bound(&mut child) {
+                Some(status) if status.signal() == Some(9) => {}
+                other => eprintln!("CapsuleGuard: the capsule's watcher ended with {other:?}, not by its own SIGKILL; its process group may have survived"),
             }
         }
     }
-}
-
-/// Regex-escape a path for safe use inside an `-f` pattern (`pkill`/`pgrep`
-/// use POSIX extended regex).
-#[cfg(target_os = "linux")]
-fn regex_escape_path(path: &Path) -> String {
-    let s = path.to_string_lossy();
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        if matches!(c, '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '\\') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// The anchored `pgrep`/`pkill` pattern for a `sot-capsule` invocation:
-/// `^<escaped exe path> <subcommand> <escaped state_root>(/| |$)`; the tail
-/// keeps `/tmp/.tmpABC` from matching `/tmp/.tmpABCD`.
-#[cfg(target_os = "linux")]
-pub fn build_leg_pgrep_pattern(exe: &Path, subcommand: &str, state_root: &Path) -> String {
-    format!("^{} {subcommand} {}(/| |$)", regex_escape_path(exe), regex_escape_path(state_root))
-}
-
-/// Whether any live process's command line matches `pattern`.
-#[cfg(target_os = "linux")]
-pub fn any_process_matches(pattern: &str) -> bool {
-    use std::process::{Command, Stdio};
-    Command::new("pgrep")
-        .arg("-f")
-        .arg(pattern)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }

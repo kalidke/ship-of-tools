@@ -271,7 +271,7 @@ fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> CapsuleGuard
         // already captures and only shows on a failing test.
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise"), state_dir)
+    CapsuleGuard::spawn(&mut cmd)
 }
 
 fn wait_for_exit(child: &mut CapsuleGuard, timeout: Duration) -> std::process::ExitStatus {
@@ -361,67 +361,170 @@ mod lifecycle;
 mod authority;
 mod spawn;
 
+
+/// Names the test process that `a_killed_test_process_leaves_no_capsule_process` kills: set (to its folder) only in
+/// the child it starts, whose body is `killed_child_body`.
+const KILLED_CHILD: &str = "SOT_TEST_KILLED_CHILD";
+
+fn recorded_voyage(state_dir: &Path) -> Option<String> {
+    match journal::pointer::validate(state_dir) {
+        journal::pointer::PointerState::Valid(voyage) => Some(voyage),
+        _ => None,
+    }
+}
+
+fn writer_lock_path(state_dir: &Path, voyage: &str) -> PathBuf {
+    sot_log::supervisor::voyage_root_path(state_dir, voyage).join(sot_log::store::voyage::WRITER_LOCK)
+}
+
+/// Each probe takes its lock and drops it before returning: locks conflict between two opens in one process, so
+/// a probe that kept its lock would make the next probe of that lock read a live holder.
+fn fence_free(state_dir: &Path) -> bool {
+    journal::fence::lock_supervisor(state_dir).is_ok()
+}
+
+fn writer_free(lock: &Path) -> bool {
+    sot_log::lock_writer(lock).is_ok()
+}
+
+fn free_within(free: impl Fn() -> bool, bound: Duration) -> bool {
+    let deadline = Instant::now() + bound;
+    loop {
+        if free() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A capsule is gone when neither kernel lock it holds is held: the supervisor fence and its voyage's writer lock,
+/// both released on any death. No pid is read.
+fn capsule_gone_within(state_dir: &Path, bound: Duration) -> bool {
+    free_within(
+        || fence_free(state_dir) && recorded_voyage(state_dir).map_or(true, |v| writer_free(&writer_lock_path(state_dir, &v))),
+        bound,
+    )
+}
+
+/// A red's cleanup, run on every path after the kill: ends a supervisor and a leg that outlived their test, over
+/// their own lanes. It never panics, so the assert that follows it still reports.
+fn end_what_outlived(state_dir: &Path) {
+    use sot_log::lane::wire::{encode_mgmt_request, MgmtRequest};
+    let voyage = recorded_voyage(state_dir);
+    if state_dir.exists() && !fence_free(state_dir) {
+        if let Ok((conn, _)) = connect_and_challenge_for_test(&state_dir_hash(state_dir)) {
+            let ask = |operation_id: &str, op: SupervisorOp| {
+                let command = SupervisorRequest::Command { operation_id: operation_id.to_string(), op };
+                let _ = request_for_test(&conn, &command, Instant::now() + Duration::from_secs(30));
+            };
+            if let Some(voyage) = &voyage {
+                ask("cleanup-end", SupervisorOp::EndRun { reason: "test cleanup".into(), voyage: voyage.clone() });
+            }
+            ask("cleanup-stop", SupervisorOp::Stop);
+        }
+        free_within(|| fence_free(state_dir), Duration::from_secs(60));
+    }
+    if let Some(voyage) = voyage {
+        let lock = writer_lock_path(state_dir, &voyage);
+        if !writer_free(&lock) {
+            if let (Ok(mgmt), Ok(shutdown)) =
+                (connect_voyage_mgmt(&voyage), encode_mgmt_request(&MgmtRequest::Shutdown { reason: "test cleanup".into() }))
+            {
+                let _ = mgmt.write_all(&shutdown);
+            }
+            free_within(|| writer_free(&lock), Duration::from_secs(30));
+        }
+    }
+}
+
+/// The body that runs in the child of `a_killed_test_process_leaves_no_capsule_process`: a supervisor and its leg on
+/// the parent's state folder, an empty `ready` marker, then a wait on stdin that only the parent's kill
+/// (or its death) ends. It does not make a runtime folder: it uses the parent's, which the parent removes.
+fn killed_child_body(name: &str, dir: &Path) {
+    sot_log::test_isolated::enter(name);
+    let state_dir = dir.join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let _capsule = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn = wait_for_lane(&state_dir_hash(&state_dir), Duration::from_secs(30));
+    wait_for_ready(&conn, Duration::from_secs(90));
+    let pending = dir.join("ready.tmp");
+    std::fs::write(&pending, b"").unwrap();
+    std::fs::rename(&pending, dir.join("ready")).unwrap();
+    std::io::copy(&mut std::io::stdin(), &mut std::io::sink()).unwrap();
+}
+
+/// The test process dying by any means, SIGKILL on Linux and TerminateProcess on Windows, takes its capsule with it:
+/// the supervisor and the leg are gone within 5 s. ADR 0041's adoption is unchanged (a leg still outlives a killed
+/// supervisor); the guard binds the capsule's life to the test process, not the supervisor's to the leg's.
 #[test]
-fn the_sweep_refuses_any_root_outside_the_test_temp_dir() {
-    use capsule_guard::sweep_root_ok;
-    use capsule_guard::sweep_root_ok_in;
-    let mut bad = vec![
-        PathBuf::new(),
-        PathBuf::from("relative/dir"),
-        std::env::temp_dir(),
-        std::env::temp_dir().join("x/../.."),
-        PathBuf::from("/run/user/1000/sot"),
-    ];
-    // HOME may be unset (windows CI): skip only the HOME-based rows.
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    if let Some(home) = &home {
-        bad.push(home.join(".local/share/sot"));
-        bad.push(home.join(".sot-comm"));
+fn a_killed_test_process_leaves_no_capsule_process() {
+    const NAME: &str = "a_killed_test_process_leaves_no_capsule_process";
+    if let Some(dir) = std::env::var_os(KILLED_CHILD) {
+        killed_child_body(NAME, Path::new(&dir));
+        return;
     }
-    for root in &bad {
-        assert!(!sweep_root_ok(root), "{root:?} must be refused");
-    }
-    // A temp dir with no normal component refuses everything.
-    assert!(!sweep_root_ok_in(Path::new("/x/y"), Path::new("/"), None, None));
-    // Each protected dir refuses on its own, even inside the temp dir.
-    let tmp = std::env::temp_dir();
-    let (h, xdg) = (tmp.join("h"), tmp.join("xdg"));
-    let ok = |root: &Path| sweep_root_ok_in(root, &tmp, Some(&h), Some(&xdg));
-    assert!(ok(&h.join("x")));
-    for root in [h.join(".local/share/sot/x"), h.join(".sot-comm/x"), xdg.join("sot")] {
-        assert!(!ok(&root), "{root:?} must be refused");
-    }
-    assert!(!sweep_root_ok_in(Path::new("/run/user/1000/sot/x"), Path::new("/run"), None, None));
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
-    assert!(sweep_root_ok(dir.path()));
+    let state_dir = dir.path().join("state");
+    let ready = dir.path().join("ready");
+    let log_path = dir.path().join("child.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let (mut command, entry) = sot_log::test_isolated::test_command(NAME);
+    let mut child = command
+        .env(KILLED_CHILD, dir.path())
+        .stdin(Stdio::piped())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .expect("start the test process to kill");
+    let child_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
+
+    let before_kill = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        poll_until(
+            || match child.try_wait().unwrap() {
+                Some(exit) => panic!("the test process ended ({exit}) before its capsule was ready:\n{}", child_log()),
+                None => std::fs::read_to_string(&ready).ok(),
+            },
+            // The child's own bounds (30 s lane, 90 s Ready) plus its start, so its specific failure is the one reported.
+            Duration::from_secs(150),
+            "the test process to start its capsule",
+        );
+        assert!(!fence_free(&state_dir), "precondition: the supervisor holds its fence");
+        let voyage = recorded_voyage(&state_dir).expect("precondition: the supervisor recorded a voyage");
+        assert!(!writer_free(&writer_lock_path(&state_dir, &voyage)), "precondition: the leg holds the writer lock");
+    }));
+    let _ = child.kill();
+    let reaped = sot_log::test_isolated::wait_until(&mut child, Instant::now() + Duration::from_secs(5));
+    let gone = before_kill.is_ok() && reaped.is_ok() && capsule_gone_within(&state_dir, Duration::from_secs(5));
+    end_what_outlived(&state_dir);
+
+    if let Err(unwind) = before_kill {
+        std::panic::resume_unwind(unwind);
+    }
+    let exit = reaped.unwrap_or_else(|e| panic!("{e}"));
+    assert!(!exit.success(), "the killed test process reported success: {exit}");
+    entry.assert_once(child.id());
+    assert!(gone, "the capsule outlived its killed test process (the fence or the writer lock was still held 5 s after the kill)");
 }
 
-#[cfg(unix)]
-#[test]
-#[should_panic(expected = "CapsuleGuard refuses root")]
-fn a_capsule_guard_cannot_be_built_with_a_bad_root() {
-    let child = Command::new("true").spawn().expect("spawn true");
-    let _guard = capsule_guard::CapsuleGuard::new(child, std::env::temp_dir());
-}
-
-/// A panicking test must leave no capsule process: not the supervisor, and
-/// not the `--survival normal` leg that outlives it by design.
-#[cfg(target_os = "linux")]
+/// A panicking test must leave no capsule process: not the supervisor, and not the `--survival normal` leg that
+/// outlives it by design.
 #[test]
 fn a_panicking_test_leaves_no_capsule_process() {
-    use capsule_guard::{any_process_matches, build_leg_pgrep_pattern};
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    let exe = capsule_exe();
-    let supervise = build_leg_pgrep_pattern(&exe, "supervise", &state_dir);
-    let run = build_leg_pgrep_pattern(&exe, "run", &state_dir);
-    println!("sweep patterns: {supervise} | {run}");
 
-    let child = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "exec sleep 600"]);
-    poll_until(|| any_process_matches(&run).then_some(true), Duration::from_secs(10), "a run leg to exist");
+    let child = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn = wait_for_lane(&state_dir_hash(&state_dir), Duration::from_secs(30));
+    wait_for_ready(&conn, Duration::from_secs(90));
+    drop(conn);
 
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _held = child;
@@ -429,9 +532,7 @@ fn a_panicking_test_leaves_no_capsule_process() {
     }));
     assert!(unwound.is_err());
 
-    poll_until(
-        || (!any_process_matches(&supervise) && !any_process_matches(&run)).then_some(true),
-        Duration::from_secs(3),
-        "no supervise or run process to survive the unwind",
-    );
+    let gone = capsule_gone_within(&state_dir, Duration::from_secs(5));
+    end_what_outlived(&state_dir);
+    assert!(gone, "the capsule outlived its guard (the fence or the writer lock was still held 5 s after the unwind)");
 }

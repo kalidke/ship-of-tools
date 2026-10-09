@@ -40,9 +40,9 @@ use std::path::PathBuf;
 // `current_uid()` call site in this module (and every downstream
 // `sot_protocol::{runtime_sot_dir, current_uid}` re-export in
 // `rust/backend/src/paths.rs`) keeps compiling unchanged. See
-// `sot_log::host::state_dir` for the doc comments, the tests, and the new
-// `SOT_RUNTIME_DIR` propagation seam (`state_dir::runtime_dir`) this move
-// exists to enable.
+// `sot_log::host::state_dir` for the doc comments, the tests, and the
+// `SOT_RUNTIME_DIR` override (`state_dir::runtime_dir`; nothing in
+// production sets it).
 pub use sot_log::host::state_dir::{current_uid, is_private_dir, runtime_sot_dir};
 
 /// Conventional per-user session endpoint for a backend with the given
@@ -136,10 +136,13 @@ pub fn is_plain_host_name(s: &str) -> bool {
 /// spelling the comm scripts and the frontend already speak. The label is
 /// never a caller's: every caller here means the one local daemon, and a
 /// `label` parameter they all passed `"sot"` to was how a Windows box came
-/// to dial a pipe name nothing listens on. The daemon's own precedence
-/// (`main.rs`'s own arg parsing): `$SOT_SOCKET`, a bare path, beats a
-/// label; else `session_socket_path($SOT_BACKEND_LABEL)` when that is set
-/// (the shell-side spelling of `--label`); else
+/// to dial a pipe name nothing listens on. The precedence: `$SOT_SOCKET`, a
+/// bare path, beats a label, as in the daemon's own arg parsing (`main.rs`);
+/// else `session_socket_path($SOT_BACKEND_LABEL)` when that is set, a step
+/// of a client: the daemon reads no environment variable for its label, and
+/// this function and the shell's `sot_daemon_endpoint` take that step
+/// (`scripts/restart-backend.sh` passes the variable to the daemon as
+/// `--label`); else
 /// `session_socket_path(`[`crate::local_daemon_label`]`())`, byte-for-byte
 /// what this returned before the overrides existed. **Never** the literal
 /// `sot` as a default — on Windows the daemon's label is `local`, and

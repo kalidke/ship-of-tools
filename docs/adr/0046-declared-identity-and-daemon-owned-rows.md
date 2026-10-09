@@ -408,6 +408,32 @@ tmux; a capsule-capable install needs no tmux.
    Surface: one op, one `sot-fe reauth` verb, one skill; no new shared entry, no new
    persisted field.
 
+   **Update 2026-10-08 (0.6.6): the resumed transcript must be the row's
+   own.** Claude Code's `--resume <id>` opens a transcript from any project
+   folder and appends to it, so an id from another row restarted this row on
+   that row's conversation, two legs writing one file: an older
+   `sot-fe reauth <workspace> <account>`, run in one row against another,
+   sent its own session's id. `check` now also refuses a `resume` that is not
+   a session id (a lowercase UUID; `resume_unreachable`), so claude never
+   reads an id as a flag and no id is joined as a path, and one
+   whose transcript was not started in the row's root (`resume_not_this_row`):
+   the first `cwd` the transcript records must be the same directory as
+   `project_root`, compared by kernel identity (`sot_log::host::dir_identity`),
+   so spelling, case, separators and symlinks do not matter. The account moves only on the row
+   `check` validated (`set_account_on`): a row replaced while the reauth waits for its guard is refused. A conversation
+   belongs to the row it was started in, and `workspace.create` gives a
+   directory to one of a daemon's rows, so no client can make a daemon resume
+   one of its rows' conversations in another of its rows. That holds only for
+   rows the one-root gate kept apart: the gate is per daemon and `projects` is
+   one per home, so a transcript started in the row's directory by anything
+   else passes: a row of another daemon sharing the home, a terminal or
+   headless claude run there, a row from a toml older than the gate, or the
+   same directory through a bind mount. The cost, stated: a row whose conversation was started in another
+   directory (a project moved by hand with its transcripts) cannot be
+   reauthed. `sot-fe reauth` still names only the row it runs in: a row's
+   live conversation id is known only inside the row, and the daemon cannot
+   tell it from the root's other transcripts.
+
 ## Consequences
 
 - **Wire, additive.** `HelloReq {host, role, instance, name}` alongside

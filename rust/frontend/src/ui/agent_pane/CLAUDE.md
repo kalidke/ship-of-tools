@@ -5,7 +5,9 @@ resolved. The code also calls it the "BL pane" and the "session pane". Part of t
 rust/frontend/src/ui/CLAUDE.md. Record: ADR 0042 and 0045.
 
 ## Files
-- `mod.rs`: declares the four files and re-exports their items to `ui`.
+- `mod.rs`: declares the agent-pane modules and re-exports their items to `ui`.
+- `presentation.rs`: the private request-owned candidate and one-shot receipt for a checkpointed current pane after its frame is submitted and presented.
+- `presentation_tests.rs`: checkpoint, visible-area, origin and one-shot presentation behavior.
 - `screen.rs`: which screen the pane paints (`PaneFeed`, `HeldPaneScreen`, `PaneScreen`, `pane_screen_choice`), the
   reason overlay and the discard notice, and the frame's work for it: `State::session_pane_view` and `State::sync_pane_pty_size`.
 - `attach.rs`: the attach client (`PaneAttachClient`), `State::attach_session_to_bl`, its event pump, and the warm pool
@@ -20,11 +22,10 @@ the pane paints while that happens.
 
 ## Rules
 - Input reaches only the selected row's client or is counted as discarded (`send_pane_input`).
-- Never two pane clients alive: the old one is shut down off the UI thread before the new attach
-  (`spawn_pane_attach_term`).
-- The pane never paints a new client's empty screen before its checkpoint (`pane_screen_choice`).
+- The active pane slot holds at most one client. Departing live checkpointed clients may remain alive in the warm pool with viewed=false; clients selected for retirement are shut down off the UI thread, and replacement attachment does not wait for shutdown or worker exit (`spawn_pane_attach_term`, `park_warm_attach`, `shutdown_detached`).
+- While a new client is awaiting its checkpoint, a held departing screen is retained when available; without a hold the pane may paint the client's initially empty screen, which does not count as attach completion.
 - The warm pool keeps at most the host's row count, capped at `WARM_ATTACH_CAP`, per host (`WarmAttachPool::park`).
 - The reason overlay never reads the shared status line (`pane_terminal_reason_text`).
-- The first frame that paints a new client's own screen marks it presented, once per attach (`session_pane_view`).
+- A presentation receipt requires the current live attached client's checkpoint, a nonempty painted pane and a known request origin, and is emitted once only after frame presentation.
 - Only a live client is resized with the pane, and a resize snaps its scrollback to live (`sync_pane_pty_size`).
 - A cold pane constructs its one `DaemonLaneEndpoint` with `new`; a warm hit reuses the existing client (`spawn_pane_attach_term`).

@@ -323,6 +323,15 @@ async fn spill_exec_figures(ws: &crate::rows::Workspace, run_id: &String, image_
     figures
 }
 
+/// Closes the drawer run `announce_exec_started` opened, with a `done` frame the shim did not send.
+fn close_exec_run(frame_tx: &tokio::sync::broadcast::Sender<ReplFrameMsg>, frame_ws: &str, eval_id: u64, elapsed_ms: u64) {
+    let _ = frame_tx.send(ReplFrameMsg {
+        eval_id,
+        workspace_id: Some(frame_ws.to_string()),
+        frame: json!({ "kind": "done", "eval_id": eval_id, "elapsed_ms": elapsed_ms }),
+    });
+}
+
 /// `repl.execute` (ADR 0033): run a `.jl` file (or code chunk) in a workspace's
 /// persistent REPL and return the COLLECTED output as one authoritative
 /// response. See `op::REPL_EXECUTE`. The output is gathered off a dedicated
@@ -386,9 +395,11 @@ pub async fn handle_repl_execute(
     let (frame_ws, frame_tx) = announce_exec_started(&req, &ws, workspaces, eval_id, &run_id, display);
 
     let repl = ws.repl(workspaces.repl_frame_tx());
+    let submitted_at = std::time::Instant::now();
     let (reply_rx, collector) = match repl.execute(inner_op, inner_payload).await {
         Ok(x) => x,
         Err(e) => {
+            close_exec_run(&frame_tx, &frame_ws, eval_id, submitted_at.elapsed().as_millis() as u64);
             return Ok(exec_err_frame(
                 req_id,
                 &run_id,
@@ -406,6 +417,7 @@ pub async fn handle_repl_execute(
         let acc = collector.lock().unwrap_or_else(|e| e.into_inner());
         (acc.frames.clone(), acc.truncated)
     };
+    let shim_closed_run = frames.iter().any(|f| f.get("kind").and_then(|v| v.as_str()) == Some("done"));
 
     // Terminal error carried by the shim's res (bad_request / io_error /
     // repl_exception) — authoritative over frame inspection.
@@ -424,15 +436,11 @@ pub async fn handle_repl_execute(
         _ => frame_error_kind.unwrap_or("ok"),
     };
 
-    // Phase 2: finalize the drawer entry for outcomes where the shim's own
-    // `done` frame won't arrive — timeout (the run is still going) or repl_died
-    // (child gone). For ok/error/busy the shim already emitted `done`.
-    if outcome == "timeout" || outcome == "repl_died" {
-        let _ = frame_tx.send(ReplFrameMsg {
-            eval_id,
-            workspace_id: Some(frame_ws.clone()),
-            frame: json!({ "kind": "done", "eval_id": eval_id, "elapsed_ms": elapsed_ms }),
-        });
+    // Phase 2: every report closes the run it announced. The shim's own `done`
+    // is the close when the collector holds one; otherwise (a timeout, a dead
+    // child, or a terminal res with no frames) the handler supplies it.
+    if !shim_closed_run {
+        close_exec_run(&frame_tx, &frame_ws, eval_id, elapsed_ms);
     }
 
     // Spill figures to files so the response never inlines base64 (1 MiB cap).
@@ -459,6 +467,6 @@ pub async fn handle_repl_execute(
     )])
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "execute_tests.rs"]
 mod tests;

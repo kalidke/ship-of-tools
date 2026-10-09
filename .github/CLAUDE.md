@@ -10,14 +10,15 @@ scripts/CLAUDE.md.
 
 ## Workflows
 - `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `docs/tools/**`, `comm/**`, `agents/**` and the file
-  itself) and dispatch. Jobs: `test` (build and test on ubuntu, windows and macos, the PowerShell 5.1 parse and the
+  itself) and dispatch. Jobs: `test` (build and test on ubuntu, windows and macos, after `npm ci` for the MathJax helper's modules, the PowerShell 5.1 parse and the
   `scripts/tests/` suites on their legs, the comm hermetic suites on ubuntu, the agents CLI suites on ubuntu (the comm list names `test-stage-bin.sh`; among them `test-ccx-launch.sh`, which proves ccx's default handle), and on ubuntu the steps "Check the layout"
   (`scripts/tests/check-layout.sh` with `check-layout.allow`) and "Test the layout tools" (its two self-tests)), `conpty-windows-2022` (ConPTY and capsule
   tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the latest published tag
-  into a clean container). The step "Test selected Rust bodies" runs the portable real-libtest shell proofs on the Linux, Windows and macOS legs; it invokes no daemon or peer suite. Its Linux leg also runs the candidate gate's finite selected-job and runtime-listing proofs; the full candidate gate is not invoked by that proof step.
+  into a clean container). The step "Test selected Rust bodies" runs the portable real-libtest shell proofs on the Linux, Windows and macOS legs; it invokes no daemon or peer suite. Its Linux leg also runs the candidate gate's finite selected-job and runtime-listing proofs; the full candidate gate is not invoked by that proof step. The ubuntu leg's step "Test L3 storage exhaustion" makes a private 64 MiB ext4 loop volume, runs `fault_storage` on it with `--include-ignored`, then unmounts it, releases the loop device and removes its folder; sudo is used only in that step, and a failed setup or teardown fails the job.
   The heartbeat context-deadline suite runs independently on Ubuntu, macOS and Windows Git Bash. Its per-behavior and sensitivity receipts distinguish fixture entry, actual release times, hook exit, both EOFs and positive lifetime cleanup; MSYS budget coverage remains separate from native Python P5 and its termination acceptance gate.
   window-close-windows and window-close-macos run the opt-in main-thread native window_close suite on hosted Windows and macOS; a missing body, native window or required observation is not a passing result. Ordinary native close must exit 0 before 2.5 seconds without the backstop; deliberate stalled teardown must end under the three-second backstop with the decided code.
   window-minimized-windows and window-minimized-macos run the native ten-minute minimized-window event-progress check on hosted Windows and macOS; a runner without a usable native window is not a passing result.
+  pane-timing-windows and pane-timing-macos build sotd and sot-capsule, then run the opt-in native pane_timing suite on hosted Windows and macOS on its stand-in route: fifteen cold Ready attaches over an `ssh:<hub>/<host>` dial whose ssh is a `sotd stdio-bridge` stand-in, each within `CONNECT_BOUND` from the request to the presented frame, three absent-supervisor attaches recorded apart, and one frame failed before present that completes nothing. The real two-login relayed route runs locally on a Linux host with sshd. A runner without a usable native window is not a passing result.
 - `workflows/CI.yml` ("CI"): push to `main` (paths `core/**`, `julia/**`, `docs/**`, `src/**`, `test/**`, `Project.toml`,
   `Manifest.toml` and the file itself) and dispatch. Jobs: `test` (the root package on Julia 1.12 and pre-release),
   `julia-packages` (core, kernel, repl, the two preview plugins and SotLog), `docs` (builds the manual with
@@ -44,7 +45,7 @@ scripts/CLAUDE.md.
 - Function length is gated: the `rust.yml` step "Function length" runs clippy's `too_many_lines` (more than 100 code
   lines) as an error, `vt100-ctt` excluded because it denies `clippy::all` in its own source. A function over the limit
   carries `#[allow(clippy::too_many_lines, reason = "...")]`, and the step "Function length allowances can only fall"
-  pins how many such allows `rust/` holds (not `rust/vt100`); removing one means lowering that number in the same commit.
+  pins how many such allows `rust/` holds (not `rust/vt100`); removing one means lowering that number in the same commit. It also reads the feature-gated native targets (test-pane-timing, test-window-close).
 - Disallowed methods are gated: the `rust.yml` step "Disallowed methods" runs clippy's `disallowed_methods` over every
   library, binary and build script on all three legs. `rust/clippy.toml` holds one array in labelled groups, each
   opening with its rule. A sanctioned site carries `#[allow(clippy::disallowed_methods, reason = "...")]` on the one

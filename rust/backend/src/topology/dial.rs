@@ -17,12 +17,45 @@ enum Conn {
     #[cfg(unix)]
     Unix(std::os::unix::net::UnixStream),
     #[cfg(windows)]
-    Pipe(std::fs::File),
+    Pipe(std::sync::Arc<sot_log::lane::pipe_win::PipeClient>),
     /// An `ssh:` endpoint's connection IS the spawned child (C2/C3,
     /// `sot_protocol::topology::ssh_bridge`) -- there is no separate "connect" step
     /// the way a socket has one, so this variant holds the not-yet-split
     /// [`ContainedStd`](crate::lifecycle::child_signal::ContainedStd) rather than a stream.
     Bridged(crate::lifecycle::child_signal::ContainedStd),
+}
+
+/// A blocking `Read`/`Write` view of a connected `PipeClient`, for `dial_and_call`'s `BufReader` and writer. Both halves
+/// share one `Arc<PipeClient>`; `read` and `write_all` are blocking from the caller's view and reject a concurrent
+/// same-direction submission, so the writer and the reply reader never share one slot.
+#[cfg(windows)]
+struct PipeIo(std::sync::Arc<sot_log::lane::pipe_win::PipeClient>);
+
+#[cfg(windows)]
+impl std::io::Read for PipeIo {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.0.read(buf).map_err(std::io::Error::other)
+    }
+}
+
+#[cfg(windows)]
+impl std::io::Write for PipeIo {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.0
+            .write_all(buf)
+            .map(|()| buf.len())
+            .map_err(std::io::Error::other)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Kills and reaps the ssh child `Conn::Bridged` hands to [`Conn::split`]
@@ -115,7 +148,8 @@ impl Conn {
     /// child alive for as long as those halves are in use. A socket or
     /// pipe's two halves are the stream and its `try_clone()`, exactly
     /// what `try_clone()` + the old `Read`/`Write` impls gave
-    /// `dial_and_call` before; `Bridged` takes the child's own stdin and
+    /// `dial_and_call` before (a connected pipe's two halves are two `PipeIo`
+    /// views of one client); `Bridged` takes the child's own stdin and
     /// stdout out of the `Child` instead of dialing anything.
     fn split(self) -> std::io::Result<(Box<dyn std::io::Write + Send>, Box<dyn std::io::Read + Send>, Option<ChildGuard>)> {
         match self {
@@ -125,10 +159,11 @@ impl Conn {
                 Ok((Box::new(s), Box::new(r), None))
             }
             #[cfg(windows)]
-            Conn::Pipe(f) => {
-                let r = f.try_clone()?;
-                Ok((Box::new(f), Box::new(r), None))
-            }
+            Conn::Pipe(client) => Ok((
+                Box::new(PipeIo(std::sync::Arc::clone(&client))),
+                Box::new(PipeIo(client)),
+                None,
+            )),
             Conn::Bridged(mut child) => {
                 let stdin = child.stdin.take().expect("the ssh command pipes stdin");
                 let stdout = child.stdout.take().expect("the ssh command pipes stdout");
@@ -164,11 +199,10 @@ fn connect(endpoint: &str, sig: &'static crate::lifecycle::child_signal::Signal)
     if let Some(p) = endpoint.strip_prefix("unix:") {
         #[cfg(unix)]
         {
-            // ADR 0049, User isolation: only a socket in this account's private folder.
-            sot_log::identity::connect_own::own_socket(std::path::Path::new(p)).map_err(|e| format!("{endpoint}: {e}"))?;
-            #[allow(clippy::disallowed_methods, reason = "own_socket runs first, above")]
-            return std::os::unix::net::UnixStream::connect(p)
-                .map(Conn::Unix)
+            // ADR 0049, User isolation: `connect_own` checks the listener's cached account after its fixed-budget
+            // connect, before client I/O.
+            return sot_log::identity::connect_own::connect_own(std::path::Path::new(p))
+                .map(|client| Conn::Unix(client.into_stream()))
                 .map_err(|e| format!("{endpoint}: {e}"));
         }
         #[cfg(not(unix))]
@@ -180,19 +214,11 @@ fn connect(endpoint: &str, sig: &'static crate::lifecycle::child_signal::Signal)
     if let Some(p) = endpoint.strip_prefix("pipe:") {
         #[cfg(windows)]
         {
-            use std::os::windows::fs::OpenOptionsExt;
-            use std::os::windows::io::AsHandle;
-            // Identification level: whatever serves the pipe can read who this is but never act as this account, so
-            // nothing it does before the check below can use this account's rights.
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .security_qos_flags(windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION)
-                .open(p)
+            // ADR 0049, User isolation: `connect_own` opens the pipe at identification level and checks the serving
+            // process's account before a byte is written.
+            let client = sot_log::identity::connect_own::connect_own(std::path::Path::new(p))
                 .map_err(|e| format!("{endpoint}: {e}"))?;
-            // ADR 0049, User isolation: only a pipe this account serves, checked before a byte is written.
-            sot_log::identity::connect_own::own_pipe(file.as_handle(), std::path::Path::new(p)).map_err(|e| format!("{endpoint}: {e}"))?;
-            return Ok(Conn::Pipe(file));
+            return Ok(Conn::Pipe(std::sync::Arc::new(client)));
         }
         #[cfg(not(windows))]
         {
@@ -550,5 +576,86 @@ pub(crate) mod tests {
         assert!(err.contains("unix:/pipe:/ssh:"), "error should name all three schemes, got: {err}");
         let tcp = connect("tcp:127.0.0.1:1", crate::lifecycle::child_signal::process()).err().expect("a tcp endpoint is not dialable");
         assert!(tcp.contains("unrecognised endpoint spelling"), "{tcp}");
+    }
+
+    /// ADR 0049, User isolation: `connect`'s `unix:` arm refuses a socket another OS account listens on, and that
+    /// listener gets no byte.
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_another_account_listens_on_is_refused() {
+        if !sot_log::test_isolated::run_isolated(
+            "topology::dial::tests::a_socket_another_account_listens_on_is_refused",
+        ) {
+            return;
+        }
+        let Some(foreign) = sot_log::test_foreign::ForeignListener::start(false) else {
+            return;
+        };
+        let refused = match connect(
+            &format!("unix:{}", foreign.path.display()),
+            crate::lifecycle::child_signal::process(),
+        ) {
+            Ok(_) => String::from("connected"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            foreign.finish(),
+            0,
+            "the dial sent another account's listener bytes"
+        );
+        assert!(
+            refused.contains("another OS account listens on this socket"),
+            "{refused}"
+        );
+    }
+
+    /// ADR 0049, User isolation: `connect`'s `pipe:` arm refuses a pipe another account serves (`epmapper`, SYSTEM's).
+    #[cfg(windows)]
+    #[test]
+    fn a_pipe_another_account_serves_is_refused() {
+        let refused = match connect(
+            r"pipe:\\.\pipe\epmapper",
+            crate::lifecycle::child_signal::process(),
+        ) {
+            Ok(_) => String::from("connected"),
+            Err(e) => e,
+        };
+        assert!(refused.contains("not connecting"), "{refused}");
+    }
+
+    /// ADR 0049, User isolation: a dial to a socket whose backlog another account has filled returns within
+    /// `CONNECT_BOUND` plus 2 s of slack, and its error is not the account refusal, so the backlog was full.
+    #[cfg(unix)]
+    #[test]
+    fn a_full_foreign_backlog_ends_the_dial_within_its_bound() {
+        if !sot_log::test_isolated::run_isolated(
+            "topology::dial::tests::a_full_foreign_backlog_ends_the_dial_within_its_bound",
+        ) {
+            return;
+        }
+        let Some(foreign) = sot_log::test_foreign::ForeignListener::start(true) else {
+            return;
+        };
+        let endpoint = format!("unix:{}", foreign.path.display());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ =
+                tx.send(connect(&endpoint, crate::lifecycle::child_signal::process()).map(|_| ()));
+        });
+        let result = rx
+            .recv_timeout(
+                sot_log::lane::transport::CONNECT_BOUND + std::time::Duration::from_secs(2),
+            )
+            .expect("the dial did not end within its bound");
+        let err = result.expect_err("connected through a full backlog");
+        assert!(
+            !err.contains("not connecting"),
+            "the connect went through, so the backlog was not full: {err}"
+        );
+        assert_eq!(
+            foreign.finish(),
+            0,
+            "the dial sent another account's listener bytes"
+        );
     }
 }

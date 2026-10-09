@@ -2,14 +2,18 @@
 # T5 — a stub bridge stands in for the hub on a unix: endpoint: each connection
 # is one run of it. Its `comm.file` answer is the payload in $HUB/answer
 # ("" = silence), given after $HUB/wait seconds; an `agent.send` is acked and
-# receipted by fe@far. Every frame it reads is logged by op.
+# receipted by fe@far. Every frame it reads is logged by op. It answers
+# `topology relay-endpoint` with the hub's socket, as topology does on the hub,
+# logs every endpoint it is asked to dial, and serves only that socket.
 HUB="$WORK/hub"
 write_hub_stub() {  # PAYLOAD [WAIT]
     rm -rf "${HUB:?}"; mkdir -p "$HUB"
     printf '%s' "$1" > "$HUB/answer"; printf '%s' "${2:-0}" > "$HUB/wait"
-    { printf '#!/bin/sh\nd=%s\n' "$HUB"; cat <<'STUB'
+    { printf '#!/bin/sh\nd=%s\nep=%s\n' "$HUB" "unix:$WORK/hub.sock"; cat <<'STUB'
+if [ "$1" = topology ] && [ "$2" = relay-endpoint ]; then printf '%s\n' "$ep"; exit 0; fi
 [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
-case "$3" in unix:*) ;; *) exit 97 ;; esac
+printf '%s\n' "$3" >> "$d/dialled.log"
+[ "$3" = "$ep" ] || { echo "sotd stdio-bridge: $3: nothing listens there" >&2; exit 1; }
 while IFS= read -r line; do
     case "$line" in
         *'"op":"comm.file"'*)
@@ -31,8 +35,7 @@ STUB
 # registry does not name, so the send goes to the wire.
 wire_send() {
     SEND_OUT="$(cd "$WORK" && PATH="$HUB:$PATH" SOTD_BIN="$HUB/sotd" SOT_COMM_SELF_FILE="$WORK/self-sender.txt" \
-        SOT_COMM_TEST_HOST="$HOST_PIN" SOT_RELAY_ENDPOINT="unix:$WORK/hub.sock" \
-        env "$@" "$BIN/comm-relay.sh" send @t-far "/to the far box" 2>"$WORK/err.txt")"
+        SOT_COMM_TEST_HOST="$HOST_PIN" env "$@" "$BIN/comm-relay.sh" send @t-far "/to the far box" 2>"$WORK/err.txt")"
     SEND_RC=$?
     SEND_ERR="$(cat "$WORK/err.txt" 2>/dev/null)"
     return 0
@@ -157,7 +160,7 @@ case_a_wire_send_with_no_daemon_is_failed() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local out rc=0 err
     out="$(cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-sender.txt" SOT_COMM_TEST_HOST="$HOST_PIN" \
-        env -u SOT_RELAY_ENDPOINT -u SOT_SOCKET "$BIN/comm-relay.sh" send @t-far "no daemon" 2>"$WORK/err.txt")" || rc=$?
+        env -u SOT_SOCKET "$BIN/comm-relay.sh" send @t-far "no daemon" 2>"$WORK/err.txt")" || rc=$?
     err="$(cat "$WORK/err.txt" 2>/dev/null)"
     [ "$rc" -eq 1 ] || { echo "  rc $rc, want 1 (out: $out err: $err)"; return 1; }
     contains "$err" "FAILED -> @t-far: no sotd daemon found; " || { echo "  err: $err"; return 1; }
@@ -274,6 +277,23 @@ CASES
     got="$(route_append "nfs rw,vers=3 A:/x" "nfs4 A:/x" unix:/own "" \
         '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":{"error":"no box knows that handle: t-peer","code":"not_here"}}')"; rc=$?
     [ "$rc" -eq 1 ] && [ "$got" = "no box knows that handle: t-peer" ] || { echo "  guard not_here: rc $rc ($got)"; return 1; }
+    return 0
+}
+
+# An endpoint the session inherited does not decide where a relay send goes: topology's answer
+# (`sotd topology relay-endpoint`, here the hub stub's) does, and the inherited endpoint is never dialled.
+case_an_inherited_endpoint_does_not_decide_the_relay_route() {
+    local var
+    for var in SOT_RELAY_ENDPOINT SOT_SPAWN_ENDPOINT; do
+        setup_rows || { echo "  setup: could not join both rows"; return 1; }
+        write_hub_stub '{"ok":true}'
+        wire_send "$var=unix:$WORK/stale.sock"
+        [ "$SEND_RC" -eq 0 ] && [ "$SEND_OUT" = "filed -> @t-far" ] \
+            || { echo "  $var: rc $SEND_RC, out '$SEND_OUT', err '$SEND_ERR'"; return 1; }
+        [ "$(cat "$HUB/dialled.log")" = "unix:$WORK/hub.sock" ] \
+            || { echo "  $var: dialled $(tr '\n' ' ' < "$HUB/dialled.log")"; return 1; }
+        [ "$(wc -l < "$HUB/comm-file.log")" -eq 1 ] || { echo "  $var: the hub filed $(wc -l < "$HUB/comm-file.log") frames"; return 1; }
+    done
     return 0
 }
 

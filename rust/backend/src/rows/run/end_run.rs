@@ -43,10 +43,6 @@ pub enum EndRunOutcome {
     /// still present is reported (`end_run` keeps the row), never
     /// silently orphaned.
     Terminal,
-    /// The lane answered `phase: Starting` (voyage may still be `None`
-    /// — only set once Recovering completes) — NEVER "not running"; a
-    /// run may be about to (or already did) start. Retry.
-    Starting,
     /// `end_run` reported the operation failed, was refused, or its
     /// outcome is unknown — no confirmed end in any case.
     NotEnded(String),
@@ -242,8 +238,37 @@ pub fn end_run(
         }
     };
 
+    // An authority reporting `Starting` (a held row is one: `Starting` is also
+    // what the storage wait reports) is waited out for activation's bound, then
+    // stopped and judged by the absence proof, as a terminal one is.
+    let status = match status.phase {
+        SupervisorPhase::Starting => {
+            let requery = || sot_log::attach_client::supervisor_client::query_status(state_dir).map(|(status, _)| status);
+            match settle_starting(requery, || std::thread::sleep(super::activation::ACTIVATION_REPROBE_INTERVAL)) {
+                Settle::Settled(status) => status,
+                Settle::StillStarting => {
+                    return end_still_starting(
+                        || {
+                            stop_and_end_scope(
+                                state_dir,
+                                "the authority was still starting after the settle bound",
+                                scope.as_deref(),
+                                &root,
+                                &own,
+                            )
+                        },
+                        || absence_proof(state_dir),
+                    );
+                }
+                Settle::Lost(e) => return Ok(R::NotEnded(format!("the lane went away while starting: {e}"))),
+            }
+        }
+        _ => status,
+    };
+
     match status.phase {
-        SupervisorPhase::Starting => return Ok(R::Starting),
+        // Settled above: a phase still `Starting` here would be a bug, and ends nothing.
+        SupervisorPhase::Starting => return Ok(R::NotEnded("the authority is still starting".to_string())),
         SupervisorPhase::EndedNoRespawn => {
             // A PRIOR end already landed here and was never stopped
             // (exactly the leak this whole function closes) — a
@@ -318,6 +343,59 @@ pub fn end_run(
                 .to_string(),
         ),
     })
+}
+
+/// What waiting out an authority that reports `Starting` found.
+enum Settle {
+    /// The phase left `Starting`.
+    Settled(sot_log::attach_client::supervisor_client::StatusReport),
+    /// Still `Starting` after activation's bound of re-probes.
+    StillStarting,
+    /// The lane stopped answering while waiting.
+    Lost(sot_log::Error),
+}
+
+/// Re-queries until the phase is not `Starting`, pausing between tries, at
+/// most `ACTIVATION_MAX_REPROBES` pauses (the bound `ensure_started` waits a
+/// transient phase out for): a settling authority gets the time activation
+/// gives one; a held one (the storage wait reports `Starting` too) does not.
+fn settle_starting(
+    mut requery: impl FnMut() -> sot_log::Result<sot_log::attach_client::supervisor_client::StatusReport>,
+    mut pause: impl FnMut(),
+) -> Settle {
+    use sot_log::lane::wire::SupervisorPhase;
+    for pauses in 0..=super::activation::ACTIVATION_MAX_REPROBES {
+        match requery() {
+            Ok(status) if status.phase != SupervisorPhase::Starting => return Settle::Settled(status),
+            Ok(_) => {}
+            Err(e) => return Settle::Lost(e),
+        }
+        if pauses < super::activation::ACTIVATION_MAX_REPROBES {
+            pause();
+        }
+    }
+    Settle::StillStarting
+}
+
+/// An authority still `Starting` after the settle bound is stopped, then
+/// judged by the same absence proof a terminal one is: no authority and no
+/// leg holds the row, or the row is kept with the reason. `stop` is
+/// `Err(detail)` when the stop or the scope end failed.
+fn end_still_starting(
+    stop: impl FnOnce() -> Result<(), String>,
+    prove: impl FnOnce() -> Result<bool, NotProven>,
+) -> std::io::Result<super::EndRunOutcome> {
+    if let Err(detail) = stop() {
+        return Ok(super::EndRunOutcome::NotEnded(detail));
+    }
+    match prove() {
+        Ok(true) => Ok(super::EndRunOutcome::Unheld),
+        Ok(false) => Err(std::io::Error::other("a leg is running with no authority (stopped while starting)")),
+        Err(NotProven::LegCheckFailed(detail)) => Err(std::io::Error::other(detail)),
+        Err(NotProven::FenceUnavailable) => Err(std::io::Error::other(
+            "the authority did not release its fence after being stopped while starting",
+        )),
+    }
 }
 
 /// Why [`absence_proof`] could not prove either outcome — distinct
@@ -511,6 +589,45 @@ mod is_definitely_orphaned_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn report(phase: sot_log::lane::wire::SupervisorPhase) -> sot_log::attach_client::supervisor_client::StatusReport {
+        sot_log::attach_client::supervisor_client::StatusReport { pid: 1, created: 1, voyage: None, leg: None, phase }
+    }
+
+    /// An authority that reports `Starting` (a held row is one) is waited out
+    /// for activation's bound of re-probes, then stopped once and judged by
+    /// the absence proof; a proof that finds a leg, or the fence still held,
+    /// keeps the row with an error naming the starting authority.
+    #[test]
+    fn a_still_starting_authority_is_stopped_then_proven() {
+        use sot_log::lane::wire::SupervisorPhase as P;
+        // Starting, Starting, Ready: settled after two pauses.
+        let mut script = vec![P::Starting, P::Starting, P::Ready].into_iter();
+        let mut pauses = 0;
+        let settled = settle_starting(|| Ok(report(script.next().unwrap())), || pauses += 1);
+        assert!(matches!(settled, Settle::Settled(ref s) if s.phase == P::Ready));
+        assert_eq!(pauses, 2);
+
+        // Starting throughout: still starting after exactly the activation bound of pauses.
+        let mut pauses = 0;
+        let settled = settle_starting(|| Ok(report(P::Starting)), || pauses += 1);
+        assert!(matches!(settled, Settle::StillStarting));
+        assert_eq!(pauses, super::super::activation::ACTIVATION_MAX_REPROBES);
+
+        // The stop runs once; a proven absence is `Unheld`.
+        let mut stops = 0;
+        let got = end_still_starting(|| { stops += 1; Ok(()) }, || Ok(true));
+        assert!(matches!(got, Ok(super::super::EndRunOutcome::Unheld)));
+        assert_eq!(stops, 1);
+        // A leg with no authority, and a fence the stopped authority did not release, keep the row.
+        for (proof, words) in [(Ok(false), "stopped while starting"), (Err(NotProven::FenceUnavailable), "while starting")] {
+            let err = end_still_starting(|| Ok(()), || proof).unwrap_err();
+            assert!(err.to_string().contains(words), "{err}");
+        }
+        // A stop that failed is a kept row with its detail.
+        let got = end_still_starting(|| Err("scope still holds a process".to_string()), || Ok(true));
+        assert!(matches!(got, Ok(super::super::EndRunOutcome::NotEnded(ref d)) if d == "scope still holds a process"));
+    }
 
     // Field defect (v0.6.0-rc.12): a supervisor that died out from under
     // a row (e.g. a daemon-pair converge that ended the old build's

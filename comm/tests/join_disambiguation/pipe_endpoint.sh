@@ -190,16 +190,13 @@ case_windows_relay_endpoint_is_never_the_pipe_the_shell_probed() {
     [ -x "$fakebin/uname" ] && [ -x "$appdata/sot/bin/sotd.exe" ] \
         || { echo "  depends on case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep's fakes"; return 1; }
     out="$(
-        unset OS OSTYPE SOT_SOCKET SOTD_BIN SOT_RELAY_ENDPOINT
+        unset OS OSTYPE SOT_SOCKET SOTD_BIN
         PATH="$fakebin:$PATH"
         LOCALAPPDATA="$appdata"
         sot_relay_endpoint
     )"
     [ "$out" = 'pipe:\\.\pipe\sot-fakeuser-local' ] \
         || { echo "  expected the binary's own no-plan pipe: answer, got: $out"; return 1; }
-    out="$(sot_relay_endpoint "unix:/explicit.sock")"
-    [ "$out" = "unix:/explicit.sock" ] \
-        || { echo "  an explicit endpoint must win verbatim, got: $out"; return 1; }
     return 0
 }
 

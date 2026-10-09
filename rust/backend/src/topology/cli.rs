@@ -19,7 +19,7 @@ Usage: sotd topology <subcommand>
                         \"cache diverged\" line when this box's file hash
                         disagrees with the hub's (skipped ON the hub, and
                         best-effort — silent if the hub can't be reached)
-  relay-endpoint        SOT_RELAY_ENDPOINT for this box
+  relay-endpoint        where this box's comm relay sends go
   relay-sockets         hub only: `<host> <path>` for each host the hub
                         serves a socket for (every daemon host but the hub
                         itself). A peer asks the hub for these over ssh —

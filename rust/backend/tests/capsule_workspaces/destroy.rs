@@ -228,10 +228,11 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
 
     // `destroy_capsule_workspace`'s own resume pre-step re-establishes
     // the authority before `end_run` ever runs; a lane still settling
-    // past `Starting` when `end_run` reaches it answers `Kept` with
-    // "supervisor is starting; retry" — a legitimate retryable outcome
-    // (`EndRunOutcome::Starting`'s own doc), never a failure. Retry
-    // exactly that one reason; anything else fails the test at once.
+    // past `Starting` when `end_run` reaches it is waited out and, if still
+    // starting, stopped and judged: its errors all name "starting" — a
+    // legitimate retryable outcome (`end_run`'s `settle_starting`), never a
+    // failure. Retry exactly that one reason; anything else fails the test
+    // at once.
     let destroy_deadline = Instant::now() + BOUND.max(Duration::from_secs(30));
     loop {
         let destroy_req = serde_json::json!({ "workspace_id": workspace_id });
@@ -393,8 +394,8 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
     // Re-executing the leg from scratch (no survivor to adopt) is
     // slower than a plain adoption — `destroy_capsule_workspace`'s
     // resume pre-step may still be settling past `Starting` when
-    // `end_run` first reaches it (`EndRunOutcome::Starting`'s own doc:
-    // retryable, never a failure). Retry exactly that one reason; any
+    // `end_run` first reaches it (`settle_starting`: retryable, never a
+    // failure). Retry exactly that one reason; any
     // other failure fails the test at once.
     let destroy_deadline = Instant::now() + BOUND.max(Duration::from_secs(30));
     loop {

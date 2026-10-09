@@ -568,14 +568,12 @@ impl DaemonLaneEndpoint {
         let stream = match &self.dial {
             #[cfg(unix)]
             LaneDial::Local(path) | LaneDial::Relay(path, _) => {
-                // `connect_own`: the folder rule (ADR 0049, User
-                // isolation), then `sot_log::lane::socket_unix`'s own
-                // bounded, non-blocking connector rather than a blocking
-                // `UnixStream::connect` under an external deadline: the
-                // latter would leak the blocked connect thread past the
-                // deadline on a full listen backlog instead of actually
-                // stopping — this connector never blocks past
-                // `CONNECT_BOUND` in the first place.
+                // `connect_own` uses sot-log's non-blocking connector and
+                // fixed `CONNECT_BOUND` retry budget, then checks the
+                // listener's cached account before client I/O (ADR 0049,
+                // User isolation). An attempt or wait in progress finishes
+                // first, including a 20 ms retry sleep; this is not an
+                // exact elapsed-time limit.
                 let client = sot_log::identity::connect_own::connect_own(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
                 LaneStream::Unix(client)
             }

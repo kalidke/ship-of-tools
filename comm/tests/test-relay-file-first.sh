@@ -90,14 +90,29 @@ setup_rows() {
         "$SOT_COMM_HOME/registry.json" >/dev/null 2>&1
 }
 
-# relay_send ENDPOINT ARGS... -> run comm-relay.sh as the sender handle.
+# relay_answer ENDPOINT [NEXT] -> the path of a stub `sotd` that answers `topology relay-endpoint` with ENDPOINT (this
+# box's relay endpoint, as topology gives it) and hands every other call to NEXT when that is executable, else exits 97.
+relay_answer() {
+    local d="$WORK/relay-answer"
+    rm -rf "${d:?}"; mkdir -p "$d"
+    printf '#!/bin/sh\nep=%s next=%s\n' "'$1'" "'${2:-}'" > "$d/sotd"
+    cat >> "$d/sotd" <<'STUB'
+if [ "$1" = topology ] && [ "$2" = relay-endpoint ]; then printf '%s\n' "$ep"; exit 0; fi
+[ -n "$next" ] && [ -x "$next" ] && exec "$next" "$@"
+exit 97
+STUB
+    chmod +x "$d/sotd"; printf '%s\n' "$d/sotd"
+}
+
+# relay_send ENDPOINT ARGS... -> run comm-relay.sh as the sender handle, on a box whose relay endpoint is ENDPOINT.
 # stdout and stderr are captured separately (the verdict is stdout, the refusal
 # is stderr) and the exit code is returned.
 RELAY_OUT=""; RELAY_ERR=""; RELAY_RC=0
 relay_send() {
-    local ep="$1"; shift
+    local ep="$1" bin; shift
+    bin="$(relay_answer "$ep" "${SOTD_BIN:-}")"
     RELAY_OUT="$(cd "$WORK" && SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$SENDER_HOST" \
-        SOT_RELAY_ENDPOINT="$ep" "$RELAY" "$@" 2>"$WORK/err.txt")"
+        SOTD_BIN="$bin" "$RELAY" "$@" 2>"$WORK/err.txt")"
     RELAY_RC=$?
     RELAY_ERR="$(cat "$WORK/err.txt" 2>/dev/null)"
     return 0
@@ -107,7 +122,8 @@ relay_send() {
 # SSHDIR prepended to PATH for the call only (BLOCKER 1's ssh: cases below:
 # a stub `ssh` ahead of any real one, never leaked into a later case).
 relay_send_with_path() {
-    local sshdir="$1" ep="$2"; shift 2
+    local sshdir="$1" ep="$2" bin; shift 2
+    bin="$(relay_answer "$ep" "$sshdir/sotd")"
     # XDG_RUNTIME_DIR unset for the same reason test-endpoint-gate.sh's own
     # sot_ssh_bridge cases unset it: with it set, _sot_ssh_sharing_ok's own
     # `ssh -G ...` probe (no stdin redirection of its own) reads from the
@@ -115,8 +131,8 @@ relay_send_with_path() {
     # any invocation -- ours -- drains the frame there instead of at the
     # real bridge call. A real ssh's `-G` never touches stdin at all, so
     # this is a test-fixture concern only, never live behavior.
-    RELAY_OUT="$(cd "$WORK" && unset XDG_RUNTIME_DIR && PATH="$sshdir:$PATH" SOTD_BIN="$sshdir/sotd" SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$SENDER_HOST" \
-        SOT_RELAY_ENDPOINT="$ep" "$RELAY" "$@" 2>"$WORK/err.txt")"
+    RELAY_OUT="$(cd "$WORK" && unset XDG_RUNTIME_DIR && PATH="$sshdir:$PATH" SOTD_BIN="$bin" SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$SENDER_HOST" \
+        "$RELAY" "$@" 2>"$WORK/err.txt")"
     RELAY_RC=$?
     RELAY_ERR="$(cat "$WORK/err.txt" 2>/dev/null)"
     return 0
@@ -715,11 +731,11 @@ case_a_broadcast_names_the_local_bridges_refusal() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local dir why
     dir="$(mktemp -d "$WORK/refusing-bridge-XXXXXX")"
-    why='sotd stdio-bridge: /x/s.sock: not connecting: /x is not a private folder of this OS account'
+    why='sotd stdio-bridge: /x/s.sock: not connecting: another OS account listens on this socket'
     cat > "$dir/sotd" <<'FAKEBRIDGE'
 #!/bin/sh
 [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
-printf 'sotd stdio-bridge: /x/s.sock: not connecting: /x is not a private folder of this OS account\n' >&2
+printf 'sotd stdio-bridge: /x/s.sock: not connecting: another OS account listens on this socket\n' >&2
 exit 1
 FAKEBRIDGE
     chmod +x "$dir/sotd"

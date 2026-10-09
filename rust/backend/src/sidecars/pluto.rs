@@ -184,38 +184,136 @@ async fn spawn_supervisor(
         }
     };
     tracing::info!(base_url = %base_url, "pluto sidecar ready");
-    // Record the port the sidecar ACTUALLY bound (start.jl falls back to an
+    // Publish the port the sidecar ACTUALLY bound (start.jl falls back to an
     // ephemeral port when 1234 is taken — another user's Pluto on a shared
-    // host). The ADR-0035 proxy allowlist reads this so it authorizes the
-    // real server, never a stranger's process squatting the preferred port.
-    if let Some(port) = port_from_base_url(&base_url) {
-        BOUND_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
-    } else {
-        tracing::warn!(base_url = %base_url, "could not parse port from pluto READY url — proxy allowlist won't include pluto");
-    }
+    // host), through the one loopback parser. The ADR-0035 proxy allowlist
+    // reads it so it authorizes the real server, never a stranger's process
+    // squatting the preferred port. The grant belongs to this supervisor: the
+    // guard moves into its task and is released on every way out.
+    let grant = match sot_protocol::page_url::loopback_port_from_url(&base_url) {
+        Some(port) => Some(Grant::publish(port)),
+        None => {
+            tracing::warn!(base_url = %base_url, "pluto READY url is not a loopback page address — proxy allowlist won't include pluto");
+            None
+        }
+    };
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(64);
-    tokio::spawn(supervisor_task(contained, stdin, stdout_lines, submit_rx, sig));
+    tokio::spawn(supervisor_task(contained, stdin, stdout_lines, submit_rx, sig, grant));
     Ok(submit_tx)
 }
 
-/// The port the Pluto sidecar ACTUALLY bound, parsed from its READY line
-/// (0 = not started / parse failed). The proxy allowlist reads this instead
-/// of assuming the preferred 1234.
-static BOUND_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+/// The proxy grant of the current Pluto supervisor: `(generation, port)`, set by [`Grant::publish`] and cleared by
+/// the drop of the same generation's guard, so a stale guard never erases a replacement's grant.
+static GRANT: std::sync::Mutex<Option<(u64, u16)>> = std::sync::Mutex::new(None);
+static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-pub fn bound_pluto_port() -> Option<u16> {
-    match BOUND_PORT.load(std::sync::atomic::Ordering::SeqCst) {
-        0 => None,
-        p => Some(p),
+/// One supervisor's hold on the proxy allowlist. Dropping it releases the port at once, whichever way the
+/// supervisor ends.
+pub(crate) struct Grant {
+    generation: u64,
+}
+
+impl Grant {
+    pub(crate) fn publish(port: u16) -> Grant {
+        let generation = NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *GRANT.lock().unwrap_or_else(|e| e.into_inner()) = Some((generation, port));
+        Grant { generation }
     }
 }
 
-/// Parse the port out of a `http://127.0.0.1:<port>` base URL.
-fn port_from_base_url(url: &str) -> Option<u16> {
-    let rest = url.strip_prefix("http://")?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    authority.rsplit_once(':')?.1.parse().ok()
+impl Drop for Grant {
+    fn drop(&mut self) {
+        let mut current = GRANT.lock().unwrap_or_else(|e| e.into_inner());
+        if current.is_some_and(|(generation, _)| generation == self.generation) {
+            *current = None;
+        }
+    }
+}
+
+/// The port the current Pluto supervisor published after a loopback READY line, if it still holds its grant. The
+/// proxy allowlist reads this instead of assuming the preferred 1234.
+pub fn bound_pluto_port() -> Option<u16> {
+    GRANT.lock().unwrap_or_else(|e| e.into_inner()).map(|(_, port)| port)
+}
+
+/// Why a supervisor stopped serving.
+enum Cause {
+    Signal,
+    Exited(std::io::Result<()>),
+    Closed,
+    Stdout(String),
+    Stdin(std::io::Error),
+}
+
+impl Cause {
+    fn describe(&self) -> String {
+        match self {
+            Cause::Signal => "the daemon is shutting down".to_string(),
+            Cause::Exited(Ok(())) => "the child exited".to_string(),
+            Cause::Exited(Err(e)) => format!("the child's exit could not be observed: {e}"),
+            Cause::Closed => "the owner dropped the sidecar".to_string(),
+            Cause::Stdout(why) => format!("stdout: {why}"),
+            Cause::Stdin(e) => format!("stdin: {e}"),
+        }
+    }
+}
+
+/// Answer the oldest pending request with one stdout line, if the line is a reply.
+fn route_reply_line(line: &str, pending: &mut VecDeque<oneshot::Sender<Result<String>>>) {
+    if let Some(url) = line.strip_prefix("URL ") {
+        if let Some(reply) = pending.pop_front() {
+            let _ = reply.send(Ok(url.trim().to_string()));
+        } else {
+            tracing::warn!("pluto: a URL line with no pending request; dropped");
+        }
+    } else if let Some(err) = line.strip_prefix("ERR ") {
+        if let Some(reply) = pending.pop_front() {
+            let _ = reply.send(Err(anyhow!("pluto: {err}")));
+        } else {
+            tracing::warn!(%line, "pluto ERR without pending request");
+        }
+    } else {
+        tracing::debug!(target: "pluto.stdout", "{line}");
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod seams {
+    //! Private test leaves at the real awaits of the supervisor: a count of the polls on which a stdin write was
+    //! still pending, and a gate every closeout waits on before the checked termination.
+    use std::sync::atomic::AtomicU64;
+    use std::sync::{Arc, Mutex};
+
+    pub(crate) static WRITE_PENDING_POLLS: AtomicU64 = AtomicU64::new(0);
+    /// Held (zero permits) while a test wants the flush await to stay pending; one-shot error for the flush.
+    pub(crate) static FLUSH_GATE: Mutex<Option<Arc<tokio::sync::Semaphore>>> = Mutex::new(None);
+    pub(crate) static FAIL_FLUSH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    pub(crate) static CLEANUP_GATE: Mutex<Option<Arc<tokio::sync::Semaphore>>> = Mutex::new(None);
+
+    /// The leaf in front of the real flush: waits on the gate, then fails once if asked.
+    pub(crate) async fn before_flush() -> std::io::Result<()> {
+        let gate = FLUSH_GATE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(gate) = gate {
+            let _ = gate.acquire().await;
+        }
+        if FAIL_FLUSH.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::Error::other("injected flush error"));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn observed<F: std::future::Future>(future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        std::future::poll_fn(|cx| {
+            let polled = future.as_mut().poll(cx);
+            if polled.is_pending() {
+                WRITE_PENDING_POLLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            polled
+        })
+        .await
+    }
 }
 
 async fn supervisor_task(
@@ -224,86 +322,109 @@ async fn supervisor_task(
     mut stdout_lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     mut submit_rx: mpsc::Receiver<Submission>,
     sig: &'static crate::lifecycle::child_signal::Signal,
+    grant: Option<Grant>,
 ) {
     // FIFO of in-flight oneshots. Pluto's serial line protocol replies
-    // to each OPEN in order; we pop the matching reply on each URL/ERR.
+    // to each OPEN in order; we pop the matching reply on each URL/ERR. A
+    // submission joins it before its line is written, so every way out below
+    // reaches it.
     let mut pending: VecDeque<oneshot::Sender<Result<String>>> = VecDeque::new();
 
-    loop {
-        tokio::select! {
-            biased;
-            // The daemon is shutting down: the signal has already killed the
-            // child's tree.
-            _ = sig.fired() => {
-                break;
-            }
-            sub = submit_rx.recv() => {
-                let Some(sub) = sub else {
-                    drop(stdin);
-                    let _ = contained.wait().await;
-                    return;
-                };
-                let line = format!("OPEN {}\n", sub.abs_path);
-                if let Err(e) = stdin.write_all(line.as_bytes()).await {
-                    let _ = sub.reply.send(Err(anyhow!("pluto stdin: {e}")));
-                    break;
-                }
-                if let Err(e) = stdin.flush().await {
-                    let _ = sub.reply.send(Err(anyhow!("pluto stdin flush: {e}")));
-                    break;
-                }
-                pending.push_back(sub.reply);
-            }
-            line = stdout_lines.next_line() => {
-                match line {
-                    Ok(Some(line)) => {
-                        if let Some(url) = line.strip_prefix("URL ") {
-                            if let Some(reply) = pending.pop_front() {
-                                let _ = reply.send(Ok(url.trim().to_string()));
-                            } else {
-                                tracing::warn!("pluto: a URL line with no pending request; dropped");
-                            }
-                        } else if let Some(err) = line.strip_prefix("ERR ") {
-                            if let Some(reply) = pending.pop_front() {
-                                let _ = reply.send(Err(anyhow!("pluto: {err}")));
-                            } else {
-                                tracing::warn!(%line, "pluto ERR without pending request");
-                            }
-                        } else {
-                            tracing::debug!(target: "pluto.stdout", "{line}");
-                        }
+    let cause = {
+        // One observation of the child's exit, held across every await below, so a stdin write that cannot
+        // complete (the child, or a descendant holding the pipe, reads nothing) still gives way to the exit.
+        let exited = contained.wait_until_exited();
+        tokio::pin!(exited);
+        loop {
+            tokio::select! {
+                biased;
+                // The daemon is shutting down: the signal has already killed the
+                // child's tree.
+                _ = sig.fired() => break Cause::Signal,
+                // The child's exit, not its pipes' EOF: a descendant that
+                // inherited stdout keeps it open past the leader's death.
+                r = &mut exited => break Cause::Exited(r),
+                sub = submit_rx.recv() => {
+                    let Some(sub) = sub else { break Cause::Closed };
+                    pending.push_back(sub.reply);
+                    let line = format!("OPEN {}\n", sub.abs_path);
+                    let write = async {
+                        stdin.write_all(line.as_bytes()).await?;
+                        #[cfg(test)]
+                        seams::before_flush().await?;
+                        stdin.flush().await
+                    };
+                    #[cfg(test)]
+                    let write = seams::observed(write);
+                    let written = tokio::select! {
+                        biased;
+                        _ = sig.fired() => Err(Cause::Signal),
+                        r = &mut exited => Err(Cause::Exited(r)),
+                        r = write => r.map_err(Cause::Stdin),
+                    };
+                    // A write cut short may have sent part of the line: the
+                    // supervisor ends and the line is never resent.
+                    if let Err(cause) = written {
+                        break cause;
                     }
-                    Ok(None) => {
-                        tracing::warn!("pluto child stdout closed");
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "pluto stdout error");
-                        break;
+                }
+                line = stdout_lines.next_line() => {
+                    match line {
+                        Ok(Some(line)) => route_reply_line(&line, &mut pending),
+                        Ok(None) => break Cause::Stdout("closed".to_string()),
+                        Err(e) => break Cause::Stdout(e.to_string()),
                     }
                 }
             }
         }
+    };
+    tracing::warn!(cause = %cause.describe(), "pluto supervisor ending");
+
+    // What the child wrote before it exited still answers its requests.
+    if matches!(cause, Cause::Exited(_)) {
+        for _ in 0..64 {
+            match tokio::time::timeout(std::time::Duration::from_millis(50), stdout_lines.next_line()).await {
+                Ok(Ok(Some(line))) => route_reply_line(&line, &mut pending),
+                _ => break,
+            }
+        }
     }
 
-    for reply in pending.drain(..) {
-        let _ = reply.send(Err(anyhow!("pluto sidecar terminated")));
+    // One closeout, before any cleanup await: release the proxy grant,
+    // admit nothing more, and fail every request still waiting.
+    drop(grant);
+    submit_rx.close();
+    let why = cause.describe();
+    while let Ok(sub) = submit_rx.try_recv() {
+        let _ = sub.reply.send(Err(anyhow!("pluto sidecar terminated: {why}")));
     }
-    let _ = contained.kill().await;
+    for reply in pending.drain(..) {
+        let _ = reply.send(Err(anyhow!("pluto sidecar terminated: {why}")));
+    }
+    #[cfg(test)]
+    {
+        let gate = seams::CLEANUP_GATE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(gate) = gate {
+            let _ = gate.acquire().await;
+        }
+    }
+    drop(stdin);
+    if let Err(e) = contained.kill().await {
+        tracing::warn!(error = %e, "pluto child cleanup failed");
+    }
 }
 
 #[cfg(test)]
 mod port_parse_tests {
-    use super::{port_from_base_url, spawn_supervisor};
+    use super::spawn_supervisor;
     use std::time::Duration;
-
-    #[test]
-    fn parses_ready_url_port() {
-        assert_eq!(port_from_base_url("http://127.0.0.1:1234"), Some(1234));
-        assert_eq!(port_from_base_url("http://127.0.0.1:43127/"), Some(43127));
-        assert_eq!(port_from_base_url("http://127.0.0.1"), None);
-        assert_eq!(port_from_base_url("garbage"), None);
-    }
+    use {
+        super::{bound_pluto_port, seams, Submission},
+        crate::lifecycle::child_signal::Signal,
+        crate::sidecars::contract_tests::{executable, isolated, within},
+        std::path::{Path, PathBuf},
+        tokio::sync::{mpsc, oneshot},
+    };
 
     /// The shutdown signal kills a Pluto child that has not yet said READY,
     /// and the test waits for its containment registration.
@@ -360,5 +481,275 @@ mod port_parse_tests {
         let gone = gc.gone();
         drop(tx);
         assert!(gone, "the Pluto grandchild survived the shutdown");
+    }
+
+    /// The longest an isolated body here may take.
+    const BODY: Duration = Duration::from_secs(180);
+    /// How long a fixture waits for the supervisor to react to the child's exit or the Signal.
+    const REACT: Duration = Duration::from_secs(30);
+
+    /// An owned `start.jl` standing in for Pluto's: it binds a real loopback listener, says READY, records its pid,
+    /// optionally starts a descendant that keeps the child's pipes, and exits when the test creates `gate`.
+    fn start_script(dir: &Path, ready_url: &str, descendant: &str) -> PathBuf {
+        let script = dir.join("start.jl");
+        let text = format!(
+            r#"using Sockets
+dir = raw"{dir}"
+server = listen(ip"127.0.0.1", 0)
+port = Int(getsockname(server)[2])
+write(joinpath(dir, "port"), string(port))
+write(joinpath(dir, "pid"), string(getpid()))
+println({ready}); flush(stdout)
+{descendant}
+while !isfile(joinpath(dir, "gate")) sleep(0.05) end
+write(joinpath(dir, "exiting"), "x")
+exit(0)
+"#,
+            dir = dir.display(),
+            ready = ready_url,
+        );
+        std::fs::write(&script, text).unwrap();
+        script
+    }
+
+    const READY_LOCAL: &str = r#""READY http://127.0.0.1:$port""#;
+    /// On Windows libuv puts every child it starts in a job that dies with its parent, so the descendant is detached
+    /// there to outlive the child (it stays in the daemon's containment job); on Unix it stays in the child's group.
+    /// A descendant that holds only the child's stdout.
+    const KEEP_STDOUT: &str = r#"cmd = `$(Base.julia_cmd()) --startup-file=no -e "sleep(300)"`; p = run(pipeline(Sys.iswindows() ? detach(cmd) : cmd, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
+    /// A descendant that holds the read end of the child's stdin and the write end of its stdout, reading nothing.
+    const KEEP_PIPES: &str = r#"cmd = `$(Base.julia_cmd()) --startup-file=no -e "sleep(300)"`; p = run(pipeline(Sys.iswindows() ? detach(cmd) : cmd, stdin=stdin, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
+
+    struct Harness {
+        dir: PathBuf,
+        sig: &'static Signal,
+        tx: mpsc::Sender<Submission>,
+    }
+
+    impl Harness {
+        async fn start(ready_url: &str, descendant: &str) -> Harness {
+            let dir = tempfile::tempdir().expect("owned fixture root").keep();
+            let script = start_script(&dir, ready_url, descendant);
+            let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
+            let julia = executable("julia").to_string_lossy().into_owned();
+            let tx = spawn_supervisor(&julia, &dir, &script, sig).await.expect("the fixture says READY");
+            Harness { dir, sig, tx }
+        }
+
+        fn number(&self, name: &str) -> Option<u32> {
+            std::fs::read_to_string(self.dir.join(name)).ok()?.trim().parse().ok()
+        }
+
+        async fn wait_number(&self, name: &str) -> u32 {
+            within(REACT, name, || self.number(name).is_some()).await;
+            self.number(name).unwrap()
+        }
+
+        async fn submit(&self, path: String) -> oneshot::Receiver<anyhow::Result<String>> {
+            let (reply, rx) = oneshot::channel();
+            self.tx.send(Submission { abs_path: path, reply }).await.expect("the supervisor admits a submission");
+            rx
+        }
+
+        /// Lets the child exit on its own.
+        fn open_gate(&self) {
+            std::fs::write(self.dir.join("gate"), "x").unwrap();
+        }
+
+        async fn finish(self) {
+            self.sig.fire().expect("fire");
+            within(REACT, "owned children reaped", || self.sig.live() == 0).await;
+            std::fs::remove_dir_all(&self.dir).expect("remove the owned fixture root");
+        }
+    }
+
+    /// Whether the fixture's child has begun exiting: its script writes `exiting` as its last act before `exit(0)`,
+    /// so the observation is the same on every platform (the supervisor, not the test, waits for the child).
+    fn exited(h: &Harness) -> bool {
+        h.dir.join("exiting").exists()
+    }
+
+    /// Whether a process of this id is running (a zombie is not).
+    #[cfg(unix)]
+    fn alive(pid: u32) -> bool {
+        // SAFETY: signal 0 only probes.
+        let probe = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        #[cfg(target_os = "linux")]
+        if std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| stat.rsplit_once(')').map(|(_, rest)| rest.trim_start().starts_with('Z')))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        probe
+    }
+
+    #[cfg(windows)]
+    fn alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        // SAFETY: a plain query on a process handle opened and closed here.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut code = 0u32;
+            let ok = GetExitCodeProcess(handle, &mut code);
+            CloseHandle(handle);
+            ok != 0 && code == 259
+        }
+    }
+
+    async fn errors(rx: oneshot::Receiver<anyhow::Result<String>>, what: &str) {
+        let got = tokio::time::timeout(REACT, rx).await.unwrap_or_else(|_| panic!("{what}: no answer"));
+        assert!(matches!(got, Ok(Err(_))), "{what}: must end with an error");
+    }
+
+    fn granted(port: u16) -> bool {
+        bound_pluto_port() == Some(port) || crate::pages::proxy::allowed_proxy_ports().contains(&port)
+    }
+
+    /// The child's own exit, with no descendant, takes the proxy grant.
+    #[tokio::test]
+    async fn death_releases_proxy_grant() {
+        if !isolated("sidecars::pluto::port_parse_tests::death_releases_proxy_grant", BODY) {
+            return;
+        }
+        let h = Harness::start(READY_LOCAL, "").await;
+        let port = h.wait_number("port").await as u16;
+        assert!(granted(port), "setup: READY grants the port");
+        h.open_gate();
+        within(REACT, "the child exits", || exited(&h)).await;
+        within(REACT, "the grant is released", || !granted(port)).await;
+        h.finish().await;
+    }
+
+    /// A descendant that keeps stdout open past the child's exit does not keep the grant.
+    #[tokio::test]
+    async fn inherited_stdout_does_not_keep_grant() {
+        if !isolated("sidecars::pluto::port_parse_tests::inherited_stdout_does_not_keep_grant", BODY) {
+            return;
+        }
+        *seams::CLEANUP_GATE.lock().unwrap() = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(0)));
+        let h = Harness::start(READY_LOCAL, KEEP_STDOUT).await;
+        let port = h.wait_number("port").await as u16;
+        let descendant = h.wait_number("desc").await;
+        h.open_gate();
+        within(REACT, "the child exits", || exited(&h)).await;
+        within(REACT, "the grant is released", || !granted(port)).await;
+        assert!(alive(descendant), "the release must not wait for cleanup or EOF");
+        let gate = seams::CLEANUP_GATE.lock().unwrap().clone().unwrap();
+        gate.add_permits(1);
+        within(REACT, "cleanup ends the descendant", || !alive(descendant)).await;
+        h.finish().await;
+    }
+
+    /// A READY line that is not a loopback page address grants nothing.
+    #[tokio::test]
+    async fn nonloopback_ready_grants_nothing() {
+        if !isolated("sidecars::pluto::port_parse_tests::nonloopback_ready_grants_nothing", BODY) {
+            return;
+        }
+        // A documentation-range address: never dialled.
+        let h = Harness::start(r#""READY http://192.0.2.7:4000""#, "").await;
+        assert_eq!(bound_pluto_port(), None);
+        assert!(!crate::pages::proxy::allowed_proxy_ports().contains(&4000));
+        h.finish().await;
+    }
+
+    /// A stdin write that cannot complete: three requests are in flight (one answered by nobody, one mid-write, one
+    /// queued) when the child exits with a descendant holding both pipes.
+    async fn blocked_write_scenario(h: &Harness) -> (u16, u32, Vec<oneshot::Receiver<anyhow::Result<String>>>) {
+        let port = h.wait_number("port").await as u16;
+        let descendant = h.wait_number("desc").await;
+        let first = h.submit("a".to_string()).await;
+        let before = seams::WRITE_PENDING_POLLS.load(std::sync::atomic::Ordering::SeqCst);
+        let big = h.submit("x".repeat(4 * 1024 * 1024)).await;
+        within(REACT, "the large write is observed blocked", || {
+            seams::WRITE_PENDING_POLLS.load(std::sync::atomic::Ordering::SeqCst) > before
+        })
+        .await;
+        let queued = h.submit("c".to_string()).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(alive(h.number("pid").unwrap()) && alive(descendant), "setup: child and descendant are running");
+        assert!(granted(port), "setup: the grant is held");
+        (port, descendant, vec![first, big, queued])
+    }
+
+    #[tokio::test]
+    async fn blocked_write_death_releases_grant_and_closes_requests() {
+        if !isolated("sidecars::pluto::port_parse_tests::blocked_write_death_releases_grant_and_closes_requests", BODY) {
+            return;
+        }
+        let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        *seams::CLEANUP_GATE.lock().unwrap() = Some(gate.clone());
+        let h = Harness::start(READY_LOCAL, KEEP_PIPES).await;
+        let (port, descendant, replies) = blocked_write_scenario(&h).await;
+        h.open_gate();
+        within(REACT, "the child exits", || exited(&h)).await;
+        within(REACT, "the grant is released", || !granted(port)).await;
+        assert!(alive(descendant), "revocation precedes cleanup: the descendant still holds the pipes");
+        for (i, rx) in replies.into_iter().enumerate() {
+            errors(rx, &format!("request {i}")).await;
+        }
+        assert!(alive(descendant), "closeout precedes cleanup");
+        gate.add_permits(1);
+        within(REACT, "cleanup ends the descendant", || !alive(descendant)).await;
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn signal_cancels_blocked_pluto_write() {
+        if !isolated("sidecars::pluto::port_parse_tests::signal_cancels_blocked_pluto_write", BODY) {
+            return;
+        }
+        let h = Harness::start(READY_LOCAL, KEEP_PIPES).await;
+        let (port, _descendant, replies) = blocked_write_scenario(&h).await;
+        h.sig.fire().expect("fire");
+        within(REACT, "the grant is released", || !granted(port)).await;
+        for (i, rx) in replies.into_iter().enumerate() {
+            errors(rx, &format!("request {i}")).await;
+        }
+        h.finish().await;
+    }
+
+    /// A flush that cannot finish gives way to the child's exit like a write does: the grant is released and the
+    /// current and pending requests end with errors.
+    #[tokio::test]
+    async fn flush_blocked_death_releases_grant_and_closes_requests() {
+        if !isolated("sidecars::pluto::port_parse_tests::flush_blocked_death_releases_grant_and_closes_requests", BODY) {
+            return;
+        }
+        let h = Harness::start(READY_LOCAL, "").await;
+        let port = h.wait_number("port").await as u16;
+        let first = h.submit("a".to_string()).await;
+        let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        *seams::FLUSH_GATE.lock().unwrap() = Some(gate.clone());
+        let second = h.submit("b".to_string()).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(granted(port), "setup: the grant is held while the flush waits");
+        h.open_gate();
+        within(REACT, "the child exits", || exited(&h)).await;
+        within(REACT, "the grant is released", || !granted(port)).await;
+        errors(first, "first").await;
+        errors(second, "second").await;
+        h.finish().await;
+    }
+
+    /// A flush that fails ends the supervisor the same way: grant released, requests failed.
+    #[tokio::test]
+    async fn flush_error_releases_grant_and_closes_requests() {
+        if !isolated("sidecars::pluto::port_parse_tests::flush_error_releases_grant_and_closes_requests", BODY) {
+            return;
+        }
+        let h = Harness::start(READY_LOCAL, "").await;
+        let port = h.wait_number("port").await as u16;
+        seams::FAIL_FLUSH.store(true, std::sync::atomic::Ordering::SeqCst);
+        let only = h.submit("a".to_string()).await;
+        errors(only, "the request whose flush failed").await;
+        within(REACT, "the grant is released", || !granted(port)).await;
+        h.finish().await;
     }
 }

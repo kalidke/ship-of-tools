@@ -32,18 +32,15 @@ assistant text.
 The normal backend listens on a private Unix socket. It has had no remote TCP
 listener since 0.4.0.
 
-Endpoint resolution for `comm-relay.sh`, `comm-spawn.sh`, `comm-despawn.sh`, and
-`sot-fe` is one gate at the point a value is returned: an explicit endpoint,
-else `$SOT_SOCKET`, else what `sotd` answers (its own endpoint, or the
-declared plan's), else an old dev daemon's `--socket` arg — every one of
-them through that gate, which dials only `unix:`, `pipe:` and `ssh:`.
-
-Override only when needed:
-
-```bash
-export SOT_RELAY_ENDPOINT=unix:/path/to/sot.sock   # backend host
-export SOT_RELAY_ENDPOINT=ssh:<hub>                # frontend host reaching the hub
-```
+Endpoint resolution is one gate at the point a value is returned, which
+dials only `unix:`, `pipe:` and `ssh:`. `comm-spawn.sh`, `comm-despawn.sh`
+and `sot-fe` take an explicit endpoint, else `$SOT_SOCKET`, else this box's
+own daemon as `sotd` names it. `comm-relay.sh` takes only what `sotd
+topology relay-endpoint` answers for this box (the hub's own socket on the
+hub, `ssh:<hub>` on a frontend box, the reverse-tunnel socket elsewhere),
+and no variable overrides it. To reach a hub from a new box, declare the
+topology (`sotd topology sync --hub <alias>`) rather than exporting an
+endpoint.
 
 On Windows or another frontend-local host, `ssh:<hub>` spawns its own `ssh`
 child to the hub and speaks the protocol over its stdio (C3) — never a

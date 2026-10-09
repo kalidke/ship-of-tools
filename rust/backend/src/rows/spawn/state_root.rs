@@ -69,7 +69,7 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 ///    list happens to miss. Then `preflight_volume` itself, mapped to
 ///    its `Display` text. Windows: unchanged — the existing NTFS-only
 ///    arm already refuses everything this would and more.
-pub fn qualified_state_root() -> Result<PathBuf, String> {
+pub fn qualified_state_root(row: Option<&Path>) -> Result<PathBuf, String> {
     let root = sot_log::host::state_dir::sot_state_dir()
         .ok_or_else(|| format!("could not resolve this machine's state root ({STATE_ROOT_HINT} unset)"))?;
     // Security review addendum (item 2b, v0.6.5 macOS field report): the
@@ -108,8 +108,32 @@ pub fn qualified_state_root() -> Result<PathBuf, String> {
             ));
         }
     }
-    sot_log::host::state_dir::preflight_volume(&root).map_err(|e| e.to_string())?;
+    preflight_verdict(sot_log::host::state_dir::preflight_volume(&root), row.is_some_and(row_has_run))?;
     Ok(root)
+}
+
+/// A full volume qualifies only a row that has run. Its supervisor already
+/// holds its fence and lane when storage runs out, and waits for storage; a new
+/// row's supervisor would have to write before it holds either, so a new row
+/// on a full volume is refused with the volume named. Every other preflight
+/// failure is the refusal, with its words.
+fn preflight_verdict(r: sot_log::Result<()>, row_has_run: bool) -> Result<(), String> {
+    match r {
+        Ok(()) => Ok(()),
+        Err(e) if sot_log::host::storage_exhaustion(&e).is_some() => {
+            if row_has_run {
+                Ok(())
+            } else {
+                Err(format!("the state root's volume is full ({e}): a new row cannot start until it has room"))
+            }
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Whether the row at `state_dir` has run: its authority fence file exists.
+fn row_has_run(state_dir: &Path) -> bool {
+    sot_log::supervisor::journal::fence::supervisor_lock_path(state_dir).is_file()
 }
 
 /// The invariant [`qualified_state_root`] alone cannot enforce (it never
@@ -238,6 +262,27 @@ pub(crate) mod macos_only {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A full volume qualifies only a row that has run; any other preflight
+    /// failure stays a refusal, and a row has run once its fence file exists.
+    #[test]
+    fn a_full_volume_qualifies_only_a_row_that_has_run() {
+        #[cfg(unix)]
+        let full = || std::io::Error::from_raw_os_error(libc::ENOSPC);
+        #[cfg(windows)]
+        let full = || std::io::Error::from_raw_os_error(112);
+        assert_eq!(preflight_verdict(Err(sot_log::Error::Io(full())), true), Ok(()));
+        let refused = preflight_verdict(Err(sot_log::Error::Io(full())), false).unwrap_err();
+        assert!(refused.contains("volume is full"), "{refused}");
+        assert_eq!(preflight_verdict(Ok(()), false), Ok(()));
+        let unsupported = || std::io::Error::new(std::io::ErrorKind::Unsupported, "incompatible volume");
+        assert!(preflight_verdict(Err(sot_log::Error::Io(unsupported())), true).is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!row_has_run(dir.path()));
+        std::fs::write(sot_log::supervisor::journal::fence::supervisor_lock_path(dir.path()), b"").unwrap();
+        assert!(row_has_run(dir.path()));
+    }
 
     #[test]
     fn state_dir_joins_workspaces_and_the_id() {

@@ -385,16 +385,22 @@ fn publish_json<T: Serialize>(dir: &Path, target: &Path, value: &T) -> Result<()
     getrandom::fill(&mut nonce_bytes).map_err(std::io::Error::from)?;
     let nonce = u64::from_le_bytes(nonce_bytes);
     let tmp = dir.join(format!(".tmp-{nonce:016x}"));
-    {
+    // Exclusive: a temp name that already exists is not this attempt's to
+    // write or remove. Once it exists, any write, sync or publish failure
+    // removes it before the error is returned, so a failed publication
+    // (a full volume, a lost race) leaves no residue.
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    let written = {
         use std::io::Write as _;
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(&bytes)?;
-        f.sync_all()?;
+        f.write_all(&bytes).and_then(|()| f.sync_all())
+    };
+    drop(f);
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
     }
     let result = crate::host::publish_noreplace(&tmp, target);
     if result.is_err() {
-        // A lost race (AlreadyExists) or any other publish failure: don't
-        // leave this attempt's temp file behind as residue.
         let _ = std::fs::remove_file(&tmp);
     }
     result

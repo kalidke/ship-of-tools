@@ -148,7 +148,8 @@ fn kill9_sweep_recovers_green_every_round() {
         // actually asserts. The old stdout-echo flag is gone entirely
         // (LU2b): wire fan-out replaced it, and this harness attaches no
         // wire client at all.
-        let capsule = std::process::Command::new(capsule_bin)
+        let mut command = std::process::Command::new(capsule_bin);
+        command
             .args([
                 "run",
                 root.to_str().unwrap(),
@@ -165,10 +166,8 @@ fn kill9_sweep_recovers_green_every_round() {
             .env("SOT_RUNTIME_DIR", runtime_dir.path())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn sot-capsule");
-        let mut capsule = capsule_guard::CapsuleGuard::new(capsule, &root);
+            .stderr(std::process::Stdio::null());
+        let mut capsule = capsule_guard::CapsuleGuard::spawn(&mut command);
 
         // Order, not timing: the kill comes after the first producer frame, so
         // every round adds output to the sealed history; the random delay then
@@ -186,12 +185,8 @@ fn kill9_sweep_recovers_green_every_round() {
             Some(libc::SIGKILL),
             "round {round}: capsule ended by {status}, not SIGKILL"
         );
-        // Reap the orphaned producer too (its own session on a now-dead
-        // PTY — it can block there indefinitely). The marker carries this
-        // run's voyage id, so the reap matches no other run's processes.
-        let _ = std::process::Command::new("pkill")
-            .args(["-9", "-f", &format!("payload-{voyage}-")])
-            .status();
+        // The orphaned producer (its own session, on a now-dead PTY) is ended
+        // by PR_SET_PDEATHSIG when its capsule dies, as pdeathsig.rs proves.
 
         // Reopen = reconcile + recover under the writer lock. The next
         // incarnation must (a) come up, (b) seal the previous run's tip,

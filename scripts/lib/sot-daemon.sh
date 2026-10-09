@@ -124,8 +124,8 @@ EOF
 }
 
 # True when SOCKET accepts a connection from this OS account: sotd's own bridge
-# connects only to a socket in a folder private to this account (ADR 0049, User
-# isolation) and, its input empty, closes again at once. A socket it cannot
+# connects only to a socket this account listens on (ADR 0049, User isolation)
+# and, its input empty, closes again at once. A socket it cannot
 # reach is not open, and is never removed on that evidence.
 sot_socket_open() {  # <sotd-bin> <socket>
     [ -S "$2" ] || return 1

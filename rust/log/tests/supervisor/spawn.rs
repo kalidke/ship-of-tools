@@ -23,11 +23,12 @@ fn start_reaches_ready_promptly() {
     let started = Instant::now();
     let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
     let elapsed = started.elapsed();
     println!("LU6b start_reaches_ready_promptly: spawn->Ready = {elapsed:?}");
     assert!(elapsed < Duration::from_secs(30), "expected Ready well within the generous 30s bound, took {elapsed:?}");
 
+    end_run_and_expect_record_closed(&conn, "start-reaches-ready-end", "cleanup", voyage);
     let _ = command(&conn, "start-reaches-ready-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
@@ -77,6 +78,8 @@ fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
          if this ever fails, the daemon's spawn-side identity read was NOT a second implementation of the same value"
     );
 
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
+    end_run_and_expect_record_closed(&conn, "identity-equality-end", "cleanup", voyage);
     let _ = command(&conn, "identity-equality-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
@@ -120,11 +123,7 @@ fn a_leg_spawned_after_the_binary_is_renamed_runs_the_supervisors_own_inode() {
         .args(SHELL)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let mut guard = CapsuleGuard::new_for_exe(
-        cmd.spawn().expect("spawn sot-capsule supervise from the copy"),
-        &copy_path,
-        &state_dir,
-    );
+    let mut guard = CapsuleGuard::spawn(&mut cmd);
     let supervisor_pid = guard.id();
 
     let conn = wait_for_lane(&h, Duration::from_secs(30));
@@ -226,7 +225,7 @@ fn first_leg_without_strips_a_token_from_the_first_leg_and_an_unstable_respawn()
         .arg("--continue")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let mut guard = CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise"), &state_dir);
+    let mut guard = CapsuleGuard::spawn(&mut cmd);
     let supervisor_pid = guard.id();
 
     let read_lines = |path: &Path| -> Option<Vec<String>> {
@@ -408,7 +407,7 @@ fn first_leg_without_does_not_exempt_a_real_crash_loop_from_the_anti_flap_bound(
         .arg("--continue")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let mut guard = CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise"), &state_dir);
+    let mut guard = CapsuleGuard::spawn(&mut cmd);
 
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     poll_until(

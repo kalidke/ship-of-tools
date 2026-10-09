@@ -5,7 +5,7 @@ use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
 #[cfg(unix)]
-use super::{fsync_dir, rename_noreplace_raw};
+use super::{fsync_dir, rename_noreplace_raw, storage_exhaustion};
 #[cfg(windows)]
 use super::{io_ctx, open_dir_handle};
 
@@ -46,7 +46,9 @@ pub fn preflight_volume(dir: &Path) -> Result<()> {
     let nonce = preflight_nonce();
     probe_rename_noreplace_pair(dir, PreflightEntryKind::Dir, &nonce)?;
     probe_rename_noreplace_pair(dir, PreflightEntryKind::File, &nonce)?;
-    fsync_dir(dir).map_err(|e| preflight_refusal(dir, format_args!("could not fsync the directory after the probes ({e})")))?;
+    fsync_dir(dir).map_err(|e| {
+        full_or(e, |e| preflight_refusal(dir, format_args!("could not fsync the directory after the probes ({e})")))
+    })?;
     Ok(())
 }
 
@@ -165,6 +167,18 @@ fn preflight_refusal(dir: &Path, detail: std::fmt::Arguments<'_>) -> Error {
     ))
 }
 
+/// A full volume is not an unqualified one (ADR 0043 decision 23,
+/// amendment): storage exhaustion is returned as itself, with its native
+/// code, and every other probe failure becomes the refusal.
+#[cfg(unix)]
+fn full_or(e: Error, refusal: impl FnOnce(Error) -> Error) -> Error {
+    if storage_exhaustion(&e).is_some() {
+        e
+    } else {
+        refusal(e)
+    }
+}
+
 /// Which kind of filesystem entry a probe pair creates — a directory pair
 /// and a file pair are both required (decision 23: "a temp directory pair
 /// AND a temp file pair"), since a store publishes both kinds and a
@@ -236,21 +250,26 @@ fn probe_rename_noreplace_pair(dir: &Path, kind: PreflightEntryKind, nonce: &str
     let second = b"sot-preflight-second";
     let mut own_b = false;
     let result = (|| -> Result<()> {
-        kind.create(&a, first)
-            .map_err(|e| preflight_refusal(dir, format_args!("could not create the {} probe entry ({e})", kind.label())))?;
-        rename_noreplace_raw(&a, &b)
-            .map_err(|e| preflight_refusal(dir, format_args!("could not rename the {} probe entry into place ({e})", kind.label())))?;
+        kind.create(&a, first).map_err(|e| {
+            full_or(Error::Io(e), |e| preflight_refusal(dir, format_args!("could not create the {} probe entry ({e})", kind.label())))
+        })?;
+        rename_noreplace_raw(&a, &b).map_err(|e| {
+            full_or(e, |e| {
+                preflight_refusal(dir, format_args!("could not rename the {} probe entry into place ({e})", kind.label()))
+            })
+        })?;
         own_b = true;
         kind.create(&a, second).map_err(|e| {
-            preflight_refusal(dir, format_args!("could not recreate a colliding {} probe entry ({e})", kind.label()))
+            full_or(Error::Io(e), |e| {
+                preflight_refusal(dir, format_args!("could not recreate a colliding {} probe entry ({e})", kind.label()))
+            })
         })?;
         match rename_noreplace_raw(&a, &b) {
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => {
-                return Err(preflight_refusal(
-                    dir,
-                    format_args!("a colliding {} rename failed for the wrong reason ({e})", kind.label()),
-                ))
+                return Err(full_or(e, |e| {
+                    preflight_refusal(dir, format_args!("a colliding {} rename failed for the wrong reason ({e})", kind.label()))
+                }))
             }
             Ok(()) => {
                 return Err(preflight_refusal(

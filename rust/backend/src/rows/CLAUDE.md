@@ -22,11 +22,12 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - The `WorkspaceChanged` event the `workspace.changed` bus carries (`mod.rs`).
 
 ## Promises
+- `Workspace::repl` supplies `project_root` unconditionally; a missing `Project.toml` does not activate the installed REPL shim.
 - Re-inserting a slug keeps its workspace id and takes every other field from the new row (`Workspaces::insert`).
 - The default row's declared handle is carried through the boot re-seed (`seed_default_row` copies it, `insert`
   keeps it); the one-row-per-handle promise below still applies to it.
 - Handle, account and agent change in place on the shared `Arc`, never through a replacing `insert`, so a destroyed row
-  is not brought back (`set_agent_handle`, `set_account`, `reset_agent_to_none`).
+  is not brought back (`set_agent_handle`, `set_account`, `set_account_on`, `reset_agent_to_none`).
 - No two rows hold one declared handle. At run time `set_agent_handle` clears it from every other row under the
   registry's write lock and returns their ids for the caller to save; at boot `store::scan_disk` keeps a handle that
   several tomls declare only on the row the comm registry names as its last joiner, if it is one of them
@@ -60,8 +61,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `capsule_supervisor_env`, `sot-capsule supervise`, `supervisor_client`, `FeAttachClient`,
 `rust/backend/src/rows/run/headless.rs`, `rust/frontend/src/ui/agent_pane/attach.rs`, `drawer.voyage`, `writer.lock`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `durable::write`, `durable::remove`,
-`rust/backend/src/durable.rs`, `remove_comm_agents_for_workspace`, `FilesMode`, `ConceptStore`,
-`rust/backend/src/rows/workspace.rs`, `Watcher`, `rust/backend/src/rows/registry.rs`, `Kernel`, `Repl`, `Signal::spawn_std`, `ContainedStd`, `child_signal::process`.
+`rust/backend/src/durable.rs`, `dir_identity`, `rust/log/src/host/pinned_dir.rs`,
+`remove_comm_agents_for_workspace`, `FilesMode`, `ConceptStore`,
+`rust/backend/src/rows/workspace.rs`, `Watcher`, `rust/backend/src/rows/registry.rs`, `Kernel`, `Repl`, `Signal::spawn_std`, `ContainedStd`, `child_signal::process`, `storage_exhaustion`.
 
 ## Folders
 - `ops/`: the row ops clients call

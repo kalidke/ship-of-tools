@@ -147,7 +147,8 @@
 #              a row that is
 #              not a capsule claude row, an account that is unknown or has
 #              no login yet, the account the row already runs, a missing
-#              transcript id, and a transcript that account cannot open; a
+#              transcript id, a transcript that account cannot open, and a
+#              transcript that was not started in this row's root; a
 #              refusal lists the accounts the daemon can see. Exit 0
 #              accepted, 2 refused, 1 no reply. Read the
 #              `reauth` skill first: everything in flight dies with the leg,

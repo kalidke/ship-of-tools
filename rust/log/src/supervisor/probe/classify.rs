@@ -30,6 +30,7 @@
 //! time" — because that clamp is part of the transition logic itself,
 //! not a policy choice a caller could reasonably vary.
 
+use crate::capsule::producer::ExitStatus;
 use crate::identity::challenge::ChallengeOutcome;
 use crate::supervisor::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
 use std::path::Path;
@@ -70,13 +71,13 @@ pub enum ProbeOutcome<Process> {
     Foreign,
     /// B7: no owned child, connect `FILE_NOT_FOUND`, writer fence FREE.
     Absent,
-    /// A2: the owned child exited before ever proving anything. Carries
-    /// no exit code — `WaitOutcome::Exited` has none to give; the
-    /// diagnostic detail (the sealed `producer_dead` record, or the
-    /// store never having opened at all) lives elsewhere, per the ADR's
-    /// own "which way a leg was unstable is DIAGNOSTIC ... never a
-    /// second counter."
-    LegEnded,
+    /// A2: the owned child exited before ever proving anything. Carries how
+    /// it ended when the OS gave it (`Some(Code)` or `Some(Signal)`, read
+    /// from the owned child), `None` when unknown; the diagnostic detail
+    /// (the sealed `producer_dead` record, or the store never having
+    /// opened at all) lives elsewhere, per the ADR's own "which way a leg
+    /// was unstable is DIAGNOSTIC ... never a second counter."
+    LegEnded(Option<ExitStatus>),
     /// A1: `CreateProcess` itself failed.
     SpawnFailed(std::io::Error),
     /// A3's KILL+WAIT succeeded (the child was killed and its exit
@@ -117,7 +118,7 @@ pub fn probe_owned_spawn<O: ProbeOps>(
     loop {
         // A2: has the child already exited?
         match ops.wait_child(&child, Duration::ZERO) {
-            WaitOutcome::Exited => return ProbeOutcome::LegEnded,
+            WaitOutcome::Exited => return ProbeOutcome::LegEnded(ops.child_exit_status(&child)),
             WaitOutcome::WaitFailed => {
                 return kill_and_wait(ops, &child, kill_wait_bound); // A3 (wait_failed half)
             }
@@ -153,7 +154,8 @@ pub fn probe_owned_spawn<O: ProbeOps>(
                     // trusting it.
                     return match ops.spawned_identity(&child) {
                         Ok(child_identity) if child_identity == ops.proven_identity(&process) => {
-                            ProbeOutcome::Ready(process) // A4
+                            // A4: the supervisor keeps the child itself.
+                            ProbeOutcome::Ready(ops.retain_owned_child(process, child))
                         }
                         _ => {
                             // Wrong identity, or the child's own identity
@@ -286,7 +288,7 @@ mod tests {
         ops.push_wait_child(WaitOutcome::Exited);
         let readiness = ops.now() + Duration::from_secs(60);
         let outcome = probe_owned_spawn(&ops, &mut unused_cmd(), "voy", readiness, KILL_WAIT, ATTEMPT);
-        assert!(matches!(outcome, ProbeOutcome::LegEnded));
+        assert!(matches!(outcome, ProbeOutcome::LegEnded(None)));
         assert!(ops.all_exhausted());
     }
 
@@ -342,6 +344,34 @@ mod tests {
         let readiness = ops.now() + Duration::from_secs(60);
         let outcome = probe_owned_spawn(&ops, &mut unused_cmd(), "voy", readiness, KILL_WAIT, ATTEMPT);
         assert!(matches!(outcome, ProbeOutcome::Ready(_)));
+        assert!(ops.all_exhausted());
+    }
+
+    /// A2 hands back how the owned child ended, and A4 hands the supervisor
+    /// the child itself (exactly one `retain_owned_child`), so the exit
+    /// status of an owned leg reaches the lifecycle.
+    #[test]
+    fn stage_a_hands_back_the_exit_status_and_the_owned_child() {
+        let ops = ScriptedProbeOps::new();
+        ops.push_spawn(SpawnOutcome::Spawned(DummySpawnedChild));
+        ops.push_wait_child(WaitOutcome::Exited);
+        ops.set_child_exit_status(Some(ExitStatus::Code(71)));
+        let readiness = ops.now() + Duration::from_secs(60);
+        let outcome = probe_owned_spawn(&ops, &mut unused_cmd(), "voy", readiness, KILL_WAIT, ATTEMPT);
+        assert!(matches!(outcome, ProbeOutcome::LegEnded(Some(ExitStatus::Code(71)))), "{outcome:?}");
+        assert_eq!(ops.retained_children(), 0, "an ended child is not retained");
+
+        let ops = ScriptedProbeOps::new();
+        ops.push_spawn(SpawnOutcome::Spawned(DummySpawnedChild));
+        ops.push_wait_child(WaitOutcome::StillRunning);
+        ops.push_connect(ConnectOutcome::Connected(DummyConn));
+        ops.push_challenge(ChallengeOutcome::Proven(DummyProcess));
+        ops.push_spawned_identity(Ok((111, 222)));
+        ops.push_proven_identity((111, 222));
+        let readiness = ops.now() + Duration::from_secs(60);
+        let outcome = probe_owned_spawn(&ops, &mut unused_cmd(), "voy", readiness, KILL_WAIT, ATTEMPT);
+        assert!(matches!(outcome, ProbeOutcome::Ready(_)));
+        assert_eq!(ops.retained_children(), 1, "Ready hands back the owned child exactly once");
         assert!(ops.all_exhausted());
     }
 

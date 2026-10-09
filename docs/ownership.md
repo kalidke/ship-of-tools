@@ -25,12 +25,13 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 |---|---|---|---|
 | state-dir rule `<state>` | disk rule | platform | `rust/log/src/host/state_dir.rs` `sot_state_dir` (second copy `rust/backend/src/paths.rs` `state_dir`) |
 | config-dir rule `<config>` | disk rule | platform | `rust/log/src/host/state_dir.rs` `sot_config_dir` (delegated `rust/backend/src/rows/store/mod.rs` `app_config_dir`; third rule `rust/frontend/src/ui/persist/resume.rs` `config_dir`; fourth `rust/frontend/src/ui/persist/discover.rs` `find_config_file`) |
-| runtime dir `<runtime>`, `SOT_RUNTIME_DIR` | disk rule | platform | `rust/log/src/host/state_dir.rs` `runtime_dir` |
+| runtime base `<runtime>` (`runtime_sot_dir`: a private `$XDG_RUNTIME_DIR`, else a private `/run/user/<uid>`, else `/tmp/sot-<uid>`); `SOT_RUNTIME_DIR` (`runtime_dir`: the capsule lane sockets only; no production writer, a test seam) | disk rule | platform | `rust/log/src/host/state_dir.rs` `runtime_sot_dir`, `runtime_dir` |
 | host name `host_name()`, `SOT_SELF_HOST` | machine fact | platform | `rust/log/src/host/state_dir.rs` `host_name` (copies: `rust/backend/src/comm/mail/filer.rs` `comm_self_host`, `rust/frontend/src/ui/persist/resume.rs` `state_path`, `comm/lib/comm-lib-base.sh` `sot_host`, `comm/registry/comm-context.sh`, `agents/spawn/comm-despawn.sh`) |
 | `state_dir_hash` (lane socket names) | machine fact | platform | `rust/log/src/host/state_dir.rs` `state_dir_hash` |
 | durable write (fsync, no-clobber rename, publish) | primitive | platform | `rust/log/src/host/durable.rs` `publish_noreplace`, `fsync_dir`, `ensure_container`; `rust/backend/src/durable.rs` `write` |
 | bounded file locks | primitive | platform | `rust/log/src/host/lock.rs` `lock_writer`, `lock_supervisor`, `try_lock_daemon` |
 | volume preflight | primitive | platform | `rust/log/src/host/volume.rs` `preflight_volume` |
+| storage-exhaustion recognition | primitive | platform | `rust/log/src/host/storage.rs` `storage_exhaustion` |
 | Windows SDDL/SID helpers | primitive | platform | `rust/log/src/host/winsec.rs` `owner_protected_descriptor`, `sid_string_from_process` |
 | peer challenge (OS peer, then wire identity) | primitive | platform | `rust/log/src/identity/challenge.rs` `exchange_identity`; `rust/log/src/identity/exchange.rs`; `rust/log/src/identity/deadline.rs` `run_with_deadline`; per-OS `rust/log/src/identity/challenge_unix.rs`, `rust/log/src/identity/challenge_win.rs`, `rust/log/src/identity/challenge_macos.rs` |
 | private-dir and socket-dir checks | primitive | platform | `rust/backend/src/paths.rs` `ensure_private_dir`, `secure_private_dir`, `secure_socket_dir` |
@@ -41,6 +42,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | umask 077, boot refusals | process rule | server | `rust/backend/src/main.rs` `apply_umask`, `parse_args` |
 | session socket/pipe path rule `<runtime>/sessions/<label>.sock`, `\\.\pipe\sot-<USER>-<label>` | disk rule | topology | `rust/protocol/src/topology/endpoint.rs` `session_socket_path` |
 | local daemon label (`sot`, `local`) | setting | topology | `rust/protocol/src/topology/endpoint.rs` `local_daemon_label`; spelled at several script sites (see two owners) |
+| this box's comm relay endpoint (derived when asked; no relay variable overrides it; on the hub it is the daemon's own endpoint, `SOT_SOCKET` first) | rule | topology | `rust/protocol/src/topology/mod.rs` `relay_endpoint`; `rust/backend/src/topology/cli.rs` `relay_endpoint_cmd`; asked, never derived, by `comm/lib/comm-lib-client.sh` `sot_relay_endpoint` |
 | generated hub-relay endpoint classification | rule | topology | `rust/protocol/src/topology/mod.rs` `relay_host_for_path`; `rust/frontend/src/net/dial.rs` `parse_dial_arg` consumes it |
 | the bound session socket/pipe, its DACL and inbound buffer, live-socket refusal | disk, endpoint | server | `rust/backend/src/server/listen.rs` `run_local`, `bind_session`, `refuse_live_socket`, `session_pipe_security_descriptor` |
 | `<state>/held.json` | disk | lifecycle | `rust/backend/src/lifecycle/lease.rs` `HeldRecord`, `persist`; name `rust/protocol/src/ops/lease.rs` `HELD_RECORD_FILE` |
@@ -115,9 +117,9 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | process `sot-capsule run` (leg) | process | capsule | `rust/log/src/supervisor/leg.rs` `build_run_command`; `rust/log/src/capsule/writer_loop/mod.rs` `run` |
 | the agent program (claude, codex): the launch recipe (the leg runs it) | process | agents | `rust/backend/src/agents/argv.rs` `agent_argv`; `rust/log/src/capsule/producer/pty/mod.rs`; `rust/log/src/capsule/producer/conpty/producer.rs` |
 | Julia kernel per workspace | process | sidecars | `rust/backend/src/sidecars/kernel.rs` `Kernel`, `run_one_generation` |
-| Julia REPL per workspace | process | sidecars | `rust/backend/src/sidecars/repl/supervisor.rs` `spawn_supervisor`, `supervisor_task` |
+| Julia REPL per workspace and restart retirement | process, state | sidecars | `rust/backend/src/sidecars/repl/mod.rs` `Repl`, `restart_with_project`, `REPL_RESTART_WAIT`; `rust/backend/src/sidecars/repl/supervisor.rs` `spawn_supervisor`, `supervisor_task` |
 | Pluto per daemon | process | sidecars | `rust/backend/src/sidecars/pluto.rs` `Pluto`, `spawn_supervisor` |
-| MathJax (node) per daemon | process | sidecars | `rust/backend/src/sidecars/mathjax.rs` `MathJax`, `spawn_supervisor` |
+| MathJax (node) per daemon | process | sidecars | `rust/backend/src/sidecars/mathjax.rs` `MathJax`, `spawn_supervisor`, `supervisor_task`; the constructor supplies `Signal` |
 | monitor sampler (`bash -s`, `ssh <alias> bash -s`) | process | sidecars | `rust/backend/src/sidecars/monitor.rs` `spawn_source`, `SAMPLER_SH` |
 | quarto render child | process | pages | `rust/backend/src/pages/ops.rs` `run_quarto` |
 | `git` child of a site open | process | pages | `rust/backend/src/pages/site/links.rs` `run_git` |
@@ -163,7 +165,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | lease holder and reader tasks | thread | lifecycle | `rust/frontend/src/lease.rs` `spawn_holder`, `Leases` |
 | attach worker, reader, supervisor probe threads | thread | capsule | `rust/log/src/attach_client/worker/mod.rs`; `rust/log/src/attach_client/worker/steady.rs`; `rust/log/src/supervisor/probe/mod.rs` |
 | supervisor worker per operation | thread | capsule | `rust/log/src/supervisor/lifecycle.rs` `Lifecycle`; `rust/log/src/supervisor/oneshot.rs` `endrun_inner`, `reset_inner` |
-| lane accept and reaper threads | thread | capsule | `rust/log/src/lane/socket_unix/accept.rs`; `rust/log/src/lane/pipe_win/accept.rs` |
+| storage wait: durable state-root probe and its backoff | state, thread | capsule | `rust/log/src/supervisor/storage/mod.rs` `Wait`, `advance`, `probe` |
+| lane accept and reaper threads | thread | capsule | `rust/log/src/lane/socket_unix/accept.rs`; `rust/log/src/lane/socket_unix/conn.rs`; `rust/log/src/lane/pipe_win/accept.rs`; `rust/log/src/lane/pipe_win/conn.rs`; `rust/log/src/lane/pending.rs` `PendingJoins`, `Claimed` |
 | frame format, codec, 1 MiB cap | wire | wire | `rust/protocol/src/lib.rs` `Frame`; `rust/protocol/src/codec.rs` `read_frame`, `write_frame`, `MAX_ENVELOPE_BYTES` |
 | `PROTOCOL_VERSION` | wire | wire | `rust/protocol/src/lib.rs` `PROTOCOL_VERSION` (the shell literal in `comm/lib/comm-lib-client.sh` `sot_hello_frame`, held to it by `the_shell_hello_is_this_protocols_hello`, which runs it) |
 | product version, `is_release_build` | wire | wire | `rust/protocol/src/version.rs` `app_version`, `is_release_build`; `rust/protocol/build.rs` |
@@ -210,8 +213,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | video suffix and MIME decision in Rust | rule | wire | `rust/protocol/src/video_path.rs` `video_mime` |
 | video, site-prefix, site-pool listeners and grant tables | endpoint, state | pages | `rust/backend/src/pages/video.rs` `Grants`, `register_video`; `rust/backend/src/pages/site/mod.rs` `spawn`, `spawn_pool`, `set_root` |
 | window page-proxy listeners and arming | endpoint | pages | `rust/frontend/src/pages.rs` `serve_browser`, `Arm`; `rust/frontend/src/ui/page_proxy.rs` `ensure_proxy_for_url` |
-| Pluto's page server and notebook workers | endpoint | sidecars | `julia/pluto/start.jl`; `julia/pluto/session_options.jl` `configure_session!` |
-| `wglshow`'s page server, one per REPL child | endpoint | sidecars | `julia/repl/src/wgl.jl` `page_server`, `no_referrer_page`, `WGL_SERVER` |
+| Pluto's page server, notebook workers and supervisor proxy grant | endpoint, state | sidecars | `julia/pluto/start.jl`; `julia/pluto/session_options.jl` `configure_session!`; `rust/backend/src/sidecars/pluto.rs` `supervisor_task`, `bound_pluto_port` |
+| `wglshow`'s page server, bound once per REPL lifetime | endpoint | sidecars | `julia/repl/src/wgl.jl` `page_server`, `wgl_server`, `no_referrer_page`, `WGL_SERVER` |
 | `lane.connect` | op | rows | `rust/backend/src/rows/ops/lane_bridge.rs` `handle_lane_connect` |
 | `pty.open` (start a row, answer `attach_direct`) | op | rows | `rust/backend/src/rows/ops/pty.rs` `handle_pty_open` |
 | `pty.write` | op | rows | `rust/protocol/src/ops/mod.rs` `PTY_WRITE` (no dispatch arm) |
@@ -256,16 +259,16 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | sotd exit 130 and 143 (INT and TERM) | exit code | lifecycle | `rust/backend/src/lifecycle/signal_exit.rs` `install` |
 | sotd exit 75 (update restart) | exit code | distribution | `rust/backend/src/update.rs` `exit_for_update` (committed under the lease by lifecycle's `Leases::commit_update`); `rust/protocol/src/ops/lease.rs` `EXIT_UPDATE_RESTART` |
 | sot exit 75/76 (relaunch, converge) | exit code | distribution | `rust/frontend/src/lease.rs` `exit_intent`, `close_now`; `rust/frontend/src/relaunch.rs` |
-| sot-capsule exit 0/69/70 | exit code | capsule | `rust/log/src/supervisor/mod.rs`; `rust/log/src/bin/sot-capsule.rs` |
+| sot-capsule exit 0/69/70 (supervise) and 71 (run: storage exhaustion) | exit code | capsule | `rust/log/src/supervisor/mod.rs`; `rust/log/src/capsule/mod.rs` `EXIT_LEG_STORAGE_FULL`; `rust/log/src/bin/sot-capsule.rs` `leg_exit_code` |
 | `SOT_SOCKET`, `SOT_SESSION`, `SOT_WORKSPACE`, `SOT_WORKSPACE_ID`, `SOT_WORKSPACE_ROOT`, `SOT_MANUAL` | env | agents | `rust/backend/src/agents/awareness.rs` `awareness_env` |
 | `SOT_COMM_NAME`, `SOT_COMM_SELF_FILE` (issued at spawn) | env | messaging | `rust/backend/src/agents/env.rs` `agent_env`; read `comm/registry/comm-context.sh`; `comm/registry/comm-join.sh` |
 | `SOT_COMM_HOOKS`, `SOT_LOCK_WAIT_SECS`, `SOT_INBOX_LOCK_WAIT_SECS`, `SOT_INBOX_READ_WAIT_SECS`, `SOT_INBOX_READ_WARNING`, `SOT_SEND_TIMEOUT`, `SOT_COMM_ASKQ_ID`, `SOT_COMM_EXPERTISE`, `SOT_HB_CTX_TIMEOUT_TICKS`, `SOT_TURN_AUDITOR`, `SOT_AUDITOR_*` | env | messaging | `comm/lib/comm-lib-base.sh`; `comm/lib/comm-lib-inbox.sh`; `comm/work_state/hooks/comm-status-heartbeat.sh`; `comm/work_state/comm-turn-auditor.sh` |
 | `SOT_COMM_SPAWN_WAIT`, `SOT_COMM_SPAWN_CAPSULE_WAIT`, `SOT_FE_ENDPOINT`, `SOT_SPAWN_ENDPOINT`, `SOT_NAV_DRY_RUN`, `SOT_ACCOUNT` | env | agents | `agents/spawn/comm-spawn.sh`; `agents/sot-fe/sot-fe`; `agents/spawn/comm-bootstrap.sh`; `rust/backend/src/agents/accounts.rs` `account_env` |
 | `SOT_PROBE_READ_TIMEOUT`, `SOT_PROBE_READY_WAIT` | env | agents | `agents/spawn/comm-probe.sh` |
 | `GH_OAUTH_CLIENT_ID`, `SOT_GH_SCOPES` (sot-gh-auth also honours gh's own `GH_HOST`, `GH_CONFIG_DIR`) | env | agents | `agents/sot-gh-auth.sh` |
-| `SOT_BACKEND_LABEL`, `SOT_RELAY_ENDPOINT`, `SOT_RELAY_LABEL`, `SOT_RELAY_SOTD`, `SOT_RELAY_TARGET` | env | topology | `rust/protocol/src/topology/relay_units.rs` `relay_command_line`; `comm/lib/comm-lib-client.sh` `sot_relay_endpoint` |
+| `SOT_BACKEND_LABEL`, `SOT_RELAY_SOTD`, `SOT_RELAY_TARGET` | env | topology | `rust/protocol/src/topology/relay_units.rs` `relay_command_line`; `rust/protocol/src/topology/endpoint.rs` `local_endpoint`; `comm/lib/comm-lib-client.sh` `sot_daemon_endpoint` |
 | `SOT_JULIA_BIN`, `SOT_NODE_BIN`, `QUARTO_JULIA` | env | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; `rust/backend/src/sidecars/mathjax.rs` `default_script_path`; `QUARTO_JULIA` is set for quarto by `rust/backend/src/pages/ops.rs` `run_quarto` |
-| which Julia binary the daemon runs (`julia::resolve_bin`: an absolute `SOT_JULIA_BIN`, juliaup's default channel, a verified PATH candidate; never a path with a `WindowsApps` component) | rule | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; read by `rust/backend/src/update.rs` `prepare_julia` and `rust/backend/src/pages/ops.rs` `run_quarto` |
+| Which Julia binary the daemon runs: absolute override, juliaup default channel, then a verified PATH candidate; Windows app-execution aliases refused by file tag | rule | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; read by `rust/backend/src/update.rs` `prepare_julia` and `rust/backend/src/pages/ops.rs` `run_quarto` |
 | `SOT_WATCH_BUDGET` | env | files | `rust/backend/src/files/watcher.rs` `watch_budget` |
 | `SOT_VIDEO_PORT`, `SOT_DOCS_PORT`, `SOT_PROXY_EXTRA_PORTS` | env | pages | `rust/backend/src/pages/video.rs` `video_port`; `rust/backend/src/pages/site/mod.rs` `site_port`; `rust/backend/src/pages/proxy.rs` `allowed_proxy_ports` |
 | `SOT_SETTINGS`, `SOT_KEYBINDINGS`, `SOT_PROJECTS_ROOT`, `SOT_REMOTE_HOME` | env | fe-ui | `rust/frontend/src/ui/persist/discover.rs` `find_config_file`; `rust/frontend/src/ui/persist/settings.rs`; `rust/frontend/src/ui/input/keybindings.rs`; `rust/frontend/src/ui/session/picker.rs` |
@@ -284,7 +287,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | per-host table (`host_connected`, `host_transports`, `host_resolved_dial`, `link_gates`, `declared_host`, `reconnect_now`) | state | fe-net | `rust/frontend/src/net/hosts.rs` `HostTable`; `rust/frontend/src/ui/connections.rs` |
 | `FrontendIdentity` | state | fe-net | `rust/frontend/src/net/identity.rs` `FrontendIdentity`, `frontend_identity` |
 | steady control read/write scheduling | state, rule | fe-net | `rust/frontend/src/net/transport/steady.rs` `steady_loop`; request correlation remains in PendingGuard |
-| `Signal` and its tree registry, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `ContainedStd`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `ContainedStd`, `fire`; `rust/backend/src/lifecycle/contain.rs` `Tree` |
+| `Signal` and its tree registry, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `ContainedStd`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `Contained::wait_until_exited`, `ContainedStd`, `fire`; `rust/backend/src/lifecycle/contain.rs` `Tree` |
 | process-start rule: each call of a function in `rust/clippy.toml`'s process-spawns group outside `Signal::spawn`, `Signal::spawn_std` and `Signal::output` is a reasoned exception; what the group does not hold is named in rust/backend/src/lifecycle/CLAUDE.md | rule | lifecycle | `rust/clippy.toml` (process-spawns group); `rust/backend/src/lifecycle/child_signal.rs` `Signal::spawn`, `Signal::spawn_std`, `Signal::output` |
 | `Leases`, its mutex and phase | state, lock | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `Phase` |
 | window exit decision (`ExitReason`, `ExitStep`, `exit_intent`, `close_now`) | state | lifecycle | `rust/frontend/src/lease.rs` `ExitReason`, `ExitStep`, `exit_intent`, `close_now` |

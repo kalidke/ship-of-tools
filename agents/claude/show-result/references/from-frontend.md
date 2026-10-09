@@ -10,14 +10,10 @@ auto-discovery relies on, and fails in a way that reads like a dead daemon:
 ERROR: could not find the sotd daemon. Set --endpoint unix:/path, ssh:target[/host], or (Windows) pipe:name (or $SOT_FE_ENDPOINT).
 ```
 
-That message appears **even with the frontend's own connection plainly working**. Two
-similarly-named variables carry the same value to different tools, and only
-one of them is set for you:
-
-| Variable | Read by | Set by session-start bootstrap? |
-|---|---|---|
-| `SOT_RELAY_ENDPOINT` | `comm-relay.sh` (messaging) | yes |
-| `SOT_FE_ENDPOINT` | `sot-fe` (`preview`/`docs`/`open-url`) | no — export it yourself |
+That message appears **even with the frontend's own connection plainly working**.
+`sot-fe` (`preview`/`docs`/`open-url`) reads `SOT_FE_ENDPOINT`, and nothing sets
+it for you; messaging needs no variable, because `comm-relay.sh` asks `sotd
+topology relay-endpoint`.
 
 Two fixes:
 

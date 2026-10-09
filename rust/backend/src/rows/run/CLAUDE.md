@@ -41,4 +41,5 @@ destroy proof. `observer.rs::ensure_running` for how a row's phase is polled; `h
   (`admission::PENDING_AUTHORITY`, from `spawn_detached_supervisor`'s `Spawn::Contended`): `ensure_started` waits
   `ADMISSION_PENDING_PASSES` passes with the row's guard released and then reports the pending refusal, never an
   attach and never a second supervisor; the watchdog's restart leaves the row for the next attach, as for exit 70.
+- `end_run` waits out an authority reporting `starting` for activation's bound (50 re-probes 200 ms apart); one still starting is stopped and judged by `absence_proof`, as a terminal one is (`settle_starting`, `end_still_starting`). A destroy or a window's close therefore ends a row held for storage.
 - Boot resume spawns nothing for a live authority (`resume::resume_all` through `activation::resume_locked`).

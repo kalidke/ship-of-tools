@@ -65,7 +65,7 @@ pub(crate) struct Refusal {
 /// out, so holding one means the record is already updated and the ack is
 /// the caller's next act.
 pub struct ReauthRestart {
-    /// The row itself — the `Arc` [`Workspaces::set_account`] mutated,
+    /// The row itself — the `Arc` [`Workspaces::set_account_on`] mutated,
     /// carried rather than copied field by field so nothing here can drift
     /// from the registry it was taken from: the id, slug, agent name, root
     /// and the account all come off it, and the ACCOUNT is read fresh at
@@ -172,25 +172,124 @@ fn discovery_name(account: &str) -> &str {
     }
 }
 
-/// Whether `account` can actually open transcript `resume`: one
-/// `projects/<project>/<resume>.jsonl` under its own config dir
-/// ([`crate::agents::accounts::claude_config_dir`]). Globbed over `projects`'
-/// children rather than rebuilding claude's own cwd-to-directory mangling
-/// — the id is unique across that tree, and a rule this daemon copied
-/// would be a rule it could get wrong.
-fn resume_reachable(home: &Path, account: &str, resume: &str) -> bool {
-    let transcript = format!("{resume}.jsonl");
-    let projects = crate::agents::accounts::claude_config_dir(home, account).join("projects");
-    let Ok(entries) = std::fs::read_dir(projects) else {
-        return false;
-    };
-    entries.flatten().any(|e| e.path().join(&transcript).is_file())
+/// How far into a transcript its start directory is looked for. The first
+/// line that records a `cwd` ended within 104 KB of the file's start in every
+/// one of 11,628 transcripts Claude Code 2.1.278 to 2.1.288 wrote; a
+/// transcript that records none in its first MiB is not provably any row's.
+const HEAD_SCAN_BYTES: u64 = 1 << 20;
+
+/// The directory transcript `path` was started in: the `cwd` of its first
+/// line that records one. Only the first: later lines record wherever the
+/// session's shell has `cd`'d since, and a `--resume` run in another
+/// directory appends lines that record THAT directory to this same file.
+fn started_in(path: &Path) -> Option<PathBuf> {
+    use std::io::{BufRead, Read};
+    #[derive(serde::Deserialize)]
+    struct Line {
+        cwd: Option<String>,
+    }
+    let file = std::fs::File::open(path).ok()?;
+    std::io::BufReader::new(file.take(HEAD_SCAN_BYTES))
+        .split(b'\n')
+        .map_while(std::result::Result::ok)
+        .find_map(|line| serde_json::from_slice::<Line>(&line).ok()?.cwd)
+        .map(PathBuf::from)
 }
 
-/// Every refusal this op owns, decided BEFORE anything is touched, pure
-/// over the row's own facts plus the home the accounts live in — the same
-/// reason [`crate::agents::accounts::account_env`] is pure: the check and the real
-/// spawn share ONE rule instead of a copy each could drift from.
+/// Whether `id` has the shape of a Claude Code session id: a lowercase UUID,
+/// 8-4-4-4-12 hex digits. Only that shape is joined into a path or handed to
+/// `claude --resume`: it holds no separator, so it names one transcript under
+/// `projects`, and no leading `-`, so claude never reads it as a flag.
+fn is_session_id(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_digit() || (b'a'..=b'f').contains(&b),
+        })
+}
+
+/// The refusal, if any, for resuming transcript `resume` as `account` in the
+/// row rooted at `root`. In order: `resume` must be a session id
+/// ([`is_session_id`]); the account must be able to open that
+/// transcript, found by globbing `projects`' children rather than by
+/// rebuilding claude's own cwd-to-directory mangling (a rule this daemon
+/// copied would be a rule it could get wrong); and the transcript must have
+/// been started in THIS row's root. The last is the row's claim on its
+/// conversation: Claude Code's `--resume <id>` opens a transcript from any
+/// project folder and appends to it, so an id from another row would restart
+/// this row on that row's conversation, two legs writing one file.
+/// Directories compare by kernel identity, so spelling, case, separators and
+/// symlinks do not matter; the recorded directory must be absolute.
+fn transcript_refusal(
+    home: &Path,
+    account: &str,
+    resume: &str,
+    root: &Path,
+) -> Option<(&'static str, String)> {
+    if !is_session_id(resume) {
+        return Some((
+            "resume_unreachable",
+            format!(
+                "{resume:?} is not a session id: claude names a conversation by a lowercase UUID"
+            ),
+        ));
+    }
+    let name = format!("{resume}.jsonl");
+    let projects = crate::agents::accounts::claude_config_dir(home, account).join("projects");
+    let transcript = std::fs::read_dir(projects).ok().and_then(|entries| {
+        entries
+            .flatten()
+            .map(|e| e.path().join(&name))
+            .find(|p| p.is_file())
+    });
+    // The refusal that protects the kill, and the reason it lives HERE:
+    // `claude --resume <id>` on an id the target cannot see exits at once,
+    // the supervisor flaps the row to `Terminal`, and the conversation is
+    // reachable again only by reauthing back — so the only actor that can
+    // read both accounts' folders proves reachability BEFORE the accept,
+    // rather than asking the leg to check its own grave.
+    let Some(transcript) = transcript else {
+        return Some((
+            "resume_unreachable",
+            format!(
+                "account {:?} cannot see transcript {resume:?}: no projects/*/{resume}.jsonl under its config dir — either that is not this conversation's id, or that account folder has its own REAL `projects` instead of the shared symlink, in which case the resume would land in a fresh, empty conversation",
+                discovery_name(account)
+            ),
+        ));
+    };
+    let root_identity = match sot_log::host::dir_identity(root) {
+        Ok(identity) => identity,
+        Err(e) => {
+            let error = format!("this row's root {root:?} cannot be opened: {e}");
+            return Some(("resume_not_this_row", error));
+        }
+    };
+    let Some(started) = started_in(&transcript) else {
+        return Some((
+            "resume_not_this_row",
+            format!(
+                "transcript {resume:?} records no working directory in its first {HEAD_SCAN_BYTES} bytes: a reauth resumes only a conversation started in this row's root {root:?}"
+            ),
+        ));
+    };
+    // Absolute only: a relative directory would be read against this daemon's
+    // own working directory, which says nothing about where the session ran.
+    let same = started.is_absolute()
+        && sot_log::host::dir_identity(&started).is_ok_and(|identity| identity == root_identity);
+    if same {
+        return None;
+    }
+    Some((
+        "resume_not_this_row",
+        format!(
+            "transcript {resume:?} was started in {started:?}, not in this row's root {root:?}: a reauth resumes only a conversation started in the row's own root"
+        ),
+    ))
+}
+
+/// Every refusal this op owns, decided BEFORE anything is touched, over the
+/// row's own facts (its runtime, agent, account and root) plus the home the
+/// accounts live in.
 ///
 /// `resume` is required with no default: `--continue` resolves "the most
 /// recent conversation" from a per-account `.claude.json` that is never
@@ -203,6 +302,7 @@ pub(crate) fn check(
     current_account: &str,
     account: &str,
     resume: &str,
+    root: &Path,
     home: &Path,
     accounts: &[DiscoveredAccount],
 ) -> Result<(), Refusal> {
@@ -263,22 +363,43 @@ pub(crate) fn check(
             "resume is required: name the transcript id to resume (the row's own CLAUDE_CODE_SESSION_ID) — there is no \"most recent conversation\" to fall back to on another login".to_string(),
         );
     }
-    // The refusal that protects the kill, and the reason it lives HERE:
-    // `claude --resume <id>` on an id the target cannot see exits at once,
-    // the supervisor flaps the row to `Terminal`, and the conversation is
-    // reachable again only by reauthing back — so the only actor that can
-    // read both accounts' folders proves reachability BEFORE the accept,
-    // rather than asking the leg to check its own grave.
-    if !resume_reachable(home, want, resume) {
-        return refuse(
-            "resume_unreachable",
-            format!(
-                "account {:?} cannot see transcript {resume:?}: no projects/*/{resume}.jsonl under its config dir — either that is not this conversation's id, or that account folder has its own REAL `projects` instead of the shared symlink, in which case the resume would land in a fresh, empty conversation",
-                discovery_name(want)
-            ),
-        );
+    // The refusals that guard the replacement's `--resume`: an id the target
+    // account cannot open, and a conversation that is not this row's own.
+    if let Some((code, error)) = transcript_refusal(home, want, resume, root) {
+        return refuse(code, error);
     }
     Ok(())
+}
+
+/// [`check`] on the blocking pool: it lists the account's `projects`, reads
+/// up to [`HEAD_SCAN_BYTES`] of a transcript and opens two directories, and
+/// none of that may stall the connection's task.
+async fn check_blocking(
+    ws: &std::sync::Arc<crate::rows::Workspace>,
+    req: &sot_protocol::WorkspaceReauthReq,
+    home: &Path,
+    accounts: &[DiscoveredAccount],
+) -> Result<Result<(), Refusal>> {
+    let (ws, req, home, accounts) = (
+        ws.clone(),
+        req.clone(),
+        home.to_path_buf(),
+        accounts.to_vec(),
+    );
+    let checked = tokio::task::spawn_blocking(move || {
+        check(
+            &ws.runtime,
+            &ws.agent(),
+            &ws.account(),
+            &req.account,
+            &req.resume,
+            &ws.project_root,
+            &home,
+            &accounts,
+        )
+    })
+    .await?;
+    Ok(checked)
 }
 
 /// The ONE refusal frame this op builds — one constructor, so the
@@ -330,23 +451,15 @@ pub async fn handle_workspace_reauth(
     let refuse = |code: &'static str, error: String| -> Result<(HandlerOutput, Option<ReauthRestart>)> {
         Ok((refused(req_id, Refusal { code, error, accounts: names.clone() }), None))
     };
-    // The one refusal a row can hit twice: once here, and once more after
-    // the guard is held, because a destroy could have won the wait.
-    let gone = || "the workspace was removed before its reauth could start".to_string();
+    // The refusal a row can hit before the guard, after it, and when the
+    // record moves: a destroy or a re-insert of its slug can win the wait.
+    let gone = || "the workspace was removed or replaced before its reauth could start".to_string();
 
     let Some(ws) = workspaces.resolve(Some(&req.workspace_id)) else {
         return refuse("unknown_workspace", format!("no workspace {:?} is registered here", req.workspace_id));
     };
     let want = normalize(&req.account).to_string();
-    if let Err(r) = check(
-        &ws.runtime,
-        &ws.agent(),
-        &ws.account(),
-        &req.account,
-        &req.resume,
-        &home,
-        &accounts,
-    ) {
+    if let Err(r) = check_blocking(&ws, &req, &home, &accounts).await? {
         return Ok((refused(req_id, r), None));
     }
 
@@ -397,24 +510,24 @@ pub async fn handle_workspace_reauth(
         Err(e) => return refuse("launcher_unresolved", e),
     };
 
-    // The record moves now, while the old leg is still running. What is
-    // persisted — and what the restart is built from — is the `Arc`
-    // `set_account` itself mutated, never the one resolved before the
-    // guard: `Workspaces::insert` is NOT taken under this guard, so a
-    // concurrent `workspace.create` for the same slug can swap the
-    // registry's `Arc` for this row inside the window, and saving the
-    // stale one would write the OLD account into a toml the registry no
-    // longer agrees with.
+    // The record moves now, while the old leg is still running, and only on
+    // the row `check` proved the transcript against. `Workspaces::insert` is
+    // NOT taken under this guard, so a concurrent `workspace.create` for the
+    // same slug can replace this row, at another root, inside the window;
+    // `set_account_on` writes only while `ws` is still the registered row, so
+    // a replaced row is a refusal, never a restart in a root nothing checked
+    // and never a save of an account the registry no longer holds.
     let previous = ws.account();
-    let Some(row) = workspaces.set_account(&ws.workspace_id, &want) else {
+    if !workspaces.set_account_on(&ws, &want) {
         return refuse("unknown_workspace", gone());
-    };
+    }
+    let row = ws;
     if let Err(e) = crate::rows::store::save(&row) {
         // An unpersisted switch is a row that comes back on the OLD login
         // after any daemon restart while its live leg spends the new one —
         // two truths. Put the field back and refuse; nothing else has been
         // touched yet, so this is still a reauth that changed nothing.
-        workspaces.set_account(&ws.workspace_id, &previous);
+        workspaces.set_account_on(&row, &previous);
         return refuse("persist_failed", format!("could not persist the row's new account: {e}"));
     }
 
@@ -481,3 +594,5 @@ mod support_tests;
 mod check_tests;
 #[cfg(test)]
 mod accept_tests;
+#[cfg(test)]
+mod own_transcript_tests;

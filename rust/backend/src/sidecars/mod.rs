@@ -8,6 +8,9 @@ pub(super) mod ops;
 pub(super) mod pluto;
 pub(super) mod repl;
 
+#[cfg(test)]
+mod contract_tests;
+
 use serde::Serialize;
 use serde_json::Value;
 

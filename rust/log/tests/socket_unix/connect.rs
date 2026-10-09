@@ -337,6 +337,10 @@ fn foreign_account_cannot_reach_the_lane() {
     {
         return;
     }
+    // The one skip rule for root (`sot_log::test_foreign`): only when `sudo -n true` fails; any later failure fails.
+    if !sot_log::test_foreign::elevation_or_skip(test) {
+        return;
+    }
     let root = isolated_runtime_dir();
     let foreign = if current_uid() == 65534 { 65533 } else { 65534 };
     for endpoint in ["voyage", "supervisor"] {

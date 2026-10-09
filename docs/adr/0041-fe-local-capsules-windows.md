@@ -1239,6 +1239,10 @@ loop. Which way a leg was unstable is DIAGNOSTIC — the sealed
 `producer_dead` detail, or the child's exit code and stderr tail when the
 store never opened — never a second counter.
 
+**Amendment (2026-10-08, 0.6.6): the leg's exit channel.** `sot-capsule run` exits 71 only when its run failed with storage exhaustion; a producer that itself exits 71 is recorded with 71 and its leg exits 1. The supervisor keeps a leg it spawned as its child (`LegProcess`) until its one reap, so an owned leg's exit status reaches the lifecycle; an adopted leg's status is unknown. This amendment changes no accounting.
+
+**Amendment (2026-10-08, 0.6.6): the storage wait.** A leg exit 71, a recovery, end_run or reset worker failing with storage exhaustion, and a leg death of unknown status whose immediate durable probe meets storage exhaustion hold the authority in one storage wait instead of charging `consecutive_unstable_legs` or entering Terminal. The wait probes the state root (a new 4 KiB file written and synced and its folder synced, then removed) after 1, 2, 4, 8 and 16 s and then every 30 s. A success respawns the same voyage, its first-leg tokens stripped until a producer has run, or re-runs startup recovery, which finishes an interrupted end_run or reset from its journal. The backoff continues through a storage exit that follows a successful probe and restarts when a leg is judged stable. Nothing waits before the authority holds its fence and lane: a storage failure there exits 69, and the daemon refuses to create a row on a full volume. A Stop ends the wait even when storage keeps its record from being written, and the daemon stops an authority still starting after its settle bound, so a destroy or a window's close ends a held row. Status reports `starting` while waiting.
+
 **Supervisor exit codes are the launcher's contract.** `0` = clean end
 (the run ended by request, or a stop was requested) — DO NOT restart.
 `69` = terminal (three consecutive unstable legs, a foreign server, a

@@ -6,7 +6,7 @@ file is published durably, how a lock is held, and what a volume must support. I
 workspace's bottom crate: every other Rust crate can reach it and it reaches none of them.
 
 ## Owns
-- The per-machine dirs and the host name (`state_dir.rs`: `sot_state_dir`, `sot_config_dir`, `runtime_dir`,
+- The per-machine dirs and the host name (`state_dir.rs`: `sot_state_dir`, `sot_config_dir`, `runtime_sot_dir`, `runtime_dir`,
   `state_dir_hash`, `host_name`).
 - Publication and fsync (`durable.rs`: `publish_noreplace`, `finish_publication`, `rename_noreplace_raw`, `fsync_dir`,
   `fsync_file`, `ensure_container`, `create_dir_protected`).
@@ -22,9 +22,19 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - The retry deadline and error context every file here shares (`mod.rs`: `RETRY_DEADLINE_MS`, `io_ctx`,
   `duration_to_wait_ms`).
 - The peer challenge in `rust/log/src/identity/` (a sibling folder; see Folders).
+- Storage-exhaustion recognition (`storage.rs`: `storage_exhaustion`, `native_storage_code`).
 
 ## Promises
 - `host_name` returns `Err`, never a guessed name.
+- Every process resolves the runtime base itself, from its own environment (`runtime_sot_dir`); `runtime_dir` adds
+  only `SOT_RUNTIME_DIR`, which no production code sets and which moves only the capsule lane sockets. A path one
+  process binds and another dials or copies (the session socket and the `SOT_SOCKET` each row is spawned with, the
+  lane sockets) agrees only while the base does not change. The supported setups keep it fixed for a boot (Linux:
+  linger and the user manager's `XDG_RUNTIME_DIR`; macOS: no `XDG_RUNTIME_DIR`; Windows has no runtime base). A boot
+  without logind binds at `/tmp/sot-<uid>`; a daemon that takes over after `/run/user/<uid>` appears cannot reach the
+  rows that boot spawned.
+- `dir_identity` opens only a directory (`O_DIRECTORY` on Unix), so a path that names a FIFO or any other non-directory
+  fails at once and never waits.
 - `preflight_volume` refuses a root the store cannot make durable: a network filesystem (NFS answers EINVAL to every
   `renameat2` flag the store publishes with), so a state root on a network home must point `XDG_STATE_HOME` at local
   disk.
@@ -35,17 +45,18 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   (`lock_writer`).
 - Kernel file locks are taken only inside three guards: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`, whose `Drop` unlocks, and `HandoverLock` in `lock.rs`, whose drop only closes, so a copy of its descriptor in a child keeps the lock held (a birth's claim on a row's fence). rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
+- Storage exhaustion is recognized by its native code only: ENOSPC and EDQUOT, on Windows ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL and ERROR_DISK_QUOTA_EXCEEDED, read from the `io::Error` an `Error::Io` carries, never from text and never from a transport error (a full runtime folder is not storage exhaustion) (`storage_exhaustion`). `preflight_volume` and Windows `io_ctx` return such an error as itself, with its code, instead of their refusal or context text.
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot_state_dir`, `sot_config_dir`,
 `host_name`, `state_dir_hash`, `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`,
 `owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`,
-`durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `resource_dir`, `rust/backend/src/paths.rs`,
-`sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`. Uses: none.
+`durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `dir_identity`,
+`rust/log/src/host/pinned_dir.rs`, `resource_dir`, `rust/backend/src/paths.rs`,
+`sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`, `storage_exhaustion`. Uses: none.
 
 ## Folders
-- `rust/log/src/host/` (here) and `rust/log/src/identity/` (the peer challenge; its folder is not at this commit, so
-  this is a forward reference).
+- `rust/log/src/host/` (here) and `rust/log/src/identity/` (the peer challenge).
 
 ## Files
 - `mod.rs`: the module list, the shared retry constants, `io_ctx`, `duration_to_wait_ms`
@@ -55,6 +66,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `pinned_dir.rs`: a directory's kernel identity and a handle that pins it.
 - `process_tree/`: the native process-birth primitives (own page).
 - `state_dir.rs`: where a file lives, and the host name.
+- `storage.rs`: which native errors are storage exhaustion.
 - `volume.rs`: the preflight that proves a volume supports the store's primitives.
 - `winhandle.rs`: Windows-only hardening of a process's own inherited stdio handles.
 - `winsec.rs`: Windows-only owner-only security descriptors and SID lookups, and `wide_null`, the UTF-16 form of a non-path string.

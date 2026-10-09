@@ -9,7 +9,9 @@
 #![cfg(windows)]
 
 use crate::identity::challenge::ChallengeOutcome;
-use crate::identity::challenge_win::{self, ChallengedProcess};
+use crate::capsule::producer::ExitStatus;
+use crate::identity::challenge_win;
+use crate::supervisor::probe::leg_process::LegProcess;
 use crate::supervisor::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
 use crate::store::voyage::WRITER_LOCK;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -25,6 +27,9 @@ use std::time::{Duration, Instant};
 #[derive(Debug)]
 pub struct SpawnedChild {
     handle: OwnedHandle,
+    /// The exit code `GetExitCodeProcess` gave once `wait` had seen the
+    /// process exit; `None` until then.
+    exit_status: std::cell::Cell<Option<ExitStatus>>,
 }
 
 impl SpawnedChild {
@@ -38,7 +43,7 @@ impl SpawnedChild {
         // SAFETY: `raw` came from `IntoRawHandle::into_raw_handle`,
         // which transfers unique ownership.
         let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
-        Self { handle }
+        Self { handle, exit_status: std::cell::Cell::new(None) }
     }
 
     fn raw(&self) -> windows_sys::Win32::Foundation::HANDLE {
@@ -47,7 +52,21 @@ impl SpawnedChild {
 
     /// See [`challenge_win::wait_handle`]'s doc for the bound.
     pub fn wait(&self, timeout: Duration) -> std::io::Result<bool> {
-        challenge_win::wait_handle(self.raw(), timeout)
+        let exited = challenge_win::wait_handle(self.raw(), timeout)?;
+        if exited && self.exit_status.get().is_none() {
+            use windows_sys::Win32::System::Threading::GetExitCodeProcess;
+            let mut code = 0u32;
+            if unsafe { GetExitCodeProcess(self.raw(), &mut code) } != 0 {
+                self.exit_status.set(Some(ExitStatus::Code(code)));
+            }
+        }
+        Ok(exited)
+    }
+
+    /// How the process ended, once [`Self::wait`] has seen it exit; `None`
+    /// before that.
+    pub fn exit_status(&self) -> Option<ExitStatus> {
+        self.exit_status.get()
     }
 
     pub fn terminate(&self) -> std::io::Result<()> {
@@ -117,7 +136,7 @@ pub(crate) struct RealProbeOps;
 impl ProbeOps for RealProbeOps {
     type Conn = crate::lane::pipe_win::PipeClient;
     type SpawnedChild = SpawnedChild;
-    type Process = ChallengedProcess;
+    type Process = LegProcess;
 
     fn spawn(&self, command: &mut std::process::Command) -> SpawnOutcome<Self::SpawnedChild> {
         #[allow(clippy::disallowed_methods, reason = "the supervisor starts its leg (ADR 0043)")]
@@ -160,7 +179,11 @@ impl ProbeOps for RealProbeOps {
 
     fn challenge(&self, conn: &Self::Conn, deadline: Instant) -> ChallengeOutcome<Self::Process> {
         let mut exchange = crate::identity::exchange::VoyageMgmtExchange::default();
-        challenge_win::challenge(conn, &mut exchange, deadline)
+        match challenge_win::challenge(conn, &mut exchange, deadline) {
+            ChallengeOutcome::Proven(process) => ChallengeOutcome::Proven(LegProcess::Adopted(process)),
+            ChallengeOutcome::Foreign => ChallengeOutcome::Foreign,
+            ChallengeOutcome::Undetermined => ChallengeOutcome::Undetermined,
+        }
     }
 
     fn writer_fence_probe(&self, voyage_root: &Path) -> FenceProbe {
@@ -192,10 +215,52 @@ impl ProbeOps for RealProbeOps {
     }
 
     fn proven_identity(&self, process: &Self::Process) -> (u32, u64) {
-        (process.pid(), process.created())
+        process.identity()
+    }
+
+    fn child_exit_status(&self, child: &Self::SpawnedChild) -> Option<ExitStatus> {
+        child.exit_status()
+    }
+
+    /// A4 has proved the answering server is this child, so the child itself
+    /// is what the supervisor keeps.
+    fn retain_owned_child(&self, _proven: Self::Process, child: Self::SpawnedChild) -> Self::Process {
+        LegProcess::Owned(child)
     }
 
     fn now(&self) -> Instant {
         Instant::now()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spawns `cmd /c exit N` through `RealProbeOps::spawn` and waits,
+    /// bounded, for it to exit.
+    fn ended(code: u32) -> LegProcess {
+        let mut command = std::process::Command::new("cmd.exe");
+        command.args(["/d", "/c", &format!("exit {code}")]);
+        let SpawnOutcome::Spawned(child) = RealProbeOps.spawn(&mut command) else {
+            panic!("spawn exit {code}");
+        };
+        let leg = LegProcess::Owned(child);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !leg.wait(Duration::from_millis(100)).unwrap() {
+            assert!(Instant::now() < deadline, "exit {code} did not end within 30 s");
+        }
+        leg
+    }
+
+    /// An owned leg keeps how it ended: the exit wait reads the code and
+    /// every later ask gives the same answer.
+    #[test]
+    fn an_owned_leg_keeps_its_exit_status() {
+        for code in [71, 3] {
+            let leg = ended(code);
+            assert_eq!(leg.reap(), Some(ExitStatus::Code(code)), "exit {code}");
+            assert_eq!(leg.reap(), Some(ExitStatus::Code(code)), "exit {code}: a second ask");
+        }
     }
 }

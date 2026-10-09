@@ -26,8 +26,6 @@ use std::sync::Arc;
 use crate::net::dial::HostKey;
 use anyhow::{Context, Result};
 use base64::Engine;
-#[cfg(unix)]
-use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
 use serde_json::Value;
 use sot_protocol::{
@@ -367,26 +365,34 @@ async fn connect_and_run(
     }
 }
 
-/// Connect to the local socket at `path`, only when this OS account serves it (ADR 0049, User isolation): the socket's
-/// folder is checked before the connect.
+/// Connect through `connect_own` on a blocking thread, then adopt the returned socket as the window's stream. The
+/// listener's cached account is checked before client I/O (ADR 0049, User isolation). The fixed `CONNECT_BOUND` retry
+/// budget permits an attempt or wait in progress to finish, including Unix's 20 ms retry sleep; it is not an exact
+/// elapsed-time limit.
 #[cfg(unix)]
 pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
-    let path_str = path.to_str().context("socket path must be valid UTF-8")?;
-    let name = path_str
-        .to_fs_name::<GenericFilePath>()
-        .with_context(|| format!("interpret {path_str:?} as local-socket name"))?;
-    sot_log::identity::connect_own::own_socket(path).with_context(|| format!("connect {path:?}"))?;
-    #[allow(clippy::disallowed_methods, reason = "the one window dial: own_socket runs first")]
-    let stream = LocalStream::connect(name)
-        .await
+    use interprocess::os::unix::uds_local_socket::tokio::Stream as UdsStream;
+
+    let owned = path.to_path_buf();
+    let client =
+        tokio::task::spawn_blocking(move || sot_log::identity::connect_own::connect_own(&owned))
+            .await
+            .context("socket connect task")?
+            .with_context(|| format!("connect {path:?}"))?;
+    let socket = client.into_stream();
+    socket
+        .set_nonblocking(true)
         .with_context(|| format!("connect {path:?}"))?;
-    Ok(stream)
+    let stream = UdsStream::try_from(std::os::fd::OwnedFd::from(socket))
+        .with_context(|| format!("connect {path:?}"))?;
+    Ok(LocalStream::from(stream))
 }
 
 /// Connect to the named pipe at `path`, only when this OS account serves it (ADR 0049, User isolation): `connect_own`
-/// opens it at identification level and checks the serving process before any byte is written, bounded by sot-log's
-/// `CONNECT_BOUND` like every other client of this pipe; the handle it returns, opened for overlapped I/O, is then
-/// adopted as the window's stream, as the lane bridge adopts its own (`rows/ops/lane_bridge.rs`).
+/// opens it at identification level and checks the serving process before any byte is written. The fixed
+/// `CONNECT_BOUND` retry budget permits an attempt or wait in progress to finish, including the 200 ms named-pipe wait;
+/// it is not an exact elapsed-time limit. The handle it returns, opened for overlapped I/O, is then adopted as the
+/// window's stream, as the lane bridge adopts its own (`rows/ops/lane_bridge.rs`).
 #[cfg(windows)]
 pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
     use interprocess::os::windows::named_pipe::local_socket::tokio::Stream as PipeStream;

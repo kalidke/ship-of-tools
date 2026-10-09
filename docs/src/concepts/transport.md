@@ -58,10 +58,13 @@ file names a hub, so other boxes provably exist, and answering "myself"
 there would be exactly the silent wrong-box failure this design deletes.
 
 **An endpoint you name that this version cannot dial is refused, never
-replaced by a local one.** A stale `SOT_RELAY_ENDPOINT` or
-`SOT_FE_ENDPOINT` naming a form this version does not speak (a leftover
-`tcp:` value, most often) is discarded with a line naming it; clear the
+replaced by a local one.** A stale `SOT_FE_ENDPOINT` or
+`SOT_SPAWN_ENDPOINT` naming a form this version does not speak (a leftover
+`tcp:` value, most often) is refused with a line naming it; clear the
 variable rather than expecting it to be silently reinterpreted.
+`SOT_RELAY_ENDPOINT` is no longer read: the relay endpoint is what `sotd
+topology relay-endpoint` answers at each send, so a profile line that still
+exports it changes nothing and can be deleted.
 
 ## The second and third connections
 
@@ -176,9 +179,9 @@ Known limits of the link gate:
   on a lost pen or when the 30 s checkpoint-in-flight wait runs out, are
   reported by their own status line, not the discard count.
 
-The window and the bridge speak only to an endpoint of their own OS account: a
-socket in a folder private to that account on Unix, a pipe served by that
-account's process on Windows.
+The window and the bridge speak only to an endpoint of their own OS account: on
+Unix a socket whose listener ran as that account when it called `listen()`, on
+Windows a pipe served by that account's process.
 
 Later work in this same design (the daemon-side account guard) lands in stages after this one and extends this page
 when it does.

@@ -24,7 +24,7 @@ scope is closed.
   before it forks anything (`durable::accept::accept`); on Windows `sot-capsule supervise` creates it. A refused launch
   leaves a state dir without a pointer, which reads as never started.
 - The state root is qualified before every launch (`qualified_state_root`), and a state dir never lies inside its
-  project (`state_root_inside_project`).
+  project (`state_root_inside_project`). A full volume qualifies only a row that has run (its `supervisor.lock` exists), whose supervisor holds its fence and waits for storage; `workspace.create` refuses a full volume (`preflight_verdict`, `row_has_run`).
 - The account half of the spawn env comes from `agents::env::account_spawn_env`, which refuses a missing account
   folder; the spawner passes its error on at once (`spawn_detached_supervisor`).
 - Every spawn holds a run-gate permit: `StartPermit` is `spawn_detached_supervisor`'s first parameter.

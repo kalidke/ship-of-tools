@@ -15,7 +15,8 @@ computer's sessions end (ADR 0050).
 - The one raw exit of the serving daemon and what every controlled end does first: `shutdown::exit`, `shutdown::terminal`;
   INT and TERM: `signal_exit::install`.
 - The child signal and the containment: `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`,
-  `Contained`, `ContainedStd`, `Signal::fire`, `fired`, `reset_child_signal`; contain.rs `Tree`, `prepare`, `adopt`,
+  `Contained`, `Contained::wait_until_exited`, `ContainedStd`, `Signal::fire`, `reset_child_signal`; contain.rs `Tree`,
+  `prepare`, `adopt`,
   `exited`, `exited_pid`.
 - Which process starts stand outside the containment: the process-spawns group of `rust/clippy.toml` and each
   exception's allow.
@@ -59,6 +60,7 @@ computer's sessions end (ADR 0050).
   daemon did (`daemon_children::guard`). A capsule is outside it by design, and the durable parent is born before the
   guard, so it never descends from it.
 - `fire()` is permanent: the signal is never reset for the life of the process (`Signal::fire`).
+- `Contained::wait_until_exited` observes its owned direct child's exit without releasing containment or reaping it. Cancelling that wait retains the child's identity and owner; checked wait/kill still request tree termination before direct-child reap.
 - A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything it started when its owner
   kills, waits for or drops its `Contained` or `ContainedStd`, or the signal fires; its leader is reaped only after
   that kill, and neither type hands its caller the child to reap (`Contained::wait`, `ContainedStd::wait`;
@@ -131,7 +133,7 @@ computer's sessions end (ADR 0050).
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `startup::begin`, `lease::ticker`,
 `Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
 `Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::commit_update`, `shutdown::exit`, `signal_exit::install`, `Signal::spawn`, `Signal::spawn_std`,
-`Signal::output`, `daemon_children::guard`, `guard_pid`, `Contained`, `ContainedStd`, `ContainedStd::wait_within`, `Signal`, `child_signal::fired`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
+`Signal::output`, `daemon_children::guard`, `guard_pid`, `Contained`, `Contained::wait_until_exited`, `ContainedStd`, `ContainedStd::wait_within`, `Signal`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
 `reject`, `write_frame_within`, `write_frame_to`, `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`,
 `close_gate_and_settle`, `remove_row_files`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `deploy/sotd.service`, `sot-apply.sh`, Dial.
@@ -142,7 +144,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 - `child_signal.rs`: the process-wide signal, the registry of contained trees and its creation mutex, the provisional
-  owner of a created child, and the contained children (`Contained`, `ContainedStd`).
+  owner of a created child, and the contained children (`Contained`, `ContainedStd`), with the observation-only
+  `Contained::wait_until_exited`.
 - `daemon_children/`: what ends with a daemon: the Linux lifetime guard (see its page).
 - `contain.rs`: the platform half of containment: the process group or job, adopting a child, the checked kill, and on
   macOS the recognition of a finished group.

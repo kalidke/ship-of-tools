@@ -13,8 +13,10 @@ license.workspace = true
 # this same package needs, since those compile the library WITHOUT
 # `cfg(test)` on it. Never enabled by a normal consumer (the frontend, or
 # a future `sot-capsule` caller) unless it explicitly opts in. It also brings
-# `test_log`, `test_exec`, `test_scan` and `test_isolated`: the way a test installs a subscriber, the one way a test writes a program it runs, the walker the source scans share, and the one way a test re-runs its binary.
-test-support = ["dep:tracing-subscriber"]
+# `test_log`, `test_exec`, `test_scan`, `test_isolated` and, on Unix, `test_foreign`: the way a test installs a
+# subscriber, the one way a test writes a program it runs, the walker the source scans share, the one way a test re-runs
+# its binary, and a socket another account listens on.
+test-support = ["dep:tracing-subscriber", "dep:tempfile"]
 # Test-only phase barriers (the native launcher's child branch, the supervisor's fence claim). Never in an installed
 # build: the backend's `daemon-lifetime-faults` feature forwards it, and nothing else enables it.
 native-barrier = []
@@ -55,6 +57,8 @@ vt100-ctt = "0.17"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+# The Unix test-support listener allocates its own directory atomically.
+tempfile = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # Raw Win32 for the durability arms (ADR 0041 §store port): MoveFileExW,

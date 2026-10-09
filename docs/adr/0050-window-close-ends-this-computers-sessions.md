@@ -225,9 +225,7 @@ connection is the only handle.
    service) and a program started through an app-execution alias, which the Store install of juliaup makes `julia`: a
    julia started that way ran, with what it started, outside the starting process's job (measured 2026-10-03; the
    mechanism is not documented). Every julia the daemon runs, the update prepare's included, comes from `resolve_bin`
-   (`rust/backend/src/sidecars/julia.rs`), which refuses a path with a `WindowsApps` component, the folder app-execution
-   aliases live in, wherever it found it; it does not inspect the file, so an alias reached by another spelling (a
-   junction, a link) is not refused. Code a row or a REPL runs can start one.
+   (`rust/backend/src/sidecars/julia.rs`). On Windows it inspects the selected existing executable's reparse tag through ordinary filesystem links and refuses `IO_REPARSE_TAG_APPEXECLINK` or an inspection failure; alternate path spelling does not bypass this check. This is not a file-substitution-after-check proof or a general broker-escape prevention rule. Code a row or a REPL runs can still start a broker or an alias.
 
 ## Known limits (0.6.6)
 

@@ -1,7 +1,9 @@
 //! The bounded, non-blocking connect(2) attempt over a fresh socket.
 
+#[cfg(not(target_os = "linux"))]
+use super::listener::set_cloexec;
+use super::listener::{set_nonblocking, STREAM_SOCKET};
 use super::*;
-use super::listener::{set_cloexec, set_nonblocking};
 
 // ---------------------------------------------------------------------
 // Connect (ADR 0043 decision 4, property 18): a bounded, non-blocking
@@ -69,14 +71,19 @@ fn set_blocking(fd: RawFd) -> io::Result<()> {
 /// [`CONNECT_BOUND`] on every attempt — an interrupted poll near the
 /// deadline must not be able to overrun it by another whole
 /// `CONNECT_BOUND`.
-pub(super) fn one_connect_attempt(addr_bytes: &[u8], deadline: Instant) -> Result<UnixStream, ConnectAttempt> {
-    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+pub(super) fn one_connect_attempt(
+    addr_bytes: &[u8],
+    deadline: Instant,
+) -> Result<UnixStream, ConnectAttempt> {
+    let raw = unsafe { libc::socket(libc::AF_UNIX, STREAM_SOCKET, 0) };
     if raw < 0 {
         return Err(ConnectAttempt::Fatal(io::Error::last_os_error()));
     }
     // SAFETY: `raw` is a freshly created, valid, not-otherwise-owned fd.
     // Wrapped immediately so every early return below closes it.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    crate::lane::test_progress::birth("connector", fd.as_raw_fd());
+    #[cfg(not(target_os = "linux"))]
     if let Err(e) = set_cloexec(fd.as_raw_fd()) {
         return Err(ConnectAttempt::Fatal(e));
     }
@@ -93,10 +100,11 @@ pub(super) fn one_connect_attempt(addr_bytes: &[u8], deadline: Instant) -> Resul
     let addr_len =
         (std::mem::size_of::<libc::sa_family_t>() + addr_bytes.len() + 1) as libc::socklen_t;
 
-    #[allow(clippy::disallowed_methods, reason = "the one raw connect(2) of the unchallenged connector")]
-    let rc = unsafe {
-        libc::connect(fd.as_raw_fd(), std::ptr::addr_of!(addr).cast(), addr_len)
-    };
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the one raw connect(2) of the unchallenged connector"
+    )]
+    let rc = unsafe { libc::connect(fd.as_raw_fd(), std::ptr::addr_of!(addr).cast(), addr_len) };
     if rc != 0 {
         let err = io::Error::last_os_error();
         match err.raw_os_error() {

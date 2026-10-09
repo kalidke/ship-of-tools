@@ -16,7 +16,6 @@ fn run_ended(outcome: &crate::rows::run::end_run::EndRunOutcome) -> Result<(), S
     use crate::rows::run::end_run::EndRunOutcome as O;
     match outcome {
         O::RecordVerified | O::RecordClosed | O::AlreadyEnded | O::Terminal | O::Unheld | O::Orphaned => Ok(()),
-        O::Starting => Err("the supervisor was still starting".to_string()),
         O::NotEnded(detail) => Err(detail.clone()),
     }
 }

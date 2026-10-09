@@ -118,6 +118,50 @@ jobs:
       - name: Prove native window close and the teardown backstop
         run: cargo test -p sot-frontend --test window_close --features test-window-close --locked
 
+  pane-timing-windows:
+    name: native pane timing, stand-in route (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build the private daemon
+        run: cargo build -p sot-backend --bin sotd --locked
+      - name: Build the capsule
+        run: cargo build -p sot-log --bin sot-capsule --locked
+      - name: Time cold attaches over the stand-in route to the presented pane
+        run: cargo test -p sot-frontend --test pane_timing --features test-pane-timing --locked -- stand-in
+
+  pane-timing-macos:
+    name: native pane timing, stand-in route (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build the private daemon
+        run: cargo build -p sot-backend --bin sotd --locked
+      - name: Build the capsule
+        run: cargo build -p sot-log --bin sot-capsule --locked
+      - name: Time cold attaches over the stand-in route to the presented pane
+        run: cargo test -p sot-frontend --test pane_timing --features test-pane-timing --locked -- stand-in
+
   # ADR 0050, the daemon's lifetime, read on real daemons and real children (rust/backend/tests/daemon_lifetime). Linux runs
   # the whole harness, the cases that need Julia 1.12 (the REPL, Pluto's environment) and Quarto 1.7.31 included; macOS runs
   # the premises on real children (its guard-free cases are the in-crate lifecycle tests of the `test` job below).
@@ -170,7 +214,7 @@ jobs:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
-    timeout-minutes: 60
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -186,12 +230,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+      # The MathJax helper's tests render through the real node script, which needs its npm modules.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: rust/backend/sidecars/mathjax/package-lock.json
+      - name: Install the MathJax helper's modules
+        working-directory: rust/backend/sidecars/mathjax
+        run: npm ci
       - name: Build workspace
         run: cargo build --workspace --locked
       # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
       # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
       - name: Function length
-        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --locked -- -A clippy::all -D clippy::too_many_lines
+        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::too_many_lines
       # rust/clippy.toml holds the rules this step enforces, one labelled group each, every group opening with its
       # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
       # that does not exist on a leg draws a warning there.
@@ -260,6 +313,70 @@ jobs:
           cargo test -p sot-backend --test trust_declare --test trust_premises --locked -- --nocapture
       - name: Test workspace
         run: cargo test --workspace --locked --no-fail-fast -- --nocapture
+
+      - name: Test L3 storage exhaustion
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          umask 022
+          case "$RUNNER_TEMP" in
+            /*) ;;
+            *) printf 'L3 HARNESS FAILURE: runner temporary root is not absolute\n'; exit 1 ;;
+          esac
+          fixture_root=$(mktemp -d "$RUNNER_TEMP/l3-ext4.XXXXXX")
+          image="$fixture_root/volume.img"
+          volume_mount="$fixture_root/volume"
+          loop_device=''
+          mounted=0
+          cleanup() {
+            local failed=0
+            if [ "$mounted" -eq 1 ]; then
+              if sudo umount "$volume_mount" && ! mountpoint -q "$volume_mount"; then
+                mounted=0
+                printf 'L3 hosted ext4 unmount=ok\n'
+              else
+                printf 'L3 HARNESS FAILURE: hosted unmount failed\n'
+                failed=1
+              fi
+            fi
+            if [ "$mounted" -eq 0 ] && [ -n "$loop_device" ]; then
+              if sudo losetup --detach "$loop_device" && remaining=$(sudo losetup --associated "$image") && [ -z "$remaining" ]; then
+                loop_device=''
+                printf 'L3 hosted ext4 loop-release=ok\n'
+              else
+                printf 'L3 HARNESS FAILURE: hosted loop release failed\n'
+                failed=1
+              fi
+            fi
+            if [ "$failed" -eq 0 ] && [ "$mounted" -eq 0 ] && [ -z "$loop_device" ]; then
+              if rm -rf -- "${fixture_root:?}"; then
+                printf 'L3 fixture linux detach=ok owned-root-removal=ok\n'
+              else
+                printf 'L3 HARNESS FAILURE: owned fixture root removal failed\n'
+                return 1
+              fi
+            else
+              printf 'L3 HARNESS FAILURE: owned fixture retained for cleanup\n'
+              return 1
+            fi
+          }
+          trap 'status=$?; trap - EXIT; cleanup || status=1; exit "$status"' EXIT
+          trap 'exit 130' INT TERM
+          mkdir "$volume_mount"
+          truncate -s 64M "$image"
+          loop_device=$(sudo losetup --find --show "$image")
+          sudo mkfs.ext4 -F "$loop_device" > "$fixture_root/format.log" 2>&1
+          mounted=1
+          sudo mount -t ext4 "$loop_device" "$volume_mount"
+          mountpoint -q "$volume_mount"
+          sudo chown "$(id -u):$(id -g)" "$volume_mount"
+          sudo chmod 0700 "$volume_mount"
+          printf 'L3 hosted ext4 setup=ok declared-bytes=67108864 mount=validated\n'
+          L3_HOSTED_VOLUME_ROOT="$volume_mount" L3_HOSTED_VOLUME_BYTES=67108864 TMPDIR="$RUNNER_TEMP" \
+            CARGO_NET_OFFLINE=true \
+            nice timeout 12m cargo test -p sot-log --test fault_storage -j 8 --locked -- --include-ignored --nocapture --test-threads=1
 
       # (The dedicated lane_bridge step was deleted 2026-09-18: "Test
       # workspace" above runs that suite byte-identically, so the step was

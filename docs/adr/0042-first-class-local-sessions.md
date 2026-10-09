@@ -134,6 +134,9 @@ new is added to the daemon, the protocol, or the workspace toml:
    (the drawer runs it from that PATH today). One-time cost: a persistent
    local daemon started by an older launcher keeps its old env — stop it
    once (`sot-local-daemon.ps1 -Stop`) and launch again.
+   **Amendment (2026-10-08, 0.6.6).** Retired: the launcher no longer exports
+   `SOT_RELAY_ENDPOINT` (C10) and nothing reads it (RELAY-EP). A relay send
+   asks `sotd topology relay-endpoint` when it happens.
 4. **The drawer's `[terminal] resume_command` retires, per box, AFTER the
    driver is proven.** Order on each frontend box: the drawer session
    `comm-leave`s (never two holders of `win-fe-<host>`; a pinned name is

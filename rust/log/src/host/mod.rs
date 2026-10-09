@@ -7,6 +7,7 @@ mod lock;
 mod pinned_dir;
 pub mod process_tree;
 pub mod state_dir;
+mod storage;
 mod volume;
 pub mod winhandle;
 #[cfg(windows)]
@@ -36,6 +37,9 @@ const RETRY_STEP_MS: u64 = 10;
 /// path's own TAIL (a filename says more than a repeated drive head).
 #[cfg(windows)]
 fn io_ctx(e: std::io::Error, what: std::fmt::Arguments<'_>) -> Error {
+    if storage::native_storage_code(&e).is_some() {
+        return Error::Io(e);
+    }
     let code = match e.raw_os_error() {
         Some(c) => format!(" (os error {c})"),
         None => String::new(),
@@ -120,6 +124,20 @@ mod tests {
         assert!(msg.contains("a") && msg.contains("b.tmp"), "{msg}");
     }
 
+    /// A full volume keeps its native code through the context wrapper:
+    /// the caller reads `raw_os_error`, not the text.
+    #[test]
+    #[cfg(windows)]
+    fn io_ctx_keeps_disk_full_codes() {
+        for code in [112, 39, 1295] {
+            let wrapped = io_ctx(std::io::Error::from_raw_os_error(code), format_args!("MoveFileExW {:?}", r"C:\a"));
+            match wrapped {
+                Error::Io(e) => assert_eq!(e.raw_os_error(), Some(code)),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
     /// No path at all in `what` (e.g. `OpenProcessToken`): the separator
     /// must not leave a dangling `": "` with nothing after it.
     #[test]
@@ -135,6 +153,7 @@ mod tests {
 pub use durable::*;
 pub use lock::*;
 pub use pinned_dir::*;
+pub use storage::storage_exhaustion;
 pub use volume::*;
 #[cfg(windows)]
 pub use winsec::*;

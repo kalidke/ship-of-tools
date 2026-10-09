@@ -242,7 +242,7 @@ fi
 # session's env, through the EXISTING `sot_daemon_endpoint` resolution
 # (manager review, S4: SOT_SOCKET first on Unix, the local pipe on
 # Windows — never a second, typed-only resolver) — never
-# $SOT_RELAY_ENDPOINT, which is cross-machine DELIVERY routing, a
+# the relay endpoint (sot_relay_endpoint), which is cross-machine DELIVERY routing, a
 # different concern from "which local daemon owns my workspace". Only
 # reachable where this shell's own identity names a row
 # (sot_capsule_workspace_id — never the ambient $SOT_WORKSPACE_ID, which a

@@ -8,8 +8,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use tokio::sync::watch;
 
-/// One shutdown signal and the trees it requests termination for. The process has one ([`fire`],
-/// [`fired`], [`process`]).
+/// One shutdown signal and the trees it requests termination for. The process has one ([`process`]).
 pub(crate) struct Signal {
     fired: watch::Sender<bool>,
     /// Every contained tree, protected by the same mutex held during creation and registration. Failed
@@ -18,6 +17,9 @@ pub(crate) struct Signal {
     next: AtomicU64,
     /// Set by the first controlled exit that reaches the terminal ([`claim_exit`](Self::claim_exit)).
     exit_claimed: std::sync::atomic::AtomicBool,
+    /// Test-only: contained children whose owner still holds them (a [`Held`] not yet dropped).
+    #[cfg(test)]
+    live: std::sync::atomic::AtomicUsize,
     /// Test-only: called right after a child is created, to put the shutdown's fire in that window.
     #[cfg(test)]
     pub(super) after_create: Mutex<Option<Box<dyn FnMut(u32) + Send>>>,
@@ -32,6 +34,8 @@ impl Signal {
             trees: Mutex::new(Some(HashMap::new())),
             next: AtomicU64::new(0),
             exit_claimed: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            live: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             after_create: Mutex::new(None),
             #[cfg(test)]
@@ -99,6 +103,12 @@ impl Signal {
             .as_ref()
             .map(|map| map.values().map(|t| t.pgid()).collect())
             .unwrap_or_default()
+    }
+
+    /// Test-only: contained children whose owner still holds them.
+    #[cfg(test)]
+    pub(crate) fn live(&self) -> usize {
+        self.live.load(Ordering::SeqCst)
     }
 
     /// Hold the registry mutex from before creation through adoption and registration. Once fire is published,
@@ -384,6 +394,8 @@ impl Held {
             .as_mut()
             .expect("reservation holds an open registry")
             .insert(id, tree);
+        #[cfg(test)]
+        sig.live.fetch_add(1, Ordering::SeqCst);
         Self { sig, id }
     }
 
@@ -410,6 +422,8 @@ impl Drop for Held {
                 map.remove(&self.id);
             }
         }
+        #[cfg(test)]
+        self.sig.live.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -428,9 +442,10 @@ pub(crate) struct Contained {
 }
 
 impl Contained {
-    /// Unix observes exit unreaped, requests tree termination, then reaps; Windows waits for child status first, then requests job termination.
-    /// Request failures remain errors; successful requests do not establish descendant death.
-    pub(crate) async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+    /// Wait for the leader to exit without releasing its tree or reaping it: the child's identity and containment
+    /// stay owned, so a caller can close requests and revoke grants before the checked [`wait`](Self::wait) or
+    /// [`kill`](Self::kill) takes the tree. Cancelling it loses nothing; a later call observes the same exit.
+    pub(crate) async fn wait_until_exited(&mut self) -> std::io::Result<()> {
         #[cfg(unix)]
         {
             if let Some(pid) = self.child.id() {
@@ -439,15 +454,20 @@ impl Contained {
                     self.sigchld.recv().await;
                 }
             }
-            self.held.release()?;
-            self.child.wait().await
+            Ok(())
         }
         #[cfg(windows)]
         {
-            let status = self.child.wait().await?;
-            self.held.release()?;
-            Ok(status)
+            self.child.wait().await.map(|_| ())
         }
+    }
+
+    /// Unix observes exit unreaped, requests tree termination, then reaps; Windows waits for child status first, then
+    /// requests job termination. Request failures remain errors; successful requests do not establish descendant death.
+    pub(crate) async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.wait_until_exited().await?;
+        self.held.release()?;
+        self.child.wait().await
     }
 
     /// Request tree termination before reaping. A failed request returns before a blocking reap.
@@ -591,11 +611,6 @@ pub(crate) fn reset_child_signal() {
 pub(crate) fn process() -> &'static Signal {
     static SIGNAL: OnceLock<Signal> = OnceLock::new();
     SIGNAL.get_or_init(Signal::new)
-}
-
-/// Resolves once the shutdown has fired; at once if it already has.
-pub(crate) async fn fired() {
-    process().fired().await
 }
 
 #[cfg(test)]
@@ -901,6 +916,43 @@ pub(crate) mod tests {
         );
         drop(contained);
         assert!(signal.held_groups().is_empty());
+    }
+
+    /// Observation alone neither releases the tree nor reaps the leader: a cancelled observation loses nothing, and
+    /// after the leader exits the tree is still held with its descendant alive until the checked wait takes it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exit_observation_retains_owner_and_descendant() {
+        use tokio::io::AsyncWriteExt;
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "sleep 3211 & echo $!; read x"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        let mut contained = signal.spawn(&mut cmd).expect("spawn");
+        let mut stdout = tokio::io::BufReader::new(contained.stdout.take().unwrap());
+        let mut line = String::new();
+        tokio::io::AsyncBufReadExt::read_line(&mut stdout, &mut line).await.unwrap();
+        let descendant = Leftover::of_pid(line.trim().parse().expect("descendant pid"));
+
+        let live = tokio::time::timeout(Duration::from_millis(200), contained.wait_until_exited()).await;
+        assert!(live.is_err(), "a live leader must not be reported exited");
+        assert_eq!(signal.held_groups().len(), 1);
+
+        contained.stdin.take().unwrap().write_all(b"\n").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), contained.wait_until_exited())
+            .await
+            .expect("the exit must be observed")
+            .expect("observe");
+        assert_eq!(signal.held_groups().len(), 1, "observation released the tree");
+        // SAFETY: signal 0 only probes the descendant this test started.
+        assert_eq!(unsafe { libc::kill(descendant.pid().expect("pid"), 0) }, 0, "observation took the descendant");
+
+        contained.wait().await.expect("the checked wait");
+        assert!(descendant.gone(), "the checked wait left the descendant");
+        assert!(signal.held_groups().is_empty());
+        drop(contained);
+        assert_eq!(signal.live(), 0);
     }
 
     /// A blocking caller sees the exit unreaped: the leader's number is still

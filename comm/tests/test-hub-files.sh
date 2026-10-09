@@ -39,9 +39,11 @@
 #
 # No bats dependency. HERMETIC: a temp $SOT_COMM_HOME, per-case self files, a
 # pinned $SOT_COMM_TEST_HOST, and a COPY of the scripts dir whose comm-lib.sh
-# gets its endpoints and mount lookup APPENDED (a sourced file's later
+# gets its own-daemon endpoint and mount lookup APPENDED (a sourced file's later
 # definitions win) so no real daemon is ever dialled and the route does not
-# depend on this box's disks. Never the real ~/.sot-comm.
+# depend on this box's disks. The relay endpoint is what a case's stub `sotd`
+# answers to `topology relay-endpoint`; with none, the home guard's refusing
+# `sotd` answers nothing. Never the real ~/.sot-comm.
 #
 # Usage: comm/tests/test-hub-files.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -66,7 +68,6 @@ cat >> "$BIN/comm-lib.sh" <<'STUB'
 
 # ---- no daemon, a fixture mount (test only) ---------------------------------
 sot_daemon_endpoint() { return 1; }
-sot_relay_endpoint() { [ -n "${1:-}" ] || return 1; printf '%s\n' "$1"; }  # an explicit one is used as given
 _sot_findmnt() { printf '%s\n' "${FAKE_MNT-nfs4 rw,vers=4.2,local_lock=none filer.example:/export/home}"; }
 _sot_machine_id() { printf '0123456789abcdef0123456789abcdef'; }
 STUB
@@ -172,6 +173,7 @@ check "the wire frame says whether the line was a broadcast copy" case_the_wire_
 check "the lock identity matches the fixture set the Rust test reads" case_the_lock_identity_matches_the_shared_fixtures
 check "the wait is one number, 10, in both languages, and no lease constant is spelled" case_the_wait_is_one_number_and_no_lease_survives
 check "T5: a wire send is one comm.file frame and prints the hub's answer; not_here alone falls back" case_a_wire_send_prints_the_hubs_answer
+check "an inherited SOT_RELAY_ENDPOINT or SOT_SPAWN_ENDPOINT does not decide a relay send: topology's answer does, and the inherited endpoint is never dialled" case_an_inherited_endpoint_does_not_decide_the_relay_route
 check "the comm.file read window outlasts the hub's lock wait: a line filed after it is filed" case_the_read_window_outlasts_the_hubs_lock_wait
 check "T6: a hub-filed and a locally-filed line read alike and both advance the cursor" case_a_hub_line_and_a_local_line_read_alike
 

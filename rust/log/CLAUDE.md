@@ -25,6 +25,7 @@ lanes. The crate is `sot-log`, the workspace's bottom crate, so it also carries 
 - Output is published only after its fsync; attach is ground-gated (`writer_loop::output_path`), so a viewer joins
   only at a parser ground boundary.
 - `sot-capsule supervise` exits 0 (clean), 69 (`EXIT_TERMINAL`) or 70 (`EXIT_CONTENDED`, the fence was already held).
+- Storage exhaustion never ends a row: the leg exits 71, and its supervisor holds without charging its crash counter, probes the state root with a real durable write, and resumes the same voyage when a probe succeeds (`supervisor/storage/`).
 - Only linux, macos and windows build: `host::durable::rename_noreplace_raw` has exactly those three arms.
 - A reply on a local connection is trusted only after the challenge in `src/identity/`.
 
@@ -33,7 +34,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `supervisor_client`, `FeAttachClient`, `rust/backend/src/rows/run/headless.rs`,
 `rust/frontend/src/ui/agent_pane/attach.rs`, `drawer.voyage`, `writer.lock`, `Endpoint`, `DaemonLaneEndpoint`, `AnonymousJob`. Uses:
 `DaemonLaneEndpoint`, `lane.connect`, `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`,
-`owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`.
+`owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`, `storage_exhaustion`.
 
 ## Folders
 - `src/store/`: the voyage store, its record codec, recovery and verifier.
@@ -51,8 +52,11 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `../../julia/sotlog/`: SotLog, the Julia reader of the golden segment fixtures.
 
 ## Files
-- `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests, and brings `test_log`, `test_exec`, `test_scan` and `test_isolated` (the backend, frontend and updater turn it on in their dev-dependencies).
-- `build.rs`: stamps the lane build id (`SOT_LOG_BUILD_SHA`) from the full git sha, or `SOT_BUILD_ID`, and compiles the native launcher (`src/host/process_tree/native_birth.c`) for the Unix targets.
+- `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests, and brings
+  `test_log`, `test_exec`, `test_scan`, `test_isolated` and, on Unix, `test_foreign` (the backend, frontend and updater
+  turn it on in their dev-dependencies).
+- `build.rs`: stamps the lane build id (`SOT_LOG_BUILD_SHA`) from the full git sha, or `SOT_BUILD_ID`, and compiles the
+  native launcher (`src/host/process_tree/native_birth.c`) for the Unix targets.
 - `claude-sdk-helper/`: the Node helper that drives one Claude Agent SDK session.
 - `tests/`: integration and whole-process tests.
 - `src/lib.rs`: the module tree, the crate's facades (`lock_writer`, `owner_protected_pipe_descriptor`) and `Error`/`Result`.
@@ -62,6 +66,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/test_exec.rs`: `write_executable`, the test-program writer (feature `test-support`); its Linux FIFO proof observes actual parent descriptors while the child writer is active, without a permission-spelling catalog.
 - `src/test_isolated.rs`: shared exact-body isolation, scoped direct-fixture supervision and bounded child/output waits (feature `test-support`); readiness errors retain termination/entry checks, and byte-captured output renders invalid UTF-8 with explicit byte escapes. Wrapped fixtures retain launcher status and both streams, validate the native role/PID witness against exact entry, and share direct fixtures' wait/drain/finalization implementation.
 - `src/test_log.rs`: timestamp-free `capture()` and formatting-preserving `install()` (feature `test-support`), with behavioral tests of the capture format, first-callsite routing, parallel isolation and guard restoration.
+- `src/test_foreign.rs`: `ForeignListener`, a socket another OS account (`nobody`) listens on, for the User isolation
+  tests, and `elevation_or_skip`, the one rule for a test that needs root: it skips only when `sudo -n true` fails (a
+  failure on CI), and every later helper failure fails the test (feature `test-support`, Unix).
 - `src/store/`: the voyage store.
 - `src/capsule/`: the leg's runtime and producers.
 - `src/supervisor/`: the supervisor, its journal, probe and authority.

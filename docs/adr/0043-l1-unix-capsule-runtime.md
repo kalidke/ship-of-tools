@@ -164,6 +164,13 @@ submissions.
    a mismatch shows up as "endpoint not found", loud, never as a silent second
    endpoint. `sun_path` is 108 bytes on Linux including the NUL: a path longer
    than 107 bytes fails loudly (`PathTooLong`) rather than truncating.
+   **Amendment (2026-10-08, 0.6.6).** The propagation above was never built:
+   no production code sets `SOT_RUNTIME_DIR`, only tests and an operator do.
+   `runtime_dir` reads it, for the capsule lane sockets alone; the session
+   socket, the relay base and the socket-directory check use discovery
+   (`runtime_sot_dir`) in every process, so "every derivation prefers it" and
+   "discovery is only the fallback" do not hold. Each process resolves the
+   runtime dir itself.
 2. **Endpoint ownership is the lifetime lock's, not the filename's.** A
    connect probe cannot tell a dead owner from a live one that has bound but
    not yet listened (`ECONNREFUSED` either way), and two reclaimers can unlink
@@ -663,6 +670,8 @@ own comm bootstrap → adoption across a daemon restart → a verified end.
     a second), an NFS-tolerant store (ADR 0039's atomicity is the point), installer
     auto-placement, a compatibility log symlink, diagnostics in the `phase` string, and
     refusing the whole daemon.
+
+    **Amendment (2026-10-08, 0.6.6).** A preflight probe failure that is storage exhaustion (ENOSPC, EDQUOT) returns that `Error::Io` with its code, not the `Unsupported` refusal: a full volume is not an unqualified one. Every other probe failure keeps the refusal. The daemon lets such a preflight pass only for a row that has run (its `supervisor.lock` exists), whose supervisor holds its fence and waits; `workspace.create` refuses a full volume.
 
 24. **Launch ownership is a transient user scope per supervisor — REVERSES decision 16's
     survival clause.** The cgroup is the Unix job. `spawn_detached`'s Linux twin runs
