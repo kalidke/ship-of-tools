@@ -228,6 +228,11 @@ include("answer_then_next.jl")
         @async DR.serve(bs_in, out)
         @async (sleep(60); close(bs_out); close(bs_in))
         if case == "a failed eval"
+            # Spawned beside serve, not by it, so it first waits for serve's ready envelope: serve is then reading
+            # requests when this eval's done frame goes out. Without the wait, serve's start (its stderr line yields
+            # when stderr is a pipe) can leave serve queued for the output lock until this eval's task has ended, and
+            # the case would pass whatever the release does.
+            DR.json_read(readline(bs_out))[:op] == "repl.ready" || error("setup: serve's first envelope is not ready")
             DR.spawn_eval(_ -> error("the machinery failed"), out, 1, 1, "repl.eval", Dict(:eval_id => 1))
         else
             write(bs_in, case == "repl.eval" ? eval_line(1, "1") : run_file_line(1, path))
