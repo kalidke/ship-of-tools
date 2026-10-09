@@ -53,6 +53,10 @@ pub fn pluto_resource_root(case: &Path, julia: &str) -> PathBuf {
             let out = std::process::Command::new(julia)
                 .arg(format!("--project={}", dir.display()))
                 .args(["-e", "using Pkg; Pkg.instantiate()"])
+                .env(
+                    "JULIA_DEPOT_PATH",
+                    crate::julia_depot_path(&case.join("julia-depot")),
+                )
                 .output()
                 .expect("run julia to instantiate Pluto");
             assert!(

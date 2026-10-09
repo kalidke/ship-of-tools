@@ -6,7 +6,7 @@ before it cleans anything, then ends only the processes it holds an identity ove
 of the backend's tests; the suites span subsystems, so this page names no charter.
 
 ## Files
-- `main.rs`: the module list and how to build the barrier variants the held-process cases need
+- `main.rs`: the module list, how to build the barrier variants the held-process cases need, and `julia_depot_path`
 - `done.rs`: the done test's parts: its inputs (a case-private copy of Pluto's folder, the trees, the environment), the trees it starts through each product route and the oracle it reads after the daemon is killed (feature `daemon-lifetime-faults`)
 - `durable.rs`: the durable parent's place in a real daemon's process tree: it descends from nothing the daemon started (feature `daemon-lifetime-faults`)
 - `gated_end.rs`: a window's close and a row's destroy while the row's capsule birth is held at the durable parent's gate: the close waits for the birth and ends the row, and a destroy waits for it and either ends the row or refuses and keeps it with its live supervisor, so no row is lost and no supervisor is left without its row (feature `daemon-lifetime-faults`; needs the barrier build of `sot-capsule`)
@@ -54,5 +54,11 @@ of the backend's tests; the suites span subsystems, so this page names no charte
   runs in a row scope outside the container the suite runs in, and the close's end of that scope needs `cgroup.kill`
   (absent on a cgroup v1 or hybrid host), so a fixture process that may outlive it ends itself: every tree process ends
   once its folder is gone and in any case after its bound (`fixtures/tree.rs`).
+- Every Julia the harness starts runs with `julia_depot_path`: a depot the case owns first, this process's own depot
+  list behind it unchanged. That covers each daemon a `Run` starts and all its children (the REPL, Pluto and its
+  workers, Quarto's engine, the update prepare), Pluto's instantiate in `done.rs` and the `Distributed` case. Julia and
+  Pkg write only into the first depot (caches, packages, a registry and its updates, Pluto's environments, logs, the
+  automatic gc), so a run adds nothing to the depot of the person running it; reading a cache there refreshes its mtime.
+  The daemons `gated_end` and `successor` start through `Env` start no Julia.
 - The Quarto half runs where `quarto --version` answers and is printed as not checked, never passed, where it does not;
   its transport files are under a case-private `XDG_RUNTIME_DIR` that only the case's `quarto` wrapper sets.

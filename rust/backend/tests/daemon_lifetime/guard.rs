@@ -93,6 +93,7 @@ impl Run {
         program: Option<&Path>,
     ) -> std::process::Command {
         let file = std::fs::File::create(log).expect("create the daemon log");
+        let depot = crate::julia_depot_path(&env._tmp.path().join("julia-depot"));
         let mut cmd = match program {
             Some(program) => sotd_command_at(program),
             None => sotd_command(),
@@ -111,6 +112,7 @@ impl Run {
             .env("SOT_COMM_HOME", &env.comm_root)
             .env("SOT_TEST_MAIN_OUTCOME", env._tmp.path().join("outcome"))
             .env("RUST_LOG", "info")
+            .env("JULIA_DEPOT_PATH", depot)
             .stdin(Stdio::null())
             .stdout(Stdio::from(file.try_clone().expect("clone the log")))
             .stderr(Stdio::from(file));

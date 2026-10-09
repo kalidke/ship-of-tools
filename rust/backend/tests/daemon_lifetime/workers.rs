@@ -28,8 +28,10 @@ rmprocs(worker)
 fn a_distributed_worker_starts_in_a_session_of_its_own() {
     let julia = std::env::var_os("SOT_JULIA_BIN").unwrap_or_else(|| "julia".into());
     let mut fx = Fixture::new("distributed_worker_session");
+    let depot = tempfile::tempdir().expect("the case's depot");
     let master = Command::new(julia)
         .args(["--startup-file=no", "-e", SCRIPT])
+        .env("JULIA_DEPOT_PATH", crate::julia_depot_path(depot.path()))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
