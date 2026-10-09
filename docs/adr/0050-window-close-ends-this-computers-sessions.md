@@ -264,8 +264,9 @@ connection is the only handle.
 Every controlled end of the serving daemon takes one terminal, `lifecycle::shutdown::exit`: it fires the child signal on a
 thread of its own, which asks each contained tree to end and reports each failed request; it waits at most two seconds for
 that answer (a child creation stalled in the OS holds the mutex the fire needs, and no exit, the backstop's included,
-waits on it longer); and it makes the daemon's one raw process exit. A request is not an observed death: on Linux the guard
-ends what is left, and on macOS these controlled ends are the only ones that end the daemon's children.
+waits on it longer; when no thread can be started for the fire, the exit goes without it); and it makes the daemon's one
+raw process exit. A request is not an observed death: on Linux the guard ends what is left, and on macOS these
+controlled ends are the only ones that end the daemon's children.
 
 The main future's result becomes a status while the runtime still exists: Ok is 0, an error is printed and is 1, a panic of
 the future is 101. A finished close exits 0; the shutdown's backstop exits 1; the update restart exits 75, and only while no

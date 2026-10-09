@@ -156,10 +156,13 @@ pub(super) fn terminal<T>(
         });
     let fired = match started {
         Ok(_) => answered.recv_timeout(FIRE_WAIT).ok(),
-        // No thread to wait on: fire here, as the exit has no other way to ask.
+        // No thread to run it on: no fire. Fired here it could wait without bound on a creation stalled in the OS (the
+        // registry mutex), and this caller holds the exit's claim, so nothing else could exit either; on Linux the guard
+        // ends what the daemon started.
         Err(error) => {
-            tracing::error!(%error, "terminal child fire: no thread to run it on");
-            Some(signal.fire())
+            tracing::error!(%error, "terminal child fire: no thread to run it on; exiting with {code} without it");
+            eprintln!("sotd: terminal child fire: no thread to run it on ({error}); exiting with {code} without it");
+            return terminate(code);
         }
     };
     match fired {
@@ -468,6 +471,72 @@ mod tests {
         assert!(
             signal.is_fired(),
             "the permanent flag was not published before the wait"
+        );
+    }
+
+    /// A terminal that cannot start its fire thread does not fire on its own thread either: a stalled creation holds the
+    /// registry mutex the fire needs, and this caller holds the exit's claim, so a fire here would park every exit. It hands
+    /// its code on at once. The thread limit is this isolated child's own; a privileged account, which no limit stops, is a
+    /// setup failure.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_terminal_with_no_thread_to_fire_on_exits_without_the_fire() {
+        use crate::lifecycle::child_signal::Signal;
+        use std::sync::{mpsc, Barrier};
+        let name = "lifecycle::shutdown::tests::a_terminal_with_no_thread_to_fire_on_exits_without_the_fire";
+        if !sot_log::test_isolated::run_isolated(name) {
+            return;
+        }
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let released = Arc::new(Barrier::new(2));
+        let (entered, arrived) = mpsc::channel();
+        let hook_released = released.clone();
+        *signal.after_create.lock().unwrap() = Some(Box::new(move |_| {
+            entered.send(()).unwrap();
+            hook_released.wait();
+        }));
+        let creation = std::thread::spawn(move || {
+            let mut cmd = std::process::Command::new("sleep");
+            cmd.arg("600");
+            if let Ok(mut child) = signal.spawn_std(&mut cmd) {
+                let _ = child.kill();
+            }
+        });
+        arrived
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the creation did not stall");
+        let mut saved = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: reading and lowering this process's own soft thread limit into and from local values.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NPROC, &mut saved), 0);
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: saved.rlim_max,
+            };
+            assert_eq!(
+                libc::setrlimit(libc::RLIMIT_NPROC, &none),
+                0,
+                "setup: lower the thread limit"
+            );
+        }
+        assert!(
+            std::thread::Builder::new().spawn(|| {}).is_err(),
+            "setup: a thread can still be started (a privileged account?)"
+        );
+        let began = std::time::Instant::now();
+        let code = terminal(signal, 7, |code| code);
+        let waited = began.elapsed();
+        // SAFETY: restoring the limit read above.
+        unsafe { libc::setrlimit(libc::RLIMIT_NPROC, &saved) };
+        released.wait();
+        creation.join().unwrap();
+        assert_eq!(code, 7);
+        assert!(
+            waited < Duration::from_secs(5),
+            "the terminal with no fire thread waited {waited:?} for a stalled creation"
         );
     }
 

@@ -43,9 +43,10 @@ computer's sessions end (ADR 0050).
 - A close that finishes exits 0 (`bounds::EXIT_REQUESTED_SHUTDOWN`); the update restart exits 75 and only while no
   shutdown has begun: update.rs commits it with `Leases::commit_update`, which moves the phase to `Updating` under the
   lease lock, so no close begins afterwards, and exits outside the lock.
-- Every controlled end of the serving daemon takes one terminal, `shutdown::exit`: it fires the child signal (each
-  contained tree is asked to end), waits at most `FIRE_WAIT` (2 s) for the answer, logs a failed request or a fire still
-  running, and makes the process's one raw exit with the code it was given. The codes: 0 (a finished close, an Ok main
+- Every controlled end of the serving daemon takes one terminal, `shutdown::exit`: it fires the child signal on a thread of
+  its own (each contained tree is asked to end), waits at most `FIRE_WAIT` (2 s) for the answer, logs a failed request or
+  a fire still running, and makes the process's one raw exit with the code it was given; when no thread can be started
+  for the fire it exits without it, logging that. The codes: 0 (a finished close, an Ok main
   result), 1 (an error, a boot refusal, the backstop), 2 (a bad `agent-exec` recipe), 75 (the update restart), 78 (no
   config directory), 101 (a panic of the main future); INT and TERM take the same fire and then end the daemon by the
   signal itself with its default action (`shutdown::exit_by_signal`), so a service manager counts the stop as clean and a
