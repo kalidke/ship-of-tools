@@ -87,7 +87,9 @@ pub(crate) fn copy_folder(source: &Path, destination: &Path) {
 
 /// An owned resource root holding a copy of the real `julia/repl` shim, so a package operation or a precompile
 /// cannot touch the installed shim, and an owned depot. Points the process's `SOT_RESOURCE_ROOT`, `SOT_JULIA_BIN`
-/// and `JULIA_DEPOT_PATH` at them: call only in an isolated body.
+/// and `JULIA_DEPOT_PATH` at them: call only in an isolated body. The depot path ends in an empty entry, which Julia
+/// expands to its own bundled depots, so the stdlibs the shim loads come precompiled from there; Julia writes to the
+/// owned depot, the first entry, and of a bundled cache it loads updates only the timestamp.
 pub(crate) fn owned_julia_env(root: &Path) -> PathBuf {
     let resources = root.join("resources");
     let shim = resources.join("julia").join("repl");
@@ -97,7 +99,8 @@ pub(crate) fn owned_julia_env(root: &Path) -> PathBuf {
         .expect("copy shim project");
     std::env::set_var("SOT_RESOURCE_ROOT", &resources);
     std::env::set_var("SOT_JULIA_BIN", executable("julia"));
-    std::env::set_var("JULIA_DEPOT_PATH", root.join("depot"));
+    let depots = std::env::join_paths([root.join("depot"), PathBuf::new()]).expect("depot path");
+    std::env::set_var("JULIA_DEPOT_PATH", depots);
     shim
 }
 
