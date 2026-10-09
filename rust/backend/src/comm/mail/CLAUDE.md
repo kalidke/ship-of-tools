@@ -37,7 +37,7 @@ files each `agent.message` whose `to` this box's registry lists through `file_co
 - `handle_agent_send` broadcasts one `AgentMessage` (`to == ""` is a broadcast); `handle_agent_filed` broadcasts one
   `AgentReceipt` whose `filer` is the answering connection's hello name, and refuses `bad_filer` when it has none.
 - inbox.rs stays std and serde only outside its macOS arm: tests/comm_file.rs includes it by path.
-- The link reads the topology once, at start (`recipe_for`). `hold_link` backs off from 1 s, doubling to 30 s, starts
-  over after a connection that lasted 60 s, and never reconnects once the shutdown signal fires; the link's ssh starts through `Signal::spawn`, so its tree dies at
+- The link reads the topology once, at start (`recipe_for`). `hold_link` waits on platform's `Redial` from 1 s, doubling to 30 s,
+  starting over only after a link that lasted `STABLE` (60 s), and never reconnects once the shutdown signal fires; the link's ssh starts through `Signal::spawn`, so its tree dies at
   the fire. `move_fe_inbox` runs
   before the first connection; a failed move leaves the old inbox in place.

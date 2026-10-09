@@ -9,24 +9,20 @@ use std::time::{Duration, Instant};
 use super::*;
 
 
-/// Steady heartbeat cadence for `run_quit`'s own loop, chosen against a
-/// CONFIRMED read of U2's own idle-eviction code (`supervisor/`'s
-/// `service_lane`/`handle_lane_bytes`): a connection's idle clock
-/// (`Conn::last_activity`, evicted past `LANE_IDLE_DEADLINE` = 5 s) is
-/// reset in EXACTLY ONE place — `handle_lane_bytes`'s own
-/// `conn.last_activity = now;`, which runs only when the SERVER
-/// RECEIVES a `TransportEvent::Bytes` from the CLIENT. The SERVER
-/// SENDING a reply (`TransportEvent::Sent`) never touches it — that
-/// event only drives the unrelated `pending_close`/refusal-flush
-/// bookkeeping. So a client that writes `end_run` and then only READS,
-/// waiting for the deferred reply, is indistinguishable from an idle
-/// connection to the SERVER, which can close it mid-teardown before the
-/// reply it is computing ever goes out — confirmed by real-Windows
-/// evidence on `285ad0d9`: `RecordClosed` arrived, `Verifying` began,
-/// then nothing for 60 s (a 2 s-budget read-then-query design still left
-/// up to ~2 s of silence between attempts, and every subsequent `query`
-/// write was swallowed by `let _ = write_bounded(..)`, so the eviction
-/// was never even detected). 1 s gives 5x margin under the 5 s deadline.
+/// Steady heartbeat cadence for `run_quit`'s own loop. The supervisor
+/// lane closes a connection whose client has sent nothing for
+/// `LANE_IDLE_DEADLINE` (5 s, `supervisor/authority/lane.rs`
+/// `service_lane`), except the connection owed the deferred `end_run`
+/// reply, until that reply is queued (`send_deferred_reply` restarts its
+/// idle clock). After `record_closed` nothing is owed while this loop waits
+/// for `record_verified` through `query`, so a client that only READS there
+/// is evicted — real-Windows evidence on `285ad0d9`: `RecordClosed`
+/// arrived, `Verifying` began, then nothing for 60 s (a 2 s-budget
+/// read-then-query design still left up to ~2 s of silence between
+/// attempts, and every subsequent `query` write was swallowed by
+/// `let _ = write_bounded(..)`, so the eviction was never even detected).
+/// 1 s gives 5x margin under the 5 s deadline, and a failed heartbeat is
+/// how this loop notices a lost connection and reconnects.
 pub(crate) const QUIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Submits `end_run` on the (already-connected) supervisor lane, THEN
@@ -34,9 +30,9 @@ pub(crate) const QUIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 /// state (`Ended`/`Failed`/`Refused`/`OutcomeUnknown`), sending
 /// `query { operation_id }` every [`QUIT_HEARTBEAT_INTERVAL`] and never
 /// blocking a read past that same interval (see the constant's own doc
-/// for why: ONLY outbound bytes reset the supervisor lane's idle clock,
-/// so a read that outlasts the heartbeat is exactly the silence that
-/// gets this connection evicted mid-wait).
+/// for why: once no reply is owed, only this client's own bytes reset the
+/// supervisor lane's idle clock, so a read that outlasts the heartbeat is
+/// exactly the silence that gets this connection evicted mid-wait).
 ///
 /// This is the THIRD pass (first real-Windows run diagnostics): the
 /// second pass's read-then-query-on-timeout design still left gaps wide

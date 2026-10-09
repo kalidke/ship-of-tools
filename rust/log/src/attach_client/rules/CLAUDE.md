@@ -21,7 +21,7 @@ capsule; charter: rust/log/CLAUDE.md.
   and the rest discarded visibly and counted (`TakeTransaction`).
 - An outstanding input is resent with its idempotency key only within the same voyage; across a voyage change it is
   cancelled and reported (`OutstandingSlot::resend_after_reconnect`); a delivery-unknown outcome is never retried.
-- Reconnect backoff doubles from 250 ms to a 4 s cap; an unresponsive supervisor turns terminal after `HEALTH_WINDOW`
-  (120 s) (`ReconnectState`).
+- Reconnect backoff doubles from 250 ms to a 4 s cap on platform's `Redial` and starts over only after an attach that
+  lasted `STABLE` (60 s); an unresponsive supervisor turns terminal after `HEALTH_WINDOW` (120 s) (`ReconnectState`).
 - Quit waits for `record_closed` then `record_verified`, stops waiting at `QUIT_CUTOFF` (90 s) with the outcome unknown,
   and never exits on that expiry (`QuitDispatcher`).

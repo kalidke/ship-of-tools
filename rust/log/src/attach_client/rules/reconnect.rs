@@ -1,6 +1,7 @@
 //! Ruling (d): reconnect backoff and the terminal decision (`ReconnectState`).
 
 use crate::lane::wire::SupervisorPhase;
+use crate::host::redial::Redial;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------
@@ -37,9 +38,9 @@ pub enum ReconnectDecision {
     Terminal(TerminalReason),
 }
 
-/// The first backoff of the doubling-to-[`RECONNECT_BACKOFF_CAP`] sequence
-/// [`ReconnectState::retry_with_backoff`] returns (reset by
-/// [`ReconnectState::attached`]), AND the fixed interval at which the worker
+/// The first wait of the doubling-to-[`RECONNECT_BACKOFF_CAP`] sequence
+/// [`ReconnectState`] waits on platform's `Redial` (started over only after an
+/// attach that lasted `STABLE`), AND the fixed interval at which the worker
 /// polls a live supervisor connection's `Status` (ADR 0043 decision 28).
 pub const RECONNECT_BACKOFF_INITIAL: Duration = Duration::from_millis(250);
 pub const RECONNECT_BACKOFF_CAP: Duration = Duration::from_secs(4);
@@ -56,21 +57,13 @@ pub const RECONNECT_BACKOFF_CAP: Duration = Duration::from_secs(4);
 /// provisional value ever changes.
 pub const HEALTH_WINDOW: Duration = Duration::from_secs(120);
 
-/// `backoff 250 ms doubling to a 4 s cap`.
-pub fn next_backoff(current: Duration) -> Duration {
-    (current * 2).min(RECONNECT_BACKOFF_CAP)
-}
-
-/// The reconnect episode's own classifier state: the current backoff,
+/// The reconnect episode's own classifier state: the redial pace (250 ms
+/// doubling to 4 s, started over only after an attach that lasted `STABLE`),
 /// and how long the "pipe absent, lane absent-or-unresponsive" condition
-/// has been continuously observed. No longer tracks a separate `Episode`
-/// phase enum (Codex review round, deletion candidate): nothing in this
-/// crate or its caller ever READ that field to decide behavior — only
-/// [`Self::attached`]'s own resets (backoff, the unresponsive clock) are
-/// behavioral, and they are kept here directly.
+/// has been continuously observed.
 #[derive(Debug)]
 pub struct ReconnectState {
-    backoff: Duration,
+    redial: Redial,
     unresponsive_since: Option<Instant>,
 }
 
@@ -82,7 +75,7 @@ impl Default for ReconnectState {
 
 impl ReconnectState {
     pub fn new() -> Self {
-        Self { backoff: RECONNECT_BACKOFF_INITIAL, unresponsive_since: None }
+        Self { redial: Redial::new(RECONNECT_BACKOFF_INITIAL, RECONNECT_BACKOFF_CAP), unresponsive_since: None }
     }
 
     pub fn classify_hello_refused_version_skew(&mut self) -> ReconnectDecision {
@@ -143,26 +136,14 @@ impl ReconnectState {
         self.unresponsive_since = None;
     }
 
-    /// Called once an attach succeeds: clears the unresponsive clock,
-    /// and resets backoff — the only behavior a "reached Watching" phase
-    /// transition ever carried.
-    pub fn attached(&mut self) {
-        self.unresponsive_since = None;
-        self.reset_backoff();
-    }
-
-    /// Everything else retries: returns the backoff to wait before the next
-    /// attempt and advances it (250ms doubling to 4s), whether or not the
-    /// row has ever attached — over an ssh lane every dial is a login (ADR
-    /// 0043 decision 28). [`Self::attached`] resets it.
-    pub fn retry_with_backoff(&mut self) -> Duration {
-        let wait = self.backoff;
-        self.backoff = next_backoff(self.backoff);
-        wait
-    }
-
-    pub fn reset_backoff(&mut self) {
-        self.backoff = RECONNECT_BACKOFF_INITIAL;
+    /// The wait before the next attempt, given how long the one that just
+    /// ended lasted: a failed dial or attach step lasted nothing
+    /// (`Duration::ZERO`), an attached session as long as it ran. 250 ms
+    /// doubling to 4 s, whether or not the row has ever attached — over an
+    /// ssh lane every dial is a login (ADR 0043 decision 28) — and back to
+    /// 250 ms only after a session that lasted `STABLE`.
+    pub fn retry_after(&mut self, lasted: Duration) -> Duration {
+        self.redial.after(lasted)
     }
 }
 
@@ -173,11 +154,11 @@ mod tests {
     // ---- (d) ReconnectState ---------------------------------------------
 
     #[test]
-    fn backoff_doubles_from_a_fresh_state_and_attached_resets_it() {
+    fn backoff_doubles_from_a_fresh_state_and_only_a_stable_session_restarts_it() {
         // ADR 0043 decision 28: every failed dial doubles, whether or not the
         // row has ever attached — over an ssh lane each dial is a login.
         let mut r = ReconnectState::new();
-        let waits: Vec<Duration> = (0..6).map(|_| r.retry_with_backoff()).collect();
+        let waits: Vec<Duration> = (0..6).map(|_| r.retry_after(Duration::ZERO)).collect();
         assert_eq!(
             waits,
             vec![
@@ -189,17 +170,17 @@ mod tests {
                 Duration::from_secs(4),
             ]
         );
-        r.attached();
-        assert_eq!(r.retry_with_backoff(), Duration::from_millis(250));
+        let short = crate::host::redial::STABLE - Duration::from_secs(1);
+        assert_eq!(r.retry_after(short), Duration::from_secs(4), "an attach that drops sooner keeps the doubling");
+        assert_eq!(r.retry_after(crate::host::redial::STABLE), Duration::from_millis(250));
     }
 
     #[test]
     fn post_attach_backoff_doubles_and_caps_at_4s() {
         let mut r = ReconnectState::new();
-        r.attached();
-        let mut waits = vec![];
-        for _ in 0..6 {
-            waits.push(r.retry_with_backoff());
+        let mut waits = vec![r.retry_after(crate::host::redial::STABLE)];
+        for _ in 0..5 {
+            waits.push(r.retry_after(Duration::ZERO));
         }
         assert_eq!(
             waits,
@@ -212,22 +193,6 @@ mod tests {
                 Duration::from_secs(4),
             ]
         );
-    }
-
-    #[test]
-    fn attached_resets_backoff_and_clears_unresponsive() {
-        let mut r = ReconnectState::new();
-        r.attached();
-        r.retry_with_backoff();
-        r.retry_with_backoff();
-        let t0 = Instant::now();
-        r.classify_unresponsive(t0);
-        r.attached();
-        assert_eq!(r.retry_with_backoff(), Duration::from_millis(250));
-        // A fresh unresponsive spell after `attached()` must not inherit
-        // the old clock.
-        let t1 = t0 + HEALTH_WINDOW + Duration::from_secs(1);
-        assert_eq!(r.classify_unresponsive(t1), ReconnectDecision::Retry);
     }
 
     #[test]

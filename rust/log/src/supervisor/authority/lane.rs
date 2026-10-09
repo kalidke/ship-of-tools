@@ -107,6 +107,11 @@ pub(in crate::supervisor) fn service_lane(
             }
         }
     }
+    // The connection owed the deferred EndRun reply is not idle: the silence is the authority's own.
+    let owed = match &*ctx.lifecycle {
+        Lifecycle::Ending { pending_reply, .. } => *pending_reply,
+        _ => None,
+    };
     let mut to_close: Vec<ConnId> = Vec::new();
     for (id, conn) in conns.iter() {
         let idle = now.saturating_duration_since(conn.last_activity) >= LANE_IDLE_DEADLINE;
@@ -118,7 +123,7 @@ pub(in crate::supervisor) fn service_lane(
                 now >= *deadline
             }
             Some(PendingClose::FlushGrace { close_at }) => now >= *close_at,
-            None => idle,
+            None => idle && owed != Some(*id),
         };
         if close_due {
             to_close.push(*id);
@@ -129,6 +134,21 @@ pub(in crate::supervisor) fn service_lane(
         conns.remove(&id);
     }
     accept_loop_dead
+}
+
+/// Queue the deferred EndRun reply for `id` if it is still connected, and restart its idle clock there: the client has
+/// the whole idle deadline from the reply, not from its own request.
+pub(in crate::supervisor) fn send_deferred_reply(
+    lane: &Lane,
+    conns: &mut HashMap<ConnId, Conn>,
+    id: ConnId,
+    reply: &SupervisorReply,
+    now: Instant,
+) {
+    if let Some(conn) = conns.get_mut(&id) {
+        conn.last_activity = now;
+        let _ = lane.send(id, encode_reply_or_fallback(reply), None);
+    } // else: the client disconnected meanwhile -- fine (B3).
 }
 
 /// the ONE thing that must

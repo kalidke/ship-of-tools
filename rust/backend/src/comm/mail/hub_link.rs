@@ -19,8 +19,6 @@ use sot_protocol::{codec, op, Frame, HelloReq, Kind};
 
 const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
-/// A connection that lasted this long was a working one: the next wait starts over.
-const STABLE: Duration = Duration::from_secs(60);
 
 pub async fn run() {
     // Before the first connection: a failed move leaves the old inbox where it was.
@@ -48,7 +46,9 @@ async fn hold_link(
     name: &str,
     sig: &'static crate::lifecycle::child_signal::Signal,
 ) {
-    let mut wait = BACKOFF_FLOOR;
+    // One rule with the window's control transport and the attach worker: the wait starts over only after a link
+    // that lasted `STABLE`.
+    let mut redial = sot_log::host::redial::Redial::new(BACKOFF_FLOOR, BACKOFF_CAP);
     loop {
         if sig.is_fired() {
             return;
@@ -58,14 +58,11 @@ async fn hold_link(
             Ok(()) => tracing::info!("hub link closed"),
             Err(e) => tracing::warn!("hub link dropped: {e}"),
         }
-        if began.elapsed() >= STABLE {
-            wait = BACKOFF_FLOOR;
-        }
+        let wait = redial.after(began.elapsed());
         tokio::select! {
             _ = tokio::time::sleep(wait) => {}
             _ = sig.fired() => return,
         }
-        wait = (wait * 2).min(BACKOFF_CAP);
     }
 }
 

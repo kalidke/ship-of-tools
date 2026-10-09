@@ -62,13 +62,15 @@ fn inbox_home() -> tempfile::TempDir {
 
 /// A holder of `inbox/<h>.lock`: takes the lock, then runs `body`. `exec` so
 /// the child's pid IS the lock holder — a grandchild that inherited the fd
-/// would keep the lock past the kill.
+/// would keep the lock past the kill. The holder writes the ready file itself,
+/// with a builtin: a child such as `touch` would still hold the lock when the
+/// test, seeing the file, kills the holder.
 fn holder(inbox: &Path, h: &str, body: &str) -> Child {
     let ready = inbox.join(format!("{h}.ready"));
     let child = Command::new("bash")
         .arg("-c")
         .arg(format!(
-            r#"exec 9>> "$1/$2.lock"; flock 9; exec 8>> "$1/$2.jsonl"; touch "$3"; {body}"#
+            r#"exec 9>> "$1/$2.lock"; flock 9; exec 8>> "$1/$2.jsonl"; : > "$3"; {body}"#
         ))
         .args(["_", inbox.to_str().unwrap(), h, ready.to_str().unwrap()])
         .spawn()
@@ -79,6 +81,15 @@ fn holder(inbox: &Path, h: &str, body: &str) -> Child {
         std::thread::sleep(Duration::from_millis(20));
     }
     child
+}
+
+/// Whether process `pid` is stopped: its state, `T`, is the first field after the paren that closes its command name.
+fn stopped(pid: u32) -> bool {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+    let state = stat
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().next());
+    state == Some("T")
 }
 
 /// Sourced after `comm-lib.sh`: the script arm's daemon is one that is not
@@ -167,6 +178,16 @@ fn a_frozen_holder_makes_the_filer_wait_then_fail() {
         "f",
         r#"printf '%s' '{"from":"holder",' >&8; kill -STOP $$; printf '%s\n' '"msg":"resumed"}' >&8"#,
     );
+    // The ready file comes before the body: a CONT sent before the holder's own STOP does nothing, and the
+    // holder would then stay stopped for good. So wait for the STOP first, as the shell arm does.
+    let t0 = Instant::now();
+    while !stopped(h.id()) {
+        if t0.elapsed() >= Duration::from_secs(5) {
+            h.kill().unwrap();
+            panic!("the holder never stopped itself");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let t0 = Instant::now();
     let e = file_frame(&inbox, "rust", "f", false, "frozen", "t", Duration::from_secs(1), "local t").unwrap_err();
     assert!(t0.elapsed() >= Duration::from_secs(1));

@@ -170,10 +170,11 @@ echo "holder $H frozen holding the lock (state $(awk '{print $3}' "/proc/$H/stat
 sleep 3; kill -CONT "$H"; wait "$H"
 sleep 0.2
 # A helper killed with -9 while it holds the lock, half a line written; the
-# writers still running end it with their newline.
+# writers still running end it with their newline. It writes its ready file itself,
+# with a builtin: a child such as `touch` would still hold the lock after the kill.
 bash -c 'exec 9>> "$1/inbox/t1h.lock"; flock 9; exec 8>> "$1/inbox/t1h.jsonl"
     printf "%s" "{\"from\":\"killed\",\"to\":\"t1h\",\"repo\":\"r\",\"msg\":\"killed-half" >&8
-    touch "$1/killed-ready"; exec sleep 60' _ "$C" &
+    : > "$1/killed-ready"; exec sleep 60' _ "$C" &
 K=$!
 for n in $(seq 1 3000); do [ -e "$C/killed-ready" ] && break; sleep 0.01; done
 kill -9 "$K"; wait "$K" 2>/dev/null

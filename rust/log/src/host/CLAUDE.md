@@ -2,7 +2,7 @@
 
 ## Idea
 One answer per machine fact and one primitive per platform mechanism: where state lives, what the host is called, how a
-file is published durably, how a lock is held, and what a volume must support. It lives in sot-log because that is the
+file is published durably, how a lock is held, what a volume must support, and how soon a dropped connection or a dead child is started again. It lives in sot-log because that is the
 workspace's bottom crate: every other Rust crate can reach it and it reaches none of them.
 
 ## Owns
@@ -23,6 +23,8 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   `duration_to_wait_ms`).
 - The peer challenge in `rust/log/src/identity/` (a sibling folder; see Folders).
 - Storage-exhaustion recognition (`storage.rs`: `storage_exhaustion`, `native_storage_code`).
+- The redial pace of a long-lived connection or child (`redial.rs`: `Redial`, `STABLE`), which the window's control
+  transport, the hub link, the attach worker and the kernel supervisor share.
 
 ## Promises
 - `host_name` returns `Err`, never a guessed name.
@@ -45,6 +47,13 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   (`lock_writer`).
 - Kernel file locks are taken only inside three guards: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`, whose `Drop` unlocks, and `HandoverLock` in `lock.rs`, whose drop only closes, so a copy of its descriptor in a child keeps the lock held (a birth's claim on a row's fence). rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
+- A connection or child restarted through `Redial` waits from its caller's floor, doubling to its cap, and starts over
+  only after one that lasted `STABLE` (60 s), or when its caller resets it at a person's request (the window's F5); an
+  answered hello, a completed attach, a bare connect or a kernel generation alone does not restart it. The window and
+  the hub link measure from the attempt's start, the attach episode from its attach and the kernel from its hello (a
+  precompile that never answers counts as nothing), each waiting from the session's end; the supervisor re-dial
+  measures from its previous dial (`dialed_at`) and waits from there, so a lane that lasted longer than its current
+  wait re-dials at once.
 - Storage exhaustion is recognized by its native code only: ENOSPC and EDQUOT, on Windows ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL and ERROR_DISK_QUOTA_EXCEEDED, read from the `io::Error` an `Error::Io` carries, never from text and never from a transport error (a full runtime folder is not storage exhaustion) (`storage_exhaustion`). `preflight_volume` and Windows `io_ctx` return such an error as itself, with its code, instead of their refusal or context text.
 
 ## Connections
@@ -53,7 +62,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `dir_identity`,
 `rust/log/src/host/pinned_dir.rs`, `resource_dir`, `rust/backend/src/paths.rs`,
-`sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`, `storage_exhaustion`. Uses: none.
+`sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`, `storage_exhaustion`,
+`Redial`, `STABLE`. Uses: none.
 
 ## Folders
 - `rust/log/src/host/` (here) and `rust/log/src/identity/` (the peer challenge).
@@ -65,6 +75,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `lock.rs`: the writer fence, the supervisor fence, the supervisor fence taken to be handed to a child, and the daemon's single-instance lock, held by the kernel.
 - `pinned_dir.rs`: a directory's kernel identity and a handle that pins it.
 - `process_tree/`: the native process-birth primitives (own page).
+- `redial.rs`: `Redial` and `STABLE`, the wait before a long-lived connection or child is started again.
 - `state_dir.rs`: where a file lives, and the host name.
 - `storage.rs`: which native errors are storage exhaustion.
 - `volume.rs`: the preflight that proves a volume supports the store's primitives.

@@ -85,22 +85,24 @@ pub(super) fn probe_supervisor_lane<E: Endpoint>(endpoint: &E, h: &str, lane: &m
     let answered = supervisor_status::<E>(&lane.conn, &mut lane.reader).map(|(_, _, phase)| phase);
     if answered.is_ok() {
         lane.redial_at = None;
-        lane.redial_backoff = SUPERVISOR_REDIAL_INITIAL;
-    } else if lane.redial_at.is_none_or(|t| now >= t) {
-        // The probe's own deadline shut this socket down (`cancel` is
-        // `shutdown(SHUT_RDWR)`), so the lane is dead from here on whatever
-        // the supervisor does next -- one stalled link would otherwise
-        // leave every later probe failing and the header lying until the
-        // next reattach. Re-dial now; the next answered probe restores
-        // "attached".
+        return answered;
+    }
+    // The probe's own deadline shut this socket down (`cancel` is
+    // `shutdown(SHUT_RDWR)`), so the lane is dead from here on whatever
+    // the supervisor does next -- one stalled link would otherwise
+    // leave every later probe failing and the header lying until the
+    // next reattach. Re-dial once the wait its lifetime earned has passed
+    // (`Redial`: a lane that lasted `STABLE` re-dials at once); the next
+    // answered probe restores "attached".
+    let due = *lane.redial_at.get_or_insert_with(|| lane.dialed_at + lane.redial.after(now.saturating_duration_since(lane.dialed_at)));
+    if now >= due {
+        // Whatever this dial's outcome, the next missed probe measures from it: a dial that failed counts as a lane
+        // that lasted until that miss, so the doubling goes on.
+        lane.dialed_at = now;
+        lane.redial_at = None;
         if let Ok((c, _)) = connect_supervisor_lane::<E>(endpoint, h) {
             lane.conn = c;
             lane.reader = FrameReader::new();
-            lane.redial_at = None;
-            lane.redial_backoff = SUPERVISOR_REDIAL_INITIAL;
-        } else {
-            lane.redial_at = Some(now + lane.redial_backoff);
-            lane.redial_backoff = (lane.redial_backoff * 2).min(SUPERVISOR_REDIAL_MAX);
         }
     }
     answered
@@ -115,9 +117,8 @@ pub(super) fn probe_supervisor_lane<E: Endpoint>(endpoint: &E, h: &str, lane: &m
 /// name"). A live voyage pipe means the capsule survives headless
 /// (exactly the scenario ADR 0041 P3 is built to tolerate), so this
 /// clears the clock and asks the caller to retry shortly rather than
-/// attaching blind this round — the caller's own backoff (fixed pre-
-/// attach interval, doubling only after a first attach) makes that a
-/// brief, bounded gap, not a stall.
+/// attaching blind this round — the caller's own backoff (the episode's
+/// doubling `Redial` wait) makes that a brief, bounded gap, not a stall.
 ///
 /// ADR 0043 decision 28, ADR 0045 decision 6: `voyage` is now OPTIONAL —
 /// the attach client converges on the supervisor's own word only, never a
@@ -129,8 +130,7 @@ pub(super) fn probe_supervisor_lane<E: Endpoint>(endpoint: &E, h: &str, lane: &m
 /// nothing to probe with, so this cannot distinguish "the capsule
 /// survives headless" from "nothing exists yet" — both retry under the
 /// same clock); an answered `Status` on a later round still clears the
-/// unresponsive count via `ReconnectState::attached` or
-/// `clear_unresponsive`, whichever path reaches it.
+/// unresponsive count via `clear_unresponsive`.
 pub(super) fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
     endpoint: &E,
     reconnect: &mut ReconnectState,
@@ -239,7 +239,7 @@ pub(super) const FIRST_ATTACH_ENDED_NO_RESPAWN_BOUND: Duration = TEARDOWN_AGGREG
 /// on that SAME connection every [`rules::RECONNECT_BACKOFF_INITIAL`]
 /// (a FIXED interval — Codex review round finding 6: this loop is
 /// steady-state polling of a lane that is actively ANSWERING, so
-/// [`ReconnectState::retry_with_backoff`]'s doubling does not apply to
+/// [`ReconnectState::retry_after`]'s doubling does not apply to
 /// that poll; it does apply to the wait after a failed voyage dial) until
 /// the report says `Ready` with a voyage id AND the voyage lane itself
 /// accepts a connection. Every answered `Status`, whatever its phase,
@@ -369,7 +369,7 @@ pub(super) fn converge_on_ready<E: Endpoint>(
             // supervisor-lane connect above it in `run_worker` — a
             // refusal is terminal, its code named; the two uncertain
             // arms clear the health window's clock and wait the doubling
-            // `ReconnectState::retry_with_backoff` (ADR 0043 decision 28:
+            // `ReconnectState::retry_after` (ADR 0043 decision 28:
             // over an ssh lane every failed dial is a login).
             Err(e) => match classify_transport(e) {
                 LaneError::Refused { code, detail } => {
@@ -395,7 +395,7 @@ pub(super) fn converge_on_ready<E: Endpoint>(
                         _ => unreachable!("matched above"),
                     };
                     emit(WorkerEvent::Status(msg));
-                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_with_backoff(), held) {
+                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_after(Duration::ZERO), held) {
                         WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                         WaitOutcome::Continue => continue,
                     }
@@ -405,7 +405,7 @@ pub(super) fn converge_on_ready<E: Endpoint>(
                         return ReadyOutcome::Terminal("voyage pipe: access denied".to_string());
                     }
                     emit(WorkerEvent::Status(format!("voyage pipe not yet available: {io}")));
-                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_with_backoff(), held) {
+                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_after(Duration::ZERO), held) {
                         WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                         WaitOutcome::Continue => continue,
                     }

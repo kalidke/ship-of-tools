@@ -6,11 +6,11 @@ use super::*;
 #[test]
 fn a_down_ssh_host_costs_the_hub_at_most_two_logins_a_minute() {
     let count = |dial: &Dial| {
-        let (mut t, mut b, mut n) = (0u64, 200u64, 0u32);
-        while t < 3_600_000 {
+        let mut redial = redial_for(dial);
+        let (mut t, mut n) = (std::time::Duration::ZERO, 0u32);
+        while t < std::time::Duration::from_secs(3_600) {
             n += 1;
-            t += b;
-            b = next_backoff_ms(b, dial);
+            t += redial.after(std::time::Duration::ZERO);
         }
         n
     };
@@ -28,8 +28,91 @@ fn a_down_ssh_host_costs_the_hub_at_most_two_logins_a_minute() {
     assert!(n >= 700, "a local socket keeps its 5 s cap, got {n} probes per hour");
 }
 
+/// A daemon that answers every hello and then closes is redialed on the doubling wait, not every 200 ms: an answered
+/// hello is not a working connection. The reconnect loop `spawn` runs dials a generated-relay endpoint this test serves
+/// (an in-process Unix socket, or a named pipe on Windows) and names, in each `Disconnected` event, the wait it is about
+/// to sleep. The first three are 200, 400 and 800 ms: three attempts happened and each wait doubled. The daemon stamps
+/// each connection, and the gaps between the first three are at least the 200 and 400 ms the loop reported: it slept
+/// what it said. Those are lower bounds, which a slow machine can only widen; the deadline only fails a loop that stops
+/// redialing.
+#[test]
+fn a_daemon_that_answers_the_hello_and_drops_is_redialed_on_the_doubling_wait() {
+    use interprocess::local_socket::{tokio::prelude::*, GenericFilePath, ListenerOptions};
+    let _env = crate::net::state::test_env::set_test_env();
+    #[cfg(windows)]
+    let sock_path = std::path::PathBuf::from(format!(r"\\.\pipe\sot-redial-test-{}", std::process::id()));
+    #[cfg(not(windows))]
+    let sock_path = {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = std::path::PathBuf::from(format!("/tmp/sot-redial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).expect("private folder");
+        dir.join("s.sock")
+    };
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let accepts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stamped = Arc::clone(&accepts);
+    rt.block_on(async {
+        let name = sock_path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new().name(name).create_tokio().expect("bind test endpoint");
+        tokio::spawn(async move {
+            while let Ok(conn) = listener.accept().await {
+                stamped.lock().unwrap().push(std::time::Instant::now());
+                tokio::spawn(async move {
+                    let (rx, mut tx) = conn.split();
+                    let mut rx = codec::buffered(rx);
+                    if let Ok((hello, _)) = codec::read_frame(&mut rx).await {
+                        let reply = Frame::res(hello.id, op::HELLO, hello_ok()).with_rev(0);
+                        let _ = codec::write_frame(&mut tx, &reply, None).await;
+                    }
+                    // Both halves drop here: the daemon closes right after its answer.
+                });
+            }
+        });
+    });
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    let (_out_tx, out_rx) = outgoing_channel();
+    let config = TransportConfig { dial: Dial::Relay(sock_path.clone()), token: None };
+    spawn(
+        &rt,
+        "redial-test".to_string(),
+        config,
+        evt_tx,
+        out_rx,
+        NoWindow,
+        Arc::new(tokio::sync::Notify::new()),
+        sot_protocol::topology::ssh_bridge::LinkGate::default(),
+        crate::lease::Leases::new(true, Vec::new()),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut waits: Vec<u64> = Vec::new();
+    while waits.len() < 3 {
+        match evt_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok((_, IncomingEvt::Disconnected { reason })) => {
+                let ms = reason.rsplit_once("retry in ").and_then(|(_, rest)| rest.split_once("ms")).and_then(|(n, _)| n.parse().ok());
+                waits.push(ms.unwrap_or_else(|| panic!("no wait named in {reason:?}")));
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    rt.shutdown_timeout(std::time::Duration::from_secs(2));
+    #[cfg(not(windows))]
+    let _ = std::fs::remove_dir_all(sock_path.parent().unwrap());
+    println!("redial: waits {waits:?} ms against a daemon that answers the hello and closes");
+    assert_eq!(waits, [200, 400, 800], "the reconnect loop's first three waits: an answered hello restarted the doubling, or the loop stopped redialing");
+    let accepts = accepts.lock().unwrap().clone();
+    let gaps: Vec<std::time::Duration> = accepts.windows(2).map(|w| w[1] - w[0]).collect();
+    println!("redial: gaps between connections {gaps:?}");
+    assert!(gaps.len() >= 2, "{} connections for three reported waits", accepts.len());
+    for (gap, wait) in gaps.iter().zip([200, 400]) {
+        assert!(*gap >= std::time::Duration::from_millis(wait), "a gap of {gap:?} after the loop reported a {wait} ms wait: it slept less than it said");
+    }
+}
+
 // --- ADR 0045 decision 4: the link gate. ---
 
+#[derive(Clone, Copy)]
 struct NoWindow;
 impl Redraw for NoWindow {
     fn request_redraw(&self) {}
@@ -71,7 +154,6 @@ async fn run_against_fake_daemon(
     let session = tokio::spawn(async move {
         let (rx, tx) = tokio::io::split(near);
         let (_out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut backoff_ms = 200;
         let result = run_protocol(
             host.clone(),
             codec::buffered(rx),
@@ -80,7 +162,6 @@ async fn run_against_fake_daemon(
             &evt_tx,
             &mut out_rx,
             &NoWindow,
-            &mut backoff_ms,
             ResolvedDial::Local,
             Some(&gate),
         )

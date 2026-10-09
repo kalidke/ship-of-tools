@@ -159,32 +159,30 @@ pub fn outgoing_channel() -> (UnboundedSender<OutgoingReq>, UnboundedReceiver<Ou
     tmpsc::unbounded_channel()
 }
 
-/// Next reconnect wait after a failed attempt: double, up to a cap that
-/// depends on the dial. A local socket costs nothing to probe, so it keeps
-/// 5 s. Each ssh probe is a login on the hub plus one on the far host, so
-/// the cap is 30 s: once the wait reaches it, a down remote host costs the hub
-/// at most two ssh logins a minute per frontend (about nine in the first minute,
-/// while the wait doubles).
-fn next_backoff_ms(current: u64, dial: &Dial) -> u64 {
+/// The reconnect wait for `dial`: from 200 ms, doubling to a cap that depends on the dial, and back to 200 ms only
+/// after a session that lasted `STABLE`. A local socket costs nothing to probe, so it keeps 5 s. Each ssh probe is a
+/// login on the hub plus one on the far host, so the cap is 30 s: once the wait reaches it, a down remote host costs
+/// the hub at most two ssh logins a minute per frontend (about nine in the first minute, while the wait doubles).
+fn redial_for(dial: &Dial) -> sot_log::host::redial::Redial {
     let cap = match dial {
-        Dial::Pipe(_) => 5_000,
+        Dial::Pipe(_) => std::time::Duration::from_secs(5),
         // Connecting to a relay socket always succeeds; the hub then opens an ssh login to the far host.
-        Dial::Relay(_) | Dial::Ssh(_) => 30_000,
+        Dial::Relay(_) | Dial::Ssh(_) => std::time::Duration::from_secs(30),
     };
-    current.saturating_mul(2).min(cap)
+    sot_log::host::redial::Redial::new(std::time::Duration::from_millis(200), cap)
 }
 
 /// Spawn the transport task on `rt`. Returns once spawned; the task runs
 /// until the connection drops or the runtime shuts down. The task asks the
 /// window to redraw whenever a new IncomingEvt is published so the GPU
 /// thread sees state updates without polling.
-pub fn spawn(
+pub(crate) fn spawn<Wn: Redraw + Clone + Send + Sync + 'static>(
     rt: &tokio::runtime::Runtime,
     host: HostKey,
     config: TransportConfig,
     evt_tx: StdSender<(HostKey, IncomingEvt)>,
     out_rx: UnboundedReceiver<OutgoingReq>,
-    window: Arc<Window>,
+    window: Wn,
     reconnect_now: Arc<tokio::sync::Notify>,
     gate: sot_protocol::topology::ssh_bridge::LinkGate,
     leases: Arc<crate::lease::Leases>,
@@ -200,24 +198,22 @@ pub fn spawn(
         // resume protocol, so missed events replay automatically.
         //
         // We never give up — the user can quit the window to terminate
-        // the task. Backoff resets to the floor after `connect_and_run`
-        // reaches `hello_res` (signalling a real round-trip succeeded)
-        // OR after a clean Ok return; mid-handshake failures keep
-        // walking the backoff up so a thrashing backend doesn't get
-        // hammered. The F5 `reconnect_now` notify lets the user
+        // the task. The wait starts over only after a session that lasted
+        // `STABLE` (`redial_for`), or at F5: an answered hello alone does not prove a
+        // working connection, so a daemon that answers and drops keeps
+        // the wait doubling. The F5 `reconnect_now` notify lets the user
         // collapse the current sleep — useful when wifi flickers and
-        // the user knows it's back before the 5s cap elapses.
+        // the user knows it's back before the wait elapses.
         let mut out_rx = out_rx;
-        let mut backoff_ms: u64 = 200;
-        const BACKOFF_FLOOR_MS: u64 = 200;
+        let mut redial = redial_for(&config.dial);
         loop {
+            let began = tokio::time::Instant::now();
             match connect_and_run(
                 host.clone(),
                 config.clone(),
                 evt_tx.clone(),
                 &mut out_rx,
                 window.clone(),
-                &mut backoff_ms,
                 &gate,
                 &leases,
             )
@@ -228,28 +224,28 @@ pub fn spawn(
                     return;
                 }
                 Err(e) => {
+                    let wait = redial.after(began.elapsed());
+                    let wait_ms = wait.as_millis();
                     tracing::warn!(
                         %host,
                         error = %format_args!("{e:#}"),
-                        backoff_ms,
+                        wait_ms,
                         "transport task ended; reconnecting"
                     );
                     let _ = evt_tx.send((
                         host.clone(),
                         IncomingEvt::Disconnected {
-                            reason: format!("{e:#} — retry in {backoff_ms}ms (F5 to retry now)"),
+                            reason: format!("{e:#} — retry in {wait_ms}ms (F5 to retry now)"),
                         },
                     ));
                     window.request_redraw();
                     tokio::select! {
-                        _ = tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)) => {}
+                        _ = tokio::time::sleep(wait) => {}
                         _ = reconnect_now.notified() => {
                             tracing::info!("manual reconnect requested — collapsing backoff");
-                            backoff_ms = BACKOFF_FLOOR_MS;
-                            continue;
+                            redial.reset();
                         }
                     }
-                    backoff_ms = next_backoff_ms(backoff_ms, &config.dial);
                 }
             }
         }
@@ -264,13 +260,12 @@ pub fn spawn(
 /// pipe failure fell through to ssh, but `Dial` makes that unconstructible
 /// now, so each arm either connects and hands off or returns its own
 /// `Err`.
-async fn connect_and_run(
+async fn connect_and_run<Wn: Redraw>(
     host: HostKey,
     config: TransportConfig,
     evt_tx: StdSender<(HostKey, IncomingEvt)>,
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
-    window: Arc<Window>,
-    backoff_ms: &mut u64,
+    window: Wn,
     gate: &sot_protocol::topology::ssh_bridge::LinkGate,
     leases: &crate::lease::Leases,
 ) -> Result<()> {
@@ -300,7 +295,6 @@ async fn connect_and_run(
                 &evt_tx,
                 out_rx,
                 &window,
-                backoff_ms,
                 ResolvedDial::Local,
                 None,
             )
@@ -320,7 +314,6 @@ async fn connect_and_run(
                 &evt_tx,
                 out_rx,
                 &window,
-                backoff_ms,
                 ResolvedDial::Relay(path.clone()),
                 Some(gate),
             )
@@ -347,7 +340,6 @@ async fn connect_and_run(
                 &evt_tx,
                 out_rx,
                 &window,
-                backoff_ms,
                 ResolvedDial::Ssh(recipe.clone()),
                 Some(gate),
             )
@@ -428,7 +420,7 @@ fn ping_interval_duration() -> std::time::Duration {
 
 /// What `run_protocol` needs of the window: a redraw request. A trait so a
 /// test can run the protocol without a real window.
-trait Redraw {
+pub(crate) trait Redraw {
     fn request_redraw(&self);
 }
 
@@ -451,7 +443,6 @@ async fn run_protocol<R, W, Wn>(
     evt_tx: &StdSender<(HostKey, IncomingEvt)>,
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
     window: &Wn,
-    backoff_ms: &mut u64,
     resolved: ResolvedDial,
     gate: Option<&sot_protocol::topology::ssh_bridge::LinkGate>,
 ) -> Result<()>
@@ -460,7 +451,7 @@ where
     W: AsyncWrite + Unpin,
     Wn: Redraw,
 {
-    let result = run_session(host, rx, tx, token, evt_tx, out_rx, window, backoff_ms, resolved, gate).await;
+    let result = run_session(host, rx, tx, token, evt_tx, out_rx, window, resolved, gate).await;
     if let Some(gate) = gate {
         if !matches!(&result, Err(e) if e.is::<HelloRefused>()) {
             gate.set_up(false);
@@ -482,7 +473,6 @@ async fn run_session<R, W, Wn>(
     evt_tx: &StdSender<(HostKey, IncomingEvt)>,
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
     window: &Wn,
-    backoff_ms: &mut u64,
     // C3 as amended §5: which transport `connect_and_run` actually
     // connected — `ResolvedDial::Local` for the pipe, `ResolvedDial::Ssh`
     // for the ssh child, carrying the exact recipe it spawned. The proxy
@@ -545,7 +535,7 @@ where
     let hello_id = take_id(&mut next_id);
     send_hello(&mut tx, hello_id, &session, token).await?;
     let frame = read_hello(&mut rx, hello_id, gate, &mut session, &emit, window).await?;
-    accept_hello(frame, &host, &mut session, backoff_ms, resolved, &emit, window)?;
+    accept_hello(frame, &host, &mut session, resolved, &emit, window)?;
 
     // tree.root — initial fetch on connect uses the default workspace
     // (no workspace_id). Once the chrome resumes a saved Sessions-mode

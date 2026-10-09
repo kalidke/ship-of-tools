@@ -87,10 +87,11 @@ pub(in crate::ui) fn help_key(state: &mut State, key: KeyPress<'_>, context: hel
 pub(in crate::ui) fn window_chords(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
     let KeyPress { event, action, .. } = key;
     // F5: manual reconnect trigger — collapses the
-    // transport's current backoff sleep and retries
-    // immediately. Works from any focus, no modifier, so
-    // it's there when wifi comes back and the user
-    // doesn't want to wait the up-to-5s backoff cap.
+    // transport's current reconnect wait and retries
+    // immediately, from the wait's floor (`Redial::reset`).
+    // Works from any focus, no modifier, so it's there when
+    // wifi comes back and the user doesn't want to wait out a
+    // wait that doubles to 5 s on a local socket, 30 s on ssh.
     if !event.repeat
         && action == Some(Action::Reconnect)
     {

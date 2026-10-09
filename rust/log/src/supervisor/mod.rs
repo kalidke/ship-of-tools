@@ -100,7 +100,10 @@
 //! `record_closed` is reached (ADR 0041:592) — held via
 //! `(ConnId, operation_id)` correlation through `Ending`; a client
 //! disconnecting meanwhile is fine, since the journal itself carries the
-//! result for a later `query`. This deferred-reply signal is now passed
+//! result for a later `query`. While it is owed, that connection is not
+//! closed as idle, and queuing the reply restarts its idle clock
+//! (`authority/lane.rs` `service_lane`, `send_deferred_reply`). This
+//! deferred-reply signal is now passed
 //! on EVERY live no-process reconciliation attempt (an
 //! earlier version hardcoded `None` here, so a `pending_reply` could
 //! wait forever once THIS path — not the with-process one — was what
@@ -349,7 +352,9 @@ const KILL_WAIT_BOUND: Duration = Duration::from_secs(10);
 /// the same shape (poll, sleep, poll) without that dead weight baked in.
 const ATTEMPT_INTERVAL: Duration = Duration::from_millis(250);
 const FLAP_THRESHOLD: u32 = 3;
-const LANE_IDLE_DEADLINE: Duration = Duration::from_secs(5);
+/// A supervisor-lane connection whose client has sent nothing for this long is closed, unless the authority owes it
+/// the deferred EndRun reply (`authority/lane.rs` `service_lane`). `pub` so a test crossing it names this value.
+pub const LANE_IDLE_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_LANE_INSTANCES: u32 = 8;
 const MAIN_LOOP_POLL: Duration = Duration::from_millis(100);
 /// Bounds

@@ -136,7 +136,9 @@ pub(super) fn run_worker<E: Endpoint>(
         // send as soon as it applies the checkpoint, and that input must
         // read as current. An input sent earlier read the older value.
         let attached_gen = attach_gen.fetch_add(1, Ordering::AcqRel) + 1;
-        announce_attach(checkpoint, attach_identity, &mut reconnect, &mut take, &discarded, &mut fe_down, &fe_down_to_handle, &emit);
+        announce_attach(checkpoint, attach_identity, &mut take, &discarded, &mut fe_down, &fe_down_to_handle, &emit);
+        // How long this attach lasts decides the wait after it ends (`ReconnectState::retry_after`).
+        let attached_at = Instant::now();
 
         resume_outstanding_input::<E>(&voyage, take_epoch, &mut outstanding, &mut take, &mut take_intent, &voyage_conn, &controller_id, &emit);
 
@@ -187,7 +189,7 @@ pub(super) fn run_worker<E: Endpoint>(
                 return;
             }
             SteadyOutcome::Reconnect => {
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_after(attached_at.elapsed()), &mut held) {
                     WaitOutcome::Shutdown => shutdown = true,
                     WaitOutcome::Continue => {}
                 }
