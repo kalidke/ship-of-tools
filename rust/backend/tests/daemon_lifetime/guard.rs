@@ -472,6 +472,68 @@ async fn the_guard_mirrors_the_daemon_and_forwards_signals() {
     }
 }
 
+/// Whether the child `pid` of this process is stopped, without consuming its state.
+fn stopped(pid: i32) -> bool {
+    // SAFETY: a non-blocking, non-consuming wait on this test's own child, into a local siginfo.
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WSTOPPED | libc::WNOHANG | libc::WNOWAIT,
+        ) == 0
+            && info.si_pid() == pid
+    }
+}
+
+/// A terminal's Ctrl-Z (TSTP to the launched process) stops the daemon and the guard with it, so a shell sees the job
+/// stopped; a continue resumes both and the daemon serves again.
+#[tokio::test]
+async fn a_stop_of_the_guard_stops_the_daemon_with_it() {
+    let _serial = SERIAL.lock().await;
+    let mut run = Run::start("gstop", &[], false).await;
+    run.assert_guarded();
+    let guard = run.guard_pid();
+    // SAFETY: a signal to the guard this test spawned.
+    unsafe { libc::kill(guard, libc::SIGTSTP) };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut guard_stopped = false;
+    while Instant::now() < deadline {
+        if stopped(guard) {
+            guard_stopped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // SAFETY: a signal to the guard this test spawned.
+    unsafe { libc::kill(guard, libc::SIGCONT) };
+    let serving = tokio::time::timeout(
+        Duration::from_secs(10),
+        connect_and_hello(&run.env.socket_path),
+    )
+    .await
+    .is_ok();
+    let said = run.said();
+    assert!(
+        guard_stopped,
+        "the guard did not stop with its daemon:\n{said}"
+    );
+    assert!(
+        serving,
+        "the daemon did not serve again after the continue:\n{said}"
+    );
+    let status = {
+        close_by_lease(&run.env).await;
+        run.status_within(Duration::from_secs(60)).await
+    };
+    assert_eq!(
+        status.and_then(|s| s.code()),
+        Some(0),
+        "the close after the continue: {status:?}"
+    );
+}
+
 #[tokio::test]
 async fn losing_the_guard_ends_the_daemon_at_once() {
     let _serial = SERIAL.lock().await;

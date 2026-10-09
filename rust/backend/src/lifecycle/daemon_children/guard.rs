@@ -42,8 +42,9 @@ pub fn install() -> io::Result<()> {
         return Err(io::Error::other(format!("the lifetime guard needs a single-threaded process, and this one has {threads} threads")));
     }
     // An inherited SIG_IGN on SIGCHLD would let the kernel reap the guard's children and void the drain's pid safety.
-    // SAFETY: plain signal-disposition and mask calls over locally owned values, in a single-threaded process.
-    let (saved, guard) = unsafe {
+    // The guard's signal source is made here, before the fork, so a failure refuses the boot with no guard and no daemon.
+    // SAFETY: plain signal-disposition, mask and signalfd calls over locally owned values, in a single-threaded process.
+    let (saved, guard, signals) = unsafe {
         libc::signal(libc::SIGCHLD, libc::SIG_DFL);
         let mut saved: libc::sigset_t = std::mem::zeroed();
         let mut all: libc::sigset_t = std::mem::zeroed();
@@ -54,7 +55,11 @@ pub fn install() -> io::Result<()> {
         if libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0 {
             return Err(errno());
         }
-        (saved, libc::getpid())
+        let signals = libc::signalfd(-1, &all, libc::SFD_CLOEXEC);
+        if signals < 0 {
+            return Err(errno());
+        }
+        (saved, libc::getpid(), signals)
     };
     // SAFETY: this process has one thread, so the child may run ordinary Rust code after the fork.
     #[allow(
@@ -66,8 +71,10 @@ pub fn install() -> io::Result<()> {
         -1 => Err(errno()),
         0 => {
             // The daemon. Its end is the guard's cue; the guard's end is its own: it dies at once.
-            // SAFETY: restoring the saved mask, asking for the death signal, and a self-kill when the guard is already gone.
+            // SAFETY: closing the guard's signal source, restoring the saved mask, asking for the death signal, and a
+            // self-kill when the guard is already gone.
             unsafe {
+                libc::close(signals);
                 libc::sigprocmask(libc::SIG_SETMASK, &saved, std::ptr::null_mut());
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0);
                 if libc::getppid() != guard {
@@ -77,26 +84,29 @@ pub fn install() -> io::Result<()> {
             GUARD_PID.store(guard as u32, Ordering::SeqCst);
             Ok(())
         }
-        daemon => keep_guard(daemon),
+        daemon => keep_guard(daemon, signals),
     }
 }
 
 /// The guard's life. Never returns.
-fn keep_guard(daemon: libc::pid_t) -> ! {
-    // The guard holds no channel, socket, lock or log of the daemon's.
-    close_descriptors_above_stderr();
+fn keep_guard(daemon: libc::pid_t, signals: i32) -> ! {
+    // The guard holds no channel, socket, lock or log of the daemon's: only its signal source.
+    close_descriptors_above_stderr_but(signals);
     // SAFETY: the name is a NUL-terminated literal.
     unsafe { libc::prctl(libc::PR_SET_NAME, c"sotd-guard".as_ptr(), 0, 0, 0) };
-    let status = wait_for_daemon(daemon);
+    let status = wait_for_daemon(daemon, signals);
     drain();
     exit_as(status)
 }
 
-fn close_descriptors_above_stderr() {
+fn close_descriptors_above_stderr_but(keep: i32) {
     // SAFETY: close_range closes descriptors this process owns; a kernel without it (before 5.9) answers ENOSYS and the
     // fallback below closes what /proc lists.
-    let rc = unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) };
-    if rc == 0 {
+    let closed = unsafe {
+        (keep <= 3 || libc::syscall(libc::SYS_close_range, 3u32, keep as u32 - 1, 0u32) == 0)
+            && libc::syscall(libc::SYS_close_range, keep as u32 + 1, u32::MAX, 0u32) == 0
+    };
+    if closed {
         return;
     }
     let fds: Vec<i32> = std::fs::read_dir("/proc/self/fd")
@@ -105,22 +115,18 @@ fn close_descriptors_above_stderr() {
                 .collect()
         })
         .unwrap_or_default();
-    for fd in fds.into_iter().filter(|fd| *fd > 2) {
+    for fd in fds.into_iter().filter(|fd| *fd > 2 && *fd != keep) {
         // SAFETY: closing a descriptor of this process; the directory's own is already gone or closes harmlessly.
         unsafe { libc::close(fd) };
     }
 }
 
-/// Read the blocked signals until the daemon is reaped; forward all but SIGCHLD to the daemon. Returns its wait status.
-fn wait_for_daemon(daemon: libc::pid_t) -> libc::c_int {
-    // SAFETY: a signalfd over every signal the guard blocks (all but the two that cannot be blocked).
-    let sfd = unsafe {
-        let mut all: libc::sigset_t = std::mem::zeroed();
-        libc::sigfillset(&mut all);
-        libc::signalfd(-1, &all, libc::SFD_CLOEXEC)
-    };
+/// Read the blocked signals until the daemon is reaped; forward all but SIGCHLD to the daemon, and stop with it on a
+/// job-control stop (a terminal's Ctrl-Z, `kill -TSTP`) so the shell sees the job stopped; the continue that resumes the
+/// guard is forwarded too. Returns the daemon's wait status.
+fn wait_for_daemon(daemon: libc::pid_t, sfd: i32) -> libc::c_int {
     loop {
-        if let Some(status) = reap_daemon(daemon) {
+        if let (Some(status), _) = reap(daemon) {
             return status;
         }
         let mut info = std::mem::MaybeUninit::<libc::signalfd_siginfo>::zeroed();
@@ -138,21 +144,30 @@ fn wait_for_daemon(daemon: libc::pid_t) -> libc::c_int {
         // SAFETY: the read filled the whole structure.
         let signo = unsafe { info.assume_init() }.ssi_signo as libc::c_int;
         if signo != libc::SIGCHLD {
-            // SAFETY: the daemon is this guard's unreaped child, so its pid is still its own.
-            unsafe { libc::kill(daemon, signo) };
+            // SAFETY: the daemon is this guard's unreaped child, so its pid is still its own; the stop is the guard's own.
+            unsafe {
+                libc::kill(daemon, signo);
+                if matches!(signo, libc::SIGTSTP | libc::SIGTTIN | libc::SIGTTOU) {
+                    libc::raise(libc::SIGSTOP);
+                }
+            }
         }
     }
 }
 
-/// Reap every child that has ended; the daemon's status when it is among them.
-fn reap_daemon(daemon: libc::pid_t) -> Option<libc::c_int> {
+/// Reap every child that has ended: the daemon's status when it is among them (`daemon` 0 matches none), and whether no
+/// child is left at all (`waitpid` answered ECHILD).
+fn reap(daemon: libc::pid_t) -> (Option<libc::c_int>, bool) {
     let mut found = None;
     loop {
         let mut status = 0;
         // SAFETY: a non-blocking wait on any child of this process.
         let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-        if pid <= 0 {
-            return found;
+        if pid == 0 {
+            return (found, false);
+        }
+        if pid < 0 {
+            return (found, errno().raw_os_error() == Some(libc::ECHILD));
         }
         if pid == daemon {
             found = Some(status);
@@ -188,11 +203,10 @@ fn own_children() -> Vec<i32> {
 fn drain() {
     let deadline = Instant::now() + DRAIN_BOUND;
     loop {
-        reap_all();
-        let children = own_children();
-        if children.is_empty() && no_children_left() {
+        if reap(0).1 {
             return;
         }
+        let children = own_children();
         for pid in &children {
             // SAFETY: the pid is an unreaped child of this process (see above).
             unsafe { libc::kill(*pid, libc::SIGKILL) };
@@ -206,23 +220,6 @@ fn drain() {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-}
-
-fn reap_all() {
-    loop {
-        // SAFETY: a non-blocking wait on any child of this process.
-        let pid = unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) };
-        if pid <= 0 {
-            return;
-        }
-    }
-}
-
-/// Whether `waitpid` says there is no child at all (ECHILD).
-fn no_children_left() -> bool {
-    // SAFETY: a non-blocking wait on any child of this process.
-    let rc = unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) };
-    rc < 0 && errno().raw_os_error() == Some(libc::ECHILD)
 }
 
 /// Leave the way the daemon did: its exit code, or its signal with no core and the default disposition.

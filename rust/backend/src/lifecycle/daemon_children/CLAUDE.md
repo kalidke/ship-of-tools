@@ -18,9 +18,10 @@ nothing after an abrupt end (ADR 0050). Part of lifecycle; charter: rust/backend
   before the runtime, and refuses the boot unless the process has exactly one thread. The durable parent is therefore
   never a descendant of the guard, and a capsule supervisor it starts is never drained.
 - The guard is the launched process and the daemon is its child: the guard is a subreaper with all catchable signals
-  blocked, forwards all but SIGCHLD to the daemon through a signalfd, reaps, and after the daemon is reaped kills and
-  reaps its own children until `waitpid` says ECHILD, within `DRAIN_BOUND`. It exits as the daemon did, so the launcher,
-  systemd and a test see the daemon's status at the launched pid.
+  blocked, forwards all but SIGCHLD to the daemon through a signalfd (made in `install` before the fork, so its failure
+  refuses the boot), stops itself after forwarding TSTP, TTIN or TTOU (a shell then sees the job stopped), reaps, and
+  after the daemon is reaped kills and reaps its own children until `waitpid` says ECHILD, within `DRAIN_BOUND`. It exits
+  as the daemon did, so the launcher, systemd and a test see the daemon's status at the launched pid.
 - The drain lists only the guard's own children (`PPid:` is the guard) and only the guard reaps them, so a listed pid is
   still the child it was (an unreaped child's pid is never reused).
 - The daemon asks for `PR_SET_PDEATHSIG` SIGKILL: the guard's loss ends the daemon at once. What the daemon started then
