@@ -25,7 +25,8 @@ Part of the capsule; charter: rust/log/CLAUDE.md.
 - One authority per state dir: `supervise_inner` takes `fence::lock_supervisor` before binding the lane, else exit 70. A
   supervisor forked by the daemon's durable parent is born holding the claim on that fence (`--claim-fd`,
   `--takeover-fd`): it adopts it (`birth_claim::BirthClaim::adopt`, never a second descriptor and never the ordinary
-  contended path) and answers the parent on the takeover channel only once the claim is its own (`take_authority`).
+  contended path) and answers the parent on the takeover channel only once the claim is its own (`take_authority`); an
+  answer that cannot be delivered (the parent is gone) is noted and the claim stays this supervisor's.
 - Exit codes 0, 69 and 70 are an interface (`EXIT_CLEAN`, `EXIT_TERMINAL`, `EXIT_CONTENDED`).
 - Journal recovery runs before the pointer is read (`spawn_recovery`).
 - The main loop never joins a stuck worker (`watchdog_expired`, `abandon_worker`).
