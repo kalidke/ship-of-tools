@@ -13,6 +13,7 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 - `src/wgl.jl`: browser-served artifacts, `BrowserView`, `page_server`, private `wgl_server` listener selection and `wglshow`.
 - `src/frames.jl`: how an eval's output becomes typed frames, and the BrowserView announcements.
 - `test/runtests.jl`: the streaming tests and the stdlib-only guard test.
+- `test/answer_then_next.jl`: an output stream that hands `serve` the next request the moment an answer's done frame is written, the order a real pipe allows, and that request's line (`eval_line`).
 - `test/bonito/`: the `wglshow` page test's own environment (Bonito): the page carries its assets, its port has no asset route, and (Linux) serving it opens exactly one listener (CI's "wglshow pages" job). Actual owned-process listener, loopback HTTP/bind and selection-preservation controls, with an extra-listener rejection control, and the live-port refusal proof.
 
 ## Start here
@@ -21,9 +22,11 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 ## Rules
 - The Rust spawn recipe activates the user directory, including a bare workspace, and places this shim behind it on `JULIA_LOAD_PATH`; user package commands do not edit the installed shim project.
 - `repl.ready` is the first envelope, and every envelope is written under `OUT_LOCK` (`serve`, `write_envelope`).
-- One eval at a time, and a second gets error then done (`handle_eval`).
+- One eval at a time, and a second gets error then done (`handle_eval`). An eval releases that guard once, just before its done frame and res go out (`spawn_eval`), so a request sent the moment an answer arrives is accepted.
 - Text frames precede value or error, and done is last (`stream_eval_frames`).
-- Every request gets a terminal `res` (`emit_fallback_done`).
+- Every request gets a terminal `res`; `spawn_eval` answers each eval once, a failure of its streaming machinery
+  included. The exceptions: an eval that an interrupt reaches before its task first runs, or while it writes its
+  `internal repl error` frame, gets no `res`; lane REPL-INT removes both.
 - A `BrowserView` is announced once per (url, open) (`announce_browserview`).
 - WGLMakie code lives only in ext/.
 - `wglshow` serves from one Bonito server per child (`page_server`), on a port the OS assigns, at a secret path minted with that server (`WGL_SERVER` holds both). Its page is a Bonito session of its own with `NoServer` (`no_referrer_page`), so its scripts and files travel inside the page and the port answers only the page and its websocket; `/` and every other path answer 404. It needs Bonito 5.1 or a later 5.x (`wgl_bonito_supported`). `wgl_server` binds once per REPL lifetime: the first call may pin a port, later default/same-port calls reuse it, and a different live pin raises `ArgumentError` without changing the listener, secret, routes or announcement. Restart the REPL to choose another port. The listener stays owned until the REPL ends; generic BrowserView servers retain their own multi-port behavior.

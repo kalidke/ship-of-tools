@@ -41,10 +41,11 @@ include("frames.jl")
 # each NDJSON envelope atomic.
 const OUT_LOCK = ReentrantLock()
 
-# The currently-running eval task (or `nothing`). `repl.interrupt` schedules an
-# `InterruptException` onto it; the single-eval guard uses it to reject a second
-# concurrent eval (the stdout/stderr redirect is process-global, so overlapping
-# evals would clobber each other's capture).
+# The eval holding the single-eval guard (or `nothing`), from its spawn until it
+# releases the guard just before its answer (`spawn_eval`) or its task ends.
+# `repl.interrupt` schedules an `InterruptException` onto it; the guard uses it to
+# reject a second concurrent eval (the stdout/stderr redirect is process-global,
+# so overlapping evals would clobber each other's capture).
 const CURRENT_EVAL = Ref{Union{Task,Nothing}}(nothing)
 
 """
@@ -129,7 +130,8 @@ function serve(io_in::IO, io_out::IO)
     end
 end
 
-# True while a spawned eval task is still running.
+# True while an eval holds the guard: from its spawn until it releases the guard just
+# before its answer, or until its task ends.
 function eval_in_progress()
     t = CURRENT_EVAL[]
     return t !== nothing && !istaskdone(t)
@@ -164,26 +166,43 @@ function handle_eval(io::IO, id, payload)
         return
     end
 
+    spawn_eval(io, id, eval_id, "repl.eval", Dict(:eval_id => eval_id, :mode => mode)) do emit
+        run_eval_streaming(emit, mode, code)
+    end
+end
+
+"""
+    spawn_eval(work, io, id, eval_id, op, ack)
+
+Run one eval on its own task, so the dispatch loop stays free to receive
+`repl.interrupt`, and answer it once. `work(emit)` runs the user code and streams
+its frames; user errors are frames inside it, and a failure of the streaming
+machinery itself becomes an `internal repl error` frame here. Then the eval
+releases the single-eval guard and sends its done frame and its terminal res,
+whose payload is `ack` with `elapsed_ms`. The release comes first, so a request
+sent the moment the answer arrives is accepted; it is the eval's only release,
+made while it holds the guard, so it never clears a later eval's.
+"""
+function spawn_eval(work, io::IO, id, eval_id, op, ack)
     CURRENT_EVAL[] = @async begin
+        emit = make_emit(io, id, eval_id)
+        start = time()
         try
-            run_eval_streaming(io, id, eval_id, mode, code)
+            work(emit)
         catch e
-            # Safety net: eval errors are handled inside run_eval_streaming;
-            # this only fires if the streaming machinery itself failed. Always
-            # emit a terminal ack so the backend's request doesn't hang.
-            emit_fallback_done(io, id, eval_id, "repl.eval",
-                Dict(:eval_id => eval_id, :mode => mode, :elapsed_ms => 0), e)
-        finally
-            CURRENT_EVAL[] = nothing
+            emit(Dict(:kind => "error",
+                      :message => "internal repl error: $(sprint(showerror, e))",
+                      :stacktrace => Dict[]))
         end
+        CURRENT_EVAL[] = nothing
+        elapsed_ms = round(Int, (time() - start) * 1000)
+        emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => elapsed_ms))
+        write_envelope(io, "res", id, op, merge(ack, Dict(:elapsed_ms => elapsed_ms)))
     end
     return
 end
 
-function run_eval_streaming(io::IO, id, eval_id, mode, code)
-    emit = make_emit(io, id, eval_id)
-    start = time()
-
+function run_eval_streaming(emit, mode, code)
     if mode == "pkg"
         Pkg.REPLMode.PRINTED_REPL_WARNING[] = true
         stream_eval_frames(emit) do
@@ -208,11 +227,6 @@ function run_eval_streaming(io::IO, id, eval_id, mode, code)
             end
         end
     end
-
-    elapsed_ms = round(Int, (time() - start) * 1000)
-    emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => elapsed_ms))
-    write_envelope(io, "res", id, "repl.eval",
-        Dict(:eval_id => eval_id, :mode => mode, :elapsed_ms => elapsed_ms))
 end
 
 """
@@ -290,22 +304,12 @@ function handle_run_file(io::IO, id, payload)
         return
     end
 
-    CURRENT_EVAL[] = @async begin
-        try
-            run_file_streaming(io, id, eval_id, abs_path, fresh, dir, source, current_project_dir)
-        catch e
-            emit_fallback_done(io, id, eval_id, "repl.run_file", ack_payload, e)
-        finally
-            CURRENT_EVAL[] = nothing
-        end
+    spawn_eval(io, id, eval_id, "repl.run_file", ack_payload) do emit
+        run_file_streaming(emit, abs_path, fresh, dir, source, current_project_dir)
     end
-    return
 end
 
-function run_file_streaming(io::IO, id, eval_id, abs_path, fresh, dir, source, current_project_dir)
-    emit = make_emit(io, id, eval_id)
-    start = time()
-
+function run_file_streaming(emit, abs_path, fresh, dir, source, current_project_dir)
     if fresh
         emit(Dict(:kind => "stderr",
             :text => "[repl.run_file fresh=true] " *
@@ -339,14 +343,6 @@ function run_file_streaming(io::IO, id, eval_id, abs_path, fresh, dir, source, c
             Base.include(Main, abs_path)
         end
     end
-
-    elapsed_ms = round(Int, (time() - start) * 1000)
-    emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => elapsed_ms))
-    write_envelope(io, "res", id, "repl.run_file", Dict(
-        :eval_id => eval_id, :path => abs_path, :fresh => fresh,
-        :project_dir => dir, :project_source => string(source),
-        :elapsed_ms => elapsed_ms,
-    ))
 end
 
 """
@@ -391,22 +387,6 @@ function handle_interrupt(io::IO, id, _payload)
     else
         write_envelope(io, "res", id, "repl.interrupt",
             Dict(:interrupted => false, :note => "no eval in progress"))
-    end
-end
-
-# Last-resort terminal ack when the streaming machinery itself throws (not a
-# user-eval error — those are emitted as `error` frames inside
-# `stream_eval_frames`). Guarantees the backend's request never hangs.
-function emit_fallback_done(io::IO, id, eval_id, op, ack_payload, e)
-    try
-        emit = make_emit(io, id, eval_id)
-        emit(Dict(:kind => "error",
-                  :message => "internal repl error: $(sprint(showerror, e))",
-                  :stacktrace => Dict[]))
-        emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => 0))
-        write_envelope(io, "res", id, op, ack_payload)
-    catch
-        # Output stream is gone; nothing more we can do.
     end
 end
 
