@@ -202,17 +202,21 @@ function wgl_warn_if_widgets(fig)
 end
 
 # A Bonito server on `host`:`port` (0: the OS picks). Bonito moves a taken port to the next one with a warning; a
-# pinned port that is taken throws instead. `proxy_url` is this server's own loopback origin, so its asset and
-# websocket addresses use 127.0.0.1 (a remote frontend's page proxy binds 127.0.0.1 only).
+# pinned port that is taken throws instead. `proxy_url` is `WGL_PROXY_URL`, so the page's websocket names no origin.
 function page_server(Bonito, host::String, port::Int)
     server = Base.invokelatest(Bonito.Server, host, port)
     if port != 0 && server.port != port
         try Base.invokelatest(close, server) catch end
         error("wglshow: port $port is taken")
     end
-    server.proxy_url = "http://$host:$(server.port)"
+    server.proxy_url = WGL_PROXY_URL
     return server
 end
+
+# Bonito 5.x's `websocket_url` dials the page's own origin (`window.location`) when `proxy_url` is exactly "./", and
+# the given origin otherwise. A remote frontend opens the page at a port of its own computer, not this server's port
+# (ADR 0035, the window's half), so the page must name no origin of its own.
+const WGL_PROXY_URL = "./"
 
 # The loopback address `wglshow` serves on.
 const WGL_HOST = "127.0.0.1"
@@ -326,7 +330,7 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Union{Bool,A
     # activate!'s set_screen_config! resets per call, so setting it here wins.
     Base.invokelatest(WGL.activate!; resize_to = :parent, use_html_widgets = false)
     Base.invokelatest(Bonito.configure_server!;
-        listen_url = host, listen_port = page.server.port, proxy_url = external)
+        listen_url = host, listen_port = page.server.port, proxy_url = WGL_PROXY_URL)
     # Mount the figure in a viewport-filling container so a resize_to=:parent
     # figure grows with the browser window instead of Bonito's content-sized
     # default (which pinned it to ~1/3 width — ImagingSystemDesign finding, 2026-07-13).

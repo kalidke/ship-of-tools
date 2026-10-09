@@ -210,10 +210,10 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | core's Julia `PreviewPayload` (`mime`, `data`, `extras`: what a plugin's `preview` returns; the kernel sends it as `blob_base64`) | ABI | sidecars | `core/src/ConceptExplorerCore.jl` `PreviewPayload`; `julia/kernel/src/preview.jl` |
 | `video.open`, `docs.open`, `quarto.open` | op | pages | `rust/backend/src/pages/ops.rs` `handle_video_open`, `handle_docs_open`, `handle_quarto_open` |
 | `proxy.connect` and the loopback allowlist | op, state | pages | `rust/backend/src/pages/proxy.rs` `handle_proxy_connect`, `allowed_proxy_ports` |
-| loopback page-URL grammar (`http` or `https`, host `127.0.0.1` or `localhost`, an explicit port) | rule | pages | `rust/protocol/src/page_url.rs` `loopback_port_from_url` |
+| loopback page-URL grammar (`http` or `https`, host `127.0.0.1` or `localhost`, an explicit port) | rule | pages | `rust/protocol/src/page_url.rs` `loopback_port_from_url`, `with_loopback_port` |
 | video suffix and MIME decision in Rust | rule | wire | `rust/protocol/src/video_path.rs` `video_mime` |
 | video, site-prefix, site-pool listeners and grant tables | endpoint, state | pages | `rust/backend/src/pages/video.rs` `Grants`, `register_video`; `rust/backend/src/pages/site/mod.rs` `spawn`, `spawn_pool`, `set_root` |
-| window page-proxy listeners and arming | endpoint | pages | `rust/frontend/src/pages.rs` `serve_browser`, `Arm`; `rust/frontend/src/ui/page_proxy.rs` `ensure_proxy_for_url` |
+| window page-proxy listeners and arming | endpoint | pages | `rust/frontend/src/pages.rs` `serve_browser`, `Arm`, `PageListener`; `rust/frontend/src/ui/page_proxy.rs` `ensure_proxy_for_url`, `bind_proxy_listener` |
 | Pluto's page server, notebook workers and supervisor proxy grant | endpoint, state | sidecars | `julia/pluto/start.jl`; `julia/pluto/session_options.jl` `configure_session!`; `rust/backend/src/sidecars/pluto.rs` `supervisor_task`, `bound_pluto_port` |
 | `wglshow`'s page server, bound once per REPL lifetime | endpoint | sidecars | `julia/repl/src/wgl.jl` `page_server`, `wgl_server`, `no_referrer_page`, `WGL_SERVER` |
 | `lane.connect` | op | rows | `rust/backend/src/rows/ops/lane_bridge.rs` `handle_lane_connect` |

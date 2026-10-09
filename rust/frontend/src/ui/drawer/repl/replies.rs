@@ -214,7 +214,7 @@ impl State {
                 self.window.request_redraw();
                 return;
             }
-            if self.ensure_proxy_for_url(&event_host, &url) {
+            if let Some(url) = self.ensure_proxy_for_url(&event_host, &url) {
                 match crate::browser_open::open_page(&url) {
                     Ok(()) => {
                         self.status = format!("opened interactive figure · {origin}")

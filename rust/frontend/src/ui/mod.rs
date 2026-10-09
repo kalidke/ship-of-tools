@@ -1476,23 +1476,15 @@ struct State {
     /// one host — so `ensure_proxy_for_url` opens the proxy against the SAME
     /// daemon connection that owns the row, whichever host that is.
     /// `proxy_listener_tx`: hands GPU-thread-bound `std` listeners to the
-    /// runtime accept loop, each tagged with the ssh recipe + token to
-    /// spawn a child through for that one port (`None` when no host has a
+    /// runtime accept loop, each tagged with its daemon port and the dial + token to
+    /// reach that daemon through (`None` when no host has a
     /// runtime at all).
-    /// `proxy_ensured`: the ports this frontend has bound, each with the
-    /// `Arm` its listener shares; opening a page on one of them re-arms it,
-    /// since the daemon may have refused the port (`bad_port`) since.
+    /// `proxy_ensured`: per (host, daemon port), the port of the listener this
+    /// frontend bound for it and the `Arm` that listener shares; opening a page
+    /// on it re-arms it, since the daemon may have refused the port (`bad_port`) since.
     proxy_capable_hosts: std::collections::HashSet<HostKey>,
-    proxy_listener_tx: Option<
-        tokio::sync::mpsc::UnboundedSender<(
-            std::net::TcpListener,
-            crate::pages::PageDial,
-            Option<String>,
-            sot_protocol::topology::ssh_bridge::LinkGate,
-            std::sync::Arc<crate::pages::Arm>,
-        )>,
-    >,
-    proxy_ensured: std::collections::HashMap<u16, std::sync::Arc<crate::pages::Arm>>,
+    proxy_listener_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::pages::PageListener>>,
+    proxy_ensured: std::collections::HashMap<(HostKey, u16), (u16, std::sync::Arc<crate::pages::Arm>)>,
     // relaunch.rs (distribution): the relaunch watcher's flag.
     /// Set by the relaunch-watcher thread when the sentinel file
     /// (`%LOCALAPPDATA%\sot\relaunch.request`) appears: `0` = no request,

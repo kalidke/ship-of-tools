@@ -24,7 +24,7 @@ them each belong to one other subsystem, named below. Part of fe-ui; charter: ru
 - `src/lease_grant_tests.rs`: lease grant tests and the shared test-only private listener/handoff fixture; its directory guard is created immediately after directory creation, before any fallible setup or binding, and behavioral tests cover bind-failure and successful-listener-drop cleanup.
 - `src/lease_leave_tests.rs`: lease leave tests and the shared test-only recording leave peer and bounded log/finish helpers.
 - `src/pages.rs`: the window's page proxy, loopback listeners that pipe each browser connection to the owning
-  daemon's `proxy.connect`. The window's page proxy opens a dedicated SSH or generated-relay connection using the owning host's resolved control selection; handoff hello and proxy.connect share one write. (pages; charter rust/backend/src/pages/CLAUDE.md).
+  daemon's `proxy.connect`, each tagged with the daemon port it reaches (`PageListener`). The window's page proxy opens a dedicated SSH or generated-relay connection using the owning host's resolved control selection; handoff hello and proxy.connect share one write. (pages; charter rust/backend/src/pages/CLAUDE.md).
 - `src/selfupdate.rs`: startup self-update staging, `--update-status` and `WindowSpawner`, the window's native async-output policy (distribution; charter scripts/CLAUDE.md).
 - `src/relaunch.rs`: the relaunch sentinel, its watcher thread, and the Windows foreground handover (distribution;
   charter scripts/CLAUDE.md).

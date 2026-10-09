@@ -83,6 +83,8 @@ The FE (remote transport only) gains a tiny `proxy_listen` facility:
 Browser URLs are **unchanged** (`http://127.0.0.1:<port>/…` on both ends) —
 no rewriting, no new user-visible surface.
 
+> *Superseded in 0.6.6 (PAGE-PORT, below): the remote window binds a port of its own and opens the URL with only that port replaced.*
+
 ### 3. Security: loopback-only + port allowlist
 
 `proxy.connect` dials **loopback only** (hardcoded — the frame carries no
@@ -252,3 +254,15 @@ the stronger long-term model.
 ## Update (0.6.6): Pluto grant lifetime
 
 Pluto's proxy port belongs to the supervisor generation that published a loopback READY URL. Child exit and the supplied Signal cancel stdin writes and flushes even when a descendant retains the pipes. Shared closeout releases the grant and fails current, pending and queued requests before checked asynchronous cleanup; a cancelled partial OPEN is never resent. Every exit and cancellation releases that grant; a stale release cannot remove a newer generation's grant. New proxy requests after release refuse a port granted only by that Pluto generation. Already-open byte pipes and the allowlist-lookup-to-connect race are not covered by this lifetime rule.
+
+## Update (0.6.6): the window's listener takes a port of its own (PAGE-PORT)
+
+A daemon's page port is a port on the daemon's computer. The window bound the same number on its own loopback and,
+since v0.5.2, refused the page when that number was taken. A window computer that runs its own daemon holds exactly the
+daemon's preferred page ports (video 1235, docs 1236, the pool), so every docs or video page from another computer
+was refused there. The window now binds 127.0.0.1 at a port the OS assigns, once per host and daemon port
+(`bind_proxy_listener`), and opens the daemon's URL with only the port replaced (`with_loopback_port`); the listener
+carries the daemon's port to `proxy.connect` (`PageListener`). No port number on the window's computer is assumed to
+be the daemon's, so the v0.5.2 refusal has nothing left to refuse, and two hosts that serve one port number no longer
+share one listener. The one page that named its own origin, `wglshow`'s, now gives Bonito the proxy URL `"./"`, so its
+websocket follows the page's origin. A local window still opens the daemon's URL as given.

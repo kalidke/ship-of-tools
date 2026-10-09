@@ -57,37 +57,24 @@ impl State {
         }
     }
 
-    /// Whether the caller may go on to open a browser tab, given the proxy
-    /// `target` `resolve_proxy_target` already decided and — only when that
-    /// target needed a bind attempt — how `TcpListener::bind` for its port
-    /// went. Pulled out of `ensure_proxy_for_url`'s tail so the exact case
-    /// the field report hit — a `Dial` target whose bind came back
-    /// `AddrInUse` — is unit-tested without a live `State`/window, same
-    /// shape as `resolve_proxy_target` itself.
-    ///
-    /// `target` alone answers it when no bind was attempted: `NotNeeded`
-    /// means the URL never routes through a proxy at all, so it's always
-    /// safe; `Refused` means there is no dial to proxy through, so it's
-    /// never safe. For `Dial`, `bind` carries what the port attempt found —
-    /// `Ok` means this frontend is about to serve it; any `Err`, most
-    /// pointedly `AddrInUse`, means something else already answers on that
-    /// port and opening now would show whatever THAT is, looking exactly
-    /// like the page the caller meant to show.
-    pub(in crate::ui) fn proxy_open_permitted(
-        target: &ProxyTarget,
-        bind: Option<&std::io::Result<std::net::TcpListener>>,
-    ) -> bool {
-        match target {
-            ProxyTarget::NotNeeded => true,
-            ProxyTarget::Refused(_) => false,
-            ProxyTarget::Dial(..) => bind.is_some_and(|r| r.is_ok()),
-        }
+    /// This window's listener for the daemon page `url`, its port, and the URL the browser opens to reach it. The listener is
+    /// 127.0.0.1 at a port the OS assigns, never the URL's own port number: that number names a port on the daemon's
+    /// computer, and a window box that runs its own daemon holds the same preferred page ports (PAGE-PORT). The URL
+    /// keeps everything but its port. Non-blocking, as the manager's `from_std` needs.
+    pub(in crate::ui) fn bind_proxy_listener(url: &str) -> std::io::Result<(std::net::TcpListener, u16, String)> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        listener.set_nonblocking(true)?;
+        let local = listener.local_addr()?.port();
+        let opened = sot_protocol::page_url::with_loopback_port(url, local).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a loopback page URL")
+        })?;
+        Ok((listener, local, opened))
     }
 
     /// ADR 0035: before opening a backend-served loopback URL in the browser,
-    /// make sure its port is reachable. On a REMOTE, proxy-capable FE this
-    /// lazily binds a local listener (once per port) that pipes to the daemon
-    /// through the control tunnel; on a local FE, or an older daemon, it's a
+    /// make sure it is reachable. On a REMOTE, proxy-capable FE this
+    /// lazily binds a local listener (once per host and daemon port) that pipes
+    /// to the daemon through the control tunnel; on a local FE, or an older daemon, it's a
     /// no-op and the URL resolves directly / via the launcher's ssh forward.
     /// The bind is synchronous (`std::net::TcpListener`, sub-millisecond) so
     /// the port is listening by the time the caller launches the browser.
@@ -96,96 +83,66 @@ impl State {
     /// `from_host`), so a figure served by a non-default host's daemon is
     /// proxied against THAT daemon, not silently skipped.
     ///
-    /// Returns whether the caller may go on to open `url` in the browser.
-    /// `true` means the page will be served by something this frontend
-    /// itself arranged — no proxy was ever needed, this FE already armed
-    /// the port earlier, or it just bound it now. `false` means the page
-    /// will NOT be served by anything of ours, and every path that returns
-    /// it has already written why to `self.status` — opening the browser
-    /// anyway is worse than not opening: a port held by an unknown local
-    /// listener renders someone else's page looking entirely normal,
-    /// indistinguishable from the one the caller meant to show.
-    /// `#[must_use]` so a new call site can't quietly repeat the bug this
-    /// fixed: opening unconditionally after a refusal this function itself
-    /// computed and discarded.
+    /// Returns the URL the caller opens in the browser, or `None` when it must
+    /// not open one. A proxied page's URL names this frontend's listener
+    /// (`bind_proxy_listener`), so it differs from the daemon's in its port alone;
+    /// any other URL is returned as given. Every path that returns `None` has
+    /// already written why to `self.status`, or logged it.
+    /// `#[must_use]` so a new call site can't open the daemon's URL, whose port
+    /// on this computer is someone else's.
     #[must_use]
-    pub(in crate::ui) fn ensure_proxy_for_url(&mut self, host: &HostKey, url: &str) -> bool {
+    pub(in crate::ui) fn ensure_proxy_for_url(&mut self, host: &HostKey, url: &str) -> Option<String> {
         let target = Self::resolve_proxy_target(
             host,
             &self.proxy_capable_hosts,
             &self.hosts.host_resolved_dial,
             &self.hosts.host_transports,
         );
-        let (dial, token) = match &target {
-            ProxyTarget::NotNeeded => return true,
+        let (dial, token) = match target {
+            ProxyTarget::NotNeeded => return Some(url.to_string()),
             ProxyTarget::Refused(reason) => {
                 tracing::warn!(%host, %reason, "proxy: refusing — no dial to proxy through");
-                self.status = reason.clone();
+                self.status = reason;
                 self.window.request_redraw();
-                return false;
+                return None;
             }
-            ProxyTarget::Dial(dial, token) => (dial.clone(), token.clone()),
+            ProxyTarget::Dial(dial, token) => (dial, token),
         };
         let gate = self.hosts.link_gates.entry(host.clone()).or_default().clone();
-        let Some(tx) = self.proxy_listener_tx.as_ref() else {
-            return false; // past NotNeeded a proxy IS needed, and there's no manager to arm one
+        let tx = self.proxy_listener_tx.as_ref()?; // past NotNeeded a proxy IS needed, and there's no manager to arm one
+        let Some(daemon_port) = sot_protocol::page_url::loopback_port_from_url(url) else {
+            return Some(url.to_string()); // nothing to proxy, so nothing to arm
         };
-        let Some(port) = sot_protocol::page_url::loopback_port_from_url(url) else {
-            return true; // nothing to proxy, so nothing to arm
-        };
-        if let Some(arm) = self.proxy_ensured.get(&port) {
-            arm.reopen();
-            return true; // already bound by this frontend; dial again, the daemon may have refused it since
+        let key = (host.clone(), daemon_port);
+        if let Some((local, arm)) = self.proxy_ensured.get(&key) {
+            arm.reopen(); // dial again: the daemon may have refused the port since
+            return sot_protocol::page_url::with_loopback_port(url, *local);
         }
-        let arm = std::sync::Arc::new(crate::pages::Arm::default());
-        self.proxy_ensured.insert(port, std::sync::Arc::clone(&arm));
-        let bind = std::net::TcpListener::bind(("127.0.0.1", port));
-        let permit_open = Self::proxy_open_permitted(&target, Some(&bind));
-        match bind {
-            Ok(listener) => {
-                if let Err(e) = listener.set_nonblocking(true) {
-                    tracing::warn!(port, error = %e, "proxy: set_nonblocking failed; not arming");
-                    self.proxy_ensured.remove(&port);
-                    return false;
-                }
-                if tx.send((listener, dial.clone(), token, gate, arm)).is_err() {
-                    tracing::warn!(port, "proxy: manager gone; not arming");
-                    self.proxy_ensured.remove(&port);
-                    return false;
-                }
-                tracing::info!(port, %dial, "proxy: bound local listener for backend page");
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                // Something already holds the port. Do NOT cache this: un-mark
-                // so the next open re-probes. If the holder later exits, a
-                // subsequent open binds and proxies instead of being wedged
-                // connection-refused forever. A re-probe is a cheap bind.
-                self.proxy_ensured.remove(&port);
-                // Who the holder is decides whether this is benign.
-                //
-                // When the daemon advertises the proxy, the launchers no longer
-                // forward these ports (ADR 0035's aux `-L` retirement), so
-                // "already bound" is NOT the old legacy-forward case — it is an
-                // UNKNOWN local listener, and opening the browser at it would
-                // render someone else's page looking entirely normal. Occupancy
-                // is not proof of ownership, so say so instead of proceeding
-                // quietly.
-                tracing::warn!(
-                    port,
-                    "proxy: port already bound by an UNKNOWN local listener — not ours. \
-                     Refusing to treat occupancy as ownership; the page may be someone else's."
-                );
-                self.status = format!(
-                    "port {port} is held by another local process — not opening (could be the wrong page)"
-                );
-                self.window.request_redraw();
-            }
+        let (listener, local, opened) = match Self::bind_proxy_listener(url) {
+            Ok(bound) => bound,
             Err(e) => {
-                tracing::warn!(port, error = %e, "proxy: bind failed");
-                self.proxy_ensured.remove(&port);
+                tracing::warn!(daemon_port, error = %e, "proxy: bind failed; not opening");
+                self.status = format!("page proxy: could not bind a local port · {e}");
+                self.window.request_redraw();
+                return None;
             }
+        };
+        let arm = std::sync::Arc::new(crate::pages::Arm::default());
+        let armed = crate::pages::PageListener {
+            listener,
+            daemon_port,
+            dial: dial.clone(),
+            token,
+            gate,
+            arm: std::sync::Arc::clone(&arm),
+        };
+        if tx.send(armed).is_err() {
+            tracing::warn!(daemon_port, "proxy: manager gone; not arming");
+            return None;
         }
-        permit_open
+        self.proxy_ensured.insert(key, (local, arm));
+        tracing::info!(daemon_port, local, %dial, "proxy: bound local listener for backend page");
+        Some(opened)
     }
 }
 
@@ -309,52 +266,19 @@ mod tests {
         );
     }
 
-    /// The field report's exact shape: a `Dial` target (this host IS
-    /// proxy-capable and holds a resolved dial) whose bind attempt comes
-    /// back `AddrInUse` must refuse the open — the port already answers to
-    /// an unknown local listener, and opening would show whatever THAT
-    /// serves, looking exactly like the page the caller meant to show.
+    /// PAGE-PORT: the daemon's page port held on this computer (as a window box's own daemon holds 1235 and 1236) no
+    /// longer stops the page: the window's listener takes a port of its own, and the URL it opens differs from the
+    /// daemon's in that port alone.
     #[test]
-    fn proxy_open_permitted_refuses_an_addr_in_use_dial() {
+    fn a_page_whose_port_is_held_here_opens_at_the_windows_own_port() {
         let holder = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = holder.local_addr().unwrap().port();
-        let bind = std::net::TcpListener::bind(("127.0.0.1", port));
-        assert!(matches!(
-            bind.as_ref().err().map(std::io::Error::kind),
-            Some(std::io::ErrorKind::AddrInUse)
-        ));
-        let target = ProxyTarget::Dial(
-            crate::pages::PageDial::Ssh(
-                sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap(),
-            ),
-            None,
-        );
-        assert!(!State::proxy_open_permitted(&target, Some(&bind)));
-    }
-
-    /// The success half of the same `Dial` case — a bind that actually
-    /// lands permits the open: this frontend is the one about to serve it.
-    #[test]
-    fn proxy_open_permitted_allows_a_successful_dial_bind() {
-        let bind = std::net::TcpListener::bind(("127.0.0.1", 0));
-        assert!(bind.is_ok());
-        let target = ProxyTarget::Dial(
-            crate::pages::PageDial::Ssh(
-                sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap(),
-            ),
-            None,
-        );
-        assert!(State::proxy_open_permitted(&target, Some(&bind)));
-    }
-
-    /// `NotNeeded` and `Refused` never reach a bind attempt at all — the
-    /// decision is `target` alone with no `bind` result to consult.
-    #[test]
-    fn proxy_open_permitted_decides_not_needed_and_refused_without_a_bind() {
-        assert!(State::proxy_open_permitted(&ProxyTarget::NotNeeded, None));
-        assert!(!State::proxy_open_permitted(
-            &ProxyTarget::Refused("no dial".to_string()),
-            None
-        ));
+        let held = holder.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{held}/site/index.html?secret=s#top");
+        let (listener, local, opened) =
+            State::bind_proxy_listener(&url).expect("a held daemon port must not stop the page");
+        assert_eq!(listener.local_addr().unwrap().port(), local);
+        assert_ne!(local, held);
+        assert_eq!(opened, format!("http://127.0.0.1:{local}/site/index.html?secret=s#top"));
+        assert!(State::bind_proxy_listener("http://192.0.2.5:1236/").is_err(), "only a loopback page URL is rewritten");
     }
 }

@@ -90,7 +90,8 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `mod.rs`: `State` and the module declarations (over 800 lines under standing exemption E11).
 - `events.rs`: drain_events routes each IncomingEvt variant to its owner, forwarding result-tree attempt identities unchanged to the navigation reply handler; event-service scheduling remains owned by the app.
 - `connections.rs`: the window's view of its connection set: `send`, `send_to`, `default_host`, `ordered_hosts`.
-- `page_proxy.rs`: arming a local listener so a remote daemon's page opens (`ensure_proxy_for_url`).
+- `page_proxy.rs`: arming a local listener, at a port of the window's own, so a remote daemon's page opens, and the
+  URL that opens it (`ensure_proxy_for_url`, `bind_proxy_listener`).
 - `scan_tests.rs`: the remaining inherited focus-write and ROI-paste source scans; the leave contract is tested behaviorally by the inline begin_leave tests in app/exit.rs.
 - `agent_pane/`: the agent pane (its own page).
 - `app/`: the winit application and exit path (its own page).
