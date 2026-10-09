@@ -69,7 +69,8 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
   than every hang guard in the suite where the case can set it, unless its expiry is what the case tests (the registry
   lock's 10 s is fixed when the library is sourced, so status_floor's race() keeps it around one jq, mv and rmdir). A
   step a case starts in the background is awaited by a signal it gives (`await`; `stopped` for a holder that stops
-  itself), never a fixed sleep, and ends before the case returns. Lower bounds ("waited at least the deadline") stay:
+  itself), never a fixed sleep, and ends before the case returns. A holder gives its ready signal itself (a builtin, such
+  as `: > FILE`), never from a child that inherits the lock. Lower bounds ("waited at least the deadline") stay:
   load only lengthens a wait. The suites that need peer hosts and comm-matrix.sh time real boxes and are outside this
   rule. The repaired wait paths use observed readiness, retry/read-completion or child-result barriers; the two
   endpoint process waits require the recorded child's expected executable image. The intentional comm-deps and
