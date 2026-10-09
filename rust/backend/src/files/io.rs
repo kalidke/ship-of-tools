@@ -202,6 +202,14 @@ fn trash_with_command(
             if waited.is_ok_and(|status| status.is_some_and(|status| status.success())) {
                 return Ok(None);
             }
+            // A trash that did not confirm may still have moved the file before it was stopped: a file already gone is
+            // in the system trash, and there is nothing left for the fallback to move.
+            if std::fs::symlink_metadata(abs)
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            {
+                tracing::warn!("system trash did not confirm, and the file is already gone: it is in the system trash");
+                return Ok(None);
+            }
         }
         Err(error) => tracing::warn!(%error, "system trash spawn failed; taking recoverable fallback"),
     }

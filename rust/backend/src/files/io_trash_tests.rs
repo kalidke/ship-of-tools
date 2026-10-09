@@ -246,6 +246,39 @@ fn nonzero_and_missing_commands_take_recoverable_fallback() {
     }
 }
 
+/// A trash that moves the file and then outlives its budget: the file is in the system trash, not an error and not a
+/// fallback of a file that is no longer there.
+#[cfg(unix)]
+#[test]
+fn a_trash_that_moved_the_file_before_its_bound_is_system_trash() {
+    let fixture = Fixture::new(
+        "#!/bin/sh\nD=${1%/*}\nmkdir -p \"$D/system-trash\"\nmv \"$D/source.txt\" \"$D/system-trash/\"\nwhile [ ! -e \"$2\" ]; do sleep 0.02; done\n",
+    );
+    let log = sot_log::test_log::capture();
+    let result = trash_with_command(
+        signal(),
+        &mut fixture.command(),
+        &fixture.source(),
+        fixture.dir.path(),
+        Duration::from_millis(500),
+        |child| assert!(child.confirmed_reaped()),
+    );
+    assert!(
+        result.expect("a moved file is not an error").is_none(),
+        "a moved file was reported as a fallback"
+    );
+    assert!(!fixture.source().exists());
+    assert_eq!(
+        std::fs::read(fixture.dir.path().join("system-trash/source.txt")).unwrap(),
+        b"recoverable bytes"
+    );
+    assert!(
+        log.text().contains("the file is already gone"),
+        "{}",
+        log.text()
+    );
+}
+
 #[test]
 fn failed_fallback_remains_an_error() {
     let fixture = Fixture::exit(7);

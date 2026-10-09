@@ -20,7 +20,8 @@ Per workspace row (built in `rows/workspace.rs`):
 - `write_file` refuses when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`).
 - Delete is a trash, never an unlink (`trash_file`: `gio trash`, else `<root>/.sot-trash/`). `gio` runs through
   `Signal::spawn_std` with null standard handles (`trash_command`) and a `ContainedStd::wait_within(TRASH_WAIT)` wait
-  budget of 5 s. Only a confirmed zero exit counts as system trash; a timeout, an error or a nonzero exit takes the
+  budget of 5 s. A confirmed zero exit counts as system trash, and so does an unconfirmed one after which the file is
+  already gone (the trash moved it before it was stopped); any other timeout, error or nonzero exit takes the
   recoverable workspace fallback and logs the reason, including a failed termination or reap, and a failed fallback
   remains an error. A timeout's `Ok(None)` means the termination requests succeeded and the direct child was reaped;
   descendant death before the fallback is not promised, and the budget is no ceiling on an OS termination or reap.
