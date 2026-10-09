@@ -511,7 +511,8 @@ fn capacity(root: &Path) -> u64 {
     total
 }
 
-/// Fills `root`'s volume until no byte and no folder fits, and returns the native code of the data write that found it full.
+/// Writes the ballast until a one-byte write fails, then makes folders beside it at `root` until one cannot be made;
+/// returns the native code of the data write that found the volume full.
 pub fn fill(root: &Path) -> i32 {
     assert!(
         capacity(root) <= volume_limit(),
@@ -534,7 +535,7 @@ pub fn fill(root: &Path) -> i32 {
     loop {
         assert!(
             std::time::Instant::now() < deadline,
-            "native fill exceeded its bound"
+            "native fill exceeded its bound at write size {size} after {allocated} bytes"
         );
         assert!(
             allocated <= volume_limit(),
@@ -570,7 +571,7 @@ fn fill_folders(root: &Path, deadline: std::time::Instant) {
     loop {
         assert!(
             std::time::Instant::now() < deadline,
-            "native fill exceeded its bound"
+            "native fill exceeded its bound after {made} folders"
         );
         match std::fs::create_dir(root.join(format!("ballast-{made}"))) {
             Ok(()) => made += 1,
