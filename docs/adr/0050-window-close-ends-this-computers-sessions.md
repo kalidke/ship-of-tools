@@ -295,14 +295,19 @@ outlasts its bound exits 1; `update.apply` against a pointer armed with the real
 updater, and the automatic update through the real stage, prepare and arm, exit 75, end the REPL's tree and leave the
 capsule, and the automatic one waits while a window is attached; a close and an update in either order keep the first one's
 exit; an update the daemon may not take leaves it serving; the updater's discovery and prepare commands end with the
-daemon. The macOS leg runs the native launcher and fence-claim premises and the crate's own lifecycle tests (the group
-recognition). Windows runs the crate's lifecycle tests: the per-child kill-on-close jobs, including that a killed daemon's
+daemon. On macOS the hosted jobs compile the native launcher with and without its phase barriers, run its premises and
+the fence claim's on real children and run the crate's own lifecycle tests (the group recognition), and the window's
+pane-timing job starts plain-shell capsule rows on a test daemon, attaches to them and closes it, the daemon reporting
+every row ended and exiting 0. No agent session has run end to end on a Mac; the only rows a test starts there are the
+pane-timing job's plain shells; the successor and controlled-outcome cases are not built for macOS. Nothing more of the
+daemon's lifetime is tested on a Mac.
+Windows runs the crate's lifecycle tests: the per-child kill-on-close jobs, including that a killed daemon's
 contained tree ends with it, and the suspended interval above observed as the limit; that a capsule outlives a killed
 daemon there is the capsule suite's adoption case, through the product's own capsule spawn.
 
-Not tested, and stated as limits: macOS after an abrupt end of the daemon (by decision, above); on macOS, a
-successor or controlled-outcome case on a real daemon (the native launcher and the fence claim are compiled there and
-their premises run on real children; a capsule row has never run end to end on a Mac); Windows console events
+Not tested, and stated as limits: macOS after an abrupt end of the daemon (by decision, above); on macOS, an agent
+session end to end, and the successor and controlled-outcome cases, which are not built there (they drive the Linux
+guard's launched process and read `/proc`); Windows console events
 (CTRL_C, CTRL_BREAK, CTRL_CLOSE), logoff and shutdown; the interval on Windows between a child's creation and its
 assignment to its job, in which a daemon death leaves one process that never ran (Windows abrupt-death coverage is the
 per-child jobs the daemon holds, which no daemon death outlives; there is no aggregate job, because it would end nothing

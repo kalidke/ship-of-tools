@@ -74,7 +74,13 @@ command -v ffmpeg         # OPTIONAL — video poster frames in previews
   child (C3, no forward). The other roles
   install (no systemd on macOS: the local-role launcher starts `sotd` on
   demand), but agent sessions on a Mac backend are not supported yet, so
-  recommend `--backend`. Intel Macs: from-source only.
+  recommend `--backend`, and tell the human plainly: no agent session has
+  run end to end on a Mac; the only rows a test starts there are the
+  pane-timing job's plain shells; the successor and controlled-outcome cases
+  are not built for macOS (the tests that a session outlives a restart of
+  its daemon, and that the daemon's own ends, a close, an update restart or
+  a stop signal, end its processes as designed). Intel Macs: from-source
+  only.
 
 ## 2. Choose the topology
 
@@ -289,7 +295,10 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
 (the frontend spawns its own ssh child, C3 — no port, no forward; browser
 pages ride that same child through the daemon proxy, ADR 0035) and starts
 the frontend; `--local` and `--be-only` are not supported for agent
-sessions on a Mac backend yet — use `--backend`. If the human prefers manual
+sessions on a Mac backend yet — use `--backend`. No agent session has run
+end to end on a Mac; the only rows a test starts there are the pane-timing
+job's plain shells; the successor and controlled-outcome cases are not built
+for macOS. If the human prefers manual
 steps: download `sot-<ver>-macos-aarch64.tar.gz` + `SHA256SUMS`, verify
 (`shasum -a 256 -c`), `xattr -d com.apple.quarantine ./sot ./sotd`,
 `./sot --dial <name>=ssh:<ssh-alias>` (no systemd on macOS; launchd wiring

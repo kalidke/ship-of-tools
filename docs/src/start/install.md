@@ -266,7 +266,12 @@ check, pinning a version, and rolling back are in
 - **Windows**: frontend only, against a Linux backend.
 - **macOS (Apple Silicon)**: experimental; the tested use is a frontend
   against a Linux backend (`--backend`) — the other roles install but agent
-  sessions on a Mac backend are not supported yet.
+  sessions on a Mac backend are not supported yet. No agent session has run
+  end to end on a Mac; the only rows a test starts there are the pane-timing
+  job's plain shells; the successor and controlled-outcome cases are not
+  built for macOS (the tests that a session outlives a restart of its daemon,
+  and that the daemon's own ends, a close, an update restart or a stop
+  signal, end its processes as designed).
 
 - **linux-x86_64** or **macos-aarch64** release artifacts (a
   **windows-x86_64** zip also ships for the Windows frontend path below).
