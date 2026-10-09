@@ -104,6 +104,23 @@ has "all tools: cold session start reports identity=ok" "$out" "identity=ok"
 out="$(STOP "$PATH")"
 check "all tools: stop hook prints no block" "$out" ""
 
+# The handoff line (FRESH-LEG): a session start run in a project holding dev/output/handoff-<handle>.md names that
+# file after BOOTSTRAP-ARM; without the file it prints no HANDOFF line. The project is its own git root, so the test
+# decides the root sot_handoff_line reads.
+HP="$WORK/handoff-project"
+mkdir -p "$HP/dev/output" && (cd "$HP" && git init -q) && HP="$(cd "$HP" && pwd -P)"
+printf 'state\n' > "$HP/dev/output/handoff-$NAME.md"
+# The handle's self file is bound to its project, so this project gets one of its own.
+HSF="$WORK/handoff-self.txt"
+eval "$(cd "$HP" && "$SCRIPTS_DIR/comm-context.sh" 2>/dev/null | grep -E '^(REPO|PROJECT_ROOT)=' | sed 's/^/H_/')"
+sot_write_self_file "$HSF" "$NAME" "$H_REPO" "$H_PROJECT_ROOT" || bad "handoff: self file for the handoff project"
+out="$(cd "$HP" && SOT_COMM_SELF_FILE="$HSF" START "$PATH")"
+has "handoff: session start names the handoff after BOOTSTRAP-ARM" "$(printf '%s\n' "$out" | sed -n '/^BOOTSTRAP-ARM /,$p')" "HANDOFF: read $HP/dev/output/handoff-$NAME.md before other work"
+rm -f "${HP:?}/dev/output/handoff-$NAME.md"
+out="$(cd "$HP" && SOT_COMM_SELF_FILE="$HSF" START "$PATH")"
+has "handoff: the session start without a handoff still joins" "$out" "BOOTSTRAP-ARM handle=$NAME"
+hasnt "handoff: no handoff file, no HANDOFF line" "$out" "HANDOFF:"
+
 # D1, D2: a count that needs jq never reads 0 without it. With jq off the PATH,
 # a timestamp cursor's offset and the unread count each exit nonzero, print
 # nothing on stdout and name jq on stderr.

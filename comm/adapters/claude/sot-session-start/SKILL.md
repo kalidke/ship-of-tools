@@ -13,6 +13,11 @@ Run once, when a session first starts:
 
 It declares this session's handle to the daemon.
 
+**Then read your handoff.** When the call prints a `HANDOFF:` line, read that
+file before other work: it is this session's recovery file. A row's agent starts
+a fresh conversation every time its leg starts; it resumes an earlier one only
+when asked (a reauth names the transcript by id, or a person resumes it).
+
 **What a session is told at start.** `comm-context.sh` prints your handle. Send
 with `comm-send.sh @handle "text"` and read its one result. When
 `[sot-comm] you have mail` appears, or your end-of-turn check says so, run
@@ -23,9 +28,8 @@ This is ADR 0049's design of record, landing in stages: a send's verdict now is
 `filed -> @h` or `FAILED -> @h: <reason>`, except that until B2 a handle the
 hub's folder does not list can still get `NOT CONFIRMED: sent for @h; …` or
 `filed -> @h (by <filer>, relay)`. The daemon wakes an idle row by typing
-`[sot-comm] you have mail: run comm-poll.sh`, and a resumed session re-runs
-this bootstrap so its handle is declared again — the launcher's `--continue`
-does that. The call above ends with `BOOTSTRAP-ARM … WAKE: daemon`: there is
+`[sot-comm] you have mail: run comm-poll.sh`, and every session a row starts
+runs this bootstrap first, so its handle is declared again. The call above ends with `BOOTSTRAP-ARM … WAKE: daemon`: there is
 nothing to arm, own or re-arm. Mail is read with `comm-poll.sh`.
 
 **Identity**: a pin (`SOT_COMM_NAME`, or a private `SOT_COMM_SELF_FILE`)

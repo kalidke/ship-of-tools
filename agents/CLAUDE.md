@@ -27,8 +27,12 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
 
 ## Promises
 - Every claude launcher passes `--permission-mode auto`, never `--dangerously-skip-permissions`: `claude_recipe` in the
-  daemon's `argv.rs`; `ccb` execs `sotd agent-exec claude`, which carries the same recipe; the sot-setup skill's
-  `resume_command` names the flag.
+  daemon's `argv.rs`; `ccb` execs `sotd agent-exec claude`, which carries the same recipe.
+- No leg resumes by recency: the capsule recipes carry no resume token (`claude_argv`, `codex_argv`), so a leg the
+  daemon starts from the row's recipe starts a fresh conversation. A conversation is resumed only when asked: a
+  reauth's `--resume <id>` (`claude_resume_argv`; that supervisor's later legs and the watchdog's restart of it keep
+  the id), or a person (`ccb --continue`, `ccx --continue`). A fresh session reads its handoff from the `HANDOFF:` line
+  that `sot_handoff_line` (comm library) gives `comm-session-start.sh` and `ccx`.
 - ccx's default handle `<repo>-cx-<host>` is built from the comm library's safe pieces (`sot_sanitize_component`, `_sot_handle_host`), so it is always a name `workspace.create` accepts; a derivation that cannot run stops the launch before the join and before codex (`agents/tests/test-ccx-launch.sh`).
 - Folder trust is recorded only when the OS-resolved root lies under the OS-resolved declared prefix. The key uses the child cwd's spelling; an already accepted entry is not rewritten. Outside, undeclared and failed preparation are observable and the agent still starts. The trust file follows the child's effective `CLAUDE_CONFIG_DIR`: account additions override inheritance; with no config override it is the home-level file. Automated evidence establishes preparation; actual child-config consumption remains a human done-test proof limit. Interactive trust recognition, parent coverage and no-dialog behavior remain outside the headless proof.
 - A launcher the daemon spawns full-paths its binaries: its environment lacks `~/.local/bin`. `ccb` resolves `sotd`

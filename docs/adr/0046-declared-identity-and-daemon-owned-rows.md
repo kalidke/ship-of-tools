@@ -515,3 +515,17 @@ modes. `runtime` stays on the wire as an additive field whose only value is
 `"capsule"`; a `workspace.create` naming any other runtime is refused with
 `bad_runtime`. The `tmux_session` wire field keeps its name: it is the row's
 `sot-be-<slug>` identity, which every client and the state layout address by.
+
+## Update (0.6.6): every leg starts a fresh conversation (FRESH-LEG)
+
+Decision 4's capsule default, `--continue`, is withdrawn (owner ruling, 2026-10-09): it resumed "the most recent
+conversation" by the account's per-folder selector on every restart, a conversation nothing named. A row's agent now
+starts a fresh conversation on every leg; the claude and codex capsule recipes carry no resume token (`claude_argv`,
+`codex_argv` in `rust/backend/src/agents/argv.rs`), and the daemon no longer passes `--first-leg-without --continue`
+(the first-leg strip had nothing left to strip). A conversation is resumed only when asked: decision 6's reauth leg,
+`--resume <id>`, unchanged, or a person (`ccb --continue`, `/resume`). A fresh session reads its handoff from the
+`HANDOFF:` line the comm library's `sot_handoff_line` gives `comm-session-start.sh` and `ccx`. Decision 6's stated
+window changes with it: a leg started from the row's recipe (start, start-on-attach, boot resume) now starts fresh
+rather than resuming whatever the new login last saw; the reauth's own supervisor keeps its `--resume <id>` for its
+later legs and the watchdog's restart of it, which resumes the conversation the reauth named, never by recency. The create-time capture
+limit above still holds: a supervisor already running keeps the argv it was spawned with until it is next spawned.

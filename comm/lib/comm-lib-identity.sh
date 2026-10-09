@@ -612,4 +612,14 @@ claim_derived_handle() {  # MODE ROOT HOST OBJ_JSON
     with_lock _sot_claim_derived_handle "$1" "$2" "$3" "$4"
 }
 
-
+# The session's handoff, its recovery file: `<repo root>/dev/output/handoff-<handle>.md`. Prints one line naming it
+# when it exists, nothing otherwise. The one place the path rule lives: comm-session-start.sh prints the line after
+# BOOTSTRAP-ARM and ccx puts it in its first prompt, so a fresh conversation reads its handoff first.
+sot_handoff_line() {
+    local handle="$1" root file
+    [ -n "$handle" ] || return 0
+    root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    file="$root/dev/output/handoff-$handle.md"
+    [ -f "$file" ] || return 0
+    printf "HANDOFF: read %s before other work; it is this session's recovery file.\n" "$file"
+}

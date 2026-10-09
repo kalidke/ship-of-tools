@@ -13,8 +13,8 @@ or `--endpoint ssh:target[/host]`. Tune boot wait with `SOT_COMM_SPAWN_WAIT`
 ## A durable peer instead of a task agent
 
 `comm-spawn.sh` is for delegation with a report-back-and-despawn lifecycle.
-For a long-lived comm-aware backend session (survives `--continue`,
-re-bootstraps its own receive path every restart), the path depends on who
+For a long-lived comm-aware backend session (survives a restart, which
+starts a fresh conversation that re-bootstraps its own receive path), the path depends on who
 is spawning:
 
 - **You are a Claude session (or headless)**: still use `comm-spawn.sh` in

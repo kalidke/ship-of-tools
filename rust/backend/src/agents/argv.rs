@@ -24,9 +24,11 @@ impl AgentEnv {
 
 /// The agent argv `sot-capsule supervise` spawns as its producer.
 /// `"claude"` and `"codex"` (Unix only) each get their own launcher
-/// recipe, sharing ONE resume token, `--continue`, stripped from a row's
-/// first-ever leg ([`first_leg_without_continue`]). `"none"` is the bare
-/// platform shell; every other kind is refused, never substituted.
+/// recipe. Neither carries a resume token: every leg starts a fresh
+/// conversation, which reads its handoff through `/sot-session-start`, and a
+/// conversation is resumed only when asked (a reauth's `--resume <id>`,
+/// [`claude_resume_argv`], or a person). `"none"` is the bare platform
+/// shell; every other kind is refused, never substituted.
 pub fn agent_argv(agent_kind: &str, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
     agent_argv_in(&AgentEnv::of_process(), agent_kind, memory_cwd)
 }
@@ -73,11 +75,11 @@ fn caller_brought_settings(extra: &[String]) -> bool {
 }
 
 /// The one shared builder for claude's launch flags (ADR 0046 decision
-/// 4): a capsule spawn ([`claude_argv`], always `resume: true`, no extra
-/// flags — a supervised row always resumes its root's own conversation)
-/// and `sotd agent-exec` (`main.rs`, `resume: false`, the caller's own
+/// 4): a capsule spawn ([`claude_argv`], no extra flags: every leg starts
+/// a fresh conversation), a reauth leg ([`claude_resume_argv`],
+/// `--resume <id>`) and `sotd agent-exec` (`main.rs`, the caller's own
 /// flags — `--continue` is `agent-exec`'s caller's choice, never added
-/// for it) build the SAME shape from here, so the two can never drift
+/// for it) build the SAME shape from here, so they can never drift
 /// the way two independent copies of this argv already had (`ccb`
 /// carried its own literal copy before this decision). Returns argv with
 /// a LITERAL `"claude"` in position 0 — never resolved here — because
@@ -88,16 +90,13 @@ fn caller_brought_settings(extra: &[String]) -> bool {
 /// absolute resolution stays out of scope (`claude_argv`'s Windows arm,
 /// below, keeps the literal name); `"codex"` has its own, much smaller,
 /// recipe ([`codex_argv`]) rather than sharing this one — its flag shape
-/// (`--continue`, no skill argv) is unrelated to claude's.
-fn claude_recipe(resume: bool, extra: &[String], memory_cwd: Option<&Path>) -> Vec<String> {
+/// (no skill argv) is unrelated to claude's.
+fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>) -> Vec<String> {
     let mut argv = vec![
         "claude".to_string(),
         "--permission-mode".to_string(),
         "auto".to_string(),
     ];
-    if resume {
-        argv.push("--continue".to_string());
-    }
     // See [`caller_brought_settings`] for why a caller's own wins.
     if !caller_brought_settings(extra) {
         // `account_home`, never `HOME`: this module's own resolver is what
@@ -134,36 +133,35 @@ fn claude_recipe(resume: bool, extra: &[String], memory_cwd: Option<&Path>) -> V
 /// out of scope here, not a gap this decision closes.
 #[cfg(windows)]
 fn claude_argv(_env: &AgentEnv, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
-    Ok(claude_recipe(true, &[], memory_cwd))
+    Ok(claude_recipe(&[], memory_cwd))
 }
 /// macOS lane: widened from `target_os = "linux"` to `unix`, a DELETION
 /// of the third arm that used to refuse here ("claude has no capsule
 /// launcher on this host"). That refusal outlived its reason.
 /// [`resolve_claude`] — the whole resolution rule — is already
 /// `cfg(unix)` and already exercised on macOS by [`agent_exec_argv`],
-/// which is how `ccb` itself launches there; a launcher recipe that
-/// differs from `agent-exec`'s only by `--continue` cannot need a
-/// narrower platform gate than the resolver it calls.
+/// which is how `ccb` itself launches there; a launcher recipe with
+/// `agent-exec`'s own flag shape cannot need a narrower platform gate
+/// than the resolver it calls.
 #[cfg(unix)]
 fn claude_argv(env: &AgentEnv, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
     let claude = resolve_claude(env.path.as_deref(), env.home.as_deref())?;
-    let mut argv = claude_recipe(true, &[], memory_cwd);
+    let mut argv = claude_recipe(&[], memory_cwd);
     argv[0] = claude;
     Ok(argv)
 }
 
 /// The reauth leg's producer argv (ADR 0046 decision 6): the SAME
-/// [`claude_recipe`] every other claude leg is built from, with
-/// `--continue` OFF and an explicit `--resume <id>` in its place. The two
-/// are contradictory, and `--continue` cannot be used here at all: it
-/// resolves "the most recent conversation" from `.claude.json`, which is
-/// per-account and never shared (`accounts.rs`'s `SHARED_ENTRIES`), so
-/// the account being switched TO either has no such selector or has one
-/// naming a different conversation. The transcript itself is one file
-/// both accounts read (`projects` IS shared), which is why an id is
-/// enough and nothing is copied. The id is never persisted on the row:
-/// once this leg has taken a turn, the new account's own selector names
-/// this conversation and an ordinary [`claude_argv`] restart lands on it.
+/// [`claude_recipe`] every other claude leg is built from, with an
+/// explicit `--resume <id>`: the one resume a row's launch ever makes.
+/// `--continue` could not serve here: it resolves "the most recent
+/// conversation" from `.claude.json`, which is per-account and never
+/// shared (`accounts.rs`'s `SHARED_ENTRIES`), so the account being
+/// switched TO either has no such selector or has one naming a different
+/// conversation. The transcript itself is one file both accounts read
+/// (`projects` IS shared), which is why an id is enough and nothing is
+/// copied. The id is never persisted on the row: a later ordinary
+/// [`claude_argv`] leg starts a fresh conversation, as every restart does.
 pub fn claude_resume_argv(
     session_id: &str,
     memory_cwd: Option<&Path>,
@@ -179,7 +177,6 @@ fn claude_resume_argv_in(
 ) -> Result<Vec<String>, String> {
     let claude = resolve_claude(env.path.as_deref(), env.home.as_deref())?;
     let mut argv = claude_recipe(
-        false,
         &["--resume".to_string(), session_id.to_string()],
         memory_cwd,
     );
@@ -195,15 +192,15 @@ fn claude_resume_argv_in(
     memory_cwd: Option<&Path>,
 ) -> Result<Vec<String>, String> {
     Ok(claude_recipe(
-        false,
         &["--resume".to_string(), session_id.to_string()],
         memory_cwd,
     ))
 }
 
-/// `"codex"`'s capsule recipe: `ccx --capsule --continue`. `--capsule`
-/// keys `ccx`'s capsule behavior directly (never an inherited env var)
-/// and is never stripped; `--continue` is the shared first-leg token.
+/// `"codex"`'s capsule recipe: `ccx --capsule`, which starts a fresh
+/// conversation (`ccx` scans for one to resume only with `--continue`).
+/// `--capsule` keys `ccx`'s capsule behavior directly (never an inherited
+/// env var).
 /// macOS lane: `unix`, not `target_os = "linux"` — `ccx` is the same
 /// shell script installed to the same `~/.local/bin` on every Unix, so
 /// the Linux gate here was naming the install layout of one host, not a
@@ -212,7 +209,7 @@ fn claude_resume_argv_in(
 #[cfg(unix)]
 fn codex_argv(env: &AgentEnv) -> Result<Vec<String>, String> {
     let ccx = resolve_ccx(env.path.as_deref(), env.home.as_deref())?;
-    Ok(vec![ccx, "--capsule".to_string(), "--continue".to_string()])
+    Ok(vec![ccx, "--capsule".to_string()])
 }
 
 /// Windows has no `ccx`, so a `codex` row's spawn fails with this reason
@@ -225,9 +222,8 @@ fn codex_argv(_env: &AgentEnv) -> Result<Vec<String>, String> {
 /// Unix-only argv for `sotd agent-exec <kind> [flags…]` (ADR 0046
 /// decision 4) — the argv `main.rs` execs THIS process into directly,
 /// never spawned as a child. Shares [`claude_recipe`] with the capsule
-/// spawn path above (`resume: false` — `agent-exec` never adds
-/// `--continue` itself; that stays the daemon's own default for a
-/// capsule row, in [`claude_argv`]) but calls [`resolve_claude`]
+/// spawn path above (`agent-exec` never adds `--continue` itself; a
+/// person's `ccb --continue` passes it in `extra`) but calls [`resolve_claude`]
 /// DIRECTLY for `"claude"`, never through [`agent_argv`]/[`claude_argv`]:
 /// those exist to gate the CAPSULE launcher, which is a narrower,
 /// separate question (ADR 0043 decision 22: no validated capsule
@@ -258,7 +254,7 @@ fn agent_exec_argv_in(env: &AgentEnv, kind: &str, extra: &[String]) -> Result<Ve
             // child), so this process's own cwd is already the directory
             // the session will run in — `ccb`'s caller chose it.
             let cwd = std::env::current_dir().ok();
-            let mut recipe = claude_recipe(false, extra, cwd.as_deref());
+            let mut recipe = claude_recipe(extra, cwd.as_deref());
             recipe[0] = claude;
             Ok(recipe)
         }
@@ -391,16 +387,31 @@ mod tests {
     #[test]
     fn claude_recipe_places_extra_flags_before_the_skill() {
         assert_eq!(
-            claude_recipe(false, &["--x".to_string()], None),
+            claude_recipe(&["--x".to_string()], None),
             vec!["claude", "--permission-mode", "auto", "--x", "/sot-session-start"]
         );
     }
 
     #[test]
-    fn claude_recipe_resume_keeps_continue_before_the_skill() {
+    #[cfg(unix)]
+    fn agent_argv_claude_starts_a_fresh_conversation() {
+        // A capsule leg resumes nothing by recency: no `--continue` on any leg. A conversation is resumed only when
+        // asked: a reauth's `--resume <id>` (below) or a person.
+        let _guard = self_file_env_guarded();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let claude = dir.path().join("claude");
+        sot_log::test_exec::write_executable(&claude, b"#!/bin/sh\n");
+        // `claude_recipe` reads HOME (the account home); the guard restores it.
+        std::env::remove_var("HOME");
+        let env = AgentEnv { path: Some(dir.path().into()), home: None, shell: None };
         assert_eq!(
-            claude_recipe(true, &[], None),
-            vec!["claude", "--permission-mode", "auto", "--continue", "/sot-session-start"]
+            agent_argv_in(&env, "claude", None).unwrap(),
+            vec![
+                claude.to_string_lossy().into_owned(),
+                "--permission-mode".to_string(),
+                "auto".to_string(),
+                "/sot-session-start".to_string(),
+            ]
         );
     }
 
@@ -408,9 +419,8 @@ mod tests {
     #[cfg(unix)]
     fn agent_exec_argv_claude_never_adds_continue() {
         // ADR 0046 decision 4's own invariant: `agent-exec` never adds
-        // `--continue` itself (that stays the daemon's own default for a
-        // capsule spawn, in `claude_argv`) — it builds the SAME recipe
-        // shape with `resume: false` and the caller's own flags. Widened
+        // `--continue` itself — it builds the SAME recipe shape with the
+        // caller's own flags. Widened
         // from Linux-only to any Unix (CI fix): this is the exact case
         // that broke on macOS when `agent_exec_argv` routed resolution
         // through the capsule launcher's own, narrower refusal there.
@@ -470,12 +480,12 @@ mod tests {
         // Renamed (ADR 0046 decision 4): `ccb` no longer bakes these
         // flags in itself -- it execs through `sotd agent-exec claude
         // "$@"`, which shares this SAME `claude_recipe` builder. This
-        // still pins the Windows capsule-spawn shape (`claude_recipe(true,
-        // &[])` verbatim, no absolute-path resolution -- Windows relies
+        // still pins the Windows capsule-spawn shape (`claude_recipe(&[],
+        // None)` verbatim, no absolute-path resolution -- Windows relies
         // on the daemon's own `PATH`, `claude_argv`'s own doc).
         assert_eq!(
             agent_argv("claude", None).unwrap(),
-            vec!["claude", "--permission-mode", "auto", "--continue", "/sot-session-start"]
+            vec!["claude", "--permission-mode", "auto", "/sot-session-start"]
         );
     }
 
@@ -538,9 +548,8 @@ mod tests {
 
         std::env::set_var("HOME", &root);
         std::env::remove_var("CLAUDE_CONFIG_DIR");
-        let ours = claude_recipe(true, &[], Some(&proj));
+        let ours = claude_recipe(&[], Some(&proj));
         let caller = claude_recipe(
-            false,
             &["--settings".to_string(), "{\"a\":1}".to_string()],
             Some(&proj),
         );
@@ -582,7 +591,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn agent_argv_codex_resolves_ccx_and_ends_in_capsule_continue() {
+    fn agent_argv_codex_resolves_ccx_and_starts_fresh() {
         let dir = tempfile_test_dir();
         let ccx = dir.path().join("ccx");
         write_stub_ccx(&ccx);
@@ -590,7 +599,7 @@ mod tests {
         let result = codex_over(Some(dir.path()), None);
         assert_eq!(
             result.unwrap(),
-            vec![ccx.to_string_lossy().into_owned(), "--capsule".to_string(), "--continue".to_string()]
+            vec![ccx.to_string_lossy().into_owned(), "--capsule".to_string()]
         );
     }
 
@@ -721,7 +730,7 @@ mod tests {
     // `resolve_claude`'s own, already tested above.
     #[test]
     fn a_reauth_leg_resumes_by_id_and_never_continues() {
-        let argv = claude_recipe(false, &["--resume".to_string(), "abc-123".to_string()], None);
+        let argv = claude_recipe(&["--resume".to_string(), "abc-123".to_string()], None);
         assert!(!argv.iter().any(|a| a == "--continue"), "{argv:?}");
         let at = argv.iter().position(|a| a == "--resume").expect("--resume present");
         assert_eq!(argv[at + 1], "abc-123");

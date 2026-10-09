@@ -280,12 +280,11 @@ frontend = true
 ```
 Reachability (User, ProxyJump, HostName) stays in `~/.ssh/config`, never here.
 
-**settings.toml** (optional but recommended) — `$REPO/.sot/settings.toml` or
-`~/.config/sot/settings.toml`. Most important key for the dogfood loop is the
-ADR-0017 resume command:
+**settings.toml** (optional) — `$REPO/.sot/settings.toml` or
+`~/.config/sot/settings.toml`. The Terminal drawer runs a plain shell; the
+retired `[terminal] resume_command` (ADR 0041) is never written:
 ```toml
 [terminal]
-resume_command = "claude --permission-mode auto --continue /sot-session-start"
 # shell = "..."   # optional override; default auto-resolves (pwsh→powershell→cmd / $SHELL→bash→sh)
 
 [layout]

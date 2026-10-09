@@ -150,8 +150,8 @@ pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
     // `plan.argv` carries `--resume <id>` from `claude_resume_argv`, built
     // for this one call, and that id is never persisted on the row. An
     // attach retires this supervisor and respawns from the ordinary
-    // `agent_argv`, whose `--continue` selects by recency rather than by
-    // id. `--resume` names the conversation outright, so the reset belongs
+    // `agent_argv`, which starts a fresh conversation (it resumes nothing
+    // by itself). `--resume` names the conversation outright, so the reset belongs
     // to the one call that still holds the id.
     //
     // But NOT at the instant the spawn returns. `start_supervisor`'s own
@@ -190,7 +190,7 @@ pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
                 workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
                 phase = settled, error = %error,
                 "workspace.reauth: the reset minted no voyage, so this row has no leg; \
-                 opening the row retires this authority and revives it on the conversation `--continue` selects"
+                 opening the row retires this authority and revives it on a fresh conversation"
             );
             return;
         }
@@ -235,7 +235,7 @@ enum MintRefusal {
 ///      and whose stop is best effort — which is why only this path owes
 ///      the identity check [`supervisor_identity`] describes.
 ///   2. What the replacement spends. Attach resolves the row's ordinary
-///      agent argv, whose `--continue` selects by recency; a reauth spends
+///      agent argv, which starts a fresh conversation; a reauth spends
 ///      the plan's `--resume <id>`, which selects by name and is never
 ///      persisted on the row, so this is the only call that can mint it.
 ///   3. How the wait is performed. Attach returns a wait step that RELEASES

@@ -136,12 +136,53 @@ case_capsule_flag_with_fresh_flag_stays_fresh_even_with_continue() {
     started_fresh
 }
 
+# A comm home holding the real comm library, so ccx can give its first prompt the handoff line (sot_handoff_line).
+LIB_COMM_HOME="$WORK/lib-comm-home"
+mkdir -p "$LIB_COMM_HOME/bin"
+cp "$SCRIPT_DIR/../../comm/lib/"comm-lib*.sh "$LIB_COMM_HOME/bin/"
+
+run_ccx_with_lib() {  # extra ccx args...
+    (
+        cd "$PROJECT_DIR" || exit 1
+        ARGV_LOG_PATH="$ARGV_LOG" \
+        HOME="$WORK/empty-home" \
+        PATH="$STUB_DIR:$PATH" \
+        SOT_COMM_HOME="$LIB_COMM_HOME" \
+        SOT_COMM_NAME="ccx-handoff-test" \
+        CODEX_HOME="$CODEX_HOME_DIR" \
+        "$CCX" "$@" >/dev/null 2>"$WORK/stderr.log"
+    )
+}
+
+case_capsule_prompt_names_the_handoff_when_one_exists() {
+    rm -f "${ARGV_LOG:?}"
+    # The project is its own git root, so the test decides the root sot_handoff_line reads.
+    mkdir -p "$PROJECT_DIR/dev/output"
+    [ -d "$PROJECT_DIR/.git" ] || (cd "$PROJECT_DIR" && git init -q)
+    printf 'state\n' > "$PROJECT_DIR/dev/output/handoff-ccx-handoff-test.md"
+    run_ccx_with_lib --capsule
+    local named=1 root
+    root="$(cd "$PROJECT_DIR" && pwd -P)"
+    grep -qF "HANDOFF: read $root/dev/output/handoff-ccx-handoff-test.md before other work" "$ARGV_LOG" && named=0
+    rm -f "$PROJECT_DIR/dev/output/handoff-ccx-handoff-test.md"
+    return "$named"
+}
+
+case_capsule_prompt_names_no_handoff_when_none_exists() {
+    rm -f "${ARGV_LOG:?}"
+    [ -d "$PROJECT_DIR/.git" ] || (cd "$PROJECT_DIR" && git init -q)
+    run_ccx_with_lib --capsule
+    [ -s "$ARGV_LOG" ] && ! grep -q "HANDOFF:" "$ARGV_LOG"
+}
+
 check "a row env (SOT_WORKSPACE_ID set, no --capsule) resumes by default" case_row_env_resumes_by_default
 check "a hand-run ccx with no SOT_* env at all keeps resuming by default" case_hand_run_ccx_with_no_env_resumes_by_default
 check "a hand-run ccx inside a capsule row's env, without --capsule, keeps its resume default" case_hand_run_ccx_inside_a_capsule_row_keeps_resume_default
 check "--capsule: a bare ccx starts fresh" case_capsule_flag_bare_ccx_starts_fresh
 check "--capsule: --continue triggers the resume scan" case_capsule_flag_with_continue_resumes
 check "--capsule: --fresh wins even alongside --continue" case_capsule_flag_with_fresh_flag_stays_fresh_even_with_continue
+check "--capsule: the first prompt names the session's handoff when one exists" case_capsule_prompt_names_the_handoff_when_one_exists
+check "--capsule: the first prompt names no handoff when none exists" case_capsule_prompt_names_no_handoff_when_none_exists
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"
