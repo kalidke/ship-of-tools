@@ -378,7 +378,19 @@ pub fn is_closed(state_dir: &Path, operation_id: &str) -> Result<bool> {
     Ok(read_json::<ClosedMarker>(&closed_path(state_dir, operation_id))?.is_some())
 }
 
+/// `SOT_TEST_JOURNAL_PUBLISH_DELAY_MS` delays every journal publish, read once per process; only tests set it, to
+/// give an authority the storage latency a busy disk gives it.
+fn test_publish_delay() -> Option<std::time::Duration> {
+    static DELAY_MS: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    DELAY_MS
+        .get_or_init(|| std::env::var("SOT_TEST_JOURNAL_PUBLISH_DELAY_MS").ok().and_then(|s| s.parse().ok()))
+        .map(std::time::Duration::from_millis)
+}
+
 fn publish_json<T: Serialize>(dir: &Path, target: &Path, value: &T) -> Result<()> {
+    if let Some(delay) = test_publish_delay() {
+        std::thread::sleep(delay);
+    }
     let envelope = EnvelopeRef { schema_version: SCHEMA_VERSION, record: value };
     let bytes = serde_json::to_vec(&envelope)?;
     let mut nonce_bytes = [0u8; 8];

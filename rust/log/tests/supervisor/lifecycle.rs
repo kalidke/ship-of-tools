@@ -444,3 +444,100 @@ fn a_request_after_an_idle_close_reconnects_once_and_is_answered() {
     let _ = command(&conn, "idle-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
+
+/// ADR 0041: a client timeout abandons the connection, never the operation. Every journal publish of this
+/// authority is held 3 s (`SOT_TEST_JOURNAL_PUBLISH_DELAY_MS`), so its Stop admission (two publishes) outlasts the
+/// 5 s reply budget; `supervisor_client::stop` still reports the stop, because the authority's exit is its outcome.
+#[test]
+fn a_stop_answered_after_the_reply_budget_still_stops() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let mut guard =
+        spawn_supervisor_with_env(&state_dir, "--start", SHELL, &[("SOT_TEST_JOURNAL_PUBLISH_DELAY_MS", "3000")]);
+    let conn = wait_for_lane(&state_dir_hash(&state_dir), Duration::from_secs(30));
+    wait_for_ready(&conn, Duration::from_secs(90));
+    drop(conn);
+
+    let started = Instant::now();
+    sot_log::attach_client::supervisor_client::stop(&state_dir).expect("a Stop answered late still stops");
+    assert!(
+        started.elapsed() >= Duration::from_secs(5),
+        "the Stop's admission outlasted the 5 s reply budget, so the late-reply path ran"
+    );
+    assert!(guard.child_mut().try_wait().unwrap().is_some(), "the authority has exited");
+}
+
+/// The same rule for a Reset: with every journal publish held 8 s, the Reset's admission outlasts the reply budget,
+/// and outlasts the first reconnect's 2 s hello budget too, so the poll also retries a reconnect to a stalled
+/// authority; `supervisor_client::reset` follows its operation on a fresh connection to the new voyage.
+#[test]
+fn a_reset_answered_after_the_reply_budget_completes() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let _guard =
+        spawn_supervisor_with_env(&state_dir, "--start", SHELL, &[("SOT_TEST_JOURNAL_PUBLISH_DELAY_MS", "8000")]);
+    let conn = wait_for_lane(&state_dir_hash(&state_dir), Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    drop(conn);
+
+    let ended = sot_log::attach_client::supervisor_client::end_run(&state_dir, &voyage, "test end").expect("end_run");
+    assert!(
+        matches!(ended, sot_log::attach_client::supervisor_client::EndRunOutcome::RecordVerified),
+        "the run ended: {ended:?}"
+    );
+    let started = Instant::now();
+    let new_voyage =
+        sot_log::attach_client::supervisor_client::reset(&state_dir).expect("a Reset answered late still completes");
+    assert!(
+        started.elapsed() >= Duration::from_secs(5),
+        "the Reset's admission outlasted the 5 s reply budget, so the late-reply path ran"
+    );
+    assert_ne!(new_voyage, voyage, "the reset minted a new voyage");
+}
+
+/// A Reset whose authority dies before answering ends at once with the no-listener error, well inside
+/// `RESET_BUDGET`, instead of polling a lane nobody serves. Linux only: the test ends the supervisor it spawned with
+/// SIGKILL while the slow admission (6 s per journal publish) holds the reply.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_reset_whose_supervisor_dies_ends_at_once() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let guard =
+        spawn_supervisor_with_env(&state_dir, "--start", SHELL, &[("SOT_TEST_JOURNAL_PUBLISH_DELAY_MS", "6000")]);
+    let conn = wait_for_lane(&state_dir_hash(&state_dir), Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    drop(conn);
+    let ended = sot_log::attach_client::supervisor_client::end_run(&state_dir, &voyage, "test end").expect("end_run");
+    assert!(
+        matches!(ended, sot_log::attach_client::supervisor_client::EndRunOutcome::RecordVerified),
+        "the run ended: {ended:?}"
+    );
+
+    let own = guard.id() as libc::pid_t;
+    let killer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(5500));
+        // SAFETY: SIGKILL to the supervisor this test spawned (the guard's own child), a plain syscall.
+        unsafe { libc::kill(own, libc::SIGKILL) };
+    });
+    let started = Instant::now();
+    let error = sot_log::attach_client::supervisor_client::reset(&state_dir)
+        .expect_err("a reset whose authority died cannot complete");
+    killer.join().unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "the reset ended soon after its authority died, not at its budget: {:?}",
+        started.elapsed()
+    );
+    assert!(error.to_string().contains("went away"), "the no-listener error: {error}");
+    drop(guard);
+}
