@@ -1,10 +1,11 @@
 # rust/backend/src/lifecycle: lifecycle (charter)
 
 ## Idea
-Nothing outlives its owner unless designed to: every process the daemon starts, but those ADR 0050 names as outside,
-runs in its own containment, which its owner's release or the process-wide signal kills with everything it started,
-every exit is bounded on the OS clock, and the last window on a computer decides, through its lease, whether that
-computer's sessions end (ADR 0050).
+Nothing outlives its owner unless designed to or stated as a limit: every process the daemon starts, but those ADR 0050
+names as outside, runs in its own containment (a process group on Unix, a job on Windows), which its owner's release or
+the process-wide signal kills with everything still in it (a process that left its Unix group outlives that kill and,
+on Linux, ends at the daemon's end: ADR 0050, residual 7), every exit is bounded on the OS clock, and the last window
+on a computer decides, through its lease, whether that computer's sessions end (ADR 0050).
 
 ## Owns
 - The window leases and `<state>/held.json`: `Leases`, `read_record`, `write_or_delete` (`crate::lifecycle::lease`, the file
@@ -65,8 +66,10 @@ computer's sessions end (ADR 0050).
   guard, so it never descends from it.
 - `fire()` is permanent: the signal is never reset for the life of the process (`Signal::fire`).
 - `Contained::wait_until_exited` observes its owned direct child's exit without releasing containment or reaping it. Cancelling that wait retains the child's identity and owner; checked wait/kill still request tree termination before direct-child reap.
-- A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything it started when its owner
-  kills, waits for or drops its `Contained` or `ContainedStd`, or the signal fires; its leader is reaped only after
+- A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything still in its process group
+  (Unix) or job (Windows) when its owner kills, waits for or drops its `Contained` or `ContainedStd`, or the signal
+  fires; a process that left its Unix group is not killed then (on Linux the guard ends it at the daemon's end; ADR
+  0050, residual 7); its leader is reaped only after
   that kill, and neither type hands its caller the child to reap (`Contained::wait`, `ContainedStd::wait`;
   `exited_pid` uses `WNOWAIT`). Creation through adoption and registration holds the registry mutex that `fire` takes
   (`Signal::reserve`, `Provisional`, `Held::fill`): a start is refused before anything is created once the signal has
