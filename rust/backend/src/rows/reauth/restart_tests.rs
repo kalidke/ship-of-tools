@@ -131,8 +131,8 @@ async fn a_revival_is_the_identity_then_end_run_then_spawn_then_the_settle_then_
         "a revival that completed never rolls the record back"
     );
     // The one call that still holds the conversation id spends it: the
-    // id is never persisted on the row, so a later attach's `--continue`
-    // would select by recency instead.
+    // id is never persisted on the row, so a later attach starts a fresh
+    // conversation instead.
     let argv = fake.spawned_argv();
     assert!(argv.iter().any(|a| a == "--resume"), "{argv:?}");
     assert!(argv.iter().any(|a| *a == sid(7)), "{argv:?}");

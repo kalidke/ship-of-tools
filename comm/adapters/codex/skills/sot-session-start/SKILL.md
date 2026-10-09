@@ -23,10 +23,10 @@ fi
 ~/.sot-comm/bin/comm-session-start.sh
 ```
 
-Then, if the repo holds `dev/output/handoff-<handle>.md` (your handle as
-`comm-context.sh` prints it), read it before other work: it is this session's
-recovery file. A row's agent starts a fresh conversation every time its leg
-starts and resumes an earlier one only when asked.
+When the call prints a `HANDOFF:` line, read that file before other work: it is
+this session's recovery file (`ccx` puts the same line in a row's first prompt).
+A row's agent starts a fresh conversation every time its leg starts and resumes
+an earlier one only when asked.
 
 It declares this session's handle to the daemon. `identity=FAIL` with a
 `REFUSED:` line means the identity slot already names a different project —
@@ -44,9 +44,9 @@ This is ADR 0049's design of record, landing in stages: a send's verdict now is
 hub's folder does not list can still get `NOT CONFIRMED: sent for @h; …` or
 `filed -> @h (by <filer>, relay)`. The daemon wakes an idle Claude row by typing
 `[sot-comm] you have mail: run comm-poll.sh`; a Codex row is one the daemon
-cannot type into, so its end-of-turn check reads the mail. A resumed session
-re-runs this bootstrap so its handle is declared again — the launcher's
-`--continue` does that. The call above ends with `BOOTSTRAP-ARM … WAKE: daemon`:
+cannot type into, so its end-of-turn check reads the mail. Every session a row
+starts runs this bootstrap first (`ccx` does it before Codex starts), so its
+handle is declared again. The call above ends with `BOOTSTRAP-ARM … WAKE: daemon`:
 there is nothing to arm, own or re-arm. Mail is read with `comm-poll.sh`.
 
 Work-state (the nav row colour) is yours to stamp: `comm-status.sh waiting

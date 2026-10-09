@@ -121,6 +121,7 @@ IDENTITY="ok"
 [ "$IDENTITY_MISMATCH" = 1 ] && IDENTITY="MISMATCH"
 
 echo "BOOTSTRAP-ARM handle=$HANDLE identity=$IDENTITY WAKE: daemon"
+sot_handoff_line "$HANDLE"
 _workstate_rule
 _capability_lines
 # A good join (this point is only ever reached after printing BOOTSTRAP-ARM
