@@ -203,7 +203,7 @@ fn end_run_racing_a_self_exiting_leg_leaves_no_zombie() {
 
     let mut guard = spawn_supervisor(&state_dir, "--start", SELF_EXITING_SOON);
 
-    let mut conn = wait_for_lane(&h, Duration::from_secs(30));
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
     // Immediately -- racing the leg's own ~1s self-exit against the
@@ -218,7 +218,8 @@ fn end_run_racing_a_self_exiting_leg_leaves_no_zombie() {
         operation_id: op_id.to_string(),
         op: SupervisorOp::EndRun { reason: "race test".into(), voyage },
     };
-    let immediate_reply = match request_for_test(&conn, &request, Instant::now() + Duration::from_secs(30)) {
+    let immediate = request_for_test(&conn.client(), &request, Instant::now() + Duration::from_secs(30));
+    let immediate_reply = match immediate {
         Ok(SupervisorReply::Operation(state)) => Some(state),
         Ok(other) => panic!("expected Operation, got {other:?}"),
         Err(e) => {
@@ -235,20 +236,11 @@ fn end_run_racing_a_self_exiting_leg_leaves_no_zombie() {
         Some(other) => other,
         None => poll_until(
             // The supervisor may close this lane connection once the run has
-            // ended (idle eviction): a closed lane is not a verdict -- reconnect
-            // and ask the journal-backed operation state again.
-            || match request_for_test(
-                &conn,
-                &SupervisorRequest::Query { operation_id: op_id.to_string() },
-                Instant::now() + Duration::from_secs(5),
-            ) {
-                Ok(SupervisorReply::Operation(SupervisorOperationState::Accepted)) => None,
-                Ok(SupervisorReply::Operation(other)) => Some(other),
-                Ok(other) => panic!("expected Operation, got {other:?}"),
-                Err(_) => {
-                    conn = wait_for_lane(&h, Duration::from_secs(10));
-                    None
-                }
+            // ended (idle eviction): a closed lane is not a verdict -- `query`
+            // reconnects and asks the journal-backed operation state again.
+            || match query(&conn, op_id) {
+                SupervisorOperationState::Accepted => None,
+                other => Some(other),
             },
             Duration::from_secs(60),
             "the operation to settle (journal-backed, since no wire reply ever arrived)",
@@ -377,4 +369,78 @@ fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
     let status =
         wait_for_exit_with_diagnostics(guard.child_mut(), &h, Duration::from_secs(360));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_TERMINAL), "three unstable legs must terminate the supervisor");
+}
+
+/// An EndRun whose `record_closed` lands after the supervisor lane's idle deadline still answers
+/// the client that waits for it in silence (ADR 0041: the command reply arrives at `record_closed`).
+/// The delay is the leg's own: four plain connections that never send a frame fill its pre-admission
+/// cap, so the supervisor's delivery is refused until the leg's 10 s pre-admission timeout closes them.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_end_run_reply_owed_past_the_lane_idle_deadline_reaches_the_waiting_client() {
+    use std::io::Read as _;
+    use std::os::unix::net::UnixStream;
+    use sot_log::supervisor::LANE_IDLE_DEADLINE;
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+
+    let socket = sot_log::lane::socket_unix::voyage_socket_path(&voyage).expect("the voyage socket path");
+    let held: Vec<UnixStream> = (0..4).map(|_| UnixStream::connect(&socket).expect("a plain connection")).collect();
+    // The premise, observed: a fifth is closed with no frame, and the four are still open.
+    let mut fifth = UnixStream::connect(&socket).expect("a fifth plain connection");
+    fifth.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    assert_eq!(fifth.read(&mut [0u8; 1]).expect("the leg refuses the fifth"), 0, "the leg's pre-admission cap is full");
+    for mut c in &held {
+        c.set_nonblocking(true).unwrap();
+        let open = matches!(c.read(&mut [0u8; 1]), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock);
+        assert!(open, "each held connection is still admitted, unclassified");
+    }
+
+    let sent = Instant::now();
+    end_run_and_expect_record_closed(&conn, "late-end", "late", voyage);
+    let waited = sent.elapsed();
+    assert!(
+        waited >= LANE_IDLE_DEADLINE + Duration::from_secs(1),
+        "record_closed landed a second past the idle deadline, as this test needs: {waited:?}"
+    );
+    drop(held);
+    let _ = poll_to_terminal(&conn, "late-end", Duration::from_secs(60));
+    let _ = command(&conn, "late-stop", SupervisorOp::Stop);
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
+}
+
+/// A helper request on a connection the supervisor has closed as idle reconnects once and is answered: a host that
+/// stalls a test for `LANE_IDLE_DEADLINE` between two requests costs a reconnect, not the test.
+#[test]
+fn a_request_after_an_idle_close_reconnects_once_and_is_answered() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    // The premise, observed: a client that sends nothing has its connection closed by the supervisor.
+    expect_connection_closes(&conn.client(), sot_log::supervisor::LANE_IDLE_DEADLINE + Duration::from_secs(5));
+
+    assert_eq!(
+        status(&conn),
+        (Some(voyage.clone()), Some(leg), SupervisorPhase::Ready),
+        "status after the idle close reconnects and is answered"
+    );
+    end_run_and_expect_record_closed(&conn, "idle-end", "cleanup", voyage);
+    let _ = poll_to_terminal(&conn, "idle-end", Duration::from_secs(60));
+    let _ = command(&conn, "idle-stop", SupervisorOp::Stop);
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }

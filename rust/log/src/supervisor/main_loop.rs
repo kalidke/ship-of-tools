@@ -105,7 +105,7 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             Lifecycle::InitialProbe { rx, handle, started_at } => advance_initial_probe(rx, handle, started_at, &capsule_exe, &config, &lease, &mut authority, now),
             Lifecycle::Spawning { rx, handle, started_at } => advance_spawning(rx, handle, started_at, &mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &mut authority, now),
             Lifecycle::Ready { process } => advance_ready(process, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &authority, now),
-            Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply, process } => advance_ending(operation_id, rx, handle, started_at, pending_reply, process, &lane, &conns, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &mut authority, now),
+            Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply, process } => advance_ending(operation_id, rx, handle, started_at, pending_reply, process, &lane, &mut conns, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &mut authority, now),
             Lifecycle::StorageFull(wait) => advance_storage_full(wait, &mut consecutive_unstable_legs, &mut storage_step, &capsule_exe, &config, &lease, &authority, now),
             Lifecycle::Resetting { operation_id, rx, handle, started_at } => advance_resetting(operation_id, rx, handle, started_at, &capsule_exe, &config, &lease, &mut authority, now),
             other @ (Lifecycle::EndedNoRespawn | Lifecycle::Terminal { .. }) => other,

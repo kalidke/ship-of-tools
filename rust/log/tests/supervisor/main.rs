@@ -134,7 +134,7 @@ fn poll_until<T>(mut attempt: impl FnMut() -> Option<T>, timeout: Duration, what
 /// Bounded poll for the lane to accept a connection AND answer the
 /// challenge — the observable fact a real client waits on, never a
 /// sleep guessing how long `bind_supervisor` takes.
-fn wait_for_lane(h: &str, timeout: Duration) -> Client {
+fn wait_for_client(h: &str, timeout: Duration) -> Client {
     poll_until(
         || connect_and_challenge_for_test(h).ok().map(|(conn, _process)| conn),
         timeout,
@@ -142,9 +142,59 @@ fn wait_for_lane(h: &str, timeout: Duration) -> Client {
     )
 }
 
-fn status(conn: &Client) -> (Option<String>, Option<u64>, SupervisorPhase) {
-    match request_for_test(conn, &SupervisorRequest::Status, Instant::now() + Duration::from_secs(5)).expect("status") {
-        SupervisorReply::StatusOk { voyage, leg, phase, .. } => (voyage, leg, phase),
+/// As [`wait_for_client`], held as the [`Lane`] the request helpers take.
+fn wait_for_lane(h: &str, timeout: Duration) -> Lane {
+    Lane::new(h, wait_for_client(h, timeout))
+}
+
+/// A supervisor-lane connection the request helpers may replace. The supervisor closes a connection whose client has
+/// sent nothing for `LANE_IDLE_DEADLINE`, so a host that stalls this test that long between two requests would cost
+/// the test its connection. Every helper request may be asked twice: `status` and `query` only read, and a command
+/// carries its operation id, which the journal answers again rather than running twice (ADR 0041). So a request that
+/// fails reconnects once and asks again, as the production client does (`attach_client/worker/quit.rs`); after a
+/// reconnect a command's reply is the journal's state for that id. A test of a raw connection's own behaviour uses
+/// `request_for_test` on [`Lane::client`].
+struct Lane {
+    h: String,
+    conn: std::cell::RefCell<Client>,
+}
+
+impl Lane {
+    fn new(h: &str, conn: Client) -> Lane {
+        Lane {
+            h: h.to_string(),
+            conn: std::cell::RefCell::new(conn),
+        }
+    }
+
+    /// The connection now held, for a test of a raw connection's own behaviour.
+    fn client(&self) -> std::cell::Ref<'_, Client> {
+        self.conn.borrow()
+    }
+
+    /// One reply to `request`, each attempt bounded by `budget`; a failed first attempt reconnects once.
+    fn request(
+        &self,
+        what: &str,
+        request: &SupervisorRequest,
+        budget: Duration,
+    ) -> SupervisorReply {
+        let first = match request_for_test(&self.conn.borrow(), request, Instant::now() + budget) {
+            Ok(reply) => return reply,
+            Err(e) => e,
+        };
+        eprintln!("{what}: {first}; reconnecting once");
+        *self.conn.borrow_mut() = wait_for_client(&self.h, Duration::from_secs(10));
+        request_for_test(&self.conn.borrow(), request, Instant::now() + budget)
+            .unwrap_or_else(|second| panic!("{what}: {first}, and after one reconnect: {second}"))
+    }
+}
+
+fn status(conn: &Lane) -> (Option<String>, Option<u64>, SupervisorPhase) {
+    match conn.request("status", &SupervisorRequest::Status, Duration::from_secs(5)) {
+        SupervisorReply::StatusOk {
+            voyage, leg, phase, ..
+        } => (voyage, leg, phase),
         other => panic!("expected StatusOk, got {other:?}"),
     }
 }
@@ -165,7 +215,7 @@ fn try_status(conn: &Client) -> Result<(Option<String>, Option<u64>, SupervisorP
 /// `status` does not by itself mean a leg is READY yet — poll for the
 /// phase itself, the observable fact, rather than assuming spawn
 /// finished the instant the lane became reachable.
-fn wait_for_ready(conn: &Client, timeout: Duration) -> (String, u64) {
+fn wait_for_ready(conn: &Lane, timeout: Duration) -> (String, u64) {
     poll_until(
         || match status(conn) {
             (Some(voyage), Some(leg), SupervisorPhase::Ready) => Some((voyage, leg)),
@@ -176,32 +226,35 @@ fn wait_for_ready(conn: &Client, timeout: Duration) -> (String, u64) {
     )
 }
 
-fn command(conn: &Client, operation_id: &str, op: SupervisorOp) -> SupervisorOperationState {
-    match request_for_test(
-        conn,
-        &SupervisorRequest::Command { operation_id: operation_id.to_string(), op },
+fn command(conn: &Lane, operation_id: &str, op: SupervisorOp) -> SupervisorOperationState {
+    match conn.request(
+        "command",
+        &SupervisorRequest::Command {
+            operation_id: operation_id.to_string(),
+            op,
+        },
         // Generous: an EndRun's own reply is DEFERRED to record_closed
         // (B3) -- the mgmt-lane exchange plus the leg writing its own
         // marker, both real OS work on a background thread, not a bound
         // this crate itself pins tighter than "well within the ADR's own
-        // per-op budgets stacked together".
-        Instant::now() + Duration::from_secs(30),
-    )
-    .expect("command")
-    {
+        // per-op budgets stacked together". The supervisor keeps the
+        // connection it owes that reply however long it takes
+        // (`authority/lane.rs` `service_lane`).
+        Duration::from_secs(30),
+    ) {
         SupervisorReply::Operation(state) => state,
         other => panic!("expected Operation, got {other:?}"),
     }
 }
 
-fn query(conn: &Client, operation_id: &str) -> SupervisorOperationState {
-    match request_for_test(
-        conn,
-        &SupervisorRequest::Query { operation_id: operation_id.to_string() },
-        Instant::now() + Duration::from_secs(5),
-    )
-    .expect("query")
-    {
+fn query(conn: &Lane, operation_id: &str) -> SupervisorOperationState {
+    match conn.request(
+        "query",
+        &SupervisorRequest::Query {
+            operation_id: operation_id.to_string(),
+        },
+        Duration::from_secs(5),
+    ) {
         SupervisorReply::Operation(state) => state,
         other => panic!("expected Operation, got {other:?}"),
     }
@@ -211,7 +264,11 @@ fn query(conn: &Client, operation_id: &str) -> SupervisorOperationState {
 /// state follows. Callers that already PROVED `record_closed` via the
 /// `end_run` command's own deferred reply (B3) use this only for the
 /// remaining `record_closed -> record_verified`/`failed` step.
-fn poll_to_terminal(conn: &Client, operation_id: &str, timeout: Duration) -> SupervisorOperationState {
+fn poll_to_terminal(
+    conn: &Lane,
+    operation_id: &str,
+    timeout: Duration,
+) -> SupervisorOperationState {
     poll_until(
         || match query(conn, operation_id) {
             SupervisorOperationState::Accepted | SupervisorOperationState::RecordClosed => None,
@@ -229,27 +286,44 @@ fn poll_to_terminal(conn: &Client, operation_id: &str, timeout: Duration) -> Sup
 /// either as `poll_to_terminal` alone would (Codex review round 2: "the
 /// workflow's own description is unproved... never requires observing
 /// record_closed").
-fn end_run_and_expect_record_closed(conn: &Client, operation_id: &str, reason: &str, voyage: String) {
-    let reply = command(conn, operation_id, SupervisorOp::EndRun { reason: reason.into(), voyage });
-    assert_eq!(reply, SupervisorOperationState::RecordClosed, "end_run's own command reply must arrive AT record_closed (ADR 0041:592)");
+fn end_run_and_expect_record_closed(conn: &Lane, operation_id: &str, reason: &str, voyage: String) {
+    let reply = command(
+        conn,
+        operation_id,
+        SupervisorOp::EndRun {
+            reason: reason.into(),
+            voyage,
+        },
+    );
+    assert_eq!(
+        reply,
+        SupervisorOperationState::RecordClosed,
+        "end_run's own command reply must arrive AT record_closed (ADR 0041:592)"
+    );
 }
 
-/// Blocks on `conn.read` in a background thread so an EOF (or any other
+/// Blocks on `conn.read` in a scoped thread so an EOF (or any other
 /// outcome) can be awaited with a bounded timeout — `Client` is
-/// `Sync`/movable across threads by design (its own doc: a second thread
-/// may `cancel` a blocking call in flight). Used to verify a connection
+/// `Sync` by design (its own doc: a second thread may `cancel` a
+/// blocking call in flight), and a read still blocked at the timeout is
+/// cancelled before the scope joins it. Used to verify a connection
 /// the supervisor is EXPECTED to close actually does.
-fn expect_connection_closes(conn: Client, timeout: Duration) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 16];
-        let _ = tx.send(conn.read(&mut buf));
+fn expect_connection_closes(conn: &Client, timeout: Duration) {
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let mut buf = [0u8; 16];
+            let _ = tx.send(conn.read(&mut buf));
+        });
+        match rx.recv_timeout(timeout) {
+            Ok(Ok(0)) => {} // ordered EOF -- the connection closed, exactly as claimed
+            Ok(other) => panic!("expected the connection to close (EOF), got {other:?}"),
+            Err(_) => {
+                conn.cancel();
+                panic!("the connection never closed within {timeout:?}");
+            }
+        }
     });
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(0)) => {} // ordered EOF -- the connection closed, exactly as claimed
-        Ok(other) => panic!("expected the connection to close (EOF), got {other:?}"),
-        Err(_) => panic!("the connection never closed within {timeout:?}"),
-    }
 }
 
 fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> CapsuleGuard {
