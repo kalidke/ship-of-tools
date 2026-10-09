@@ -40,10 +40,11 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
 - A connection or child restarted through `Redial` waits from its caller's floor, doubling to its cap, and starts over
   only after one that lasted `STABLE` (60 s), or when its caller resets it at a person's request (the window's F5); an
-  answered hello, a completed attach, a bare connect or a kernel generation alone does not restart it. The window, the
-  hub link, the attach episode and the kernel measure how long the session lasted and wait from its end; the
-  supervisor re-dial measures from its previous dial (`dialed_at`) and waits from there, so a lane that lasted longer
-  than its current wait re-dials at once.
+  answered hello, a completed attach, a bare connect or a kernel generation alone does not restart it. The window and
+  the hub link measure from the attempt's start, the attach episode from its attach and the kernel from its hello (a
+  precompile that never answers counts as nothing), each waiting from the session's end; the supervisor re-dial
+  measures from its previous dial (`dialed_at`) and waits from there, so a lane that lasted longer than its current
+  wait re-dials at once.
 - Storage exhaustion is recognized by its native code only: ENOSPC and EDQUOT, on Windows ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL and ERROR_DISK_QUOTA_EXCEEDED, read from the `io::Error` an `Error::Io` carries, never from text and never from a transport error (a full runtime folder is not storage exhaustion) (`storage_exhaustion`). `preflight_volume` and Windows `io_ctx` return such an error as itself, with its code, instead of their refusal or context text.
 
 ## Connections

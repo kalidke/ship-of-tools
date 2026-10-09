@@ -239,7 +239,7 @@ pub(super) const FIRST_ATTACH_ENDED_NO_RESPAWN_BOUND: Duration = TEARDOWN_AGGREG
 /// on that SAME connection every [`rules::RECONNECT_BACKOFF_INITIAL`]
 /// (a FIXED interval — Codex review round finding 6: this loop is
 /// steady-state polling of a lane that is actively ANSWERING, so
-/// [`ReconnectState::retry_with_backoff`]'s doubling does not apply to
+/// [`ReconnectState::retry_after`]'s doubling does not apply to
 /// that poll; it does apply to the wait after a failed voyage dial) until
 /// the report says `Ready` with a voyage id AND the voyage lane itself
 /// accepts a connection. Every answered `Status`, whatever its phase,
@@ -369,7 +369,7 @@ pub(super) fn converge_on_ready<E: Endpoint>(
             // supervisor-lane connect above it in `run_worker` — a
             // refusal is terminal, its code named; the two uncertain
             // arms clear the health window's clock and wait the doubling
-            // `ReconnectState::retry_with_backoff` (ADR 0043 decision 28:
+            // `ReconnectState::retry_after` (ADR 0043 decision 28:
             // over an ssh lane every failed dial is a login).
             Err(e) => match classify_transport(e) {
                 LaneError::Refused { code, detail } => {

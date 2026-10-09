@@ -51,8 +51,8 @@ use super::WireRequest;
 const KERNEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Respawn backoff floor: the first failed spawn, and the first failure
-/// after a generation that ran `STABLE`, waits this long before the
-/// supervisor tries again.
+/// after a kernel that served `STABLE` after its hello, waits this long
+/// before the supervisor tries again.
 const RESPAWN_BACKOFF_FLOOR: Duration = Duration::from_millis(250);
 
 /// Respawn backoff ceiling: a persistently broken install is retried no
@@ -267,8 +267,9 @@ async fn submit_and_await(
 /// The persistent loop: spawn a generation of the child, run it until it
 /// answers hello and then dies (or dies before ever answering), record
 /// `Dead` with the wait platform's `Redial` gives (started over only after
-/// a generation that ran `STABLE`, so a kernel that answers hello and then
-/// dies keeps the doubling), sleep, repeat — until `status`
+/// a kernel that served `STABLE` after its hello, so a kernel that never
+/// answers, or answers and then dies, keeps the doubling however long its
+/// precompile ran), sleep, repeat — until `status`
 /// closes (every `Kernel` handle sharing it has been dropped), at which
 /// point this returns and the task ends. It also ends when `sig` fires, and
 /// never respawns after.
@@ -284,12 +285,12 @@ async fn supervisor_loop(
             return;
         }
         let _ = status.send(Status::Starting);
-        let began = tokio::time::Instant::now();
-        let reason = run_one_generation(&kernel_project, &project_root, &status, sig).await;
+        let (served_since, reason) = run_one_generation(&kernel_project, &project_root, &status, sig).await;
         if status.is_closed() || sig.is_fired() {
             return;
         }
-        let wait = redial.after(began.elapsed());
+        // A kernel's working life starts at its hello: a precompile that never answers counts as nothing.
+        let wait = redial.after(served_since.map_or(Duration::ZERO, |t| t.elapsed()));
         tracing::warn!(reason = %reason, next_retry_in = ?wait, "kernel unavailable; will retry after backoff");
         let _ = status.send(Status::Dead { reason });
         tokio::select! {
@@ -314,9 +315,10 @@ fn julia_bin(kernel_project: &Path) -> Result<(String, &'static str), String> {
 /// publish `Running` the moment it answers, then keep serving until it
 /// dies OR `status` closes (the owning `Kernel` was dropped — the
 /// contained tree dies as `contained` goes out of scope on return). Returns
-/// the human-readable cause of this generation's end (spawn failure, the
-/// child's exit — before or after hello alike — or a owner-dropped
-/// shutdown).
+/// when the kernel answered hello (`None` if it never did), from which its
+/// working life is measured, and the human-readable cause of this
+/// generation's end (spawn failure, the child's exit — before or after
+/// hello alike — or a owner-dropped shutdown).
 ///
 /// The binary is resolved FRESH here, not cached: a removed or replaced
 /// juliaup install recovers on the very next attempt.
@@ -326,17 +328,17 @@ async fn run_one_generation(
     project_root: &Path,
     status: &watch::Sender<Status>,
     sig: &'static crate::lifecycle::child_signal::Signal,
-) -> String {
+) -> (Option<tokio::time::Instant>, String) {
     let (julia_bin, source) = match julia_bin(kernel_project) {
         Ok(v) => v,
-        Err(reason) => return reason,
+        Err(reason) => return (None, reason),
     };
     if !kernel_project.exists() {
-        return format!("kernel project missing at {}", kernel_project.display());
+        return (None, format!("kernel project missing at {}", kernel_project.display()));
     }
     let project_root_str = match project_root.to_str() {
         Some(s) => s,
-        None => return format!("project_root not utf-8: {}", project_root.display()),
+        None => return (None, format!("project_root not utf-8: {}", project_root.display())),
     };
     let escaped = project_root_str.replace('\\', "\\\\").replace('"', "\\\"");
     let julia_src = format!(
@@ -357,20 +359,20 @@ async fn run_one_generation(
     // not polling for (a full stdin pipe) and what it started still die.
     let mut contained = match sig.spawn(&mut cmd) {
         Ok(c) => c,
-        Err(e) => return format!("spawn {julia_bin} failed: {e}"),
+        Err(e) => return (None, format!("spawn {julia_bin} failed: {e}")),
     };
 
     let mut stdin = match contained.stdin.take() {
         Some(s) => s,
-        None => return "kernel child stdin missing".to_string(),
+        None => return (None, "kernel child stdin missing".to_string()),
     };
     let stdout = match contained.stdout.take() {
         Some(s) => s,
-        None => return "kernel child stdout missing".to_string(),
+        None => return (None, "kernel child stdout missing".to_string()),
     };
     let stderr = match contained.stderr.take() {
         Some(s) => s,
-        None => return "kernel child stderr missing".to_string(),
+        None => return (None, "kernel child stderr missing".to_string()),
     };
 
     tokio::spawn(async move {
@@ -384,7 +386,7 @@ async fn run_one_generation(
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     let mut next_id: u64 = 1;
     let mut stdout_lines = BufReader::new(stdout).lines();
-    let mut published_running = false;
+    let mut served_since: Option<tokio::time::Instant> = None;
 
     // Submit `kernel.hello` to OURSELVES through the exact same
     // Submission/pending machinery every other op uses — one
@@ -394,7 +396,7 @@ async fn run_one_generation(
     next_id += 1;
     pending.insert(hello_id, hello_tx);
     if let Err(e) = write_request(&mut stdin, hello_id, "kernel.hello", &json!({})).await {
-        return format!("julia exited at once (path {julia_bin}): {e}");
+        return (None, format!("julia exited at once (path {julia_bin}): {e}"));
     }
 
     loop {
@@ -403,7 +405,7 @@ async fn run_one_generation(
             // The daemon is shutting down: the signal has already killed the
             // child's tree.
             _ = sig.fired() => {
-                return "the daemon is shutting down".to_string();
+                return (served_since, "the daemon is shutting down".to_string());
             }
             // Every `Kernel` handle sharing this `status` has been dropped
             // (a destroyed workspace, most commonly) — stop serving; the
@@ -413,17 +415,17 @@ async fn run_one_generation(
             // nobody is watching `status` to read a `Dead` we could no
             // longer deliver anyway).
             _ = status.closed() => {
-                return "owning kernel handle dropped".to_string();
+                return (served_since, "owning kernel handle dropped".to_string());
             }
-            hello = &mut hello_rx, if !published_running => {
+            hello = &mut hello_rx, if served_since.is_none() => {
                 match hello {
                     Ok(Ok(payload)) => {
                         log_hello(&payload);
-                        published_running = true;
+                        served_since = Some(tokio::time::Instant::now());
                         let _ = status.send(Status::Running(submit_tx.clone()));
                     }
                     Ok(Err(e)) => {
-                        return format!("julia exited at once (path {julia_bin}): {e:#}");
+                        return (None, format!("julia exited at once (path {julia_bin}): {e:#}"));
                     }
                     Err(_) => {
                         // `pending`'s hello entry can only be consumed by
@@ -438,14 +440,14 @@ async fn run_one_generation(
                     // Unreachable while this function holds `submit_tx`
                     // itself (it does, for the whole loop) — kept as a
                     // defensive exit rather than an `unreachable!()`.
-                    return "kernel submission channel closed".to_string();
+                    return (served_since, "kernel submission channel closed".to_string());
                 };
                 let id = next_id;
                 next_id += 1;
                 if let Err(e) = write_request(&mut stdin, id, &sub.op, &sub.payload).await {
                     let _ = sub.reply.send(Err(anyhow!("kernel stdin: {e}")));
                     let reason = format!("julia exited at once (path {julia_bin}): {e}");
-                    return finish_generation(status, reason, pending).await;
+                    return (served_since, finish_generation(status, reason, pending).await);
                 }
                 pending.insert(id, sub.reply);
             }
@@ -456,14 +458,14 @@ async fn run_one_generation(
                         tracing::warn!("kernel child stdout closed");
                         let reason = format!(
                             "julia exited {} (path {julia_bin})",
-                            if published_running { "mid-request" } else { "at once" }
+                            if served_since.is_some() { "mid-request" } else { "at once" }
                         );
-                        return finish_generation(status, reason, pending).await;
+                        return (served_since, finish_generation(status, reason, pending).await);
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "kernel stdout error");
                         let reason = format!("kernel stdout error (path {julia_bin}): {e}");
-                        return finish_generation(status, reason, pending).await;
+                        return (served_since, finish_generation(status, reason, pending).await);
                     }
                 }
             }
@@ -694,6 +696,79 @@ mod tests {
         println!("respawn: {spawns} kernel spawns in {WINDOW:?} against a kernel that answers hello and exits");
         assert!(spawns >= 2, "the supervisor never respawned the kernel: {spawns} spawn(s) in {WINDOW:?}");
         assert!(spawns <= 4, "{spawns} kernel spawns in {WINDOW:?}: an answered hello restarted the wait");
+    }
+
+    /// A kernel's working life starts at its hello. A precompile that runs past `STABLE` and then exits without
+    /// answering, or answers and dies at once, is not a working kernel: the next respawn waits the doubling, 2 s after
+    /// waits of 250 ms, 500 ms and 1 s, not the 250 ms floor. The paused clock moves only at the supervisor's waits and
+    /// at the test's one sleep, which stands for the long precompile, so the gap between the fourth and fifth spawn is
+    /// exact: that precompile plus the wait. Each stub blocks until the test releases it, so every `Starting` is seen;
+    /// a watchdog thread fires the signal if a run stalls for a minute of real time.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_kernel_whose_precompile_outlasts_stable_without_serving_backs_off() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let precompile = sot_log::host::redial::STABLE + Duration::from_secs(1);
+        for late_hello in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let counter = dir.path().join("spawns");
+            let stub = dir.path().join("stub-julia");
+            sot_log::test_exec::write_executable(
+                &stub,
+                format!(
+                    "#!/bin/sh\necho x >> {c}\nn=$(wc -l < {c} | tr -d ' ')\nwhile [ ! -f {d}/go-$n ]; do sleep 0.02; done\nif [ -f {d}/hello-$n ]; then read l; echo '{{\"id\":1,\"payload\":{{\"protocol\":{KERNEL_PROTOCOL_VERSION}}}}}'; fi\n",
+                    c = counter.display(),
+                    d = dir.path().display(),
+                ),
+            );
+            let project = dir.path().join("kp");
+            std::fs::create_dir(&project).unwrap();
+            STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
+            let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+            let (status, mut status_rx) = watch::channel(Status::Starting);
+            let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig));
+            let done = std::sync::Arc::new(AtomicBool::new(false));
+            let watchdog = {
+                let done = std::sync::Arc::clone(&done);
+                std::thread::spawn(move || {
+                    for _ in 0..600 {
+                        if done.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    sig.fire();
+                })
+            };
+            let mut starts = Vec::new();
+            while starts.len() < 5 {
+                status_rx.changed().await.expect("the supervisor ended before its fifth spawn (the watchdog fired)");
+                if !matches!(*status_rx.borrow_and_update(), Status::Starting) {
+                    continue;
+                }
+                starts.push(tokio::time::Instant::now());
+                let n = starts.len();
+                if n == 4 {
+                    tokio::time::sleep(precompile).await;
+                    if late_hello {
+                        std::fs::write(dir.path().join("hello-4"), "").unwrap();
+                    }
+                }
+                if n < 5 {
+                    std::fs::write(dir.path().join(format!("go-{n}")), "").unwrap();
+                }
+            }
+            done.store(true, Ordering::SeqCst);
+            sig.fire();
+            watchdog.join().unwrap();
+            task.await.expect("supervisor task");
+            let gap = starts[4] - starts[3];
+            println!("respawn: late_hello={late_hello}: the spawn after a {precompile:?} precompile came {gap:?} after it began");
+            assert!(
+                gap >= precompile + Duration::from_secs(2),
+                "late_hello={late_hello}: the spawn after a {precompile:?} precompile came {gap:?} after it began: a kernel that did not serve counted as stable"
+            );
+        }
     }
 
     #[test]
