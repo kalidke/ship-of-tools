@@ -47,20 +47,6 @@ pub(crate) enum Spawn {
     Contended,
 }
 
-/// `sot-capsule supervise`'s own `--first-leg-without --continue`, passed
-/// only for [`StartMode::Start`] (a row's first-ever run) so that leg's own
-/// producer argv starts a fresh claude conversation. The daemon never
-/// passes it again for a resumed or restarted supervisor; the supervisor's
-/// own self-heal, using this SAME token, is what strips `--continue` a
-/// second time for a leg that follows an unstable one (see
-/// [`agent_argv`]'s own doc).
-pub fn first_leg_without_continue(mode: StartMode) -> &'static [&'static str] {
-    match mode {
-        StartMode::Start => &["--first-leg-without", "--continue"],
-        StartMode::Resume => &[],
-    }
-}
-
 /// `sot-capsule supervise`'s own start-mode flag.
 pub fn mode_flag(mode: StartMode) -> &'static str {
     match mode {
@@ -272,11 +258,6 @@ pub(crate) fn spawn_detached_supervisor(
             survival.into(),
             "--assume-no-rollback-target".into(),
         ]);
-        args.extend(
-            first_leg_without_continue(mode)
-                .iter()
-                .map(std::ffi::OsString::from),
-        );
         args.push("--".into());
         args.extend(agent_argv.iter().map(std::ffi::OsString::from));
         Line {
@@ -676,11 +657,5 @@ mod start_mode_tests {
 fn mode_flag_matches_the_sot_capsule_cli() {
     assert_eq!(mode_flag(StartMode::Start), "--start");
     assert_eq!(mode_flag(StartMode::Resume), "--resume");
-}
-
-#[test]
-fn first_leg_without_continue_only_on_start() {
-    assert_eq!(first_leg_without_continue(StartMode::Start), ["--first-leg-without", "--continue"]);
-    assert!(first_leg_without_continue(StartMode::Resume).is_empty());
 }
 }

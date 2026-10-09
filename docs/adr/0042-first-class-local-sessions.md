@@ -539,3 +539,11 @@ which ADR 0041 had already discharged.
 ## Update (0.6.6): listed workspace targets
 
 The window resolves result commands against the producing host's workspace.list, accepting its listed slug or canonical id. Strip keys retain the listed slug and view keys normalize the per-host default. Pane attachment reads session_name from that row; the window derives neither a session name from a slug nor a slug from a session name.
+
+## Update (0.6.6): no leg resumes by recency (FRESH-LEG)
+
+Slice 1's `--continue` line is withdrawn (owner ruling, 2026-10-09; ADR 0046's FRESH-LEG update): a row's agent starts
+a fresh conversation on every leg and reads its handoff through the session-start skill, and a conversation is resumed
+only when asked (a reauth's `--resume <id>`, or a person). The daemon no longer passes `--first-leg-without --continue`,
+so the 2026-09-14 amendment's strip has no caller; the supervisor's `--first-leg-without` remains a generic option
+until its own removal.

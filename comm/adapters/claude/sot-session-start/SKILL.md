@@ -13,6 +13,12 @@ Run once, when a session first starts:
 
 It declares this session's handle to the daemon.
 
+**Then read your handoff.** A row's agent starts a fresh conversation every time
+its leg starts; it resumes an earlier one only when asked (a reauth names the
+transcript by id, or a person resumes it). If the repo holds
+`dev/output/handoff-<handle>.md` (your handle as `comm-context.sh` prints it),
+read it before other work: it is this session's recovery file.
+
 **What a session is told at start.** `comm-context.sh` prints your handle. Send
 with `comm-send.sh @handle "text"` and read its one result. When
 `[sot-comm] you have mail` appears, or your end-of-turn check says so, run

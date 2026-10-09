@@ -23,6 +23,11 @@ fi
 ~/.sot-comm/bin/comm-session-start.sh
 ```
 
+Then, if the repo holds `dev/output/handoff-<handle>.md` (your handle as
+`comm-context.sh` prints it), read it before other work: it is this session's
+recovery file. A row's agent starts a fresh conversation every time its leg
+starts and resumes an earlier one only when asked.
+
 It declares this session's handle to the daemon. `identity=FAIL` with a
 `REFUSED:` line means the identity slot already names a different project —
 re-run with a more specific `$SOT_COMM_NAME` (you already set one above; this
