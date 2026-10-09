@@ -6,10 +6,9 @@
 //! `daemon-lifetime-faults`), which a case opens once it has seen what it wants to see. The capsule a case starts is
 //! outside the daemon's lifetime and stays alive through an update restart.
 
+use crate::ephemerals::{start_spinning_at, start_spinning_with};
 use crate::fixture_owner::Fixture;
-use crate::guard::{
-    close_by_lease, lease, leave_with_close, start_spinning_at, start_spinning_with, Run,
-};
+use crate::guard::{close_by_lease, lease, leave_with_close, Run};
 use crate::routes::{all_ended, ready_row, supervisor_in};
 use crate::support::{call, connect_and_hello, Env};
 use crate::update_fixture;

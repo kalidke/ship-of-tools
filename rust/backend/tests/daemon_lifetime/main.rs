@@ -19,6 +19,8 @@
 mod done;
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 mod durable;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod ephemerals;
 mod fixture_owner;
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 mod guard;

@@ -388,11 +388,11 @@ fn claim_parent_role() {
     };
     sot_log::test_isolated::enter("native_premises::claim_parent_role");
     let claim = BirthClaim::take(&dir.join("state")).expect("the role takes the claim");
-    // The child ends when the case writes `stop` (the case never signals a pid it did not spawn); it ends by itself
-    // after ten minutes otherwise.
+    // The child ends when the case writes `stop` or its folder is gone (the case never signals a pid it did not spawn); it
+    // ends by itself after ten minutes otherwise.
     let mut launch = sh(&format!(
-        "n=0; while [ ! -e '{}' ] && [ $n -lt 6000 ]; do sleep 0.1; n=$((n+1)); done",
-        dir.join("stop").display()
+        "n=0; while [ -d '{0}' ] && [ ! -e '{0}/stop' ] && [ $n -lt 6000 ]; do sleep 0.1; n=$((n+1)); done",
+        dir.display()
     ));
     launch.inherit_across_exec(claim.as_raw_fd());
     let mut birth = launch.begin().expect("begin");
@@ -500,10 +500,10 @@ fn source_group_role() {
         return;
     };
     sot_log::test_isolated::enter("native_premises::source_group_role");
-    // The child ends when the case writes `stop` in the role's folder, and by itself after ten minutes.
+    // The child ends when the case writes `stop` in the role's folder or the folder is gone, and by itself after ten minutes.
     let mut birth = sh(&format!(
-        "n=0; while [ ! -e '{}' ] && [ $n -lt 6000 ]; do sleep 0.1; n=$((n+1)); done",
-        dir.join("stop").display()
+        "n=0; while [ -d '{0}' ] && [ ! -e '{0}/stop' ] && [ $n -lt 6000 ]; do sleep 0.1; n=$((n+1)); done",
+        dir.display()
     ))
     .begin()
     .expect("begin");

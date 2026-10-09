@@ -4,8 +4,9 @@
 //! and an early command keeps its own status. The status is read at the launched process: the guard exits as the daemon did.
 //! The capsule a case starts is outside the daemon's lifetime and stays alive through every outcome.
 
+use crate::ephemerals::start_spinning_with;
 use crate::fixture_owner::Fixture;
-use crate::guard::{start_spinning_with, Run};
+use crate::guard::Run;
 use crate::routes::{all_ended, ready_row, supervisor_in};
 use crate::support::{connect_and_hello, Env};
 use crate::SERIAL;
