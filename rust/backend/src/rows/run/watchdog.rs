@@ -4,13 +4,12 @@ use super::observer::observe_with_adoption;
 use super::probe::phase_of;
 use super::start::settle_after_spawn;
 use super::UNREACHABLE_PHASE;
-use crate::rows::spawn::detach::spawn_detached_supervisor;
+use crate::rows::spawn::detach::{spawn_detached_supervisor, Spawn, SupervisorChild};
 use crate::rows::Workspaces;
 use sot_log::supervisor::{StartMode, EXIT_CLEAN, EXIT_CONTENDED, EXIT_TERMINAL};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use tokio::process::Child;
 
 /// ADR 0042 L1a (Codex review finding 6): the daemon's own watchdog
 /// restart budget for a capsule supervisor — ADR 0041's own launcher
@@ -84,17 +83,20 @@ fn classify_exit_code(code: Option<i32>) -> LegOutcome {
 }
 
 /// Waits for `child` to end and classifies the result.
-/// `tokio::process::Child::wait` is trusted outright: the daemon is
-/// the sole, unambiguous owner of a supervisor it spawned itself —
-/// ADR 0043 decision 33, "a watchdog exists only for a `Child` the
-/// daemon launched." There is no adopted twin any more: an authority
-/// `resume_all` merely finds already alive at boot is never watched
-/// at all (see that function's own doc); if it later goes quiet, the
-/// next attach's `resume_if_absent`/`ensure_started` spawns and
-/// watches a FRESH leg, which this function then does own.
-async fn wait_and_classify(mut child: Child, workspace_id: &str) -> LegOutcome {
+/// The wait is trusted outright: the daemon is the sole, unambiguous
+/// owner of a supervisor it launched itself (its durable parent reports
+/// the exit, on Unix) -- ADR 0043 decision 33, "a watchdog exists only
+/// for a child the daemon launched." There is no adopted twin any more:
+/// an authority `resume_all` merely finds already alive at boot is never
+/// watched at all (see that function's own doc); if it later goes quiet,
+/// the next attach's `resume_if_absent`/`ensure_started` spawns and
+/// watches a FRESH leg, which this function then does own. A parent
+/// lost before it could report is a crash here: the restart's own
+/// recheck (`watchdog_may_act`) finds out whether anything is still
+/// serving.
+async fn wait_and_classify(child: SupervisorChild, workspace_id: &str) -> LegOutcome {
     let code = match child.wait().await {
-        Ok(status) => status.code(),
+        Ok(code) => code,
         Err(e) => {
             tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: wait() failed; treating as a crash");
             return LegOutcome::Crash;
@@ -235,7 +237,7 @@ pub(super) fn install_watchdog(
     cwd: PathBuf,
     agent_name: String,
     slug: String,
-    child: Child,
+    child: SupervisorChild,
     initial_identity: Option<crate::rows::workspace::SupervisorIdentity>,
     workspaces: Workspaces,
 ) {
@@ -387,11 +389,20 @@ pub(super) fn install_watchdog(
                             &agent_kind_for_spawn,
                             &account_for_spawn,
                         )
-                        .map(|child| (child, permit))
+                        .map(|spawn| (spawn, permit))
                     })
                     .await;
                     match spawn_result {
-                        Ok(Ok((child, permit))) => {
+                        Ok(Ok((Spawn::Contended, _permit))) => {
+                            // The row's fence is held: a live authority, or another birth's claim. Exactly the
+                            // Contended exit (70): leave the row for the next attach's admission.
+                            tracing::info!(
+                                workspace_id = %workspace_id,
+                                "capsule supervisor watchdog: restart found the authority fence claimed -- leaving the row for the next attach"
+                            );
+                            return;
+                        }
+                        Ok(Ok((Spawn::Started(child), permit))) => {
                             // Settle BEFORE this guard drops — the
                             // SAME shared wait `spawn_and_watch`
                             // itself uses; see `settle_after_spawn`'s

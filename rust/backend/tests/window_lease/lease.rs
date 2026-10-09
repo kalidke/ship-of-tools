@@ -439,22 +439,64 @@ async fn closing_flag_spans_shutdown() {
     drop(fence);
 }
 
+/// `shutdown_bound_is_end_to_end`'s stage `sot-capsule`: the real one, run as a child, until the marker exists. A
+/// supervisor that exits while the marker exists leaves the stub's status 1, a crash the watchdog restarts; the restart
+/// finds the marker and holds the fence claim it was born with, serving nothing, until the marker is gone (at most
+/// 600 s). It ends itself: the case ends no process by number.
+#[cfg(target_os = "linux")]
+const STUB_CAPSULE: &str = r#"#!/bin/sh
+if [ -e "$SOT_L2_STUB_MARKER" ]; then
+  echo "stub supervisor: holding the claim" >&2
+  n=0
+  while [ -e "$SOT_L2_STUB_MARKER" ] && [ "$n" -lt 3000 ]; do sleep 0.2; n=$((n + 1)); done
+  exit 0
+fi
+"@REAL@" "$@"
+code=$?
+[ -e "$SOT_L2_STUB_MARKER" ] && exit 1
+exit "$code"
+"#;
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn shutdown_bound_is_end_to_end() {
     let _serial = SERIAL.lock().await;
     let env = Env::new("endtoend");
-    let mut daemon = Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "19000"), ("SOT_TEST_SPAWN_SETTLE_MS", "5000")]).await;
+    // The daemon runs from a stage of its own, beside the stub `STUB_CAPSULE`.
+    let stage = tempfile::tempdir().expect("a stage folder");
+    for (from, to) in [(support::sotd_program(), stage.path().join("sotd"))] {
+        if std::fs::hard_link(&from, &to).is_err() {
+            sot_log::test_exec::write_executable(&to, std::fs::read(&from).expect("read the binary to stage"));
+        }
+    }
+    let marker = stage.path().join("slow-start");
+    sot_log::test_exec::write_executable(
+        &stage.path().join(support::CAPSULE_EXE_NAME),
+        STUB_CAPSULE.replace("@REAL@", &support::sot_capsule_exe().display().to_string()),
+    );
+    let mut daemon = Daemon::start_at(
+        &env,
+        &stage.path().join("sotd"),
+        &[
+            ("SOT_TEST_SHUTDOWN_BOUND_MS", "19000"),
+            ("SOT_TEST_SPAWN_SETTLE_MS", "5000"),
+            ("SOT_L2_STUB_MARKER", marker.to_str().unwrap()),
+        ],
+    )
+    .await;
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let (_id, row_dir) = create_row(&env, &mut conn, &mut next_id, "slow").await;
     drop(conn);
     let (mut w, _) = Window::open(&env.socket_path).await;
-    let _fence = slow_row(&row_dir).await;
-    // The watchdog restarts the killed supervisor 1 s later and holds that run start through its settle, 5 s here;
-    // the new supervisor finds the fence held and logs it. The close lands about 0.3 s into the settle.
+    // From here a start is the stub: the supervisor is stopped through its lane, the stub reports a crash, and the
+    // watchdog's restart, 1 s later, claims the fence and forks a stub that never answers. That run start is held
+    // through its settle, 5 s here, and the claim keeps the row from being proven ended. The close lands about 0.3 s
+    // into the settle.
+    std::fs::write(&marker, b"").expect("mark the next start slow");
+    stop_supervisor(&row_dir).await;
     let log_path = state_dir(&env).join("sotd.log");
     let until = Instant::now() + BOUND;
-    while !std::fs::read_to_string(&log_path).unwrap_or_default().contains("authority fence already held") {
+    while !std::fs::read_to_string(&log_path).unwrap_or_default().contains("stub supervisor: holding the claim") {
         assert!(Instant::now() < until, "the watchdog never restarted the slow row: {}", daemon.said());
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -462,6 +504,8 @@ async fn shutdown_bound_is_end_to_end() {
     // No `ack` is sent, so the closer's notice waits out its own bound; exit 0
     // (the backstop's is 1) proves the whole shutdown fit inside the bound.
     assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{}", daemon.said());
+    // The holding stub ends itself once its marker is gone, or with the stage folder if the case fails first.
+    std::fs::remove_file(&marker).expect("let the holding stub end");
     // Steps 2 and 3 share one rows deadline, decided + budget (9 s), which the hold ends before. The refused row, retried
     // 1 s apart, is let go between budget - 1 and budget + 0.4 (timer and log slack). A fresh step-3 deadline lets it go
     // at least held + budget - 1 in: past the upper bound only if held >= 1.4, which the last assert requires.

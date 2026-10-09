@@ -56,12 +56,14 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests, and brings
   `test_log`, `test_exec`, `test_scan`, `test_isolated` and, on Unix, `test_foreign` (the backend, frontend and updater
   turn it on in their dev-dependencies).
-- `build.rs`: stamps the lane build id (`SOT_LOG_BUILD_SHA`) from the full git sha, or `SOT_BUILD_ID`.
+- `build.rs`: stamps the lane build id (`SOT_LOG_BUILD_SHA`) from the full git sha, or `SOT_BUILD_ID`, and compiles the
+  native launcher (`src/host/process_tree/native_birth.c`) for the Unix targets.
 - `claude-sdk-helper/`: the Node helper that drives one Claude Agent SDK session.
 - `tests/`: integration and whole-process tests.
 - `src/lib.rs`: the module tree, the crate's facades (`lock_writer`, `owner_protected_pipe_descriptor`) and `Error`/`Result`.
 - `src/claude.rs`: the dormant Claude SDK producer.
 - `src/secret.rs`: `redact` and `RedactingWriter`, the masking of page secrets in both binaries' logs.
+- `src/test_barrier.rs`: `hold`, a named phase barrier a real process can be held at (Unix, feature `native-barrier`, which no installed build enables; inert unless `SOT_TEST_BARRIER_DIR` names a folder).
 - `src/test_exec.rs`: `write_executable`, the test-program writer (feature `test-support`); its Linux FIFO proof observes actual parent descriptors while the child writer is active, without a permission-spelling catalog.
 - `src/test_isolated.rs`: shared exact-body isolation, scoped direct-fixture supervision and bounded child/output waits (feature `test-support`); readiness errors retain termination/entry checks, and byte-captured output renders invalid UTF-8 with explicit byte escapes. Wrapped fixtures retain launcher status and both streams, validate the native role/PID witness against exact entry, and share direct fixtures' wait/drain/finalization implementation.
 - `src/test_log.rs`: timestamp-free `capture()` and formatting-preserving `install()` (feature `test-support`), with behavioral tests of the capture format, first-callsite routing, parallel isolation and guard restoration.
@@ -95,7 +97,8 @@ the leg. For the record's format read `src/store/record.rs` and `src/store/segme
 - Another crate can reach the processes this crate starts (the capsule's agent, the supervisor's legs, the Claude
   adapter's helper) through its public items, as read on 2026-10-05: `capsule::run`, `capsule::producer::Producer::spawn`,
   `capsule::producer::conpty::ConptySpawn::spawn`, `supervisor::supervise`,
-  `supervisor::probe::classify::probe_owned_spawn`, `supervisor::probe::ProbeOps::spawn` and `claude::run`.
-  `rust/clippy.toml` lists none of them, so the lint does not see a call from another crate; today no other crate calls
-  them but `src/bin/sot-capsule.rs`, which reaches them through `capsule::run`, `supervisor::supervise` and
-  `claude::run`.
+  `supervisor::probe::classify::probe_owned_spawn`, `supervisor::probe::ProbeOps::spawn`, `claude::run` and, on
+  Unix, `host::process_tree::Launch::begin` (the native launcher). `rust/clippy.toml` lists none of them, so the lint
+  does not see a call from another crate; today no other crate calls them but `src/bin/sot-capsule.rs`, which reaches
+  them through `capsule::run`, `supervisor::supervise` and `claude::run`, and the daemon-lifetime harness
+  (`rust/backend/tests/daemon_lifetime`), which calls `Launch::begin`.

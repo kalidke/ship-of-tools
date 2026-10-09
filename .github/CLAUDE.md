@@ -54,6 +54,10 @@ scripts/CLAUDE.md.
   line (`cargo clippy
   --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods`) on the merged
   tree before the merge.
+- The daemon-lifetime harness (`rust/backend/tests/daemon_lifetime`) has its own jobs: "daemon lifetime harness (Linux)"
+  runs every case with Julia 1.12 and Quarto 1.7.31 installed and the capsule built with its phase barriers, and "daemon
+  lifetime premises (macOS)" runs the premises on real children; neither is part of the `test` matrix's plain run, which
+  builds the harness without its fault feature.
 - The Windows containment tests that need julia, Git for Windows' bash or a job around the test process are `#[ignore]`
   in `cargo test`; the job "containment, ignored tests (windows-latest)" runs them with julia installed
   (rust/backend/src/lifecycle/contain.rs).

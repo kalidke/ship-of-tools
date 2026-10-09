@@ -5,6 +5,7 @@
 mod durable;
 mod lock;
 mod pinned_dir;
+pub mod process_tree;
 pub mod redial;
 pub mod state_dir;
 mod storage;

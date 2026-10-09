@@ -463,6 +463,8 @@ mod tests {
             assume_no_rollback_target: true,
             survival: Survival::Normal,
             first_leg_without: Vec::new(),
+            #[cfg(unix)]
+            birth: None,
         };
         let authority = AuthorityState {
             state_dir,

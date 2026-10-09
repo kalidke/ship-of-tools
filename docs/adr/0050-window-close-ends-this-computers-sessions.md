@@ -88,16 +88,29 @@ any row is touched; the run gate closes and in-flight starts drain, until the ro
 deadline (`SHUTDOWN_BOUND` minus the 10 s `SHUTDOWN_TAIL`); every capsule row and the
 drawer end without resuming anything, retrying a kept row once a second to that same
 deadline, and a row of any other runtime is left running and counted not ended; every
-process the daemon starts, but a capsule supervisor and the update pipeline's children (known limit
-(n)), is killed with everything it started that did not leave it (residual 7): each runs in its own process group
-on Unix and its own job on Windows, its leader is reaped only after that kill, a start in flight when the signal fires
-is counted before it creates anything and killed if it registers within those 3 s, and their owners are given 3 s to
-let go; the final record is written; the
+process the daemon starts, but a capsule supervisor, receives a checked termination attempt for its contained tree;
+descendants that leave it remain residual 7. Each runs in its own process group on Unix and its own job on Windows.
+Unix termination requests precede the owner's direct-child reap. Windows async wait obtains the direct-child status
+before requesting job termination; Windows blocking and nonblocking exit observation uses wait or try_wait before the
+subsequent job request, with the job handle retaining containment identity. Explicit kill requests termination before
+waiting on either platform. On macOS only, a real group-request EPERM counts as no live member only after checked
+observation confirms that the retained leader has exited without being reaped and a complete libproc process-group
+membership and status query finds no live member; live, failed or ambiguous observations preserve the original error,
+and leader requests and injected failures remain independently checked. No Unix signal or process-group identity query
+occurs after leader reap. Creation through adoption and registration shares the registry mutex with the permanent child
+signal. Fire attempts every registered tree and reports errors, without a child-count grace period or waiting for
+confirmed death; contained children can still outlive daemon exit. An OS creation or adoption that never returns can
+delay fire and process exit; the final record is written; the
 waiting `fe.leaving{close}` is answered with the not-ended count, and if that is above
 zero the daemon waits up to 5 s for `fe.notice_seen` before exiting 0. Rows that ended
 are forgotten, their registration deleted and its directory synced before the final
 record clears `closing`; rows not ended stay registered and running, and are counted. The product
 never runs `pkill` or `tmux kill-server`.
+
+`gio trash` uses the contained blocking wait with a 5 s wait budget; a successful timeout cleanup means termination requests
+succeeded and the direct child was reaped before the recoverable workspace-trash fallback. Request and reap failures are
+diagnosed and take that fallback without claiming cleanup succeeded; descendant death before the fallback is not promised.
+The budget imposes no wall-clock ceiling on an OS termination or reap.
 
 Exit codes: 0 is a requested shutdown and stays down; 75 is an update restart and starts
 again, taken only while no shutdown is under way, so a shutdown's own exit always stands;
@@ -194,13 +207,24 @@ connection is the only handle.
    macOS has no such container at all. On Windows the leg's job permits no breakaway (ruling (g)); see residual 7.
 6. Closed: a row's remembered scopes are the durable file `row-scopes` in its state dir,
    read by every end, a startup Cleanup included, so a daemon restart no longer loses them.
-7. A daemon child's tree is killed with it, but a process can leave. Unix: a descendant that moves to another
-   process group is outside it, by `setpgid` (a shell's job control does this) or by `setsid`; this covers Julia's
-   `detach` (a `run(detach(cmd))` child has pgid = sid = its own pid), so Pluto's notebook workers, which Malt starts
-   detached, and quarto's julia server, which quarto starts detached (measured with quarto 1.7.31). Under the systemd
-   unit the daemon's cgroup ends them when the daemon exits; started without systemd, an idle worker exits when its
-   server socket closes and a busy one when its cell ends. Every ssh the daemon starts (its two bridges and the monitor's
-   sampler) sets `ControlMaster=no`, `ControlPath=none` and `ControlPersist=no`, so none leaves a master behind. Windows: nothing started inside a daemon child's job or a
+7. A daemon child's tree is killed with it, and no process can leave it, except as stated here. Linux: every serving
+   daemon is the child of a guard that is a subreaper (the 0.6.6 update below), so a process the daemon starts stays a
+   descendant of the guard through `setpgid`, `setsid`, Julia's `detach` (Pluto's notebook workers, which Malt starts
+   detached, and quarto's julia server, which quarto starts detached, measured with quarto 1.7.31) or a double fork,
+   and ends within `DRAIN_BOUND` (10 s) of the daemon's end, however that end came, a SIGKILL included; while the
+   daemon runs, such a process outlives the end of the child whose group it left (Pluto's notebook worker when Pluto's
+   server ends) unless it exits on its own. A crashed Pluto server can leave one idle Julia worker per crash, which
+   ends when the daemon ends (a stated 0.6.6 limit; per-child containment is designed for 0.6.7). Outside it:
+   a process a broker starts; a SIGKILL of the guard itself, after which the daemon ends at once but what it started
+   does not (under the systemd unit the unit's cgroup ends the rest within the unit's stop timeout); and a process in an
+   uninterruptible kernel call, which has SIGKILL pending and ends when the call returns (the guard logs it). Every ssh
+   the daemon starts (its two bridges and the monitor's sampler) sets `ControlMaster=no`, `ControlPath=none` and
+   `ControlPersist=no`, so none leaves a master behind. macOS has
+   no guard, no subreaper and no cgroup: a controlled end of the daemon (Close, the update restart, the backstop, a
+   handled signal, a returned error) kills each child's process group, and not a process that left it (Pluto's notebook
+   worker, quarto's engine server, a `detach`ed process); after SIGKILL, abort or a crash nothing ends the children;
+   each ends on its own, an idle Julia child when its input closes, a busy one when its work ends, quarto's
+   engine server after 300 s idle. Windows: nothing started inside a daemon child's job or a
    row's job can leave it. Outside it are a process a broker starts (WMI, COM activation, the task scheduler, a
    service) and a program started through an app-execution alias, which the Store install of juliaup makes `julia`: a
    julia started that way ran, with what it started, outside the starting process's job (measured 2026-10-03; the
@@ -230,16 +254,74 @@ connection is the only handle.
   may resume them.
 - (k) A startup Cleanup's count reaches a window granted before the Cleanup finished only
   at the next window; it stays in the record until acknowledged.
-- (n) Every process `rust/updater` starts inside the daemon runs outside containment, with at most `kill_on_drop`,
-  which does not run at the daemon's exit. The daemon reaches them through the updater's four entries, each called in
-  update.rs under a `clippy::disallowed_methods` allow naming this limit: `check_release` (in `check`), `stage` and
-  `prepare::prepare` (in `stage_prepare_arm_inner`), and `PreparedState::matches` (in `handle_update_check`). A shutdown
-  or exit while one runs leaves it and what it started to end on their own; under the systemd unit its cgroup ends them.
-- (p) Only the requested shutdown fires the child signal. Every other exit leaves the contained trees to end on
-  their own, for example the update restart (exit 75, update.rs `exit_for_update`), the shutdown's backstop (exit 1),
-  an accept-loop failure (`server::run` returning an error) and a termination signal (SIGTERM, SIGINT), which the
-  daemon does not handle. Under the systemd unit its cgroup ends them.
+- (n) Closed (0.6.6): the updater takes its spawner from its caller (`sot_updater::Spawner`). The daemon's
+  `UpdaterSpawner` runs every discovery, stage, prepare and prepared-state command through the child signal, so what the
+  update pipeline starts is contained like any other daemon child; the window's `WindowSpawner` keeps its explicit
+  kill-on-drop policy, which does not contain descendants.
+- (p) Closed (0.6.6): every controlled end of the serving daemon fires the child signal (see "controlled exits"
+  below). What no code can do stays a limit: an uncatchable signal, an abort or an OS kill runs no daemon code at all;
+  on Linux the guard ends the daemon's children then, on Windows the jobs do, and on macOS nothing does.
 - Window: see the release notes.
+
+## Update (0.6.6): controlled exits
+
+Every controlled end of the serving daemon takes one terminal, `lifecycle::shutdown::exit`: it fires the child signal on a
+thread of its own, which asks each contained tree to end and reports each failed request; it waits at most two seconds for
+that answer (a child creation stalled in the OS holds the mutex the fire needs, and no exit, the backstop's included,
+waits on it longer; when no thread can be started for the fire, the exit goes without it); and it makes the daemon's one
+raw process exit. A request is not an observed death: on Linux the guard ends what is left, and on macOS these
+controlled ends are the only ones that end the daemon's children, and they reach only each child's process group
+(residual 7).
+
+The main future's result becomes a status while the runtime still exists: Ok is 0, an error is printed and is 1, a panic of
+the future is 101. A finished close exits 0; the shutdown's backstop exits 1; the update restart exits 75, and only while no
+shutdown has begun: the update is committed under the lease lock (`Leases::commit_update`, which moves the lease to
+`Updating`, so no close begins afterwards and none is granted) and the exit, with its wait for the fire, comes after the
+lock is released; a close that began first keeps its own exit. INT and TERM are caught on a thread of their own with a
+runtime of its own, unblocked whatever mask the daemon inherited and checked to be deliverable, take the same fire and
+then end the daemon by the signal itself with its default action, however stalled its main runtime is: a shell reads 130
+and 143, and a service manager counts the end as a clean stop, so `systemctl stop` leaves the unit inactive rather than
+failed and an outside TERM is not restarted under `Restart=on-failure` (as before 0.6.6, when no handler was installed); a
+failed installation refuses the boot. A bad `agent-exec` recipe is 2, a
+missing `sot-capsule` or a state dir that is not private is 1 and no derivable config directory is 78. The guard exits as
+the daemon did, so a launcher sees these codes. Capsules are outside all of this by design (an update restart or a window
+Keep leaves them running).
+
+## Update (0.6.6): tested scope
+
+The daemon's lifetime is read on real daemons, real `sot-capsule` supervisors and real children
+(`rust/backend/tests/daemon_lifetime`), never from source text. On Linux: the guard exits as the daemon did (a close 0,
+the backstop 1, SIGKILL, SIGABRT) and forwards TERM, INT and HUP, also to the group; a lost guard ends the daemon within a
+second; the drain outlasts a forking child and ends only its own subtree; a killed daemon's REPL, Pluto (server, worker
+and tree) and Quarto (engine server, worker and tree) all end while the capsule stays and a successor adopts it; Pluto's
+notebook worker, outside Pluto's process group and spinning so it cannot end by itself, has ended by the time a closed
+daemon's guard exits; the main
+future's Ok, error and panic are 0, 1 and 101; INT and TERM end a daemon whose runtime is stalled and whose inherited mask
+blocks them, by the signal, and a test-owned service unit's stop ends inactive, not failed, with no restart; a close that
+outlasts its bound exits 1; `update.apply` against a pointer armed with the real
+updater, and the automatic update through the real stage, prepare and arm, exit 75, end the REPL's tree and leave the
+capsule, and the automatic one waits while a window is attached; a close and an update in either order keep the first one's
+exit; an update the daemon may not take leaves it serving; the updater's discovery and prepare commands end with the
+daemon. On macOS the hosted jobs compile the native launcher with and without its phase barriers, run its premises and
+the fence claim's on real children and run the crate's own lifecycle tests (the group recognition), and the window's
+pane-timing job starts plain-shell capsule rows on a test daemon, attaches to them and closes it, the daemon reporting
+every row ended and exiting 0. No agent session has run end to end on a Mac; the only rows a test starts there are the
+pane-timing job's plain shells; the successor and controlled-outcome cases are not built for macOS. Nothing more of the
+daemon's lifetime is tested on a Mac.
+Windows runs the crate's lifecycle tests: the per-child kill-on-close jobs, including that a killed daemon's
+contained tree ends with it, and the suspended interval above observed as the limit; that a capsule outlives a killed
+daemon there is the capsule suite's adoption case, through the product's own capsule spawn.
+
+Not tested, and stated as limits: macOS after an abrupt end of the daemon (by decision, above); on macOS, an agent
+session end to end, and the successor and controlled-outcome cases, which are not built there (they drive the Linux
+guard's launched process and read `/proc`); Windows console events
+(CTRL_C, CTRL_BREAK, CTRL_CLOSE), logoff and shutdown; the interval on Windows between a child's creation and its
+assignment to its job, in which a daemon death leaves one process that never ran (Windows abrupt-death coverage is the
+per-child jobs the daemon holds, which no daemon death outlives; there is no aggregate job, because it would end nothing
+the per-child jobs do not and would leave this same interval; std has no stable way to name a job at creation, which
+`CREATE_SUSPENDED` and a later assignment work around, and a `CreateProcessW` spawn with `PROC_THREAD_ATTRIBUTE_JOB_LIST`,
+as the pseudoconsole spawn already does, would close it); a binary built with `panic=abort`, a
+stack overflow, an allocation failure and the OS's out-of-memory kill; power loss.
 
 ## Update (0.6.6): hub relay locality
 
@@ -254,3 +336,25 @@ Foreign reports a refused boot, pid or creation-time claim and does not by itsel
 The Ctrl+Q prompt reads Tab and Enter by key identity; other non-repeat keys cancel and repeats do nothing. Final window teardown starts after the leave acknowledgement and any required notice presentation, or at an explicit second-close decision. Queued writes share a one-second OS-monotonic deadline, returning event loops use a one-second runtime shutdown timeout, and one independent three-second std-thread backstop bounds final process teardown. These intervals do not shorten the Close acknowledgement wait. A timed-out blocking task can continue until process termination; tests separately observe cleanup of a yielding task's owned child. The existing nonzero handover exit remains immediate.
 
 The macOS default menu remains enabled. Earlier T1 review recorded native Cmd+Q bypassing the Ctrl+Q prompt; this lane does not re-test or change that native menu route.
+
+## Update (0.6.6): the Linux lifetime guard
+
+A process the daemon starts is contained by ancestry on Linux. `main`'s serving prologue starts the durable parent (a
+capsule's birth parent, outside the daemon's tree), then `lifecycle::daemon_children::guard::install` forks: the
+launched process becomes the guard, a subreaper that blocks every catchable signal and reads them from a signalfd, and
+the daemon is its child with `PR_SET_PDEATHSIG` set to SIGKILL. The guard forwards every signal but SIGCHLD to the
+daemon and reaps. When the daemon is reaped it kills and reaps its own children until `waitpid` answers ECHILD, within
+`DRAIN_BOUND` (10 s), then exits as the daemon did: the daemon's code, or its signal with the default disposition and no
+core. A process the daemon started that moved to a group or session of its own is still a descendant, and an orphan goes
+to its nearest living subreaper ancestor, so it is a child of the guard when its parent ends. An unreaped child's pid is
+never reused, so the drain's kill cannot reach another process. The durable parent is born before the guard and never
+descends from it, so a capsule's supervisor is never drained: capsules stay outside the daemon's lifetime.
+
+On Linux, then, a process the daemon starts ends with the daemon, and a process a row's agent starts belongs to the row
+and survives (a capsule is outside the daemon's lifetime by design). Known limits: the guard's own loss ends the daemon at once and leaves its processes to the unit's
+cgroup or to end on their own; a brokered start and an uninterruptible kernel call are outside it (residual 7).
+
+macOS after an abrupt daemon end (SIGKILL, abort, a crash): nothing in 0.6.6 ends the daemon's children. macOS has no
+subreaper and no cgroup, a process group is left by `setsid` and Pluto's and Quarto's workers leave it, and macOS installs
+as experimental without service-manager wiring. This is a limit of an experimental platform, decided by the maintainer;
+every controlled end still kills each child's process group, and not a process that left it (residual 7).

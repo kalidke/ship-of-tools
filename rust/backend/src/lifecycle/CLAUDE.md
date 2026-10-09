@@ -1,10 +1,11 @@
 # rust/backend/src/lifecycle: lifecycle (charter)
 
 ## Idea
-Nothing outlives its owner unless designed to: every process the daemon starts, but those ADR 0050 names as outside,
-runs in its own containment, which its owner's release or the process-wide signal kills with everything it started,
-every exit is bounded on the OS clock, and the last window on a computer decides, through its lease, whether that
-computer's sessions end (ADR 0050).
+Nothing outlives its owner unless designed to or stated as a limit: every process the daemon starts, but those ADR 0050
+names as outside, runs in its own containment (a process group on Unix, a job on Windows), which its owner's release or
+the process-wide signal kills with everything still in it (a process that left its Unix group outlives that kill and,
+on Linux, ends at the daemon's end: ADR 0050, residual 7), every exit is bounded on the OS clock, and the last window
+on a computer decides, through its lease, whether that computer's sessions end (ADR 0050).
 
 ## Owns
 - The window leases and `<state>/held.json`: `Leases`, `read_record`, `write_or_delete` (`crate::lifecycle::lease`, the file
@@ -12,11 +13,16 @@ computer's sessions end (ADR 0050).
 - The lease ops `fe.lease`, `fe.leaving`, `fe.notice_seen` (`lease::hold`) and the 1 s `lease::ticker`.
 - The start plan Resume, Pending or Cleanup: `startup::begin`, `lease::startup_plan`.
 - The close and its backstop `exit(1)`: `shutdown::run`, `shutdown::end_rows`.
+- The serving daemon's controlled ends and what each does first: `shutdown::exit` (the one raw exit),
+  `shutdown::exit_by_signal` (INT and TERM: the same fire, then the signal), `shutdown::terminal`; INT and TERM:
+  `signal_exit::install`.
 - The child signal and the containment: `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`,
-  `Contained`, `ContainedStd`, `fire`, `live_children`, `reset_child_signal`; contain.rs `Tree`, `prepare`, `adopt`,
+  `Contained`, `Contained::wait_until_exited`, `ContainedStd`, `Signal::fire`, `reset_child_signal`; contain.rs `Tree`,
+  `prepare`, `adopt`,
   `exited`, `exited_pid`.
 - Which process starts stand outside the containment: the process-spawns group of `rust/clippy.toml` and each
   exception's allow.
+- The Linux lifetime guard: `daemon_children::guard` (`require_one_thread`, `install`, `drain`, `guard_pid`).
 - The bounds and exit codes in `sot_protocol::ops::lease`.
 - The window's half, rust/frontend/src/lease.rs.
 
@@ -36,19 +42,49 @@ computer's sessions end (ADR 0050).
   the listener, then calls `shutdown::run`), ends rows without resuming any (`end_rows`), counts each row not confirmed
   ended, and a backstop thread exits 1 at `bounds::SHUTDOWN_BOUND` (`shutdown::run`, step 0).
 - A close that finishes exits 0 (`bounds::EXIT_REQUESTED_SHUTDOWN`); the update restart exits 75 and only while no
-  shutdown has begun (`Leases::while_open`, called by update.rs).
+  shutdown has begun: update.rs commits it with `Leases::commit_update`, which moves the phase to `Updating` under the
+  lease lock, so no close begins afterwards, and exits outside the lock.
+- Every controlled end of the serving daemon takes one terminal, `shutdown::exit`: it fires the child signal on a thread of
+  its own (each contained tree is asked to end), waits at most `FIRE_WAIT` (2 s) for the answer, logs a failed request or
+  a fire still running, and makes the process's one raw exit with the code it was given; when no thread can be started
+  for the fire it exits without it, logging that. The codes: 0 (a finished close, an Ok main
+  result), 1 (an error, a boot refusal, the backstop), 2 (a bad `agent-exec` recipe), 75 (the update restart), 78 (no
+  config directory), 101 (a panic of the main future); INT and TERM take the same fire and then end the daemon by the
+  signal itself with its default action (`shutdown::exit_by_signal`), so a service manager counts the stop as clean and a
+  shell reads 130 and 143; a death by an uncatchable signal, an abort or a raw exit elsewhere is the guard's and the OS's,
+  not this terminal's. `main` turns the main future's result into
+  its code while the runtime still exists (`complete_main`). INT and TERM are caught on a thread of their own with a
+  runtime of its own, unblocked whatever mask the daemon inherited and checked to be deliverable, so a stalled main runtime
+  does not hold them; a failed installation refuses the boot (`signal_exit::install`). The wait is bounded because a child
+  creation stalled in the OS holds the registry mutex the fire needs: no exit, the backstop's included, depends on it. A
+  request is not a death: on Linux the guard ends what is left, and on macOS the controlled ends are the only ones that end
+  the daemon's children (ADR 0050).
+- On Linux a process the daemon starts, at any depth, ends within `DRAIN_BOUND` of the daemon's end, however the daemon
+  ends, unless a broker started it, the guard itself was killed, or a kernel call is uninterruptible: every serving
+  daemon is the child of a guard that is a subreaper and kills its own children until it has none, then exits as the
+  daemon did (`daemon_children::guard`). A capsule is outside it by design, and the durable parent is born before the
+  guard, so it never descends from it.
 - `fire()` is permanent: the signal is never reset for the life of the process (`Signal::fire`).
 - `Contained::wait_until_exited` observes its owned direct child's exit without releasing containment or reaping it. Cancelling that wait retains the child's identity and owner; checked wait/kill still request tree termination before direct-child reap.
-- A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything it started when its owner
-  kills, waits for or drops its `Contained` or `ContainedStd`, or the signal fires; its leader is reaped only after
+- A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything still in its process group
+  (Unix) or job (Windows) when its owner kills, waits for or drops its `Contained` or `ContainedStd`, or the signal
+  fires; a process that left its Unix group is not killed then (on Linux the guard ends it at the daemon's end; ADR
+  0050, residual 7); its leader is reaped only after
   that kill, and neither type hands its caller the child to reap (`Contained::wait`, `ContainedStd::wait`;
-  `exited_pid` uses `WNOWAIT`); a start is refused before anything is created
-  once the signal has fired, and a child created while it fires is counted from before its creation and killed when it
-  registers, so the shutdown's 3 s wait for its children (`CHILDREN_WAIT`) covers it (`Signal::reserve`, `Held::fill`);
-  a start that stalls longer than that between creation and registration is counted but can outlive the exit: on Unix
-  its group is not registered yet; on Windows a pause before job assignment leaves it suspended outside any job, while
-  a pause after it (`contain::adopt` assigns, then resumes) leaves it running inside its kill-on-close job, whose last
-  handle the daemon holds, so the daemon's exit ends it.
+  `exited_pid` uses `WNOWAIT`). Creation through adoption and registration holds the registry mutex that `fire` takes
+  (`Signal::reserve`, `Provisional`, `Held::fill`): a start is refused before anything is created once the signal has
+  fired, and a child created while it fires is either registered and requested or cleaned up by its provisional owner,
+  on an error or an unwind too. `fire` attempts every registered tree, reports every failed request and waits for no
+  death and no child count; the shutdown has no grace period. An OS creation or adoption that never returns holds the
+  mutex and so delays `fire`: that is the stated kernel limit.
+- `ContainedStd::wait_within` bounds the wait for a live leader. At the bound `Ok(None)` confirms successful
+  tree-termination requests and a direct-child reap; it does not confirm descendant death. Probe, request and reap errors
+  are returned, both reasons kept when a probe and a cleanup both fail. An OS termination or reap has no wall-clock ceiling.
+- A request is checked: a group and its unreaped leader are asked independently, only ESRCH counts as already gone,
+  and the owner reaps the leader only after the requests succeed. On macOS alone a group request refused with EPERM
+  counts as no live member only when the retained leader is seen exited unreaped and a complete libproc membership and
+  status query, taken twice, finds every member a zombie of that group (`contain::macos::checked_no_live_group`); a live
+  member, a failed or an ambiguous observation keeps the original error.
 - `main` resets `SIGCHLD` to its default and unblocks it in the main thread before anything else (`reset_child_signal`),
   so neither an ignored nor a blocked one inherited from the parent can make the kernel reap a contained leader early or
   keep `Contained::wait` from seeing its exit; the main thread lives as long as the daemon, so the signal always has a
@@ -58,7 +94,7 @@ computer's sessions end (ADR 0050).
   "Disallowed methods" step fails on any other. The group holds every way std and tokio start a process, portable-pty's
   `spawn_command`, libc's `fork`, `vfork`, `posix_spawn`, `posix_spawnp`, `execv`, `execve`, `execvp` and `system`,
   windows-sys's `CreateProcessW`, `CreateProcessA`, `CreateProcessAsUserW` and `CreateProcessAsUserA`, `LinkGate`'s
-  `spawn_sync`, `spawn_async` and `probe`, and the updater's four entries (rust/updater/CLAUDE.md). Not held:
+  `spawn_sync`, `spawn_async` and `probe`, and no updater entry: the updater requires its caller's `Spawner` and starts no process itself (rust/updater/CLAUDE.md). Not held:
   - other process starts in libc and windows-sys, among them libc's other exec, fork and spawn functions and `popen`,
     and windows-sys's `CreateProcessWithLogonW`, `CreateProcessWithTokenW`, `WinExec`, `ShellExecute*`,
     `SHCreateProcessAsUserW` and `SHOpenWithDialog`, called nowhere in the workspace today (libc:
@@ -103,8 +139,8 @@ computer's sessions end (ADR 0050).
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `startup::begin`, `lease::ticker`,
 `Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
-`Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::while_open`, `Signal::spawn`, `Signal::spawn_std`,
-`Signal::output`, `Contained`, `Contained::wait_until_exited`, `ContainedStd`, `Signal`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
+`Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::commit_update`, `shutdown::exit`, `signal_exit::install`, `Signal::spawn`, `Signal::spawn_std`,
+`Signal::output`, `daemon_children::guard`, `guard_pid`, `Contained`, `Contained::wait_until_exited`, `ContainedStd`, `ContainedStd::wait_within`, `Signal`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
 `reject`, `write_frame_within`, `write_frame_to`, `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`,
 `close_gate_and_settle`, `remove_row_files`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `deploy/sotd.service`, `sot-apply.sh`, Dial.
@@ -114,14 +150,25 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `rust/frontend/src/lease.rs`: a file, the window's half.
 
 ## Files
-- `child_signal.rs`: the process-wide signal, the registry of contained trees, the contained children (`Contained`,
-  `ContainedStd`) and the live-child count. It also owns observation-only `Contained::wait_until_exited` and its native cancellation/retained-identity controls.
-- `contain.rs`: the platform half of containment: the process group or job, adopting a child, the kill.
+- `child_signal.rs`: the process-wide signal, the registry of contained trees and its creation mutex, the provisional
+  owner of a created child, and the contained children (`Contained`, `ContainedStd`), with the observation-only
+  `Contained::wait_until_exited`.
+- `daemon_children/`: what ends with a daemon: the Linux lifetime guard (see its page).
+- `contain.rs`: the platform half of containment: the process group or job, adopting a child, the checked kill, and on
+  macOS the recognition of a finished group.
 - `lease.rs`: the window lease: `Leases`, the grant rule, the lease connection (`hold`), `held.json` and the start plan.
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.
-- `mod.rs`: declares the five modules.
-- `shutdown.rs`: the close, its backstop and the row ends.
+- `mod.rs`: declares the seven modules, the held points (feature `daemon-lifetime-faults`) and the test module.
+- `shutdown.rs`: the close, its backstop, the row ends and the daemon's one terminal exit.
+- `signal_exit.rs`: the thread that catches INT and TERM and ends the daemon through the terminal's fire and then by the
+  caught signal.
+- `start_tests.rs`: tests of child creation against the fire, checked termination requests and partial births (an error
+  or an unwind between creation and registration), on real processes. They are in-crate because they reach `Signal` and
+  `contain`; the daemon-lifetime harness is a separate test binary and cannot.
+- `start_tests_windows.rs`: the Windows half: a suspended start cannot be outwaited, job requests are checked, a killed daemon's contained tree ends with it, and the suspended interval between creation and the job assignment is observed as ADR 0050's limit (a re-run of the test binary plays the daemon, inside a job of the case's own; `SOT_L2_NO_JOB_ASSIGNMENT` and `SOT_L2_PAUSE_ADOPT` are its two faults in `contain::assign`). That a capsule outlives a killed daemon is the capsule suite's adoption case (`capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning_a_second_one`), through the product's own capsule spawn.
+- `start_tests_macos.rs`: the macOS half: the recognition of a finished group before the reap, with injected observation faults.
 - `startup.rs`: the start's decision from `held.json` and acting on it.
+- `test_gates.rs`: the held points of the daemon-lifetime harness (feature `daemon-lifetime-faults`, `SOT_TEST_GATES`): a point waits until the case creates its file; an installed binary has none.
 
 ## Start here
 `startup::begin` for what a start does; `shutdown::run` for the close and its order; `child_signal.rs` before a change

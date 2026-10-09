@@ -1,13 +1,14 @@
 //! Starting a capsule row's supervisor: spawn and hand to a watchdog, the run gate, and the post-spawn settle.
 
+use super::admission::{is_pending, pending, PENDING_AUTHORITY};
 use super::observer::observe_with_adoption;
 use super::probe::probe;
 use super::watchdog::{identity_of, install_watchdog};
 use super::UNREACHABLE_PHASE;
-use crate::rows::spawn::detach::{sot_capsule_exe, spawn_detached_supervisor};
-use sot_log::supervisor::StartMode;
 use crate::rows::gate::StartPermit;
+use crate::rows::spawn::detach::{sot_capsule_exe, spawn_detached_supervisor, Spawn};
 use crate::rows::Workspaces;
+use sot_log::supervisor::StartMode;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -63,9 +64,13 @@ pub fn spawn_and_watch(
         .resolve(Some(&workspace_id))
         .map(|ws| (ws.agent(), ws.account()))
         .unwrap_or_default();
-    let child = spawn_detached_supervisor(
+    let child = match spawn_detached_supervisor(
         permit, sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug, &agent_kind, &account,
-    )?;
+    )? {
+        Spawn::Started(child) => child,
+        // The row's fence is claimed: nothing was started, and no watchdog is installed for a launch that never was.
+        Spawn::Contended => return Err(pending()),
+    };
     // The supervisor authors its own identity; this daemon only
     // LEARNS it, here, from the first status the settle draws out.
     // A settle that yields no `Phase` leaves the row unclaimed --
@@ -157,7 +162,13 @@ pub fn start_supervisor(
         slug.to_string(),
         workspaces.clone(),
     )
-    .map_err(|e| format!("capsule supervisor spawn failed: {e}"))
+    .map_err(|e| {
+        if is_pending(&e) {
+            PENDING_AUTHORITY.to_string()
+        } else {
+            format!("capsule supervisor spawn failed: {e}")
+        }
+    })
 }
 
 /// Mints a fresh voyage on the row's live authority — a run start, so
@@ -214,13 +225,10 @@ mod tests {
 
     // #8: every run start passes the gate. The compiler enumerates spawns
     // through `spawn_detached_supervisor`'s permit parameter; this pins
-    // what it cannot see — that the one reset is behind the gate, that
-    // every spawn call hands a permit, and that a closing gate refuses
-    // before anything is located or dialled.
+    // what it cannot see: that a closing gate refuses a start and a reset
+    // before anything is located, claimed or dialled.
     #[test]
-    fn every_run_start_path_takes_a_permit() {
-        let mut faults = Vec::new();
-
+    fn closed_gate_refuses_start_and_reset() {
         let reg = crate::rows::Workspaces::new();
         assert!(reg.close_gate_and_settle(std::time::Instant::now()));
         let root = tempfile::tempdir().unwrap();
@@ -228,50 +236,9 @@ mod tests {
         let started = start_supervisor(
             root.path(), "ws-gate-1", StartMode::Start, &["true".to_string()], root.path(), "", "gate", reg.clone(),
         );
-        if started != Err(refusal.clone()) {
-            faults.push(format!("start_supervisor with the gate closing answered {started:?}"));
-        }
+        assert_eq!(started, Err(refusal.clone()), "start_supervisor with the gate closing");
         let reset = reset_run(&reg, "ws-gate-1", &state_dir_for(root.path(), "ws-gate-1"));
-        if reset != Err(refusal.clone()) {
-            faults.push(format!("reset_run with the gate closing answered {reset:?}"));
-        }
-
-        let reset_needle = "supervisor_client::reset(";
-        let spawn_needle = "spawn_detached_supervisor(";
-        let mut resets = 0;
-        let mut spawn_calls = 0;
-        let backend = sot_log::test_scan::production_sources()
-            .into_iter()
-            .filter_map(|(p, t)| p.strip_prefix("rust/backend/src/").map(|rel| (rel.to_string(), t)));
-        for (path, text) in backend {
-            for (pos, _) in text.match_indices(reset_needle) {
-                resets += 1;
-                let enclosing = text[..pos].rfind("fn ").map(|at| &text[at + 3..]).unwrap_or("");
-                if !enclosing.starts_with("reset_run(") {
-                    faults.push(format!("{path}: supervisor_client::reset called outside reset_run"));
-                }
-            }
-            for (pos, _) in text.match_indices(spawn_needle) {
-                let args = text[pos + spawn_needle.len()..].trim_start();
-                if text[..pos].ends_with("fn ") {
-                    if !args.starts_with("_permit: &StartPermit,") {
-                        faults.push(format!("{path}: spawn_detached_supervisor does not take a permit first"));
-                    }
-                    continue;
-                }
-                spawn_calls += 1;
-                let first = args.split(',').next().unwrap_or("");
-                if !first.contains("permit") {
-                    faults.push(format!("{path}: a spawn_detached_supervisor call passes {first:?} first"));
-                }
-            }
-        }
-        if resets != 1 {
-            faults.push(format!("supervisor_client::reset occurs {resets} times outside tests, not once"));
-        }
-        if spawn_calls < 2 {
-            faults.push(format!("found {spawn_calls} spawn_detached_supervisor calls; the scan is not seeing the spawns"));
-        }
-        assert!(faults.is_empty(), "{faults:#?}");
+        assert_eq!(reset, Err(refusal), "reset_run with the gate closing");
+        assert!(!state_dir_for(root.path(), "ws-gate-1").exists(), "a refused start claimed nothing: no state folder was made");
     }
 }

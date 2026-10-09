@@ -197,6 +197,23 @@ impl Env {
         let child = self.daemon.borrow_mut().take();
         if let Some(child) = child {
             kill_and_wait_bounded(child).await;
+            // On Linux the launched process is the daemon's lifetime guard and the daemon is its child: the daemon
+            // ends a moment after the guard is reaped, and until it has, its socket still answers, so a restart that
+            // connected at once would reach the dying daemon.
+            #[cfg(target_os = "linux")]
+            poll_until(
+                || {
+                    let socket = self.socket_path.clone();
+                    async move {
+                        std::os::unix::net::UnixStream::connect(socket)
+                            .is_err()
+                            .then_some(())
+                    }
+                },
+                BOUND,
+                "the killed daemon's socket to stop answering",
+            )
+            .await;
         }
     }
 

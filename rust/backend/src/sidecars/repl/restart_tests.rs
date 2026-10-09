@@ -103,7 +103,7 @@ impl Fixture {
 
     /// Ends every child this fixture started, then removes only its own root.
     async fn finish(self) {
-        self.sig.fire();
+        self.sig.fire().expect("fire");
         within(Duration::from_secs(60), "owned children reaped", || {
             self.sig.live() == 0
         })
@@ -241,7 +241,7 @@ async fn channel_close_finishes_streamed_runs() {
     }
     assert_eq!(kinds.last().map(String::as_str), Some("done"));
     assert!(kinds.contains(&"error".to_owned()), "an error precedes the done: {kinds:?}");
-    sig.fire();
+    sig.fire().expect("fire");
     within(Duration::from_secs(60), "owned children reaped", || sig.live() == 0).await;
     std::fs::remove_dir_all(&root).expect("remove the owned fixture root");
 }

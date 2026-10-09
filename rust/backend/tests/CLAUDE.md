@@ -38,6 +38,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `subcommand_help.rs`: server; every `sotd` subcommand's `--help` prints usage and dials nothing
 - `topology_set.rs`: topology; `topology.set` and `topology.changed` over the wire; a hub daemon started from umask 022 creates its comm files owner-only
 - `window_start.rs`: lifecycle; a daemon's start from `held.json`, resumed or ended rows
+- `daemon_lifetime/`: lifecycle; the harness of lane L2: native launcher and fence-claim premises on real children, a successor daemon against a held capsule birth, and, on Linux, the lifetime guard, the daemon's controlled outcomes and the update outcomes on real daemons (own page; needs the barrier build)
 - `capsule_workspaces/`: rows; a real `sotd` and a real detached `sot-capsule` over a real local socket (`main.rs` plus modules); `session_env.rs`: a session's `SOTD_BIN` is the daemon's own start path, over an inherited value and, on Linux, after an in-place update; each test's row ends through its own supervisor, and its folders are kept, with a report, when that end is not confirmed
 - `lane_bridge/`: rows and topology; a frontend attach client reaching a capsule row through a daemon and a test-owned relay, plus explicitly spawned SSH stand-ins
 - `switch_latency/`: server; a slow request does not block a later cheap reply on one connection; its `dead_kernel` module is sidecars
@@ -62,6 +63,9 @@ shows the shape.
   or link of the built binary. Both drop every inherited `SOT_` variable, which `daemon_boot.rs` shows on Linux (a
   started daemon holds only the `SOT_` variables its test set); `sotd_exe`, the built binary's path, is private there.
 - A suite writes a comm registry only through `support::write_registry`, which takes the registry lock as the daemon and the comm scripts do (`daemon_boot.rs` scans this folder for any other write).
+- On Linux the `sotd` a suite launches is the daemon's lifetime guard and the daemon is its child: killing the launched process
+  ends the daemon a moment later, so `Env::kill_daemon_bounded` waits until the daemon's socket stops answering before it
+  returns, and a restart never reaches the dying daemon.
 - Every wait is bounded: `support::poll_until` and `BOUND`; a suite waits on a child process with `sot_log::test_isolated`'s `wait_within` or `drain(..).wait_within(..)` (`stdio_bridge.rs`, `shell_dial.rs`); `session_env.rs`'s `OwnedRow` instead polls its daemon's exit with `try_wait` within `BOUND`, since it also runs while a test unwinds, where a second panic would abort.
 - A test that reads a stream it accepted makes it blocking (macOS keeps a non-blocking listener's `O_NONBLOCK` on an
   accepted socket; Linux does not) and bounds those reads by a deadline it owns, such as waiting for the reading

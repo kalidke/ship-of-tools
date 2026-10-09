@@ -5,6 +5,11 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+# Test-only controls for tests/daemon_lifetime (phase barriers in the supervisor and the native launcher). Never in an
+# installed build: nothing enables it but a test run that asks for it by name.
+daemon-lifetime-faults = ["sot-log/native-barrier"]
+
 [dependencies]
 sot-protocol = { path = "../protocol" }
 sot-updater = { path = "../updater" }

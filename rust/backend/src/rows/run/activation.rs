@@ -1,5 +1,6 @@
 //! Activation: the one boundary that starts, resumes or (for a selection) retires and resets a capsule row's run.
 
+use super::admission::{is_pending_text, PENDING_AUTHORITY};
 use super::observer::observe_with_adoption;
 use super::probe::probe;
 use super::start::{reset_run, start_supervisor};
@@ -182,6 +183,11 @@ pub(super) const ACTIVATION_MAX_REPROBES: u32 = 50;
 /// hazard to close properly -- deleted).
 pub(super) const ACTIVATION_REPROBE_INTERVAL: Duration = Duration::from_millis(200);
 
+/// How many re-probe passes [`ensure_started`] waits for a claimed authority fence to become an answering supervisor
+/// before it reports the row's authority pending (25 passes of [`ACTIVATION_REPROBE_INTERVAL`], 5 s). The guard is
+/// released between passes, so the claim's holder can finish and the row's other operations are not held behind it.
+const ADMISSION_PENDING_PASSES: u32 = 25;
+
 /// The ONE shared activation boundary for every caller: guard, inert-anchor refusal, then start/resume/(Selection-only) retire+reset. BLOCKING.
 pub fn ensure_started(
     state_root: &Path,
@@ -197,6 +203,7 @@ pub fn ensure_started(
         return Err("unknown workspace".to_string());
     };
     let mut reprobes: u32 = 0;
+    let mut pending_passes: u32 = 0;
     // Round-9 BLOCKER: the identity of the fresh authority THIS
     // activation itself spawned to retire an ended row, carried
     // across passes -- see `ensure_started_locked`'s own doc for why.
@@ -259,6 +266,18 @@ pub fn ensure_started(
                 // `settle_after_spawn`'s own wait.
                 std::thread::sleep(ACTIVATION_REPROBE_INTERVAL);
             }
+            // The row's authority fence is claimed: a supervisor still coming up, or a birth in flight. Nothing was
+            // started. Wait for it with the guard released; at the bound the row's authority is reported pending,
+            // never attached to and never replaced.
+            LockedStep::Pending => {
+                pending_passes += 1;
+                if pending_passes > ADMISSION_PENDING_PASSES {
+                    ws.set_activation_error(Some(PENDING_AUTHORITY.to_string()));
+                    return Err(PENDING_AUTHORITY.to_string());
+                }
+                drop(held);
+                std::thread::sleep(ACTIVATION_REPROBE_INTERVAL);
+            }
         }
     }
 }
@@ -271,6 +290,8 @@ enum LockedStep {
     /// may be made from -- see [`is_resting_phase`]'s own doc for
     /// the invariant, and [`ensure_started`]'s own loop for the wait.
     WaitForSettle,
+    /// A start found the row's authority fence claimed (`admission`): wait for the claim's holder, bounded.
+    Pending,
 }
 
 /// [`ensure_started`]'s guard-held body, after membership/inert-anchor/activation-error clear.
@@ -329,6 +350,7 @@ fn ensure_started_locked(
                 state_root, workspace_id, StartMode::Start, &argv, project_root, agent_name, slug, workspaces.clone(),
             ) {
                 Ok(p) => p,
+                Err(e) if is_pending_text(&e) => return LockedStep::Pending,
                 Err(e) => return LockedStep::Done(Err(e)),
             };
             (Some(()), phase)
@@ -338,6 +360,7 @@ fn ensure_started_locked(
                 state_root, workspace_id, agent_kind, agent_name, slug, project_root, workspaces.clone(),
             ) {
                 Ok(p) => p,
+                Err(e) if is_pending_text(&e) => return LockedStep::Pending,
                 Err(e) => return LockedStep::Done(Err(e)),
             };
             (Some(()), phase)
@@ -405,6 +428,7 @@ fn ensure_started_locked(
                 state_root, workspace_id, StartMode::Resume, &argv, project_root, agent_name, slug, workspaces.clone(),
             ) {
                 Ok(p) => p,
+                Err(e) if is_pending_text(&e) => return LockedStep::Pending,
                 Err(e) => return LockedStep::Done(Err(e)),
             };
             // Remember which authority THIS pass just spawned (a

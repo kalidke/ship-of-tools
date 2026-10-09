@@ -50,7 +50,7 @@ mod tests {
     use crate::topology::dial::tests::{prepend_to_path, wait_for_marker, write_ssh_script};
 
     /// A forwarded comm.file call is cut short by its own timeout or by the
-    /// shutdown signal, and either way the ssh child dies and is no longer counted.
+    /// shutdown signal, and either way the ssh child dies and is reaped.
     #[cfg(unix)]
     #[test]
     fn forward_comm_file_kills_its_ssh_child_on_timeout_and_on_shutdown() {
@@ -71,7 +71,7 @@ mod tests {
                     if by_shutdown {
                         assert!(wait_for_marker(&pid_file));
                         std::thread::sleep(std::time::Duration::from_millis(200));
-                        sig.fire();
+                        sig.fire().expect("fire");
                     }
                 }
             });
@@ -83,9 +83,9 @@ mod tests {
             let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
             let gone = (0..100).any(|_| {
                 std::thread::sleep(std::time::Duration::from_millis(30));
-                !alive(pid) && sig.live() == 0
+                !alive(pid)
             });
-            assert!(gone, "the ssh child survived (shutdown={by_shutdown}) or is still counted");
+            assert!(gone, "the ssh child survived (shutdown={by_shutdown}) or was not reaped");
         }
     }
 }

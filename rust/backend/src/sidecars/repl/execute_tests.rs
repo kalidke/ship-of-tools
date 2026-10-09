@@ -181,8 +181,8 @@ async fn res_without_done_closes_started_run() {
     let r = run_case(&workspaces, &session, &mut bus, "resonly", eval_payload(&id, "1", None)).await;
     assert_eq!(r.reply, refusal(&id, "error", "nope"));
     assert_closed_once(&r);
-    crate::lifecycle::child_signal::fire();
-    within(Duration::from_secs(60), "owned children reaped", || crate::lifecycle::child_signal::live_children() == 0).await;
+    crate::lifecycle::child_signal::process().fire().expect("fire");
+    within(Duration::from_secs(60), "owned children reaped", || crate::lifecycle::child_signal::process().live() == 0).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 

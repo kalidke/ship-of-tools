@@ -108,10 +108,13 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `.sot/hosts.toml.example` | disk | topology | `.sot/hosts.toml.example` |
 | `.sot/{settings,keybindings}.toml.example` | disk | fe-ui | `.sot/settings.toml.example`; `.sot/keybindings.toml.example` |
 | process `sotd` | process | server | `rust/backend/src/main.rs` `main` |
+| the Linux lifetime guard (the launched process, the daemon's parent and a subreaper; it kills what the daemon started when the daemon ends) | process | lifecycle | `rust/backend/src/lifecycle/daemon_children/guard.rs` `require_one_thread`, `install`, `drain`, `guard_pid` |
 | process `sot` (the window) | process | fe-ui | `rust/frontend/src/main.rs` `main` |
 | starting this computer's daemon (`sot_daemon_ensure`, `sot-local-daemon.ps1`) | process | distribution | `scripts/lib/sot-daemon.sh` `sot_daemon_ensure`; `scripts/sot-local-daemon.ps1` |
 | window supervisor (respawn on 75/76, crash-loop rollback) | process | distribution | `scripts/launch-sot.ps1`; `scripts/lib/sot-daemon.sh` `render_sot_launch` |
-| process `sot-capsule supervise` (spawned by rows) | process | capsule | `rust/log/src/bin/sot-capsule.rs`; `rust/log/src/supervisor/mod.rs` `supervise`; spawn `rust/backend/src/rows/spawn/detach.rs` `spawn_detached_supervisor` |
+| process `sot-capsule supervise` (spawned by rows) | process | capsule | `rust/log/src/bin/sot-capsule.rs`; `rust/log/src/supervisor/mod.rs` `supervise`; spawn `rust/backend/src/rows/spawn/detach.rs` `spawn_detached_supervisor`, forked by the durable parent `rust/backend/src/rows/spawn/durable/accept.rs` `accept` (Windows: created by `spawn_detached`) |
+| process `sotd durable-parent` (the capsule-only birth parent, one per daemon, started once in `main`'s prologue before the runtime, never restarted) | process | rows | `rust/backend/src/rows/spawn/durable/parent.rs` `run`; start `rust/backend/src/rows/spawn/durable/proxy.rs` `start_before_runtime` |
+| a capsule birth's claim on `<sd>/supervisor.lock`, carried from acceptance to the supervisor's first act | disk, lock | capsule | `rust/log/src/supervisor/birth_claim.rs` `BirthClaim`; `rust/log/src/host/lock.rs` `HandoverLock`; adoption `rust/log/src/supervisor/main_loop.rs` `take_authority`; taken by `rust/backend/src/rows/spawn/durable/accept.rs` `accept` |
 | process `sot-capsule run` (leg) | process | capsule | `rust/log/src/supervisor/leg.rs` `build_run_command`; `rust/log/src/capsule/writer_loop/mod.rs` `run` |
 | the agent program (claude, codex): the launch recipe (the leg runs it) | process | agents | `rust/backend/src/agents/argv.rs` `agent_argv`; `rust/log/src/capsule/producer/pty/mod.rs`; `rust/log/src/capsule/producer/conpty/producer.rs` |
 | Julia kernel per workspace | process | sidecars | `rust/backend/src/sidecars/kernel.rs` `Kernel`, `run_one_generation` |
@@ -121,7 +124,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | monitor sampler (`bash -s`, `ssh <alias> bash -s`) | process | sidecars | `rust/backend/src/sidecars/monitor.rs` `spawn_source`, `SAMPLER_SH` |
 | quarto render child | process | pages | `rust/backend/src/pages/ops.rs` `run_quarto` |
 | `git` child of a site open | process | pages | `rust/backend/src/pages/site/links.rs` `run_git` |
-| `gio trash` | process | files | `rust/backend/src/files/io.rs` `trash_file` |
+| `gio trash` and its wait budget | process, deadline | files | `rust/backend/src/files/io.rs` `trash_file`, `TRASH_WAIT`; `rust/backend/src/lifecycle/child_signal.rs` `ContainedStd::wait_within` |
 | hub-link ssh | process | messaging | `rust/backend/src/comm/mail/hub_link.rs` `recipe_for`, `link_once` |
 | comm forward ssh (guest to hub) | process | messaging | `rust/backend/src/comm/mail/forward.rs` `forward_comm_file` |
 | `sotd stdio-bridge` | process | topology | `rust/backend/src/topology/stdio_bridge.rs` `run`, `connect` |
@@ -132,10 +135,11 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | page-proxy ssh per browser connection | process | pages | `rust/frontend/src/pages.rs` `pipe_one`, `dial` |
 | browser opener | process | pages | `rust/frontend/src/pages.rs` `open_url_in_browser`, `open_html_in_browser` |
 | drawer shell (portable-pty) | process | fe-ui | `rust/frontend/src/ui/drawer/terminal/pty.rs` `LocalTerminal`, `spawn` |
-| updater children (curl, gh, tar, julia instantiate, npm) | process | distribution | `rust/updater/src/fetch/mod.rs`; `rust/updater/src/fetch/archive.rs`; `rust/updater/src/prepare.rs` |
+| updater children (curl, gh, tar, zipinfo, unzip, PowerShell, git, julia instantiate, npm) | process | distribution | `rust/updater/src/fetch/mod.rs`; `rust/updater/src/fetch/archive.rs`; `rust/updater/src/prepare.rs`; daemon lifetime through `rust/backend/src/update.rs` `UpdaterSpawner`, window lifetime through `rust/frontend/src/selfupdate.rs` `WindowSpawner` |
+| updater caller spawning policy, `Spawner` | interface | distribution | `rust/updater/src/spawn.rs` `Spawner`; `rust/backend/src/update.rs` `UpdaterSpawner`; `rust/frontend/src/selfupdate.rs` `WindowSpawner` |
 | `systemctl` calls of the relay refresh | process | topology | `rust/backend/src/topology/relay_units.rs` `run_systemctl` |
 | turn auditor (`claude -p`) | process | messaging | `comm/work_state/comm-turn-auditor.sh` |
-| sotd tokio runtime and accept loop | thread | server | `rust/backend/src/main.rs` `main`; `rust/backend/src/server/listen.rs` `run_local` |
+| sotd tokio runtime and accept loop | thread | server | `rust/backend/src/main.rs` `main`, `runtime` (built after the serving prologue); `rust/backend/src/server/listen.rs` `run_local` |
 | per-connection task and writer | thread | server | `rust/backend/src/server/conn.rs` `handle_connection`, `serve_control`; `rust/backend/src/server/reply.rs` `write_frame_within` |
 | off-loop job pool (4 per connection) | thread, lock | server | `rust/backend/src/server/reply.rs` `spawn_job`, `OFFLOOP_CONCURRENCY` |
 | lease ticker (1 s) | thread | lifecycle | `rust/backend/src/lifecycle/lease.rs` `ticker`, `tick` |
@@ -154,6 +158,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | window UI thread | thread | fe-ui | `rust/frontend/src/main.rs` `main`; `rust/frontend/src/ui/app/mod.rs` |
 | `sot-transport` runtime (one worker) | thread | fe-net | `rust/frontend/src/main.rs` `main`; `rust/frontend/src/net/hosts.rs` `spawn_transports` |
 | `sot-relaunch-watch` | thread | distribution | `rust/frontend/src/relaunch.rs` `spawn_watcher` |
+| `sot-signal-exit` (INT and TERM, with a runtime of its own) | thread | lifecycle | `rust/backend/src/lifecycle/signal_exit.rs` `install` |
 | `sot-fe-command-watch` | thread | fe-ui | `rust/frontend/src/ui/control/file_channel.rs` |
 | `sot-selfupdate` | thread | distribution | `rust/frontend/src/selfupdate.rs` `spawn_startup_selfcheck` |
 | `sot-term-reader` | thread | fe-ui | `rust/frontend/src/ui/drawer/terminal/pty.rs` `run_reader` |
@@ -243,13 +248,17 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | sotd subcommand `ancestors` | CLI | messaging | `rust/backend/src/comm/registry/ancestors.rs` `run` |
 | sotd subcommand `trust declare` | CLI | agents | `rust/backend/src/agents/trust_declaration.rs` `declare_trust`; routing `rust/backend/src/main.rs` |
 | sotd subcommand `agent-exec` | CLI | agents | `rust/backend/src/agents/ops.rs` `agent_exec` |
+| sotd subcommand `durable-parent` (private; its standard input is the daemon's channel) | CLI | rows | `rust/backend/src/rows/spawn/durable/parent.rs` `run`; routing `rust/backend/src/main.rs` |
 | sot flags `--dial`, `--socket` | CLI | fe-net | `rust/frontend/src/cli.rs` `Cli`; `rust/frontend/src/net/dial.rs` `parse_dial_arg`, `resolve_connections` |
 | sot flags `--capture`, `--ephemeral` | CLI | fe-ui | `rust/frontend/src/cli.rs` `Cli`; `rust/frontend/src/ui/render/capture.rs` |
 | sot flag `--no-lease` | CLI | lifecycle | `rust/frontend/src/lease.rs` `lease_exempt` |
 | sot flags `--update-status`, `--relaunched` | CLI | distribution | `rust/frontend/src/selfupdate.rs` `print_status`; `rust/frontend/src/cli.rs` `Cli` |
 | sot flag `--token`, `SOT_TOKEN` | CLI | fe-net | `rust/frontend/src/cli.rs` `Cli` |
 | sotd exit 0 (requested shutdown) | exit code | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `REASON`; `rust/protocol/src/ops/lease.rs` `EXIT_REQUESTED_SHUTDOWN` |
-| sotd exit 75 (update restart) | exit code | distribution | `rust/backend/src/update.rs` `exit_for_update`; `rust/protocol/src/ops/lease.rs` `EXIT_UPDATE_RESTART` |
+| the serving daemon's one raw exit, and the child fire that comes first (`FIRE_WAIT`) | process rule | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `exit`, `terminal` |
+| sotd exit 0, 1 and 101 (the main future's result) | exit code | server | `rust/backend/src/main.rs` `complete_main` |
+| sotd's end by INT and TERM (the fire, then death by the signal) | exit code | lifecycle | `rust/backend/src/lifecycle/signal_exit.rs` `install`; `rust/backend/src/lifecycle/shutdown.rs` `exit_by_signal` |
+| sotd exit 75 (update restart) | exit code | distribution | `rust/backend/src/update.rs` `exit_for_update` (committed under the lease by lifecycle's `Leases::commit_update`); `rust/protocol/src/ops/lease.rs` `EXIT_UPDATE_RESTART` |
 | sot exit 75/76 (relaunch, converge) | exit code | distribution | `rust/frontend/src/lease.rs` `exit_intent`, `close_now`; `rust/frontend/src/relaunch.rs` |
 | sot-capsule exit 0/69/70 (supervise) and 71 (run: storage exhaustion) | exit code | capsule | `rust/log/src/supervisor/mod.rs`; `rust/log/src/capsule/mod.rs` `EXIT_LEG_STORAGE_FULL`; `rust/log/src/bin/sot-capsule.rs` `leg_exit_code` |
 | `SOT_SOCKET`, `SOT_SESSION`, `SOT_WORKSPACE`, `SOT_WORKSPACE_ID`, `SOT_WORKSPACE_ROOT`, `SOT_MANUAL` | env | agents | `rust/backend/src/agents/awareness.rs` `awareness_env` |
@@ -270,6 +279,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `SOT_UPDATE_MODE`, `SOT_UPDATE_REPO`, `SOT_UPDATE_ROOT`, `SOT_UPDATE_FETCHER`, `SOT_NO_UPDATE`, `SOT_APPLY*`, `SOT_INSTALL_*`, `SOT_PREFIX`, `SOT_BIN`, `SOT_FRONTEND_BIN`, `SOT_LAUNCH_*`, `SOT_LOG_KEEP`, `SOT_LOG_CAP_BYTES`, `SOT_REPO_DIR`, `SOT_HOST_NAME`, `SOT_RESTART_BE`, `SOT_BACKEND_LOG`, `SOT_BUILD_*` | env | distribution | `rust/backend/src/update.rs` `mode_from_env`; `rust/updater/src/fetch/mod.rs`; `rust/updater/src/manifest.rs`; `scripts/install.sh`; `scripts/launch-sot.sh`; `scripts/launch-sot.ps1`; `rust/protocol/build.rs` |
 | `SOT_MEDIA_BIN`, `SOT_MEDIA_FONT_SCALE`, `SOT_MEDIA_KEEP`, `SOT_MEDIA_AGENT_TIMEOUT` | env | records | `docs/tools/docs-media.sh` |
 | `SOT_TEST_*` seams read by production binaries: the daemon's shutdown and lease bounds | env | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `OVERRIDE_MS`; `rust/backend/src/lifecycle/lease.rs` `OVERRIDE_MS` |
+| `SOT_TEST_MAIN_OUTCOME`, `SOT_TEST_GATES`, `SOT_TEST_RELEASE_BUILD`, `SOT_TEST_PROLOGUE_THREAD`: read only by a binary built with `daemon-lifetime-faults` (an installed binary reads none) | env | lifecycle | `rust/backend/src/main.rs` `injected_outcome`; `rust/backend/src/lifecycle/test_gates.rs`; `rust/backend/src/update.rs` `Updater::from_env` |
 | `SOT_TEST_*` seams read by production binaries: the connection read deadline | env | server | `rust/backend/src/server/conn.rs` `OVERRIDE_MS` |
 | `SOT_TEST_*` seams read by production binaries: the registry lock's timings | env | messaging | `rust/backend/src/comm/registry/lock.rs` |
 | `SOT_TCP_PORT`, `SOT_REMOTE_REPO`, `SOT_REMOTE_SOCKET` (retired: only scripts and skills still name them) | env | distribution | `scripts/shutdown-sot.ps1`; `scripts/install.sh`; `agents/claude/sot-setup/SKILL.md` |

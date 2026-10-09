@@ -262,9 +262,20 @@ mod help_tests {
     }
 }
 
-#[tokio::main]
-#[allow(clippy::too_many_lines, reason = "the daemon entry: startup checks, boot and the serve loop in one function; predates the 100-line limit")]
-async fn main() -> Result<()> {
+/// The runtime `#[tokio::main]` built before this entry was synchronous: main builds it itself, after the serving
+/// prologue, so that what must exist before any thread (the durable parent, on Linux the lifetime guard) can.
+fn runtime() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("building the tokio runtime")
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the daemon entry: startup checks, boot and the serve loop in one function; predates the 100-line limit"
+)]
+fn main() -> Result<()> {
     #[cfg(unix)]
     lifecycle::child_signal::reset_child_signal();
     // Pure query subcommands (security review): checked against raw argv
@@ -307,8 +318,15 @@ async fn main() -> Result<()> {
             }
             // `sotd ancestors [--from <pid>]` (Windows only): comm-lib.sh reads it to count
             // the agents above a comm script. A pure query like the arms around it.
-            "ancestors" => std::process::exit(comm::registry::ancestors::run(&std::env::args().skip(2).collect::<Vec<_>>())),
+            "ancestors" => lifecycle::shutdown::exit(comm::registry::ancestors::run(&std::env::args().skip(2).collect::<Vec<_>>())),
             "agent-exec" => agents::ops::agent_exec(),
+            // The capsule-only birth parent (`rows::spawn::durable`): the daemon starts it over a private channel it
+            // holds as standard input. Not a user command, so it is in no usage text.
+            #[cfg(unix)]
+            "durable-parent" => {
+                apply_umask();
+                std::process::exit(rows::spawn::durable::parent::run(&args[1..]));
+            }
             // The last inch of a cross-host dial: connect to THIS box's
             // own endpoint for a label and shuttle stdin/stdout. Sits in
             // this early block for the same reason the queries above do —
@@ -317,23 +335,22 @@ async fn main() -> Result<()> {
             // printed would land on the byte stream it owns.
             "stdio-bridge" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(topology::stdio_bridge::run(&args));
+                lifecycle::shutdown::exit(topology::stdio_bridge::run(&args));
             }
             // The declared topology (`hosts.toml` v2): what this box
             // derives from it — the launcher's tunnel/dial plan, the relay
             // endpoint, the declared table, a fetch of the hub's copy.
             "topology" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(topology::cli::run(&args));
+                lifecycle::shutdown::exit(topology::cli::run(&args));
             }
             // `sotd status` (topology plan §E): declared + LIVE, fanned out
             // to every reachable daemon concurrently — unlike `topology`
-            // above this needs the runtime we're already inside (`sotd` is
-            // `#[tokio::main]`), so it's awaited here rather than called as
-            // a plain synchronous query.
+            // above this needs a runtime, so main builds one here and blocks on it
+            // rather than calling a plain synchronous query.
             "status" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(topology::status::run(&args).await);
+                lifecycle::shutdown::exit(runtime()?.block_on(topology::status::run(&args)));
             }
             "--version" | "-V" => {
                 println!("{}", sot_protocol::version_line("sotd"));
@@ -351,7 +368,7 @@ async fn main() -> Result<()> {
     // mid-request (or fall back to a shared directory).
     if let Err(msg) = rows::store::check_config_dir() {
         eprintln!("sotd: {msg}");
-        std::process::exit(78);
+        lifecycle::shutdown::exit(78);
     }
     // Defect fix (field-proven, Windows; see `sot_log::host::winhandle`'s module
     // doc): harden this process's own inherited stdio before anything is
@@ -397,7 +414,7 @@ async fn main() -> Result<()> {
             "sotd: state dir {} is not private ({e}) — refusing to start",
             paths::state_dir().display()
         );
-        std::process::exit(1);
+        lifecycle::shutdown::exit(1);
     }
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -431,12 +448,51 @@ async fn main() -> Result<()> {
             );
             eprintln!("{msg}");
             tracing::error!("{msg}");
-            std::process::exit(1);
+            lifecycle::shutdown::exit(1);
         }
     }
 
     // Every session's SOTD_BIN is this start's own path, made absolute once, now (agents::env::own_sotd_bin).
     let _ = agents::env::own_sotd_bin();
+
+    // The prologue's forks below (the durable parent's intermediate, then the guard) need a process with one thread: a
+    // boot with a second one is refused before either fork.
+    #[cfg(target_os = "linux")]
+    {
+        #[cfg(feature = "daemon-lifetime-faults")]
+        if std::env::var_os("SOT_TEST_PROLOGUE_THREAD").is_some() {
+            std::thread::spawn(|| std::thread::sleep(std::time::Duration::from_secs(3600)));
+        }
+        if let Err(e) = lifecycle::daemon_children::guard::require_one_thread() {
+            eprintln!("sotd: {e} -- refusing to start");
+            lifecycle::shutdown::exit(1);
+        }
+    }
+
+    // The capsule-only birth parent, started once, here, before the runtime and before any thread: it is forked through
+    // an intermediate that exits, so it descends from nothing this daemon starts later, and it is never started again.
+    // A failure is logged and every capsule start then says so (`rows::spawn::durable::proxy`).
+    #[cfg(unix)]
+    if let Err(e) = rows::spawn::durable::proxy::start_before_runtime() {
+        tracing::warn!(error = %e, "durable parent: not started; capsule rows cannot start until the daemon is restarted");
+    }
+
+    // On Linux this daemon becomes the child of a guard that ends everything the daemon starts when the daemon ends
+    // (`lifecycle::daemon_children::guard`). It needs a process with one thread, so it comes after the durable parent
+    // and before the runtime, the relay refresh and every other thread.
+    #[cfg(target_os = "linux")]
+    if let Err(e) = lifecycle::daemon_children::guard::install() {
+        eprintln!("sotd: {e} -- refusing to start");
+        lifecycle::shutdown::exit(1);
+    }
+
+    // INT and TERM take the fire every other controlled exit takes and then end the daemon by the signal itself, from a
+    // thread of their own, so a stalled runtime or an inherited blocked mask does not hold them. After the guard, which
+    // needs one thread.
+    if let Err(error) = lifecycle::signal_exit::install() {
+        eprintln!("sotd: signal watcher installation failed: {error}");
+        lifecycle::shutdown::exit(1);
+    }
 
     tracing::info!(
         socket = ?opts.socket,
@@ -450,7 +506,75 @@ async fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     topology::relay_units::spawn_refresh_at_start();
 
-    server::run(opts).await
+    let runtime = runtime()?;
+    complete_main(
+        &runtime,
+        async move {
+            #[cfg(unix)]
+            if let Err(e) = rows::spawn::durable::connect_parent() {
+                tracing::warn!(error = %e, "durable parent: no answer; capsule rows cannot start until the daemon is restarted");
+            }
+            #[cfg(feature = "daemon-lifetime-faults")]
+            return tokio::select! { served = server::run(opts) => served, injected = injected_outcome() => injected };
+            #[cfg(not(feature = "daemon-lifetime-faults"))]
+            server::run(opts).await
+        },
+        |code| lifecycle::shutdown::exit(code),
+    )
+}
+
+/// The serving daemon's main result becomes a status while the runtime still exists, and takes the one terminal path: `Ok`
+/// is 0, an error is printed and is 1, a panic of the main future is 101 (what an unwinding `main` would have given).
+fn complete_main<T>(
+    runtime: &tokio::runtime::Runtime,
+    future: impl std::future::Future<Output = Result<()>>,
+    terminate: impl FnOnce(i32) -> T,
+) -> T {
+    let code =
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.block_on(future))) {
+            Ok(Ok(())) => 0,
+            Ok(Err(error)) => {
+                eprintln!("Error: {error:?}");
+                1
+            }
+            Err(_) => 101,
+        };
+    terminate(code)
+}
+
+/// Under the daemon-lifetime fault feature a case ends the main future with a result the product would reach only through a
+/// defect: the file named by `SOT_TEST_MAIN_OUTCOME` holds `ok`, `err`, `panic`, `stall` (every runtime worker blocked) or
+/// `raise:<signal>` (the daemon sends that signal to itself, as an outside sender's would arrive, so no case names the
+/// daemon's pid) once the case is ready. The control selects an outcome and performs no cleanup.
+#[cfg(feature = "daemon-lifetime-faults")]
+async fn injected_outcome() -> Result<()> {
+    let Some(path) = std::env::var_os("SOT_TEST_MAIN_OUTCOME") else {
+        return std::future::pending().await;
+    };
+    loop {
+        match std::fs::read_to_string(&path).as_deref().map(str::trim) {
+            Ok("ok") => return Ok(()),
+            Ok("err") => anyhow::bail!("injected main error"),
+            Ok("panic") => panic!("injected main panic"),
+            // A signal the daemon sends itself (Unix): the harness's stimulus for a death it does not deliver itself.
+            #[cfg(unix)]
+            Ok(raise) if raise.starts_with("raise:") => {
+                let signal: i32 = raise["raise:".len()..].parse().expect("a signal number");
+                // SAFETY: a signal to this process, sent by itself.
+                unsafe { libc::kill(libc::getpid(), signal) };
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+            // Every runtime worker blocked at once: nothing the runtime runs makes progress for two minutes.
+            Ok("stall") => {
+                let workers = std::thread::available_parallelism().map_or(8, |n| n.get()) * 2;
+                for _ in 0..workers {
+                    tokio::spawn(async { std::thread::sleep(std::time::Duration::from_secs(120)) });
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

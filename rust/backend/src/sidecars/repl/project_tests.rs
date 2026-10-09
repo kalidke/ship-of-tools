@@ -79,9 +79,9 @@ impl Fixture {
 
     /// Ends every child the process owns, then removes the fixture. Only the owned root is removed.
     async fn finish(self) {
-        crate::lifecycle::child_signal::fire();
+        crate::lifecycle::child_signal::process().fire().expect("fire");
         within(Duration::from_secs(60), "owned children reaped", || {
-            crate::lifecycle::child_signal::live_children() == 0
+            crate::lifecycle::child_signal::process().live() == 0
         })
         .await;
         std::fs::remove_dir_all(&self.root).expect("remove the owned fixture root");
@@ -454,7 +454,7 @@ async fn observer_rejects_a_deliberate_leak() {
         "the observer must pass a clean one"
     );
     let _ = owned.kill().await;
-    sig.fire();
+    sig.fire().expect("fire");
 }
 
 /// Adds WGLMakie to the fixture's workspace from the read depot, offline; its precompile is setup, bounded by `SETUP`.

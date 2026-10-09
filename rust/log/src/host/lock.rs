@@ -116,6 +116,90 @@ pub fn lock_supervisor(lock_path: &Path) -> Result<WriterLock> {
     lock_writer(lock_path)
 }
 
+/// A supervisor fence taken to be HANDED to the process that becomes the authority (R4: the claim a capsule's
+/// birth carries from acceptance to the supervisor's first act). Unlike [`WriterLock`] it has no `Drop` that
+/// unlocks: dropping it only closes its descriptor, and a kernel `flock` belongs to the open file description, so
+/// the lock stays held for as long as any descriptor of that description is open anywhere, a forked or exec'd
+/// child's copy included. Handing it over is leaving that copy open in the child and closing this one. The
+/// descriptor is close-on-exec here; the launcher clears the flag in the child's copy only
+/// (`process_tree::Launch::inherit_across_exec`).
+#[cfg(unix)]
+pub struct HandoverLock {
+    file: File,
+}
+
+#[cfg(unix)]
+impl HandoverLock {
+    pub fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd as _;
+        self.file.as_raw_fd()
+    }
+
+    /// Take over a fence descriptor inherited across an exec: it must be the open file the lock path names, and
+    /// the lock must be held on it (a second descriptor on the path is refused). The descriptor becomes
+    /// close-on-exec at once, so nothing the new owner starts inherits the fence.
+    pub fn adopt(fd: std::os::fd::RawFd, lock_path: &Path) -> Result<HandoverLock> {
+        use std::os::fd::FromRawFd as _;
+        use std::os::unix::fs::MetadataExt as _;
+        // SAFETY: the caller names a descriptor it was handed for this purpose and owns nothing else with it.
+        let file = unsafe { File::from_raw_fd(fd) };
+        let theirs = file.metadata()?;
+        let ours = std::fs::metadata(lock_path)?;
+        if (theirs.dev(), theirs.ino()) != (ours.dev(), ours.ino()) {
+            return Err(Error::State(format!(
+                "the inherited descriptor is not the fence {lock_path:?}"
+            )));
+        }
+        let probe = open_lock_file(lock_path)?;
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a probe that must fail: it proves the inherited descriptor holds the lock, and unlocks nothing"
+        )]
+        let probed = probe.try_lock();
+        match probed {
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Ok(()) => {
+                return Err(Error::State(format!(
+                    "the inherited descriptor does not hold the fence {lock_path:?}"
+                )))
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io(e)),
+        }
+        // SAFETY: a plain flag change on a descriptor this value owns.
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return Err(Error::Io(std::io::Error::last_os_error()));
+        }
+        Ok(HandoverLock { file })
+    }
+}
+
+/// [`lock_supervisor`] for a fence that will be handed on: bootstrapped and taken the same way, held by a guard
+/// that only closes (see [`HandoverLock`]).
+#[cfg(unix)]
+pub fn lock_supervisor_for_handover(lock_path: &Path) -> Result<HandoverLock> {
+    bootstrap_supervisor_lock(lock_path)?;
+    let file = open_lock_file(lock_path)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
+    loop {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the HandoverLock built from this lock is released by the kernel when the last descriptor of the description closes, never by an unlock a copy would defeat"
+        )]
+        let locked = file.try_lock();
+        match locked {
+            Ok(()) => return Ok(HandoverLock { file }),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io(e)),
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::State(format!(
+                "lock held by another process: {lock_path:?}"
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
+    }
+}
+
 /// Unix lock open: open-existing ONLY, matching the Windows arm — bootstrap
 /// created the fence, and absence means a mutilated store. With `create`,
 /// unlinking the held lock path would let the next writer mint a fresh

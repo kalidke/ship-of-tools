@@ -32,7 +32,8 @@ for `sotd status`; `stdio_bridge.rs` `run` for the bridge.
 - `sotd status` and `sotd stdio-bridge` are answered in main's early argv match, before the umask, log or state dir.
 - `apply`, `relay-sockets` and `refresh` act only on the hub (`topology::relay_units::require_hub`).
 - `apply` is a dry run unless given `--yes`, and one failing unit does not stop the others.
-- `refresh_at_start` acts only when this process is sotd.service's MainPID (`supervised_by_systemd`), and the daemon
+- `refresh_at_start` acts only when this daemon's guard is sotd.service's MainPID (`supervised_by_systemd` compares it with
+  `guard_pid`, else with the process's own pid, since the guard is the unit's main process on Linux), and the daemon
   never waits on it (main spawns it on its own thread).
 - In `refresh`, only `daemon-reload` is fatal.
 - The relay refresh's `systemctl` calls run through `Signal::output`, so what one leaves running dies with it.

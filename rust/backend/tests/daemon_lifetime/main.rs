@@ -1,0 +1,76 @@
+#![cfg(unix)]
+#![cfg_attr(
+    not(all(target_os = "linux", feature = "daemon-lifetime-faults")),
+    allow(
+        dead_code,
+        reason = "the cases that use the barrier folder, the saved results and the daemon runs are built only with the barrier build, on Linux; the macOS leg runs the premises"
+    )
+)]
+//! The daemon-lifetime harness: the premises and, from the next commits, the cases of lane L2 (a daemon lifetime and
+//! the children it owns), run on real processes. Nothing here stands in for a daemon, and nothing is proved by
+//! reading source text: a premise is a real launch, a real lock or a real `sotd` and `sot-capsule`, and every death
+//! is read from an identity the fixture opened while the process was alive (`fixture_owner`, `native`).
+//!
+//! The cases that hold a real process at a phase barrier (`successor`, the pause cases of `native_premises`) need
+//! the barrier build: `cargo build -p sot-log --features native-barrier --bin sot-capsule` into the target the
+//! tests run from, then `cargo test -p sot-backend --features daemon-lifetime-faults --test daemon_lifetime`.
+
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod done;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod durable;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod ephemerals;
+mod fixture_owner;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod gated_end;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod guard;
+mod native;
+mod native_premises;
+mod observations;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod outcomes;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod routes;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod successor;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+#[allow(
+    dead_code,
+    reason = "the shared fixture serves more suites than this one uses"
+)]
+#[path = "../support/mod.rs"]
+mod support;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod update_fixture;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod updates;
+mod workers;
+
+/// The cases that start a daemon take this first: `Env::new` points this process's `SOT_RUNTIME_DIR` at its own folder.
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+pub static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The depot path of every Julia the harness starts, a daemon's children included: `owned`, a depot the case owns, first,
+/// then this process's own depot list unchanged (an unset variable means `~/.julia` and Julia's bundled depots). Julia and
+/// Pkg write into the first depot only (compile caches, installed packages, a registry and its updates, scratch spaces,
+/// logs, the automatic gc), so a case adds nothing to the depots it reads; reading a cache refreshes its mtime. The list
+/// behind stays whole, so every cache in it stays valid.
+pub fn julia_depot_path(owned: &std::path::Path) -> String {
+    let own = std::env::var("JULIA_DEPOT_PATH")
+        .ok()
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| format!("{}/.julia:", std::env::var("HOME").unwrap_or_default()));
+    format!("{}:{own}", owned.display())
+}
+
+/// Write an executable stub `systemctl` into `dir` (the relay-refresh case's stand-in).
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+pub fn native_stub_systemctl(dir: &std::path::Path, body: &str) {
+    sot_log::test_exec::write_executable(&dir.join("systemctl"), body);
+}
+
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+#[path = "fixtures/tree.rs"]
+mod tree;

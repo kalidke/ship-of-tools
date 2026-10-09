@@ -792,18 +792,18 @@ mod quarto_shutdown_tests {
             run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig).await
         });
         let began = std::time::Instant::now();
-        while sig.live() == 0 || !pid_file.exists() || std::fs::read_to_string(&pid_file).unwrap().trim().is_empty() {
+        while !pid_file.exists() || std::fs::read_to_string(&pid_file).unwrap().trim().is_empty() {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub render never started");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        sig.fire();
+        sig.fire().expect("fire");
         let done = tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .expect("the render outlived the shutdown")
             .expect("render task")
             .expect("run_quarto");
         assert!(done.is_none(), "a killed render has no output");
-        assert_eq!(sig.live(), 0);
+        assert!(sig.held_groups().is_empty());
         assert!(engine.gone(), "the engine child survived the shutdown");
     }
 
@@ -829,7 +829,7 @@ mod quarto_shutdown_tests {
             .expect("render task")
             .expect("run_quarto");
         assert!(done.is_some_and(|out| out.status.success()), "the render did not finish on its own");
-        assert_eq!(sig.live(), 0);
+        assert!(sig.held_groups().is_empty());
         assert!(engine.gone(), "the engine survived its launcher's exit");
     }
 
@@ -877,10 +877,11 @@ mod quarto_shutdown_tests {
         let dir = tempfile::tempdir().unwrap();
         let _pin = JuliaPin::new(&dir.path().join("julia"), None);
         let sleeper = dir.path().join("sleeper");
-        let _leftover = Leftover::of_file(sleeper.clone());
+        let leftover = Leftover::of_file(sleeper.clone());
+        leftover.kept_alive();
         let stub = dir.path().join("stub-quarto");
         // The pid is written once the sleeper has its own session: until then a kill of the launcher's group takes it too.
-        let body = "setsid sleep 3106 &\np=$!\nwhile [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$(cut -d' ' -f6 /proc/$$/stat)\" ]; do sleep 0.02; done\n";
+        let body = "setsid sleep 120 &\np=$!\nwhile [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$(cut -d' ' -f6 /proc/$$/stat)\" ]; do sleep 0.02; done\n";
         sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\n{body}echo $p > {}\nexit 0\n", sleeper.display()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
@@ -898,7 +899,7 @@ mod quarto_shutdown_tests {
             // SAFETY: signal 0 only probes the pid.
             assert_eq!(unsafe { libc::kill(group, 0) }, 0, "a held tree names a process-group number nothing holds");
         }
-        sig.fire();
+        sig.fire().expect("fire");
         tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .expect("the render outlived the shutdown")

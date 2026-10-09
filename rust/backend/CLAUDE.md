@@ -5,7 +5,7 @@ behind them and the one control socket every client reaches it through. This fol
 the crate folder and `src/`, and each folder under `src/` has its own page.
 
 ## Files
-- `Cargo.toml`: the crate; one `[[bin]]` named `sotd` at `src/main.rs`
+- `Cargo.toml`: the crate; one `[[bin]]` named `sotd` at `src/main.rs`, and the test-only feature `daemon-lifetime-faults` (phase barriers for `tests/daemon_lifetime`; no installed build has it)
 - `sidecars/`: `mathjax/`, the MathJax renderer (`render.mjs` and its npm lock) that `src/sidecars/mathjax.rs` runs
 - `tests/`: the integration suites, each a real `sotd` over the real wire (own page)
 - `src/main.rs`: subcommand routing, offline trust declaration, then daemon boot: umask, directory checks, the tee log and `server::run`.
@@ -15,7 +15,7 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
 - `src/session.rs`: the revision counter and the bounded event ring a reconnecting client replays from (`Session::bump`)
 - `src/paths.rs`: the platform helpers: state and socket paths, `resource_dir`, the private-directory checks
 - `src/durable.rs`: the one fsynced write and delete for the records a later start acts on
-- `src/update.rs`: the daemon's half of the updater: when to check, whom to notify, `update.check` and `update.apply`
+- `src/update.rs`: the daemon's half of the updater: when to check, whom to notify, `UpdaterSpawner` over the child signal, `update.check` and `update.apply`
 - `src/agents/`: accounts, folder trust, the awareness env and the launch recipe (agents)
 - `src/comm/`: the daemon's half of messaging: delivery, the registry and the wake (messaging)
 - `src/files/`: workspace file reads, writes, previews, confinement and the watcher (files)
@@ -30,6 +30,15 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
 `main` in `src/main.rs` for boot; `src/server/` for a connection; the owning folder for an op.
 
 ## Rules
+- `main` is synchronous and builds its runtime itself (`runtime`) after the serving prologue, so that what must exist before
+  any thread can, in this order: on Linux the check that the process has one thread
+  (`lifecycle::daemon_children::guard::require_one_thread`), which refuses the boot otherwise; on Unix the durable parent
+  (`rows::spawn::durable::proxy::start_before_runtime`), once, never restarted; then on Linux the lifetime guard
+  (`lifecycle::daemon_children::guard::install`), which forks the daemon as the child of a process that kills what the
+  daemon started when it ends; then the thread that catches INT and TERM (`lifecycle::signal_exit::install`), which refuses the
+  boot if it cannot be installed. The runtime, the relay refresh and every other thread come after these. `main` blocks on
+  `server::run` through `complete_main`, which turns the main future's result into its exit code (Ok 0, an error 1, a
+  panic 101) while the runtime still exists, and every exit of the serving daemon takes `lifecycle::shutdown::exit`.
 - `main` answers help before any side effect. Query/bridge subcommands keep their existing contracts; `trust declare`
   is an offline settings mutation and returns before daemon initialization.
 - Daemon boot creates nothing before the umask and directory checks. Offline trust declaration applies the private umask

@@ -307,7 +307,7 @@ pub fn refresh_at_start() {
 }
 
 /// The unit deploy/sotd.service installs. Its ExecStart `exec`s sotd, so
-/// its MainPID is the daemon's own pid.
+/// its MainPID is the launched process: the daemon's lifetime guard.
 #[cfg(target_os = "linux")]
 const DAEMON_UNIT: &str = "sotd.service";
 
@@ -329,7 +329,9 @@ fn supervised_by_systemd() -> Result<bool, String> {
     if !out.status.success() {
         return Err(format!("{what}: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
-    Ok(is_main_pid(&String::from_utf8_lossy(&out.stdout), std::process::id()))
+    // The unit's main process is the lifetime guard that supervises this daemon, else the daemon itself.
+    let me = crate::lifecycle::daemon_children::guard::guard_pid().unwrap_or_else(std::process::id);
+    Ok(is_main_pid(&String::from_utf8_lossy(&out.stdout), me))
 }
 
 /// Removes every generated file for a host, then the service's `.d/` if that

@@ -507,7 +507,7 @@ pub(crate) mod tests {
     }
 
     /// A cancel kills the tracked child's tree through the guard's own handle on every platform, and the guard's drop
-    /// releases the live count. Fails on the unchanged Windows cancel, which only set the flag.
+    /// removes its registration. Fails on the unchanged Windows cancel, which only set the flag.
     #[test]
     fn cancel_kills_the_tracked_child_through_its_own_handle() {
         // Other tests swap PATH under this lock; the child below is found through PATH.
@@ -525,7 +525,8 @@ pub(crate) mod tests {
         let child = sig
             .spawn_std(cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()))
             .expect("a sleeper child");
-        assert_eq!(sig.live(), 1);
+        #[cfg(unix)]
+        assert_eq!(sig.held_groups().len(), 1);
         let mut guard = ChildGuard { child: std::sync::Arc::new(std::sync::Mutex::new(child)), last_stderr: Default::default(), track: None };
         assert!(!guard.attach(&track), "a fresh track is not cancelled");
         track.cancel();
@@ -536,7 +537,11 @@ pub(crate) mod tests {
         });
         assert!(exited, "cancel left the tracked child running");
         drop(guard);
-        assert_eq!(sig.live(), 0, "the guard left the child counted");
+        #[cfg(unix)]
+        assert!(
+            sig.held_groups().is_empty(),
+            "the guard left a registered tree"
+        );
         assert!(track.child.lock().unwrap().is_none(), "the guard left its child published after reaping it");
         track.cancel(); // after the guard is gone a cancel reaches nothing and must not panic
     }

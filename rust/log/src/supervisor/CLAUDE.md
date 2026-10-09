@@ -6,6 +6,7 @@ Part of the capsule; charter: rust/log/CLAUDE.md.
 
 ## Files
 - `mod.rs`: entry points (`supervise`, `endrun`, `reset`), exit codes and bounds, config, voyage paths, `note`
+- `birth_claim.rs`: `BirthClaim`, the row's own supervisor fence taken before a capsule birth and carried to the new supervisor (Unix)
 - `leg.rs`: the leg: voyage pointer discovery or mint, the spawn decision, `SpawnLease`, `LegLease`, `build_run_command`
 - `lifecycle.rs`: the `Lifecycle` state machine, its recovery, end-run and reset worker threads, leg retirement, `force_terminal`
 - `main_loop.rs`: `supervise_inner`, the authority's main loop
@@ -21,7 +22,11 @@ Part of the capsule; charter: rust/log/CLAUDE.md.
 `supervise` in `mod.rs` for the entry point, `supervise_inner` in `main_loop.rs` for the loop, `Lifecycle` in `lifecycle.rs` for a state change.
 
 ## Rules
-- One authority per state dir: `supervise_inner` takes `fence::lock_supervisor` before binding the lane, else exit 70.
+- One authority per state dir: `supervise_inner` takes `fence::lock_supervisor` before binding the lane, else exit 70. A
+  supervisor forked by the daemon's durable parent is born holding the claim on that fence (`--claim-fd`,
+  `--takeover-fd`): it adopts it (`birth_claim::BirthClaim::adopt`, never a second descriptor and never the ordinary
+  contended path) and answers the parent on the takeover channel only once the claim is its own (`take_authority`); an
+  answer that cannot be delivered (the parent is gone) is noted and the claim stays this supervisor's.
 - Exit codes 0, 69 and 70 are an interface (`EXIT_CLEAN`, `EXIT_TERMINAL`, `EXIT_CONTENDED`).
 - Journal recovery runs before the pointer is read (`spawn_recovery`).
 - The main loop never joins a stuck worker (`watchdog_expired`, `abandon_worker`).

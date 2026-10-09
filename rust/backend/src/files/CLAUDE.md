@@ -18,8 +18,14 @@ Per workspace row (built in `rows/workspace.rs`):
 - Reads follow links (`node_id_to_path`). Mutations resolve through `node_id_to_path_confined`, which canonicalizes and
   refuses a path outside the root.
 - `write_file` refuses when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`).
-- Delete is a trash, never an unlink (`trash_file`: `gio trash`, else `<root>/.sot-trash/`); `gio` runs through
-  `Signal::spawn_std` with null standard handles and counts as system trash only after it exited 0.
+- Delete is a trash, never an unlink (`trash_file`: `gio trash`, else `<root>/.sot-trash/`). `gio` runs through
+  `Signal::spawn_std` with null standard handles (`trash_command`) and a `ContainedStd::wait_within(TRASH_WAIT)` wait
+  budget of 5 s. Only a confirmed zero exit counts as system trash; an unconfirmed one after which the file is already
+  gone (the trash may have moved it, or another process removed it) is an error that says so; any other timeout, error
+  or nonzero exit takes the recoverable workspace fallback and logs the reason, including a failed termination or reap,
+  and a failed fallback remains an error. A timeout's `Ok(None)` means the termination requests succeeded and the direct
+  child was reaped; descendant death before the fallback is not promised, and the budget is no ceiling on an OS
+  termination or reap.
 - A concept target never holds `..`, an absolute path or an empty segment, and `.md` is appended, never substituted
   (`ConceptStore::target_to_path`).
 - The watcher never watches the daemon's own state, install or updates trees (`self_owned_roots`, `should_skip`), never
@@ -34,7 +40,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `dir.create`, `preview.changed`, `FilesMode`, `ConceptStore`, `rust/backend/src/rows/workspace.rs`, `Watcher`,
 `rust/backend/src/rows/registry.rs`. Uses: `dispatch`, `write_frame_to`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `Kernel::request`, `file.preview`,
-`is_servable_video`, `Signal::spawn_std`, `ContainedStd`, `child_signal::process`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against, sot_protocol::physical_scale::PhysicalScale, sot_protocol::physical_scale::parse_physical_scale.
+`is_servable_video`, `Signal::spawn_std`, `ContainedStd`, `ContainedStd::wait_within`, `child_signal::process`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against, sot_protocol::physical_scale::PhysicalScale, sot_protocol::physical_scale::parse_physical_scale.
 
 ## Folders
 - `examples/preview/` (repo root): sample files that previews are tried on.
@@ -42,7 +48,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ## Files
 - `mod.rs`: the folder's module list.
 - `tree.rs`: the Files tree: node ids, listing, confined resolution, mime types.
-- `io.rs`: editor file IO: read, version-checked write, trash.
+- `io.rs`: editor file IO: read, version-checked write and contained trash with a wait budget.
+- `io_trash_tests.rs`: absolute trash fixtures, checked cleanup before fallback, error diagnostics and the command's null streams.
 - `preview/`: preview.get, preview.set_scale, image.crop.
 - `concept.rs`: the `.concept/` annotation store.
 - `confine.rs`: workspace confinement: whether a path lies under a root, and the canonical form of a path that may not exist yet.

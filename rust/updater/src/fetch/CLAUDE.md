@@ -17,3 +17,4 @@ archive extraction. Part of distribution; charter: scripts/CLAUDE.md.
   `sums::lookup` entry first).
 - Every archive entry is validated against the expected top folder before anything is written
   (`archive::extract_validated`).
+- Discovery, downloads, archive listing and extraction run their commands through the required caller `Spawner`, preserving their existing timeouts and error contexts; this folder owns bytes and validation, not child lifetime policy.

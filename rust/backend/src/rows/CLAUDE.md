@@ -35,6 +35,9 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - `capsule_guard` returns a guard only for a registered row and creates it under the registry's write lock, so two
   first callers never mint two guards; `remove_by_id` drops it with the row, cancels and aborts the row's observer,
   and clears the default id if it was the removed row.
+- A launch takes the row's authority fence before it forks (Unix: the durable parent, `spawn/durable/`), and a claimed
+  fence forks nothing: the start is told the authority is pending (`run/admission.rs`), never success, and no second
+  supervisor is born over an original still coming up.
 - No start begins once the gate is closed: `begin_start` refuses after `close_gate_and_settle`, which then waits for
   the permits already out.
 - The phase cell is written only through `Workspace::apply_phase_observation`, which rejects an observation whose

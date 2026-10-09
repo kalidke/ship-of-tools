@@ -153,7 +153,7 @@ async fn repl_uses_private_signal() {
     assert!(value, "the real eval must return its value");
     assert_eq!(sig.live(), 1, "the supplied Signal owns the child");
 
-    sig.fire();
+    sig.fire().expect("fire");
     within(
         Duration::from_secs(60),
         "the fired Signal's child is reaped and released",
@@ -202,7 +202,7 @@ async fn mathjax_uses_private_signal() {
     );
     assert_eq!(sig.live(), 1, "the supplied Signal owns the child");
 
-    sig.fire();
+    sig.fire().expect("fire");
     within(
         Duration::from_secs(30),
         "the fired Signal's child is reaped and released",
@@ -283,7 +283,7 @@ async fn mathjax_helper_tree_listens_nowhere() {
     let (processes, listeners) = group_listeners(groups[0]);
     assert!(processes >= 1, "setup: the observer sees the helper's process");
     assert!(listeners.is_empty(), "the helper's tree must listen nowhere: {listeners:?}");
-    sig.fire();
+    sig.fire().expect("fire");
     within(Duration::from_secs(30), "the helper is reaped", || sig.live() == 0).await;
 }
 
@@ -324,7 +324,7 @@ async fn listener_observer_rejects_a_listening_node_tree() {
         "the empty-set comparison must reject a listening tree"
     );
     assert!(listeners.contains(&("tcp", port)), "the observer sees the declared listener: {listeners:?}");
-    sig.fire();
+    sig.fire().expect("fire");
     let _ = owned.kill().await;
     drop(owned);
     within(Duration::from_secs(30), "the listener is reaped", || sig.live() == 0).await;

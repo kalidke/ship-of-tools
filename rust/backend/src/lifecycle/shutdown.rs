@@ -1,11 +1,12 @@
 //! shutdown.rs — ending this computer's sessions without resuming any,
-//! and the signal that takes the daemon's own children down with it.
+//! and the one terminal every controlled daemon exit goes through.
 //!
 //! [`end_rows`] ends every capsule row and the drawer by one deadline,
 //! retrying a refused end once per second; any other row, and what it
 //! could not end, is counted, never guessed. The daemon's own children
-//! end through [`super::child_signal`]: its signal fires once and kills
-//! every contained tree.
+//! receive checked termination requests through [`super::child_signal`]:
+//! [`exit`] fires its signal before the one raw process exit, and does not
+//! wait for any tree to die.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -27,9 +28,6 @@ const RETRY_EVERY: Duration = Duration::from_secs(1);
 /// The end-run reason a window's close records.
 const REASON: &str = "window closed";
 
-/// How long step 4 waits for the daemon's own children.
-const CHILDREN_WAIT: Duration = Duration::from_secs(3);
-
 /// `SOT_TEST_SHUTDOWN_BOUND_MS` overrides [`bounds::SHUTDOWN_BOUND`] for
 /// tests, read once per process; unset in every real deployment.
 pub(crate) fn shutdown_bound() -> Duration {
@@ -43,11 +41,12 @@ pub(crate) fn shutdown_bound() -> Duration {
 }
 
 /// The shutdown (1.4), after step 1 stopped the accepting; it never
-/// returns. Step 0 is a backstop thread that exits 1 at the bound, for
-/// the next start to finish. Steps 2 and 3 share the rows deadline,
+/// returns. Step 0 is a backstop thread that exits 1 at the bound through [`exit`], for
+/// the next start to finish; a stalled OS child creation or adoption can delay that exit's
+/// fire. Steps 2 and 3 share the rows deadline,
 /// `decided + bound - SHUTDOWN_TAIL`; the tail is not scaled with an
-/// overridden bound, because steps 4 to 6 take as long either way. Then the daemon's own children, the final
-/// record, the waiting closer's answer, and exit 0.
+/// overridden bound, because steps 4 to 6 take as long either way. Then the final
+/// record, the waiting closer's answer, and exit 0 through [`exit`], which fires the child signal.
 pub(crate) async fn run(
     leases: Arc<Leases>,
     workspaces: Workspaces,
@@ -58,11 +57,13 @@ pub(crate) async fn run(
     let backstop = bound.saturating_sub(decided.elapsed());
     std::thread::spawn(move || {
         std::thread::sleep(backstop);
-        tracing::error!("shutdown still running after {bound:?}: exiting 1; the next start finishes it");
-        std::process::exit(1);
+        tracing::error!("shutdown still running after {bound:?}: exiting 1 after the child fire; the next start finishes it");
+        exit(1);
     });
     leases.begin_close();
     tracing::info!("shutting down: ending this computer's sessions");
+    #[cfg(feature = "daemon-lifetime-faults")]
+    super::test_gates::held("close-go").await;
 
     let rows_deadline = decided + bound.saturating_sub(bounds::SHUTDOWN_TAIL);
     let gate = workspaces.clone();
@@ -86,15 +87,6 @@ pub(crate) async fn run(
         }
     };
 
-    fire();
-    let children = Instant::now() + CHILDREN_WAIT;
-    while live_children() > 0 && Instant::now() < children {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    if live_children() > 0 {
-        tracing::warn!(live = live_children(), "shutdown: the daemon's own children were still alive after {CHILDREN_WAIT:?}");
-    }
-
     if let Err(e) = leases.finish_shutdown(report.not_ended, report.forget.clone()) {
         tracing::error!("shutdown: the final held record was not written: {e}");
     }
@@ -103,7 +95,88 @@ pub(crate) async fn run(
         let _ = tokio::time::timeout(wait, leases.answered()).await;
     }
     tracing::info!(ended = report.ended.len(), not_ended = report.not_ended, "shutdown complete");
-    std::process::exit(bounds::EXIT_REQUESTED_SHUTDOWN)
+    exit(bounds::EXIT_REQUESTED_SHUTDOWN)
+}
+
+/// How long the exit waits for the fire to answer before it exits anyway.
+const FIRE_WAIT: Duration = Duration::from_secs(2);
+
+/// Fire the child signal and then take the one raw daemon exit. A controlled exit of the serving daemon (the close, the
+/// backstop, an update restart, a handled signal, the main result) comes here, so each contained tree is asked to end
+/// first; the first caller's code is the one the process exits with ([`terminal`]). Request errors are logged and the
+/// chosen code stands; this is no wait for death, and the exit waits no longer than [`FIRE_WAIT`] for the requests either:
+/// a child creation stalled in the OS holds the mutex the fire needs, and the exit, the backstop's included, does not
+/// depend on it.
+pub(crate) fn exit(code: i32) -> ! {
+    terminal(super::child_signal::process(), code, |code| {
+        std::process::exit(code)
+    })
+}
+
+/// [`exit`] for a caught INT or TERM: the same terminal (its claim and its fire), then death by that signal with its
+/// default action, so whatever started the daemon sees the end it would see with no handler (a service manager counts
+/// INT and TERM as a clean stop, a shell reads 128 + n, and the guard mirrors the signal). If the raise returns, the exit
+/// is 128 + n.
+#[cfg(unix)]
+pub(crate) fn exit_by_signal(signum: i32) -> ! {
+    terminal(super::child_signal::process(), 128 + signum, |code| {
+        // SAFETY: the default action restored for one valid signal, the signal unblocked in this thread, then raised at
+        // this thread; no handler runs.
+        unsafe {
+            libc::signal(signum, libc::SIG_DFL);
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, signum);
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+            libc::raise(signum);
+        }
+        std::process::exit(code)
+    })
+}
+
+/// The terminal body: claim the exit, fire `signal` on a thread of its own, wait at most [`FIRE_WAIT`] for it, then hand
+/// `code` to `terminate`. Two controlled ends can arrive together (the backstop and a close that finishes at the bound):
+/// the first to arrive claims the exit and its code stands; the other waits for the process to end under it. A test
+/// supplies a private signal and a callback.
+pub(super) fn terminal<T>(
+    signal: &'static super::child_signal::Signal,
+    code: i32,
+    terminate: impl FnOnce(i32) -> T,
+) -> T {
+    if !signal.claim_exit() {
+        loop {
+            std::thread::park();
+        }
+    }
+    let (sent, answered) = std::sync::mpsc::channel();
+    let started = std::thread::Builder::new()
+        .name("sotd-fire".into())
+        .spawn(move || {
+            let _ = sent.send(signal.fire());
+        });
+    let fired = match started {
+        Ok(_) => answered.recv_timeout(FIRE_WAIT).ok(),
+        // No thread to run it on: no fire. Fired here it could wait without bound on a creation stalled in the OS (the
+        // registry mutex), and this caller holds the exit's claim, so nothing else could exit either; on Linux the guard
+        // ends what the daemon started.
+        Err(error) => {
+            tracing::error!(%error, "terminal child fire: no thread to run it on; exiting with {code} without it");
+            eprintln!("sotd: terminal child fire: no thread to run it on ({error}); exiting with {code} without it");
+            return terminate(code);
+        }
+    };
+    match fired {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            tracing::error!(%error, "terminal child fire failed");
+            eprintln!("sotd: terminal child fire failed: {error}");
+        }
+        None => {
+            tracing::error!("terminal child fire still running after {FIRE_WAIT:?}: exiting with {code} regardless");
+            eprintln!("sotd: terminal child fire still running after {FIRE_WAIT:?}: exiting with {code} regardless");
+        }
+    }
+    terminate(code)
 }
 
 /// What [`end_rows`] did. `ended` and `forget` are both ended runs;
@@ -355,12 +428,150 @@ where
     }
 }
 
-use super::child_signal::{fire, live_children};
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rows::run::end_run::EndRunOutcome as O;
+
+    /// A child creation stalled in the OS holds the registry mutex the fire needs: the terminal hands its code on after the
+    /// wait, and the fire completes when the creation does.
+    #[cfg(unix)]
+    #[test]
+    fn the_terminal_does_not_wait_for_a_stalled_creation() {
+        use crate::lifecycle::child_signal::Signal;
+        use std::sync::{mpsc, Barrier};
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let released = Arc::new(Barrier::new(2));
+        let (entered, arrived) = mpsc::channel();
+        let hook_released = released.clone();
+        *signal.after_create.lock().unwrap() = Some(Box::new(move |_| {
+            entered.send(()).unwrap();
+            hook_released.wait();
+        }));
+        let creation = std::thread::spawn(move || {
+            let mut cmd = std::process::Command::new("sleep");
+            cmd.arg("600");
+            if let Ok(mut child) = signal.spawn_std(&mut cmd) {
+                let _ = child.kill();
+            }
+        });
+        arrived
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the creation did not stall");
+        let began = std::time::Instant::now();
+        let code = terminal(signal, 7, |code| code);
+        let waited = began.elapsed();
+        released.wait();
+        creation.join().unwrap();
+        assert_eq!(code, 7);
+        assert!(
+            waited < Duration::from_secs(5),
+            "the terminal waited {waited:?} for a stalled creation"
+        );
+        assert!(
+            signal.is_fired(),
+            "the permanent flag was not published before the wait"
+        );
+    }
+
+    /// A terminal that cannot start its fire thread does not fire on its own thread either: a stalled creation holds the
+    /// registry mutex the fire needs, and this caller holds the exit's claim, so a fire here would park every exit. It hands
+    /// its code on at once. The thread limit is this isolated child's own; a privileged account, which no limit stops, is a
+    /// setup failure.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_terminal_with_no_thread_to_fire_on_exits_without_the_fire() {
+        use crate::lifecycle::child_signal::Signal;
+        use std::sync::{mpsc, Barrier};
+        let name = "lifecycle::shutdown::tests::a_terminal_with_no_thread_to_fire_on_exits_without_the_fire";
+        if !sot_log::test_isolated::run_isolated(name) {
+            return;
+        }
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let released = Arc::new(Barrier::new(2));
+        let (entered, arrived) = mpsc::channel();
+        let hook_released = released.clone();
+        *signal.after_create.lock().unwrap() = Some(Box::new(move |_| {
+            entered.send(()).unwrap();
+            hook_released.wait();
+        }));
+        let creation = std::thread::spawn(move || {
+            let mut cmd = std::process::Command::new("sleep");
+            cmd.arg("600");
+            if let Ok(mut child) = signal.spawn_std(&mut cmd) {
+                let _ = child.kill();
+            }
+        });
+        arrived
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the creation did not stall");
+        let mut saved = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: reading and lowering this process's own soft thread limit into and from local values.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NPROC, &mut saved), 0);
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: saved.rlim_max,
+            };
+            assert_eq!(
+                libc::setrlimit(libc::RLIMIT_NPROC, &none),
+                0,
+                "setup: lower the thread limit"
+            );
+        }
+        assert!(
+            std::thread::Builder::new().spawn(|| {}).is_err(),
+            "setup: a thread can still be started (a privileged account?)"
+        );
+        let began = std::time::Instant::now();
+        let code = terminal(signal, 7, |code| code);
+        let waited = began.elapsed();
+        // SAFETY: restoring the limit read above.
+        unsafe { libc::setrlimit(libc::RLIMIT_NPROC, &saved) };
+        released.wait();
+        creation.join().unwrap();
+        assert_eq!(code, 7);
+        assert!(
+            waited < Duration::from_secs(5),
+            "the terminal with no fire thread waited {waited:?} for a stalled creation"
+        );
+    }
+
+    /// Two controlled ends that arrive together (the backstop and a close finishing at the bound): the first one's code is
+    /// the only one handed to the exit, and the second never reaches it.
+    #[test]
+    fn the_first_controlled_exit_decides_the_code() {
+        use crate::lifecycle::child_signal::Signal;
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let handed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (first_in, first_inside) = std::sync::mpsc::channel();
+        let record = handed.clone();
+        let first = std::thread::spawn(move || {
+            terminal(signal, 1, |code| {
+                record.lock().unwrap().push(code);
+                first_in.send(()).unwrap();
+                // The first exit is still on its way out when the second arrives.
+                std::thread::sleep(Duration::from_millis(500));
+            })
+        });
+        first_inside
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the first exit did not reach its end");
+        let record = handed.clone();
+        let _second = std::thread::spawn(move || {
+            terminal(signal, 0, |code| record.lock().unwrap().push(code))
+        });
+        std::thread::sleep(Duration::from_millis(1000));
+        first.join().unwrap();
+        assert_eq!(
+            *handed.lock().unwrap(),
+            vec![1],
+            "the second controlled exit reached the process exit"
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn end_with_retry_table() {

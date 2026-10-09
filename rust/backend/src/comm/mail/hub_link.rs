@@ -299,7 +299,7 @@ mod tests {
 
     pub(super) static STUB_PROGRAM: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-    /// The shutdown signal kills the ssh child and everything it started; the loop neither reconnects nor leaves a guard counted.
+    /// The shutdown signal kills the ssh child and everything it started; the loop neither reconnects nor leaves a registered tree.
     #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_kills_the_link_child_and_never_reconnects() {
@@ -321,23 +321,23 @@ mod tests {
         let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
         let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", sig).await });
         let began = Instant::now();
-        // The guard counts the child at its spawn, before the stub's first line has run; fire only once
+        // Spawn completes before the stub's first line has run; fire only once
         // that line has written the counter, so the one-spawn precondition is true.
         while std::fs::read_to_string(&counter).map_or(0, |s| s.lines().count()) == 0 {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub child never ran");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(sig.live() > 0, "the stub child exited before the fire");
+        assert!(!task.is_finished(), "the ready owner finished before the fire");
         while std::fs::read_to_string(&bg).map(|s| s.trim().is_empty()).unwrap_or(true) {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub child never wrote its descendant's pid");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        sig.fire();
+        sig.fire().expect("fire");
         tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .expect("the link loop outlived the shutdown")
             .expect("link task");
-        assert_eq!(sig.live(), 0);
+        assert!(sig.held_groups().is_empty());
         assert!(descendant.gone(), "the link's descendant survived the shutdown");
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1, "reconnected after the fire");

@@ -6,13 +6,54 @@ use super::*;
 // The main authority loop
 // ---------------------------------------------------------------------
 
+/// The fence this authority holds for its whole life.
+enum Fence {
+    Taken(
+        #[allow(dead_code, reason = "held for its Drop")]
+        crate::supervisor::journal::fence::SupervisorLock,
+    ),
+    #[cfg(unix)]
+    Inherited(
+        #[allow(dead_code, reason = "held for its descriptor")] super::birth_claim::BirthClaim,
+    ),
+}
+
+/// Become the authority: adopt the claim this process was born holding and answer the parent that forked it, or, with
+/// none, take the fence now. An adopted claim is the same locked open file description the parent took, so the fence is
+/// never free between the claim and this process's first act (R4: no second descriptor, no second lock).
+fn take_authority(config: &SuperviseConfig) -> crate::Result<Fence> {
+    #[cfg(unix)]
+    if let Some(birth) = config.birth {
+        let claim = super::birth_claim::BirthClaim::adopt(birth.claim_fd, &config.state_dir)?;
+        #[cfg(feature = "native-barrier")]
+        crate::test_barrier::hold("claim_adopted");
+        let (pid, created) = self_pid_and_created().unwrap_or((0, 0));
+        // The acknowledgement is the parent's bookkeeping: a parent that is gone has nothing to be told, and one that
+        // missed it keeps its own copy of the claim until this process ends. The claim is this supervisor's either way.
+        if let Err(e) = super::birth_claim::acknowledge_takeover(
+            birth.takeover_fd,
+            super::birth_claim::Takeover { pid, created },
+        ) {
+            note(format_args!(
+                "takeover not acknowledged to the parent ({e}); the claim is this supervisor's"
+            ));
+        }
+        return Ok(Fence::Inherited(claim));
+    }
+    crate::supervisor::journal::fence::lock_supervisor(&config.state_dir).map(Fence::Taken)
+}
+
 pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     init_process_globals(&config)?;
 
     std::fs::create_dir_all(voyages_dir(&config.state_dir))?;
 
-    // ONE AUTHORITY.
-    let _fence = match crate::supervisor::journal::fence::lock_supervisor(&config.state_dir) {
+    // The harness's barrier before the fence is claimed (only a build with `native-barrier`).
+    #[cfg(all(unix, feature = "native-barrier"))]
+    crate::test_barrier::hold("pre_fence");
+
+    // ONE AUTHORITY: the fence this process was born holding, else the one it takes now.
+    let _fence = match take_authority(&config) {
         Ok(f) => f,
         // `Error::State` is the ONE error `lock_supervisor` can return for
         // "already held" (see `EXIT_CONTENDED`'s own doc for why this is
@@ -227,3 +268,48 @@ fn final_exit_code(lifecycle: &Lifecycle, authority: &AuthorityState) -> i32 {
     }
 }
 
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::fd::IntoRawFd;
+
+    /// A supervisor whose parent is gone before the takeover still becomes the authority: the acknowledgement cannot be
+    /// delivered (the channel has no reader), and the inherited claim stays this supervisor's fence.
+    #[test]
+    fn a_takeover_nobody_reads_keeps_the_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let claim = super::super::birth_claim::BirthClaim::take(dir.path())
+            .expect("claim the fence for a birth");
+        // SAFETY: a duplicate of a descriptor this test holds: the child's copy of the claim, as the launcher leaves it.
+        let claim_fd = unsafe { libc::dup(claim.as_raw_fd()) };
+        assert!(claim_fd >= 0, "dup the claim");
+        drop(claim);
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let config = SuperviseConfig {
+            state_dir: dir.path().to_path_buf(),
+            mode: StartMode::Start,
+            producer_argv: vec!["unused".into()],
+            cols: 80,
+            rows: 24,
+            assume_no_rollback_target: true,
+            survival: Survival::Normal,
+            first_leg_without: Vec::new(),
+            birth: Some(super::super::birth_claim::InheritedBirth {
+                claim_fd,
+                takeover_fd: writer.into_raw_fd(),
+            }),
+        };
+        let fence = take_authority(&config).expect("the claim was lost with the parent's channel");
+        assert!(matches!(fence, Fence::Inherited(_)));
+        assert!(
+            crate::supervisor::journal::fence::lock_supervisor(dir.path()).is_err(),
+            "the fence was free while the authority held its claim"
+        );
+        drop(fence);
+        assert!(
+            crate::supervisor::journal::fence::lock_supervisor(dir.path()).is_ok(),
+            "the fence stayed held after the authority let go"
+        );
+    }
+}

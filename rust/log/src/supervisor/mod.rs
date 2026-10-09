@@ -284,6 +284,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 mod authority;
+#[cfg(unix)]
+pub mod birth_claim;
 pub mod journal;
 pub mod lease_win;
 mod leg;
@@ -521,6 +523,10 @@ pub struct SuperviseConfig {
     /// or `--continue`, only that the caller wants some tokens gone from
     /// an unstable leg's own argv.
     pub first_leg_without: Vec<String>,
+    /// The fence claim this supervisor was born holding, and the channel it answers on once the claim is its own
+    /// (`--claim-fd`, `--takeover-fd`). `None` for a supervisor nobody claimed for: it takes the fence itself.
+    #[cfg(unix)]
+    pub birth: Option<birth_claim::InheritedBirth>,
 }
 
 /// `sot-capsule supervise`'s own entry point — never panics by design;

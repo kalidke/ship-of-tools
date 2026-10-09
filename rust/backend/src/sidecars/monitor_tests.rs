@@ -289,7 +289,7 @@
                 break;
             }
         }
-        sig.fire();
+        sig.fire().expect("fire");
         tokio::time::timeout(Duration::from_secs(1), task)
             .await
             .expect("the monitor backoff outlived the shutdown")
