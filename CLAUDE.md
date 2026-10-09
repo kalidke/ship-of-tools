@@ -36,15 +36,16 @@ Each line names the subsystem and the folder of its charter page (idea, owns, pr
 - **distribution**: release, CI, install, update, apply, launch. `scripts/`
 - **records**: ADRs, the manual, this file. `docs/`
 
-Who owns what and how the subsystems connect load with this page (interim, until one generated map replaces both):
-@docs/ownership.md
-@docs/integration.md
+Who owns what is `docs/ownership.md`, and how the subsystems connect is `docs/integration.md` (interim, until one
+generated map replaces both). Neither loads with this page: read the one you need before you change an owner or a
+connection.
 
 ## Finding your way
 - Pages come in three tiers: this root map; one charter per subsystem in its charter folder; and a module
   page in every other source folder. No page repeats its parent.
-- Start from the map that loads with this page; it names each subsystem's folders and connections. The first Read of a file in a folder loads that folder's page and every page above it; Grep and
-  shell searches load none. So read the file, not only grep it.
+- Start from the subsystem list above; `docs/ownership.md` names each concept's owner and files, and
+  `docs/integration.md` each connection. The first Read of a file in a folder loads that folder's page and every page
+  above it; Grep and shell searches load none. So read the file, not only grep it.
 - Folders with no page of their own are listed, with their reason, in `scripts/tests/exempt.txt`.
 - Designed but unbuilt parts (the Project, Types, Math, Outputs and Agents modes; the concept layer's refresh and
   reference checks; the plugin contract beyond `FileType`) are described, marked unbuilt, in `docs/src/guide/modes.md`,
