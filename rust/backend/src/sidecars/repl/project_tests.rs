@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 
 use super::*;
 use crate::rows::Workspace;
-use crate::sidecars::contract_tests::{isolated, owned_julia_env, within};
+use crate::sidecars::contract_tests::{depot_path, isolated, owned_julia_env, within};
 
 /// The longest an isolated body here may take: an empty depot compiles the shim on first start.
 pub(super) const BODY: Duration = Duration::from_secs(240);
@@ -34,17 +34,16 @@ impl Fixture {
         Self::with_read_depot(None)
     }
 
-    /// As `new`, with `read_depot` behind the owned depot on `JULIA_DEPOT_PATH`: packages and their compiled caches are
-    /// read from it, and every file Julia makes goes to the owned depot. In the read depot Julia does only the
+    /// As `new`, with the depots of `read_depot` (a `JULIA_DEPOT_PATH` list) behind the owned depot and Julia's own
+    /// bundled depots after them (`depot_path`): packages and their compiled caches are read from them, and every file
+    /// Julia makes goes to the owned depot. In the read depot Julia does only the
     /// bookkeeping any session does there: Pkg makes and at once removes a lock file beside each package version it
     /// resolves (`packages/<name>/<slug>.pid`), and loading a cache updates its timestamp.
     fn with_read_depot(read_depot: Option<std::ffi::OsString>) -> Self {
         let root = tempfile::tempdir().expect("owned fixture root").keep();
         let shim = owned_julia_env(&root);
         if let Some(read) = read_depot {
-            let depots = std::env::join_paths([root.join("depot").into_os_string(), read])
-                .expect("depot path");
-            std::env::set_var("JULIA_DEPOT_PATH", depots);
+            std::env::set_var("JULIA_DEPOT_PATH", depot_path(&root.join("depot"), Some(&read)));
         }
         let workspace = root.join("workspace with spaces");
         std::fs::create_dir(&workspace).expect("create the bare workspace");
