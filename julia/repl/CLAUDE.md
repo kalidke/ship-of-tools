@@ -13,7 +13,7 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 - `src/wgl.jl`: browser-served artifacts, `BrowserView`, `page_server`, private `wgl_server` listener selection and `wglshow`.
 - `src/frames.jl`: how an eval's output becomes typed frames, and the BrowserView announcements.
 - `test/runtests.jl`: the streaming tests and the stdlib-only guard test.
-- `test/answer_then_next.jl`: an output stream that hands `serve` the next request the moment an answer is written, the order a real pipe allows.
+- `test/answer_then_next.jl`: an output stream that hands `serve` the next request the moment an answer's done frame is written, the order a real pipe allows, and that request's line (`eval_line`).
 - `test/bonito/`: the `wglshow` page test's own environment (Bonito): the page carries its assets, its port has no asset route, and (Linux) serving it opens exactly one listener (CI's "wglshow pages" job). Actual owned-process listener, loopback HTTP/bind and selection-preservation controls, with an extra-listener rejection control, and the live-port refusal proof.
 
 ## Start here

@@ -1,7 +1,7 @@
 # An output stream for `ShipToolsRepl.serve` that reproduces the order a real pipe allows: the client reads an answer
-# while the answering task still waits on its write, and sends its next request at once. The moment the terminal res
-# of request `trigger` has been written, `next()` hands the dispatch loop that next request, and the loop runs before
-# the answering task resumes.
+# while the answering task still waits on its write, and sends its next request at once. The moment the done frame of
+# request `trigger` has been written (an answer's first part; its res follows), `next()` hands the dispatch loop that
+# next request, and the loop runs before the answering task resumes.
 mutable struct AnswerThenNext <: IO
     out::Base.BufferStream
     pending::Vector{UInt8}
@@ -31,7 +31,8 @@ function Base.flush(io::AnswerThenNext)
     deleteat!(io.pending, 1:cut)
     for line in lines
         env = ShipToolsRepl.json_read(line)
-        if !io.fired && get(env, :kind, "") == "res" && get(env, :id, 0) == io.trigger
+        if !io.fired && get(env, :id, 0) == io.trigger && get(env, :op, "") == "repl.frame" &&
+           env[:payload][:frame][:kind] == "done"
             io.fired = true
             io.next()
             # One thread, cooperative tasks: the dispatch loop, now runnable, reads the request and acts on it
@@ -43,3 +44,7 @@ function Base.flush(io::AnswerThenNext)
     end
     return nothing
 end
+
+# One `repl.eval` request line, whose eval id is its request id.
+eval_line(id, code) = sprint(ShipToolsRepl.json_write, Dict(:v => 1, :id => id, :op => "repl.eval",
+    :payload => Dict(:eval_id => id, :code => code))) * "\n"

@@ -213,47 +213,50 @@ include("answer_then_next.jl")
         @test all(e -> e[:payload][:eval_id] == 78, evts)
     end
 
-    eval_line(id, code) = sprint(DR.json_write, Dict(:v => 1, :id => id, :op => "repl.eval",
-        :payload => Dict(:eval_id => id, :code => code))) * "\n"
     run_file_line(id, path) = sprint(DR.json_write, Dict(:v => 1, :id => id, :op => "repl.run_file",
         :payload => Dict(:eval_id => id, :path => path, :fresh => false))) * "\n"
 
-    # A client sends its next request the moment an answer arrives. The answered eval is over by then, so the next
-    # request is accepted, after an eval and after a run_file alike.
-    @testset "serve: a request sent the moment $op answers is accepted" for op in ("repl.eval", "repl.run_file")
+    # A client sends its next request the moment an answer's done frame arrives. The answered eval is over by then, so
+    # the next request is accepted: after an eval, after a run_file, and after an eval whose streaming machinery failed
+    # (a `work` that throws, spawned directly), which is answered with an `internal repl error` frame.
+    @testset "serve: a request sent the moment $case answers is accepted" for case in
+            ("repl.eval", "repl.run_file", "a failed eval")
         path = tempname() * ".jl"
-        write(path, "1\n")
+        case == "repl.run_file" && write(path, "1\n")
         bs_in, bs_out = Base.BufferStream(), Base.BufferStream()
         out = AnswerThenNext(bs_out, 1, () -> (write(bs_in, eval_line(2, "40 + 2")); flush(bs_in)))
         @async DR.serve(bs_in, out)
         @async (sleep(60); close(bs_out); close(bs_in))
-        write(bs_in, op == "repl.eval" ? eval_line(1, "1") : run_file_line(1, path))
-        flush(bs_in)
-        second = Any[]
+        if case == "a failed eval"
+            DR.spawn_eval(_ -> error("the machinery failed"), out, 1, 1, "repl.eval", Dict(:eval_id => 1))
+        else
+            write(bs_in, case == "repl.eval" ? eval_line(1, "1") : run_file_line(1, path))
+            flush(bs_in)
+        end
+        envs = Any[]
         while true
             line = readline(bs_out)
             isempty(line) && (eof(bs_out) ? break : continue)
             env = DR.json_read(line)
-            get(env, :id, 0) == 2 || continue
-            push!(second, env)
-            get(env, :kind, "") == "res" && break
+            push!(envs, env)
+            get(env, :kind, "") == "res" && get(env, :id, 0) == 2 && break
         end
         close(bs_in)
         rm(path; force = true)
+        frames(n) = [e[:payload][:frame] for e in envs if get(e, :kind, "") == "evt" && get(e, :id, 0) == n]
         @test out.fired
-        frames = [e[:payload][:frame] for e in second if get(e, :kind, "") == "evt"]
-        @test !any(f -> f[:kind] == "error", frames)
-        @test any(f -> f[:kind] == "value" && strip(f[:text]) == "42", frames)
+        @test !any(f -> f[:kind] == "error", frames(2))
+        @test any(f -> f[:kind] == "value" && strip(f[:text]) == "42", frames(2))
+        @test any(f -> f[:kind] == "error" && startswith(f[:message], "internal repl error"), frames(1)) ==
+              (case == "a failed eval")
     end
 
-    # A child process runs `body` against `serve` with an `AnswerThenNext` output and returns its exit code. `line`
-    # builds an eval request; the child exits 4 if nothing decides within a minute.
+    # A child process runs `body` against `serve` with an `AnswerThenNext` output and returns its exit code; the child
+    # exits 4 if nothing decides within a minute.
     function child_exit_code(body::String)
         script = """
             using ShipToolsRepl
             include($(repr(joinpath(@__DIR__, "answer_then_next.jl"))))
-            line(id, code) = sprint(ShipToolsRepl.json_write, Dict(:v => 1, :id => id, :op => "repl.eval",
-                :payload => Dict(:eval_id => id, :code => code))) * "\\n"
             bs_in, bs_out = Base.BufferStream(), Base.BufferStream()
             @async (sleep(60); exit(4))
             """ * body
@@ -261,24 +264,24 @@ include("answer_then_next.jl")
         return run(ignorestatus(cmd)).exitcode
     end
 
-    # The guard still holds one eval at a time: an answered eval that finishes after the next eval started leaves that
-    # eval's mark, so a third request while the second runs is refused (0); accepting it (5) would overlap two evals'
-    # output capture, which is why this runs in a child.
+    # The guard still holds one eval at a time: once an answered eval's task has ended, the eval accepted on its answer
+    # still holds the guard, so a third request while it runs is refused (0); accepting it (5) would overlap two evals'
+    # output capture, which is why this runs in a child. Eval 2 waits on `gate`, which nothing fills, so it is still
+    # running when the third request is decided; `answering` is eval 1's task, caught as it writes its done frame.
     @testset "serve: an answered eval's finish leaves the next eval's mark" begin
         @test child_exit_code("""
-            out = AnswerThenNext(bs_out, 1, () -> (write(bs_in, line(2, "sleep(5); 2")); flush(bs_in)))
+            gate = Channel{Nothing}(1)
+            answering = nothing
+            out = AnswerThenNext(bs_out, 1, () -> (global answering = current_task();
+                write(bs_in, eval_line(2, "take!(gate); 2")); flush(bs_in)))
             @async ShipToolsRepl.serve(bs_in, out)
-            write(bs_in, line(1, "sleep(0.5); 1"))
+            write(bs_in, eval_line(1, "1"))
             flush(bs_in)
-            while ShipToolsRepl.CURRENT_EVAL[] === nothing
-                yield()
-            end
-            first = ShipToolsRepl.CURRENT_EVAL[]
             while true
                 env = ShipToolsRepl.json_read(readline(bs_out))
                 if get(env, :kind, "") == "res" && get(env, :id, 0) == 1
-                    wait(first)
-                    write(bs_in, line(3, "3"))
+                    wait(answering)
+                    write(bs_in, eval_line(3, "3"))
                     flush(bs_in)
                 elseif get(env, :id, 0) == 3 && get(env, :kind, "") == "evt" &&
                        occursin("REPL busy", string(get(env[:payload][:frame], :message, "")))
@@ -294,9 +297,9 @@ include("answer_then_next.jl")
     # exit having run; 3, its refusal). In a child, since the eval exits it.
     @testset "serve: an exit() sent the moment an answer arrives ends the REPL" begin
         @test child_exit_code("""
-            out = AnswerThenNext(bs_out, 1, () -> (write(bs_in, line(2, "exit(0)")); flush(bs_in)))
+            out = AnswerThenNext(bs_out, 1, () -> (write(bs_in, eval_line(2, "exit(0)")); flush(bs_in)))
             @async ShipToolsRepl.serve(bs_in, out)
-            write(bs_in, line(1, "1"))
+            write(bs_in, eval_line(1, "1"))
             flush(bs_in)
             while true
                 env = ShipToolsRepl.json_read(readline(bs_out))
