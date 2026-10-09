@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::sidecars::contract_tests::{executable, isolated, within};
+use crate::sidecars::contract_tests::{depot_path, executable, isolated, within};
 
 fn scratch_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!("sot-repl-execute-{}", std::process::id()));
@@ -171,7 +171,7 @@ async fn res_without_done_closes_started_run() {
     std::fs::write(shim.join("src").join("ShipToolsRepl.jl"), RES_ONLY_SHIM).unwrap();
     std::env::set_var("SOT_RESOURCE_ROOT", dir.join("resources"));
     std::env::set_var("SOT_JULIA_BIN", executable("julia"));
-    std::env::set_var("JULIA_DEPOT_PATH", dir.join("depot"));
+    std::env::set_var("JULIA_DEPOT_PATH", depot_path(&dir.join("depot"), None));
     let (frame_tx, mut bus) = tokio::sync::broadcast::channel(256);
     let workspaces = Workspaces::new();
     workspaces.set_repl_frame_tx(frame_tx);

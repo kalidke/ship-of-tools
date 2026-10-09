@@ -15,7 +15,7 @@ use tokio::sync::broadcast;
 use super::project_tests::{eval, raw, stdout_of};
 use super::*;
 use crate::lifecycle::child_signal::Signal;
-use crate::sidecars::contract_tests::{executable, isolated, owned_julia_env, within};
+use crate::sidecars::contract_tests::{depot_path, executable, isolated, owned_julia_env, within};
 
 /// A first start compiles the shim in an empty depot, which several parallel tests slow further.
 #[cfg_attr(windows, allow(dead_code, reason = "used by the Unix-only tests of this file"))]
@@ -70,7 +70,7 @@ impl Fixture {
         std::fs::write(shim.join("src").join("ShipToolsRepl.jl"), IDLE_SHIM).unwrap();
         std::env::set_var("SOT_RESOURCE_ROOT", fx.root.join("resources"));
         std::env::set_var("SOT_JULIA_BIN", executable("julia"));
-        std::env::set_var("JULIA_DEPOT_PATH", fx.root.join("depot"));
+        std::env::set_var("JULIA_DEPOT_PATH", depot_path(&fx.root.join("depot"), None));
         fx
     }
 
