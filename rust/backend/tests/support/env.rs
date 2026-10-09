@@ -300,6 +300,9 @@ impl Env {
     /// (`rows/store/`'s own doc); every other field the daemon needs
     /// defaults sensibly.
     ///
+    /// Every value is written as the row store's writer writes it
+    /// (`toml_basic`), so the daemon reads back the path given here.
+    ///
     /// 2026-09-04 amendment: `scan_disk` (`rows/store/`, which loads
     /// this toml) runs BEFORE the daemon's own default-row seed logic
     /// and has no spawn side effect of its own (`scan_dir` only ever
@@ -313,13 +316,16 @@ impl Env {
     pub fn seed_capsule_toml(&self, workspace_id: &str, slug: &str, project_root: &Path, agent: &str) {
         let dir = self.app_config_dir().join(format!("workspaces-{TEST_STATE_HOST}"));
         std::fs::create_dir_all(&dir).expect("mkdir pre-seeded workspaces dir");
-        let project_root = project_root.to_string_lossy();
         let body = format!(
-            "workspace_id  = \"{workspace_id}\"\n\
-             slug          = \"{slug}\"\n\
-             project_root  = \"{project_root}\"\n\
+            "workspace_id  = {}\n\
+             slug          = {}\n\
+             project_root  = {}\n\
              runtime       = \"capsule\"\n\
-             agent         = \"{agent}\"\n"
+             agent         = {}\n",
+            toml_basic(workspace_id),
+            toml_basic(slug),
+            toml_basic(&project_root.to_string_lossy()),
+            toml_basic(agent),
         );
         std::fs::write(dir.join(format!("{slug}.toml")), body)
             .expect("write pre-seeded capsule row toml");
@@ -731,4 +737,23 @@ impl Drop for Env {
         // (4) `_tmp`/`_runtime_tmp` remove themselves right after this
         // method returns — see the doc comment above.
     }
+}
+
+/// A TOML basic string spelled as the row store's writer spells it (`toml_quote` in
+/// `rust/backend/src/rows/store/codec.rs`), so the store's reader returns `s` unchanged.
+fn toml_basic(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
 }

@@ -146,6 +146,30 @@ fn stamp() -> String {
     format!("{:x}{:x}", std::process::id(), nanos & 0xffff_ffff_ffff)
 }
 
+/// The project folder of the seeded row `slug` under the daemon's `root`.
+fn seeded_project(root: &Path, slug: &str) -> PathBuf {
+    root.join("projects").join(format!("t-{slug}"))
+}
+
+/// A TOML basic string spelled as the row store's writer spells it (`toml_quote` in
+/// `rust/backend/src/rows/store/codec.rs`), so the store's reader returns `s` unchanged.
+fn toml_basic(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
 const LEASE_HOST: &str = "t3lease";
 
 impl Daemon {
@@ -181,9 +205,13 @@ impl Daemon {
         let seeded_dir = config_dir.join(format!("workspaces-{SELF_HOST}"));
         std::fs::create_dir_all(&seeded_dir)?;
         for n in 0..seeded {
-            let (id, slug, project) = (format!("t3seed{n}-{}", stamp()), format!("t3seed{n}"), projects.join(format!("seed{n}")));
+            let (id, slug) = (format!("t3seed{n}-{}", stamp()), format!("t3seed{n}"));
+            // A folder whose name starts with `t`: on Windows its path holds `\t`, which the row store's reader decodes
+            // unless the value is quoted as its writer quotes it (`make_ready_rows` checks the listed root).
+            let project = seeded_project(&root, &slug);
             std::fs::create_dir_all(&project)?;
-            let body = format!("workspace_id  = \"{id}\"\nslug          = \"{slug}\"\nproject_root  = \"{}\"\nruntime       = \"capsule\"\nagent         = \"none\"\n", project.display());
+            let (q_id, q_slug, q_root) = (toml_basic(&id), toml_basic(&slug), toml_basic(&project.to_string_lossy()));
+            let body = format!("workspace_id  = {q_id}\nslug          = {q_slug}\nproject_root  = {q_root}\nruntime       = \"capsule\"\nagent         = \"none\"\n");
             std::fs::write(seeded_dir.join(format!("{slug}.toml")), body)?;
             daemon.rows.push(Row { id, slug, session: String::new(), kind: RowKind::Seeded, nonce: String::new() });
         }
@@ -317,6 +345,10 @@ impl Daemon {
         let listed = self.list()?;
         for row in &mut self.rows {
             let entry = listed.iter().find(|e| e["workspace_id"] == row.id.as_str()).with_context(|| format!("row {} not listed", row.id))?;
+            if row.kind == RowKind::Seeded {
+                let written = seeded_project(&self.root, &row.slug);
+                ensure!(entry["project_root"].as_str() == Some(&*written.to_string_lossy()), "the daemon must read seeded row {}'s project folder back unchanged: {entry}", row.slug);
+            }
             row.slug = entry["slug"].as_str().unwrap_or_default().to_string();
             row.session = entry["session_name"].as_str().unwrap_or_default().to_string();
         }
