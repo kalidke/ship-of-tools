@@ -4,7 +4,7 @@ What the cases give the products they run, so that a case exercises the product'
 process trees they watch for an end. Part of the daemon-lifetime harness; page: rust/backend/tests/daemon_lifetime/CLAUDE.md.
 
 ## Files
-- `tree.rs`: `Tree`, a leader, a child and a grandchild that report their pids (the last two ignore TERM and HUP; the leader is started detached), and the forking tree; `session_members`
+- `tree.rs`: `Tree`, a leader, a child and a grandchild that report their pids (the last two ignore TERM and HUP; the leader is started detached), and the forking tree; each ends itself once its folder is gone; `session_members`
 - `notebook.jl`: a Pluto notebook of one trivial cell; the case's worker is started by the startup expression the case's own copy of `session_options.jl` carries
 - `render.qmd`: a Quarto document on the Julia engine whose one chunk reports the worker's pid and its parent's (the engine server), ignores TERM and HUP and starts a tree detached
 

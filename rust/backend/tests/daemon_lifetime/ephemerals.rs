@@ -86,7 +86,7 @@ async fn the_drain_outlasts_a_forking_child() {
     let spinning = start_spinning("gdrn", &mut fx, true).await;
     let leader = fx.identity(spinning.ids[0]).pid;
     let alive_before = session_members(leader).len();
-    let daemon = fx
+    let _daemon = fx
         .watch(spinning.run.daemon, None, "the daemon")
         .expect("an identity for the daemon");
     spinning.task.abort();

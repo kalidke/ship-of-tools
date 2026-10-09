@@ -2,6 +2,9 @@
 //! the last two ignoring TERM and HUP, the leader a session of its own (it is started detached); each writes its pid to
 //! the case's folder once it is up, so the case learns the identities from the fixture itself and never from `ps`.
 //! The forking tree is a leader that starts a short-lived child every millisecond, to outlast a single sweep.
+//! Every process of a tree ends itself once the tree's folder is gone (within a second; the forking tree within a
+//! millisecond's poll) and in any case after its bound, so no cleanup depends on the product, the daemon's guard or the
+//! host's cgroup layout: a tree in a capsule's row scope, outside the suite's container, ends with the case's folder.
 
 use std::path::{Path, PathBuf};
 
@@ -10,21 +13,25 @@ pub struct Tree {
     dir: PathBuf,
 }
 
-/// The shell a tree runs; `$1` is its folder. The leader becomes `sleep` (its pid is `$$`), the child is a `sleep`, and the
-/// grandchild is a `sleep` under a subshell.
+/// The shell a tree runs; `$1` is its folder. The leader becomes the waiting loop `W` (its pid is `$$`), the child is a
+/// `W`, and the grandchild is a `W` under a subshell. `W` ignores TERM and HUP and polls once a second until the folder is
+/// gone, for at most 3150 polls.
 const TREE: &str = r#"trap '' HUP TERM
 D=$1
-sleep 3152 & echo $! > "$D/child.pid"
-( trap '' HUP TERM; sleep 3153 & echo $! > "$D/grandchild.pid"; wait ) &
+W='trap "" HUP TERM; n=0; while [ -d "$0" ] && [ "$n" -lt 3150 ]; do sleep 1; n=$((n + 1)); done'
+sh -c "$W" "$D" & echo $! > "$D/child.pid"
+( trap '' HUP TERM; sh -c "$W" "$D" & echo $! > "$D/grandchild.pid"; wait ) &
 echo $$ > "$D/leader.pid"
-exec sleep 3150
+exec sh -c "$W" "$D"
 "#;
 
-/// The shell of the forking tree: it only ever forks and waits, so there is always a young child to kill.
+/// The shell of the forking tree: it only ever forks and waits, so there is always a young child to kill, until its folder
+/// is gone (at most 3,150,000 forks).
 const FORKING: &str = r#"trap '' HUP TERM
 D=$1
 echo $$ > "$D/leader.pid"
-while :; do sleep 0.001; done
+n=0
+while [ -d "$D" ] && [ "$n" -lt 3150000 ]; do sleep 0.001; n=$((n + 1)); done
 "#;
 
 impl Tree {

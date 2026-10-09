@@ -285,7 +285,7 @@ fn stop_gracefully(child: &mut Child) {
 /// window's close, on a thread of its own because the case's runtime is the caller's.
 fn end_capsules_blocking(env: &Env) {
     let log = env._tmp.path().join("daemon-ending.log");
-    let Ok(mut daemon) = Run::command(env, &log, &[], None).spawn() else {
+    let Ok(daemon) = Run::command(env, &log, &[], None).spawn() else {
         return;
     };
     let socket = env.socket_path.clone();

@@ -49,7 +49,9 @@ of the backend's tests; the suites span subsystems, so this page names no charte
   launched to end (TERM: the daemon exits through its terminal and the guard drains what it started; only a guard that
   does not end in 20 s is killed), and ends the capsules a daemon's end leaves by design through the product: a successor
   on the case's roots re-adopts the rows and the window's close ends them (`Run::end_capsules`; the drop does it for a
-  daemon started from a copy of the binary, whose capsules `Env`'s sweep of the case's roots does not match). What is
-  still alive after that is the container the suite runs in.
+  daemon started from a copy of the binary, whose capsules `Env`'s sweep of the case's roots does not match). A capsule
+  runs in a row scope outside the container the suite runs in, and the close's end of that scope needs `cgroup.kill`
+  (absent on a cgroup v1 or hybrid host), so a fixture process that may outlive it ends itself: every tree process ends
+  once its folder is gone and in any case after its bound (`fixtures/tree.rs`).
 - The Quarto half runs where `quarto --version` answers and is printed as not checked, never passed, where it does not;
   its transport files are under a case-private `XDG_RUNTIME_DIR` that only the case's `quarto` wrapper sets.
