@@ -22,7 +22,7 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 ## Rules
 - The Rust spawn recipe activates the user directory, including a bare workspace, and places this shim behind it on `JULIA_LOAD_PATH`; user package commands do not edit the installed shim project.
 - `repl.ready` is the first envelope, and every envelope is written under `OUT_LOCK` (`serve`, `write_envelope`).
-- One eval at a time, and a second gets error then done (`handle_eval`).
+- One eval at a time, and a second gets error then done (`handle_eval`). An eval ends itself for that guard before its done frame and res go out (`finish_eval`), so a request sent the moment an answer arrives is accepted.
 - Text frames precede value or error, and done is last (`stream_eval_frames`).
 - Every request gets a terminal `res` (`emit_fallback_done`).
 - A `BrowserView` is announced once per (url, open) (`announce_browserview`).

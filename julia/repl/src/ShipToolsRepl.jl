@@ -135,6 +135,14 @@ function eval_in_progress()
     return t !== nothing && !istaskdone(t)
 end
 
+# Ends the calling eval for the single-eval guard. An eval calls it before its done frame and res go out, so a request
+# sent the moment the answer arrives is accepted; only the eval that holds `CURRENT_EVAL` clears it, so a finishing
+# eval never clears a later one.
+function finish_eval()
+    CURRENT_EVAL[] === current_task() && (CURRENT_EVAL[] = nothing)
+    return nothing
+end
+
 # Returns a closure that writes one frame as a `repl.frame` evt, correlated to
 # `id` (request) and `eval_id`.
 make_emit(io::IO, id, eval_id) =
@@ -171,10 +179,11 @@ function handle_eval(io::IO, id, payload)
             # Safety net: eval errors are handled inside run_eval_streaming;
             # this only fires if the streaming machinery itself failed. Always
             # emit a terminal ack so the backend's request doesn't hang.
+            finish_eval()
             emit_fallback_done(io, id, eval_id, "repl.eval",
                 Dict(:eval_id => eval_id, :mode => mode, :elapsed_ms => 0), e)
         finally
-            CURRENT_EVAL[] = nothing
+            finish_eval()
         end
     end
     return
@@ -209,6 +218,7 @@ function run_eval_streaming(io::IO, id, eval_id, mode, code)
         end
     end
 
+    finish_eval()
     elapsed_ms = round(Int, (time() - start) * 1000)
     emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => elapsed_ms))
     write_envelope(io, "res", id, "repl.eval",
@@ -294,9 +304,10 @@ function handle_run_file(io::IO, id, payload)
         try
             run_file_streaming(io, id, eval_id, abs_path, fresh, dir, source, current_project_dir)
         catch e
+            finish_eval()
             emit_fallback_done(io, id, eval_id, "repl.run_file", ack_payload, e)
         finally
-            CURRENT_EVAL[] = nothing
+            finish_eval()
         end
     end
     return
@@ -340,6 +351,7 @@ function run_file_streaming(io::IO, id, eval_id, abs_path, fresh, dir, source, c
         end
     end
 
+    finish_eval()
     elapsed_ms = round(Int, (time() - start) * 1000)
     emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => elapsed_ms))
     write_envelope(io, "res", id, "repl.run_file", Dict(
