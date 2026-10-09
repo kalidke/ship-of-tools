@@ -150,9 +150,9 @@ pub(super) fn toml_quote(s: &str) -> String {
 /// Inverse of `toml_quote`, applied to the inside of the quotes
 /// (`strip_quotes`'s output): `\\`→`\`, `\"`→`"`, `\n`, `\r`, `\t`. An
 /// escape this doesn't recognize (`\U`, `\k`, a lone trailing `\`, …) is
-/// kept verbatim as backslash+char rather than dropped, so a toml written
-/// by an even older build that never escaped anything at all still loads
-/// unchanged — this only widens what the reader accepts, never narrows it.
+/// kept verbatim as backslash+char rather than dropped. A value written by
+/// an older build that never escaped loads unchanged only when it holds none
+/// of those five sequences: a raw `C:\Users\tom` loads with a tab.
 ///
 /// Field defect (2026-09-04): before this existed, `load_toml` fed
 /// `strip_quotes`'s output straight through, so every saved value that

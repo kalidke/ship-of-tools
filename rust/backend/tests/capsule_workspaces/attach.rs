@@ -184,12 +184,16 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     );
 
     let env = Env::new("car");
+    // A project folder whose name starts with `t`: on Windows its path holds `\t`, which the row store's reader
+    // decodes unless the seeded value is quoted as its writer quotes it.
+    let project_root = env._tmp.path().join("t-project");
+    std::fs::create_dir_all(&project_root).expect("mkdir the pre-seeded row's project");
     // Pre-seed an ORDINARY (non-default) capsule row — never touched by
     // `workspace.create`, so its supervisor has never been spawned.
     env.seed_capsule_toml(
         "ws-preseeded-extra",
         "extra",
-        &env.workspace_project_root,
+        &project_root,
         "none",
     );
     // Real test-only barrier: activation blocks until this file exists,
@@ -202,6 +206,11 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     next_id += 1;
     let row = find_row(&list_payload, "ws-preseeded-extra").expect("the pre-seeded row is registered");
     assert_eq!(row["runtime"], "capsule", "row: {row:?}");
+    assert_eq!(
+        row["project_root"].as_str(),
+        Some(&*project_root.to_string_lossy()),
+        "the daemon must read the pre-seeded row's project folder back unchanged: {row:?}"
+    );
     let workspace_id = row["workspace_id"].as_str().expect("workspace_id").to_string();
     let target = row["session_name"].as_str().expect("session_name").to_string();
 
