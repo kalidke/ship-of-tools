@@ -470,8 +470,9 @@ fn a_stop_answered_after_the_reply_budget_still_stops() {
     assert!(guard.child_mut().try_wait().unwrap().is_some(), "the authority has exited");
 }
 
-/// The same rule for a Reset: with every journal publish held 6 s, the Reset's admission outlasts the reply budget,
-/// and `supervisor_client::reset` follows its operation on a fresh connection to the new voyage.
+/// The same rule for a Reset: with every journal publish held 8 s, the Reset's admission outlasts the reply budget,
+/// and outlasts the first reconnect's 2 s hello budget too, so the poll also retries a reconnect to a stalled
+/// authority; `supervisor_client::reset` follows its operation on a fresh connection to the new voyage.
 #[test]
 fn a_reset_answered_after_the_reply_budget_completes() {
     let _serial = serial();
@@ -480,7 +481,7 @@ fn a_reset_answered_after_the_reply_budget_completes() {
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let _guard =
-        spawn_supervisor_with_env(&state_dir, "--start", SHELL, &[("SOT_TEST_JOURNAL_PUBLISH_DELAY_MS", "6000")]);
+        spawn_supervisor_with_env(&state_dir, "--start", SHELL, &[("SOT_TEST_JOURNAL_PUBLISH_DELAY_MS", "8000")]);
     let conn = wait_for_lane(&state_dir_hash(&state_dir), Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
     drop(conn);
