@@ -702,21 +702,22 @@ mod tests {
     /// answering, or answers and dies at once, is not a working kernel: the next respawn waits the doubling, 2 s after
     /// waits of 250 ms, 500 ms and 1 s, not the 250 ms floor. The paused clock moves only at the supervisor's waits and
     /// at the test's one sleep, which stands for the long precompile, so the gap between the fourth and fifth spawn is
-    /// exact: that precompile plus the wait. Each stub blocks until the test releases it, so every `Starting` is seen;
+    /// exact: that precompile plus the wait. A third case serves for `STABLE` after its hello and then dies: the next
+    /// spawn comes at the 250 ms floor. Each stub blocks until the test releases it, so every `Starting` is seen;
     /// a watchdog thread fires the signal if a run stalls for a minute of real time.
     #[cfg(unix)]
     #[tokio::test(start_paused = true)]
     async fn a_kernel_whose_precompile_outlasts_stable_without_serving_backs_off() {
         use std::sync::atomic::{AtomicBool, Ordering};
         let precompile = sot_log::host::redial::STABLE + Duration::from_secs(1);
-        for late_hello in [false, true] {
+        for (late_hello, served) in [(false, false), (true, false), (false, true)] {
             let dir = tempfile::tempdir().unwrap();
             let counter = dir.path().join("spawns");
             let stub = dir.path().join("stub-julia");
             sot_log::test_exec::write_executable(
                 &stub,
                 format!(
-                    "#!/bin/sh\necho x >> {c}\nn=$(wc -l < {c} | tr -d ' ')\nwhile [ ! -f {d}/go-$n ]; do sleep 0.02; done\nif [ -f {d}/hello-$n ]; then read l; echo '{{\"id\":1,\"payload\":{{\"protocol\":{KERNEL_PROTOCOL_VERSION}}}}}'; fi\n",
+                    "#!/bin/sh\necho x >> {c}\nn=$(wc -l < {c} | tr -d ' ')\nwhile [ ! -f {d}/go-$n ]; do sleep 0.02; done\nif [ -f {d}/hello-$n ]; then read l; echo '{{\"id\":1,\"payload\":{{\"protocol\":{KERNEL_PROTOCOL_VERSION}}}}}'; fi\nif [ -f {d}/hold-$n ]; then while [ ! -f {d}/die-$n ]; do sleep 0.02; done; fi\n",
                     c = counter.display(),
                     d = dir.path().display(),
                 ),
@@ -741,6 +742,7 @@ mod tests {
                 })
             };
             let mut starts = Vec::new();
+            let mut died = None;
             while starts.len() < 5 {
                 status_rx.changed().await.expect("the supervisor ended before its fifth spawn (the watchdog fired)");
                 if !matches!(*status_rx.borrow_and_update(), Status::Starting) {
@@ -748,7 +750,18 @@ mod tests {
                 }
                 starts.push(tokio::time::Instant::now());
                 let n = starts.len();
-                if n == 4 {
+                if n == 4 && served {
+                    // The kernel answers at once and serves for `STABLE` and a second, then dies.
+                    for f in ["hold-4", "hello-4", "go-4"] {
+                        std::fs::write(dir.path().join(f), "").unwrap();
+                    }
+                    while !matches!(*status_rx.borrow_and_update(), Status::Running(_)) {
+                        status_rx.changed().await.expect("the supervisor ended before the kernel answered hello");
+                    }
+                    tokio::time::sleep(precompile).await;
+                    died = Some(tokio::time::Instant::now());
+                    std::fs::write(dir.path().join("die-4"), "").unwrap();
+                } else if n == 4 {
                     tokio::time::sleep(precompile).await;
                     if late_hello {
                         std::fs::write(dir.path().join("hello-4"), "").unwrap();
@@ -762,6 +775,15 @@ mod tests {
             sig.fire();
             watchdog.join().unwrap();
             task.await.expect("supervisor task");
+            if let Some(died) = died {
+                let gap = starts[4] - died;
+                println!("respawn: served for {precompile:?} after its hello: the spawn came {gap:?} after the kernel died");
+                assert!(
+                    gap <= Duration::from_millis(300),
+                    "the spawn after a kernel that served {precompile:?} came {gap:?} after it died: the wait did not start over at the floor"
+                );
+                continue;
+            }
             let gap = starts[4] - starts[3];
             println!("respawn: late_hello={late_hello}: the spawn after a {precompile:?} precompile came {gap:?} after it began");
             assert!(
