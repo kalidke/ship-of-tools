@@ -1,5 +1,6 @@
-//! `sotd durable-parent`: the capsule-only birth parent. The daemon starts one, lazily, over a private channel; it
-//! lives in a session of its own, so a capsule it forks never inherits anything the daemon's containment covers.
+//! `sotd durable-parent`: the capsule-only birth parent. The daemon starts one, once, in its serving prologue before the
+//! runtime, over a private channel; it lives in a session of its own, so a capsule it forks never inherits anything the
+//! daemon's containment covers.
 //!
 //! The parent accepts a launch only with the row's fence in hand (`accept`), keeps the physical gate writer and the
 //! kernel parent authority of the supervisor it forks until that supervisor has taken the claim over, and forwards the

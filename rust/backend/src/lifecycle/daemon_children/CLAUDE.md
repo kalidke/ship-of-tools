@@ -1,8 +1,10 @@
 # rust/backend/src/lifecycle/daemon_children: what ends with a daemon (lifecycle)
 
 The one owner of "every process the daemon starts, at any depth, ends with it", except what is outside by design: a
-row's capsule (ADR 0050 and the rows charter). On Linux that is the lifetime guard; Windows takes its aggregate job from
-the lifecycle charter's containment. Part of lifecycle; charter: rust/backend/src/lifecycle/CLAUDE.md.
+row's capsule (ADR 0050 and the rows charter). On Linux that is the lifetime guard. Windows has no aggregate job: each
+contained child's own kill-on-close job, held by the daemon (the lifecycle charter's containment), ends its tree when the
+daemon dies, and the interval between a child's creation and its job assignment is ADR 0050's stated limit. macOS has
+nothing after an abrupt end (ADR 0050). Part of lifecycle; charter: rust/backend/src/lifecycle/CLAUDE.md.
 
 ## Files
 - `mod.rs`: declares the folder's modules (the guard is Linux only).

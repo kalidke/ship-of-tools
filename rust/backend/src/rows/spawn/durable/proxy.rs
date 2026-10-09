@@ -1,5 +1,6 @@
-//! The daemon's end of the durable parent: start it lazily, send it a launch, and wait for the supervisor's exit it
-//! forwards. One reader thread routes the parent's replies to whoever asked.
+//! The daemon's end of the durable parent: start it once, in the serving prologue before the runtime
+//! ([`start_before_runtime`]), send it a launch, and wait for the supervisor's exit it forwards. One reader thread
+//! routes the parent's replies to whoever asked.
 
 use super::wire::{decode, encode, Channel, LaunchSpec, Reply, Request};
 use std::collections::HashMap;

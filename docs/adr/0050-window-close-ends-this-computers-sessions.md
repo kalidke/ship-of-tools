@@ -294,7 +294,9 @@ daemon. The macOS and Windows legs run the native launcher and fence-claim premi
 (the macOS group recognition; on Windows the per-child kill-on-close jobs, including that a killed daemon's contained tree
 ends with it, that the capsule stand-in does not, and the suspended interval above observed as the limit).
 
-Not tested, and stated as limits: macOS after an abrupt end of the daemon (by decision, above); Windows console events
+Not tested, and stated as limits: macOS after an abrupt end of the daemon (by decision, above); on macOS, a
+successor or controlled-outcome case on a real daemon (the native launcher and the fence claim are compiled there and
+their premises run on real children; a capsule row has never run end to end on a Mac); Windows console events
 (CTRL_C, CTRL_BREAK, CTRL_CLOSE), logoff and shutdown; the interval on Windows between a child's creation and its
 assignment to its job, in which a daemon death leaves one process that never ran (Windows abrupt-death coverage is the
 per-child jobs the daemon holds, which no daemon death outlives; there is no aggregate job, because it would end nothing

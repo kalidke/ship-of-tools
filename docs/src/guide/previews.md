@@ -70,7 +70,10 @@ in-pane:
   sessions in the browser. As `.jl` files they still get a syntax-highlighted
   source preview in the pane.
 - **Quarto documents** (`quarto_julia.qmd`) — the rich rendered form opens in the
-  browser; the source previews as text in-pane.
+  browser; the source previews as text in-pane. On Linux the Julia engine server a
+  render starts ends when the backend daemon ends; a `quarto render` of your own that
+  found and reused that server (Quarto finds it through `XDG_RUNTIME_DIR`) starts a
+  new one after that.
 
 These all follow the same "rich/interactive content lives in the browser" policy.
 
