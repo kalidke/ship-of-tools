@@ -25,6 +25,10 @@ pub struct Run {
     pub log: PathBuf,
     launched: Option<Child>,
     pub daemon: i32,
+    /// The daemon was started from a copy of the binary (`boot_at`): its capsules run from the copy's folder, which the
+    /// `Env`'s own sweep of the case's roots does not match, so `Run` ends them itself.
+    own_exe: bool,
+    capsules_ended: bool,
 }
 
 /// The pid `SO_PEERCRED` reports for the process that listens on `socket`: the daemon.
@@ -110,6 +114,8 @@ impl Run {
             log,
             launched: Some(launched),
             daemon,
+            own_exe: true,
+            capsules_ended: false,
         }
     }
 
@@ -167,6 +173,8 @@ impl Run {
             log,
             launched: Some(launched),
             daemon,
+            own_exe: false,
+            capsules_ended: false,
         };
         run
     }
@@ -183,6 +191,19 @@ impl Run {
         self.launched = Some(launched);
         self.daemon = daemon;
         self.log = log;
+    }
+
+    /// End what a daemon's end leaves running by design, the capsules, through the product: a daemon that has ended is
+    /// replaced by a successor on the same roots (which re-adopts the rows), and the window's close ends the rows. The
+    /// status is the closing daemon's.
+    pub async fn end_capsules(&mut self) -> Option<ExitStatus> {
+        if self.status_within(Duration::ZERO).await.is_some() {
+            self.successor(&[]).await;
+        }
+        close_by_lease(&self.env).await;
+        let status = self.status_within(Duration::from_secs(60)).await;
+        self.capsules_ended = true;
+        status
     }
 
     /// The daemon is the child of the launched process, which is the guard.
@@ -239,18 +260,83 @@ impl Run {
     }
 }
 
+/// Ask the guard this test spawned to end: TERM reaches the daemon, which exits through its terminal, and the guard drains
+/// whatever the daemon started before it exits itself. Only a guard that does not end within the bound is killed.
+fn stop_gracefully(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_some() {
+        return;
+    }
+    // SAFETY: a signal to the child this test spawned and has not reaped.
+    unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        if child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// [`Run::end_capsules`] for a run that ends without it (a failed assertion): a successor on the case's roots and the
+/// window's close, on a thread of its own because the case's runtime is the caller's.
+fn end_capsules_blocking(env: &Env) {
+    let log = env._tmp.path().join("daemon-ending.log");
+    let Ok(mut daemon) = Run::command(env, &log, &[], None).spawn() else {
+        return;
+    };
+    let socket = env.socket_path.clone();
+    let worker = std::thread::spawn(move || {
+        if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            runtime.block_on(async {
+                let answered = poll_until(
+                    || {
+                        let socket = socket.clone();
+                        async move { peer_pid(&socket) }
+                    },
+                    BOUND,
+                    "the ending daemon to answer",
+                )
+                .await;
+                let _ = answered;
+                close_on(&socket).await;
+            });
+        }
+        daemon
+    });
+    if let Ok(mut daemon) = worker.join() {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while daemon.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+    }
+}
+
 impl Drop for Run {
     fn drop(&mut self) {
         if let Some(mut child) = self.launched.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_gracefully(&mut child);
+        }
+        if self.own_exe && !self.capsules_ended {
+            end_capsules_blocking(&self.env);
         }
     }
 }
 
 /// A lease from this process, then the window's close: the daemon shuts down and exits 0.
 pub async fn close_by_lease(env: &Env) {
-    let mut conn = lease(env).await;
+    close_on(&env.socket_path).await;
+}
+
+/// [`close_by_lease`] for the daemon that listens on `socket`.
+pub async fn close_on(socket: &Path) {
+    let mut conn = lease_on(socket).await;
     leave_with_close(&mut conn).await;
 }
 
@@ -267,6 +353,11 @@ pub async fn leave_with_close(conn: &mut crate::support::Conn) {
 
 /// A lease from this process, granted: the connection is the lease and holds it while it is open.
 pub async fn lease(env: &Env) -> crate::support::Conn {
+    lease_on(&env.socket_path).await
+}
+
+/// [`lease`] on the daemon that listens on `socket`.
+pub async fn lease_on(socket: &Path) -> crate::support::Conn {
     let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
     let lease = FeLeaseReq {
         boot: me.boot,
@@ -275,7 +366,7 @@ pub async fn lease(env: &Env) -> crate::support::Conn {
         token: None,
     };
     let mut conn = handoff(
-        &env.socket_path,
+        socket,
         &Frame::req(1, op::FE_LEASE, serde_json::to_value(&lease).unwrap()),
     )
     .await;

@@ -150,6 +150,8 @@ async fn update_apply_exits_75_ends_the_trees_and_leaves_the_capsule() {
     );
     fx.save("capsule_alive", alive(&fx, supervisor));
     let said = spinning.run.said();
+    // The capsule stays by design: the window's close, through a successor, ends it.
+    spinning.run.end_capsules().await;
     let cleanup = fx.cleanup();
     assert!(cleanup.complete(), "{cleanup:?}");
     let applied = fx.saved("applied").unwrap().to_string();
@@ -305,13 +307,8 @@ async fn an_update_the_daemon_may_not_take_leaves_it_serving() {
         );
         fx.save("capsule_alive", alive(&fx, supervisor));
         drop(conn);
-        // A daemon that exited has nothing to close: the assertions below say why.
-        let closed = if fx.saved("still_running") == Some("true") {
-            close_by_lease(&run.env).await;
-            run.status_within(Duration::from_secs(60)).await
-        } else {
-            None
-        };
+        // The close ends the row; a daemon that exited is replaced by a successor that closes: the assertions say why.
+        let closed = run.end_capsules().await;
         let said = run.said();
         let cleanup = fx.cleanup();
         assert!(cleanup.complete(), "{cleanup:?}");
@@ -436,6 +433,8 @@ async fn update_command_ends_with_the_daemon(program: &str, automatic: bool, tag
     fx.save("ended", all_ended(&fx, &ids, Duration::from_secs(10)));
     fx.save("capsule_alive", alive(&fx, supervisor));
     let said = run.said();
+    // The capsule stays by design: the window's close, through a successor, ends it.
+    run.end_capsules().await;
     let cleanup = fx.cleanup();
     assert!(cleanup.complete(), "{cleanup:?}");
     assert_eq!(
@@ -503,6 +502,8 @@ async fn the_automatic_update_exits_75_when_no_window_is_attached() {
     );
     fx.save("capsule_alive", alive(&fx, supervisor));
     let said = spinning.run.said();
+    // The capsule stays by design: the window's close, through a successor, ends it.
+    spinning.run.end_capsules().await;
     let cleanup = fx.cleanup();
     assert!(cleanup.complete(), "{cleanup:?}");
     assert!(
@@ -552,13 +553,8 @@ async fn the_automatic_update_waits_while_a_window_is_attached() {
     .await;
     fx.save("armed", matches!(armed, Ok(Some(_))));
     drop(_attached);
-    // A daemon that exited has nothing to close: the assertions below say why.
-    let closed = if fx.saved("still_running") == Some("true") {
-        close_by_lease(&run.env).await;
-        run.status_within(Duration::from_secs(60)).await
-    } else {
-        None
-    };
+    // The close ends the row; a daemon that exited is replaced by a successor that closes: the assertions say why.
+    let closed = run.end_capsules().await;
     let said = run.said();
     let cleanup = fx.cleanup();
     assert!(cleanup.complete(), "{cleanup:?}");
