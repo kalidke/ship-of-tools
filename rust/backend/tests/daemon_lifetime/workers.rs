@@ -71,6 +71,70 @@ fn a_distributed_worker_starts_in_a_session_of_its_own() {
     );
 }
 
+/// Pluto's notebook worker, started detached in a session of its own, is outside the process group the fire kills; on
+/// Linux the guard's drain ends it. One notebook opened through the daemon's real Pluto supervisor, an ordinary worker
+/// that only reports its pid, then the window's close: the daemon exits 0 and the worker has ended by the time the guard
+/// has.
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+#[tokio::test]
+#[ignore = "needs Julia 1.12 and Pluto's environment (SOT_JULIA_BIN, SOT_L2_PLUTO_MANIFEST); run by the harness job with --ignored"]
+async fn a_closed_daemon_ends_plutos_notebook_worker() {
+    use crate::done::{open_notebook, pluto_resource_root, read_pid, Wire};
+    use crate::guard::{close_by_lease, Run};
+    use std::time::Duration;
+    let _serial = crate::SERIAL.lock().await;
+    let mut fx = Fixture::new("a_closed_daemon_ends_plutos_notebook_worker");
+    let case = tempfile::tempdir().expect("the case's folder");
+    let julia = crate::routes::julia_bin();
+    let resources = pluto_resource_root(case.path(), &julia);
+    let report = case.path().join("worker.pid");
+    let startup = format!("write(\"{}\", string(getpid()))", report.display());
+    let env = [
+        ("SOT_JULIA_BIN", julia.as_str()),
+        (
+            "SOT_RESOURCE_ROOT",
+            resources.to_str().expect("a UTF-8 case folder"),
+        ),
+        ("SOT_L2_WORKER_STARTUP", startup.as_str()),
+    ];
+    let mut run = Run::start("gplworker", &env, false).await;
+    let mut wire = Wire::connect(&run).await;
+    // The default row's root, where the daemon was started: the one row this case needs.
+    open_notebook(&run.env.daemon_project_root, &mut wire).await;
+    let worker = crate::support::poll_until(
+        || async { read_pid(report.clone()) },
+        Duration::from_secs(120),
+        "Pluto's worker to report",
+    )
+    .await;
+    let id = fx
+        .watch(worker, None, "Pluto's worker")
+        .expect("an identity for the worker that reported itself");
+    // SAFETY: plain reads of a process's session and group; nothing is signalled.
+    let (sid, pgid) = unsafe { (libc::getsid(worker), libc::getpgid(worker)) };
+    close_by_lease(&run.env).await;
+    let status = run.status_within(Duration::from_secs(60)).await;
+    let ended = fx.identity(id).exited(Duration::from_secs(1));
+    let said = run.said();
+    fx.save("worker_ended", ended);
+    let cleanup = fx.cleanup();
+    assert!(cleanup.complete(), "{cleanup:?}");
+    assert_eq!(
+        (sid, pgid),
+        (worker, worker),
+        "the worker is not in a session and group of its own, so the case tests nothing"
+    );
+    assert_eq!(
+        status.and_then(|s| s.code()),
+        Some(0),
+        "the close: {status:?}\n{said}"
+    );
+    assert!(
+        ended,
+        "Pluto's notebook worker outlived its closed daemon and the guard:\n{said}"
+    );
+}
+
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 #[tokio::test]
 #[ignore = "needs Julia 1.12 and Pluto's environment (SOT_JULIA_BIN, SOT_L2_PLUTO_MANIFEST) and, for its Quarto half, Quarto 1.7.31; run by the harness job with --ignored"]

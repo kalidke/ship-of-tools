@@ -199,7 +199,7 @@ impl Wire {
     }
 }
 
-fn read_pid(path: PathBuf) -> Option<i32> {
+pub fn read_pid(path: PathBuf) -> Option<i32> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
@@ -236,16 +236,9 @@ pub async fn hold_row(
     held.state_dir = state_dir;
 }
 
-/// Pluto: a notebook opened through the daemon; its worker starts the case's tree from its startup expression. Pluto's
-/// server is a child of the daemon (its children list).
-pub async fn hold_pluto(
-    fx: &mut Fixture,
-    run: &Run,
-    wire: &mut Wire,
-    inputs: &Inputs,
-    held: &mut Held,
-) {
-    let notebook = run.env.workspace_project_root.join("notebook.jl");
+/// One notebook, in `folder` (a row's root), opened through the daemon's real Pluto supervisor (`pluto.open`).
+pub async fn open_notebook(folder: &Path, wire: &mut Wire) {
+    let notebook = folder.join("notebook.jl");
     std::fs::copy(
         repo_file("rust/backend/tests/daemon_lifetime/fixtures/notebook.jl"),
         &notebook,
@@ -256,6 +249,18 @@ pub async fn hold_pluto(
         serde_json::json!({ "path": notebook.to_string_lossy() }),
     )
     .await;
+}
+
+/// Pluto: a notebook opened through the daemon; its worker starts the case's tree from its startup expression. Pluto's
+/// server is a child of the daemon (its children list).
+pub async fn hold_pluto(
+    fx: &mut Fixture,
+    run: &Run,
+    wire: &mut Wire,
+    inputs: &Inputs,
+    held: &mut Held,
+) {
+    open_notebook(&run.env.workspace_project_root, wire).await;
     held.pluto_ids = watch_tree(fx, &inputs.pluto_tree, false, "Pluto's").await;
     let worker = poll_until(
         || async { read_pid(inputs.pluto_tree.report_path("worker")) },

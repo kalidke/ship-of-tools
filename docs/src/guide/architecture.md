@@ -114,7 +114,7 @@ The kernel, the REPL, Pluto and every other process the daemon starts, at any de
 within a few seconds of the daemon's end, even when the daemon is killed; a capsule does not, by design. The guard
 exits with the daemon's own status. A process a broker starts, the loss of the guard itself and a process stuck in an
 uninterruptible kernel call are outside it, and macOS has no guard: only a controlled end of the daemon ends its
-children there (ADR 0050).
+children there, and not a process that left a child's process group, such as Pluto's notebook worker (ADR 0050).
 
 ## Where to go next
 

@@ -33,4 +33,5 @@ nothing after an abrupt end (ADR 0050). Part of lifecycle; charter: rust/backend
 - A start by a broker, a SIGKILL of the guard and an uninterruptible kernel call are outside the guard (ADR 0050, residual
   7); after `DRAIN_BOUND` the guard logs each pid still listed and exits.
 - `guard_pid` is the guard's one interface to the daemon (`supervised_by_systemd` compares it with the unit's MainPID).
-- macOS has no guard: only a controlled end kills the children (ADR 0050, residual 7).
+- macOS has no guard: only a controlled end kills the children, and only each child's process group; a process that
+  left it, such as Pluto's notebook worker, is not killed (ADR 0050, residual 7).

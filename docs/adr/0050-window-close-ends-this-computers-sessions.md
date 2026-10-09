@@ -211,15 +211,18 @@ connection is the only handle.
    daemon is the child of a guard that is a subreaper (the 0.6.6 update below), so a process the daemon starts stays a
    descendant of the guard through `setpgid`, `setsid`, Julia's `detach` (Pluto's notebook workers, which Malt starts
    detached, and quarto's julia server, which quarto starts detached, measured with quarto 1.7.31) or a double fork,
-   and ends within `DRAIN_BOUND` (10 s) of the daemon's end, however that end came, a SIGKILL included. Outside it:
+   and ends within `DRAIN_BOUND` (10 s) of the daemon's end, however that end came, a SIGKILL included; while the
+   daemon runs, such a process outlives the end of the child whose group it left (Pluto's notebook worker when Pluto's
+   server ends) unless it exits on its own. Outside it:
    a process a broker starts; a SIGKILL of the guard itself, after which the daemon ends at once but what it started
    does not (under the systemd unit the unit's cgroup ends the rest within the unit's stop timeout); and a process in an
    uninterruptible kernel call, which has SIGKILL pending and ends when the call returns (the guard logs it). Every ssh
    the daemon starts (its two bridges and the monitor's sampler) sets `ControlMaster=no`, `ControlPath=none` and
    `ControlPersist=no`, so none leaves a master behind. macOS has
    no guard, no subreaper and no cgroup: a controlled end of the daemon (Close, the update restart, the backstop, a
-   handled signal, a returned error) kills each child's tree, and after SIGKILL, abort or a crash nothing ends the
-   children; each ends on its own, an idle Julia child when its input closes, a busy one when its work ends, quarto's
+   handled signal, a returned error) kills each child's process group, and not a process that left it (Pluto's notebook
+   worker, quarto's engine server, a `detach`ed process); after SIGKILL, abort or a crash nothing ends the children;
+   each ends on its own, an idle Julia child when its input closes, a busy one when its work ends, quarto's
    engine server after 300 s idle. Windows: nothing started inside a daemon child's job or a
    row's job can leave it. Outside it are a process a broker starts (WMI, COM activation, the task scheduler, a
    service) and a program started through an app-execution alias, which the Store install of juliaup makes `julia`: a
@@ -266,7 +269,8 @@ thread of its own, which asks each contained tree to end and reports each failed
 that answer (a child creation stalled in the OS holds the mutex the fire needs, and no exit, the backstop's included,
 waits on it longer; when no thread can be started for the fire, the exit goes without it); and it makes the daemon's one
 raw process exit. A request is not an observed death: on Linux the guard ends what is left, and on macOS these
-controlled ends are the only ones that end the daemon's children.
+controlled ends are the only ones that end the daemon's children, and they reach only each child's process group
+(residual 7).
 
 The main future's result becomes a status while the runtime still exists: Ok is 0, an error is printed and is 1, a panic of
 the future is 101. A finished close exits 0; the shutdown's backstop exits 1; the update restart exits 75, and only while no
@@ -288,7 +292,8 @@ The daemon's lifetime is read on real daemons, real `sot-capsule` supervisors an
 (`rust/backend/tests/daemon_lifetime`), never from source text. On Linux: the guard exits as the daemon did (a close 0,
 the backstop 1, SIGKILL, SIGABRT) and forwards TERM, INT and HUP, also to the group; a lost guard ends the daemon within a
 second; the drain outlasts a forking child and ends only its own subtree; a killed daemon's REPL, Pluto (server, worker
-and tree) and Quarto (engine server, worker and tree) all end while the capsule stays and a successor adopts it; the main
+and tree) and Quarto (engine server, worker and tree) all end while the capsule stays and a successor adopts it; Pluto's
+ordinary notebook worker, outside Pluto's process group, has ended by the time a closed daemon's guard exits; the main
 future's Ok, error and panic are 0, 1 and 101; INT and TERM end a daemon whose runtime is stalled and whose inherited mask
 blocks them, by the signal, and a test-owned service unit's stop ends inactive, not failed, with no restart; a close that
 outlasts its bound exits 1; `update.apply` against a pointer armed with the real
