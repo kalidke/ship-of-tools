@@ -9,8 +9,9 @@
 //! listener carries its OWN target (never one baked-in default-host
 //! address for every port — that was the cross-host figure defect: a page
 //! served by a non-default host's daemon had nowhere to proxy through). The
-//! browser still opens a plain `http://127.0.0.1:<port>/…` URL; this module
-//! makes that loopback port resolve by binding a local listener that pipes
+//! browser still opens a plain `http://127.0.0.1:<port>/…` URL; for a page a
+//! daemon op served its port is this window's listener's, bound where the OS
+//! assigns it, not the daemon's (PAGE-PORT, `PageSource`); the listener pipes
 //! each browser connection to the right daemon, which dials the real service
 //! (the daemon half validates the port + does the dialing —
 //! `backend/src/pages/proxy.rs`).
@@ -88,34 +89,31 @@ enum Answer {
     LinkDown,
 }
 
+/// One armed page port, as the GPU thread hands it to the manager: this window's bound `listener`, and the
+/// `daemon_port` its browser connections reach. They differ: the listener's port is the window's computer's, the
+/// daemon's port is the daemon's computer's (PAGE-PORT), and `proxy.connect` names the daemon's.
+pub struct PageListener {
+    pub listener: StdTcpListener,
+    pub daemon_port: u16,
+    pub dial: PageDial,
+    pub token: Option<String>,
+    pub gate: LinkGate,
+    pub arm: std::sync::Arc<Arm>,
+}
+
 /// Spawn the proxy manager on the transport runtime. It receives bound
 /// listeners from the GPU thread (`State::ensure_proxy_for_url`), each
-/// tagged with `(recipe, token)` — the exact ssh recipe and token resolved
+/// tagged with its daemon port and `(dial, token)` — the exact recipe and token resolved
 /// for the page's OWNING host, not a single manager-wide default. Per
 /// listener it runs an accept loop that pipes each accepted browser
-/// connection to a FRESH ssh child spawned from that listener's own
-/// `recipe`; `token` is forwarded in the handshake when that daemon has one
+/// connection to a FRESH connection made from that listener's own
+/// `dial`; `token` is forwarded in the handshake when that daemon has one
 /// configured (Unix-socket transports carry none). A port the daemon answers `bad_port` is parked (`Arm`) until a page
 /// on it is opened again; the listener itself never closes.
-pub fn spawn_proxy_manager(
-    rt: &tokio::runtime::Runtime,
-    mut listener_rx: UnboundedReceiver<(
-        StdTcpListener,
-        PageDial,
-        Option<String>,
-        LinkGate,
-        std::sync::Arc<Arm>,
-    )>,
-) {
+pub fn spawn_proxy_manager(rt: &tokio::runtime::Runtime, mut listener_rx: UnboundedReceiver<PageListener>) {
     rt.spawn(async move {
-        while let Some((std_listener, target, token, gate, arm)) = listener_rx.recv().await {
-            let port = match std_listener.local_addr() {
-                Ok(a) => a.port(),
-                Err(e) => {
-                    tracing::warn!(error = %e, "proxy: listener with no local_addr; dropping");
-                    continue;
-                }
-            };
+        while let Some(armed) = listener_rx.recv().await {
+            let PageListener { listener: std_listener, daemon_port: port, dial: target, token, gate, arm } = armed;
             // The GPU thread already set it non-blocking; from_std needs that.
             let listener = match tokio::net::TcpListener::from_std(std_listener) {
                 Ok(l) => l,
@@ -125,18 +123,32 @@ pub fn spawn_proxy_manager(
                 }
             };
             tracing::info!(port, %target, "proxy: accepting browser connections for backend port");
-            let dial = move |browser| {
-                let (d, g, t) = (target.clone(), gate.clone(), token.clone());
-                async move { pipe_one(browser, &d, &g, port, t.as_deref()).await }
-            };
-            tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "page-proxy", move |browser| {
-                let arm = std::sync::Arc::clone(&arm);
-                let done = dial(browser);
-                async move { serve_browser(port, &arm, done).await }
-            }));
+            tokio::spawn(serve_page_listener(listener, port, target, token, gate, arm));
         }
         tracing::debug!("proxy: listener channel closed; manager exiting");
     });
+}
+
+/// Serve one armed listener: each browser connection `serve_own` admits is piped to `dial`'s daemon with
+/// `proxy.connect` naming `port`, the daemon's page port, never the listener's own.
+async fn serve_page_listener(
+    listener: tokio::net::TcpListener,
+    port: u16,
+    target: PageDial,
+    token: Option<String>,
+    gate: LinkGate,
+    arm: std::sync::Arc<Arm>,
+) {
+    let dial = move |browser| {
+        let (d, g, t) = (target.clone(), gate.clone(), token.clone());
+        async move { pipe_one(browser, &d, &g, port, t.as_deref()).await }
+    };
+    sot_log::identity::peer_owner::serve_own(listener, "page-proxy", move |browser| {
+        let arm = std::sync::Arc::clone(&arm);
+        let done = dial(browser);
+        async move { serve_browser(port, &arm, done).await }
+    })
+    .await
 }
 
 /// One browser connection `serve_own` has admitted, as `done`, the future of its `dial`. A port the daemon refused
@@ -721,5 +733,57 @@ mod tests {
             .unwrap();
         let err = super::pipe_child(child, browser, port, None).await.map(|_| ()).unwrap_err();
         assert_eq!(err.to_string(), format!("daemon refused the hello for port {port}: os_user_conflict: a line ssh wrote to stderr"));
+    }
+
+    /// PAGE-PORT: the window's listener and the daemon's page port are different numbers on different computers. A
+    /// browser connection to the armed listener, through the manager as production runs it, reaches the daemon as
+    /// `proxy.connect` naming the daemon's port, never the listener's own.
+    #[cfg(unix)]
+    #[test]
+    fn the_manager_dials_the_daemons_port_not_the_listeners() {
+        use sot_protocol::{codec, op, Frame};
+        use tokio::io::AsyncWriteExt;
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let path = relay_stand_in_path("port");
+        let daemon_port = 7000;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        super::spawn_proxy_manager(&rt, rx);
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let local = listener.local_addr().unwrap().port();
+        assert_ne!(local, daemon_port);
+        let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+        gate.set_up(true);
+        let asked = rt.block_on(async {
+            let relay = tokio::net::UnixListener::bind(&path).unwrap();
+            tx.send(super::PageListener {
+                listener,
+                daemon_port,
+                dial: super::PageDial::Relay(path.clone()),
+                token: None,
+                gate,
+                arm: std::sync::Arc::new(super::Arm::default()),
+            })
+            .unwrap();
+            let _browser = tokio::net::TcpStream::connect(("127.0.0.1", local)).await.unwrap();
+            let (conn, _) = tokio::time::timeout(std::time::Duration::from_secs(5), relay.accept())
+                .await
+                .expect("the browser connection must dial the daemon")
+                .unwrap();
+            let (rd, mut wr) = conn.into_split();
+            let mut rd = tokio::io::BufReader::new(rd);
+            let (hello, _) = codec::read_frame(&mut rd).await.unwrap();
+            let (req, _) = codec::read_frame(&mut rd).await.unwrap();
+            assert_eq!(req.op, op::PROXY_CONNECT);
+            let mut out = Vec::new();
+            let accepted = serde_json::json!({ "session_id": "s", "revision": 0, "snapshot_pending": false });
+            codec::write_frame(&mut out, &Frame::res(hello.id, op::HELLO, accepted), None).await.unwrap();
+            let refused = serde_json::json!({ "error": "not proxyable", "code": "bad_port" });
+            codec::write_frame(&mut out, &Frame::res(req.id, op::PROXY_CONNECT, refused), None).await.unwrap();
+            wr.write_all(&out).await.unwrap();
+            req.payload["port"].as_u64()
+        });
+        assert_eq!(asked, Some(u64::from(daemon_port)));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

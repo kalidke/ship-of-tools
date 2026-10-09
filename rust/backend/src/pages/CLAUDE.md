@@ -35,6 +35,11 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   since quarto runs `QUARTO_JULIA` for an `engine: julia` document even then; so a host without julia renders no
   document through quarto. The site's `git` child runs through `Signal::spawn_std` (`run_git`).
 - A window's relay page proxy opens the same generated relay endpoint as its control connection, with a handoff hello and proxy.connect before the existing byte splice.
+- A remote window serves a page a daemon op returned (`docs.open`, `video.open`, `pluto.open`) on a loopback port the
+  OS assigns it, one per host and daemon port, and opens the URL with only the port replaced; `proxy.connect` names the
+  daemon's port (`bind_proxy_listener`, `with_loopback_port`, `PageListener`, `armed_url`). A URL user code announced
+  or `open_url` named keeps the daemon's number and is refused when that number is taken (`PageSource`; ADR 0035,
+  PAGE-PORT update).
 - `.git` and `..` are never served, and a link is followed only when git tracks it and its target lies under a
   declared data root (`site/` `resolve_and_open`).
 - Rust video opens, preview bounds and HTTP MIME decisions use sot_protocol::video_path::video_mime; leading-dot filenames follow the existing Julia suffix contract.
@@ -43,7 +48,8 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `video.open`, `docs.open`,
 `quarto.open`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `record_browser_port`, `revoke_browser_ports`,
-`is_servable_video`, `start_page_servers`, `remove_root`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`.
+`is_servable_video`, `start_page_servers`, `remove_root`, `loopback_port_from_url`, `with_loopback_port`,
+`rust/protocol/src/page_url.rs`.
 Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`,
 `dispatch`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `ContainedStd`, `Signal`, `child_signal::process`, `resolve_bin`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `bound_pluto_port`, `allowed_proxy_ports`, `lane_dial`, `ResolvedDial`, `sot_protocol::video_path::video_mime`.

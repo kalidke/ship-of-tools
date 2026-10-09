@@ -122,7 +122,7 @@ impl State {
                 // command-file / internal dispatch names no host and gets the
                 // default — the only proxied one anyway.
                 let host = from_host.cloned().unwrap_or_else(|| self.default_host());
-                if self.ensure_proxy_for_url(&host, &url) {
+                if let Some(url) = self.ensure_proxy_for_url(&host, &url, crate::ui::page_proxy::PageSource::Announced) {
                     match crate::browser_open::open_page(&url) {
                         Ok(()) => self.status = format!("opened in browser · {origin}"),
                         Err(e) => self.status = format!("open_url failed · {e}"),

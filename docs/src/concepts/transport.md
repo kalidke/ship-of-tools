@@ -136,6 +136,17 @@ per account and port is logged as a warning. A connection the daemon makes
 itself, the proxy reaching a page for a remote frontend, is the daemon's
 own account and is served.
 
+A frontend showing documentation, a video or Pluto from another computer
+listens for it on a loopback port of its own, which the operating system
+assigns, and opens the page's address with that port in place of the
+daemon's: the daemon's port number names a port on the daemon's computer,
+which on the frontend's computer may belong to anything, its own daemon
+included. Such a tab does not survive a restart of the frontend; open the
+page again. A page your own code serves (`wglshow`, `browserview`) or
+`sot-fe open-url` names may name its own address, so it keeps the daemon's
+port number, and the frontend declines to open it when something on its
+computer already holds that number.
+
 Pluto's server and the server `wglshow` starts in your REPL are Julia's
 own listeners on loopback ports, which any account on the box can reach,
 so each answers nothing without a secret drawn from the operating system's

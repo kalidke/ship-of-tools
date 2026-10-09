@@ -83,6 +83,8 @@ The FE (remote transport only) gains a tiny `proxy_listen` facility:
 Browser URLs are **unchanged** (`http://127.0.0.1:<port>/…` on both ends) —
 no rewriting, no new user-visible surface.
 
+> *Partly superseded in 0.6.6 (PAGE-PORT, below): a page a daemon op served opens at a port of the remote window's own, the URL otherwise unchanged.*
+
 ### 3. Security: loopback-only + port allowlist
 
 `proxy.connect` dials **loopback only** (hardcoded — the frame carries no
@@ -252,3 +254,24 @@ the stronger long-term model.
 ## Update (0.6.6): Pluto grant lifetime
 
 Pluto's proxy port belongs to the supervisor generation that published a loopback READY URL. Child exit and the supplied Signal cancel stdin writes and flushes even when a descendant retains the pipes. Shared closeout releases the grant and fails current, pending and queued requests before checked asynchronous cleanup; a cancelled partial OPEN is never resent. Every exit and cancellation releases that grant; a stale release cannot remove a newer generation's grant. New proxy requests after release refuse a port granted only by that Pluto generation. Already-open byte pipes and the allowlist-lookup-to-connect race are not covered by this lifetime rule.
+
+## Update (0.6.6): a served page opens at the window's own port (PAGE-PORT)
+
+A daemon's page port is a port on the daemon's computer. The window bound the same number on its own loopback and,
+since v0.5.2, refused the page when that number was taken. A window computer that runs its own daemon holds exactly the
+daemon's preferred page ports (video 1235, docs 1236, the pool), so every docs or video page from another computer
+was refused there.
+
+What may move depends on where the URL came from, since the window cannot see inside a page (`PageSource`):
+- **Served**: the reply of `docs.open`, `video.open` or `pluto.open`. These are the daemon's own servers and name no
+  origin of their own, so the window binds 127.0.0.1 at a port the OS assigns and opens the URL with only the port
+  replaced (`bind_proxy_listener`, `with_loopback_port`). The listener carries the daemon's port to `proxy.connect`
+  (`PageListener`).
+- **Announced**: a URL user code announced (`wglshow`, a `BrowserView`) or an `open_url` command named. Such a page may
+  name its own address (Bonito's defaults do), so it keeps the daemon's number, and a taken number is still refused:
+  occupancy is not ownership.
+Listeners are keyed by host and daemon port (`armed_url`), so two daemons serving one port number reach two listeners,
+and an announced page reuses only a listener at the daemon's own number. The pool cookie is named for its listener,
+daemon host and pool port (`pool_cookie_name`), for the same reason: the browser's loopback cookies are shared by every
+port, and a name per open would add a cookie at every open until the request head overflows. A served page's tab does not survive a
+window restart: the next window's listener has another port. A local window opens every URL as given.
