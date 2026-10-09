@@ -327,6 +327,11 @@ fn expect_connection_closes(conn: &Client, timeout: Duration) {
 }
 
 fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> CapsuleGuard {
+    spawn_supervisor_with_env(state_dir, mode, argv, &[])
+}
+
+/// [`spawn_supervisor`] with extra environment for the supervisor, such as a `SOT_TEST_` seam.
+fn spawn_supervisor_with_env(state_dir: &Path, mode: &str, argv: &[&str], env: &[(&str, &str)]) -> CapsuleGuard {
     let mut cmd = Command::new(capsule_exe());
     cmd.arg("supervise")
         .arg(state_dir)
@@ -344,7 +349,8 @@ fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> CapsuleGuard
         // the test binary's own stdout/stderr, which `cargo test`
         // already captures and only shows on a failing test.
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::inherit())
+        .envs(env.iter().copied());
     CapsuleGuard::spawn(&mut cmd)
 }
 

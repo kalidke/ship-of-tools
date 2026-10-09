@@ -17,3 +17,4 @@ own supervisor-lane calls live here too. Part of capsule; charter: rust/log/CLAU
 ## Rules
 - `FeAttachClient` owns only the parser and UI state and drains its worker's events in `pump`.
 - Every supervisor-lane call connects through `connect_and_challenge` (hello with the build identity, then the challenge) before any request, each bounded: `HELLO_BUDGET` 2 s and `STATUS_BUDGET` 5 s (the worker's), `RESET_BUDGET` 30 s.
+- A reply timeout abandons the connection, never the operation (ADR 0041): `stop` takes the authority's exit as its outcome, and `reset` queries its operation id on a fresh connection until it is terminal or `RESET_BUDGET` passes; a reconnect that finds no listener ends it (`supervisor_client.rs`).

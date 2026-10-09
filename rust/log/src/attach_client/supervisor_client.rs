@@ -170,24 +170,34 @@ pub fn query_status(state_dir: &Path) -> crate::Result<(StatusReport, Challenged
 /// lane before releasing the fence), so a caller that waits this long
 /// and still sees no exit has a genuine, reportable problem, not mere
 /// impatience.
+///
+/// A reply that misses the read budget does not end the Stop (ADR 0041: a
+/// client timeout abandons the connection, never the operation): the
+/// connection is dropped, and the authority's exit, waited for the same
+/// way, is the outcome.
 pub fn stop(state_dir: &Path) -> crate::Result<()> {
     let deadline = Instant::now() + HELLO_BUDGET;
     let (conn, process) = connect(state_dir, deadline)?;
     let operation_id = format!("sot-backend-stop-{}", uuid::Uuid::now_v7());
     let request = SupervisorRequest::Command { operation_id, op: SupervisorOp::Stop };
-    match send_and_read(&conn, &request, Instant::now() + STATUS_BUDGET)? {
-        SupervisorReply::Operation(SupervisorOperationState::Stopping) => {}
-        other => return Err(err_state(format!("expected Operation(Stopping), got {other:?}"))),
-    }
+    // ADR 0041: a reply timeout abandons the connection, never the operation. The authority admits a Stop with two
+    // durable journal writes on its own thread, so on slow storage its reply can miss the read budget; its exit,
+    // which the wait below observes, is the Stop's outcome either way.
+    let unanswered = match send_and_read(&conn, &request, Instant::now() + STATUS_BUDGET) {
+        Ok(SupervisorReply::Operation(SupervisorOperationState::Stopping)) => None,
+        Ok(other) => return Err(err_state(format!("expected Operation(Stopping), got {other:?}"))),
+        Err(e) => Some(e),
+    };
     // Close the RPC connection first -- the peer owes it no further
     // reply once it has accepted `stopping`, so holding it open across
     // the wait below only delays ITS OWN teardown for no benefit here.
     drop(conn);
     match process.wait(TEARDOWN_AGGREGATE_DEADLINE) {
         Ok(true) => Ok(()),
-        Ok(false) => Err(err_state(format!(
-            "supervisor acknowledged stop but did not exit within {TEARDOWN_AGGREGATE_DEADLINE:?}"
-        ))),
+        Ok(false) => Err(err_state(match unanswered {
+            None => format!("supervisor acknowledged stop but did not exit within {TEARDOWN_AGGREGATE_DEADLINE:?}"),
+            Some(e) => format!("stop got no reply ({e}) and the supervisor did not exit within {TEARDOWN_AGGREGATE_DEADLINE:?}"),
+        })),
         Err(e) => Err(err_state(format!("waiting for the stopped supervisor to exit: {e}"))),
     }
 }
@@ -249,8 +259,8 @@ pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<En
     })
 }
 
-/// Bound for [`reset`]'s own poll-to-completion after the command is
-/// accepted — matches the authority's private `RESETTING_WATCHDOG`
+/// Bound for [`reset`]'s own poll-to-completion, from the command's
+/// send — matches the authority's private `RESETTING_WATCHDOG`
 /// (`supervisor/`, 30s), the reset transaction's own worst-case
 /// budget.
 const RESET_BUDGET: Duration = Duration::from_secs(30);
@@ -267,7 +277,8 @@ const RESET_POLL_INTERVAL: Duration = Duration::from_millis(200);
 ///
 /// The command's own reply is an immediate `Accepted` — the transaction
 /// (mint + bootstrap + publish) runs asynchronously, so this polls
-/// `Query{operation_id}` on the SAME connection for the terminal
+/// `Query{operation_id}` on the same connection, or on a fresh one after a
+/// reply timeout, for the terminal
 /// `ResetDone { new_voyage }`, bounded by [`RESET_BUDGET`]. Returns the
 /// new voyage id.
 pub fn reset(state_dir: &Path) -> crate::Result<String> {
@@ -294,31 +305,52 @@ pub fn reset(state_dir: &Path) -> crate::Result<String> {
             voyage: Some(voyage),
         },
     };
-    match send_and_read(&conn, &request, Instant::now() + STATUS_BUDGET)? {
-        SupervisorReply::Operation(SupervisorOperationState::Accepted) => {}
-        other => {
+    let poll_deadline = Instant::now() + RESET_BUDGET;
+    // ADR 0041: a reply timeout abandons the connection, never the operation. The authority admits a Reset with a
+    // durable journal write on its own thread, so on slow storage a reply can miss the read budget; the reset is then
+    // followed by querying its operation id on a fresh connection, until it is terminal or RESET_BUDGET has passed.
+    let mut conn = Some(conn);
+    match send_and_read(conn.as_ref().expect("connected above"), &request, Instant::now() + STATUS_BUDGET) {
+        Ok(SupervisorReply::Operation(SupervisorOperationState::Accepted)) => {}
+        Ok(other) => {
             return Err(err_state(format!(
                 "reset: expected Operation(Accepted), got {other:?}"
             )))
         }
+        Err(_) => conn = None,
     }
-    let poll_deadline = Instant::now() + RESET_BUDGET;
     loop {
-        let query = SupervisorRequest::Query {
-            operation_id: operation_id.clone(),
-        };
-        match send_and_read(&conn, &query, Instant::now() + STATUS_BUDGET)? {
-            SupervisorReply::Operation(SupervisorOperationState::ResetDone { new_voyage }) => {
-                return Ok(new_voyage)
+        if conn.is_none() {
+            match connect(state_dir, Instant::now() + HELLO_BUDGET) {
+                Ok((c, _)) => conn = Some(c),
+                // No listener at all: the authority is gone, and nothing will answer this reset.
+                Err(crate::Error::Transport(e)) if e.is_endpoint_absent() => {
+                    return Err(err_state(format!(
+                        "reset: the supervisor went away before its reset completed: {e}"
+                    )))
+                }
+                // A busy or still-stalled authority: the next pass tries again.
+                Err(_) => {}
             }
-            SupervisorReply::Operation(SupervisorOperationState::Accepted) => {} // still in flight
-            SupervisorReply::Operation(other) => {
-                return Err(err_state(format!("reset did not complete: {other:?}")))
-            }
-            other => {
-                return Err(err_state(format!(
-                    "reset: expected an Operation reply, got {other:?}"
-                )))
+        }
+        if let Some(c) = &conn {
+            let query = SupervisorRequest::Query {
+                operation_id: operation_id.clone(),
+            };
+            match send_and_read(c, &query, Instant::now() + STATUS_BUDGET) {
+                Ok(SupervisorReply::Operation(SupervisorOperationState::ResetDone { new_voyage })) => {
+                    return Ok(new_voyage)
+                }
+                Ok(SupervisorReply::Operation(SupervisorOperationState::Accepted)) => {} // still in flight
+                Ok(SupervisorReply::Operation(other)) => {
+                    return Err(err_state(format!("reset did not complete: {other:?}")))
+                }
+                Ok(other) => {
+                    return Err(err_state(format!(
+                        "reset: expected an Operation reply, got {other:?}"
+                    )))
+                }
+                Err(_) => conn = None,
             }
         }
         if Instant::now() >= poll_deadline {
