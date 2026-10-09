@@ -15,6 +15,10 @@ use crate::sidecars::contract_tests::{isolated, owned_julia_env, within};
 /// The longest an isolated body here may take: an empty depot compiles the shim on first start.
 pub(super) const BODY: Duration = Duration::from_secs(240);
 const EVAL: Duration = Duration::from_secs(180);
+/// The WGLMakie setup's bound. Each run's owned depot starts empty and the read depot's compile caches need not match
+/// the versions an offline add resolves, so the add can precompile WGLMakie's whole environment, Makie then WGLMakie in
+/// series; about twice the slowest measured (303 s, on two CPUs).
+const SETUP: Duration = Duration::from_secs(600);
 
 /// A bare workspace (no `Project.toml`) whose path holds a space, and the real `Workspace::repl` factory over it.
 struct Fixture {
@@ -86,17 +90,24 @@ impl Fixture {
 
 /// Evaluates `code` in the REPL and returns the frames it produced.
 pub(super) async fn eval(repl: &Repl, id: u64, code: &str) -> Vec<Value> {
+    eval_within(repl, id, code, EVAL)
+        .await
+        .expect("the eval must answer")
+}
+
+/// As `eval`, waiting at most `bound` for the answer; `None` when none came.
+async fn eval_within(repl: &Repl, id: u64, code: &str, bound: Duration) -> Option<Vec<Value>> {
     let (reply, collector) = repl
         .execute("repl.eval", json!({ "code": code, "eval_id": id }))
         .await
         .expect("the REPL must start");
-    tokio::time::timeout(EVAL, reply)
+    tokio::time::timeout(bound, reply)
         .await
-        .expect("the eval must answer")
+        .ok()?
         .expect("the supervisor must keep the reply")
         .expect("the eval must succeed");
     let frames = collector.lock().expect("collector").frames.clone();
-    frames
+    Some(frames)
 }
 
 pub(super) fn stdout_of(frames: &[Value]) -> String {
@@ -446,28 +457,21 @@ async fn observer_rejects_a_deliberate_leak() {
     sig.fire();
 }
 
-/// A page served by the real `wglshow` path never puts its secret, or the address that carries it, on a command
-/// line of the REPL's tree, before or after the page exists, on every spawn route; a deliberately leaking process is
-/// rejected by the same observer, and a sentinel proves the observation sees a value the child really has.
-#[tokio::test]
-async fn repl_page_secret_never_reaches_command_line() {
-    if !isolated(
-        "sidecars::repl::project_tests::repl_page_secret_never_reaches_command_line",
-        BODY * 3,
-    ) {
-        return;
-    }
-    let read_depot =
-        std::env::var_os("JULIA_DEPOT_PATH").expect("setup: the packages' depot is not named");
-    std::env::set_var("SOT_TEST_PAGE_SENTINEL", SENTINEL);
-    let fixture = Fixture::with_read_depot(Some(read_depot));
+/// Adds WGLMakie to the fixture's workspace from the read depot, offline; its precompile is setup, bounded by `SETUP`.
+async fn add_wglmakie(fixture: &Fixture) {
     offline_pkg(&fixture.root);
-    let added = eval(
+    let added = eval_within(
         &fixture.repl,
         1,
         "import Pkg; Pkg.offline(true); Pkg.add(\"WGLMakie\"; io=devnull); println(\"added\")",
+        SETUP,
     )
-    .await;
+    .await
+    .unwrap_or_else(|| {
+        panic!(
+            "setup: WGLMakie did not install and precompile into the owned depot within {SETUP:?}"
+        )
+    });
     assert_eq!(
         stdout_of(&added),
         "added",
@@ -479,6 +483,24 @@ async fn repl_page_secret_never_reaches_command_line() {
             .collect::<Vec<_>>()
             .join(" ")
     );
+}
+
+/// A page served by the real `wglshow` path never puts its secret, or the address that carries it, on a command
+/// line of the REPL's tree, before or after the page exists, on every spawn route; a deliberately leaking process is
+/// rejected by the same observer, and a sentinel proves the observation sees a value the child really has.
+#[tokio::test]
+async fn repl_page_secret_never_reaches_command_line() {
+    if !isolated(
+        "sidecars::repl::project_tests::repl_page_secret_never_reaches_command_line",
+        SETUP + BODY,
+    ) {
+        return;
+    }
+    let read_depot =
+        std::env::var_os("JULIA_DEPOT_PATH").expect("setup: the packages' depot is not named");
+    std::env::set_var("SOT_TEST_PAGE_SENTINEL", SENTINEL);
+    let fixture = Fixture::with_read_depot(Some(read_depot));
+    add_wglmakie(&fixture).await;
 
     observer_rejects_a_deliberate_leak().await;
 
