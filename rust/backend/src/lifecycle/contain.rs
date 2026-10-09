@@ -68,13 +68,7 @@ pub(crate) fn adopt(
             .ok_or_else(|| std::io::Error::other("the child was reaped before it was contained"))?;
         let job = sot_log::capsule::producer::conpty::AnonymousJob::create()
             .map_err(std::io::Error::other)?;
-        // SAFETY: both handles are live; the job is ours and the process handle is the child's.
-        if unsafe {
-            windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(job.raw(), handle as _)
-        } == 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
+        assign(&job, pid, handle)?;
         let mut tree = Tree {
             job,
             terminated: false,
@@ -84,6 +78,36 @@ pub(crate) fn adopt(
         }
         Ok(tree)
     }
+}
+
+/// Put the suspended child in its job. The tests' daemon role has two faults here (`SOT_L2_PAUSE_ADOPT`, `SOT_L2_NO_JOB_ASSIGNMENT`).
+#[cfg(windows)]
+#[cfg_attr(not(test), allow(unused_variables))]
+fn assign(
+    job: &sot_log::capsule::producer::conpty::AnonymousJob,
+    pid: u32,
+    handle: std::os::windows::io::RawHandle,
+) -> std::io::Result<()> {
+    #[cfg(test)]
+    {
+        if let Some(path) = std::env::var_os("SOT_L2_PAUSE_ADOPT") {
+            std::fs::write(path, pid.to_string())?;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        }
+        if std::env::var_os("SOT_L2_NO_JOB_ASSIGNMENT").is_some() {
+            return Ok(());
+        }
+    }
+    // SAFETY: both handles are live; the job is ours and the process handle is the child's.
+    if unsafe {
+        windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(job.raw(), handle as _)
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 impl Tree {

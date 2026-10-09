@@ -262,7 +262,8 @@ fn unwind_cleans_std_and_async_suspended_children() {
     partial_start_cleanup(true, true);
 }
 
-/// The role a re-run of this test binary plays for [`a_killed_daemon_takes_its_contained_tree`]: start a tree through a
+/// The role a re-run of this test binary plays for the daemon-death cases: wait for the case to put it in the case's own
+/// job, then (by `SOT_L2_ROLE_MODE`) start a stand-in for the capsule outside any containment, and start a tree through a
 /// private signal as the daemon does, say who is in it and wait to be killed. A no-op in an ordinary run.
 #[test]
 fn contained_tree_role() {
@@ -270,6 +271,23 @@ fn contained_tree_role() {
         return;
     };
     sot_log::test_isolated::enter("lifecycle::start_tests::windows::contained_tree_role");
+    let began = Instant::now();
+    while !dir.join("go").exists() {
+        assert!(began.elapsed() < Duration::from_secs(60), "no go");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if std::env::var("SOT_L2_ROLE_MODE").as_deref() == Ok("capsule") {
+        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, the capsule's flags without the breakaway attempt.
+        let mut capsule = std::process::Command::new("ping");
+        capsule.args(["-n", "600", "127.0.0.1"]);
+        std::os::windows::process::CommandExt::creation_flags(&mut capsule, 0x0000_0208);
+        let capsule = capsule
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("start the capsule stand-in");
+        std::fs::write(dir.join("capsule.pid"), capsule.id().to_string()).unwrap();
+    }
     let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
     let mut cmd = std::process::Command::new("powershell");
     cmd.args([
@@ -287,31 +305,61 @@ fn contained_tree_role() {
     drop(child);
 }
 
-/// The kernel closes a dead daemon's handles, and a contained tree's job closes with them: the daemon (a re-run of this
-/// binary that holds the tree through a private signal) is ended by the case, which spawned it, and the tree it started
-/// ends with it though nothing in the daemon ran. The tree's processes are watched through handles opened while they
-/// lived; the case ends only the role it started.
-#[test]
-fn a_killed_daemon_takes_its_contained_tree() {
-    let dir = tempfile::tempdir().unwrap();
-    let (mut command, entry) = sot_log::test_isolated::test_command(
-        "lifecycle::start_tests::windows::contained_tree_role",
-    );
-    let mut role = command
-        .env("SOT_L2_ROLE_DIR", dir.path())
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("start the role");
-    let pid_of = |name: &str| -> u32 {
+/// A daemon role running, inside a job of the case's own: whatever the role leaves alive when it is killed ends when the
+/// case drops this, so the case ends only what its own spawn put in its own job.
+struct DaemonRole {
+    dir: tempfile::TempDir,
+    role: std::process::Child,
+    entry: sot_log::test_isolated::Entry,
+    _job: sot_log::capsule::producer::conpty::AnonymousJob,
+}
+
+impl DaemonRole {
+    fn start(mode: &str, env: &[(&str, &std::ffi::OsStr)]) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut command, entry) = sot_log::test_isolated::test_command(
+            "lifecycle::start_tests::windows::contained_tree_role",
+        );
+        command
+            .env("SOT_L2_ROLE_DIR", dir.path())
+            .env("SOT_L2_ROLE_MODE", mode)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let role = command.spawn().expect("start the role");
+        let job = sot_log::capsule::producer::conpty::AnonymousJob::create().unwrap();
+        // SAFETY: both handles are live; the job is the case's and the process handle is the role's.
+        assert!(
+            unsafe {
+                windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(
+                    job.raw(),
+                    std::os::windows::io::AsRawHandle::as_raw_handle(&role) as _,
+                )
+            } != 0,
+            "put the role in the case's job: {}",
+            std::io::Error::last_os_error()
+        );
+        std::fs::write(dir.path().join("go"), "").unwrap();
+        Self {
+            dir,
+            role,
+            entry,
+            _job: job,
+        }
+    }
+
+    /// A pid the role wrote, opened as a retained handle while it lives.
+    fn watch(&self, name: &str) -> Watched {
         let began = Instant::now();
         loop {
-            if let Some(pid) = std::fs::read_to_string(dir.path().join(name))
+            if let Some(pid) = std::fs::read_to_string(self.dir.path().join(name))
                 .ok()
                 .and_then(|text| text.trim().parse().ok())
             {
-                return pid;
+                return Watched::open(pid);
             }
             assert!(
                 began.elapsed() < Duration::from_secs(60),
@@ -319,22 +367,106 @@ fn a_killed_daemon_takes_its_contained_tree() {
             );
             std::thread::sleep(Duration::from_millis(50));
         }
-    };
-    let child = Watched::open(pid_of("child.pid"));
-    let grandchild = Watched::open(pid_of("grandchild.pid"));
+    }
+
+    /// End the role, the case's own spawn, and check that its body ran once.
+    fn kill(mut self) -> DeadRole {
+        self.role.kill().expect("end the role");
+        self.role.wait().expect("reap the role");
+        self.entry.assert_once(self.role.id());
+        DeadRole {
+            _dir: self.dir,
+            _job: self._job,
+        }
+    }
+}
+
+/// What outlives the role's death: the case's job, which ends what is left when the case drops it.
+struct DeadRole {
+    _dir: tempfile::TempDir,
+    _job: sot_log::capsule::producer::conpty::AnonymousJob,
+}
+
+/// The kernel closes a dead daemon's handles, and a contained tree's per-child job closes with them: the daemon (a re-run
+/// of this binary that holds the tree through a private signal) is ended by the case, which spawned it, and the tree it
+/// started ends with it though nothing in the daemon ran. The tree's processes are watched through handles opened while
+/// they lived. Run with `SOT_L2_NO_JOB_ASSIGNMENT=1` in the environment, the role skips the job assignment and this case
+/// is red: that is its reversal.
+#[test]
+fn windows_job_daemon_death() {
+    let role = DaemonRole::start("", &[]);
+    let child = role.watch("child.pid");
+    let grandchild = role.watch("grandchild.pid");
     assert!(!child.dead_within(0), "the tree's leader was not running");
     assert!(
         !grandchild.dead_within(0),
         "the tree's descendant was not running"
     );
-    role.kill().expect("end the role");
-    role.wait().expect("reap the role");
+    let _dead = role.kill();
     let child_ended = child.dead_within(10_000);
     let grandchild_ended = grandchild.dead_within(10_000);
-    entry.assert_once(role.id());
     assert!(child_ended, "the killed daemon's tree leader outlived it");
     assert!(
         grandchild_ended,
         "the killed daemon's tree descendant outlived it"
+    );
+}
+
+/// The fault control of the case above: with the job assignment skipped, the killed daemon's tree outlives it, so the
+/// case above can fail. The case's own job ends the tree afterwards.
+#[test]
+fn windows_job_daemon_death_needs_the_job_assignment() {
+    let role = DaemonRole::start("", &[("SOT_L2_NO_JOB_ASSIGNMENT", "1".as_ref())]);
+    let child = role.watch("child.pid");
+    let grandchild = role.watch("grandchild.pid");
+    let _dead = role.kill();
+    assert!(
+        !child.dead_within(3000) && !grandchild.dead_within(0),
+        "the tree ended without its job: the daemon-death case cannot fail"
+    );
+}
+
+/// The capsule is never in a job the daemon holds: a stand-in started outside the signal, with the capsule's detach
+/// flags, is alive after the daemon's death that ends the contained tree.
+#[test]
+fn windows_outside_capsule_survives_daemon_death() {
+    let role = DaemonRole::start("capsule", &[]);
+    let child = role.watch("child.pid");
+    let capsule = role.watch("capsule.pid");
+    let _dead = role.kill();
+    assert!(
+        child.dead_within(10_000),
+        "the contained tree outlived the daemon"
+    );
+    assert!(
+        !capsule.dead_within(3000),
+        "the capsule stand-in ended with the daemon: it was in a daemon-held job"
+    );
+}
+
+/// The known Windows limit, observed: a child created suspended and not yet assigned to its job when the daemon dies is
+/// not ended by anything (the role pauses in the assignment, `SOT_L2_PAUSE_ADOPT`). It never ran; the case's job ends it.
+#[test]
+fn windows_suspended_interval_is_the_known_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let paused = dir.path().join("paused.pid");
+    let role = DaemonRole::start("", &[("SOT_L2_PAUSE_ADOPT", paused.as_os_str())]);
+    let suspended = {
+        let began = Instant::now();
+        loop {
+            if let Some(pid) = std::fs::read_to_string(&paused)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                break Watched::open(pid);
+            }
+            assert!(began.elapsed() < Duration::from_secs(60), "no pause");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let _dead = role.kill();
+    assert!(
+        !suspended.dead_within(3000),
+        "the suspended child ended with the daemon: the limit no longer holds, so retire it in ADR 0050"
     );
 }

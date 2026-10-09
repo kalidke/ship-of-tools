@@ -294,11 +294,15 @@ capsule, and the automatic one waits while a window is attached; a close and an 
 exit; an update the daemon may not take leaves it serving; the updater's discovery and prepare commands end with the
 daemon. The macOS and Windows legs run the native launcher and fence-claim premises and the crate's own lifecycle tests
 (the macOS group recognition; on Windows the per-child kill-on-close jobs, including that a killed daemon's contained tree
-ends with it).
+ends with it, that the capsule stand-in does not, and the suspended interval above observed as the limit).
 
 Not tested, and stated as limits: macOS after an abrupt end of the daemon (by decision, above); Windows console events
 (CTRL_C, CTRL_BREAK, CTRL_CLOSE), logoff and shutdown; the interval on Windows between a child's creation and its
-assignment to its job, in which a daemon death leaves one process that never ran; a binary built with `panic=abort`, a
+assignment to its job, in which a daemon death leaves one process that never ran (Windows abrupt-death coverage is the
+per-child jobs the daemon holds, which no daemon death outlives; there is no aggregate job, because it would end nothing
+the per-child jobs do not and would leave this same interval; std has no stable way to name a job at creation, which
+`CREATE_SUSPENDED` and a later assignment work around, and a `CreateProcessW` spawn with `PROC_THREAD_ATTRIBUTE_JOB_LIST`,
+as the pseudoconsole spawn already does, would close it); a binary built with `panic=abort`, a
 stack overflow, an allocation failure and the OS's out-of-memory kill; power loss.
 
 ## Update (0.6.6): hub relay locality
