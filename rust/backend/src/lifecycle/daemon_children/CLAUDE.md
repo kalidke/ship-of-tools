@@ -8,7 +8,8 @@ nothing after an abrupt end (ADR 0050). Part of lifecycle; charter: rust/backend
 
 ## Files
 - `mod.rs`: declares the folder's modules (the guard is Linux only).
-- `guard.rs`: the Linux lifetime guard: `install`, the guard's loop, `drain`, the mirrored exit and `guard_pid`.
+- `guard.rs`: the Linux lifetime guard: `require_one_thread`, `install`, the guard's loop, `drain`, the mirrored exit and
+  `guard_pid`.
 
 ## Start here
 `guard.rs` `install`, then `keep_guard` for the guard's life and `drain` for what it does when the daemon is gone.

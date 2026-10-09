@@ -108,7 +108,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `.sot/hosts.toml.example` | disk | topology | `.sot/hosts.toml.example` |
 | `.sot/{settings,keybindings}.toml.example` | disk | fe-ui | `.sot/settings.toml.example`; `.sot/keybindings.toml.example` |
 | process `sotd` | process | server | `rust/backend/src/main.rs` `main` |
-| the Linux lifetime guard (the launched process, the daemon's parent and a subreaper; it kills what the daemon started when the daemon ends) | process | lifecycle | `rust/backend/src/lifecycle/daemon_children/guard.rs` `install`, `drain`, `guard_pid` |
+| the Linux lifetime guard (the launched process, the daemon's parent and a subreaper; it kills what the daemon started when the daemon ends) | process | lifecycle | `rust/backend/src/lifecycle/daemon_children/guard.rs` `require_one_thread`, `install`, `drain`, `guard_pid` |
 | process `sot` (the window) | process | fe-ui | `rust/frontend/src/main.rs` `main` |
 | starting this computer's daemon (`sot_daemon_ensure`, `sot-local-daemon.ps1`) | process | distribution | `scripts/lib/sot-daemon.sh` `sot_daemon_ensure`; `scripts/sot-local-daemon.ps1` |
 | window supervisor (respawn on 75/76, crash-loop rollback) | process | distribution | `scripts/launch-sot.ps1`; `scripts/lib/sot-daemon.sh` `render_sot_launch` |
