@@ -131,12 +131,12 @@ whole_lines() {
 # stops itself). `exec` so the recorded pid IS the lock holder — a child that
 # inherited fd 9 would keep the lock past the kill. `ready` means the lock is held; a
 # case that needs the body's own writes first has the body stop itself (`kill -STOP $$`)
-# and awaits `stopped`. The ready signal's `touch` closes fds 8 and 9: the test waits
-# only for the file, so a `touch` still running at the kill would hold the lock after it.
+# and awaits `stopped`. The holder writes the ready file itself, with a builtin: a child
+# such as `touch` would still hold the lock when the test, seeing the file, kills the holder.
 start_holder() {
     local body="$1"
     rm -f "${WORK:?}/ready"
-    bash -c 'exec 9>> "$1/$2.lock"; flock 9; exec 8>> "$1/$2.jsonl"; touch "$3" 8>&- 9>&-; '"$body" \
+    bash -c 'exec 9>> "$1/$2.lock"; flock 9; exec 8>> "$1/$2.jsonl"; : > "$3"; '"$body" \
         _ "$INBOX" "$PEER" "$WORK/ready" &
     HOLDER=$!
     HOLDERS+=("$HOLDER")
