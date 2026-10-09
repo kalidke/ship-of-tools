@@ -478,8 +478,9 @@ fn main() -> Result<()> {
         }
     }
 
-    // INT and TERM end the daemon the way every other controlled exit does (130, 143), from a thread of their own, so a
-    // stalled runtime or an inherited blocked mask does not hold them. After the guard, which needs one thread.
+    // INT and TERM take the fire every other controlled exit takes and then end the daemon by the signal itself, from a
+    // thread of their own, so a stalled runtime or an inherited blocked mask does not hold them. After the guard, which
+    // needs one thread.
     if let Err(error) = lifecycle::signal_exit::install() {
         eprintln!("sotd: signal watcher installation failed: {error}");
         lifecycle::shutdown::exit(1);

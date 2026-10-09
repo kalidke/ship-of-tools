@@ -272,8 +272,11 @@ the future is 101. A finished close exits 0; the shutdown's backstop exits 1; th
 shutdown has begun: the update is committed under the lease lock (`Leases::commit_update`, which moves the lease to
 `Updating`, so no close begins afterwards and none is granted) and the exit, with its wait for the fire, comes after the
 lock is released; a close that began first keeps its own exit. INT and TERM are caught on a thread of their own with a
-runtime of its own, unblocked whatever mask the daemon inherited and checked to be deliverable, and end the daemon as 130
-and 143, however stalled its main runtime is; a failed installation refuses the boot. A bad `agent-exec` recipe is 2, a
+runtime of its own, unblocked whatever mask the daemon inherited and checked to be deliverable, take the same fire and
+then end the daemon by the signal itself with its default action, however stalled its main runtime is: a shell reads 130
+and 143, and a service manager counts the end as a clean stop, so `systemctl stop` leaves the unit inactive rather than
+failed and an outside TERM is not restarted under `Restart=on-failure` (as before 0.6.6, when no handler was installed); a
+failed installation refuses the boot. A bad `agent-exec` recipe is 2, a
 missing `sot-capsule` or a state dir that is not private is 1 and no derivable config directory is 78. The guard exits as
 the daemon did, so a launcher sees these codes. Capsules are outside all of this by design (an update restart or a window
 Keep leaves them running).
@@ -286,7 +289,8 @@ the backstop 1, SIGKILL, SIGABRT) and forwards TERM, INT and HUP, also to the gr
 second; the drain outlasts a forking child and ends only its own subtree; a killed daemon's REPL, Pluto (server, worker
 and tree) and Quarto (engine server, worker and tree) all end while the capsule stays and a successor adopts it; the main
 future's Ok, error and panic are 0, 1 and 101; INT and TERM end a daemon whose runtime is stalled and whose inherited mask
-blocks them (130, 143); a close that outlasts its bound exits 1; `update.apply` against a pointer armed with the real
+blocks them, by the signal, and a test-owned service unit's stop ends inactive, not failed, with no restart; a close that
+outlasts its bound exits 1; `update.apply` against a pointer armed with the real
 updater, and the automatic update through the real stage, prepare and arm, exit 75, end the REPL's tree and leave the
 capsule, and the automatic one waits while a window is attached; a close and an update in either order keep the first one's
 exit; an update the daemon may not take leaves it serving; the updater's discovery and prepare commands end with the

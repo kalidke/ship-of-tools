@@ -461,13 +461,13 @@ async fn the_guard_mirrors_the_daemon_and_forwards_signals() {
             Stimulus::Backstop => {
                 assert_eq!(status.code(), Some(1), "the backstop: {status:?}\n{said}")
             }
-            // INT and TERM are the daemon's own handled signals (130, 143); any other ends it by the signal itself, and the
-            // guard ends the same way.
-            Stimulus::ToDaemon(sig) | Stimulus::ToGuard(sig) | Stimulus::ToGroup(sig) => match sig {
-                libc::SIGTERM => assert_eq!(status.code(), Some(143), "{stimulus:?}: {status:?}\n{said}"),
-                libc::SIGINT => assert_eq!(status.code(), Some(130), "{stimulus:?}: {status:?}\n{said}"),
-                _ => assert_eq!(status.signal(), Some(sig), "{stimulus:?}: the launched process did not end as the daemon did: {status:?}\n{said}"),
-            },
+            // INT and TERM end the daemon through its terminal and then by the signal itself; any other ends it by the
+            // signal at once. The guard ends the same way.
+            Stimulus::ToDaemon(sig) | Stimulus::ToGuard(sig) | Stimulus::ToGroup(sig) => assert_eq!(
+                status.signal(),
+                Some(sig),
+                "{stimulus:?}: the launched process did not end as the daemon did: {status:?}\n{said}"
+            ),
         }
     }
 }

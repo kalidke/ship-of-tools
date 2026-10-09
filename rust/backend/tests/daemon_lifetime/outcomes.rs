@@ -1,8 +1,9 @@
 //! The serving daemon's outcomes on real processes: the main future's result becomes a status while the runtime still exists
-//! (0, 1, 101), INT and TERM end a daemon whose runtime is stalled and whose inherited mask blocks them (130, 143) and a
-//! second TERM changes nothing, a close that outlasts its bound ends the daemon with 1 and takes its ephemeral trees with it,
-//! and an early command keeps its own status. The status is read at the launched process: the guard exits as the daemon did.
-//! The capsule a case starts is outside the daemon's lifetime and stays alive through every outcome.
+//! (0, 1, 101), INT and TERM end a daemon whose runtime is stalled and whose inherited mask blocks them (by the signal itself,
+//! after the fire) and a second TERM changes nothing, a service manager counts that end as a clean stop, a close that
+//! outlasts its bound ends the daemon with 1 and takes its ephemeral trees with it, and an early command keeps its own
+//! status. The status is read at the launched process: the guard exits as the daemon did. The capsule a case starts is
+//! outside the daemon's lifetime and stays alive through every outcome.
 
 use crate::ephemerals::start_spinning_with;
 use crate::fixture_owner::Fixture;
@@ -81,11 +82,11 @@ async fn a_main_outcome_becomes_the_launched_status() {
 #[tokio::test]
 async fn int_and_term_end_a_stalled_daemon_whatever_mask_it_inherited() {
     let _serial = SERIAL.lock().await;
-    for (signal, code, masked) in [
-        (libc::SIGTERM, 143, false),
-        (libc::SIGINT, 130, false),
-        (libc::SIGTERM, 143, true),
-        (libc::SIGINT, 130, true),
+    for (signal, masked) in [
+        (libc::SIGTERM, false),
+        (libc::SIGINT, false),
+        (libc::SIGTERM, true),
+        (libc::SIGINT, true),
     ] {
         let mut fx = Fixture::new(&format!("stalled_signal::{signal}::{masked}"));
         let mut case = ready("msig", &mut fx, masked, &[]).await;
@@ -133,16 +134,119 @@ async fn int_and_term_end_a_stalled_daemon_whatever_mask_it_inherited() {
         let status = status
             .unwrap_or_else(|| panic!("signal {signal}: the stalled daemon did not end:\n{log}"));
         assert_eq!(
-            status.code(),
-            Some(code),
-            "signal {signal} masked {masked}: {status:?} signal {:?}\n{log}",
-            status.signal()
+            status.signal(),
+            Some(signal),
+            "signal {signal} masked {masked}: {status:?} code {:?}\n{log}",
+            status.code()
         );
         assert_eq!(
             fx.saved("capsule_alive"),
             Some("true"),
             "signal {signal}: the daemon's end took the capsule with it"
         );
+    }
+}
+
+/// `systemctl --user` for one of this case's own units; its status and its output.
+fn systemctl(args: &[&str]) -> (bool, String) {
+    let out = std::process::Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .output()
+        .expect("run systemctl --user");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+/// Whether a daemon answers on `socket` within `bound`.
+async fn answers_within(socket: &std::path::Path, bound: Duration) -> bool {
+    let deadline = std::time::Instant::now() + bound;
+    while std::time::Instant::now() < deadline {
+        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+/// Under a service manager INT and TERM are a clean stop, as for a daemon with no handler: `systemctl stop` leaves a unit
+/// inactive, not failed, and a TERM to its main process (the guard) is not restarted under the deploy unit's
+/// `Restart=on-failure`. The units are this case's own, named for it, and are stopped and reset by name.
+#[tokio::test]
+async fn a_service_manager_counts_int_and_term_as_a_clean_stop() {
+    let _serial = SERIAL.lock().await;
+    if let Err(e) = crate::support::user_manager_available_for_test() {
+        assert_ne!(
+            std::env::var("SOT_TEST_REQUIRE_USER_MANAGER").as_deref(),
+            Ok("1"),
+            "SOT_TEST_REQUIRE_USER_MANAGER=1 but no user manager answers: {e}"
+        );
+        eprintln!("SKIPPED: no user manager: {e}");
+        return;
+    }
+    for how in ["stop", "term-to-main"] {
+        let env = Env::new("msvc");
+        let unit = format!("sot-l2-term-{how}-{}.service", std::process::id());
+        let set = |k: &str, v: &std::ffi::OsStr| format!("--setenv={k}={}", v.to_string_lossy());
+        let started = std::process::Command::new("systemd-run")
+            .args(["--user", "--unit", &unit, "--service-type=exec"])
+            .args(["--property=Restart=on-failure", "--property=RestartSec=1"])
+            .arg(set("XDG_STATE_HOME", env.state_root.as_os_str()))
+            .arg(set("XDG_CONFIG_HOME", env.config_root.as_os_str()))
+            .arg(set(
+                "SOT_SELF_HOST",
+                std::ffi::OsStr::new(crate::support::TEST_STATE_HOST),
+            ))
+            .arg(set("SOT_RUNTIME_DIR", env._runtime_tmp.path().as_os_str()))
+            .arg(set("HOME", env.home_root.as_os_str()))
+            .arg(set("SOT_COMM_HOME", env.comm_root.as_os_str()))
+            .arg(set("PATH", &std::env::var_os("PATH").unwrap_or_default()))
+            .arg("--")
+            .arg(crate::support::sotd_program())
+            .arg("--socket")
+            .arg(&env.socket_path)
+            .arg("--project-root")
+            .arg(&env.daemon_project_root)
+            .status()
+            .expect("systemd-run the case's unit");
+        assert!(
+            started.success(),
+            "{how}: systemd-run --user --unit {unit} failed ({started})"
+        );
+        let answered = answers_within(&env.socket_path, crate::support::BOUND).await;
+        let stimulus = match how {
+            "stop" => systemctl(&["stop", &unit]).0,
+            _ => systemctl(&["kill", "--kill-who=main", "--signal=TERM", &unit]).0,
+        };
+        // Long enough for the end, then for a restart a failed end would bring (RestartSec=1).
+        let mut ended = false;
+        for _ in 0..150 {
+            if std::os::unix::net::UnixStream::connect(&env.socket_path).is_err() {
+                ended = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let restarted = answers_within(&env.socket_path, Duration::from_secs(5)).await;
+        let (_, shown) = systemctl(&["show", &unit, "--property=ActiveState,Result,NRestarts"]);
+        systemctl(&["stop", &unit]);
+        systemctl(&["reset-failed", &unit]);
+        assert!(answered, "{how}: the unit's daemon never answered");
+        assert!(stimulus, "{how}: systemctl refused the stimulus");
+        assert!(ended, "{how}: the unit's daemon did not end");
+        assert!(
+            !restarted,
+            "{how}: the unit was restarted after a clean INT/TERM end:\n{shown}"
+        );
+        for line in ["ActiveState=inactive", "Result=success", "NRestarts=0"] {
+            assert!(
+                shown.lines().any(|l| l == line),
+                "{how}: {line} missing:\n{shown}"
+            );
+        }
     }
 }
 

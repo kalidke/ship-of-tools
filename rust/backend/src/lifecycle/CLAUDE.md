@@ -12,8 +12,9 @@ computer's sessions end (ADR 0050).
 - The lease ops `fe.lease`, `fe.leaving`, `fe.notice_seen` (`lease::hold`) and the 1 s `lease::ticker`.
 - The start plan Resume, Pending or Cleanup: `startup::begin`, `lease::startup_plan`.
 - The close and its backstop `exit(1)`: `shutdown::run`, `shutdown::end_rows`.
-- The one raw exit of the serving daemon and what every controlled end does first: `shutdown::exit`, `shutdown::terminal`;
-  INT and TERM: `signal_exit::install`.
+- The serving daemon's controlled ends and what each does first: `shutdown::exit` (the one raw exit),
+  `shutdown::exit_by_signal` (INT and TERM: the same fire, then the signal), `shutdown::terminal`; INT and TERM:
+  `signal_exit::install`.
 - The child signal and the containment: `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`,
   `Contained`, `Contained::wait_until_exited`, `ContainedStd`, `Signal::fire`, `reset_child_signal`; contain.rs `Tree`,
   `prepare`, `adopt`,
@@ -46,8 +47,10 @@ computer's sessions end (ADR 0050).
   contained tree is asked to end), waits at most `FIRE_WAIT` (2 s) for the answer, logs a failed request or a fire still
   running, and makes the process's one raw exit with the code it was given. The codes: 0 (a finished close, an Ok main
   result), 1 (an error, a boot refusal, the backstop), 2 (a bad `agent-exec` recipe), 75 (the update restart), 78 (no
-  config directory), 101 (a panic of the main future), 130 and 143 (INT and TERM); a death by an uncatchable signal, an
-  abort or a raw exit elsewhere is the guard's and the OS's, not this terminal's. `main` turns the main future's result into
+  config directory), 101 (a panic of the main future); INT and TERM take the same fire and then end the daemon by the
+  signal itself with its default action (`shutdown::exit_by_signal`), so a service manager counts the stop as clean and a
+  shell reads 130 and 143; a death by an uncatchable signal, an abort or a raw exit elsewhere is the guard's and the OS's,
+  not this terminal's. `main` turns the main future's result into
   its code while the runtime still exists (`complete_main`). INT and TERM are caught on a thread of their own with a
   runtime of its own, unblocked whatever mask the daemon inherited and checked to be deliverable, so a stalled main runtime
   does not hold them; a failed installation refuses the boot (`signal_exit::install`). The wait is bounded because a child
@@ -153,7 +156,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.
 - `mod.rs`: declares the seven modules, the held points (feature `daemon-lifetime-faults`) and the test module.
 - `shutdown.rs`: the close, its backstop, the row ends and the daemon's one terminal exit.
-- `signal_exit.rs`: the thread that catches INT and TERM and ends the daemon through the terminal as 130 and 143.
+- `signal_exit.rs`: the thread that catches INT and TERM and ends the daemon through the terminal's fire and then by the
+  caught signal.
 - `start_tests.rs`: tests of child creation against the fire, checked termination requests and partial births (an error
   or an unwind between creation and registration), on real processes. They are in-crate because they reach `Signal` and
   `contain`; the daemon-lifetime harness is a separate test binary and cannot.

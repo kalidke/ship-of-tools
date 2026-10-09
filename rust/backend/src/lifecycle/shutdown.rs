@@ -113,6 +113,27 @@ pub(crate) fn exit(code: i32) -> ! {
     })
 }
 
+/// [`exit`] for a caught INT or TERM: the same terminal (its claim and its fire), then death by that signal with its
+/// default action, so whatever started the daemon sees the end it would see with no handler (a service manager counts
+/// INT and TERM as a clean stop, a shell reads 128 + n, and the guard mirrors the signal). If the raise returns, the exit
+/// is 128 + n.
+#[cfg(unix)]
+pub(crate) fn exit_by_signal(signum: i32) -> ! {
+    terminal(super::child_signal::process(), 128 + signum, |code| {
+        // SAFETY: the default action restored for one valid signal, the signal unblocked in this thread, then raised at
+        // this thread; no handler runs.
+        unsafe {
+            libc::signal(signum, libc::SIG_DFL);
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, signum);
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+            libc::raise(signum);
+        }
+        std::process::exit(code)
+    })
+}
+
 /// The terminal body: claim the exit, fire `signal` on a thread of its own, wait at most [`FIRE_WAIT`] for it, then hand
 /// `code` to `terminate`. Two controlled ends can arrive together (the backstop and a close that finishes at the bound):
 /// the first to arrive claims the exit and its code stands; the other waits for the process to end under it. A test

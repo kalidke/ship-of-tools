@@ -1,4 +1,6 @@
-//! Checked Unix signal installation on an independent runtime thread, before daemon child work.
+//! Checked Unix signal installation on an independent runtime thread, before daemon child work. INT and TERM end the
+//! daemon through the terminal's fire and then by the signal itself, so whatever started the daemon (a service manager,
+//! a shell, the guard, which mirrors a signal death) sees the end it would see with no handler.
 
 #[cfg(not(unix))]
 pub(crate) fn install() -> std::io::Result<()> {
@@ -7,7 +9,13 @@ pub(crate) fn install() -> std::io::Result<()> {
 
 #[cfg(unix)]
 pub(crate) fn install() -> std::io::Result<()> {
-    unix::install_with(|code| super::shutdown::exit(code), unix::Ops::default())
+    unix::install_with(
+        |caught| match caught {
+            Some(signum) => super::shutdown::exit_by_signal(signum),
+            None => super::shutdown::exit(1),
+        },
+        unix::Ops::default(),
+    )
 }
 
 #[cfg(unix)]
@@ -16,101 +24,76 @@ mod unix {
     use std::sync::mpsc;
     use tokio::signal::unix::{signal, SignalKind};
 
-    #[derive(Clone, Default)]
+    /// Test-only: a registration that fails, to show an installation failure is a concrete failure exit.
+    #[derive(Clone, Copy, Default)]
     pub(super) struct Ops {
         #[cfg(test)]
-        pub(super) fail: Option<&'static str>,
+        pub(super) fail_registration: bool,
     }
+
     impl Ops {
-        fn before(&self, stage: &'static str) -> io::Result<()> {
+        fn register(self, kind: SignalKind, name: &str) -> io::Result<tokio::signal::unix::Signal> {
             #[cfg(test)]
-            if self.fail == Some(stage) {
-                return Err(io::Error::other(format!("injected {stage} failure")));
+            if self.fail_registration {
+                return Err(io::Error::other(format!(
+                    "injected {name} registration failure"
+                )));
             }
-            let _ = stage;
-            Ok(())
+            signal(kind).map_err(|e| io::Error::other(format!("register {name}: {e}")))
         }
-        fn set(&self) -> io::Result<libc::sigset_t> {
-            self.before("set")?;
-            let mut set = unsafe { std::mem::zeroed() };
-            for (name, code) in [
-                ("sigemptyset", unsafe { libc::sigemptyset(&mut set) }),
-                ("SIGINT sigaddset", unsafe {
-                    libc::sigaddset(&mut set, libc::SIGINT)
-                }),
-                ("SIGTERM sigaddset", unsafe {
-                    libc::sigaddset(&mut set, libc::SIGTERM)
-                }),
-            ] {
-                if code != 0 {
-                    return Err(io::Error::other(format!(
-                        "{name}: {}",
-                        io::Error::last_os_error()
-                    )));
-                }
-            }
-            Ok(set)
+    }
+
+    /// INT and TERM as a set. The calls cannot fail with these valid signal numbers.
+    fn int_and_term() -> libc::sigset_t {
+        // SAFETY: a set built in place from valid signal numbers.
+        unsafe {
+            let mut set = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGINT);
+            libc::sigaddset(&mut set, libc::SIGTERM);
+            set
         }
-        fn mask(
-            &self,
-            stage: &'static str,
-            how: i32,
-            set: *const libc::sigset_t,
-            old: *mut libc::sigset_t,
-        ) -> io::Result<()> {
-            self.before(stage)?;
-            // SAFETY: only valid local sigset pointers (or null); pthread returns its own error number.
-            let code = unsafe { libc::pthread_sigmask(how, set, old) };
-            if code == 0 {
-                Ok(())
-            } else {
-                Err(io::Error::other(format!(
-                    "{stage}: {}",
-                    io::Error::from_raw_os_error(code)
-                )))
-            }
+    }
+
+    /// Set this thread's mask by `how`; the old mask is returned. It cannot fail with a valid `how` and local sets.
+    fn mask(how: libc::c_int, set: &libc::sigset_t) -> libc::sigset_t {
+        // SAFETY: valid local sets; pthread_sigmask edits only this thread's mask.
+        unsafe {
+            let mut old = std::mem::zeroed();
+            libc::pthread_sigmask(how, set, &mut old);
+            old
         }
-        fn deliverable(&self) -> io::Result<()> {
-            let mut current = unsafe { std::mem::zeroed() };
-            self.mask(
-                "readback",
-                libc::SIG_SETMASK,
-                std::ptr::null(),
-                &mut current,
-            )?;
-            self.before("membership")?;
+    }
+
+    /// Whether INT and TERM reach this thread: the readback of its mask after the unblock.
+    fn deliverable() -> io::Result<()> {
+        // SAFETY: a read of this thread's mask into a local set (a null new set changes nothing), then membership tests.
+        unsafe {
+            let mut current = std::mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_SETMASK, std::ptr::null(), &mut current);
             for signum in [libc::SIGINT, libc::SIGTERM] {
-                let member = unsafe { libc::sigismember(&current, signum) };
-                if member == -1 {
-                    return Err(io::Error::other(format!(
-                        "sigismember: {}",
-                        io::Error::last_os_error()
-                    )));
-                }
-                if member != 0 {
+                if libc::sigismember(&current, signum) != 0 {
                     return Err(io::Error::other(format!(
                         "signal {signum} remains blocked in watcher"
                     )));
                 }
             }
-            Ok(())
         }
+        Ok(())
     }
 
+    /// Block INT and TERM in this thread while the watcher starts (it inherits the block, registers, then unblocks them
+    /// in itself), and restore this thread's mask after. `terminate` gets the caught signal, or `None` for a watcher that
+    /// lost its stream.
     pub(super) fn install_with(
-        terminate: impl Fn(i32) + Send + 'static,
+        terminate: impl Fn(Option<i32>) + Send + 'static,
         ops: Ops,
     ) -> io::Result<()> {
-        let set = ops.set()?;
-        let mut old = unsafe { std::mem::zeroed() };
-        ops.mask("block", libc::SIG_BLOCK, &set, &mut old)?;
+        let old = mask(libc::SIG_BLOCK, &int_and_term());
         let (sent, ready) = mpsc::sync_channel(1);
-        let watcher_ops = ops.clone();
         let started = std::thread::Builder::new()
             .name("sot-signal-exit".into())
-            .spawn(move || {
-                watch(terminate, watcher_ops, sent);
-            });
+            .spawn(move || watch(terminate, ops, sent));
         let installed = match started {
             Ok(_) => ready
                 .recv()
@@ -118,17 +101,11 @@ mod unix {
                 .and_then(|r| r),
             Err(e) => Err(io::Error::other(format!("signal watcher start: {e}"))),
         };
-        let restored = ops.mask("restore", libc::SIG_SETMASK, &old, std::ptr::null_mut());
-        match (installed, restored) {
-            (Ok(()), result) => result,
-            (Err(error), Ok(())) => Err(error),
-            (Err(error), Err(restore)) => Err(io::Error::other(format!(
-                "{error}; restoring main mask: {restore}"
-            ))),
-        }
+        mask(libc::SIG_SETMASK, &old);
+        installed
     }
 
-    fn watch(terminate: impl Fn(i32), ops: Ops, ready: mpsc::SyncSender<io::Result<()>>) {
+    fn watch(terminate: impl Fn(Option<i32>), ops: Ops, ready: mpsc::SyncSender<io::Result<()>>) {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -143,15 +120,10 @@ mod unix {
         };
         runtime.block_on(async {
             let handlers = (|| {
-                ops.before("register-int")?;
-                let int = signal(SignalKind::interrupt())
-                    .map_err(|e| io::Error::other(format!("register SIGINT: {e}")))?;
-                ops.before("register-term")?;
-                let term = signal(SignalKind::terminate())
-                    .map_err(|e| io::Error::other(format!("register SIGTERM: {e}")))?;
-                let set = ops.set()?;
-                ops.mask("unblock", libc::SIG_UNBLOCK, &set, std::ptr::null_mut())?;
-                ops.deliverable()?;
+                let int = ops.register(SignalKind::interrupt(), "SIGINT")?;
+                let term = ops.register(SignalKind::terminate(), "SIGTERM")?;
+                mask(libc::SIG_UNBLOCK, &int_and_term());
+                deliverable()?;
                 Ok::<_, io::Error>((int, term))
             })();
             let (mut int, mut term) = match handlers {
@@ -163,19 +135,19 @@ mod unix {
             };
             if ready.send(Ok(())).is_err() {
                 eprintln!("sotd: signal watcher lost its startup receiver");
-                terminate(1);
+                terminate(None);
                 return;
             }
-            let (received, code) = tokio::select! {
-                received = int.recv() => (received, 130),
-                received = term.recv() => (received, 143),
+            let (received, signum) = tokio::select! {
+                received = int.recv() => (received, libc::SIGINT),
+                received = term.recv() => (received, libc::SIGTERM),
             };
             if received.is_none() {
                 tracing::error!("signal watcher notification stream ended");
                 eprintln!("sotd: signal watcher notification stream ended");
-                terminate(1);
+                terminate(None);
             } else {
-                terminate(code);
+                terminate(Some(signum));
             }
         });
     }
@@ -185,43 +157,34 @@ mod unix {
         use super::*;
         use crate::lifecycle::{child_signal::Signal, shutdown};
 
-        /// Each stage of the installation that can fail does so as a concrete failure exit: the reason reaches the log and the
-        /// child signal is fired before the exit code is handed on. The delivery of INT and TERM to a real daemon (inherited
-        /// blocked masks and a stalled runtime included) is the daemon-lifetime harness's, `guard.rs`.
+        /// A failed installation is a concrete failure exit: the reason reaches the log and the child signal is fired
+        /// before the exit code is handed on. The delivery of INT and TERM to a real daemon (inherited blocked masks and a
+        /// stalled runtime included) is the daemon-lifetime harness's, `outcomes.rs`.
         #[test]
-        fn installation_failures_are_concrete_failure_exits() {
-            let name = "lifecycle::signal_exit::unix::tests::installation_failures_are_concrete_failure_exits";
+        fn an_installation_failure_is_a_concrete_failure_exit() {
+            let name = "lifecycle::signal_exit::unix::tests::an_installation_failure_is_a_concrete_failure_exit";
             if !sot_log::test_isolated::run_isolated(name) {
                 return;
             }
-            for stage in [
-                "set",
-                "block",
-                "register-int",
-                "register-term",
-                "unblock",
-                "readback",
-                "membership",
-                "restore",
-            ] {
-                let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
-                let error = install_with(
-                    |_| panic!("installation failed after acknowledging readiness"),
-                    Ops { fail: Some(stage) },
-                )
-                .expect_err("installation failure was silently accepted");
-                let log = sot_log::test_log::capture();
-                tracing::error!(%error, "signal watcher installation failed");
-                let observed =
-                    shutdown::terminal(signal, 1, |code| (code, signal.is_fired(), log.text()));
-                assert_eq!(observed.0, 1);
-                assert!(observed.1);
-                assert!(
-                    observed.2.contains(&format!("injected {stage} failure")),
-                    "installation reason was discarded: {}",
-                    observed.2
-                );
-            }
+            let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+            let error = install_with(
+                |_| panic!("installation failed after acknowledging readiness"),
+                Ops {
+                    fail_registration: true,
+                },
+            )
+            .expect_err("installation failure was silently accepted");
+            let log = sot_log::test_log::capture();
+            tracing::error!(%error, "signal watcher installation failed");
+            let observed =
+                shutdown::terminal(signal, 1, |code| (code, signal.is_fired(), log.text()));
+            assert_eq!(observed.0, 1);
+            assert!(observed.1);
+            assert!(
+                observed.2.contains("injected SIGINT registration failure"),
+                "installation reason was discarded: {}",
+                observed.2
+            );
         }
     }
 }
