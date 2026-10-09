@@ -95,9 +95,11 @@ const LIVENESS_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// otherwise be dialed every two seconds for as long as the stall lasts,
 /// and each dial it cannot yet accept sits in its listener backlog
 /// (bounded by `MAX_LANE_INSTANCES`) waiting to claim a slot the moment
-/// it wakes. One dial, then a doubling wait, reset by the first answered
-/// probe: recovery stays immediate and a minute-long stall costs a
-/// handful of dials instead of thirty.
+/// it wakes. The re-dials wait on platform's `Redial`, from this floor
+/// doubling to [`SUPERVISOR_REDIAL_MAX`], started over only after a lane
+/// that lasted `STABLE`: recovery from a long-lived lane stays immediate,
+/// and a stall, or a lane that accepts and then drops, costs a handful of
+/// dials a minute instead of thirty.
 const SUPERVISOR_REDIAL_INITIAL: Duration = Duration::from_secs(2);
 const SUPERVISOR_REDIAL_MAX: Duration = Duration::from_secs(30);
 
@@ -128,8 +130,11 @@ const READER_QUEUE_CAP_BYTES: usize = 4 * 1024 * 1024;
 pub(super) struct SupLane<C> {
     conn: C,
     reader: FrameReader,
+    /// When `conn` was dialed: how long it lasted decides the wait before the next dial.
+    dialed_at: Instant,
+    /// The earliest next dial, set at the first missed probe after the last dial; `None` until then.
     redial_at: Option<Instant>,
-    redial_backoff: Duration,
+    redial: crate::host::redial::Redial,
 }
 
 
@@ -516,3 +521,5 @@ mod ingress_tests;
 mod converge_tests;
 #[cfg(test)]
 mod steady_tests;
+#[cfg(test)]
+mod redial_tests;
