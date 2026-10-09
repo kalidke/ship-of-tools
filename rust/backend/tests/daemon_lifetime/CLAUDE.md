@@ -44,7 +44,11 @@ of the backend's tests; the suites span subsystems, so this page names no charte
   child it started). A pid a product printed, a fixture process wrote, a peer credential reported, /proc showed or a parent
   link reached is looked at through a pidfd (`Fixture::watch`) and is never signalled: `Identity::kill` refuses it. A case
   that needs the daemon to die sends nothing to it: the daemon sends itself the signal when the case writes `raise:<n>` to
-  its outcome file (`Run::daemon_does`, feature `daemon-lifetime-faults`). What a failing run leaves alive is the guard's
-  to drain (a case kills the guard it launched), the sweep of the case's own roots and the container the suite runs in.
+  its outcome file (`Run::daemon_does`, feature `daemon-lifetime-faults`). A `Run` ends its daemon by asking the guard it
+  launched to end (TERM: the daemon exits through its terminal and the guard drains what it started; only a guard that
+  does not end in 20 s is killed), and ends the capsules a daemon's end leaves by design through the product: a successor
+  on the case's roots re-adopts the rows and the window's close ends them (`Run::end_capsules`; the drop does it for a
+  daemon started from a copy of the binary, whose capsules `Env`'s sweep of the case's roots does not match). What is
+  still alive after that is the container the suite runs in.
 - The Quarto half runs where `quarto --version` answers and is printed as not checked, never passed, where it does not;
   its transport files are under a case-private `XDG_RUNTIME_DIR` that only the case's `quarto` wrapper sets.
