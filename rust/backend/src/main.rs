@@ -556,6 +556,8 @@ async fn injected_outcome() -> Result<()> {
             Ok("ok") => return Ok(()),
             Ok("err") => anyhow::bail!("injected main error"),
             Ok("panic") => panic!("injected main panic"),
+            // A signal the daemon sends itself (Unix): the harness's stimulus for a death it does not deliver itself.
+            #[cfg(unix)]
             Ok(raise) if raise.starts_with("raise:") => {
                 let signal: i32 = raise["raise:".len()..].parse().expect("a signal number");
                 // SAFETY: a signal to this process, sent by itself.
