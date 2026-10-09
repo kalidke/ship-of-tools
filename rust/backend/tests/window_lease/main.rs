@@ -301,24 +301,22 @@ fn stamped(log: &str, needle: &str) -> f64 {
     num(&line[t + 1..t + 3]) * 3600.0 + num(&line[t + 4..t + 6]) * 60.0 + num(line[t + 7..].split('Z').next().unwrap())
 }
 
-/// The supervisor of the ready row at `state_dir`, killed by the pid this test read from its lane.
+/// The supervisor of the ready row at `state_dir`, stopped through its own lane (the product's `stop`): it exits and its
+/// leg stays. No process is ended by number.
 #[cfg(target_os = "linux")]
-async fn kill_supervisor(state_dir: &Path) {
+async fn stop_supervisor(state_dir: &Path) {
     let dir = state_dir.to_path_buf();
-    let (_status, process) = tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::query_status(&dir))
+    tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::stop(&dir))
         .await
         .unwrap()
-        .expect("query_status on a ready row");
-    // SAFETY: a plain kill of the supervisor this test's daemon spawned.
-    unsafe { libc::kill(process.pid() as i32, libc::SIGKILL) };
-    drop(process);
+        .expect("stop the ready row's supervisor through its lane");
 }
 
-/// The "slow row": its supervisor killed by the pid this test read, then
-/// its fence held here, so no end of it can be proven.
+/// The "slow row": its supervisor stopped through its lane, then its fence
+/// held here, so no end of it can be proven.
 #[cfg(target_os = "linux")]
 async fn slow_row(state_dir: &Path) -> sot_log::supervisor::journal::fence::SupervisorLock {
-    kill_supervisor(state_dir).await;
+    stop_supervisor(state_dir).await;
     let dir = state_dir.to_path_buf();
     poll_until(|| { let dir = dir.clone(); async move { sot_log::supervisor::journal::fence::lock_supervisor(&dir).ok() } }, BOUND, "the row's fence").await
 }
