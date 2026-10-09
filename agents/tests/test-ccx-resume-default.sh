@@ -156,17 +156,21 @@ run_ccx_with_lib() {  # extra ccx args...
 
 case_capsule_prompt_names_the_handoff_when_one_exists() {
     rm -f "${ARGV_LOG:?}"
+    # The project is its own git root, so the test decides the root sot_handoff_line reads.
     mkdir -p "$PROJECT_DIR/dev/output"
+    [ -d "$PROJECT_DIR/.git" ] || (cd "$PROJECT_DIR" && git init -q)
     printf 'state\n' > "$PROJECT_DIR/dev/output/handoff-ccx-handoff-test.md"
     run_ccx_with_lib --capsule
-    local named=1
-    grep -qF "HANDOFF: read $PROJECT_DIR/dev/output/handoff-ccx-handoff-test.md before other work" "$ARGV_LOG" && named=0
+    local named=1 root
+    root="$(cd "$PROJECT_DIR" && pwd -P)"
+    grep -qF "HANDOFF: read $root/dev/output/handoff-ccx-handoff-test.md before other work" "$ARGV_LOG" && named=0
     rm -f "$PROJECT_DIR/dev/output/handoff-ccx-handoff-test.md"
     return "$named"
 }
 
 case_capsule_prompt_names_no_handoff_when_none_exists() {
     rm -f "${ARGV_LOG:?}"
+    [ -d "$PROJECT_DIR/.git" ] || (cd "$PROJECT_DIR" && git init -q)
     run_ccx_with_lib --capsule
     [ -s "$ARGV_LOG" ] && ! grep -q "HANDOFF:" "$ARGV_LOG"
 }
