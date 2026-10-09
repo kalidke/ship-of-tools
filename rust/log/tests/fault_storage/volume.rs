@@ -511,6 +511,8 @@ fn capacity(root: &Path) -> u64 {
     total
 }
 
+/// Writes the ballast until a one-byte write fails, then makes folders beside it at `root` until one cannot be made;
+/// returns the native code of the data write that found the volume full.
 pub fn fill(root: &Path) -> i32 {
     assert!(
         capacity(root) <= volume_limit(),
@@ -527,16 +529,19 @@ pub fn fill(root: &Path) -> i32 {
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let mut allocated = 0;
+    // A write that does not fit may fail whole (NTFS) instead of short (ext4): after each exhaustion error the next
+    // write is half as long, and the volume is full only when a one-byte write fails.
+    let mut size = block.len();
     loop {
         assert!(
             std::time::Instant::now() < deadline,
-            "native fill exceeded its bound"
+            "native fill exceeded its bound at write size {size} after {allocated} bytes"
         );
         assert!(
             allocated <= volume_limit(),
             "native volume never reported exhaustion within its size bound"
         );
-        match file.write(&block) {
+        match file.write(&block[..size]) {
             Ok(0) => {
                 panic!("native volume returned a zero write instead of an OS exhaustion error")
             }
@@ -549,7 +554,37 @@ pub fn fill(root: &Path) -> i32 {
                     boundaries::codes().contains(&code),
                     "native fill failed for another reason: {error}"
                 );
-                return code;
+                if size == 1 {
+                    fill_folders(root, deadline);
+                    return code;
+                }
+                size /= 2;
+            }
+        }
+    }
+}
+
+/// A volume with no data space left can still take a folder where the filesystem keeps a small folder in its own
+/// table (NTFS's master file table): folders are made beside the ballast until one cannot be.
+fn fill_folders(root: &Path, deadline: std::time::Instant) {
+    let mut made = 0u32;
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native fill exceeded its bound after {made} folders"
+        );
+        match std::fs::create_dir(root.join(format!("ballast-{made}"))) {
+            Ok(()) => made += 1,
+            Err(error) => {
+                let code = error
+                    .raw_os_error()
+                    .expect("native fill must yield an OS code");
+                assert!(
+                    boundaries::codes().contains(&code),
+                    "native fill's folder failed for another reason: {error}"
+                );
+                println!("L3 fill folders={made} folder-code={code}");
+                return;
             }
         }
     }
@@ -557,6 +592,12 @@ pub fn fill(root: &Path) -> i32 {
 
 pub fn free_and_sync(root: &Path) {
     std::fs::remove_file(root.join("ballast")).expect("remove only the owned ballast");
+    for entry in std::fs::read_dir(root).expect("list the owned volume") {
+        let entry = entry.expect("an owned volume entry");
+        if entry.file_name().to_string_lossy().starts_with("ballast-") {
+            std::fs::remove_dir(entry.path()).expect("remove only the owned ballast folders");
+        }
+    }
     let path = root.join("after-free");
     let mut file = std::fs::OpenOptions::new()
         .write(true)
