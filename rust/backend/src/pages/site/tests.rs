@@ -53,14 +53,17 @@ mod pool_tests {
         reset();
     }
 
-    /// PAGE-PORT: one browser can hold two sites at one pool port number (two daemons' pools through a remote window's
-    /// page proxy), and cookies are not separated by port, so each open's cookie has a name of its own and a second
-    /// site's first response never overwrites the first's cookie.
+    /// PAGE-PORT: one browser can hold two daemons' pool sites at one pool port number (through a remote window's page
+    /// proxy), and cookies are not separated by port, so the cookie is named for the listener, (daemon host, port):
+    /// two daemons' names differ, and one listener's name is the same on every open, so a reopen overwrites its own
+    /// cookie and the names stay bounded. A name is a cookie token whatever the host string holds.
     #[test]
-    fn two_opens_of_one_pool_port_number_name_their_cookies_apart() {
-        let (a, b) = ("0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210");
-        assert_ne!(pool_cookie_name(a), pool_cookie_name(b));
-        assert_eq!(pool_cookie_name(a), "sot_pool_0123456789abcdef");
+    fn a_pool_cookie_is_named_for_its_listener() {
+        assert_ne!(pool_cookie_name("box-a", 1237), pool_cookie_name("box-b", 1237));
+        assert_ne!(pool_cookie_name("box-a", 1237), pool_cookie_name("box-a", 1238));
+        assert_eq!(pool_cookie_name("box-a", 1237), "sot_pool_box-a_1237");
+        assert_eq!(pool_cookie_name("x.y z;=", 1237), "sot_pool_x_y_z___1237");
+        assert_eq!(pool_cookie_name("", 1237), "sot_pool_1237");
     }
 }
 

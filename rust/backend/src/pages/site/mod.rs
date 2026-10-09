@@ -417,12 +417,24 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The pool cookie's name for one open: `sot_pool_` and the first half of the open's secret. Cookies are not separated
-/// by port, and one browser can hold two sites at one pool port number (two daemons' pools, reached through a remote
-/// window's page proxy at two ports of its own; PAGE-PORT), so the name follows the open, never the port. The name
-/// carries nothing the cookie's value does not.
-fn pool_cookie_name(secret: &str) -> String {
-    format!("sot_pool_{}", secret.get(..secret.len() / 2).unwrap_or(secret))
+/// The pool cookie's name for the pool listener at `port` on daemon host `host`. The browser's 127.0.0.1 cookies are
+/// shared by every port and every daemon a window shows, and one browser can hold two sites at one pool port number
+/// (two daemons' pools, reached through a remote window's page proxy at ports of its own; PAGE-PORT). So the name
+/// identifies the listener: distinct for two daemons, the same across opens, so a reopen overwrites its own cookie and
+/// the names stay bounded (at most one per pool port per daemon host). It takes no secret, so no open adds a name.
+fn pool_cookie_name(host: &str, port: u16) -> String {
+    if host.is_empty() {
+        return format!("sot_pool_{port}");
+    }
+    let host: String = host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    format!("sot_pool_{host}_{port}")
+}
+
+/// This daemon's host for `pool_cookie_name`, read once: `host_name()`, or empty when it fails (the name is then the
+/// port's alone, as before PAGE-PORT).
+fn pool_cookie_host() -> &'static str {
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| sot_log::host::state_dir::host_name().unwrap_or_default())
 }
 
 /// Look up `name`'s value in a `Cookie:` header value (`name1=val1; name2=val2`).
@@ -504,11 +516,11 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
             // way the shared `:1236` server does (a root-relative site needs
             // the WHOLE path space). So the ONE-TIME secret `docs.open` put
             // in the URL's query string authenticates the FIRST request; that
-            // response sets an HttpOnly cookie named for this open
+            // response sets an HttpOnly cookie named for this pool listener
             // (`pool_cookie_name`) so every later same-page
             // asset fetch — which can't carry a query string — authenticates
             // via the cookie instead. Neither present or valid: 403.
-            let cookie_name = pool_cookie_name(&secret);
+            let cookie_name = pool_cookie_name(pool_cookie_host(), port);
             let cookie_ok = cookie_hdr
                 .as_deref()
                 .and_then(|c| cookie_value(c, &cookie_name))

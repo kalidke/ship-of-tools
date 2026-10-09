@@ -90,15 +90,20 @@ impl State {
     }
 
     /// The URL to open for a page this window already armed a listener for, by (`host`, `daemon_port`), re-arming that
-    /// listener since the daemon may have refused the port since; `None` when nothing is armed for the pair. Keyed by
-    /// host as well as port: two daemons serving one port number reach two listeners.
+    /// listener since the daemon may have refused the port since; `None` when nothing fits. Keyed by host as well as
+    /// port: two daemons serving one port number reach two listeners. An `Announced` page reuses only a listener that
+    /// holds the daemon's own number, since it may name that address; a `Served` listener elsewhere does not fit it.
     pub(in crate::ui) fn armed_url(
         ensured: &HashMap<(HostKey, u16), (u16, std::sync::Arc<crate::pages::Arm>)>,
         host: &HostKey,
         daemon_port: u16,
         url: &str,
+        source: PageSource,
     ) -> Option<String> {
         let (local, arm) = ensured.get(&(host.clone(), daemon_port))?;
+        if source == PageSource::Announced && *local != daemon_port {
+            return None;
+        }
         arm.reopen();
         sot_protocol::page_url::with_loopback_port(url, *local)
     }
@@ -155,7 +160,7 @@ impl State {
         let Some(daemon_port) = sot_protocol::page_url::loopback_port_from_url(url) else {
             return Some(url.to_string()); // nothing to proxy, so nothing to arm
         };
-        if let Some(opened) = Self::armed_url(&self.proxy_ensured, host, daemon_port, url) {
+        if let Some(opened) = Self::armed_url(&self.proxy_ensured, host, daemon_port, url, source) {
             return Some(opened);
         }
         let (listener, local, opened) = match Self::bind_proxy_listener(url, source) {
@@ -168,9 +173,15 @@ impl State {
                     daemon_port,
                     "proxy: port already bound by an UNKNOWN local listener — not ours; not opening"
                 );
-                self.status = format!(
-                    "port {daemon_port} is held by another local process — not opening (could be the wrong page)"
-                );
+                let ours = self.proxy_ensured.iter().find(|(_, (local, _))| *local == daemon_port);
+                self.status = match ours {
+                    Some(((other, _), _)) => format!(
+                        "port {daemon_port} is held by this window's page from '{other}' — not opening (it would show that page)"
+                    ),
+                    None => format!(
+                        "port {daemon_port} is held by another local process — not opening (could be the wrong page)"
+                    ),
+                };
                 self.window.request_redraw();
                 return None;
             }
@@ -364,10 +375,24 @@ mod tests {
             (("host-b".to_string(), 1236), (50002, std::sync::Arc::clone(&arm_b))),
         ]);
         let url = "http://127.0.0.1:1236/n/index.html";
-        let open = |host: &str| State::armed_url(&ensured, &host.to_string(), 1236, url);
+        let open = |host: &str| State::armed_url(&ensured, &host.to_string(), 1236, url, PageSource::Served);
         assert_eq!(open("host-a").as_deref(), Some("http://127.0.0.1:50001/n/index.html"));
         assert_eq!(open("host-b").as_deref(), Some("http://127.0.0.1:50002/n/index.html"));
         assert_eq!(open("host-c"), None);
-        assert_eq!(State::armed_url(&ensured, &"host-a".to_string(), 1235, url), None);
+        assert_eq!(State::armed_url(&ensured, &"host-a".to_string(), 1235, url, PageSource::Served), None);
+    }
+
+    /// An Announced page may name its own address, so it reuses only a listener at the daemon's own number: a Served
+    /// listener armed for that daemon port at another local port does not fit it, and one at the number does.
+    #[test]
+    fn an_announced_page_reuses_only_a_listener_at_the_daemons_number() {
+        let arm = std::sync::Arc::new(crate::pages::Arm::default());
+        let host = "host-a".to_string();
+        let url = "http://127.0.0.1:41000/app";
+        let moved = HashMap::from([((host.clone(), 41000), (50001, std::sync::Arc::clone(&arm)))]);
+        assert_eq!(State::armed_url(&moved, &host, 41000, url, PageSource::Announced), None);
+        assert!(State::armed_url(&moved, &host, 41000, url, PageSource::Served).is_some());
+        let same = HashMap::from([((host.clone(), 41000), (41000, arm))]);
+        assert_eq!(State::armed_url(&same, &host, 41000, url, PageSource::Announced).as_deref(), Some(url));
     }
 }

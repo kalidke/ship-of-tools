@@ -270,6 +270,8 @@ What may move depends on where the URL came from, since the window cannot see in
 - **Announced**: a URL user code announced (`wglshow`, a `BrowserView`) or an `open_url` command named. Such a page may
   name its own address (Bonito's defaults do), so it keeps the daemon's number, and a taken number is still refused:
   occupancy is not ownership.
-Listeners are keyed by host and daemon port (`armed_url`), so two daemons serving one port number reach two listeners;
-the pool cookie is named per open for the same reason (`pool_cookie_name`). A served page's tab does not survive a
+Listeners are keyed by host and daemon port (`armed_url`), so two daemons serving one port number reach two listeners,
+and an announced page reuses only a listener at the daemon's own number. The pool cookie is named for its listener,
+daemon host and pool port (`pool_cookie_name`), for the same reason: the browser's loopback cookies are shared by every
+port, and a name per open would add a cookie at every open until the request head overflows. A served page's tab does not survive a
 window restart: the next window's listener has another port. A local window opens every URL as given.
