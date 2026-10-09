@@ -186,6 +186,35 @@ jobs:
       - uses: quarto-dev/quarto-actions/setup@v2
         with:
           version: 1.7.31
+      # Every Julia a case starts runs on a depot of the case's own, with this runner's depot behind it, read only. This
+      # step fills the runner's depot once: Pluto's environment, with one notebook run so its worker side compiles too,
+      # and Quarto's Julia runner, with one document rendered. SOT_L2_PLUTO_MANIFEST and QUARTO_JULIA_PROJECT hand the
+      # cases exactly those environments, so no case resolves, installs or compiles them again.
+      - name: Prepare Pluto and Quarto's Julia runner in the runner's depot
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          warm="$RUNNER_TEMP/l2-warm"
+          quarto_julia="$RUNNER_TEMP/l2-quarto-julia"
+          mkdir -p "$warm" "$quarto_julia"
+          cp rust/backend/tests/daemon_lifetime/fixtures/notebook.jl "$warm/notebook.jl"
+          julia --startup-file=no --project=julia/pluto -e '
+            using Pkg; Pkg.instantiate()
+            using Pluto
+            include("julia/pluto/session_options.jl")
+            session = configure_session!(Pluto.ServerSession(), "127.0.0.1", 1234)
+            notebook = Pluto.SessionActions.open(session, ARGS[1]; run_async = false)
+            ran = notebook.cells[1].output.body == "2"
+            Pluto.SessionActions.shutdown(session, notebook; keep_in_session = false, async = false)
+            ran || error("the warm-up notebook did not run")' "$warm/notebook.jl"
+          echo "SOT_L2_PLUTO_MANIFEST=$GITHUB_WORKSPACE/julia/pluto/Manifest.toml" >> "$GITHUB_ENV"
+          cp "$(quarto --paths | sed -n 2p)/julia/Project.toml" "$quarto_julia/"
+          julia --startup-file=no --project="$quarto_julia" -e 'using Pkg; Pkg.instantiate()'
+          printf -- '---\nengine: julia\n---\n\n```{julia}\n1 + 1\n```\n' > "$warm/render.qmd"
+          QUARTO_JULIA_PROJECT="$quarto_julia" QUARTO_JULIA="$(command -v julia)" quarto render "$warm/render.qmd" --to html
+          QUARTO_JULIA_PROJECT="$quarto_julia" quarto call engine julia kill
+          echo "QUARTO_JULIA_PROJECT=$quarto_julia" >> "$GITHUB_ENV"
       - name: Build the capsule with its phase barriers
         run: cargo build -p sot-log --locked --features native-barrier --bin sot-capsule
       - name: Prove the daemon's lifetime on real daemons
@@ -214,7 +243,7 @@ jobs:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
-    timeout-minutes: 75
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -311,6 +340,17 @@ jobs:
           cargo test -p sot-backend --bin sotd trust_declaration --locked -- --nocapture
           cargo test -p sot-backend --bin sotd agents::folder_trust --locked -- --nocapture
           cargo test -p sot-backend --test trust_declare --test trust_premises --locked -- --nocapture
+      # The sidecar tests start a real Julia, which the macOS image lacks, and the WGL page test adds WGLMakie offline
+      # from the depot JULIA_DEPOT_PATH names. Precompiled here, so that test's add reuses these caches.
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.13'
+      - name: Prepare the Julia depot the WGL page test reads
+        shell: bash
+        run: |
+          depot="$RUNNER_TEMP/julia-depot"
+          echo "JULIA_DEPOT_PATH=$depot" >> "$GITHUB_ENV"
+          JULIA_DEPOT_PATH="$depot" julia --startup-file=no -e 'using Pkg; Pkg.activate(; temp = true); Pkg.add(name = "WGLMakie", version = "0.13")'
       - name: Test workspace
         run: cargo test --workspace --locked --no-fail-fast -- --nocapture
 

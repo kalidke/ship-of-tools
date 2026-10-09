@@ -7,8 +7,9 @@
 # cross checks, every Julia suite, and the shell suites.
 #
 # Reads HOME, PATH (only for `command -v cargo` and `command -v julia`) and
-# CARGO_TARGET_DIR (required); forwards JULIA_DEPOT_PATH, SSH_AUTH_SOCK and
-# CARGO_PROFILE_DEV_DEBUG when set. Rust jobs never get XDG_RUNTIME_DIR or
+# CARGO_TARGET_DIR (required); forwards JULIA_DEPOT_PATH (to the Julia suites
+# and the Rust tests, whose WGL page test adds WGLMakie from it), SSH_AUTH_SOCK
+# and CARGO_PROFILE_DEV_DEBUG when set. Rust jobs never get XDG_RUNTIME_DIR or
 # DBUS_SESSION_BUS_ADDRESS: they would put test scopes into the user's systemd
 # manager. Needs jq. Exit 2 on bad args; otherwise 0 (130 if interrupted) and
 # the verdict is in <logdir>/summary.txt: it ends in ALLDONE, or ALLDONE FAILED
@@ -32,7 +33,8 @@ JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/vi
 envs() {
   D=$RCG_D L=$RCG_L
   CE=(env -i HOME="$HOME" PATH="$RCG_CARGO_DIR:/usr/bin:/bin" TMPDIR=/tmp CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
-    ${CARGO_PROFILE_DEV_DEBUG:+CARGO_PROFILE_DEV_DEBUG="$CARGO_PROFILE_DEV_DEBUG"})
+    ${CARGO_PROFILE_DEV_DEBUG:+CARGO_PROFILE_DEV_DEBUG="$CARGO_PROFILE_DEV_DEBUG"}
+    ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
   SE=(env -i HOME="$HOME" PATH=/usr/bin:/bin ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"})
   JE=(env -i HOME="$HOME" PATH="$RCG_JULIA_DIR:/usr/bin:/bin" ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
 }

@@ -15,6 +15,7 @@ scripts/CLAUDE.md.
   (`scripts/tests/check-layout.sh` with `check-layout.allow`) and "Test the layout tools" (its two self-tests)), `conpty-windows-2022` (ConPTY and capsule
   tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the latest published tag
   into a clean container). The step "Test selected Rust bodies" runs the portable real-libtest shell proofs on the Linux, Windows and macOS legs; it invokes no daemon or peer suite. Its Linux leg also runs the candidate gate's finite selected-job and runtime-listing proofs; the full candidate gate is not invoked by that proof step. The ubuntu leg's step "Test L3 storage exhaustion" makes a private 64 MiB ext4 loop volume, runs `fault_storage` on it with `--include-ignored`, then unmounts it, releases the loop device and removes its folder; sudo is used only in that step, and a failed setup or teardown fails the job.
+  Every leg of `test` installs Julia 1.13 (`julia-actions/setup-julia`), and before "Test workspace" the step "Prepare the Julia depot the WGL page test reads" adds WGLMakie 0.13, precompiled, to a depot in the runner's temporary folder that `JULIA_DEPOT_PATH` names for the rest of the job: the sidecar tests start that Julia, and the WGL page test adds WGLMakie from that depot offline.
   The heartbeat context-deadline suite runs independently on Ubuntu, macOS and Windows Git Bash. Its per-behavior and sensitivity receipts distinguish fixture entry, actual release times, hook exit, both EOFs and positive lifetime cleanup; MSYS budget coverage remains separate from native Python P5 and its termination acceptance gate.
   window-close-windows and window-close-macos run the opt-in main-thread native window_close suite on hosted Windows and macOS; a missing body, native window or required observation is not a passing result. Ordinary native close must exit 0 before 2.5 seconds without the backstop; deliberate stalled teardown must end under the three-second backstop with the decided code.
   window-minimized-windows and window-minimized-macos run the native ten-minute minimized-window event-progress check on hosted Windows and macOS; a runner without a usable native window is not a passing result.
@@ -57,7 +58,9 @@ scripts/CLAUDE.md.
 - The daemon-lifetime harness (`rust/backend/tests/daemon_lifetime`) has its own jobs: "daemon lifetime harness (Linux)"
   runs every case with Julia 1.12 and Quarto 1.7.31 installed and the capsule built with its phase barriers, and "daemon
   lifetime premises (macOS)" runs the premises on real children; neither is part of the `test` matrix's plain run, which
-  builds the harness without its fault feature.
+  builds the harness without its fault feature. Before the harness, the Linux job installs and compiles Pluto's
+  environment and Quarto's Julia runner into the runner's depot once (one notebook run, one document rendered), and
+  hands the cases those environments through `SOT_L2_PLUTO_MANIFEST` and `QUARTO_JULIA_PROJECT`.
 - The Windows containment tests that need julia, Git for Windows' bash or a job around the test process are `#[ignore]`
   in `cargo test`; the job "containment, ignored tests (windows-latest)" runs them with julia installed
   (rust/backend/src/lifecycle/contain.rs).

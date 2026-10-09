@@ -34,8 +34,10 @@ impl Fixture {
         Self::with_read_depot(None)
     }
 
-    /// As `new`, with `read_depot` behind the owned depot on `JULIA_DEPOT_PATH`: packages are read from it, and
-    /// everything is written to the owned depot only.
+    /// As `new`, with `read_depot` behind the owned depot on `JULIA_DEPOT_PATH`: packages and their compiled caches are
+    /// read from it, and every file Julia makes goes to the owned depot. In the read depot Julia does only the
+    /// bookkeeping any session does there: Pkg makes and at once removes a lock file beside each package version it
+    /// resolves (`packages/<name>/<slug>.pid`), and loading a cache updates its timestamp.
     fn with_read_depot(read_depot: Option<std::ffi::OsString>) -> Self {
         let root = tempfile::tempdir().expect("owned fixture root").keep();
         let shim = owned_julia_env(&root);
@@ -161,6 +163,35 @@ async fn bare_workspace_is_active() {
         active_in(&fixture.repl, 1, &real).await,
         "true,true",
         "the bare workspace, not the shim, must be the active project and the cwd"
+    );
+    fixture.finish().await;
+}
+
+/// The owned fixture's first start compiles only the shim into its depot: the stdlibs the shim loads come precompiled
+/// from Julia's bundled depot, so no first eval in these tests pays for compiling them.
+#[tokio::test]
+async fn first_start_compiles_only_the_shim() {
+    if !isolated(
+        "sidecars::repl::project_tests::first_start_compiles_only_the_shim",
+        BODY,
+    ) {
+        return;
+    }
+    let fixture = Fixture::new();
+    eval(&fixture.repl, 1, "1").await;
+    let compiled_root = fixture.root.join("depot").join("compiled");
+    let mut compiled = Vec::new();
+    for version in std::fs::read_dir(compiled_root).expect("compiled") {
+        for package in std::fs::read_dir(version.expect("version").path()).expect("packages") {
+            let name = package.expect("package").file_name();
+            compiled.push(name.to_string_lossy().into_owned());
+        }
+    }
+    compiled.sort();
+    assert_eq!(
+        compiled,
+        ["ShipToolsRepl"],
+        "a first start must compile only the shim into the owned depot"
     );
     fixture.finish().await;
 }
@@ -413,21 +444,40 @@ fn announced_address(frames: &[Value]) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The page test's leak control alone: it needs no package, so the Windows box and every hosted leg can run it.
+#[tokio::test]
+async fn the_command_line_observer_rejects_a_deliberate_leak() {
+    observer_rejects_a_deliberate_leak().await;
+}
+
 /// The observer rejects a deliberate leak: an owned process whose command line carries the needle is found, and one
-/// that does not carry it is passed.
+/// that does not carry it is passed. The probe prints its pid, then sleeps. It is Julia, the kind the observation
+/// watches, except on Windows: there Julia's loader splits its own command line in place, writing a NUL after each
+/// argument (`cli/loader_win_utils.c` in every release from 1.6 to 1.13.1), so a reader sees only its executable
+/// path, and the probe is PowerShell, whose command line keeps its arguments.
 async fn observer_rejects_a_deliberate_leak() {
     let sig: &'static crate::lifecycle::child_signal::Signal =
         Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
-    let mut probe =
-        tokio::process::Command::new(crate::sidecars::contract_tests::executable("julia"));
-    probe
-        .args([
+    let mut probe = if cfg!(windows) {
+        let mut probe = tokio::process::Command::new("powershell");
+        probe.args([
+            "-NoProfile",
+            "-Command",
+            "[Console]::Out.WriteLine($PID); [Console]::Out.Flush(); Start-Sleep -Seconds 60 # probe-needle-5d1e",
+        ]);
+        probe
+    } else {
+        let mut probe =
+            tokio::process::Command::new(crate::sidecars::contract_tests::executable("julia"));
+        probe.args([
             "--startup-file=no",
             "-e",
             "println(getpid()); flush(stdout); sleep(60)",
             "probe-needle-5d1e",
-        ])
-        .stdout(std::process::Stdio::piped());
+        ]);
+        probe
+    };
+    probe.stdout(std::process::Stdio::piped());
     let mut owned = sig.spawn(&mut probe).expect("start the owned leak probe");
     let mut first = tokio::io::BufReader::new(owned.stdout.take().expect("probe stdout"));
     let mut line = String::new();
