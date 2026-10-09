@@ -110,6 +110,9 @@ async fn every_descendant_of_a_killed_daemon_ends() {
     save_oracle(&mut fx, &held, supervisor_id);
     save_successor(&mut fx, &mut run, &env, &held, supervisor).await;
     let said = run.said();
+    // The capsule's agent tree stays by design (it ignores TERM and HUP and runs in the row's scope): the successor's
+    // close, through the product, ends the row and with it the tree.
+    run.end_capsules().await;
     let cleanup = fx.cleanup();
     assert!(cleanup.complete(), "{cleanup:?}");
     assert_oracle(&fx, status, &said);
