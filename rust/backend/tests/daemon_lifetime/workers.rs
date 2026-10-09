@@ -74,9 +74,9 @@ fn a_distributed_worker_starts_in_a_session_of_its_own() {
 }
 
 /// Pluto's notebook worker, started detached in a session of its own, is outside the process group the fire kills; on
-/// Linux the guard's drain ends it. One notebook opened through the daemon's real Pluto supervisor, an ordinary worker
-/// that only reports its pid, then the window's close: the daemon exits 0 and the worker has ended by the time the guard
-/// has.
+/// Linux the guard's drain ends it. One notebook opened through the daemon's real Pluto supervisor, a worker that reports
+/// its pid and then spins, so it never notices its server's death and cannot end by itself, then the window's close: the
+/// daemon exits 0 and the worker has ended by the time the guard has.
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 #[tokio::test]
 #[ignore = "needs Julia 1.12 and Pluto's environment (SOT_JULIA_BIN, SOT_L2_PLUTO_MANIFEST); run by the harness job with --ignored"]
@@ -90,7 +90,10 @@ async fn a_closed_daemon_ends_plutos_notebook_worker() {
     let julia = crate::routes::julia_bin();
     let resources = pluto_resource_root(case.path(), &julia);
     let report = case.path().join("worker.pid");
-    let startup = format!("write(\"{}\", string(getpid()))", report.display());
+    let startup = format!(
+        "write(\"{}\", string(getpid())); while true end",
+        report.display()
+    );
     let env = [
         ("SOT_JULIA_BIN", julia.as_str()),
         (

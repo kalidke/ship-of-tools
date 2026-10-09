@@ -294,7 +294,8 @@ The daemon's lifetime is read on real daemons, real `sot-capsule` supervisors an
 the backstop 1, SIGKILL, SIGABRT) and forwards TERM, INT and HUP, also to the group; a lost guard ends the daemon within a
 second; the drain outlasts a forking child and ends only its own subtree; a killed daemon's REPL, Pluto (server, worker
 and tree) and Quarto (engine server, worker and tree) all end while the capsule stays and a successor adopts it; Pluto's
-ordinary notebook worker, outside Pluto's process group, has ended by the time a closed daemon's guard exits; the main
+notebook worker, outside Pluto's process group and spinning so it cannot end by itself, has ended by the time a closed
+daemon's guard exits; the main
 future's Ok, error and panic are 0, 1 and 101; INT and TERM end a daemon whose runtime is stalled and whose inherited mask
 blocks them, by the signal, and a test-owned service unit's stop ends inactive, not failed, with no restart; a close that
 outlasts its bound exits 1; `update.apply` against a pointer armed with the real
