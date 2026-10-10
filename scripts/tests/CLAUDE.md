@@ -30,8 +30,10 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-moved-check.sh`: self-test of `moved-check.sh` over throwaway repos.
 - `on-host.sh`: `on-host.sh HOST DIR -- CMD [ARG...]` runs CMD in DIR on a second host through `ssh HOST bash -s`, with
   the host's SOT_ variables, XDG_STATE_HOME, JULIA_LOAD_PATH and JULIA_PROJECT unset first; prints nothing of its own.
-- `in-container.sh`: `in-container.sh UNIT -- CMD [ARG...]` runs CMD in a transient `systemd --user` scope named UNIT (Linux); the
-  base shape of the test container, which a later commit replaces.
+- `in-container.sh`: `in-container.sh [--user-manager] UNIT -- CMD [ARG...]` runs CMD as the main process of the transient
+  `systemd --user` service UNIT.service, the test container (Linux): a private empty `XDG_RUNTIME_DIR` and no
+  `DBUS_SESSION_BUS_ADDRESS`, so every capsule row stays in its control group, and every process left in it is SIGKILLed
+  when CMD ends. `--user-manager` keeps the manager's address.
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
 - `rc-gate.sh`: the Linux candidate gate; a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
@@ -175,6 +177,8 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   own for it, its handle taken while the child runs (`GetProcessById`), since production disposes its own. A timed fake
   starts its timer at the test's own origin, the arm file the test writes as it starts measuring
   (`FAKE_SOTD_EXIT_ARM_FILE`), never at its own start.
+- A test job runs in a test container (`in-container.sh`). The five tests that need a user manager run under
+  `--user-manager` with `SOT_TEST_REQUIRE_USER_MANAGER=1`, by name (`rust/backend/tests/CLAUDE.md`).
 - `rc-gate.sh` needs `CARGO_TARGET_DIR` to itself while it runs; its verdict ends `<logdir>/summary.txt` as `ALLDONE` or
   `ALLDONE FAILED`.
 

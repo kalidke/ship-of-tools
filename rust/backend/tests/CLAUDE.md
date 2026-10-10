@@ -63,6 +63,12 @@ shows the shape.
 - P0/P1/P5 remain proof limits closed by the human release done test; CI provisions no Claude credential. Preparation tests observe
   filesystem effects and diagnostics. Headless task success proves no interactive recognition, parent coverage or dialog suppression.
   Interactive no-dialog remains a person-run release done-test; existing-file external-writer concurrency is a scoped limit.
+- A capsule row leaves the test's cgroup only when the user manager answers its daemon. Run the suites in a test
+  container (`scripts/tests/in-container.sh`), which withholds it, so a killed job leaves no row. The five tests that need
+  it run under `--user-manager`, by name: `capsule_supervisor_survives_a_real_user_service_stop` and
+  `destroy_ends_a_child_that_left_the_agents_process_group` (capsule_workspaces),
+  `killed_after_capture_next_start_ends_scope` (window_start), `shutdown_ends_a_child_that_left_the_agents_process_group`
+  (window_lease), `a_service_manager_counts_int_and_term_as_a_clean_stop` (daemon_lifetime); so does `contained_job`.
 - A binary whose tests share one process takes its `SERIAL` before `Env::new`, which sets the process's `SOT_RUNTIME_DIR`
   (capsule_workspaces, comm_send, comm_wake, daemon_boot, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
 - Every `sotd` a suite starts comes from `support/sotd.rs`: `sotd_command()`, or `sotd_command_at(program)` for a copy

@@ -22,11 +22,16 @@ use support::{
 const NAME: &str = "a_killed_test_job_leaves_no_row";
 const CHILD: &str = "SOT_TEST_CONTAINED_CHILD";
 
-fn state_lock_free(state_dir: &Path, voyage: &str) -> bool {
+/// Whether the row's supervisor fence and its voyage's writer lock can be taken (each is dropped at once), in that order.
+fn state_locks(state_dir: &Path, voyage: &str) -> (bool, bool) {
     let fence = sot_log::supervisor::journal::fence::lock_supervisor(state_dir).is_ok();
     let writer =
         sot_log::lock_writer(&state_dir.join("voyages").join(voyage).join("writer.lock")).is_ok();
-    fence && writer
+    (fence, writer)
+}
+
+fn state_lock_free(state_dir: &Path, voyage: &str) -> bool {
+    state_locks(state_dir, voyage) == (true, true)
 }
 
 /// The row's own state folder and its supervisor's report, once ready.
@@ -96,6 +101,12 @@ async fn child(dir: PathBuf) {
     let part = dir.join("ready.part");
     std::fs::write(&part, record).expect("write the ready record");
     std::fs::rename(&part, dir.join("ready")).expect("publish the ready record");
+    // The parent checks that the row is live first: a container ends everything the moment its job does.
+    let go = dir.join("go");
+    let end = Instant::now() + Duration::from_secs(60);
+    while !go.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(100));
+    }
     // The test process ends as a killed one: no Drop runs.
     unsafe { libc::raise(libc::SIGKILL) };
     std::thread::sleep(Duration::from_secs(60));
@@ -175,14 +186,16 @@ fn spawn_client(
         .expect("spawn the container client")
 }
 
-/// Waits for the job to end, then judges the row: is it gone within 10 s, and did it live in the job's control group.
-async fn judge(r: &HashMap<String, String>, client: &mut std::process::Child) -> (bool, bool) {
+/// Releases the child to kill itself, waits for the job to end, then judges the row: was its fence held before, is it
+/// gone within 10 s, and did it live in the job's control group.
+async fn judge(
+    dir: &Path,
+    r: &HashMap<String, String>,
+    client: &mut std::process::Child,
+) -> (bool, bool, bool) {
     let (state_dir, voyage) = (PathBuf::from(&r["state_dir"]), r["voyage"].clone());
-    let held_before = !sot_log::supervisor::journal::fence::lock_supervisor(&state_dir).is_ok();
-    assert!(
-        held_before,
-        "precondition: the supervisor's fence must be held while the job runs"
-    );
+    let held_before = state_locks(&state_dir, &voyage) == (false, false);
+    std::fs::write(dir.join("go"), "").expect("release the child");
     // The job's end: the client returns when its unit stops; with the base shape it is the child itself.
     let end = Instant::now() + Duration::from_secs(30);
     while client.try_wait().ok().flatten().is_none() && Instant::now() < end {
@@ -198,7 +211,11 @@ async fn judge(r: &HashMap<String, String>, client: &mut std::process::Child) ->
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    (gone, r["child_cgroup"] == r["supervisor_cgroup"])
+    (
+        held_before,
+        gone,
+        r["child_cgroup"] == r["supervisor_cgroup"],
+    )
 }
 
 /// Ends a row the job left, through the product, and waits for its locks.
@@ -211,11 +228,14 @@ async fn end_leftover_row(r: &HashMap<String, String>) {
     if support::try_connect(&sock).await.is_some() {
         close_by_lease(&sock).await;
     } else {
+        // The supervisor's lane socket lives in the child's private runtime folder.
+        std::env::set_var("SOT_RUNTIME_DIR", &r["runtime"]);
         let (d, v) = (state_dir.clone(), voyage.clone());
         let _ = tokio::task::spawn_blocking(move || {
-            let _ =
+            let ended =
                 sot_log::attach_client::supervisor_client::end_run(&d, &v, "contained_job cleanup");
-            let _ = sot_log::attach_client::supervisor_client::stop(&d);
+            let stopped = sot_log::attach_client::supervisor_client::stop(&d);
+            eprintln!("cleanup: end_run {ended:?}, stop {stopped:?}");
         })
         .await;
     }
@@ -247,9 +267,9 @@ async fn a_killed_test_job_leaves_no_row() {
 
     let ready = wait_ready_or_exit(dir.path(), &mut client).await;
     let record = ready.as_deref().map(parse);
-    let (gone, contained) = match &record {
-        Some(r) => judge(r, &mut client).await,
-        None => (true, false),
+    let (held_before, gone, contained) = match &record {
+        Some(r) => judge(dir.path(), r, &mut client).await,
+        None => (true, true, false),
     };
     // Cleanup runs before any assert and never panics.
     let _ = client.kill();
@@ -276,6 +296,10 @@ async fn a_killed_test_job_leaves_no_row() {
     assert!(
         record.is_some(),
         "the child never wrote its ready record within 120 s"
+    );
+    assert!(
+        held_before,
+        "precondition: the supervisor's fence and the voyage's writer lock must be held while the job runs"
     );
     entry.assert_once(field("child_pid").parse().expect("child_pid"));
     let (c, s) = (field("child_cgroup"), field("supervisor_cgroup"));
