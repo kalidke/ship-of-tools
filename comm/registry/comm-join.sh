@@ -6,6 +6,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
+sot_require_tools "join" jq || exit 1
 
 usage() {
     cat <<'EOF'

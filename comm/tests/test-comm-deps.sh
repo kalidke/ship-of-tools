@@ -135,6 +135,15 @@ for fn in sot_cursor_offset sot_unread; do
 done
 rm -f "${INBOX_DIR:?}/$NAME.jsonl" "${READ_DIR:?}/$NAME.cursor"
 
+# JQ-LOUD: a client frame builder with jq off the PATH exits nonzero, prints nothing on stdout and
+# names jq on stderr, before any connection (no endpoint is given).
+for fn in "sot_json_escape x" "sot_hello_frame" "sot_pty_screen ws" "sot_pty_input ws aGk="; do
+    out="$(PATH="$PJ" "$BASH_BIN" -c 'source "$1"; '"$fn" _ "$SCRIPTS_DIR/comm-lib.sh" 2>"$WORK/deps.err")"; rc=$?
+    [ "$rc" -ne 0 ] && ok "JQ: $fn exits nonzero without jq" || bad "JQ: $fn exits nonzero without jq"
+    check "JQ: $fn prints nothing on stdout without jq" "$out" ""
+    has "JQ: $fn names jq on stderr" "$(cat "$WORK/deps.err")" "jq is missing"
+done
+
 # A mode this script no longer has (the retired --context) must fail loudly
 # and write nothing, not fall through to the joining default.
 before="$(cksum < "$REGISTRY")"

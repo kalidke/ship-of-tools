@@ -37,6 +37,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
+sot_require_tools "build a daemon request" jq || exit 1
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 
 # Subcommand parsed FIRST, before any transport setup (Codex review round-2
