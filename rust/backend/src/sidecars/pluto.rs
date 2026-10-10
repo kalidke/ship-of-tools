@@ -116,7 +116,6 @@ async fn spawn_supervisor(
             start_script.display()
         ));
     }
-    // Declared before the child, so an early return removes it only after the child's kill (`child_tmp`).
     let tmp = crate::sidecars::child_tmp::ChildTmp::new().context("pluto child temporary folder")?;
     let mut cmd = Command::new(julia_bin);
     tmp.apply(&mut cmd);
@@ -161,6 +160,7 @@ async fn spawn_supervisor(
             // The daemon is shutting down: the signal has already killed the
             // child's tree.
             _ = sig.fired() => {
+                let _ = tmp.retire(&mut contained).await;
                 return Err(anyhow!("the daemon is shutting down"));
             }
         };
@@ -173,15 +173,15 @@ async fn spawn_supervisor(
                 }
             }
             Ok(Ok(None)) => {
-                let _ = contained.kill().await;
+                let _ = tmp.retire(&mut contained).await;
                 return Err(anyhow!("pluto sidecar stdout closed before READY"));
             }
             Ok(Err(e)) => {
-                let _ = contained.kill().await;
+                let _ = tmp.retire(&mut contained).await;
                 return Err(anyhow!("pluto sidecar stdout error: {e}"));
             }
             Err(_) => {
-                let _ = contained.kill().await;
+                let _ = tmp.retire(&mut contained).await;
                 return Err(anyhow!("pluto sidecar did not emit READY within 180s"));
             }
         }
@@ -413,12 +413,9 @@ async fn supervisor_task(
         }
     }
     drop(stdin);
-    if let Err(e) = contained.kill().await {
+    if let Err(e) = tmp.retire(&mut contained).await {
         tracing::warn!(error = %e, "pluto child cleanup failed");
     }
-    // The child is reaped: its temporary folder goes, with what its notebook workers and its own exit-time cleanup
-    // left there.
-    drop(tmp);
 }
 
 #[cfg(test)]

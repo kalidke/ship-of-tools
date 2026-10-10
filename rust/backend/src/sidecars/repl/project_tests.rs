@@ -308,13 +308,11 @@ async fn a_killed_child_leaves_no_temp_files() {
         || second.iter().all(|p| !p.exists()),
     )
     .await;
-    assert_eq!(
-        std::fs::read_dir(&tmp)
-            .expect("read the temporary folder")
-            .count(),
-        1,
-        "only the living child's own folder is left"
-    );
+    // A folder goes after its files: the removal runs on a blocking thread after the reap, so the folder can outlast them.
+    within(Duration::from_secs(30), "only the living child's own folder is left", || {
+        std::fs::read_dir(&tmp).map_or(0, |d| d.count()) == 1
+    })
+    .await;
     fixture.finish().await;
 }
 

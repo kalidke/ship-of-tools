@@ -35,7 +35,7 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{ChildStdin, Command};
+use tokio::process::{ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, watch, OnceCell};
 
 use super::WireRequest;
@@ -313,16 +313,16 @@ fn julia_bin(kernel_project: &Path) -> Result<(String, &'static str), String> {
 /// Resolve + spawn one child, fold `kernel.hello` into the same
 /// request/response loop every other op uses (no separate raw exchange),
 /// publish `Running` the moment it answers, then keep serving until it
-/// dies OR `status` closes (the owning `Kernel` was dropped — the
-/// contained tree dies as `contained` goes out of scope on return). Returns
-/// when the kernel answered hello (`None` if it never did), from which its
-/// working life is measured, and the human-readable cause of this
+/// dies OR `status` closes (the owning `Kernel` was dropped). On every
+/// return the child's tree is ended and reaped, and its temporary folder
+/// removed (`ChildTmp::retire`). Returns when the kernel answered hello
+/// (`None` if it never did), from which its working life is measured, and
+/// the human-readable cause of this
 /// generation's end (spawn failure, the child's exit — before or after
 /// hello alike — or a owner-dropped shutdown).
 ///
 /// The binary is resolved FRESH here, not cached: a removed or replaced
 /// juliaup install recovers on the very next attempt.
-#[allow(clippy::too_many_lines, reason = "runs one generation of the Julia kernel from spawn to exit; predates the 100-line limit")]
 async fn run_one_generation(
     kernel_project: &Path,
     project_root: &Path,
@@ -347,7 +347,6 @@ async fn run_one_generation(
 
     tracing::info!(julia_bin = %julia_bin, source, "spawning kernel");
 
-    // Declared before `contained`, so every return removes it after the child's kill (`child_tmp`).
     let tmp = match crate::sidecars::child_tmp::ChildTmp::new() {
         Ok(tmp) => tmp,
         Err(e) => return (None, format!("kernel child temporary folder: {e}")),
@@ -367,26 +366,40 @@ async fn run_one_generation(
         Ok(c) => c,
         Err(e) => return (None, format!("spawn {julia_bin} failed: {e}")),
     };
+    let outcome = serve_child(&mut contained, &julia_bin, status, sig).await;
+    // The child is ended and reaped before its folder goes, however the generation ended.
+    if let Err(e) = tmp.retire(&mut contained).await {
+        tracing::warn!(error = %e, "kernel child cleanup failed");
+    }
+    outcome
+}
 
-    let mut stdin = match contained.stdin.take() {
-        Some(s) => s,
-        None => return (None, "kernel child stdin missing".to_string()),
-    };
-    let stdout = match contained.stdout.take() {
-        Some(s) => s,
-        None => return (None, "kernel child stdout missing".to_string()),
-    };
-    let stderr = match contained.stderr.take() {
-        Some(s) => s,
-        None => return (None, "kernel child stderr missing".to_string()),
-    };
-
+/// Takes the child's pipes and sends its stderr to the log. Returns its stdin and stdout.
+fn take_pipes(contained: &mut crate::lifecycle::child_signal::Contained) -> Result<(ChildStdin, ChildStdout), String> {
+    let stdin = contained.stdin.take().ok_or("kernel child stdin missing")?;
+    let stdout = contained.stdout.take().ok_or("kernel child stdout missing")?;
+    let stderr = contained.stderr.take().ok_or("kernel child stderr missing")?;
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             tracing::debug!(target: "kernel.stderr", "{line}");
         }
     });
+    Ok((stdin, stdout))
+}
+
+/// One generation's serving loop, from the hello until the child dies, every handle drops, or the daemon shuts down.
+/// `contained` stays with the caller, which ends it.
+async fn serve_child(
+    contained: &mut crate::lifecycle::child_signal::Contained,
+    julia_bin: &str,
+    status: &watch::Sender<Status>,
+    sig: &'static crate::lifecycle::child_signal::Signal,
+) -> (Option<tokio::time::Instant>, String) {
+    let (mut stdin, stdout) = match take_pipes(contained) {
+        Ok(pipes) => pipes,
+        Err(reason) => return (None, reason),
+    };
 
     let (submit_tx, mut submit_rx) = mpsc::channel::<Submission>(64);
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
@@ -415,7 +428,7 @@ async fn run_one_generation(
             }
             // Every `Kernel` handle sharing this `status` has been dropped
             // (a destroyed workspace, most commonly) — stop serving; the
-            // function returning drops `contained`, which kills the tree, and
+            // generation's return ends the tree (`retire`), and
             // `pending`'s senders (their receivers, if any caller is
             // somehow still awaiting one, just see a dropped channel —
             // nobody is watching `status` to read a `Dead` we could no
@@ -702,6 +715,63 @@ mod tests {
         println!("respawn: {spawns} kernel spawns in {WINDOW:?} against a kernel that answers hello and exits");
         assert!(spawns >= 2, "the supervisor never respawned the kernel: {spawns} spawn(s) in {WINDOW:?}");
         assert!(spawns <= 4, "{spawns} kernel spawns in {WINDOW:?}: an answered hello restarted the wait");
+    }
+
+    /// A generation's temporary folder is removed once its child is ended and reaped. The stub stands in for the kernel
+    /// on the generation's own spawn path: it writes a file into its temporary folder, answers hello and waits. The
+    /// generation ends when its last handle drops, and then the owned folder that held the kernel's folder must be
+    /// empty. `isolated` gives this process an owned temporary folder.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_generation_removes_its_temporary_folder_after_the_reap() {
+        const BODY: Duration = Duration::from_secs(120);
+        if !crate::sidecars::contract_tests::isolated(
+            "sidecars::kernel::tests::a_generation_removes_its_temporary_folder_after_the_reap",
+            BODY,
+        ) {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("fixture folder");
+        let owned = tempfile::tempdir().expect("owned temporary folder");
+        std::env::set_var("TMPDIR", owned.path());
+        let stub = dir.path().join("stub-julia");
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!(
+                "#!/bin/sh\necho x > \"$TMPDIR/made\"\nread l\necho '{{\"id\":1,\"payload\":{{\"protocol\":{KERNEL_PROTOCOL_VERSION}}}}}'\nexec sleep 30\n"
+            ),
+        );
+        let project = dir.path().join("kp");
+        std::fs::create_dir(&project).unwrap();
+        STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (status, mut keep) = watch::channel(Status::Starting);
+        let root = dir.path().to_path_buf();
+        let generation = tokio::spawn(async move { run_one_generation(&project, &root, &status, sig).await });
+        tokio::time::timeout(Duration::from_secs(30), keep.wait_for(|s| matches!(s, Status::Running(_))))
+            .await
+            .expect("the stub answers hello")
+            .expect("status open");
+        let folders = || -> Vec<PathBuf> {
+            std::fs::read_dir(owned.path())
+                .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect())
+                .unwrap_or_default()
+        };
+        let running = folders();
+        assert!(
+            running.len() == 1 && running[0].join("made").exists(),
+            "setup: the kernel's folder is in the owned folder and holds the child's file: {running:?}"
+        );
+        drop(keep);
+        let (_served, reason) = tokio::time::timeout(Duration::from_secs(30), generation)
+            .await
+            .expect("the generation ends when its handle drops")
+            .expect("generation task");
+        assert_eq!(reason, "owning kernel handle dropped");
+        crate::sidecars::contract_tests::within(Duration::from_secs(30), "the kernel's folder is removed after its reap", || {
+            folders().is_empty()
+        })
+        .await;
     }
 
     /// A kernel's working life starts at its hello. A precompile that runs past `STABLE` and then exits without
