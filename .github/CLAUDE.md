@@ -13,8 +13,10 @@ scripts/CLAUDE.md.
   itself) and dispatch. Jobs: `test` (build and test on windows and macos, after `npm ci` for the MathJax helper's modules, and on windows the
   PowerShell 5.1 parse and the `scripts/tests/` `.ps1` suites), `test-linux` (the ubuntu build and test, one job per
   shard, named "build+test (ubuntu-latest, <shard>)": its `SHARDS` table names the test targets of the shards `outage`,
-  `capsule`, `wake` and `sotd`; the shard `rest` runs every other test executable cargo builds, then the doc tests, and
-  fails when the table names a shard the matrix lacks; every command selects `--workspace`; only `sotd` runs `npm ci`
+  `capsule`, `wake` and `sotd`, each target whole or split once as `X` and `--skip X`; the shard `rest` runs every other
+  test executable cargo builds, then the doc tests; before it runs anything, every shard fails unless the table's shards
+  and `rest` are as many as the matrix's jobs and every split is such a pair, and a matrix shard with no row fails;
+  every command selects `--workspace`; only `sotd` runs `npm ci`
   and the WGL depot step, and only `rest` saves the shared cache), `checks-linux` ("checks (ubuntu-latest)": the clippy
   gates and the allowance count, the selected-body proofs, the L3 run, the shell parse, "Check the layout"
   (`scripts/tests/check-layout.sh` with `check-layout.allow`), "Test the layout tools" (its two self-tests), the

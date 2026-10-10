@@ -279,10 +279,6 @@ jobs:
       # that does not exist on a leg draws a warning there.
       - name: Disallowed methods
         run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
-      # --nocapture: the fault sweeps REPORT (never assert) their torn-tail
-      # hit counts on stderr — captured output would hide them from CI logs,
-      # making the sweeps' actual coverage invisible (review finding).
-      # --no-fail-fast: one failing test binary must not hide the others.
       - name: Build selected-body fixture
         shell: bash
         run: |
@@ -323,8 +319,7 @@ jobs:
               with (directory / 'cargo.log').open('w') as output:
                   subprocess.run(['cargo', 'test', '--config', 'target."cfg(all())".runner=' + json.dumps(['python3', str(runner), str(directory)]), '--manifest-path', str(manifest), '-p', 'sot-log', '--test', 'test_body_fixture', '--locked', name, '--'] + flags + ['--format', 'pretty', '--color', 'never', '--show-output', '--test-threads=1'], cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=True)
           PYCARGO
-          proof_mode=--portable
-          ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh "$proof_mode" "$(cat ../dev/output/iso-sh-ci-path)"
+          ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh --portable "$(cat ../dev/output/iso-sh-ci-path)"
 
       - name: Folder trust premises (Windows and macOS)
         run: |
@@ -342,6 +337,10 @@ jobs:
           depot="$RUNNER_TEMP/julia-depot"
           echo "JULIA_DEPOT_PATH=$depot" >> "$GITHUB_ENV"
           JULIA_DEPOT_PATH="$depot" julia --startup-file=no -e 'using Pkg; Pkg.activate(; temp = true); Pkg.add(name = "WGLMakie", version = "0.13")'
+      # --nocapture: the fault sweeps REPORT (never assert) their torn-tail
+      # hit counts on stderr — captured output would hide them from CI logs,
+      # making the sweeps' actual coverage invisible (review finding).
+      # --no-fail-fast: one failing test binary must not hide the others.
       - name: Test workspace
         run: cargo test --workspace --locked --no-fail-fast -- --nocapture
 
@@ -438,11 +437,12 @@ jobs:
         run: bash comm/tests/test-heartbeat-ctx-wait.sh
 
   # The ubuntu build and test, one job per shard, so the slowest test binaries run side by side. SHARDS is the one table
-  # of named shards, a row each: shard, target kind (test or bin), target name, then any libtest arguments. The shard
-  # `rest` runs every test executable the table does not name, then the doc tests, and fails when the table names a shard
-  # the matrix lacks. Each binary's SERIAL lock guards only its own process, so binaries on different runners share
-  # nothing; lane_bridge's two rows split it by complementary filters. Every command selects `--workspace`, so features
-  # unify as in one `cargo test --workspace`.
+  # of named shards, a row each: shard, target kind (test or bin), target name, then any libtest arguments. A target runs
+  # whole (one row, no arguments) or split once (two rows, `X` and `--skip X`, as lane_bridge is). The shard `rest` runs
+  # every test executable the table does not name, then the doc tests. Before it runs anything, every shard fails unless
+  # the table's shards and `rest` are as many as the matrix's jobs and every split is such a pair; a matrix shard with no
+  # row fails too. Each binary's SERIAL lock guards only its own process, so binaries on different runners share
+  # nothing. Every command selects `--workspace`, so features unify as in one `cargo test --workspace`.
   test-linux:
     name: build+test (ubuntu-latest, ${{ matrix.shard }})
     runs-on: ubuntu-latest
@@ -482,8 +482,9 @@ jobs:
         if: matrix.shard == 'sotd'
         working-directory: rust/backend/sidecars/mathjax
         run: npm ci
-      # Every shard runs with the Julia every leg of `test` installs; the sidecar tests (shard sotd) start it, and the WGL
-      # page test adds WGLMakie offline from the depot JULIA_DEPOT_PATH names, precompiled here.
+      # Every shard installs the Julia every leg of `test` installs, so a test that starts Julia (the sidecar tests in sotd,
+      # the daemon suites in rest that send kernel, preview or REPL ops) runs 1.13 as on the other legs. The WGL page test
+      # (shard sotd) adds WGLMakie offline from the depot JULIA_DEPOT_PATH names, precompiled here.
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1.13'
@@ -509,6 +510,12 @@ jobs:
           named = {(row[1], row[2]) for row in rows}
           shards = {row[0] for row in rows}
           TARGET_KINDS = ('bin', 'test', 'example', 'bench')
+          if len(shards) + 1 != total:
+              sys.exit(f'SHARDS names {len(shards)} shards and rest, but the matrix runs {total} jobs')
+          for target in named:
+              split = [tuple(row[3].split()) if len(row) > 3 else () for row in rows if (row[1], row[2]) == target]
+              if split != [()] and not (len(split) == 2 and any(len(a) == 1 and ('--skip', a[0]) in split for a in split)):
+                  sys.exit(f'SHARDS runs {target[1]} as {split}; a target runs whole, or split once as X and --skip X')
           def failed(selection, libtest=()):
               command = ['cargo', 'test', '--workspace', '--locked', '--no-fail-fast', *selection, '--', *libtest, '--nocapture']
               print('shard ' + shard + ': ' + ' '.join(command), flush=True)
@@ -519,8 +526,6 @@ jobs:
                   sys.exit('shard ' + shard + ' has no row in SHARDS')
               results = [failed(['--' + kind, name], libtest[0].split() if libtest else []) for _, kind, name, *libtest in mine]
           else:
-              if len(shards) + 1 != total:
-                  sys.exit(f'SHARDS names {len(shards)} shards and rest, but the matrix runs {total} jobs')
               out = subprocess.run(['cargo', 'test', '--workspace', '--locked', '--no-run', '--message-format=json-render-diagnostics'],
                                    stdout=subprocess.PIPE, text=True, check=True).stdout
               built = set()
@@ -611,8 +616,7 @@ jobs:
               with (directory / 'cargo.log').open('w') as output:
                   subprocess.run(['cargo', 'test', '--config', 'target."cfg(all())".runner=' + json.dumps(['python3', str(runner), str(directory)]), '--manifest-path', str(manifest), '-p', 'sot-log', '--test', 'test_body_fixture', '--locked', name, '--'] + flags + ['--format', 'pretty', '--color', 'never', '--show-output', '--test-threads=1'], cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=True)
           PYCARGO
-          proof_mode=--all
-          ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh "$proof_mode" "$(cat ../dev/output/iso-sh-ci-path)"
+          ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh --all "$(cat ../dev/output/iso-sh-ci-path)"
 
       - name: Test L3 storage exhaustion
         shell: bash
@@ -731,8 +735,8 @@ jobs:
         working-directory: .
         run: bash comm/tests/test-heartbeat-ctx-wait.sh
 
-      # PR #148 Codex review F10: hermetic + fast, so it rides along in this
-      # existing ubuntu leg rather than a dedicated job.
+      # PR #148 Codex review F10: hermetic + fast, so it runs among the
+      # checks rather than in a job of its own.
       - name: Test sot-comm disambiguation (hermetic)
         working-directory: comm/tests
         run: |
@@ -927,9 +931,8 @@ jobs:
       # `sot-capsule supervise` child. L1-unix LU3c: renamed from
       # `tests/supervisor_win.rs` when the suite ungated to run on Linux
       # too (over a real socket lane, a real `/bin/sh` producer) -- this
-      # job proves Windows behavior is unchanged; the ubuntu matrix job's
-      # blanket `cargo test --workspace` picks the Linux half up on its
-      # own.
+      # job proves Windows behavior is unchanged; the Linux half runs in
+      # the `rest` shard of `test-linux`.
       - name: Test supervisor (the supervisor authority, real process)
         timeout-minutes: 15
         run: cargo test -p sot-log --test supervisor -- --nocapture
