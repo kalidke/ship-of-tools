@@ -171,7 +171,7 @@ async fn create_during_shutdown_refused() {
 #[tokio::test]
 async fn shutdown_ends_a_child_that_left_the_agents_process_group() {
     let _serial = SERIAL.lock().await;
-    use support::{arm_scope_guard, assert_scope_empties, cgroup_rel, user_manager_available_for_test};
+    use support::{arm_scope_guard, cgroup_rel, user_manager_available_for_test};
     if let Err(e) = user_manager_available_for_test() {
         if std::env::var("SOT_TEST_REQUIRE_USER_MANAGER").as_deref() == Ok("1") {
             panic!("SOT_TEST_REQUIRE_USER_MANAGER=1 but no user manager is reachable: {e}");
@@ -214,7 +214,7 @@ async fn shutdown_ends_a_child_that_left_the_agents_process_group() {
         .expect("query_status on a ready row");
     let scope = cgroup_rel(process.pid());
     drop(process);
-    let _guard = arm_scope_guard(&scope, &state_dir);
+    let guard = arm_scope_guard(&scope, &state_dir);
     let deadline = Instant::now() + Duration::from_secs(10);
     let escapee: u32 = loop {
         if let Some(e) = std::fs::read_to_string(&pidfile).ok().and_then(|t| t.trim().parse().ok()) {
@@ -229,7 +229,7 @@ async fn shutdown_ends_a_child_that_left_the_agents_process_group() {
     let ack = w.ask("close", EXIT_WITHIN).await;
     assert_eq!(ack["not_ended"], 0, "{ack:?}");
     assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{}", daemon.said());
-    assert_scope_empties(&scope, Duration::from_secs(5)).await;
+    guard.assert_empties(Duration::from_secs(5)).await;
 }
 
 /// A row with no run record (never started, or the anchor, which runs

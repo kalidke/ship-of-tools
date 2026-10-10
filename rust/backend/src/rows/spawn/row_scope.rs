@@ -56,29 +56,44 @@ pub(crate) fn capture(root: &Path, state_dir: &Path, pid: u32) -> Result<Option<
 /// The `0::` path of `proc_cgroup` when its leaf is a scope of this
 /// row and `cgroup.kill` is there to end it, listed durably in
 /// [`SCOPES_FILE`]; `Ok(None)` ends the row exactly as before this
-/// module (an unscoped or older row, a frontend-spawned drawer, a
-/// kernel before 5.14, a host with no cgroup v2 hierarchy). `Err` is a
-/// failed write: nothing is killed.
+/// module (an unscoped or older row, a frontend-spawned drawer, or a scope
+/// with no `cgroup.kill` under `root`, for the cause [`no_kill_cause`]
+/// names). `Err` is a failed write: nothing is killed.
 pub(crate) fn capture_from(root: &Path, state_dir: &Path, proc_cgroup: &str) -> Result<Option<String>, String> {
     let Some(rel) = rel_of(proc_cgroup) else { return Ok(None) };
     let leaf = rel.rsplit('/').next().unwrap_or("");
     if !(leaf.starts_with(&prefix(&state_dir_hash(state_dir))) && leaf.ends_with(".scope")) {
         return Ok(None);
     }
-    let kill = at(root, &rel).join("cgroup.kill");
+    let scope = at(root, &rel);
+    let kill = scope.join("cgroup.kill");
     if let Err(e) = std::fs::metadata(&kill) {
         if e.kind() == ErrorKind::NotFound {
             tracing::warn!(
                 path = %kill.display(),
-                "capsule workspace: the row's scope has no cgroup.kill here (Linux before 5.14, or no cgroup v2 \
-                 hierarchy at /sys/fs/cgroup or /sys/fs/cgroup/unified); a child that left the agent's process \
-                 group survives this row's end"
+                "capsule workspace: no cgroup.kill for the row's scope ({}); this row's end reaches only the \
+                 agent's process group",
+                no_kill_cause(root, &scope)
             );
             return Ok(None);
         }
     }
     remember(state_dir, std::slice::from_ref(&rel))?;
     Ok(Some(rel))
+}
+
+/// Why `scope`, named by a supervisor's `0::` path, has no `cgroup.kill`
+/// under `root`, checked in this order: no cgroup v2 hierarchy at `root`;
+/// no such scope under it (removed since `/proc` named it, or a path from
+/// another cgroup namespace); else a kernel without `cgroup.kill`.
+fn no_kill_cause(root: &Path, scope: &Path) -> &'static str {
+    if !root.join("cgroup.controllers").exists() {
+        "no cgroup v2 hierarchy at this root"
+    } else if !scope.exists() {
+        "the scope is not under this root: removed already, or named from another cgroup namespace"
+    } else {
+        "Linux before 5.14"
+    }
 }
 
 /// The scopes [`SCOPES_FILE`] lists; an absent file lists none.
@@ -261,6 +276,31 @@ mod tests {
         assert_eq!(at(format!("0::{theirs}\n")), None, "another row's scope");
         assert_eq!(at(format!("12:pids:{ours}\n1:name=systemd:{ours}\n")), None, "v1 lines only");
         assert_eq!(at(format!("0::{no_kill}\n")), None, "no cgroup.kill");
+    }
+
+    #[test]
+    fn a_scope_without_cgroup_kill_is_not_captured_and_its_cause_is_checked_in_order() {
+        let not_under = "the scope is not under this root: removed already, or named from another cgroup namespace";
+        for (controllers, scope_dir, cause) in [
+            (false, false, "no cgroup v2 hierarchy at this root"),
+            (false, true, "no cgroup v2 hierarchy at this root"),
+            (true, false, not_under),
+            (true, true, "Linux before 5.14"),
+        ] {
+            let (state, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(state.path()));
+            let scope = root.path().join(rel.trim_start_matches('/'));
+            if controllers {
+                std::fs::write(root.path().join("cgroup.controllers"), "").unwrap();
+            }
+            if scope_dir {
+                std::fs::create_dir_all(&scope).unwrap();
+            }
+            let case = format!("controllers {controllers}, scope folder {scope_dir}");
+            assert_eq!(no_kill_cause(root.path(), &scope), cause, "{case}");
+            assert_eq!(capture_from(root.path(), state.path(), &format!("0::{rel}\n")), Ok(None), "{case}");
+            assert_eq!(listed(state.path()), Ok(Vec::new()), "{case}: listed");
+        }
     }
 
     #[test]

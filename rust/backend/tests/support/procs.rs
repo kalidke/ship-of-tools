@@ -201,13 +201,36 @@ pub fn cgroup_rel(pid: u32) -> String {
 }
 
 /// A4b: kills a row scope this test created when the test ends, panic or
-/// not. Only [`arm_scope_guard`] builds one.
+/// not. Only [`arm_scope_guard`] builds one, once it has seen the scope.
 #[cfg(target_os = "linux")]
 pub struct ScopeKillGuard {
     rel: String,
     hash: String,
-    /// The caller's own cgroup when the arming gave one; else re-read at drop.
-    own_rel: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+impl ScopeKillGuard {
+    /// A4b: polls every 100 ms until the scope's `cgroup.events` is gone or
+    /// reads `populated 0`; on timeout panics with that file and `cgroup.procs`.
+    /// Arming saw the scope under the same root, so a missing file means the
+    /// scope was removed.
+    pub async fn assert_empties(&self, within: Duration) {
+        let rel = &self.rel;
+        let dir = row_scope_aim::v2_root().join(rel.trim_start_matches('/'));
+        let deadline = Instant::now() + within;
+        loop {
+            let events = match std::fs::read_to_string(dir.join("cgroup.events")) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+                Ok(text) if text.lines().any(|l| l.trim() == "populated 0") => return,
+                other => other,
+            };
+            if Instant::now() >= deadline {
+                let procs = std::fs::read_to_string(dir.join("cgroup.procs"));
+                panic!("scope {rel} did not empty within {within:?}: cgroup.events {events:?}, cgroup.procs {procs:?}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -215,7 +238,7 @@ impl Drop for ScopeKillGuard {
     fn drop(&mut self) {
         // The aim rule runs again just before the write: the scope's identity
         // is the one kept at arming, the caller's cgroup is read now.
-        let own = self.own_rel.clone().unwrap_or_else(|| cgroup_rel(std::process::id()));
+        let own = cgroup_rel(std::process::id());
         if let Err(e) = row_scope_aim::aim(&self.rel, &own, &self.hash) {
             eprintln!("ScopeKillGuard: the aim rule refuses {} at drop, nothing written: {e}", self.rel);
             return;
@@ -240,54 +263,32 @@ pub fn require_cgroup_v2_root() {
 
 /// A4b: a guard on the scope `rel` under production's cgroup v2 root
 /// (`row_scope_aim::v2_root`), armed only when PRODUCTION's aim rule
-/// accepts `rel` for this test's own row: the prefix carries
-/// `state_dir`'s hash, and `rel` is not this test process's own cgroup or
-/// an ancestor of it. Panics otherwise, so a capture bug or a reused pid
-/// can never aim the guard at a live session; and panics when that root
-/// does not show the scope, which [`assert_scope_empties`] would then read
-/// as emptied.
+/// accepts `rel` for this test's own row ([`aim_scope_guard`]) and that
+/// root shows the scope. Panics otherwise, so a capture bug or a reused pid
+/// can never aim the guard at a live session, and
+/// [`ScopeKillGuard::assert_empties`] never reads an unseen scope as emptied.
 #[cfg(target_os = "linux")]
 pub fn arm_scope_guard(rel: &str, state_dir: &Path) -> ScopeKillGuard {
-    let mut guard = arm_scope_guard_against(rel, &cgroup_rel(std::process::id()), state_dir);
-    guard.own_rel = None;
+    let hash = aim_scope_guard(rel, &cgroup_rel(std::process::id()), state_dir);
     let events = row_scope_aim::v2_root().join(rel.trim_start_matches('/')).join("cgroup.events");
     assert!(
         events.exists(),
         "the scope is not at {events:?}, under production's cgroup v2 root (row_scope_aim::v2_root): a test cannot judge a scope it cannot see"
     );
-    guard
+    ScopeKillGuard { rel: rel.to_string(), hash }
 }
 
-/// [`arm_scope_guard`] with the caller's own cgroup given, for the aim table.
+/// [`arm_scope_guard`]'s aim check with the caller's own cgroup given, for the
+/// aim table: `state_dir`'s hash when production's aim rule accepts `rel` (the
+/// prefix carries that hash, and `rel` is not `own_rel` or an ancestor of it);
+/// panics otherwise.
 #[cfg(target_os = "linux")]
-pub fn arm_scope_guard_against(rel: &str, own_rel: &str, state_dir: &Path) -> ScopeKillGuard {
+pub fn aim_scope_guard(rel: &str, own_rel: &str, state_dir: &Path) -> String {
     let hash = sot_log::host::state_dir::state_dir_hash(state_dir);
     if let Err(e) = row_scope_aim::aim(rel, own_rel, &hash) {
         panic!("arm_scope_guard: the production aim rule refuses this target: {e}");
     }
-    ScopeKillGuard { rel: rel.to_string(), hash, own_rel: Some(own_rel.to_string()) }
-}
-
-/// A4b: polls every 100 ms until the scope's `cgroup.events` is gone or
-/// reads `populated 0`; on timeout panics with that file and `cgroup.procs`.
-/// Only for a scope [`arm_scope_guard`] armed, which proved it visible, so
-/// a missing file means the scope was removed.
-#[cfg(target_os = "linux")]
-pub async fn assert_scope_empties(rel: &str, within: Duration) {
-    let dir = row_scope_aim::v2_root().join(rel.trim_start_matches('/'));
-    let deadline = Instant::now() + within;
-    loop {
-        let events = match std::fs::read_to_string(dir.join("cgroup.events")) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-            Ok(text) if text.lines().any(|l| l.trim() == "populated 0") => return,
-            other => other,
-        };
-        if Instant::now() >= deadline {
-            let procs = std::fs::read_to_string(dir.join("cgroup.procs"));
-            panic!("scope {rel} did not empty within {within:?}: cgroup.events {events:?}, cgroup.procs {procs:?}");
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    hash
 }
 
 /// ADR 0043 decision 32, test 1's own SKIP gate: does THIS test runner
