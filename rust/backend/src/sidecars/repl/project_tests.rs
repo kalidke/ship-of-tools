@@ -317,7 +317,8 @@ async fn a_killed_child_leaves_no_temp_files() {
 }
 
 /// The running child's real argument vector, from the operating system. On Windows the OS keeps one command line,
-/// returned as a single element.
+/// returned as a single element. On Windows a Julia child's arguments are not observable this way: Julia's loader
+/// splits its own command line in place, so the reading stops at the executable path.
 #[cfg(target_os = "linux")]
 fn os_argv(pid: u32) -> Vec<String> {
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).expect("read the child's command line");
@@ -390,20 +391,9 @@ fn os_argv(pid: u32) -> Vec<String> {
     vec![String::from_utf8_lossy(&out.stdout).trim().to_owned()]
 }
 
-/// Whether the vector carries `--project=<workspace>` as one intact argument.
-fn has_intact_project(argv: &[String], workspace: &Path) -> bool {
-    let wanted = format!("--project={}", workspace.display());
-    if cfg!(windows) {
-        argv.iter()
-            .any(|line| line.contains(&format!("\"{wanted}\"")))
-    } else {
-        argv.iter().any(|arg| *arg == wanted)
-    }
-}
-
 /// Every spawn route must leave the same contract inside the real child: the workspace is the active project and
-/// the cwd, the shim is second on the load path and answers, the workspace root is exported, and the OS argument
-/// vector names the workspace as one intact `--project` argument and does not name the shim.
+/// the cwd, the shim is second on the load path and answers, the workspace root is exported, and the child's own parse
+/// of its arguments is `--project=<workspace>`, whole, with no other argument.
 async fn check_route(fixture: &Fixture, route: &str, id: u64) -> u32 {
     let real = fixture.real_workspace();
     let repl = &fixture.repl;
@@ -434,14 +424,16 @@ async fn check_route(fixture: &Fixture, route: &str, id: u64) -> u32 {
     let pid: u32 = stdout_of(&eval(repl, id + 3, "println(getpid())").await)
         .parse()
         .expect("child pid");
-    let argv = os_argv(pid);
-    assert!(
-        has_intact_project(&argv, &fixture.workspace),
-        "{route}: --project is one intact argument"
+    // The child's own parse of its arguments: on Windows the OS copy of the command line is not evidence, since
+    // Julia's loader splits that buffer in place, leaving the executable path alone before its first NUL.
+    let parsed = format!(
+        "println(unsafe_string(Base.JLOptions().project) == {}, \",\", isempty(ARGS))",
+        raw(&fixture.workspace.to_string_lossy())
     );
-    assert!(
-        !argv.iter().any(|a| a.contains(&shim)),
-        "{route}: the shim is not an argument"
+    assert_eq!(
+        stdout_of(&eval(repl, id + 4, &parsed).await),
+        "true,true",
+        "{route}: the child parsed --project as one intact argument naming the workspace, and no other argument"
     );
     pid
 }
