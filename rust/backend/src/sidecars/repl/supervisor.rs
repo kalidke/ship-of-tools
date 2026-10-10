@@ -71,7 +71,9 @@ pub(super) fn spawn_supervisor(
     let sep = ":";
     let load_path = format!("@{sep}{}{sep}", repl_project.display());
 
+    let tmp = crate::sidecars::child_tmp::ChildTmp::new().context("repl child temporary folder")?;
     let mut cmd = Command::new(&julia_bin);
+    tmp.apply(&mut cmd);
     cmd.env("JULIA_LOAD_PATH", &load_path)
         // The workspace root, for the shim's relative-path fallback and for
         // user scripts (pty sessions already get it; REPL children didn't).
@@ -107,7 +109,7 @@ pub(super) fn spawn_supervisor(
     let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
 
     let join = tokio::spawn(supervisor_task(
-        contained, stdin, stdout, submit_rx, stop_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen, sig,
+        contained, stdin, stdout, submit_rx, stop_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen, sig, tmp,
     ));
     Ok(Supervisor {
         tx: submit_tx,
@@ -194,6 +196,7 @@ async fn supervisor_task(
     lifecycle: SharedLifecycle,
     my_gen: u64,
     sig: &'static crate::lifecycle::child_signal::Signal,
+    tmp: crate::sidecars::child_tmp::ChildTmp,
 ) -> std::result::Result<(), String> {
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight: eval_id recorded at submit,
@@ -416,7 +419,7 @@ async fn supervisor_task(
             let _ = gate.acquire().await;
         }
     }
-    let reaped = contained.kill().await.map(|_| ()).map_err(|e| e.to_string());
+    let reaped = tmp.retire(&mut contained).await.map(|_| ()).map_err(|e| e.to_string());
     #[cfg(test)]
     if seams::FAIL_RETIREMENT.swap(false, std::sync::atomic::Ordering::SeqCst) {
         return Err("injected termination error".to_string());

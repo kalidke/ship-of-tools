@@ -100,6 +100,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | physical-scale schema and validity | rule | wire | `rust/protocol/src/physical_scale.rs` `PhysicalScale`, `parse_physical_scale`; consumers in files and fe-ui |
 | `<ws>/.sot/captures/` | disk | files | `rust/backend/src/files/preview/crop.rs` `handle_image_crop` |
 | `<ws>/.sot/runs/<run_id>/` | disk | sidecars | `rust/backend/src/sidecars/repl/execute.rs` |
+| a Julia child's temporary folder `std::env::temp_dir()`/`sot-julia-*/` | disk | sidecars | `rust/backend/src/sidecars/child_tmp.rs` `ChildTmp`, `retire` |
 | `<home>/.claude-auth/<name>/` and its allowlisted links | disk | agents | `rust/backend/src/agents/accounts.rs` `ensure_account_links`, `SHARED_ENTRIES`, `CLAUDE_ACCOUNTS_DIR` |
 | `.claude.json` folder-trust entries | disk | agents | `rust/backend/src/agents/folder_trust.rs` `ensure_folder_trusted`, `publish_trust_file`; file selection at `rust/backend/src/agents/env.rs` `account_spawn_env` |
 | folder-trust entries `[projects."<root>"]` in `$CODEX_HOME/config.toml` | disk | agents | `agents/codex/bin/ccx` |

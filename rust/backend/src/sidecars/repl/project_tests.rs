@@ -236,6 +236,86 @@ async fn pkg_add_does_not_edit_shim() {
     fixture.finish().await;
 }
 
+/// A REPL child the daemon kills leaves none of its temporary files. Julia's copy of SSH's known hosts, written on
+/// first use, and a user's `mktemp` file live in the child's own folder, which goes after the child's reap: on a
+/// restart, and when an ended row's handle drops.
+#[tokio::test]
+async fn a_killed_child_leaves_no_temp_files() {
+    if !isolated(
+        "sidecars::repl::project_tests::a_killed_child_leaves_no_temp_files",
+        BODY,
+    ) {
+        return;
+    }
+    let fixture = Fixture::new();
+    // This process's temporary folder is the fixture's, so a file a child leaves outside its own folder stays here.
+    let tmp = fixture.root.join("tmp");
+    std::fs::create_dir(&tmp).expect("create the owned temporary folder");
+    let tmp_vars: &[&str] = if cfg!(windows) {
+        &["TMP", "TEMP"]
+    } else {
+        &["TMPDIR"]
+    };
+    for key in tmp_vars {
+        std::env::set_var(key, &tmp);
+    }
+    let make = "import NetworkOptions; println(NetworkOptions.ssh_known_hosts_files()[end]); println(mktemp()[1])";
+    let made = |frames: Vec<Value>| -> Vec<PathBuf> {
+        stdout_of(&frames).lines().map(PathBuf::from).collect()
+    };
+
+    let first = made(eval(&fixture.repl, 1, make).await);
+    assert!(
+        first.len() == 2 && first.iter().all(|p| p.exists()),
+        "setup: the child made two temporary files"
+    );
+    fixture
+        .repl
+        .restart_with_project(&fixture.workspace)
+        .await
+        .expect("restart");
+    within(
+        Duration::from_secs(30),
+        "a restart's killed child leaves no temporary file",
+        || first.iter().all(|p| !p.exists()),
+    )
+    .await;
+
+    let (frame_tx, _frames) = broadcast::channel(64);
+    let row = Workspace::meta_only(
+        "ws-tmp-tests".into(),
+        "tmp-tests".into(),
+        "Temporary files".into(),
+        fixture.workspace.clone(),
+        "sot-be-tmp-tests".into(),
+        0,
+        false,
+        "none".into(),
+        String::new(),
+        String::new(),
+    );
+    let other = row.repl(frame_tx);
+    let second = made(eval(&other, 2, make).await);
+    assert!(
+        second.len() == 2 && second.iter().all(|p| p.exists()),
+        "setup: the second child made its files"
+    );
+    drop(other);
+    drop(row);
+    within(
+        Duration::from_secs(30),
+        "an ended row's killed child leaves no temporary file",
+        || second.iter().all(|p| !p.exists()),
+    )
+    .await;
+    // A folder goes after its files: the removal runs on a blocking thread after the reap, so the folder can outlast them.
+    within(Duration::from_secs(30), "only the living child's own folder is left", || {
+        std::fs::read_dir(&tmp).map_or(0, |d| d.count()) == 1
+    })
+    .await;
+    fixture.finish().await;
+}
+
 /// The running child's real argument vector, from the operating system. On Windows the OS keeps one command line,
 /// returned as a single element.
 #[cfg(target_os = "linux")]

@@ -213,8 +213,8 @@ connection is the only handle.
    detached, and quarto's julia server, which quarto starts detached, measured with quarto 1.7.31) or a double fork,
    and ends within `DRAIN_BOUND` (10 s) of the daemon's end, however that end came, a SIGKILL included; while the
    daemon runs, such a process outlives the end of the child whose group it left (Pluto's notebook worker when Pluto's
-   server ends) unless it exits on its own. A crashed Pluto server can leave one idle Julia worker per crash, which
-   ends when the daemon ends (a stated 0.6.6 limit; per-child containment is designed for 0.6.7). Outside it:
+   server ends) unless it exits on its own. A crashed Pluto server can leave one Julia worker per open notebook,
+   which ends when the daemon ends (a stated 0.6.6 limit; per-child containment is designed for 0.6.7). Outside it:
    a process a broker starts; a SIGKILL of the guard itself, after which the daemon ends at once but what it started
    does not (under the systemd unit the unit's cgroup ends the rest within the unit's stop timeout); and a process in an
    uninterruptible kernel call, which has SIGKILL pending and ends when the call returns (the guard logs it). Every ssh

@@ -116,7 +116,9 @@ async fn spawn_supervisor(
             start_script.display()
         ));
     }
+    let tmp = crate::sidecars::child_tmp::ChildTmp::new().context("pluto child temporary folder")?;
     let mut cmd = Command::new(julia_bin);
+    tmp.apply(&mut cmd);
     cmd.arg(format!("--project={}", project_dir.display()))
         .arg(start_script)
         .stdin(Stdio::piped())
@@ -158,6 +160,7 @@ async fn spawn_supervisor(
             // The daemon is shutting down: the signal has already killed the
             // child's tree.
             _ = sig.fired() => {
+                let _ = tmp.retire(&mut contained).await;
                 return Err(anyhow!("the daemon is shutting down"));
             }
         };
@@ -170,15 +173,15 @@ async fn spawn_supervisor(
                 }
             }
             Ok(Ok(None)) => {
-                let _ = contained.kill().await;
+                let _ = tmp.retire(&mut contained).await;
                 return Err(anyhow!("pluto sidecar stdout closed before READY"));
             }
             Ok(Err(e)) => {
-                let _ = contained.kill().await;
+                let _ = tmp.retire(&mut contained).await;
                 return Err(anyhow!("pluto sidecar stdout error: {e}"));
             }
             Err(_) => {
-                let _ = contained.kill().await;
+                let _ = tmp.retire(&mut contained).await;
                 return Err(anyhow!("pluto sidecar did not emit READY within 180s"));
             }
         }
@@ -199,7 +202,7 @@ async fn spawn_supervisor(
     };
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(64);
-    tokio::spawn(supervisor_task(contained, stdin, stdout_lines, submit_rx, sig, grant));
+    tokio::spawn(supervisor_task(contained, stdin, stdout_lines, submit_rx, sig, grant, tmp));
     Ok(submit_tx)
 }
 
@@ -323,6 +326,7 @@ async fn supervisor_task(
     mut submit_rx: mpsc::Receiver<Submission>,
     sig: &'static crate::lifecycle::child_signal::Signal,
     grant: Option<Grant>,
+    tmp: crate::sidecars::child_tmp::ChildTmp,
 ) {
     // FIFO of in-flight oneshots. Pluto's serial line protocol replies
     // to each OPEN in order; we pop the matching reply on each URL/ERR. A
@@ -409,7 +413,7 @@ async fn supervisor_task(
         }
     }
     drop(stdin);
-    if let Err(e) = contained.kill().await {
+    if let Err(e) = tmp.retire(&mut contained).await {
         tracing::warn!(error = %e, "pluto child cleanup failed");
     }
 }
@@ -656,6 +660,28 @@ exit(0)
         let h = Harness::start(r#""READY http://192.0.2.7:4000""#, "").await;
         assert_eq!(bound_pluto_port(), None);
         assert!(!crate::pages::proxy::allowed_proxy_ports().contains(&4000));
+        h.finish().await;
+    }
+
+    /// A Pluto child the daemon kills leaves no temporary file: what it made in its temporary folder goes with the
+    /// folder after the supervisor's reap.
+    #[tokio::test]
+    async fn a_killed_child_leaves_no_temp_files() {
+        if !isolated("sidecars::pluto::port_parse_tests::a_killed_child_leaves_no_temp_files", BODY) {
+            return;
+        }
+        // This process's temporary folder is an owned one, so a file the child leaves outside its own folder stays
+        // here.
+        let tmp = tempfile::tempdir().expect("owned temporary folder");
+        for key in if cfg!(windows) { &["TMP", "TEMP"][..] } else { &["TMPDIR"][..] } {
+            std::env::set_var(key, tmp.path());
+        }
+        let h = Harness::start(READY_LOCAL, r#"write(joinpath(dir, "made"), mktemp()[1])"#).await;
+        within(REACT, "the child makes its temporary file", || h.dir.join("made").exists()).await;
+        let made = PathBuf::from(std::fs::read_to_string(h.dir.join("made")).unwrap());
+        assert!(made.exists(), "setup: the child's temporary file exists");
+        h.sig.fire().expect("fire");
+        within(REACT, "the killed child's temporary file is gone", || !made.exists()).await;
         h.finish().await;
     }
 
