@@ -59,7 +59,7 @@ fn every_request_kind(download_dest: &std::path::Path) -> Vec<OutgoingReq> {
         OutgoingReq::FigureGet { url: s("fg.url"), node_id: s("fg.node"), workspace_id: o("fg.ws") },
         OutgoingReq::FunctionMethods { module: s("fm.module"), name: s("fm.name"), workspace_id: o("fm.ws") },
         OutgoingReq::ReplEval { eval_id: 113, code: s("re.code"), mode: o("re.mode"), workspace_id: o("re.ws") },
-        OutgoingReq::ReplInterrupt { workspace_id: o("ri.ws") },
+        OutgoingReq::ReplInterrupt { workspace_id: o("ri.ws"), eval_ids: vec![205, 1 << 40] },
         OutgoingReq::PtyOpen { cols: 114, rows: 115, target: o("po.target"), user_switch: true },
         OutgoingReq::DirectoryList { path: s("dl.path"), include_hidden: true },
         OutgoingReq::WorkspaceCreate {

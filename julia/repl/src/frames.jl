@@ -54,7 +54,8 @@ function announce_browserview(bv::BrowserView)
     try
         em(browser_frame(bv))
         push!(ANNOUNCED_BROWSER_URLS, browser_announce_key(bv))
-    catch
+    catch e
+        e isa InterruptException && rethrow()
         # Emission is best-effort: a failed announce must not break the serve
         # itself — the value-position path still covers a returned BrowserView.
     end
@@ -74,14 +75,19 @@ function stream_eval_frames(f, emit)
     reader_out = @async stream_pipe(pipe_out, emit, "stdout")
     reader_err = @async stream_pipe(pipe_err, emit, "stderr")
 
-    result = nothing
+    frames = Dict[]
     threw = nothing
     local_bt = Base.StackTraces.StackFrame[]
     try
         redirect_stdout(pipe_out)
         redirect_stderr(pipe_err)
         try
-            result = f()
+            # The value's display is user code too, so it renders in the
+            # interruptible region; its frames are emitted after the drain.
+            frames = run_user_code() do
+                result = f()
+                result === nothing ? Dict[] : value_frames_for(result)
+            end
         catch e
             threw = e
             local_bt = stacktrace(catch_backtrace())
@@ -110,8 +116,8 @@ function stream_eval_frames(f, emit)
             "InterruptException: eval interrupted by repl.interrupt" :
             sprint(showerror, threw)
         emit(Dict(:kind => "error", :message => msg, :stacktrace => stack))
-    elseif result !== nothing
-        for fr in value_frames_for(result)
+    else
+        for fr in frames
             emit(fr)
         end
     end
@@ -193,7 +199,8 @@ function value_frames_for(result)
     for m in img_mimes
         is_showable = try
             Base.invokelatest(showable, m, result)
-        catch
+        catch e
+            e isa InterruptException && rethrow()
             false
         end
         is_showable || continue
@@ -201,7 +208,8 @@ function value_frames_for(result)
         ok = try
             Base.invokelatest(show, buf, m, result)
             true
-        catch
+        catch e
+            e isa InterruptException && rethrow()
             false
         end
         if ok
@@ -221,6 +229,7 @@ function value_frames_for(result)
     try
         Base.invokelatest(show, valbuf, MIME"text/plain"(), result)
     catch e
+        e isa InterruptException && rethrow()
         print(valbuf, "<unshowable $(typeof(result)): $(sprint(showerror, e))>")
     end
     push!(out, Dict(

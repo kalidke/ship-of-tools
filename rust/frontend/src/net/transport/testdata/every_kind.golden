@@ -22,7 +22,7 @@
 > {"v":3,"id":23,"kind":"req","op":"preview.get","payload":{"node_id":"fg.node","workspace_id":"fg.ws"}}
 > {"v":3,"id":24,"kind":"req","op":"kernel.request","payload":{"kernel_op":"function.methods","kernel_payload":{"module":"fm.module","name":"fm.name"},"workspace_id":"fm.ws"}}
 > {"v":3,"id":25,"kind":"req","op":"repl.eval","payload":{"code":"re.code","eval_id":113,"mode":"re.mode","workspace_id":"re.ws"}}
-> {"v":3,"id":26,"kind":"req","op":"repl.interrupt","payload":{"workspace_id":"ri.ws"}}
+> {"v":3,"id":26,"kind":"req","op":"repl.interrupt","payload":{"eval_ids":[205,1099511627776],"workspace_id":"ri.ws"}}
 > {"v":3,"id":27,"kind":"req","op":"pty.open","payload":{"cols":114,"rows":115,"target":"po.target","user_switch":true}}
 > {"v":3,"id":28,"kind":"req","op":"directory.list","payload":{"include_hidden":true,"path":"dl.path"}}
 > {"v":3,"id":29,"kind":"req","op":"workspace.create","payload":{"account":"wc.account","agent":"wc.agent","agent_name":"","autostart_claude":true,"label":"wc.label","project_root":"wc.root","runtime":"","task":""}}

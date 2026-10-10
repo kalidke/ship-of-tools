@@ -57,8 +57,9 @@ pub mod op {
     /// intermediate directories.
     pub const DIR_CREATE: &str = "dir.create";
     pub const REPL_EVAL: &str = "repl.eval";
-    /// Run a `.jl` file either in the persistent REPL (`fresh:false`,
-    /// via `include`) or in a fresh `julia` subprocess (`fresh:true`).
+    /// Run a `.jl` file in the persistent REPL, via `include`. The daemon
+    /// answers `fresh:true` by restarting the REPL and then running the file in
+    /// it, so the Julia side only ever sees `fresh:false`.
     /// Project is auto-detected by walking up from the file path. Same
     /// frame stream shape as `repl.eval`.
     pub const REPL_RUN_FILE: &str = "repl.run_file";

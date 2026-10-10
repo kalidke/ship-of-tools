@@ -53,14 +53,15 @@ pub(crate) async fn send_repl_interrupt<W: AsyncWrite + Unpin>(
     mut tx: W,
     id: u64,
     workspace_id: Option<String>,
+    eval_ids: Vec<u64>,
 ) -> Result<()> {
-    tracing::info!(?workspace_id, id, "→ repl.interrupt");
+    tracing::info!(?workspace_id, ?eval_ids, id, "→ repl.interrupt");
     codec::write_frame(
         &mut tx,
         &Frame::req(
             id,
             op::REPL_INTERRUPT,
-            serde_json::json!({ "workspace_id": workspace_id }),
+            serde_json::json!({ "workspace_id": workspace_id, "eval_ids": eval_ids }),
         ),
         None,
     )

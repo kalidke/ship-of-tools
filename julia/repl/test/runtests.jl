@@ -8,6 +8,20 @@ const DR = ShipToolsRepl
 
 include("answer_then_next.jl")
 
+# An output stream that counts the `write` calls that reach it.
+mutable struct CountingIO <: IO
+    writes::Int
+    bytes::Vector{UInt8}
+end
+CountingIO() = CountingIO(0, UInt8[])
+function Base.unsafe_write(io::CountingIO, p::Ptr{UInt8}, n::UInt)
+    io.writes += 1
+    append!(io.bytes, unsafe_wrap(Array, p, n))
+    return n
+end
+Base.write(io::CountingIO, b::UInt8) = (io.writes += 1; push!(io.bytes, b); 1)
+Base.flush(::CountingIO) = nothing
+
 @testset "ShipToolsRepl streaming" begin
 
     @testset "utf8_prefix splits on char boundary" begin
@@ -196,7 +210,7 @@ include("answer_then_next.jl")
         bs_in, bs_out, _ = drive(String[])
         req = sprint(DR.json_write, Dict(
             :v => 1, :id => 11, :op => "repl.run_file",
-            :payload => Dict(:eval_id => 78, :path => path, :fresh => false),
+            :payload => Dict(:eval_id => 78, :path => path),
         ))
         write(bs_in, req * "\n")
         flush(bs_in)
@@ -214,7 +228,33 @@ include("answer_then_next.jl")
     end
 
     run_file_line(id, path) = sprint(DR.json_write, Dict(:v => 1, :id => id, :op => "repl.run_file",
-        :payload => Dict(:eval_id => id, :path => path, :fresh => false))) * "\n"
+        :payload => Dict(:eval_id => id, :path => path))) * "\n"
+    # An interrupt request; `eval_ids` names the evals it means, `nothing` none (any eval).
+    interrupt_line(id, eval_ids) = sprint(DR.json_write, Dict(:v => 1, :id => id, :op => "repl.interrupt",
+        :payload => eval_ids === nothing ? Dict() : Dict(:eval_ids => eval_ids))) * "\n"
+
+    # Every envelope until each request in `ids` has its res (or the stream closes).
+    function read_until_answered(bs_out, ids)
+        envs = Any[]
+        left = Set(ids)
+        while !isempty(left)
+            line = readline(bs_out)
+            isempty(line) && (eof(bs_out) ? break : continue)
+            env = DR.json_read(line)
+            push!(envs, env)
+            get(env, :kind, "") == "res" && delete!(left, get(env, :id, 0))
+        end
+        return envs
+    end
+    frames_of(envs, n) = [e[:payload][:frame] for e in envs if get(e, :kind, "") == "evt" && get(e, :id, 0) == n]
+    # Reads until request `n` prints `text`, so its user code is running (or the stream closes).
+    function read_until_printed(bs_out, n, text)
+        while !eof(bs_out)
+            env = DR.json_read(readline(bs_out))
+            any(f -> f[:kind] == "stdout" && occursin(text, f[:text]), frames_of(Any[env], n)) && return
+        end
+    end
+    res_of(envs, n) = only(e[:payload] for e in envs if get(e, :kind, "") == "res" && get(e, :id, 0) == n)
 
     # A client sends its next request the moment an answer's done frame arrives. The answered eval is over by then, so
     # the next request is accepted: after an eval, after a run_file, and after an eval whose streaming machinery failed
@@ -316,13 +356,8 @@ include("answer_then_next.jl")
     @testset "serve: repl.interrupt cancels a running eval" begin
         bs_in, bs_out, _ = drive(String[])
         # A long, yielding eval so the dispatch loop stays responsive to interrupt.
-        evalreq = sprint(DR.json_write, Dict(
-            :v => 1, :id => 1, :op => "repl.eval",
-            :payload => Dict(:eval_id => 1, :code => "sleep(60)"),
-        ))
-        write(bs_in, evalreq * "\n"); flush(bs_in)
-        # Let the eval task actually start before interrupting.
-        sleep(1.0)
+        write(bs_in, eval_line(1, "println(\"started\"); sleep(60)")); flush(bs_in)
+        read_until_printed(bs_out, 1, "started")
         intreq = sprint(DR.json_write, Dict(
             :v => 1, :id => 2, :op => "repl.interrupt", :payload => Dict(),
         ))
@@ -351,6 +386,98 @@ include("answer_then_next.jl")
         @test saw_interrupt_res
         @test saw_eval_error        # InterruptException surfaced as an error frame
         @test saw_eval_done         # eval terminated with a done frame
+    end
+
+    # An interrupt read in the same batch as the eval it stops reaches that eval before its task first runs. The eval's
+    # code never runs, and the eval is still answered: an InterruptException error frame, done and res.
+    @testset "serve: an interrupt that arrives before an eval starts stops it, and the eval is answered" begin
+        bs_in, bs_out, _ = drive(String[])
+        write(bs_in, eval_line(1, "print(\"ran\")") * interrupt_line(2, nothing))
+        flush(bs_in)
+        envs = read_until_answered(bs_out, [1, 2])
+        close(bs_in)
+        @test res_of(envs, 2)[:interrupted] == true
+        frames = frames_of(envs, 1)
+        @test [f[:kind] for f in frames] == ["error", "done"]
+        @test occursin("InterruptException", first(frames)[:message])
+        @test haskey(res_of(envs, 1), :eval_id)
+    end
+
+    # An interrupt reaches an eval only in its user code. One that arrives as the eval writes its value (the moment its
+    # value frame is written) finds the code done: it is answered interrupted=false, and the eval's answer stays whole.
+    @testset "serve: an interrupt that arrives after an eval's code has run leaves its answer whole" begin
+        bs_in, bs_out = Base.BufferStream(), Base.BufferStream()
+        out = AnswerThenNext(bs_out, 1, () -> (write(bs_in, interrupt_line(2, nothing)); flush(bs_in)); kind = "value")
+        @async DR.serve(bs_in, out)
+        @async (sleep(60); close(bs_out); close(bs_in))
+        write(bs_in, eval_line(1, "41 + 1"))
+        flush(bs_in)
+        envs = read_until_answered(bs_out, [1, 2])
+        close(bs_in)
+        @test out.fired
+        @test res_of(envs, 2)[:interrupted] == false
+        @test [f[:kind] for f in frames_of(envs, 1)] == ["value", "done"]
+    end
+
+    # An interrupt that names evals (`eval_ids`) reaches only an eval among them, as the window's Ctrl+C, which names
+    # the evals its drawer shows running, must leave alone an eval accepted after the one it meant.
+    @testset "serve: an interrupt naming other evals leaves the running eval alone" begin
+        bs_in, bs_out, _ = drive(String[])
+        write(bs_in, eval_line(1, "1")); flush(bs_in)
+        read_until_answered(bs_out, [1])
+        write(bs_in, eval_line(2, "println(\"started\"); wait(Condition())")); flush(bs_in)
+        read_until_printed(bs_out, 2, "started")
+        write(bs_in, interrupt_line(3, [1])); flush(bs_in)
+        missed = read_until_answered(bs_out, [3])
+        @test res_of(missed, 3)[:interrupted] == false
+        @test isempty(frames_of(missed, 2))
+        write(bs_in, interrupt_line(4, [1, 2])); flush(bs_in)
+        envs = read_until_answered(bs_out, [4, 2])
+        close(bs_in)
+        # Eval 2 waits forever, so its error and done frames show the second interrupt reached it.
+        frames = frames_of(envs, 2)
+        @test [f[:kind] for f in frames] == ["error", "done"]
+        @test occursin("InterruptException", first(frames)[:message])
+    end
+
+    # The value's display is user code too: an interrupt during a slow `show` stops it, and the eval is answered with the
+    # error, not a value.
+    @testset "serve: an interrupt during the value's display stops it, and the eval is answered" begin
+        bs_in, bs_out, _ = drive(String[])
+        code = "struct SlowShow end; " *
+            "Base.showable(::MIME\"image/png\", ::SlowShow) = true; " *
+            "Base.show(io::IO, ::MIME\"image/png\", ::SlowShow) = (println(\"rendering\"); wait(Condition())); " *
+            "SlowShow()"
+        write(bs_in, eval_line(1, code)); flush(bs_in)
+        read_until_printed(bs_out, 1, "rendering")
+        write(bs_in, interrupt_line(2, nothing)); flush(bs_in)
+        envs = read_until_answered(bs_out, [1, 2])
+        close(bs_in)
+        @test res_of(envs, 2)[:interrupted] == true
+        kinds = [f[:kind] for f in frames_of(envs, 1)]
+        @test last(kinds, 2) == ["error", "done"]
+        @test !("image" in kinds) && !("value" in kinds)
+        @test occursin("InterruptException", only(filter(f -> f[:kind] == "error", frames_of(envs, 1)))[:message])
+    end
+
+    # A wire line is written in one write, so an interrupt cannot leave half of it on the wire.
+    @testset "write_envelope: one write per envelope" begin
+        io = CountingIO()
+        DR.write_envelope(io, "res", 7, "repl.interrupt", Dict(:interrupted => false, :note => "x"))
+        @test io.writes == 1
+        @test endswith(String(copy(io.bytes)), "\n")
+        @test DR.json_read(String(copy(io.bytes)))[:id] == 7
+    end
+
+    # An interrupt that lands in an announce is not swallowed: it stops the eval.
+    @testset "announce_browserview: rethrows an interrupt" begin
+        DR.CURRENT_EMIT[] = _ -> throw(InterruptException())
+        empty!(DR.ANNOUNCED_BROWSER_URLS)
+        try
+            @test_throws InterruptException DR.announce_browserview(DR.BrowserView("http://127.0.0.1:59992/"))
+        finally
+            DR.CURRENT_EMIT[] = nothing
+        end
     end
 
     @testset "announce_browserview: swallowed serves still emit; returned ones don't double" begin
