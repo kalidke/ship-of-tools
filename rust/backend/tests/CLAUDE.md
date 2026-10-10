@@ -64,7 +64,7 @@ shows the shape.
   filesystem effects and diagnostics. Headless task success proves no interactive recognition, parent coverage or dialog suppression.
   Interactive no-dialog remains a person-run release done-test; existing-file external-writer concurrency is a scoped limit.
 - A capsule row leaves the test's cgroup only when the user manager answers its daemon. Run the suites in a test
-  container (`scripts/tests/in-container.sh`), which withholds it, so a killed job leaves no row. The five tests that need
+  container (`scripts/tests/in-container.sh`), which withholds it, so a killed job leaves no row; a supervisor's command line begins with its file name when no manager answers. The five tests that need
   it run under `--user-manager`, by name: `capsule_supervisor_survives_a_real_user_service_stop` and
   `destroy_ends_a_child_that_left_the_agents_process_group` (capsule_workspaces),
   `killed_after_capture_next_start_ends_scope` (window_start), `shutdown_ends_a_child_that_left_the_agents_process_group`
