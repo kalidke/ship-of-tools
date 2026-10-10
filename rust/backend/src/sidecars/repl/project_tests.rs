@@ -316,20 +316,32 @@ async fn a_killed_child_leaves_no_temp_files() {
     fixture.finish().await;
 }
 
-/// The running child's real argument vector, from the operating system. On Windows the OS keeps one command line,
-/// returned as a single element. On Windows a Julia child's arguments are not observable this way: Julia's loader
-/// splits its own command line in place, so the reading stops at the executable path.
+/// The running child's real argument vector, from the operating system, or `None` once the process has exited. On
+/// Windows the OS keeps one command line, returned as a single element. On Windows a Julia child's arguments are not
+/// observable this way: Julia's loader splits its own command line in place, so the reading stops at the executable
+/// path.
 #[cfg(target_os = "linux")]
-fn os_argv(pid: u32) -> Vec<String> {
-    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).expect("read the child's command line");
-    raw.split(|b| *b == 0)
-        .filter(|a| !a.is_empty())
-        .map(|a| String::from_utf8_lossy(a).into_owned())
-        .collect()
+fn os_argv(pid: u32) -> Option<Vec<String>> {
+    let raw = match std::fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(raw) => raw,
+        Err(_) if !std::path::Path::new(&format!("/proc/{pid}")).exists() => return None,
+        Err(e) => panic!("the command line of process {pid}, still alive, cannot be read: {e}"),
+    };
+    Some(
+        raw.split(|b| *b == 0)
+            .filter(|a| !a.is_empty())
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect(),
+    )
 }
 
 #[cfg(target_os = "macos")]
-fn os_argv(pid: u32) -> Vec<String> {
+fn os_argv(pid: u32) -> Option<Vec<String>> {
+    // SAFETY: signal 0 only checks that the process exists.
+    let gone = || unsafe {
+        libc::kill(pid as libc::pid_t, 0) == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    };
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
     let mut size: libc::size_t = 0;
     // SAFETY: the sizes and buffers passed are the ones the calls document.
@@ -343,6 +355,9 @@ fn os_argv(pid: u32) -> Vec<String> {
             0,
         )
     };
+    if first != 0 && gone() {
+        return None;
+    }
     assert_eq!(first, 0, "size the child's argument block");
     let mut buf = vec![0u8; size];
     // SAFETY: `buf` is `size` bytes.
@@ -356,6 +371,9 @@ fn os_argv(pid: u32) -> Vec<String> {
             0,
         )
     };
+    if second != 0 && gone() {
+        return None;
+    }
     assert_eq!(second, 0, "read the child's argument block");
     buf.truncate(size);
     let argc = i32::from_ne_bytes(buf[..4].try_into().expect("argc")) as usize;
@@ -370,25 +388,38 @@ fn os_argv(pid: u32) -> Vec<String> {
             .iter()
             .position(|b| *b != 0)
             .expect("argument start");
-    rest[args_start..]
-        .split(|b| *b == 0)
-        .take(argc)
-        .map(|a| String::from_utf8_lossy(a).into_owned())
-        .collect()
+    Some(
+        rest[args_start..]
+            .split(|b| *b == 0)
+            .take(argc)
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect(),
+    )
 }
 
 #[cfg(windows)]
-fn os_argv(pid: u32) -> Vec<String> {
+fn os_argv(pid: u32) -> Option<Vec<String>> {
     let mut command = std::process::Command::new("powershell");
     command.args([
         "-NoProfile",
         "-Command",
-        &format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"),
+        &format!(
+            "Get-CimInstance Win32_Process -Filter 'ProcessId={pid}' | ForEach-Object {{ if ($null -eq $_.CommandLine) {{ 'NULL' }} else {{ 'CMD ' + $_.CommandLine }} }}"
+        ),
     ]);
     let out = crate::lifecycle::child_signal::process()
         .output(&mut command)
         .expect("read the child's command line");
-    vec![String::from_utf8_lossy(&out.stdout).trim().to_owned()]
+    assert!(out.status.success(), "the command-line reader: the CIM query failed");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let row = text.trim();
+    if row.is_empty() {
+        return None;
+    }
+    let line = row
+        .strip_prefix("CMD ")
+        .unwrap_or_else(|| panic!("the command line of process {pid}, still alive, cannot be read"));
+    Some(vec![line.to_owned()])
 }
 
 /// Every spawn route must leave the same contract inside the real child: the workspace is the active project and
@@ -472,9 +503,13 @@ async fn repl_child_arguments_and_environment_match_selected_project() {
     fixture.finish().await;
 }
 
-/// The process ids of the child's tree: its process group, on Unix (the containment makes the child its leader).
+/// The process ids of the child's tree, read the way each OS can. Linux and macOS: its process group (the containment
+/// makes the child its leader), from `/proc` and from one `ps -A -o pid=,pgid=` through the test's process seam.
+/// Windows: the root and every descendant, walked from the root over one CIM query of `ProcessId, ParentProcessId`; a
+/// descendant whose parent has already exited breaks the walk and is not seen (the daemon's job holds it, and the
+/// Linux run covers that path).
 #[cfg(target_os = "linux")]
-fn tree_pids(root: u32) -> Vec<u32> {
+fn read_tree(root: u32) -> Vec<u32> {
     let group = |pid: u32| -> Option<u32> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let after = &stat[stat.rfind(')')? + 2..];
@@ -487,19 +522,79 @@ fn tree_pids(root: u32) -> Vec<u32> {
         .collect()
 }
 
-#[cfg(not(target_os = "linux"))]
-fn tree_pids(root: u32) -> Vec<u32> {
-    vec![root]
+#[cfg(target_os = "macos")]
+fn read_tree(root: u32) -> Vec<u32> {
+    let mut command = std::process::Command::new("ps");
+    command.args(["-A", "-o", "pid=,pgid="]);
+    let out = crate::lifecycle::child_signal::process()
+        .output(&mut command)
+        .expect("read the process table");
+    assert!(out.status.success(), "the tree reader: ps failed");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut cols = l.split_whitespace().map(|c| c.parse::<u32>().ok());
+            let (pid, group) = (cols.next()??, cols.next()??);
+            (group == root).then_some(pid)
+        })
+        .collect()
 }
 
-/// Whether any command line in the tree rooted at `root` carries any needle. Only booleans leave this function.
+#[cfg(windows)]
+fn read_tree(root: u32) -> Vec<u32> {
+    let mut command = std::process::Command::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }",
+    ]);
+    let out = crate::lifecycle::child_signal::process()
+        .output(&mut command)
+        .expect("read the process table");
+    assert!(out.status.success(), "the tree reader: the CIM query failed");
+    let edges: Vec<(u32, u32)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut cols = l.split_whitespace().map(|c| c.parse::<u32>().ok());
+            Some((cols.next()??, cols.next()??))
+        })
+        .collect();
+    assert!(!edges.is_empty(), "the tree reader: the CIM query printed no process");
+    assert!(edges.iter().any(|(pid, _)| *pid == root), "the tree reader did not list the root {root}");
+    let mut tree = vec![root];
+    let mut next = 0;
+    while next < tree.len() {
+        let parent = tree[next];
+        next += 1;
+        for (pid, _) in edges.iter().filter(|(_, up)| *up == parent) {
+            if !tree.contains(pid) {
+                tree.push(*pid);
+            }
+        }
+    }
+    tree
+}
+
+/// The tree's process ids, which must include the root: a reading that cannot list the root fails the test.
+fn tree_pids(root: u32) -> Vec<u32> {
+    let tree = read_tree(root);
+    assert!(
+        tree.contains(&root),
+        "the tree reader did not list the root {root}"
+    );
+    tree
+}
+
+/// Whether any command line in the tree rooted at `root` carries any needle. Only booleans leave this function. A
+/// process that has exited is skipped; a command line that cannot be read from a process still alive fails the test.
 fn tree_argv_leaks(root: u32, needles: &[&str]) -> bool {
     tree_pids(root).into_iter().any(|pid| {
-        let argv = std::panic::catch_unwind(|| os_argv(pid)).unwrap_or_default();
-        argv.iter().any(|arg| {
-            needles
-                .iter()
-                .any(|needle| !needle.is_empty() && arg.contains(needle))
+        os_argv(pid).is_some_and(|argv| {
+            argv.iter().any(|arg| {
+                needles
+                    .iter()
+                    .any(|needle| !needle.is_empty() && arg.contains(needle))
+            })
         })
     })
 }
@@ -521,11 +616,14 @@ async fn the_command_line_observer_rejects_a_deliberate_leak() {
     observer_rejects_a_deliberate_leak().await;
 }
 
-/// The observer rejects a deliberate leak: an owned process whose command line carries the needle is found, and one
-/// that does not carry it is passed. The probe prints its pid, then sleeps. It is Julia, the kind the observation
-/// watches, except on Windows: there Julia's loader splits its own command line in place, writing a NUL after each
-/// argument (`cli/loader_win_utils.c` in every release from 1.6 to 1.13.1), so a reader sees only its executable
-/// path, and the probe is PowerShell, whose command line keeps its arguments.
+/// The observer rejects a deliberate leak: a needle carried by a process of an owned probe's tree is found, and a
+/// needle nothing carries is passed. Two needles say two things. The root needle is the root's own trailing argument:
+/// finding it shows the root's command line is readable. The descendant needle sits in the child's arguments alone, and
+/// the root's own text builds it from two pieces: finding it shows the tree reading reaches a descendant. The probe
+/// prints its pid, starts the child, then waits. It is Julia, the kind the observation watches, except on Windows:
+/// there Julia's loader splits its own command line in place, writing a NUL after each argument
+/// (`cli/loader_win_utils.c` in every release from 1.6 to 1.13.1), so a reader sees only its executable path, and the
+/// probe is PowerShell, whose command line keeps its arguments.
 async fn observer_rejects_a_deliberate_leak() {
     let sig: &'static crate::lifecycle::child_signal::Signal =
         Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
@@ -534,7 +632,8 @@ async fn observer_rejects_a_deliberate_leak() {
         probe.args([
             "-NoProfile",
             "-Command",
-            "[Console]::Out.WriteLine($PID); [Console]::Out.Flush(); Start-Sleep -Seconds 60 # probe-needle-5d1e",
+            "$n = 'probe-needle-' + '5d1e'; [Console]::Out.WriteLine($PID); [Console]::Out.Flush(); \
+             & powershell -NoProfile -Command \"Start-Sleep -Seconds 60 # $n\" # probe-root-needle-5d1e",
         ]);
         probe
     } else {
@@ -543,8 +642,9 @@ async fn observer_rejects_a_deliberate_leak() {
         probe.args([
             "--startup-file=no",
             "-e",
-            "println(getpid()); flush(stdout); sleep(60)",
-            "probe-needle-5d1e",
+            "n = \"probe-needle-\" * \"5d1e\"; run(`sh -c \"sleep 60; :\" $n`; wait=false); \
+             println(getpid()); flush(stdout); sleep(60)",
+            "probe-root-needle-5d1e",
         ]);
         probe
     };
@@ -560,15 +660,21 @@ async fn observer_rejects_a_deliberate_leak() {
     .expect("the probe reports its pid")
     .expect("read the probe pid");
     let pid: u32 = line.trim().parse().expect("probe pid");
-    within(
-        Duration::from_secs(30),
-        "the probe's command line is observable",
-        || tree_argv_leaks(pid, &["probe-needle-5d1e"]),
-    )
-    .await;
+    for needle in ["probe-root-needle-5d1e", "probe-needle-5d1e"] {
+        within(
+            Duration::from_secs(30),
+            &format!("the probe's {needle} is observable"),
+            || tree_argv_leaks(pid, &[needle]),
+        )
+        .await;
+    }
+    assert!(
+        tree_argv_leaks(pid, &["probe-root-needle-5d1e"]),
+        "the observer must reject a leaking root command line"
+    );
     assert!(
         tree_argv_leaks(pid, &["probe-needle-5d1e"]),
-        "the observer must reject a leaking command line"
+        "the observer must reject a leaking descendant command line"
     );
     assert!(
         !tree_argv_leaks(pid, &["a-needle-it-does-not-carry"]),
@@ -608,7 +714,9 @@ async fn add_wglmakie(fixture: &Fixture) {
 
 /// A page served by the real `wglshow` path never puts its secret, or the address that carries it, on a command
 /// line of the REPL's tree, before or after the page exists, on every spawn route; a deliberately leaking process is
-/// rejected by the same observer, and a sentinel proves the observation sees a value the child really has.
+/// rejected by the same observer, and a sentinel proves the observation sees a value the child really has. It reads
+/// every process of the tree; on Windows the Julia root's own command line cannot be read (Julia's loader), so there
+/// the check covers the descendants only.
 #[tokio::test]
 async fn repl_page_secret_never_reaches_command_line() {
     if !isolated(
