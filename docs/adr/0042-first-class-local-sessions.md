@@ -545,5 +545,6 @@ The window resolves result commands against the producing host's workspace.list,
 Slice 1's `--continue` line is withdrawn (owner ruling, 2026-10-09; ADR 0046's FRESH-LEG update): a row's agent starts
 a fresh conversation on every leg and reads its handoff through the session-start skill, and a conversation is resumed
 only when asked (a reauth's `--resume <id>`, or a person). The daemon no longer passes `--first-leg-without --continue`,
-so the 2026-09-14 amendment's strip has no caller; the supervisor's `--first-leg-without` remains a generic option
-until its own removal.
+so the 2026-09-14 amendment's strip has no caller. FRESH-LEG-2 replaces the supervisor's `--first-leg-without` with
+its inverse, `--first-leg-only` (tokens kept until a producer has run, stripped from every leg after), which carries a
+reauth's `--resume <id>` to that reauth's own leg alone.

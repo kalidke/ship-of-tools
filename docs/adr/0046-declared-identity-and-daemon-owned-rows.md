@@ -526,6 +526,9 @@ starts a fresh conversation on every leg; the claude and codex capsule recipes c
 `--resume <id>`, unchanged, or a person (`ccb --continue`, `/resume`). A fresh session reads its handoff from the
 `HANDOFF:` line the comm library's `sot_handoff_line` gives `comm-session-start.sh` and `ccx`. Decision 6's stated
 window changes with it: a leg started from the row's recipe (start, start-on-attach, boot resume) now starts fresh
-rather than resuming whatever the new login last saw; the reauth's own supervisor keeps its `--resume <id>` for its
-later legs and the watchdog's restart of it, which resumes the conversation the reauth named, never by recency. The create-time capture
-limit above still holds: a supervisor already running keeps the argv it was spawned with until it is next spawned.
+rather than resuming whatever the new login last saw. FRESH-LEG-2 (captain's ruling, same day): only the reauth's own
+leg resumes by id. The daemon passes its `--resume <id>` to the supervisor as `--first-leg-only` tokens (the inverse of
+the retired `--first-leg-without`), so every leg after a producer has run (respawn, reset, later voyage) starts fresh,
+and a watchdog restart spawns the row's recipe as built at restart time. A bare `ccx`, like a bare `ccb`, now starts
+fresh and resumes only on `--continue`. The create-time capture limit above still holds: a supervisor already running
+keeps the argv it was spawned with until it is next spawned.

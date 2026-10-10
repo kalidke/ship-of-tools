@@ -1,4 +1,4 @@
-//! Supervisor leg-spawn tests: start readiness, tick counts, binary rename, first_leg_without, client survival, cancel.
+//! Supervisor leg-spawn tests: start readiness, tick counts, binary rename, first_leg_only, client survival, cancel.
 
 use super::*;
 
@@ -184,20 +184,13 @@ fn a_leg_spawned_after_the_binary_is_renamed_runs_the_supervisors_own_inode() {
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
-/// `--first-leg-without <token>` (docs/adr/0042 §1's 2026-09-12/09-14
-/// amendments) strips the token from the very first leg this supervisor
-/// process spawns, AND from any leg that follows one classified unstable
-/// (the self-heal). A SIGKILL moments after Ready is by construction an
-/// unstable death (`leg_was_stable` needs `STABILITY_INTERVAL`, 60s, of
-/// uptime), so the respawn it forces must ALSO come back without the
-/// token -- never the stale argv a plain "first leg only" rule would hand
-/// back. The producer appends its own argv to a file and sleeps, rather
-/// than self-exiting, so each leg's own line is unambiguous; the leg is
-/// killed directly (as the rename test above does) for a fast, direct
-/// respawn signal instead of waiting out a timed self-exit.
+/// `--first-leg-only <token>` keeps the token on the first leg this supervisor process spawns and strips it from
+/// every leg after a producer has run (`producer_ran`, set at Ready): the daemon passes a reauth's `--resume <id>` this
+/// way, so only the reauth's own leg resumes by id. The producer appends its own argv to a file and sleeps, so each
+/// leg's own line is unambiguous; the leg is killed directly, after Ready, for a fast respawn.
 #[cfg(target_os = "linux")]
 #[test]
-fn first_leg_without_strips_a_token_from_the_first_leg_and_an_unstable_respawn() {
+fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_ran() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -208,21 +201,21 @@ fn first_leg_without_strips_a_token_from_the_first_leg_and_an_unstable_respawn()
 
     // Quoted `"$*"` is always exactly one word (empty when there are no
     // positional params), so `printf` writes exactly one line per leg
-    // regardless of whether `--continue` survived.
+    // regardless of whether the token survived.
     let script = format!("printf '%s\\n' \"$*\" >> '{}'; exec sleep 300", log_path.display());
     let mut cmd = Command::new(capsule_exe());
     cmd.arg("supervise")
         .arg(&state_dir)
         .arg("--start")
-        .arg("--first-leg-without")
-        .arg("--continue")
+        .arg("--first-leg-only")
+        .arg("--resume")
         .arg("--assume-no-rollback-target")
         .arg("--")
         .arg("/bin/sh")
         .arg("-c")
         .arg(&script)
         .arg("leg")
-        .arg("--continue")
+        .arg("--resume")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     let mut guard = CapsuleGuard::spawn(&mut cmd);
@@ -237,8 +230,11 @@ fn first_leg_without_strips_a_token_from_the_first_leg_and_an_unstable_respawn()
         Duration::from_secs(30),
         "the first leg to record its own argv",
     );
-    assert_eq!(lines[0], "", "the first leg must have --continue stripped from its argv");
+    assert_eq!(lines[0], "--resume", "the first leg must keep its first-leg-only token");
 
+    // Ready first: that is the producer having run, after which no leg carries the token.
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let _ = wait_for_ready(&conn, Duration::from_secs(30));
     let original_leg_pid = poll_until(
         || direct_children_of(supervisor_pid).into_iter().next(),
         Duration::from_secs(10),
@@ -258,12 +254,8 @@ fn first_leg_without_strips_a_token_from_the_first_leg_and_an_unstable_respawn()
         Duration::from_secs(30),
         "the respawned leg to record its own argv",
     );
-    assert_eq!(
-        lines[1], "",
-        "a respawn that follows an UNSTABLE leg must also have --continue stripped (the self-heal)"
-    );
+    assert_eq!(lines[1], "", "a leg after a producer ran must not carry the first-leg-only token");
 
-    let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
     end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
@@ -377,17 +369,16 @@ fn a_cancel_landing_between_connect_and_publish_is_never_missed() {
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
-/// The self-heal buys one clean retry, never an exemption: a producer
+/// A first-leg-only token is never an exemption: a producer
 /// that fails fast for a reason that has NOTHING to do with the stripped
 /// token (every leg dies the same way regardless) must still trip the
 /// anti-flap bound and end the supervisor Terminal -- exactly
 /// [`a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound`]
-/// above, with `--first-leg-without <token>` also configured, proving the
-/// flag does not disable the bound it shares `leg_was_stable`'s own
-/// classification with.
+/// above, with `--first-leg-only <token>` also configured, proving the
+/// flag does not disable the bound.
 #[cfg(target_os = "linux")]
 #[test]
-fn first_leg_without_does_not_exempt_a_real_crash_loop_from_the_anti_flap_bound() {
+fn first_leg_only_does_not_exempt_a_real_crash_loop_from_the_anti_flap_bound() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -399,12 +390,12 @@ fn first_leg_without_does_not_exempt_a_real_crash_loop_from_the_anti_flap_bound(
     cmd.arg("supervise")
         .arg(&state_dir)
         .arg("--start")
-        .arg("--first-leg-without")
-        .arg("--continue")
+        .arg("--first-leg-only")
+        .arg("--resume")
         .arg("--assume-no-rollback-target")
         .arg("--")
         .args(SELF_EXITING_PRODUCER)
-        .arg("--continue")
+        .arg("--resume")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     let mut guard = CapsuleGuard::spawn(&mut cmd);

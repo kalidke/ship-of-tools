@@ -357,7 +357,6 @@ pub(super) fn install_watchdog(
                     // untouched and reused on the NEXT iteration.
                     let exe = sot_capsule_exe.clone();
                     let dir = state_dir.clone();
-                    let argv_for_spawn = argv.clone();
                     let cwd_for_spawn = cwd.clone();
                     let agent_name_for_spawn = agent_name.clone();
                     let workspace_id_for_spawn = workspace_id.clone();
@@ -375,6 +374,12 @@ pub(super) fn install_watchdog(
                         .resolve(Some(&workspace_id))
                         .map(|ws| (ws.agent(), ws.account()))
                         .unwrap_or_default();
+                    // The row's own recipe, built now like the agent and account above, never the captured argv
+                    // whole: a reauth's `--resume <id>` belongs to its own leg only.
+                    let argv_for_spawn = restart_argv(
+                        crate::agents::argv::agent_argv(&agent_kind_for_spawn, Some(cwd_for_spawn.as_path())),
+                        &argv,
+                    );
                     let spawn_result = tokio::task::spawn_blocking(move || {
                         spawn_detached_supervisor(
                             &permit,
@@ -457,9 +462,35 @@ pub(super) fn install_watchdog(
     });
 }
 
+/// The argv a watchdog restart spawns: the row's recipe as built now (`recipe`), else the spawn's argv without a
+/// reauth's `--resume <id>` pair, which belongs to the reauth's own leg only. For an ordinary row the two are the same.
+fn restart_argv(recipe: Result<Vec<String>, String>, spawned: &[String]) -> Vec<String> {
+    recipe.unwrap_or_else(|error| {
+        tracing::warn!(%error, "capsule supervisor watchdog: the row's recipe could not be built; restarting with the spawn's argv, its resume removed");
+        let mut argv = Vec::with_capacity(spawned.len());
+        let mut rest = spawned.iter();
+        while let Some(arg) = rest.next() {
+            if arg == "--resume" {
+                rest.next();
+            } else {
+                argv.push(arg.clone());
+            }
+        }
+        argv
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_restart_spawns_the_rows_recipe_never_a_reauths_resume() {
+        let reauth: Vec<String> = ["claude", "--resume", "abc", "/sot-session-start"].map(String::from).to_vec();
+        let recipe: Vec<String> = ["claude", "/sot-session-start"].map(String::from).to_vec();
+        assert_eq!(restart_argv(Ok(recipe.clone()), &reauth), recipe);
+        assert_eq!(restart_argv(Err("no claude".into()), &reauth), recipe);
+    }
 
     #[test]
     fn exit_codes_classify_as_the_supervisor_returns_them() {

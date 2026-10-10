@@ -39,15 +39,13 @@ fi
 # next to codex in the nvm bin dir; put that dir on PATH.
 export PATH="$(dirname "$CODEX_BIN"):$PATH"
 
-# $CAPSULE keys ONLY on this argv flag, never an inherited env var (argv
-# does not inherit into a hand-run ccx typed inside a capsule row).
-RESUME_ID=""; FRESH=0; CONTINUE=0; CAPSULE=0
+RESUME_ID=""; FRESH=0; CONTINUE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --fresh) FRESH=1 ;;
         --resume) RESUME_ID="$2"; shift ;;
         --continue) CONTINUE=1 ;;
-        --capsule) CAPSULE=1 ;;
+        --capsule) ;;
     esac
     shift
 done
@@ -110,13 +108,11 @@ fi
 # the flag really does execute an untrusted hook — a /hooks panel reading
 # Active=0 reflects PERSISTED trust and does not predict behaviour under this
 # flag. See comm/adapters/codex/hooks.README.md.
-# --capsule starts FRESH (only --continue scans); a bare ccx resumes as before.
+# Every ccx starts FRESH; only --continue scans for this folder's last conversation (--resume <id> names one).
+# --capsule and --fresh are accepted and change nothing here: a supervisor spawned before this rule still respawns
+# its legs as `ccx --capsule`.
 SCAN=0
-if [ "$CAPSULE" = 1 ]; then
-    [ "$CONTINUE" = 1 ] && [ "$FRESH" = 0 ] && [ -z "$RESUME_ID" ] && SCAN=1
-else
-    [ "$FRESH" = 0 ] && [ -z "$RESUME_ID" ] && SCAN=1
-fi
+[ "$CONTINUE" = 1 ] && [ "$FRESH" = 0 ] && [ -z "$RESUME_ID" ] && SCAN=1
 if [ "$SCAN" = 1 ]; then
     for f in $(ls -t "$CODEX_HOME_DIR"/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -300); do
         if head -c 4096 "$f" | grep -q "\"cwd\":\"$PWD\""; then

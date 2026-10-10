@@ -58,9 +58,8 @@ pub(super) fn advance_initial_probe(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>
                 Ok(true) => match lease.for_spawn() {
                     Ok(spawn_lease) => {
                         let voyage_root = voyage_root_path(&config.state_dir, &voyage_id);
-                        // Stripped while no producer has run in this process
-                        // (`leg_argv`), as the very first leg is.
-                        let argv = leg_argv(config, authority.producer_ran, false);
+                        // First-leg-only tokens are gone once a producer has run (`leg_argv`).
+                        let argv = leg_argv(config, authority.producer_ran);
                         let (rx, handle) = spawn_owned_spawn_attempt(
                             capsule_exe.to_path_buf(),
                             voyage_root,
@@ -141,7 +140,7 @@ pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, han
             note(format_args!(
                 "leg failed to spawn: {e} (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}"
             ));
-            respawn_or_terminal(consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, true)
+            respawn_or_terminal(consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
         }
         Ok(ProbeOutcome::LegEnded(status)) if storage::leg_death(status) == storage::LegDeath::Storage => {
             join_and_warn(handle, "spawn");
@@ -159,7 +158,7 @@ pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, han
                 "leg ended status={} before reaching Ready (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}",
                 status_text(status)
             ));
-            respawn_or_terminal(consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, true)
+            respawn_or_terminal(consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
         }
         Ok(ProbeOutcome::Foreign) => {
             // identity-
@@ -224,7 +223,7 @@ fn account_and_respawn(how: &str, consecutive_unstable_legs: &mut u32, storage_s
     note(format_args!(
         "leg ended {how} (unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
     ));
-    respawn_or_terminal(consecutive_unstable_legs, capsule_exe, config, lease, authority, unstable)
+    respawn_or_terminal(consecutive_unstable_legs, capsule_exe, config, lease, authority)
 }
 
 /// What follows a leg's death with this exit `status`: a storage exit (71)
@@ -368,7 +367,7 @@ pub(super) fn advance_resetting(operation_id: String, rx: mpsc::Receiver<ResetWo
                         config.rows,
                         spawn_lease,
                         config.survival,
-                        config.producer_argv.clone(),
+                        leg_argv(config, authority.producer_ran),
                     );
                     Lifecycle::Spawning { rx, handle, started_at: now }
                 }
@@ -420,7 +419,7 @@ pub(super) fn advance_storage_full(wait: storage::Wait, consecutive_unstable_leg
         storage::Outcome::Waiting(wait) => Lifecycle::StorageFull(wait),
         storage::Outcome::Resume(storage::Resume::Respawn) => {
             note(format_args!("storage is back; respawning the leg"));
-            respawn_or_terminal(consecutive_unstable_legs, capsule_exe, config, lease, authority, false)
+            respawn_or_terminal(consecutive_unstable_legs, capsule_exe, config, lease, authority)
         }
         storage::Outcome::Resume(storage::Resume::Recover) => {
             note(format_args!("storage is back; re-running startup recovery"));
@@ -462,7 +461,7 @@ mod tests {
             rows: 24,
             assume_no_rollback_target: true,
             survival: Survival::Normal,
-            first_leg_without: Vec::new(),
+            first_leg_only: Vec::new(),
             #[cfg(unix)]
             birth: None,
         };
@@ -570,19 +569,17 @@ mod tests {
         expect(next, storage::Resume::Recover);
     }
 
-    /// The first-leg tokens are stripped while no producer has run in this
-    /// process and after an unstable leg, and kept after a stable one; a leg
-    /// that reaches Ready is the producer having run.
+    /// The first-leg-only tokens are kept while no producer has run in this
+    /// process and stripped from every leg after; a leg that reaches Ready
+    /// is the producer having run.
     #[test]
-    fn a_respawn_before_any_producer_ran_keeps_the_first_leg_tokens_stripped() {
+    fn first_leg_only_tokens_go_once_a_producer_has_run() {
         let mut f = fixture();
-        f.config.producer_argv = vec!["agent".into(), "--continue".into()];
-        f.config.first_leg_without = vec!["--continue".into()];
-        let stripped = vec!["agent".to_string()];
+        f.config.producer_argv = vec!["agent".into(), "--resume".into(), "abc".into()];
+        f.config.first_leg_only = vec!["--resume".into(), "abc".into()];
         let whole = f.config.producer_argv.clone();
-        assert_eq!(leg_argv(&f.config, false, false), stripped, "no producer ran: stripped");
-        assert_eq!(leg_argv(&f.config, true, false), whole, "a producer ran and the leg was stable: kept");
-        assert_eq!(leg_argv(&f.config, true, true), stripped, "an unstable leg: stripped");
+        assert_eq!(leg_argv(&f.config, false), whole, "no producer ran: kept");
+        assert_eq!(leg_argv(&f.config, true), vec!["agent".to_string()], "a producer ran: stripped");
 
         // A leg that reaches Ready sets `producer_ran`.
         assert!(!f.authority.producer_ran);

@@ -197,10 +197,8 @@ fn claude_resume_argv_in(
     ))
 }
 
-/// `"codex"`'s capsule recipe: `ccx --capsule`, which starts a fresh
-/// conversation (`ccx` scans for one to resume only with `--continue`).
-/// `--capsule` keys `ccx`'s capsule behavior directly (never an inherited
-/// env var).
+/// `"codex"`'s capsule recipe: a bare `ccx`, which starts a fresh
+/// conversation (`ccx` resumes only on `--continue` or `--resume <id>`).
 /// macOS lane: `unix`, not `target_os = "linux"` — `ccx` is the same
 /// shell script installed to the same `~/.local/bin` on every Unix, so
 /// the Linux gate here was naming the install layout of one host, not a
@@ -209,7 +207,7 @@ fn claude_resume_argv_in(
 #[cfg(unix)]
 fn codex_argv(env: &AgentEnv) -> Result<Vec<String>, String> {
     let ccx = resolve_ccx(env.path.as_deref(), env.home.as_deref())?;
-    Ok(vec![ccx, "--capsule".to_string()])
+    Ok(vec![ccx])
 }
 
 /// Windows has no `ccx`, so a `codex` row's spawn fails with this reason
@@ -599,7 +597,7 @@ mod tests {
         let result = codex_over(Some(dir.path()), None);
         assert_eq!(
             result.unwrap(),
-            vec![ccx.to_string_lossy().into_owned(), "--capsule".to_string()]
+            vec![ccx.to_string_lossy().into_owned()]
         );
     }
 
