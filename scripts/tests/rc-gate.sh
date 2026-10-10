@@ -6,18 +6,16 @@
 # slow binaries split per test), the doc tests, the windows-gnu and darwin
 # cross checks, every Julia suite, and the shell suites.
 #
-# Reads HOME, PATH (only for `command -v cargo` and `command -v julia`) and
-# CARGO_TARGET_DIR (required); forwards JULIA_DEPOT_PATH (to the Julia suites
-# and the Rust tests, whose WGL page test adds WGLMakie from it), SSH_AUTH_SOCK
-# and CARGO_PROFILE_DEV_DEBUG when set. Rust jobs never get XDG_RUNTIME_DIR or
-# DBUS_SESSION_BUS_ADDRESS: they would put test scopes into the user's systemd
-# manager. Needs jq. Exit 2 on bad args; otherwise 0 (130 if interrupted) and
-# the verdict is in <logdir>/summary.txt: it ends in ALLDONE, or ALLDONE FAILED
-# when any job's rc is nonzero, the job runner failed, a job never ran, the run
-# was interrupted, or a test left a process behind. Every job's result file
-# starts as `unrun`, so a job that never ran cannot pass; each job's command
-# has a 1200 s end (the builds do not). CARGO_TARGET_DIR must be the gate's
-# alone while it runs: any new process started from it counts as a leftover.
+# Runs as the main process of its own test container: scripts/tests/in-container.sh UNIT -- bash rc-gate.sh ...
+# (exit 2 otherwise). Reads HOME, PATH (only for `command -v cargo` and `command -v julia`),
+# XDG_RUNTIME_DIR (the container's private folder) and CARGO_TARGET_DIR (required); forwards JULIA_DEPOT_PATH (to the
+# Julia suites and the Rust tests, whose WGL page test adds WGLMakie from it), SSH_AUTH_SOCK and
+# CARGO_PROFILE_DEV_DEBUG when set. Every job gets the container's private XDG_RUNTIME_DIR and no
+# DBUS_SESSION_BUS_ADDRESS, so no test scope reaches the user's systemd manager. Needs jq. Exit 2 on bad args;
+# otherwise 0 (130 if interrupted) and the verdict is in <logdir>/summary.txt: it ends in ALLDONE, or ALLDONE FAILED
+# when any job's rc is nonzero, the job runner failed, a job never ran, the run was interrupted, or a test left a
+# process behind (any process left in the container). Every job's result file starts as `unrun`, so a job that never
+# ran cannot pass; each job's command has a 1200 s end (the builds do not). The container's end kills what is left.
 # ALLDONE means every rc line is 0; the rc lines say which job failed.
 # A selected Rust job's result is zero only when its exact body completed successfully. A missing,
 # ignored-only or mismatched body produces a failed result even if the executable exited zero.
@@ -33,10 +31,11 @@ JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/vi
 envs() {
   D=$RCG_D L=$RCG_L
   CE=(env -i HOME="$HOME" PATH="$RCG_CARGO_DIR:/usr/bin:/bin" TMPDIR=/tmp CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
+    XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"
     ${CARGO_PROFILE_DEV_DEBUG:+CARGO_PROFILE_DEV_DEBUG="$CARGO_PROFILE_DEV_DEBUG"}
     ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
-  SE=(env -i HOME="$HOME" PATH=/usr/bin:/bin ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"})
-  JE=(env -i HOME="$HOME" PATH="$RCG_JULIA_DIR:/usr/bin:/bin" ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
+  SE=(env -i HOME="$HOME" PATH=/usr/bin:/bin XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"})
+  JE=(env -i HOME="$HOME" PATH="$RCG_JULIA_DIR:/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
 }
 
 st() { echo "$1 start $(date +%H:%M:%S) load $(cut -d' ' -f1-3 /proc/loadavg) cargo=$(pgrep -c cargo)" >> "$L/summary.txt"; }
@@ -286,6 +285,10 @@ if [ $# -lt 2 ] || [ -z "${CARGO_TARGET_DIR:-}" ] || ! [[ $CAP =~ ^[1-9][0-9]*$ 
   echo "usage: CARGO_TARGET_DIR=... rc-gate.sh <checkout> <logdir> [cap >= 1]" >&2
   exit 2
 fi
+CG=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)
+[ -r "$CG/cgroup.procs" ] || { echo "rc-gate: needs a cgroup v2 control group" >&2; exit 2; }
+mapfile -t P < "$CG/cgroup.procs"
+[ "${P[*]}" = "$$" ] || { echo "rc-gate: run it as the main process of its own container: scripts/tests/in-container.sh UNIT -- bash $SELF ..." >&2; exit 2; }
 if [ -d "$2" ] && [ -n "$(ls -A "$2")" ]; then
   echo "rc-gate: logdir $2 exists and is not empty" >&2
   exit 2
@@ -305,25 +308,13 @@ trap 'INTR=1' INT TERM HUP
 echo "head $(git -C "$D" rev-parse HEAD) tree $(git -C "$D" rev-parse 'HEAD^{tree}')" > "$L/summary.txt"
 echo "cap $CAP" >> "$L/summary.txt"
 
-TD=$(realpath -m -- "$CARGO_TARGET_DIR")
-# pids of every process whose executable lives under the target dir
-target_pids() {
-  local d e
-  for d in /proc/[0-9]*; do
-    e=$(readlink "$d/exe" 2> /dev/null) || continue
-    [[ $e == "$TD"/* ]] && echo "${d#/proc/}"
-  done
+# every process in this container but rc-gate itself, read again after 5 s so one that is exiting is not counted
+census() {
+  local p; mapfile -t P < "$CG/cgroup.procs"
+  for p in "${P[@]}"; do [ "$p" = "$$" ] || { sleep 5; break; }; done
+  mapfile -t P < "$CG/cgroup.procs"
+  for p in "${P[@]}"; do [ "$p" = "$$" ] || echo "$p $(tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null)"; done
 }
-# "<pid> <cmdline>" for each process new under the target dir since BEFORE,
-# rescanned after 5 s so one that is exiting is not counted and one started
-# meanwhile is
-leaks() {
-  local l p
-  l=$(comm -13 <(sort <<< "$BEFORE") <(target_pids | sort))
-  [ -z "$l" ] || { sleep 5; l=$(comm -13 <(sort <<< "$BEFORE") <(target_pids | sort)); }
-  for p in $l; do echo "$p $(tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null)"; done
-}
-BEFORE=$(target_pids)
 
 T0=$(date +%s)
 M=$D/rust/Cargo.toml
@@ -354,16 +345,10 @@ if [ "$INTR" -eq 0 ]; then
   PG=$!
   wait "$PG"
   XS=$?
-  # every job of a clean run is done: look before the drain kills a leak
-  [ "$XS" -eq 0 ] && [ "$INTR" -eq 0 ] && LEFT=$(leaks)
-  # the gate owns its session: drain it whatever way the pipeline ended
-  pkill -TERM -s "$PG" 2> /dev/null
-  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do pgrep -s "$PG" > /dev/null || break; sleep 1; done
-  for _ in 1 2 3 4 5; do pgrep -s "$PG" > /dev/null || break; pkill -KILL -s "$PG" 2> /dev/null; sleep 1; done
-  wait "$PG" 2> /dev/null
+  [ "$XS" -eq 0 ] && [ "$INTR" -eq 0 ] && census > "$L/leftovers.txt"
 fi
-# anything the tests left under the target dir is reported, never killed
-[ -n "$LEFT" ] || LEFT=$(leaks)
+# anything the tests left in the container is reported; the container's end kills it
+LEFT=$(cat "$L/leftovers.txt" 2> /dev/null)
 # the verdict is being written: from here no signal changes it
 trap '' INT TERM HUP
 

@@ -35,7 +35,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   `DBUS_SESSION_BUS_ADDRESS`, so every capsule row stays in its control group, and every process left in it is SIGKILLed
   when CMD ends. `--user-manager` keeps the manager's address.
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
-- `rc-gate.sh`: the Linux candidate gate; a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy.
+- `rc-gate.sh`: the Linux candidate gate, run as the main process of its own test container (`in-container.sh`); a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
   `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test install layout
   (pinned-checkout predicate)".
@@ -179,8 +179,9 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   (`FAKE_SOTD_EXIT_ARM_FILE`), never at its own start.
 - A test job runs in a test container (`in-container.sh`). The five tests that need a user manager run under
   `--user-manager` with `SOT_TEST_REQUIRE_USER_MANAGER=1`, by name (`rust/backend/tests/CLAUDE.md`).
-- `rc-gate.sh` needs `CARGO_TARGET_DIR` to itself while it runs; its verdict ends `<logdir>/summary.txt` as `ALLDONE` or
-  `ALLDONE FAILED`.
+- `rc-gate.sh` runs as the main process of its own test container (`in-container.sh UNIT -- bash rc-gate.sh ...`) and
+  exits 2 otherwise; it lists every process left in the container at the end of a clean run as a leftover, and the
+  container's end kills them. Its verdict ends `<logdir>/summary.txt` as `ALLDONE` or `ALLDONE FAILED`.
 
 - Trust tests execute the real declaration owner and installer entry; emitted-byte assertions and native exit-status
   observations establish behavior, never source membership or statement offsets.
