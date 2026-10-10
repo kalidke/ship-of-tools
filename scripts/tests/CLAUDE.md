@@ -181,9 +181,18 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   (`FAKE_SOTD_EXIT_ARM_FILE`), never at its own start.
 - A test job runs in a test container (`in-container.sh`). The five tests that need a user manager run under
   `--user-manager` with `SOT_TEST_REQUIRE_USER_MANAGER=1`, by name (`rust/backend/tests/CLAUDE.md`).
-- `rc-gate.sh` runs as the main process of its own test container (`in-container.sh UNIT -- bash rc-gate.sh ...`) and
-  exits 2 otherwise; it lists every process left in the container at the end of a clean run as a leftover, and the
-  container's end kills them. Its verdict ends `<logdir>/summary.txt` as `ALLDONE` or `ALLDONE FAILED`.
+- `rc-gate.sh` runs as the main process of its own test container (`in-container.sh UNIT -- bash rc-gate.sh ...`, no
+  `--user-manager`) and exits 2 otherwise: `DBUS_SESSION_BUS_ADDRESS` unset, a private `XDG_RUNTIME_DIR` holding neither
+  `bus` nor `systemd`, and a `.service` control group are all required, so its jobs reach no user manager. It lists every
+  process left in the container, nested groups included, at the end of a clean run as a leftover, and the container's end
+  kills them. Its verdict ends `<logdir>/summary.txt` as `ALLDONE` or `ALLDONE FAILED`; a container stopped from outside
+  SIGKILLs rc-gate, so a summary without `ALLDONE` is a failed run.
+- `CARGO_TARGET_DIR` is the gate's alone while it runs: its jobs run the binaries in it (the tests.tsv paths, `sotd`,
+  `sot-capsule`), and summary.txt's first line names one head and tree; a build of another checkout into it would replace
+  them mid-run.
+- `rc-gate.sh` needs `node` on its PATH, as it needs `julia`, and `npm ci` done in `rust/backend/sidecars/mathjax` (the
+  sotd contract tests and test-agent-layers use them); it refuses, exit 2, rather than install into the checkout it
+  judges. A Rust test binary's stderr goes to `<key>.stderr` beside its log, so the body check reads stdout only.
 
 - Trust tests execute the real declaration owner and installer entry; emitted-byte assertions and native exit-status
   observations establish behavior, never source membership or statement offsets.
