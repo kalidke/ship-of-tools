@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::sidecars::contract_tests::{depot_path, executable, isolated, pin_env, within};
+use crate::sidecars::contract_tests::{depot_path, executable, isolated, within};
 
 fn scratch_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!("sot-repl-execute-{}", std::process::id()));
@@ -190,6 +190,7 @@ async fn res_without_done_closes_started_run() {
 #[cfg(unix)]
 mod shell_table {
     use super::*;
+    use crate::sidecars::contract_tests::pin_env;
 
     /// A `julia` stand-in speaking the shim's line protocol: it logs each request line, then acts on the code or path text.
     const STUB: &str = r#"#!/bin/sh
