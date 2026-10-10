@@ -13,7 +13,7 @@
 # arg > $SOT_COMM_NAME env > self-file NAME > derive) already implements the
 # same order correctly; manufacturing an explicit --name here from a
 # lower-priority source (the bug this PR shipped with) can override a real
-# launcher pin. A subagent/lane that does not own the ambient pane-keyed
+# launcher pin. A lane that does not own the ambient pane-keyed
 # self-file MUST pin a distinct $SOT_COMM_NAME and, ideally, its own private
 # $SOT_COMM_SELF_FILE — see references/reclaim-handle.md. When neither is
 # given and the self-file already names a DIFFERENT, validated identity, this
@@ -94,7 +94,7 @@ fi
 if [ "$COLD_PRODUCER" = 0 ] && [ -z "$PIN_NAME" ] && [ -z "${NAME:-}" ] \
    && [ -n "${SELF_FILE:-}" ] && [ -f "$SELF_FILE" ]; then
     echo "BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a"
-    echo "REFUSED: $SELF_FILE already names a different, validated identity (see the diagnostic line above) and no SOT_COMM_NAME/SOT_COMM_SELF_FILE pin was given — refusing to join over it. A subagent/lane launcher must pin a distinct SOT_COMM_NAME and, ideally, a private SOT_COMM_SELF_FILE of its own; see this skill's Identity line and references/reclaim-handle.md." >&2
+    echo "REFUSED: $SELF_FILE already names a different, validated identity (see the diagnostic line above) and no SOT_COMM_NAME/SOT_COMM_SELF_FILE pin was given — refusing to join over it. A lane's launcher must pin a distinct SOT_COMM_NAME and, ideally, a private SOT_COMM_SELF_FILE of its own; see this skill's Identity line and references/reclaim-handle.md." >&2
     exit 0
 fi
 
