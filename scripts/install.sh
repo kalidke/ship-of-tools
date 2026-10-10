@@ -655,6 +655,7 @@ WANT_DAEMON=0
 WANT_FRONTEND=0
 TOPO_ROLE=none
 TOPO_DECLARED=0
+UNREADABLE=""
 if STATUS_OUT="$("$PREFIX/bin/sotd" topology status 2>/dev/null)"; then
     TOPO_DECLARED=1
     TOPO_ROLE="$(installer_topology_role "$STATUS_OUT" "$SELF_HOST")"
@@ -708,7 +709,7 @@ else
 fi
 case "$RESOLVED" in *"daemon:1"*) WANT_DAEMON=1 ;; esac
 case "$RESOLVED" in *"frontend:1"*) WANT_FRONTEND=1 ;; esac
-if [ "$TOPO_DECLARED" = 1 ] && [ "$TOPO_ROLE" = none ] && [ "$WANT_DAEMON" = 1 ]; then
+if [ "$TOPO_DECLARED" = 1 ] && [ -z "$UNREADABLE" ] && [ "$TOPO_ROLE" = none ] && [ "$WANT_DAEMON" = 1 ]; then
     say "WARNING: hosts.toml declares no daemon on '$SELF_HOST', so sotd.service's host pin keeps it from starting here; declare the host (daemon or frontend) in hosts.toml"
 fi
 

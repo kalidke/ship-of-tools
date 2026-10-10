@@ -153,6 +153,41 @@ fn an_invalid_hosts_toml_leaves_the_pin_alone() {
     assert_eq!(std::fs::read(units(&t).join("sotd.service.d/topology.conf")).unwrap(), before);
 }
 
+/// The installer tells a lone box (no hosts.toml) from an unreadable one by this error text
+/// (`installer_topology_unreadable` in `scripts/install.sh` matches it), so the text is pinned here.
+#[test]
+fn status_without_a_hosts_toml_says_so_in_the_words_the_installer_matches() {
+    let t = home();
+    let (code, out) = topology(&t, None, &me(), &["status"]);
+    assert_eq!(code, Some(2), "{out}");
+    assert!(out.contains("no hosts.toml at"), "{out}");
+}
+
+/// A pin that cannot be written stops `apply` before any enable: a unit enabled without its pin would start on every
+/// host that shares the home.
+#[test]
+fn apply_enables_nothing_when_a_pin_cannot_be_written() {
+    let t = home();
+    std::fs::write(units(&t).join("sot-relay-tunnel@.service.d"), "a file where the pin's folder goes").unwrap();
+    let hosts = "hub = \"unithost-hub\"\n[host.unithost-hub]\ndaemon = true\n[host.unithost-server]\n";
+    let (code, out) = topology(&t, Some(hosts), "unithost-hub", &["apply", "--yes"]);
+    assert_eq!(code, Some(2), "{out}");
+    assert!(out.contains("nothing was enabled"), "{out}");
+    let calls = std::fs::read_to_string(t.path().join("bin/calls")).unwrap_or_default();
+    assert!(!calls.contains("enable"), "{calls}");
+}
+
+/// A dry `apply` whose only change is a pin says it is a dry run, and writes nothing.
+#[test]
+fn a_dry_apply_that_would_only_write_pins_says_so_and_writes_nothing() {
+    let t = home();
+    let hosts = "hub = \"unithost-hub\"\n[host.unithost-hub]\ndaemon = true\n[host.unithost-fe]\nfrontend = true\n";
+    let (code, out) = topology(&t, Some(hosts), "unithost-hub", &["apply"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("would write") && out.contains("(dry run"), "{out}");
+    assert!(!units(&t).join("sotd.service.d/topology.conf").exists(), "{out}");
+}
+
 /// The hub's refresh pins every reverse-tunnel instance to the hub on the template, where systemd reads it for each
 /// instance.
 #[test]

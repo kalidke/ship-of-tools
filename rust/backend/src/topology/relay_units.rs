@@ -408,13 +408,13 @@ fn converge_pins(dir: &Path, pins: &[(String, String)], dry_run: bool, say: &mut
         if std::fs::read_to_string(&path).is_ok_and(|now| now == *text) {
             continue;
         }
+        changed = true;
         if dry_run {
             say(format!("would write {}", path.display()));
             continue;
         }
         write_atomic(&path, text)?;
         say(format!("wrote {}", path.display()));
-        changed = true;
     }
     Ok(changed)
 }
