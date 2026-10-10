@@ -331,11 +331,12 @@ fn stop_gracefully(child: &mut Child) {
 /// window's close, on a thread of its own because the case's runtime is the caller's.
 fn end_capsules_blocking(env: &Env) {
     let log = env._tmp.path().join("daemon-ending.log");
-    let Ok(daemon) = Run::command(env, &log, &[], None).spawn() else {
+    let Ok(mut daemon) = Run::command(env, &log, &[], None).spawn() else {
         return;
     };
     let socket = env.socket_path.clone();
-    let worker = std::thread::spawn(move || {
+    // The successor stays owned here, so it is ended on every path, a panic in the close included.
+    let _ = std::thread::spawn(move || {
         if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -354,16 +355,14 @@ fn end_capsules_blocking(env: &Env) {
                 close_on(&socket).await;
             });
         }
-        daemon
-    });
-    if let Ok(mut daemon) = worker.join() {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while daemon.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let _ = daemon.kill();
-        let _ = daemon.wait();
+    })
+    .join();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while daemon.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
     }
+    let _ = daemon.kill();
+    let _ = daemon.wait();
 }
 
 impl Drop for Run {
