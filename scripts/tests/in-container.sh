@@ -5,7 +5,7 @@
 # and every capsule row a test daemon starts stay in its control group (ADR 0043 decision 32's contained launch). When
 # CMD ends, however it ends, systemd stops the unit and SIGKILLs every process left in it. --user-manager keeps the
 # manager's address, for the tests that need it; their rows run in scopes of their own, outside the container.
-# Foreground: output streams back and the exit status is CMD's. Stop it early: systemctl --user stop UNIT.service
+# Foreground: output streams back; the exit status is CMD's when CMD exits, and a CMD killed by a signal gives 255. Stop it early: systemctl --user stop UNIT.service
 set -u
 manager=0
 [ "${1-}" = --user-manager ] && { manager=1; shift; }
@@ -24,4 +24,10 @@ if [ "$manager" = 0 ]; then
     props+=(-p "ExecStopPost=/bin/rm -rf $rt")
     set -- /usr/bin/env -u DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR="$rt" "$@"
 fi
-exec systemd-run --user --quiet --collect --wait --pipe --same-dir --unit="$unit.service" "${props[@]}" "${envs[@]}" -- "$@"
+# systemd expands $VAR and ${VAR} in a command line: doubled, each word reaches CMD as written.
+set -- "${@//[\$]/\$\$}"
+systemd-run --user --quiet --collect --wait --pipe --same-dir --unit="$unit.service" "${props[@]}" "${envs[@]}" -- "$@"
+rc=$?
+# ExecStopPost removes it when the unit started; a failed start leaves it here.
+[ "$manager" = 1 ] || rm -rf "$rt"
+exit "$rc"

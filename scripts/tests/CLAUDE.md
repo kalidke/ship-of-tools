@@ -33,7 +33,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `in-container.sh`: `in-container.sh [--user-manager] UNIT -- CMD [ARG...]` runs CMD as the main process of the transient
   `systemd --user` service UNIT.service, the test container (Linux): a private empty `XDG_RUNTIME_DIR` and no
   `DBUS_SESSION_BUS_ADDRESS`, so every capsule row stays in its control group, and every process left in it is SIGKILLed
-  when CMD ends. `--user-manager` keeps the manager's address.
+  when CMD ends. `--user-manager` keeps the manager's address. CMD runs as written (`$` is doubled for systemd, which expands
+  `$VAR` and `${VAR}`); the exit status is CMD's when CMD exits, and a CMD killed by a signal gives 255; a failed start
+  leaves no `/tmp/sot-job-*`.
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
 - `rc-gate.sh`: the Linux candidate gate, run as the main process of its own test container (`in-container.sh`); a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
