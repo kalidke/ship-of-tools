@@ -230,7 +230,7 @@ impl Drop for ScopeKillGuard {
 /// A scope's end is read and written under `/sys/fs/cgroup`, the only root production's row scope end uses
 /// (`row_scope.rs`). Where that is not a cgroup v2 mount, a scope test would pass without seeing a scope.
 #[cfg(target_os = "linux")]
-fn require_cgroup_v2_root() {
+pub fn require_cgroup_v2_root() {
     assert!(
         Path::new("/sys/fs/cgroup/cgroup.controllers").exists(),
         "cgroup v2 is not mounted at /sys/fs/cgroup, the only root production's row scope end reads (row_scope.rs:9): this host cannot prove a scope's end"

@@ -68,7 +68,7 @@ shows the shape.
   it run under `--user-manager`, by name: `capsule_supervisor_survives_a_real_user_service_stop` and
   `destroy_ends_a_child_that_left_the_agents_process_group` (capsule_workspaces),
   `killed_after_capture_next_start_ends_scope` (window_start), `shutdown_ends_a_child_that_left_the_agents_process_group`
-  (window_lease), `a_service_manager_counts_int_and_term_as_a_clean_stop` (daemon_lifetime); so does `contained_job`.
+  (window_lease), `a_service_manager_counts_int_and_term_as_a_clean_stop` (daemon_lifetime); so does `contained_job`. The three scope tests refuse before their row starts where cgroup v2 is not at `/sys/fs/cgroup` (`require_cgroup_v2_root`, called by `Env::seed_fake_claude_with_escapee`); `contained_job` refuses where no cgroup v2 tree exists at either root.
 - A binary whose tests share one process takes its `SERIAL` before `Env::new`, which sets the process's `SOT_RUNTIME_DIR`
   (capsule_workspaces, comm_send, comm_wake, daemon_boot, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
 - Every `sotd` a suite starts comes from `support/sotd.rs`: `sotd_command()`, or `sotd_command_at(program)` for a copy

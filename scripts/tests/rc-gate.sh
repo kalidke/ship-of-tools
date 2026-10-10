@@ -33,11 +33,11 @@ JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/vi
 
 envs() {
   D=$RCG_D L=$RCG_L
-  CE=(env -i HOME="$HOME" PATH="$RCG_CARGO_DIR:$RCG_NODE_DIR:/usr/bin:/bin" TMPDIR=/tmp CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
+  CE=(env -i HOME="$HOME" PATH="$RCG_CARGO_DIR:${RCG_NODE_DIR:+$RCG_NODE_DIR:}/usr/bin:/bin" TMPDIR=/tmp CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
     XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"
     ${CARGO_PROFILE_DEV_DEBUG:+CARGO_PROFILE_DEV_DEBUG="$CARGO_PROFILE_DEV_DEBUG"}
     ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
-  SE=(env -i HOME="$HOME" PATH="$RCG_NODE_DIR:/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"})
+  SE=(env -i HOME="$HOME" PATH="${RCG_NODE_DIR:+$RCG_NODE_DIR:}/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"})
   JE=(env -i HOME="$HOME" PATH="$RCG_JULIA_DIR:/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
 }
 
@@ -309,7 +309,9 @@ JULIA_BIN=$(command -v julia) || { echo "rc-gate: julia not found" >&2; exit 2; 
 NODE_BIN=$(command -v node) || { echo "rc-gate: node not found" >&2; exit 2; }
 [ -d "$D/rust/backend/sidecars/mathjax/node_modules" ] || { echo "rc-gate: run npm ci in rust/backend/sidecars/mathjax" >&2; exit 2; }
 command -v jq > /dev/null || { echo "rc-gate: jq not found" >&2; exit 2; }
-export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$(dirname "$JULIA_BIN") RCG_NODE_DIR=$(dirname "$NODE_BIN")
+# The jobs get node and nothing else from its folder (on the servers it also holds real agent CLIs).
+mkdir -p "$L/bin" && ln -s "$NODE_BIN" "$L/bin/node" || exit 2
+export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$(dirname "$JULIA_BIN") RCG_NODE_DIR=$L/bin
 envs
 INTR=0
 trap 'INTR=1' INT TERM HUP

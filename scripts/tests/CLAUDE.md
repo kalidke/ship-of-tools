@@ -190,7 +190,7 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
 - `CARGO_TARGET_DIR` is the gate's alone while it runs: its jobs run the binaries in it (the tests.tsv paths, `sotd`,
   `sot-capsule`), and summary.txt's first line names one head and tree; a build of another checkout into it would replace
   them mid-run.
-- `rc-gate.sh` needs `node` on its PATH, as it needs `julia`, and `npm ci` done in `rust/backend/sidecars/mathjax` (the
+- `rc-gate.sh` needs `node` on its PATH, as it needs `julia`, and gives its jobs node alone, through a link in `<logdir>/bin`, and `npm ci` done in `rust/backend/sidecars/mathjax` (the
   sotd contract tests and test-agent-layers use them); it refuses, exit 2, rather than install into the checkout it
   judges. A Rust test binary's stderr goes to `<key>.stderr` beside its log, so the body check reads stdout only.
 

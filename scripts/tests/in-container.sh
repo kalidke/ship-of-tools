@@ -28,6 +28,7 @@ fi
 set -- "${@//[\$]/\$\$}"
 systemd-run --user --quiet --collect --wait --pipe --same-dir --unit="$unit.service" "${props[@]}" "${envs[@]}" -- "$@"
 rc=$?
-# ExecStopPost removes it when the unit started; a failed start leaves it here.
-[ "$manager" = 1 ] || rm -rf "$rt"
+# ExecStopPost removes it when the unit ends; a failed start leaves it here. A client that returns while its unit
+# still runs (it lost its bus) leaves the running job's folder alone.
+[ "$manager" = 1 ] || systemctl --user is-active --quiet "$unit.service" || rm -rf "$rt"
 exit "$rc"

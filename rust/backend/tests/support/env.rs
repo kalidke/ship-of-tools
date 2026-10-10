@@ -393,6 +393,8 @@ impl Env {
     /// session leader writes its pid to. The 120 s lifetimes cap any leak.
     #[cfg(target_os = "linux")]
     pub fn seed_fake_claude_with_escapee(&self) -> (PathBuf, PathBuf) {
+        // Before any row starts: an escapee on a host whose scope end the test cannot see would outlive the test.
+        require_cgroup_v2_root();
         let dir = self._tmp.path().join("fakebin");
         std::fs::create_dir_all(&dir).expect("mkdir fakebin");
         let pidfile = self._tmp.path().join("escapee.pid");

@@ -203,6 +203,15 @@ fn cgroup_root() -> PathBuf {
     }
 }
 
+/// `cgroup.kill` in the job's own group, only when its leaf is the unit this test named: a contained row the unit did
+/// not kill (`KillMode=none`, reversal R2) and the product did not end. Never panics.
+fn kill_job_group(rel: &str, unit: &str) {
+    let leaf = rel.rsplit('/').next().unwrap_or("");
+    if leaf == format!("{unit}.service") || leaf == format!("{unit}.scope") {
+        let _ = std::fs::write(cgroup_root().join(rel.trim_start_matches('/')).join("cgroup.kill"), "1");
+    }
+}
+
 /// Whether a control group is gone or reads `populated 0`.
 fn group_empty(rel: &str) -> bool {
     let events = cgroup_root()
@@ -317,6 +326,10 @@ async fn a_killed_test_job_leaves_no_row() {
         eprintln!("SKIPPED: no user manager: {e}");
         return;
     }
+    assert!(
+        cgroup_root().join("cgroup.controllers").exists(),
+        "no cgroup v2 tree at /sys/fs/cgroup or /sys/fs/cgroup/unified: this host cannot show where a job's processes run"
+    );
     let dir = tempfile::Builder::new()
         .prefix("sotcj-")
         .tempdir_in("/tmp")
@@ -334,7 +347,7 @@ async fn a_killed_test_job_leaves_no_row() {
     // Cleanup runs before any assert and never panics.
     let _ = client.kill();
     let _ = client.wait();
-    let freed = match (&record, gone) {
+    let mut freed = match (&record, gone) {
         (Some(r), false) => end_leftover_row(r).await,
         _ => true,
     };
@@ -349,6 +362,10 @@ async fn a_killed_test_job_leaves_no_row() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+    if let (Some(r), false) = (&record, freed) {
+        kill_job_group(&r["child_cgroup"], &unit);
+        freed = wait_free(Path::new(&r["state_dir"]), &r["voyage"], 10).await;
+    }
     let field = |k: &str| record.as_ref().map(|r| r[k].clone()).unwrap_or_default();
     if record.is_none() {
         let out = std::fs::read_to_string(dir.path().join("out"));
