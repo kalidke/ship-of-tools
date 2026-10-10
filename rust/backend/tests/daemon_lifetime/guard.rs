@@ -92,6 +92,8 @@ impl Run {
         extra: &[(&str, &str)],
         program: Option<&Path>,
     ) -> std::process::Command {
+        // A successor reads the same outcome file as its predecessor: an outcome asked of one is not asked of the next.
+        let _ = std::fs::remove_file(env._tmp.path().join("outcome"));
         let file = std::fs::File::create(log).expect("create the daemon log");
         let depot = crate::julia_depot_path(&env._tmp.path().join("julia-depot"));
         let mut cmd = match program {
@@ -153,8 +155,6 @@ impl Run {
             "daemon-{}.log",
             std::time::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_nanos())
         ));
-        // A successor reads the same outcome file as its predecessor: an outcome asked of one is not asked of the next.
-        let _ = std::fs::remove_file(env._tmp.path().join("outcome"));
         let mut cmd = Self::command(env, &log, extra, program);
         if own_group {
             cmd.process_group(0);
@@ -336,13 +336,14 @@ fn end_capsules_blocking(env: &Env) {
     };
     let socket = env.socket_path.clone();
     // The successor stays owned here, so it is ended on every path, a panic in the close included.
-    let _ = std::thread::spawn(move || {
-        if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
+    let closed = std::thread::Builder::new()
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
             runtime.block_on(async {
-                let answered = poll_until(
+                poll_until(
                     || {
                         let socket = socket.clone();
                         async move { peer_pid(&socket) }
@@ -351,13 +352,13 @@ fn end_capsules_blocking(env: &Env) {
                     "the ending daemon to answer",
                 )
                 .await;
-                let _ = answered;
                 close_on(&socket).await;
             });
-        }
-    })
-    .join();
-    let deadline = Instant::now() + Duration::from_secs(60);
+            Some(())
+        })
+        .map_or(false, |worker| matches!(worker.join(), Ok(Some(()))));
+    // A close that never ran leaves nothing to wait for.
+    let deadline = Instant::now() + Duration::from_secs(if closed { 60 } else { 0 });
     while daemon.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
