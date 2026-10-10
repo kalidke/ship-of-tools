@@ -12,8 +12,9 @@ const TMP_VARS: &[&str] = &["TMP", "TEMP"];
 /// A folder of its own, in this process's temporary folder, for one Julia child and everything it starts. Julia
 /// removes its temporary files only at a clean exit, never when the daemon kills it, so the folder holds what a killed
 /// child leaves. An owner ends its child with [`retire`](Self::retire), which removes the folder after the reap.
-/// Dropping a `ChildTmp` removes the folder at once, so it is only for an owner whose child never started: a folder
-/// dropped after a spawn may still hold a live child's files.
+/// Dropping a `ChildTmp` removes the folder at once, so it is for an owner whose child never started (and the pipe-take
+/// returns after a spawn, unreachable while every pipe is `Stdio::piped()`): a folder dropped after a spawn may still
+/// hold a live child's files.
 pub(crate) struct ChildTmp(tempfile::TempDir);
 
 impl ChildTmp {
@@ -77,7 +78,8 @@ mod tests {
         }
     }
 
-    /// A folder with a file in it is removed once its child is ended, and not before the reap.
+    /// A folder with a file in it is removed once its child is ended. The order (after the reap) is `retire`'s own; this
+    /// test sees only that the folder goes.
     #[tokio::test]
     async fn retire_removes_the_folder_after_the_reap() {
         let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
