@@ -102,8 +102,10 @@ cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launc
 - **A schema-1 manifest** → this is an UPGRADE. Same command (bump `--version`
   or omit it for latest); role is derived fresh each run (the declared list,
   else the role flag/interactive answer) — the manifest's own `daemon`/
-  `frontend` bits just record what got installed, for a listless box's own
-  self-update check to fall back on, same list-first order.
+  `frontend` bits record what got installed, for a listless box's own
+  self-update check to fall back on, same list-first order; the installer also
+  reads `daemon` and `service` back, so a run never records less than they say
+  under a declared topology (below).
 - **The backend service or any FE integration file belongs to a different
   prefix** → one ownership rule covers all of them: an ACTIVE `sotd.service`
   whose `ExecStart` is outside this prefix, the `~/.local/bin/sot-launch`
@@ -118,13 +120,25 @@ cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launc
   doesn't recognize is refused the same way, but **not** overridable with
   `--force-role-change` — its owner can't be identified at all, so tell the
   human to move it aside instead.
+- **`hosts.toml` runs no sotd on this host and an install is already at the
+  prefix** (this host is not listed, or is listed with neither `daemon` nor
+  `frontend`), or **the manifest records a daemon or its unit and this run
+  would record none** (`--no-service` over a `systemd` record, or the role
+  flags under a `hosts.toml` sotd cannot read) → the installer refuses and
+  writes nothing under the prefix or `~/.local/bin`. On a home several hosts
+  share, that install serves the hosts that run sotd: run the installer on one
+  of them, or declare this host in `hosts.toml`. Add `--force-role-change` only
+  when the human says this machine's own role changed, or that this prefix is
+  this machine's own.
 - **A manifest you cannot read** — truncated, unknown schema, recording a
   different prefix — is NOT the same as no install. Treat it as unknown state
   and stop; the installer does the same.
 - **Neither** → a fresh install; carry on below.
 
-Only when a live daemon or integration file from a different prefix is
-blocking you, and the human has explicitly authorized stepping on it, add
+Only when a live daemon or integration file from a different prefix, an
+install on a host `hosts.toml` runs no sotd on, or a daemon install this run
+would demote, is blocking you, and the human has explicitly authorized stepping
+on it, add
 `--force-role-change` to
 the install command. Never add it to get past an error you did not understand.
 

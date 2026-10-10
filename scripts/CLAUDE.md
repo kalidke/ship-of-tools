@@ -23,6 +23,13 @@ and the launch path fails open: no update step can stop a window from starting.
 - A tag is cut only from `main`, `fixes/*` or `rc/*`, sorts above every tag of its line, and has green `rust.yml` and
   `CI.yml` runs in HEAD's history (`release.sh` preflight).
 - Install checksums verify before any write, and `install.json` is written last (`install.sh` steps 2 and 9).
+- A refused install writes nothing under its prefix or `~/.local/bin`: the role and the ownership, host and record
+  gates run on the unpacked `sotd` before the layout, and an unpacked `sotd` that cannot run stops the install. Without
+  `--force-role-change`, a host a readable hosts.toml runs no sotd on never writes over an install at the prefix
+  (`installer_host_decision`), and under a declared topology a run never records less than install.json does
+  (`installer_record_decision`). Limit: the update stager (`stage_prepare_arm` in `rust/backend/src/update.rs`) writes
+  `updates/` wherever its `sotd` runs; the host pin keeps a server's manager from starting one, but a `sotd` started by
+  hand on such a host still stages into the shared install.
 - Apply verifies everything before it mutates, restores on a failure after mutation and exits 0; a rollback marks the
   bad tag so it is never armed again (`sot-apply.sh`, `sot-apply.ps1`).
 - The launch path never stops on an update: every update or freshness step logs and the window still starts.

@@ -75,7 +75,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | host pins `topology.conf` in `sotd.service.d/`, `sot-relay-tunnel@.service.d/` and `sot-host-relay-<h>.socket.d/` under `<home>/.config/systemd/user` | disk | topology | text `rust/protocol/src/topology/relay_units.rs` `host_pin`, `daemon_pin`, `hub_pins`; hosts `rust/protocol/src/topology/mod.rs` `sotd_hosts`; writers `rust/backend/src/topology/relay_units.rs` `pin_daemon`, `converge_hub_pins` |
 | `<home>/.local/bin/sot-launch` wrapper | disk | distribution | `scripts/lib/sot-daemon.sh` `render_sot_launch` |
 | `$PREFIX/{bin/*(.prev), repo/{base,versions/<tag>,current}, julia/current}` | disk | distribution | `scripts/install.sh`; `scripts/sot-apply.sh` |
-| `$PREFIX/install.json` | disk | distribution | `scripts/install.sh`; `scripts/install-manifest.ps1`; `rust/updater/src/manifest.rs` `InstallManifest` |
+| `$PREFIX/install.json` | disk | distribution | `scripts/install.sh` (rewritten only as `installer_host_decision` and `installer_record_decision` allow); `scripts/sot-apply.sh` (version and tag); `scripts/install-manifest.ps1`; `rust/updater/src/manifest.rs` `InstallManifest` |
 | `$PREFIX/updates/` (stages, `pending-<t>.json`, `last-good-<t>.json`, `just-applied-<t>`, `bad-<tag>-<t>`) | disk | distribution | `rust/updater/src/lib.rs` `stage`; `rust/updater/src/pending.rs`; `scripts/sot-apply.sh`; `scripts/sot-apply.ps1` |
 | `updates/.lock` (mkdir mutex) | lock | distribution | `rust/updater/src/lock.rs`; `scripts/sot-apply.sh` |
 | `$PREFIX/logs/`; Windows `logs\supervisor.log`, `launcher.pid`, `launch-status.txt` | disk, lock | distribution | `scripts/lib/sot-daemon.sh` `sot_prune_logs`; `scripts/launch-sot.ps1` |

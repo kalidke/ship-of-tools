@@ -72,13 +72,13 @@ status_stub() {  # <dir> <exit> <stderr line>: a sotd whose `topology status` fa
     chmod +x "$1/prefix/bin/sotd"
 }
 d="$WORK/unreadable"; status_stub "$d" 2 "sotd topology: hosts.toml line 2: expected key = value"
-rc=0; out="$(installer_topology_unreadable "$d/prefix")" || rc=$?
+rc=0; out="$(installer_topology_unreadable "$d/prefix/bin/sotd")" || rc=$?
 check "an invalid hosts.toml is a declared topology" "0" "$rc"
 check "its error is reported" "yes" "$(case "$out" in *"line 2"*) echo yes ;; *) echo no ;; esac)"
 d="$WORK/missing"; status_stub "$d" 2 "sotd topology: no hosts.toml at /x/hosts.toml (run sotd topology sync --hub ALIAS)"
-rc=0; installer_topology_unreadable "$d/prefix" >/dev/null || rc=$?; check "a missing hosts.toml is no topology" "1" "$rc"
+rc=0; installer_topology_unreadable "$d/prefix/bin/sotd" >/dev/null || rc=$?; check "a missing hosts.toml is no topology" "1" "$rc"
 d="$WORK/readable"; status_stub "$d" 0 ""
-rc=0; installer_topology_unreadable "$d/prefix" >/dev/null || rc=$?; check "a readable hosts.toml is not unreadable" "1" "$rc"
+rc=0; installer_topology_unreadable "$d/prefix/bin/sotd" >/dev/null || rc=$?; check "a readable hosts.toml is not unreadable" "1" "$rc"
 
 # ---------------------------------------------------------------------------
 case_start "update_rerender_pins_the_unit_before_the_reload"
@@ -90,6 +90,93 @@ printf '[Service]\nExecStart=%s/bin/sotd --x\n' "$d/prefix" > "$d/home/.config/s
 pin="$(at "$d" "$(PIN_LINE "$d")")"; reload="$(at "$d" 'systemctl --user daemon-reload')"
 check "the unit is re-rendered" "1" "$(grep -c '^Restart=on-failure$' "$d/home/.config/systemd/user/sotd.service" || true)"
 check "pin, then reload" "yes" "$([ "${pin:-0}" -gt 0 ] && [ "$pin" -lt "${reload:-0}" ] && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+case_start "record_decision_table"
+check "the unit is recorded only for a Linux daemon with a service" "systemd none none none" \
+    "$(installer_service_record Linux 1 0) $(installer_service_record Darwin 1 0) $(installer_service_record Linux 0 0) $(installer_service_record Linux 1 1)"
+rec() { installer_manifest_json /p /c "$1" 1.0.0 v1.0.0 abc 2026-10-09T00:00:00Z "" "$2" 0 > "$WORK/rec.json"; }
+verdict() { installer_record_decision "$@" | cut -d: -f1; }
+rec systemd 1
+check "no hosts.toml: the record is this box's" allow "$(verdict "$WORK/rec.json" 0 0 none 0)"
+check "a host that runs no daemon over a daemon install" refuse "$(verdict "$WORK/rec.json" 1 0 none 0)"
+check "a daemon host with --no-service over a unit install" refuse "$(verdict "$WORK/rec.json" 1 1 none 0)"
+check "consent" allow "$(verdict "$WORK/rec.json" 1 0 none 1)"
+check "a daemon host upgrading" allow "$(verdict "$WORK/rec.json" 1 1 systemd 0)"
+check "no record yet" allow "$(verdict "$WORK/absent.json" 1 0 none 0)"
+rec none 0
+check "a shell install over a shell install" allow "$(verdict "$WORK/rec.json" 1 0 none 0)"
+
+# ---------------------------------------------------------------------------
+case_start "host_decision_table"
+mkdir -p "$WORK/installed/bin" "$WORK/old/bin" "$WORK/empty"; : > "$WORK/installed/install.json"; : > "$WORK/old/bin/sotd"
+hv() { installer_host_decision "$@" | cut -d: -f1; }
+check "a host the topology runs sotd on" allow "$(hv 1 'daemon:1 frontend:0' "$WORK/installed" 0)"
+check "a frontend host runs its own sotd" allow "$(hv 1 'daemon:1 frontend:1' "$WORK/installed" 0)"
+check "an unlisted host over an install" refuse "$(hv 1 none "$WORK/installed" 0)"
+check "a host listed with neither key over an install" refuse "$(hv 1 'daemon:0 frontend:0' "$WORK/installed" 0)"
+check "an install with no record yet" refuse "$(hv 1 none "$WORK/old" 0)"
+check "a first install" allow "$(hv 1 none "$WORK/empty" 0)"
+check "consent" allow "$(hv 1 none "$WORK/installed" 1)"
+check "no hosts.toml, or one sotd cannot read" allow "$(hv 0 none "$WORK/installed" 0)"
+
+# ---------------------------------------------------------------------------
+case_start "an_install_from_a_host_that_runs_no_daemon_changes_nothing_in_the_shared_install"
+# A daemon host's install, as an update leaves it: binaries, their .prev rollback copies, rollback state and the record.
+# install.sh then runs end to end from a stub release on a host the declared topology runs no sotd on.
+me="$(hostname | cut -d. -f1 | tr '[:upper:]' '[:lower:]')"
+snapshot() {  # every entry of every type under the prefix and ~/.local, and every file's hash
+    find "$1/prefix" "$1/home/.local" -printf '%y %p\n' 2>/dev/null | sort
+    find "$1/prefix" "$1/home/.local" -type f -exec sha256sum {} + 2>/dev/null | sort
+}
+shared_install_run() {  # <dir> <topology status lines> <mode of the release's sotd> <install.sh args...>
+    local d="$1" table="$2" mode="$3"; shift 3
+    local rel="$d/rel/sot-9.9.9-linux-x86_64"
+    mkdir -p "$d/home" "$d/prefix/bin" "$d/prefix/updates" "$rel" "$d/stubs"
+    for b in sot sotd sot-capsule sot-apply; do
+        printf 'daemon host %s\n' "$b" > "$d/prefix/bin/$b"; printf 'previous %s\n' "$b" > "$d/prefix/bin/$b.prev"
+    done
+    printf '{"tag": "v9.9.7"}\n' > "$d/prefix/updates/last-good-linux-x86_64.json"
+    installer_manifest_json "$d/prefix" "$d/home/.config/sot" systemd 9.9.8 v9.9.8 abc 2026-10-09T00:00:00Z "" 1 0 \
+        > "$d/prefix/install.json"
+    snapshot "$d" > "$d/before"
+    cat > "$rel/sotd" <<STUBEOF
+#!/bin/sh
+case "\$1 \$2" in
+    "topology status") printf 'HOST DECLARED\n$table\n' ;;
+    "session-socket-path sot") echo "$d/sot.sock" ;;
+    *) echo "sotd 9.9.9" ;;
+esac
+STUBEOF
+    for b in sot sot-capsule sot-apply; do printf '#!/bin/sh\nexit 0\n' > "$rel/$b"; done
+    chmod +x "$rel"/*; chmod "$mode" "$rel/sotd"
+    tar -czf "$d/rel/sot-9.9.9-linux-x86_64.tar.gz" -C "$d/rel" sot-9.9.9-linux-x86_64
+    ( cd "$d/rel" && sha256sum sot-9.9.9-linux-x86_64.tar.gz > SHA256SUMS )
+    cat > "$d/stubs/curl" <<STUBEOF
+#!/bin/sh
+out=""; url=""
+while [ \$# -gt 0 ]; do case "\$1" in -o) out="\$2"; shift ;; http*) url="\$1" ;; esac; shift; done
+case "\$url" in */releases/download/*) cp "$d/rel/\${url##*/}" "\$out" ;; esac
+STUBEOF
+    printf '#!/bin/sh\nexit 1\n' > "$d/stubs/git"
+    printf '#!/bin/sh\nexit 3\n' > "$d/stubs/systemctl"
+    chmod +x "$d/stubs/curl" "$d/stubs/git" "$d/stubs/systemctl"
+    env -i HOME="$d/home" PATH="$d/stubs:/usr/bin:/bin" SOT_INSTALL_TAG=v9.9.9 \
+        bash "$(dirname "$0")/../install.sh" --prefix "$d/prefix" "$@" 2>&1
+}
+says() { printf '%s\n' "$1" | grep -c "$2" || true; }
+d="$WORK/neither"; rc=0; out="$(shared_install_run "$d" "hub-box hub,daemon\n$me shell" 755 --be-only --no-service)" || rc=$?
+check "a host listed with neither key is refused" "2" "$rc"
+check "it says why" "1" "$(says "$out" 'hosts.toml runs no sotd on this host, and .* already holds an install')"
+check "the shared install is unchanged" "$(cat "$d/before")" "$(snapshot "$d")"
+d="$WORK/unlisted"; rc=0; out="$(shared_install_run "$d" "hub-box hub,daemon" 755 --be-only)" || rc=$?
+check "an unlisted host asking for a daemon is refused" "2" "$rc"
+check "it says why" "1" "$(says "$out" 'hosts.toml runs no sotd on this host, and .* already holds an install')"
+check "the shared install is unchanged" "$(cat "$d/before")" "$(snapshot "$d")"
+d="$WORK/noexec"; rc=0; out="$(shared_install_run "$d" "$me daemon" 644 --be-only)" || rc=$?
+check "an unpacked sotd that cannot run stops the install" "1" "$rc"
+check "it names TMPDIR" "1" "$(says "$out" 'the unpacked sotd cannot run from .*noexec')"
+check "the install is unchanged" "$(cat "$d/before")" "$(snapshot "$d")"
 
 # ---------------------------------------------------------------------------
 printf '\n'
