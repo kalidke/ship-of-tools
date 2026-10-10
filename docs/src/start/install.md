@@ -74,9 +74,11 @@ installer refuses to write over an install already there, whatever role its
 flags ask for; on a host that does run `sotd`, it refuses `--no-service` over
 an install whose record names the systemd unit. Either refusal comes before it
 writes anything under `~/.local/share/sot` or `~/.local/bin`. The remedy for
-the first is to declare the host in `hosts.toml` (for a machine with a home of
-its own, in the hub's `hosts.toml`) and re-run; `--force-role-change` overrides
-either refusal, for a machine whose own role changed.
+the first is to declare the host in `hosts.toml` (`frontend` for a machine that
+runs a window) and re-run; a machine with a home of its own is declared in the
+hub's `hosts.toml` and re-runs with `--hub <hub alias>`, which fetches it. The
+remedy for the second is to drop `--no-service`. `--force-role-change`
+overrides either refusal, for a machine whose own role changed.
 
 Every machine that runs a window also runs its own private local daemon, so
 an entry with `frontend = true` alone installs one as `--local` does.

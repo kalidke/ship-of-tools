@@ -125,21 +125,27 @@ cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launc
   `frontend`), or **the manifest records a daemon or its unit and this run
   would record none** (`--no-service` over a `systemd` record, or the role
   flags under a `hosts.toml` sotd cannot read) → the installer refuses and
-  writes nothing under the prefix or `~/.local/bin`. The remedy is to declare
-  this host in `hosts.toml` (`daemon` or `frontend`; for a machine with a home
-  of its own, in the hub's `hosts.toml`) and re-run, or, on a home several
-  hosts share, to run the installer on a host it already declares. Add
-  `--force-role-change` only as an override, when the human says this
+  writes nothing under the prefix or `~/.local/bin`. The remedy depends on the
+  refusal:
+  - this host is not declared: declare it in `hosts.toml` (`frontend` for a
+    machine that runs a window, `daemon` for one other machines dial) and
+    re-run, or, on a home several hosts share, run the installer on a host it
+    already declares. A machine with a home of its own is declared in the
+    hub's `hosts.toml` and re-runs with `--hub <hub alias>`, which fetches it;
+  - `--no-service` over a `systemd` record: drop `--no-service`;
+  - `hosts.toml` cannot be read: fix it (`sotd topology status` names the line).
+
+  Add `--force-role-change` only as an override, when the human says this
   machine's own role changed.
 - **A manifest you cannot read** — truncated, unknown schema, recording a
   different prefix — is NOT the same as no install. Treat it as unknown state
   and stop; the installer does the same.
 - **Neither** → a fresh install; carry on below.
 
-Only when a live daemon or integration file from a different prefix, an
-install on a host `hosts.toml` runs no sotd on, or a daemon install this run
-would demote, is blocking you, and the human has explicitly authorized stepping
-on it, add
+Only when a live daemon or integration file from a different prefix is blocking
+you and the human has explicitly authorized stepping on it, or when a host or
+record refusal above stands and the human says this machine's own role changed,
+add
 `--force-role-change` to
 the install command. Never add it to get past an error you did not understand.
 

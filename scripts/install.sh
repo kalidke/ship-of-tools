@@ -791,7 +791,7 @@ HOST_DECISION="$(installer_host_decision "$TOPO_READABLE" "$TOPO_ROLE" "$PREFIX"
 case "$HOST_DECISION" in
     refuse:*)
         printf '\033[1;31mERROR:\033[0m %s\n' "${HOST_DECISION#refuse:}" >&2
-        printf '       Declare this host in hosts.toml (daemon or frontend; a machine with a home of its own is declared in the hub'"'"'s hosts.toml) and re-run, or run the installer on a host hosts.toml already declares. --force-role-change overrides this check.\n' >&2
+        printf '       Declare this host in hosts.toml (frontend for a machine that runs a window, daemon for one other machines dial; a machine with a home of its own is declared in the hub'"'"'s hosts.toml and re-runs with --hub <hub alias> to fetch it) and re-run, or run the installer on a host hosts.toml already declares. --force-role-change overrides this check.\n' >&2
         exit 2 ;;
 esac
 RECORD_DECISION="$(installer_record_decision "$PREFIX/install.json" "$TOPO_DECLARED" "$WANT_DAEMON" \
@@ -799,7 +799,7 @@ RECORD_DECISION="$(installer_record_decision "$PREFIX/install.json" "$TOPO_DECLA
 case "$RECORD_DECISION" in
     refuse:*)
         printf '\033[1;31mERROR:\033[0m %s\n' "${RECORD_DECISION#refuse:}" >&2
-        printf '       On a home several hosts share, run the installer on a host hosts.toml declares daemon or frontend. If this machine'"'"'s own role changed, re-run with --force-role-change.\n' >&2
+        printf '       If this host runs the daemon, drop --no-service. If hosts.toml could not be read, fix it (sotd topology status names the line). If this machine'"'"'s own role changed, re-run with --force-role-change.\n' >&2
         exit 2 ;;
 esac
 
