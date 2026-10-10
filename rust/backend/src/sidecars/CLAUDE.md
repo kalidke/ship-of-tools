@@ -74,3 +74,6 @@ for a sampler's life.
   Pluto's `READY`/`OPEN`/`URL`/`ERR` lines with julia/pluto/start.jl; MathJax `{id, tex, display}` with
   rust/backend/sidecars/mathjax/render.mjs.
 - A supervisor uses the `Signal` it was given for spawn and `fired()`; it never selects a different shutdown signal inside its service loop.
+- A test that finds julia or node through the process environment (`contract_tests::executable`, `julia::resolve_bin`)
+  runs its body in `isolated`, or holds `paths::ENV_TEST_LOCK` from that read through its spawn; the ignored Windows
+  julia test in `lifecycle/contain.rs` instead runs alone (`--test-threads=1`) in its own CI job.
