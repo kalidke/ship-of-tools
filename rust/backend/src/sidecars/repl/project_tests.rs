@@ -531,8 +531,10 @@ fn tree_pids(root: u32) -> Vec<u32> {
     while next < tree.len() {
         let parent = tree[next];
         next += 1;
-        for (pid, _) in edges.iter().filter(|(pid, up)| *up == parent && !tree.contains(pid)) {
-            tree.push(*pid);
+        for (pid, _) in edges.iter().filter(|(_, up)| *up == parent) {
+            if !tree.contains(pid) {
+                tree.push(*pid);
+            }
         }
     }
     tree
