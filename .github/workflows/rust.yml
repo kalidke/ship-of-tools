@@ -551,6 +551,14 @@ jobs:
         run: bash scripts/tests/installer-apply.sh
         working-directory: .
 
+      # A home several hosts share: every path that writes, re-renders or retires sotd.service pins it to the hosts that
+      # run sotd, and a retire under a declared topology never disables the shared unit.
+      - name: Test installer shared home (bash)
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 5
+        run: bash scripts/tests/installer-shared-home.sh
+        working-directory: .
+
       # PR #148 Codex review F10: hermetic + fast, so it rides along in this
       # existing ubuntu leg rather than a dedicated job.
       # The context deadline covers foreground children and the final wait.

@@ -129,6 +129,16 @@ whose hostname is the hub. The drop-in file name is fixed and owned by
 left untouched by a re-apply, the same rule `scripts/install.sh` already
 follows for `sotd.service.d`.
 
+Update (2026-10-09, 0.6.6): `apply` wrote that drop-in to
+`sot-relay-tunnel@<host>.d/`, a folder systemd never reads, so every
+shared-home box started every tunnel and each one rebound the others'
+`sot-relay.sock`. The hub now keeps one pin on the template,
+`sot-relay-tunnel@.service.d/topology.conf`, matching the hub's name or its
+name followed by a domain, at every `apply` and at each start of its daemon;
+the unread per-instance files an older `apply` left are harmless and stay
+until removed by hand. `sotd.service` carries the same
+kind of pin, naming every host that runs sotd (`sotd topology pin`).
+
 The shell profile's per-host `case` on `SOT_RELAY_ENDPOINT` is superseded
 too — see `.sot/hosts.toml.example` and the installer's post-install message
 for the one-liner that replaces it (`sotd topology relay-endpoint`, correct

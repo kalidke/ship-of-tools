@@ -25,6 +25,8 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
 - `SOT_LAUNCH_WAIT_S` equals `lease::LAUNCH_WAIT` in `rust/protocol/src/ops/lease.rs` (`launcher_bounds_match_ops`). The
   ensure's wait stays longer than the daemon's own lock wait, so `sot_daemon_ensure` never kills a daemon it started
   and never removes the socket.
+- `sot_rerender_owned` pins the re-rendered unit with `sotd topology pin` before its reload; a failed pin keeps the
+  pin the unit had.
 - A rendered unit or wrapper is the install's own only when `sot_service_owned` or `sot_wrapper_owned` says so (the
   prefix embedded in it matches); `sot_rerender_owned` and `sot_backup_owned` touch no other file.
 - `sot_prune_logs` keeps a log while the pid in its name is alive or while it is the newest, and a failed `rm` is

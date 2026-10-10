@@ -95,6 +95,16 @@ pwsh -File scripts\install-shortcut.ps1
 That refreshes the desktop shortcut and repoints any existing Ship of Tools
 taskbar pin to `scripts\launch-sot.ps1`.
 
+## The daemon does not start on this host
+
+If `journalctl --user -u sotd.service` says the start was skipped because a
+condition check failed, the unit's host pin, `sotd.service.d/topology.conf`,
+does not name this host: the installer pins the unit to the hosts
+`~/.config/sot/hosts.toml` declares `daemon` or `frontend`, matched by kernel
+hostname. Declare the host there (on the hub), then run
+`sotd topology pin --dir ~/.config/systemd/user` and
+`systemctl --user daemon-reload && systemctl --user start sotd` on it.
+
 ## A session will not start on a shared home
 
 The daemon keeps capsule session records under

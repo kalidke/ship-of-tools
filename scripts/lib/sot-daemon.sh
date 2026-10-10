@@ -294,6 +294,9 @@ sot_rerender_owned() {  # <prefix> <target> <checkout>
     local unit="$HOME/.config/systemd/user/sotd.service" wrapper="$HOME/.local/bin/sot-launch"
     if sot_service_owned "$prefix"; then
         render_sotd_unit "$prefix" "$checkout/deploy/sotd.service" "$unit" || return 1
+        # The unit's host pin follows hosts.toml; a failure keeps the pin it had.
+        "$prefix/bin/sotd" topology pin --dir "$HOME/.config/systemd/user" >/dev/null \
+            || echo "sot-apply: sotd topology pin failed (sotd.service keeps its previous host pin)" >&2
         # The file on disk is right either way; the live check reads NeedDaemonReload.
         timeout 10 systemctl --user daemon-reload >/dev/null 2>&1 \
             || echo "sot-apply: systemctl --user daemon-reload failed (the unit file is current)" >&2

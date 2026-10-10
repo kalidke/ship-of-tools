@@ -24,6 +24,11 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `ping_reaper.rs`: server; the reaper of half-open long-lived client roles, over the wire
 - `preview_order.rs`: server; a `preview.get` written behind a `preview.set_scale` on one connection carries the new scale
 - `relay_refresh.rs`: topology; `sotd topology refresh` on a scratch hub with a stand-in `systemctl`
+- `unit_pin.rs`: topology; `sotd topology pin` and `refresh` write host pins into a scratch systemd folder, real systemd
+  loads it in test mode (`systemd --test --user`) and `systemd-analyze --user condition` evaluates the attached
+  conditions on this box; `apply` enables nothing when a pin cannot be written, and a dry `apply` writes no pin;
+  `status` without a hosts.toml prints the words the installer matches; and the installer's role rule agrees with
+  `sotd_hosts`
 - `shell_dial.rs`: topology; comm-lib's `sot_dial` (with and without its bound) and `sot_oneshot_request`, and the
   launch scripts' `sot_socket_open`, run by bash against the built `sotd`: a socket another account listens on (needs
   passwordless `sudo -n`; skips without it except on CI) and a pipe another account serves are refused with nothing

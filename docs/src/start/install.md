@@ -45,8 +45,8 @@ the role explicitly:
 | `--be-only` | headless backend only (servers) |
 
 Plus `--version vX.Y.Z` to pin a release (default: latest), `--prefix <dir>` to
-relocate the install, `--no-service` on backend roles when a
-shared-home deployment should not get a persistent user systemd unit,
+relocate the install, `--no-service` on backend roles when something else
+supervises `sotd`,
 `--hub <ssh-alias>` to copy the hub's `~/.config/sot/hosts.toml` to this
 machine first (for a machine that does not share the hub's home directory),
 and `--force-role-change` (see the next section).
@@ -54,6 +54,18 @@ and `--force-role-change` (see the next section).
 If `~/.config/sot/hosts.toml` already names this host, that entry decides
 which parts are installed and enabled here, and a role flag on the command
 line is ignored.
+
+A home directory shared by several Linux hosts shows them all the same
+`sotd.service` and its enable link. The installer pins the unit with
+`sotd topology pin`: a drop-in, `sotd.service.d/topology.conf`, under which
+systemd starts it only on the hosts `hosts.toml` declares `daemon` or
+`frontend`, so on a shared home that file must list every host. The pin
+compares the kernel hostname, so a host that `SOT_SELF_HOST` renames is not
+matched. An install or update rewrites the pin, and so do the hub's daemon at
+each start and `sotd topology apply` there; a host whose entry changed reads
+it at its next boot or `systemctl --user daemon-reload`. Stop the daemon on a host that should no
+longer run one with `systemctl --user stop sotd.service`; never `disable` it
+there, since the enable link is shared too.
 
 Every machine that runs a window also runs its own private local daemon, so
 an entry with `frontend = true` alone installs one as `--local` does.

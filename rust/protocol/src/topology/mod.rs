@@ -372,6 +372,14 @@ pub fn dialable_hosts(topo: &Topology) -> impl Iterator<Item = &HostDecl> {
     topo.hosts.iter().filter(|h| h.daemon)
 }
 
+/// Every host that runs `sotd`, in file order: each declaring `daemon` or `frontend`, since a box that runs a window
+/// runs its own private daemon too (the installer's `installer_topology_role` is the shell twin of this rule). This
+/// list is what [`relay_units::daemon_pin`] lets systemd start `sotd.service` on; it is never empty, because the hub
+/// must declare `daemon`.
+pub fn sotd_hosts(topo: &Topology) -> Vec<&str> {
+    topo.hosts.iter().filter(|h| h.daemon || h.frontend).map(|h| h.name.as_str()).collect()
+}
+
 /// `(host, endpoint)` for every [`dialable_hosts`] entry, resolved for
 /// `self_host`: its own local socket for itself; on the hub, the hub's own
 /// socket for a remote host ([`relay_socket_path`] — no forward needed,
