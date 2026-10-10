@@ -51,7 +51,7 @@ connection.
   reference checks; the plugin contract beyond `FileType`) are described, marked unbuilt, in `docs/src/guide/modes.md`,
   `docs/src/guide/concept-layer.md`, `docs/src/guide/color-coding.md`, `docs/src/extend/abi.md` and
   `docs/src/extend/mode.md`.
-- A session that runs in a Ship of Tools row reads `docs/ROW-SESSION.md` at its start and after each compaction: the
+- Every session, in a row or outside any, reads `docs/SESSION.md` at its start and after each compaction: the
   workspace row, worktrees, the window's restart, releases, the handoff and messaging between sessions. A subagent
   does not read it and uses no mail; it reports to the session that launched it.
 
@@ -93,3 +93,4 @@ connection.
   the folder that owns it.
 - Run a command on a second host with `scripts/tests/on-host.sh HOST DIR -- CMD`, never a hand-built `env -u` list
   inside a quoted ssh command: its newlines can run a bare `env` there and print that host's environment.
+- Never kill the window's process: ADR 0017 says how it restarts.

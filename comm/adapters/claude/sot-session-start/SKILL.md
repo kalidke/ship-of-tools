@@ -34,8 +34,10 @@ nothing to arm, own or re-arm. Mail is read with `comm-poll.sh`.
 
 **Identity**: a pin (`SOT_COMM_NAME`, or a private `SOT_COMM_SELF_FILE`)
 always wins; otherwise a validated prior identity; otherwise fresh
-derivation — never manufactured from a lower-priority source. A
-lane that doesn't own its ambient identity slot MUST pin both.
+derivation — never manufactured from a lower-priority source. Only a
+session holds an identity: a row's own session, whose self-file the daemon
+pins, or a session outside any row. Nothing started inside a session (a
+subagent, `codex exec`, `claude -p`) joins: it uses no mail.
 `identity=MISMATCH` and a `REFUSED` start (`identity=FAIL`) are different
 problems with different fixes — see `references/reclaim-handle.md`.
 

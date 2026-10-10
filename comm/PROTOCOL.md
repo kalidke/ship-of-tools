@@ -580,10 +580,10 @@ Monitor exists.
   \x1b) reads as a separator, an unknown marker or an encoded newline or
   return. On Windows an unpaired UTF-16 surrogate in a command line reads as
   U+FFFD. On Linux a process whose whole command line is exactly `!end` ends
-  the walk as if it were the top. Nor does it see a subagent: a subagent's
-  shell has its session's ancestry, so the check takes it for the session,
-  and that a subagent neither sends nor reads rests on nothing in its start
-  or its brief telling it to.
+  the walk as if it were the top. Nor does the check see a subagent: a
+  subagent's shell has its session's ancestry, so the check takes it for the
+  session, and that a subagent neither sends nor reads rests on nothing in
+  its load or its brief telling it to use mail.
 
 ## Dependencies
 

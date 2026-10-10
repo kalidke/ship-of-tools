@@ -6,7 +6,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" exec python3 - "$@" <<'
 import os, re, subprocess, sys
 
 FILE_LIMIT, FOLDER_LINES, FOLDER_FILES = 800, 3000, 12
-NAMED_PATH_FILES = ["docs/ownership.md", "docs/integration.md", "docs/ROW-SESSION.md", "CLAUDE.md"]   # pages whose backticked repo paths must exist
+NAMED_PATH_FILES = ["docs/ownership.md", "docs/integration.md", "docs/SESSION.md", "CLAUDE.md"]   # pages whose backticked repo paths must exist
 SRC_EXT = (".rs", ".jl", ".sh", ".ps1")
 
 def usage(msg=None):

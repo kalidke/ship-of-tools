@@ -69,14 +69,14 @@ This means the identity slot `comm-session-start.sh` would have joined into
 (the self-file at `$SOT_COMM_SELF_FILE`, or the ambient pane-keyed one) is
 currently validated for a **different project** — mutating it (even via an
 ordinary bare join) would silently steal that slot from whoever legitimately
-holds it. This is not a rare edge case for a **lane session**: if
-you did not launch with your own `$SOT_COMM_NAME` (a distinct handle) and,
-ideally, your own private `$SOT_COMM_SELF_FILE` (a slot nobody else reads or
-writes), you may be inheriting an ambient identity slot — e.g. a pane shared
-with the session that spawned you — that genuinely belongs to someone else
-right now. (This is exactly how a coordinator session's own identity was
-clobbered by an unpinned subagent during this feature's own development —
-see the PR's implementation report.)
+holds it. A session outside any row meets this most: every no-workspace
+shell on this host shares one derived slot (`<host>__nopane.txt`), so
+another project's session may hold it right now. Only a session holds an
+identity, a row's own session or a session outside any row; nothing started
+inside a session (a subagent, `codex exec`, `claude -p`) joins, because it
+uses no mail. (An unpinned subagent once clobbered a coordinator session's
+own identity this way, during this feature's own development — see the PR's
+implementation report.)
 
 **The fix is at the LAUNCHER, not here**: re-run with an explicit pin —
 
@@ -84,22 +84,21 @@ see the PR's implementation report.)
 SOT_COMM_NAME=<a-distinct-handle> ~/.sot-comm/bin/comm-session-start.sh
 ```
 
-— or, for a lane that should never share the parent's slot at all,
-also pin a private self-file so nothing it does can ever touch the parent's:
+— or, so that nothing you do can touch the shared slot, also pin a private
+self-file:
 
 ```bash
-SOT_COMM_NAME=<a-distinct-handle> SOT_COMM_SELF_FILE=<a-path-only-this-lane-uses> \
+SOT_COMM_NAME=<a-distinct-handle> SOT_COMM_SELF_FILE=<a-path-only-this-session-uses> \
     ~/.sot-comm/bin/comm-session-start.sh
 ```
 
-That private path is the right shape for a lane, which owns no row: the row a
-session declares its handle into is read from the self-file's BASENAME
-(`<host>__<workspace-id>.txt`), so a lane-only name declares nothing to the
-daemon — exactly what a lane should do, and what stops it rewriting the
-parent row's handle. If you are the row's OWN session
-and still need a slot of your own, keep that basename and put it in a private
-directory instead; a different basename would leave your row naming whatever
-handle last declared into it.
+That private path is the right shape for a session outside any row: the row
+a session declares its handle into is read from the self-file's BASENAME
+(`<host>__<workspace-id>.txt`), so a private self-file is never named that
+way, and a name of its own declares nothing to the daemon. If you are a
+row's OWN session and still need a slot of your own, keep that basename and
+put it in a private directory instead; a different basename would leave your
+row naming whatever handle last declared into it.
 
 Do **not** "fix" a `REFUSED` by removing or hand-editing the self-file it
 named — that file may be a live session's real identity record. Pin your own
