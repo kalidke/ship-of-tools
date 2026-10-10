@@ -125,11 +125,12 @@ cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launc
   `frontend`), or **the manifest records a daemon or its unit and this run
   would record none** (`--no-service` over a `systemd` record, or the role
   flags under a `hosts.toml` sotd cannot read) → the installer refuses and
-  writes nothing under the prefix or `~/.local/bin`. On a home several hosts
-  share, that install serves the hosts that run sotd: run the installer on one
-  of them, or declare this host in `hosts.toml`. Add `--force-role-change` only
-  when the human says this machine's own role changed, or that this prefix is
-  this machine's own.
+  writes nothing under the prefix or `~/.local/bin`. The remedy is to declare
+  this host in `hosts.toml` (`daemon` or `frontend`; for a machine with a home
+  of its own, in the hub's `hosts.toml`) and re-run, or, on a home several
+  hosts share, to run the installer on a host it already declares. Add
+  `--force-role-change` only as an override, when the human says this
+  machine's own role changed.
 - **A manifest you cannot read** — truncated, unknown schema, recording a
   different prefix — is NOT the same as no install. Treat it as unknown state
   and stop; the installer does the same.

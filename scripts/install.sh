@@ -791,7 +791,7 @@ HOST_DECISION="$(installer_host_decision "$TOPO_READABLE" "$TOPO_ROLE" "$PREFIX"
 case "$HOST_DECISION" in
     refuse:*)
         printf '\033[1;31mERROR:\033[0m %s\n' "${HOST_DECISION#refuse:}" >&2
-        printf '       On a home several hosts share, that install serves the hosts hosts.toml declares daemon or frontend: run the installer on one of them, or declare this host there. If %s is this machine'"'"'s own, re-run with --force-role-change.\n' "$PREFIX" >&2
+        printf '       Declare this host in hosts.toml (daemon or frontend; a machine with a home of its own is declared in the hub'"'"'s hosts.toml) and re-run, or run the installer on a host hosts.toml already declares. --force-role-change overrides this check.\n' >&2
         exit 2 ;;
 esac
 RECORD_DECISION="$(installer_record_decision "$PREFIX/install.json" "$TOPO_DECLARED" "$WANT_DAEMON" \

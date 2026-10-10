@@ -172,6 +172,7 @@ check "the shared install is unchanged" "$(cat "$d/before")" "$(snapshot "$d")"
 d="$WORK/unlisted"; rc=0; out="$(shared_install_run "$d" "hub-box hub,daemon" 755 --be-only)" || rc=$?
 check "an unlisted host asking for a daemon is refused" "2" "$rc"
 check "it says why" "1" "$(says "$out" 'hosts.toml runs no sotd on this host, and .* already holds an install')"
+check "it names the remedy first" "1" "$(says "$out" "Declare this host in hosts.toml .*hub's hosts.toml.* and re-run")"
 check "the shared install is unchanged" "$(cat "$d/before")" "$(snapshot "$d")"
 d="$WORK/noexec"; rc=0; out="$(shared_install_run "$d" "$me daemon" 644 --be-only)" || rc=$?
 check "an unpacked sotd that cannot run stops the install" "1" "$rc"
