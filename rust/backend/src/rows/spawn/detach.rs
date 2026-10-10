@@ -180,8 +180,8 @@ pub(crate) fn supervisor_stderr_std() -> Stdio {
 }
 
 /// Launch `sot-capsule supervise <state_dir> <--start|--resume>
-/// --survival <normal|degraded> --assume-no-rollback-target -- <agent
-/// argv>` DETACHED, so the supervisor authority survives the
+/// --survival <normal|degraded> --assume-no-rollback-target
+/// [--first-leg-only <tok>]... -- <agent argv>` DETACHED, so the supervisor authority survives the
 /// daemon's own exit — the daemon must not be its kill domain (ADR
 /// 0042 L1a). On Unix the durable parent forks it after claiming the
 /// row's authority fence (`durable`, ADR 0043 decision 37): a claimed
@@ -191,7 +191,8 @@ pub(crate) fn supervisor_stderr_std() -> Stdio {
 /// `line`'s second parameter — whether the command line starts with
 /// `systemd-run --user --scope … --` (the escape) or with
 /// `<sot-capsule>` directly (bare) — so the shared tail (`supervise`,
-/// `state_dir`, mode, survival, `--assume-no-rollback-target`, argv)
+/// `state_dir`, mode, survival, `--assume-no-rollback-target`,
+/// [`first_leg_only`]'s pairs, argv)
 /// is written ONCE regardless of which head it lands on. `scoped` is
 /// always `false` on Windows (no scope concept there).
 /// `--assume-no-rollback-target` is mandatory: `sot_log::supervisor::supervise`

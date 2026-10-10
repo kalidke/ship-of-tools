@@ -108,9 +108,9 @@ fi
 # the flag really does execute an untrusted hook — a /hooks panel reading
 # Active=0 reflects PERSISTED trust and does not predict behaviour under this
 # flag. See comm/adapters/codex/hooks.README.md.
-# Every ccx starts FRESH; only --continue scans for this folder's last conversation (--resume <id> names one).
-# --capsule and --fresh are accepted and change nothing here: a supervisor spawned before this rule still respawns
-# its legs as `ccx --capsule`.
+# Every ccx starts FRESH; only --continue scans for this folder's last conversation (--resume <id> names one), and
+# --fresh overrides --continue. --capsule is accepted and changes nothing here: the daemon keeps passing it because the
+# installed ccx is refreshed only by update_comm, and an older ccx starts fresh only with --capsule.
 SCAN=0
 [ "$CONTINUE" = 1 ] && [ "$FRESH" = 0 ] && [ -z "$RESUME_ID" ] && SCAN=1
 if [ "$SCAN" = 1 ]; then

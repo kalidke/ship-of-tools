@@ -61,8 +61,8 @@ daemon starts capsules and lists them, but does not hold them up.
 
 When a session's agent restarts, or a session is reopened after it ended, the agent starts a fresh conversation, which
 first reads the session's handoff file (`dev/output/handoff-<handle>.md` in the project, when it has one). An earlier
-conversation comes back only when asked: `/resume` inside Claude Code, or `ccb --continue` / `ccx --continue` from a
-terminal.
+conversation comes back only when asked: `/resume` inside Claude Code, `ccb --continue` / `ccx --continue` from a
+terminal, or a reauth (`/reauth`), which continues the same conversation on the new account.
 
 On Linux each capsule supervisor runs in its own transient `systemd --user`
 scope, outside the daemon's unit, which is what lets it survive a daemon

@@ -369,6 +369,99 @@ fn a_cancel_landing_between_connect_and_publish_is_never_missed() {
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
+/// The reauth's real path: a supervisor started `--resume` on a state dir whose run has ended rests at
+/// `EndedNoRespawn` with no producer run, and the reset's leg is the reauth's own leg, so it keeps its first-leg-only
+/// token; once that leg has reached Ready, the respawn after it does not.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+    let log_path = dir.path().join("argv.log");
+
+    // The run the reauth ends: start, Ready, end, stop.
+    let mut first = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    end_run_and_expect_record_closed(&conn, "end-before-reauth", "test", voyage.clone());
+    let _ = poll_to_terminal(&conn, "end-before-reauth", Duration::from_secs(60));
+    let _ = command(&conn, "stop-before-reauth", SupervisorOp::Stop);
+    let _ = wait_for_exit(&mut first, Duration::from_secs(30));
+    drop(conn);
+
+    // The reauth's supervisor: `--resume` mode with the id first-leg-only.
+    let script = format!("printf '%s\\n' \"$*\" >> '{}'; exec sleep 300", log_path.display());
+    let mut cmd = Command::new(capsule_exe());
+    cmd.arg("supervise")
+        .arg(&state_dir)
+        .arg("--resume")
+        .arg("--first-leg-only")
+        .arg("--resume")
+        .arg("--assume-no-rollback-target")
+        .arg("--")
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(&script)
+        .arg("leg")
+        .arg("--resume")
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let mut guard = CapsuleGuard::spawn(&mut cmd);
+    let supervisor_pid = guard.id();
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    poll_until(
+        || matches!(status(&conn), (_, _, SupervisorPhase::EndedNoRespawn)).then_some(()),
+        Duration::from_secs(30),
+        "the reauth's supervisor to rest at EndedNoRespawn",
+    );
+    assert_eq!(command(&conn, "reauth-reset", SupervisorOp::Reset { voyage: Some(voyage) }), SupervisorOperationState::Accepted);
+    let _ = poll_to_terminal(&conn, "reauth-reset", Duration::from_secs(30));
+    let (new_voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+
+    let read_lines = |path: &Path| -> Option<Vec<String>> {
+        std::fs::read_to_string(path).ok().map(|c| c.lines().map(str::to_string).collect())
+    };
+    let lines = poll_until(|| read_lines(&log_path).filter(|l| !l.is_empty()), Duration::from_secs(30), "the reset's leg argv");
+    assert_eq!(lines[0], "--resume", "the reauth's own leg (the reset's) must keep its first-leg-only token");
+
+    let reset_leg_pid = poll_until(
+        || direct_children_of(supervisor_pid).into_iter().next(),
+        Duration::from_secs(10),
+        "the reset's leg child pid",
+    );
+    unsafe {
+        libc::kill(reset_leg_pid as libc::pid_t, libc::SIGKILL);
+    }
+    let lines = poll_until(|| read_lines(&log_path).filter(|l| l.len() >= 2), Duration::from_secs(30), "the respawned leg argv");
+    assert_eq!(lines[1], "", "a leg after the reauth's own leg reached Ready must not carry the token");
+
+    // A later reset, after a producer ran, starts a leg without the token too (the reset site goes through
+    // `leg_argv`, never the captured argv whole).
+    let (current, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
+    assert_eq!(current, new_voyage);
+    end_run_and_expect_record_closed(&conn, "end-before-second-reset", "test", current.clone());
+    let _ = poll_to_terminal(&conn, "end-before-second-reset", Duration::from_secs(60));
+    poll_until(
+        || matches!(status(&conn), (_, _, SupervisorPhase::EndedNoRespawn)).then_some(()),
+        Duration::from_secs(30),
+        "EndedNoRespawn before the second reset",
+    );
+    assert_eq!(command(&conn, "second-reset", SupervisorOp::Reset { voyage: Some(current) }), SupervisorOperationState::Accepted);
+    let _ = poll_to_terminal(&conn, "second-reset", Duration::from_secs(30));
+    let (last, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    let lines = poll_until(|| read_lines(&log_path).filter(|l| l.len() >= 3), Duration::from_secs(30), "the second reset's leg argv");
+    assert_eq!(lines[2], "", "a reset after a producer ran must not carry the token");
+
+    end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", last);
+    let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
+    let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
+}
+
 /// A first-leg-only token is never an exemption: a producer
 /// that fails fast for a reason that has NOTHING to do with the stripped
 /// token (every leg dies the same way regardless) must still trip the
