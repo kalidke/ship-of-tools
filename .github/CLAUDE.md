@@ -10,12 +10,27 @@ scripts/CLAUDE.md.
 
 ## Workflows
 - `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `docs/tools/**`, `comm/**`, `agents/**` and the file
-  itself) and dispatch. Jobs: `test` (build and test on ubuntu, windows and macos, after `npm ci` for the MathJax helper's modules, the PowerShell 5.1 parse and the
-  `scripts/tests/` suites on their legs, the comm hermetic suites on ubuntu, the agents CLI suites on ubuntu (the comm list names `test-stage-bin.sh`; among them `test-ccx-launch.sh`, which proves ccx's default handle), and on ubuntu the steps "Check the layout"
-  (`scripts/tests/check-layout.sh` with `check-layout.allow`) and "Test the layout tools" (its two self-tests)), `conpty-windows-2022` (ConPTY and capsule
-  tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the latest published tag
-  into a clean container). The step "Test selected Rust bodies" runs the portable real-libtest shell proofs on the Linux, Windows and macOS legs; it invokes no daemon or peer suite. Its Linux leg also runs the candidate gate's finite selected-job and runtime-listing proofs; the full candidate gate is not invoked by that proof step. The ubuntu leg's step "Test L3 storage exhaustion" makes a private 64 MiB ext4 loop volume, runs `fault_storage` on it with `--include-ignored`, then unmounts it, releases the loop device and removes its folder; sudo is used only in that step, and a failed setup or teardown fails the job.
-  Every leg of `test` installs Julia 1.13 (`julia-actions/setup-julia`), and before "Test workspace" the step "Prepare the Julia depot the WGL page test reads" adds WGLMakie 0.13, precompiled, to a depot in the runner's temporary folder that `JULIA_DEPOT_PATH` names for the rest of the job: the sidecar tests start that Julia, and the WGL page test adds WGLMakie from that depot offline.
+  itself) and dispatch. Jobs: `test` (build and test on windows and macos, after `npm ci` for the MathJax helper's modules, and on windows the
+  PowerShell 5.1 parse and the `scripts/tests/` `.ps1` suites), `test-linux` (the ubuntu build and test, one job per
+  shard, named "build+test (ubuntu-latest, <shard>)": its `SHARDS` table names the test targets of the shards `outage`,
+  `capsule`, `wake` and `sotd`; the shard `rest` runs every other test executable cargo builds, then the doc tests, and
+  fails when the table names a shard the matrix lacks; every command selects `--workspace`; only `sotd` runs `npm ci`
+  and the WGL depot step, and only `rest` saves the shared cache), `checks-linux` ("checks (ubuntu-latest)": the clippy
+  gates and the allowance count, the selected-body proofs, the L3 run, the shell parse, "Check the layout"
+  (`scripts/tests/check-layout.sh` with `check-layout.allow`), "Test the layout tools" (its two self-tests), the
+  `scripts/tests/` bash suites, the comm hermetic suites and the agents CLI suites (the comm list names
+  `test-stage-bin.sh`; among them `test-ccx-launch.sh`, which proves ccx's default handle)), `conpty-windows-2022`
+  (ConPTY and capsule tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the
+  latest published tag into a clean container). The step "Test selected Rust bodies" runs the portable real-libtest
+  shell proofs in `test` on windows and macos and in `checks-linux` on ubuntu; it invokes no daemon or peer suite. On
+  ubuntu it also runs the candidate gate's finite selected-job and runtime-listing proofs; the full candidate gate is
+  not invoked by that proof step. The step "Test L3 storage exhaustion" in `checks-linux` makes a private 64 MiB ext4
+  loop volume, runs `fault_storage` on it with `--include-ignored`, then unmounts it, releases the loop device and
+  removes its folder; sudo is used only in that step, and a failed setup or teardown fails the job.
+  Every leg of `test` and every shard of `test-linux` installs Julia 1.13 (`julia-actions/setup-julia`); in `test`
+  before "Test workspace", and in the shard `sotd`, the step "Prepare the Julia depot the WGL page test reads" adds
+  WGLMakie 0.13, precompiled, to a depot in the runner's temporary folder that `JULIA_DEPOT_PATH` names for the rest of
+  the job: the sidecar tests start that Julia, and the WGL page test adds WGLMakie from that depot offline.
   The heartbeat context-deadline suite runs independently on Ubuntu, macOS and Windows Git Bash. Its per-behavior and sensitivity receipts distinguish fixture entry, actual release times, hook exit, both EOFs and positive lifetime cleanup; MSYS budget coverage remains separate from native Python P5 and its termination acceptance gate.
   window-close-windows and window-close-macos run the opt-in main-thread native window_close suite on hosted Windows and macOS; a missing body, native window or required observation is not a passing result. Ordinary native close must exit 0 before 2.5 seconds without the backstop; deliberate stalled teardown must end under the three-second backstop with the decided code.
   window-minimized-windows and window-minimized-macos run the native ten-minute minimized-window event-progress check on hosted Windows and macOS; a runner without a usable native window is not a passing result.
@@ -48,7 +63,7 @@ scripts/CLAUDE.md.
   carries `#[allow(clippy::too_many_lines, reason = "...")]`, and the step "Function length allowances can only fall"
   pins how many such allows `rust/` holds (not `rust/vt100`); removing one means lowering that number in the same commit. It also reads the feature-gated native targets (test-pane-timing, test-window-close).
 - Disallowed methods are gated: the `rust.yml` step "Disallowed methods" runs clippy's `disallowed_methods` over every
-  library, binary and build script on all three legs. `rust/clippy.toml` holds one array in labelled groups, each
+  library, binary and build script on all three platforms. `rust/clippy.toml` holds one array in labelled groups, each
   opening with its rule. A sanctioned site carries `#[allow(clippy::disallowed_methods, reason = "...")]` on the one
   statement that calls the method; a new method joins its group, and a new rule is a new group in the same array. Like
   the other clippy steps it runs on main and on demand, not on every branch push, so a lane merge gate runs the same
@@ -57,8 +72,8 @@ scripts/CLAUDE.md.
   tree before the merge.
 - The daemon-lifetime harness (`rust/backend/tests/daemon_lifetime`) has its own jobs: "daemon lifetime harness (Linux)"
   runs every case with Julia 1.12 and Quarto 1.7.31 installed and the capsule built with its phase barriers, and "daemon
-  lifetime premises (macOS)" runs the premises on real children; neither is part of the `test` matrix's plain run, which
-  builds the harness without its fault feature. Before the harness, the Linux job installs and compiles Pluto's
+  lifetime premises (macOS)" runs the premises on real children; neither is part of the plain runs of `test` and `test-linux`, which
+  build the harness without its fault feature. Before the harness, the Linux job installs and compiles Pluto's
   environment and Quarto's Julia runner into the runner's depot once (one notebook run, one document rendered), and
   hands the cases those environments through `SOT_L2_PLUTO_MANIFEST` and `QUARTO_JULIA_PROJECT`.
 - The Windows containment tests that need julia, Git for Windows' bash or a job around the test process are `#[ignore]`

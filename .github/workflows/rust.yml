@@ -247,7 +247,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest, macos-latest]
     defaults:
       run:
         working-directory: rust
@@ -279,13 +279,6 @@ jobs:
       # that does not exist on a leg draws a warning there.
       - name: Disallowed methods
         run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
-      - name: Function length allowances can only fall
-        if: matrix.os == 'ubuntu-latest'
-        working-directory: .
-        run: |
-          n=$(git grep -c 'clippy::too_many_lines' -- rust ':!rust/vt100' | awk -F: '{ s += $2 } END { print s + 0 }')
-          echo "allowances: $n (pinned: 65)"
-          [ "$n" -eq 65 ] || { echo "the count changed: lower 65 here when you remove an allowance"; exit 1; }
       # --nocapture: the fault sweeps REPORT (never assert) their torn-tail
       # hit counts on stderr — captured output would hide them from CI logs,
       # making the sweeps' actual coverage invisible (review finding).
@@ -331,11 +324,9 @@ jobs:
                   subprocess.run(['cargo', 'test', '--config', 'target."cfg(all())".runner=' + json.dumps(['python3', str(runner), str(directory)]), '--manifest-path', str(manifest), '-p', 'sot-log', '--test', 'test_body_fixture', '--locked', name, '--'] + flags + ['--format', 'pretty', '--color', 'never', '--show-output', '--test-threads=1'], cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=True)
           PYCARGO
           proof_mode=--portable
-          if [ '${{ matrix.os }}' = ubuntu-latest ]; then proof_mode=--all; fi
           ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh "$proof_mode" "$(cat ../dev/output/iso-sh-ci-path)"
 
       - name: Folder trust premises (Windows and macOS)
-        if: matrix.os != 'ubuntu-latest'
         run: |
           cargo test -p sot-backend --bin sotd trust_declaration --locked -- --nocapture
           cargo test -p sot-backend --bin sotd agents::folder_trust --locked -- --nocapture
@@ -354,74 +345,6 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace --locked --no-fail-fast -- --nocapture
 
-      - name: Test L3 storage exhaustion
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          umask 022
-          case "$RUNNER_TEMP" in
-            /*) ;;
-            *) printf 'L3 HARNESS FAILURE: runner temporary root is not absolute\n'; exit 1 ;;
-          esac
-          fixture_root=$(mktemp -d "$RUNNER_TEMP/l3-ext4.XXXXXX")
-          image="$fixture_root/volume.img"
-          volume_mount="$fixture_root/volume"
-          loop_device=''
-          mounted=0
-          cleanup() {
-            local failed=0
-            if [ "$mounted" -eq 1 ]; then
-              if sudo umount "$volume_mount" && ! mountpoint -q "$volume_mount"; then
-                mounted=0
-                printf 'L3 hosted ext4 unmount=ok\n'
-              else
-                printf 'L3 HARNESS FAILURE: hosted unmount failed\n'
-                failed=1
-              fi
-            fi
-            if [ "$mounted" -eq 0 ] && [ -n "$loop_device" ]; then
-              if sudo losetup --detach "$loop_device" && remaining=$(sudo losetup --associated "$image") && [ -z "$remaining" ]; then
-                loop_device=''
-                printf 'L3 hosted ext4 loop-release=ok\n'
-              else
-                printf 'L3 HARNESS FAILURE: hosted loop release failed\n'
-                failed=1
-              fi
-            fi
-            if [ "$failed" -eq 0 ] && [ "$mounted" -eq 0 ] && [ -z "$loop_device" ]; then
-              if rm -rf -- "${fixture_root:?}"; then
-                printf 'L3 fixture linux detach=ok owned-root-removal=ok\n'
-              else
-                printf 'L3 HARNESS FAILURE: owned fixture root removal failed\n'
-                return 1
-              fi
-            else
-              printf 'L3 HARNESS FAILURE: owned fixture retained for cleanup\n'
-              return 1
-            fi
-          }
-          trap 'status=$?; trap - EXIT; cleanup || status=1; exit "$status"' EXIT
-          trap 'exit 130' INT TERM
-          mkdir "$volume_mount"
-          truncate -s 64M "$image"
-          loop_device=$(sudo losetup --find --show "$image")
-          sudo mkfs.ext4 -F "$loop_device" > "$fixture_root/format.log" 2>&1
-          mounted=1
-          sudo mount -t ext4 "$loop_device" "$volume_mount"
-          mountpoint -q "$volume_mount"
-          sudo chown "$(id -u):$(id -g)" "$volume_mount"
-          sudo chmod 0700 "$volume_mount"
-          printf 'L3 hosted ext4 setup=ok declared-bytes=67108864 mount=validated\n'
-          L3_HOSTED_VOLUME_ROOT="$volume_mount" L3_HOSTED_VOLUME_BYTES=67108864 TMPDIR="$RUNNER_TEMP" \
-            CARGO_NET_OFFLINE=true \
-            nice timeout 12m cargo test -p sot-log --test fault_storage -j 8 --locked -- --include-ignored --nocapture --test-threads=1
-
-      # (The dedicated lane_bridge step was deleted 2026-09-18: "Test
-      # workspace" above runs that suite byte-identically, so the step was
-      # an 8-minute second run bought for a per-suite budget the job-level
-      # timeout now provides.)
       # The PowerShell scripts are executed by nothing in CI, and no dev box in
       # the Linux fleet has pwsh — so before this step, a ps1 syntax error
       # shipped to main was first discovered by the next FE LAUNCH (launchers
@@ -506,8 +429,255 @@ jobs:
         run: .\scripts\tests\test-topology-plan.ps1
         working-directory: .
 
+      # The context deadline covers foreground children and the final wait.
+      # Fixtures are finite, isolated, and require entry and completion evidence.
+      - name: Test heartbeat context deadline (hermetic)
+        shell: bash
+        timeout-minutes: 5
+        working-directory: .
+        run: bash comm/tests/test-heartbeat-ctx-wait.sh
+
+  # The ubuntu build and test, one job per shard, so the slowest test binaries run side by side. SHARDS is the one table
+  # of named shards, a row each: shard, target kind (test or bin), target name, then any libtest arguments. The shard
+  # `rest` runs every test executable the table does not name, then the doc tests, and fails when the table names a shard
+  # the matrix lacks. Each binary's SERIAL lock guards only its own process, so binaries on different runners share
+  # nothing; lane_bridge's two rows split it by complementary filters. Every command selects `--workspace`, so features
+  # unify as in one `cargo test --workspace`.
+  test-linux:
+    name: build+test (ubuntu-latest, ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [outage, capsule, wake, sotd, rest]
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      SHARDS: |
+        outage  test lane_bridge outage::
+        capsule test lane_bridge --skip outage::
+        capsule test capsule_workspaces
+        wake    test comm_wake
+        wake    test window_start
+        sotd    bin  sotd
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          shared-key: test-linux
+          save-if: ${{ matrix.shard == 'rest' }}
+      # The sotd unit tests render through the real MathJax node script, which needs its npm modules.
+      - uses: actions/setup-node@v7
+        if: matrix.shard == 'sotd'
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: rust/backend/sidecars/mathjax/package-lock.json
+      - name: Install the MathJax helper's modules
+        if: matrix.shard == 'sotd'
+        working-directory: rust/backend/sidecars/mathjax
+        run: npm ci
+      # Every shard runs with the Julia every leg of `test` installs; the sidecar tests (shard sotd) start it, and the WGL
+      # page test adds WGLMakie offline from the depot JULIA_DEPOT_PATH names, precompiled here.
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.13'
+      - name: Prepare the Julia depot the WGL page test reads
+        if: matrix.shard == 'sotd'
+        shell: bash
+        run: |
+          depot="$RUNNER_TEMP/julia-depot"
+          echo "JULIA_DEPOT_PATH=$depot" >> "$GITHUB_ENV"
+          JULIA_DEPOT_PATH="$depot" julia --startup-file=no -e 'using Pkg; Pkg.activate(; temp = true); Pkg.add(name = "WGLMakie", version = "0.13")'
+      # sotd and sot-capsule sit in the target dir the backend tests spawn them from.
+      - name: Build workspace
+        run: cargo build --workspace --locked
+      # --nocapture: tests that report on stdout (the fault sweeps' hit counts, the PASS lines other lanes read) print
+      # here. --no-fail-fast: one failing test binary must not hide the others.
+      - name: Test shard ${{ matrix.shard }}
+        shell: bash
+        run: |
+          python3 - "${{ matrix.shard }}" "${{ strategy.job-total }}" <<'PYSHARD'
+          import json, os, subprocess, sys
+          shard, total = sys.argv[1], int(sys.argv[2])
+          rows = [line.split(None, 3) for line in os.environ['SHARDS'].splitlines() if line.strip()]
+          named = {(row[1], row[2]) for row in rows}
+          shards = {row[0] for row in rows}
+          TARGET_KINDS = ('bin', 'test', 'example', 'bench')
+          def failed(selection, libtest=()):
+              command = ['cargo', 'test', '--workspace', '--locked', '--no-fail-fast', *selection, '--', *libtest, '--nocapture']
+              print('shard ' + shard + ': ' + ' '.join(command), flush=True)
+              return subprocess.run(command).returncode != 0
+          if shard != 'rest':
+              mine = [row for row in rows if row[0] == shard]
+              if not mine:
+                  sys.exit('shard ' + shard + ' has no row in SHARDS')
+              results = [failed(['--' + kind, name], libtest[0].split() if libtest else []) for _, kind, name, *libtest in mine]
+          else:
+              if len(shards) + 1 != total:
+                  sys.exit(f'SHARDS names {len(shards)} shards and rest, but the matrix runs {total} jobs')
+              out = subprocess.run(['cargo', 'test', '--workspace', '--locked', '--no-run', '--message-format=json-render-diagnostics'],
+                                   stdout=subprocess.PIPE, text=True, check=True).stdout
+              built = set()
+              for line in out.splitlines():
+                  message = json.loads(line) if line.startswith('{') else {}
+                  if message.get('reason') == 'compiler-artifact' and message['profile']['test'] and message['executable']:
+                      built.add((message['target']['kind'][0], message['target']['name']))
+              if named - built:
+                  sys.exit('SHARDS names targets that build no test executable: ' + repr(sorted(named - built)))
+              rest = sorted(built - named)
+              selection = ['--lib'] if any(kind not in TARGET_KINDS for kind, _ in rest) else []
+              selection += [arg for kind, name in rest if kind in TARGET_KINDS for arg in ('--' + kind, name)]
+              print(f'shard coverage: {len(built)} test executables, {len(named)} named in {len(shards)} shards, {len(rest)} in rest', flush=True)
+              results = [failed(selection), failed(['--doc'])]
+          sys.exit(1 if any(results) else 0)
+          PYSHARD
+
+  # The ubuntu checks: the clippy gates and the allowance count, the selected-body proofs (all of them on this leg), the
+  # L3 storage-exhaustion run and the shell suites. The shell steps set their own working directory.
+  checks-linux:
+    name: checks (ubuntu-latest)
+    runs-on: ubuntu-latest
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
+      # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
+      - name: Function length
+        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::too_many_lines
+      # rust/clippy.toml holds the rules this step enforces, one labelled group each, every group opening with its
+      # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
+      # that does not exist on a leg draws a warning there.
+      - name: Disallowed methods
+        run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
+      - name: Function length allowances can only fall
+        working-directory: .
+        run: |
+          n=$(git grep -c 'clippy::too_many_lines' -- rust ':!rust/vt100' | awk -F: '{ s += $2 } END { print s + 0 }')
+          echo "allowances: $n (pinned: 65)"
+          [ "$n" -eq 65 ] || { echo "the count changed: lower 65 here when you remove an allowance"; exit 1; }
+      - name: Build selected-body fixture
+        shell: bash
+        run: |
+          mkdir -p ../dev/output
+          cargo test -p sot-log --test test_body_fixture --locked --no-run --message-format=json > ../dev/output/iso-sh-ci-artifacts.json
+          python3 - <<'PYFIXTURE'
+          import json, os
+          rows = [json.loads(line) for line in open('../dev/output/iso-sh-ci-artifacts.json') if line.startswith('{')]
+          paths = [row['executable'] for row in rows if row.get('target', {}).get('name') == 'test_body_fixture' and row.get('executable')]
+          if len(paths) != 1:
+              raise SystemExit('expected exactly one compiled selected-body fixture')
+          path = os.path.abspath(paths[0]).replace('\\', '/')
+          with open('../dev/output/iso-sh-ci-path', 'w') as output:
+              output.write(path + '\n')
+          PYFIXTURE
+      - name: Test selected Rust bodies
+        shell: bash
+        run: |
+          python3 - <<'PYCARGO'
+          import json, os, pathlib, subprocess
+          manifest = pathlib.Path('Cargo.toml').resolve()
+          root = pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve()
+          root.mkdir()
+          environment = {k: v for k, v in os.environ.items() if not k.startswith('SOT_')}
+          runner = root / 'runner.py'
+          runner.write_text('import os, subprocess, sys\nos.chdir(sys.argv[1])\nsys.exit(subprocess.run(sys.argv[2:]).returncode)\n')
+          environment.setdefault('CARGO_HOME', str(pathlib.Path.home() / '.cargo'))
+          environment.setdefault('RUSTUP_HOME', str(pathlib.Path.home() / '.rustup'))
+          home = root / 'home'
+          home.mkdir()
+          for name in ('HOME', 'USERPROFILE', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME'):
+              environment[name] = str(home)
+          for key, name, flags in [('normal', 'ordinary', ['--exact']), ('ignored', 'qualified::ignored_positive', ['--ignored', '--exact']), ('absent', 'absent', ['--exact']), ('substring', 'near', [])]:
+              directory = root / key
+              directory.mkdir()
+              (directory / 'iso-sh-fixture-request').touch()
+              (directory / 'go').touch()
+              with (directory / 'cargo.log').open('w') as output:
+                  subprocess.run(['cargo', 'test', '--config', 'target."cfg(all())".runner=' + json.dumps(['python3', str(runner), str(directory)]), '--manifest-path', str(manifest), '-p', 'sot-log', '--test', 'test_body_fixture', '--locked', name, '--'] + flags + ['--format', 'pretty', '--color', 'never', '--show-output', '--test-threads=1'], cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=True)
+          PYCARGO
+          proof_mode=--all
+          ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh "$proof_mode" "$(cat ../dev/output/iso-sh-ci-path)"
+
+      - name: Test L3 storage exhaustion
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          umask 022
+          case "$RUNNER_TEMP" in
+            /*) ;;
+            *) printf 'L3 HARNESS FAILURE: runner temporary root is not absolute\n'; exit 1 ;;
+          esac
+          fixture_root=$(mktemp -d "$RUNNER_TEMP/l3-ext4.XXXXXX")
+          image="$fixture_root/volume.img"
+          volume_mount="$fixture_root/volume"
+          loop_device=''
+          mounted=0
+          cleanup() {
+            local failed=0
+            if [ "$mounted" -eq 1 ]; then
+              if sudo umount "$volume_mount" && ! mountpoint -q "$volume_mount"; then
+                mounted=0
+                printf 'L3 hosted ext4 unmount=ok\n'
+              else
+                printf 'L3 HARNESS FAILURE: hosted unmount failed\n'
+                failed=1
+              fi
+            fi
+            if [ "$mounted" -eq 0 ] && [ -n "$loop_device" ]; then
+              if sudo losetup --detach "$loop_device" && remaining=$(sudo losetup --associated "$image") && [ -z "$remaining" ]; then
+                loop_device=''
+                printf 'L3 hosted ext4 loop-release=ok\n'
+              else
+                printf 'L3 HARNESS FAILURE: hosted loop release failed\n'
+                failed=1
+              fi
+            fi
+            if [ "$failed" -eq 0 ] && [ "$mounted" -eq 0 ] && [ -z "$loop_device" ]; then
+              if rm -rf -- "${fixture_root:?}"; then
+                printf 'L3 fixture linux detach=ok owned-root-removal=ok\n'
+              else
+                printf 'L3 HARNESS FAILURE: owned fixture root removal failed\n'
+                return 1
+              fi
+            else
+              printf 'L3 HARNESS FAILURE: owned fixture retained for cleanup\n'
+              return 1
+            fi
+          }
+          trap 'status=$?; trap - EXIT; cleanup || status=1; exit "$status"' EXIT
+          trap 'exit 130' INT TERM
+          mkdir "$volume_mount"
+          truncate -s 64M "$image"
+          loop_device=$(sudo losetup --find --show "$image")
+          sudo mkfs.ext4 -F "$loop_device" > "$fixture_root/format.log" 2>&1
+          mounted=1
+          sudo mount -t ext4 "$loop_device" "$volume_mount"
+          mountpoint -q "$volume_mount"
+          sudo chown "$(id -u):$(id -g)" "$volume_mount"
+          sudo chmod 0700 "$volume_mount"
+          printf 'L3 hosted ext4 setup=ok declared-bytes=67108864 mount=validated\n'
+          L3_HOSTED_VOLUME_ROOT="$volume_mount" L3_HOSTED_VOLUME_BYTES=67108864 TMPDIR="$RUNNER_TEMP" \
+            CARGO_NET_OFFLINE=true \
+            nice timeout 12m cargo test -p sot-log --test fault_storage -j 8 --locked -- --include-ignored --nocapture --test-threads=1
+
       - name: Parse shell scripts
-        if: matrix.os == 'ubuntu-latest'
         working-directory: .
         run: |
           shopt -s globstar nullglob
@@ -520,19 +690,16 @@ jobs:
           exit "$rc"
 
       - name: Check the layout
-        if: matrix.os == 'ubuntu-latest'
         working-directory: .
         run: bash scripts/tests/check-layout.sh --allow scripts/tests/check-layout.allow
 
       - name: Test the layout tools
-        if: matrix.os == 'ubuntu-latest'
         working-directory: .
         run: bash scripts/tests/test-check-layout.sh && bash scripts/tests/test-moved-check.sh
 
       # The bash sibling of the PowerShell topology plan test above: scripts/lib/sot-hosts.sh's sot_topology_plan
       # against the same fake sotd, pure text processing, hermetic and fast.
       - name: Test topology plan (bash)
-        if: matrix.os == 'ubuntu-latest'
         timeout-minutes: 5
         run: bash scripts/tests/test-topology-plan.sh
         working-directory: .
@@ -540,13 +707,11 @@ jobs:
       # The installer's pure decisions and the sot-launch socket probe, run
       # from install.sh's own text; hermetic and fast.
       - name: Test installer state (bash)
-        if: matrix.os == 'ubuntu-latest'
         timeout-minutes: 5
         run: bash scripts/tests/installer-state.sh
         working-directory: .
 
       - name: Test installer apply (bash)
-        if: matrix.os == 'ubuntu-latest'
         timeout-minutes: 5
         run: bash scripts/tests/installer-apply.sh
         working-directory: .
@@ -554,13 +719,10 @@ jobs:
       # A home several hosts share: every path that writes, re-renders or retires sotd.service pins it to the hosts that
       # run sotd, and a retire under a declared topology never disables the shared unit.
       - name: Test installer shared home (bash)
-        if: matrix.os == 'ubuntu-latest'
         timeout-minutes: 5
         run: bash scripts/tests/installer-shared-home.sh
         working-directory: .
 
-      # PR #148 Codex review F10: hermetic + fast, so it rides along in this
-      # existing ubuntu leg rather than a dedicated job.
       # The context deadline covers foreground children and the final wait.
       # Fixtures are finite, isolated, and require entry and completion evidence.
       - name: Test heartbeat context deadline (hermetic)
@@ -569,8 +731,9 @@ jobs:
         working-directory: .
         run: bash comm/tests/test-heartbeat-ctx-wait.sh
 
+      # PR #148 Codex review F10: hermetic + fast, so it rides along in this
+      # existing ubuntu leg rather than a dedicated job.
       - name: Test sot-comm disambiguation (hermetic)
-        if: matrix.os == 'ubuntu-latest'
         working-directory: comm/tests
         run: |
           bash test-join-disambiguation.sh
@@ -638,7 +801,6 @@ jobs:
           bash test-agent-layers.sh
 
       - name: Test agents CLIs (hermetic)
-        if: matrix.os == 'ubuntu-latest'
         working-directory: agents/tests
         run: |
           # A spawn onto another box writes no row here, so a folder that lists
