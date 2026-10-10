@@ -275,13 +275,11 @@ pub fn tunnel_pin_path() -> String {
 }
 
 /// The hub's pins, as (path under the user's systemd folder, text), each naming the hub alone: the reverse tunnels'
-/// template pin when the topology wants a tunnel ([`tunnel_hosts`]), and the pin of each relay socket in `relays`.
+/// template pin, always (a tunnel runs nowhere but the hub, and an instance can stay enabled after the topology stops
+/// wanting it), and the pin of each relay socket in `relays`.
 pub fn hub_pins(topo: &Topology, relays: &[&str]) -> Vec<(String, String)> {
     let pin = host_pin(&[topo.hub.as_str()]);
-    let mut out = Vec::new();
-    if !tunnel_hosts(topo).is_empty() {
-        out.push((tunnel_pin_path(), pin.clone()));
-    }
+    let mut out = vec![(tunnel_pin_path(), pin.clone())];
     for h in relays {
         out.push((format!("{}.d/{PIN_FILE}", relay_unit(h)), pin.clone()));
     }
@@ -370,7 +368,8 @@ frontend = true
         let paths: Vec<String> = hub_pins(&t, &["remote-a"]).into_iter().map(|(p, _)| p).collect();
         assert_eq!(paths, ["sot-relay-tunnel@.service.d/topology.conf", "sot-host-relay-remote-a.socket.d/topology.conf"]);
         let no_tunnel = parse("hub = \"hub\"\n[host.hub]\ndaemon = true\n[host.fe]\nfrontend = true\n").unwrap();
-        assert!(hub_pins(&no_tunnel, &[]).is_empty());
+        let paths: Vec<String> = hub_pins(&no_tunnel, &[]).into_iter().map(|(p, _)| p).collect();
+        assert_eq!(paths, ["sot-relay-tunnel@.service.d/topology.conf"], "a tunnel runs nowhere but the hub, wanted or not");
     }
 
     #[test]

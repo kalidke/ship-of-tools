@@ -65,6 +65,22 @@ d="$WORK/retire-daemon"; pin_fixture "$d" 1
 check "a box that runs a daemon retires nothing" "0" "$(wc -l < "$d/log" | tr -d ' ')"
 
 # ---------------------------------------------------------------------------
+case_start "an_unreadable_hosts_toml_is_still_a_declared_topology"
+status_stub() {  # <dir> <exit> <stderr line>: a sotd whose `topology status` fails or succeeds as told
+    mkdir -p "$1/prefix/bin"
+    printf '#!/bin/sh\necho "%s" >&2\nexit %s\n' "$3" "$2" > "$1/prefix/bin/sotd"
+    chmod +x "$1/prefix/bin/sotd"
+}
+d="$WORK/unreadable"; status_stub "$d" 2 "sotd topology: hosts.toml line 2: expected key = value"
+rc=0; out="$(installer_topology_unreadable "$d/prefix")" || rc=$?
+check "an invalid hosts.toml is a declared topology" "0" "$rc"
+check "its error is reported" "yes" "$(case "$out" in *"line 2"*) echo yes ;; *) echo no ;; esac)"
+d="$WORK/missing"; status_stub "$d" 2 "sotd topology: no hosts.toml at /x/hosts.toml (run sotd topology sync --hub ALIAS)"
+rc=0; installer_topology_unreadable "$d/prefix" >/dev/null || rc=$?; check "a missing hosts.toml is no topology" "1" "$rc"
+d="$WORK/readable"; status_stub "$d" 0 ""
+rc=0; installer_topology_unreadable "$d/prefix" >/dev/null || rc=$?; check "a readable hosts.toml is not unreadable" "1" "$rc"
+
+# ---------------------------------------------------------------------------
 case_start "update_rerender_pins_the_unit_before_the_reload"
 d="$WORK/rerender"; pin_fixture "$d" 0
 mkdir -p "$d/co/deploy"; cp "$TEMPLATE" "$d/co/deploy/sotd.service"

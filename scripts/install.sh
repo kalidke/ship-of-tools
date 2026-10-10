@@ -344,6 +344,16 @@ installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
 # unit's host pin (`sotd topology pin`) keeps it from starting here, and this
 # host's own run is stopped. With no hosts.toml the unit is this box's alone,
 # and it is disabled.
+# Whether this box has a hosts.toml that `sotd topology status` cannot read: such a file is still a declared
+# topology, and a retire under it must never disable a unit that may serve another host. Only a missing file (status
+# says "no hosts.toml at") means this box is alone. Prints status's error when it is unreadable.
+installer_topology_unreadable() {  # <prefix>
+    local err
+    err="$("$1/bin/sotd" topology status 2>&1 >/dev/null)" && return 1
+    case "$err" in *"no hosts.toml at"*) return 1 ;; esac
+    printf '%s\n' "$err"
+}
+
 installer_retire_local_service() {  # <want-daemon 0|1> <prefix> <topology-declared 0|1>
     [ "$1" = 0 ] && command -v systemctl >/dev/null 2>&1 || return 0
     if [ "$3" = 1 ]; then
@@ -648,6 +658,9 @@ TOPO_DECLARED=0
 if STATUS_OUT="$("$PREFIX/bin/sotd" topology status 2>/dev/null)"; then
     TOPO_DECLARED=1
     TOPO_ROLE="$(installer_topology_role "$STATUS_OUT" "$SELF_HOST")"
+elif UNREADABLE="$(installer_topology_unreadable "$PREFIX")"; then
+    TOPO_DECLARED=1
+    say "WARNING: hosts.toml could not be read ($UNREADABLE); the role comes from the flags, and the shared sotd.service is never disabled from here"
 fi
 if [ "$TOPO_ROLE" != none ]; then
     [ -n "$ROLE" ] && say "note: --$ROLE given, but the declared topology names this host — the topology wins"
@@ -695,6 +708,9 @@ else
 fi
 case "$RESOLVED" in *"daemon:1"*) WANT_DAEMON=1 ;; esac
 case "$RESOLVED" in *"frontend:1"*) WANT_FRONTEND=1 ;; esac
+if [ "$TOPO_DECLARED" = 1 ] && [ "$TOPO_ROLE" = none ] && [ "$WANT_DAEMON" = 1 ]; then
+    say "WARNING: hosts.toml declares no daemon on '$SELF_HOST', so sotd.service's host pin keeps it from starting here; declare the host (daemon or frontend) in hosts.toml"
+fi
 
 # A coding agent isn't part of this installer's business, but a daemon role
 # with neither one on PATH will start sessions that go nowhere — warn, don't

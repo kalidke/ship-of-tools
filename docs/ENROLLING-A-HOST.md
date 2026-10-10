@@ -98,8 +98,9 @@ Each step's check must pass before the next one is worth doing.
    `sotd topology apply --yes`. It must enable exactly one
    `sot-host-relay-<host>.socket` and disable nothing you did not expect.
    On every other box: `sotd topology sync`. A box that shares the hub's
-   home reads the new `sotd.service` pin at its next boot, or at once after
-   `systemctl --user daemon-reload` there.
+   home reads the new `sotd.service` pin at its next boot, or after
+   `systemctl --user daemon-reload` there; a reload starts nothing, so a box
+   newly declared to run a daemon then needs `systemctl --user start sotd`.
 
 7. **Verify end to end.** On the hub, `sotd status` reports that box's
    real rows through `unix:<runtime>/sot-host-<host>.sock`. From another

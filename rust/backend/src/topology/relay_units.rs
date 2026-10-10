@@ -23,18 +23,20 @@ pub(super) fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
     topology::relay_units::require_hub(topo, &me, "apply")?;
     let plan = topology::relay_units::apply_plan(topo, &enabled_hosts(TUNNEL_TEMPLATE)?, &enabled_hosts(RELAY_TEMPLATE)?);
     let mut failures: Vec<String> = Vec::new();
-    // The pins first, on every run: a unit enabled below never starts without its pin, and a run whose plan is
-    // empty still heals a pin that differs.
-    match converge_hub_pins(topo, &systemd_user_dir()?, &topology::relay_units::relay_hosts(topo), dry_run, &mut |l| println!("{l}")) {
-        Ok(true) if !dry_run => {
-            if let Err(e) = run_systemctl(&["--user", "daemon-reload"]) {
-                failures.push(e);
-            }
+    // The pins first, on every run: a unit enabled below never starts without its pin, so a pin that cannot be
+    // written stops the run before any enable; a run whose plan is empty still heals a pin that differs.
+    let pins_changed = converge_hub_pins(topo, &systemd_user_dir()?, &topology::relay_units::relay_hosts(topo), dry_run, &mut |l| println!("{l}"))
+        .map_err(|e| format!("the host pins could not be written, so nothing was enabled: {e}"))?;
+    if pins_changed && !dry_run {
+        if let Err(e) = run_systemctl(&["--user", "daemon-reload"]) {
+            failures.push(e);
         }
-        Ok(_) => {}
-        Err(e) => failures.push(e),
     }
     if plan.is_empty() && failures.is_empty() {
+        if pins_changed && dry_run {
+            println!("(dry run — pass --yes to apply)");
+            return Ok(());
+        }
         println!(
             "up to date: {} tunnel instance(s), {} relay instance(s)",
             topology::relay_units::tunnel_hosts(topo).len(),
@@ -436,17 +438,13 @@ fn remove_pin(dir: &Path, name: &str, dry_run: bool, say: &mut dyn FnMut(String)
     Ok(true)
 }
 
-/// The hub's pins under `dir`: sotd.service's, the reverse tunnels' template pin and each relay socket's in `relays`,
-/// written when their text differs; the tunnels' pin removed when the topology wants no tunnel. True when anything
-/// changed.
+/// The hub's pins under `dir`: sotd.service's, the reverse tunnels' template pin (always: a tunnel instance still
+/// enabled after the topology stopped wanting it must not start on another host) and each relay socket's in `relays`,
+/// written when their text differs. True when anything changed.
 fn converge_hub_pins(topo: &Topology, dir: &Path, relays: &[&str], dry_run: bool, say: &mut dyn FnMut(String)) -> Result<bool, String> {
     let mut pins = vec![topology::relay_units::daemon_pin(topo)];
     pins.extend(topology::relay_units::hub_pins(topo, relays));
-    let mut changed = converge_pins(dir, &pins, dry_run, say)?;
-    if topology::relay_units::tunnel_hosts(topo).is_empty() {
-        changed |= remove_pin(dir, &topology::relay_units::tunnel_pin_path(), dry_run, say)?;
-    }
-    Ok(changed)
+    converge_pins(dir, &pins, dry_run, say)
 }
 
 /// `sotd topology pin --dir <dir>`: sotd.service's pin under `dir`, from this box's hosts.toml, written when its text
