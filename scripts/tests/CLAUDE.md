@@ -13,8 +13,10 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   `rust.yml` step "Test installer apply (bash)" (ubuntu leg) and in `rc-gate.sh`.
 - `installer-shared-home.sh`: a home several hosts share holds one install. Every path that writes, re-renders or
   retires `sotd.service` (`installer_enable_local_service`, `installer_retire_local_service`, `sot_rerender_owned`) pins
-  it with `sotd topology pin` before any reload, and none disables the shared unit under a declared topology.
-  Runs in the `rust.yml` step "Test installer shared home (bash)"
+  it with `sotd topology pin` before any reload, and none disables the shared unit under a declared topology; a
+  hosts.toml sotd cannot read is still a declared topology; `installer_record_decision`'s table; and `install.sh`, run
+  end to end from a stub release on a host that runs no daemon, leaves a daemon install byte-identical. Runs in the
+  `rust.yml` step "Test installer shared home (bash)"
   (ubuntu leg) and in `rc-gate.sh`.
 - `installer-support.sh`: the setup the installer suites source: install.sh and lib/sot-daemon.sh, `check`,
   `starts_with`, `case_start`, the sandboxed tool dir (`mk_tools`) and the recording stubs (`mk_stubs`).

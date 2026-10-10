@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # installer-state.sh — the decision matrix for "what does this install do".
 #
-# install.json used to record a `role` that nothing ever read back, so a
-# re-run on a machine with a live backend could silently re-role it. That
-# manifest-role gate is gone: the declared topology (hosts.toml) is now the
-# source of truth for what a listed host installs and enables, and a
-# listless box falls back to its flags — nothing is persisted or compared
-# across runs any more. What IS still worth guarding is a live process: a
-# shared-home cluster (four boxes, one NFS $HOME) sees every host's
-# sotd.service unit FILE, so the guard has to ask systemd whether one is
-# actually RUNNING here, not just whether a file exists.
+# The declared topology (hosts.toml) decides what a listed host installs and
+# enables, and a listless box falls back to its flags; no role is read back
+# from install.json. Two things are guarded. A live process: a shared home
+# shows every host the same sotd.service FILE, so the guard asks systemd
+# whether one RUNS here. And, under a declared topology, the install record:
+# a run that would record no daemon may not rewrite one that records a daemon
+# (installer_record_decision, tested in installer-shared-home.sh), because a
+# shared home's one install serves the hosts that run sotd. A refused run
+# writes nothing under the prefix: the gates come before its layout.
 #
 # Run: scripts/tests/installer-state.sh
 

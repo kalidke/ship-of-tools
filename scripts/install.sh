@@ -20,7 +20,10 @@
 # What it does (idempotent; re-run to upgrade):
 #   1. preflight — arch/glibc floor for the FE, tar/curl present
 #   2. download the release artifacts from the fixed release URL + verify SHA256SUMS
-#   3. lay out $PREFIX (~/.local/share/sot): bin/ updates/ repo/current
+#   3. unpack them; resolve the role (the declared topology, else the flags)
+#      with the unpacked sotd, and run the ownership and install-record gates
+#      before anything is written under $PREFIX; then lay out $PREFIX
+#      (~/.local/share/sot): bin/ updates/ repo/current
 #   4. REPO CHECKOUT at the release tag (ADR 0030 addendum: the repo IS the
 #      manual and the resource tree; blobless partial clone = full history
 #      for blame, only the tag's tree downloaded; supersedes the curated
@@ -114,6 +117,33 @@ installer_running_daemon_decision() {  # <running-bin> <prefix> <force>
         return
     fi
     printf 'refuse:the sotd.service running for this user runs %s; this install targets %s/bin/sotd' "$running" "$prefix"
+}
+
+# What install.json's `service` records for this run: "systemd" when the run
+# installs the unit (Linux, a daemon here, no --no-service), else "none".
+installer_service_record() {  # <os> <want-daemon 0|1> <no-service 0|1>
+    if [ "$1" = Linux ] && [ "$2" = 1 ] && [ "$3" = 0 ]; then printf systemd; else printf none; fi
+}
+
+# "allow" | "refuse:<why>": under a declared topology, a run may not record
+# less than the install record already says the install runs: a daemon
+# ("daemon": true) or its systemd unit ("service": "systemd"). A home several
+# hosts share holds one install and one record, serving the hosts that run
+# sotd; a host that runs no daemon there would rewrite both. On a home of its
+# own the same run is this box's role change. Either way it takes
+# --force-role-change. With no hosts.toml nothing is declared and the record
+# is this box's alone. Pure, so the decision is testable without a release.
+installer_record_decision() {  # <install.json> <topology-declared 0|1> <new-daemon 0|1> <new-service> <force 0|1>
+    if [ "$2" != 1 ] || [ "$5" = 1 ] || [ ! -f "$1" ]; then printf allow; return; fi
+    if [ "$3" = 0 ] && grep -q '"daemon": *true' "$1"; then
+        printf 'refuse:%s records an install that runs a daemon, and this run would record none' "$1"
+        return
+    fi
+    if [ "$4" != systemd ] && grep -q '"service": *"systemd"' "$1"; then
+        printf 'refuse:%s records an install whose daemon runs as a systemd unit, and this run would record none' "$1"
+        return
+    fi
+    printf allow
 }
 
 # The owner prefix a sot-launch wrapper's content embeds, or empty when it
@@ -347,9 +377,9 @@ installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
 # Whether this box has a hosts.toml that `sotd topology status` cannot read: such a file is still a declared
 # topology, and a retire under it must never disable a unit that may serve another host. Only a missing file (status
 # says "no hosts.toml at") means this box is alone. Prints status's error when it is unreadable.
-installer_topology_unreadable() {  # <prefix>
+installer_topology_unreadable() {  # <sotd>
     local err
-    err="$("$1/bin/sotd" topology status 2>&1 >/dev/null)" && return 1
+    err="$("$1" topology status 2>&1 >/dev/null)" && return 1
     case "$err" in *"no hosts.toml at"*) return 1 ;; esac
     printf '%s\n' "$err"
 }
@@ -557,7 +587,7 @@ fi
 for t in curl tar; do command -v "$t" >/dev/null || die "$t is required"; done
 # The glibc floor for the frontend binary is checked further down, once the
 # role is resolved (WANT_FRONTEND) — that now needs the declared topology,
-# read via the sotd just staged below, so it can't run this early any more.
+# read via the sotd unpacked below, so it can't run this early any more.
 
 # Downloader: the repo is public, so unauthenticated curl against the fixed
 # release-download URL works — no API call, no auth.
@@ -595,33 +625,12 @@ else
     ( cd "$WORK" && shasum -a 256 -c --ignore-missing SHA256SUMS ) || die "checksum verification FAILED"
 fi
 
-# ---- 3. layout ---------------------------------------------------------------
-mkdir -p "$PREFIX/bin" "$PREFIX/updates" "$PREFIX/repo" "$CONFIG"
+# ---- 3. unpack ---------------------------------------------------------------
+# Unpacked into $WORK only: the role resolution and the gates below run the
+# unpacked sotd, so a refused install has written nothing under $PREFIX.
+mkdir -p "$CONFIG"
 tar -xzf "$WORK/sot-$VER-$TARGET.tar.gz" -C "$WORK"
 BINDIR="$WORK/sot-$VER-$TARGET"
-# sot-capsule is sotd's capsule-runtime pair (ADR 0042 L1a): sotd resolves it
-# next to its own executable, so it must land in the same directory. Archives
-# that predate the capsule runtime lack it, hence the skip for it alone.
-for b in sot sotd sot-capsule; do
-    [ "$b" = sot-capsule ] && [ ! -f "$BINDIR/$b" ] && continue
-    if [ -f "$PREFIX/bin/$b" ]; then
-        sot_install_copy "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev" || die "backing up $PREFIX/bin/$b failed"
-    fi
-    sot_install_copy "$BINDIR/$b" "$PREFIX/bin/$b" 0755 || die "installing $PREFIX/bin/$b failed"
-    # Gatekeeper: strip any quarantine attr (browser downloads carry it).
-    [ "$OS" = Darwin ] && xattr -d com.apple.quarantine "$PREFIX/bin/$b" 2>/dev/null || true
-done
-# The offline apply/rollback script (Phase C3). Newer releases ship it in the
-# archive; otherwise it lands from the checkout below.
-if [ -f "$BINDIR/sot-apply" ]; then
-    sot_install_copy "$BINDIR/sot-apply" "$PREFIX/bin/sot-apply" 0755 || die "installing $PREFIX/bin/sot-apply failed"
-fi
-# A manual installer run is a NEW transaction: stale rollback state from a
-# previous auto-apply must not pair old last-good pointers with these fresh
-# .prev binaries (a later crash-loop rollback would mix versions).
-rm -f "${PREFIX:?}"/updates/last-good-*.json "${PREFIX:?}"/updates/just-applied-* 2>/dev/null || true
-say "binaries: $("$PREFIX/bin/sotd" --version)"
-DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 
 # ---- heal a pre-0.6 hosts.toml (finding 3a, v0.6.5 macOS field report) -----------
 # The old grammar (`default_host` at top level) is a loud parse error under
@@ -648,7 +657,7 @@ fi
 # not share the hub's home; a box that does already has the file, no fetch
 # needed.
 if [ -n "$HUB_ALIAS" ]; then
-    "$PREFIX/bin/sotd" topology sync --hub "$HUB_ALIAS" || die "topology sync --hub $HUB_ALIAS failed"
+    "$BINDIR/sotd" topology sync --hub "$HUB_ALIAS" || die "topology sync --hub $HUB_ALIAS failed"
 fi
 SELF_HOST="$(installer_self_host)"
 WANT_DAEMON=0
@@ -656,10 +665,10 @@ WANT_FRONTEND=0
 TOPO_ROLE=none
 TOPO_DECLARED=0
 UNREADABLE=""
-if STATUS_OUT="$("$PREFIX/bin/sotd" topology status 2>/dev/null)"; then
+if STATUS_OUT="$("$BINDIR/sotd" topology status 2>/dev/null)"; then
     TOPO_DECLARED=1
     TOPO_ROLE="$(installer_topology_role "$STATUS_OUT" "$SELF_HOST")"
-elif UNREADABLE="$(installer_topology_unreadable "$PREFIX")"; then
+elif UNREADABLE="$(installer_topology_unreadable "$BINDIR/sotd")"; then
     TOPO_DECLARED=1
     say "WARNING: hosts.toml could not be read ($UNREADABLE); the role comes from the flags, and the shared sotd.service is never disabled from here"
 fi
@@ -739,7 +748,8 @@ fi
 
 # ---- ownership gate ------------------------------------------------------------
 # Run now that the role is known and before the first write under $HOME (the
-# mkdir of ~/.local/bin included) — a refused install changes nothing there.
+# prefix's layout and the mkdir of ~/.local/bin included) — a refused install
+# changes nothing there.
 # installer_ownership_gate is read-only, so this cannot be the source of a
 # stray write; see it above for what --force-role-change does and does not
 # waive.
@@ -753,6 +763,40 @@ case "$GATE_DECISION" in
         printf '\033[1;31mERROR:\033[0m %s\n' "${GATE_DECISION#unresolvable:}" >&2
         exit 2 ;;
 esac
+RECORD_DECISION="$(installer_record_decision "$PREFIX/install.json" "$TOPO_DECLARED" "$WANT_DAEMON" \
+    "$(installer_service_record "$OS" "$WANT_DAEMON" "$NO_SERVICE")" "$FORCE_ROLE_CHANGE")"
+case "$RECORD_DECISION" in
+    refuse:*)
+        printf '\033[1;31mERROR:\033[0m %s\n' "${RECORD_DECISION#refuse:}" >&2
+        printf '       On a home several hosts share, run the installer on a host hosts.toml declares daemon or frontend. If this machine'"'"'s own role changed, re-run with --force-role-change.\n' >&2
+        exit 2 ;;
+esac
+
+# ---- 3b. layout, now that the gates allow it --------------------------------
+mkdir -p "$PREFIX/bin" "$PREFIX/updates" "$PREFIX/repo"
+# sot-capsule is sotd's capsule-runtime pair (ADR 0042 L1a): sotd resolves it
+# next to its own executable, so it must land in the same directory. Archives
+# that predate the capsule runtime lack it, hence the skip for it alone.
+for b in sot sotd sot-capsule; do
+    [ "$b" = sot-capsule ] && [ ! -f "$BINDIR/$b" ] && continue
+    if [ -f "$PREFIX/bin/$b" ]; then
+        sot_install_copy "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev" || die "backing up $PREFIX/bin/$b failed"
+    fi
+    sot_install_copy "$BINDIR/$b" "$PREFIX/bin/$b" 0755 || die "installing $PREFIX/bin/$b failed"
+    # Gatekeeper: strip any quarantine attr (browser downloads carry it).
+    [ "$OS" = Darwin ] && xattr -d com.apple.quarantine "$PREFIX/bin/$b" 2>/dev/null || true
+done
+# The offline apply/rollback script (Phase C3). Newer releases ship it in the
+# archive; otherwise it lands from the checkout below.
+if [ -f "$BINDIR/sot-apply" ]; then
+    sot_install_copy "$BINDIR/sot-apply" "$PREFIX/bin/sot-apply" 0755 || die "installing $PREFIX/bin/sot-apply failed"
+fi
+# A manual installer run is a NEW transaction: stale rollback state from a
+# previous auto-apply must not pair old last-good pointers with these fresh
+# .prev binaries (a later crash-loop rollback would mix versions).
+rm -f "${PREFIX:?}"/updates/last-good-*.json "${PREFIX:?}"/updates/just-applied-* 2>/dev/null || true
+say "binaries: $("$PREFIX/bin/sotd" --version)"
+DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 
 # ---- 4. the repo checkout — manual, resources, julia code (ADR 0030 add.) -----
 # The checkout IS the product's resource tree and its help system:
@@ -1031,8 +1075,7 @@ fi
 # LAST so it always describes a completed install; an update re-run refreshes
 # it. Read by sot-updater's InstallManifest (rust/updater/src/manifest.rs) —
 # keep the two in sync.
-SERVICE="none"
-[ "$OS" = Linux ] && [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 0 ] && SERVICE="systemd"
+SERVICE="$(installer_service_record "$OS" "$WANT_DAEMON" "$NO_SERVICE")"
 COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
 # Temp file plus rename: a heredoc straight onto the live path truncates it
 # first, so an interrupt would leave the machine with no readable manifest.

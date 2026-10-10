@@ -23,6 +23,9 @@ and the launch path fails open: no update step can stop a window from starting.
 - A tag is cut only from `main`, `fixes/*` or `rc/*`, sorts above every tag of its line, and has green `rust.yml` and
   `CI.yml` runs in HEAD's history (`release.sh` preflight).
 - Install checksums verify before any write, and `install.json` is written last (`install.sh` steps 2 and 9).
+- A refused install writes nothing under its prefix: the role and the ownership and record gates run on the unpacked
+  `sotd` before the layout. Under a declared topology a run that would record no daemon never rewrites a record of
+  one without `--force-role-change` (`installer_record_decision`).
 - Apply verifies everything before it mutates, restores on a failure after mutation and exits 0; a rollback marks the
   bad tag so it is never armed again (`sot-apply.sh`, `sot-apply.ps1`).
 - The launch path never stops on an update: every update or freshness step logs and the window still starts.

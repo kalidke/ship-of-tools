@@ -67,6 +67,13 @@ it at its next boot or `systemctl --user daemon-reload`. Stop the daemon on a ho
 longer run one with `systemctl --user stop sotd.service`; never `disable` it
 there, since the enable link is shared too.
 
+The install itself is shared the same way: one `~/.local/share/sot` and one
+`install.json` serve every host that runs `sotd`. Run the installer on one of
+those hosts. On a host `hosts.toml` lists with neither key the installer
+refuses, before it writes anything, to replace an install whose record says it
+runs a daemon (`--force-role-change` overrides, for a machine whose own role
+changed).
+
 Every machine that runs a window also runs its own private local daemon, so
 an entry with `frontend = true` alone installs one as `--local` does.
 `daemon = true` means other machines dial that daemon through the hub; the

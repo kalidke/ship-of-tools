@@ -118,13 +118,21 @@ cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launc
   doesn't recognize is refused the same way, but **not** overridable with
   `--force-role-change` — its owner can't be identified at all, so tell the
   human to move it aside instead.
+- **The manifest records an install that runs a daemon, and this run would
+  record none** (`hosts.toml` lists this host with neither `daemon` nor
+  `frontend`, or the flags say so, or `--no-service` drops the unit) → the
+  installer refuses under a declared topology and writes nothing under the
+  prefix. On a home several hosts share, that install is the daemon host's:
+  run the installer there. Add `--force-role-change` only when the human says
+  this machine's own role changed.
 - **A manifest you cannot read** — truncated, unknown schema, recording a
   different prefix — is NOT the same as no install. Treat it as unknown state
   and stop; the installer does the same.
 - **Neither** → a fresh install; carry on below.
 
-Only when a live daemon or integration file from a different prefix is
-blocking you, and the human has explicitly authorized stepping on it, add
+Only when a live daemon or integration file from a different prefix, or a
+daemon install this run would demote, is blocking you, and the human has
+explicitly authorized stepping on it, add
 `--force-role-change` to
 the install command. Never add it to get past an error you did not understand.
 
