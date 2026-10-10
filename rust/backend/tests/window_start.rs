@@ -358,7 +358,7 @@ async fn killed_mid_shutdown_next_start_finishes() {
 #[tokio::test]
 async fn killed_after_capture_next_start_ends_scope() {
     let _serial = SERIAL.lock().await;
-    use support::{arm_scope_guard, assert_scope_empties, cgroup_rel, user_manager_available_for_test};
+    use support::{arm_scope_guard, cgroup_rel, user_manager_available_for_test};
     if let Err(e) = user_manager_available_for_test() {
         if std::env::var("SOT_TEST_REQUIRE_USER_MANAGER").as_deref() == Ok("1") {
             panic!("SOT_TEST_REQUIRE_USER_MANAGER=1 but no user manager is reachable: {e}");
@@ -373,7 +373,7 @@ async fn killed_after_capture_next_start_ends_scope() {
         let row = ready_row(&env, "capture-row", Some("claude")).await;
         // The supervisor runs in the row's scope, as the agent does.
         let scope = cgroup_rel(row.pid);
-        let _guard = arm_scope_guard(&scope, &row.state_dir);
+        let guard = arm_scope_guard(&scope, &row.state_dir);
         let escapee: u32 = poll_until(
             || async { std::fs::read_to_string(&pidfile).ok().and_then(|t| t.trim().parse().ok()) },
             BOUND,
@@ -397,7 +397,7 @@ async fn killed_after_capture_next_start_ends_scope() {
         write_closing_record(&env);
         env.spawn_sotd_with_prepended_path(&dir);
 
-        assert_scope_empties(&scope, BOUND).await;
+        guard.assert_empties(BOUND).await;
         poll_until(
             || async { (!scopes_file.exists()).then_some(()) },
             BOUND,

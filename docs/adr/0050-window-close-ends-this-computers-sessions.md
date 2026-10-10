@@ -203,7 +203,8 @@ connection is the only handle.
 5. A row ends only the agent's process group, and a descendant that left it (for example by
    `setsid`) survives, in each of these cases: its supervisor died before its end; it was
    started before 0.6.6; it runs on a host without a reachable user systemd manager,
-   without cgroup v2 at `/sys/fs/cgroup`, or without `cgroup.kill` (Linux before 5.14).
+   without a cgroup v2 hierarchy (at `/sys/fs/cgroup`, or `/sys/fs/cgroup/unified` on a hybrid
+   host), or without `cgroup.kill` (Linux before 5.14).
    macOS has no such container at all. On Windows the leg's job permits no breakaway (ruling (g)); see residual 7.
 6. Closed: a row's remembered scopes are the durable file `row-scopes` in its state dir,
    read by every end, a startup Cleanup included, so a daemon restart no longer loses them.

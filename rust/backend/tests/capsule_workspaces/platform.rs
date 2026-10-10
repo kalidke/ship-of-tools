@@ -372,9 +372,8 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
     // The supervisor left the DAEMON's own unit's cgroup for its own
     // transient scope at spawn time (ADR 0043 decision 32) -- proven
     // BEFORE the stop, not merely inferred from surviving it.
-    let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
-        .unwrap_or_else(|e| panic!("read /proc/{pid}/cgroup: {e}"));
-    let last_segment = cgroup.trim().rsplit('/').next().unwrap_or("");
+    let cgroup = cgroup_rel(pid);
+    let last_segment = cgroup.rsplit('/').next().unwrap_or("");
     assert!(
         last_segment.starts_with("sot-row-") && last_segment.ends_with(".scope"),
         "supervisor's own cgroup does not end in a sot-row-*.scope (still inside the daemon's own unit?): {cgroup:?}"
@@ -480,7 +479,7 @@ async fn destroy_ends_a_child_that_left_the_agents_process_group() {
     // accepts the scope only as this row's, never this test's own cgroup
     // or an ancestor of it.
     let scope = cgroup_rel(pid);
-    let _guard = arm_scope_guard(&scope, &state_dir);
+    let guard = arm_scope_guard(&scope, &state_dir);
 
     let deadline = Instant::now() + Duration::from_secs(10);
     let escapee: u32 = loop {
@@ -501,7 +500,7 @@ async fn destroy_ends_a_child_that_left_the_agents_process_group() {
     next_id += 1;
     assert!(destroy.payload.get("error").is_none(), "workspace.destroy failed: {:?}", destroy.payload);
 
-    assert_scope_empties(&scope, Duration::from_secs(5)).await;
+    guard.assert_empties(Duration::from_secs(5)).await;
 
     // The daemon survived the kill of the row's scope.
     let list = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await;
@@ -519,10 +518,8 @@ fn scope_guard_refuses_everything_the_aim_rule_refuses() {
     let h = sot_log::host::state_dir::state_dir_hash(state.path());
     for (target, own, accepted) in row_scope_aim::aim_table(&h) {
         assert_eq!(row_scope_aim::aim(&target, &own, &h).is_ok(), accepted, "aim on {target:?} with own {own:?}");
-        // `forget`: the accepted row's path does not exist, and even so no
-        // guard built here is ever dropped.
-        let armed = std::panic::catch_unwind(|| std::mem::forget(arm_scope_guard_against(&target, &own, state.path())));
-        assert_eq!(armed.is_ok(), accepted, "arm_scope_guard on {target:?} with own {own:?}");
+        let armed = std::panic::catch_unwind(|| aim_scope_guard(&target, &own, state.path()));
+        assert_eq!(armed.is_ok(), accepted, "arm_scope_guard's aim on {target:?} with own {own:?}");
     }
 }
 

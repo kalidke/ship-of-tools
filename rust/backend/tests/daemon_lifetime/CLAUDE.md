@@ -52,8 +52,8 @@ of the backend's tests; the suites span subsystems, so this page names no charte
   on the case's roots re-adopts the rows and the window's close ends them (`Run::end_capsules`; the drop does it for a
   daemon started from a copy of the binary, whose capsules `Env`'s sweep of the case's roots does not match). A capsule
   runs in a row scope outside the container the suite runs in, and the close's end of that scope needs `cgroup.kill`
-  (absent on a cgroup v1 or hybrid host), so a fixture process that may outlive it ends itself: every tree process ends
-  once its folder is gone and in any case after its bound (`fixtures/tree.rs`).
+  (absent before Linux 5.14 and on a host with no cgroup v2 hierarchy), so a fixture process that may outlive it ends
+  itself: every tree process ends once its folder is gone and in any case after its bound (`fixtures/tree.rs`).
 - Every Julia the harness starts runs with `julia_depot_path`: a depot the case owns first, this process's own depot
   list behind it unchanged. That covers each daemon a `Run` starts and all its children (the REPL, Pluto and its
   workers, Quarto's engine, the update prepare), Pluto's instantiate in `done.rs` and the `Distributed` case. Julia and

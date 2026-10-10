@@ -1,12 +1,11 @@
 //! A row's own systemd scope: capture, remembered list, and the aimed kill at destroy.
 
-use crate::rows::spawn::row_scope_aim::{aim, prefix};
+use crate::rows::spawn::row_scope_aim::{aim, prefix, v2_root};
 use sot_log::host::state_dir::state_dir_hash;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub(crate) const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 /// The cgroup fence's own `QUIESCENCE_TIMEOUT` (`sot_log::claude`).
 pub(crate) const SCOPE_EMPTY_BOUND: Duration = Duration::from_secs(10);
 /// The row's remembered scopes, one cgroup rel per line, in its state
@@ -22,13 +21,13 @@ thread_local! {
     pub(crate) static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
-/// The cgroup2 root every end aims at.
+/// The cgroup v2 root every end aims at ([`v2_root`]).
 pub(crate) fn root() -> PathBuf {
     #[cfg(test)]
     if let Some(root) = TEST_ROOT.with(|r| r.borrow().clone()) {
         return root;
     }
-    PathBuf::from(CGROUP_ROOT)
+    v2_root()
 }
 
 /// `systemd-run --unit` value for a new scoped supervisor of this row.
@@ -57,26 +56,44 @@ pub(crate) fn capture(root: &Path, state_dir: &Path, pid: u32) -> Result<Option<
 /// The `0::` path of `proc_cgroup` when its leaf is a scope of this
 /// row and `cgroup.kill` is there to end it, listed durably in
 /// [`SCOPES_FILE`]; `Ok(None)` ends the row exactly as before this
-/// module (an unscoped or older row, a frontend-spawned drawer, a
-/// kernel before 5.14). `Err` is a failed write: nothing is killed.
+/// module (an unscoped or older row, a frontend-spawned drawer, or a scope
+/// with no `cgroup.kill` under `root`, for the cause [`no_kill_cause`]
+/// names). `Err` is a failed write: nothing is killed.
 pub(crate) fn capture_from(root: &Path, state_dir: &Path, proc_cgroup: &str) -> Result<Option<String>, String> {
     let Some(rel) = rel_of(proc_cgroup) else { return Ok(None) };
     let leaf = rel.rsplit('/').next().unwrap_or("");
     if !(leaf.starts_with(&prefix(&state_dir_hash(state_dir))) && leaf.ends_with(".scope")) {
         return Ok(None);
     }
-    if let Err(e) = std::fs::metadata(at(root, &rel).join("cgroup.kill")) {
+    let scope = at(root, &rel);
+    let kill = scope.join("cgroup.kill");
+    if let Err(e) = std::fs::metadata(&kill) {
         if e.kind() == ErrorKind::NotFound {
             tracing::warn!(
-                scope = %rel,
-                "capsule workspace: no cgroup.kill (Linux before 5.14); a child that left the agent's \
-                 process group survives this row's end"
+                path = %kill.display(),
+                "capsule workspace: no cgroup.kill for the row's scope ({}); this row's end reaches only the \
+                 agent's process group",
+                no_kill_cause(root, &scope)
             );
             return Ok(None);
         }
     }
     remember(state_dir, std::slice::from_ref(&rel))?;
     Ok(Some(rel))
+}
+
+/// Why `scope`, named by a supervisor's `0::` path, has no `cgroup.kill`
+/// under `root`, checked in this order: no cgroup v2 hierarchy at `root`;
+/// no such scope under it (removed since `/proc` named it, or a path from
+/// another cgroup namespace); else a kernel without `cgroup.kill`.
+fn no_kill_cause(root: &Path, scope: &Path) -> &'static str {
+    if !root.join("cgroup.controllers").exists() {
+        "no cgroup v2 hierarchy at this root"
+    } else if !scope.exists() {
+        "the scope is not under this root: removed already, or named from another cgroup namespace"
+    } else {
+        "Linux before 5.14"
+    }
 }
 
 /// The scopes [`SCOPES_FILE`] lists; an absent file lists none.
@@ -233,6 +250,15 @@ mod tests {
     }
 
     #[test]
+    fn the_v2_root_is_sys_fs_cgroup_when_it_is_the_v2_mount_else_its_unified_child() {
+        use crate::rows::spawn::row_scope_aim::v2_root_in;
+        let base = tempfile::tempdir().unwrap();
+        assert_eq!(v2_root_in(base.path()), base.path().join("unified"), "a hybrid host");
+        std::fs::write(base.path().join("cgroup.controllers"), "").unwrap();
+        assert_eq!(v2_root_in(base.path()), base.path(), "a unified host");
+    }
+
+    #[test]
     fn capture_finds_only_this_rows_scope() {
         let (state, other_state, root) =
             (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -250,6 +276,31 @@ mod tests {
         assert_eq!(at(format!("0::{theirs}\n")), None, "another row's scope");
         assert_eq!(at(format!("12:pids:{ours}\n1:name=systemd:{ours}\n")), None, "v1 lines only");
         assert_eq!(at(format!("0::{no_kill}\n")), None, "no cgroup.kill");
+    }
+
+    #[test]
+    fn a_scope_without_cgroup_kill_is_not_captured_and_its_cause_is_checked_in_order() {
+        let not_under = "the scope is not under this root: removed already, or named from another cgroup namespace";
+        for (controllers, scope_dir, cause) in [
+            (false, false, "no cgroup v2 hierarchy at this root"),
+            (false, true, "no cgroup v2 hierarchy at this root"),
+            (true, false, not_under),
+            (true, true, "Linux before 5.14"),
+        ] {
+            let (state, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(state.path()));
+            let scope = root.path().join(rel.trim_start_matches('/'));
+            if controllers {
+                std::fs::write(root.path().join("cgroup.controllers"), "").unwrap();
+            }
+            if scope_dir {
+                std::fs::create_dir_all(&scope).unwrap();
+            }
+            let case = format!("controllers {controllers}, scope folder {scope_dir}");
+            assert_eq!(no_kill_cause(root.path(), &scope), cause, "{case}");
+            assert_eq!(capture_from(root.path(), state.path(), &format!("0::{rel}\n")), Ok(None), "{case}");
+            assert_eq!(listed(state.path()), Ok(Vec::new()), "{case}: listed");
+        }
     }
 
     #[test]
