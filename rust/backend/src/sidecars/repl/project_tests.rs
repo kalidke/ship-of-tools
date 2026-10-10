@@ -472,7 +472,11 @@ async fn repl_child_arguments_and_environment_match_selected_project() {
     fixture.finish().await;
 }
 
-/// The process ids of the child's tree: its process group, on Unix (the containment makes the child its leader).
+/// The process ids of the child's tree, read the way each OS can. Linux and macOS: its process group (the containment
+/// makes the child its leader), from `/proc` and from one `ps -A -o pid=,pgid=` through the test's process seam.
+/// Windows: the root and every descendant, walked from the root over one CIM query of `ProcessId, ParentProcessId`; a
+/// descendant whose parent has already exited breaks the walk and is not seen (the daemon's job holds it, and the
+/// Linux run covers that path).
 #[cfg(target_os = "linux")]
 fn tree_pids(root: u32) -> Vec<u32> {
     let group = |pid: u32| -> Option<u32> {
@@ -487,9 +491,51 @@ fn tree_pids(root: u32) -> Vec<u32> {
         .collect()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn tree_pids(root: u32) -> Vec<u32> {
-    vec![root]
+    let mut command = std::process::Command::new("ps");
+    command.args(["-A", "-o", "pid=,pgid="]);
+    let out = crate::lifecycle::child_signal::process()
+        .output(&mut command)
+        .expect("read the process table");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut cols = l.split_whitespace().map(|c| c.parse::<u32>().ok());
+            let (pid, group) = (cols.next()??, cols.next()??);
+            (group == root).then_some(pid)
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn tree_pids(root: u32) -> Vec<u32> {
+    let mut command = std::process::Command::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }",
+    ]);
+    let out = crate::lifecycle::child_signal::process()
+        .output(&mut command)
+        .expect("read the process table");
+    let edges: Vec<(u32, u32)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut cols = l.split_whitespace().map(|c| c.parse::<u32>().ok());
+            Some((cols.next()??, cols.next()??))
+        })
+        .collect();
+    let mut tree = vec![root];
+    let mut next = 0;
+    while next < tree.len() {
+        let parent = tree[next];
+        next += 1;
+        for (pid, _) in edges.iter().filter(|(pid, up)| *up == parent && !tree.contains(pid)) {
+            tree.push(*pid);
+        }
+    }
+    tree
 }
 
 /// Whether any command line in the tree rooted at `root` carries any needle. Only booleans leave this function.
@@ -521,11 +567,13 @@ async fn the_command_line_observer_rejects_a_deliberate_leak() {
     observer_rejects_a_deliberate_leak().await;
 }
 
-/// The observer rejects a deliberate leak: an owned process whose command line carries the needle is found, and one
-/// that does not carry it is passed. The probe prints its pid, then sleeps. It is Julia, the kind the observation
-/// watches, except on Windows: there Julia's loader splits its own command line in place, writing a NUL after each
-/// argument (`cli/loader_win_utils.c` in every release from 1.6 to 1.13.1), so a reader sees only its executable
-/// path, and the probe is PowerShell, whose command line keeps its arguments.
+/// The observer rejects a deliberate leak: a process of an owned probe's tree whose command line carries the needle is
+/// found, and a needle nothing carries is passed. The needle sits in a descendant's arguments alone; the root's own
+/// text builds it from two pieces, so that finding it shows the tree reading reaches a descendant. The probe prints its
+/// pid, starts the child, then waits. It is Julia, the kind the observation watches, except on Windows: there Julia's
+/// loader splits its own command line in place, writing a NUL after each argument (`cli/loader_win_utils.c` in every
+/// release from 1.6 to 1.13.1), so a reader sees only its executable path, and the probe is PowerShell, whose command
+/// line keeps its arguments.
 async fn observer_rejects_a_deliberate_leak() {
     let sig: &'static crate::lifecycle::child_signal::Signal =
         Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
@@ -534,7 +582,8 @@ async fn observer_rejects_a_deliberate_leak() {
         probe.args([
             "-NoProfile",
             "-Command",
-            "[Console]::Out.WriteLine($PID); [Console]::Out.Flush(); Start-Sleep -Seconds 60 # probe-needle-5d1e",
+            "$n = 'probe-needle-' + '5d1e'; [Console]::Out.WriteLine($PID); [Console]::Out.Flush(); \
+             & powershell -NoProfile -Command \"Start-Sleep -Seconds 60 # $n\"",
         ]);
         probe
     } else {
@@ -543,8 +592,8 @@ async fn observer_rejects_a_deliberate_leak() {
         probe.args([
             "--startup-file=no",
             "-e",
-            "println(getpid()); flush(stdout); sleep(60)",
-            "probe-needle-5d1e",
+            "n = \"probe-needle-\" * \"5d1e\"; run(`sh -c \"sleep 60; :\" $n`; wait=false); \
+             println(getpid()); flush(stdout); sleep(60)",
         ]);
         probe
     };
@@ -608,7 +657,9 @@ async fn add_wglmakie(fixture: &Fixture) {
 
 /// A page served by the real `wglshow` path never puts its secret, or the address that carries it, on a command
 /// line of the REPL's tree, before or after the page exists, on every spawn route; a deliberately leaking process is
-/// rejected by the same observer, and a sentinel proves the observation sees a value the child really has.
+/// rejected by the same observer, and a sentinel proves the observation sees a value the child really has. It reads
+/// every process of the tree; on Windows the Julia root's own command line cannot be read (Julia's loader), so there
+/// the check covers the descendants only.
 #[tokio::test]
 async fn repl_page_secret_never_reaches_command_line() {
     if !isolated(

@@ -53,6 +53,24 @@ function stranger_is_dropped(port::Integer, bytes::Vector{UInt8}; wait = 10.0)
 end
 
 # Linux: `pid` and every process descended from it.
+# The command lines of `pids` that carry `needle`, and how many lines were read. A process that exited between the walk
+# and the read is skipped; any other unreadable command line is an error, so an unreadable one cannot pass as clean.
+function cmdline_carriers(pids, needle::AbstractString)
+    carriers = Int[]
+    read_count = 0
+    for p in pids
+        cmdline = try
+            read("/proc/$p/cmdline", String)
+        catch
+            isdir("/proc/$p") && error("the command line of process $p, still in the tree, cannot be read")
+            continue
+        end
+        read_count += 1
+        occursin(needle, cmdline) && push!(carriers, p)
+    end
+    return carriers, read_count
+end
+
 function process_tree(pid::Integer)
     parent_of = Dict{Int,Int}()
     for entry in readdir("/proc")
@@ -77,6 +95,24 @@ function process_tree(pid::Integer)
     end
     return tree
 end
+
+if Sys.islinux()
+    # The observation can fail: a needle in a descendant's arguments is found, and one nothing carries is not.
+    @testset "the command-line reading finds a needle in a descendant" begin
+        needle = "probe-needle-" * "5d1e"
+        child = run(`sh -c "sleep 60; :" $needle`; wait = false)
+        try
+            carriers, read_count = cmdline_carriers(process_tree(getpid()), needle)
+            @test Base.getpid(child) in carriers
+            @test read_count >= 1
+            @test isempty(first(cmdline_carriers(process_tree(getpid()), "a-needle-nothing-carries")))
+        finally
+            kill(child)
+            wait(child)
+        end
+    end
+end
+
 
 # Linux: the (port, loopback) of every TCP socket in state LISTEN whose inode a process of `pid`'s tree holds open:
 # what that tree listens on, and not what the rest of the account's processes do meanwhile.
@@ -154,11 +190,12 @@ end
         if Sys.islinux()
             @testset "the cluster cookie is on no command line of the worker's tree" begin
                 worker_pid = Int(Malt.remote_eval_fetch(workspace.worker, :(getpid())))
-                for p in process_tree(getpid())
-                    cmdline = try read("/proc/$p/cmdline", String) catch; "" end
-                    @test !occursin(cookie, cmdline)
-                end
-                @test worker_pid in process_tree(getpid())
+                tree = process_tree(getpid())
+                carriers, read_count = cmdline_carriers(tree, cookie)
+                @test isempty(carriers)
+                @test read_count >= 1
+                @test worker_pid in tree
+                @test worker_pid in tree && !isempty(first(cmdline_carriers([worker_pid], "julia")))
             end
         end
 
@@ -276,10 +313,9 @@ end
                 @test (port, true) in listening
                 @test length(listening) == 2
                 @test all(last, listening)
-                for p in tree
-                    cmdline = try read("/proc/$p/cmdline", String) catch; "" end
-                    @test !occursin(secret, cmdline)
-                end
+                carriers, read_count = cmdline_carriers(tree, secret)
+                @test isempty(carriers)
+                @test read_count >= 1
             end
         end
     finally
