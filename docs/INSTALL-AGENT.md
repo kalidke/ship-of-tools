@@ -138,14 +138,17 @@ the install command. Never add it to get past an error you did not understand.
 |--------|-----------------|
 | (a) all-in-one | `--local` |
 | (b) UI here, backend remote | `--backend <ssh-alias>` |
-| (c) headless backend | `--be-only` (add `--no-service` for an optional shared-home deployment) |
+| (c) headless backend | `--be-only` (add `--no-service` when something else supervises `sotd`) |
 
 For (b): verify key-based SSH first — `ssh -o BatchMode=yes <alias> true`.
 If it fails, walk the human through `ssh-keygen` + `ssh-copy-id`, then
 recheck. The *remote* machine also needs a `--be-only` install (offer to do
-it over SSH after this one). **On a shared-home deployment**, always add
-`--no-service`: a `systemd --user` unit written into a shared `$HOME` applies to
-every host sharing it.
+it over SSH after this one). **On a shared-home deployment** (one `$HOME` on
+several hosts), `~/.config/sot/hosts.toml` must list every host that shares
+it: the installer pins `sotd.service`, whose file and enable link every such
+host sees, to the hosts that list declares `daemon` or `frontend`
+(`sotd.service.d/topology.conf`), and the unit starts on no other. A host the
+list leaves out, or lists with neither key, never starts it.
 
 ### 2.2 Quote what it touches, get explicit yes
 

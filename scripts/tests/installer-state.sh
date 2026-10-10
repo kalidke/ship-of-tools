@@ -96,7 +96,7 @@ STUBEOF
     chmod +x "$d/stubs/systemctl" "$d/stubs/loginctl"
     (
         HOME="$d/home"; PATH="$d/stubs:$PATH"
-        installer_retire_local_service "$2"
+        installer_retire_local_service "$2" "$d/prefix" 0
         [ "$2" = 0 ] || installer_enable_local_service "$d/prefix" "$(dirname "$0")/../../deploy/sotd.service" "$d/sot.sock"
         installer_render_wrapper "$d/prefix" testtarget "$4" "$d/home/.local/bin/sot-launch"
     ) >/dev/null 2>&1 || true

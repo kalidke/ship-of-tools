@@ -1,10 +1,10 @@
-//! `sotd topology <plan|status|relay-endpoint|relay-sockets|sync|apply>` — what a box
+//! `sotd topology <plan|status|relay-endpoint|relay-sockets|sync|apply|refresh|pin|set>` — what a box
 //! derives from the declared topology (`sot_protocol::topology`, the one
 //! parser). A pure query arm of `main` (no startup side effects). Output is
 //! line-oriented so a shell or PowerShell launcher reads it with `split`;
 //! the `plan` line set is documented on `topology::plan` and nowhere else.
 
-use super::relay_units::{apply, refresh_cmd};
+use super::relay_units::{apply, pin_daemon, refresh_cmd};
 use sot_protocol::topology::{self, Topology};
 
 pub(crate) const USAGE: &str = "\
@@ -47,6 +47,15 @@ Usage: sotd topology <subcommand>
                         --yes runs systemctl for real. --dry-run is
                         accepted too, as the explicit spelling of the
                         default. Refuses on a non-hub box, naming the hub.
+  pin --dir <dir>       write sotd.service's host pin, <dir>/sotd.service.d/
+                        topology.conf: systemd starts the unit only on the
+                        hosts hosts.toml runs sotd on (daemon or frontend),
+                        so a home several hosts share starts it only there.
+                        With no hosts.toml the pin is removed (a lone box
+                        runs its own daemon); an invalid hosts.toml changes
+                        nothing. Runs no systemctl: reload after it. The
+                        installer and the update apply run it; on the hub,
+                        apply and refresh keep it and the hub's own pins.
   refresh               hub only: rewrite each enabled host's relay unit files
                         and the drop-in that sets their command, when their
                         text differs from this sotd's; clear failed relay instances,
@@ -97,6 +106,10 @@ pub fn run(args: &[String]) -> i32 {
         "sync" => report(sync(flag("--hub"))),
         "apply" => with_topology(|t| apply(t, !args.iter().any(|a| a == "--yes"))),
         "refresh" => with_topology(|t| refresh_cmd(t)),
+        "pin" => report(match flag("--dir") {
+            Some(dir) => pin_daemon(std::path::Path::new(&dir), &mut |l| println!("{l}")),
+            None => Err("pin needs --dir <the user's systemd folder>".to_string()),
+        }),
         "set" => report(set(&args[1..])),
         _ => {
             eprintln!("{USAGE}");

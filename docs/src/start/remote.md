@@ -19,9 +19,9 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
 ```
 
 By default this installs and starts the `systemd --user` unit `sotd.service`,
-so the daemon outlives your SSH login. (`--no-service` skips the unit when a
-shared-home deployment supervises `sotd` itself; see
-[Install details](install.md).)
+so the daemon outlives your SSH login. (`--no-service` skips the unit when
+something else supervises `sotd`; a server whose home other hosts share is
+covered in [Install details](install.md).)
 
 Every role needs Julia 1.12 or newer (installed with juliaup if missing)
 and gets the skills and hooks; see

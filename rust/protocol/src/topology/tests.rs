@@ -291,3 +291,9 @@ fn a_planned_relay_dial_is_recognized_and_the_hubs_own_is_not() {
         assert_eq!(class.as_deref().unwrap_or(&host), host);
     }
 }
+
+#[test]
+fn sotd_runs_on_every_daemon_or_frontend_host() {
+    let t = parse(V2).unwrap();
+    assert_eq!(sotd_hosts(&t), vec!["alpha", "gamma", "delta"]);
+}

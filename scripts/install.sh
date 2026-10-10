@@ -336,12 +336,24 @@ installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
 }
 
 # Step 6: a resolution with no daemon here must not leave a previously
-# installed LOCAL backend running (a wrong-topology remnant): disable it,
-# don't just orphan it. Only `--backend <host>` and a topology entry with
-# neither flag resolve that way; a box that runs a window resolves a daemon
-# of its own (installer_topology_role), so its unit is never disabled here.
-installer_retire_local_service() {  # <want-daemon 0|1>
-    if [ "$1" = 0 ] && command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
+# installed LOCAL backend running (a wrong-topology remnant). Only
+# `--backend <host>` and a topology entry with neither flag resolve that way;
+# a box that runs a window resolves a daemon of its own
+# (installer_topology_role). Under a declared topology the unit file and its
+# enable link may serve another host that shares this home, so they stay: the
+# unit's host pin (`sotd topology pin`) keeps it from starting here, and this
+# host's own run is stopped. With no hosts.toml the unit is this box's alone,
+# and it is disabled.
+installer_retire_local_service() {  # <want-daemon 0|1> <prefix> <topology-declared 0|1>
+    [ "$1" = 0 ] && command -v systemctl >/dev/null 2>&1 || return 0
+    if [ "$3" = 1 ]; then
+        [ -f "$HOME/.config/systemd/user/sotd.service" ] || return 0
+        "$2/bin/sotd" topology pin --dir "$HOME/.config/systemd/user" \
+            || say "WARNING: sotd topology pin failed: sotd.service is not pinned to the hosts that run sotd"
+        systemctl --user stop sotd.service 2>/dev/null || true
+        systemctl --user daemon-reload 2>/dev/null || true
+        say "stopped this host's sotd.service; the declared topology runs no daemon here"
+    elif systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
         systemctl --user disable --now sotd.service || true
         say "disabled the local sotd.service from a previous all-in-one install"
     fi
@@ -358,6 +370,10 @@ installer_enable_local_service() {  # <prefix> <template> <socket>
     mkdir -p "$HOME/.config/systemd/user"
     installer_retire_tmux_unit "$HOME/.config/systemd/user"
     render_sotd_unit "$1" "$2" "$HOME/.config/systemd/user/sotd.service"
+    # The unit and its enable link live in the home, which other hosts may
+    # share: pin it to the hosts that run sotd before any manager reloads it.
+    "$1/bin/sotd" topology pin --dir "$HOME/.config/systemd/user" \
+        || say "WARNING: sotd topology pin failed: sotd.service is not pinned to the hosts that run sotd"
     systemctl --user daemon-reload
     systemctl --user enable --now sotd.service
     loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
@@ -449,10 +465,10 @@ while [ $# -gt 0 ]; do
         --hub) HUB_ALIAS="${2:?--hub needs an ssh alias}"; shift ;;
         --version) VERSION="${2:?}"; shift ;;
         --prefix) PREFIX="${2:?}"; shift ;;
-        # Skip the systemd unit install/enable — for shared-home deployments
-        # (a user-level unit file + its enable symlink live in $HOME, so on an
-        # shared home they'd apply to EVERY machine). The caller supervises
-        # sotd itself (e.g. systemd-run --user transient unit, per-machine).
+        # Skip the systemd unit install/enable: the caller supervises sotd
+        # itself (e.g. a systemd-run --user transient unit). A shared home
+        # needs no such flag: the unit is pinned to the hosts that run sotd
+        # (`sotd topology pin`).
         --no-service) NO_SERVICE=1 ;;
         # Consent to reconfiguring an installation that is already here. See
         # the role gate below for what it protects and why a role flag alone
@@ -628,7 +644,9 @@ SELF_HOST="$(installer_self_host)"
 WANT_DAEMON=0
 WANT_FRONTEND=0
 TOPO_ROLE=none
+TOPO_DECLARED=0
 if STATUS_OUT="$("$PREFIX/bin/sotd" topology status 2>/dev/null)"; then
+    TOPO_DECLARED=1
     TOPO_ROLE="$(installer_topology_role "$STATUS_OUT" "$SELF_HOST")"
 fi
 if [ "$TOPO_ROLE" != none ]; then
@@ -874,7 +892,7 @@ fi
 # ---- 6. config -----------------------------------------------------------------
 # hosts.toml is never written here — see "what this box knows about itself"
 # above.
-installer_retire_local_service "$WANT_DAEMON"
+installer_retire_local_service "$WANT_DAEMON" "$PREFIX" "$TOPO_DECLARED"
 # The owner creates or upgrades settings and keeps any existing trust answer.
 installer_declare_trust "$PREFIX/bin/sotd" "$HOME"
 

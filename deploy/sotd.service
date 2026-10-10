@@ -1,7 +1,9 @@
 # Ship of Tools backend daemon — systemd user unit TEMPLATE (ADR 0030 §3).
 #
 # Installers substitute the @TOKENS@ and place the result at
-# ~/.config/systemd/user/sotd.service, then:
+# ~/.config/systemd/user/sotd.service, pin it to the hosts that run sotd
+# (`sotd topology pin` writes sotd.service.d/topology.conf: a home several
+# hosts share shows this unit to all of them), then:
 #   systemctl --user daemon-reload && systemctl --user enable --now sotd
 #   loginctl enable-linger $USER    # keep it alive without an open session
 #

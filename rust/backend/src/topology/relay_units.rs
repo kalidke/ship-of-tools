@@ -1,13 +1,14 @@
-//! `sotd topology apply` and `refresh`: the hub's systemd --user relay units and drop-ins,
-//! converged with hosts.toml; unit text comes from `sot_protocol::topology`.
+//! `sotd topology apply`, `refresh` and `pin`: the systemd --user files sotd writes into the user's systemd folder,
+//! converged with hosts.toml (the hub's relay units and drop-ins, and the host pins); their text comes from
+//! `sot_protocol::topology`.
 
 use super::cli::self_host;
 use sot_protocol::topology::{self, Topology};
 use std::path::{Path, PathBuf};
 
-/// `sotd topology apply` (plan §C, §F step 5): on the hub, converge both
-/// systemd --user unit families (plus each instance's ConditionHost
-/// drop-in, `topology::relay_units::apply_dropin`) with the declared list —
+/// `sotd topology apply` (plan §C, §F step 5): on the hub, converge the
+/// host pins (`converge_hub_pins`) and both systemd --user unit families
+/// with the declared list —
 /// `sot-relay-tunnel@<host>` for the comm relay's reverse tunnels, and
 /// `sot-host-relay-<host>.socket` (plus the per-connection
 /// `sot-host-relay-<host>@.service`) for the hub's own socket per dialable
@@ -21,7 +22,19 @@ pub(super) fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
     let me = self_host()?;
     topology::relay_units::require_hub(topo, &me, "apply")?;
     let plan = topology::relay_units::apply_plan(topo, &enabled_hosts(TUNNEL_TEMPLATE)?, &enabled_hosts(RELAY_TEMPLATE)?);
-    if plan.is_empty() {
+    let mut failures: Vec<String> = Vec::new();
+    // The pins first, on every run: a unit enabled below never starts without its pin, and a run whose plan is
+    // empty still heals a pin that differs.
+    match converge_hub_pins(topo, &systemd_user_dir()?, &topology::relay_units::relay_hosts(topo), dry_run, &mut |l| println!("{l}")) {
+        Ok(true) if !dry_run => {
+            if let Err(e) = run_systemctl(&["--user", "daemon-reload"]) {
+                failures.push(e);
+            }
+        }
+        Ok(_) => {}
+        Err(e) => failures.push(e),
+    }
+    if plan.is_empty() && failures.is_empty() {
         println!(
             "up to date: {} tunnel instance(s), {} relay instance(s)",
             topology::relay_units::tunnel_hosts(topo).len(),
@@ -42,7 +55,6 @@ pub(super) fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
     // far it got. Each unit's failure is reported as it happens, the rest
     // still run, and the aggregate is returned at the end so the exit
     // status is still honest.
-    let mut failures: Vec<String> = Vec::new();
     for (diff, unit, generated) in [
         (&plan.tunnels, topology::relay_units::tunnel_unit as fn(&str) -> String, false),
         (&plan.relays, topology::relay_units::relay_unit as fn(&str) -> String, true),
@@ -54,7 +66,6 @@ pub(super) fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
                     if generated {
                         write_relay_units(h)?;
                     }
-                    write_dropin(&unit(h), &topo.hub)?;
                     run_systemctl(&["--user", "daemon-reload"])?;
                     run_systemctl(&["--user", "enable", "--now", &unit(h)])
                 };
@@ -69,7 +80,6 @@ pub(super) fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
             if !dry_run {
                 let step = || -> Result<(), String> {
                     run_systemctl(&["--user", "disable", "--now", &unit(h)])?;
-                    remove_dropin(&unit(h))?;
                     if generated {
                         remove_relay_units(h)?;
                     }
@@ -196,10 +206,20 @@ fn refresh(
 ) -> Result<(), String> {
     topology::relay_units::require_hub(topo, me, "refresh")?;
     let hosts: Vec<&str> = topology::relay_units::relay_hosts(topo).into_iter().filter(|h| enabled.iter().any(|e| e == h)).collect();
-    if hosts.is_empty() {
-        return Ok(());
-    }
     let mut failures: Vec<String> = Vec::new();
+    let pinned = converge_hub_pins(topo, dir, &hosts, false, say).unwrap_or_else(|e| {
+        failures.push(e);
+        false
+    });
+    if hosts.is_empty() {
+        if pinned {
+            systemctl(&["--user", "daemon-reload"]).map_err(|e| format!("daemon-reload failed: {e}"))?;
+        }
+        return match failures.is_empty() {
+            true => Ok(()),
+            false => Err(format!("{} relay refresh step(s) failed:\n  {}", failures.len(), failures.join("\n  "))),
+        };
+    }
     for &h in &hosts {
         for (name, text) in topology::relay_units::relay_files(h) {
             let path = dir.join(&name);
@@ -343,11 +363,14 @@ fn remove_relay_units(host: &str) -> Result<(), String> {
         let _ = std::fs::remove_file(dir.join(name));
     }
     let _ = std::fs::remove_dir(dir.join(format!("{}.d", topology::relay_units::relay_service_unit_file(host))));
+    remove_pin(&dir, &format!("{}.d/{}", topology::relay_units::relay_unit(host), topology::relay_units::PIN_FILE), false, &mut |_| {})?;
     Ok(())
 }
 
-/// `~/.config/systemd/user` — same `$XDG_CONFIG_HOME`-or-`$HOME/.config`
-/// rule `scripts/install.sh` uses for its own unit writes.
+/// `$XDG_CONFIG_HOME/systemd/user`, else `~/.config/systemd/user`: the folder a user manager reads with that
+/// environment. `scripts/install.sh` writes `sotd.service` under `$HOME/.config/systemd/user` whatever
+/// `$XDG_CONFIG_HOME` says, so it names that folder to `sotd topology pin --dir` rather than leave this rule to
+/// choose.
 fn systemd_user_dir() -> Result<PathBuf, String> {
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|v| !v.is_empty())
@@ -374,47 +397,66 @@ fn systemctl_stdout(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn dropin_path(unit: &str) -> Result<PathBuf, String> {
-    Ok(systemd_user_dir()?.join(format!("{unit}.d")).join(topology::relay_units::APPLY_DROPIN_FILE))
+/// Writes each pin in `pins` (path under `dir`, text) whose text differs, through a temp file and a rename, and says
+/// each; `dry_run` only says what it would write. True when a pin changed, so the caller reloads once.
+fn converge_pins(dir: &Path, pins: &[(String, String)], dry_run: bool, say: &mut dyn FnMut(String)) -> Result<bool, String> {
+    let mut changed = false;
+    for (name, text) in pins {
+        let path = dir.join(name);
+        if std::fs::read_to_string(&path).is_ok_and(|now| now == *text) {
+            continue;
+        }
+        if dry_run {
+            say(format!("would write {}", path.display()));
+            continue;
+        }
+        write_atomic(&path, text)?;
+        say(format!("wrote {}", path.display()));
+        changed = true;
+    }
+    Ok(changed)
 }
 
-/// Writes only apply's own fixed-named file (`topology::relay_units::APPLY_DROPIN_FILE`)
-/// inside the instance's `.d/` directory — any other, hand-made drop-in
-/// beside it is never touched (mirrors `scripts/install.sh`'s own rule for
-/// `sotd.service.d`: it heals only the one drop-in name it knows).
-fn write_dropin(unit: &str, hub: &str) -> Result<(), String> {
-    let path = dropin_path(unit)?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+/// Removes the pin at `name` under `dir`, then its folder when that left it empty (a hand-made drop-in beside it
+/// keeps the folder). True when a pin was removed.
+fn remove_pin(dir: &Path, name: &str, dry_run: bool, say: &mut dyn FnMut(String)) -> Result<bool, String> {
+    let path = dir.join(name);
+    if std::fs::symlink_metadata(&path).is_err() {
+        return Ok(false);
     }
-    // `ConditionHost=` is compared against the hostname systemd sees, which
-    // on a domain-joined box is the FQDN -- so the topology's SHORT hub name
-    // never matched and every generated unit was enabled, correct and
-    // permanently skipped. `apply` only ever runs ON the hub (`require_hub`),
-    // so the hostname this process reads IS the value to write: exact, no
-    // glob. A glob (`<hub>*`) also matches, but it would match a different
-    // box whose name merely starts the same -- and the shared home these
-    // units live on is precisely where such a collision would bite, which is
-    // the condition's whole reason for existing.
-    let condition_host = std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|h| h.trim().to_string())
-        .ok()
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| hub.to_string());
-    std::fs::write(&path, topology::relay_units::apply_dropin(&condition_host))
-        .map_err(|e| format!("{}: {e}", path.display()))
+    if dry_run {
+        say(format!("would remove {}", path.display()));
+        return Ok(false);
+    }
+    std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if let Some(folder) = path.parent() {
+        let _ = std::fs::remove_dir(folder);
+    }
+    say(format!("removed {}", path.display()));
+    Ok(true)
 }
 
-/// Removes apply's own drop-in file, then the `.d/` directory only if that
-/// left it empty — a hand-made drop-in under a different name keeps the
-/// directory (and itself) alive.
-fn remove_dropin(unit: &str) -> Result<(), String> {
-    let path = dropin_path(unit)?;
-    let _ = std::fs::remove_file(&path);
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::remove_dir(dir);
+/// The hub's pins under `dir`: sotd.service's, the reverse tunnels' template pin and each relay socket's in `relays`,
+/// written when their text differs; the tunnels' pin removed when the topology wants no tunnel. True when anything
+/// changed.
+fn converge_hub_pins(topo: &Topology, dir: &Path, relays: &[&str], dry_run: bool, say: &mut dyn FnMut(String)) -> Result<bool, String> {
+    let mut pins = vec![topology::relay_units::daemon_pin(topo)];
+    pins.extend(topology::relay_units::hub_pins(topo, relays));
+    let mut changed = converge_pins(dir, &pins, dry_run, say)?;
+    if topology::relay_units::tunnel_hosts(topo).is_empty() {
+        changed |= remove_pin(dir, &topology::relay_units::tunnel_pin_path(), dry_run, say)?;
     }
-    Ok(())
+    Ok(changed)
+}
+
+/// `sotd topology pin --dir <dir>`: sotd.service's pin under `dir`, from this box's hosts.toml, written when its text
+/// differs; removed when there is no hosts.toml, since a lone box runs its own daemon. An invalid hosts.toml is an
+/// error and changes nothing. Runs no systemctl: the installer and the update apply reload after it.
+pub(super) fn pin_daemon(dir: &Path, say: &mut dyn FnMut(String)) -> Result<(), String> {
+    match topology::load()? {
+        Some((_, topo)) => converge_pins(dir, &[topology::relay_units::daemon_pin(&topo)], false, say).map(|_| ()),
+        None => remove_pin(dir, &format!("sotd.service.d/{}", topology::relay_units::PIN_FILE), false, say).map(|_| ()),
+    }
 }
 
 #[cfg(test)]
@@ -485,6 +527,9 @@ mod tests {
         assert_eq!(
             said,
             [
+                format!("wrote {}", dir.join("sotd.service.d/topology.conf").display()),
+                format!("wrote {}", dir.join("sot-relay-tunnel@.service.d/topology.conf").display()),
+                format!("wrote {}", dir.join("sot-host-relay-remote-a.socket.d/topology.conf").display()),
                 format!("rewrote {}", dir.join("sot-host-relay-remote-a@.service").display()),
                 format!("rewrote {}", dir.join("sot-host-relay-remote-a@.service.d/zz-sot-relay-command.conf").display())
             ]
@@ -546,6 +591,33 @@ mod tests {
         assert!(!is_main_pid("0\n", 4242), "a stopped or missing unit");
         assert!(!is_main_pid("4243\n", 4242), "a session child or a hand-started daemon");
         assert!(!is_main_pid("", 4242));
+    }
+
+    /// The hub pins sotd.service to every host that runs sotd and its reverse tunnels to itself, on their template so
+    /// systemd reads the pin for every instance. A second run changes nothing and, with no relay socket enabled,
+    /// reloads nothing.
+    #[test]
+    fn refresh_pins_the_daemon_and_the_tunnels() {
+        let topo = topology::parse("hub = \"hub-box\"\n[host.hub-box]\ndaemon = true\n[host.laptop]\nfrontend = true\n[host.server]\n").unwrap();
+        let dir = scratch("pins");
+        let mut calls: Vec<String> = Vec::new();
+        refresh(&topo, "hub-box", &dir, &[], &mut |a| {
+            calls.push(a[1..].join(" "));
+            Ok(String::new())
+        }, &mut |_| {})
+        .unwrap();
+        let read = |p: &str| std::fs::read_to_string(dir.join(p)).ok();
+        assert_eq!(read("sotd.service.d/topology.conf"), Some(topology::relay_units::host_pin(&["hub-box", "laptop"])));
+        assert_eq!(read("sot-relay-tunnel@.service.d/topology.conf"), Some(topology::relay_units::host_pin(&["hub-box"])));
+        assert_eq!(calls, ["daemon-reload"]);
+        calls.clear();
+        refresh(&topo, "hub-box", &dir, &[], &mut |a| {
+            calls.push(a[1..].join(" "));
+            Ok(String::new())
+        }, &mut |_| {})
+        .unwrap();
+        assert!(calls.is_empty(), "{calls:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

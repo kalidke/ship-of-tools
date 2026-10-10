@@ -9,7 +9,7 @@ the CLI commands dial the daemon with. Part of topology.
 - `dial.rs`: the one-shot blocking daemon client; its `connect` reaches a `unix:` or `pipe:` endpoint through
   `connect_own`.
 - `mod.rs`: declares the seven modules below.
-- `relay_units.rs`: `sotd topology apply` and `refresh`, the hub's systemd --user relay units and drop-ins, and the hub's relay-refresh thread (`spawn_refresh_at_start`).
+- `relay_units.rs`: `sotd topology apply`, `refresh` and `pin`, the hub's systemd --user relay units and drop-ins, the host pins, and the hub's relay-refresh thread (`spawn_refresh_at_start`).
 - `set.rs`: `handle_topology_set`, the daemon side of op `topology.set`.
 - `status.rs`: `sotd status`, declared plus live state fanned out to every reachable daemon.
 - `stdio_bridge.rs`: `sotd stdio-bridge`, the byte shuttle between stdin/stdout and this box's own daemon endpoint, a hub relay socket, or a local endpoint its caller names (`--endpoint`), reached through `connect_own`.
@@ -36,6 +36,8 @@ for `sotd status`; `stdio_bridge.rs` `run` for the bridge.
   `guard_pid`, else with the process's own pid, since the guard is the unit's main process on Linux), and the daemon
   never waits on it (main spawns it on its own thread).
 - In `refresh`, only `daemon-reload` is fatal.
+- `apply` and `refresh` converge the host pins (`converge_hub_pins`) before they enable, reload or restart a unit, on
+  every run; `pin` writes only sotd.service's pin, runs no systemctl, and an invalid hosts.toml changes nothing.
 - The relay refresh's `systemctl` calls run through `Signal::output`, so what one leaves running dies with it.
 - The dial's ssh runs through `Signal::spawn_std`: dropping its `ChildGuard` in dial.rs, or a `Track::cancel`, kills
   the ssh tree through its `ContainedStd` before the child is reaped.
