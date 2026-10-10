@@ -7,7 +7,7 @@
 #   ./scripts/install.sh --be-only                   # headless backend/canary
 #   [--version vX.Y.Z] [--prefix <dir>] [--no-service]
 #   [--hub <ssh-alias>]     # this box does NOT share the hub's home: fetch
-#                           # its hosts.toml (`sotd topology sync`) once staged
+#                           # its hosts.toml (`sotd topology sync`) once unpacked
 #   [--force-role-change]  # consent to installing over another prefix's live daemon, over an existing
 #                          # install from a host hosts.toml runs no sotd on, or to recording less than
 #                          # install.json records
@@ -519,7 +519,7 @@ while [ $# -gt 0 ]; do
         --backend) ROLE=remote; BE_ALIAS="${2:?--backend needs an ssh alias}"; shift ;;
         --be-only) ROLE=be-only ;;
         # This box does not share the hub's home: fetch its hosts.toml
-        # (`sotd topology sync`) after staging, below.
+        # (`sotd topology sync`) with the unpacked sotd, below.
         --hub) HUB_ALIAS="${2:?--hub needs an ssh alias}"; shift ;;
         --version) VERSION="${2:?}"; shift ;;
         --prefix) PREFIX="${2:?}"; shift ;;
