@@ -37,7 +37,8 @@ Because they are different processes, **killing the REPL does not kill the
 kernel.** You can tear down and restart your interactive session — to clear
 state or recover from a wedged computation — without losing the project view, the
 mode trees, or the index. (In-memory REPL bindings are not expected to survive a
-restart; static content on disk always does.)
+restart, and neither is anything in the REPL's own temporary folder, `tempdir()`,
+which goes with its process; other content on disk always does.)
 
 ## Dispatching code
 

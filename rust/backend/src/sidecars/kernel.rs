@@ -347,7 +347,13 @@ async fn run_one_generation(
 
     tracing::info!(julia_bin = %julia_bin, source, "spawning kernel");
 
+    // Declared before `contained`, so every return removes it after the child's kill (`child_tmp`).
+    let tmp = match crate::sidecars::child_tmp::ChildTmp::new() {
+        Ok(tmp) => tmp,
+        Err(e) => return (None, format!("kernel child temporary folder: {e}")),
+    };
     let mut cmd = Command::new(&julia_bin);
+    tmp.apply(&mut cmd);
     cmd.arg(format!("--project={}", kernel_project.display()))
         .arg("-e")
         .arg(&julia_src)

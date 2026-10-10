@@ -46,6 +46,9 @@ libc = "0.2"
 # Already in the lock as a transitive dep of `sot-log`, so direct use
 # compiles nothing new.
 uuid = { workspace = true }
+# A Julia child's own temporary folder (`sidecars::child_tmp`), removed after its reap. Already in the lock as a
+# dev dependency, so direct use compiles nothing new.
+tempfile = { workspace = true }
 
 # ADR 0046 decision 2 R3: the watchdog's own zero-network identity read
 # of a child it just spawned itself needs `HANDLE` to call `sot_log::identity::challenge_win::
@@ -73,9 +76,6 @@ sot-log = { path = "../log", features = ["test-support"] }
 # `start_paused` test runtime (pages::site's bind-fallback test collapses the
 # 10x300ms preferred-port retry loop instead of really sleeping through it).
 tokio = { workspace = true, features = ["test-util"] }
-# ADR 0042 slice L1a: `tests/capsule_workspaces/main.rs`'s own isolated
-# project/state/config roots (matching `sot-log`'s own dev-dependency use).
-tempfile = { workspace = true }
 
 # ADR 0043 decision 32: `tests/capsule_workspaces/main.rs`'s own Windows-only
 # breakaway-containment test stands up a real job object, assigns the
