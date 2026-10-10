@@ -26,9 +26,9 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 - Text frames precede value or error, and done is last (`stream_eval_frames`).
 - Every request gets a terminal `res`; `spawn_eval` answers each eval once, a failure of its streaming machinery
   included.
-- An interrupt reaches an eval only in its user code (`run_user_code`): while the code runs it is raised there, one that
-  arrives before the code starts stops it before it runs, and one that arrives after the code has run is answered
-  `interrupted:false`. An interrupt that names `eval_ids` reaches only an eval among them (`handle_interrupt`).
+- An interrupt reaches an eval only in its user code (`run_user_code`), which is its code and the rendering of its value
+  (`stream_eval_frames`): while that runs it is raised there, one that arrives before it starts stops it before it runs,
+  and one that arrives after it has finished is answered `interrupted:false`. A wire line is one write (`write_envelope`). An interrupt that names `eval_ids` reaches only an eval among them (`handle_interrupt`).
 - A `BrowserView` is announced once per (url, open) (`announce_browserview`).
 - WGLMakie code lives only in ext/.
 - `wglshow` serves from one Bonito server per child (`page_server`), on a port the OS assigns, at a secret path minted with that server (`WGL_SERVER` holds both). Its page is a Bonito session of its own with `NoServer` (`no_referrer_page`), so its scripts and files travel inside the page and the port answers only the page and its websocket; `/` and every other path answer 404. It needs Bonito 5.1 or a later 5.x (`wgl_bonito_supported`). `wgl_server` binds once per REPL lifetime: the first call may pin a port, later default/same-port calls reuse it, and a different live pin raises `ArgumentError` without changing the listener, secret, routes or announcement. Restart the REPL to choose another port. The listener stays owned until the REPL ends; generic BrowserView servers retain their own multi-port behavior.

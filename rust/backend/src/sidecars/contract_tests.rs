@@ -137,6 +137,37 @@ pub(crate) async fn within(bound: Duration, what: &str, mut condition: impl FnMu
     }
 }
 
+/// `SOT_JULIA_BIN` and `SOT_RESOURCE_ROOT` are process-global and read on every spawn attempt, so pinning them takes
+/// the crate-wide env serialization lock (`paths::ENV_TEST_LOCK`); the previous values come back when the pin drops.
+pub(crate) struct EnvPin {
+    _serial: std::sync::MutexGuard<'static, ()>,
+    julia_bin: Option<std::ffi::OsString>,
+    resource_root: Option<std::ffi::OsString>,
+}
+
+impl Drop for EnvPin {
+    fn drop(&mut self) {
+        for (key, val) in [("SOT_JULIA_BIN", &self.julia_bin), ("SOT_RESOURCE_ROOT", &self.resource_root)] {
+            match val {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
+pub(crate) fn pin_env(julia_bin: &Path, resource_root: &Path) -> EnvPin {
+    let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let pin = EnvPin {
+        _serial: serial,
+        julia_bin: std::env::var_os("SOT_JULIA_BIN"),
+        resource_root: std::env::var_os("SOT_RESOURCE_ROOT"),
+    };
+    std::env::set_var("SOT_JULIA_BIN", julia_bin);
+    std::env::set_var("SOT_RESOURCE_ROOT", resource_root);
+    pin
+}
+
 fn private_signal() -> &'static Signal {
     Box::leak(Box::new(Signal::new()))
 }

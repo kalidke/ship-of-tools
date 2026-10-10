@@ -319,25 +319,8 @@ pub async fn handle_repl_interrupt(
 #[cfg(all(test, unix))]
 mod interrupt_tests {
     use super::*;
-    use crate::sidecars::contract_tests::within;
+    use crate::sidecars::contract_tests::{pin_env, within};
     use std::time::Duration;
-
-    /// Holds `paths::ENV_TEST_LOCK` and puts back the two process-global variables this test sets, however it ends.
-    struct EnvPin {
-        _serial: std::sync::MutexGuard<'static, ()>,
-        saved: [(&'static str, Option<std::ffi::OsString>); 2],
-    }
-
-    impl Drop for EnvPin {
-        fn drop(&mut self) {
-            for (key, val) in &self.saved {
-                match val {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-    }
 
     /// A `julia` stand-in: it says it is ready, then logs each request line beside itself and answers it.
     const STUB: &str = r#"#!/bin/sh
@@ -360,12 +343,7 @@ done
         std::fs::create_dir_all(&root).unwrap();
         let julia = dir.join("julia");
         sot_log::test_exec::write_executable(&julia, STUB);
-        let _pin = EnvPin {
-            _serial: crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner()),
-            saved: ["SOT_JULIA_BIN", "SOT_RESOURCE_ROOT"].map(|k| (k, std::env::var_os(k))),
-        };
-        std::env::set_var("SOT_JULIA_BIN", &julia);
-        std::env::set_var("SOT_RESOURCE_ROOT", &resources);
+        let _pin = pin_env(&julia, &resources);
 
         let (frame_tx, _bus) = tokio::sync::broadcast::channel(256);
         let workspaces = Workspaces::new();

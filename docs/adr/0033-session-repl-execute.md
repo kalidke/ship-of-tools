@@ -159,8 +159,10 @@ Deferred:
 `repl.interrupt` takes an optional `eval_ids`. The shim interrupts the eval that holds its guard only if that eval's id
 is among them, so the window's Ctrl+C, which names every eval its drawer shows in flight, does not stop an eval
 accepted after the one the user meant. Each window numbers its own evals, so two windows on one REPL can share a
-number; the scope is by number. An interrupt without `eval_ids` still stops whichever eval runs, and `sot-fe repl
+number; the scope is by number. `sot-fe repl run --fresh` always sends `eval_id` 1, a number every window's first
+eval shares, so its interrupt scope has the same limit. An interrupt without `eval_ids` still stops whichever eval runs, and `sot-fe repl
 interrupt` sends none: item 4's "not run-scoped" and item 9's "workspace-wide" describe that form. An interrupt reaches
-an eval only in its user code. One that arrives before the code starts stops it before it runs, and the eval is still
-answered with an error frame, done and res, so item 2's "every path" holds; one that arrives after the code has run is
+an eval only in its user code, which is its code and the display of its value. One that arrives before it starts stops
+it before it runs, and the eval is still answered with an error frame, done and res, so item 2's "every path" holds; one
+that arrives after it has finished is
 answered `interrupted:false`. Item 4 stands: a timeout sends no interrupt.

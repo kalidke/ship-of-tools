@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::sidecars::contract_tests::{depot_path, executable, isolated, within};
+use crate::sidecars::contract_tests::{depot_path, executable, isolated, pin_env, within};
 
 fn scratch_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!("sot-repl-execute-{}", std::process::id()));
@@ -216,36 +216,6 @@ mod shell_table {
       esac
     done
     "#;
-
-    /// `SOT_JULIA_BIN` and `SOT_RESOURCE_ROOT` are process-global: pinning them takes `paths::ENV_TEST_LOCK`.
-    struct EnvPin {
-        _serial: std::sync::MutexGuard<'static, ()>,
-        julia_bin: Option<std::ffi::OsString>,
-        resource_root: Option<std::ffi::OsString>,
-    }
-
-    impl Drop for EnvPin {
-        fn drop(&mut self) {
-            for (key, val) in [("SOT_JULIA_BIN", &self.julia_bin), ("SOT_RESOURCE_ROOT", &self.resource_root)] {
-                match val {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-    }
-
-    fn pin_env(julia_bin: &Path, resource_root: &Path) -> EnvPin {
-        let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let pin = EnvPin {
-            _serial: serial,
-            julia_bin: std::env::var_os("SOT_JULIA_BIN"),
-            resource_root: std::env::var_os("SOT_RESOURCE_ROOT"),
-        };
-        std::env::set_var("SOT_JULIA_BIN", julia_bin);
-        std::env::set_var("SOT_RESOURCE_ROOT", resource_root);
-        pin
-    }
 
     fn logged_request(log: &Path, eval_id: u64) -> Value {
         std::fs::read_to_string(log)

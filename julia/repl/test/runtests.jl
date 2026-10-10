@@ -8,6 +8,20 @@ const DR = ShipToolsRepl
 
 include("answer_then_next.jl")
 
+# An output stream that counts the `write` calls that reach it.
+mutable struct CountingIO <: IO
+    writes::Int
+    bytes::Vector{UInt8}
+end
+CountingIO() = CountingIO(0, UInt8[])
+function Base.unsafe_write(io::CountingIO, p::Ptr{UInt8}, n::UInt)
+    io.writes += 1
+    append!(io.bytes, unsafe_wrap(Array, p, n))
+    return n
+end
+Base.write(io::CountingIO, b::UInt8) = (io.writes += 1; push!(io.bytes, b); 1)
+Base.flush(::CountingIO) = nothing
+
 @testset "ShipToolsRepl streaming" begin
 
     @testset "utf8_prefix splits on char boundary" begin
@@ -196,7 +210,7 @@ include("answer_then_next.jl")
         bs_in, bs_out, _ = drive(String[])
         req = sprint(DR.json_write, Dict(
             :v => 1, :id => 11, :op => "repl.run_file",
-            :payload => Dict(:eval_id => 78, :path => path, :fresh => false),
+            :payload => Dict(:eval_id => 78, :path => path),
         ))
         write(bs_in, req * "\n")
         flush(bs_in)
@@ -214,7 +228,7 @@ include("answer_then_next.jl")
     end
 
     run_file_line(id, path) = sprint(DR.json_write, Dict(:v => 1, :id => id, :op => "repl.run_file",
-        :payload => Dict(:eval_id => id, :path => path, :fresh => false))) * "\n"
+        :payload => Dict(:eval_id => id, :path => path))) * "\n"
     # An interrupt request; `eval_ids` names the evals it means, `nothing` none (any eval).
     interrupt_line(id, eval_ids) = sprint(DR.json_write, Dict(:v => 1, :id => id, :op => "repl.interrupt",
         :payload => eval_ids === nothing ? Dict() : Dict(:eval_ids => eval_ids))) * "\n"
@@ -424,6 +438,46 @@ include("answer_then_next.jl")
         frames = frames_of(envs, 2)
         @test [f[:kind] for f in frames] == ["error", "done"]
         @test occursin("InterruptException", first(frames)[:message])
+    end
+
+    # The value's display is user code too: an interrupt during a slow `show` stops it, and the eval is answered with the
+    # error, not a value.
+    @testset "serve: an interrupt during the value's display stops it, and the eval is answered" begin
+        bs_in, bs_out, _ = drive(String[])
+        code = "struct SlowShow end; " *
+            "Base.showable(::MIME\"image/png\", ::SlowShow) = true; " *
+            "Base.show(io::IO, ::MIME\"image/png\", ::SlowShow) = (println(\"rendering\"); wait(Condition())); " *
+            "SlowShow()"
+        write(bs_in, eval_line(1, code)); flush(bs_in)
+        read_until_printed(bs_out, 1, "rendering")
+        write(bs_in, interrupt_line(2, nothing)); flush(bs_in)
+        envs = read_until_answered(bs_out, [1, 2])
+        close(bs_in)
+        @test res_of(envs, 2)[:interrupted] == true
+        kinds = [f[:kind] for f in frames_of(envs, 1)]
+        @test last(kinds, 2) == ["error", "done"]
+        @test !("image" in kinds) && !("value" in kinds)
+        @test occursin("InterruptException", only(filter(f -> f[:kind] == "error", frames_of(envs, 1)))[:message])
+    end
+
+    # A wire line is written in one write, so an interrupt cannot leave half of it on the wire.
+    @testset "write_envelope: one write per envelope" begin
+        io = CountingIO()
+        DR.write_envelope(io, "res", 7, "repl.interrupt", Dict(:interrupted => false, :note => "x"))
+        @test io.writes == 1
+        @test endswith(String(copy(io.bytes)), "\n")
+        @test DR.json_read(String(copy(io.bytes)))[:id] == 7
+    end
+
+    # An interrupt that lands in an announce is not swallowed: it stops the eval.
+    @testset "announce_browserview: rethrows an interrupt" begin
+        DR.CURRENT_EMIT[] = _ -> throw(InterruptException())
+        empty!(DR.ANNOUNCED_BROWSER_URLS)
+        try
+            @test_throws InterruptException DR.announce_browserview(DR.BrowserView("http://127.0.0.1:59992/"))
+        finally
+            DR.CURRENT_EMIT[] = nothing
+        end
     end
 
     @testset "announce_browserview: swallowed serves still emit; returned ones don't double" begin

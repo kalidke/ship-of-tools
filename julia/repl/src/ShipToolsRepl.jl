@@ -385,7 +385,14 @@ function handle_interrupt(io::IO, id, payload)
     named = get(payload, :eval_ids, nothing)
     if ev === nothing || istaskdone(ev.task) || ev.stage === :done ||
        (named !== nothing && !(ev.id in named))
-        note = named === nothing ? "no eval in progress" : "none of the named evals is in progress"
+        note = if ev !== nothing && !istaskdone(ev.task) && ev.stage === :done &&
+                  (named === nothing || ev.id in named)
+            "the eval has finished and is writing its answer"
+        elseif named === nothing
+            "no eval in progress"
+        else
+            "none of the named evals is in progress"
+        end
         write_envelope(io, "res", id, "repl.interrupt", Dict(:interrupted => false, :note => note))
         return
     end
@@ -399,9 +406,14 @@ end
 
 function write_envelope(io::IO, kind, id, op, payload)
     env = Dict(:v => PROTOCOL_VERSION, :id => id, :kind => kind, :op => op, :payload => payload)
+    # One write per line: an interrupt delivered mid-sequence cannot leave a
+    # partial envelope on the wire.
+    buf = IOBuffer()
+    json_write(buf, env)
+    write(buf, '\n')
+    line = take!(buf)
     lock(OUT_LOCK) do
-        json_write(io, env)
-        write(io, '\n')
+        write(io, line)
         flush(io)
     end
 end

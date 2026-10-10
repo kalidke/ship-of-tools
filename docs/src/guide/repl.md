@@ -59,8 +59,9 @@ A long-running evaluation does not block the dispatch loop: it runs on its own
 task, so you can interrupt it mid-eval. An interrupt schedules a real
 `InterruptException` onto the running evaluation — the same semantics as `Ctrl-C`
 in the stock REPL — which surfaces as an `error` frame. It reaches only the
-evaluation's own code: an interrupt sent before that code starts stops it before it
-runs, and one sent after the code has finished does nothing. `Ctrl+C` in the drawer
+evaluation's own code and the display of its value (a figure rendering, for example):
+an interrupt sent before that starts stops it before it runs, and one sent after it
+has finished does nothing. `Ctrl+C` in the drawer
 names, by number, the evaluations the drawer shows as running, and stops the running
 evaluation only if its number is one of them; each window numbers its own
 evaluations, so two windows on one REPL can share a number.

@@ -214,7 +214,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `edit.save` | `Ctrl+s` / `Super+s` | Save the current file or concept annotation. |
 | `input.cancel` | `Escape` | Cancel the current input. Unsaved edits require confirmation. |
 | `input.confirm` | `Enter` | Submit the entered filename or value. |
-| `repl.interrupt` | `Ctrl+c` | Interrupt the current evaluation, or clear the input when Julia is idle. |
+| `repl.interrupt` | `Ctrl+c` | Interrupt the evaluation the drawer shows running, or clear the input when Julia is idle. |
 | `repl.history_prev` | `ArrowUp` | Recall the previous Julia input. |
 | `repl.history_next` | `ArrowDown` | Recall the next Julia input. |
 | `picker.parent` | `Backspace` | Go to the parent folder in the new-session picker. |
