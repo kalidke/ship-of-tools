@@ -251,6 +251,7 @@ sot_registry_entry_status() {
 # exits 0 on a file with no document.
 sot_registry_read() {
     local out
+    sot_require_tools "read the registry" jq || return 2
     out="$(sot_registry_bytes | sot_jq -s -r --arg n "${1-}" --arg one "${1+1}" '
         if length != 1 or (.[0].agents | type) != "object" then "unreadable"
         else .[0] | if $one == "" then "present\t" + tojson

@@ -37,7 +37,12 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
-sot_require_tools "build a daemon request" jq || exit 1
+# Before comm-context.sh, which can write: nothing is written without jq. A send says so in the protocol's one
+# failure form.
+if ! why="$(sot_require_tools "build a daemon request" jq 2>&1)"; then
+    if [ "${1:-}" = send ]; then to="${2:-}"; echo "FAILED -> @${to#@}: $why" >&2; else echo "$why" >&2; fi
+    exit 1
+fi
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 
 # Subcommand parsed FIRST, before any transport setup (Codex review round-2

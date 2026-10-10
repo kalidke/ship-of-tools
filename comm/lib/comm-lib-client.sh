@@ -588,13 +588,10 @@ sot_oneshot_request() {
     # Accept only a COMPLETE res line: op precedes payload on the wire, so a
     # grep hit can be a line the transport is still appending. jq gates acceptance
     # (the hello builder above already required it).
-    _sot_line_ok() {
-        printf '%s' "$1" | jq -e . >/dev/null 2>&1
-    }
     deadline=$(( $(date +%s) + timeout_s ))
     while [ "$(date +%s)" -le "$deadline" ]; do
         line="$(grep -m1 "\"op\":\"$op\"" "$tmp" 2>/dev/null || true)"
-        if [ -n "$line" ] && _sot_line_ok "$line"; then
+        if [ -n "$line" ] && printf '%s' "$line" | jq -e . >/dev/null 2>&1; then
             break
         fi
         line=""
@@ -604,7 +601,7 @@ sot_oneshot_request() {
         kill -0 "$ncpid" 2>/dev/null || {
             # transport exited — one final scan for a reply that landed last
             line="$(grep -m1 "\"op\":\"$op\"" "$tmp" 2>/dev/null || true)"
-            _sot_line_ok "$line" || line=""
+            printf '%s' "$line" | jq -e . >/dev/null 2>&1 || line=""
             break; }
         sleep 0.1
     done

@@ -590,7 +590,10 @@ checks the tools it runs before first use and says so, naming the tool:
 `comm-poll.sh` prints the line on stdout and exits 1; `comm-session-start.sh`
 prints it and exits 1; the Stop hook blocks once per episode with it as the
 reason, prefixes every later block with it, and clears it on the first turn end
-with the tools present.
+with the tools present. The client's request builders (`sot_hello_frame`,
+`sot_pty_input`, `sot_pty_screen`), the registry reader, `comm-join.sh` and
+`comm-relay.sh` check jq the same way and name it on stderr before any write or
+connection; `comm-relay.sh send` says it as `FAILED -> @<to>: ...`.
 
 ## Upgrading to 0.6.6
 
