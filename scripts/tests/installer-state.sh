@@ -5,11 +5,11 @@
 # enables, and a listless box falls back to its flags; no role is read back
 # from install.json. Two things are guarded. A live process: a shared home
 # shows every host the same sotd.service FILE, so the guard asks systemd
-# whether one RUNS here. And, under a declared topology, the install record:
-# a run that would record no daemon may not rewrite one that records a daemon
-# (installer_record_decision, tested in installer-shared-home.sh), because a
-# shared home's one install serves the hosts that run sotd. A refused run
-# writes nothing under the prefix: the gates come before its layout.
+# whether one RUNS here. And the shared install, which serves the hosts that
+# run sotd: a host a readable hosts.toml runs no sotd on may not write over it
+# (installer_host_decision), nor, under a declared topology, may a run record
+# less than install.json does (installer_record_decision); both are tested in
+# installer-shared-home.sh. A refused run writes nothing under the prefix.
 #
 # Run: scripts/tests/installer-state.sh
 

@@ -23,8 +23,8 @@
 #   1. preflight — arch/glibc floor for the FE, tar/curl present
 #   2. download the release artifacts from the fixed release URL + verify SHA256SUMS
 #   3. unpack them; resolve the role (the declared topology, else the flags)
-#      with the unpacked sotd, and run the ownership and install-record gates
-#      before anything is written under $PREFIX; then lay out $PREFIX
+#      with the unpacked sotd, and run the ownership, host and install-record
+#      gates before anything is written under $PREFIX; then lay out $PREFIX
 #      (~/.local/share/sot): bin/ updates/ repo/current
 #   4. REPO CHECKOUT at the release tag (ADR 0030 addendum: the repo IS the
 #      manual and the resource tree; blobless partial clone = full history
