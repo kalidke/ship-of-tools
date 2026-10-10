@@ -11,7 +11,7 @@ rust/backend/src/sidecars/CLAUDE.md.
 - `ops.rs`: repl.eval, repl.run_file, repl.interrupt
 - `mod.rs`: the handle (`Repl`): submit, execute, interrupt and restart, the frame bus message and `ExecAccum`.
 - `lifecycle.rs`: the child's state (`ReplLifecycle`), spawn generations and the `lifecycle` frames.
-- `project_tests.rs`: real Julia bare/project workspace, package-write destination and all-entry spawn controls in isolated resource/depot fixtures, whose first start compiles only the shim. Real owned-child argv/environment and WGL page-secret exclusion controls, with a deliberate-leak sensitivity probe, and a killed child's temporary files removed with it; no source-text assertions.
+- `project_tests.rs`: real Julia bare/project workspace, package-write destination and all-entry spawn controls in isolated resource/depot fixtures, whose first start compiles only the shim. Real owned-child parsed-argument/environment and WGL page-secret exclusion controls, with a deliberate-leak sensitivity probe, and a killed child's temporary files removed with it; no source-text assertions.
 - `restart_tests.rs`: noncooperative restart, retained senders, channel close, retired-generation grants and selected-project respawn, with owned child observations.
 - `supervisor.rs`: spawning the child and `supervisor_task`, its life: wire, routing and close-out on death.
 
