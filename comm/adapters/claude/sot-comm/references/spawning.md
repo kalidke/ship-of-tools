@@ -58,5 +58,5 @@ that bypasses the registry. Once the target joins it appears in
 
 Every window connected to the daemon re-lists when a row is created or
 destroyed, so the row appears in (or leaves) its session strip without a
-refresh. A spawn moves no window off the row it is on; Ctrl+PageDown
-switches to the new row.
+refresh. A spawn moves no window off the row it is on; the user cycles to
+the new row with Shift+ArrowRight / Shift+ArrowLeft.

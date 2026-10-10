@@ -351,7 +351,8 @@ case_pipe_occupied_root_in_daemon_spelling_refused() {
 
 # A bash row (--agent none) runs a shell and no agent, so nothing joins comm:
 # the spawn claims no handle, writes no registry row or inbox, sends an empty
-# agent_name, waits for ready like any row and prints the workspace id last.
+# agent_name, waits for ready like any row and prints, last, a line with the
+# workspace id and the despawn command with its endpoint.
 case_bash_row_spawns_with_no_handle() {
     local wsid="ws-bash" slug="bash1" create last
     start_stub_daemon "$wsid" "$slug" \

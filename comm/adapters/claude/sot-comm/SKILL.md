@@ -151,8 +151,8 @@ comm-spawn.sh mysim ~/projects/MySim --expertise "simulation workflows" \
   --task "Add a per-emitter intensity field to Emitter; branch + PR"
 ```
 
-Creates a **sot workspace** (a session-strip row, switchable with
-Ctrl+PageDown) whose agent the daemon starts at once; its own
+Creates a **sot workspace** (a session-strip row; the user cycles
+to it with Shift+ArrowRight / Shift+ArrowLeft) whose agent the daemon starts at once; its own
 `/sot-session-start` joins it under the name you chose, and any `--task`
 waits in its inbox as an ordinary message. **Addressable immediately** — the
 handle is pre-registered, so `comm-send.sh @<name>` queues even before it

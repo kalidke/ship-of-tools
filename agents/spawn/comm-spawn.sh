@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # comm-spawn.sh — spawn a new agent to work on another package and report back
 # over sot-comm. By default the agent is created as a Ship of Tools *workspace*, so
-# it appears in the frontend session strip and is switchable (Ctrl+PageDown);
+# it appears in the frontend session strip and is switchable (Shift+ArrowRight / Shift+ArrowLeft);
 # switching also gives you that package's files/REPL/concept.
 #
 # Usage:
