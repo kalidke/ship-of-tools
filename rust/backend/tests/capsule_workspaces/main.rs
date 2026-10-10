@@ -110,7 +110,7 @@ mod leg_pgrep_pattern_tests {
         let pattern = build_leg_pgrep_pattern(&exe, "supervise", &state_root);
         assert_eq!(
             pattern,
-            r"^/scratch/build target/debug/sot-capsule supervise /tmp/sotcw-abc123/state"
+            r"^(/scratch/build target/debug/sot-capsule|sot-capsule) supervise /tmp/sotcw-abc123/state"
         );
     }
 
@@ -126,7 +126,7 @@ mod leg_pgrep_pattern_tests {
         let pattern = build_leg_pgrep_pattern(&exe, "run", &state_root);
         assert_eq!(
             pattern,
-            r"^/scratch/target\+build/sot-capsule run /tmp/sotcw-v1\.2/state"
+            r"^(/scratch/target\+build/sot-capsule|sot-capsule) run /tmp/sotcw-v1\.2/state"
         );
     }
 }

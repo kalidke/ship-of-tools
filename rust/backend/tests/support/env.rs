@@ -393,6 +393,8 @@ impl Env {
     /// session leader writes its pid to. The 120 s lifetimes cap any leak.
     #[cfg(target_os = "linux")]
     pub fn seed_fake_claude_with_escapee(&self) -> (PathBuf, PathBuf) {
+        // Before any row starts: an escapee on a host whose scope end the test cannot see would outlive the test.
+        require_cgroup_v2_root();
         let dir = self._tmp.path().join("fakebin");
         std::fs::create_dir_all(&dir).expect("mkdir fakebin");
         let pidfile = self._tmp.path().join("escapee.pid");
@@ -599,8 +601,8 @@ impl Env {
     /// anchoring on the ROOT alone covers every row this `Env` could ever
     /// create without having to learn each workspace's own state dir as
     /// it's discovered). See [`build_leg_pgrep_pattern`] for why this
-    /// anchors on the ESCAPED, EXACT executable path rather than a
-    /// wildcard.
+    /// anchors on the ESCAPED, EXACT executable path (or its file name)
+    /// rather than a wildcard.
     #[cfg(target_os = "linux")]
     pub fn leg_pgrep_pattern(&self) -> String {
         build_leg_pgrep_pattern(&sot_capsule_exe(), "(supervise|run)", &self.state_root)

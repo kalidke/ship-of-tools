@@ -12,6 +12,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `admission.rs`: server; every connection starts with an accepted hello (every op of `sot_protocol::op` as a first frame is refused), and two OS accounts on one host are refused (ADR 0049 `## User isolation`)
 - `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
 - `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with
+- `contained_job.rs`: lifecycle; a test job killed from outside (a child that kills itself after starting a ready row, run as the main process of a test container) leaves no row: the row lived in the job's own control group, its fence and writer lock are free and the job's control group is empty
 - `comm_file.rs`: messaging; the inbox lock held by the daemon's filer and by the scripts' `sot_inbox_append`. It also executes declared-host join/self-slot agreement, unread activation and destroyed-handle prune in disposable homes.
 - `comm_send.rs`: messaging; the staged `comm-send.sh` against a real `sotd`: `filed` only for a live handle, nothing appended for a gone one, and an idle row's daemon keeps it live, so a send is filed while that daemon is down
 - `comm_wake.rs`: messaging; the comm wake tick on a real capsule row whose agent is a stub `claude`
@@ -62,6 +63,12 @@ shows the shape.
 - P0/P1/P5 remain proof limits closed by the human release done test; CI provisions no Claude credential. Preparation tests observe
   filesystem effects and diagnostics. Headless task success proves no interactive recognition, parent coverage or dialog suppression.
   Interactive no-dialog remains a person-run release done-test; existing-file external-writer concurrency is a scoped limit.
+- A capsule row leaves the test's cgroup only when the user manager answers its daemon. Run the suites in a test
+  container (`scripts/tests/in-container.sh`), which withholds it, so a killed job leaves no row; a supervisor's command line begins with its file name when no manager answers. The five tests that need
+  it run under `--user-manager`, by name: `capsule_supervisor_survives_a_real_user_service_stop` and
+  `destroy_ends_a_child_that_left_the_agents_process_group` (capsule_workspaces),
+  `killed_after_capture_next_start_ends_scope` (window_start), `shutdown_ends_a_child_that_left_the_agents_process_group`
+  (window_lease), `a_service_manager_counts_int_and_term_as_a_clean_stop` (daemon_lifetime); so does `contained_job`. The three scope tests refuse before their row starts where cgroup v2 is not at `/sys/fs/cgroup` (`require_cgroup_v2_root`, called by `Env::seed_fake_claude_with_escapee`); `contained_job` refuses where no cgroup v2 tree exists at either root.
 - A binary whose tests share one process takes its `SERIAL` before `Env::new`, which sets the process's `SOT_RUNTIME_DIR`
   (capsule_workspaces, comm_send, comm_wake, daemon_boot, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
 - Every `sotd` a suite starts comes from `support/sotd.rs`: `sotd_command()`, or `sotd_command_at(program)` for a copy

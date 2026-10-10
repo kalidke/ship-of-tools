@@ -19,7 +19,7 @@ fn regex_escape_path(path: &Path) -> String {
     out
 }
 /// The anchored `pgrep`/`pkill` pattern for a `sot-capsule` invocation:
-/// `^<escaped exe path> <subcommand> <escaped state_root>`. G2 (LU4
+/// `^(<escaped exe path>|<escaped file name>) <subcommand> <escaped state_root>`. G2 (LU4
 /// review round 2): anchoring the OLD way, `^\S*sot-capsule`, silently
 /// requires the character just before `sot-capsule` to be non-whitespace
 /// — `\S*` cannot cross a space — so an executable path containing one
@@ -30,9 +30,13 @@ fn regex_escape_path(path: &Path) -> String {
 /// needs no escaping to match itself literally, so `regex_escape_path`
 /// leaves it untouched. `subcommand` is a literal ("supervise", "run") or
 /// an alternation ("(supervise|run)") — both are valid ERE on their own.
+/// The command line starts with the exact path or its file name: see below.
 #[cfg(target_os = "linux")]
 pub fn build_leg_pgrep_pattern(exe: &Path, subcommand: &str, state_root: &Path) -> String {
-    format!("^{} {subcommand} {}", regex_escape_path(exe), regex_escape_path(state_root))
+    // argv[0] is the full path when `systemd-run` execs the supervisor (a scoped launch) and only the file name when the
+    // durable parent's native launcher does (`Launch::new`, no user manager); a leg's is always the full path.
+    let name = exe.file_name().map(|n| regex_escape_path(Path::new(n))).unwrap_or_default();
+    format!("^({}|{name}) {subcommand} {}", regex_escape_path(exe), regex_escape_path(state_root))
 }
 /// Windows: the pids of every `sot-capsule.exe` this test build's own
 /// executable started over `state_root`, supervisors first, then `run`
@@ -223,6 +227,16 @@ impl Drop for ScopeKillGuard {
     }
 }
 
+/// A scope's end is read and written under `/sys/fs/cgroup`, the only root production's row scope end uses
+/// (`row_scope.rs`). Where that is not a cgroup v2 mount, a scope test would pass without seeing a scope.
+#[cfg(target_os = "linux")]
+pub fn require_cgroup_v2_root() {
+    assert!(
+        Path::new("/sys/fs/cgroup/cgroup.controllers").exists(),
+        "cgroup v2 is not mounted at /sys/fs/cgroup, the only root production's row scope end reads (row_scope.rs:9): this host cannot prove a scope's end"
+    );
+}
+
 /// A4b: a guard on `/sys/fs/cgroup{rel}`, armed only when PRODUCTION's aim
 /// rule accepts `rel` for this test's own row: the prefix carries
 /// `state_dir`'s hash, and `rel` is not this test process's own cgroup or
@@ -230,6 +244,7 @@ impl Drop for ScopeKillGuard {
 /// can never aim the guard at a live session.
 #[cfg(target_os = "linux")]
 pub fn arm_scope_guard(rel: &str, state_dir: &Path) -> ScopeKillGuard {
+    require_cgroup_v2_root();
     let mut guard = arm_scope_guard_against(rel, &cgroup_rel(std::process::id()), state_dir);
     guard.own_rel = None;
     guard
@@ -249,6 +264,7 @@ pub fn arm_scope_guard_against(rel: &str, own_rel: &str, state_dir: &Path) -> Sc
 /// reads `populated 0`; on timeout panics with that file and `cgroup.procs`.
 #[cfg(target_os = "linux")]
 pub async fn assert_scope_empties(rel: &str, within: Duration) {
+    require_cgroup_v2_root();
     let dir = Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/'));
     let deadline = Instant::now() + within;
     loop {
