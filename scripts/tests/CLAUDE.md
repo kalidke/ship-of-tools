@@ -30,6 +30,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-moved-check.sh`: self-test of `moved-check.sh` over throwaway repos.
 - `on-host.sh`: `on-host.sh HOST DIR -- CMD [ARG...]` runs CMD in DIR on a second host through `ssh HOST bash -s`, with
   the host's SOT_ variables, XDG_STATE_HOME, JULIA_LOAD_PATH and JULIA_PROJECT unset first; prints nothing of its own.
+- `in-container.sh`: `in-container.sh UNIT -- CMD [ARG...]` runs CMD in a transient `systemd --user` scope named UNIT (Linux); the
+  base shape of the test container, which a later commit replaces.
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
 - `rc-gate.sh`: the Linux candidate gate; a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
