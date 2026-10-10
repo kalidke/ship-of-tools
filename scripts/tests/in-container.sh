@@ -29,6 +29,6 @@ set -- "${@//[\$]/\$\$}"
 systemd-run --user --quiet --collect --wait --pipe --same-dir --unit="$unit.service" "${props[@]}" "${envs[@]}" -- "$@"
 rc=$?
 # ExecStopPost removes it when the unit ends; a failed start leaves it here. A client that returns while its unit
-# still runs (it lost its bus) leaves the running job's folder alone.
-[ "$manager" = 1 ] || systemctl --user is-active --quiet "$unit.service" || rm -rf "$rt"
+# still runs (it lost its bus) leaves the running job's folder alone: only a unit naming this folder keeps it.
+[ "$manager" = 1 ] || systemctl --user show -p ExecStopPost --value "$unit.service" 2> /dev/null | grep -qF "$rt" || rm -rf "$rt"
 exit "$rc"
