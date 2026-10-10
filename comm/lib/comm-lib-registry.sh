@@ -246,7 +246,8 @@ sot_registry_entry_status() {
 
 # sot_registry_read [HANDLE] — THE unlocked registry read. No HANDLE: the registry, compact.
 # HANDLE: that row, compact. 0 present; 1 absent (it parsed, no such row); 2 unreadable
-# (missing, empty, not JSON, not one document, or no .agents object), with nothing on stdout.
+# (missing, empty, not JSON, not one document, or no .agents object; or jq is missing, said on stderr), with nothing
+# on stdout.
 # 2 never means absent. It slurps and reads jq's output, never its exit code alone: jq 1.6
 # exits 0 on a file with no document.
 sot_registry_read() {

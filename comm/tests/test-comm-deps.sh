@@ -151,6 +151,8 @@ err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-relay.sh" send @peer hi 2>&1 >/
 check "JQ: comm-relay.sh send exits 1 without jq" "$rc" "1"
 has "JQ: comm-relay.sh send fails in the protocol's form" "$err" "FAILED -> @peer: sot-comm: cannot build a daemon request: jq is missing"
 check "JQ: comm-relay.sh send prints one line" "$(printf '%s\n' "$err" | wc -l | tr -d ' ')" "1"
+err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-relay.sh" send --all hi 2>&1 >/dev/null)"
+has "JQ: a broadcast fails in the protocol's broadcast form" "$err" "FAILED -> <all>: sot-comm: cannot build a daemon request: jq is missing"
 err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-relay.sh" list 2>&1 >/dev/null)"; rc=$?
 [ "$rc" -ne 0 ] && ok "JQ: comm-relay.sh list exits nonzero without jq" || bad "JQ: comm-relay.sh list exits nonzero without jq"
 has "JQ: comm-relay.sh list names jq" "$err" "jq is missing"

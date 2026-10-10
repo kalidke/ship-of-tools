@@ -106,7 +106,8 @@ so it never replaces, truncates or repairs a registry. Every read goes through
 `sot_registry_read` (the hooks source the library in a subshell for it; only the Stop
 hook's joined-agent test on a host without jq greps `sot_registry_bytes` instead), which has three
 answers: present, absent (it parsed; no such row) and unreadable (missing,
-empty, not JSON, not exactly one document, or no object `.agents`).
+empty, not JSON, not exactly one document, or no object `.agents`; or jq is
+missing, which it says on stderr).
 Unreadable is never absent. Every read, and every writer's read under the
 lock, takes its bytes from `sot_registry_bytes` (every daemon read from its
 Rust twin, `read_registry_fresh`, but its 1.5 s change poll, where a failed read

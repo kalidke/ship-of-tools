@@ -40,7 +40,7 @@ source "$SCRIPT_DIR/comm-lib.sh"
 # Before comm-context.sh, which can write: nothing is written without jq. A send says so in the protocol's one
 # failure form.
 if ! why="$(sot_require_tools "build a daemon request" jq 2>&1)"; then
-    if [ "${1:-}" = send ]; then to="${2:-}"; echo "FAILED -> @${to#@}: $why" >&2; else echo "$why" >&2; fi
+    if [ "${1:-}" = send ]; then to="${2:-}"; [ "$to" = --all ] && to="<all>" || to="@${to#@}"; echo "FAILED -> $to: $why" >&2; else echo "$why" >&2; fi
     exit 1
 fi
 eval "$("$SCRIPT_DIR/comm-context.sh")"
@@ -53,7 +53,7 @@ eval "$("$SCRIPT_DIR/comm-context.sh")"
 # refusal that's the actual, fixable problem.
 SUB="${1:-}"; [ $# -gt 0 ] && shift || true
 case "$SUB" in
-    send) why="$(sot_require_routable_identity)" || { to="${1:-}"; echo "FAILED -> @${to#@}: $why" >&2; exit 1; } ;;
+    send) why="$(sot_require_routable_identity)" || { to="${1:-}"; [ "$to" = --all ] && to="<all>" || to="@${to#@}"; echo "FAILED -> $to: $why" >&2; exit 1; } ;;
 esac
 
 # A unix: or pipe: endpoint goes through sot_dial, an ssh: one through sot_ssh_bridge (nc_send below).
