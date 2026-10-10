@@ -36,6 +36,60 @@ case_comm_bootstrap_refuses_with_no_identity() {
     return 0
 }
 
+case_comm_bootstrap_refuses_a_bash_row() {
+    # A row whose agent is none runs a shell: nothing there can join, and the
+    # nudge would be typed to the shell as a command line. Refused after the
+    # row is found, and nothing is typed.
+    local root self errfile out rc err req
+    mkdir -p "$WORK/bootstrap-bash/sender41"
+    root="$(realpath "$WORK/bootstrap-bash/sender41")"
+    join_in "$root"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    self="$NEXT_SELF_FILE"
+    PRE_CREATE_LIST="$(jq -nc --arg root "$WORK/bootstrap-bash" \
+        '[{workspace_id:"ws-bash-41",slug:"bash41",label:"bash41",project_root:$root,is_default:false,agent:"none",agent_name:"",agent_handle:"",runtime:"capsule",phase:"ready"}]')"
+    start_stub_daemon "ws-bash-41" "bash41" "$WORK/bootstrap-bash"
+    errfile="$WORK/bootstrap-bash.err"
+    out="$(cd "$root" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
+        SOT_SPAWN_ENDPOINT="unix:$STUB_SOCK" "$SCRIPTS_DIR/comm-bootstrap.sh" bash41 2>"$errfile")"
+    rc=$?
+    err="$(cat "$errfile" 2>/dev/null || true)"
+    req="$(grep -m1 '"op":"pty\.' "$STUB_REQLOG" 2>/dev/null || true)"
+    stop_stub_daemon
+    PRE_CREATE_LIST=""
+    [ "$rc" -eq 1 ] || { echo "  exited $rc (want 1): $out $err"; return 1; }
+    contains "$err" "is a bash row (agent none)" || { echo "  stderr: $err"; return 1; }
+    [ -z "$req" ] || { echo "  comm-bootstrap.sh typed into a bash row: $req"; return 1; }
+    return 0
+}
+
+case_comm_bootstrap_types_into_an_agent_row() {
+    # The other side of the bash-row refusal: a claude row, a codex row and a
+    # row whose list entry has no agent field are each typed into, once.
+    local root self errfile out rc err kind n
+    mkdir -p "$WORK/bootstrap-agent/sender42"
+    root="$(realpath "$WORK/bootstrap-agent/sender42")"
+    join_in "$root"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    self="$NEXT_SELF_FILE"
+    for kind in claude codex absent; do
+        PRE_CREATE_LIST="$(jq -nc --arg root "$WORK/bootstrap-agent" --arg k "$kind" \
+            '[{workspace_id:"ws-agent-42",slug:"agent42",label:"agent42",project_root:$root,is_default:false,agent:$k,agent_name:"",agent_handle:"",runtime:"capsule",phase:"ready"} | if $k == "absent" then del(.agent) else . end]')"
+        start_stub_daemon "ws-agent-42" "agent42" "$WORK/bootstrap-agent"
+        errfile="$WORK/bootstrap-agent.err"
+        out="$(cd "$root" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
+            SOT_SPAWN_ENDPOINT="unix:$STUB_SOCK" "$SCRIPTS_DIR/comm-bootstrap.sh" agent42 2>"$errfile")"
+        rc=$?
+        err="$(cat "$errfile" 2>/dev/null || true)"
+        n="$(grep -c '"op":"pty\.input"' "$STUB_REQLOG" 2>/dev/null || true)"
+        stop_stub_daemon
+        PRE_CREATE_LIST=""
+        [ "$rc" -eq 0 ] || { echo "  $kind: exited $rc (want 0): $out $err"; return 1; }
+        [ "$n" = 1 ] || { echo "  $kind: $n pty.input requests (want 1)"; return 1; }
+    done
+    return 0
+}
+
 case_send_files_and_types_nothing() {
     # A send is its inbox append and nothing else: the daemon wakes the row,
     # so comm-send.sh sends no pty.input and its line carries no wake verdict,

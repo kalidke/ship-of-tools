@@ -543,8 +543,8 @@ impl State {
                 }
             }
         }
-        // --capture-cycle <N>: simulate N Ctrl+PgDn presses
-        // (negative = Ctrl+PgUp) on the first workspace.list
+        // --capture-cycle <N>: simulate N next-session presses
+        // (Shift+ArrowRight; negative = Shift+ArrowLeft) on the first workspace.list
         // reply. Consumed once so a re-fetch from a later
         // switch doesn't re-cycle.
         if self.capture_cycle != 0 {

@@ -112,7 +112,6 @@ if printf '%s' "$RESP" | jq -e '.payload.workspace_id' >/dev/null 2>&1; then
         with_lock registry_del "$WHO"
         echo "Removed @$WHO from sot-comm registry"
     fi
-    echo "In the FE: refresh the session list (enter Sessions mode) to drop the row."
 else
     echo "ERROR: workspace.destroy failed: $(printf '%s' "$RESP" | jq -c '.payload' 2>/dev/null || printf '%s' "$RESP")" >&2
     exit 1

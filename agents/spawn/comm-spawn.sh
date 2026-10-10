@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # comm-spawn.sh — spawn a new agent to work on another package and report back
 # over sot-comm. By default the agent is created as a Ship of Tools *workspace*, so
-# it appears in the frontend session strip and is switchable (Ctrl+PageDown);
+# it appears in the frontend session strip and is switchable (Shift+ArrowRight / Shift+ArrowLeft);
 # switching also gives you that package's files/REPL/concept.
 #
 # Usage:
@@ -21,8 +21,12 @@
 #                 root. The legacy two-positional form (`<name> <repo-path>`)
 #                 still works and is equivalent to passing --name.
 #   --agent       agent kind for the workspace row: claude (default) | codex
-#                 (ADR 0031). The daemon launches ccb or ccx accordingly in
-#                 the row's capsule.
+#                 (ADR 0031) | none. The daemon runs claude or ccx in the
+#                 row's capsule. none is a bash row: the daemon's login shell
+#                 ($SHELL, else /bin/sh; cmd.exe on Windows) and no agent, so
+#                 it takes no --name, name argument or --task, gets no
+#                 registry row or inbox, and is ended by the comm-despawn.sh
+#                 command printed last (its id and this spawn's endpoint).
 #   --account     which discovered account (accounts brief, v0.6.0) the
 #                 row's agent runs under — the NAME of a subdirectory that
 #                 must already exist under ~/.claude-auth (claude rows
@@ -31,8 +35,8 @@
 #                 agent's own default account. The daemon refuses the
 #                 whole create, loudly, with the exact one-line command
 #                 to fix it, if the named subdirectory is missing; a bash
-#                 (--agent none) row refuses ANY --account outright, and
-#                 so does a codex row — Codex accounts are deferred.
+#                 (--agent none) row refuses any --account but "default",
+#                 and so does a codex row — Codex accounts are deferred.
 #   --label       FE workspace label (default: basename of repo-path); guarded to
 #                 the repo basename so a session stays findable next to its repo.
 #   --display-label  FE label that deliberately DIFFERS from the repo basename
@@ -69,18 +73,12 @@
 # resolve, both of which now fail BEFORE the write) reports nothing rather
 # than a verdict on a row it never wrote.
 #
-# NOT covered, and not coverable from here: the daemon boots claude
-# ASYNCHRONOUSLY after workspace.create already returned success (a
-# throwaway boot-pty, ADR 0023 §3) — if THAT fails or hangs after this
-# script has already reported success and exited, the provisional row
-# (workspace_id:"" — never updated, because the real /sot-session-start join never
-# ran) is left behind, and since a derived NAME generally differs from the
-# workspace slug (it carries "-HOST"; the slug doesn't), `comm-despawn.sh`
-# cannot recover the slug from the handle to clean up the orphaned
-# workspace/TOML either. This is a real, currently-unfixed gap for that one
-# failure mode; there is no synchronous signal in this script's control
-# flow to hook a rollback to. `comm-despawn.sh <slug-or-label>` (not the
-# handle) still reaches it manually.
+# Not covered: a row that reaches "ready" but whose agent never joins keeps
+# its provisional handle (workspace_id:"", status "spawning"). The handle does
+# not lead comm-despawn.sh to the row (a derived NAME carries "-HOST"; the slug
+# does not), but the workspace id on the "Created workspace" line does, and the
+# daemon's destroy removes that handle with the row (it matches the row's
+# stored agent_name).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
@@ -123,6 +121,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# A bash row (--agent none) runs a shell and no agent, so nothing there joins
+# comm: a handle (--name, or the legacy name argument) and a --task each
+# promise an agent. Refused here, before any request or write.
+if [ "$AGENT" = none ] && { [ -n "$NAME_FLAG" ] || [ -n "$TASK" ] || [ "${#POSITIONAL[@]}" -gt 1 ]; }; then
+    echo "ERROR: --agent none starts a bash row, which runs no agent: it takes no --name, no name argument and no --task" >&2
+    exit 1
+fi
+
 if [ -n "$TASK" ]; then
     # --task promises a reply route back to @SPAWNER, so SPAWNER's own
     # identity must be ROUTABLE (registry row present, root matches — not
@@ -144,14 +150,15 @@ fi
 # `<name> <repo-path>`, kept for existing callers (e.g. /worktree). --name is
 # the equivalent flag form — either way an explicitly-passed name is used
 # VERBATIM, exactly as before.
+USAGE="usage: comm-spawn.sh [--name NAME] <repo-path> [--agent claude|codex|none] [--expertise \"...\"] [--task \"...\"] [--label L]"
 case "${#POSITIONAL[@]}" in
     1) REPO_PATH="${POSITIONAL[0]}" ;;
     2) NAME="${POSITIONAL[0]}"; REPO_PATH="${POSITIONAL[1]}" ;;
-    *) echo "usage: comm-spawn.sh [--name NAME] <repo-path> [--agent claude|codex] [--expertise \"...\"] [--task \"...\"] [--label L]" >&2; exit 1 ;;
+    *) echo "$USAGE" >&2; exit 1 ;;
 esac
 case "$AGENT" in
-    claude|codex) ;;
-    *) echo "ERROR: --agent must be claude or codex (got '$AGENT')" >&2; exit 1 ;;
+    claude|codex|none) ;;
+    *) echo "ERROR: --agent must be claude, codex or none (got '$AGENT')" >&2; exit 1 ;;
 esac
 # --account is bound into jq as `--arg acc`, which the hermetic suite's
 # slash-safe audit allows only because this rule (the account-name rule,
@@ -170,7 +177,7 @@ if [ -n "$NAME_FLAG" ]; then
 fi
 
 if [ -z "$REPO_PATH" ]; then
-    echo "usage: comm-spawn.sh [--name NAME] <repo-path> [--expertise \"...\"] [--task \"...\"] [--label L]" >&2; exit 1
+    echo "$USAGE" >&2; exit 1
 fi
 REPO_PATH="${REPO_PATH/#\~/$HOME}"
 [ -d "$REPO_PATH" ] || { echo "ERROR: repo path not found: $REPO_PATH" >&2; exit 1; }
@@ -397,7 +404,9 @@ done
 # explicit --display-label is the caller's own informed choice.
 DERIVED_CLAIM=false
 AUTO_DISPLAY_LABEL=false
-if [ -z "$NAME" ]; then
+# A bash row has no handle: nothing is derived or claimed for it, and NAME
+# stays empty, which every handle step below tests.
+if [ -z "$NAME" ] && [ "$AGENT" != none ]; then
     if [ "$SPAWN_IS_LOCAL" = true ]; then
         DERIVED_CLAIM=true
         claim_derived_handle fresh "$CANON_ROOT" "$HANDLE_HOST" "$PROV_OBJ"
@@ -457,7 +466,7 @@ fi
 # here, and reaches this check harmlessly — fresh-mode derivation already
 # escalated away from every candidate this registry holds, so it cannot
 # fire on one.
-if [ "$DERIVED_CLAIM" = false ]; then
+if [ -n "$NAME" ] && [ "$DERIVED_CLAIM" = false ]; then
     rc=0; sot_registry_read "$NAME" >/dev/null || rc=$?
     case "$rc" in
         0) echo "ERROR: agent '@$NAME' already in registry — pick another name or comm-leave it first" >&2; exit 1 ;;
@@ -483,7 +492,13 @@ TASKMSG=""
 # a create (Workspaces::insert keeps THAT caller's id), so nothing this
 # script can observe ever proves sole ownership. Report and leave it.
 _row_left_running() {  # reason
-    echo "ERROR: $1 — the row was left running (comm-spawn never destroys one); to remove it: $COMM_HOME/bin/comm-despawn.sh $WSID" >&2
+    echo "ERROR: $1 — the row was left running (comm-spawn never destroys one); to remove it: $(_despawn_cmd)" >&2
+}
+# The command that ends this row. It names the endpoint this spawn used:
+# without one, comm-despawn.sh asks this box's daemon, which does not list a
+# row made on another box.
+_despawn_cmd() {
+    printf '%s/comm-despawn.sh %s --endpoint %q' "$BIN" "$WSID" "$ENDPOINT"
 }
 
 
@@ -509,7 +524,7 @@ _row_left_running() {  # reason
 # what makes the same send route over the relay instead (comm-send.sh's
 # registry-MISS branch execs comm-relay.sh), and what makes a handle that
 # is not yet reachable say so.
-if [ "$SPAWN_IS_LOCAL" = true ]; then
+if [ -n "$NAME" ] && [ "$SPAWN_IS_LOCAL" = true ]; then
     if [ "$DERIVED_CLAIM" = false ]; then
         with_lock registry_put "$NAME" "$PROV_OBJ"
         PROV_WRITTEN=true
@@ -577,12 +592,9 @@ if [ "$AUTO_DISPLAY_LABEL" = true ]; then
         exit 1
     fi
 fi
-# task:"" — no brief on the wire; the FE has nothing to paste on attach. Any
-# --task is sent below as an ordinary durable comm message instead.
-# boot:true (ADR 0023 §3) — the DAEMON boots claude via a throwaway boot-pty
-# (no FE attach / no session switch needed), so a background spawn comes up
-# running claude even if no frontend ever navigates to it. autostart_claude
-# stays true as the FE-attach fallback (the foreground guard de-dupes).
+# task:"" — no brief on the wire. Any --task is sent below as an ordinary
+# durable comm message instead. boot:true is only logged by today's daemon:
+# workspace.create starts every capsule row's supervisor itself.
 # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): the project
 # root is a filesystem path, and LABEL (a free-text --label override, not
 # just the REPO_PATH-derived default) can also legitimately start with
@@ -601,14 +613,14 @@ fi
 # the endpoint is resolved.
 SPAWN_LABEL_FILE="$(sot_jq_rawfile "$LABEL")" || exit 1
 SPAWN_PATH_FILE="$(sot_jq_rawfile "$SPAWN_WIRE_ROOT")" || exit 1
-# agent: explicit kind (ADR 0031) — the daemon's capsule launcher picks ccb/ccx
-# by it; autostart_claude stays true as the legacy fallback an older daemon
-# derives the kind from.
+# agent: explicit kind (ADR 0031) — the daemon picks the row's argv by it
+# (none: the login shell). autostart_claude says the same for a daemon that
+# reads no `agent` (rows/ops/create.rs resolve_create_agent): false for none.
 # account: accounts brief (v0.6.0) — "" (omitted --account) means the
 # agent's own default; jq only sends the key when non-empty, matching
 # `WorkspaceCreateReq.account`'s own "absent or empty = default" contract.
 REQ="$(jq -nc --rawfile l "$SPAWN_LABEL_FILE" --rawfile p "$SPAWN_PATH_FILE" --arg an "$NAME" --arg ag "$AGENT" --arg acc "$ACCOUNT" \
-    '{v:1,id:1,kind:"req",op:"workspace.create",payload:({label:$l,project_root:$p,autostart_claude:true,agent:$ag,agent_name:$an,task:"",boot:true} + (if $acc == "" then {} else {account:$acc} end))}')"
+    '{v:1,id:1,kind:"req",op:"workspace.create",payload:({label:$l,project_root:$p,autostart_claude:($ag != "none"),agent:$ag,agent_name:$an,task:"",boot:true} + (if $acc == "" then {} else {account:$acc} end))}')"
 rm -f "${SPAWN_LABEL_FILE:?}" "${SPAWN_PATH_FILE:?}"
 RESP="$(sot_send "$REQ" workspace.create || true)"
 CREATE_ERR="$(printf '%s' "$RESP" | jq -r '.payload.error // empty' 2>/dev/null || true)"
@@ -656,12 +668,14 @@ done
 echo "Capsule row ready (id=$WSID, phase=ready)"
 SPAWN_SUCCEEDED=true
 
-# Workspace mode: the workspace carries autostart_claude=true + agent_name on
-# the wire — task is EMPTY, no brief. The FE reads them off workspace.list
-# and, on first attach, launches ccb with SOT_COMM_NAME=<agent_name> (it
-# owns the terminal; a detached session can't init claude). The agent joins
-# comm + reads its repo CLAUDE.md; nothing is pasted.
 [ -n "$SPAWNER" ] && SOT_LOCK_WAIT_SECS=1 with_lock registry_touch "$SPAWNER" 2>/dev/null || true
+if [ "$AGENT" = none ]; then
+    echo "Spawned a bash row as workspace '${SLUG}' (id=${WSID}) on ${REPO_NAME}: no agent, no handle. End it with $(_despawn_cmd)"
+    exit 0
+fi
+# The row's capsule already runs the agent (workspace.create started it, and the
+# wait above saw it ready), with SOT_COMM_NAME=<agent_name>. The agent joins
+# comm and reads its repo CLAUDE.md; nothing is pasted.
 echo "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (agent=${AGENT}, autostart; NO brief — agent uses its repo CLAUDE.md / AGENTS.md)."
 # Said BEFORE the --task attempt below, because it is also why that attempt
 # can fail: a handle with no row here is not addressable here yet.
@@ -670,9 +684,9 @@ if [ "$SPAWN_IS_LOCAL" = false ]; then
     echo "It becomes reachable once it joins comm on ${SPAWN_HOST} (~1 min); sends from here then route over the relay."
 fi
 if [ -n "$SPAWNER" ]; then
-    echo "The daemon/FE auto-starts $([ "$AGENT" = codex ] && echo ccx || echo ccb) on first attach; the agent joins comm (~1 min) and reports to @${SPAWNER}."
+    echo "The row runs ${AGENT} now; the agent joins comm (~1 min) and reports to @${SPAWNER}."
 else
-    echo "The daemon/FE auto-starts $([ "$AGENT" = codex ] && echo ccx || echo ccb) on first attach; the agent joins comm (~1 min). This spawning session has no resolved identity of its own, so give the agent an explicit reply target if one is needed."
+    echo "The row runs ${AGENT} now; the agent joins comm (~1 min). This spawning session has no resolved identity of its own, so give the agent an explicit reply target if one is needed."
 fi
 # Deliver any --task as an ordinary durable comm message (NOT a startup brief):
 # it queues in the agent's inbox now and is read with comm-poll once the daemon
@@ -694,6 +708,6 @@ if [ -n "$TASKMSG" ]; then
 fi
 if [ "$SPAWN_IS_LOCAL" = true ]; then
     echo "@${NAME} is addressable NOW: ${BIN}/comm-send.sh @${NAME} \"...\" queues durably in its inbox,"
-    echo "and the agent reads it with comm-poll once the daemon tells it of mail, and replies (~1 min after first attach)."
+    echo "and the agent reads it with comm-poll once the daemon tells it of mail, and replies (~1 min after it starts)."
 fi
 echo "Watch: ${BIN}/comm-list.sh  /  ${BIN}/comm-poll.sh"

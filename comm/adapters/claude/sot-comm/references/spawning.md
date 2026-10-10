@@ -7,8 +7,8 @@
 `comm-spawn.sh` auto-detects the daemon endpoint from explicit env, an old dev
 `--socket` daemon flag, or `sotd session-socket-path
 ${SOT_BACKEND_LABEL:-sot}`. Override with `--endpoint unix:/path/to/sot.sock`
-or `--endpoint ssh:target[/host]`. Tune boot wait with `SOT_COMM_SPAWN_WAIT`
-(default 6s).
+or `--endpoint ssh:target[/host]`. It waits up to
+`SOT_COMM_SPAWN_CAPSULE_WAIT` seconds (default 90) for the new row to reach phase `ready`.
 
 ## A durable peer instead of a task agent
 
@@ -24,6 +24,16 @@ is spawning:
   `comm-spawn.sh`); the daemon no longer starts `ccb` — it runs the agent
   recipe directly via `sotd agent-exec` in the row's capsule. Never take a
   registry handle that already exists, even one that looks stale.
+
+## A bash row
+
+`comm-spawn.sh <repo-path> --agent none` makes a row that runs the daemon's
+login shell (`$SHELL`, else `/bin/sh`; `cmd.exe` on Windows) and no agent.
+Nothing there joins comm, so it takes no `--name` or `--task`, gets no
+registry row or inbox, and the daemon refuses any `--account` but `default`
+for it. The script waits for the row to reach `ready`, then prints the
+`comm-despawn.sh` command that ends it, with the row's id and the endpoint
+the spawn used. `comm-bootstrap.sh` refuses it.
 
 ## Git worktrees
 
@@ -46,6 +56,7 @@ that bypasses the registry. Once the target joins it appears in
 
 ## Seeing the new row in the FE
 
-The frontend learns about new workspaces on its next `workspace.list` poll —
-refresh the session list (enter Sessions mode) after spawning and the new
-row appears, then Ctrl+PageDown to switch to it.
+Every window connected to the daemon re-lists when a row is created or
+destroyed, so the row appears in (or leaves) its session strip without a
+refresh. A spawn moves no window off the row it is on; the user cycles to
+the new row with Shift+ArrowRight / Shift+ArrowLeft.
