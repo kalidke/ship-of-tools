@@ -35,7 +35,7 @@ nothing to arm, own or re-arm. Mail is read with `comm-poll.sh`.
 **Identity**: a pin (`SOT_COMM_NAME`, or a private `SOT_COMM_SELF_FILE`)
 always wins; otherwise a validated prior identity; otherwise fresh
 derivation — never manufactured from a lower-priority source. A
-subagent/lane that doesn't own its ambient identity slot MUST pin both.
+lane that doesn't own its ambient identity slot MUST pin both.
 `identity=MISMATCH` and a `REFUSED` start (`identity=FAIL`) are different
 problems with different fixes — see `references/reclaim-handle.md`.
 

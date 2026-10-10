@@ -69,7 +69,7 @@ This means the identity slot `comm-session-start.sh` would have joined into
 (the self-file at `$SOT_COMM_SELF_FILE`, or the ambient pane-keyed one) is
 currently validated for a **different project** — mutating it (even via an
 ordinary bare join) would silently steal that slot from whoever legitimately
-holds it. This is not a rare edge case for a **subagent or lane session**: if
+holds it. This is not a rare edge case for a **lane session**: if
 you did not launch with your own `$SOT_COMM_NAME` (a distinct handle) and,
 ideally, your own private `$SOT_COMM_SELF_FILE` (a slot nobody else reads or
 writes), you may be inheriting an ambient identity slot — e.g. a pane shared
@@ -84,7 +84,7 @@ see the PR's implementation report.)
 SOT_COMM_NAME=<a-distinct-handle> ~/.sot-comm/bin/comm-session-start.sh
 ```
 
-— or, for a lane/subagent that should never share the parent's slot at all,
+— or, for a lane that should never share the parent's slot at all,
 also pin a private self-file so nothing it does can ever touch the parent's:
 
 ```bash
