@@ -135,6 +135,36 @@ for fn in sot_cursor_offset sot_unread; do
 done
 rm -f "${INBOX_DIR:?}/$NAME.jsonl" "${READ_DIR:?}/$NAME.cursor"
 
+# JQ-LOUD: a client frame builder with jq off the PATH exits nonzero, prints nothing on stdout and
+# names jq on stderr, before any connection (no endpoint is given).
+for fn in "sot_json_escape x" "sot_hello_frame" "sot_pty_screen ws" "sot_pty_input ws aGk="; do
+    out="$(PATH="$PJ" "$BASH_BIN" -c 'source "$1"; '"$fn" _ "$SCRIPTS_DIR/comm-lib.sh" 2>"$WORK/deps.err")"; rc=$?
+    [ "$rc" -ne 0 ] && ok "JQ: $fn exits nonzero without jq" || bad "JQ: $fn exits nonzero without jq"
+    check "JQ: $fn prints nothing on stdout without jq" "$out" ""
+    has "JQ: $fn names jq on stderr" "$(cat "$WORK/deps.err")" "jq is missing"
+done
+
+# comm-relay.sh send, comm-join.sh and comm-send.sh with jq off the PATH: nonzero, jq named on stderr, and the
+# registry and the self file untouched.
+before="$(cksum < "$REGISTRY"; cksum < "$SOT_COMM_SELF_FILE")"
+err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-relay.sh" send @peer hi 2>&1 >/dev/null)"; rc=$?
+check "JQ: comm-relay.sh send exits 1 without jq" "$rc" "1"
+has "JQ: comm-relay.sh send fails in the protocol's form" "$err" "FAILED -> @peer: sot-comm: cannot build a daemon request: jq is missing"
+check "JQ: comm-relay.sh send prints one line" "$(printf '%s\n' "$err" | wc -l | tr -d ' ')" "1"
+err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-relay.sh" send --all hi 2>&1 >/dev/null)"
+has "JQ: a broadcast fails in the protocol's broadcast form" "$err" "FAILED -> <all>: sot-comm: cannot build a daemon request: jq is missing"
+err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-relay.sh" list 2>&1 >/dev/null)"; rc=$?
+[ "$rc" -ne 0 ] && ok "JQ: comm-relay.sh list exits nonzero without jq" || bad "JQ: comm-relay.sh list exits nonzero without jq"
+has "JQ: comm-relay.sh list names jq" "$err" "jq is missing"
+err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-join.sh" --name other 2>&1 >/dev/null)"; rc=$?
+[ "$rc" -ne 0 ] && ok "JQ: comm-join.sh exits nonzero without jq" || bad "JQ: comm-join.sh exits nonzero without jq"
+has "JQ: comm-join.sh names jq on stderr" "$err" "jq is missing"
+check "JQ: relay and join wrote neither the registry nor the self file" "$(cksum < "$REGISTRY"; cksum < "$SOT_COMM_SELF_FILE")" "$before"
+err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-send.sh" @peer hi 2>&1 >/dev/null)"; rc=$?
+[ "$rc" -ne 0 ] && ok "JQ: comm-send.sh exits nonzero without jq" || bad "JQ: comm-send.sh exits nonzero without jq"
+has "JQ: comm-send.sh names jq on stderr" "$err" "jq is missing"
+case "$err" in *"jq is missing"*"FAILED ->"*) ok "JQ: comm-send.sh names jq ahead of its FAILED line" ;; *) bad "JQ: comm-send.sh names jq ahead of its FAILED line (got: $err)" ;; esac
+
 # A mode this script no longer has (the retired --context) must fail loudly
 # and write nothing, not fall through to the joining default.
 before="$(cksum < "$REGISTRY")"

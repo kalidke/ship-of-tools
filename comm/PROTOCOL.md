@@ -106,7 +106,8 @@ so it never replaces, truncates or repairs a registry. Every read goes through
 `sot_registry_read` (the hooks source the library in a subshell for it; only the Stop
 hook's joined-agent test on a host without jq greps `sot_registry_bytes` instead), which has three
 answers: present, absent (it parsed; no such row) and unreadable (missing,
-empty, not JSON, not exactly one document, or no object `.agents`).
+empty, not JSON, not exactly one document, or no object `.agents`; or jq is
+missing, which it says on stderr).
 Unreadable is never absent. Every read, and every writer's read under the
 lock, takes its bytes from `sot_registry_bytes` (every daemon read from its
 Rust twin, `read_registry_fresh`, but its 1.5 s change poll, where a failed read
@@ -590,7 +591,10 @@ checks the tools it runs before first use and says so, naming the tool:
 `comm-poll.sh` prints the line on stdout and exits 1; `comm-session-start.sh`
 prints it and exits 1; the Stop hook blocks once per episode with it as the
 reason, prefixes every later block with it, and clears it on the first turn end
-with the tools present.
+with the tools present. The client's request builders (`sot_hello_frame`,
+`sot_pty_input`, `sot_pty_screen`), the registry reader, `comm-join.sh` and
+`comm-relay.sh` check jq the same way and name it on stderr before any write or
+connection; `comm-relay.sh send` says it as `FAILED -> @<to>: ...`.
 
 ## Upgrading to 0.6.6
 

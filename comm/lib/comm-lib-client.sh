@@ -375,6 +375,7 @@ sot_daemon_endpoint() {
 # reaches a session by its workspace row or stays in the durable inbox.
 sot_pty_input() {
     local wsid="$1" data="$2" frame
+    sot_require_tools "send text to a session" jq || return 1
     # base64 can begin with "/" (MSYS2 path conversion): --rawfile, never --arg.
     local _data_file; _data_file="$(sot_jq_rawfile "$data")" || return 1
     frame="$(jq -nc --arg w "$wsid" --rawfile d "$_data_file" \
@@ -393,7 +394,8 @@ sot_pty_input() {
 # instead of two frame-builders drifting apart.
 sot_pty_screen() {
     local wsid="$1" frame
-    frame="$(jq -nc --arg w "$wsid" '{v:1,id:1,kind:"req",op:"pty.screen",payload:{workspace_id:$w}}')"
+    sot_require_tools "read a session's screen" jq || return 1
+    frame="$(jq -nc --arg w "$wsid" '{v:1,id:1,kind:"req",op:"pty.screen",payload:{workspace_id:$w}}')" || return 1
     # No local default here (fixed 2026-09-17): sot_oneshot_request's own
     # fallback chain is SOT_SEND_TIMEOUT -> SEND_TIMEOUT -> 10. Presetting
     # SOT_SEND_TIMEOUT=10 here shadowed a caller-set SEND_TIMEOUT (sot-fe
@@ -412,6 +414,7 @@ sot_pty_screen() {
 # single JSON string literal — the general escaping jq's own JSON writer
 # already gets right, never a hand-rolled sed/printf substitution.
 sot_json_escape() {
+    sot_require_tools "write a JSON string" jq || return 1
     printf '%s' "$1" | jq -Rs .
 }
 
@@ -480,7 +483,8 @@ _sot_os_user() {
 sot_hello_frame() {
     local role
     if [ -n "${SOT_WORKSPACE:-}" ]; then role="agent"; else role="cli"; fi
-    local host os_user
+    local host os_user j_host j_user j_role j_name
+    sot_require_tools "build the hello" jq || return 1
     host="$(sot_host)" || return 1
     _sot_os_user >/dev/null || return 1
     os_user="$_SOT_OS_USER"
@@ -494,8 +498,14 @@ sot_hello_frame() {
     # unrelated). It is bumped by hand with every `PROTOCOL_VERSION`
     # change; sot-protocol's `the_shell_hello_is_this_protocols_hello`
     # test runs this function and fails until the two match.
+    # Each value is escaped into a local first: a failure inside a printf
+    # argument's command substitution would be lost and a malformed frame printed.
+    j_host="$(sot_json_escape "$host")" || return 1
+    j_user="$(sot_json_escape "$os_user")" || return 1
+    j_role="$(sot_json_escape "$role")" || return 1
+    j_name="$(sot_json_escape "${NAME:-}")" || return 1
     printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":3,"app_version":"comm","host":%s,"os_user":%s,"role":%s,"name":%s}}\n' \
-        "$(sot_json_escape "$host")" "$(sot_json_escape "$os_user")" "$(sot_json_escape "$role")" "$(sot_json_escape "${NAME:-}")"
+        "$j_host" "$j_user" "$j_role" "$j_name"
 }
 
 # sot_oneshot_request FRAME OP — one-shot request/response on a fresh daemon
@@ -544,17 +554,10 @@ _sot_hello_refusal() {
     local reply got
     reply="$(grep -m1 '"op":"hello"' "$1" 2>/dev/null || true)"
     [ -n "$reply" ] || return 0
-    if command -v jq >/dev/null 2>&1; then
-        got="$(printf '%s' "$reply" | jq -r 'if (.payload.error? // null) != null then ((.payload.code? // "") + "\t" + (.payload.error | tostring)) else empty end' 2>/dev/null)"
-        [ -n "$got" ] || return 0
-        [ -n "${2:-}" ] || [ "${got%%$'\t'*}" != protocol_mismatch ] || return 0
-        printf '%s\n' "${got#*$'\t'}"
-    else
-        case "$reply" in
-            *'"protocol_mismatch"'*) [ -z "${2:-}" ] || printf 'refused\n' ;;
-            *'"error"'*) printf 'refused\n' ;;
-        esac
-    fi
+    got="$(printf '%s' "$reply" | jq -r 'if (.payload.error? // null) != null then ((.payload.code? // "") + "\t" + (.payload.error | tostring)) else empty end' 2>/dev/null)"
+    [ -n "$got" ] || return 0
+    [ -n "${2:-}" ] || [ "${got%%$'\t'*}" != protocol_mismatch ] || return 0
+    printf '%s\n' "${got#*$'\t'}"
 }
 
 sot_oneshot_request() {
@@ -583,20 +586,12 @@ sot_oneshot_request() {
         | sot_dial "$ENDPOINT" "$timeout_s" > "$tmp" 2>"$tmp.err" &
     ncpid=$!
     # Accept only a COMPLETE res line: op precedes payload on the wire, so a
-    # grep hit can be a line the transport is still appending. jq gates acceptance when
-    # available; without jq (minimal envs) fall back to requiring that the
-    # file's last byte is a newline OR more bytes follow the match.
-    _sot_line_ok() {
-        if command -v jq >/dev/null 2>&1; then
-            printf '%s' "$1" | jq -e . >/dev/null 2>&1
-        else
-            case "$1" in *"}"* ) return 0 ;; * ) return 1 ;; esac
-        fi
-    }
+    # grep hit can be a line the transport is still appending. jq gates acceptance
+    # (the hello builder above already required it).
     deadline=$(( $(date +%s) + timeout_s ))
     while [ "$(date +%s)" -le "$deadline" ]; do
         line="$(grep -m1 "\"op\":\"$op\"" "$tmp" 2>/dev/null || true)"
-        if [ -n "$line" ] && _sot_line_ok "$line"; then
+        if [ -n "$line" ] && printf '%s' "$line" | jq -e . >/dev/null 2>&1; then
             break
         fi
         line=""
@@ -606,7 +601,7 @@ sot_oneshot_request() {
         kill -0 "$ncpid" 2>/dev/null || {
             # transport exited — one final scan for a reply that landed last
             line="$(grep -m1 "\"op\":\"$op\"" "$tmp" 2>/dev/null || true)"
-            _sot_line_ok "$line" || line=""
+            printf '%s' "$line" | jq -e . >/dev/null 2>&1 || line=""
             break; }
         sleep 0.1
     done
