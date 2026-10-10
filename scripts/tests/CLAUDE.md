@@ -8,9 +8,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners, including combined captured-summary/truncation and scratch-path controls; accepts a compiled fixture executable by absolute path and validates its shell scratch root before cleanup.
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies, and executed trust declaration delegation (`--trust-only`). Runs in the `rust.yml`
-  step "Test installer state (bash)" (ubuntu leg) and in `rc-gate.sh`.
+  step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper and the network refusal. Runs in the
-  `rust.yml` step "Test installer apply (bash)" (ubuntu leg) and in `rc-gate.sh`.
+  `rust.yml` step "Test installer apply (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-shared-home.sh`: a home several hosts share holds one install. Every path that writes, re-renders or
   retires `sotd.service` (`installer_enable_local_service`, `installer_retire_local_service`, `sot_rerender_owned`) pins
   it with `sotd topology pin` before any reload, and none disables the shared unit under a declared topology; a
@@ -19,7 +19,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   on an unlisted host asking for a daemon, and with an unpacked sotd that cannot run, refuses and leaves every entry
   under the prefix and `~/.local` as it was. Runs in the
   `rust.yml` step "Test installer shared home (bash)"
-  (ubuntu leg) and in `rc-gate.sh`.
+  (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-support.sh`: the setup the installer suites source: install.sh and lib/sot-daemon.sh, `check`,
   `starts_with`, `case_start`, the sandboxed tool dir (`mk_tools`) and the recording stubs (`mk_stubs`).
 - `check-layout.sh`: the layout check (file and folder sizes, pages, `## Files` lists); see Tools below.
@@ -67,7 +67,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-topology-plan.ps1`: `Get-SotTopologyPlan` and `Invoke-SotTopologySync` (scripts/sot-hosts.ps1) against a fake
   `sotd`. Runs in the `rust.yml` step "Test topology plan".
 - `test-topology-plan.sh`: `sot_topology_plan` (scripts/lib/sot-hosts.sh) against a fake `sotd`. Runs in the `rust.yml` step
-  "Test topology plan (bash)" (ubuntu leg) and in `rc-gate.sh`.
+  "Test topology plan (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 
 ## Tools
 
