@@ -321,25 +321,18 @@ pub(super) fn build_run_command(
     command
 }
 
-/// The argv of the next leg: `first_leg_without` is stripped while no producer
-/// has run in this process (`producer_ran`) and after an unstable leg, so a
-/// first leg that exited before running anything (a storage exit, say) is
-/// respawned with its first-leg argv, and a healthy row that restarts keeps the
-/// argv it was never wrong to keep.
-pub(super) fn leg_argv(config: &SuperviseConfig, producer_ran: bool, unstable: bool) -> Vec<String> {
-    if unstable || !producer_ran {
-        strip_first_leg_tokens(&config.producer_argv, &config.first_leg_without)
+/// The argv of the next leg, the one place every leg's argv is chosen: `first_leg_only` is kept while no producer
+/// has run in this process (`producer_ran`), so a first leg that exited before running anything (a storage exit,
+/// say) is retried with it, and stripped from every leg after: a respawn, a leg after a reset, a later voyage.
+pub(super) fn leg_argv(config: &SuperviseConfig, producer_ran: bool) -> Vec<String> {
+    if producer_ran {
+        strip_first_leg_tokens(&config.producer_argv, &config.first_leg_only)
     } else {
         config.producer_argv.clone()
     }
 }
 
-/// `producer_argv` with every element equal to one of `tokens` removed —
-/// called at the very first leg this process ever spawns (unconditionally)
-/// and, via `respawn_or_terminal`, at any later leg that follows one
-/// classified unstable. Never called for a leg after a reset or for a
-/// later voyage's own first spawn — those sites clone `producer_argv`
-/// directly.
+/// `producer_argv` with every element equal to one of `tokens` removed (`leg_argv`, once a producer has run).
 pub(super) fn strip_first_leg_tokens(producer_argv: &[String], tokens: &[String]) -> Vec<String> {
     if tokens.is_empty() {
         return producer_argv.to_vec();

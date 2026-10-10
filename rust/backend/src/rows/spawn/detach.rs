@@ -47,6 +47,17 @@ pub(crate) enum Spawn {
     Contended,
 }
 
+/// `sot-capsule supervise`'s `--first-leg-only` pairs for `agent_argv`: a reauth's `--resume <id>` (the one resume a
+/// row's launch makes, `claude_resume_argv`) is first-leg-only, so the reauth's own leg resumes by id and every leg
+/// after it starts fresh. Any other argv gets none.
+pub fn first_leg_only(agent_argv: &[String]) -> Vec<String> {
+    agent_argv
+        .windows(2)
+        .find(|pair| pair[0] == "--resume")
+        .map(|pair| vec!["--first-leg-only".into(), pair[0].clone(), "--first-leg-only".into(), pair[1].clone()])
+        .unwrap_or_default()
+}
+
 /// `sot-capsule supervise`'s own start-mode flag.
 pub fn mode_flag(mode: StartMode) -> &'static str {
     match mode {
@@ -169,8 +180,8 @@ pub(crate) fn supervisor_stderr_std() -> Stdio {
 }
 
 /// Launch `sot-capsule supervise <state_dir> <--start|--resume>
-/// --survival <normal|degraded> --assume-no-rollback-target -- <agent
-/// argv>` DETACHED, so the supervisor authority survives the
+/// --survival <normal|degraded> --assume-no-rollback-target
+/// [--first-leg-only <tok>]... -- <agent argv>` DETACHED, so the supervisor authority survives the
 /// daemon's own exit — the daemon must not be its kill domain (ADR
 /// 0042 L1a). On Unix the durable parent forks it after claiming the
 /// row's authority fence (`durable`, ADR 0043 decision 37): a claimed
@@ -180,7 +191,8 @@ pub(crate) fn supervisor_stderr_std() -> Stdio {
 /// `line`'s second parameter — whether the command line starts with
 /// `systemd-run --user --scope … --` (the escape) or with
 /// `<sot-capsule>` directly (bare) — so the shared tail (`supervise`,
-/// `state_dir`, mode, survival, `--assume-no-rollback-target`, argv)
+/// `state_dir`, mode, survival, `--assume-no-rollback-target`,
+/// [`first_leg_only`]'s pairs, argv)
 /// is written ONCE regardless of which head it lands on. `scoped` is
 /// always `false` on Windows (no scope concept there).
 /// `--assume-no-rollback-target` is mandatory: `sot_log::supervisor::supervise`
@@ -258,6 +270,7 @@ pub(crate) fn spawn_detached_supervisor(
             survival.into(),
             "--assume-no-rollback-target".into(),
         ]);
+        args.extend(first_leg_only(agent_argv).into_iter().map(std::ffi::OsString::from));
         args.push("--".into());
         args.extend(agent_argv.iter().map(std::ffi::OsString::from));
         Line {
@@ -652,6 +665,15 @@ mod capsule_sibling_present_tests {
 #[cfg(test)]
 mod start_mode_tests {
     use super::*;
+
+#[test]
+fn only_a_resume_by_id_is_first_leg_only() {
+    let ordinary: Vec<String> = ["claude", "--permission-mode", "auto", "/sot-session-start"].map(String::from).to_vec();
+    assert!(first_leg_only(&ordinary).is_empty());
+    let reauth: Vec<String> =
+        ["claude", "--permission-mode", "auto", "--resume", "abc", "/sot-session-start"].map(String::from).to_vec();
+    assert_eq!(first_leg_only(&reauth), ["--first-leg-only", "--resume", "--first-leg-only", "abc"]);
+}
 
 #[test]
 fn mode_flag_matches_the_sot_capsule_cli() {

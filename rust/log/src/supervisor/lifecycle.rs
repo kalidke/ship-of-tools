@@ -556,19 +556,15 @@ pub(super) fn force_terminal(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<L
 /// `Spawning` attempt for the CURRENT voyage — read fresh off
 /// `authority` every time, never a value captured before the loop began
 /// (a live `reset` can change it; a stale local was a real bug this
-/// crate already shipped once). `unstable` is the SAME classification the
-/// caller just counted against `consecutive_unstable_legs` — when `true`,
-/// this respawn strips `config.first_leg_without`'s tokens too (the
-/// self-heal: a leg that failed fast on stale argv gets one clean retry).
-/// A stable leg's respawn never strips anything, so a healthy row that
-/// happens to restart never loses argv it was never wrong to keep.
+/// crate already shipped once). The leg's argv is `leg_argv`'s:
+/// `config.first_leg_only`'s tokens are gone once a producer has run in
+/// this process, stable leg or not.
 pub(super) fn respawn_or_terminal(
     consecutive_unstable_legs: &mut u32,
     capsule_exe: &Path,
     config: &SuperviseConfig,
     lease: &LegLease,
     authority: &AuthorityState,
-    unstable: bool,
 ) -> Lifecycle {
     if *consecutive_unstable_legs >= FLAP_THRESHOLD {
         note(format_args!(
@@ -593,7 +589,7 @@ pub(super) fn respawn_or_terminal(
     };
     let voyage_id = authority.voyage_id.clone().expect("respawn is only reachable once voyage_id is Some");
     let voyage_root = voyage_root_path(&authority.state_dir, &voyage_id);
-    let argv = leg_argv(config, authority.producer_ran, unstable);
+    let argv = leg_argv(config, authority.producer_ran);
     let (rx, handle) = spawn_owned_spawn_attempt(
         capsule_exe.to_path_buf(),
         voyage_root,

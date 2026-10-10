@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# test-ccx-resume-default.sh — ccx's resume default is keyed on the
-# `--capsule` ARGV flag alone, never an inherited env var. Runs the REAL
+# test-ccx-resume-default.sh — every ccx starts fresh and resumes only on an
+# explicit --continue (or --resume <id>), whatever its env; --capsule and
+# --fresh are accepted and change nothing else. Runs the REAL
 # ccx as a subprocess with a stub `codex` on PATH recording its argv.
 #
 # Usage: agents/tests/test-ccx-resume-default.sh
@@ -76,7 +77,7 @@ started_fresh() {  # -> 0 iff argv.log's 1st line is NOT "resume"
     [ "$(sed -n 1p "$ARGV_LOG")" != "resume" ]
 }
 
-case_row_env_resumes_by_default() {
+case_row_env_starts_fresh() {
     rm -f "${ARGV_LOG:?}"
     (
         cd "$PROJECT_DIR" || exit 1
@@ -89,18 +90,18 @@ case_row_env_resumes_by_default() {
         SOT_WORKSPACE_ID="ws-row-1" \
         "$CCX" >/dev/null 2>"$WORK/stderr.log"
     )
-    resumed_this_id
+    started_fresh
 }
 
-case_hand_run_ccx_with_no_env_resumes_by_default() {
+case_hand_run_ccx_with_no_env_starts_fresh() {
     rm -f "${ARGV_LOG:?}"
     run_ccx
-    resumed_this_id
+    started_fresh
 }
 
 # A real capsule leg's full inherited env, minus --capsule -- plus a
 # stale SOT_RUNTIME=capsule, which must have ZERO effect (ccx no longer reads it).
-case_hand_run_ccx_inside_a_capsule_row_keeps_resume_default() {
+case_hand_run_ccx_inside_a_capsule_row_starts_fresh() {
     rm -f "${ARGV_LOG:?}"
     (
         cd "$PROJECT_DIR" || exit 1
@@ -115,6 +116,12 @@ case_hand_run_ccx_inside_a_capsule_row_keeps_resume_default() {
         SOT_RUNTIME="capsule" \
         "$CCX" >/dev/null 2>"$WORK/stderr.log"
     )
+    started_fresh
+}
+
+case_hand_run_ccx_with_continue_resumes() {
+    rm -f "${ARGV_LOG:?}"
+    run_ccx --continue
     resumed_this_id
 }
 
@@ -175,9 +182,10 @@ case_capsule_prompt_names_no_handoff_when_none_exists() {
     [ -s "$ARGV_LOG" ] && ! grep -q "HANDOFF:" "$ARGV_LOG"
 }
 
-check "a row env (SOT_WORKSPACE_ID set, no --capsule) resumes by default" case_row_env_resumes_by_default
-check "a hand-run ccx with no SOT_* env at all keeps resuming by default" case_hand_run_ccx_with_no_env_resumes_by_default
-check "a hand-run ccx inside a capsule row's env, without --capsule, keeps its resume default" case_hand_run_ccx_inside_a_capsule_row_keeps_resume_default
+check "a row env (SOT_WORKSPACE_ID set, no --capsule) starts fresh" case_row_env_starts_fresh
+check "a hand-run ccx with no SOT_* env at all starts fresh" case_hand_run_ccx_with_no_env_starts_fresh
+check "a hand-run ccx inside a capsule row's env starts fresh" case_hand_run_ccx_inside_a_capsule_row_starts_fresh
+check "a hand-run ccx --continue resumes this folder's last conversation" case_hand_run_ccx_with_continue_resumes
 check "--capsule: a bare ccx starts fresh" case_capsule_flag_bare_ccx_starts_fresh
 check "--capsule: --continue triggers the resume scan" case_capsule_flag_with_continue_resumes
 check "--capsule: --fresh wins even alongside --continue" case_capsule_flag_with_fresh_flag_stays_fresh_even_with_continue

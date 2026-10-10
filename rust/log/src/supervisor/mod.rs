@@ -509,20 +509,16 @@ pub struct SuperviseConfig {
     /// Defaults to `Normal` for every existing manual invocation that
     /// predates this field.
     pub survival: Survival,
-    /// Tokens (`sot-capsule supervise`'s repeatable `--first-leg-without
-    /// <token>`) stripped from `producer_argv` for the very first leg THIS
-    /// PROCESS spawns, and again for any leg that follows one
-    /// [`leg_was_stable`] classified unstable — the self-heal that lets a
-    /// producer flag failing fast on stale argv (e.g. an agent's
-    /// `--continue` against a store with nothing to continue) get one
-    /// fresh retry rather than flapping the row terminal. Never applied
-    /// after a STABLE leg's respawn, a leg after a reset, or a later
-    /// voyage: [`respawn_or_terminal`] and the spawn sites for those cases
-    /// read this list too, but only under the exact conditions each names.
-    /// This module stays agent-agnostic: it knows nothing about `claude`
-    /// or `--continue`, only that the caller wants some tokens gone from
-    /// an unstable leg's own argv.
-    pub first_leg_without: Vec<String>,
+    /// Tokens (`sot-capsule supervise`'s repeatable `--first-leg-only
+    /// <token>`) kept in `producer_argv` only until a producer has run in
+    /// THIS PROCESS (`producer_ran`: a leg reached Ready or was adopted),
+    /// and stripped from every leg after, whatever starts it: a respawn, a
+    /// leg after a reset, a later voyage (`leg_argv`). A first leg
+    /// that dies before Ready keeps them. The daemon passes a reauth's
+    /// `--resume <id>` this way, so only the reauth's own leg resumes by id.
+    /// This module stays agent-agnostic: it knows nothing about `claude` or
+    /// `--resume`, only that the caller wants some tokens on the first leg.
+    pub first_leg_only: Vec<String>,
     /// The fence claim this supervisor was born holding, and the channel it answers on once the claim is its own
     /// (`--claim-fd`, `--takeover-fd`). `None` for a supervisor nobody claimed for: it takes the fence itself.
     #[cfg(unix)]

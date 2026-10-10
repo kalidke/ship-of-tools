@@ -294,7 +294,7 @@ mod tests {
             rows: 24,
             assume_no_rollback_target: true,
             survival: Survival::Normal,
-            first_leg_without: Vec::new(),
+            first_leg_only: Vec::new(),
             birth: Some(super::super::birth_claim::InheritedBirth {
                 claim_fd,
                 takeover_fd: writer.into_raw_fd(),

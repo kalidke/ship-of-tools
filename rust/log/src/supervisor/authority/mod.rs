@@ -106,9 +106,8 @@ pub(super) struct AuthorityState {
     pub(super) self_created: u64,
     pub(super) stop_requested: Option<StopRequested>,
     /// Whether a producer has run in this process: a leg reached Ready, or one
-    /// was adopted. Until then `first_leg_without` is stripped from a leg's
-    /// argv, and afterwards only from the respawn of an unstable leg
-    /// (`leg_argv`).
+    /// was adopted. Until then `first_leg_only` stays in a leg's argv, and
+    /// afterwards it is stripped from every leg (`leg_argv`).
     pub(super) producer_ran: bool,
     /// legs whose `Lifecycle` state was left
     /// (`Ready`/`Ending` resolving to something else) while STILL ALIVE —

@@ -198,9 +198,9 @@ fn claude_resume_argv_in(
 }
 
 /// `"codex"`'s capsule recipe: `ccx --capsule`, which starts a fresh
-/// conversation (`ccx` scans for one to resume only with `--continue`).
-/// `--capsule` keys `ccx`'s capsule behavior directly (never an inherited
-/// env var).
+/// conversation with every `ccx` copy a host may hold: the installed
+/// launcher is refreshed only by `update_comm`, never by an auto-apply,
+/// and a released `ccx` run bare resumes by recency.
 /// macOS lane: `unix`, not `target_os = "linux"` — `ccx` is the same
 /// shell script installed to the same `~/.local/bin` on every Unix, so
 /// the Linux gate here was naming the install layout of one host, not a

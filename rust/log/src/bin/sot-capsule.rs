@@ -351,19 +351,18 @@ fn leg_exit_code(result: &sot_log::Result<sot_log::capsule::ExitSummary>) -> i32
 }
 
 /// `sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
-/// [--rows <n>] [--first-leg-without <token>]... [--claim-fd <n> --takeover-fd <n>]
+/// [--rows <n>] [--first-leg-only <token>]... [--claim-fd <n> --takeover-fd <n>]
 /// --assume-no-rollback-target -- <cmd> [args...]` (ADR 0041 step 6 U2): the authority. `--assume-no-rollback-target` is
 /// mandatory here for the exact reason `run`'s own copy of it is — see
-/// `sot_log::supervisor`'s own module doc. `--first-leg-without` is
+/// `sot_log::supervisor`'s own module doc. `--first-leg-only` is
 /// repeatable and agent-agnostic: this binary knows nothing about `claude`
-/// or `--continue`, only that the caller wants a given token stripped from
-/// the very first leg's own argv, and again from any later leg that
-/// follows one this process classified unstable — see
-/// `SuperviseConfig::first_leg_without`.
+/// or `--resume`, only that the caller wants a given token on the legs
+/// before any producer has run in this process and on none after — see
+/// `SuperviseConfig::first_leg_only`.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn cmd_supervise(args: &[String]) {
     let usage = "usage: sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
-[--rows <n>] [--survival <normal|degraded>] [--first-leg-without <token>]... \
+[--rows <n>] [--survival <normal|degraded>] [--first-leg-only <token>]... \
 [--claim-fd <n> --takeover-fd <n>] --assume-no-rollback-target -- <cmd> [args...]";
     if args.len() < 3 {
         eprintln!("{usage}");
@@ -388,7 +387,7 @@ fn cmd_supervise(args: &[String]) {
     // manual invocation, matching every existing caller of this CLI that
     // predates the flag.
     let mut survival = sot_log::lane::wire::Survival::Normal;
-    let mut first_leg_without: Vec<String> = Vec::new();
+    let mut first_leg_only: Vec<String> = Vec::new();
     // The claim a spawning parent took on the fence for this birth, and the channel to answer it on (Unix).
     let mut claim_fd: Option<i32> = None;
     let mut takeover_fd: Option<i32> = None;
@@ -427,8 +426,8 @@ fn cmd_supervise(args: &[String]) {
                 };
                 rest = &rest[2..];
             }
-            Some("--first-leg-without") if rest.len() > 1 => {
-                first_leg_without.push(rest[1].clone());
+            Some("--first-leg-only") if rest.len() > 1 => {
+                first_leg_only.push(rest[1].clone());
                 rest = &rest[2..];
             }
             Some("--assume-no-rollback-target") => {
@@ -452,7 +451,7 @@ fn cmd_supervise(args: &[String]) {
         rows,
         assume_no_rollback_target,
         survival,
-        first_leg_without,
+        first_leg_only,
         #[cfg(unix)]
         birth,
     };
