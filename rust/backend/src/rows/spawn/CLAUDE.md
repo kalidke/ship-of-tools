@@ -34,5 +34,7 @@ scope is closed.
 - A launch whose row's fence is already claimed forks nothing and answers `Spawn::Contended` (`spawn_detached_supervisor`);
   the caller reports the authority pending (`rows/run/admission.rs`), never success and never a replacement.
 - A scope is killed only after `row_scope_aim::aim` accepts it (`row_scope::end`).
+- A scope is read and killed under the host's cgroup v2 root, `/sys/fs/cgroup` or, on a hybrid host,
+  `/sys/fs/cgroup/unified` (`row_scope_aim::v2_root`); the test helpers read it through the same file.
 - The user-scope probe runs through `Signal::spawn_std`; on its timeout `ContainedStd::wait_within` kills its tree
   before it reaps it (`user_scope_available`).

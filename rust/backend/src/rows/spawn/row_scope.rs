@@ -1,12 +1,11 @@
 //! A row's own systemd scope: capture, remembered list, and the aimed kill at destroy.
 
-use crate::rows::spawn::row_scope_aim::{aim, prefix};
+use crate::rows::spawn::row_scope_aim::{aim, prefix, v2_root};
 use sot_log::host::state_dir::state_dir_hash;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub(crate) const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 /// The cgroup fence's own `QUIESCENCE_TIMEOUT` (`sot_log::claude`).
 pub(crate) const SCOPE_EMPTY_BOUND: Duration = Duration::from_secs(10);
 /// The row's remembered scopes, one cgroup rel per line, in its state
@@ -22,13 +21,13 @@ thread_local! {
     pub(crate) static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
-/// The cgroup2 root every end aims at.
+/// The cgroup v2 root every end aims at ([`v2_root`]).
 pub(crate) fn root() -> PathBuf {
     #[cfg(test)]
     if let Some(root) = TEST_ROOT.with(|r| r.borrow().clone()) {
         return root;
     }
-    PathBuf::from(CGROUP_ROOT)
+    v2_root()
 }
 
 /// `systemd-run --unit` value for a new scoped supervisor of this row.
@@ -58,19 +57,22 @@ pub(crate) fn capture(root: &Path, state_dir: &Path, pid: u32) -> Result<Option<
 /// row and `cgroup.kill` is there to end it, listed durably in
 /// [`SCOPES_FILE`]; `Ok(None)` ends the row exactly as before this
 /// module (an unscoped or older row, a frontend-spawned drawer, a
-/// kernel before 5.14). `Err` is a failed write: nothing is killed.
+/// kernel before 5.14, a host with no cgroup v2 hierarchy). `Err` is a
+/// failed write: nothing is killed.
 pub(crate) fn capture_from(root: &Path, state_dir: &Path, proc_cgroup: &str) -> Result<Option<String>, String> {
     let Some(rel) = rel_of(proc_cgroup) else { return Ok(None) };
     let leaf = rel.rsplit('/').next().unwrap_or("");
     if !(leaf.starts_with(&prefix(&state_dir_hash(state_dir))) && leaf.ends_with(".scope")) {
         return Ok(None);
     }
-    if let Err(e) = std::fs::metadata(at(root, &rel).join("cgroup.kill")) {
+    let kill = at(root, &rel).join("cgroup.kill");
+    if let Err(e) = std::fs::metadata(&kill) {
         if e.kind() == ErrorKind::NotFound {
             tracing::warn!(
-                scope = %rel,
-                "capsule workspace: no cgroup.kill (Linux before 5.14); a child that left the agent's \
-                 process group survives this row's end"
+                path = %kill.display(),
+                "capsule workspace: the row's scope has no cgroup.kill here (Linux before 5.14, or no cgroup v2 \
+                 hierarchy at /sys/fs/cgroup or /sys/fs/cgroup/unified); a child that left the agent's process \
+                 group survives this row's end"
             );
             return Ok(None);
         }
