@@ -143,18 +143,25 @@ fn parse(text: &str) -> HashMap<String, String> {
         .collect()
 }
 
-async fn wait_ready_or_exit(dir: &Path, client: &mut std::process::Child) -> Option<String> {
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while Instant::now() < deadline {
+/// The ready record, if the child wrote one, and how long after the start the client had already exited, if it had.
+async fn wait_ready_or_exit(
+    dir: &Path,
+    client: &mut std::process::Child,
+) -> (Option<String>, Option<Duration>) {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(120) {
         if let Ok(text) = std::fs::read_to_string(dir.join("ready")) {
-            return Some(text);
+            return (Some(text), None);
         }
         if client.try_wait().ok().flatten().is_some() {
-            return std::fs::read_to_string(dir.join("ready")).ok();
+            return (
+                std::fs::read_to_string(dir.join("ready")).ok(),
+                Some(start.elapsed()),
+            );
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    None
+    (None, None)
 }
 
 fn spawn_client(
@@ -186,13 +193,34 @@ fn spawn_client(
         .expect("spawn the container client")
 }
 
-/// Releases the child to kill itself, waits for the job to end, then judges the row: was its fence held before, is it
-/// gone within 10 s, and did it live in the job's control group.
+/// The root of the unified cgroup tree: `/sys/fs/cgroup`, or its `unified` mount on a hybrid host.
+fn cgroup_root() -> PathBuf {
+    let root = Path::new("/sys/fs/cgroup");
+    if root.join("cgroup.controllers").exists() {
+        root.to_path_buf()
+    } else {
+        root.join("unified")
+    }
+}
+
+/// Whether a control group is gone or reads `populated 0`.
+fn group_empty(rel: &str) -> bool {
+    let events = cgroup_root()
+        .join(rel.trim_start_matches('/'))
+        .join("cgroup.events");
+    match std::fs::read_to_string(events) {
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+        Ok(text) => text.lines().any(|l| l.trim() == "populated 0"),
+    }
+}
+
+/// Releases the child to kill itself, waits for the job to end, then judges: was the row's fence held before, are its
+/// fence and writer lock free and the job's control group empty within 10 s, and did the row live in that group.
 async fn judge(
     dir: &Path,
     r: &HashMap<String, String>,
     client: &mut std::process::Child,
-) -> (bool, bool, bool) {
+) -> (bool, bool, bool, bool) {
     let (state_dir, voyage) = (PathBuf::from(&r["state_dir"]), r["voyage"].clone());
     let held_before = state_locks(&state_dir, &voyage) == (false, false);
     std::fs::write(dir.join("go"), "").expect("release the child");
@@ -202,31 +230,61 @@ async fn judge(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let end = Instant::now() + Duration::from_secs(10);
-    let gone = loop {
-        if state_lock_free(&state_dir, &voyage) {
-            break true;
-        }
-        if Instant::now() >= end {
-            break false;
-        }
+    let (mut gone, mut emptied) = (false, false);
+    while !(gone && emptied) && Instant::now() < end {
+        gone = gone || state_lock_free(&state_dir, &voyage);
+        emptied = emptied || group_empty(&r["child_cgroup"]);
         tokio::time::sleep(Duration::from_millis(100)).await;
-    };
+    }
     (
         held_before,
         gone,
         r["child_cgroup"] == r["supervisor_cgroup"],
+        emptied,
     )
 }
 
-/// Ends a row the job left, through the product, and waits for its locks.
-async fn end_leftover_row(r: &HashMap<String, String>) {
+/// Whether the row's fence and writer lock are both free within `secs`.
+async fn wait_free(state_dir: &Path, voyage: &str, secs: u64) -> bool {
+    let end = Instant::now() + Duration::from_secs(secs);
+    while !state_lock_free(state_dir, voyage) && Instant::now() < end {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    state_lock_free(state_dir, voyage)
+}
+
+/// The lease close on a thread of its own, with a runtime of its own: a panic in it stays in that thread.
+fn close_on_thread(sock: PathBuf) {
+    let worker = std::thread::Builder::new().spawn(move || {
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            rt.block_on(close_by_lease(&sock));
+        }
+    });
+    let _ = worker.map(|w| w.join());
+}
+
+/// Ends a row the job left, through the product, then by its scope's control group if it escaped, and reports whether
+/// its locks are free at the end. Never panics.
+async fn end_leftover_row(r: &HashMap<String, String>) -> bool {
     let (state_dir, voyage, sock) = (
         PathBuf::from(&r["state_dir"]),
         r["voyage"].clone(),
         PathBuf::from(&r["socket"]),
     );
+    // A row that left the job's group lives in a scope of its own: the product's end may not reach it.
+    let guard = (r["supervisor_cgroup"] != r["child_cgroup"])
+        .then(|| {
+            std::panic::catch_unwind(|| {
+                support::arm_scope_guard(&r["supervisor_cgroup"], &state_dir)
+            })
+            .ok()
+        })
+        .flatten();
     if support::try_connect(&sock).await.is_some() {
-        close_by_lease(&sock).await;
+        close_on_thread(sock);
     } else {
         // The supervisor's lane socket lives in the child's private runtime folder.
         std::env::set_var("SOT_RUNTIME_DIR", &r["runtime"]);
@@ -239,10 +297,12 @@ async fn end_leftover_row(r: &HashMap<String, String>) {
         })
         .await;
     }
-    let end = Instant::now() + Duration::from_secs(60);
-    while !state_lock_free(&state_dir, &voyage) && Instant::now() < end {
-        tokio::time::sleep(Duration::from_millis(200)).await;
+    if wait_free(&state_dir, &voyage, 60).await {
+        return true;
     }
+    // The scope's cgroup.kill ends whatever the product did not.
+    drop(guard);
+    wait_free(&state_dir, &voyage, 10).await
 }
 
 #[tokio::test]
@@ -265,18 +325,19 @@ async fn a_killed_test_job_leaves_no_row() {
     let (cmd, entry) = sot_log::test_isolated::test_command(NAME);
     let mut client = spawn_client(dir.path(), &unit, &cmd, &entry);
 
-    let ready = wait_ready_or_exit(dir.path(), &mut client).await;
+    let (ready, exited) = wait_ready_or_exit(dir.path(), &mut client).await;
     let record = ready.as_deref().map(parse);
-    let (held_before, gone, contained) = match &record {
+    let (held_before, gone, contained, emptied) = match &record {
         Some(r) => judge(dir.path(), r, &mut client).await,
-        None => (true, true, false),
+        None => (true, true, false, true),
     };
     // Cleanup runs before any assert and never panics.
     let _ = client.kill();
     let _ = client.wait();
-    if let (false, Some(r)) = (gone, &record) {
-        end_leftover_row(r).await;
-    }
+    let freed = match (&record, gone) {
+        (Some(r), false) => end_leftover_row(r).await,
+        _ => true,
+    };
     let _ = std::process::Command::new("systemctl")
         .args([
             "--user",
@@ -289,22 +350,40 @@ async fn a_killed_test_job_leaves_no_row() {
         .stderr(Stdio::null())
         .status();
     let field = |k: &str| record.as_ref().map(|r| r[k].clone()).unwrap_or_default();
-    for k in ["runtime", "tmp"] {
-        let _ = std::fs::remove_dir_all(field(k));
+    if record.is_none() {
+        let out = std::fs::read_to_string(dir.path().join("out"));
+        eprintln!("the child's output ({}/out): {out:?}", dir.path().display());
     }
-    drop(dir);
+    if freed {
+        for k in ["runtime", "tmp"] {
+            let _ = std::fs::remove_dir_all(field(k));
+        }
+        drop(dir);
+    } else {
+        eprintln!(
+            "the row is not confirmed ended: keeping its folders: {} {} {}",
+            dir.path().display(),
+            field("runtime"),
+            field("tmp")
+        );
+        std::mem::forget(dir);
+    }
+    let seen = match exited {
+        Some(after) => format!("the client had already exited after {after:?}"),
+        None => "the client was still running at 120 s".to_string(),
+    };
     assert!(
         record.is_some(),
-        "the child never wrote its ready record within 120 s"
+        "the child never wrote its ready record ({seen})"
     );
     assert!(
         held_before,
         "precondition: the supervisor's fence and the voyage's writer lock must be held while the job runs"
     );
     entry.assert_once(field("child_pid").parse().expect("child_pid"));
-    let (c, s) = (field("child_cgroup"), field("supervisor_cgroup"));
+    let (c, sc) = (field("child_cgroup"), field("supervisor_cgroup"));
     assert!(
-        contained && gone,
-        "a killed test job: contained={contained} (the supervisor's control group {s}, the job's {c}), gone={gone} (its fence or writer lock was still held 10 s after the job ended)"
+        contained && gone && emptied,
+        "a killed test job: contained={contained} (the supervisor's control group {sc}, the job's {c}), gone={gone} (its fence or writer lock was still held 10 s after the job ended), emptied={emptied} (the job's control group was still populated)"
     );
 }
