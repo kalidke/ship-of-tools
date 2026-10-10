@@ -51,6 +51,9 @@ connection.
   reference checks; the plugin contract beyond `FileType`) are described, marked unbuilt, in `docs/src/guide/modes.md`,
   `docs/src/guide/concept-layer.md`, `docs/src/guide/color-coding.md`, `docs/src/extend/abi.md` and
   `docs/src/extend/mode.md`.
+- A session that runs in a Ship of Tools row reads `docs/ROW-SESSION.md` at its start and after each compaction: the
+  workspace row, worktrees, the window's restart, releases, the handoff and messaging between sessions. A subagent
+  does not read it and uses no mail; it reports to the session that launched it.
 
 ## Limits
 - A file holds one concept and at most 800 code lines. Tests sit inline, or in a sibling file of at most 800 lines.
@@ -84,37 +87,9 @@ connection.
 - Read `requirements.md` before adding a feature. Change a CLAUDE.md, ADR status or manual page in the commit that
   changes the code it describes. Plots in Julia use CairoMakie.
 - The repo is public: no private host names, user names, LAN details or host-suffixed handles in commits, PRs, code
-  comments or docs.
-
-## Working in this repo
-- Development runs in the `ship-of-tools` workspace row. The daemon's default row is a hidden anchor; nothing runs in it.
-- `/worktree` (`agents/worktree/comm-worktree-new.sh <short>`) makes `<repo-parent>/worktrees/ship-of-tools-wt-<short>`
-  on branch `wt/<short>` with its own session; `/worktree status|sync|clean` manage it.
+  comments or docs. The publish guard in `.claude/hooks/` blocks commit and PR text that matches the private denylist.
 - The repo is canonical, not any machine's memory: the user works across computers, and per-machine session memory is
   never a prerequisite. Session memory holds working practices only; a fact about the code belongs in the CLAUDE.md of
   the folder that owns it.
-- A launcher the daemon spawns full-paths its binaries: a capsule inherits the daemon's environment, whose `PATH`
-  lacks `~/.local/bin`. Spawn and daemon boot: ADR 0046.
-- Window restart (ADR 0017; read it before any restart): never kill the window's process. `scripts/relaunch-sot.ps1`
-  writes the relaunch sentinel and the Windows launcher respawns the window on exit 75 or 76. On Linux and macOS the
-  installed all-in-one `sot-launch` respawns on 75 only, and a window started by `scripts/launch-sot.sh` is not
-  respawned.
-- Run a command on a second host with `scripts/tests/on-host.sh HOST DIR -- CMD`, never a hand-built `env -u` list inside a
-  quoted ssh command: its newlines can run a bare `env` there and print that host's environment.
-- Releases follow the `release` skill and `scripts/release.sh`.
-- A session's handoff is its recovery file, `dev/output/handoff-<handle>.md` (gitignored), written at milestones.
-  The private ops sidecar (`../ship-of-tools-ops`, or `$SOT_OPS_DIR`) holds the publish guard's denylist; on a machine
-  where the sidecar exists but the denylist is unreadable, the guard blocks publishing.
-
-## Messaging between sessions
-- Design of record: `docs/adr/0049-messaging-on-one-page.md`; the contract is `comm/PROTOCOL.md`.
-- A session's handle is its folder name plus its box name; `comm-context.sh` prints it.
-- Send with `comm-send.sh @<handle> "text"`; its one result is `filed -> @<handle>` or `FAILED -> @<handle>: <why>`,
-  except that a send relayed to a handle the hub's folder does not list can still end `NOT CONFIRMED: sent for @h; ...`
-  or `filed -> @h (by <filer>, relay)` (`comm/mail/comm-relay.sh`).
-
-  Known limit (B2): the hub's comm folder has not been shown to list every live row on every attached box. At the 2026-10-06 premise check, two attached boxes had no session; one of them had no frontend connected, so those two boxes were unobserved. A handle absent from that folder still uses the broadcast filer route and may end NOT CONFIRMED. Full B2 removal is blocked on the live-row registry premise; this checkout does not promise a binary verdict for that route.
-
-- An idle row is woken by the line `[sot-comm] you have mail: run comm-poll.sh`; a turn cannot end with directed
-  mail unread. Read with `comm-poll.sh`. To wait for a reply, end your turn.
-- Run `/sot-session-start` once when a session starts.
+- Run a command on a second host with `scripts/tests/on-host.sh HOST DIR -- CMD`, never a hand-built `env -u` list
+  inside a quoted ssh command: its newlines can run a bare `env` there and print that host's environment.

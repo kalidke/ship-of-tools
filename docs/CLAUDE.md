@@ -6,8 +6,8 @@ the commit that changes the code it describes, and a design that is not built is
 
 ## Owns
 - `docs/`: the ADRs and their index, the manual (`src/`, `make.jl`, `Project.toml`), `INSTALL-AGENT.md`,
-  `ENROLLING-A-HOST.md`, `USING.md`, `SCREENSHOTS.md`, `plan.md`, the ownership table `ownership.md` and the demo
-  project the screenshots are taken from.
+  `ENROLLING-A-HOST.md`, `USING.md`, `ROW-SESSION.md`, `SCREENSHOTS.md`, `plan.md`, the ownership table
+  `ownership.md` and the demo project the screenshots are taken from.
 - Outside this folder: `requirements.md` and `README.md` at the root, the root `CLAUDE.md`, and the publish guard
   (`.claude/settings.json`, `.claude/hooks/`). Each folder's own `CLAUDE.md` belongs to the subsystem that owns that folder.
 
@@ -43,6 +43,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `ENROLLING-A-HOST.md`: the procedure for enrolling a host behind the hub; staged into the manual by `make.jl`.
 - `INSTALL-AGENT.md`: the install runbook written for a coding agent.
 - `Project.toml`: the docs environment (Documenter, DocumenterVitepress, and the two local packages by path).
+- `ROW-SESSION.md`: the row and messaging tooling a session in a row reads; the root `CLAUDE.md` names it.
 - `SCREENSHOTS.md`: how the docs media are regenerated.
 - `USING.md`: the entry page for a user with a local checkout.
 - `adr/`: the decision records and their `README.md` index.
