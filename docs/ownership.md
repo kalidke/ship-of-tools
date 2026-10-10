@@ -66,7 +66,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `<sd>/drawer.voyage` (pointer) | disk | capsule | `rust/log/src/supervisor/journal/pointer.rs` |
 | `<sd>/supervisor-journal/` | disk | capsule | `rust/log/src/supervisor/journal/mod.rs` `begin`, `finish` |
 | `<sd>/voyages/<id>/{writer.lock, seg/, blobs/sha256/}` | disk, lock | capsule | `rust/log/src/store/voyage.rs`; names repeated `rust/backend/src/rows/run/end_run.rs` `absence_proof` |
-| `<sd>/row-scopes` and the row's systemd scope `sot-row-<hash>-<uuid>.scope` | disk, process | rows | `rust/backend/src/rows/spawn/row_scope.rs` `capture`, `listed`, `end`, `unit_name`; `rust/backend/src/rows/spawn/row_scope_aim.rs` `aim` |
+| `<sd>/row-scopes` and the row's systemd scope `sot-row-<hash>-<uuid>.scope` | disk, process | rows | `rust/backend/src/rows/spawn/row_scope.rs` `capture`, `listed`, `end`, `unit_name`; `rust/backend/src/rows/spawn/row_scope_aim.rs` `aim`, `v2_root` (shell twin of `v2_root`: `scripts/tests/rc-gate.sh` `CG`) |
 | supervisor lane socket/pipe `supervisor-<hash>` | endpoint | capsule | `rust/log/src/lane/socket_unix/mod.rs`; `rust/log/src/lane/pipe_win/mod.rs` |
 | voyage lane socket/pipe `voyage-<id>` | endpoint | capsule | `rust/log/src/lane/socket_unix/mod.rs`; `rust/log/src/lane/pipe_win/mod.rs` |
 | hub relay sockets `sot-host-<h>.sock`, relay units and the `zz-sot-relay-command.conf` drop-in | disk, endpoint | topology | `rust/protocol/src/topology/mod.rs` `relay_socket_path`, `runtime_relay_dir`; `rust/protocol/src/topology/relay_units.rs` `relay_service_unit`, `RELAY_COMMAND_DROPIN`; `rust/backend/src/topology/relay_units.rs` `apply`, `refresh` |

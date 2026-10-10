@@ -13,7 +13,7 @@ daemon's rows subsystem; charter: `rust/backend/src/rows/CLAUDE.md`.
 - `detach.rs`: the supervise flags over `sot_log::supervisor::StartMode`, the `sot-capsule` sibling check and `spawn_detached_supervisor` with its three `spawn_detached` arms (`Spawn`: started, or contended)
 - `durable/` (Unix): the capsule-only birth parent: the daemon's end, the parent's loop, one launch's acceptance and the private channel (own page)
 - `row_scope.rs` (Linux): the row's scope record, `capture`, `listed` and the aimed `end`
-- `row_scope_aim.rs` (Linux): `aim`, the pure rule that decides which scope may be killed; no dependencies
+- `row_scope_aim.rs` (Linux): `aim`, the pure rule that decides which scope may be killed, and `v2_root`, where the host mounts its cgroup v2 hierarchy; no dependencies
 
 ## Start here
 `detach.rs::spawn_detached_supervisor` for how a launch is built and refused; `row_scope.rs::end` for how a row's

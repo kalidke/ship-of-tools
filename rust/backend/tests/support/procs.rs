@@ -220,33 +220,41 @@ impl Drop for ScopeKillGuard {
             eprintln!("ScopeKillGuard: the aim rule refuses {} at drop, nothing written: {e}", self.rel);
             return;
         }
-        let kill = Path::new("/sys/fs/cgroup").join(self.rel.trim_start_matches('/')).join("cgroup.kill");
+        let kill = row_scope_aim::v2_root().join(self.rel.trim_start_matches('/')).join("cgroup.kill");
         if kill.exists() {
             let _ = std::fs::write(&kill, "1");
         }
     }
 }
 
-/// A scope's end is read and written under `/sys/fs/cgroup`, the only root production's row scope end uses
-/// (`row_scope.rs`). Where that is not a cgroup v2 mount, a scope test would pass without seeing a scope.
+/// A control group's end is read and written under production's cgroup v2 root (`row_scope_aim::v2_root`). Where
+/// that root holds no v2 hierarchy, a test would start what it cannot see end; it refuses before any row starts.
 #[cfg(target_os = "linux")]
 pub fn require_cgroup_v2_root() {
+    let root = row_scope_aim::v2_root();
     assert!(
-        Path::new("/sys/fs/cgroup/cgroup.controllers").exists(),
-        "cgroup v2 is not mounted at /sys/fs/cgroup, the only root production's row scope end reads (row_scope.rs:9): this host cannot prove a scope's end"
+        root.join("cgroup.controllers").exists(),
+        "no cgroup v2 hierarchy at production's root {root:?} (row_scope_aim::v2_root: /sys/fs/cgroup, or /sys/fs/cgroup/unified on a hybrid host): this host cannot show a control group's end"
     );
 }
 
-/// A4b: a guard on `/sys/fs/cgroup{rel}`, armed only when PRODUCTION's aim
-/// rule accepts `rel` for this test's own row: the prefix carries
+/// A4b: a guard on the scope `rel` under production's cgroup v2 root
+/// (`row_scope_aim::v2_root`), armed only when PRODUCTION's aim rule
+/// accepts `rel` for this test's own row: the prefix carries
 /// `state_dir`'s hash, and `rel` is not this test process's own cgroup or
 /// an ancestor of it. Panics otherwise, so a capture bug or a reused pid
-/// can never aim the guard at a live session.
+/// can never aim the guard at a live session; and panics when that root
+/// does not show the scope, which [`assert_scope_empties`] would then read
+/// as emptied.
 #[cfg(target_os = "linux")]
 pub fn arm_scope_guard(rel: &str, state_dir: &Path) -> ScopeKillGuard {
-    require_cgroup_v2_root();
     let mut guard = arm_scope_guard_against(rel, &cgroup_rel(std::process::id()), state_dir);
     guard.own_rel = None;
+    let events = row_scope_aim::v2_root().join(rel.trim_start_matches('/')).join("cgroup.events");
+    assert!(
+        events.exists(),
+        "the scope is not at {events:?}, under production's cgroup v2 root (row_scope_aim::v2_root): a test cannot judge a scope it cannot see"
+    );
     guard
 }
 
@@ -262,10 +270,11 @@ pub fn arm_scope_guard_against(rel: &str, own_rel: &str, state_dir: &Path) -> Sc
 
 /// A4b: polls every 100 ms until the scope's `cgroup.events` is gone or
 /// reads `populated 0`; on timeout panics with that file and `cgroup.procs`.
+/// Only for a scope [`arm_scope_guard`] armed, which proved it visible, so
+/// a missing file means the scope was removed.
 #[cfg(target_os = "linux")]
 pub async fn assert_scope_empties(rel: &str, within: Duration) {
-    require_cgroup_v2_root();
-    let dir = Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/'));
+    let dir = row_scope_aim::v2_root().join(rel.trim_start_matches('/'));
     let deadline = Instant::now() + within;
     loop {
         let events = match std::fs::read_to_string(dir.join("cgroup.events")) {

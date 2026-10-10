@@ -233,6 +233,15 @@ mod tests {
     }
 
     #[test]
+    fn the_v2_root_is_sys_fs_cgroup_when_it_is_the_v2_mount_else_its_unified_child() {
+        use crate::rows::spawn::row_scope_aim::v2_root_in;
+        let base = tempfile::tempdir().unwrap();
+        assert_eq!(v2_root_in(base.path()), base.path().join("unified"), "a hybrid host");
+        std::fs::write(base.path().join("cgroup.controllers"), "").unwrap();
+        assert_eq!(v2_root_in(base.path()), base.path(), "a unified host");
+    }
+
+    #[test]
     fn capture_finds_only_this_rows_scope() {
         let (state, other_state, root) =
             (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());

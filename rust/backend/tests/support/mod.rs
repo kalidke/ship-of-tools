@@ -27,8 +27,8 @@ use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
 use interprocess::local_socket::GenericFilePath;
 use sot_protocol::{codec, op, Frame, HelloReq, Kind};
 
-/// A4b: production's own aim rule, one source — [`arm_scope_guard`]
-/// refuses exactly what `rows::spawn::row_scope` refuses.
+/// A4b: production's own aim rule and cgroup v2 root, one source — [`arm_scope_guard`]
+/// refuses exactly what `rows::spawn::row_scope` refuses, and reads a scope where it does.
 #[cfg(target_os = "linux")]
 #[path = "../../src/rows/spawn/row_scope_aim.rs"]
 pub mod row_scope_aim;

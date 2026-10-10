@@ -193,28 +193,19 @@ fn spawn_client(
         .expect("spawn the container client")
 }
 
-/// The root of the unified cgroup tree: `/sys/fs/cgroup`, or its `unified` mount on a hybrid host.
-fn cgroup_root() -> PathBuf {
-    let root = Path::new("/sys/fs/cgroup");
-    if root.join("cgroup.controllers").exists() {
-        root.to_path_buf()
-    } else {
-        root.join("unified")
-    }
-}
-
 /// `cgroup.kill` in the job's own group, only when its leaf is the unit this test named: a contained row the unit did
 /// not kill (`KillMode=none`, reversal R2) and the product did not end. Never panics.
 fn kill_job_group(rel: &str, unit: &str) {
     let leaf = rel.rsplit('/').next().unwrap_or("");
     if leaf == format!("{unit}.service") || leaf == format!("{unit}.scope") {
-        let _ = std::fs::write(cgroup_root().join(rel.trim_start_matches('/')).join("cgroup.kill"), "1");
+        let kill = support::row_scope_aim::v2_root().join(rel.trim_start_matches('/')).join("cgroup.kill");
+        let _ = std::fs::write(kill, "1");
     }
 }
 
 /// Whether a control group is gone or reads `populated 0`.
 fn group_empty(rel: &str) -> bool {
-    let events = cgroup_root()
+    let events = support::row_scope_aim::v2_root()
         .join(rel.trim_start_matches('/'))
         .join("cgroup.events");
     match std::fs::read_to_string(events) {
@@ -326,10 +317,7 @@ async fn a_killed_test_job_leaves_no_row() {
         eprintln!("SKIPPED: no user manager: {e}");
         return;
     }
-    assert!(
-        cgroup_root().join("cgroup.controllers").exists(),
-        "no cgroup v2 tree at /sys/fs/cgroup or /sys/fs/cgroup/unified: this host cannot show where a job's processes run"
-    );
+    support::require_cgroup_v2_root();
     let dir = tempfile::Builder::new()
         .prefix("sotcj-")
         .tempdir_in("/tmp")
