@@ -63,9 +63,9 @@ package and has it report back to you over the comm relay. Combined with
 others and collect their answers.
 
 `comm-spawn.sh <repo-path> --agent none` starts a shell row instead, with no
-agent: it prints the row's workspace id, and `comm-despawn.sh <workspace-id>`
-ends it. A new row appears in the session strip without moving the window off
-the row you are on.
+agent: it prints the row's workspace id and the `comm-despawn.sh` command that
+ends it. A row made this way appears in the session strip without moving the
+window off the row you are on.
 
 ## A separate subscription per session
 

@@ -30,9 +30,10 @@ is spawning:
 `comm-spawn.sh <repo-path> --agent none` makes a row that runs the daemon's
 login shell (`$SHELL`, else `/bin/sh`; `cmd.exe` on Windows) and no agent.
 Nothing there joins comm, so it takes no `--name` or `--task`, gets no
-registry row or inbox, and the daemon refuses a named `--account` for it.
-The script waits for the row to reach `ready`, then prints its workspace id;
-`comm-despawn.sh <workspace-id>` ends it. `comm-bootstrap.sh` refuses it.
+registry row or inbox, and the daemon refuses any `--account` but `default`
+for it. The script waits for the row to reach `ready`, then prints the
+`comm-despawn.sh` command that ends it, with the row's id and the endpoint
+the spawn used. `comm-bootstrap.sh` refuses it.
 
 ## Git worktrees
 
@@ -57,4 +58,5 @@ that bypasses the registry. Once the target joins it appears in
 
 Every window connected to the daemon re-lists when a row is created or
 destroyed, so the row appears in (or leaves) its session strip without a
-refresh. No window switches to a row it did not create; Ctrl+PageDown does.
+refresh. A spawn moves no window off the row it is on; Ctrl+PageDown
+switches to the new row.

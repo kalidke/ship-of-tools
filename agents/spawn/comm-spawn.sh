@@ -25,8 +25,8 @@
 #                 row's capsule. none is a bash row: the daemon's login shell
 #                 ($SHELL, else /bin/sh; cmd.exe on Windows) and no agent, so
 #                 it takes no --name, name argument or --task, gets no
-#                 registry row or inbox, and is ended by
-#                 comm-despawn.sh <workspace-id> (the id is printed last).
+#                 registry row or inbox, and is ended by the comm-despawn.sh
+#                 command printed last (its id and this spawn's endpoint).
 #   --account     which discovered account (accounts brief, v0.6.0) the
 #                 row's agent runs under — the NAME of a subdirectory that
 #                 must already exist under ~/.claude-auth (claude rows
@@ -35,8 +35,8 @@
 #                 agent's own default account. The daemon refuses the
 #                 whole create, loudly, with the exact one-line command
 #                 to fix it, if the named subdirectory is missing; a bash
-#                 (--agent none) row refuses ANY --account outright, and
-#                 so does a codex row — Codex accounts are deferred.
+#                 (--agent none) row refuses any --account but "default",
+#                 and so does a codex row — Codex accounts are deferred.
 #   --label       FE workspace label (default: basename of repo-path); guarded to
 #                 the repo basename so a session stays findable next to its repo.
 #   --display-label  FE label that deliberately DIFFERS from the repo basename
@@ -73,18 +73,12 @@
 # resolve, both of which now fail BEFORE the write) reports nothing rather
 # than a verdict on a row it never wrote.
 #
-# NOT covered, and not coverable from here: the daemon boots claude
-# ASYNCHRONOUSLY after workspace.create already returned success (a
-# throwaway boot-pty, ADR 0023 §3) — if THAT fails or hangs after this
-# script has already reported success and exited, the provisional row
-# (workspace_id:"" — never updated, because the real /sot-session-start join never
-# ran) is left behind, and since a derived NAME generally differs from the
-# workspace slug (it carries "-HOST"; the slug doesn't), `comm-despawn.sh`
-# cannot recover the slug from the handle to clean up the orphaned
-# workspace/TOML either. This is a real, currently-unfixed gap for that one
-# failure mode; there is no synchronous signal in this script's control
-# flow to hook a rollback to. `comm-despawn.sh <slug-or-label>` (not the
-# handle) still reaches it manually.
+# Not covered: a row that reaches "ready" but whose agent never joins keeps
+# its provisional handle (workspace_id:"", status "spawning"). The handle does
+# not lead comm-despawn.sh to the row (a derived NAME carries "-HOST"; the slug
+# does not), but the workspace id on the "Created workspace" line does, and the
+# daemon's destroy removes that handle with the row (it matches the row's
+# stored agent_name).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
@@ -156,10 +150,11 @@ fi
 # `<name> <repo-path>`, kept for existing callers (e.g. /worktree). --name is
 # the equivalent flag form — either way an explicitly-passed name is used
 # VERBATIM, exactly as before.
+USAGE="usage: comm-spawn.sh [--name NAME] <repo-path> [--agent claude|codex|none] [--expertise \"...\"] [--task \"...\"] [--label L]"
 case "${#POSITIONAL[@]}" in
     1) REPO_PATH="${POSITIONAL[0]}" ;;
     2) NAME="${POSITIONAL[0]}"; REPO_PATH="${POSITIONAL[1]}" ;;
-    *) echo "usage: comm-spawn.sh [--name NAME] <repo-path> [--agent claude|codex|none] [--expertise \"...\"] [--task \"...\"] [--label L]" >&2; exit 1 ;;
+    *) echo "$USAGE" >&2; exit 1 ;;
 esac
 case "$AGENT" in
     claude|codex|none) ;;
@@ -182,7 +177,7 @@ if [ -n "$NAME_FLAG" ]; then
 fi
 
 if [ -z "$REPO_PATH" ]; then
-    echo "usage: comm-spawn.sh [--name NAME] <repo-path> [--expertise \"...\"] [--task \"...\"] [--label L]" >&2; exit 1
+    echo "$USAGE" >&2; exit 1
 fi
 REPO_PATH="${REPO_PATH/#\~/$HOME}"
 [ -d "$REPO_PATH" ] || { echo "ERROR: repo path not found: $REPO_PATH" >&2; exit 1; }
@@ -497,7 +492,13 @@ TASKMSG=""
 # a create (Workspaces::insert keeps THAT caller's id), so nothing this
 # script can observe ever proves sole ownership. Report and leave it.
 _row_left_running() {  # reason
-    echo "ERROR: $1 — the row was left running (comm-spawn never destroys one); to remove it: $COMM_HOME/bin/comm-despawn.sh $WSID" >&2
+    echo "ERROR: $1 — the row was left running (comm-spawn never destroys one); to remove it: $(_despawn_cmd)" >&2
+}
+# The command that ends this row. It names the endpoint this spawn used:
+# without one, comm-despawn.sh asks this box's daemon, which does not list a
+# row made on another box.
+_despawn_cmd() {
+    printf '%s/comm-despawn.sh %s --endpoint %q' "$BIN" "$WSID" "$ENDPOINT"
 }
 
 
@@ -667,14 +668,14 @@ done
 echo "Capsule row ready (id=$WSID, phase=ready)"
 SPAWN_SUCCEEDED=true
 
+[ -n "$SPAWNER" ] && SOT_LOCK_WAIT_SECS=1 with_lock registry_touch "$SPAWNER" 2>/dev/null || true
+if [ "$AGENT" = none ]; then
+    echo "Spawned a bash row as workspace '${SLUG}' (id=${WSID}) on ${REPO_NAME}: no agent, no handle. End it with $(_despawn_cmd)"
+    exit 0
+fi
 # The row's capsule already runs the agent (workspace.create started it, and the
 # wait above saw it ready), with SOT_COMM_NAME=<agent_name>. The agent joins
 # comm and reads its repo CLAUDE.md; nothing is pasted.
-[ -n "$SPAWNER" ] && SOT_LOCK_WAIT_SECS=1 with_lock registry_touch "$SPAWNER" 2>/dev/null || true
-if [ "$AGENT" = none ]; then
-    echo "Spawned a bash row as workspace '${SLUG}' (id=${WSID}) on ${REPO_NAME}: no agent, no handle. End it with ${BIN}/comm-despawn.sh ${WSID}"
-    exit 0
-fi
 echo "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (agent=${AGENT}, autostart; NO brief — agent uses its repo CLAUDE.md / AGENTS.md)."
 # Said BEFORE the --task attempt below, because it is also why that attempt
 # can fail: a handle with no row here is not addressable here yet.

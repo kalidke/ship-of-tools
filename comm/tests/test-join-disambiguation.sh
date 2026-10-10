@@ -350,6 +350,7 @@ check "nopane self-file read from a non-repo cwd: discarded, not healed; a send 
 check "comm-relay.sh send refuses with no resolved identity" case_comm_relay_send_refuses_with_no_identity
 check "comm-bootstrap.sh refuses with no resolved identity" case_comm_bootstrap_refuses_with_no_identity
 check "comm-bootstrap.sh refuses a bash row (agent none) and types nothing" case_comm_bootstrap_refuses_a_bash_row
+check "comm-bootstrap.sh types once into a claude row, a codex row and a row with no agent field" case_comm_bootstrap_types_into_an_agent_row
 check "comm-send.sh files and types nothing, with a daemon or without one" case_send_files_and_types_nothing
 check "comm-relay.sh send fails loudly with no reachable daemon, never claims 'relayed' (round-3 F3)" case_relay_send_fails_loudly_with_no_reachable_daemon
 check "comm-send.sh succeeds with two genuinely rooted, registered identities (round-3 F8 positive path)" case_send_succeeds_with_rooted_registry_row

@@ -158,7 +158,7 @@ run_spawn() {
 
 registry_has_row() { jq -e --arg n "$1" '.agents | has($n)' "$SPAWN_HOME/registry.json" >/dev/null 2>&1; }
 destroy_was_sent_for() { grep -q "\"op\":\"workspace.destroy\".*\"workspace_id\":\"$1\"" "$REQLOG" 2>/dev/null; }
-despawn_cmd_printed_for() { contains "$SPAWN_ERR" "comm-despawn.sh $1"; }
+despawn_cmd_printed_for() { contains "$SPAWN_ERR" "comm-despawn.sh $1 --endpoint unix:$SOCK"; }
 
 # assert_never_destroyed WSID NAME — the shared shape every failure case
 # checks: non-zero exit, no destroy request, the despawn command printed,
@@ -180,9 +180,11 @@ case_capsule_reaches_ready_on_second_poll() {
         "$(entry "$wsid" "$slug" capsule starting)" \
         "$(entry "$wsid" "$slug" capsule ready)"
     SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn spawn-ready
+    local create; create="$(jq -c 'select(.op=="workspace.create") | .payload | [.agent, .agent_name, .autostart_claude]' "$REQLOG")"
     stop_stub_daemon
 
     [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
+    [ "$create" = '["claude","spawn-ready",true]' ] || { echo "  workspace.create [agent, agent_name, autostart_claude]: $create"; return 1; }
     contains "$SPAWN_OUT" "Capsule row ready" || { echo "  stdout: $SPAWN_OUT"; return 1; }
     registry_has_row "spawn-ready" || { echo "  registry row missing after success"; return 1; }
     return 0
@@ -363,7 +365,7 @@ case_bash_row_spawns_with_no_handle() {
     [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
     [ "$create" = '["none","",false]' ] || { echo "  workspace.create [agent, agent_name, autostart_claude]: $create"; return 1; }
     contains "$last" "(id=$wsid)" || { echo "  last stdout line: $last"; return 1; }
-    contains "$last" "comm-despawn.sh $wsid" || { echo "  last stdout line: $last"; return 1; }
+    contains "$last" "comm-despawn.sh $wsid --endpoint unix:$SOCK" || { echo "  last stdout line: $last"; return 1; }
     ! contains "$SPAWN_OUT" "Spawned @" || { echo "  agent text printed for a bash row: $SPAWN_OUT"; return 1; }
     ! contains "$SPAWN_OUT" "addressable" || { echo "  agent text printed for a bash row: $SPAWN_OUT"; return 1; }
     [ ! -e "$SPAWN_HOME/registry.json" ] || jq -e '(.agents // {}) == {}' "$SPAWN_HOME/registry.json" >/dev/null \

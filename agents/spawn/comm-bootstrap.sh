@@ -30,11 +30,11 @@ LIST="$(sot_oneshot_request '{"v":1,"id":1,"kind":"req","op":"workspace.list","p
 WSID="$(printf '%s' "$LIST" | sot_jq -r --arg w "$TGT" \
     '[.payload.workspaces[]? | select(.slug==$w or .label==$w or .workspace_id==$w) | .workspace_id][0] // empty' 2>/dev/null)"
 [ -n "$WSID" ] || { echo "ERROR: no workspace row matching '$TGT' (slug/label/id) on this daemon" >&2; exit 1; }
-# A row whose agent is none runs a shell: nothing there can join, and the nudge
-# would be typed to the shell as a command line.
+# A row made with agent none (a bash row) runs a shell, which would take the
+# nudge as a command line.
 ROW_AGENT="$(printf '%s' "$LIST" | sot_jq -r --arg w "$WSID" \
     '[.payload.workspaces[]? | select(.workspace_id==$w) | .agent][0] // empty' 2>/dev/null)"
-[ "$ROW_AGENT" != none ] || { echo "ERROR: row $WSID ($TGT) runs no agent (a bash row), so nothing there can join sot-comm; nothing was typed" >&2; exit 1; }
+[ "$ROW_AGENT" != none ] || { echo "ERROR: row $WSID ($TGT) is a bash row (agent none); nothing was typed" >&2; exit 1; }
 
 BIN="$COMM_HOME/bin"
 NUDGE="[sot-comm bootstrap from @$NAME] You have the sot-comm skill but are not joined. Please join and reply: run  $BIN/comm-join.sh${SUGG:+ --name $SUGG}  then  $BIN/comm-send.sh @$NAME \"joined as <yourname>\" . (Or just use the /sot-comm skill.) After this, we talk over sot-comm."
