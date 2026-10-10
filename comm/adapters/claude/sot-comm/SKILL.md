@@ -152,16 +152,20 @@ comm-spawn.sh mysim ~/projects/MySim --expertise "simulation workflows" \
 ```
 
 Creates a **sot workspace** (a session-strip row, switchable with
-Ctrl+PageDown), boots `ccb` on first FE attach so its own
-`/sot-session-start` joins it under the name you chose, then delivers a
-task-only brief. **Addressable immediately** — the handle is pre-registered,
-so `comm-send.sh @<name>` queues even before it finishes joining. Label =
-repo name, never the task (`comm-spawn.sh` rejects task-named labels).
-One repo root holds one session: `comm-spawn.sh` refuses a root that already has a
-workspace, naming it; a second session on a repo is a worktree (`/worktree`).
-Refresh the FE's session list to see the new row; despawn with
-`comm-despawn.sh <name|slug>`, which fails (exit 1, nothing changed) when it cannot resolve the name
-to a workspace; a handle with no workspace is removed with `comm-leave.sh --name <handle>`.
+Ctrl+PageDown) whose agent the daemon starts at once; its own
+`/sot-session-start` joins it under the name you chose, and any `--task`
+waits in its inbox as an ordinary message. **Addressable immediately** — the
+handle is pre-registered, so `comm-send.sh @<name>` queues even before it
+finishes joining. Label = repo name, never the task (`comm-spawn.sh` rejects
+task-named labels). One repo root holds one session: `comm-spawn.sh` refuses
+a root that already has a workspace, naming it; a second session on a repo is
+a worktree (`/worktree`). The new row appears in every window's strip on its
+own, and no window leaves the row it is on. `--agent none` makes a bash row
+instead (no agent, no handle, no `--name` or `--task`) and prints its
+workspace id. Despawn with `comm-despawn.sh <name|slug|workspace-id>`, which
+fails (exit 1, nothing changed) when it cannot resolve the name to a
+workspace; a handle with no workspace is removed with
+`comm-leave.sh --name <handle>`.
 
 **Never hand-roll a Claude session outside a workspace row** (it inherits
 your `CLAUDECODE` env). A durable peer is a capsule row: `comm-spawn.sh`, or a

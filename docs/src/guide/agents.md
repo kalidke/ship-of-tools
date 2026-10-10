@@ -62,6 +62,11 @@ package and has it report back to you over the comm relay. Combined with
 [agent messaging](messaging.md), one session can fan work out to several
 others and collect their answers.
 
+`comm-spawn.sh <repo-path> --agent none` starts a shell row instead, with no
+agent: it prints the row's workspace id, and `comm-despawn.sh <workspace-id>`
+ends it. A new row appears in the session strip without moving the window off
+the row you are on.
+
 ## A separate subscription per session
 
 A session normally runs under the agent's default login. To spend a different

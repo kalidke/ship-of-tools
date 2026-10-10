@@ -45,7 +45,7 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     # fresh, not-yet-allowlisted name so this test forces a deliberate
     # choice about it. `c` is sot-fe's fe_cmd — always one of a small
     # fixed set of literal verbs from a case dispatch, never raw text.
-    # `ag` is comm-spawn.sh's --agent kind — validated to `claude|codex`
+    # `ag` is comm-spawn.sh's --agent kind — validated to `claude|codex|none`
     # before it is ever bound, never raw text.
     # `acc` is an --account value, in comm-spawn.sh and in sot-fe's reauth
     # verb: BOTH validate it to the account-name rule ^[a-z0-9][a-z0-9_-]*$

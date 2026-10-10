@@ -347,6 +347,54 @@ case_pipe_occupied_root_in_daemon_spelling_refused() {
     assert_occupied_root_refused ""
 }
 
+# A bash row (--agent none) runs a shell and no agent, so nothing joins comm:
+# the spawn claims no handle, writes no registry row or inbox, sends an empty
+# agent_name, waits for ready like any row and prints the workspace id last.
+case_bash_row_spawns_with_no_handle() {
+    local wsid="ws-bash" slug="bash1" create last
+    start_stub_daemon "$wsid" "$slug" \
+        "$(entry "$wsid" "$slug" capsule starting)" \
+        "$(entry "$wsid" "$slug" capsule ready)"
+    SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn "" --agent none
+    create="$(jq -c 'select(.op=="workspace.create") | .payload | [.agent, .agent_name, .autostart_claude]' "$REQLOG")"
+    stop_stub_daemon
+    last="$(printf '%s\n' "$SPAWN_OUT" | tail -n 1)"
+
+    [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
+    [ "$create" = '["none","",false]' ] || { echo "  workspace.create [agent, agent_name, autostart_claude]: $create"; return 1; }
+    contains "$last" "(id=$wsid)" || { echo "  last stdout line: $last"; return 1; }
+    contains "$last" "comm-despawn.sh $wsid" || { echo "  last stdout line: $last"; return 1; }
+    ! contains "$SPAWN_OUT" "Spawned @" || { echo "  agent text printed for a bash row: $SPAWN_OUT"; return 1; }
+    ! contains "$SPAWN_OUT" "addressable" || { echo "  agent text printed for a bash row: $SPAWN_OUT"; return 1; }
+    [ ! -e "$SPAWN_HOME/registry.json" ] || jq -e '(.agents // {}) == {}' "$SPAWN_HOME/registry.json" >/dev/null \
+        || { echo "  a registry row was written: $(jq -c .agents "$SPAWN_HOME/registry.json")"; return 1; }
+    [ -z "$(ls -A "$SPAWN_HOME/inbox" 2>/dev/null)" ] || { echo "  an inbox file was written: $(ls "$SPAWN_HOME/inbox")"; return 1; }
+    ! contains "$SPAWN_ERR" "roll" || { echo "  rollback verdict printed: $SPAWN_ERR"; return 1; }
+    return 0
+}
+
+# --name, a name argument (the legacy form) and --task each promise an agent:
+# a bash row refuses them before workspace.create or any registry write.
+case_bash_row_refuses_a_handle_or_a_task() {
+    local how
+    for how in name positional task; do
+        start_stub_daemon ws-bash2 bash2 "$(entry ws-bash2 bash2 capsule ready)"
+        case "$how" in
+            name)       SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn bash-name --agent none ;;
+            positional) SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn "" --agent none "$REPO_PATH" ;;
+            task)       SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn "" --agent none --task "do x" ;;
+        esac
+        stop_stub_daemon
+        [ "$SPAWN_RC" -eq 1 ] || { echo "  $how: exited $SPAWN_RC (want 1): $SPAWN_ERR"; return 1; }
+        contains "$SPAWN_ERR" "--agent none starts a bash row" || { echo "  $how: stderr: $SPAWN_ERR"; return 1; }
+        ! grep -q '"op":"workspace.create"' "$REQLOG" || { echo "  $how: workspace.create was sent"; return 1; }
+        [ ! -e "$SPAWN_HOME/registry.json" ] || jq -e '(.agents // {}) == {}' "$SPAWN_HOME/registry.json" >/dev/null \
+            || { echo "  $how: a registry row was written"; return 1; }
+        [ -z "$(ls -A "$SPAWN_HOME/inbox" 2>/dev/null)" ] || { echo "  $how: an inbox file was written"; return 1; }
+    done
+    return 0
+}
+
 # --- run -----------------------------------------------------------------
 
 check "capsule row reaches phase 'ready' on the second poll: succeeds" \
@@ -370,6 +418,10 @@ check "pipe: endpoint, cygpath fails: refused before any registry write (nothing
 check "pipe: endpoint, root listed in the daemon's C:/ spelling: refused before any write or create" \
     case_pipe_occupied_root_in_daemon_spelling_refused
 
+check "--agent none: a bash row with no handle, registry row or inbox; waits for ready, prints its id" \
+    case_bash_row_spawns_with_no_handle
+check "--agent none refuses --name, a name argument and --task before any create or write" \
+    case_bash_row_refuses_a_handle_or_a_task
 echo ""
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
