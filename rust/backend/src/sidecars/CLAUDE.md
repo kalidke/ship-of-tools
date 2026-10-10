@@ -19,7 +19,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - Pluto's proxy port is a supervisor-owned generation grant, published only after a loopback READY URL and released on every supervisor exit or cancellation before cleanup awaits. An old generation's release cannot erase its replacement's grant (`bound_pluto_port`).
 - Pluto polls child exit and its supplied Signal during each stdin write and flush. Cancelling a submission retires the supervisor, releases its grant and closes current, pending and queued replies before checked cleanup; it never resends a partial OPEN line.
 - A REPL restart explicitly retires and joins its owned supervisor before replacement; it never relies on Julia reaching stdin EOF. Errors retain retirement ownership and prevent replacement.
-- Each Julia child (kernel, REPL, Pluto) runs with a temporary folder of its own in the daemon's temporary folder (`ChildTmp`: `TMPDIR`; `TMP` and `TEMP` on Windows), which its owner removes after the reap, so a killed child and its descendants leave no temporary file. A daemon close exits without waiting for any child's death, so the living children's folders stay in the system temporary folder then.
+- Each Julia child (kernel, REPL, Pluto) runs with a temporary folder of its own in the daemon's temporary folder (`ChildTmp`: `TMPDIR`; `TMP` and `TEMP` on Windows). Its owner ends the child and reaps it, then removes the folder (`ChildTmp::retire`), so a killed child and its descendants in its process group leave no temporary file. Limits: a daemon close or crash ends without reaping the living children, so their folders stay in the system temporary folder until the OS clears it (on these hosts `/tmp` is cleared at boot); a descendant that leaves the child's process group (Pluto's notebook worker after a server crash, a detached process) runs on without its folder (ADR 0050 residual 7).
 - Every sidecar child starts through `Signal::spawn`. Kernel, REPL, Pluto, MathJax and monitor supervisors receive a caller-supplied `&'static Signal` for both spawn and shutdown observation; the monitor's respawn backoff ends at its fire. REPL and MathJax select the daemon's process `Signal` only where their production handles are constructed.
 - A remote host's sampler ssh is built from `SSH_OPTS`, so it turns ssh sharing off as the bridges do
   (`sampler_command`).
@@ -52,7 +52,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 - `mod.rs`: declares the eight modules and `WireRequest`.
-- `child_tmp.rs`: a Julia child's own temporary folder (`ChildTmp`), made before its spawn and removed after its reap.
+- `child_tmp.rs`: a Julia child's own temporary folder (`ChildTmp`), made before its spawn; `retire` ends the child and removes the folder after its reap.
 - `contract_tests.rs`: native REPL/MathJax private-Signal spawn, shutdown closeout and owned-child observations, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions.
 - `julia.rs`: which julia binary runs (`resolve_bin`).
 - `kernel.rs`: the per-row kernel and its supervisor.

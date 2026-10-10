@@ -46,8 +46,8 @@ libc = "0.2"
 # Already in the lock as a transitive dep of `sot-log`, so direct use
 # compiles nothing new.
 uuid = { workspace = true }
-# A Julia child's own temporary folder (`sidecars::child_tmp`), removed after its reap. Already in the lock as a
-# dev dependency, so direct use compiles nothing new.
+# A Julia child's own temporary folder (`sidecars::child_tmp`), removed after its reap. The release `sotd` links it:
+# before this it was a dev and `test-support` dependency only, so this line adds it to the release build.
 tempfile = { workspace = true }
 
 # ADR 0046 decision 2 R3: the watchdog's own zero-network identity read
