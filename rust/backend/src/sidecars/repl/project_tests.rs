@@ -150,10 +150,7 @@ fn offline_pkg(root: &Path) {
 
 #[tokio::test]
 async fn bare_workspace_is_active() {
-    if !isolated(
-        "sidecars::repl::project_tests::bare_workspace_is_active",
-        BODY,
-    ) {
+    if !isolated("sidecars::repl::project_tests::bare_workspace_is_active", BODY) {
         return;
     }
     let fixture = Fixture::new();
@@ -610,10 +607,12 @@ fn announced_address(frames: &[Value]) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The page test's leak control alone: it needs no package, so the Windows box and every hosted leg can run it.
+/// The page test's leak control alone (no package: the Windows box and hosted legs run it), isolated for its environment.
 #[tokio::test]
 async fn the_command_line_observer_rejects_a_deliberate_leak() {
-    observer_rejects_a_deliberate_leak().await;
+    if isolated("sidecars::repl::project_tests::the_command_line_observer_rejects_a_deliberate_leak", BODY) {
+        observer_rejects_a_deliberate_leak().await;
+    }
 }
 
 /// The observer rejects a deliberate leak: a needle carried by a process of an owned probe's tree is found, and a
