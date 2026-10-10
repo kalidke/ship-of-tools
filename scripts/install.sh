@@ -8,7 +8,9 @@
 #   [--version vX.Y.Z] [--prefix <dir>] [--no-service]
 #   [--hub <ssh-alias>]     # this box does NOT share the hub's home: fetch
 #                           # its hosts.toml (`sotd topology sync`) once staged
-#   [--force-role-change]  # consent to installing over another prefix's live daemon
+#   [--force-role-change]  # consent to installing over another prefix's live daemon, over an existing
+#                          # install from a host hosts.toml runs no sotd on, or to recording less than
+#                          # install.json records
 #                                                    # default: latest release
 #   SOT_INSTALL_TAG=<tag> ./scripts/install.sh ...   # run THIS checkout's body
 #
@@ -144,6 +146,22 @@ installer_record_decision() {  # <install.json> <topology-declared 0|1> <new-dae
         return
     fi
     printf allow
+}
+
+# "allow" | "refuse:<why>": the shared install is written only from a host the
+# declared topology runs sotd on. Under a readable hosts.toml that runs none
+# here (this host unlisted, or listed with neither key), a run over an install
+# already at the prefix is refused, whatever role its flags ask for: on a home
+# several hosts share, that install serves the hosts that run sotd, and the
+# layout would replace their binaries and rollback state. A first install, no
+# hosts.toml, an unreadable one (installer_record_decision then decides) and
+# --force-role-change are allowed. Reads the prefix only.
+installer_host_decision() {  # <topology-readable 0|1> <topology-role> <prefix> <force 0|1>
+    case "$2" in *"daemon:1"*) printf allow; return ;; esac
+    if [ "$1" != 1 ] || [ "$4" = 1 ] || { [ ! -f "$3/install.json" ] && [ ! -e "$3/bin/sotd" ]; }; then
+        printf allow; return
+    fi
+    printf 'refuse:hosts.toml runs no sotd on this host, and %s already holds an install' "$3"
 }
 
 # The owner prefix a sot-launch wrapper's content embeds, or empty when it
@@ -631,6 +649,10 @@ fi
 mkdir -p "$CONFIG"
 tar -xzf "$WORK/sot-$VER-$TARGET.tar.gz" -C "$WORK"
 BINDIR="$WORK/sot-$VER-$TARGET"
+# Every answer the gates read comes from this sotd, so one that cannot run here
+# (a TMPDIR mounted noexec) stops the install instead of reading as a topology.
+"$BINDIR/sotd" --version >/dev/null 2>&1 \
+    || die "the unpacked sotd cannot run from $WORK (is ${TMPDIR:-/tmp} mounted noexec?); set TMPDIR to a folder that allows execution"
 
 # ---- heal a pre-0.6 hosts.toml (finding 3a, v0.6.5 macOS field report) -----------
 # The old grammar (`default_host` at top level) is a loud parse error under
@@ -664,9 +686,11 @@ WANT_DAEMON=0
 WANT_FRONTEND=0
 TOPO_ROLE=none
 TOPO_DECLARED=0
+TOPO_READABLE=0
 UNREADABLE=""
 if STATUS_OUT="$("$BINDIR/sotd" topology status 2>/dev/null)"; then
     TOPO_DECLARED=1
+    TOPO_READABLE=1
     TOPO_ROLE="$(installer_topology_role "$STATUS_OUT" "$SELF_HOST")"
 elif UNREADABLE="$(installer_topology_unreadable "$BINDIR/sotd")"; then
     TOPO_DECLARED=1
@@ -718,7 +742,7 @@ else
 fi
 case "$RESOLVED" in *"daemon:1"*) WANT_DAEMON=1 ;; esac
 case "$RESOLVED" in *"frontend:1"*) WANT_FRONTEND=1 ;; esac
-if [ "$TOPO_DECLARED" = 1 ] && [ -z "$UNREADABLE" ] && [ "$TOPO_ROLE" = none ] && [ "$WANT_DAEMON" = 1 ]; then
+if [ "$TOPO_READABLE" = 1 ] && [ "$TOPO_ROLE" = none ] && [ "$WANT_DAEMON" = 1 ]; then
     say "WARNING: hosts.toml declares no daemon on '$SELF_HOST', so sotd.service's host pin keeps it from starting here; declare the host (daemon or frontend) in hosts.toml"
 fi
 
@@ -747,9 +771,9 @@ if [ "$OS" = Linux ] && [ "$WANT_FRONTEND" = 1 ]; then
 fi
 
 # ---- ownership gate ------------------------------------------------------------
-# Run now that the role is known and before the first write under $HOME (the
-# prefix's layout and the mkdir of ~/.local/bin included) — a refused install
-# changes nothing there.
+# Run now that the role is known and before the first write under the prefix
+# or ~/.local/bin (the layout and the launcher) — a refused install changes
+# nothing there.
 # installer_ownership_gate is read-only, so this cannot be the source of a
 # stray write; see it above for what --force-role-change does and does not
 # waive.
@@ -761,6 +785,13 @@ case "$GATE_DECISION" in
         exit 2 ;;
     unresolvable:*)
         printf '\033[1;31mERROR:\033[0m %s\n' "${GATE_DECISION#unresolvable:}" >&2
+        exit 2 ;;
+esac
+HOST_DECISION="$(installer_host_decision "$TOPO_READABLE" "$TOPO_ROLE" "$PREFIX" "$FORCE_ROLE_CHANGE")"
+case "$HOST_DECISION" in
+    refuse:*)
+        printf '\033[1;31mERROR:\033[0m %s\n' "${HOST_DECISION#refuse:}" >&2
+        printf '       On a home several hosts share, that install serves the hosts hosts.toml declares daemon or frontend: run the installer on one of them, or declare this host there. If %s is this machine'"'"'s own, re-run with --force-role-change.\n' "$PREFIX" >&2
         exit 2 ;;
 esac
 RECORD_DECISION="$(installer_record_decision "$PREFIX/install.json" "$TOPO_DECLARED" "$WANT_DAEMON" \
