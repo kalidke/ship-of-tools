@@ -393,7 +393,7 @@ fn os_argv(pid: u32) -> Vec<String> {
 
 /// Every spawn route must leave the same contract inside the real child: the workspace is the active project and
 /// the cwd, the shim is second on the load path and answers, the workspace root is exported, and the child's own parse
-/// of its arguments is `--project=<workspace>`, whole, with no other argument.
+/// names `--project=<workspace>`, whole, as its last `--project`, and leaves `ARGS` empty.
 async fn check_route(fixture: &Fixture, route: &str, id: u64) -> u32 {
     let real = fixture.real_workspace();
     let repl = &fixture.repl;
@@ -433,7 +433,7 @@ async fn check_route(fixture: &Fixture, route: &str, id: u64) -> u32 {
     assert_eq!(
         stdout_of(&eval(repl, id + 4, &parsed).await),
         "true,true",
-        "{route}: the child parsed --project as one intact argument naming the workspace, and no other argument"
+        "{route}: the child parsed --project as one intact argument naming the workspace, and no program argument"
     );
     pid
 }
