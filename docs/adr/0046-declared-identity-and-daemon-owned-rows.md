@@ -531,5 +531,5 @@ leg resumes by id. The daemon passes its `--resume <id>` to the supervisor as `-
 the retired `--first-leg-without`), so every leg after a producer has run (respawn, reset, later voyage) starts fresh,
 and a watchdog restart spawns the row's recipe as built at restart time. A bare `ccx`, like a bare `ccb`, now starts
 fresh and resumes only on `--continue`, on a host once `update_comm` refreshes its installed `ccx`; the codex recipe
-keeps passing `--capsule`, which starts every copy fresh. The create-time capture limit above still holds: a supervisor already running
+keeps passing `--capsule`, which starts every copy since v0.6.0 fresh. The create-time capture limit above still holds: a supervisor already running
 keeps the argv it was spawned with until it is next spawned.
