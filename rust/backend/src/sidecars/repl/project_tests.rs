@@ -316,9 +316,10 @@ async fn a_killed_child_leaves_no_temp_files() {
     fixture.finish().await;
 }
 
-/// The running child's real argument vector, from the operating system, or `None` once the process has exited. On Windows the OS keeps one command line,
-/// returned as a single element. On Windows a Julia child's arguments are not observable this way: Julia's loader
-/// splits its own command line in place, so the reading stops at the executable path.
+/// The running child's real argument vector, from the operating system, or `None` once the process has exited. On
+/// Windows the OS keeps one command line, returned as a single element. On Windows a Julia child's arguments are not
+/// observable this way: Julia's loader splits its own command line in place, so the reading stops at the executable
+/// path.
 #[cfg(target_os = "linux")]
 fn os_argv(pid: u32) -> Option<Vec<String>> {
     let raw = match std::fs::read(format!("/proc/{pid}/cmdline")) {
@@ -559,6 +560,7 @@ fn read_tree(root: u32) -> Vec<u32> {
         })
         .collect();
     assert!(!edges.is_empty(), "the tree reader: the CIM query printed no process");
+    assert!(edges.iter().any(|(pid, _)| *pid == root), "the tree reader did not list the root {root}");
     let mut tree = vec![root];
     let mut next = 0;
     while next < tree.len() {
@@ -614,14 +616,14 @@ async fn the_command_line_observer_rejects_a_deliberate_leak() {
     observer_rejects_a_deliberate_leak().await;
 }
 
-/// The observer rejects a deliberate leak: a needle carried by a process of an owned probe's tree is found, and a needle
-/// nothing carries is passed. Two needles say two things. The root needle is the root's own trailing argument: finding
-/// it shows the root's command line is readable. The descendant needle sits in the child's arguments alone, and the
-/// root's own text builds it from two pieces: finding it shows the tree reading reaches a descendant. The probe prints
-/// its pid, starts the child, then waits. It is Julia, the kind the observation watches, except on Windows: there Julia's
-/// loader splits its own command line in place, writing a NUL after each argument (`cli/loader_win_utils.c` in every
-/// release from 1.6 to 1.13.1), so a reader sees only its executable path, and the probe is PowerShell, whose command
-/// line keeps its arguments.
+/// The observer rejects a deliberate leak: a needle carried by a process of an owned probe's tree is found, and a
+/// needle nothing carries is passed. Two needles say two things. The root needle is the root's own trailing argument:
+/// finding it shows the root's command line is readable. The descendant needle sits in the child's arguments alone, and
+/// the root's own text builds it from two pieces: finding it shows the tree reading reaches a descendant. The probe
+/// prints its pid, starts the child, then waits. It is Julia, the kind the observation watches, except on Windows:
+/// there Julia's loader splits its own command line in place, writing a NUL after each argument
+/// (`cli/loader_win_utils.c` in every release from 1.6 to 1.13.1), so a reader sees only its executable path, and the
+/// probe is PowerShell, whose command line keeps its arguments.
 async fn observer_rejects_a_deliberate_leak() {
     let sig: &'static crate::lifecycle::child_signal::Signal =
         Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
@@ -661,7 +663,7 @@ async fn observer_rejects_a_deliberate_leak() {
     for needle in ["probe-root-needle-5d1e", "probe-needle-5d1e"] {
         within(
             Duration::from_secs(30),
-            "the probe's command line is observable",
+            &format!("the probe's {needle} is observable"),
             || tree_argv_leaks(pid, &[needle]),
         )
         .await;
