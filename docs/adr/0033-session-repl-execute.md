@@ -146,10 +146,21 @@ Phase 2 uses a backend `Started` frame before submit to register a session-origi
 Deferred:
 
 - **Backend execution coordinator** (atomic `Idle→Running(run_id,origin)`
-  pre-admission, so busy is decided before submit and user evals participate) +
-  **run-id-scoped interrupt** in the shim (targeted cancel — the safe basis for a
-  session-initiated stop).
+  pre-admission, so busy is decided before submit and user evals participate) and a
+  **session-initiated stop**, which would use the shim's eval-scoped interrupt
+  (amendment below).
 - **`--reset-repl`** (explicit, refuses-while-busy, broadcasts a reset boundary)
   if a session needs the file's own project env.
 - Connection-level frame filtering if "own-run-only" ever becomes a security
   boundary (today every authenticated connection sees the live frame stream).
+
+## Amendment (2026-10-09, 0.6.6): the eval-scoped interrupt
+
+`repl.interrupt` takes an optional `eval_ids`. The shim interrupts the eval that holds its guard only if that eval's id
+is among them, so the window's Ctrl+C, which names every eval its drawer shows in flight, does not stop an eval
+accepted after the one the user meant. Each window numbers its own evals, so two windows on one REPL can share a
+number; the scope is by number. An interrupt without `eval_ids` still stops whichever eval runs, and `sot-fe repl
+interrupt` sends none: item 4's "not run-scoped" and item 9's "workspace-wide" describe that form. An interrupt reaches
+an eval only in its user code. One that arrives before the code starts stops it before it runs, and the eval is still
+answered with an error frame, done and res, so item 2's "every path" holds; one that arrives after the code has run is
+answered `interrupted:false`. Item 4 stands: a timeout sends no interrupt.

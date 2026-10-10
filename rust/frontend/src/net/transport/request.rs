@@ -263,12 +263,12 @@ pub enum OutgoingReq {
         /// eval to the right per-workspace Repl handle.
         workspace_id: Option<String>,
     },
-    /// Interrupt the workspace's currently-running REPL eval
-    /// (`repl.interrupt`). Fire-and-forget: the backend schedules an
-    /// `InterruptException` into the running eval task and the resulting
-    /// error+done frames stream back to finalize the entry. No `eval_id` --
-    /// the kernel interrupts its CURRENT_EVAL.
-    ReplInterrupt { workspace_id: Option<String> },
+    /// Interrupt the workspace's running REPL eval if it is one of
+    /// `eval_ids` (`repl.interrupt`), the evals the drawer shows in flight.
+    /// Fire-and-forget: the shim raises an `InterruptException` in that eval's
+    /// code and the resulting error+done frames stream back to finalize the
+    /// entry; an eval not named is left alone.
+    ReplInterrupt { workspace_id: Option<String>, eval_ids: Vec<u64> },
     /// Open (or attach) the LLM-pane terminal at the given size.
     /// `target` selects the tmux session; `None` uses the historical
     /// `sot-llm`. Sessions mode (ADR 0013) passes a backend session
@@ -442,7 +442,7 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
         }
         OutgoingReq::FunctionMethods { module, name, workspace_id } => send_function_methods(&mut tx, pending, id, module, name, workspace_id).await?,
         OutgoingReq::ReplEval { eval_id, code, mode, workspace_id } => send_repl_eval(&mut tx, pending, id, eval_id, code, mode, workspace_id).await?,
-        OutgoingReq::ReplInterrupt { workspace_id } => send_repl_interrupt(&mut tx, id, workspace_id).await?,
+        OutgoingReq::ReplInterrupt { workspace_id, eval_ids } => send_repl_interrupt(&mut tx, id, workspace_id, eval_ids).await?,
         OutgoingReq::PtyOpen { cols, rows, target, user_switch } => send_pty_open(&mut tx, pending, id, cols, rows, target, user_switch).await?,
         OutgoingReq::DirectoryList { path, include_hidden } => send_directory_list(&mut tx, pending, id, path, include_hidden).await?,
         OutgoingReq::WorkspaceCreate { label, project_root, autostart_claude, agent, account } => send_workspace_create(&mut tx, pending, id, label, project_root, autostart_claude, agent, account).await?,

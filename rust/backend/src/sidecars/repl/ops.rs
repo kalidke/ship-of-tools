@@ -313,3 +313,83 @@ pub async fn handle_repl_interrupt(
         None,
     )])
 }
+
+/// The daemon forwards an interrupt's payload to the REPL child unchanged, so the
+/// evals it names (`eval_ids`) reach the shim, which decides which eval it means.
+#[cfg(all(test, unix))]
+mod interrupt_tests {
+    use super::*;
+    use crate::sidecars::contract_tests::within;
+    use std::time::Duration;
+
+    /// Holds `paths::ENV_TEST_LOCK` and puts back the two process-global variables this test sets, however it ends.
+    struct EnvPin {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        saved: [(&'static str, Option<std::ffi::OsString>); 2],
+    }
+
+    impl Drop for EnvPin {
+        fn drop(&mut self) {
+            for (key, val) in &self.saved {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    /// A `julia` stand-in: it says it is ready, then logs each request line beside itself and answers it.
+    const STUB: &str = r#"#!/bin/sh
+printf '{"v":1,"id":0,"kind":"evt","op":"repl.ready","payload":{}}\n'
+while read -r line; do
+  printf '%s\n' "$line" >> "$0.log"
+  id=$(printf '%s' "$line" | sed -e 's/.*"id":\([0-9]*\).*/\1/')
+  printf '{"v":1,"id":%s,"kind":"res","op":"repl.interrupt","payload":{"interrupted":true}}\n' "$id"
+done
+"#;
+
+    #[tokio::test]
+    async fn an_interrupt_reaches_the_child_with_the_evals_it_names() {
+        // Removed when dropped, after a failed assertion too.
+        let tmp = tempfile::Builder::new().prefix("sot-repl-interrupt-").tempdir().unwrap();
+        let dir = tmp.path();
+        let resources = dir.join("resources");
+        std::fs::create_dir_all(resources.join("julia").join("repl")).unwrap();
+        let root = dir.join("row");
+        std::fs::create_dir_all(&root).unwrap();
+        let julia = dir.join("julia");
+        sot_log::test_exec::write_executable(&julia, STUB);
+        let _pin = EnvPin {
+            _serial: crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner()),
+            saved: ["SOT_JULIA_BIN", "SOT_RESOURCE_ROOT"].map(|k| (k, std::env::var_os(k))),
+        };
+        std::env::set_var("SOT_JULIA_BIN", &julia);
+        std::env::set_var("SOT_RESOURCE_ROOT", &resources);
+
+        let (frame_tx, _bus) = tokio::sync::broadcast::channel(256);
+        let workspaces = Workspaces::new();
+        workspaces.set_repl_frame_tx(frame_tx);
+        let session = Session::new();
+        let ws = crate::rows::Workspace::from_label("introw", root, false, "none".into(), String::new(), String::new());
+        let id = ws.workspace_id.clone();
+        workspaces.insert(ws);
+        let row = row_or_reply(&workspaces, Some(&id), 0, op::REPL_EVAL).unwrap_or_else(|_| panic!("setup: the row"));
+        handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 205, "code": "1" }), &session, &workspaces)
+            .await
+            .expect("setup: the eval starts the child");
+        within(Duration::from_secs(30), "the child is ready", || row.repl_state() == "ready").await;
+
+        let named = json!({ "workspace_id": id, "eval_ids": [205, 1u64 << 40] });
+        let out = handle_repl_interrupt(2, named.clone(), &session, &workspaces).await.expect("handler");
+        assert_eq!(out[0].0.payload, json!({ "interrupted": true }), "the child's answer is the reply");
+        let logged: Vec<serde_json::Value> = std::fs::read_to_string(dir.join("julia.log"))
+            .unwrap()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .filter(|v: &serde_json::Value| v["op"] == op::REPL_INTERRUPT)
+            .collect();
+        assert_eq!(logged.len(), 1, "one interrupt reached the child: {logged:?}");
+        assert_eq!(logged[0]["payload"], named, "the child received the payload as sent");
+    }
+}

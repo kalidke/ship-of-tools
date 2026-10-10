@@ -178,9 +178,33 @@ fn history_step_forward(
     Some(log[candidates[new_pos]].code.clone())
 }
 
+/// The eval ids of every entry still in flight: the evals a Ctrl+C means. An
+/// entry whose done frame was lost stays in flight, so the interrupt names them
+/// all and reaches the running eval if it is any of them.
+pub(in crate::ui) fn in_flight_eval_ids(log: &[ReplEntry]) -> Vec<u64> {
+    log.iter()
+        .filter(|e| e.in_flight)
+        .map(|e| e.eval_id)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ctrl_c_names_every_eval_in_flight_and_no_other() {
+        let mut session_run = entry(1 << 40, "run x.jl", true);
+        session_run.origin = Some("session".to_string());
+        let log = vec![
+            entry(1, "a", false),
+            entry(2, "b", true),
+            session_run,
+            entry(3, "c", false),
+        ];
+        assert_eq!(in_flight_eval_ids(&log), vec![2, 1 << 40]);
+        assert!(in_flight_eval_ids(&[entry(4, "d", false)]).is_empty());
+    }
 
     fn entry(eval_id: u64, code: &str, in_flight: bool) -> ReplEntry {
         ReplEntry {

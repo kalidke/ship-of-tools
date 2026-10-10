@@ -166,17 +166,19 @@ fn repl_scroll_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
         }
         // Ctrl+C interrupts a running eval (repl.interrupt).
         // Only dispatched when something is actually in
-        // flight: the backend schedules an InterruptException
-        // into the eval task and the error+done frames stream
-        // back to finalize the entry (no eval_id -- the kernel
-        // interrupts its CURRENT_EVAL). With nothing running,
-        // Ctrl+C clears the input line (standard REPL UX)
-        // instead of typing a literal 'c'.
+        // flight, naming every eval in flight: the shim
+        // interrupts the running eval only if it is one of
+        // them, and the error+done frames stream back to
+        // finalize the entry. With nothing running, Ctrl+C
+        // clears the input line (standard REPL UX) instead of
+        // typing a literal 'c'.
         _ if action == Some(Action::ReplInterrupt) => {
-            if state.repl_log.iter().any(|e| e.in_flight) {
+            let eval_ids = crate::ui::drawer::repl::log::in_flight_eval_ids(&state.repl_log);
+            if !eval_ids.is_empty() {
                 if let Err(e) =
                     state.send(crate::net::transport::OutgoingReq::ReplInterrupt {
                         workspace_id: state.active_workspace_id.clone(),
+                        eval_ids,
                     })
                 {
                     tracing::warn!(error = %e, "drop repl.interrupt - channel closed");

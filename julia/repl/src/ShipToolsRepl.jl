@@ -41,12 +41,22 @@ include("frames.jl")
 # each NDJSON envelope atomic.
 const OUT_LOCK = ReentrantLock()
 
-# The eval holding the single-eval guard (or `nothing`), from its spawn until it
-# releases the guard just before its answer (`spawn_eval`) or its task ends.
-# `repl.interrupt` schedules an `InterruptException` onto it; the guard uses it to
-# reject a second concurrent eval (the stdout/stderr redirect is process-global,
-# so overlapping evals would clobber each other's capture).
-const CURRENT_EVAL = Ref{Union{Task,Nothing}}(nothing)
+# An eval holding the single-eval guard. `id` is its eval_id, which a scoped
+# `repl.interrupt` names; `task` runs it. `stage` is where its user code is, and
+# so where an interrupt goes (`handle_interrupt`): `:running`, raised in the code
+# at once; `:waiting`, not started, so the interrupt is `:held` and the code never
+# runs (`run_user_code`); `:done`, past interrupting.
+mutable struct Eval
+    const id::Any
+    const task::Task
+    stage::Symbol
+end
+
+# The eval holding the guard (or `nothing`), from its spawn until it releases the
+# guard just before its answer (`spawn_eval`) or its task ends. The guard uses it
+# to reject a second concurrent eval (the stdout/stderr redirect is
+# process-global, so overlapping evals would clobber each other's capture).
+const CURRENT_EVAL = Ref{Union{Eval,Nothing}}(nothing)
 
 """
     serve(io_in::IO, io_out::IO)
@@ -133,8 +143,8 @@ end
 # True while an eval holds the guard: from its spawn until it releases the guard just
 # before its answer, or until its task ends.
 function eval_in_progress()
-    t = CURRENT_EVAL[]
-    return t !== nothing && !istaskdone(t)
+    ev = CURRENT_EVAL[]
+    return ev !== nothing && !istaskdone(ev.task)
 end
 
 # Returns a closure that writes one frame as a `repl.frame` evt, correlated to
@@ -184,7 +194,7 @@ sent the moment the answer arrives is accepted; it is the eval's only release,
 made while it holds the guard, so it never clears a later eval's.
 """
 function spawn_eval(work, io::IO, id, eval_id, op, ack)
-    CURRENT_EVAL[] = @async begin
+    task = Task() do
         emit = make_emit(io, id, eval_id)
         start = time()
         try
@@ -199,7 +209,24 @@ function spawn_eval(work, io::IO, id, eval_id, op, ack)
         emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => elapsed_ms))
         write_envelope(io, "res", id, op, merge(ack, Dict(:elapsed_ms => elapsed_ms)))
     end
+    CURRENT_EVAL[] = Eval(eval_id, task, :waiting)
+    schedule(task)
     return
+end
+
+# Runs the calling eval's user code, the only place an interrupt reaches the eval
+# (`handle_interrupt`): an interrupt held while the eval waited stops it here,
+# before the code runs. Outside an eval (a direct call) it just runs `f`.
+function run_user_code(f)
+    ev = CURRENT_EVAL[]
+    (ev === nothing || ev.task !== current_task()) && return f()
+    try
+        ev.stage === :held && throw(InterruptException())
+        ev.stage = :running
+        return f()
+    finally
+        ev.stage = :done
+    end
 end
 
 function run_eval_streaming(emit, mode, code)
@@ -232,20 +259,15 @@ end
 """
     handle_run_file
 
-Run a `.jl` file in the persistent REPL (`fresh:false`, via `include`) or in a
-fresh `julia` subprocess (`fresh:true`). Project is discovered by walking up
-from `path`; the persistent REPL's active project is the fallback. Streams
-frames like `repl.eval`.
-
-Note: as of priority J the Rust supervisor intercepts `fresh:true` *before*
-the request reaches us (it bounces the REPL child to the file's project and
-forwards `fresh:false`); the subprocess branch is preserved for a future direct
-caller.
+Run a `.jl` file in the persistent REPL with `include`. A fresh run never
+reaches the shim: the daemon restarts the REPL into the file's project and then
+sends a plain run. Project is discovered by walking up from `path`; the
+persistent REPL's active project is the fallback. Streams frames like
+`repl.eval`.
 """
 function handle_run_file(io::IO, id, payload)
     eval_id = get(payload, :eval_id, UInt64(0))
     path = String(get(payload, :path, ""))
-    fresh = Bool(get(payload, :fresh, false))
 
     if isempty(path)
         write_envelope(io, "res", id, "repl.run_file",
@@ -290,7 +312,7 @@ function handle_run_file(io::IO, id, payload)
     dir, _toml, source = discover_project(abs_path; fallback = current_project_dir)
 
     ack_payload = Dict(
-        :eval_id => eval_id, :path => abs_path, :fresh => fresh,
+        :eval_id => eval_id, :path => abs_path,
         :project_dir => dir, :project_source => string(source), :elapsed_ms => 0,
     )
 
@@ -305,43 +327,19 @@ function handle_run_file(io::IO, id, payload)
     end
 
     spawn_eval(io, id, eval_id, "repl.run_file", ack_payload) do emit
-        run_file_streaming(emit, abs_path, fresh, dir, source, current_project_dir)
+        run_file_streaming(emit, abs_path, dir, current_project_dir)
     end
 end
 
-function run_file_streaming(emit, abs_path, fresh, dir, source, current_project_dir)
-    if fresh
+function run_file_streaming(emit, abs_path, dir, current_project_dir)
+    if dir !== nothing && dir != current_project_dir
         emit(Dict(:kind => "stderr",
-            :text => "[repl.run_file fresh=true] " *
-                     "$(Base.julia_cmd().exec[1]) --project=$dir $abs_path " *
-                     "(project source: $(string(source)))\n"))
-        pipe_out = Pipe()
-        pipe_err = Pipe()
-        cmd = `$(Base.julia_cmd()) --color=no --project=$dir $abs_path`
-        proc = run(pipeline(cmd; stdout = pipe_out, stderr = pipe_err); wait = false)
-        close(pipe_out.in)
-        close(pipe_err.in)
-        # Stream subprocess output incrementally, same as in-process eval.
-        reader_out = @async stream_pipe(pipe_out, emit, "stdout")
-        reader_err = @async stream_pipe(pipe_err, emit, "stderr")
-        wait(proc)
-        wait(reader_out)
-        wait(reader_err)
-        if proc.exitcode != 0
-            emit(Dict(:kind => "error",
-                      :message => "julia subprocess exited with code $(proc.exitcode)",
-                      :stacktrace => Dict[]))
-        end
-    else
-        if dir !== nothing && dir != current_project_dir
-            emit(Dict(:kind => "stderr",
-                :text => "[repl.run_file fresh=false] note: file's project is " *
-                         "$dir but persistent REPL is using $current_project_dir; " *
-                         "include() may fail if deps differ.\n"))
-        end
-        stream_eval_frames(emit) do
-            Base.include(Main, abs_path)
-        end
+            :text => "[repl.run_file] note: file's project is " *
+                     "$dir but persistent REPL is using $current_project_dir; " *
+                     "include() may fail if deps differ.\n"))
+    end
+    stream_eval_frames(emit) do
+        Base.include(Main, abs_path)
     end
 end
 
@@ -374,20 +372,29 @@ end
 """
     handle_interrupt(io, id, payload)
 
-Schedule a real `InterruptException` onto the running eval task (ADR 0009
-phase-2). The exception lands at the task's next yield/safepoint — same
-semantics as Ctrl-C in the stock REPL on a single thread; it surfaces to the
-frontend as an `error` frame followed by `done`.
+Interrupt the eval holding the guard (ADR 0009 phase-2), only in its user code
+(`run_user_code`). While the code runs, a real `InterruptException` is
+scheduled onto the eval's task and lands at its next yield/safepoint, the same
+semantics as Ctrl-C in the stock REPL on a single thread; before the code
+starts, the interrupt is held and the code never runs. Either way the eval
+answers with an `error` frame, then `done` and its `res`. An interrupt that
+names `eval_ids` reaches only an eval among them.
 """
-function handle_interrupt(io::IO, id, _payload)
-    t = CURRENT_EVAL[]
-    if t !== nothing && !istaskdone(t)
-        schedule(t, InterruptException(); error = true)
-        write_envelope(io, "res", id, "repl.interrupt", Dict(:interrupted => true))
-    else
-        write_envelope(io, "res", id, "repl.interrupt",
-            Dict(:interrupted => false, :note => "no eval in progress"))
+function handle_interrupt(io::IO, id, payload)
+    ev = CURRENT_EVAL[]
+    named = get(payload, :eval_ids, nothing)
+    if ev === nothing || istaskdone(ev.task) || ev.stage === :done ||
+       (named !== nothing && !(ev.id in named))
+        note = named === nothing ? "no eval in progress" : "none of the named evals is in progress"
+        write_envelope(io, "res", id, "repl.interrupt", Dict(:interrupted => false, :note => note))
+        return
     end
+    if ev.stage === :running
+        schedule(ev.task, InterruptException(); error = true)
+    else
+        ev.stage = :held
+    end
+    write_envelope(io, "res", id, "repl.interrupt", Dict(:interrupted => true))
 end
 
 function write_envelope(io::IO, kind, id, op, payload)

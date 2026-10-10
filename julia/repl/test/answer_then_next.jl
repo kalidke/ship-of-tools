@@ -1,17 +1,18 @@
-# An output stream for `ShipToolsRepl.serve` that reproduces the order a real pipe allows: the client reads an answer
-# while the answering task still waits on its write, and sends its next request at once. The moment the done frame of
-# request `trigger` has been written (an answer's first part; its res follows), `next()` hands the dispatch loop that
-# next request, and the loop runs before the answering task resumes.
+# An output stream for `ShipToolsRepl.serve` that reproduces the order a real pipe allows: the client reads a frame
+# while the writing task still waits on its write, and sends its next request at once. The moment the `kind` frame of
+# request `trigger` has been written (by default its done frame, an answer's first part; its res follows), `next()`
+# hands the dispatch loop that next request, and the loop runs before the writing task resumes.
 mutable struct AnswerThenNext <: IO
     out::Base.BufferStream
     pending::Vector{UInt8}
     trigger::Int
+    kind::String
     next::Function
     fired::Bool
 end
 
-AnswerThenNext(out::Base.BufferStream, trigger::Integer, next::Function) =
-    AnswerThenNext(out, UInt8[], trigger, next, false)
+AnswerThenNext(out::Base.BufferStream, trigger::Integer, next::Function; kind = "done") =
+    AnswerThenNext(out, UInt8[], trigger, kind, next, false)
 
 function Base.unsafe_write(io::AnswerThenNext, p::Ptr{UInt8}, n::UInt)
     append!(io.pending, unsafe_wrap(Array, p, n))
@@ -32,7 +33,7 @@ function Base.flush(io::AnswerThenNext)
     for line in lines
         env = ShipToolsRepl.json_read(line)
         if !io.fired && get(env, :id, 0) == io.trigger && get(env, :op, "") == "repl.frame" &&
-           env[:payload][:frame][:kind] == "done"
+           env[:payload][:frame][:kind] == io.kind
             io.fired = true
             io.next()
             # One thread, cooperative tasks: the dispatch loop, now runnable, reads the request and acts on it

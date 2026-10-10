@@ -81,7 +81,7 @@ function stream_eval_frames(f, emit)
         redirect_stdout(pipe_out)
         redirect_stderr(pipe_err)
         try
-            result = f()
+            result = run_user_code(f)
         catch e
             threw = e
             local_bt = stacktrace(catch_backtrace())
