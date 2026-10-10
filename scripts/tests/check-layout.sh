@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# check-layout.sh: folder/file layout gate for the organize pass. See README.md.
+# check-layout.sh: folder/file layout gate for the organize pass. See scripts/tests/CLAUDE.md.
 # Usage: check-layout.sh [--repo <dir>] [--allow <file>] [--exempt <file>] [<folder> ...]
 #        check-layout.sh [--repo <dir>] --report [<folder> ...]
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" exec python3 - "$@" <<'PY'
 import os, re, subprocess, sys
 
 FILE_LIMIT, FOLDER_LINES, FOLDER_FILES = 800, 3000, 12
-NAMED_PATH_FILES = ["docs/ownership.md", "docs/integration.md", "CLAUDE.md"]   # pages whose backticked repo paths must exist
+NAMED_PATH_FILES = ["docs/ownership.md", "docs/integration.md", "docs/ROW-SESSION.md", "CLAUDE.md"]   # pages whose backticked repo paths must exist
 SRC_EXT = (".rs", ".jl", ".sh", ".ps1")
 
 def usage(msg=None):
