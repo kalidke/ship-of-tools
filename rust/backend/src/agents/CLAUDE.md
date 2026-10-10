@@ -35,8 +35,9 @@ execs.
 - P0/P1/P5 are proof limits: real-Claude config consumption, child-observed spelling and unusual config semantics are not checked.
   Interactive recognition, parent coverage and no-dialog behavior require the person-run release done test.
 - Every claude launch passes `--permission-mode auto`, never `--dangerously-skip-permissions` (`claude_recipe`).
-- On Unix `claude` and `ccx` resolve to absolute paths, because a daemon-spawned process lacks `~/.local/bin`
-  (`resolve_claude`, `agent_env`).
+- The daemon's own `PATH` need not hold `~/.local/bin`, so on Unix `claude` and `ccx` resolve to absolute paths, from
+  `PATH` and then `~/.local/bin` (`resolve_claude`, `resolve_ccx`), and `capsule_supervisor_env` puts `~/.local/bin` at
+  the front of a leg's `PATH` that lacks it (`agent_env`; `sotd agent-exec` too).
 - The auto-memory flag names a directory only when one shared store is proven, else no flag (`auto_memory_reason`).
 - The variables in `NESTING_ENV_VARS_TO_SCRUB` are removed from every spawn and from `sotd agent-exec`.
 - A session's environment gets `SOTD_BIN` from this daemon's argv[0], made absolute once at startup without following

@@ -8,6 +8,8 @@ fallback for a handle its folder does not list (`agent.send`, ending `NOT CONFIR
 B2. The rest lands in stages, and the per-session watcher, listener and bridge machinery it
 replaces stays in place until each stage does.
 
+2026-10-10: A subagent uses no mail (decision 0031, amended); Cases says so.
+
 2026-10-06: B2 premise amendment for 0.6.6.
 
 Known limit (B2): the hub's comm folder has not been shown to list every live row on every attached box. At the 2026-10-06 premise check, two attached boxes had no session; one of them had no frontend connected, so those two boxes were unobserved. A handle absent from that folder still uses the broadcast filer route and may end NOT CONFIRMED. Full B2 removal is blocked on the live-row registry premise; this checkout does not promise a binary verdict for that route.
@@ -57,8 +59,8 @@ The owner asked for the fix as "agree on the one page comm system and then clean
 - **Cases** — a restarted or compacted row re-arms nothing, since the handle stays with
   the row and the count is a file. A session outside any row sees mail only at its own
   next turn end while idle, and after ten idle minutes a send to it fails. A subagent
-  that runs inside its parent's agent process is part of that session: it may send under
-  the parent's handle and never reads the inbox. Another agent started inside a session
+  that runs inside its parent's agent process uses no mail: it neither sends nor reads,
+  and it reports to its parent, which sends. Another agent started inside a session
   (`codex exec`, `claude -p`), and anything it starts, has no comm identity: a process
   acts as a handle only if at most one agent lies between it and its row's capsule, or
   the top of its process tree outside a row; an ancestry that cannot be read in full is

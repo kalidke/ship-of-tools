@@ -13,9 +13,10 @@
 # arg > $SOT_COMM_NAME env > self-file NAME > derive) already implements the
 # same order correctly; manufacturing an explicit --name here from a
 # lower-priority source (the bug this PR shipped with) can override a real
-# launcher pin. A subagent/lane that does not own the ambient pane-keyed
-# self-file MUST pin a distinct $SOT_COMM_NAME and, ideally, its own private
-# $SOT_COMM_SELF_FILE — see references/reclaim-handle.md. When neither is
+# launcher pin. A session whose slot another project holds pins a distinct
+# $SOT_COMM_NAME and, outside a row, its own private $SOT_COMM_SELF_FILE;
+# nothing started inside a session joins (it uses no mail) — see
+# references/reclaim-handle.md. When neither is
 # given and the self-file already names a DIFFERENT, validated identity, this
 # script REFUSES to join at all rather than silently stealing that slot (this
 # is exactly how PR1's own coordinator session was clobbered by an unpinned
@@ -94,7 +95,7 @@ fi
 if [ "$COLD_PRODUCER" = 0 ] && [ -z "$PIN_NAME" ] && [ -z "${NAME:-}" ] \
    && [ -n "${SELF_FILE:-}" ] && [ -f "$SELF_FILE" ]; then
     echo "BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a"
-    echo "REFUSED: $SELF_FILE already names a different, validated identity (see the diagnostic line above) and no SOT_COMM_NAME/SOT_COMM_SELF_FILE pin was given — refusing to join over it. A subagent/lane launcher must pin a distinct SOT_COMM_NAME and, ideally, a private SOT_COMM_SELF_FILE of its own; see this skill's Identity line and references/reclaim-handle.md." >&2
+    echo "REFUSED: $SELF_FILE already names a different, validated identity (see the diagnostic line above) and no SOT_COMM_NAME pin was given — refusing to join over it. The session's launcher pins a distinct SOT_COMM_NAME and, outside a row, a private SOT_COMM_SELF_FILE of its own; nothing started inside a session joins. See this skill's Identity line and references/reclaim-handle.md." >&2
     exit 0
 fi
 

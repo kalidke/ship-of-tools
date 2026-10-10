@@ -505,8 +505,8 @@ Monitor exists.
   daemon) has a handle and an inbox, and its end-of-turn check reads new
   mail before a turn ends. While idle it sees mail only at its next turn,
   and after ten idle minutes sends to it fail as "no live session".
-- A subagent that runs inside its parent's agent process is part of that
-  session: it may send under the parent's handle and never reads the inbox.
+- A subagent that runs inside its parent's agent process uses no mail: it
+  neither sends nor reads, and it reports to its parent, which sends.
   Another agent started inside a session (`codex exec`, `claude -p`), and
   anything it starts, has no comm identity: a process acts as a handle only if
   at most one agent (claude or codex) lies between it and its row's capsule, or
@@ -580,7 +580,10 @@ Monitor exists.
   \x1b) reads as a separator, an unknown marker or an encoded newline or
   return. On Windows an unpaired UTF-16 surrogate in a command line reads as
   U+FFFD. On Linux a process whose whole command line is exactly `!end` ends
-  the walk as if it were the top.
+  the walk as if it were the top. Nor does the check see a subagent: a
+  subagent's shell has its session's ancestry, so the check takes it for the
+  session, and that a subagent neither sends nor reads rests on nothing in
+  its load or its brief telling it to use mail.
 
 ## Dependencies
 
