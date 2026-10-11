@@ -14,9 +14,10 @@ scripts/CLAUDE.md.
   PowerShell 5.1 parse and the `scripts/tests/` `.ps1` suites), `test-linux` (the ubuntu build and test, one job per
   shard, named "build+test (ubuntu-latest, <shard>)": its `SHARDS` table names the test targets of the shards `outage`,
   `capsule`, `wake` and `sotd`, each target whole or split once as `X` and `--skip X`; the shard `rest` runs every other
-  test executable cargo builds, then the doc tests; the matrix lists the table's shards in the order they first appear,
-  then `rest`, and before it runs anything, every shard fails unless every split is such a pair and the matrix runs
-  that many jobs, and a job fails unless its shard is the one at its place (`strategy.job-index`) in that list;
+  test executable cargo builds, then the doc tests, so no row names `rest`; the matrix lists the table's shards in the
+  order they first appear, then `rest`, and before it runs anything, every shard fails unless no row names `rest`,
+  every split is such a pair and the matrix runs that many jobs, and a job fails unless its shard is the one at its
+  place (`strategy.job-index`) in that list;
   every command selects `--workspace`; only `sotd` runs `npm ci`
   and the WGL depot step, and only `rest` saves the shared cache), `checks-linux` ("checks (ubuntu-latest)": the clippy
   gates and the allowance count, the selected-body proofs, the L3 run, the shell parse, "Check the layout"

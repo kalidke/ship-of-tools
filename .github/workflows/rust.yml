@@ -439,11 +439,12 @@ jobs:
   # The ubuntu build and test, one job per shard, so the slowest test binaries run side by side. SHARDS is the one table
   # of named shards, a row each: shard, target kind (test or bin), target name, then any libtest arguments. A target runs
   # whole (one row, no arguments) or split once (two rows, `X` and `--skip X`, as lane_bridge is). The shard `rest` runs
-  # every test executable the table does not name, then the doc tests. The matrix lists the table's shards in the order
-  # they first appear, then `rest`. Before it runs anything, every shard fails unless every split is such a pair and the
-  # matrix runs that many jobs, and a job fails unless its shard is the one at its place (`strategy.job-index`) in that
-  # list. Each binary's SERIAL lock guards only its own process, so binaries on different runners share nothing. Every
-  # command selects `--workspace`, so features unify as in one `cargo test --workspace`.
+  # every test executable the table does not name, then the doc tests, so no row names `rest`. The matrix lists the
+  # table's shards in the order they first appear, then `rest`. Before it runs anything, every shard fails unless no row
+  # names `rest`, every split is such a pair and the matrix runs that many jobs, and a job fails unless its shard is the
+  # one at its place (`strategy.job-index`) in that list. Each binary's SERIAL lock guards only its own process, so
+  # binaries on different runners share nothing. Every command selects `--workspace`, so features unify as in one
+  # `cargo test --workspace`.
   test-linux:
     name: build+test (ubuntu-latest, ${{ matrix.shard }})
     runs-on: ubuntu-latest
@@ -511,6 +512,8 @@ jobs:
           named = {(row[1], row[2]) for row in rows}
           order = [*dict.fromkeys(row[0] for row in rows), 'rest']
           TARGET_KINDS = ('bin', 'test', 'example', 'bench')
+          if order.count('rest') != 1:
+              sys.exit('SHARDS names the shard rest; rest runs only what the table does not name')
           if total != len(order) or order[index] != shard:
               sys.exit(f'job {index} of {total} (from 0) runs {shard}; the matrix must list {order} in that order')
           for target in named:
