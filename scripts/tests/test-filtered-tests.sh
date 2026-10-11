@@ -22,73 +22,79 @@ output = Path(sys.argv[2]).resolve() / 'dev/output'
 output.mkdir(parents=True, exist_ok=True)
 runner = output.parent.parent / 'scripts/tests/run-filtered-tests.sh'
 flags = ['--test-threads=1', '--format', 'pretty', '--color', 'never', '--show-output']
+evidence = {}
+
+
+def check(ok, detail):
+    if not ok:
+        raise AssertionError(detail)
+
+
+def run(name, expected, selected, exact=True):
+    """The runner over the fixture in a fresh root: exit status, output, libtest log and the bodies that ran."""
+    evidence.clear()
+    with tempfile.TemporaryDirectory(prefix=f'filtered-count-{name}.', dir=output) as temporary:
+        root = Path(temporary).resolve()
+        (root / 'iso-sh-fixture-request').touch()
+        if name == 'failed':
+            (root / 'iso-sh-panic-request').touch()
+        log = root if name == 'capture-error' else root / 'libtest.log'
+        argv = ['bash', str(runner), str(expected), str(log), '--', str(fixture), *selected]
+        argv += ['--exact'] if exact else []
+        try:
+            result = subprocess.run(argv + flags, cwd=root, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, timeout=60)
+            code, child = result.returncode, result.stdout
+        except subprocess.TimeoutExpired as error:
+            code, child = 'timeout after 60 seconds', error.output or b''
+        bodies = sorted(path.name.removeprefix('witness-') for path in root.glob('witness-*'))
+        text = child.decode('utf-8', 'replace')
+        evidence['status'] = json.dumps({'exit': code, 'witnesses': bodies})
+        evidence['output'] = text.replace(str(root), '<temporary-root>').replace(str(fixture), '<fixture>')
+        evidence['libtest'] = log.read_text() if log.is_file() else ''
+    for suffix, saved in evidence.items():
+        (output / f'filtered-count-{name}.{suffix}').write_text(saved + '\n')
+    check(isinstance(code, int), 'child wait timed out after 60 seconds')
+    return code, text, evidence['libtest'], bodies
+
+
+# name, expected count, selection, --exact, libtest's own summary, bodies that ran, runner accepts
 cases = [
-    ('absent', 1, 'absent', True, 0, 0, []),
-    ('ordinary', 1, 'ordinary', True, 1, 0, ['ordinary']),
-    ('group', 2, 'near', False, 2, 0, ['near', 'qualified-near']),
-    ('wrong-count', 1, 'near', False, 2, 0, ['near', 'qualified-near']),
-    ('ignored', 1, 'qualified::ignored_positive', True, 0, 1, []),
-    ('failed', 1, 'ordinary', True, 0, 0, ['ordinary']),
-    ('invalid-count', 0, 'ordinary', True, 0, 0, []),
-    ('capture-error', 1, 'ordinary', True, 1, 0, ['ordinary']),
+    ('absent', 1, ['absent'], True, 'ok. 0 passed; 0 failed; 0 ignored;', [], False),
+    ('ordinary', 1, ['ordinary'], True, 'ok. 1 passed; 0 failed; 0 ignored;', ['ordinary'], True),
+    ('group', 2, ['near'], False, 'ok. 2 passed; 0 failed; 0 ignored;', ['near', 'qualified-near'], True),
+    ('wrong-count', 1, ['near'], False, 'ok. 2 passed; 0 failed; 0 ignored;', ['near', 'qualified-near'], False),
+    ('ignored', 1, ['qualified::ignored_positive'], True, 'ok. 0 passed; 0 failed; 1 ignored;', [], False),
+    ('failed', 1, ['ordinary'], True, 'FAILED. 0 passed; 1 failed; 0 ignored;', ['ordinary'], False),
+    ('misleading', 1, ['misleading', 'ordinary'], True, 'ok. 2 passed; 0 failed; 0 ignored;',
+     ['misleading', 'ordinary'], False),
 ]
 
+name = 'setup'
 try:
-    for name, expected, selected, exact, passed, ignored, witnesses in cases:
-        with tempfile.TemporaryDirectory(prefix=f'filtered-count-{name}.', dir=output) as temporary:
-            root = Path(temporary).resolve()
-            (root / 'iso-sh-fixture-request').touch()
-            if name == 'failed':
-                (root / 'iso-sh-panic-request').touch()
-            log = root if name == 'capture-error' else root / 'libtest.log'
-            argv = ['bash', str(runner), str(expected), str(log), '--', str(fixture), selected]
-            if exact:
-                argv.append('--exact')
-            argv.extend(flags)
-            try:
-                result = subprocess.run(argv, cwd=root, stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT, timeout=60)
-            except subprocess.TimeoutExpired as error:
-                (output / f'filtered-count-{name}.output').write_bytes(error.output or b'')
-                (output / f'filtered-count-{name}.status').write_text('timeout after 60 seconds\n')
-                raise AssertionError(f'filtered-count case={name}: child wait timed out after 60 seconds')
-            text = result.stdout.decode('utf-8', 'strict')
-            raw = log.read_text() if log.is_file() else ''
-            saved = text.replace(str(root), '<temporary-root>').replace(str(fixture), '<fixture>')
-            (output / f'filtered-count-{name}.output').write_text(saved)
-            (output / f'filtered-count-{name}.libtest').write_text(raw)
-            (output / f'filtered-count-{name}.status').write_text(json.dumps({
-                'exit': result.returncode,
-                'witnesses': sorted(path.name for path in root.glob('witness-*')),
-            }) + '\n')
-            if name == 'invalid-count':
-                assert result.returncode == 2, 'zero expected count was not a usage error'
-                assert not (root / 'witness-ordinary').exists(), 'invalid count started the fixture'
-            elif name == 'capture-error':
-                assert result.returncode != 0, 'capture failure was accepted'
-                assert 'Is a directory' in text, 'capture did not fail writing the directory'
-            else:
-                failed = 1 if name == 'failed' else 0
-                status = 'FAILED' if failed else 'ok'
-                summary = f'test result: {status}. {passed} passed; {failed} failed; {ignored} ignored;'
-                assert summary in raw, f'{name}: missing real libtest summary: {summary}'
-                if name == 'absent':
-                    assert 'running 0 tests' in raw, 'absent filter entered a body'
-                    assert result.returncode != 0, 'zero-test filter was accepted: expected=1 passed=0'
-                elif name in ('ordinary', 'group'):
-                    assert result.returncode == 0, f'{name}: completed selection was rejected'
-                    assert f'filtered-tests: expected={expected} ok=true' in text, 'missing count receipt'
-                else:
-                    assert result.returncode != 0, f'{name}: invalid selection was accepted'
-                for witness in witnesses:
-                    assert (root / f'witness-{witness}').is_file(), f'{name}: missing body witness {witness}'
-                if name == 'ignored':
-                    assert not (root / 'witness-ignored-positive').exists(), 'ignored body executed'
-                if name == 'failed':
-                    assert 'requested fixture panic' in raw, 'missing actual failed-body cause'
-            print(f'filtered-count proof={name} ok=true', flush=True)
-    print('filtered-count completed_cases=8 ok=true', flush=True)
+    for name, expected, selected, exact, summary, ran, accepted in cases:
+        code, text, raw, bodies = run(name, expected, selected, exact)
+        check(any(line.startswith(f'test result: {summary}') for line in raw.splitlines()),
+              f'missing libtest summary: test result: {summary}')
+        check(bodies == ran, f'bodies that ran: {bodies}, want {ran}')
+        check((code == 0) == accepted, f'runner exit {code}: this selection must be '
+              + ('accepted' if accepted else 'rejected'))
+        check(not accepted or f'filtered-tests: expected={expected} ok=true' in text, 'missing count receipt')
+        check(name != 'failed' or 'requested fixture panic' in raw, 'missing the failed body cause')
+        print(f'filtered-count proof={name} ok=true', flush=True)
+    name = 'invalid-count'
+    code, text, raw, bodies = run(name, 0, ['ordinary'])
+    check(code == 2 and not bodies, f'runner exit {code}, bodies {bodies}: want usage exit 2 before the fixture')
+    print(f'filtered-count proof={name} ok=true', flush=True)
+    name = 'capture-error'
+    code, text, raw, bodies = run(name, 1, ['ordinary'])
+    check(code != 0 and 'Is a directory' in text, f'runner exit {code}: an unwritable log must fail the capture')
+    print(f'filtered-count proof={name} ok=true', flush=True)
+    print(f'filtered-count completed_cases={len(cases) + 2} ok=true', flush=True)
 except (AssertionError, OSError, UnicodeError) as error:
-    print(f'filtered-count FAIL: {error}', file=sys.stderr, flush=True)
+    print(f'filtered-count FAIL case={name}: {error}', file=sys.stderr)
+    for suffix, saved in evidence.items():
+        print(f'--- filtered-count-{name}.{suffix} ---\n{saved}', file=sys.stderr)
+    sys.stderr.flush()
     sys.exit(1)
 PY

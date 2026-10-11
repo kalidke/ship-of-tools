@@ -6,8 +6,12 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 ## Files
 - `lib-test-body.sh`: the shared completion verdict for one selected Rust test; ordered, unambiguous capture closure precedes the outer result; missing, ignored, mismatched and failed bodies cannot pass.
 - `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners, including combined captured-summary/truncation and scratch-path controls; accepts a compiled fixture executable by absolute path and validates its shell scratch root before cleanup.
-- `run-filtered-tests.sh`: shared runner for a filtered libtest group; tees a fresh invocation log, fails on command/capture error or an absent positive exact-pass-count summary; used by rust.yml's Test native harness helpers step.
-- `test-filtered-tests.sh`: real-libtest controls for the group runner's completed, empty, ignored, wrong-count and failed selections, argument validation and capture failure; receives the existing compiled fixture by absolute path and uses its own temporary roots.
+- `run-filtered-tests.sh`: shared runner for a filtered libtest group; tees a fresh invocation log and fails on a command or
+  capture error, or unless the log holds exactly one libtest summary line and it starts with the expected positive pass
+  count, zero failed and zero ignored; used by rust.yml's Test native harness helpers step.
+- `test-filtered-tests.sh`: real-libtest controls for the group runner's completed, empty, ignored, wrong-count, failed and
+  captured-summary selections, argument validation and capture failure; a failing case prints its saved status, output
+  and libtest log; receives the existing compiled fixture by absolute path and uses its own temporary roots.
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.

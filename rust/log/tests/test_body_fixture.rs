@@ -1,6 +1,7 @@
-//! Real libtest bodies for scripts/tests/test-test-body.sh. Explicit fixture input records body
-//! execution under the caller's scratch root; ordinary workspace execution is harmless. This fixture
-//! starts no process and opens no endpoint.
+//! Real libtest bodies for scripts/tests/test-test-body.sh and test-filtered-tests.sh. Explicit
+//! fixture input records body execution under the caller's scratch root; ordinary workspace
+//! execution is harmless. This fixture starts no process and opens no endpoint. `misleading`
+//! prints a libtest summary of its own, which neither suite's verdict may take for libtest's.
 
 use std::path::PathBuf;
 

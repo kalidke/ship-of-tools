@@ -12,8 +12,12 @@ if ! "$@" 2>&1 | tee "$filtered_log"; then
     echo 'filtered-tests: command or capture failed' >&2
     exit 1
 fi
-if ! grep -Fq "test result: ok. $filtered_count passed; 0 failed; 0 ignored;" "$filtered_log"; then
-    printf 'filtered-tests: missing exact pass summary expected=%s\n' "$filtered_count" >&2
+# A body's captured output can print a summary line of its own, so the log must hold exactly one.
+filtered_summary=$(grep '^test result: ' "$filtered_log" || true)
+if [[ $filtered_summary == *$'\n'* ||
+    $filtered_summary != "test result: ok. $filtered_count passed; 0 failed; 0 ignored;"* ]]; then
+    printf 'filtered-tests: want exactly one summary line, starting "test result: ok. %s passed; 0 failed; 0 ignored;"\n' \
+        "$filtered_count" >&2
     exit 1
 fi
 printf 'filtered-tests: expected=%s ok=true\n' "$filtered_count"
