@@ -138,8 +138,8 @@ impl Drop for Handshake<'_> {
 pub struct Leases {
     exempt: bool,
     book: Mutex<Book>,
-    /// `lease::LEASE_REPLY_WAIT`: how long the request may take to send, and
-    /// when an unanswered one is warned about and named to the caller; tests shorten it.
+    /// `lease::LEASE_REPLY_WAIT`: when an unanswered request is warned about and named to the caller; tests shorten
+    /// it. The send keeps the constant, so a shortened wait never races a connect on a busy machine.
     reply_wait: Duration,
 }
 
@@ -240,7 +240,7 @@ impl Leases {
         // awaited for as long as the connection lasts, since the daemon may
         // still grant the lease and a dropped granted connection departs as a
         // Close.
-        let sent = tokio::time::timeout(self.reply_wait, async {
+        let sent = tokio::time::timeout(lease::LEASE_REPLY_WAIT, async {
             let stream = connect_pipe(path).await?;
             let (rx, mut tx) = stream.split();
             let rx = codec::buffered(rx);

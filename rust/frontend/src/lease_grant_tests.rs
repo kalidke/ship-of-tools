@@ -192,13 +192,13 @@ async fn lease_retried_each_data_connection() {
     assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     assert_eq!(count.load(Ordering::SeqCst), 6, "a held lease is not retaken");
     drop_tx.send(()).unwrap();
-    for _ in 0..40 {
-        if !leases.held(&host) {
-            break;
+    // The holder sees the end on this runtime's own turn: a bound far above that, which a busy machine cannot reach.
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while leases.held(&host) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(!leases.held(&host), "the dropped stream ends the lease");
+    });
+    assert!(ended.await.is_ok(), "the dropped stream ends the lease");
     leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 7);
 }
@@ -293,36 +293,42 @@ async fn lease_wire_round_trip() {
 
 #[tokio::test]
 async fn slow_grant_is_held_not_dropped() {
+    // The fake grants only once the window has passed its wait (`unanswered`), an event rather than a sleep, and
+    // reports whether the window's end of the granted stream stayed open through a read window after the grant.
     let (listener, path) = bind("slowgrant");
     let accepts = Arc::new(AtomicUsize::new(0));
-    let eof = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (a, e) = (accepts.clone(), eof.clone());
+    let (past_tx, past_rx) = oneshot::channel::<()>();
+    let (kept_tx, kept_rx) = oneshot::channel::<bool>();
+    let a = accepts.clone();
     tokio::spawn(async move {
+        let mut grant = Some((past_rx, kept_tx));
         loop {
             let conn = listener.accept().await.unwrap();
             a.fetch_add(1, Ordering::SeqCst);
-            let e = e.clone();
+            let Some((past_rx, kept_tx)) = grant.take() else { continue };
             tokio::spawn(async move {
                 let (rx, mut tx) = conn.split();
                 let mut rx = codec::buffered(rx);
                 let Some((_, req)) = read_handoff(&mut rx, &mut tx).await else { return };
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                past_rx.await.unwrap();
                 let granted = serde_json::json!({"outcome": "granted", "state_root": "r", "not_ended": 2});
                 codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
-                if tokio::time::timeout(Duration::from_millis(500), codec::read_frame(&mut rx)).await.is_ok() {
-                    e.store(true, Ordering::SeqCst);
-                }
+                let quiet = tokio::time::timeout(Duration::from_millis(500), codec::read_frame(&mut rx)).await.is_err();
+                let _ = kept_tx.send(quiet);
+                tokio::time::sleep(Duration::from_secs(30)).await;
             });
         }
     });
     let host = "local".to_string();
     let mut leases = Leases::new(false, vec![host.clone()]);
     Arc::get_mut(&mut leases).unwrap().reply_wait = Duration::from_millis(100);
-    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 2);
+    let named = move |_| {
+        let _ = past_tx.send(());
+    };
+    assert_eq!(leases.before_data_connection(&host, &path, None, named).await.unwrap(), 2);
     assert!(leases.held(&host));
     assert_eq!(accepts.load(Ordering::SeqCst), 1);
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    assert!(!eof.load(Ordering::SeqCst), "a granted lease's connection was dropped");
+    assert!(kept_rx.await.unwrap(), "a granted lease's connection was dropped or written to");
 }
 
 #[tokio::test]
