@@ -6,8 +6,8 @@ Monitor (ADR 0041). Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
 ## Files
 - `mod.rs`: declares the tenants' folders and files.
 - `keys.rs`: What a key does in the drawer: clear and paste, then the Terminal's pty or the REPL's scroll, history and input.
-- `monitor.rs`: the Monitor tenant's state (a ring of samples per host) and its SVG chart (ADR 0020), and
-  `State::layout_drawer_px`, which sizes the drawer's rects and rasterises the chart.
+- `monitor.rs`: the Monitor tenant's state (a ring of samples per host), its subscription and its SVG chart (ADR 0020),
+  and `State::layout_drawer_px`, which sizes the drawer's rects and rasterises the chart.
 - `repl/`: the REPL tenant, its eval log and the log's display lines.
 - `terminal/`: the Terminal tenant, the local pty and the vt100 helpers.
 
@@ -20,3 +20,6 @@ Monitor (ADR 0041). Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
   `*` with the shown reading's age (`HostBuf::mark`). The window's own clock decides; `layout_drawer_px` rasterises
   the chart again whenever a mark changes, which the once-a-second idle repaint checks with no tick arriving.
 - Each host's ring holds at most `RING_CAP` samples (`HostBuf::push`).
+- The window holds the Monitor subscription from the drawer's open to its close by the toggle
+  (`MonitorView::subscribed`). The daemon starts every connection unsubscribed, so each new connection to the monitor
+  host is sent it again with the history prefill (`State::resubscribe_monitor`, called from `on_connected`).

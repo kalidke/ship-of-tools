@@ -14,7 +14,7 @@ hand-over it serves.
 - `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `user_event`,
   `new_events`.
 - `frame.rs`: `State::redraw`, one frame's sequence, its upkeep (`frame_upkeep`) and `ack_presented_lines`.
-- `native_children.rs`: the window_minimized target's children and parent: the start its two children share, the State fixtures' own child (the native-only fixtures of the result-routing, badge, account and canonical-row commits, one `state-fixture name=... ok=...` line each, all run before the child judges) and the parent, which runs both children and then judges.
+- `native_children.rs`: the window_minimized target's children and parent: the start its two children share, the State fixtures' own child (the native-only fixtures of the result-routing, badge, account, canonical-row and Monitor commits, one `state-fixture name=... ok=...` line each, all run before the child judges) and the parent, which runs both children and then judges.
 - `native_eventlog.rs`: Windows only: the Application log's Application Hang events (1002) for one fixture child; an unreadable log is an error.
 - `native_exit_tests.rs`: the opt-in main-thread native window-close fixture, using the actual App callbacks and test-owned inputs; the parent runs each close case as a child of its binary.
 - `native_pane_daemon_tests.rs`: the pane_timing parent's private daemon: its own roots, rows created Ready or seeded with no supervisor, planted screen sentinels, and one window lease the parent holds for its whole life; teardown is that lease's Close (zero not ended) and the daemon's own exit, and a parent that dies without the Close leaves the daemon to end every row and exit.

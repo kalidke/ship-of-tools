@@ -361,7 +361,8 @@ pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: 
             state.set_focus(PaneFocus::NavTree);
         }
         // Monitor drawer subscribe/unsubscribe lifecycle (ADR
-        // 0020): subscribe + prefill on open, unsubscribe on
+        // 0020): subscribe + prefill on open (sent again at each
+        // new connection to the monitor host), unsubscribe on
         // close. Backend sampling is always-on; this just gates
         // this connection's live stream to when the drawer is up.
         // ADR 0042 L2a: always `monitor_host` (2.1, the
@@ -369,22 +370,7 @@ pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: 
         // `active_host`.
         if state.drawer == DrawerContent::Monitor && !state.monitor_view.subscribed
         {
-            let monitor_host = state.monitor_host();
-            let _ = state.send_to(
-                &monitor_host,
-                crate::net::transport::OutgoingReq::MonitorSubscribe,
-            );
-            let _ = state.send_to(
-                &monitor_host,
-                crate::net::transport::OutgoingReq::MonitorHistory {
-                    window_s: 300.0,
-                    points: 300,
-                    until: None,
-                    host: None,
-                },
-            );
-            state.monitor_view.subscribed = true;
-            state.monitor_dirty = true;
+            state.subscribe_monitor();
         } else if state.drawer != DrawerContent::Monitor
             && state.monitor_view.subscribed
         {

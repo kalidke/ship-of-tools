@@ -80,6 +80,9 @@ here rather than edited into the text, so the change is visible.
   arrived for 5 s (`GAP_S`, the gap that already breaks a trace) and shows the age of the reading on screen. The
   window's own clock decides; the age is the larger of the time since the reading arrived and its timestamp's age.
   The `stale` flag still marks a source that died.
+- *Amended 2026-10-11 (0.6.6):* `monitor.subscribe` holds for one connection, so the window sends it again, with
+  `monitor.history`, at each new connection to the hub while it holds the subscription (from the drawer's open to its
+  close). Before, a reconnect left an open drawer with no ticks until it was closed and reopened.
 
 Also worth naming, because it has cost a debugging session: the monitored host
 list is read ONCE, at daemon start. There is no reload path. A live roster would

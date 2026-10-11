@@ -428,29 +428,10 @@ fn apply_harness_flags(state: &mut State, cli: &crate::cli::Cli) {
         state.prev_workspace_states.insert(key, prior.to_string());
     }
     // `--start-monitor` (capture harness): the drawer was opened at
-    // construction; queue the same subscribe + history prefill the
-    // Ctrl+M arm sends. The unbounded req channel buffers until the
-    // transport connects, so sending here is safe pre-hello.
+    // construction and holds its subscription from the start. The
+    // monitor host's first Connected sends it with the history
+    // prefill, as every later one does (`State::resubscribe_monitor`).
     if cli.start_monitor {
-        // ADR 0042 L2a: the drawer (Monitor content included) rides a
-        // FIXED connection always — it never follows `active_host`
-        // around as the user switches workspaces. Which connection is
-        // `monitor_host` (2.1): the declared hub, so the fleet's record
-        // is what's shown regardless of which host this box dialled.
-        let monitor_host = state.monitor_host();
-        let _ = state.send_to(
-            &monitor_host,
-            crate::net::transport::OutgoingReq::MonitorSubscribe,
-        );
-        let _ = state.send_to(
-            &monitor_host,
-            crate::net::transport::OutgoingReq::MonitorHistory {
-                window_s: 300.0,
-                points: 300,
-                until: None,
-                host: None,
-            },
-        );
         state.monitor_view.subscribed = true;
         state.monitor_dirty = true;
     }

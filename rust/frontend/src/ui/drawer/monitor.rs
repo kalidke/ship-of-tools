@@ -94,7 +94,8 @@ impl HostBuf {
 pub struct MonitorView {
     hosts: Vec<String>,
     bufs: HashMap<String, HostBuf>,
-    /// Whether we've sent monitor.subscribe for the currently-open drawer.
+    /// Whether this window holds a monitor subscription: from the Monitor drawer's open to its close by the toggle. It
+    /// is sent at the open and again at each new connection to the monitor host (`State::resubscribe_monitor`).
     pub subscribed: bool,
     /// Each host's mark in the chart last rasterised: a reading that ages past `GAP_S` changes it with no tick.
     drawn_marks: Vec<String>,
@@ -421,6 +422,25 @@ fn escape(s: &str) -> String {
 }
 
 impl State {
+    /// Subscribe to the monitor host's ticks and prefill the chart from its history (ADR 0020). ADR 0042 L2a: always
+    /// `monitor_host`, the declared hub; the drawer never follows `active_host`.
+    pub(in crate::ui) fn subscribe_monitor(&mut self) {
+        let monitor_host = self.monitor_host();
+        let _ = self.send_to(&monitor_host, OutgoingReq::MonitorSubscribe);
+        let history = OutgoingReq::MonitorHistory { window_s: 300.0, points: 300, until: None, host: None };
+        let _ = self.send_to(&monitor_host, history);
+        self.monitor_view.subscribed = true;
+        self.monitor_dirty = true;
+    }
+
+    /// The daemon starts every connection unsubscribed, so a new connection to the monitor host is sent the
+    /// subscription this window holds; without it the drawer would get no reading until it was reopened.
+    pub(in crate::ui) fn resubscribe_monitor(&mut self, connected: &HostKey) {
+        if self.monitor_view.subscribed && *connected == self.monitor_host() {
+            self.subscribe_monitor();
+        }
+    }
+
     pub(crate) fn on_monitor_subscribed(&mut self, hosts: Vec<String>) {
         self.monitor_view.set_roster(hosts);
         self.monitor_dirty = true;
@@ -646,5 +666,80 @@ mod tests {
         assert!(!v.has_data());
         let svg = v.render_svg(200, 80, 1.0);
         assert!(svg.starts_with("<svg") && svg.trim_end().ends_with("</svg>"));
+    }
+}
+
+/// The Monitor's native State fixture: a `State` exists only inside a native window, so it runs in the
+/// window_minimized target's fixtures child (`ui/app/native_children.rs`).
+#[cfg(all(test, feature = "test-window-progress"))]
+mod native_fixture {
+    use super::*;
+    use crate::net::transport::{IncomingEvt, ResolvedDial};
+
+    impl State {
+        /// A new connection to the monitor host is sent the subscription this window holds, with its history prefill:
+        /// with the drawer open, and with Help shown over it. No other host's connection is sent one, and the hub's
+        /// is sent none once the drawer has closed.
+        #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+        pub(in crate::ui) fn a_held_monitor_subscription_is_sent_on_each_new_connection(&mut self) -> Result<()> {
+            let (hub, other) = ("<monitor-hub>".to_string(), "<host-other>".to_string());
+            let (hub_tx, mut hub_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (other_tx, mut other_rx) = tokio::sync::mpsc::unbounded_channel();
+            // The hub sorts second: only the declared hub, not the first connection, makes it the monitor host.
+            self.conns = vec![(other.clone(), other_tx), (hub.clone(), hub_tx)];
+            self.monitor_hub = Some(hub.clone());
+            self.active_host = other.clone();
+            let (events, receiver) = std::sync::mpsc::channel();
+            self.evt_rx = receiver;
+            let rows = [
+                ("open, the hub connects", DrawerContent::Monitor, true, &hub),
+                ("help over it, the hub connects", DrawerContent::Help, true, &hub),
+                ("open, another host connects", DrawerContent::Monitor, true, &other),
+                ("closed, the hub connects", DrawerContent::Closed, false, &hub),
+            ];
+            let mut seen = Vec::new();
+            for (label, drawer, held, host) in rows {
+                self.drawer = drawer;
+                self.monitor_view.subscribed = held;
+                let connected = IncomingEvt::Connected {
+                    session_id: "session".into(),
+                    revision: 0,
+                    host: None,
+                    project_root: None,
+                    proxy: false,
+                    resolved: ResolvedDial::Local,
+                    backend_version: "test".into(),
+                };
+                events
+                    .send((host.clone(), connected))
+                    .map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+                self.drain_events();
+                seen.push((label, monitor_ops(&mut hub_rx), monitor_ops(&mut other_rx)));
+            }
+            self.drawer = DrawerContent::Closed;
+            self.monitor_view.subscribed = false;
+            self.monitor_hub = None;
+            println!("monitor-resubscribe: {seen:?}");
+            let resent = |i: usize| seen[i].1 == ["subscribe", "history"];
+            let right = resent(0)
+                && resent(1)
+                && seen[2].1.is_empty()
+                && seen[3].1.is_empty()
+                && seen.iter().all(|(_, _, to_other)| to_other.is_empty());
+            anyhow::ensure!(right, "(row, monitor ops to the hub, to another host): {seen:?}");
+            Ok(())
+        }
+    }
+
+    /// The monitor requests queued on one connection's channel, in order.
+    fn monitor_ops(rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>) -> Vec<&'static str> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|req| match req {
+                OutgoingReq::MonitorSubscribe => Some("subscribe"),
+                OutgoingReq::MonitorHistory { .. } => Some("history"),
+                OutgoingReq::MonitorUnsubscribe => Some("unsubscribe"),
+                _ => None,
+            })
+            .collect()
     }
 }
