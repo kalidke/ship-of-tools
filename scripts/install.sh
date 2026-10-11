@@ -472,8 +472,9 @@ installer_declare_trust() {  # <absolute-sotd-path> <prefix>
     return 0
 }
 
-# scripts/tests/installer-state.sh sources this file to exercise the
-# functions above in isolation. Nothing else sets this, `curl | bash`
+# Tests set this to source the functions above in isolation: the shell
+# suites through scripts/tests/installer-support.sh, and the Rust tests
+# trust_premises.rs and unit_pin.rs. An install never sets it, `curl | bash`
 # included.
 if [ "${SOT_INSTALL_SOURCE_ONLY:-}" = 1 ]; then return 0; fi
 

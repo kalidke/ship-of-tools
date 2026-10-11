@@ -34,6 +34,9 @@ execs.
   platform no-replace publication; an appearing destination is kept.
 - P0/P1/P5 are proof limits: real-Claude config consumption, child-observed spelling and unusual config semantics are not checked.
   Interactive recognition, parent coverage and no-dialog behavior require the person-run release done test.
+- A Windows alias case whose facility is missing (a drive-letter, distinct drive, short-name or junction spelling) fails
+  on CI, which GitHub marks with `CI`, naming what was missing; elsewhere it prints its named NOT CHECKED
+  (`not_checked` in `folder_trust_tests.rs`). The C5 unavailable control's drive-alias NOT CHECKED is planned and stays.
 - Every claude launch passes `--permission-mode auto`, never `--dangerously-skip-permissions` (`claude_recipe`).
 - The daemon's own `PATH` need not hold `~/.local/bin`, so on Unix `claude` and `ccx` resolve to absolute paths, from
   `PATH` and then `~/.local/bin` (`resolve_claude`, `resolve_ccx`), and `capsule_supervisor_env` puts `~/.local/bin` at

@@ -6,8 +6,10 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 
 ## Files
 - `trust_declare.rs`: agents; the offline declaration CLI against temporary settings, with no daemon startup.
-- `trust_premises.rs`: agents; declaration spelling and selected-file preparation controls. Real-Claude consumption and child-observed
-  spelling are proof limits closed by the human release done test; no credentials or Claude process run in CI.
+- `trust_premises.rs`: agents; declaration spelling and selected-file preparation controls, and (Unix) the installer's
+  `installer_declare_trust` against the real owner: kept answers, invalid settings, a missing and an older `sotd`.
+  Real-Claude consumption and child-observed spelling are proof limits closed by the human release done test; no
+  credentials or Claude process run in CI.
 - `active_frontend.rs`: server; which frontend is active, over the wire against a real `sotd`
 - `admission.rs`: server; every connection starts with an accepted hello (every op of `sot_protocol::op` as a first frame is refused), and two OS accounts on one host are refused (ADR 0049 `## User isolation`)
 - `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
@@ -79,6 +81,8 @@ shows the shape.
   ends the daemon a moment later, so `Env::kill_daemon_bounded` waits until the daemon's socket stops answering before it
   returns, and a restart never reaches the dying daemon.
 - Every wait is bounded: `support::poll_until` and `BOUND`; a suite waits on a child process with `sot_log::test_isolated`'s `wait_within` or `drain(..).wait_within(..)` (`stdio_bridge.rs`, `shell_dial.rs`); `session_env.rs`'s `OwnedRow` instead polls its daemon's exit with `try_wait` within `BOUND`, since it also runs while a test unwinds, where a second panic would abort.
+- A test that judges a drained child by its status or output puts the status and every stream it did not take itself in
+  that assertion's message, so a hosted failure names its cause.
 - A test that reads a stream it accepted makes it blocking (macOS keeps a non-blocking listener's `O_NONBLOCK` on an
   accepted socket; Linux does not) and bounds those reads by a deadline it owns, such as waiting for the reading
   thread's result, never by a read timeout on the accepted socket: Darwin refuses `SO_RCVTIMEO` there (EINVAL;
