@@ -495,6 +495,7 @@ fn the_claim_outlives_its_parents_death() {
 
 #[test]
 fn adopting_a_claim_checks_the_file_and_that_the_lock_is_held() {
+    let _alone = Fixture::new("adopting_a_claim");
     let dir = tempfile::tempdir().unwrap();
     let state = state_with_fence(dir.path());
     let claim = BirthClaim::take(&state).unwrap();
