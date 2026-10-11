@@ -87,8 +87,10 @@ jobs:
   window-minimized-macos-mutation:
     name: native minimized window, MAC-REDRAW mutation leg, expected red (macOS)
     runs-on: macos-latest
-    # Build up to 300 s, the fixtures child up to 120 s, the workload child to its visible verdict about 60 s.
-    timeout-minutes: 15
+    # Its worst case is the same target's: build up to 300 s, the fixtures child up to 120 s, the workload child up to
+    # its own 780 s bound if it hangs before the visible verdict, about 1200 s in all. 25 minutes lets the parent print
+    # its verdict rather than the job be cancelled.
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: rust
