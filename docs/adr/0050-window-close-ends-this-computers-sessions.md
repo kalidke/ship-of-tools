@@ -371,3 +371,7 @@ macOS after an abrupt daemon end (SIGKILL, abort, a crash): nothing in 0.6.6 end
 subreaper and no cgroup, a process group is left by `setsid` and Pluto's and Quarto's workers leave it, and macOS installs
 as experimental without service-manager wiring. This is a limit of an experimental platform, decided by the maintainer;
 every controlled end still kills each child's process group, and not a process that left it (residual 7).
+
+## Amendment (2026-10-11): native window harnesses
+
+The pane timing fixture selects its own in-memory Laptop layout and reports the monitor shape and resolved columns. The runner's display no longer selects whether this fixture has an agent pane. Product layout selection and the wire protocol are unchanged.

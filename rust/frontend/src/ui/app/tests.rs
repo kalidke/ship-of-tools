@@ -700,3 +700,6 @@ impl Drop for FixtureHome {
         }
     }
 }
+
+#[path = "native_harness_tests.rs"]
+mod harness_tests;

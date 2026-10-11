@@ -165,6 +165,9 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
     }
     for run in runs.iter().filter(|r| r.role == "fault").chain(runs.iter().filter(|r| r.role != "fault")) {
         anyhow::ensure!(run.out.matches("pane-timing: body entered").count() == 1, "pane timing body did not enter exactly once: {}", run.role);
+        let layouts: Vec<_> = run.out.lines().filter(|l| l.starts_with("pane-timing layout ")).collect();
+        anyhow::ensure!(layouts.len() == 1, "{} must publish one layout receipt: {}", run.role, run.out);
+        println!("{}", layouts[0]);
         if run.role == "fault" {
             let line = run.out.lines().find(|l| l.starts_with("pane-timing fault")).ok_or_else(|| anyhow::anyhow!("fault child printed no verdict: {}", run.out))?;
             anyhow::ensure!(line.contains("ok=true"), "fault child verdict not ok: {line}");
@@ -259,6 +262,8 @@ struct PaneDriver<'a> {
     targets: Vec<String>,
     stop: std::sync::Arc<AtomicBool>,
     finished: bool,
+    monitor_px: String,
+    layout_reported: bool,
     failure: Option<anyhow::Error>,
 }
 
@@ -275,6 +280,14 @@ impl PaneDriver<'_> {
     /// The window's own state at the setup bound, so one run says which condition failed and why: the rows of every
     /// listed host key (a missing key is no list, `key:0` an empty one), the frame count, the pane's size, the active host
     /// and its status line (rebuilt only for the active host's events), and the window thread's last failed redraw.
+    fn layout_state(&self) -> String {
+        let Some(state) = self.app.state.as_ref() else { return "no State".to_string() };
+        let columns = state.settings.resolve_preset(state.monitor_aspect).columns.iter()
+            .map(|slot| slot.label()).collect::<Vec<_>>().join(",");
+        format!("monitor_px={} monitor_aspect={} preset={:?} columns={columns}",
+            self.monitor_px, state.monitor_aspect, state.settings.preset)
+    }
+
     fn setup_state(&self, listed: bool) -> String {
         let Some(state) = self.app.state.as_ref() else { return "no State".to_string() };
         let mut lists: Vec<String> = state.workspace_lists.iter().map(|(key, rows)| format!("{key}:{}", rows.len())).collect();
@@ -282,8 +295,8 @@ impl PaneDriver<'_> {
         let text = self.capture.text();
         let redraw_failed = text.lines().filter(|l| l.contains("redraw failed")).last().unwrap_or("none").trim().to_string();
         format!(
-            "listed={listed} lists=[{}] frames={} pty_size={:?} active_host={} status={:?} last_redraw_failure={redraw_failed:?}",
-            lists.join(" "), state.frame_counter, state.pty_size, state.active_host, state.status
+            "listed={listed} lists=[{}] frames={} pty_size={:?} active_host={} status={:?} last_redraw_failure={redraw_failed:?} {}",
+            lists.join(" "), state.frame_counter, state.pty_size, state.active_host, state.status, self.layout_state()
         )
     }
 
@@ -432,6 +445,14 @@ impl PaneDriver<'_> {
 impl ApplicationHandler for PaneDriver<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.app.resumed(event_loop);
+        if !self.layout_reported && self.app.state.is_some() {
+            self.monitor_px = event_loop.primary_monitor().map(|m| {
+                let size = m.size();
+                format!("{}x{}", size.width, size.height)
+            }).unwrap_or_else(|| "unavailable".to_string());
+            println!("pane-timing layout {}", self.layout_state());
+            self.layout_reported = true;
+        }
         if self.app.state.is_none() {
             println!("pane-timing not runnable here: display: native App/State startup did not complete");
             self.stop.store(true, Ordering::SeqCst);
@@ -464,6 +485,10 @@ fn plan_for(role: &str, scenario: &Scenario) -> Result<Vec<Plan>> {
     let mut out: Vec<Plan> = scenario.ready.iter().map(|v| plan(v, false)).collect();
     out.push(plan(scenario.seeded.get(n - 1).ok_or_else(|| anyhow::anyhow!("no seeded row for {role}"))?, true));
     Ok(out)
+}
+
+pub(super) fn pane_child_settings() -> Settings {
+    Settings { preset: crate::ui::persist::settings::PresetMode::Laptop, ..Settings::default() }
 }
 
 fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
@@ -503,7 +528,7 @@ fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     let inputs = crate::ui::init::NativeStartupInputs {
         resume: crate::ui::persist::resume::GlobalState { window_w: Some(1024.0), window_h: Some(768.0), ..Default::default() },
         topology: None,
-        settings: Settings::default(),
+        settings: pane_child_settings(),
         keybindings: KeyBindings::defaults(),
         ledger: Arc::new(std::sync::Mutex::new(NativeProgressLedger::default())),
     };
@@ -520,7 +545,7 @@ fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     let (mut failure, mut finished) = (None, false);
     let result = crate::ui::init::with_native_startup(inputs, || {
         app.run_with(|app| {
-            let mut driver = PaneDriver { app, capture: &capture, role: role.to_string(), plan, idx: 0, cur: None, begun: Instant::now(), targets: Vec::new(), stop: stop.clone(), finished: false, failure: None };
+            let mut driver = PaneDriver { app, capture: &capture, role: role.to_string(), plan, idx: 0, cur: None, begun: Instant::now(), targets: Vec::new(), stop: stop.clone(), finished: false, monitor_px: "unavailable".to_string(), layout_reported: false, failure: None };
             let result = event_loop.run_app(&mut driver);
             failure = driver.failure.take();
             finished = driver.finished;
