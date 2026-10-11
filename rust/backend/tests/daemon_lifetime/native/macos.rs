@@ -2,8 +2,8 @@
 //! and checked against its start time. The knote names the process instance, not the number, so an exit is seen however
 //! the process is reaped. A case signals only a pid its own code got back from its own spawn (`acquire_own`); every other
 //! identity is watched. No task-control right is needed, since nothing here ends a process the case did not start.
-//! The kernel attaches no knote to an unreaped zombie (ESRCH), so the case's own child, opened after its exit and before
-//! its reap, starts exited: the zombie pins its number, so ESRCH can mean nothing else.
+//! The kernel attaches no knote to an unreaped zombie (ESRCH), so a process opened after its exit and before its reap
+//! starts exited: its start time, read the same before and after the attach, shows the number still names it.
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -41,7 +41,7 @@ pub struct Identity {
     pub label: String,
     /// Whether this case's own code got the pid back from its own spawn. Only such an identity can be signalled.
     own: bool,
-    /// `None`: the case's own child had already exited when it was opened.
+    /// `None`: the process had already exited when it was opened.
     exits: Option<OwnedFd>,
     /// `NOTE_EXIT` is delivered once and then detached: the first sight of the exit is kept.
     gone: AtomicBool,
@@ -49,7 +49,8 @@ pub struct Identity {
 
 impl Identity {
     /// Open `pid` as an identity to watch: the process is observed and never signalled. With `created` (the process's own
-    /// report of its start time) the identity is kept only if the process it attached to has that start time.
+    /// report of its start time) the identity is kept only if the process it attached to has that start time. One that
+    /// has exited but is not yet reaped is held as exited.
     pub fn acquire(pid: i32, created: Option<u64>, label: &str) -> io::Result<Identity> {
         Self::open(pid, created, label, false)
     }
@@ -63,13 +64,8 @@ impl Identity {
     fn open(pid: i32, created: Option<u64>, label: &str, own: bool) -> io::Result<Identity> {
         let before = start_ticks(pid)?;
         let exits = watch_exit(pid)?;
-        if exits.is_none() && !own {
-            return Err(io::Error::other(format!(
-                "pid {pid} exited before it could be watched"
-            )));
-        }
-        // The knote attached to the instance the number named at that moment: it is the one read before only if the
-        // start time still reads the same.
+        // The knote, or with none the exit, belongs to the instance the number named at that moment: it is the one read
+        // before only if the start time still reads the same.
         let found = start_ticks(pid)?;
         if found != before {
             return Err(io::Error::other(format!(
@@ -88,8 +84,8 @@ impl Identity {
             created: found,
             label: label.to_string(),
             own,
-            gone: AtomicBool::new(exits.is_none()),
             exits,
+            gone: AtomicBool::new(false),
         })
     }
 

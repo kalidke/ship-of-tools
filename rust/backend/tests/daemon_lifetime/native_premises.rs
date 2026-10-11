@@ -1,10 +1,12 @@
 //! The native premises of the lane, each run on the real launcher and the real fence: a gated child is returned to
 //! its owner before it executes; its setup and exec errors are named; the claim a birth carries stays contended in
 //! the child's copy through the parent's close, the exec and the parent's death; a child's source group is its
-//! parent's. Every process is a real `sh` or `sleep`; every identity is opened while alive and every death is read
-//! from it. Unix only: the launcher is the Unix half of `host::process_tree`.
+//! parent's. Every process is a real `sh`, `sleep` or `/bin/kill`; every identity is opened while alive or, after an
+//! exit, before the reap, and every death is read from it. Unix only: the launcher is the Unix half of
+//! `host::process_tree`.
 
 use crate::fixture_owner::Fixture;
+use crate::kill_probe::{assert_kill_end, kill_control, with_usr1, KILL_PROBE};
 use crate::observations::wait_for;
 use sot_log::host::process_tree::{Birth, BirthError, Group, Launch, Stage};
 use sot_log::supervisor::birth_claim::BirthClaim;
@@ -186,7 +188,7 @@ fn setup_and_exec_errors_are_named_by_stage_and_errno_and_the_target_never_runs(
 }
 
 #[test]
-fn an_own_child_that_exited_before_it_was_held_is_held_as_exited() {
+fn a_child_that_exited_before_it_was_held_is_held_as_exited() {
     let mut fx = Fixture::new("held_after_its_exit");
     // A group that does not exist: the child fails its setup and exits without waiting at its gate.
     let mut launch = sh("exit 0");
@@ -196,13 +198,11 @@ fn an_own_child_that_exited_before_it_was_held_is_held_as_exited() {
     wait_for(BOUND, "the child's exit at its setup", || {
         birth.exited(false).unwrap().then_some(())
     });
-    let index = fx
-        .own(birth.pid(), "exited before it was held")
-        .expect("an own child that already exited is held");
-    assert!(
-        fx.identity(index).exited(Duration::ZERO),
-        "an own child held after its exit reads alive"
-    );
+    let own = fx.own(birth.pid(), "own").unwrap();
+    let watched = fx.watch(birth.pid(), None, "watched").unwrap();
+    for (index, who) in [(own, "own"), (watched, "watched")] {
+        assert!(fx.identity(index).exited(Duration::ZERO), "{who}");
+    }
     let err = birth.ready(BOUND).expect_err("the group step fails");
     assert_eq!(error_of(&err).stage, Stage::Group, "{err}");
     assert_eq!(birth.wait().unwrap().code(), Some(126));
@@ -298,42 +298,34 @@ fn session_and_group_placement_is_reported_by_the_child_itself() {
     assert!(fx.cleanup().complete());
 }
 
-/// `gated`, with SIGUSR1 ignored in this process across the fork: a disposition the target must not inherit.
-fn gated_ignoring_usr1(fx: &mut Fixture, launch: Launch, label: &str) -> Birth {
-    // SAFETY: restored below; SIGUSR1 is otherwise unused by this test binary.
-    let previous = unsafe { libc::signal(libc::SIGUSR1, libc::SIG_IGN) };
-    let (birth, _) = gated(fx, launch, label);
-    // SAFETY: puts back what was there.
-    unsafe { libc::signal(libc::SIGUSR1, previous) };
-    birth
-}
-
 #[test]
 fn the_target_gets_the_standard_streams_the_directory_the_environment_and_clean_signals() {
     let dir = tempfile::tempdir().unwrap();
     let mut fx = Fixture::new("target_surroundings");
-    // On every Unix and through no shell: alone in its own group, /bin/kill sends SIGUSR1 to group 0, itself, and dies by
-    // it only if the signal arrives neither ignored nor blocked (the launcher blocks every signal across the fork).
+    // The kill probe (`kill_probe`), on every Unix: after its two controls, the launched probe, begun with SIGUSR1
+    // ignored here and every signal blocked by the launcher across the fork, must be killed.
+    kill_control(&mut fx, libc::SIG_DFL, "killed");
+    kill_control(&mut fx, libc::SIG_IGN, "survived");
+    let (err_reader, err_writer) = std::io::pipe().unwrap();
     let mut launch = Launch::new("/bin/kill");
-    launch.args(["-s", "USR1", "0"]).group(Group::Own);
-    let mut probe = gated_ignoring_usr1(&mut fx, launch, "kill probe");
+    launch.args(KILL_PROBE).group(Group::Own);
+    launch.stdio(2, OwnedFd::from(err_writer));
+    let (mut probe, _) = with_usr1(libc::SIG_IGN, || gated(&mut fx, launch, "kill probe"));
     let ready = probe.ready(BOUND).unwrap();
     assert_eq!(ready.pgid, ready.pid, "group 0 must be the probe's own");
     probe.release().unwrap();
     probe.exec_result(BOUND).unwrap();
     let status = probe.wait().unwrap();
-    assert_eq!(
-        status.signal(),
-        Some(libc::SIGUSR1),
-        "an ignored or blocked signal reached the target: {status}"
-    );
+    let mut stderr = Vec::new();
+    std::io::Read::read_to_end(&mut &err_reader, &mut stderr).unwrap();
+    assert_kill_end("the launched probe", status, &stderr, "killed");
 
     let (reader, writer) = std::io::pipe().unwrap();
     let cwd = OwnedFd::from(std::fs::File::open(dir.path()).unwrap());
-    // Stdin must be /dev/null (cat ends at once); stdout is the pipe. Linux also lists the target's ignored and blocked
-    // sets; macOS has no /proc.
+    // Stdin must be /dev/null (cat ends at once); stdout is the pipe. Linux also lists the target's whole ignored set,
+    // SIGPIPE (which Rust's runtime ignores) included; macOS has no /proc.
     let mut launch = sh(if cfg!(target_os = "linux") {
-        "cat; pwd; echo \"var=$LAUNCH_VAR\"; grep -E '^Sig(Ign|Blk):' /proc/self/status"
+        "cat; pwd; echo \"var=$LAUNCH_VAR\"; grep '^SigIgn:' /proc/self/status"
     } else {
         "cat; pwd; echo \"var=$LAUNCH_VAR\""
     });
@@ -341,7 +333,7 @@ fn the_target_gets_the_standard_streams_the_directory_the_environment_and_clean_
         .stdio(1, OwnedFd::from(writer))
         .cwd(cwd)
         .env("LAUNCH_VAR", "kept");
-    let mut birth = gated_ignoring_usr1(&mut fx, launch, "surroundings");
+    let (mut birth, _) = with_usr1(libc::SIG_IGN, || gated(&mut fx, launch, "surroundings"));
     birth.ready(BOUND).unwrap();
     birth.release().unwrap();
     birth.exec_result(BOUND).unwrap();
@@ -359,11 +351,6 @@ fn the_target_gets_the_standard_streams_the_directory_the_environment_and_clean_
         assert!(
             lines.contains(&"SigIgn:\t0000000000000000"),
             "an ignored signal reached the target: {out}"
-        );
-        // Where /bin/sh is dash, which clears an inherited mask, this line cannot fail; the kill probe proves the mask.
-        assert!(
-            lines.contains(&"SigBlk:\t0000000000000000"),
-            "a blocked signal reached the target: {out}"
         );
     }
     assert!(fx.cleanup().complete());
