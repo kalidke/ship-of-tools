@@ -245,15 +245,21 @@ impl NativeVolume {
             "L3 diskpart-order start transaction={} script={name}",
             self.transaction
         );
-        let (code, output) = bounded(command, 120);
+        let owned = [
+            (self.image_native.as_str(), "<owned-image>"),
+            (self.mount_native.as_str(), "<owned-mount>"),
+        ];
+        let observation = bounded(command, 120, &owned);
         println!(
             "L3 diskpart-order end transaction={} script={name}",
             self.transaction
         );
-        let text = format!("{commands}\n{output}")
-            .replace(&self.image_native, "<owned-image>")
-            .replace(&self.mount_native, "<owned-mount>");
-        let text = scrub(&text);
+        let text = format!(
+            "{}\n{}",
+            scrub_owned(commands, &owned),
+            observation.combined()
+        );
+        let code = observation.exit_record();
         let logs = scratch().join("logs");
         std::fs::create_dir_all(&logs).unwrap();
         let log = logs.join(format!("l3-diskpart-{}-{name}.log", self.transaction));
@@ -263,7 +269,11 @@ impl NativeVolume {
         );
         std::fs::write(log, &transcript).expect("retain the sanitized DiskPart transcript");
         print!("{transcript}");
-        assert_eq!(code, 0, "L3 HARNESS FAILURE: DiskPart transaction failed");
+        assert!(
+            observation.status.success(),
+            "L3 HARNESS FAILURE: DiskPart transaction failed\n{}",
+            observation.diagnostic("command")
+        );
     }
 
     #[cfg(windows)]
@@ -470,14 +480,14 @@ impl Drop for NativeVolume {
 
 #[cfg(target_os = "macos")]
 fn native_command(command: Command) -> String {
-    let (code, text) = bounded(command, 120);
-    assert_eq!(
-        code,
-        0,
+    let observation = bounded(command, 120, &[]);
+    assert!(
+        observation.status.success(),
         "L3 HARNESS FAILURE: native fixture setup/cleanup failed:\n{}",
-        scrub(&text)
+        observation.diagnostic("command")
     );
-    print!("{}", scrub(&text));
+    let text = observation.combined();
+    print!("{text}");
     text
 }
 

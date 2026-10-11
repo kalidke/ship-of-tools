@@ -25,30 +25,80 @@ fn scratch() -> PathBuf {
 }
 
 #[cfg(any(target_os = "macos", windows))]
-fn bounded(mut command: Command, seconds: u64) -> (i32, String) {
+struct NativeObservation {
+    status: std::process::ExitStatus,
+    stdout: String,
+    stderr: String,
+}
+
+#[cfg(any(target_os = "macos", windows))]
+impl NativeObservation {
+    fn combined(&self) -> String {
+        format!("{}{}", self.stdout, self.stderr)
+    }
+
+    fn diagnostic(&self, label: &str) -> String {
+        scrub(&format!(
+            "{label} status={} code={:?} success={}\n{label} stdout:\n{}\n{label} stderr:\n{}",
+            self.status,
+            self.status.code(),
+            self.status.success(),
+            self.stdout,
+            self.stderr
+        ))
+    }
+
+    fn exit_record(&self) -> String {
+        self.status
+            .code()
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "none".into())
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn bounded(mut command: Command, seconds: u64, owned: &[(&str, &str)]) -> NativeObservation {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let child = command.spawn().unwrap_or_else(|error| {
         panic!(
-            "L3 HARNESS FAILURE: start the owned premise command: {}",
-            scrub(&error.to_string())
+            "L3 HARNESS FAILURE: start the owned premise command: {}; command status=unavailable; command stdout: unavailable; command stderr: unavailable",
+            scrub_owned(&error.to_string(), owned)
         )
     });
-    finish_bounded(child, Duration::from_secs(seconds))
+    finish_bounded(child, Duration::from_secs(seconds), owned)
 }
 
 #[cfg(any(target_os = "macos", windows))]
-fn finish_bounded(child: std::process::Child, bound: Duration) -> (i32, String) {
+fn finish_bounded(
+    child: std::process::Child,
+    bound: Duration,
+    owned: &[(&str, &str)],
+) -> NativeObservation {
     let (status, out, err) = sot_log::test_isolated::drain(child)
         .try_wait_within(bound)
-        .unwrap_or_else(|error| panic!("L3 HARNESS FAILURE: native command: {}", scrub(&error)));
-    (status.code().unwrap_or(-1), scrub(&format!("{out}{err}")))
+        .unwrap_or_else(|error| {
+            panic!(
+                "L3 HARNESS FAILURE: native command: {}",
+                scrub_owned(&error, owned)
+            )
+        });
+    NativeObservation {
+        status,
+        stdout: scrub_owned(&out, owned),
+        stderr: scrub_owned(&err, owned),
+    }
 }
 
 #[cfg(any(target_os = "macos", windows))]
 fn scrub(text: &str) -> String {
+    scrub_owned(text, &[])
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn scrub_owned(text: &str, owned: &[(&str, &str)]) -> String {
     let mut text = text
         .split_inclusive('\n')
         .map(|line| {
@@ -66,7 +116,14 @@ fn scrub(text: &str) -> String {
             }
         })
         .collect::<String>();
-    for (value, replacement) in [
+    let mut owned = owned.to_vec();
+    owned.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+    for (value, replacement) in owned {
+        if !value.is_empty() {
+            text = text.replace(value, replacement);
+        }
+    }
+    let mut roots: Vec<_> = [
         (std::env::var_os("CARGO_TARGET_DIR"), "<target>"),
         (
             Some(
@@ -81,12 +138,16 @@ fn scrub(text: &str) -> String {
         (std::env::var_os("HOME"), "<home>"),
         (std::env::var_os("USERPROFILE"), "<home>"),
         (Some(scratch().into_os_string()), "<scratch>"),
-    ] {
-        if let Some(value) = value {
-            let value = value.to_string_lossy();
-            if !value.is_empty() {
-                text = text.replace(value.as_ref(), replacement);
-            }
+    ]
+    .into_iter()
+    .filter_map(|(value, replacement)| {
+        value.map(|value| (value.to_string_lossy().into_owned(), replacement))
+    })
+    .collect();
+    roots.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+    for (value, replacement) in roots {
+        if !value.is_empty() {
+            text = text.replace(&value, replacement);
         }
     }
     text
