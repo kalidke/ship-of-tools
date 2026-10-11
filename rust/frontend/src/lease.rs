@@ -119,6 +119,8 @@ struct Book {
     /// Each daemon's newest nonzero not-ended count no presented frame has acked, keyed at
     /// its grant by the state root it named (else its label): `owed`, `notice_seen`.
     owed: BTreeMap<HostKey, u32>,
+    /// The intent of a leave that stayed (`Leases::stay`), until the next `leave_all`: `notice` names it.
+    stayed: Option<LeaveIntent>,
 }
 
 /// A lease handshake in flight. Its drop, after its `set`, counts it down; the last one closes a leave's late-grant channel.
@@ -151,7 +153,7 @@ impl Leases {
             .collect();
         Arc::new(Self {
             exempt,
-            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, owed: BTreeMap::new() }),
+            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, owed: BTreeMap::new(), stayed: None }),
             reply_wait: lease::LEASE_REPLY_WAIT,
         })
     }
@@ -339,11 +341,11 @@ impl Leases {
         }
     }
 
-    /// The status-line notice for the current standings, if any.
+    /// The status-line notice: a leave that stayed (until the next leave), else the one for the current standings.
     pub fn notice(&self) -> Option<&'static str> {
-        let standings: Vec<Standing> =
-            self.book.lock().unwrap().slots.values().map(Self::resolved).collect();
-        lease_notice(self.exempt, &standings)
+        let book = self.book.lock().unwrap();
+        let standings: Vec<Standing> = book.slots.values().map(Self::resolved).collect();
+        book.stayed.map(exit::stay_line).or_else(|| lease_notice(self.exempt, &standings))
     }
 
     /// The state roots of every granted lease.
@@ -391,11 +393,12 @@ impl Leases {
     /// flight grants leaves too (`set`); the leave waits for each such
     /// handshake. A second call (an X during a Keep) supersedes the first:
     /// each holder writes the new line after the old one, and the old acks
-    /// are dropped.
+    /// are dropped. A stay's notice ends here.
     pub fn leave_all(&self, intent: LeaveIntent, exit_code: i32, now: Instant) -> Option<Leaving> {
         let mut book = self.book.lock().unwrap();
         let (late_tx, late) = mpsc::unbounded_channel();
         book.leaving = Some(intent);
+        book.stayed = None;
         book.late = (book.inflight > 0).then_some(late_tx);
         let mut pending = Vec::new();
         for (host, slot) in book.slots.iter() {
@@ -414,15 +417,8 @@ impl Leases {
         }
         let mut leaving = Leaving::new(intent, exit_code, pending, now);
         leaving.late = Some(late);
+        leaving.unsettled = book.inflight;
         Some(leaving)
-    }
-
-    /// A leave that stayed (`LeaveStep::Stay`): the window goes on, so a handshake still in flight installs as usual,
-    /// with no leave behind it, and the next one is taken.
-    pub fn stay(&self) {
-        let mut book = self.book.lock().unwrap();
-        book.leaving = None;
-        book.late = None;
     }
 
     /// A forced exit's last step: block until every holder has written each
@@ -492,6 +488,8 @@ pub struct Leaving {
     /// The outcomes of handshakes in flight when the leave began
     /// (`Leases::set`); None once closed, when no handshake is in flight.
     late: Option<mpsc::UnboundedReceiver<PendingAck>>,
+    /// How many of the handshakes in flight when the leave began have not settled yet (`settle`).
+    unsettled: usize,
     outcomes: Vec<(HostKey, LeaveOutcome)>,
     deadline: Instant,
     /// The line the outcomes left to show, and when the poll first had it.
@@ -507,7 +505,8 @@ pub enum LeaveStep {
     Wait(Instant),
     Show,
     Exit,
-    /// A Keep or Handover whose lease handshake is still unanswered at the deadline: the window stays open.
+    /// A Keep or Handover whose lease handshake is still unanswered at the deadline: the window stays open once
+    /// `Leases::stay` confirms it.
     Stay,
 }
 
@@ -527,6 +526,7 @@ impl Leaving {
             exit_code,
             pending,
             late: None,
+            unsettled: 0,
             outcomes: Vec::new(),
             deadline: now + wait,
             shown: None,
@@ -550,22 +550,7 @@ impl Leaving {
             tracing::warn!(intent = ?self.intent, "window lease: no frame showed the leaving line; exiting without its ack");
             return LeaveStep::Exit;
         }
-        let mut closed = false;
-        if let Some(late) = self.late.as_mut() {
-            loop {
-                match late.try_recv() {
-                    Ok(p) => self.pending.push(p),
-                    Err(mpsc::error::TryRecvError::Empty) => break,
-                    Err(mpsc::error::TryRecvError::Disconnected) => {
-                        closed = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if closed {
-            self.late = None;
-        }
+        self.settle(now);
         let mut still = Vec::new();
         for (host, mut rx) in std::mem::take(&mut self.pending) {
             match rx.try_recv() {
@@ -580,8 +565,7 @@ impl Leaving {
         if (!self.pending.is_empty() || self.late.is_some()) && now < self.deadline {
             return LeaveStep::Wait(self.deadline.min(now + LEAVE_POLL));
         }
-        // Exiting would drop a request the daemon may still grant, and that grant would depart as a Close.
-        if self.late.is_some() && self.intent != LeaveIntent::Close {
+        if self.must_stay() {
             return LeaveStep::Stay;
         }
         let timed_out = std::mem::take(&mut self.pending).into_iter().map(|(h, _)| (h, LeaveOutcome::TimedOut));
@@ -598,6 +582,29 @@ impl Leaving {
         self.shown = Some((line, now));
         self.acks = report.acks;
         LeaveStep::Show
+    }
+
+    /// Moves the outcomes of the handshakes that settled since the last call (`Leases::install`) into the wait, and
+    /// closes `late` once none is in flight. A Keep's or a Handover's leave taken by a late grant gets its own
+    /// `KEEP_ACK_WAIT` from here: exiting at once could end the window before the leave is written.
+    fn settle(&mut self, now: Instant) {
+        let Some(late) = self.late.as_mut() else { return };
+        loop {
+            match late.try_recv() {
+                Ok(p) => {
+                    self.pending.push(p);
+                    self.unsettled = self.unsettled.saturating_sub(1);
+                    if self.intent != LeaveIntent::Close {
+                        self.deadline = self.deadline.max(now + lease::KEEP_ACK_WAIT);
+                    }
+                }
+                Err(mpsc::error::TryRecvError::Empty) => return,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.late = None;
+                    return;
+                }
+            }
+        }
     }
 
     /// A presented frame drew the line whole: the hold starts from it, and

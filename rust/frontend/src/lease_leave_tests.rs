@@ -699,12 +699,78 @@ async fn a_stayed_window_takes_its_late_grant_without_leaving() {
     asked.await.unwrap();
     let t0 = Instant::now();
     let mut leaving = leases.leave_all(LeaveIntent::Keep, 0, t0).unwrap();
-    assert_eq!(leaving.poll(t0 + lease::KEEP_ACK_WAIT + Duration::from_secs(1)), LeaveStep::Stay);
-    leases.stay();
+    let at = t0 + lease::KEEP_ACK_WAIT + Duration::from_secs(1);
+    assert_eq!(leaving.poll(at), LeaveStep::Stay);
+    assert!(leases.stay(&mut leaving, at), "the request is still unanswered");
     open.send(()).unwrap();
     assert_eq!(in_flight.await.unwrap().unwrap(), 0);
     assert!(leases.held(&host), "the late grant is held");
     assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0, "a held lease is not retaken");
     drop((leaving, leases));
     assert_eq!(finish(fake, &log).await, ["eof"], "the stayed window wrote behind its late grant");
+}
+
+/// A grant that lands between the poll's `Stay` and the stay takes the leave under the book's lock, so the window does
+/// not stay with that leave sent; the leave then waits its own ack wait instead of exiting before the daemon has it.
+#[tokio::test]
+async fn a_grant_between_the_poll_and_the_stay_takes_the_leave() {
+    for (intent, name, code) in [(LeaveIntent::Keep, "keep", 0), (LeaveIntent::Handover, "handover", 75)] {
+        let (listener, path) = bind("stayrace");
+        let (asked_tx, asked) = oneshot::channel();
+        let (open, open_rx) = oneshot::channel();
+        let (log, _, fake) = leave_fake(listener, Some((asked_tx, open_rx)), None, Duration::ZERO);
+        let host = "local".to_string();
+        let leases = Leases::new(false, vec![host.clone()]);
+        let in_flight = {
+            let (leases, host) = (leases.clone(), host.clone());
+            tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
+        };
+        asked.await.unwrap();
+        let t0 = Instant::now();
+        let mut leaving = leases.leave_all(intent, code, t0).unwrap();
+        let at = t0 + lease::KEEP_ACK_WAIT + Duration::from_secs(1);
+        assert_eq!(leaving.poll(at), LeaveStep::Stay);
+        // The grant installs after the poll and before the stay.
+        open.send(()).unwrap();
+        assert_eq!(in_flight.await.unwrap().unwrap(), 0);
+        assert!(!leases.stay(&mut leaving, at), "the window stayed after the late grant took the {name}");
+        assert!(logged(&log, 1).await.first().is_some_and(|e| is_leave(e, name)), "the daemon has no {name}");
+        assert!(matches!(leaving.poll(at), LeaveStep::Wait(_)), "the late grant's {name} got no ack wait");
+        // The daemon never answers it: the leave ends at its own bound, as at any deadline.
+        let step = leaving.poll(at + lease::KEEP_ACK_WAIT);
+        match intent {
+            LeaveIntent::Keep => assert_eq!((step, leaving.line().as_deref()), (LeaveStep::Show, Some(LEAVE_UNCONFIRMED_KEEP))),
+            _ => assert_eq!((step, leaving.exit_code), (LeaveStep::Exit, 75)),
+        }
+        assert_eq!(leases.notice(), None, "a leave that did not stay has no stay notice");
+        drop((leaving, leases));
+        assert_eq!(finish(fake, &log).await.len(), 2, "the {name}, then eof");
+    }
+}
+
+/// A handshake's guard drops a moment after its grant installs, so `late` can still be open when the stay is decided:
+/// the count of handshakes settled decides, not the open channel. Here the test installs for the handshake in flight.
+#[tokio::test]
+async fn a_settled_handshake_never_stays_while_its_guard_lives() {
+    let (listener, path) = bind("stayguard");
+    let (asked_tx, asked) = oneshot::channel();
+    let (open, open_rx) = oneshot::channel::<()>();
+    let (_, _, fake) = leave_fake(listener, Some((asked_tx, open_rx)), None, Duration::ZERO);
+    let host = "local".to_string();
+    let leases = Leases::new(false, vec![host.clone()]);
+    let in_flight = {
+        let (leases, host) = (leases.clone(), host.clone());
+        tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
+    };
+    asked.await.unwrap();
+    let t0 = Instant::now();
+    let mut leaving = leases.leave_all(LeaveIntent::Handover, 75, t0).unwrap();
+    let at = t0 + lease::KEEP_ACK_WAIT + Duration::from_secs(1);
+    assert_eq!(leaving.poll(at), LeaveStep::Stay);
+    let (holder, _cmds) = mpsc::unbounded_channel();
+    leases.set(&host, Standing::Granted { state_root: None }, Some(holder));
+    assert!(!leases.stay(&mut leaving, at), "the window stayed though its one handshake had settled");
+    in_flight.abort();
+    fake.abort();
+    drop(open);
 }

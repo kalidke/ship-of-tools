@@ -157,6 +157,19 @@ fn begin_leave(leases: &crate::lease::Leases, prompt: &mut Option<NavPrompt>, le
     if leaving.is_some() { LeaveEffect::Redraw } else { LeaveEffect::Finish(code) }
 }
 
+/// A leave's stay (`LeaveStep::Stay`, or a Ctrl+Q during its wait), over the same slots as `begin_leave`: when
+/// `Leases::stay` confirms it, the leave ends and the window stays open, its lease notice saying why (true);
+/// otherwise a grant took the leave first, and the wait goes on (false).
+fn confirm_stay(leases: &crate::lease::Leases, leaving: &mut Option<crate::lease::Leaving>, should_exit: &mut bool,
+    now: std::time::Instant) -> bool {
+    if !leaving.as_mut().is_some_and(|l| leases.stay(l, now)) {
+        return false;
+    }
+    *leaving = None;
+    *should_exit = false;
+    true
+}
+
 impl State {
     /// ADR 0041 step 6 U3 ruling (a): the ONE quit dispatcher every
     /// user-requested exit routes through — the window-close request and
@@ -167,7 +180,8 @@ impl State {
     ///
     /// `exit_intent` decides: the window's close button leaves with Close,
     /// Ctrl+Q asks first (`NavPrompt::ConfirmQuit`), and a second request
-    /// while leaving exits at once (an X during a Keep closes instead). `leave` tells each held lease's daemon
+    /// while leaving exits at once (an X during a Keep closes instead, and a Ctrl+Q while a Keep or a Handover waits
+    /// on an unanswered lease request stays open, `confirm_stay`). `leave` tells each held lease's daemon
     /// what to do with this computer's sessions and the window exits once
     /// the acks are in (`about_to_wait`).
     pub(in crate::ui) fn request_quit(&mut self, event_loop: &ActiveEventLoop, reason: ExitReason) {
@@ -177,6 +191,11 @@ impl State {
                 self.window.request_redraw();
             }
             ExitStep::Now { code } => {
+                // A Ctrl+Q while a Keep or a Handover waits on an unanswered lease request stays open, as at the
+                // leave's deadline: exiting would drop the request. An X still exits.
+                if matches!(reason, ExitReason::QuitKey) && self.stay_open(std::time::Instant::now()) {
+                    return;
+                }
                 let code = terminal_close(&self.exit_deadline, &self.leases, self.leaving.as_mut(), code);
                 self.finish_exit(event_loop, code);
             }
@@ -202,25 +221,15 @@ impl State {
         end_loop(&self.exit_deadline, code, || event_loop.exit());
     }
 
-    /// A Keep or Handover still waiting on an unanswered lease request when its ack wait ends (`LeaveStep::Stay`):
-    /// exiting would drop the request, and a later grant would end this computer's sessions, so the window stays open.
-    pub(in crate::ui) fn stay_open(&mut self) {
-        let intent = self.leaving.take().map(|l| l.intent);
-        self.leases.stay();
-        self.should_exit = false;
-        self.status = stay_line(intent).to_string();
-        self.window.request_redraw();
-    }
-}
-
-/// The status line of a leave that stayed open.
-fn stay_line(intent: Option<LeaveIntent>) -> &'static str {
-    match intent {
-        Some(LeaveIntent::Handover) => {
-            "relaunch not done · this computer's backend has not answered the window lease; the window stays open"
+    /// A Keep or Handover still waiting on an unanswered lease request (`confirm_stay`): exiting would drop the
+    /// request, and a later grant would end this computer's sessions, so the window stays open. False when a grant
+    /// took the leave first.
+    pub(in crate::ui) fn stay_open(&mut self, now: std::time::Instant) -> bool {
+        let stayed = confirm_stay(&self.leases, &mut self.leaving, &mut self.should_exit, now);
+        if stayed {
+            self.window.request_redraw();
         }
-        _ => "keep not done · this computer's backend has not answered the window lease, so its sessions cannot be kept \
-              yet; the window stays open",
+        stayed
     }
 }
 
@@ -312,4 +321,56 @@ mod tests {
         }
     }
 
+    /// A stay, mid-wait (a Ctrl+Q) or at the deadline, ends the leave and keeps the window open: neither the next
+    /// redraw nor the next wake exits, the late grant installs with no leave behind it, a new lease is taken, and the
+    /// lease notice names the stay until the next leave. A leave with no request unanswered never stays.
+    #[tokio::test]
+    async fn a_stay_keeps_the_window_open_until_the_next_leave() {
+        use crate::lease::{grant_tests::bind, leave_tests::{leave_fake, logged, is_leave, finish}, LeaveStep};
+        use std::time::Duration;
+        for (intent, code, said, at_deadline) in [(LeaveIntent::Keep, 0, "keep not done", false),
+            (LeaveIntent::Keep, 0, "keep not done", true), (LeaveIntent::Handover, 75, "relaunch not done", false),
+            (LeaveIntent::Handover, 75, "relaunch not done", true)] {
+            let (listener, path) = bind("staytransition");
+            let (asked_tx, asked) = tokio::sync::oneshot::channel();
+            let (open, open_rx) = tokio::sync::oneshot::channel();
+            let (log, _, fake) = leave_fake(listener, Some((asked_tx, open_rx)), None, Duration::ZERO);
+            let (host, next) = ("fixture".to_string(), "next".to_string());
+            let leases = crate::lease::Leases::new(false, vec![host.clone(), next.clone()]);
+            let in_flight = {
+                let (leases, host) = (leases.clone(), host.clone());
+                tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
+            };
+            asked.await.unwrap();
+            let (mut prompt, mut leaving, mut should_exit) = (None, None, false);
+            let t0 = std::time::Instant::now();
+            assert_eq!(begin_leave(&leases, &mut prompt, &mut leaving, &mut should_exit, intent, code, t0), LeaveEffect::Redraw);
+            let at = if at_deadline { t0 + sot_protocol::ops::lease::KEEP_ACK_WAIT + Duration::from_secs(1) } else { t0 };
+            if at_deadline {
+                assert_eq!(leaving.as_mut().unwrap().poll(at), LeaveStep::Stay);
+            }
+            assert!(confirm_stay(&leases, &mut leaving, &mut should_exit, at), "{intent:?} with its request unanswered");
+            assert!(leaving.is_none() && !should_exit && !redraw_exits(should_exit, leaving.is_some(), false),
+                "a stayed window would exit at its next redraw or wake");
+            assert!(leases.notice().is_some_and(|n| n.starts_with(said)), "the stay's notice: {:?}", leases.notice());
+            open.send(()).unwrap();
+            assert_eq!(in_flight.await.unwrap().unwrap(), 0);
+            assert!(leases.held(&host), "the late grant is held");
+            assert!(leases.notice().is_some_and(|n| n.starts_with(said)), "the stay's notice ended at the grant");
+            let (listener, path) = bind("staynext");
+            let (next_log, _, next_fake) = leave_fake(listener, None, None, Duration::ZERO);
+            leases.before_data_connection(&next, &path, None, |_| {}).await.expect("a stayed window takes a new lease");
+            assert_eq!(begin_leave(&leases, &mut prompt, &mut leaving, &mut should_exit, LeaveIntent::Keep, 0, t0),
+                LeaveEffect::Redraw);
+            assert_eq!(leases.notice(), None, "the next leave ends the stay's notice");
+            assert!(!confirm_stay(&leases, &mut leaving, &mut should_exit, t0), "a Keep with no request unanswered");
+            assert!(leaving.is_some() && should_exit);
+            assert!(logged(&log, 1).await.first().is_some_and(|e| is_leave(e, "keep")), "the next leave reached the late grant");
+            drop((leaving, leases));
+            for (fake, log) in [(fake, log), (next_fake, next_log)] {
+                let seen = finish(fake, &log).await;
+                assert!(seen.len() == 2 && is_leave(&seen[0], "keep"), "only the next leave was written: {seen:?}");
+            }
+        }
+    }
 }
