@@ -242,7 +242,6 @@ struct Plan {
 struct Current {
     at: Instant,
     mark: usize,
-    seen: Option<Seen>,
 }
 
 struct Seen {
@@ -279,9 +278,7 @@ impl PaneDriver<'_> {
         state.terminal.backend().project_lines(0.0, 0.0, 1.0, 1.0).into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n")
     }
 
-    /// The window's own state at the setup bound, so one run says which condition failed and why: the rows of every
-    /// listed host key (a missing key is no list, `key:0` an empty one), the frame count, the pane's size, the active host
-    /// and its status line (rebuilt only for the active host's events), and the window thread's last failed redraw.
+    /// The monitor shape and effective in-memory layout of this child.
     fn layout_state(&self) -> String {
         let Some(state) = self.app.state.as_ref() else { return "no State".to_string() };
         let columns = state.settings.resolve_preset(state.monitor_aspect).columns.iter()
@@ -290,6 +287,9 @@ impl PaneDriver<'_> {
             self.monitor_px, state.monitor_aspect, state.settings.preset)
     }
 
+    /// The window's own state at the setup bound, so one run says which condition failed and why: the rows of every
+    /// listed host key (a missing key is no list, `key:0` an empty one), the frame count, the pane's size, the active host
+    /// and its status line (rebuilt only for the active host's events), and the window thread's last failed redraw.
     fn setup_state(&self, listed: bool) -> String {
         let Some(state) = self.app.state.as_ref() else { return "no State".to_string() };
         let mut lists: Vec<String> = state.workspace_lists.iter().map(|(key, rows)| format!("{key}:{}", rows.len())).collect();
@@ -329,7 +329,7 @@ impl PaneDriver<'_> {
         if let Some(state) = self.app.state.as_mut() {
             state.switch_to_workspace(HOST_KEY.to_string(), Some(slug), None, true);
         }
-        self.cur = Some(Current { at, mark, seen: None });
+        self.cur = Some(Current { at, mark });
         Ok(())
     }
 
@@ -342,24 +342,22 @@ impl PaneDriver<'_> {
             return Ok(());
         }
         let text = self.capture.text();
-        let (at, mark, seen_before) = {
+        let (at, mark) = {
             let c = self.cur.as_ref().unwrap();
-            (c.at, c.mark, c.seen.is_some())
+            (c.at, c.mark)
         };
         let new = &text[mark..];
         let plan = &self.plan[self.idx];
         let bound = if plan.resume { RESUME_BOUND } else { READY_BOUND };
-        if !seen_before {
-            if let Some(first) = receipts(new).first() {
-                self.check_fault_order(new)?;
-                let seen = Seen { total_ns: *first, driver_ns: at.elapsed().as_nanos(), open_ms: self.open_ms(), sentinel: self.cells().contains(&plan.nonce) };
-                return self.finish_sample(event_loop, Some(seen), "presented".to_string(), new.to_string());
-            } else if at.elapsed() > bound {
-                anyhow::ensure!(self.role != "fault", "fault child saw no receipt within {bound:?}");
-                return self.finish_sample(event_loop, None, "timeout".to_string(), new.to_string());
-            } else if let Some(outcome) = self.dead_client_outcome(plan.resume) {
-                return self.finish_sample(event_loop, None, outcome, new.to_string());
-            }
+        if let Some(first) = receipts(new).first() {
+            self.check_fault_order(new)?;
+            let seen = Seen { total_ns: *first, driver_ns: at.elapsed().as_nanos(), open_ms: self.open_ms(), sentinel: self.cells().contains(&plan.nonce) };
+            return self.finish_sample(event_loop, Some(seen), "presented".to_string(), new.to_string());
+        } else if at.elapsed() > bound {
+            anyhow::ensure!(self.role != "fault", "fault child saw no receipt within {bound:?}");
+            return self.finish_sample(event_loop, None, "timeout".to_string(), new.to_string());
+        } else if let Some(outcome) = self.dead_client_outcome(plan.resume) {
+            return self.finish_sample(event_loop, None, outcome, new.to_string());
         }
         Ok(())
     }
