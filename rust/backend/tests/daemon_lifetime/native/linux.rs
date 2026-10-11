@@ -1,5 +1,6 @@
 //! Linux: an identity is a pidfd opened while the process was alive and checked against its start time. The pidfd
-//! becomes readable at the process's exit and stays so after the reap, so an exit is seen however it was reaped.
+//! becomes readable at the process's exit and stays so after the reap, so an exit is seen however it was reaped. A pidfd
+//! and `/proc` also open on an unreaped zombie, so a process opened after its exit and before its reap reads as exited.
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};

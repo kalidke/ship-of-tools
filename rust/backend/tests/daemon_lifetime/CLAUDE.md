@@ -13,8 +13,9 @@ of the backend's tests; the suites span subsystems, so this page names no charte
 - `guard.rs`: the Linux lifetime guard on real daemons: it mirrors the daemon's end and forwards signals, a stop of the guard stops the daemon with it and a TSTP that cannot stop the daemon stops neither, a lost guard ends the daemon, the relay refresh follows the guard, the prologue refuses a second thread before the durable parent is started (feature `daemon-lifetime-faults`); and `Run`, the guarded daemon the cases start and end (its guard, its capsules, its outcome file)
 - `ephemerals.rs`: a ready row whose REPL has started a tree detached (spinning or returned), the drain that outlasts a forking child and the guard that ends only its own subtree (these two need Julia) (feature `daemon-lifetime-faults`)
 - `fixture_owner.rs`: `Fixture`, the outside owner: it watches every process a case learns of, holds authority over the ones its own code spawned, saved results, bounded cleanup
+- `kill_probe.rs`: the kill probe: `/bin/kill` alone in its group sends itself SIGUSR1; its three controls (SIGUSR1 at its default, ignored, blocked) and how its end is read (killed, survived, refused)
 - `observations.rs`: `wait_for`, and `BarrierDir`, the folder a process held at a phase barrier reports to
-- `native/`: the per-OS process authority (an identity opened while alive; death read from it)
+- `native/`: the per-OS process authority (an identity opened while alive, or after its exit and before its reap; death read from it)
 - `native_premises.rs`: the native launcher and the fence claim on real children (gate, owning return, errors, claim lifetime, source group)
 - `outcomes.rs`: the serving daemon's outcomes read at the launched process: the main future's Ok, error and panic (0, 1, 101), INT and TERM on a daemon whose runtime is stalled and whose inherited mask blocks them (it ends by the signal), a second TERM changing nothing, a service manager's stop and an outside TERM counted as a clean stop (a test-owned unit; `SOT_TEST_REQUIRE_USER_MANAGER=1` makes a missing user manager a failure), a close that outlasts its bound (1; the ephemeral trees go too) and the early commands' own statuses; the capsule stays alive through each (feature `daemon-lifetime-faults`)
 - `update_fixture.rs`: what an automatic update works on, built from real programs: an upstream git repository with the release's tag, an install-shaped prefix (a copy of the built daemon beside its capsule, an install manifest, a base clone) and a release folder (the platform archive, `SHA256SUMS`, `COMMIT`) for the directory fetcher
@@ -29,7 +30,8 @@ of the backend's tests; the suites span subsystems, so this page names no charte
 
 ## Rules
 - No case reads source text as proof: a premise is a real launch, lock or daemon, and a death is read from an
-  identity opened while the process was alive, never from a number or a name.
+  identity opened while the process was alive (or after its exit and before its reap, when it reads as exited), never
+  from a number or a name.
 - A case saves what the product did before `Fixture::cleanup`, ends only the identities its own code spawned (`Fixture::own`)
   within `CLEANUP_RESERVE`, and asserts the saved result after; cleanup never calls product code.
 - A case that holds a real process at a phase barrier needs the barrier build: `sot-capsule` built with
@@ -41,7 +43,8 @@ of the backend's tests; the suites span subsystems, so this page names no charte
   `sot_log::test_isolated::test_command` and `enter`, and does nothing in an ordinary run.
 - On macOS an identity is a kqueue `NOTE_EXIT` knote (`native/macos.rs`); the cases that need the Linux guard or `/proc`
   (`guard`, `outcomes`, `updates`, `done`, `durable`, `routes`, `successor`) are compiled for Linux only, and the macOS leg
-  runs `native_premises` and the in-crate lifecycle tests.
+  runs `native_premises` and the in-crate lifecycle tests. `native_premises` has one `/proc` read (the target's ignored
+  signals), which runs on Linux only, inside a case macOS also runs.
 - A case ends only a pid its own code got back from its own spawn (`Fixture::own`; the launched guard, a gated birth, a
   child it started). A pid a product printed, a fixture process wrote, a peer credential reported, /proc showed or a parent
   link reached is looked at through a pidfd (`Fixture::watch`) and is never signalled: `Identity::kill` refuses it. A case

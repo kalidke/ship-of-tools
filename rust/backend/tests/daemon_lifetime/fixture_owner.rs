@@ -56,7 +56,8 @@ impl Fixture {
     }
 
     /// Watch `pid` (checked against `created` when the process reported its own start time), under `label`. The case did
-    /// not start it: it is observed through its identity and never signalled.
+    /// not start it: it is observed through its identity and never signalled. One that has exited but is not yet reaped
+    /// is held as exited.
     pub fn watch(&mut self, pid: i32, created: Option<u64>, label: &str) -> std::io::Result<usize> {
         let identity = Identity::acquire(pid, created, label)?;
         self.identities.push(identity);
@@ -64,6 +65,7 @@ impl Fixture {
     }
 
     /// Hold the process this case's own code got `pid` back for from its own spawn and has not reaped: cleanup may end it.
+    /// A child that has already exited is held as exited.
     pub fn own(&mut self, pid: i32, label: &str) -> std::io::Result<usize> {
         let identity = Identity::acquire_own(pid, label)?;
         self.identities.push(identity);
