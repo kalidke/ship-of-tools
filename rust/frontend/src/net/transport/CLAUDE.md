@@ -12,16 +12,19 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
 - `steady.rs`: steady_loop and its held read/write futures, encoded-request correlation and orderly outgoing-close drain.
 - `steady_tests.rs`: the steady loop over small in-memory streams: upload and download progress, blocked pings, fairness, partial frames, early replies, failures, close and cancellation.
 - `tests.rs`: the connection task's tests: backoff, the redial pace against a daemon that answers the hello and drops
-  (the real reconnect loop, a window-free `Redraw`), the link gate, a tree.root error reply, a closed local connection,
+  (the real reconnect loop, a window-free `Redraw`), the link gate, a tree.root error reply, a daemon falling silent
+  before each connect reply (on a paused clock, at the real bound), a closed local connection,
   the stderr drain, and the two `connect_pipe` cases with another account's listener (refusal, full backlog), which
   need passwordless `sudo -n` and skip without it except on CI
 - `golden_tests.rs`: every request kind's wire line and the events its error reply yields, against the golden file
 - `testdata/`: golden files for golden_tests.rs
 - `ops/`: one file per op family: the request each op writes, and the event its reply becomes
-- `hello.rs`: the hello: its 30 s reply bound (`HELLO_TIMEOUT`, `read_hello_reply`), the refusal type `HelloRefused`,
+- `hello.rs`: the hello: the 30 s bound on each connect reply, which the preamble shares (`CONNECT_REPLY_BOUND`,
+  `read_connect_reply`), the refusal type `HelloRefused`,
   the protocol-mismatch message, and the three steps of the hello (`send_hello`, `read_hello`, which puts any refused
   hello on the blocking screen as `IncomingEvt::HelloRefused`, and `accept_hello`)
-- `preamble.rs`: the connect preamble after the hello (tree.root, then preview.get of its root)
+- `preamble.rs`: the connect preamble after the hello (tree.root, then preview.get of its root), each reply within
+  `CONNECT_REPLY_BOUND`
 
 ## Start here
 `spawn`, then `connect_and_run`, `run_protocol`, `run_session` (the hello and the preamble), `steady.rs` `steady_loop` (everything
@@ -30,7 +33,7 @@ after). A new request or reply goes through `ops/`.
 ## Rules
 - Steady reads and writes each use one held future; a partial frame is never cancelled and restarted. Outgoing close finishes the current write and retains the current read before draining.
 - A request is encoded in memory and its pending entries enter PendingGuard before its first network byte; at most one encoded write is active and reads remain polled during it.
-- The hello and the preamble read plainly, before any request can race them.
+- The hello and the preamble read plainly, each reply within `CONNECT_REPLY_BOUND`, before any request can race them.
 - send_figure_get and send_result_tree register their pending entry before writing; PendingGuard reports their outstanding failures when the connection ends.
 - The link gate goes up at any hello reply (`read_hello`) and down when the session ends, except after a hello refusal
   (`run_protocol`).

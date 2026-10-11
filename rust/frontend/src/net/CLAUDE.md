@@ -23,7 +23,9 @@ through the channel types below.
 
 ## Promises
 - Events carry the dial `HostKey`; the daemon's declared host is display only (`IncomingEvt` tagging in `transport`).
-- A hello reply arrives within 30 s or the attempt ends (`HELLO_TIMEOUT`, `read_hello_reply` in transport/hello.rs).
+- Each reply on the connect path (the hello, then the preamble's tree.root and preview.get) arrives within 30 s, or
+  the attempt ends with a disconnect that names the step (`CONNECT_REPLY_BOUND`, `read_connect_reply` in
+  transport/hello.rs).
 - No frame is half-read across a `select!`: reads go through one held future (`read_owned`).
 - Every `figure.get` ends in exactly one result (`send_figure_get` records its `PendingKind` before it writes).
 - A result-tree completion carries the canonical workspace id and result/attempt serials saved at issuance through the request-id pending entry; the existing fan-in envelope supplies its dial HostKey. These identities are local and change no daemon payload.

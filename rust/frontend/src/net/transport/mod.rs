@@ -58,7 +58,7 @@ mod steady;
 pub(crate) use reply::observe_native_fan_in;
 
 use crate::net::state::{note_revision, SessionState, StateSaveGate};
-use hello::{accept_hello, read_hello, send_hello, HelloRefused};
+use hello::{accept_hello, read_connect_reply, read_hello, send_hello, HelloRefused};
 use ops::*;
 use preamble::{preamble_preview, preamble_tree_root};
 use reply::{handle_response_frame, PendingGuard, PendingKind};

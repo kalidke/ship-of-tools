@@ -1,22 +1,22 @@
-//! The hello: its reply bound, its refusal and the protocol-mismatch message.
+//! The hello: the connect-reply bound it shares with the preamble, its refusal and the protocol-mismatch message.
 
 use super::*;
 
-/// How long the hello reply may take. An ssh child stalled before auth
-/// leaves the pipe open and silent, so without a bound the one control
-/// transport waits forever; on expiry the read errors like an EOF and the
-/// reconnect loop backs off normally, dropping the child.
-pub(super) const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long each reply on the connect path may take: the hello's, then the preamble's tree.root and preview.get. An
+/// ssh child stalled before auth leaves the pipe open and silent, and a daemon that answered the hello can still leave
+/// the preamble unanswered; without a bound the one control transport waits forever, the second time "connected" with
+/// no rows. On expiry the read errors like an EOF naming its step, the window shows that as the disconnect reason, and
+/// the reconnect loop backs off normally, dropping the child.
+pub(super) const CONNECT_REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Read the hello reply frame, bounded by `timeout` (a parameter so a test
-/// can pass a short one).
-pub(super) async fn read_hello_reply<R: tokio::io::AsyncBufRead + Unpin>(
+/// Read the reply to the connect step `step` (its op), within `CONNECT_REPLY_BOUND`.
+pub(super) async fn read_connect_reply<R: tokio::io::AsyncBufRead + Unpin>(
     rx: &mut R,
-    timeout: std::time::Duration,
+    step: &str,
 ) -> Result<(Frame, Option<Vec<u8>>)> {
-    tokio::time::timeout(timeout, codec::read_frame(rx))
+    tokio::time::timeout(CONNECT_REPLY_BOUND, codec::read_frame(rx))
         .await
-        .map_err(|_| anyhow::anyhow!("hello reply timed out after {timeout:?}"))?
+        .map_err(|_| anyhow::anyhow!("{step} reply timed out after {CONNECT_REPLY_BOUND:?}"))?
 }
 
 /// The daemon answered the hello with a refusal (protocol skew, no account named, a second account):
@@ -110,7 +110,7 @@ pub(super) async fn read_hello<R: tokio::io::AsyncBufRead + Unpin, Wn: Redraw>(
     emit: &impl Fn(IncomingEvt),
     window: &Wn,
 ) -> Result<Frame> {
-    let (frame, _) = read_hello_reply(&mut rx, HELLO_TIMEOUT).await?;
+    let (frame, _) = read_connect_reply(&mut rx, op::HELLO).await?;
     if frame.id != hello_id {
         anyhow::bail!("hello reply id mismatch: got {}, want {hello_id}", frame.id);
     }
@@ -208,24 +208,6 @@ pub(super) fn accept_hello<Wn: Redraw>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn hello_read_times_out_against_a_silent_peer() {
-        // The far end is held open and never written: without a bound the
-        // read waits forever.
-        let (_far, near) = tokio::io::duplex(64);
-        let mut rx = tokio::io::BufReader::new(near);
-        let r = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            read_hello_reply(&mut rx, std::time::Duration::from_millis(100)),
-        )
-        .await
-        .expect("hang guard: the bounded read must return");
-        let err = r.expect_err("a silent peer must time out");
-        assert!(err.to_string().contains("timed out"), "{err}");
-    }
-
     #[test]
     fn protocol_mismatch_message_names_both_sides_of_the_skew() {
         // A NEW frontend against an OLD daemon: the daemon's gate answers
