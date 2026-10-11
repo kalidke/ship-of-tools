@@ -129,7 +129,7 @@ fn run_child(role: &str, scenario: &std::path::Path) -> Result<ChildRun> {
         .spawn()?;
     println!("pane-timing child {role} started pid={}", child.id());
     let _stdin = child.stdin.take();
-    let (waited, out, mut err) = sot_log::test_isolated::drain(child).wait_until(Instant::now() + CHILD_BOUND);
+    let (waited, out, mut err) = sot_log::test_isolated::drain(child).wait_and_read(Instant::now() + CHILD_BOUND);
     let ok = match waited {
         Ok(status) => {
             println!("pane-timing child {role} status={status}");
@@ -157,7 +157,12 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
     // The fault child first: its order assertion is the cause when a timing run's attribution also breaks.
     // Every failed child says what it saw, not only the first: one hosted run should settle what the gate is waiting on.
     let failed: Vec<String> = runs.iter().filter(|r| !r.ok).map(|r| format!("pane-timing child {} failed:\n{}{}", r.role, r.out, r.err)).collect();
-    anyhow::ensure!(failed.is_empty(), "{}", failed.join("\n"));
+    if !failed.is_empty() {
+        // The fault child's own verdict first: it is the cause when a timing run's attribution also breaks.
+        let fault = runs.iter().find(|r| r.role == "fault").and_then(|r| r.out.lines().find(|l| l.starts_with("pane-timing fault")));
+        let fault = fault.map_or_else(|| "pane-timing fault: no verdict line".to_string(), |line| format!("{line} route={route}"));
+        anyhow::bail!("{fault}\n{}", failed.join("\n"));
+    }
     for run in runs.iter().filter(|r| r.role == "fault").chain(runs.iter().filter(|r| r.role != "fault")) {
         anyhow::ensure!(run.out.matches("pane-timing: body entered").count() == 1, "pane timing body did not enter exactly once: {}", run.role);
         if run.role == "fault" {

@@ -500,14 +500,14 @@ impl Draining {
     }
     /// The non-panicking wait: the child's exit, or why it has none, and both streams as far as they were read. A
     /// stream that did not end, or whose read failed, keeps what was read and ends with one line saying so.
-    pub fn wait_until(self, deadline: Instant) -> (Result<ExitStatus, ChildWaitError>, String, String) {
+    pub fn wait_and_read(self, deadline: Instant) -> (Result<ExitStatus, ChildWaitError>, String, String) {
         let (status, output) = self.observe(deadline);
         let text = |stream: Result<String, OutputFailure>| {
             stream.unwrap_or_else(|failure| format!("{}\n[the child's {} did not end: {}]\n", failure.captured, failure.stream, failure.reason))
         };
         (status, text(output.stdout), text(output.stderr))
     }
-    /// [`wait_until`](Self::wait_until) within `bound`, returning the child's status, stdout and stderr. A failed or
+    /// [`wait_and_read`](Self::wait_and_read) within `bound`, returning the child's status, stdout and stderr. A failed or
     /// timed-out wait fails the caller, and so do a failed read and output still open at the deadline. Every such
     /// failure panics with the child's status, if any, and both streams as far as they were read, each cut to its last
     /// `FAILURE_STREAM_BYTES` (`failure_text`).
