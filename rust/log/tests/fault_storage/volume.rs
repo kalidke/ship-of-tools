@@ -6,11 +6,11 @@ use std::io::Write;
 static ONE_VOLUME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn on_volume(body: impl FnOnce(&Path)) {
-    let _one = ONE_VOLUME
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     #[cfg(target_os = "linux")]
     {
+        let _one = ONE_VOLUME
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = std::env::var_os("L3_HOSTED_VOLUME_ROOT").unwrap_or_else(|| {
             panic!(
                 "L3 HARNESS FAILURE: no bounded volume: on Linux the volume tests run only in rust.yml's L3 step"
@@ -100,11 +100,16 @@ struct NativeVolume {
     transaction: uuid::Uuid,
     attached: bool,
     cleanup_attempted: bool,
+    // Last in field drop order: exclusion outlives every owned resource and Drop's cleanup.
+    _one: std::sync::MutexGuard<'static, ()>,
 }
 
 #[cfg(any(target_os = "macos", windows))]
 impl NativeVolume {
     fn new() -> Self {
+        let one = ONE_VOLUME
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::Builder::new()
             .prefix("l3 premise ")
             .tempdir_in(scratch())
@@ -131,6 +136,7 @@ impl NativeVolume {
             image,
             attached: false,
             cleanup_attempted: false,
+            _one: one,
         };
         volume.attach();
         let bytes = capacity(&volume.mount);
@@ -235,21 +241,18 @@ impl NativeVolume {
         command
             .arg("/s")
             .arg(native_path(&script.canonicalize().unwrap()));
+        println!(
+            "L3 diskpart-order start transaction={} script={name}",
+            self.transaction
+        );
         let (code, output) = bounded(command, 120);
+        println!(
+            "L3 diskpart-order end transaction={} script={name}",
+            self.transaction
+        );
         let text = format!("{commands}\n{output}")
             .replace(&self.image_native, "<owned-image>")
             .replace(&self.mount_native, "<owned-mount>");
-        let text = text
-            .lines()
-            .map(|line| {
-                if line.trim_start().starts_with("On computer:") {
-                    "On computer: <host>"
-                } else {
-                    line
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
         let text = scrub(&text);
         let logs = scratch().join("logs");
         std::fs::create_dir_all(&logs).unwrap();
@@ -430,6 +433,21 @@ pub fn windows_unwind_control() {
         "L3 HARNESS FAILURE: partial attach unwind retained resources"
     );
     println!("L3 harness windows after-attach-unwind=ok image-removal=ok");
+}
+
+#[cfg(windows)]
+#[test]
+fn direct_native_volume_creation_owns_the_gate() {
+    let volume = NativeVolume::new();
+    let owned = matches!(
+        ONE_VOLUME.try_lock(),
+        Err(std::sync::TryLockError::WouldBlock)
+    );
+    volume.close();
+    assert!(
+        owned,
+        "a directly constructed native volume must own ONE_VOLUME"
+    );
 }
 
 #[cfg(any(target_os = "macos", windows))]

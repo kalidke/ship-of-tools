@@ -2,6 +2,8 @@
 #![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 mod boundaries;
+#[cfg(any(target_os = "macos", windows))]
+mod command_tests;
 mod exits;
 #[cfg(any(windows, target_os = "linux"))]
 mod scenario;
@@ -28,15 +30,36 @@ fn bounded(mut command: Command, seconds: u64) -> (i32, String) {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = command.spawn().expect("start the owned premise command");
-    let (status, out, err) =
-        sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(seconds));
-    (status.code().unwrap_or(-1), format!("{out}{err}"))
+    let child = command.spawn().unwrap_or_else(|error| {
+        panic!(
+            "L3 HARNESS FAILURE: start the owned premise command: {}",
+            scrub(&error.to_string())
+        )
+    });
+    finish_bounded(child, Duration::from_secs(seconds))
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn finish_bounded(child: std::process::Child, bound: Duration) -> (i32, String) {
+    let (status, out, err) = sot_log::test_isolated::drain(child)
+        .try_wait_within(bound)
+        .unwrap_or_else(|error| panic!("L3 HARNESS FAILURE: native command: {}", scrub(&error)));
+    (status.code().unwrap_or(-1), scrub(&format!("{out}{err}")))
 }
 
 #[cfg(any(target_os = "macos", windows))]
 fn scrub(text: &str) -> String {
-    let mut text = text.to_string();
+    let mut text = text
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("On computer:") {
+                "On computer: <host>"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     for (value, replacement) in [
         (std::env::var_os("CARGO_TARGET_DIR"), "<target>"),
         (
