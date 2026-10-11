@@ -61,10 +61,14 @@ function Start-SotBridge([string]$SotdExe, [string]$PipePath) {
 # stream returned is the child's input: what is written to it reaches the daemon, and disposing it ends the child and
 # the lease. The first line is the hello the daemon admits every connection by (role handoff, this computer and the OS
 # account, the process token's user SID); the lease line follows in the same write and the two replies are read in
-# order. A lease not granted is logged with the bridge's own stderr line, when it wrote one.
+# order. A lease not granted is logged with the bridge's own stderr line, when it wrote one. A request the daemon has
+# not answered within $LeaseReplyWaitMs is never closed: the daemon may still grant it, and a granted lease whose
+# connection ends departs as a close (ADR 0050). Its stream is emitted like a granted one and also kept in
+# $global:SotLeasesUnanswered, so Close-SotLeases writes the handover behind the request and leaves it open.
 function Open-SotLease([string]$PipePath, [string]$SotdExe) {
     $bridge = $null
     $why = ''
+    $sent = $false
     try {
         $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         $hello = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":3,"app_version":"launcher","host":' + (ConvertTo-SotJsonString (Get-SotHelloHost)) + ',"os_user":' + (ConvertTo-SotJsonString $sid) + ',"role":"handoff"}}'
@@ -75,6 +79,7 @@ function Open-SotLease([string]$PipePath, [string]$SotdExe) {
         $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($hello + "`n" + $line + "`n")
         $in.Write($bytes, 0, $bytes.Length)
         $in.Flush()
+        $sent = $true
         $task = $bridge.StandardOutput.ReadLineAsync()
         if (-not $task.Wait($LeaseReplyWaitMs)) { throw 'no reply' }
         if ($null -eq $task.Result) { throw 'the bridge ended' }
@@ -96,6 +101,11 @@ function Open-SotLease([string]$PipePath, [string]$SotdExe) {
     } catch {
         $why = $_.Exception.Message
     }
+    if ($sent -and $why -eq 'no reply') {
+        Write-SupLog "WARNING: relaunch: the backend has not answered the lease in $LeaseReplyWaitMs ms - keeping the request open, since closing it could end this computer's sessions"
+        $global:SotLeasesUnanswered += @($in)
+        return $in
+    }
     if ($bridge) {
         try { $bridge.StandardInput.Close() } catch { }
         # The bridge's exit code and its own stderr line say why it ended (a refusal, no daemon, a hello the daemon
@@ -115,7 +125,9 @@ function Open-SotLease([string]$PipePath, [string]$SotdExe) {
     Write-SupLog "WARNING: relaunch: lease not granted ($why) - this computer's sessions end if no window holds the backend within $HandoverBoundSeconds s"
 }
 
-# Hand every lease this process holds over to the frontend just spawned: say so, then drop them.
+# Hand every lease this process holds over to the frontend just spawned: say so, then drop them. A request still
+# unanswered ($global:SotLeasesUnanswered) stays open behind its handover line: the daemon reads the handover once it
+# grants, and closing it first would read as a close.
 function Close-SotLeases {
     foreach ($c in @($global:SotLeases)) {
         try {
@@ -123,7 +135,9 @@ function Close-SotLeases {
             $c.Write($bytes, 0, $bytes.Length)
             $c.Flush()
         } catch { }
-        try { $c.Dispose() } catch { }
+        if (@($global:SotLeasesUnanswered) -notcontains $c) {
+            try { $c.Dispose() } catch { }
+        }
     }
     $global:SotLeases = @()
 }

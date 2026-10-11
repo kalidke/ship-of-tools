@@ -259,6 +259,55 @@ try {
                 $script:child11f = $null
             }
 
+            # (g) a request the daemon has not answered is kept open, never closed, and its handover is written behind it,
+            # so a grant that comes later departs as that handover, not as a close (ADR 0050). The fake reads nothing
+            # after the request until the test creates the hold file.
+            $pipe11g = New-TestPipeName
+            $log11g = Join-Path $root 'lease11g.log'
+            $hold11g = Join-Path $root 'lease-hold-11g'
+            Clear-FakeEnv
+            $env:FAKE_SOTD_LOG = $log11g
+            $env:FAKE_SOTD_LEASE_HOLD_FILE = $hold11g
+            $fake11g = Start-Process -FilePath $fakeExe -ArgumentList @('--socket', (Get-PipePath $pipe11g)) -WindowStyle Hidden -PassThru
+            $LeaseReplyWaitMs = 500
+            $global:SotLeasesUnanswered = @()
+            $child11g = $null
+            try {
+                Check '11g: the fake pipe is up' (Wait-Pipe $pipe11g) 'pipe never answered'
+                $script:supLines = @()
+                $streams11g = @(Open-SotLease (Get-PipePath $pipe11g) $realSotd)
+                Check '11g: an unanswered lease is kept' ($streams11g.Count -eq 1) "got $($streams11g.Count)"
+                Check '11g: the warning says the request is kept open' ((@($script:supLines | Where-Object { $_ -like '*has not answered the lease*keeping the request open*' })).Count -ge 1) "log: $($script:supLines -join ' | ')"
+                $lines11g = @(Get-Content -LiteralPath $log11g -ErrorAction SilentlyContinue)
+                if ($lines11g.Count -ge 2) {
+                    # A process object of the test's own for the bridge, for the cleanup below.
+                    $child11g = Get-Process -Id (($lines11g[1] | ConvertFrom-Json).payload.pid) -ErrorAction SilentlyContinue
+                    if ($child11g) { $null = $child11g.Handle }
+                }
+                $global:SotLeases = $streams11g
+                Close-SotLeases
+                Set-Content -LiteralPath $hold11g -Value 'answer' -Encoding ASCII
+                $wait11g = [System.Diagnostics.Stopwatch]::StartNew()
+                do {
+                    $lines11g = @(Get-Content -LiteralPath $log11g -ErrorAction SilentlyContinue)
+                    if ($lines11g.Count -ge 3) { break }
+                    Start-Sleep -Milliseconds 50
+                } while ($wait11g.ElapsedMilliseconds -lt 10000)
+                $handover11g = '{"v":3,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
+                Check '11g: once answered, the daemon reads the handover behind the request, not an eof' (($lines11g.Count -ge 3) -and ($lines11g[2] -ceq $handover11g)) "lines: $($lines11g -join ' | ')"
+                Check '11g: the lease list is empty after Close-SotLeases' ($global:SotLeases.Count -eq 0) "count $($global:SotLeases.Count)"
+            } finally {
+                foreach ($s in @($global:SotLeasesUnanswered)) { try { $s.Dispose() } catch { } }
+                $global:SotLeasesUnanswered = @()
+                $LeaseReplyWaitMs = 5000
+                if ($child11g) {
+                    if (-not $child11g.WaitForExit(10000)) { $child11g.Kill() }
+                    $child11g.Dispose()
+                }
+                if ($fake11g -and -not $fake11g.HasExited) { Stop-Process -Id $fake11g.Id -Force -ErrorAction SilentlyContinue }
+                Clear-FakeEnv
+            }
+
             # (c) the boot identity is stable and numeric
             $b1 = Get-SotBootId; $b2 = Get-SotBootId
             Check '11c: Get-SotBootId is stable' ($b1 -ceq $b2) "got '$b1' then '$b2'"
