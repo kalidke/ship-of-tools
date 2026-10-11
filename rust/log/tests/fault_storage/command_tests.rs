@@ -11,7 +11,7 @@ const RAW_PATH: &str = "/L3_SYNTHETIC_PATH_9";
 
 #[test]
 fn prefixed_native_command_output_is_scrubbed() {
-    let path = scratch().join("stdout-marker");
+    let path = format!("{}/stdout-marker", scratch().display());
     for (input, expected) in [
         (
             "test command_tests::native_command_child_role ... On computer: L3_SYNTHETIC_HOST_9",
@@ -23,7 +23,7 @@ fn prefixed_native_command_output_is_scrubbed() {
             "  On computer: <host>",
         ),
     ] {
-        let text = scrub(&format!("{input}\nordinary neighbor\n{}", path.display()));
+        let text = scrub(&format!("{input}\nordinary neighbor\n{path}"));
         assert_eq!(
             text,
             format!("{expected}\nordinary neighbor\n<scratch>/stdout-marker"),
@@ -32,6 +32,24 @@ fn prefixed_native_command_output_is_scrubbed() {
         assert!(!text.contains(RAW_HOST), "raw synthetic host retained");
     }
     println!("L3 command-proof prefixed-banner=scrubbed prefix=retained");
+    for ending in ["", "\n", "\r\n"] {
+        let input = format!("ordinary\r\n\n\ntest role ... On computer: {RAW_HOST}{ending}");
+        let expected = format!("ordinary\r\n\n\ntest role ... On computer: <host>{ending}");
+        assert_eq!(
+            scrub(&input),
+            expected,
+            "native scrub changed line terminators"
+        );
+        let input = format!("{input}\nL3 fixture macos detach=ok\n{path}\r\n");
+        let expected =
+            format!("{expected}\nL3 fixture macos detach=ok\n<scratch>/stdout-marker\r\n");
+        assert_eq!(
+            scrub(&input),
+            expected,
+            "native scrub changed line terminators"
+        );
+    }
+    println!("L3 command-proof terminators=retained");
 }
 
 fn runner(mode: &str) -> (bool, String) {

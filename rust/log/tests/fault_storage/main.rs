@@ -50,16 +50,22 @@ fn finish_bounded(child: std::process::Child, bound: Duration) -> (i32, String) 
 #[cfg(any(target_os = "macos", windows))]
 fn scrub(text: &str) -> String {
     let mut text = text
-        .lines()
+        .split_inclusive('\n')
         .map(|line| {
-            if let Some((prefix, _)) = line.split_once("On computer:") {
-                format!("{prefix}On computer: <host>")
+            let (body, ending) = if let Some(body) = line.strip_suffix("\r\n") {
+                (body, "\r\n")
+            } else if let Some(body) = line.strip_suffix('\n') {
+                (body, "\n")
+            } else {
+                (line, "")
+            };
+            if let Some((prefix, _)) = body.split_once("On computer:") {
+                format!("{prefix}On computer: <host>{ending}")
             } else {
                 line.to_owned()
             }
         })
-        .collect::<Vec<_>>()
-        .join("\n");
+        .collect::<String>();
     for (value, replacement) in [
         (std::env::var_os("CARGO_TARGET_DIR"), "<target>"),
         (
