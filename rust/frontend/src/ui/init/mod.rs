@@ -432,8 +432,7 @@ fn apply_harness_flags(state: &mut State, cli: &crate::cli::Cli) {
     // monitor host's first Connected sends it with the history
     // prefill, as every later one does (`State::resubscribe_monitor`).
     if cli.start_monitor {
-        state.monitor_view.subscribed = true;
-        state.monitor_dirty = true;
+        state.hold_monitor_subscription();
     }
 }
 

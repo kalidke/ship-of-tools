@@ -96,7 +96,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 5] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 6] = [
         ("result_target_uses_host_and_listed_identity", State::result_target_uses_host_and_listed_identity),
         ("passing_a_result_row_keeps_its_badge", State::passing_a_result_row_keeps_its_badge),
         ("first_named_account_is_sent", State::first_named_account_is_sent),
@@ -104,6 +104,10 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
         (
             "a_held_monitor_subscription_is_sent_on_each_new_connection",
             State::a_held_monitor_subscription_is_sent_on_each_new_connection,
+        ),
+        (
+            "a_monitor_chart_is_redrawn_on_resize_and_on_return",
+            State::a_monitor_chart_is_redrawn_on_resize_and_on_return,
         ),
     ];
     // Every fixture runs and reports; the child fails after the last if any failed.

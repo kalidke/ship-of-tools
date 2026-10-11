@@ -419,9 +419,10 @@ fn initial_drawer(cli: &crate::cli::Cli, want_terminal_init: bool) -> DrawerCont
     if cli.start_monitor {
         // `--start-monitor` (capture harness) wins over the
         // relaunch terminal default: an explicit capture ask beats
-        // the relaunch convenience. The subscribe + history prefill
-        // for this startup-opened drawer is sent right after
-        // construction, where `req_tx` is wired up.
+        // the relaunch convenience. The drawer holds its subscription
+        // from construction (`State::hold_monitor_subscription`), and
+        // the monitor host's first Connected sends it with the history
+        // prefill (`State::resubscribe_monitor`).
         DrawerContent::Monitor
     } else if want_terminal_init {
         DrawerContent::Terminal

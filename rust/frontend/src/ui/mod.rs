@@ -885,7 +885,9 @@ struct State {
     /// chart renderer. `monitor_quad` is the rasterised chart painted into
     /// the drawer rect via the resvg→wgpu-quad path (same as MathJax);
     /// `monitor_rect_px` is the drawer's pixel rect from the last layout
-    /// pass; `monitor_dirty` requests a re-render when data or size changes.
+    /// pass; `monitor_dirty` requests a re-render when the readings change
+    /// (a change of size, text scale or mark redraws by itself:
+    /// `MonitorView`'s `drawn`).
     monitor_view: crate::ui::drawer::monitor::MonitorView,
     monitor_quad: Option<Quad>,
     monitor_rect_px: ScreenRect,
