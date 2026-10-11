@@ -52,6 +52,8 @@ pub struct App {
     modifiers: winit::keyboard::ModifiersState,
     /// Shared with State: the one three-second process backstop.
     deadline: ExitDeadline,
+    /// The idle repaint's armed deadline (`about_to_wait`), kept so a wake does not move it.
+    idle_due: Option<std::time::Instant>,
 }
 
 impl App {
@@ -78,6 +80,7 @@ impl App {
             leases,
             modifiers: winit::keyboard::ModifiersState::empty(),
             deadline: ExitDeadline::new(),
+            idle_due: None,
         }
     }
 

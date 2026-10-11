@@ -29,6 +29,7 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 - A leaving window exits from `about_to_wait`'s poll once the acks are in (`redraw_exits`).
 - A harness instance (`ephemeral`) starts neither watcher thread: `resumed` skips `relaunch::spawn_watcher` and `spawn_command_watcher` for it.
 - Frames are capped at `FRAME_BUDGET` (`window_event`'s redraw arm and `about_to_wait`).
+- The idle repaint (the 1 s clock, the 80 ms flash and 16 ms help fades) keeps its armed deadline across wakes (`idle_deadline`): a wake brings it forward or leaves it, never later.
 - A frame runs in `redraw`'s fixed order: upkeep, the chrome draw, the pixel layout, the text prepare, one render pass,
   then the capture's staging, submit, present, the acks and the capture's write.
 - While the quit prompt is open, non-repeat Tab toggles and Enter confirms by logical key identity, every other non-repeat key cancels, and repeats do nothing; input routing consumes the event before modifier-only suppression and later dispatch.

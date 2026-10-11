@@ -291,11 +291,12 @@ impl ApplicationHandler for App {
             } else {
                 std::time::Duration::from_millis(80)
             };
-            let mut deadline = std::time::Instant::now() + interval;
+            let mut deadline = idle_deadline(self.idle_due, std::time::Instant::now(), interval);
             if let Some(peek) = &state.help.peek {
                 let fade_at = peek.started + help::PEEK_HOLD;
                 if fade_at > std::time::Instant::now() { deadline = deadline.min(fade_at); }
             }
+            self.idle_due = Some(deadline);
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             return;
         }
@@ -367,6 +368,15 @@ fn relaunch_if_requested(state: &mut State, event_loop: &ActiveEventLoop) {
     }
 }
 
+/// The idle repaint's deadline: the one already armed while it is still ahead, brought forward when `interval` asks for
+/// sooner, otherwise `interval` from `now`. Every wake runs `about_to_wait`, so a deadline taken from `now` alone moved
+/// with each wake and a steady stream of them (a mouse over a still window, a harness's ticker) put off the clock
+/// repaint and the fades for as long as it lasted.
+fn idle_deadline(armed: Option<std::time::Instant>, now: std::time::Instant, interval: std::time::Duration) -> std::time::Instant {
+    let fresh = now + interval;
+    armed.filter(|t| *t > now).map_or(fresh, |t| t.min(fresh))
+}
+
 fn redraw_requested(state: &mut State, event_loop: &ActiveEventLoop) {
     // Frame-rate cap: if the previous frame finished less than
     // FRAME_BUDGET ago, defer. `about_to_wait` reschedules at
@@ -418,5 +428,29 @@ fn redraw_requested(state: &mut State, event_loop: &ActiveEventLoop) {
             let code = state.leaving.as_ref().map_or(0, |l| l.exit_code);
             state.finish_exit(event_loop, code);
         }
+    }
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::idle_deadline;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn idle_repaint_deadline_is_not_postponed_by_wakes() {
+        let start = Instant::now();
+        let second = Duration::from_secs(1);
+        let armed = idle_deadline(None, start, second);
+        assert_eq!(armed, start + second);
+        // A wake every 50 ms leaves the armed deadline where it is.
+        for n in 1..20u32 {
+            let now = start + Duration::from_millis(50) * n;
+            assert_eq!(idle_deadline(Some(armed), now, second), armed, "a wake at {n} x 50 ms moved the idle repaint");
+        }
+        // A shorter cadence (a fade) brings it forward; a passed deadline is armed again from the wake.
+        let fade = idle_deadline(Some(armed), start + Duration::from_millis(100), Duration::from_millis(80));
+        assert_eq!(fade, start + Duration::from_millis(180));
+        let late = start + Duration::from_millis(1500);
+        assert_eq!(idle_deadline(Some(armed), late, second), late + second);
     }
 }
