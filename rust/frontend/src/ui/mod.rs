@@ -56,7 +56,7 @@ use sot_protocol::{ReplFrame, TreeNode};
 
 mod app;
 use app::*;
-pub(crate) use app::App;
+pub(crate) use app::{App, MainWake};
 use preview::image::figures::{decode_figure_bytes, fail_figure, FigureCacheEntry};
 #[cfg(test)]
 use preview::image::overlay::CAPTION_MAX_CHARS;
@@ -170,7 +170,9 @@ mod init;
 
 struct State {
     // ui/render: the wgpu surface and device, text layer, fixed quads, cell metrics and --capture state.
-    window: Arc<Window>,
+    window: MainWindow,
+    /// What another thread holds to ask this window for a redraw.
+    wake: MainWake,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,

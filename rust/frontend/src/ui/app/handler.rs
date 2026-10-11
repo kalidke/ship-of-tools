@@ -17,12 +17,11 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match State::new(event_loop, evt_rx, &self.cli, self.conns.clone(), self.leases.clone()) {
+        match State::new(event_loop, evt_rx, &self.cli, self.conns.clone(), self.leases.clone(), self.wake.clone()) {
             Ok(mut state) => {
                 state.exit_deadline = self.deadline.clone();
                 // Spawn one transport task per host once the window exists,
-                // since each task needs an Arc<Window> to call
-                // request_redraw on incoming frames (ADR 0042 L2a). Every
+                // each waking it through `wake` on incoming frames (ADR 0042 L2a). Every
                 // host's sender clones the same `evt_tx` — fan-in, tagged at
                 // each transport's own send, not through a forwarding task.
                 if let (Some(rt), Some(evt_tx), Some(transports)) = (
@@ -30,7 +29,7 @@ impl ApplicationHandler for App {
                     self.evt_tx.take(),
                     self.pending_transports.take(),
                 ) {
-                    crate::net::hosts::spawn_transports(rt, transports, &evt_tx, &state.window, &state.leases, &mut state.hosts);
+                    crate::net::hosts::spawn_transports(rt, transports, &evt_tx, &state.wake, &state.leases, &mut state.hosts);
                     // ADR 0035: spawn the proxy manager whenever there's a
                     // runtime at all (i.e. at least one host connection is
                     // configured) — the manager just waits for listeners and
@@ -76,7 +75,7 @@ impl ApplicationHandler for App {
                 // background thread (not the control-flow timer) keeps the
                 // interactive `Wait` power profile intact.
                 if let Some(sentinel) = relaunch_sentinel_path().filter(|_| !state.ephemeral) {
-                    crate::relaunch::spawn_watcher(sentinel, state.relaunch_flag.clone(), state.window.clone());
+                    crate::relaunch::spawn_watcher(sentinel, state.relaunch_flag.clone(), state.wake.clone());
                 }
                 // FE control-command watcher (ADR 0019): poll the fe-commands
                 // dir for JSON command files dropped by an in-terminal agent
@@ -89,7 +88,7 @@ impl ApplicationHandler for App {
                 // ephemeral instances don't arm them (B8).
                 if let Some(cmd_dir) = fe_commands_dir().filter(|_| !state.ephemeral) {
                     let _ = std::fs::create_dir_all(&cmd_dir);
-                    spawn_command_watcher(cmd_dir, state.fe_commands.clone(), state.window.clone());
+                    spawn_command_watcher(cmd_dir, state.fe_commands.clone(), state.wake.clone());
                 }
                 self.state = Some(state);
             }
@@ -309,6 +308,16 @@ impl ApplicationHandler for App {
             }
             None => {
                 state.dirty = false;
+                state.window.request_redraw();
+            }
+        }
+    }
+
+    /// A `MainWake` from another thread: its redraw, requested here on the window's thread, where winit never waits.
+    /// A user event with no wake pending (a native test driver's own tick) requests nothing.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, (): ()) {
+        if self.wake.take() {
+            if let Some(state) = self.state.as_ref() {
                 state.window.request_redraw();
             }
         }

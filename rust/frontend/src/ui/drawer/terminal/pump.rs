@@ -47,7 +47,7 @@ impl State {
                             .to_string();
                 }
                 let shell = crate::ui::drawer::terminal::pty::resolve_shell(self.settings.terminal_shell.as_deref());
-                let waker = self.window.clone();
+                let wake = self.wake.clone();
                 // cwd = repo root, so the plain shell starts in the
                 // project directory. ADR 0017.
                 let cwd = self.repo_dir.clone();
@@ -56,7 +56,7 @@ impl State {
                     80,
                     24,
                     cwd.as_deref(),
-                    Box::new(move || waker.request_redraw()),
+                    Box::new(move || wake.wake()),
                 ) {
                     Ok(t) => {
                         tracing::info!(program = %shell.program, "local terminal spawned");

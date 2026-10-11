@@ -5,10 +5,13 @@ the event loop against it. Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.m
 hand-over it serves.
 
 ## Files
-- `mod.rs`: App, its constructor and run/finalizer boundary, plus FRAME_BUDGET and NAV_FIRE_DEBOUNCE.
+- `mod.rs`: App, its constructor and run/finalizer boundary, `MainWake` (how another thread wakes the window) and
+  `MainWindow` (State's window handle, `!Send`, which a compile-time check asserts), plus FRAME_BUDGET and
+  NAV_FIRE_DEBOUNCE.
 - `exit_process_tests.rs`: bounded runtime and process-exit cases, run through the shared isolation helper.
 - `exit.rs`: quit_prompt_step, request_quit, begin_leave, leave, finish_exit, redraw_exits and the per-App ExitDeadline shared with State.
-- `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `new_events`.
+- `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `user_event`,
+  `new_events`.
 - `frame.rs`: `State::redraw`, one frame's sequence, its upkeep (`frame_upkeep`) and `ack_presented_lines`.
 - `native_children.rs`: the window_minimized target's children and parent: the start its two children share, the State fixtures' own child (the native-only fixtures of the result-routing, badge, account and canonical-row commits, one `state-fixture name=... ok=...` line each, all run before the child judges) and the parent, which runs both children and then judges.
 - `native_eventlog.rs`: Windows only: the Application log's Application Hang events (1002) for one fixture child; an unreadable log is an error.
@@ -16,7 +19,7 @@ hand-over it serves.
 - `native_pane_daemon_tests.rs`: the pane_timing parent's private daemon: its own roots, rows created Ready or seeded with no supervisor, planted screen sentinels, and one window lease the parent holds for its whole life; teardown is that lease's Close (zero not ended) and the daemon's own exit, and a parent that dies without the Close leaves the daemon to end every row and exit.
 - `native_pane_route_tests.rs`: the pane_timing routes: a `sotd stdio-bridge` stand-in, or two real ssh logins through a test-owned stand-in for the hub's relay unit; and the preflight that proves the route reaches the private daemon.
 - `native_pane_tests.rs`: the opt-in native relayed-attach timing fixture: the parent runs three timing children and one fault child of its binary; each timing child switches once to every row through the real App and reports each attach's presentation receipt and the cells of that frame.
-- `tests.rs`: the native minimized-window event-progress workload; test-owned inputs, no daemon or user settings. It runs in a child of its own, after the State fixtures' child (`native_children.rs`), and starts its visible phase after the window's first three frames.
+- `tests.rs`: the native minimized-window event-progress workload; test-owned inputs, no daemon or user settings. It runs in a child of its own, after the State fixtures' child (`native_children.rs`), and starts its visible phase after the window's first three frames. Its visible phase starts with the window's thread held for `MAIN_HOLD`; under `test-mac-redraw-mutation` its transport wakes the window by a `Window` call instead of `MainWake`, and the workload child ends at the visible phase's verdict (`mac-redraw-mutation visible failures=...`).
 
 ## Start here
 `redraw` in frame.rs for the order of one frame; `window_event` in handler.rs for which winit event goes where and for
@@ -31,6 +34,8 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 - A harness instance (`ephemeral`) starts neither watcher thread: `resumed` skips `relaunch::spawn_watcher` and `spawn_command_watcher` for it.
 - Frames are capped at `FRAME_BUDGET` (`window_event`'s redraw arm and `about_to_wait`).
 - The idle repaint (the 1 s clock, the 80 ms flash and 16 ms help fades) keeps its armed deadline across wakes (`arm_idle`, which owns the slot): a wake brings it forward or leaves it, never later.
+- A pending `MainWake` becomes the window's own redraw in `user_event`; at most one wake event is outstanding. A native
+  driver offers each user event to `App::user_event` before its own tick, so its ticks request no redraw.
 - A frame runs in `redraw`'s fixed order: upkeep, the chrome draw, the pixel layout, the text prepare, one render pass,
   then the capture's staging, submit, present, the acks and the capture's write.
 - While the quit prompt is open, non-repeat Tab toggles and Enter confirms by logical key identity, every other non-repeat key cancels, and repeats do nothing; input routing consumes the event before modifier-only suppression and later dispatch.

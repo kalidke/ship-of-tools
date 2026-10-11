@@ -19,6 +19,7 @@ impl State {
             tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
         )>,
         leases: Arc<crate::lease::Leases>,
+        wake: MainWake,
     ) -> Result<Self> {
         let launch = load_launch_inputs(&conns);
         let window =
@@ -51,6 +52,7 @@ impl State {
             evt_rx,
             conns,
             leases,
+            wake,
             launch,
             window,
             metrics,

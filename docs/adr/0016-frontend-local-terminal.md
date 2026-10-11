@@ -3,6 +3,10 @@
 **Status:** current — accepted.
 **Date:** 2026-05-26
 
+> **Amended 2026-10-10 (0.6.6):** a thread other than the window's wakes it only through `MainWake::wake`
+> (`rust/frontend/src/ui/app/mod.rs`), never a `Window` call: on macOS winit runs such a call on the main thread and
+> waits there for the frame being drawn. The window's handle in `State` is `!Send`.
+
 ## Context
 
 TODO section G adds a bottom-drawer terminal pane (Ctrl-T) that gives the user a live OS shell inside the frontend. The canonical use case is SSHing from the local machine to backend hosts — deliberately not a remote shell proxied through the daemon. Several independent choices were made during design; this ADR records each one explicitly so the implementation decisions are not re-litigated later.

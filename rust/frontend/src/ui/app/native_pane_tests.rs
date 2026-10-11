@@ -450,6 +450,7 @@ impl ApplicationHandler for PaneDriver<'_> {
         self.after(event_loop);
     }
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
+        self.app.user_event(event_loop, ());
         self.after(event_loop);
     }
 }
@@ -498,7 +499,7 @@ fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     let (req_tx, req_rx) = crate::net::transport::outgoing_channel();
     let config = crate::net::transport::TransportConfig { dial: crate::net::transport::Dial::Ssh(recipe), token: None };
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build()?;
-    let mut app = App::new(evt_rx, Some(rt), fixture_cli(), evt_tx, vec![(HOST_KEY.to_string(), req_tx)], Some(vec![(HOST_KEY.to_string(), config, req_rx)]), crate::lease::Leases::new(true, Vec::new()));
+    let mut app = App::new(evt_rx, Some(rt), fixture_cli(), evt_tx, vec![(HOST_KEY.to_string(), req_tx)], Some(vec![(HOST_KEY.to_string(), config, req_rx)]), crate::lease::Leases::new(true, Vec::new()), MainWake::new(proxy.clone()));
     let inputs = crate::ui::init::NativeStartupInputs {
         resume: crate::ui::persist::resume::GlobalState { window_w: Some(1024.0), window_h: Some(768.0), ..Default::default() },
         topology: None,

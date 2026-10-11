@@ -21,7 +21,10 @@ fn fixture_app(runtime: Option<tokio::runtime::Runtime>) -> App {
         contrast_mode: "bright".to_string(), relaunched: false,
     };
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut app = App::new(rx, runtime, cli, tx, vec![], None, crate::lease::Leases::new(true, vec![]));
+    // No event loop here: a wake posts nothing.
+    let wake = MainWake::posting(|| {});
+    let leases = crate::lease::Leases::new(true, vec![]);
+    let mut app = App::new(rx, runtime, cli, tx, vec![], None, leases, wake);
     app.deadline = ExitDeadline::inert(); // A returning test keeps running past the production bound.
     app
 }

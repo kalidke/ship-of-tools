@@ -124,6 +124,9 @@ winresource = "0.1"
 
 [features]
 test-window-progress = []
+# The minimized target's mutation leg: its transport wakes the window by a `Window` call from its own thread, as every
+# transport did before `MainWake`. On macOS the visible phase must then fail its lateness bound (rust.yml).
+test-mac-redraw-mutation = ["test-window-progress"]
 # The window_close target reuses the in-memory startup seam of the progress target.
 test-window-close = ["test-window-progress", "windows-sys/Win32_System_EventLog"]
 # The pane_timing target reuses the progress target's in-memory startup and the protocol's test-only ssh fixture command.

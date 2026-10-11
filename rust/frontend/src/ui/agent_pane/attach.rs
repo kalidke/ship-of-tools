@@ -269,7 +269,7 @@ impl State {
         // `fe_instance_component`'s own doc.
         let controller_id = format!("{}#{}", self_comm_handle(), frontend_identity().instance);
         let fe_down_to = self_comm_handle();
-        let waker = self.window.clone();
+        let wake = self.wake.clone();
         match sot_log::attach_client::client::FeAttachClient::attach(
             endpoint,
             target.to_string(),
@@ -278,7 +278,7 @@ impl State {
             controller_id,
             fe_down_to,
             None,
-            Box::new(move || waker.request_redraw()),
+            Box::new(move || wake.wake()),
         ) {
             Ok(c) => {
                 tracing::info!("session pane: capsule attach client attaching");

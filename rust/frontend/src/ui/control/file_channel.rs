@@ -110,7 +110,7 @@ pub(in crate::ui) fn fe_state_path() -> Option<std::path::PathBuf> {
 pub(in crate::ui) fn spawn_command_watcher(
     cmd_dir: std::path::PathBuf,
     queue: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<FeCommand>>>,
-    waker: std::sync::Arc<winit::window::Window>,
+    wake: crate::ui::MainWake,
 ) {
     if let Err(e) = std::thread::Builder::new()
         .name("sot-fe-command-watch".to_string())
@@ -153,7 +153,7 @@ pub(in crate::ui) fn spawn_command_watcher(
                 }
             }
             if woke {
-                waker.request_redraw();
+                wake.wake();
             }
         })
     {

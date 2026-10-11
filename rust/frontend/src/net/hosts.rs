@@ -141,7 +141,7 @@ pub(crate) fn spawn_transports(
     rt: &tokio::runtime::Runtime,
     transports: Vec<PendingTransport>,
     evt_tx: &std::sync::mpsc::Sender<(HostKey, crate::net::transport::IncomingEvt)>,
-    window: &std::sync::Arc<winit::window::Window>,
+    wake: &crate::ui::MainWake,
     leases: &std::sync::Arc<crate::lease::Leases>,
     hosts: &mut HostTable,
 ) {
@@ -161,7 +161,7 @@ pub(crate) fn spawn_transports(
             config,
             evt_tx.clone(),
             req_rx,
-            window.clone(),
+            wake.clone(),
             hosts.reconnect_now.clone(),
             gate,
             leases.clone(),

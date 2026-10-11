@@ -282,6 +282,18 @@ async fn produce(
     Ok(())
 }
 
+/// The mutation leg (`test-mac-redraw-mutation`): the harness transport wakes the window by a `Window` call from its own
+/// thread, as every transport did before `MainWake`.
+#[cfg(feature = "test-mac-redraw-mutation")]
+struct OffMainRedraw(Arc<Window>);
+
+#[cfg(feature = "test-mac-redraw-mutation")]
+impl crate::net::transport::Redraw for OffMainRedraw {
+    fn request_redraw(&self) {
+        self.0.request_redraw();
+    }
+}
+
 struct PeerTasks {
     rt: tokio::runtime::Runtime,
     profiles: Option<tokio::sync::mpsc::UnboundedSender<(Profile, Instant)>>,
@@ -290,7 +302,7 @@ struct PeerTasks {
 
 impl PeerTasks {
     fn start(
-        window: Arc<Window>,
+        wake: impl crate::net::transport::Redraw + Send + Sync + 'static,
         sender: std::sync::mpsc::Sender<(HostKey, IncomingEvt)>,
         mut outgoing: tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
         ledger: Arc<Mutex<NativeProgressLedger>>,
@@ -311,7 +323,7 @@ impl PeerTasks {
                 HOST.to_string(),
                 &sender,
                 &mut outgoing,
-                &window,
+                &wake,
             )
             .await;
             // EOF of this owned synthetic peer is the expected terminal result.
@@ -400,8 +412,12 @@ impl NativeDriver {
             self.fail(event_loop, anyhow::anyhow!("not runnable here: visible native control was not confirmed"));
             return;
         };
+        #[cfg(not(feature = "test-mac-redraw-mutation"))]
+        let wake = state.wake.clone();
+        #[cfg(feature = "test-mac-redraw-mutation")]
+        let wake = OffMainRedraw(state.window.0.clone());
         let peer = PeerTasks::start(
-            state.window.clone(),
+            wake,
             self.fan_in.take().expect("real App fan-in"),
             self.outgoing.take().expect("owned request receiver"),
             self.ledger.clone(),
@@ -411,6 +427,11 @@ impl NativeDriver {
             Ok(peer) => {
                 self.peer = Some(peer);
                 self.begin(VISIBLE, false);
+                // The visible phase starts with the window's thread held, as a slow frame holds it. The transport must
+                // keep reading meanwhile: it wakes the window through `MainWake`, never a `Window` call, which on
+                // macOS would wait here. So the phase's 250 ms lateness bound still holds.
+                const MAIN_HOLD: Duration = Duration::from_millis(600);
+                std::thread::sleep(MAIN_HOLD);
             }
             Err(error) => self.fail(event_loop, error),
         }
@@ -476,6 +497,17 @@ impl NativeDriver {
         }
         let failures = phase.failures(now);
         phase.print("completed", now, native);
+        // The mutation leg ends at the visible phase's verdict. Its transport may be waiting on this thread (the defect
+        // it restores), so there is no orderly stop: it reports and ends the process.
+        #[cfg(feature = "test-mac-redraw-mutation")]
+        if profile.phase == VISIBLE.phase {
+            println!(
+                "mac-redraw-mutation visible failures={}",
+                failures.join(",")
+            );
+            std::io::stdout().flush()?;
+            std::process::exit(i32::from(!failures.is_empty()));
+        }
         if profile.stall {
             anyhow::ensure!(
                 failures.contains(&"workload_volume")
@@ -545,6 +577,7 @@ impl ApplicationHandler for NativeDriver {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
+        self.app.user_event(event_loop, ());
         if let Err(error) = self.tick(event_loop) {
             self.fail(event_loop, error);
         }
