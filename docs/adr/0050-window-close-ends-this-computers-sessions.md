@@ -179,9 +179,8 @@ read by every end, a startup Cleanup included.
   its ack wait ends does not exit, and neither does a Ctrl+Q during that wait: exiting would drop a request the daemon
   may still grant, and that grant would read as a Close. The window stays open instead, decided under the lock that
   installs a grant, so a grant that lands first takes the leave, which then waits `KEEP_ACK_WAIT` for its own ack;
-  until the next leave, the lease notice says the keep or the relaunch was not done, unless the request then ends
-  without a grant (a refusal, or the connection's end), which gives it a cause to name, since closing will not end the
-  sessions. Only a close (X, an OS close,
+  until the next leave, the lease notice says the keep or the relaunch was not done whenever it has no cause to
+  name; a cause, which says closing will not end the sessions, comes first. Only a close (X, an OS close,
   Ctrl+Q then No) leaves an unanswered request behind. With two local hosts, the other host's lease, if held, has
   already departed by the Keep or the Handover when the window stays: after a Keep a later crash keeps that host's
   sessions, and after a Handover that daemon shuts down at `HANDOVER_BOUND` and ends them (in practice there is one

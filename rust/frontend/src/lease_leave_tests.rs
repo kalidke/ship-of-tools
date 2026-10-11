@@ -686,6 +686,28 @@ async fn an_unanswered_keep_or_handover_stays_at_the_deadline() {
     }
 }
 
+/// A handshake cancelled in flight (its future dropped) is counted down by its drop, so a later Keep has nothing to
+/// wait for and the window exits at once.
+#[tokio::test]
+async fn a_cancelled_handshake_leaves_nothing_to_wait_for() {
+    let (listener, path) = bind("cancelled");
+    let (asked_tx, asked) = oneshot::channel();
+    let (open, open_rx) = oneshot::channel::<&str>();
+    let (_log, _, fake) = leave_fake(listener, Some((asked_tx, open_rx)), None, Duration::ZERO);
+    let host = "local".to_string();
+    let leases = Leases::new(false, vec![host.clone()]);
+    let in_flight = {
+        let (leases, host) = (leases.clone(), host.clone());
+        tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
+    };
+    asked.await.unwrap();
+    in_flight.abort();
+    assert!(in_flight.await.unwrap_err().is_cancelled(), "the handshake was cancelled in flight");
+    assert!(leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).is_none(), "a cancelled handshake holds the Keep");
+    fake.abort();
+    drop(open);
+}
+
 /// A grant that lands between the poll's `Stay` and the stay takes the leave under the book's lock, so the window does
 /// not stay with that leave sent; the leave then waits its own ack wait instead of exiting before the daemon has it.
 #[tokio::test]

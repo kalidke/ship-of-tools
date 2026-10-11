@@ -109,13 +109,13 @@ struct Slot {
 /// already in flight grants after `leave_all` took its snapshot still leaves.
 struct Book {
     slots: HashMap<HostKey, Slot>,
-    /// Set by `leave_all`; from then on no handshake starts.
+    /// Set by `leave_all` and cleared by a stay; while it is set, no handshake starts.
     leaving: Option<LeaveIntent>,
     /// Lease handshakes in flight that have not settled (`Handshake`).
     inflight: usize,
     /// Where a handshake in flight puts its one outcome for the `Leaving`
-    /// wait (`install`); closed under the lock that settles the last one, so
-    /// it is open exactly while a handshake has not settled.
+    /// wait (`install`): open exactly while a leave waits on a handshake it
+    /// counted; closed by a stay, or under the lock that settles the last one.
     late: Option<mpsc::UnboundedSender<PendingAck>>,
     /// Each daemon's newest nonzero not-ended count no presented frame has acked, keyed at
     /// its grant by the state root it named (else its label): `owed`, `notice_seen`.
@@ -410,11 +410,12 @@ impl Leases {
 
     /// Ask every held lease's daemon to end (or keep) its sessions. None when
     /// no lease is held and no handshake is in flight: the window can exit at
-    /// once. From here no new lease is taken, and one that a handshake in
-    /// flight grants leaves too (`set`); the leave waits for each such
-    /// handshake. A second call (an X during a Keep) supersedes the first:
-    /// each holder writes the new line after the old one, and the old acks
-    /// are dropped. A stay's notice ends here.
+    /// once. From here until a stay no new lease is taken, and one that a
+    /// handshake in flight grants leaves too (`install`, from
+    /// `Handshake::settle`); the leave waits for each such handshake. A
+    /// second call (an X during a Keep) supersedes the first: each holder
+    /// writes the new line after the old one, and the old acks are dropped.
+    /// A stay's notice ends here.
     pub fn leave_all(&self, intent: LeaveIntent, exit_code: i32, now: Instant) -> Option<Leaving> {
         let mut book = self.book.lock().unwrap();
         let (late_tx, late) = mpsc::unbounded_channel();

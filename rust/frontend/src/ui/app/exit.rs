@@ -324,10 +324,9 @@ mod tests {
     }
 
     /// A stay, mid-wait (a Ctrl+Q) or at the deadline, ends the leave and keeps the window open: neither the next
-    /// redraw nor the next wake exits, the late grant installs with no leave behind it, a new lease is taken, and the
-    /// lease notice names the stay until the next leave, unless the request then ends without a grant, which leaves a
-    /// cause to name (closing will not end the sessions then), and a relaunch command's status does not outlast the
-    /// stay. A leave with no request unanswered never stays.
+    /// redraw nor the next wake exits, the late grant installs with no leave behind it, a new lease is taken, the
+    /// lease notice names the stay until the next leave whenever the standings name no cause, and a relaunch
+    /// command's status does not outlast the stay. A leave with no request unanswered never stays.
     #[tokio::test]
     async fn a_stay_keeps_the_window_open_until_the_next_leave() {
         use crate::lease::{grant_tests::bind, leave_tests::{leave_fake, logged, is_leave, finish}, LeaveStep};
