@@ -15,9 +15,11 @@ use crate::sidecars::contract_tests::{depot_path, isolated, owned_julia_env, wit
 /// The longest an isolated body here may take: an empty depot compiles the shim on first start.
 pub(super) const BODY: Duration = Duration::from_secs(240);
 const EVAL: Duration = Duration::from_secs(180);
-/// The WGLMakie setup's bound. Each run's owned depot starts empty and the read depot's compile caches need not match
-/// the versions an offline add resolves, so the add can precompile WGLMakie's whole environment, Makie then WGLMakie in
-/// series; about twice the slowest measured (303 s, on two CPUs).
+/// The WGLMakie setup's bound. An offline add resolves only the versions the depots hold, and it reuses the read
+/// depot's caches when they were compiled against the stdlib caches Julia ships, the ones every fixture loads: CI's
+/// depot is built so, and there the add compiles only the shim. A read depot holding other versions, or built without
+/// Julia's bundled depots (so holding stdlib builds of its own), makes the add precompile much of WGLMakie's
+/// environment, Makie then WGLMakie in series; about twice the slowest measured (303 s, on two CPUs).
 const SETUP: Duration = Duration::from_secs(600);
 
 /// A bare workspace (no `Project.toml`) whose path holds a space, and the real `Workspace::repl` factory over it.
