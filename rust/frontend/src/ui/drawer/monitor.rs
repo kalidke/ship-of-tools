@@ -98,9 +98,10 @@ pub struct MonitorView {
     /// is sent at the open and again at each new connection to the monitor host (`State::resubscribe_monitor`). Only
     /// the `State` methods in this file change it.
     subscribed: bool,
-    /// What the chart on screen was drawn for: the drawer's size in pixels, its text scale and each host's mark; `None`
-    /// while no chart is on screen. Any difference redraws it, so a mark that ages past `GAP_S` with no tick, a resize
-    /// and a return to the Monitor tenant each show a true chart.
+    /// What the chart was last drawn for: the drawer's size in pixels, its text scale and each host's mark; `None`
+    /// before the first draw and while the drawer shows another tenant. A draw that fails to raster still records it,
+    /// so a failed draw is not retried every frame. Any difference redraws it, so a mark that ages past `GAP_S` with no
+    /// tick, a resize and a return to the Monitor tenant each show a true chart.
     drawn: Option<(u32, u32, f64, Vec<String>)>,
 }
 
