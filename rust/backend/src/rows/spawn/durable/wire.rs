@@ -341,34 +341,268 @@ pub fn decode<T: for<'de> Deserialize<'de>>(payload: &[u8]) -> io::Result<T> {
 mod tests {
     use super::*;
     use std::io::{Read, Seek, Write};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    #[derive(Clone)]
+    struct Phase(Arc<Mutex<&'static str>>);
+
+    impl Phase {
+        fn set(&self, phase: &'static str) {
+            *self.0.lock().unwrap_or_else(|e| e.into_inner()) = phase;
+        }
+
+        fn name(&self) -> &'static str {
+            *self.0.lock().unwrap_or_else(|e| e.into_inner())
+        }
+    }
+
+    struct Worker {
+        ended: mpsc::Receiver<(Instant, Result<(), String>)>,
+        complete: bool,
+    }
+
+    struct Exchange {
+        deadline: Instant,
+        // A receiving-end duplicate can unblock both ends without keeping the sender alive at EOF.
+        shutdown: Channel,
+        phase: Phase,
+        workers: Vec<Worker>,
+    }
+
+    impl Exchange {
+        fn new(bound: Duration) -> (Self, Channel, Channel) {
+            let deadline = Instant::now() + bound;
+            let (a, b) = constrained_pair();
+            let shutdown = b
+                .try_clone()
+                .expect("duplicate only the owned receiving endpoint");
+            (
+                Self {
+                    deadline,
+                    shutdown,
+                    phase: Phase(Arc::new(Mutex::new("setup"))),
+                    workers: Vec::new(),
+                },
+                a,
+                b,
+            )
+        }
+
+        fn spawn(&mut self, body: impl FnOnce() + Send + 'static) {
+            let (sent, ended) = mpsc::channel();
+            std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).map_err(
+                    |payload| {
+                        payload
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| payload.downcast_ref::<&str>().map(|text| text.to_string()))
+                            .unwrap_or_else(|| "worker panic without text".into())
+                    },
+                );
+                let _ = sent.send((Instant::now(), result));
+            });
+            self.workers.push(Worker {
+                ended,
+                complete: false,
+            });
+        }
+
+        fn finish(mut self) -> Result<(), String> {
+            let mut failure = None;
+            for worker in &mut self.workers {
+                let left = self.deadline.saturating_duration_since(Instant::now());
+                match worker.ended.recv_timeout(left) {
+                    Ok((ended, result)) => {
+                        worker.complete = true;
+                        // A completion queued after expiry cannot become green if this owner was descheduled.
+                        if ended > self.deadline {
+                            failure = Some(format!(
+                                "wire exchange deadline phase={}",
+                                self.phase.name()
+                            ));
+                            break;
+                        }
+                        if let Err(text) = result {
+                            failure = Some(format!(
+                                "wire exchange failed phase={}: {text}",
+                                self.phase.name()
+                            ));
+                            break;
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        failure = Some(format!(
+                            "wire exchange deadline phase={}",
+                            self.phase.name()
+                        ));
+                        break;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        worker.complete = true;
+                        failure = Some(format!("wire worker lost phase={}", self.phase.name()));
+                        break;
+                    }
+                }
+            }
+            match failure {
+                None => Ok(()),
+                Some(text) => Err(format!("{text}; {}", self.cleanup())),
+            }
+        }
+
+        fn cleanup(&mut self) -> String {
+            // SAFETY: this duplicate belongs to this exchange and refers only to its receiving socket.
+            let result = unsafe { libc::shutdown(self.shutdown.as_raw_fd(), libc::SHUT_RDWR) };
+            let error = (result < 0).then(io::Error::last_os_error);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            for worker in &mut self.workers {
+                if !worker.complete {
+                    worker.complete = match worker
+                        .ended
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    {
+                        Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => true,
+                        Err(mpsc::RecvTimeoutError::Timeout) => false,
+                    };
+                }
+            }
+            if error.is_none() && self.workers.iter().all(|worker| worker.complete) {
+                "cleanup=confirmed".into()
+            } else {
+                format!("cleanup=unconfirmed shutdown={error:?}")
+            }
+        }
+    }
+
+    fn constrained_pair() -> (Channel, Channel) {
+        let (a, b) = Channel::pair().expect("wire fixture socketpair");
+        #[cfg(target_os = "linux")]
+        for channel in [&a, &b] {
+            for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
+                let bytes: libc::c_int = 8192;
+                // SAFETY: a live owned socket and a correctly sized integer option value.
+                let result = unsafe {
+                    libc::setsockopt(
+                        channel.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        option,
+                        (&bytes as *const libc::c_int).cast(),
+                        std::mem::size_of_val(&bytes) as _,
+                    )
+                };
+                assert_eq!(
+                    result,
+                    0,
+                    "wire fixture setsockopt option={option}: {}",
+                    io::Error::last_os_error()
+                );
+            }
+            let mut bytes: libc::c_int = 0;
+            let mut length = std::mem::size_of_val(&bytes) as libc::socklen_t;
+            // SAFETY: a live socket and writable integer/length buffers for its option.
+            let result = unsafe {
+                libc::getsockopt(
+                    channel.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&mut bytes as *mut libc::c_int).cast(),
+                    &mut length,
+                )
+            };
+            assert_eq!(
+                result,
+                0,
+                "wire fixture getsockopt: {}",
+                io::Error::last_os_error()
+            );
+            assert_eq!(length as usize, std::mem::size_of_val(&bytes));
+            assert!(
+                bytes > 0 && bytes < 100_004,
+                "wire fixture capacity is not below the framed payload: {bytes}"
+            );
+            println!("wire fixture send-capacity={bytes} framed-bytes=100004");
+        }
+        (a, b)
+    }
 
     #[test]
     fn a_message_and_its_descriptor_cross_the_channel_and_eof_ends_it() {
-        let (a, b) = Channel::pair().unwrap();
-        let mut file = tempfile::tempfile().unwrap();
-        file.write_all(b"carried").unwrap();
-        a.send(b"hello", &[file.as_raw_fd()]).unwrap();
-        a.send(&vec![7u8; 100_000], &[]).unwrap();
-        let first = b.recv().unwrap().unwrap();
-        assert_eq!(first.payload, b"hello");
-        assert_eq!(first.fds.len(), 1);
-        let mut received = std::fs::File::from(first.fds.into_iter().next().unwrap());
-        received.rewind().unwrap();
-        let mut text = String::new();
-        received.read_to_string(&mut text).unwrap();
-        assert_eq!(text, "carried", "the descriptor is the same open file");
-        let second = b.recv().unwrap().unwrap();
-        assert_eq!((second.payload.len(), second.fds.len()), (100_000, 0));
-        drop(a);
-        assert!(
-            b.recv().unwrap().is_none(),
-            "EOF between messages is the end"
-        );
+        let (mut exchange, a, b) = Exchange::new(Duration::from_secs(5));
+        let phase = exchange.phase.clone();
+        exchange.spawn(move || {
+            let mut file = tempfile::tempfile().unwrap();
+            file.write_all(b"carried").unwrap();
+            phase.set("small send");
+            a.send(b"hello", &[file.as_raw_fd()]).unwrap();
+            phase.set("large send");
+            a.send(&vec![7u8; 100_000], &[]).unwrap();
+            // Closing this original sender is what the receiver's EOF asserts.
+        });
+        let phase = exchange.phase.clone();
+        exchange.spawn(move || {
+            phase.set("first receive");
+            let first = b.recv().unwrap().unwrap();
+            assert_eq!(first.payload, b"hello");
+            assert_eq!(first.fds.len(), 1);
+            phase.set("descriptor read");
+            let mut received = std::fs::File::from(first.fds.into_iter().next().unwrap());
+            received.rewind().unwrap();
+            let mut text = String::new();
+            received.read_to_string(&mut text).unwrap();
+            assert_eq!(text, "carried", "the descriptor is the same open file");
+            phase.set("large receive");
+            let second = b.recv().unwrap().unwrap();
+            assert_eq!(second.payload, vec![7u8; 100_000]);
+            assert!(second.fds.is_empty());
+            phase.set("EOF receive");
+            assert!(
+                b.recv().unwrap().is_none(),
+                "EOF between messages is the end"
+            );
+        });
+        exchange.finish().unwrap();
     }
 
     #[test]
     fn a_message_past_the_bound_is_refused_before_it_is_written() {
-        let (a, _b) = Channel::pair().unwrap();
-        assert!(a.send(&vec![0u8; MAX_MESSAGE + 1], &[]).is_err());
+        let (mut exchange, a, b) = Exchange::new(Duration::from_secs(5));
+        let phase = exchange.phase.clone();
+        exchange.spawn(move || {
+            phase.set("oversize send");
+            let error = a.send(&vec![0u8; MAX_MESSAGE + 1], &[]).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        });
+        let phase = exchange.phase.clone();
+        exchange.spawn(move || {
+            phase.set("oversize EOF receive");
+            assert!(
+                b.recv().unwrap().is_none(),
+                "a refused send must write no bytes before EOF"
+            );
+        });
+        exchange.finish().unwrap();
+    }
+
+    #[test]
+    fn a_stalled_exchange_reports_its_phase_within_the_deadline() {
+        let origin = Instant::now();
+        let (mut exchange, _silent, b) = Exchange::new(Duration::from_millis(100));
+        let phase = exchange.phase.clone();
+        exchange.spawn(move || {
+            phase.set("first receive");
+            let _ = b.recv();
+        });
+        let error = exchange.finish().expect_err("a silent peer must expire");
+        assert!(
+            error.contains("wire exchange deadline phase=first receive"),
+            "{error}"
+        );
+        assert!(error.contains("cleanup=confirmed"), "{error}");
+        assert!(
+            origin.elapsed() < Duration::from_secs(3),
+            "the exchange exceeded its deadline and cleanup reserve"
+        );
     }
 }
