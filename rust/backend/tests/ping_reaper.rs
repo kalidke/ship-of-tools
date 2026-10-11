@@ -172,7 +172,7 @@ async fn poll_until_connected(socket_path: &std::path::Path) -> Conn {
 }
 
 /// Connect + hello declaring `role` (`"fe"` or `"bridge"`, topology plan §F
-/// step 2's two long-lived roles) with a `name` (`<role>@<client_id>`).
+/// step 2's two long-lived roles, or `"cli"`, the hub link's role) with a `name` (`<role>@<client_id>`).
 /// Returns the connection and the next free request id (2 -- id 1 is hello).
 async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, role: &str) -> (Conn, u64) {
     let mut conn = poll_until_connected(socket_path).await;
