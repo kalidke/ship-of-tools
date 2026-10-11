@@ -16,7 +16,7 @@ const ORDINARY_BOUND_MS: u128 = 2500;
 const HELD_ACK: Duration = Duration::from_millis(3600);
 /// How long a close child waits for the window's third frame before it fails, saying how many it drew.
 const FRAME_WAIT: Duration = Duration::from_secs(20);
-/// A child's whole bound; an overrun is ended and its output printed.
+/// A child's whole bound; an overrun is ended and its streams printed.
 const CHILD_BOUND: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, PartialEq)]
@@ -52,11 +52,22 @@ pub(crate) fn run_native_window_close() -> Result<()> {
     }
 }
 
+/// Runs every case, then judges: one hosted run reports each case, not only the first to fail. A host where the
+/// window cannot run at all stops at its first case.
 fn parent() -> Result<()> {
+    let mut failed = Vec::new();
     for (role, stage, expect) in CASES {
-        run_case(role, stage, expect)?;
-        println!("window-close case={role} held={stage:?} ok=true");
+        match run_case(role, stage, expect) {
+            Ok(()) => println!("window-close case={role} held={stage:?} ok=true"),
+            Err(error) if error.to_string().contains("not runnable here") => return Err(error),
+            Err(error) => {
+                println!("window-close case={role} held={stage:?} ok=false");
+                eprintln!("{error:#}");
+                failed.push(format!("{role} held={stage:?}"));
+            }
+        }
     }
+    anyhow::ensure!(failed.is_empty(), "window-close cases failed: {}", failed.join(", "));
     println!("window-close completed_bodies={}", CASES.len());
     Ok(())
 }
@@ -75,65 +86,68 @@ fn run_case(role: &str, stage: Option<&str>, expect: Expect) -> Result<()> {
     let started = Instant::now();
     let child = command.spawn()?;
     let pid = child.id();
-    let super::native_children::Captured { status, out, err } = super::native_children::run_captured(child, CHILD_BOUND);
+    let (waited, out, err) = sot_log::test_isolated::drain(child).wait_until(Instant::now() + CHILD_BOUND);
     let wall = started.elapsed();
     let shot = capture.exists();
-    std::fs::remove_dir_all(&folder)?;
-    let Some(status) = status else {
-        anyhow::bail!("window-close {role}: the child did not finish within {CHILD_BOUND:?}:\n{out}{err}");
-    };
-    if out.contains("not runnable here") || err.contains("not runnable here") {
-        anyhow::bail!("window-close not runnable here: {role}: {out}{err}");
-    }
-    anyhow::ensure!(out.matches("native: body entered").count() == 1, "{role}: the body did not enter exactly once: {out}{err}");
-    anyhow::ensure!(!out.contains("native: frames="), "{role}: the window did not draw three frames: {out}{err}");
-    if role != "capture" && !(out.contains("native: frame presented") && out.contains("native: terminal decision")) {
-        // No desktop, or a lost device: nothing rendered, so nothing was proved. Never a pass.
-        anyhow::bail!("window-close not runnable here: {role}: no rendered frame preceded the decision (status {status:?}): {out}{err}");
-    }
-    if role == "capture" && !shot && !matches!(expect, Expect::Backstop(_)) {
-        anyhow::bail!("window-close not runnable here: {role}: no capture was written (status {status:?}): {out}{err}");
-    }
-    let want_code = match expect {
-        Expect::Ordinary => 0,
-        Expect::Code(c, _) | Expect::Backstop(c) => c,
-    };
-    anyhow::ensure!(status.code() == Some(want_code), "{role}: exit status {status:?}, wanted {want_code}: {out}{err}");
-    if role == "capture" {
-        anyhow::ensure!(shot, "{role}: the capture was never written: {out}");
-    }
-    match expect {
-        Expect::Backstop(_) => {
-            anyhow::ensure!(out.contains(&format!("barrier entered: {}", stage.unwrap())), "{role}: stall barrier never entered: {out}");
-            anyhow::ensure!(out.contains(BACKSTOP_EVENT), "{role}: stalled teardown did not end through the backstop: {out}");
+    let verdict = (|| -> Result<()> {
+        let status = waited.map_err(|e| anyhow::anyhow!("window-close {role}: {e}:\n{out}{err}"))?;
+        if out.contains("not runnable here") || err.contains("not runnable here") {
+            anyhow::bail!("window-close not runnable here: {role}: {out}{err}");
         }
-        Expect::Ordinary | Expect::Code(..) => {
-            anyhow::ensure!(!out.contains(BACKSTOP_EVENT), "{role}: ordinary teardown tripped the backstop: {out}");
-            let ms = elapsed_ms(&out);
-            if role != "capture" && role != "relaunch-75" && role != "relaunch-76" {
-                let ms = ms.ok_or_else(|| anyhow::anyhow!("{role}: no close timing: {out}"))?;
-                if let Expect::Code(_, least) = expect {
-                    anyhow::ensure!(ms >= least, "{role}: closed after {ms} ms, before its held acknowledgement ({least} ms)");
-                } else {
-                    anyhow::ensure!(ms < ORDINARY_BOUND_MS, "{role}: ordinary close took {ms} ms");
+        anyhow::ensure!(out.matches("native: body entered").count() == 1, "{role}: the body did not enter exactly once: {out}{err}");
+        anyhow::ensure!(!out.contains("native: frames="), "{role}: the window did not draw three frames: {out}{err}");
+        if role != "capture" && !(out.contains("native: frame presented") && out.contains("native: terminal decision")) {
+            // No desktop, or a lost device: nothing rendered, so nothing was proved. Never a pass.
+            anyhow::bail!("window-close not runnable here: {role}: no rendered frame preceded the decision (status {status:?}): {out}{err}");
+        }
+        if role == "capture" && !shot && !matches!(expect, Expect::Backstop(_)) {
+            anyhow::bail!("window-close not runnable here: {role}: no capture was written (status {status:?}): {out}{err}");
+        }
+        let want_code = match expect {
+            Expect::Ordinary => 0,
+            Expect::Code(c, _) | Expect::Backstop(c) => c,
+        };
+        anyhow::ensure!(status.code() == Some(want_code), "{role}: exit status {status:?}, wanted {want_code}: {out}{err}");
+        if role == "capture" {
+            anyhow::ensure!(shot, "{role}: the capture was never written: {out}");
+        }
+        match expect {
+            Expect::Backstop(_) => {
+                anyhow::ensure!(out.contains(&format!("barrier entered: {}", stage.unwrap())), "{role}: stall barrier never entered: {out}");
+                anyhow::ensure!(out.contains(BACKSTOP_EVENT), "{role}: stalled teardown did not end through the backstop: {out}");
+            }
+            Expect::Ordinary | Expect::Code(..) => {
+                anyhow::ensure!(!out.contains(BACKSTOP_EVENT), "{role}: ordinary teardown tripped the backstop: {out}");
+                let ms = elapsed_ms(&out);
+                if role != "capture" && role != "relaunch-75" && role != "relaunch-76" {
+                    let ms = ms.ok_or_else(|| anyhow::anyhow!("{role}: no close timing: {out}"))?;
+                    if let Expect::Code(_, least) = expect {
+                        anyhow::ensure!(ms >= least, "{role}: closed after {ms} ms, before its held acknowledgement ({least} ms)");
+                    } else {
+                        anyhow::ensure!(ms < ORDINARY_BOUND_MS, "{role}: ordinary close took {ms} ms");
+                    }
                 }
             }
         }
-    }
-    if role == "held-ack" {
-        anyhow::ensure!(out.contains("fe.leaving") && out.contains("fe.notice_seen"),
-            "{role}: the daemon did not see the leave and the presented notice acknowledged: {out}");
-    }
-    #[cfg(windows)]
-    if !matches!(expect, Expect::Backstop(_)) {
-        let image = std::env::current_exe()?.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let hangs = super::native_eventlog::hang_events_for(&image, pid, wall.as_millis() as u64 + 5000)?;
-        anyhow::ensure!(hangs.is_empty(), "{role}: Application Hang event for the fixture: {hangs:?}");
-        println!("window-close case={role} application_hang_events=0");
-    }
-    #[cfg(not(windows))]
-    let _ = (pid, wall);
-    Ok(())
+        if role == "held-ack" {
+            anyhow::ensure!(out.contains("fe.leaving") && out.contains("fe.notice_seen"),
+                "{role}: the daemon did not see the leave and the presented notice acknowledged: {out}");
+        }
+        #[cfg(windows)]
+        if !matches!(expect, Expect::Backstop(_)) {
+            let image = std::env::current_exe()?.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let hangs = super::native_eventlog::hang_events_for(&image, pid, wall.as_millis() as u64 + 5000)?;
+            anyhow::ensure!(hangs.is_empty(), "{role}: Application Hang event for the fixture: {hangs:?}");
+            println!("window-close case={role} application_hang_events=0");
+        }
+        #[cfg(not(windows))]
+        let _ = (pid, wall);
+        Ok(())
+    })();
+    // The folder goes after the verdict: a folder a killed child still holds (os error 32 on Windows) cannot hide it.
+    let removed = std::fs::remove_dir_all(&folder)
+        .map_err(|e| anyhow::anyhow!("window-close {role}: removing {}: {e}", folder.display()));
+    verdict.and(removed)
 }
 
 fn elapsed_ms(out: &str) -> Option<u128> {

@@ -291,12 +291,8 @@ impl ApplicationHandler for App {
             } else {
                 std::time::Duration::from_millis(80)
             };
-            let mut deadline = idle_deadline(self.idle_due, std::time::Instant::now(), interval);
-            if let Some(peek) = &state.help.peek {
-                let fade_at = peek.started + help::PEEK_HOLD;
-                if fade_at > std::time::Instant::now() { deadline = deadline.min(fade_at); }
-            }
-            self.idle_due = Some(deadline);
+            let fade_at = state.help.peek.as_ref().map(|peek| peek.started + help::PEEK_HOLD);
+            let deadline = arm_idle(&mut self.idle_due, std::time::Instant::now(), interval, fade_at);
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             return;
         }
@@ -368,13 +364,24 @@ fn relaunch_if_requested(state: &mut State, event_loop: &ActiveEventLoop) {
     }
 }
 
-/// The idle repaint's deadline: the one already armed while it is still ahead, brought forward when `interval` asks for
-/// sooner, otherwise `interval` from `now`. Every wake runs `about_to_wait`, so a deadline taken from `now` alone moved
-/// with each wake and a steady stream of them (a mouse over a still window, a harness's ticker) put off the clock
-/// repaint and the fades for as long as it lasted.
-fn idle_deadline(armed: Option<std::time::Instant>, now: std::time::Instant, interval: std::time::Duration) -> std::time::Instant {
+/// Arms the idle repaint in `slot` and returns its deadline: the one already armed while it is still ahead, brought
+/// forward when `interval` asks for sooner, otherwise `interval` from `now`, and never past a help peek's coming fade.
+/// Every wake runs `about_to_wait`, so a deadline taken from `now` alone moved with each wake and a steady stream of
+/// them (a mouse over a still window, a harness's ticker) put off the clock repaint and the fades for as long as it
+/// lasted. The returned deadline is always after `now`, so a frame that keeps failing is retried at the interval.
+fn arm_idle(
+    slot: &mut Option<std::time::Instant>,
+    now: std::time::Instant,
+    interval: std::time::Duration,
+    fade_at: Option<std::time::Instant>,
+) -> std::time::Instant {
     let fresh = now + interval;
-    armed.filter(|t| *t > now).map_or(fresh, |t| t.min(fresh))
+    let mut deadline = slot.filter(|t| *t > now).map_or(fresh, |t| t.min(fresh));
+    if let Some(fade_at) = fade_at.filter(|t| *t > now) {
+        deadline = deadline.min(fade_at);
+    }
+    *slot = Some(deadline);
+    deadline
 }
 
 fn redraw_requested(state: &mut State, event_loop: &ActiveEventLoop) {
@@ -432,25 +439,31 @@ fn redraw_requested(state: &mut State, event_loop: &ActiveEventLoop) {
 }
 
 #[cfg(test)]
+#[cfg_attr(feature = "test-window-progress", allow(unused_imports, reason = "the harness=false native targets run none of these tests"))]
 mod idle_tests {
-    use super::idle_deadline;
+    use super::arm_idle;
     use std::time::{Duration, Instant};
 
+    /// One slot, driven through the wakes `about_to_wait` sees: the armed repaint does not move later.
     #[test]
     fn idle_repaint_deadline_is_not_postponed_by_wakes() {
         let start = Instant::now();
         let second = Duration::from_secs(1);
-        let armed = idle_deadline(None, start, second);
+        let mut slot = None;
+        let armed = arm_idle(&mut slot, start, second, None);
         assert_eq!(armed, start + second);
         // A wake every 50 ms leaves the armed deadline where it is.
         for n in 1..20u32 {
             let now = start + Duration::from_millis(50) * n;
-            assert_eq!(idle_deadline(Some(armed), now, second), armed, "a wake at {n} x 50 ms moved the idle repaint");
+            assert_eq!(arm_idle(&mut slot, now, second, None), armed, "a wake at {n} x 50 ms moved the idle repaint");
         }
-        // A shorter cadence (a fade) brings it forward; a passed deadline is armed again from the wake.
-        let fade = idle_deadline(Some(armed), start + Duration::from_millis(100), Duration::from_millis(80));
+        // A shorter cadence (a fade) and a coming help fade bring it forward; a passed deadline is armed again.
+        let fade = arm_idle(&mut slot, start + Duration::from_millis(100), Duration::from_millis(80), None);
         assert_eq!(fade, start + Duration::from_millis(180));
+        let peek = arm_idle(&mut slot, start + Duration::from_millis(120), second, Some(start + Duration::from_millis(150)));
+        assert_eq!(peek, start + Duration::from_millis(150));
         let late = start + Duration::from_millis(1500);
-        assert_eq!(idle_deadline(Some(armed), late, second), late + second);
+        assert_eq!(arm_idle(&mut slot, late, second, Some(start)), late + second);
+        assert_eq!(slot, Some(late + second), "the slot holds the deadline it returned");
     }
 }

@@ -604,15 +604,16 @@ pub(in crate::ui) fn minimized_window_drains_events_for_ten_minutes() -> Result<
         outcome: None,
     };
     let run = crate::ui::init::with_native_startup(inputs, || event_loop.run_app(&mut driver));
-    if let Some(peer) = driver.peer.take() {
-        peer.stop()?;
-    }
-    run?;
-    driver.outcome.unwrap_or_else(|| {
-        Err(anyhow::anyhow!(
-            "native proof exited without a completion verdict"
-        ))
-    })
+    // The verdict first: a peer that cannot stop in its bound must not hide what the workload proved or failed.
+    let verdict = run.map_err(anyhow::Error::from).and_then(|()| {
+        driver.outcome.take().unwrap_or_else(|| {
+            Err(anyhow::anyhow!(
+                "native proof exited without a completion verdict"
+            ))
+        })
+    });
+    let stopped = driver.peer.take().map_or(Ok(()), PeerTasks::stop);
+    verdict.and(stopped)
 }
 
 pub(super) struct FixtureHome {

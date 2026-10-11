@@ -1,5 +1,5 @@
-//! The native window harnesses' children: the start every window child shares, the State fixtures' own child, the
-//! window_minimized parent, and the one bounded wait that keeps a child's output when it overruns.
+//! The window_minimized target's children and parent: the start its two children share, the State fixtures' own
+//! child, and the parent that runs both.
 
 use super::tests::{fixture_cli, FixtureHome, NativeProgressLedger, HOST};
 use super::*;
@@ -12,8 +12,9 @@ const FIXTURES_BOUND: Duration = Duration::from_secs(120);
 /// The three phases (2 s, 20 s, 600 s), their native transitions, the final drain and the first frames, with room.
 const WORKLOAD_BOUND: Duration = Duration::from_secs(780);
 
-/// Every native window child's start: the fixture home, the "not runnable here" panic hook, an event loop and an App
-/// on one synthetic host with test-owned startup inputs.
+/// The start the window_minimized target's two children share: the fixture home, the "not runnable here" panic hook,
+/// an event loop and an App on one synthetic host with test-owned startup inputs. The close and pane children build
+/// their own.
 pub(super) struct NativeChild {
     pub(super) _home: FixtureHome,
     pub(super) event_loop: EventLoop<()>,
@@ -67,8 +68,9 @@ pub(super) fn native_child(ledger: Arc<Mutex<NativeProgressLedger>>) -> Result<N
     Ok(NativeChild { _home: home, event_loop, app, outgoing, inputs })
 }
 
-/// The State fixtures of the result-routing, badge and account commits. They rewire State (its event receiver, its
-/// connections, its active host), so they run in a child and window of their own, never on the workload's State.
+/// The State fixtures of the result-routing, badge, account and canonical-row commits. They rewire State (its event
+/// receiver, its connections, its active host), so they run in a child and window of their own, never on the
+/// workload's State.
 struct FixturesDriver {
     app: App,
     outcome: Option<Result<()>>,
@@ -93,16 +95,23 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 3] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 4] = [
         ("result_target_uses_host_and_listed_identity", State::result_target_uses_host_and_listed_identity),
         ("passing_a_result_row_keeps_its_badge", State::passing_a_result_row_keeps_its_badge),
         ("first_named_account_is_sent", State::first_named_account_is_sent),
+        ("pending_result_dies_with_its_canonical_row", State::pending_result_dies_with_its_canonical_row),
     ];
+    // Every fixture runs and reports; the child fails after the last if any failed.
+    let mut failed = Vec::new();
     for (name, fixture) in fixtures {
         let result = fixture(state);
         println!("state-fixture name={name} ok={}", result.is_ok());
-        result.map_err(|error| error.context(name))?;
+        if let Err(error) = result {
+            eprintln!("state-fixture name={name}: {error:#}");
+            failed.push(name);
+        }
     }
+    anyhow::ensure!(failed.is_empty(), "State fixtures failed: {}", failed.join(", "));
     Ok(())
 }
 
@@ -115,63 +124,21 @@ pub(in crate::ui) fn state_fixtures_child() -> Result<()> {
 }
 
 /// The window_minimized target's parent: the State fixtures and then the workload, each a child of this binary with a
-/// window of its own. Their output streams straight through, so an overrun loses none of it; each must exit 0 in its
-/// bound.
+/// window of its own. Their output streams straight through, so an overrun loses none of it. Both run whatever the
+/// first did; then each must have exited 0 in its bound.
 pub(in crate::ui) fn window_progress_parent() -> Result<()> {
+    let mut failed = Vec::new();
     for (role, bound) in [("fixtures", FIXTURES_BOUND), ("workload", WORKLOAD_BOUND)] {
         let mut child = std::process::Command::new(std::env::current_exe()?)
             .args(["child", role])
             .stdin(std::process::Stdio::null())
             .spawn()?;
-        let status = sot_log::test_isolated::wait_until(&mut child, Instant::now() + bound)
-            .map_err(|e| anyhow::anyhow!("window-progress child {role} did not finish within {bound:?}: {e}"))?;
-        anyhow::ensure!(status.success(), "window-progress child {role} failed: {status}");
-        println!("window-progress child={role} ok=true");
+        match sot_log::test_isolated::wait_until(&mut child, Instant::now() + bound) {
+            Ok(status) if status.success() => println!("window-progress child={role} ok=true"),
+            Ok(status) => failed.push(format!("window-progress child {role} failed: {status}")),
+            Err(e) => failed.push(format!("window-progress child {role} did not finish within {bound:?}: {e}")),
+        }
     }
+    anyhow::ensure!(failed.is_empty(), "{}", failed.join("; "));
     Ok(())
-}
-
-/// One native child's exit and output. `status` is `None` when the child overran its bound and was ended; what it
-/// wrote until then is kept either way.
-pub(super) struct Captured {
-    pub(super) status: Option<std::process::ExitStatus>,
-    pub(super) out: String,
-    pub(super) err: String,
-}
-
-/// Reads `pipe` to its end on a thread of its own.
-fn read_all(pipe: Option<impl std::io::Read + Send + 'static>) -> std::sync::mpsc::Receiver<String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut text = String::new();
-        if let Some(mut pipe) = pipe {
-            let mut bytes = Vec::new();
-            let _ = std::io::Read::read_to_end(&mut pipe, &mut bytes);
-            text = String::from_utf8_lossy(&bytes).into_owned();
-        }
-        let _ = tx.send(text);
-    });
-    rx
-}
-
-/// Waits up to `bound` for `child`, whose stdout and stderr are piped, reading both meanwhile. A child that overruns
-/// is ended (`test_isolated::wait_until`) and the reason joins its stderr, so the caller can print what it said.
-pub(super) fn run_captured(mut child: std::process::Child, bound: Duration) -> Captured {
-    let (out_rx, err_rx) = (read_all(child.stdout.take()), read_all(child.stderr.take()));
-    let waited = sot_log::test_isolated::wait_until(&mut child, Instant::now() + bound);
-    let mut err = err_rx
-        .recv_timeout(Duration::from_secs(10))
-        .unwrap_or_else(|_| "the child's stderr was still open 10 s after it ended\n".to_string());
-    let out = out_rx.recv_timeout(Duration::from_secs(10)).unwrap_or_else(|_| {
-        err.push_str("the child's stdout was still open 10 s after it ended\n");
-        String::new()
-    });
-    let status = match waited {
-        Ok(status) => Some(status),
-        Err(e) => {
-            err.push_str(&format!("the child did not finish within {bound:?}; cleanup: {e}\n"));
-            None
-        }
-    };
-    Captured { status, out, err }
 }

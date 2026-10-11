@@ -129,11 +129,18 @@ fn run_child(role: &str, scenario: &std::path::Path) -> Result<ChildRun> {
         .spawn()?;
     println!("pane-timing child {role} started pid={}", child.id());
     let _stdin = child.stdin.take();
-    let run = super::native_children::run_captured(child, CHILD_BOUND);
-    if let Some(status) = run.status {
-        println!("pane-timing child {role} status={status}");
-    }
-    Ok(ChildRun { role: role.to_string(), ok: run.status.is_some_and(|s| s.success()), out: run.out, err: run.err })
+    let (waited, out, mut err) = sot_log::test_isolated::drain(child).wait_until(Instant::now() + CHILD_BOUND);
+    let ok = match waited {
+        Ok(status) => {
+            println!("pane-timing child {role} status={status}");
+            status.success()
+        }
+        Err(e) => {
+            err.push_str(&format!("child {role} did not finish in its bound; cleanup: {e}\n"));
+            false
+        }
+    };
+    Ok(ChildRun { role: role.to_string(), ok, out, err })
 }
 
 fn field(line: &str, name: &str) -> Option<String> {
@@ -148,8 +155,10 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
     let mut ready: Vec<(String, u128, u128)> = Vec::new();
     let mut resume = Vec::new();
     // The fault child first: its order assertion is the cause when a timing run's attribution also breaks.
+    // Every failed child says what it saw, not only the first: one hosted run should settle what the gate is waiting on.
+    let failed: Vec<String> = runs.iter().filter(|r| !r.ok).map(|r| format!("pane-timing child {} failed:\n{}{}", r.role, r.out, r.err)).collect();
+    anyhow::ensure!(failed.is_empty(), "{}", failed.join("\n"));
     for run in runs.iter().filter(|r| r.role == "fault").chain(runs.iter().filter(|r| r.role != "fault")) {
-        anyhow::ensure!(run.ok, "pane-timing child {} failed:\n{}{}", run.role, run.out, run.err);
         anyhow::ensure!(run.out.matches("pane-timing: body entered").count() == 1, "pane timing body did not enter exactly once: {}", run.role);
         if run.role == "fault" {
             let line = run.out.lines().find(|l| l.starts_with("pane-timing fault")).ok_or_else(|| anyhow::anyhow!("fault child printed no verdict: {}", run.out))?;
@@ -258,17 +267,27 @@ impl PaneDriver<'_> {
         state.terminal.backend().project_lines(0.0, 0.0, 1.0, 1.0).into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n")
     }
 
+    /// The window's own state at the setup bound, so one run says which condition failed and why: the rows of every
+    /// listed host key (a missing key is no list, `key:0` an empty one), the frame count, the pane's size, the active host
+    /// and its status line (rebuilt only for the active host's events), and the window thread's last failed redraw.
+    fn setup_state(&self, listed: bool) -> String {
+        let Some(state) = self.app.state.as_ref() else { return "no State".to_string() };
+        let mut lists: Vec<String> = state.workspace_lists.iter().map(|(key, rows)| format!("{key}:{}", rows.len())).collect();
+        lists.sort();
+        let text = self.capture.text();
+        let redraw_failed = text.lines().filter(|l| l.contains("redraw failed")).last().unwrap_or("none").trim().to_string();
+        format!(
+            "listed={listed} lists=[{}] frames={} pty_size={:?} active_host={} status={:?} last_redraw_failure={redraw_failed:?}",
+            lists.join(" "), state.frame_counter, state.pty_size, state.active_host, state.status
+        )
+    }
+
     fn ready_to_switch(&self) -> Result<bool> {
         let Some(state) = self.app.state.as_ref() else { return Ok(false) };
         let listed = state.workspace_lists.get(HOST_KEY).is_some_and(|rows| self.plan.iter().all(|p| rows.iter().any(|r| r.slug == p.slug)));
         if !(listed && state.frame_counter >= 3 && state.pty_size.is_some()) {
             if self.begun.elapsed() >= SETUP_BOUND {
-                // The window's own state at the bound: which of the three conditions failed, and its connection.
-                let rows: Vec<&str> = state.workspace_lists.get(HOST_KEY).map(|rows| rows.iter().map(|r| r.slug.as_str()).collect()).unwrap_or_default();
-                anyhow::bail!(
-                    "pane-timing setup failure: the window never listed its rows in {SETUP_BOUND:?}: listed={listed} rows={rows:?} frames={} pty_size={:?} status={:?}",
-                    state.frame_counter, state.pty_size, state.status
-                );
+                anyhow::bail!("pane-timing setup failure: the window was not ready to switch in {SETUP_BOUND:?}: {}", self.setup_state(listed));
             }
             return Ok(false);
         }
