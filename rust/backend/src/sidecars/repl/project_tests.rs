@@ -15,9 +15,11 @@ use crate::sidecars::contract_tests::{depot_path, isolated, owned_julia_env, wit
 /// The longest an isolated body here may take: an empty depot compiles the shim on first start.
 pub(super) const BODY: Duration = Duration::from_secs(240);
 const EVAL: Duration = Duration::from_secs(180);
-/// The WGLMakie setup's bound. Each run's owned depot starts empty and the read depot's compile caches need not match
-/// the versions an offline add resolves, so the add can precompile WGLMakie's whole environment, Makie then WGLMakie in
-/// series; about twice the slowest measured (303 s, on two CPUs).
+/// The WGLMakie setup's bound. The fixture reads the depot list whole (`depot_path`; unset, Julia's default list), so
+/// the offline add reuses the read depot's caches and compiles only the shim (5 s) when the depot is named on the list
+/// it was built on (CI's: .github/wgl-depot.sh). A read depot holding other versions recompiles those (25 packages on
+/// one host). Named on another list, a depot can recompile most of WGLMakie's environment (420 s on hosted Linux, past
+/// 600 s on hosted Windows); setup fails fast on that instead (`one_fresh_pkg_cache`).
 const SETUP: Duration = Duration::from_secs(600);
 
 /// A bare workspace (no `Project.toml`) whose path holds a space, and the real `Workspace::repl` factory over it.
@@ -34,8 +36,8 @@ impl Fixture {
         Self::with_read_depot(None)
     }
 
-    /// As `new`, with the depots of `read_depot` (a `JULIA_DEPOT_PATH` list) behind the owned depot and Julia's own
-    /// bundled depots after them (`depot_path`): packages and their compiled caches are read from them, and every file
+    /// As `new`, with the depots of `read_depot` (a `JULIA_DEPOT_PATH` list) behind the owned depot, the list whole
+    /// (`depot_path`): packages and their compiled caches are read from them, and every file
     /// Julia makes goes to the owned depot. In the read depot Julia does only the
     /// bookkeeping any session does there: Pkg makes and at once removes a lock file beside each package version it
     /// resolves (`packages/<name>/<slug>.pid`), and loading a cache updates its timestamp.
@@ -44,6 +46,7 @@ impl Fixture {
         let shim = owned_julia_env(&root);
         if let Some(read) = read_depot {
             std::env::set_var("JULIA_DEPOT_PATH", depot_path(&root.join("depot"), Some(&read)));
+            crate::sidecars::contract_tests::one_fresh_pkg_cache();
         }
         let workspace = root.join("workspace with spaces");
         std::fs::create_dir(&workspace).expect("create the bare workspace");
@@ -724,10 +727,8 @@ async fn repl_page_secret_never_reaches_command_line() {
     ) {
         return;
     }
-    let read_depot =
-        std::env::var_os("JULIA_DEPOT_PATH").expect("setup: the packages' depot is not named");
     std::env::set_var("SOT_TEST_PAGE_SENTINEL", SENTINEL);
-    let fixture = Fixture::with_read_depot(Some(read_depot));
+    let fixture = Fixture::with_read_depot(Some(crate::sidecars::contract_tests::read_depots()));
     add_wglmakie(&fixture).await;
 
     observer_rejects_a_deliberate_leak().await;

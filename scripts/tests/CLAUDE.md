@@ -126,6 +126,19 @@ Each violation is `VIOLATION <kind> <path> <detail>`:
   is skipped. A token whose first segment is not a tracked top-level folder or root file is skipped. Any other must
   name a tracked file or a folder holding tracked files, else it is a violation. A folder-argument run checks the
   listed pages too.
+- `too-many-lines`: `VIOLATION too-many-lines rust <n> allowances, pinned <p>: the count rose|fell...`. The lines of
+  tracked `.rs` files under `rust/` (not `rust/vt100`, the vendored crate the clippy steps exclude) that name
+  `clippy::too_many_lines` must number exactly the pin, the allow file's line `too-many-lines rust <n> <reason>` (no
+  line pins 0; a pin that does not start with a number is a usage error). The count can only fall: a rise says to
+  split the function, a fall says to lower the pin in the same commit. Every run checks it, folder arguments or not.
+  These text forms, which loosen the gate without moving the count, each fail as `VIOLATION too-many-lines <file>
+  <why>`. In a `.rs` under `rust/` (not `rust/vt100`): an inner `#![allow(..)]` or `#![expect(..)]`, at crate or module
+  level, naming `clippy::too_many_lines`; a `cfg_attr(.., allow(..))` or `expect` naming it, at any level; an `allow` or
+  `expect` naming `clippy::pedantic`, at any level. In a Cargo.toml there: `too_many_lines = "allow"` or `"warn"`, plain
+  or as `{ level = .. }`. In a clippy.toml there: `too-many-lines-threshold`. In a workflow: `-A`, `-W`, `--allow` or
+  `--warn` before `clippy::too_many_lines` (spaced, with `=` or attached), and any `--cap-lints`. A form not listed here
+  is not caught: removing the step's `-D clippy::too_many_lines`, or a source-level `warn` of the lint or of
+  `clippy::pedantic`, which also overrides the command line's `-D`.
 
 Covered folders: a crate root (a tracked Cargo.toml with `[package]`) covers its `src/`; a Julia package root (a tracked
 Project.toml) covers `src/`, `test/` and `ext/`. A covered folder needs no CLAUDE.md of its own (a covered folder that
@@ -143,7 +156,8 @@ the folder. An exempt match is silent and counted as `exempt: n`.
 file for file-size, the CLAUDE.md for file-list, the folder otherwise. Matches print as `ALLOWED ...` and do not fail.
 An allow line that matches no violation prints `UNUSED-ALLOW <line>` and makes the exit status 1.
 
-When a listed page is tracked, the line before the last is `named-path: n tokens checked in f files`.
+When a listed page is tracked, `named-path: n tokens checked in f files` follows the violations; then always
+`too-many-lines: n allowances in rust (pinned: p)`.
 Last line: `violations: n, allowed: m, exempt: e, unused-allow: u, folders checked: k`. Exit 0 none, 1 any, 2 usage error.
 
 `--report`: per folder, source files as `code N test M name`, largest code first.
