@@ -10,13 +10,14 @@
 // log/multiscale time axis + history-backed zoom is Task 5 (ADR 0020 §3).
 
 use std::collections::{HashMap, VecDeque};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use sot_protocol::{HostLatest, HostSeries, MonitorSample, ProcSample};
 use crate::ui::*;
 
 const RING_CAP: usize = 900; // ~15 min of 1 Hz live tail
 const WINDOW_S: f64 = 300.0; // default visible window (5 min)
-const GAP_S: f64 = 5.0; // break the trace across gaps wider than this (stale)
+const GAP_S: f64 = 5.0; // break the trace across gaps wider than this, and mark a host whose last reading is older (stale)
 
 // Trace colors. CPU warm, RAM dim, GPUs a distinct palette (a shared multi-GPU host has two).
 const CPU_COLOR: &str = "#f2a64d";
@@ -34,6 +35,9 @@ struct HostBuf {
     /// raw-tier history carry procs (downsampled tiers drop them) — a history
     /// prefill or a momentarily proc-less sample must not blank the line.
     top_procs: Vec<ProcSample>,
+    /// When this window last received a sample for the host, on its own clock: a sampler, daemon or connection that
+    /// stops sending leaves the last reading on screen, and only its age says so.
+    heard: Option<Instant>,
 }
 
 impl HostBuf {
@@ -44,9 +48,32 @@ impl HostBuf {
             cpu_cores: None,
             ram_total_gb: None,
             top_procs: Vec::new(),
+            heard: None,
         }
     }
+
+    /// The mark after the host's name: empty while a reading has arrived within `GAP_S`; otherwise, or when the
+    /// daemon reports the host's source down, `*` and the shown reading's age. The window's own clock decides; the
+    /// age is the larger of the time since the reading arrived and its timestamp's age, so a reading shown from
+    /// history reads its full age on clocks that agree.
+    fn mark(&self, now: Instant, now_epoch: f64) -> String {
+        let silent = self.heard.map(|t| now.saturating_duration_since(t).as_secs_f64());
+        if !self.stale && silent.is_none_or(|s| s <= GAP_S) {
+            return String::new();
+        }
+        let Some(last) = self.samples.back() else {
+            return " *".to_string();
+        };
+        let age = silent.unwrap_or(0.0).max(now_epoch - last.ts).max(0.0) as u64;
+        match age {
+            0..=59 => format!(" * {age}s"),
+            60..=3599 => format!(" * {}m", age / 60),
+            _ => format!(" * {}h", age / 3600),
+        }
+    }
+
     fn push(&mut self, s: MonitorSample) {
+        self.heard = Some(Instant::now());
         if let Some(c) = s.cpu_cores {
             self.cpu_cores = Some(c);
         }
@@ -69,6 +96,8 @@ pub struct MonitorView {
     bufs: HashMap<String, HostBuf>,
     /// Whether we've sent monitor.subscribe for the currently-open drawer.
     pub subscribed: bool,
+    /// Each host's mark in the chart last rasterised: a reading that ages past `GAP_S` changes it with no tick.
+    drawn_marks: Vec<String>,
 }
 
 impl MonitorView {
@@ -77,7 +106,14 @@ impl MonitorView {
             hosts: Vec::new(),
             bufs: HashMap::new(),
             subscribed: false,
+            drawn_marks: Vec::new(),
         }
+    }
+
+    /// Each host's mark (`HostBuf::mark`) on the window's clocks now, in display order.
+    fn marks(&self) -> Vec<String> {
+        let (now, now_epoch) = clocks();
+        self.hosts.iter().map(|h| self.bufs.get(h).map_or_else(String::new, |b| b.mark(now, now_epoch))).collect()
     }
 
     /// Roster from the monitor.subscribe response — fixes display order and
@@ -132,6 +168,7 @@ impl MonitorView {
         // legible on a hi-DPI drawer rect.
         let s = scale.max(0.5);
         let n = self.hosts.len().max(1);
+        let (now, now_epoch) = clocks();
 
         let mut out = String::with_capacity(4096);
         out.push_str(&format!(
@@ -161,10 +198,11 @@ impl MonitorView {
             // ── Header line: host name (bold) + colored current-value readout.
             // The readout shows absolute cpu/ram % and per-GPU util/mem %, and
             // its colors are the legend for the traces below.
-            let (lcolor, lsuffix) = if buf.stale {
-                ("#e2b341", " *")
-            } else {
+            let mark = buf.mark(now, now_epoch);
+            let (lcolor, lsuffix) = if mark.is_empty() {
                 ("#cdd3de", "")
+            } else {
+                ("#e2b341", mark.as_str())
             };
             let base_y = py0 + label_fs;
             out.push_str(&format!(
@@ -369,6 +407,12 @@ fn flush_seg(out: &mut String, seg: &mut Vec<(f64, f64)>, color: &str, sw: f64, 
     seg.clear();
 }
 
+/// The window's monotonic clock, which decides staleness, and its wall clock in seconds, which ages a timestamp.
+fn clocks() -> (Instant, f64) {
+    let epoch = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    (Instant::now(), epoch)
+}
+
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -415,6 +459,12 @@ impl State {
         if self.drawer == DrawerContent::Monitor {
             let mw = self.monitor_rect_px.w.max(1.0) as u32;
             let mh = self.monitor_rect_px.h.max(1.0) as u32;
+            // A reading that ages past GAP_S changes its host's mark with no tick to say so; the idle repaint brings
+            // this check round once a second.
+            let marks = self.monitor_view.marks();
+            if marks != self.monitor_view.drawn_marks {
+                self.monitor_dirty = true;
+            }
             if self.monitor_dirty && mw > 1 && mh > 1 {
                 // Scale the chart's text + gutters to match the chrome's
                 // effective text size (cell_h is BASE_CELL_H * scale), so the
@@ -432,6 +482,7 @@ impl State {
                 .ok();
                 self.monitor_quad = quad;
                 self.monitor_dirty = false;
+                self.monitor_view.drawn_marks = marks;
             }
         } else {
             self.monitor_quad = None;
@@ -518,6 +569,42 @@ mod tests {
         let svg = v.render_svg(400, 100, 1.0);
         // Stale marker " *" rides next to the host label (ADR 0020 §5).
         assert!(svg.contains("host-a *"), "stale host should be marked");
+    }
+
+    /// A host whose readings stop arriving is marked stale with the shown reading's age once no reading has come for
+    /// `GAP_S`: one that was live, and one prefilled from history whose last reading is an hour old. A new reading
+    /// clears the mark.
+    #[test]
+    fn a_reading_that_stops_arriving_is_marked_stale_with_its_age() {
+        let epoch = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        let mut v = MonitorView::new();
+        v.set_roster(vec!["live-a".into(), "hung-b".into()]);
+        v.apply_tick(HostLatest { host: "live-a".into(), stale: false, sample: Some(sample(epoch(), 10.0, &[])) });
+        v.apply_history(vec![HostSeries {
+            host: "hung-b".into(),
+            step_s: 1.0,
+            stale: false,
+            samples: vec![sample(epoch() - 3600.0, 20.0, &[])],
+        }]);
+        let label = |svg: &str, host: &str| {
+            let at = svg.find(&format!(">{host}")).map_or(0, |i| i + 1);
+            svg[at..].split('<').next().unwrap_or("").to_string()
+        };
+        let fresh = v.render_svg(800, 240, 1.0);
+        let mut seen = vec![label(&fresh, "live-a"), label(&fresh, "hung-b")];
+        std::thread::sleep(std::time::Duration::from_secs_f64(GAP_S + 0.5));
+        let aged = v.render_svg(800, 240, 1.0);
+        seen.extend([label(&aged, "live-a"), label(&aged, "hung-b")]);
+        v.apply_tick(HostLatest { host: "live-a".into(), stale: false, sample: Some(sample(epoch(), 11.0, &[])) });
+        seen.push(label(&v.render_svg(800, 240, 1.0), "live-a"));
+        eprintln!("monitor-stale: {seen:?}");
+        let right = seen[0] == "live-a"
+            && seen[1] == "hung-b"
+            && seen[2].starts_with("live-a * ")
+            && seen[2].ends_with('s')
+            && seen[3] == "hung-b * 1h"
+            && seen[4] == "live-a";
+        assert!(right, "fresh, after {GAP_S}s silent, after a new reading: {seen:?}");
     }
 
     #[test]

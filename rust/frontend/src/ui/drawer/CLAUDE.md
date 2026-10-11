@@ -16,4 +16,7 @@ Monitor (ADR 0041). Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
 
 ## Rules
 - A stale tick flags its host and appends nothing (`MonitorView::apply_tick`).
+- A host whose last reading arrived more than `GAP_S` (5 s) ago, or whose source the daemon reports down, is marked
+  `*` with the shown reading's age (`HostBuf::mark`). The window's own clock decides; `layout_drawer_px` rasterises
+  the chart again whenever a mark changes, which the once-a-second idle repaint checks with no tick arriving.
 - Each host's ring holds at most `RING_CAP` samples (`HostBuf::push`).
