@@ -244,7 +244,7 @@ impl Daemon {
     fn take_lease(&mut self) -> Result<()> {
         let rt = self.runtime.as_ref().context("lease runtime gone")?;
         let host = LEASE_HOST.to_string();
-        let granted = rt.block_on(self.leases.before_data_connection(&host, &self.endpoint, None));
+        let granted = rt.block_on(self.leases.before_data_connection(&host, &self.endpoint, None, |_| {}));
         if !matches!(granted, Ok(0)) || !self.leases.held(&host) {
             bail!("pane-timing could not lease its private daemon: {granted:?}");
         }
@@ -610,7 +610,7 @@ fn process_start(pid: u32) -> Option<String> {
 fn close_by_lease(endpoint: &Path) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build()?;
     let leases = crate::lease::Leases::new(false, vec![LEASE_HOST.to_string()]);
-    rt.block_on(leases.before_data_connection(&LEASE_HOST.to_string(), endpoint, None))?;
+    rt.block_on(leases.before_data_connection(&LEASE_HOST.to_string(), endpoint, None, |_| {}))?;
     if let Some(mut leaving) = leases.leave_all(LeaveIntent::Close, 0, Instant::now()) {
         while let crate::lease::LeaveStep::Wait(until) = leaving.poll(Instant::now()) {
             std::thread::sleep(until.saturating_duration_since(Instant::now()).min(Duration::from_millis(100)));

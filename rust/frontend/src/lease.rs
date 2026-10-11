@@ -139,7 +139,7 @@ pub struct Leases {
     exempt: bool,
     book: Mutex<Book>,
     /// `lease::LEASE_REPLY_WAIT`: how long the request may take to send, and
-    /// when an unanswered one is warned about; tests shorten it.
+    /// when an unanswered one is warned about and named to the caller; tests shorten it.
     reply_wait: Duration,
 }
 
@@ -203,13 +203,15 @@ impl Leases {
 
     /// Claim the daemon on a dedicated connection before a data connection is
     /// made. Returns the count of sessions an earlier close could not end.
-    /// An `Err` is the transport's cue to back off and retry.
+    /// An `Err` is the transport's cue to back off and retry. `unanswered` is called once if the request is sent and
+    /// `reply_wait` passes with no reply; the wait goes on.
     #[allow(clippy::too_many_lines, reason = "claims the daemon on a dedicated connection before the data connection; predates the 100-line limit")]
     pub async fn before_data_connection(
         &self,
         host: &HostKey,
         path: &Path,
         token: Option<&str>,
+        unanswered: impl FnOnce(Duration),
     ) -> Result<u32> {
         if self.exempt || self.held(host) {
             return Ok(0);
@@ -275,6 +277,7 @@ impl Leases {
                 Ok(r) => r,
                 Err(_) => {
                     tracing::warn!(%host, waited = ?self.reply_wait, "window lease: no reply yet; still waiting, since dropping the request would read as a close");
+                    unanswered(self.reply_wait);
                     read.await
                 }
             }
@@ -799,7 +802,7 @@ mod delivery_tests {
             for host in ["pending-a", "pending-b"] {
                 let (listener, path) = bind("forcedclock");
                 let (log, _, peer) = leave_fake(listener, None, None, Duration::ZERO);
-                tokio::time::timeout(Duration::from_secs(5), leases.before_data_connection(&host.to_string(), &path, None)).await.unwrap().unwrap();
+                tokio::time::timeout(Duration::from_secs(5), leases.before_data_connection(&host.to_string(), &path, None, |_| {})).await.unwrap().unwrap();
                 peers.push((log, peer));
             }
         });
@@ -807,7 +810,7 @@ mod delivery_tests {
         let fast_peer = fast.block_on(async {
             let (listener, path) = bind("forcedready");
             let peer = leave_fake(listener, None, None, Duration::ZERO);
-            tokio::time::timeout(Duration::from_secs(5), leases.before_data_connection(&"ready".to_string(), &path, None)).await.unwrap().unwrap();
+            tokio::time::timeout(Duration::from_secs(5), leases.before_data_connection(&"ready".to_string(), &path, None, |_| {})).await.unwrap().unwrap();
             peer
         });
         let (closed, rx) = mpsc::unbounded_channel();

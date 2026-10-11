@@ -95,7 +95,7 @@ async fn keep_reaches_the_daemon_before_eof() {
     let (log, replied, fake) = leave_fake(listener, None, Some("keep"), Duration::from_millis(300));
     let host = "local".to_string();
     let leases = Leases::new(false, vec![host.clone()]);
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     let mut leaving = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
     assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)));
     let seen = logged(&log, 1).await;
@@ -114,7 +114,7 @@ async fn close_waits_for_its_reply() {
     let (log, replied, fake) = leave_fake(listener, None, Some("close"), Duration::from_millis(300));
     let host = "local".to_string();
     let leases = Leases::new(false, vec![host.clone()]);
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
     assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)));
     let seen = logged(&log, 1).await;
@@ -130,7 +130,7 @@ async fn close_waits_for_its_reply() {
     let (listener, path) = bind("closenoreply");
     let (log, replied, fake) = leave_fake(listener, None, None, Duration::ZERO);
     let leases = Leases::new(false, vec![host.clone()]);
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     let t0 = Instant::now();
     let mut leaving = leases.leave_all(LeaveIntent::Close, 0, t0).unwrap();
     let seen = logged(&log, 1).await;
@@ -151,7 +151,7 @@ async fn close_after_keep_supersedes() {
     let (log, _replied, fake) = leave_fake(listener, None, Some("close"), Duration::from_millis(300));
     let host = "local".to_string();
     let leases = Leases::new(false, vec![host.clone()]);
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     let keep = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
     assert_eq!(logged(&log, 1).await.len(), 1);
     // The X during the keep's ack wait (`exit_intent`'s Supersede).
@@ -178,10 +178,10 @@ async fn late_grant_gets_the_leave() {
     let (a, b, c) = ("a".to_string(), "b".to_string(), "c".to_string());
     let mut leases = Leases::new(false, vec![a.clone(), b.clone(), c.clone()]);
     Arc::get_mut(&mut leases).unwrap().reply_wait = Duration::from_secs(2);
-    assert_eq!(leases.before_data_connection(&a, &pa, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&a, &pa, None, |_| {}).await.unwrap(), 0);
     let in_flight = {
         let leases = leases.clone();
-        tokio::spawn(async move { leases.before_data_connection(&b, &pb, None).await })
+        tokio::spawn(async move { leases.before_data_connection(&b, &pb, None, |_| {}).await })
     };
     asked.await.unwrap();
     let mut leaving = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
@@ -191,7 +191,7 @@ async fn late_grant_gets_the_leave() {
     open.send(()).unwrap();
     assert_eq!(in_flight.await.unwrap().unwrap(), 0);
     // A handshake started after the leave is refused, and never connects.
-    assert!(leases.before_data_connection(&c, &pc, None).await.is_err());
+    assert!(leases.before_data_connection(&c, &pc, None, |_| {}).await.is_err());
     assert!(tokio::time::timeout(Duration::from_millis(200), lc.accept()).await.is_err(), "a lease after the leave");
     // Both acks are in the one wait: 7 from each, and their sum shows.
     assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show);
@@ -245,7 +245,7 @@ async fn inflight_handshake_gets_the_leave() {
     let leases = Leases::new(false, vec![host.clone()]);
     let in_flight = {
         let (leases, host) = (leases.clone(), host.clone());
-        tokio::spawn(async move { leases.before_data_connection(&host, &path, None).await })
+        tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
     };
     asked.await.unwrap();
     let mut leaving =
@@ -268,10 +268,10 @@ async fn inflight_handshake_gets_the_leave() {
     let (log_b, _, fake_b) = leave_fake(lb, Some((asked_tx, open_rx)), Some("close"), Duration::ZERO);
     let (a, b) = ("a".to_string(), "b".to_string());
     let leases = Leases::new(false, vec![a.clone(), b.clone()]);
-    assert_eq!(leases.before_data_connection(&a, &pa, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&a, &pa, None, |_| {}).await.unwrap(), 0);
     let in_flight = {
         let leases = leases.clone();
-        tokio::spawn(async move { leases.before_data_connection(&b, &pb, None).await })
+        tokio::spawn(async move { leases.before_data_connection(&b, &pb, None, |_| {}).await })
     };
     asked.await.unwrap();
     let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
@@ -298,10 +298,10 @@ async fn failed_leave_send_is_not_confirmed() {
     let (log_b, _, fake_b) = leave_fake(lb, Some((asked_tx, open_rx)), Some("keep"), Duration::ZERO);
     let (a, b, c) = ("a".to_string(), "b".to_string(), "c".to_string());
     let leases = Leases::new(false, vec![a.clone(), b.clone(), c.clone()]);
-    assert_eq!(leases.before_data_connection(&a, &pa, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&a, &pa, None, |_| {}).await.unwrap(), 0);
     let in_flight = {
         let leases = leases.clone();
-        tokio::spawn(async move { leases.before_data_connection(&b, &pb, None).await })
+        tokio::spawn(async move { leases.before_data_connection(&b, &pb, None, |_| {}).await })
     };
     asked.await.unwrap();
     let mut leaving = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
@@ -330,7 +330,7 @@ async fn inflight_handshake_ended_unanswered_is_not_confirmed() {
     Arc::get_mut(&mut leases).unwrap().reply_wait = Duration::from_millis(300);
     let in_flight = {
         let (leases, host) = (leases.clone(), host.clone());
-        tokio::spawn(async move { leases.before_data_connection(&host, &path, None).await })
+        tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
     };
     asked.await.unwrap();
     let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
@@ -355,7 +355,7 @@ fn forced_exit_delivers_the_queued_close() {
     let host = "local".to_string();
     let leases = Leases::new(false, vec![host.clone()]);
     window.block_on(async {
-        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+        assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
         let mut keep = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
         assert_eq!(poll_out(&mut keep).await, LeaveStep::Show, "the daemon accepted the keep");
     });
@@ -387,7 +387,7 @@ async fn invalid_leave_reply_is_not_confirmed() {
         let (listener, path) = bind(&format!("badreply{i}"));
         let fake = odd_reply_fake(listener, 0, payload.clone());
         let leases = Leases::new(false, vec![host.clone()]);
-        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+        assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
         let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
         assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show, "{payload}");
         assert_eq!(leaving.line().as_deref(), Some(LEAVE_UNCONFIRMED_CLOSE), "{payload}");
@@ -398,7 +398,7 @@ async fn invalid_leave_reply_is_not_confirmed() {
     let (listener, path) = bind("wrongid");
     let fake = odd_reply_fake(listener, 100, serde_json::json!({"not_ended": 7}));
     let leases = Leases::new(false, vec![host.clone()]);
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     let t0 = Instant::now();
     let mut leaving = leases.leave_all(LeaveIntent::Close, 0, t0).unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -444,7 +444,7 @@ async fn notice_seen_reply_never_swallows_a_handover_reply() {
     let (log, replied, fake) = leave_fake(listener, None, Some("handover"), Duration::from_millis(200));
     let host = "local".to_string();
     let leases = Leases::new(false, vec![host.clone()]);
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     // A relaunch; then the owed count's ack goes out while the handover
     // awaits its reply (the fake never answers the ack).
     let mut leaving = leases.leave_all(LeaveIntent::Handover, 75, Instant::now()).unwrap();
@@ -466,7 +466,7 @@ async fn ended_lease_gives_eof_while_window_lives() {
     let (log, _, fake) = leave_fake(listener, None, None, Duration::ZERO);
     let host = "local".to_string();
     let leases = Leases::new(false, vec![host.clone()]);
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     drop(leases);
     assert_eq!(finish(fake, &log).await, vec!["eof".to_string()]);
 }
@@ -481,7 +481,7 @@ async fn spawned_child_does_not_hold_the_lease() {
     let (log, _, fake) = leave_fake(listener, None, None, Duration::ZERO);
     let host = "local".to_string();
     let leases = Leases::new(false, vec![host.clone()]);
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     #[cfg(windows)]
     let mut cmd = std::process::Command::new("ping");
     #[cfg(windows)]

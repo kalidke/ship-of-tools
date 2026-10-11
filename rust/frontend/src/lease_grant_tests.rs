@@ -110,7 +110,7 @@ fn harness_never_leases() {
         let (listener, path) = bind("exempt");
         let host = "local".to_string();
         let leases = Leases::new(true, vec![host.clone()]);
-        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+        assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
         let accepted = tokio::time::timeout(Duration::from_millis(300), listener.accept()).await;
         assert!(accepted.is_err(), "an exempt window must not connect");
         assert_eq!(leases.notice(), None);
@@ -167,29 +167,29 @@ async fn lease_retried_each_data_connection() {
     let host = "local".to_string();
     let mut leases = Leases::new(false, vec![host.clone()]);
     Arc::get_mut(&mut leases).unwrap().reply_wait = Duration::from_millis(100);
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     assert_eq!(count.load(Ordering::SeqCst), 1);
     assert_eq!(leases.standing(&host), Some(Standing::Unsupported));
     // Closing, and a connection that ends unanswered: each a failed connect.
-    assert!(leases.before_data_connection(&host, &path, None).await.is_err());
+    assert!(leases.before_data_connection(&host, &path, None, |_| {}).await.is_err());
     assert_eq!(count.load(Ordering::SeqCst), 2);
     assert_eq!(leases.standing(&host), Some(Standing::Unreached));
-    assert!(leases.before_data_connection(&host, &path, None).await.is_err());
+    assert!(leases.before_data_connection(&host, &path, None, |_| {}).await.is_err());
     assert_eq!(count.load(Ordering::SeqCst), 3);
     assert_eq!(leases.standing(&host), Some(Standing::Unreached));
     // Foreign and Undetermined proceed unleased, and the next connection asks again.
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     assert_eq!(count.load(Ordering::SeqCst), 4);
     assert_eq!(leases.standing(&host), Some(Standing::Foreign));
     assert!(!leases.held(&host));
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     assert_eq!(count.load(Ordering::SeqCst), 5);
     assert_eq!(leases.standing(&host), Some(Standing::Undetermined));
     assert!(!leases.held(&host));
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     assert_eq!(count.load(Ordering::SeqCst), 6);
     assert_eq!(leases.standing(&host), Some(Standing::Granted { state_root: Some("r".into()) }));
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     assert_eq!(count.load(Ordering::SeqCst), 6, "a held lease is not retaken");
     drop_tx.send(()).unwrap();
     for _ in 0..40 {
@@ -199,7 +199,7 @@ async fn lease_retried_each_data_connection() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(!leases.held(&host), "the dropped stream ends the lease");
-    leases.before_data_connection(&host, &path, None).await.unwrap();
+    leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 7);
 }
 
@@ -224,7 +224,7 @@ async fn notice_seen_timeout_keeps_the_lease() {
     });
     let host = "local".to_string();
     let leases = Leases::new(false, vec![host.clone()]);
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     leases.notice_seen(&host, 2);
     assert!(!eof_rx.await.unwrap(), "the fake daemon read an EOF after a slow notice_seen reply");
     assert!(leases.held(&host), "a slow notice_seen reply must not end the lease");
@@ -269,7 +269,7 @@ async fn lease_wire_round_trip() {
     });
     let host = "local".to_string();
     let leases = Leases::new(false, vec![host.clone()]);
-    assert_eq!(leases.before_data_connection(&host, &path, Some("tok")).await.unwrap(), 1);
+    assert_eq!(leases.before_data_connection(&host, &path, Some("tok"), |_| {}).await.unwrap(), 1);
     assert_eq!(leases.granted_state_roots(), vec!["r".to_string()]);
     leases.notice_seen(&host, 1);
     let seen = tokio::time::timeout(Duration::from_secs(2), seen_rx).await.unwrap().unwrap();
@@ -318,7 +318,7 @@ async fn slow_grant_is_held_not_dropped() {
     let host = "local".to_string();
     let mut leases = Leases::new(false, vec![host.clone()]);
     Arc::get_mut(&mut leases).unwrap().reply_wait = Duration::from_millis(100);
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 2);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 2);
     assert!(leases.held(&host));
     assert_eq!(accepts.load(Ordering::SeqCst), 1);
     tokio::time::sleep(Duration::from_millis(600)).await;
@@ -363,9 +363,9 @@ async fn one_daemon_under_two_labels_is_one_count() {
     let (_log3, _conns3) = daemon(l3, "t", 0);
     let (a, b, c) = ("a".to_string(), "b".to_string(), "c".to_string());
     let leases = Leases::new(false, vec![a.clone(), b.clone(), c.clone()]);
-    assert_eq!(leases.before_data_connection(&a, &p1, None).await.unwrap(), 3);
-    assert_eq!(leases.before_data_connection(&b, &p1, None).await.unwrap(), 3);
-    assert_eq!(leases.before_data_connection(&c, &p2, None).await.unwrap(), 4);
+    assert_eq!(leases.before_data_connection(&a, &p1, None, |_| {}).await.unwrap(), 3);
+    assert_eq!(leases.before_data_connection(&b, &p1, None, |_| {}).await.unwrap(), 3);
+    assert_eq!(leases.before_data_connection(&c, &p2, None, |_| {}).await.unwrap(), 4);
     let rs = vec![("r".to_string(), 3), ("s".to_string(), 4)];
     assert_eq!(leases.owed(), rs, "a count is owed per label, not per granting daemon");
     // a re-leases a replacement daemon (nothing not ended) before any frame drew the counts.
@@ -377,7 +377,7 @@ async fn one_daemon_under_two_labels_is_one_count() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(!leases.held(&a));
-    assert_eq!(leases.before_data_connection(&a, &p3, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&a, &p3, None, |_| {}).await.unwrap(), 0);
     assert_eq!(leases.owed(), rs, "a re-lease moved or dropped a count another daemon granted");
     leases.notice_seen(&"s".to_string(), 9);
     assert_eq!(leases.owed(), rs, "an ack of another count cleared the owed one");
@@ -525,8 +525,100 @@ async fn a_refused_hello_leaves_the_lease_undetermined_and_the_data_connection_g
     });
     let host = "local".to_string();
     let leases = Leases::new(false, vec![host.clone()]);
-    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     assert_eq!(leases.standing(&host), Some(Standing::Undetermined));
     assert!(!leases.held(&host));
     assert_eq!(leases.notice(), Some(NOTICE_UNDETERMINED));
+}
+
+/// LEASE-REPLY-WAIT, through the real transport task: a lease request the daemon has not answered within `reply_wait`
+/// is named on the status line as a disconnect, is never dropped and never repeated, and the host connects once the
+/// daemon answers.
+#[test]
+fn an_unanswered_lease_is_named_and_held_until_its_answer() {
+    #[derive(Clone, Copy)]
+    struct NoWindow;
+    impl crate::net::transport::Redraw for NoWindow {
+        fn request_redraw(&self) {}
+    }
+    use crate::net::transport::IncomingEvt;
+    let _env = crate::net::state::test_env::set_test_env();
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let (listener, path) = {
+        let _in = rt.enter();
+        bind("unanswered")
+    };
+    let host = "local".to_string();
+    let (answer_tx, answer_rx) = oneshot::channel::<()>();
+    let (data_tx, data_rx) = std::sync::mpsc::channel::<Frame>();
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (a, d) = (accepts.clone(), dropped.clone());
+    rt.spawn(async move {
+        let conn = listener.accept().await.unwrap();
+        a.fetch_add(1, Ordering::SeqCst);
+        let (rx, mut tx) = conn.split();
+        let mut rx = codec::buffered(rx);
+        let (_, req) = read_handoff(&mut rx, &mut tx).await.expect("a handoff");
+        assert_eq!(req.op, op::FE_LEASE);
+        // Unanswered until the test says so: an EOF or a frame before then is the window giving up its request.
+        tokio::select! {
+            _ = answer_rx => {}
+            _ = codec::read_frame(&mut rx) => d.store(true, Ordering::SeqCst),
+        }
+        let granted = serde_json::json!({"outcome": "granted", "state_root": "r"});
+        codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
+        let held = d.clone();
+        tokio::spawn(async move {
+            let _tx = tx;
+            let _ = codec::read_frame(&mut rx).await;
+            held.store(true, Ordering::SeqCst);
+        });
+        let conn = listener.accept().await.unwrap();
+        a.fetch_add(1, Ordering::SeqCst);
+        let (rx, tx) = conn.split();
+        let mut rx = codec::buffered(rx);
+        let (hello, _) = codec::read_frame(&mut rx).await.unwrap();
+        let _ = data_tx.send(hello);
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        drop((rx, tx));
+    });
+    let mut leases = Leases::new(false, vec![host.clone()]);
+    Arc::get_mut(&mut leases).unwrap().reply_wait = Duration::from_millis(100);
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    let (_out_tx, out_rx) = crate::net::transport::outgoing_channel();
+    crate::net::transport::spawn(
+        &rt,
+        host.clone(),
+        pipe_config(&path),
+        evt_tx,
+        out_rx,
+        NoWindow,
+        Arc::new(tokio::sync::Notify::new()),
+        sot_protocol::topology::ssh_bridge::LinkGate::default(),
+        leases.clone(),
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let reason = loop {
+        match evt_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok((_, IncomingEvt::Disconnected { reason })) => break reason,
+            Ok(_) => continue,
+            Err(_) => panic!("no named state within 10s of an unanswered lease"),
+        }
+    };
+    assert_eq!(reason, "this computer's backend has not answered the window lease in 100ms; waiting for its answer");
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(accepts.load(Ordering::SeqCst), 1, "a second request or a data connection while the lease was unanswered");
+    assert!(!dropped.load(Ordering::SeqCst), "the window dropped its unanswered lease request");
+    assert!(
+        !evt_rx.try_iter().any(|(_, e)| matches!(e, IncomingEvt::Disconnected { .. })),
+        "the attempt ended or named twice"
+    );
+    answer_tx.send(()).unwrap();
+    let hello = data_rx.recv_timeout(Duration::from_secs(10)).expect("no data connection after the late grant");
+    assert_eq!(hello.op, op::HELLO);
+    assert_eq!(hello.payload["role"], crate::net::identity::FrontendIdentity::ROLE);
+    assert!(leases.held(&host), "the late grant is not held");
+    assert!(!dropped.load(Ordering::SeqCst), "the window dropped its lease after the grant");
+    rt.shutdown_timeout(Duration::from_secs(2));
 }

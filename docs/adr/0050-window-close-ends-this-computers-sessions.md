@@ -168,7 +168,8 @@ read by every end, a startup Cleanup included.
   `Granted` makes a holder task own the stream for the process's life; `Foreign`,
   `Undetermined` or an unsupported reply proceeds without it; `Closing`, an io error, or a request not sent within `LEASE_REPLY_WAIT` is a
   failed connect. Once the request is sent the window waits for the reply as long as the connection lasts, since
-  dropping it would read as this window closing (ruling a). A not-ended count is shown once per daemon, keyed by
+  dropping it would read as this window closing (ruling a). From `LEASE_REPLY_WAIT` on, that host's status line names
+  the wait, and the host connects when the daemon answers. A not-ended count is shown once per daemon, keyed by
   the state root its grant names. With no granted lease it shows a persistent notice naming
   the cause.
 - X, an OS close or Ctrl+Q then No sends `Close` and waits for the ack, up to 125 s; an X

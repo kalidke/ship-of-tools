@@ -264,7 +264,7 @@ mod tests {
             let (log, _, fake) = leave_fake(listener, None, None, std::time::Duration::ZERO);
             let host = "fixture".to_string();
             let leases = crate::lease::Leases::new(false, vec![host.clone()]);
-            tokio::time::timeout(std::time::Duration::from_secs(5), leases.before_data_connection(&host, &path, None))
+            tokio::time::timeout(std::time::Duration::from_secs(5), leases.before_data_connection(&host, &path, None, |_| {}))
                 .await.unwrap().unwrap();
             let (mut prompt, mut leaving, mut should_exit) = (Some(NavPrompt::ConfirmQuit { keep: true }), None, false);
             let now = std::time::Instant::now();

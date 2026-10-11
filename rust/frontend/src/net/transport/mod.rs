@@ -270,8 +270,16 @@ async fn connect_and_run<Wn: Redraw>(
 ) -> Result<()> {
     match &config.dial {
         Dial::Pipe(pipe_path) => {
+            // A sent lease request is never dropped (its end would read as this window closing, ADR 0050): past its
+            // bound the wait is named on the status line, and the host connects when the daemon answers.
+            let unanswered = |waited: std::time::Duration| {
+                let reason =
+                    format!("this computer's backend has not answered the window lease in {waited:?}; waiting for its answer");
+                let _ = evt_tx.send((host.clone(), IncomingEvt::Disconnected { reason }));
+                window.request_redraw();
+            };
             let not_ended = leases
-                .before_data_connection(&host, pipe_path, config.token.as_deref())
+                .before_data_connection(&host, pipe_path, config.token.as_deref(), unanswered)
                 .await?;
             // The grant recorded the count (`Leases::owed`); the next frame shows it.
             if not_ended > 0 {
