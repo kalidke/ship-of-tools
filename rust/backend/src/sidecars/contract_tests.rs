@@ -104,26 +104,27 @@ pub(crate) fn owned_julia_env(root: &Path) -> PathBuf {
 }
 
 /// The depot path of a fixture's Julia, the one builder every sidecar fixture uses: `owned` first (Julia writes only
-/// there), then the depots of `read` in its own order (`JULIA_DEPOT_PATH` is a list, split by the platform's
-/// separator), then one empty entry, which Julia expands to its own bundled depots, unless the list already holds one.
+/// there), then `read`, a `JULIA_DEPOT_PATH` list, whole and in its own order, as the daemon's children read it; with
+/// no list, one empty entry, which Julia expands to its own bundled depots. A list is never extended: its depots were
+/// built on it and hold the stdlib caches their caches need, and adding Julia's bundled depots would put a second copy
+/// of each stdlib on the path, so which copy loads would turn on which one a sibling test touched last.
 pub(crate) fn depot_path(owned: &Path, read: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
-    let mut entries = vec![owned.to_path_buf()];
-    entries.extend(read.into_iter().flat_map(std::env::split_paths));
-    if !entries.iter().any(|entry| entry.as_os_str().is_empty()) {
-        entries.push(PathBuf::new());
-    }
+    let entries: Vec<PathBuf> = match read {
+        Some(list) => std::iter::once(owned.to_path_buf()).chain(std::env::split_paths(list)).collect(),
+        None => vec![owned.to_path_buf(), PathBuf::new()],
+    };
     std::env::join_paths(entries).expect("depot path")
 }
 
 #[test]
-fn a_fixture_depot_path_keeps_a_read_list_whole_and_julias_own_depots() {
+fn a_fixture_depot_path_keeps_a_read_list_whole() {
     let owned = PathBuf::from("owned");
     let entries = |path: std::ffi::OsString| std::env::split_paths(&path).collect::<Vec<_>>();
     let none = PathBuf::new();
     assert_eq!(entries(depot_path(&owned, None)), [owned.clone(), none.clone()]);
+    // A bare list (a developer's depot) gains no bundled depots; a list that keeps them (CI's) keeps its one entry.
     let one = std::env::join_paths(["read"]).unwrap();
-    assert_eq!(entries(depot_path(&owned, Some(&one))), [owned.clone(), "read".into(), none.clone()]);
-    // The form that keeps Julia's own depots (a list ending in an empty entry) stays one list with one empty entry.
+    assert_eq!(entries(depot_path(&owned, Some(&one))), [owned.clone(), "read".into()]);
     let list = std::env::join_paths(["a", "b", ""]).unwrap();
     assert_eq!(entries(depot_path(&owned, Some(&list))), [owned, "a".into(), "b".into(), none]);
 }

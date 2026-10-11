@@ -35,7 +35,7 @@ on:
     # comm/** added alongside the "Test sot-comm disambiguation" step below
     # (PR #148 Codex review F10) — without it, a comm-only change (like the
     # one that added that step) would never trigger this workflow at all.
-    paths: ["rust/**", "scripts/**", "docs/tools/**", "comm/**", "agents/**", ".github/workflows/rust.yml"]
+    paths: ["rust/**", "scripts/**", "docs/tools/**", "comm/**", "agents/**", ".github/workflows/rust.yml", ".github/wgl-depot.sh"]
   workflow_dispatch: {}
 
 concurrency:
@@ -327,27 +327,13 @@ jobs:
           cargo test -p sot-backend --bin sotd agents::folder_trust --locked -- --nocapture
           cargo test -p sot-backend --test trust_declare --test trust_premises --locked -- --nocapture
       # The sidecar tests start a real Julia, which the macOS image lacks, and the WGL page test adds WGLMakie offline
-      # from the depot JULIA_DEPOT_PATH names. That depot is built over Julia's bundled depots (the empty last entry),
-      # so it holds no stdlib builds of its own and its caches are compiled against the stdlib caches Julia ships, the
-      # ones every fixture loads: the test's add then compiles only the shim. Built without them, the depot holds a Pkg
-      # of its own, which the step refuses: once a sibling test has loaded Julia's own stdlib caches, Julia prefers
-      # them, and the add would recompile most of WGLMakie's environment.
+      # from the depot JULIA_DEPOT_PATH names; .github/wgl-depot.sh builds it and says why it is built so.
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1.13'
       - name: Prepare the Julia depot the WGL page test reads
         shell: bash
-        run: |
-          depot="$RUNNER_TEMP/julia-depot"
-          if [ "$RUNNER_OS" = Windows ]; then sep=';'; else sep=':'; fi
-          echo "JULIA_DEPOT_PATH=$depot" >> "$GITHUB_ENV"
-          JULIA_DEPOT_PATH="$depot$sep" julia --startup-file=no -e '
-            using Pkg
-            println("DEPOT_PATH: ", DEPOT_PATH)
-            Pkg.activate(; temp = true)
-            Pkg.add(name = "WGLMakie", version = "0.13")
-            own = joinpath(DEPOT_PATH[1], "compiled", "v$(VERSION.major).$(VERSION.minor)", "Pkg")
-            isdir(own) && error("$own exists: the depot was built without the bundled depots")'
+        run: bash ../.github/wgl-depot.sh
       # --nocapture: the fault sweeps REPORT (never assert) their torn-tail
       # hit counts on stderr — captured output would hide them from CI logs,
       # making the sweeps' actual coverage invisible (review finding).
@@ -497,24 +483,14 @@ jobs:
         run: npm ci
       # Every shard installs the Julia every leg of `test` installs, so a test that starts Julia (the sidecar tests in sotd,
       # the daemon suites in rest that send kernel, preview or REPL ops) runs 1.13 as on the other legs. The WGL page test
-      # (shard sotd) adds WGLMakie offline from the depot JULIA_DEPOT_PATH names, built here as `test` builds it.
+      # (shard sotd) adds WGLMakie offline from the depot JULIA_DEPOT_PATH names, built by .github/wgl-depot.sh.
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1.13'
       - name: Prepare the Julia depot the WGL page test reads
         if: matrix.shard == 'sotd'
         shell: bash
-        run: |
-          depot="$RUNNER_TEMP/julia-depot"
-          if [ "$RUNNER_OS" = Windows ]; then sep=';'; else sep=':'; fi
-          echo "JULIA_DEPOT_PATH=$depot" >> "$GITHUB_ENV"
-          JULIA_DEPOT_PATH="$depot$sep" julia --startup-file=no -e '
-            using Pkg
-            println("DEPOT_PATH: ", DEPOT_PATH)
-            Pkg.activate(; temp = true)
-            Pkg.add(name = "WGLMakie", version = "0.13")
-            own = joinpath(DEPOT_PATH[1], "compiled", "v$(VERSION.major).$(VERSION.minor)", "Pkg")
-            isdir(own) && error("$own exists: the depot was built without the bundled depots")'
+        run: bash ../.github/wgl-depot.sh
       # sotd and sot-capsule sit in the target dir the backend tests spawn them from.
       - name: Build workspace
         run: cargo build --workspace --locked
@@ -591,12 +567,6 @@ jobs:
       # that does not exist on a leg draws a warning there.
       - name: Disallowed methods
         run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
-      - name: Function length allowances can only fall
-        working-directory: .
-        run: |
-          n=$(git grep -c 'clippy::too_many_lines' -- rust ':!rust/vt100' | awk -F: '{ s += $2 } END { print s + 0 }')
-          echo "allowances: $n (pinned: 64)"
-          [ "$n" -eq 64 ] || { echo "the count changed: lower 64 here when you remove an allowance"; exit 1; }
       - name: Build selected-body fixture
         shell: bash
         run: |

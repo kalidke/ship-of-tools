@@ -9,3 +9,8 @@ folder-size scripts entry-point paths are a published interface
 
 # the repo-root page is the map tier (it names the subsystems' charter folders, not every root entry); records plan, rec-12
 file-list CLAUDE.md the repo-root page is the map tier, not a module page
+
+# rust.yml's "Function length" clippy step fails a function over 100 code lines unless it carries a reasoned
+# allow(clippy::too_many_lines); this pins how many rust/ holds (not rust/vt100). It can only fall: removing one lowers
+# the number in the same commit.
+too-many-lines rust 64 functions over 100 code lines that carry a reasoned allow

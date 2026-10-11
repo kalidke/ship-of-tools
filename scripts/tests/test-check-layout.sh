@@ -190,6 +190,21 @@ WANT="VIOLATION named-path docs/integration.md d/gone.jl
 VIOLATION named-path CLAUDE.md d/gone.jl
 named-path: 2 tokens checked in 3 files"; check "named-path lists the integration page and the root page" 1 d
 
+# too-many-lines: the allowances under rust/ (not rust/vt100) equal the pin; a rise and a fall each fail and say which
+newrepo; mkdir -p rust/a rust/vt100
+printf '#[allow(clippy::too_many_lines, reason = "x")]\nfn f() {}\n' > rust/a/x.rs; mkpage rust/a x.rs
+printf '#[allow(clippy::too_many_lines)]\n' > rust/vt100/v.rs; mkpage rust/vt100 v.rs; commit
+printf 'too-many-lines rust 1 pinned\n' > "$tmp/allow"
+WANT="too-many-lines: 1 allowances in rust (pinned: 1)
+violations: 0, allowed: 0, exempt: 0, unused-allow: 0"; check "too-many-lines at its pin" 0 --allow "$tmp/allow" rust/a
+printf 'too-many-lines rust 0 pinned\n' > "$tmp/allow"
+WANT="VIOLATION too-many-lines rust 1 allowances, pinned 0: the count rose"; check "too-many-lines rise" 1 --allow "$tmp/allow" rust/a
+WANT="VIOLATION too-many-lines rust 1 allowances, pinned 0: the count rose"; check "too-many-lines unpinned" 1 rust/a
+printf 'too-many-lines rust 2 pinned\n' > "$tmp/allow"
+WANT="VIOLATION too-many-lines rust 1 allowances, pinned 2: the count fell; lower the pin to 1"; check "too-many-lines fall" 1 --allow "$tmp/allow" rust/a
+printf 'too-many-lines rust many pinned\n' > "$tmp/allow"
+"$tool" --repo "$tmp/r" --exempt /dev/null --allow "$tmp/allow" rust/a >/dev/null 2>&1; [ $? = 2 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: too-many-lines bad pin rc"; }
+
 # report
 newrepo; mkdir d; { lines 5 'x='; } > d/small.rs; { lines 30 'x='; echo '#[cfg(test)]'; echo 'mod t {'; echo '}'; } > d/big.rs; commit
 out="$("$tool" --repo "$tmp/r" --report d)"

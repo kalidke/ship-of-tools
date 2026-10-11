@@ -15,11 +15,11 @@ use crate::sidecars::contract_tests::{depot_path, isolated, owned_julia_env, wit
 /// The longest an isolated body here may take: an empty depot compiles the shim on first start.
 pub(super) const BODY: Duration = Duration::from_secs(240);
 const EVAL: Duration = Duration::from_secs(180);
-/// The WGLMakie setup's bound. An offline add resolves only the versions the depots hold, and it reuses the read
-/// depot's caches when they were compiled against the stdlib caches Julia ships, the ones every fixture loads: CI's
-/// depot is built so, and there the add compiles only the shim. A read depot holding other versions, or built without
-/// Julia's bundled depots (so holding stdlib builds of its own), makes the add precompile much of WGLMakie's
-/// environment, Makie then WGLMakie in series; about twice the slowest measured (303 s, on two CPUs).
+/// The WGLMakie setup's bound. The fixture reads the depot list whole (`depot_path`), so the offline add reuses the
+/// read depot's caches and compiles only the shim (5 s) when the depots were built on that list, as CI's are
+/// (.github/wgl-depot.sh) and a developer's are. A read depot holding other versions recompiles those (25 packages on
+/// one host). A depot read on a list it was not built on can recompile most of WGLMakie's environment (420 s on hosted
+/// Linux, past 600 s on hosted Windows); this bound does not cover that.
 const SETUP: Duration = Duration::from_secs(600);
 
 /// A bare workspace (no `Project.toml`) whose path holds a space, and the real `Workspace::repl` factory over it.
@@ -36,8 +36,8 @@ impl Fixture {
         Self::with_read_depot(None)
     }
 
-    /// As `new`, with the depots of `read_depot` (a `JULIA_DEPOT_PATH` list) behind the owned depot and Julia's own
-    /// bundled depots after them (`depot_path`): packages and their compiled caches are read from them, and every file
+    /// As `new`, with the depots of `read_depot` (a `JULIA_DEPOT_PATH` list) behind the owned depot, the list whole
+    /// (`depot_path`): packages and their compiled caches are read from them, and every file
     /// Julia makes goes to the owned depot. In the read depot Julia does only the
     /// bookkeeping any session does there: Pkg makes and at once removes a lock file beside each package version it
     /// resolves (`packages/<name>/<slug>.pid`), and loading a cache updates its timestamp.

@@ -6,10 +6,12 @@ scripts/CLAUDE.md.
 
 ## Files
 - `dependabot.yml`: weekly version updates for the GitHub Actions and the Julia environments (`/`, `/docs`, `/test`).
+- `wgl-depot.sh`: builds the Julia depot the WGL page test reads (rust.yml's `test` job and shard `sotd`); its
+  comment says why it is built over Julia's bundled depots.
 - `workflows/`: the four workflows below.
 
 ## Workflows
-- `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `docs/tools/**`, `comm/**`, `agents/**` and the file
+- `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `docs/tools/**`, `comm/**`, `agents/**`, `.github/wgl-depot.sh` and the file
   itself) and dispatch. Jobs: `test` (build and test on windows and macos, after `npm ci` for the MathJax helper's modules, and on windows the
   PowerShell 5.1 parse and the `scripts/tests/` `.ps1` suites), `test-linux` (the ubuntu build and test, one job per
   shard, named "build+test (ubuntu-latest, <shard>)": its `SHARDS` table names the test targets of the shards `outage`,
@@ -20,7 +22,7 @@ scripts/CLAUDE.md.
   place (`strategy.job-index`) in that list;
   every command selects `--workspace`; only `sotd` runs `npm ci`
   and the WGL depot step, and only `rest` saves the shared cache), `checks-linux` ("checks (ubuntu-latest)": the clippy
-  gates and the allowance count, the selected-body proofs, the L3 run, the shell parse, "Check the layout"
+  gates, the selected-body proofs, the L3 run, the shell parse, "Check the layout"
   (`scripts/tests/check-layout.sh` with `check-layout.allow`), "Test the layout tools" (its two self-tests), the
   `scripts/tests/` bash suites, the comm hermetic suites and the agents CLI suites (the comm list names
   `test-stage-bin.sh`; among them `test-ccx-launch.sh`, which proves ccx's default handle)), `conpty-windows-2022`
@@ -32,11 +34,10 @@ scripts/CLAUDE.md.
   loop volume, runs `fault_storage` on it with `--include-ignored`, then unmounts it, releases the loop device and
   removes its folder; sudo is used only in that step, and a failed setup or teardown fails the job.
   Every leg of `test` and every shard of `test-linux` installs Julia 1.13 (`julia-actions/setup-julia`); in `test`
-  before "Test workspace", and in the shard `sotd`, the step "Prepare the Julia depot the WGL page test reads" adds
-  WGLMakie 0.13, precompiled, to a depot in the runner's temporary folder that `JULIA_DEPOT_PATH` names for the rest of
-  the job: the sidecar tests start that Julia, and the WGL page test adds WGLMakie from that depot offline. The step
-  builds the depot over Julia's bundled depots and fails if the depot holds a compiled Pkg of its own, so the page
-  test's add reuses its caches and compiles only the shim.
+  before "Test workspace", and in the shard `sotd`, the step "Prepare the Julia depot the WGL page test reads" runs
+  `wgl-depot.sh`: it adds WGLMakie 0.13, precompiled, to a depot in the runner's temporary folder, built over Julia's
+  bundled depots, and names that same list in `JULIA_DEPOT_PATH` for the rest of the job: the sidecar tests start that
+  Julia, and the WGL page test adds WGLMakie from that depot offline, compiling only the shim.
   The heartbeat context-deadline suite runs independently on Ubuntu, macOS and Windows Git Bash. Its per-behavior and sensitivity receipts distinguish fixture entry, actual release times, hook exit, both EOFs and positive lifetime cleanup; MSYS budget coverage remains separate from native Python P5 and its termination acceptance gate.
   window-close-windows and window-close-macos run the opt-in main-thread native window_close suite on hosted Windows and macOS; a missing body, native window or required observation is not a passing result. Ordinary native close must exit 0 before 2.5 seconds without the backstop; deliberate stalled teardown must end under the three-second backstop with the decided code.
   window-minimized-windows and window-minimized-macos run the native ten-minute minimized-window event-progress check on hosted Windows and macOS; a runner without a usable native window is not a passing result.
@@ -66,8 +67,10 @@ scripts/CLAUDE.md.
   that adds it.
 - Function length is gated: the `rust.yml` step "Function length" runs clippy's `too_many_lines` (more than 100 code
   lines) as an error, `vt100-ctt` excluded because it denies `clippy::all` in its own source. A function over the limit
-  carries `#[allow(clippy::too_many_lines, reason = "...")]`, and the step "Function length allowances can only fall"
-  pins how many such allows `rust/` holds (not `rust/vt100`); removing one means lowering that number in the same commit. It also reads the feature-gated native targets (test-pane-timing, test-window-close).
+  carries `#[allow(clippy::too_many_lines, reason = "...")]`. The step also reads the feature-gated native targets
+  (test-pane-timing, test-window-close). "Check the layout" pins how many such allows `rust/` holds (not `rust/vt100`):
+  the `too-many-lines` line of `scripts/tests/check-layout.allow`; a rise fails, and removing one means lowering that
+  number in the same commit.
 - Disallowed methods are gated: the `rust.yml` step "Disallowed methods" runs clippy's `disallowed_methods` over every
   library, binary and build script on all three platforms. `rust/clippy.toml` holds one array in labelled groups, each
   opening with its rule. A sanctioned site carries `#[allow(clippy::disallowed_methods, reason = "...")]` on the one
