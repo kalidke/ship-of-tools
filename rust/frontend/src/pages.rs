@@ -272,13 +272,12 @@ where
     d_wr.write_all(&both).await?;
     d_wr.flush().await?;
 
-    // Each reply within the connect bound: a daemon that never answers names the step, not a page that loads forever.
-    let (hello_res, _blob) = crate::net::transport::read_connect_reply(d_buf, op::HELLO).await?;
+    let (hello_res, _blob) = codec::read_frame(d_buf).await?;
     if hello_res.payload.get("error").is_some() {
         let code = hello_res.payload.get("code").and_then(|v| v.as_str()).unwrap_or("error");
         anyhow::bail!("daemon refused the hello for port {port}: {code}");
     }
-    let (res, _blob) = crate::net::transport::read_connect_reply(d_buf, op::PROXY_CONNECT).await?;
+    let (res, _blob) = codec::read_frame(d_buf).await?;
     if res.payload.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         let code = res
             .payload
@@ -359,63 +358,6 @@ mod tests {
             let done = dial(browser);
             async move { super::serve_browser(port, &arm, done).await }
         }))
-    }
-
-    /// A daemon that falls silent in the proxy handshake ends it at the 30 s connect bound, naming the step: before
-    /// the hello's reply, and before proxy.connect's. The browser pair is made first; then the clock is paused, so the
-    /// bound runs at its real 30 s.
-    #[tokio::test]
-    async fn a_silent_daemon_ends_the_proxy_handshake_naming_the_step() {
-        use sot_protocol::{codec, op, Frame};
-        use std::time::Duration;
-        use tokio::io::BufReader;
-        for (answered, step) in [(0, "hello"), (1, "proxy.connect")] {
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-                .await
-                .unwrap();
-            let addr = listener.local_addr().unwrap();
-            let (_client, accepted) =
-                tokio::join!(tokio::net::TcpStream::connect(addr), listener.accept());
-            let browser = accepted.unwrap().0;
-            let (fe, daemon) = tokio::io::duplex(4096);
-            let held = tokio::spawn(async move {
-                let (d_rd, mut d_wr) = tokio::io::split(daemon);
-                let mut d_buf = BufReader::new(d_rd);
-                if answered > 0 {
-                    let (hello, _) = codec::read_frame(&mut d_buf).await.unwrap();
-                    let accepted = serde_json::json!({ "session_id": "s", "revision": 0, "snapshot_pending": false });
-                    codec::write_frame(&mut d_wr, &Frame::res(hello.id, op::HELLO, accepted), None)
-                        .await
-                        .unwrap();
-                }
-                std::future::pending::<()>().await;
-            });
-            let (f_rd, mut f_wr) = tokio::io::split(fe);
-            let mut f_buf = BufReader::new(f_rd);
-            tokio::time::pause();
-            let started = tokio::time::Instant::now();
-            let handshake = super::pipe_one_over(&mut f_wr, &mut f_buf, browser, 1, None);
-            let ended = tokio::time::timeout(Duration::from_secs(60), handshake)
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("silent before the {step} reply: still waiting after 60s")
-                });
-            let at = started.elapsed();
-            tokio::time::resume();
-            held.abort();
-            let err = format!(
-                "{:#}",
-                ended
-                    .err()
-                    .unwrap_or_else(|| panic!("{step}: a silent daemon was answered"))
-            );
-            assert_eq!(err, format!("{step} reply timed out after 30s"));
-            assert!(
-                at >= Duration::from_secs(30) && at < Duration::from_secs(31),
-                "{step}: ended after {at:?}"
-            );
-            println!("proxy-handshake: silent before the {step} reply -> \"{err}\" after {at:?}");
-        }
     }
 
     /// ADR 0045 decision 4: with the host's link down a browser connection

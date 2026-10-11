@@ -9,9 +9,8 @@ use super::*;
 /// the reconnect loop backs off normally, dropping the child.
 pub(super) const CONNECT_REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Read the reply to the connect step `step` (its op), within `CONNECT_REPLY_BOUND`. The page proxy's handshake uses it
-/// too (`pages::pipe_one_over`).
-pub(crate) async fn read_connect_reply<R: tokio::io::AsyncBufRead + Unpin>(
+/// Read the reply to the connect step `step` (its op), within `CONNECT_REPLY_BOUND`.
+pub(super) async fn read_connect_reply<R: tokio::io::AsyncBufRead + Unpin>(
     rx: &mut R,
     step: &str,
 ) -> Result<(Frame, Option<Vec<u8>>)> {

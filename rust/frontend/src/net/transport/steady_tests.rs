@@ -122,12 +122,12 @@ fn frame_bytes(frame: &Frame) -> Vec<u8> {
 }
 
 /// A ping that cannot be written yet holds nothing else up: the daemon's events arrive while it is not reading, and
-/// the ping then arrives whole. On a paused clock, so the daemon's first bytes come inside three ping intervals.
-#[tokio::test(start_paused = true)]
+/// the ping then arrives whole.
+#[tokio::test]
 async fn ping_write_does_not_block_reads() {
     let mut rig = rig(16, Duration::from_millis(20), 1);
     // Let the first ping come due; with the daemon not reading, it cannot be written whole.
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
     for n in 0..3 {
         put(&mut rig.far_wr, &&event_frame(n)).await;
     }
@@ -249,92 +249,4 @@ async fn cancelling_during_a_write_flushes_the_figure_once() {
         .filter(|(_, e)| matches!(e, IncomingEvt::FigureGetFailed { url } if url == "fig://three"))
         .count();
     assert_eq!(failed, 1);
-}
-
-/// The window's half of the daemon's 90 s rule, on a paused clock at the real 30 s ping interval: a daemon that sends
-/// nothing ends the loop after three intervals, naming the silence; one that answers each ping keeps the connection;
-/// and one whose reply is still arriving keeps it while its bytes come, then ends three intervals after the last.
-/// Each row's rig is dropped before the next is built, since a rig holds the state folder's test lock.
-#[tokio::test(start_paused = true)]
-async fn a_daemon_silent_for_three_ping_intervals_ends_the_connection() {
-    const PING: Duration = Duration::from_secs(30);
-    let (silence, late) = (PING * 3, Duration::from_secs(1));
-    {
-        let started = tokio::time::Instant::now();
-        let silent = rig(1024, PING, 1);
-        let ended = tokio::time::timeout(PING * 10, silent.task)
-            .await
-            .expect("silent: still connected");
-        assert_eq!(
-            format!("{:#}", ended.unwrap().unwrap_err()),
-            "nothing from the daemon in 90s"
-        );
-        let at = started.elapsed();
-        assert!(
-            at >= silence && at < silence + late,
-            "silent: ended after {at:?}"
-        );
-        println!("steady-silence: silent daemon -> ended after {at:?}");
-    }
-    {
-        let answering = rig(1024, PING, 1);
-        let (mut rd, mut wr) = (answering.far_rd, answering.far_wr);
-        let pinged = tokio::spawn(async move {
-            let mut answered = 0u32;
-            while let Ok((frame, _)) = codec::read_frame(&mut rd).await {
-                if frame.op == op::PING {
-                    put(
-                        &mut wr,
-                        &Frame::res(frame.id, op::PING, serde_json::json!({})),
-                    )
-                    .await;
-                    answered += 1;
-                }
-            }
-            answered
-        });
-        tokio::time::sleep(PING * 20).await;
-        assert!(
-            !answering.task.is_finished(),
-            "answering: the loop ended though every ping was answered"
-        );
-        answering.task.abort();
-        let answered = pinged.await.unwrap();
-        println!(
-            "steady-silence: answering daemon -> connected after {:?}, {answered} pings answered",
-            PING * 20
-        );
-    }
-    {
-        let mut trickling = rig(1024, PING, 1);
-        let blob = 10u32;
-        let reply = Frame::evt(
-            "test.trickle",
-            serde_json::json!({ "blob": { "len": blob, "mime": "x" } }),
-        );
-        put(&mut trickling.far_wr, &reply).await;
-        for _ in 0..blob {
-            tokio::time::sleep(PING * 2).await;
-            assert!(
-                !trickling.task.is_finished(),
-                "trickling: the loop ended while the reply was arriving"
-            );
-            trickling.far_wr.write_all(b"x").await.unwrap();
-        }
-        let last = tokio::time::Instant::now();
-        let ended = tokio::time::timeout(PING * 10, trickling.task)
-            .await
-            .expect("trickling: still connected");
-        assert_eq!(
-            format!("{:#}", ended.unwrap().unwrap_err()),
-            "nothing from the daemon in 90s"
-        );
-        let at = last.elapsed();
-        assert!(
-            at >= silence && at < silence + late,
-            "trickling: ended {at:?} after the last byte"
-        );
-        let lasted = PING * 2 * blob;
-        println!("steady-silence: trickling daemon -> connected for {lasted:?}, ended {at:?} after its last byte");
-    }
 }

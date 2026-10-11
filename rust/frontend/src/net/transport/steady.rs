@@ -3,79 +3,6 @@
 
 use super::*;
 
-use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::task::{Context, Poll};
-
-/// How many ping intervals with no byte from the daemon end the connection. A live daemon answers each ping, which goes
-/// out every `ping_every` that the write slot is free; the daemon reaps a window silent this long (its
-/// `PING_READ_DEADLINE`, three intervals), and this is the window's half of that rule. Bytes, not frames, keep the
-/// connection: a large reply still arriving is the daemon talking.
-const SILENT_PINGS: u32 = 3;
-
-/// The steady reader, stamping on the Tokio clock the last time a byte came through it.
-struct Heard<R> {
-    inner: R,
-    since: tokio::time::Instant,
-    last_ms: Arc<AtomicU64>,
-}
-
-impl<R> Heard<R> {
-    fn new(inner: R) -> Self {
-        Self {
-            inner,
-            since: tokio::time::Instant::now(),
-            last_ms: Arc::new(AtomicU64::new(0)),
-        }
-    }
-}
-
-fn stamp(since: tokio::time::Instant, last_ms: &AtomicU64) {
-    last_ms.store(since.elapsed().as_millis() as u64, Relaxed);
-}
-
-/// When the reader last delivered a byte; it keeps working while the read future owns the reader.
-struct LastHeard {
-    since: tokio::time::Instant,
-    last_ms: Arc<AtomicU64>,
-}
-
-impl LastHeard {
-    fn at(&self) -> tokio::time::Instant {
-        self.since + std::time::Duration::from_millis(self.last_ms.load(Relaxed))
-    }
-}
-
-impl<R: AsyncRead + Unpin> AsyncRead for Heard<R> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        let before = buf.filled().len();
-        let polled = Pin::new(&mut self.inner).poll_read(cx, buf);
-        if buf.filled().len() > before {
-            stamp(self.since, &self.last_ms);
-        }
-        polled
-    }
-}
-
-impl<R: tokio::io::AsyncBufRead + Unpin> tokio::io::AsyncBufRead for Heard<R> {
-    fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<&[u8]>> {
-        let this = self.get_mut();
-        let polled = Pin::new(&mut this.inner).poll_fill_buf(cx);
-        if matches!(&polled, Poll::Ready(Ok(bytes)) if !bytes.is_empty()) {
-            stamp(this.since, &this.last_ms);
-        }
-        polled
-    }
-
-    fn consume(mut self: Pin<&mut Self>, amt: usize) {
-        Pin::new(&mut self.inner).consume(amt);
-    }
-}
-
 /// The one encoded request or ping on its way to the daemon, written as the peer takes it. Its bytes are whole
 /// frames encoded in memory, so a partly written one is resumed by the next poll and never rebuilt.
 #[derive(Default)]
@@ -108,15 +35,14 @@ impl WriteSlot {
 /// rather than dropping it mid-blob) without the borrow checker objecting to a
 /// stored future that re-borrows `rx` each loop. See the CANCEL-SAFETY note in
 /// `steady_loop`.
-pub(super) async fn read_owned<R: tokio::io::AsyncBufRead + Unpin>(
-    mut rx: R,
-) -> (R, Result<(Frame, Option<Vec<u8>>)>) {
+pub(super) async fn read_owned<R: AsyncRead + Unpin>(
+    mut rx: tokio::io::BufReader<R>,
+) -> (tokio::io::BufReader<R>, Result<(Frame, Option<Vec<u8>>)>) {
     let res = codec::read_frame(&mut rx).await;
     (rx, res)
 }
 
-/// The steady-state loop: replies and pushed events, the ping, and the window's requests. It ends, naming the silence,
-/// when no byte has come from the daemon for `SILENT_PINGS` ping intervals.
+/// The steady-state loop: replies and pushed events, the ping, and the window's requests.
 ///
 /// CANCEL-SAFETY: `read_frame` is NOT cancellation-safe — it reads the `\n`-terminated envelope and then
 /// `read_exact`s the blob tail across two separate awaits, so a select! that dropped a half-read future would leave
@@ -143,12 +69,6 @@ where
     W: AsyncWrite + Unpin,
     Wn: Redraw,
 {
-    let rx = Heard::new(rx);
-    let heard = LastHeard {
-        since: rx.since,
-        last_ms: Arc::clone(&rx.last_ms),
-    };
-    let silence = ping_every * SILENT_PINGS;
     let mut read_fut = Some(Box::pin(read_owned(rx)));
     // Topology plan §F step 2 (the half-open-roster fix): this connection is always `fe`-declared, one of the
     // daemon's two long-lived roles, so it always pings. `Interval::tick` is cancellation-safe: an iteration that
@@ -185,11 +105,6 @@ where
                 window.request_redraw();
             }
             _ = ping_interval.tick() => ping_due = true,
-            () = tokio::time::sleep_until(heard.at() + silence) => {
-                if heard.at() + silence <= tokio::time::Instant::now() {
-                    anyhow::bail!("nothing from the daemon in {silence:?}");
-                }
-            }
             req = out_rx.recv(), if slot.is_idle() && !closed => match req {
                 None => closed = true,
                 Some(req) => {
@@ -209,7 +124,7 @@ where
 
 /// After the outgoing side closed: handle the read that was in flight, then every frame until the connection ends.
 async fn drain_reads<R, Wn>(
-    mut rx: R,
+    mut rx: tokio::io::BufReader<R>,
     first: Result<(Frame, Option<Vec<u8>>)>,
     pending: &mut HashMap<u64, PendingKind>,
     session: &mut SessionState,
@@ -218,7 +133,7 @@ async fn drain_reads<R, Wn>(
     window: &Wn,
 ) -> Result<()>
 where
-    R: tokio::io::AsyncBufRead + Unpin,
+    R: AsyncRead + Unpin,
     Wn: Redraw,
 {
     let mut next = first;
