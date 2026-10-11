@@ -298,25 +298,50 @@ fn session_and_group_placement_is_reported_by_the_child_itself() {
     assert!(fx.cleanup().complete());
 }
 
+/// `gated`, with SIGUSR1 ignored in this process across the fork: a disposition the target must not inherit.
+fn gated_ignoring_usr1(fx: &mut Fixture, launch: Launch, label: &str) -> Birth {
+    // SAFETY: restored below; SIGUSR1 is otherwise unused by this test binary.
+    let previous = unsafe { libc::signal(libc::SIGUSR1, libc::SIG_IGN) };
+    let (birth, _) = gated(fx, launch, label);
+    // SAFETY: puts back what was there.
+    unsafe { libc::signal(libc::SIGUSR1, previous) };
+    birth
+}
+
 #[test]
 fn the_target_gets_the_standard_streams_the_directory_the_environment_and_clean_signals() {
     let dir = tempfile::tempdir().unwrap();
     let mut fx = Fixture::new("target_surroundings");
+    // On every Unix and through no shell: alone in its own group, /bin/kill sends SIGUSR1 to group 0, itself, and dies by
+    // it only if the signal arrives neither ignored nor blocked (the launcher blocks every signal across the fork).
+    let mut launch = Launch::new("/bin/kill");
+    launch.args(["-s", "USR1", "0"]).group(Group::Own);
+    let mut probe = gated_ignoring_usr1(&mut fx, launch, "kill probe");
+    let ready = probe.ready(BOUND).unwrap();
+    assert_eq!(ready.pgid, ready.pid, "group 0 must be the probe's own");
+    probe.release().unwrap();
+    probe.exec_result(BOUND).unwrap();
+    let status = probe.wait().unwrap();
+    assert_eq!(
+        status.signal(),
+        Some(libc::SIGUSR1),
+        "an ignored or blocked signal reached the target: {status}"
+    );
+
     let (reader, writer) = std::io::pipe().unwrap();
     let cwd = OwnedFd::from(std::fs::File::open(dir.path()).unwrap());
-    // Stdin must be /dev/null (cat ends at once); stdout is the pipe; the signal lines show a clean slate.
-    let mut launch =
-        sh("cat; pwd; echo \"var=$LAUNCH_VAR\"; grep -E '^Sig(Ign|Blk):' /proc/self/status");
+    // Stdin must be /dev/null (cat ends at once); stdout is the pipe. Linux also lists the target's ignored and blocked
+    // sets; macOS has no /proc.
+    let mut launch = sh(if cfg!(target_os = "linux") {
+        "cat; pwd; echo \"var=$LAUNCH_VAR\"; grep -E '^Sig(Ign|Blk):' /proc/self/status"
+    } else {
+        "cat; pwd; echo \"var=$LAUNCH_VAR\""
+    });
     launch
         .stdio(1, OwnedFd::from(writer))
         .cwd(cwd)
         .env("LAUNCH_VAR", "kept");
-    // A disposition this process ignores must not reach the target.
-    // SAFETY: restoring the disposition below; SIGUSR1 is otherwise unused by this test binary.
-    let previous = unsafe { libc::signal(libc::SIGUSR1, libc::SIG_IGN) };
-    let (mut birth, _) = gated(&mut fx, launch, "surroundings");
-    // SAFETY: puts back what was there.
-    unsafe { libc::signal(libc::SIGUSR1, previous) };
+    let mut birth = gated_ignoring_usr1(&mut fx, launch, "surroundings");
     birth.ready(BOUND).unwrap();
     birth.release().unwrap();
     birth.exec_result(BOUND).unwrap();
@@ -330,14 +355,17 @@ fn the_target_gets_the_standard_streams_the_directory_the_environment_and_clean_
         "the working directory: {out}"
     );
     assert_eq!(lines[1], "var=kept", "{out}");
-    assert!(
-        lines.contains(&"SigIgn:\t0000000000000000"),
-        "an ignored signal reached the target: {out}"
-    );
-    assert!(
-        lines.contains(&"SigBlk:\t0000000000000000"),
-        "a blocked signal reached the target: {out}"
-    );
+    if cfg!(target_os = "linux") {
+        assert!(
+            lines.contains(&"SigIgn:\t0000000000000000"),
+            "an ignored signal reached the target: {out}"
+        );
+        // Where /bin/sh is dash, which clears an inherited mask, this line cannot fail; the kill probe proves the mask.
+        assert!(
+            lines.contains(&"SigBlk:\t0000000000000000"),
+            "a blocked signal reached the target: {out}"
+        );
+    }
     assert!(fx.cleanup().complete());
 }
 
