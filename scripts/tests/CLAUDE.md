@@ -132,12 +132,13 @@ Each violation is `VIOLATION <kind> <path> <detail>`:
   line pins 0; a pin that does not start with a number is a usage error). The count can only fall: a rise says to
   split the function, a fall says to lower the pin in the same commit. Every run checks it, folder arguments or not.
   These text forms, which loosen the gate without moving the count, each fail as `VIOLATION too-many-lines <file>
-  <why>`. In a `.rs` under `rust/` (not `rust/vt100`): a crate-level `#![allow(..)]` or `#![expect(..)]` naming
-  `clippy::too_many_lines`; a `cfg_attr(.., allow(..))` or `expect` naming it, at any level; an `allow` or `expect`
-  naming `clippy::pedantic`, at any level. In a Cargo.toml there: `too_many_lines = "allow"` or `"warn"`, plain or as
-  `{ level = .. }`. In a clippy.toml there: `too-many-lines-threshold`. In a workflow: `-A`, `-W`, `--allow` or
-  `--warn` before `clippy::too_many_lines` (spaced, with `=` or attached), and any `--cap-lints`. A form not listed
-  here (removing the step's `-D clippy::too_many_lines`, for one) is not caught.
+  <why>`. In a `.rs` under `rust/` (not `rust/vt100`): an inner `#![allow(..)]` or `#![expect(..)]`, at crate or module
+  level, naming `clippy::too_many_lines`; a `cfg_attr(.., allow(..))` or `expect` naming it, at any level; an `allow` or
+  `expect` naming `clippy::pedantic`, at any level. In a Cargo.toml there: `too_many_lines = "allow"` or `"warn"`, plain
+  or as `{ level = .. }`. In a clippy.toml there: `too-many-lines-threshold`. In a workflow: `-A`, `-W`, `--allow` or
+  `--warn` before `clippy::too_many_lines` (spaced, with `=` or attached), and any `--cap-lints`. A form not listed here
+  is not caught: removing the step's `-D clippy::too_many_lines`, or a source-level `warn` of the lint or of
+  `clippy::pedantic`, which also overrides the command line's `-D`.
 
 Covered folders: a crate root (a tracked Cargo.toml with `[package]`) covers its `src/`; a Julia package root (a tracked
 Project.toml) covers `src/`, `test/` and `ext/`. A covered folder needs no CLAUDE.md of its own (a covered folder that
