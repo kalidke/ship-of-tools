@@ -27,7 +27,7 @@ scripts/CLAUDE.md.
   `scripts/tests/` bash suites, the comm hermetic suites and the agents CLI suites (the comm list names
   `test-stage-bin.sh`; among them `test-ccx-launch.sh`, which proves ccx's default handle)), `conpty-windows-2022`
   (ConPTY and capsule tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the
-  latest published tag into a clean container). The Test native harness helpers step runs the feature-gated sot binary's nine display-free native harness regression bodies; native window acceptance remains in the dedicated hosted jobs.
+  latest published tag into a clean container). The Test native harness helpers step runs the feature-gated sot binary's eight display-free native harness regression bodies through scripts/tests/run-filtered-tests.sh, which requires command and log-capture success and the exact eight-pass, zero-failed, zero-ignored summary. The step also executes test-filtered-tests.sh against the real harmless libtest fixture; native window acceptance remains in the dedicated hosted jobs.
   The step "Test selected Rust bodies" runs the portable real-libtest
   shell proofs in `test` on windows and macos and in `checks-linux` on ubuntu; it invokes no daemon or peer suite. On
   ubuntu it also runs the candidate gate's finite selected-job and runtime-listing proofs; the full candidate gate is

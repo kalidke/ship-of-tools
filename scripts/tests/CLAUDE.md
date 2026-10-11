@@ -6,6 +6,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 ## Files
 - `lib-test-body.sh`: the shared completion verdict for one selected Rust test; ordered, unambiguous capture closure precedes the outer result; missing, ignored, mismatched and failed bodies cannot pass.
 - `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners, including combined captured-summary/truncation and scratch-path controls; accepts a compiled fixture executable by absolute path and validates its shell scratch root before cleanup.
+- `run-filtered-tests.sh`: shared runner for a filtered libtest group; tees a fresh invocation log, fails on command/capture error or an absent positive exact-pass-count summary; used by rust.yml's Test native harness helpers step.
+- `test-filtered-tests.sh`: real-libtest controls for the group runner's completed, empty, ignored, wrong-count and failed selections, argument validation and capture failure; receives the existing compiled fixture by absolute path and uses its own temporary roots.
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
@@ -173,6 +175,7 @@ Last line: `violations: n, allowed: m, exempt: e, unused-allow: u, folders check
 behaviour it pins. For a Windows script change, the `.ps1` suite named for it above.
 
 ## Rules
+- A step selecting a libtest group uses run-filtered-tests.sh with its verified positive expected count; exit zero with no matching bodies cannot pass. Single selected-body owners retain lib-test-body.sh and its stronger identity verdict.
 - The checker accepts the outer result only after complete, unambiguous captured-output boundaries; a captured summary or truncated capture cannot supply that result.
 - The proof binds its shell scratch root to a validated absolute directory before installing cleanup; behavior controls observe the driver and cleanup paths under relative TMPDIR.
 - A shell owner that selects one Rust body consumes the completion verdict from lib-test-body.sh; a listed name, child exit zero or a zero-test summary alone is not execution proof.

@@ -602,7 +602,21 @@ jobs:
       - name: Function length
         run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::too_many_lines
       - name: Test native harness helpers
-        run: cargo test -p sot-frontend --bin sot --features test-pane-timing,test-window-close --locked ui::app::tests::harness_tests:: -- --test-threads=1 --format pretty --color never --show-output
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../dev/output
+          cargo test -p sot-log --test test_body_fixture --locked --no-run --message-format=json > ../dev/output/native-filtered-fixture.json
+          python3 - <<'PYFIXTURE'
+          import json, pathlib
+          rows = [json.loads(line) for line in pathlib.Path('../dev/output/native-filtered-fixture.json').read_text().splitlines() if line.startswith('{')]
+          paths = [row['executable'] for row in rows if row.get('target', {}).get('name') == 'test_body_fixture' and row.get('executable')]
+          if len(paths) != 1:
+              raise SystemExit('expected exactly one compiled filtered-count fixture')
+          pathlib.Path('../dev/output/native-filtered-fixture.path').write_text(str(pathlib.Path(paths[0]).resolve()) + '\n')
+          PYFIXTURE
+          bash ../scripts/tests/test-filtered-tests.sh "$(cat ../dev/output/native-filtered-fixture.path)"
+          bash ../scripts/tests/run-filtered-tests.sh 8 ../dev/output/native-harness-helpers.log -- cargo test -p sot-frontend --bin sot --features test-pane-timing,test-window-close --locked ui::app::tests::harness_tests:: -- --test-threads=1 --format pretty --color never --show-output
       # rust/clippy.toml holds the rules this step enforces, one labelled group each, every group opening with its
       # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
       # that does not exist on a leg draws a warning there.

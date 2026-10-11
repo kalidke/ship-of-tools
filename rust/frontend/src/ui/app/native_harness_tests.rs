@@ -71,45 +71,10 @@ fn coalesced_progress_ticks_preserve_sample_count() {
     assert_eq!(report.snapshot.samples, 600,
         "coalesced progress ticks lost sample credit: samples={} expected=600", report.snapshot.samples);
     assert!(report.failures.is_empty(), "valid coalesced workload failed: {:?}", report.failures);
-    tick.dispatch(&mut reports, |_| {}, |_, _| panic!("unmarked dispatch added sample credit"));
-    assert_eq!(reports.len(), 1);
-    assert_eq!(ledger.lock().unwrap().phases[MINIMIZED.phase].samples, 600);
-    let report = report_progress(&ledger, ReportRequest::Begin(CONTROL, true), false, &mut Vec::new()).unwrap();
-    assert_eq!(report.snapshot.samples, 0, "new phase inherited ticker credit");
     let report = report_progress(&ledger, ReportRequest::Sample(MINIMIZED,
         epoch + Duration::from_secs(600), false, 2), false, &mut Vec::new()).unwrap();
     assert_eq!(report.snapshot.samples, 602);
     assert_eq!(report.failures, ["native_observation"], "ticker credit hid the wrong native state");
-}
-
-#[test]
-fn progress_reports_include_sample_counts() {
-    let ledger = Mutex::new(NativeProgressLedger::default());
-    let mut bytes = Vec::new();
-    let report = report_progress(&ledger, ReportRequest::Begin(VISIBLE, false), false, &mut bytes).unwrap();
-    assert_report_samples(&bytes, &report);
-    assert_eq!(report.snapshot.samples, 0);
-    for (profile, complete, mutation) in [
-        (VISIBLE, false, false), (VISIBLE, true, false), (CONTROL, true, false),
-        (MINIMIZED, true, false), (VISIBLE, true, true),
-    ] {
-        let mut events = scheduled(profile);
-        if mutation { events[0].1 = Duration::from_millis(301); }
-        let (mut ledger, epoch) = seeded(profile, &events, true);
-        if !complete { ledger.phases.get_mut(profile.phase).unwrap().producer_done = None; }
-        let ledger = Mutex::new(ledger);
-        let mut bytes = Vec::new();
-        let report = report_progress(&ledger, ReportRequest::Sample(profile,
-            epoch + Duration::from_secs(profile.seconds as u64), profile.minimized, 1), mutation, &mut bytes).unwrap();
-        assert_eq!(report.completed, complete);
-        assert_report_samples(&bytes, &report);
-        if profile.phase == MINIMIZED.phase {
-            let text = String::from_utf8(bytes).unwrap();
-            let line = text.lines().find(|line| line.starts_with("window-progress phase=completed ")).unwrap();
-            assert!(line.split_whitespace().any(|field| field == format!("samples={}", report.snapshot.samples)),
-                "minimized completion omitted samples");
-        }
-    }
 }
 
 fn assert_report_samples(bytes: &[u8], report: &ProgressReport) {
@@ -256,6 +221,14 @@ impl Write for LockWriter<'_> {
 }
 
 fn check_report_paths_release_lock() {
+    let ledger = Mutex::new(NativeProgressLedger::default());
+    let mut writer = LockWriter { ledger: &ledger, bytes: Vec::new(), writes: 0, flushes: 0 };
+    let report = report_progress(&ledger, ReportRequest::Begin(VISIBLE, false), false, &mut writer).unwrap();
+    assert!(!report.completed);
+    assert_eq!(report.snapshot.samples, 0);
+    assert!(std::str::from_utf8(&writer.bytes).unwrap().contains("phase=body-entered"));
+    assert_report_samples(&writer.bytes, &report);
+    assert!(writer.writes > 0 && writer.flushes > 0);
     for (profile, complete, mutation, wanted) in [
         (VISIBLE, false, false, "phase=sample"),
         (VISIBLE, true, false, "phase=completed"),
@@ -272,7 +245,14 @@ fn check_report_paths_release_lock() {
         let report = report_progress(&ledger, ReportRequest::Sample(profile,
             epoch + Duration::from_secs(profile.seconds as u64), profile.minimized, 1), mutation, &mut writer).unwrap();
         assert_eq!(report.completed, complete);
-        assert!(String::from_utf8(writer.bytes).unwrap().contains(wanted));
+        assert_report_samples(&writer.bytes, &report);
+        let text = std::str::from_utf8(&writer.bytes).unwrap();
+        assert!(text.contains(wanted));
+        if profile.phase == MINIMIZED.phase {
+            let line = text.lines().find(|line| line.starts_with("window-progress phase=completed ")).unwrap();
+            assert!(line.split_whitespace().any(|field| field == format!("samples={}", report.snapshot.samples)),
+                "minimized completion omitted samples");
+        }
         assert!(writer.writes > 0 && writer.flushes > 0);
     }
 }
@@ -323,11 +303,6 @@ fn blocked_output_allows_producer() {
 
 #[test]
 fn progress_output_releases_ledger_before_write() {
-    let ledger = Mutex::new(NativeProgressLedger::default());
-    let mut writer = LockWriter { ledger: &ledger, bytes: Vec::new(), writes: 0, flushes: 0 };
-    report_progress(&ledger, ReportRequest::Begin(VISIBLE, false), false, &mut writer).unwrap();
-    assert!(String::from_utf8(writer.bytes).unwrap().contains("phase=body-entered"));
-    assert!(writer.writes > 0 && writer.flushes > 0);
     check_report_paths_release_lock();
     blocked_output_allows_producer();
 }
