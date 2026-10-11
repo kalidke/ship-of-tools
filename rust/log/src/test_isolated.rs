@@ -416,31 +416,71 @@ fn supervise_selected<T>(
 }
 
 /// A child whose piped stdout and stderr are read on threads of their own, so a child that writes more than a pipe
-/// holds is never stalled by its parent. Each reader sends what it read once its pipe ends.
+/// holds is never stalled by its parent. Each reader keeps what it has read where its owner can see it, and says how
+/// its pipe ended once it has.
 pub struct Draining {
     child: Child,
-    out: Option<Receiver<(Vec<u8>, std::io::Result<()>)>>,
-    err: Option<Receiver<(Vec<u8>, std::io::Result<()>)>>,
+    out: Option<StreamReader>,
+    err: Option<StreamReader>,
+}
+
+/// One stream's reader: the bytes read so far, and its pipe's end once that has come.
+struct StreamReader {
+    read: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    ended: Receiver<std::io::Result<()>>,
 }
 
 /// Starts reading `child`'s piped stdout and stderr (either may be absent) on threads of their own.
 pub fn drain(mut child: Child) -> Draining {
-    fn reader(
-        pipe: Option<impl Read + Send + 'static>,
-    ) -> Option<Receiver<(Vec<u8>, std::io::Result<()>)>> {
+    fn reader(pipe: Option<impl Read + Send + 'static>) -> Option<StreamReader> {
         pipe.map(|mut pipe| {
-            let (sent, read) = std::sync::mpsc::channel();
+            let read = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (sent, ended) = std::sync::mpsc::channel();
+            let sink = read.clone();
             std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let result = pipe.read_to_end(&mut bytes).map(|_| ());
-                let _ = sent.send((bytes, result));
+                let mut chunk = [0u8; 8192];
+                let result = loop {
+                    match pipe.read(&mut chunk) {
+                        Ok(0) => break Ok(()),
+                        Ok(n) => sink.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&chunk[..n]),
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(error) => break Err(error),
+                    }
+                };
+                let _ = sent.send(result);
             });
-            read
+            StreamReader { read, ended }
         })
     }
     let out = reader(child.stdout.take());
     let err = reader(child.stderr.take());
     Draining { child, out, err }
+}
+
+/// The most of each stream a failure carries: its last bytes, where a hang or a fault usually shows, so a child that
+/// wrote megabytes cannot flood the log.
+const FAILURE_STREAM_BYTES: usize = 8 * 1024;
+
+/// A failed drained wait: the child's exit or why it has none, then each stream as far as it was read (its last
+/// `FAILURE_STREAM_BYTES`), with the reason a stream did not end.
+fn failure_text(status: &Result<ExitStatus, ChildWaitError>, output: &FixtureOutput) -> String {
+    let mut text = match status {
+        Ok(status) => format!("the child exited: {status}"),
+        Err(error) => error.to_string(),
+    };
+    for (name, stream) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+        let (body, ended) = match stream {
+            Ok(body) => (body.as_str(), String::new()),
+            Err(failure) => (failure.captured.as_str(), format!(", did not end: {}", failure.reason)),
+        };
+        let mut start = body.len().saturating_sub(FAILURE_STREAM_BYTES);
+        while !body.is_char_boundary(start) {
+            start += 1;
+        }
+        let cut = if start > 0 { format!(", last {} of {} bytes", body.len() - start, body.len()) } else { String::new() };
+        text.push_str(&format!("\n--- {name}{ended}{cut} ---\n{}", &body[start..]));
+    }
+    text
 }
 
 impl Draining {
@@ -450,22 +490,33 @@ impl Draining {
             stderr: read_output(self.err.take(), deadline, "stderr"),
         }
     }
-    fn output_until(&mut self, deadline: Instant) -> Result<(String, String), String> {
-        self.observe_output_until(deadline).combined()
+    /// The child's end and both streams: waits for it until `deadline` (the free [`wait_until`], which ends a child that
+    /// overruns), then for its output to end within what remains (and at least 1 s, so a child that exits at the
+    /// deadline is not failed for its readers' last step). A reader whose pipe a descendant still holds is left to end
+    /// when the descendant does.
+    fn observe(mut self, deadline: Instant) -> (Result<ExitStatus, ChildWaitError>, FixtureOutput) {
+        let status = wait_until(&mut self.child, deadline);
+        (status, self.observe_output_until(deadline))
     }
-    /// Waits for the child within `bound` ([`wait_within`]), then for its output to end within what remains of that
-    /// bound (and at least 1 s, so a child that exits at the bound's edge is not failed for its readers' last step).
-    /// It returns the child's status, stdout and stderr. A failed read fails the caller. So does output still open at
-    /// the deadline, which a descendant that inherited the pipe can hold after the child's exit; that reader is left to
-    /// end when the descendant does.
-    pub fn wait_within(mut self, bound: Duration) -> (ExitStatus, String, String) {
-        let deadline = Instant::now() + bound;
-        let status =
-            wait_until(&mut self.child, deadline).unwrap_or_else(|error| panic!("{error}"));
-        let (out, err) = self
-            .output_until(deadline)
-            .unwrap_or_else(|error| panic!("{error}"));
-        (status, out, err)
+    /// The non-panicking wait: the child's exit, or why it has none, and both streams as far as they were read. A
+    /// stream that did not end, or whose read failed, keeps what was read and ends with one line saying so.
+    pub fn wait_and_read(self, deadline: Instant) -> (Result<ExitStatus, ChildWaitError>, String, String) {
+        let (status, output) = self.observe(deadline);
+        let text = |stream: Result<String, OutputFailure>| {
+            stream.unwrap_or_else(|failure| format!("{}\n[the child's {} did not end: {}]\n", failure.captured, failure.stream, failure.reason))
+        };
+        (status, text(output.stdout), text(output.stderr))
+    }
+    /// [`wait_and_read`](Self::wait_and_read) within `bound`, returning the child's status, stdout and stderr. A failed or
+    /// timed-out wait fails the caller, and so do a failed read and output still open at the deadline. Every such
+    /// failure panics with the child's status, if any, and both streams as far as they were read, each cut to its last
+    /// `FAILURE_STREAM_BYTES` (`failure_text`).
+    pub fn wait_within(self, bound: Duration) -> (ExitStatus, String, String) {
+        let (status, output) = self.observe(Instant::now() + bound);
+        match (&status, output.combined()) {
+            (Ok(status), Ok((out, err))) => (*status, out, err),
+            _ => panic!("{}", failure_text(&status, &output)),
+        }
     }
 }
 
@@ -500,7 +551,7 @@ impl FixtureOutput {
     }
 }
 fn read_output(
-    reader: Option<Receiver<(Vec<u8>, std::io::Result<()>)>>,
+    reader: Option<StreamReader>,
     deadline: Instant,
     what: &'static str,
 ) -> Result<String, OutputFailure> {
@@ -511,15 +562,14 @@ fn read_output(
     let left = deadline
         .saturating_duration_since(Instant::now())
         .max(Duration::from_secs(1));
-    match reader.recv_timeout(left) {
-        Ok((bytes, result)) => {
-            let text = render_bytes(&bytes);
-            result.map(|()| text.clone()).map_err(|error| OutputFailure {
-                stream: what, kind: Some(error.kind()), reason: error.to_string(), captured: text,
-            })
-        }
+    let ended = reader.ended.recv_timeout(left);
+    let text = render_bytes(&reader.read.lock().unwrap_or_else(|e| e.into_inner()));
+    match ended {
+        Ok(result) => result.map(|()| text.clone()).map_err(|error| OutputFailure {
+            stream: what, kind: Some(error.kind()), reason: error.to_string(), captured: text,
+        }),
         Err(error) => Err(OutputFailure {
-            stream: what, kind: None, captured: String::new(),
+            stream: what, kind: None, captured: text,
             reason: match error {
                 RecvTimeoutError::Timeout => format!("the child exited but its {what} did not end within the output deadline (a descendant may hold it)"),
                 RecvTimeoutError::Disconnected => format!("the reader of the child's {what} ended without a result"),
@@ -872,6 +922,19 @@ mod tests {
                 }
             }
             "stall" => std::thread::sleep(Duration::from_secs(120)),
+            // Says something on both streams, more than a failure carries on stdout, then never ends.
+            "speak-then-stall" => {
+                eprintln!("said on stderr before the stall");
+                std::io::stderr().flush().unwrap();
+                let mut out = std::io::stdout().lock();
+                for _ in 0..16 {
+                    out.write_all(&[b'x'; 4096]).expect("write the flood");
+                }
+                writeln!(out, "\nsaid on stdout before the stall").unwrap();
+                out.flush().unwrap();
+                drop(out);
+                std::thread::sleep(Duration::from_secs(120));
+            }
             "bytes" => {
                 let mut err = std::io::stderr().lock();
                 err.write_all(b"intended child diagnostic \xFF\xFE\xC3(\n")
@@ -934,6 +997,31 @@ mod tests {
             "the flood was not read whole: {} bytes",
             stdout.len()
         );
+        entry.assert_once(pid);
+    }
+
+    /// A drained child that hangs fails its parent with what it had said: the deadline, then both streams read so
+    /// far, each cut to its last `FAILURE_STREAM_BYTES` so a flood cannot fill the log.
+    #[test]
+    fn a_hanging_drained_child_panics_with_its_streams() {
+        let (mut command, entry) = test_command("test_isolated::tests::a_role");
+        let child = command
+            .env(ROLE, "speak-then-stall")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drain(child).wait_within(Duration::from_secs(5))
+        }))
+        .expect_err("a child that never ends must fail its wait");
+        let text = panic_text(payload);
+        assert!(text.contains("did not complete within its absolute work deadline"), "{text}");
+        assert!(text.contains("said on stderr before the stall"), "the stderr read so far is missing: {text}");
+        assert!(text.contains("said on stdout before the stall"), "the stdout read so far is missing: {text}");
+        assert!(text.contains(&format!("last {FAILURE_STREAM_BYTES} of ")), "the stdout flood was not cut: {text}");
+        assert!(text.len() < 3 * FAILURE_STREAM_BYTES, "the failure carries {} bytes", text.len());
         entry.assert_once(pid);
     }
 

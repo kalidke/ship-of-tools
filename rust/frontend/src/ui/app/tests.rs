@@ -1,6 +1,7 @@
 //! Native workload observations around the real App/State and transport loop.
 //! The owned peer supplies events; only production callbacks drain them.
 
+use super::native_children::NativeChild;
 use super::*;
 use crate::net::transport::{observe_native_fan_in, run_native_progress_transport, IncomingEvt};
 use std::collections::BTreeMap;
@@ -8,10 +9,12 @@ use std::io::Write;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncWriteExt, BufReader};
-use winit::event_loop::{EventLoop, EventLoopProxy};
+use winit::event_loop::EventLoopProxy;
 
 const TEST: &str = "ui::app::tests::minimized_window_drains_events_for_ten_minutes";
-const HOST: &str = "<host>";
+pub(super) const HOST: &str = "<host>";
+/// How long the workload child waits for the window's first three frames before its visible phase.
+const FIRST_FRAMES: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Copy, Debug)]
 struct Profile {
@@ -361,6 +364,8 @@ impl PeerTasks {
 
 struct NativeDriver {
     app: App,
+    /// The App's fan-in sender, cloned before `resumed`, which takes the App's own.
+    fan_in: Option<std::sync::mpsc::Sender<(HostKey, IncomingEvt)>>,
     ledger: Arc<Mutex<NativeProgressLedger>>,
     proxy: EventLoopProxy<()>,
     outgoing: Option<tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>>,
@@ -375,6 +380,40 @@ impl NativeDriver {
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: anyhow::Error) {
         self.outcome = Some(Err(error));
         event_loop.exit();
+    }
+
+    /// Starts the owned peer and the visible phase once the window has drawn three frames, so the cost of its first
+    /// frames (about 0.9 s on a hosted macOS runner) falls outside the measured workload.
+    fn start_when_drawn(&mut self, event_loop: &ActiveEventLoop) {
+        if self.peer.is_some() || self.outcome.is_some() {
+            return;
+        }
+        let Some(state) = self.app.state.as_ref() else { return };
+        if state.frame_counter < 3 {
+            if self.transition.elapsed() > FIRST_FRAMES {
+                let drawn = state.frame_counter;
+                self.fail(event_loop, anyhow::anyhow!("the window drew {drawn} frames in {FIRST_FRAMES:?}; the workload starts after 3"));
+            }
+            return;
+        }
+        let Some(false) = state.window.is_minimized() else {
+            self.fail(event_loop, anyhow::anyhow!("not runnable here: visible native control was not confirmed"));
+            return;
+        };
+        let peer = PeerTasks::start(
+            state.window.clone(),
+            self.fan_in.take().expect("real App fan-in"),
+            self.outgoing.take().expect("owned request receiver"),
+            self.ledger.clone(),
+            self.proxy.clone(),
+        );
+        match peer {
+            Ok(peer) => {
+                self.peer = Some(peer);
+                self.begin(VISIBLE, false);
+            }
+            Err(error) => self.fail(event_loop, error),
+        }
     }
 
     fn begin(&mut self, profile: Profile, native: bool) {
@@ -480,63 +519,15 @@ impl NativeDriver {
 
 impl ApplicationHandler for NativeDriver {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let sender = self.app.evt_tx.clone();
-        self.app.resumed(event_loop);
-        if self.peer.is_some() {
-            return;
+        if self.fan_in.is_none() {
+            self.fan_in = self.app.evt_tx.clone();
         }
-        let Some(_) = self.app.state.as_ref() else {
+        self.app.resumed(event_loop);
+        if self.app.state.is_none() && self.outcome.is_none() {
             self.fail(
                 event_loop,
                 anyhow::anyhow!("not runnable here: native App/State startup did not complete"),
             );
-            return;
-        };
-        // The behaviour proofs of the result-routing, badge and account commits need a real State.
-        let state = self.app.state.as_mut().expect("native State");
-        let fixtures: [(&str, fn(&mut State) -> Result<()>); 3] = [
-            (
-                "result_target_uses_host_and_listed_identity",
-                State::result_target_uses_host_and_listed_identity,
-            ),
-            (
-                "passing_a_result_row_keeps_its_badge",
-                State::passing_a_result_row_keeps_its_badge,
-            ),
-            (
-                "first_named_account_is_sent",
-                State::first_named_account_is_sent,
-            ),
-        ];
-        for (name, fixture) in fixtures {
-            let result = fixture(state);
-            println!("state-fixture name={name} ok={}", result.is_ok());
-            if let Err(error) = result {
-                self.fail(event_loop, error.context(name));
-                return;
-            }
-        }
-        let state = self.app.state.as_ref().expect("native State");
-        let Some(false) = state.window.is_minimized() else {
-            self.fail(
-                event_loop,
-                anyhow::anyhow!("not runnable here: visible native control was not confirmed"),
-            );
-            return;
-        };
-        let peer = PeerTasks::start(
-            state.window.clone(),
-            sender.expect("real App fan-in"),
-            self.outgoing.take().expect("owned request receiver"),
-            self.ledger.clone(),
-            self.proxy.clone(),
-        );
-        match peer {
-            Ok(peer) => {
-                self.peer = Some(peer);
-                self.begin(VISIBLE, false);
-            }
-            Err(error) => self.fail(event_loop, error),
         }
     }
 
@@ -550,6 +541,7 @@ impl ApplicationHandler for NativeDriver {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.app.about_to_wait(event_loop);
+        self.start_when_drawn(event_loop);
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
@@ -594,55 +586,17 @@ pub(super) fn fixture_cli() -> crate::cli::Cli {
     }
 }
 
+/// The workload child: the visible, stalled-control and minimized phases on a State that nothing else has touched.
 pub(in crate::ui) fn minimized_window_drains_events_for_ten_minutes() -> Result<()> {
-    let _home = FixtureHome::enter()?;
-    // A session with no usable display or GPU fails inside wgpu with a panic; say it is not runnable here.
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let message = info.to_string();
-        if ["Surface::configure", "device is lost", "wgpu"]
-            .iter()
-            .any(|w| message.contains(w))
-        {
-            println!(
-                "window-progress not runnable here: {}",
-                message.lines().next().unwrap_or_default()
-            );
-            let _ = std::io::stdout().flush();
-        }
-        previous(info);
-    }));
     let ledger = Arc::new(Mutex::new(NativeProgressLedger::default()));
     let _observation = observe_native_fan_in(ledger.clone());
-    let event_loop = EventLoop::new().map_err(|e| anyhow::anyhow!("not runnable here: {e}"))?;
-    event_loop.set_control_flow(ControlFlow::Wait);
-    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
-    let (req_tx, req_rx) = tokio::sync::mpsc::unbounded_channel();
-    let app = App::new(
-        evt_rx,
-        None,
-        fixture_cli(),
-        evt_tx,
-        vec![(HOST.to_string(), req_tx)],
-        None,
-        crate::lease::Leases::new(true, Vec::new()),
-    );
-    let inputs = crate::ui::init::NativeStartupInputs {
-        resume: crate::ui::persist::resume::GlobalState {
-            window_w: Some(640.0),
-            window_h: Some(480.0),
-            ..Default::default()
-        },
-        topology: None,
-        settings: Settings::default(),
-        keybindings: KeyBindings::defaults(),
-        ledger: ledger.clone(),
-    };
+    let NativeChild { _home, event_loop, app, outgoing, inputs } = super::native_children::native_child(ledger.clone())?;
     let mut driver = NativeDriver {
         app,
+        fan_in: None,
         ledger,
         proxy: event_loop.create_proxy(),
-        outgoing: Some(req_rx),
+        outgoing: Some(outgoing),
         peer: None,
         current: None,
         next: None,
@@ -650,15 +604,16 @@ pub(in crate::ui) fn minimized_window_drains_events_for_ten_minutes() -> Result<
         outcome: None,
     };
     let run = crate::ui::init::with_native_startup(inputs, || event_loop.run_app(&mut driver));
-    if let Some(peer) = driver.peer.take() {
-        peer.stop()?;
-    }
-    run?;
-    driver.outcome.unwrap_or_else(|| {
-        Err(anyhow::anyhow!(
-            "native proof exited without a completion verdict"
-        ))
-    })
+    // The verdict first: a peer that cannot stop in its bound must not hide what the workload proved or failed.
+    let verdict = run.map_err(anyhow::Error::from).and_then(|()| {
+        driver.outcome.take().unwrap_or_else(|| {
+            Err(anyhow::anyhow!(
+                "native proof exited without a completion verdict"
+            ))
+        })
+    });
+    let stopped = driver.peer.take().map_or(Ok(()), PeerTasks::stop);
+    verdict.and(stopped)
 }
 
 pub(super) struct FixtureHome {

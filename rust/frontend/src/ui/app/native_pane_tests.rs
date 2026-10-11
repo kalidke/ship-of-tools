@@ -18,6 +18,8 @@ const DISPLAY_MARKER: &str = "not runnable here: display:";
 const READY_BOUND: Duration = Duration::from_secs(30);
 const RESUME_BOUND: Duration = Duration::from_secs(60);
 const CHILD_BOUND: Duration = Duration::from_secs(240);
+/// How long a child waits for its rows, three frames and the pane's size before its first switch.
+const SETUP_BOUND: Duration = Duration::from_secs(90);
 
 static FAIL_NEXT_CANDIDATE_FRAME: AtomicBool = AtomicBool::new(false);
 
@@ -116,21 +118,6 @@ fn daemon_scenario_path(daemon: &Daemon) -> std::path::PathBuf {
     daemon.endpoint_root().join("scenario.json")
 }
 
-/// Reads `pipe` to its end on a thread of its own.
-fn read_all(pipe: Option<impl std::io::Read + Send + 'static>) -> std::sync::mpsc::Receiver<String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut text = String::new();
-        if let Some(mut pipe) = pipe {
-            let mut bytes = Vec::new();
-            let _ = pipe.read_to_end(&mut bytes);
-            text = String::from_utf8_lossy(&bytes).into_owned();
-        }
-        let _ = tx.send(text);
-    });
-    rx
-}
-
 /// Runs one child with its stdin held open until it has exited, so a parent that dies takes the child with it.
 fn run_child(role: &str, scenario: &std::path::Path) -> Result<ChildRun> {
     let mut child = std::process::Command::new(std::env::current_exe()?)
@@ -142,11 +129,8 @@ fn run_child(role: &str, scenario: &std::path::Path) -> Result<ChildRun> {
         .spawn()?;
     println!("pane-timing child {role} started pid={}", child.id());
     let _stdin = child.stdin.take();
-    let (out_rx, err_rx) = (read_all(child.stdout.take()), read_all(child.stderr.take()));
-    let waited = sot_log::test_isolated::wait_until(&mut child, Instant::now() + CHILD_BOUND);
-    let out = out_rx.recv_timeout(Duration::from_secs(10)).unwrap_or_default();
-    let mut err = err_rx.recv_timeout(Duration::from_secs(10)).unwrap_or_default();
-    let ok = match &waited {
+    let (waited, out, mut err) = sot_log::test_isolated::drain(child).wait_and_read(Instant::now() + CHILD_BOUND);
+    let ok = match waited {
         Ok(status) => {
             println!("pane-timing child {role} status={status}");
             status.success()
@@ -171,8 +155,15 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
     let mut ready: Vec<(String, u128, u128)> = Vec::new();
     let mut resume = Vec::new();
     // The fault child first: its order assertion is the cause when a timing run's attribution also breaks.
+    // Every failed child says what it saw, not only the first: one hosted run should settle what the gate is waiting on.
+    let failed: Vec<String> = runs.iter().filter(|r| !r.ok).map(|r| format!("pane-timing child {} failed:\n{}{}", r.role, r.out, r.err)).collect();
+    if !failed.is_empty() {
+        // The fault child's own verdict first: it is the cause when a timing run's attribution also breaks.
+        let fault = runs.iter().find(|r| r.role == "fault").and_then(|r| r.out.lines().find(|l| l.starts_with("pane-timing fault")));
+        let fault = fault.map_or_else(|| "pane-timing fault: no verdict line".to_string(), |line| format!("{line} route={route}"));
+        anyhow::bail!("{fault}\n{}", failed.join("\n"));
+    }
     for run in runs.iter().filter(|r| r.role == "fault").chain(runs.iter().filter(|r| r.role != "fault")) {
-        anyhow::ensure!(run.ok, "pane-timing child {} failed:\n{}{}", run.role, run.out, run.err);
         anyhow::ensure!(run.out.matches("pane-timing: body entered").count() == 1, "pane timing body did not enter exactly once: {}", run.role);
         if run.role == "fault" {
             let line = run.out.lines().find(|l| l.starts_with("pane-timing fault")).ok_or_else(|| anyhow::anyhow!("fault child printed no verdict: {}", run.out))?;
@@ -281,11 +272,28 @@ impl PaneDriver<'_> {
         state.terminal.backend().project_lines(0.0, 0.0, 1.0, 1.0).into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n")
     }
 
+    /// The window's own state at the setup bound, so one run says which condition failed and why: the rows of every
+    /// listed host key (a missing key is no list, `key:0` an empty one), the frame count, the pane's size, the active host
+    /// and its status line (rebuilt only for the active host's events), and the window thread's last failed redraw.
+    fn setup_state(&self, listed: bool) -> String {
+        let Some(state) = self.app.state.as_ref() else { return "no State".to_string() };
+        let mut lists: Vec<String> = state.workspace_lists.iter().map(|(key, rows)| format!("{key}:{}", rows.len())).collect();
+        lists.sort();
+        let text = self.capture.text();
+        let redraw_failed = text.lines().filter(|l| l.contains("redraw failed")).last().unwrap_or("none").trim().to_string();
+        format!(
+            "listed={listed} lists=[{}] frames={} pty_size={:?} active_host={} status={:?} last_redraw_failure={redraw_failed:?}",
+            lists.join(" "), state.frame_counter, state.pty_size, state.active_host, state.status
+        )
+    }
+
     fn ready_to_switch(&self) -> Result<bool> {
         let Some(state) = self.app.state.as_ref() else { return Ok(false) };
         let listed = state.workspace_lists.get(HOST_KEY).is_some_and(|rows| self.plan.iter().all(|p| rows.iter().any(|r| r.slug == p.slug)));
         if !(listed && state.frame_counter >= 3 && state.pty_size.is_some()) {
-            anyhow::ensure!(self.begun.elapsed() < Duration::from_secs(90), "pane-timing setup failure: the window never listed its rows in 90 s");
+            if self.begun.elapsed() >= SETUP_BOUND {
+                anyhow::bail!("pane-timing setup failure: the window was not ready to switch in {SETUP_BOUND:?}: {}", self.setup_state(listed));
+            }
             return Ok(false);
         }
         let (cols, rows) = state.pty_size.unwrap_or((0, 0));

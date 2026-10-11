@@ -11,6 +11,8 @@ mod exit_process_tests;
 
 #[cfg(all(test, feature = "test-window-progress"))]
 pub(super) mod tests;
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(super) mod native_children;
 #[cfg(all(test, feature = "test-window-close"))]
 pub(super) mod native_exit_tests;
 #[cfg(all(test, feature = "test-window-close", windows))]
@@ -52,6 +54,8 @@ pub struct App {
     modifiers: winit::keyboard::ModifiersState,
     /// Shared with State: the one three-second process backstop.
     deadline: ExitDeadline,
+    /// The idle repaint's armed deadline (`about_to_wait`), kept so a wake does not move it.
+    idle_due: Option<std::time::Instant>,
 }
 
 impl App {
@@ -78,6 +82,7 @@ impl App {
             leases,
             modifiers: winit::keyboard::ModifiersState::empty(),
             deadline: ExitDeadline::new(),
+            idle_due: None,
         }
     }
 
