@@ -109,7 +109,10 @@ fn unix_installer_preserves_table_forms_and_reports_owner_failures() {
     std::fs::write(&file, initial).unwrap();
     expect_reported(invoke(&sotd::sotd_program()), "folder trust declared");
     let text = std::fs::read_to_string(&file).unwrap();
-    assert!(text.starts_with(initial));
+    assert!(
+        text.starts_with(initial),
+        "W1 C4 Unix declaration lost the settings it kept: {text:?}"
+    );
     let doc: toml::Table = toml::from_str(&text).unwrap();
     assert_eq!(
         doc["trust"]["root_prefix"].as_str().unwrap(),
@@ -122,7 +125,7 @@ fn unix_installer_preserves_table_forms_and_reports_owner_failures() {
         "[ trust ]\n",
     ] {
         std::fs::write(&file, text).unwrap();
-        let ran = invoke(&sotd::sotd_program());
+        expect_reported(invoke(&sotd::sotd_program()), "folder trust kept");
         let emitted = std::fs::read_to_string(&file).unwrap();
         assert!(
             toml::from_str::<toml::Table>(&emitted).is_ok(),
@@ -133,7 +136,6 @@ fn unix_installer_preserves_table_forms_and_reports_owner_failures() {
             text.as_bytes(),
             "W1 C4 Unix existing trust answer changed"
         );
-        expect_reported(ran, "folder trust kept");
     }
     for bytes in [&b"[layout"[..], &b"\xff\xfe[\x00l\x00"[..]] {
         std::fs::write(&file, bytes).unwrap();

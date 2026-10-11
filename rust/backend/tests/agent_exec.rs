@@ -2,7 +2,7 @@
 //! `sotd agent-exec` (ADR 0046 decision 4) — a real `sotd` binary, run
 //! directly as a subprocess. No daemon, no socket: `agent-exec` is a
 //! pure-subcommand arm answered before any of that starts (`main.rs`),
-//! so this suite is a plain `Command::output()` proof, not a wire-
+//! so this suite is a plain subprocess proof (`run`), not a wire-
 //! protocol one (contrast `tests/capsule_workspaces/main.rs`).
 //!
 //! The fake `claude` is a printing stub (a shell script), not the
@@ -13,9 +13,22 @@
 //! env var (so scrubbing is provably real, not merely undocumented).
 
 use std::path::PathBuf;
+use std::process::{Command, ExitStatus, Stdio};
+use std::time::Duration;
 
 #[path = "support/sotd.rs"]
 mod sotd;
+
+/// Runs `cmd` to its end within 20 s with both streams drained, and returns its status, stdout and stderr.
+fn run(mut cmd: Command) -> (ExitStatus, String, String) {
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test-only offline subcommand; retained child is drained within its bound"
+    )]
+    let child = cmd.spawn().expect("spawn sotd agent-exec");
+    sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(20))
+}
 
 /// A `claude` stub at `<home>/.local/bin/claude` — found ONLY via
 /// `resolve_claude`'s HOME-derived fallback (the proof's own PATH never
@@ -58,8 +71,8 @@ fn agent_exec_claude_resolves_scrubs_and_execs_with_no_continue() {
     let home = tempfile::tempdir().expect("tempdir");
     let claude = seed_printing_claude_stub(home.path());
 
-    let out = sotd::sotd_command()
-        .arg("agent-exec")
+    let mut cmd = sotd::sotd_command();
+    cmd.arg("agent-exec")
         .arg("claude")
         .arg("--x")
         .env_clear()
@@ -67,39 +80,32 @@ fn agent_exec_claude_resolves_scrubs_and_execs_with_no_continue() {
         // Deliberately WITHOUT ~/.local/bin -- the whole point of the
         // fallback this proof exercises.
         .env("PATH", "/usr/bin:/bin")
-        .env("CLAUDECODE", "1")
-        .output()
-        .expect("spawn sotd agent-exec");
+        .env("CLAUDECODE", "1");
+    let (status, stdout, stderr) = run(cmd);
+    let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
 
-    assert!(
-        out.status.success(),
-        "sotd agent-exec exited {:?}\nstdout: {}\nstderr: {}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(status.success(), "sotd agent-exec failed: {said}");
 
     let argv0 = format!("ARGV0={}", claude.display());
     assert!(
         stdout.lines().any(|l| l == argv0),
-        "expected {argv0:?} in stdout:\n{stdout}"
+        "expected {argv0:?} in stdout: {said}"
     );
     let expected_args = ["--permission-mode", "auto", "--x", "/sot-session-start"];
     for (i, want) in expected_args.iter().enumerate() {
         let line = format!("ARG{}={want}", i + 1);
         assert!(
             stdout.lines().any(|l| l == line),
-            "expected {line:?} in stdout:\n{stdout}"
+            "expected {line:?} in stdout: {said}"
         );
     }
     assert!(
         !stdout.lines().any(|l| l.starts_with("ARG") && l.ends_with("=--continue")),
-        "agent-exec must never add --continue itself:\n{stdout}"
+        "agent-exec must never add --continue itself: {said}"
     );
     assert!(
         stdout.lines().any(|l| l == "CLAUDECODE=<unset>"),
-        "nesting env must be scrubbed before exec:\n{stdout}"
+        "nesting env must be scrubbed before exec: {said}"
     );
     let local_bin = home.path().join(".local").join("bin");
     let path_line = stdout
@@ -108,7 +114,7 @@ fn agent_exec_claude_resolves_scrubs_and_execs_with_no_continue() {
         .unwrap_or_default();
     assert!(
         path_line.starts_with(&format!("PATH={}:", local_bin.display())),
-        "expected ~/.local/bin prepended to PATH, got: {path_line}"
+        "expected ~/.local/bin prepended to PATH, got {path_line:?}: {said}"
     );
 }
 
@@ -117,13 +123,10 @@ fn agent_exec_claude_resolves_scrubs_and_execs_with_no_continue() {
 /// explicitly asked for.
 #[test]
 fn agent_exec_unknown_kind_exits_2() {
-    let out = sotd::sotd_command()
-        .arg("agent-exec")
-        .arg("bogus")
-        .env_clear()
-        .output()
-        .expect("spawn sotd agent-exec");
-    assert_eq!(out.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("bogus"), "got: {stderr}");
+    let mut cmd = sotd::sotd_command();
+    cmd.arg("agent-exec").arg("bogus").env_clear();
+    let (status, stdout, stderr) = run(cmd);
+    let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
+    assert_eq!(status.code(), Some(2), "{said}");
+    assert!(stderr.contains("bogus"), "{said}");
 }

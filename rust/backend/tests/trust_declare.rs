@@ -84,7 +84,11 @@ fn offline_trust_declare_preserves_settings() {
         "W1 offline trust declare did not return Declared: {status}; stdout {out:?}; stderr {err:?}"
     );
     let after = std::fs::read(f.settings()).unwrap();
-    assert!(after.starts_with(before));
+    assert!(
+        after.starts_with(before),
+        "W1 offline trust declare lost the settings it kept: {:?}",
+        String::from_utf8_lossy(&after)
+    );
     let (status, out, err) = f.declare();
     assert!(
         status.success() && out.trim() == "Kept",

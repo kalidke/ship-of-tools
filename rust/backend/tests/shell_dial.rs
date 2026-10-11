@@ -62,8 +62,9 @@ fn ping(mut child: Child) {
     let reply = rx.recv_timeout(BOUND).expect("the shell reply within its bound").expect("read the shell reply");
     drop(input);
     let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
-    assert!(status.success(), "sot_dial failed: {stderr}");
-    assert_eq!(reply, "pong\n", "the bridge carries the reply");
+    let said = format!("{status}; stderr {stderr:?}");
+    assert!(status.success(), "sot_dial failed: {said}");
+    assert_eq!(reply, "pong\n", "the bridge carries the reply: {said}");
 }
 
 /// ADR 0049 `## User isolation`: every shell path that opens a local socket refuses one another OS account listens on,
@@ -103,14 +104,15 @@ fn a_shell_request_to_a_socket_another_account_listens_on_writes_nothing() {
         .expect("bash on Unix");
         drop(child.stdin.take());
         let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+        let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
         assert_eq!(foreign.finish(), 0, "{path}: the shell client sent another account's listener bytes (ADR 0049 `## User isolation`)");
-        assert!(status.success(), "{path}: bash: {stderr}");
-        assert_eq!(stdout, "refused\n", "{path}: {stderr}");
+        assert!(status.success(), "{path}: bash: {said}");
+        assert_eq!(stdout, "refused\n", "{path}: {said}");
         // sot_socket_open discards the bridge's stderr; its socket exists, so only the bridge's refusal prints
         // `refused`.
         assert!(
             path == "socket open" || stderr.contains("another OS account listens on this socket"),
-            "{path}: {stderr}"
+            "{path}: {said}"
         );
     }
 }
@@ -181,7 +183,7 @@ fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
     let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
     assert!(
         status.success() && stdout == "open\n",
-        "sot_socket_open did not reach this account's socket: {stdout}{stderr}"
+        "sot_socket_open did not reach this account's socket: {status}; stdout {stdout:?}; stderr {stderr:?}"
     );
     let sent = sent_rx
         .recv_timeout(BOUND)
@@ -219,18 +221,20 @@ printf 'dial\n' | sot_dial ssh:box/far1 5
     let mut child = shell(home.path(), script, "").expect("bash");
     drop(child.stdin.take());
     let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
-    assert!(status.success(), "bash: {stderr}");
+    let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
+    assert!(status.success(), "bash: {said}");
     assert_eq!(
         stdout,
         "far sotd stdio-bridge\nplain\nfar sotd stdio-bridge\nbounded\nfar sotd stdio-bridge --host far1\nrelay\nfar sotd stdio-bridge --host far1\ndial\n",
-        "{stderr}"
+        "{said}"
     );
 }
 
-/// Runs `script` after comm-lib under this platform's bash, within `BOUND`, and returns its stdout and how long it
-/// took. Every line is printed, in a passing run's log too (CI runs the tests with --nocapture). A script that does not
-/// finish within `BOUND`, or a bash that fails, fails the caller.
-fn bound_case(script: &str) -> (String, Duration) {
+/// Runs `script` after comm-lib under this platform's bash, within `BOUND`, and returns its stdout, how long it took,
+/// and its status and both streams for the caller's messages. Every line is printed, in a passing run's log too (CI
+/// runs the tests with --nocapture). A script that does not finish within `BOUND`, or a bash that fails, fails the
+/// caller.
+fn bound_case(script: &str) -> (String, Duration, String) {
     let home = tempfile::tempdir().expect("scratch home");
     let started = std::time::Instant::now();
     let mut child = shell(home.path(), &format!(". \"$1\" || exit 1\n{script}"), "").expect("bash");
@@ -238,8 +242,9 @@ fn bound_case(script: &str) -> (String, Duration) {
     let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
     let took = started.elapsed();
     eprintln!("the case's lines:\n{stdout}its stderr:\n{stderr}it took {took:?}");
-    assert!(status.success(), "bash failed: {stderr}");
-    (stdout, took)
+    let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
+    assert!(status.success(), "bash failed: {said}");
+    (stdout, took, said)
 }
 
 /// `sot_bounded` keeps its deadline while CMD's group outlives CMD: CMD exits 0 at once, a descendant still holds the
@@ -248,12 +253,12 @@ fn bound_case(script: &str) -> (String, Duration) {
 #[test]
 fn the_comm_bound_holds_a_group_whose_leader_exited() {
     let Some(_) = bash() else { return };
-    let (lines, took) = bound_case(
+    let (lines, took, said) = bound_case(
         r#"out="$(sot_bounded 1 sh -c 'sleep 30 & echo $! > "$HOME/lead.pid"; exit 0')"; echo "leader exit $?"
 kill -0 "$(cat "$HOME/lead.pid")" 2>/dev/null && echo "leader exit alive" || echo "leader exit gone"
 "#,
     );
-    assert_eq!(lines, "leader exit 124\nleader exit gone\n");
+    assert_eq!(lines, "leader exit 124\nleader exit gone\n", "{said}");
     assert!(
         took < Duration::from_secs(10),
         "the bound returned only after {took:?}"
@@ -265,12 +270,12 @@ kill -0 "$(cat "$HOME/lead.pid")" 2>/dev/null && echo "leader exit alive" || ech
 #[cfg(unix)]
 #[test]
 fn the_comm_bound_ends_a_command_that_left_its_group() {
-    let (lines, took) = bound_case(
+    let (lines, took, said) = bound_case(
         r#"sot_bounded 1 sh -c 'echo $$ > "$HOME/leave.pid"; exec perl -e "setpgrp(0, getpgrp(getppid())) or die; exec q(sleep), q(30)"'; echo "leave $?"
 kill -0 "$(cat "$HOME/leave.pid")" 2>/dev/null && echo "leave alive" || echo "leave gone"
 "#,
     );
-    assert_eq!(lines, "leave 124\nleave gone\n");
+    assert_eq!(lines, "leave 124\nleave gone\n", "{said}");
     assert!(
         took < Duration::from_secs(10),
         "the bound returned only after {took:?}"
@@ -282,12 +287,12 @@ kill -0 "$(cat "$HOME/leave.pid")" 2>/dev/null && echo "leave alive" || echo "le
 #[cfg(unix)]
 #[test]
 fn the_comm_bound_kills_a_deaf_command_one_grace_period_after_its_bound() {
-    let (lines, took) = bound_case(
+    let (lines, took, said) = bound_case(
         r#"sot_bounded 1 sh -c 'trap "" TERM; echo $$ > "$HOME/deaf.pid"; exec sleep 30'; echo "deaf $?"
 kill -0 "$(cat "$HOME/deaf.pid")" 2>/dev/null && echo "deaf alive" || echo "deaf gone"
 "#,
     );
-    assert_eq!(lines, "deaf 137\ndeaf gone\n");
+    assert_eq!(lines, "deaf 137\ndeaf gone\n", "{said}");
     assert!(
         took >= Duration::from_millis(1900) && took < Duration::from_millis(3500),
         "a 1 s bound and a 1 s grace period took {took:?}"
@@ -356,8 +361,9 @@ sot_bounded 0 true 2>/dev/null; echo "zero $?"
     let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND * 2);
     // Every line, in the log of a run that passes too (CI runs the tests with --nocapture).
     eprintln!("the bound test's lines:\n{stdout}its stderr:\n{stderr}");
-    assert!(status.success(), "the bound: bash failed: {stderr}");
-    assert_eq!(stdout, want, "the bound: {stderr}");
+    let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
+    assert!(status.success(), "the bound: bash failed: {said}");
+    assert_eq!(stdout, want, "the bound: {said}");
 }
 
 /// Windows: every shell path that opens a pipe, `sot_dial` with and without its bound, reaches a pipe this account
@@ -406,11 +412,12 @@ fn the_shell_dial_reaches_only_a_pipe_this_account_serves() {
         echo.join().expect("pipe echo server");
         let mut child = shell(home.path(), dial, r"pipe:\\.\pipe\epmapper").expect("Git Bash");
         drop(child.stdin.take());
-        let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+        let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+        let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
         assert!(
             !status.success(),
-            "{form}: another account's pipe is refused: {stderr}"
+            "{form}: another account's pipe is refused: {said}"
         );
-        assert!(stderr.contains("not connecting"), "{form}: {stderr}");
+        assert!(stderr.contains("not connecting"), "{form}: {said}");
     }
 }

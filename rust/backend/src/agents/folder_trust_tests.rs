@@ -441,7 +441,27 @@ fn resolved_aliases_keep_the_original_cwd_key() {
 fn windows_case_and_drive_alias_keep_the_cwd_key() {
     let temp = tempfile::tempdir().unwrap();
     let home = crate::agents::support_tests::platform_spelling(temp.path());
-    run_windows_alias_receipts(&home, &mut |receipt| println!("{receipt}"));
+    // The real case: a drive-alias NOT CHECKED here is a missing facility. The unavailable control below makes it on
+    // purpose and keeps it.
+    run_windows_alias_receipts(&home, &mut |receipt| {
+        if receipt.contains("NOT CHECKED") {
+            not_checked(receipt);
+        } else {
+            println!("{receipt}");
+        }
+    });
+}
+
+/// A real case whose facility is missing. On CI, which GitHub marks with `CI` and whose hosted runner must supply the
+/// facility, that fails naming what was missing; elsewhere it prints its named NOT CHECKED line.
+#[cfg(windows)]
+#[track_caller]
+fn not_checked(line: &str) {
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "on CI a missing facility is not a pass: {line}"
+    );
+    println!("{line}");
 }
 
 #[cfg(windows)]
@@ -556,16 +576,18 @@ fn windows_alias_receipts_available_drive_has_separate_passes() {
     let case_pass = receipts.iter().position(|receipt| {
         receipt == "W1 P4 case spelling PASS: OS comparison converges; original cwd key retained"
     });
-    if receipts
+    if let Some(missing) = receipts
         .iter()
-        .any(|receipt| receipt.contains("drive-alias NOT CHECKED"))
+        .find(|receipt| receipt.contains("drive-alias NOT CHECKED"))
     {
         assert!(case_pass.is_some());
         assert!(receipts
             .iter()
             .all(|receipt| !receipt.contains("drive spelling PASS")
                 && !receipt.contains("case/drive spelling PASS")));
-        println!("W1 C5 available control NOT CHECKED: fixture supplies no distinct drive witness");
+        not_checked(&format!(
+            "W1 C5 available control NOT CHECKED: fixture supplies no distinct drive witness ({missing})"
+        ));
         return;
     }
     let drive_pass = receipts.iter().position(|receipt| receipt
@@ -602,10 +624,12 @@ fn windows_junction_escape_records_nothing() {
         reason = "test-only junction facility; retained child is drained within its bound"
     )]
     let child = command.spawn().unwrap();
-    let (status, _, _) =
+    let (status, out, err) =
         sot_log::test_isolated::drain(child).wait_within(std::time::Duration::from_secs(20));
     if !status.success() {
-        println!("W1 P4 junction NOT CHECKED: runner cannot create the fixture junction");
+        not_checked(&format!(
+            "W1 P4 junction NOT CHECKED: runner cannot create the fixture junction: mklink {status}; stdout {out:?}; stderr {err:?}"
+        ));
         return;
     }
     assert_eq!(
@@ -643,13 +667,19 @@ fn windows_short_name_keeps_the_cwd_key_when_available() {
             buffer.len() as u32,
         )
     } as usize;
+    let error = std::io::Error::last_os_error();
     if length == 0 || length >= buffer.len() {
-        println!("W1 P4 short-name NOT CHECKED: runner exposes no short spelling");
+        not_checked(&format!(
+            "W1 P4 short-name NOT CHECKED: runner exposes no short spelling (GetShortPathNameW returned {length}: {error})"
+        ));
         return;
     }
     let alias = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
     if alias == root {
-        println!("W1 P4 short-name NOT CHECKED: filesystem supplies no distinct short spelling");
+        not_checked(&format!(
+            "W1 P4 short-name NOT CHECKED: filesystem supplies no distinct short spelling ({})",
+            root.display()
+        ));
         return;
     }
     assert_eq!(

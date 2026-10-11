@@ -204,8 +204,9 @@ fn round_trip(socket: &Path, args: &[&str]) {
     assert!(tail.is_empty(), "the bridge wrote {} byte(s) of its own to stdout: {tail:?}", tail.len());
 
     let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
-    assert_eq!(status.code(), Some(0), "a caller hanging up is a clean exit, not a failure: {stderr:?}");
-    assert!(stderr.is_empty(), "a clean run says nothing on stderr: {stderr:?}");
+    let said = format!("{status}; stderr {stderr:?}");
+    assert_eq!(status.code(), Some(0), "a caller hanging up is a clean exit, not a failure: {said}");
+    assert!(stderr.is_empty(), "a clean run says nothing on stderr: {said}");
     echo.join().expect("echo listener");
 }
 
@@ -255,6 +256,7 @@ fn dash_dash_endpoint_refuses_a_socket_another_account_listens_on() {
     let _ = stdin.write_all(b"ping\n").and_then(|()| stdin.flush());
     drop(stdin);
     let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
     assert_eq!(
         foreign.finish(),
         0,
@@ -262,13 +264,13 @@ fn dash_dash_endpoint_refuses_a_socket_another_account_listens_on() {
     );
     assert!(
         !status.success(),
-        "a socket another account listens on is refused: stdout {stdout:?}; stderr {stderr:?}"
+        "a socket another account listens on is refused: {said}"
     );
     assert!(
         stderr.contains("another OS account listens on this socket"),
-        "{stderr:?}"
+        "{said}"
     );
-    assert!(stdout.is_empty(), "a refusal writes nothing to stdout");
+    assert!(stdout.is_empty(), "a refusal writes nothing to stdout: {said}");
 }
 
 /// ADR 0049, User isolation: the bridge returns within `CONNECT_BOUND` plus 5 s of slack against a socket whose backlog
@@ -287,15 +289,16 @@ fn a_full_foreign_backlog_ends_the_bridge_within_its_bound() {
     let endpoint = format!("unix:{}", foreign.path.display());
     let mut child = spawn_bridge(&["--endpoint", &endpoint]);
     drop(child.stdin.take());
-    let (status, _, stderr) = sot_log::test_isolated::drain(child)
+    let (status, stdout, stderr) = sot_log::test_isolated::drain(child)
         .wait_within(sot_log::lane::transport::CONNECT_BOUND + Duration::from_secs(5));
+    let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
     assert!(
         !status.success(),
-        "the bridge connected through a full backlog: {stderr:?}"
+        "the bridge connected through a full backlog: {said}"
     );
     assert!(
         !stderr.contains("not connecting"),
-        "the connect went through, so the backlog was not full: {stderr:?}"
+        "the connect went through, so the backlog was not full: {said}"
     );
     assert_eq!(
         foreign.finish(),
@@ -309,10 +312,11 @@ fn a_full_foreign_backlog_ends_the_bridge_within_its_bound() {
 fn dash_dash_endpoint_refuses_the_other_platforms_scheme() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let (status, stdout, stderr) = run_bridge(&["--endpoint", "pipe:x"]);
-    assert!(!status.success(), "the other platform's scheme is refused");
-    assert_eq!(stderr.lines().count(), 1, "one line names the refused endpoint: {stderr:?}");
-    assert!(stderr.contains("pipe:x"), "{stderr:?}");
-    assert!(stdout.is_empty(), "a refusal writes nothing to stdout");
+    let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
+    assert!(!status.success(), "the other platform's scheme is refused: {said}");
+    assert_eq!(stderr.lines().count(), 1, "one line names the refused endpoint: {said}");
+    assert!(stderr.contains("pipe:x"), "{said}");
+    assert!(stdout.is_empty(), "a refusal writes nothing to stdout: {said}");
 }
 
 #[test]
@@ -322,12 +326,13 @@ fn a_third_form_is_a_usage_error() {
     // The dropped flag itself, kept as the usage-error case: it is exactly
     // the argument pattern this change removes.
     let (status, stdout, stderr) = run_bridge(&["--label", "sot"]);
-    assert!(!status.success(), "an unrecognised form is a failure");
-    assert!(stdout.is_empty(), "nothing may reach stdout on the usage-error path: {stdout:?}");
-    assert_eq!(stderr.lines().count(), 1, "one line names the usage: {stderr:?}");
+    let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
+    assert!(!status.success(), "an unrecognised form is a failure: {said}");
+    assert!(stdout.is_empty(), "nothing may reach stdout on the usage-error path: {said}");
+    assert_eq!(stderr.lines().count(), 1, "one line names the usage: {said}");
     assert!(
         stderr.contains("Usage: sotd stdio-bridge [--host <host> | --endpoint <unix:PATH|pipe:PATH>]"),
-        "{stderr:?}"
+        "{said}"
     );
 }
 
@@ -340,17 +345,18 @@ fn a_missing_endpoint_exits_promptly_with_one_stderr_line_and_no_stdout() {
     // the name straight into the path, so the diagnosis names it without
     // this test needing a caller-supplied label the flag no longer has.
     let (status, stdout, stderr) = run_bridge(&["--host", "nothing-listens-here"]);
+    let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
 
-    assert!(!status.success(), "an endpoint that is not there is a failure");
-    assert!(status.code().is_some(), "it exits, it is not killed by a signal: {status:?}");
-    assert!(stdout.is_empty(), "nothing may reach stdout, not even on the failure path: {stdout:?}");
-    assert_eq!(stderr.lines().count(), 1, "one line names the cause: {stderr:?}");
-    assert!(stderr.contains("nothing-listens-here"), "the line names the endpoint it could not reach: {stderr:?}");
+    assert!(!status.success(), "an endpoint that is not there is a failure: {said}");
+    assert!(status.code().is_some(), "it exits, it is not killed by a signal: {said}");
+    assert!(stdout.is_empty(), "nothing may reach stdout, not even on the failure path: {said}");
+    assert_eq!(stderr.lines().count(), 1, "one line names the cause: {said}");
+    assert!(stderr.contains("nothing-listens-here"), "the line names the endpoint it could not reach: {said}");
     // The fatal first attempt names op `connect`; the bounded retry names
     // `connect(bounded retry)`.
     assert!(
         stderr.contains(": connect: ") && !stderr.contains("bounded retry"),
-        "a missing endpoint is fatal on the first attempt, not after the connect bound: {stderr:?}"
+        "a missing endpoint is fatal on the first attempt, not after the connect bound: {said}"
     );
 }
 
