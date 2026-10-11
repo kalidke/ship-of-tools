@@ -297,7 +297,8 @@ impl ChromeView<'_> {
                     let avail = preview_rect.width.saturating_sub(2) as usize;
                     let fixed = " preview · ".chars().count() + markers.chars().count() + 1; // trailing space
                     let name_budget = avail.saturating_sub(fixed).max(1);
-                    let shown = middle_truncate(&name, name_budget);
+                    // Measured as drawn: one row (`cell_row`), so a line break cannot push the markers off.
+                    let shown = middle_truncate(&cell_row(&name), name_budget);
                     format!(" preview · {shown}{markers} ")
                 }
                 None => format!(" preview{markers} "),
@@ -435,7 +436,7 @@ impl ChromeView<'_> {
                 } else {
                     spans.push(Span::raw(cont_pad.clone()));
                 }
-                spans.push(Span::raw(seg.to_string()));
+                spans.push(Span::raw(cell_row(seg).into_owned()));
                 if repl_focus && i == last_idx {
                     spans.push(Span::styled(
                         "\u{2588}",
@@ -682,7 +683,7 @@ fn render_nav_widgets(
 }
 
 #[cfg(test)]
-#[cfg_attr(feature = "test-window-progress", allow(unused_imports, reason = "the harness=false native targets run none of these tests"))]
+#[cfg_attr(feature = "test-window-progress", allow(unused_imports, dead_code, reason = "the harness=false native targets run none of these tests"))]
 mod tests {
     use super::*;
 
@@ -717,5 +718,213 @@ mod tests {
                 if height == 0 { assert!(rows.is_empty()); }
             }
         }
+    }
+
+    /// The REPL log's lines for `untrusted_lines_stay_apart_in_the_chrome`: code holding a tab, output holding a lone
+    /// `\r`, an error holding a `\r\n`, and a value's MIME, an image's MIME and a page's address holding a `\n`.
+    fn untrusted_repl_lines() -> Vec<RtLine<'static>> {
+        use crate::ui::drawer::repl::{lines::build_repl_lines, log::ReplEntry};
+        use sot_protocol::ReplFrame::{Browser, Error, Image, Stdout, Value};
+        let frames = vec![
+            Stdout {
+                text: "AA10\rBB10\n".to_string(),
+            },
+            Error {
+                message: "AA11\r\nBB11".to_string(),
+                stacktrace: Vec::new(),
+            },
+            Value {
+                mime: "AA14\nBB14".to_string(),
+                text: "v".to_string(),
+            },
+            Image {
+                mime: "AA15\nBB15".to_string(),
+                data_base64: String::new(),
+                bytes: 3,
+            },
+            Browser {
+                url: "http://AA16\nBB16/x".to_string(),
+                open: false,
+                fe: None,
+            },
+        ];
+        let log = vec![ReplEntry {
+            eval_id: 1,
+            code: "AA09\tBB09".to_string(),
+            frames,
+            elapsed_ms: 0,
+            in_flight: false,
+            pkg_mode: false,
+            origin: None,
+        }];
+        build_repl_lines(&log, &HashMap::new(), 0.0, 0.0, 8.0, 16.0, false).0
+    }
+
+    /// The chrome painted into a 200x60 buffer, row by row, with `status` and the nav rows `tree`, and every other
+    /// text from outside the window holding a line break or a tab between a marker `AAnn` and its `BBnn`. The pinned
+    /// preview's file name holds sixty more breaks, so its title is cut to fit.
+    fn paint_chrome(status: &str, tree: Vec<NavRow>) -> Vec<String> {
+        let preset = crate::ui::persist::settings::LayoutPreset::default_laptop();
+        let status = status.to_string();
+        let prompt = Some(("delete AA05\rBB05? [y/N]".to_string(), String::new()));
+        let none: Option<String> = None;
+        let concept = "c AA06\nBB06".to_string();
+        let preview_name = Some(format!("dir/AA07\nBB07{}.jl", "\nzz".repeat(60)));
+        let pinned = Some("files:dir".to_string());
+        let host: HostKey = "local".to_string();
+        let repl_input = "x = AA08\tBB08\ny".to_string();
+        let repl_lines = untrusted_repl_lines();
+        let (help_state, bindings, context) = (
+            help::Help::default(),
+            KeyBindings::defaults(),
+            help::Context::default(),
+        );
+        let (battery, stamp) = (None, " fe 0 · be 0 ".to_string());
+        let screen = crate::ui::agent_pane::blank_pane_screen(80, 24);
+        let overlay = vec!["pty.open failed: AA12\nBB12".to_string()];
+        let mut view = ChromeView {
+            layout_preset: &preset,
+            drawer_open: true,
+            maximize_slot: None,
+            nav_logo_row: false,
+            focus: PaneFocus::NavTree,
+            mode: Mode::default(),
+            nav_prompt_line: &prompt,
+            lease_notice: None,
+            nav_line: &none,
+            owed_line: &none,
+            status: &status,
+            nav_cursor_body_pos: 2,
+            tree_empty: tree.is_empty(),
+            contrast_dim: false,
+            concept_status: &concept,
+            last_key: &none,
+            nav_has_cursor: !tree.is_empty(),
+            nav_spill_active: false,
+            preview_name: &preview_name,
+            pinned_preview_node_id: &pinned,
+            drawer: DrawerContent::Repl,
+            monitor_host_connected: true,
+            monitor_host_label: &host,
+            repl_input: &repl_input,
+            repl_lines: &repl_lines,
+            repl_pkg_mode: false,
+            help_state: &help_state,
+            help_bindings: &bindings,
+            help_context: &context,
+            clock_now: chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+            battery: &battery,
+            version_stamp: &stamp,
+            version_skew: false,
+            pty_screen: &screen,
+            pane_overlay: &overlay,
+            term_screen: None,
+            owed_drawn: false,
+            leaving_drawn: false,
+            nav_scroll: 0,
+            preview_cells: Default::default(),
+            repl_cells: Default::default(),
+            new_pane_rects: PaneRects::default(),
+            new_repl_scroll: 0,
+            repl_scrollback_cells: Default::default(),
+            repl_window: (0, 0),
+            pty_size_observed: (0, 0),
+            term_size_observed: (0, 0),
+        };
+        let (w, h) = (200u16, 60u16);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        term.draw(|frame| view.paint(frame, tree, &mut Vec::new()))
+            .unwrap();
+        let buf = term.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    /// Text from outside the window (a daemon's error, an agent's summary, a file name, a paste) that holds a line
+    /// break or another control character keeps its pieces apart wherever the chrome draws it: no cell holds a
+    /// control character, and each `AAnn` is followed by its `BBnn` on the next row, or on the same row after the
+    /// separator only one row has room for (`⏎` for a line break, a space for a tab). A title cut to fit keeps its
+    /// marker.
+    #[test]
+    fn untrusted_lines_stay_apart_in_the_chrome() {
+        let status = "s AA01\nBB01 AA02\r\nBB02 AA03\rBB03 AA04\tBB04";
+        let row = "> . AA13\nBB13".to_string();
+        let rows = paint_chrome(
+            status,
+            vec![(row, true, false, false, None, 0.0, false, false)],
+        );
+        let mut failures: Vec<String> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.contains(char::is_control))
+            .map(|(y, row)| format!("row {y} holds a control character: {row:?}"))
+            .collect();
+        // (marker, how its two pieces must sit): None = on consecutive rows, Some(sep) = on one row around `sep`.
+        let cases: &[(u8, Option<&str>)] = &[
+            (1, None),
+            (2, None),
+            (3, None),
+            (4, Some(" ")),
+            (5, None),
+            (6, Some(" ⏎ ")),
+            (7, Some(" ⏎ ")),
+            (8, Some(" ")),
+            (9, Some(" ")),
+            (10, None),
+            (11, None),
+            (12, Some(" ⏎ ")),
+            (13, Some(" ⏎ ")),
+            (14, Some(" ⏎ ")),
+            (15, Some(" ⏎ ")),
+            (16, Some(" ⏎ ")),
+        ];
+        for &(n, sep) in cases {
+            let (a, b) = (format!("AA{n:02}"), format!("BB{n:02}"));
+            let ra = rows.iter().position(|r| r.contains(&a));
+            let rb = rows.iter().position(|r| r.contains(&b));
+            let apart = match sep {
+                None => ra.is_some() && rb == ra.map(|r| r + 1),
+                Some(sep) => rows.iter().any(|r| r.contains(&format!("{a}{sep}{b}"))),
+            };
+            if !apart {
+                let shown: Vec<&String> = ra.iter().chain(rb.iter()).map(|&r| &rows[r]).collect();
+                failures.push(format!("{a} and {b} are not apart: {shown:?}"));
+            }
+        }
+        if !rows.iter().any(|r| r.contains("[pinned *]")) {
+            failures.push("the preview title lost its `[pinned *]` marker".to_string());
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// A status longer than the nav pane (a Quarto failure keeps up to 64 KiB: what failed, its ERROR lines with the
+    /// root cause first, Quarto's last lines, then a hint) shows its first and its last rows around a count of the
+    /// rows not shown, and leaves the rest of the pane to the tree.
+    #[test]
+    fn a_long_status_keeps_its_first_and_last_rows() {
+        let flood: Vec<String> = (0..300).map(|n| format!("ERROR flood {n:03}")).collect();
+        let frames: Vec<String> = (0..10).map(|n| format!("stack frame {n:02}")).collect();
+        let status = format!(
+            "quarto.open failed · quarto render failed (execute=true):\nERROR root cause\n{}\n{}\nHINT the last line",
+            flood.join("\n"),
+            frames.join("\n")
+        );
+        let rows = paint_chrome(&status, Vec::new());
+        let missing: Vec<&str> = [
+            "status: quarto.open failed",
+            "ERROR root cause",
+            "rows not shown",
+            "stack frame 09",
+            "HINT the last line",
+            "(no tree yet)",
+        ]
+        .into_iter()
+        .filter(|want| !rows.iter().any(|r| r.contains(want)))
+        .collect();
+        assert!(missing.is_empty(), "not shown: {missing:?} in {rows:#?}");
     }
 }

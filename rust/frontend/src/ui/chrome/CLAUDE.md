@@ -11,7 +11,8 @@ rust/frontend/src/ui/CLAUDE.md.
   are imported by name.
 - `panes.rs`: `PaneFocus`, `DrawerContent`, `SpatialDir`, `PaneRects`, `maximize_slot`, and `State::set_focus`.
 - `layout.rs`: pane geometry for a layout preset (`LayoutGeom`) and `draw_wireframe`, which paints the box-drawing frame.
-- `status.rs`: status wrapping, the nav pane's pinned rows, the clock, battery and version labels, pane titles.
+- `status.rs`: the cell-text rule (`cell_lines`, `cell_row`), status wrapping, the nav pane's pinned rows, the clock,
+  battery and version labels, pane titles.
 - `spill.rs`: `NavSpillSeg`, `nav_spill_take` and cell-width truncation for the nav spill overlay.
 - `theme.rs`: RGB scaling, the contrast levers and the status-change flash.
 - `strip/`: the session strip at the bottom: its items, the ships drawn on the band, and the band's rows and text.
@@ -34,6 +35,8 @@ rows say; `layout.rs` for where the panes sit; `draw_chrome` in draw.rs for what
 - Leaving the nav pane dismisses the quit prompt (`set_focus` via `quit_prompt_on_focus`).
 - While a leave line shows, nothing is maximized (`maximize_slot`).
 - The nav pane's pinned rows are kept whole or dropped whole (`nav_pinned_rows`).
+- The status takes at most half the nav list's rows; past that its first and last rows show around a count of the rows
+  not shown (`status_spans`; test `a_long_status_keeps_its_first_and_last_rows`, view.rs).
 - The chrome draw reads only its `ChromeView`, the ratatui frame and the tree rows, and writes only the view's outs
   and `nav_spill_segs_out` (`ChromeView::paint`).
 - Pinned rows are Yellow and Bold while any navigation prompt is open; ordinary pinned status rows are LightGreen. Rendered-cell tests cover wrapping and clipped panes.

@@ -414,8 +414,11 @@ fn clocks() -> (Instant, f64) {
     (Instant::now(), epoch)
 }
 
+/// Text from the daemon (a host, a process or a user name) as the chart's SVG text: one row (`cell_row`), since XML 1.0
+/// forbids most control characters and usvg rejects the whole chart for one, then markup escaped.
 fn escape(s: &str) -> String {
-    s.replace('&', "&amp;")
+    cell_row(s)
+        .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
@@ -689,6 +692,28 @@ mod tests {
         let svg = v.render_svg(800, 240, 1.0, &marks_now(&v));
         assert!(svg.contains("julia\u{b7}alice 312%"), "proc entry should render");
         assert!(svg.contains("nv(idia)\u{b7}root 3%"), "second proc should render");
+    }
+
+    #[test]
+    fn a_control_character_in_a_name_leaves_the_chart_drawable() {
+        // A process name is the file name it ran from, which may hold any byte but `/` and NUL; usvg rejects the
+        // whole chart for one character XML 1.0 forbids, so a name is drawn as one row (`cell_row`).
+        let mut v = MonitorView::new();
+        let mut s = sample(1.0, 50.0, &[]);
+        s.top_procs = vec![sot_protocol::ProcSample {
+            name: "AA\u{1}BB\nCC".into(),
+            user: "alice".into(),
+            cpu_pct: 3.0,
+        }];
+        v.apply_tick(HostLatest {
+            host: "host-a".into(),
+            stale: false,
+            sample: Some(s),
+        });
+        let svg = v.render_svg(800, 240, 1.0, &marks_now(&v));
+        let parsed = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default());
+        assert!(parsed.is_ok(), "the chart does not parse: {:?}", parsed.err());
+        assert!(svg.contains("AA BB ⏎ CC\u{b7}alice 3%"), "{svg}");
     }
 
     #[test]

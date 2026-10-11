@@ -36,6 +36,13 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
 - Input reaches only the selected row's client or is counted: `State::send_pane_input` (agent_pane/input.rs) bumps
   `pane_inputs_discarded` when there is no live client.
 - Text over 512 KiB, or binary, is summarized, never shaped: `PREVIEW_TEXT_CAP` in preview/pane.rs.
+- The window draws text from outside it (a daemon's reply, a REPL's output, an agent's words, a file's name, a
+  paste) in a cell run, a strip name or the Monitor's chart only through `cell_lines`, one row per line, or
+  `cell_row`, its lines joined by ` ⏎ ` where only one row exists (chrome/status.rs), so none of them holds a control
+  character: ratatui drops a `\n` inside a span, the glyph layer draws a `\r` or a `\t` as a line break or a tab
+  stop, and usvg rejects a whole chart for one. Tests `untrusted_lines_stay_apart_in_the_chrome` (chrome/view.rs),
+  `strip_names_keep_their_lines_apart` (chrome/strip/items_tests.rs) and
+  `a_control_character_in_a_name_leaves_the_chart_drawable` (drawer/monitor.rs).
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),
   `resumed` (app/handler.rs); a relaunch command is refused for them (control/dispatch.rs).

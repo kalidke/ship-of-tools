@@ -21,8 +21,11 @@ pub(in crate::ui) const STRIP_SHIP_GAP_CELLS: f32 = 5.0;
 /// for across a ship boundary.
 pub(in crate::ui) const STRIP_STERN_CLEAR_CELLS: f32 = 2.0;
 
-/// Truncate a session label to `STRIP_MAX_LABEL` chars, ellipsizing if longer.
+/// Truncate a session label or a box name to `STRIP_MAX_LABEL` chars,
+/// ellipsizing if longer. It is one row of the band, so its rows are joined
+/// first (`cell_row`).
 pub(in crate::ui) fn strip_truncate(label: &str) -> String {
+    let label = cell_row(label);
     let n = label.chars().count();
     if n <= STRIP_MAX_LABEL {
         label.to_string()

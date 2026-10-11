@@ -306,6 +306,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | the shell `with_lock` | lock | messaging | `comm/lib/comm-lib-registry-lock.sh` `with_lock` |
 | result target resolution and row attachment names | rule | fe-ui | `rust/frontend/src/ui/session/workspace_key.rs` `resolve_listed_workspace`; row facts from `workspace.list` |
 | pending-result lifetime and acknowledgement | state, rule | fe-ui | `rust/frontend/src/ui/session/badge.rs` `PendingNav`, result/attempt serials and admission; authoritative list/destroy invalidation, cursor, preview and presentation hooks; fe-net carries the saved attempt through its existing pending entry and event |
+| text from outside the window drawn in a cell run, a strip name or the Monitor's chart: `\r\n`, `\n` and a lone `\r` end a line, any other control character is a space, and where only one row exists the lines are joined by ` ⏎ ` | rule | fe-ui | `rust/frontend/src/ui/chrome/status.rs` `cell_lines`, `cell_row` |
 
 ## Two owners today
 

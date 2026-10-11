@@ -10,6 +10,21 @@ fn strip_truncate_ellipsizes_long_labels() {
 }
 
 #[test]
+fn strip_names_keep_their_lines_apart() {
+    // A session label or a box name is one row of the band: a line break shows as `⏎`, a tab as a space, and no
+    // control character reaches the glyph layer, which would start a new line there or jump to a tab stop.
+    assert_eq!(strip_truncate("AA\nBB"), "AA ⏎ BB");
+    assert_eq!(strip_truncate("AA\r\nBB\tCC"), "AA ⏎ BB CC");
+    assert_eq!(strip_label("AA\rBB", true), "●AA ⏎ BB");
+    assert_eq!(
+        strip_truncate(&format!("{}\n{}", "a".repeat(20), "b".repeat(20)))
+            .chars()
+            .count(),
+        STRIP_MAX_LABEL
+    );
+}
+
+#[test]
 fn strip_items_gives_a_lone_host_its_ship_too() {
     let slugs: Vec<WsKey> = vec![
         ("alpha".to_string(), "one".to_string()),
