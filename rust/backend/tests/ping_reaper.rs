@@ -20,6 +20,9 @@
 //!   that deadline (armed, kept bumped);
 //! - an ordinary clean exit still reaps immediately, unaffected by any of
 //!   the above.
+//!
+//! A fifth case pins the hub link's premise: a `cli` connection's `ping` is
+//! answered and never arms the reaper.
 
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
@@ -169,7 +172,7 @@ async fn poll_until_connected(socket_path: &std::path::Path) -> Conn {
 }
 
 /// Connect + hello declaring `role` (`"fe"` or `"bridge"`, topology plan §F
-/// step 2's two long-lived roles) with a `name` (`<role>@<client_id>`).
+/// step 2's two long-lived roles, or `"cli"`, the hub link's role) with a `name` (`<role>@<client_id>`).
 /// Returns the connection and the next free request id (2 -- id 1 is hello).
 async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, role: &str) -> (Conn, u64) {
     let mut conn = poll_until_connected(socket_path).await;
@@ -344,6 +347,29 @@ async fn pinging_fe_connection_stays_in_the_roster() {
     tokio::time::timeout(BOUND, body)
         .await
         .expect("pinging connection exchange did not finish within BOUND");
+}
+
+/// The hub link says hello as `cli`, pings every 30 s, and ends a hub silent
+/// for 90 s, so a real hub must answer a `cli` connection's `ping`, and the
+/// ping must arm nothing. A daemon that answered `ping` only for `fe` and
+/// `bridge` fails the first assertion; one that armed the reaper for every
+/// role fails the second `call`.
+#[tokio::test]
+async fn a_cli_connection_is_answered_its_ping_and_never_reaped() {
+    let env = Env::spawn("cliping", Some(TEST_DEADLINE_MS));
+    let (mut conn, id) = connect_and_hello(&env.socket_path, "cliping-cli", "cli").await;
+
+    let body = async {
+        let first = call(&mut conn, id, op::PING, serde_json::json!({})).await;
+        assert_eq!(first.get("ok").and_then(|v| v.as_bool()), Some(true), "a cli ping was not answered: {first}");
+        // Silent for three deadlines: a pinged `fe` connection is reaped within one.
+        tokio::time::sleep(Duration::from_millis(TEST_DEADLINE_MS * 3)).await;
+        let again = call(&mut conn, id + 1, op::PING, serde_json::json!({})).await;
+        assert_eq!(again.get("ok").and_then(|v| v.as_bool()), Some(true), "the cli connection was reaped: {again}");
+    };
+    tokio::time::timeout(BOUND, body)
+        .await
+        .expect("the cli connection's pings were not answered within BOUND");
 }
 
 /// Regression guard: a clean exit (the client closes its own socket) must

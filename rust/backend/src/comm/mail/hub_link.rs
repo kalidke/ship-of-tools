@@ -6,7 +6,10 @@
 // hub broadcasts every `agent.message`; this daemon files the ones whose `to`
 // its own comm folder lists, through the same function `comm.file` uses
 // (`comm::mail::filer::file_comm`), and answers `agent.filed {id}`. Nothing else rides
-// the link: only a positive claim exists (`op::AGENT_FILED`).
+// the link but a `ping` every 30 s; only a positive claim exists (`op::AGENT_FILED`).
+// A hub that sends no frame for three of those intervals ends the link, which
+// then redials: ssh's ServerAlive covers a dead network or sshd, never a hub
+// daemon or bridge stopped behind a live sshd (`SILENT_PINGS`).
 //
 // The topology is read once at start, like the frontend's tunnel set: a box
 // that is the hub, or has no `ssh:` endpoint to it, runs no link.
@@ -19,6 +22,15 @@ use sot_protocol::{codec, op, Frame, HelloReq, Kind};
 
 const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
+/// How often the link pings the hub once its hello is answered: the window's interval, a third of the daemon's own
+/// `PING_READ_DEADLINE`.
+const PING_EVERY: Duration = Duration::from_secs(30);
+/// How many ping intervals with no frame from the hub end the link, the hello's reply included. A live hub answers
+/// each ping at once only while every request the link sends is one the hub answers at once in its connection loop
+/// (`hello`, `ping`, `agent.filed`): a request the hub awaits inline must not ride this link, or a busy hub is cut as a
+/// silent one. Frames, not bytes: nothing the hub sends this connection carries a blob, so each frame is one envelope
+/// under the codec's 1 MiB cap.
+const SILENT_PINGS: u32 = 3;
 
 pub async fn run() {
     // Before the first connection: a failed move leaves the old inbox where it was.
@@ -85,7 +97,7 @@ fn recipe_for(self_host: &str) -> Result<Option<sot_protocol::topology::ssh_brid
 /// The ssh command, for the signal to start. Tests swap the program for a stub, nothing else.
 fn spawn_link(recipe: &sot_protocol::topology::ssh_bridge::SshRecipe) -> Result<tokio::process::Command, String> {
     #[cfg(test)]
-    if let Some(program) = tests::STUB_PROGRAM.lock().unwrap().as_ref() {
+    if let Some(program) = tests::STUB_PROGRAM.with_borrow(Clone::clone) {
         let mut cmd = tokio::process::Command::new(program);
         cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
         return Ok(cmd);
@@ -131,7 +143,8 @@ async fn link_once(
         // child's tree.
         _ = sig.fired() => return Ok(()),
     };
-    if result.is_err() {
+    // A silent hub leaves ssh up: its last line is stale then, not the diagnosis.
+    if result.as_ref().is_err_and(|why| *why != silent()) {
         if let Some(line) = sot_protocol::topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
             return Err(format!("{}: {line}", result.unwrap_err()));
         }
@@ -139,12 +152,25 @@ async fn link_once(
     result
 }
 
+/// Why a hub silent for `SILENT_PINGS` intervals ended the link.
+fn silent() -> String {
+    format!("nothing from the hub in {}s", (PING_EVERY * SILENT_PINGS).as_secs())
+}
+
+/// Read one frame, owning the reader's borrow and handing it back, so the loop below holds one read across its select:
+/// `read_frame` is not cancellation-safe.
+async fn read_owned<R: tokio::io::AsyncBufRead + Unpin>(rx: &mut R) -> (&mut R, anyhow::Result<(Frame, Option<Vec<u8>>)>) {
+    let read = codec::read_frame(rx).await;
+    (rx, read)
+}
+
 async fn converse<W, R>(tx: &mut W, rx: &mut R, self_host: &str, name: &str) -> Result<(), String>
 where
     W: tokio::io::AsyncWrite + Unpin,
     R: tokio::io::AsyncBufRead + Unpin,
 {
-    // One-shot roles are never read-deadline reaped; the link ignores every event but one.
+    // The hub never reaps a `cli` connection, so the link holds its own deadline (`SILENT_PINGS`); it ignores every
+    // event but one.
     let hello = HelloReq {
         name: Some(name.to_string()),
         ..HelloReq::this_process(format!("sotd-hub-link-{}", std::process::id()), "cli", Some(self_host.to_string()))
@@ -153,18 +179,38 @@ where
     let e = |what: &'static str| move |err: anyhow::Error| format!("{what}: {err}");
     let payload = serde_json::to_value(hello).map_err(|err| err.to_string())?;
     codec::write_frame(tx, &Frame::req(1, op::HELLO, payload), None).await.map_err(e("hello"))?;
-    loop {
-        let (frame, _) = codec::read_frame(rx).await.map_err(e("hello reply"))?;
-        if frame.kind == Kind::Res && frame.id == 1 {
-            if let Some(err) = frame.payload.get("error") {
-                return Err(format!("hello refused: {err}"));
-            }
-            break;
-        }
-    }
+    let silence = PING_EVERY * SILENT_PINGS;
+    let mut heard = tokio::time::Instant::now();
+    let mut ping = tokio::time::interval_at(heard + PING_EVERY, PING_EVERY);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut read = Box::pin(read_owned(rx));
+    let mut answered = false;
     let mut next_id = 2u64;
     loop {
-        let (frame, _) = codec::read_frame(rx).await.map_err(e("read"))?;
+        let frame = tokio::select! {
+            biased;
+            (rx, got) = &mut read => {
+                read.set(read_owned(rx));
+                heard = tokio::time::Instant::now();
+                got.map_err(e(if answered { "read" } else { "hello reply" }))?.0
+            }
+            _ = ping.tick(), if answered => {
+                let req = Frame::req(next_id, op::PING, serde_json::json!({}));
+                codec::write_frame(tx, &req, None).await.map_err(e("ping"))?;
+                next_id += 1;
+                continue;
+            }
+            () = tokio::time::sleep_until(heard + silence) => return Err(silent()),
+        };
+        if !answered {
+            if frame.kind == Kind::Res && frame.id == 1 {
+                if let Some(err) = frame.payload.get("error") {
+                    return Err(format!("hello refused: {err}"));
+                }
+                answered = true;
+            }
+            continue;
+        }
         if frame.kind != Kind::Evt || frame.op != op::AGENT_MESSAGE {
             continue;
         }
@@ -297,7 +343,11 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    pub(super) static STUB_PROGRAM: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    thread_local! {
+        /// The program a link starts in place of ssh, per test thread: each test's runtime, and every link it spawns,
+        /// runs on its own thread.
+        pub(super) static STUB_PROGRAM: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    }
 
     /// The shutdown signal kills the ssh child and everything it started; the loop neither reconnects nor leaves a registered tree.
     #[cfg(unix)]
@@ -316,7 +366,7 @@ mod tests {
                 bg.display()
             ),
         );
-        *STUB_PROGRAM.lock().unwrap() = Some(stub.to_string_lossy().into_owned());
+        STUB_PROGRAM.set(Some(stub.to_string_lossy().into_owned()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
         let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", sig).await });
@@ -341,7 +391,7 @@ mod tests {
         assert!(descendant.gone(), "the link's descendant survived the shutdown");
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1, "reconnected after the fire");
-        *STUB_PROGRAM.lock().unwrap() = None;
+        STUB_PROGRAM.set(None);
     }
 
     fn setup(registry: &str, fe: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -426,6 +476,147 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("fe-inbox.jsonl")).unwrap(), before);
         assert!(!dir.join("fe-inbox.jsonl.moving").exists() && !dir.join("fe-inbox.jsonl.moved").exists());
         assert!(!home.join("inbox").exists(), "a line was filed off Windows");
+    }
+
+    /// The far end of a link under test: it answers the hello when `hello` is set and each ping when `pings` is, and
+    /// sends an event the link ignores at each of `events` (seconds after the hello). Returns the pings it answered.
+    async fn fake_hub(rx: tokio::io::DuplexStream, mut tx: tokio::io::DuplexStream, hello: bool, pings: bool, events: Vec<u64>) -> u32 {
+        // Frames reach the loop through a channel, whose receive is cancellation-safe.
+        let (frames_tx, mut frames) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut rx = codec::buffered(rx);
+            while let Ok((frame, _)) = codec::read_frame(&mut rx).await {
+                let _ = frames_tx.send(frame);
+            }
+        });
+        let began = tokio::time::Instant::now();
+        let mut events = events.into_iter();
+        let mut next = events.next();
+        let mut answered = 0;
+        loop {
+            let due = next.map_or(began + Duration::from_secs(1 << 20), |s| began + Duration::from_secs(s));
+            tokio::select! {
+                frame = frames.recv() => {
+                    let Some(frame) = frame else { return answered };
+                    let reply = match frame.op.as_str() {
+                        op::HELLO if hello => serde_json::json!({ "ok": true }),
+                        op::PING if pings => serde_json::json!({ "ok": true }),
+                        _ => continue,
+                    };
+                    let _ = codec::write_frame(&mut tx, &Frame::res(frame.id, &frame.op, reply), None).await;
+                    answered += u32::from(frame.op == op::PING);
+                }
+                () = tokio::time::sleep_until(due) => {
+                    let evt = Frame::evt(op::AGENT_RECEIPT, serde_json::json!({ "id": "x", "filer": "f" }));
+                    let _ = codec::write_frame(&mut tx, &evt, None).await;
+                    next = events.next();
+                }
+            }
+        }
+    }
+
+    /// A hub that sends no frame for three ping intervals ends the link, before the hello's reply or after it; a hub
+    /// that answers every ping keeps it, and so does one that only sends events, until 90 s after its last.
+    #[tokio::test(start_paused = true)]
+    async fn a_hub_silent_for_three_ping_intervals_ends_the_link() {
+        let cases: [(&str, bool, bool, Vec<u64>, Option<u64>); 4] = [
+            ("silent before the hello reply", false, false, vec![], Some(90)),
+            ("silent after the hello reply", true, false, vec![], Some(90)),
+            ("answering every ping", true, true, vec![], None),
+            ("events every 80s until 560s, no ping answered", true, false, (1..=7).map(|n| n * 80).collect(), Some(650)),
+        ];
+        let mut wrong = Vec::new();
+        for (what, hello, pings, events, ends_at) in cases {
+            let (link_tx, hub_rx) = tokio::io::duplex(64 * 1024);
+            let (hub_tx, link_rx) = tokio::io::duplex(64 * 1024);
+            let hub = tokio::spawn(fake_hub(hub_rx, hub_tx, hello, pings, events));
+            let (mut tx, mut rx) = (link_tx, codec::buffered(link_rx));
+            let began = tokio::time::Instant::now();
+            let ended = tokio::time::timeout(Duration::from_secs(1200), converse(&mut tx, &mut rx, "self", "sotd-self")).await;
+            let took = began.elapsed();
+            drop((tx, rx));
+            let answered = hub.await.unwrap();
+            let seen = match &ended {
+                Ok(Err(why)) => format!("\"{why}\" after {took:?}"),
+                Ok(Ok(())) => format!("closed after {took:?}"),
+                Err(_) => format!("linked after {took:?}, {answered} pings answered"),
+            };
+            eprintln!("hub-silence: {what} -> {seen}");
+            let right = match (&ended, ends_at) {
+                (Ok(Err(why)), Some(at)) => {
+                    why == "nothing from the hub in 90s" && took >= Duration::from_secs(at) && took < Duration::from_secs(at + 1)
+                }
+                (Err(_), None) => answered >= 39,
+                _ => false,
+            };
+            if !right {
+                wrong.push(format!("{what}: {seen}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// A stub ssh behind which the hub stopped: it prints a login warning on stderr, answers the hello, writes
+    /// `<dir>/said`, then stays up and silent.
+    #[cfg(unix)]
+    fn silent_hub_ssh(dir: &Path) -> String {
+        let reply = serde_json::to_string(&Frame::res(1, op::HELLO, serde_json::json!({ "ok": true }))).unwrap();
+        let (stub, said) = (dir.join("stub-ssh"), dir.join("said"));
+        let script = format!(
+            "#!/bin/sh\necho 'Warning: Permanently added hub (ED25519) to the list of known hosts.' >&2\nprintf '%s\\n' '{reply}'\n: > '{}'\nexec sleep 30\n",
+            said.display()
+        );
+        sot_log::test_exec::write_executable(&stub, script);
+        stub.to_string_lossy().into_owned()
+    }
+
+    /// A hub silent behind a live ssh ends the link with its own reason alone: ssh's last line is a stale login
+    /// warning, not the diagnosis. The cut ends the ssh tree, though ssh never exited.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_hub_ends_the_link_without_a_stale_ssh_line() {
+        let dir = tempfile::tempdir().unwrap();
+        STUB_PROGRAM.set(Some(silent_hub_ssh(dir.path())));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+        let link = tokio::spawn(async move { link_once(&recipe, "self", "sotd-self", sig).await });
+        // A running blocking task holds the paused clock, so the link has the stub's warning and reply before it waits.
+        let said = dir.path().join("said");
+        tokio::task::spawn_blocking(move || {
+            let began = Instant::now();
+            while !said.exists() {
+                assert!(began.elapsed() < Duration::from_secs(5), "the stub never spoke");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })
+        .await
+        .unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(1200), link).await.expect("the link outlived a silent hub").unwrap();
+        assert_eq!(ended, Err("nothing from the hub in 90s".to_string()));
+        assert!(sig.held_groups().is_empty(), "the cut link's ssh tree is still held");
+    }
+
+    /// A link cut for silence, its ssh still up, is dialled again, and the box never holds two links at once.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_link_cut_for_silence_is_dialled_again() {
+        let dir = tempfile::tempdir().unwrap();
+        STUB_PROGRAM.set(Some(silent_hub_ssh(dir.path())));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+        let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", sig).await });
+        // Each link is one process group. The paused clock runs the 90 s cut and the redial in a moment of real time.
+        let (began, mut seen) = (Instant::now(), Vec::new());
+        while seen.len() < 2 {
+            let held = sig.held_groups();
+            assert!(held.len() <= 1, "two links held at once: {held:?}");
+            seen.extend(held.into_iter().filter(|g| !seen.contains(g)).collect::<Vec<_>>());
+            assert!(began.elapsed() < Duration::from_secs(10), "no second link after a silence cut: {seen:?}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        sig.fire().expect("fire");
+        tokio::time::timeout(Duration::from_secs(3), task).await.expect("the link loop outlived the shutdown").expect("link task");
+        assert!(sig.held_groups().is_empty());
     }
 
     #[test]

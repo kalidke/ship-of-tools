@@ -63,8 +63,8 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   session pipe's inbound buffer holds both (`bind_session`, `PIPE_INBOUND_BYTES`), so a refusal, which the pipe holds
   open until the client has read it, never waits on a client still blocked in its own write. The cost: a client of this
   account may leave up to 2 MiB of nonpaged pool waiting per connection until the daemon reads it or closes the pipe.
-- A pinged `fe` or `bridge` connection silent for 90 s is reaped (the reaper arm in `select_once`,
-  `ping_read_deadline`).
+- Every control connection's `ping` is answered, whatever its role (`handle_ping`); a pinged `fe` or `bridge`
+  connection silent for 90 s is reaped (the reaper arm in `select_once`, `ping_read_deadline`).
 - At most 4 off-loop jobs run per connection, and one queued 10 s is answered with a timeout and never runs
   (`spawn_job`); `pty.*` and `monitor.*` run inline and never wait on that pool.
 - Accepting stops at the deciding lease departure, before any row is touched (`run_local`'s accept loop, then
@@ -73,7 +73,7 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: handle_fe_command_send relay diagnostics, `proxy.connect`,
 `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`, `lane.connect`, `handle_lane_connect`,
-`fe.lease`, `lease::hold`, `admit_peer`, `dispatch`, `hello`, `admit_hello`, `sotd stdio-bridge`, `write_frame_within`,
+`fe.lease`, `lease::hold`, `admit_peer`, `dispatch`, `hello`, `admit_hello`, `ping`, `sotd stdio-bridge`, `write_frame_within`,
 `write_frame_to`, `version.query`. Uses: `Frame`, `codec::read_frame`, `codec::read_envelope`, `codec::write_frame`, `hello`,
 `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `version_line`, `--version`,
 `TopologyStore`, `topology.set`, `topology.changed`, `startup::begin`, `lease::ticker`, `Leases::gone`,
