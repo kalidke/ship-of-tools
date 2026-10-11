@@ -409,7 +409,7 @@ fn the_shell_dial_reaches_only_a_pipe_this_account_serves() {
         let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
         assert!(
             !status.success(),
-            "{form}: another account's pipe is refused"
+            "{form}: another account's pipe is refused: {stderr}"
         );
         assert!(stderr.contains("not connecting"), "{form}: {stderr}");
     }

@@ -204,7 +204,7 @@ fn round_trip(socket: &Path, args: &[&str]) {
     assert!(tail.is_empty(), "the bridge wrote {} byte(s) of its own to stdout: {tail:?}", tail.len());
 
     let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
-    assert_eq!(status.code(), Some(0), "a caller hanging up is a clean exit, not a failure");
+    assert_eq!(status.code(), Some(0), "a caller hanging up is a clean exit, not a failure: {stderr:?}");
     assert!(stderr.is_empty(), "a clean run says nothing on stderr: {stderr:?}");
     echo.join().expect("echo listener");
 }
@@ -262,7 +262,7 @@ fn dash_dash_endpoint_refuses_a_socket_another_account_listens_on() {
     );
     assert!(
         !status.success(),
-        "a socket another account listens on is refused"
+        "a socket another account listens on is refused: stdout {stdout:?}; stderr {stderr:?}"
     );
     assert!(
         stderr.contains("another OS account listens on this socket"),
@@ -291,7 +291,7 @@ fn a_full_foreign_backlog_ends_the_bridge_within_its_bound() {
         .wait_within(sot_log::lane::transport::CONNECT_BOUND + Duration::from_secs(5));
     assert!(
         !status.success(),
-        "the bridge connected through a full backlog"
+        "the bridge connected through a full backlog: {stderr:?}"
     );
     assert!(
         !stderr.contains("not connecting"),
@@ -451,8 +451,8 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
     assert!(parsed.payload.get("error").is_none(), "hello refused: {:?}", parsed.payload);
 
     drop(stdin);
-    let (status, _, _) = sot_log::test_isolated::drain(child).wait_within(BOUND);
-    assert_eq!(status.code(), Some(0), "the bridge exits cleanly when its caller hangs up");
+    let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    assert_eq!(status.code(), Some(0), "the bridge exits cleanly when its caller hangs up: {stderr:?}");
 }
 
 /// A lease sent through the bridge is the bridge's own connection: the
@@ -534,8 +534,8 @@ fn lease_through_stdio_bridge_refused() {
     assert_eq!(parsed.payload["outcome"], "foreign", "a bridged lease must be foreign: {:?}", parsed.payload);
 
     drop(stdin);
-    let (status, _, _) = sot_log::test_isolated::drain(child).wait_within(BOUND);
-    assert_eq!(status.code(), Some(0));
+    let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    assert_eq!(status.code(), Some(0), "the bridge exits cleanly after a bridged lease: {stderr:?}");
     std::thread::sleep(Duration::from_secs(2));
     let exited = env.daemon.borrow_mut().as_mut().expect("the daemon is tracked").try_wait().expect("try_wait the daemon");
     assert!(exited.is_none(), "the bridged lease's end shut the daemon down: {exited:?}: {}", daemon_said(&daemon_stderr));

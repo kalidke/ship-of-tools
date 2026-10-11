@@ -2,7 +2,7 @@
 #[path = "support/sotd.rs"]
 mod sotd;
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 struct Fixture {
     _temp: tempfile::TempDir,
@@ -30,7 +30,7 @@ impl Fixture {
             prefix,
         }
     }
-    fn run(&self, args: &[&std::ffi::OsStr]) -> (bool, String, String) {
+    fn run(&self, args: &[&std::ffi::OsStr]) -> (ExitStatus, String, String) {
         let mut cmd = sotd::sotd_command();
         cmd.args(args)
             .current_dir(&self.root)
@@ -51,11 +51,9 @@ impl Fixture {
             reason = "test-only offline command; retained child is drained and bounded"
         )]
         let child = cmd.spawn().unwrap();
-        let (status, out, err) =
-            sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(20));
-        (status.success(), out, err)
+        sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(20))
     }
-    fn declare(&self) -> (bool, String, String) {
+    fn declare(&self) -> (ExitStatus, String, String) {
         self.run(&[
             "trust".as_ref(),
             "declare".as_ref(),
@@ -80,15 +78,18 @@ fn offline_trust_declare_preserves_settings() {
     std::fs::create_dir_all(&f.config).unwrap();
     let before = b"# preserved settings\n[layout]\npreset = 'auto'\n";
     std::fs::write(f.settings(), before).unwrap();
-    let (ok, out, _) = f.declare();
+    let (status, out, err) = f.declare();
     assert!(
-        ok && out.trim() == "Declared",
-        "W1 offline trust declare did not return Declared"
+        status.success() && out.trim() == "Declared",
+        "W1 offline trust declare did not return Declared: {status}; stdout {out:?}; stderr {err:?}"
     );
     let after = std::fs::read(f.settings()).unwrap();
     assert!(after.starts_with(before));
-    let (ok, out, _) = f.declare();
-    assert!(ok && out.trim() == "Kept");
+    let (status, out, err) = f.declare();
+    assert!(
+        status.success() && out.trim() == "Kept",
+        "W1 offline trust declare did not return Kept: {status}; stdout {out:?}; stderr {err:?}"
+    );
     assert_eq!(std::fs::read(f.settings()).unwrap(), after);
     f.no_daemon_output();
     println!("W1 C1 offline declaration PASS");
@@ -97,8 +98,11 @@ fn offline_trust_declare_preserves_settings() {
 #[test]
 fn offline_cli_matrix_creates_keeps_and_rejects_without_startup() {
     let f = Fixture::new();
-    let (ok, out, _) = f.declare();
-    assert!(ok && out.trim() == "Declared");
+    let (status, out, err) = f.declare();
+    assert!(
+        status.success() && out.trim() == "Declared",
+        "W1 CLI did not declare: {status}; stdout {out:?}; stderr {err:?}"
+    );
     let text = std::fs::read_to_string(f.settings()).unwrap();
     let doc: toml::Table = toml::from_str(&text).unwrap();
     assert_eq!(
@@ -113,14 +117,22 @@ fn offline_cli_matrix_creates_keeps_and_rejects_without_startup() {
         &b"[ trust ]\n"[..],
     ] {
         std::fs::write(f.settings(), bytes).unwrap();
-        let (ok, out, _) = f.declare();
-        assert!(ok && out.trim() == "Kept");
+        let (status, out, err) = f.declare();
+        assert!(
+            status.success() && out.trim() == "Kept",
+            "W1 CLI changed a kept answer {:?}: {status}; stdout {out:?}; stderr {err:?}",
+            String::from_utf8_lossy(bytes)
+        );
         assert_eq!(std::fs::read(f.settings()).unwrap(), bytes);
     }
     for bytes in [&b"[layout"[..], &b"\xff\xfe\x00\x00"[..]] {
         std::fs::write(f.settings(), bytes).unwrap();
-        let (ok, out, err) = f.declare();
-        assert!(!ok && out.is_empty() && err.contains("settings.toml"));
+        let (status, out, err) = f.declare();
+        assert!(
+            !status.success() && out.is_empty() && err.contains("settings.toml"),
+            "W1 CLI accepted invalid settings {:?}: {status}; stdout {out:?}; stderr {err:?}",
+            String::from_utf8_lossy(bytes)
+        );
         assert_eq!(std::fs::read(f.settings()).unwrap(), bytes);
     }
     f.no_daemon_output();
@@ -136,7 +148,11 @@ fn offline_cli_matrix_creates_keeps_and_rejects_without_startup() {
             "extra".as_ref(),
         ],
     ] {
-        assert!(!fresh.run(&args).0);
+        let (status, out, err) = fresh.run(&args);
+        assert!(
+            !status.success(),
+            "W1 CLI accepted {args:?}: {status}; stdout {out:?}; stderr {err:?}"
+        );
         assert!(!fresh.config.exists());
     }
     // Built as text: `Path::join` folds `..` away on a verbatim (`\\?\`) path, which would declare a clean prefix.
@@ -148,15 +164,19 @@ fn offline_cli_matrix_creates_keeps_and_rejects_without_startup() {
         .take_while(|c| !matches!(c, std::path::Component::Normal(_)))
         .collect();
     for prefix in [&parent_components, &filesystem_root] {
+        let (status, out, err) =
+            fresh.run(&["trust".as_ref(), "declare".as_ref(), prefix.as_os_str()]);
         assert!(
-            !fresh
-                .run(&["trust".as_ref(), "declare".as_ref(), prefix.as_os_str()])
-                .0
+            !status.success(),
+            "W1 CLI declared {prefix:?}: {status}; stdout {out:?}; stderr {err:?}"
         );
         assert!(!fresh.config.exists());
     }
-    let (ok, out, _) = fresh.run(&["trust".as_ref(), "declare".as_ref(), "--help".as_ref()]);
-    assert!(ok && out.contains("Usage: sotd trust declare <absolute-prefix>"));
+    let (status, out, err) = fresh.run(&["trust".as_ref(), "declare".as_ref(), "--help".as_ref()]);
+    assert!(
+        status.success() && out.contains("Usage: sotd trust declare <absolute-prefix>"),
+        "W1 CLI help: {status}; stdout {out:?}; stderr {err:?}"
+    );
     assert!(!fresh.config.exists());
     fresh.no_daemon_output();
     println!("W1 C1 CLI matrix PASS: parsed settings; preserved answers; encoding and argv refused; help inert");

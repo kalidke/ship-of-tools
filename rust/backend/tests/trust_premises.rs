@@ -30,9 +30,12 @@ fn preparation_declaration_spelling_survives_the_real_cli() {
         reason = "test-only offline owner witness; retained child is bounded and drained"
     )]
     let child = command.spawn().unwrap();
-    let (status, out, _) =
+    let (status, out, err) =
         sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(20));
-    assert!(status.success() && out.trim() == "Declared");
+    assert!(
+        status.success() && out.trim() == "Declared",
+        "W1 declaration preparation: {status}; stdout {out:?}; stderr {err:?}"
+    );
     let config = if cfg!(windows) {
         root.join("local/sot/config")
     } else {
@@ -49,6 +52,17 @@ fn preparation_declaration_spelling_survives_the_real_cli() {
     }
     println!("W1 declaration preparation PASS: exact prefix spelling in selected settings; no daemon output");
     println!("W1 P0/P1/P5 PROOF LIMIT: real-Claude config consumption, observed child key and config semantics require the human release done test");
+}
+
+/// One installer call must succeed and report `want`; a failure names the calling line, the child's status and both
+/// streams.
+#[cfg(unix)]
+#[track_caller]
+fn expect_reported((status, output, err): (std::process::ExitStatus, String, String), want: &str) {
+    assert!(
+        status.success() && output.contains(want),
+        "W1 C4 Unix installer did not report {want:?}: {status}; stdout {output:?}; stderr {err:?}"
+    );
 }
 
 #[cfg(unix)]
@@ -93,8 +107,7 @@ fn unix_installer_preserves_table_forms_and_reports_owner_failures() {
     };
     let initial = "# retained\n[layout]\npreset = 'auto'\n";
     std::fs::write(&file, initial).unwrap();
-    let (status, output, _) = invoke(&sotd::sotd_program());
-    assert!(status.success() && output.contains("folder trust declared"));
+    expect_reported(invoke(&sotd::sotd_program()), "folder trust declared");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.starts_with(initial));
     let doc: toml::Table = toml::from_str(&text).unwrap();
@@ -109,7 +122,7 @@ fn unix_installer_preserves_table_forms_and_reports_owner_failures() {
         "[ trust ]\n",
     ] {
         std::fs::write(&file, text).unwrap();
-        let (status, output, _) = invoke(&sotd::sotd_program());
+        let ran = invoke(&sotd::sotd_program());
         let emitted = std::fs::read_to_string(&file).unwrap();
         assert!(
             toml::from_str::<toml::Table>(&emitted).is_ok(),
@@ -120,17 +133,15 @@ fn unix_installer_preserves_table_forms_and_reports_owner_failures() {
             text.as_bytes(),
             "W1 C4 Unix existing trust answer changed"
         );
-        assert!(status.success() && output.contains("folder trust kept"));
+        expect_reported(ran, "folder trust kept");
     }
     for bytes in [&b"[layout"[..], &b"\xff\xfe[\x00l\x00"[..]] {
         std::fs::write(&file, bytes).unwrap();
-        let (status, output, _) = invoke(&sotd::sotd_program());
-        assert!(status.success() && output.contains("folder trust not declared"));
+        expect_reported(invoke(&sotd::sotd_program()), "folder trust not declared");
         assert_eq!(std::fs::read(&file).unwrap(), bytes);
     }
     let before = std::fs::read(&file).unwrap();
-    let (status, output, _) = invoke(&root.join("missing-sotd"));
-    assert!(status.success() && output.contains("folder trust not declared"));
+    expect_reported(invoke(&root.join("missing-sotd")), "folder trust not declared");
     assert_eq!(std::fs::read(&file).unwrap(), before);
     let old = root.join("older-sotd");
     sot_log::test_exec::write_executable(
@@ -138,8 +149,7 @@ fn unix_installer_preserves_table_forms_and_reports_owner_failures() {
         b"#!/bin/sh\nprintf 'unknown subcommand trust\\n' >&2\nexit 64\n",
     );
     let before = std::fs::read(&file).unwrap();
-    let (status, output, _) = invoke(&old);
-    assert!(status.success() && output.contains("folder trust not declared (exit 64)"));
+    expect_reported(invoke(&old), "folder trust not declared (exit 64)");
     assert_eq!(std::fs::read(&file).unwrap(), before);
     println!("W1 C4 Unix matrix PASS: real caller; preserved TOML forms and invalid encodings; older binary warning; no fallback");
 }
