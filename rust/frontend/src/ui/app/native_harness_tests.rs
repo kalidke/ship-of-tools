@@ -17,47 +17,110 @@ fn pane_child_layout_has_agent_at_any_monitor_shape() {
 #[test]
 fn native_drivers_ignore_unmarked_wakes() {
     use super::super::native_children::HarnessTick;
-    for driver in ["progress", "close", "pane"] {
-        let tick = HarnessTick::default();
-        let mut trace = Vec::new();
-        for _ in 0..100 {
-            tick.dispatch(&mut trace, |t| t.push("forward"), |t| t.push("work"));
-        }
-        assert_eq!(trace.len(), 100, "{driver}: unmarked wakes advanced harness work");
-        tick.post();
-        tick.dispatch(&mut trace, |t| t.push("forward"), |t| t.push("work"));
-        assert_eq!(&trace[100..], &["forward", "work"]);
-        for _ in 0..10 {
-            tick.dispatch(&mut trace, |t| t.push("forward"), |t| t.push("work"));
-        }
-        assert_eq!(trace.iter().filter(|&&v| v == "work").count(), 1);
-        if driver == "pane" {
-            tick.post();
-            for _ in ["window-event", "about-to-wait"] {
-                HarnessTick::forward(&mut trace, |t| t.push("forward"));
-            }
-            assert_eq!(trace.iter().filter(|&&v| v == "work").count(), 1,
-                "pane forwarding callbacks advanced the harness");
-            tick.dispatch(&mut trace, |_| {}, |t| t.push("work"));
-            assert_eq!(trace.iter().filter(|&&v| v == "work").count(), 2);
-        }
+    let tick = HarnessTick::default();
+    let mut trace = Vec::new();
+    for _ in 0..100 {
+        tick.dispatch(&mut trace, |t| t.push("forward"), |t, _| t.push("work"));
     }
+    assert_eq!(trace.len(), 100, "unmarked wakes advanced harness work");
+    tick.post();
+    tick.dispatch(&mut trace, |t| t.push("forward"), |t, _| t.push("work"));
+    assert_eq!(&trace[100..], &["forward", "work"]);
+    for _ in 0..10 {
+        tick.dispatch(&mut trace, |t| t.push("forward"), |t, _| t.push("work"));
+    }
+    assert_eq!(trace.iter().filter(|&&v| v == "work").count(), 1);
 }
 
 #[test]
 fn pending_tick_is_consumed_once() {
     use super::super::native_children::HarnessTick;
     let tick = HarnessTick::default();
-    let mut work = 0;
+    let mut observed = (0, 0, 0); // forwards, work calls, consumed posts
     for _ in 0..3 { tick.post(); }
-    tick.dispatch(&mut work, |_| {}, |w| *w += 1);
-    tick.dispatch(&mut work, |_| {}, |w| *w += 1);
-    assert_eq!(work, 1, "coalesced tick advanced twice");
+    for _ in 0..2 {
+        tick.dispatch(&mut observed, |o| o.0 += 1, |o, count| { o.1 += 1; o.2 += count; });
+    }
+    assert_eq!(observed.0, 2);
+    assert_eq!(observed.1, 1, "coalesced tick advanced twice");
+    assert_eq!(observed.2, 3, "pending tick count was lost: consumed={} expected=3", observed.2);
     tick.post();
-    tick.dispatch(&mut work, |_| {}, |w| { *w += 1; tick.post(); });
-    tick.dispatch(&mut work, |_| {}, |w| *w += 1);
-    tick.dispatch(&mut work, |_| {}, |w| *w += 1);
-    assert_eq!(work, 3, "post during consumed work was lost or duplicated");
+    tick.dispatch(&mut observed, |o| o.0 += 1, |o, count| { o.1 += 1; o.2 += count; tick.post(); });
+    for _ in 0..2 {
+        tick.dispatch(&mut observed, |o| o.0 += 1, |o, count| { o.1 += 1; o.2 += count; });
+    }
+    assert_eq!(observed, (5, 3, 5), "post during consumed work was lost or duplicated");
+}
+
+#[test]
+fn coalesced_progress_ticks_preserve_sample_count() {
+    use super::super::native_children::HarnessTick;
+    let (mut ledger, epoch) = seeded(MINIMIZED, &scheduled(MINIMIZED), true);
+    ledger.phases.get_mut(MINIMIZED.phase).unwrap().samples = 598;
+    let ledger = Mutex::new(ledger);
+    let tick = HarnessTick::default();
+    tick.post();
+    tick.post();
+    let mut reports = Vec::new();
+    tick.dispatch(&mut reports, |_| {}, |reports, count| {
+        reports.push(report_progress(&ledger, ReportRequest::Sample(MINIMIZED,
+            epoch + Duration::from_secs(600), true, count), false, &mut Vec::new()).unwrap());
+    });
+    let report = &reports[0];
+    assert!(report.completed);
+    assert_eq!(report.snapshot.samples, 600,
+        "coalesced progress ticks lost sample credit: samples={} expected=600", report.snapshot.samples);
+    assert!(report.failures.is_empty(), "valid coalesced workload failed: {:?}", report.failures);
+    tick.dispatch(&mut reports, |_| {}, |_, _| panic!("unmarked dispatch added sample credit"));
+    assert_eq!(reports.len(), 1);
+    assert_eq!(ledger.lock().unwrap().phases[MINIMIZED.phase].samples, 600);
+    let report = report_progress(&ledger, ReportRequest::Begin(CONTROL, true), false, &mut Vec::new()).unwrap();
+    assert_eq!(report.snapshot.samples, 0, "new phase inherited ticker credit");
+    let report = report_progress(&ledger, ReportRequest::Sample(MINIMIZED,
+        epoch + Duration::from_secs(600), false, 2), false, &mut Vec::new()).unwrap();
+    assert_eq!(report.snapshot.samples, 602);
+    assert_eq!(report.failures, ["native_observation"], "ticker credit hid the wrong native state");
+}
+
+#[test]
+fn progress_reports_include_sample_counts() {
+    let ledger = Mutex::new(NativeProgressLedger::default());
+    let mut bytes = Vec::new();
+    let report = report_progress(&ledger, ReportRequest::Begin(VISIBLE, false), false, &mut bytes).unwrap();
+    assert_report_samples(&bytes, &report);
+    assert_eq!(report.snapshot.samples, 0);
+    for (profile, complete, mutation) in [
+        (VISIBLE, false, false), (VISIBLE, true, false), (CONTROL, true, false),
+        (MINIMIZED, true, false), (VISIBLE, true, true),
+    ] {
+        let mut events = scheduled(profile);
+        if mutation { events[0].1 = Duration::from_millis(301); }
+        let (mut ledger, epoch) = seeded(profile, &events, true);
+        if !complete { ledger.phases.get_mut(profile.phase).unwrap().producer_done = None; }
+        let ledger = Mutex::new(ledger);
+        let mut bytes = Vec::new();
+        let report = report_progress(&ledger, ReportRequest::Sample(profile,
+            epoch + Duration::from_secs(profile.seconds as u64), profile.minimized, 1), mutation, &mut bytes).unwrap();
+        assert_eq!(report.completed, complete);
+        assert_report_samples(&bytes, &report);
+        if profile.phase == MINIMIZED.phase {
+            let text = String::from_utf8(bytes).unwrap();
+            let line = text.lines().find(|line| line.starts_with("window-progress phase=completed ")).unwrap();
+            assert!(line.split_whitespace().any(|field| field == format!("samples={}", report.snapshot.samples)),
+                "minimized completion omitted samples");
+        }
+    }
+}
+
+fn assert_report_samples(bytes: &[u8], report: &ProgressReport) {
+    let text = std::str::from_utf8(bytes).unwrap();
+    let snapshots: Vec<_> = text.lines().filter(|line| line.starts_with("window-progress test=")).collect();
+    assert_eq!(snapshots.len(), if report.completed { 2 } else { 1 });
+    for line in snapshots {
+        let phase = line.split_whitespace().find(|field| field.starts_with("phase=")).unwrap();
+        assert!(line.split_whitespace().any(|field| field == format!("samples={}", report.snapshot.samples)),
+            "progress snapshot omitted samples: {phase}");
+    }
 }
 
 fn seeded(profile: Profile, events: &[(usize, Duration)], dequeue: bool) -> (NativeProgressLedger, Instant) {
@@ -207,7 +270,7 @@ fn check_report_paths_release_lock() {
         let ledger = Mutex::new(ledger);
         let mut writer = LockWriter { ledger: &ledger, bytes: Vec::new(), writes: 0, flushes: 0 };
         let report = report_progress(&ledger, ReportRequest::Sample(profile,
-            epoch + Duration::from_secs(profile.seconds as u64), profile.minimized), mutation, &mut writer).unwrap();
+            epoch + Duration::from_secs(profile.seconds as u64), profile.minimized, 1), mutation, &mut writer).unwrap();
         assert_eq!(report.completed, complete);
         assert!(String::from_utf8(writer.bytes).unwrap().contains(wanted));
         assert!(writer.writes > 0 && writer.flushes > 0);

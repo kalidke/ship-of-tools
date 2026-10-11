@@ -245,7 +245,7 @@ impl ApplicationHandler for CloseDriver<'_> {
     }
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
         let tick = self.harness_tick.clone();
-        tick.dispatch(self, |driver| driver.app.user_event(event_loop, ()), |driver| {
+        tick.dispatch(self, |driver| driver.app.user_event(event_loop, ()), |driver, _count| {
             if driver.second_due.is_some() {
                 driver.second_close(event_loop);
             } else if driver.decided.is_none() {

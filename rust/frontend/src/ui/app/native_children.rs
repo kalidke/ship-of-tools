@@ -8,29 +8,26 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use winit::event_loop::EventLoop;
 
-/// A harness ticker marks work before posting its unit-valued event.
+/// A harness ticker counts pending work before posting its unit-valued event.
 #[derive(Clone, Default)]
-pub(super) struct HarnessTick(Arc<std::sync::atomic::AtomicBool>);
+pub(super) struct HarnessTick(Arc<std::sync::atomic::AtomicUsize>);
 
 impl HarnessTick {
     pub(super) fn post(&self) {
-        self.0.store(true, std::sync::atomic::Ordering::Release);
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     pub(super) fn dispatch<D>(
         &self,
         driver: &mut D,
         forward: impl FnOnce(&mut D),
-        work: impl FnOnce(&mut D),
+        work: impl FnOnce(&mut D, usize),
     ) {
-        Self::forward(driver, forward);
-        if self.0.swap(false, std::sync::atomic::Ordering::AcqRel) {
-            work(driver);
-        }
-    }
-
-    pub(super) fn forward<D>(driver: &mut D, forward: impl FnOnce(&mut D)) {
         forward(driver);
+        let count = self.0.swap(0, std::sync::atomic::Ordering::AcqRel);
+        if count > 0 {
+            work(driver, count);
+        }
     }
 }
 

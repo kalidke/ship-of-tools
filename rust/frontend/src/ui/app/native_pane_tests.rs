@@ -462,17 +462,17 @@ impl ApplicationHandler for PaneDriver<'_> {
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        HarnessTick::forward(self, |driver| driver.app.window_event(event_loop, id, event));
+        self.app.window_event(event_loop, id, event);
     }
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         self.app.new_events(event_loop, cause);
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        HarnessTick::forward(self, |driver| driver.app.about_to_wait(event_loop));
+        self.app.about_to_wait(event_loop);
     }
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
         let tick = self.harness_tick.clone();
-        tick.dispatch(self, |driver| driver.app.user_event(event_loop, ()), |driver| driver.after(event_loop));
+        tick.dispatch(self, |driver| driver.app.user_event(event_loop, ()), |driver, _count| driver.after(event_loop));
     }
 }
 

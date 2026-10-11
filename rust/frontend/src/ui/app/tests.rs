@@ -234,7 +234,6 @@ impl ProgressSnapshot {
             failures.push("workload_rate");
         }
         if self.dequeued != self.accepted
-            || self.accepted - self.dequeued != 0
             || self.max_outstanding > 200
         {
             failures.push("queue_progress");
@@ -258,15 +257,15 @@ impl ProgressSnapshot {
         let workload_ok = self.accepted == self.profile.expected
             && late <= 250
             && (self.profile.seconds < 10 || (min >= 190 && max <= 210));
-        writeln!(writer, "window-progress test={TEST} phase={phase} elapsed_s={} expected_sent={} sent={} dequeued={} outstanding={} max_outstanding={} min_10s_sent={min} max_10s_sent={max} max_lateness_ms={late} native_minimized={} workload_ok={workload_ok}",
-            self.elapsed.as_secs(), self.profile.expected, self.accepted, self.dequeued, self.accepted - self.dequeued, self.max_outstanding, self.native)?;
+        writeln!(writer, "window-progress test={TEST} phase={phase} elapsed_s={} expected_sent={} sent={} dequeued={} outstanding={} max_outstanding={} min_10s_sent={min} max_10s_sent={max} max_lateness_ms={late} native_minimized={} workload_ok={workload_ok} samples={}",
+            self.elapsed.as_secs(), self.profile.expected, self.accepted, self.dequeued, self.accepted - self.dequeued, self.max_outstanding, self.native, self.samples)?;
         writer.flush()
     }
 }
 
 enum ReportRequest {
     Begin(Profile, bool),
-    Sample(Profile, Instant, bool),
+    Sample(Profile, Instant, bool, usize),
 }
 
 struct ProgressReport {
@@ -291,7 +290,7 @@ impl ProgressReport {
         {
             writeln!(writer, "window-progress control=stalled_minimized_producer_is_rejected expected_failure=workload_volume,workload_rate observed_failure={} control_bodies=1", self.failures.join(","))?;
         } else if profile.phase == MINIMIZED.phase && self.failures.is_empty() {
-            writeln!(writer, "window-progress phase=completed expected_sent=12000 sent=12000 dequeued=12000 outstanding=0 workload_ok=true completed_bodies=1")?;
+            writeln!(writer, "window-progress phase=completed expected_sent=12000 sent=12000 dequeued=12000 outstanding=0 workload_ok=true completed_bodies=1 samples={}", self.snapshot.samples)?;
         }
         writer.flush()
     }
@@ -305,14 +304,14 @@ fn report_progress(
 ) -> std::io::Result<ProgressReport> {
     let mut ledger = ledger.lock().expect("native progress ledger");
     let body_entered = matches!(request, ReportRequest::Begin(..));
-    let (profile, now, native) = match request {
-        ReportRequest::Begin(profile, native) => (profile, ledger.begin(profile), native),
-        ReportRequest::Sample(profile, now, native) => (profile, now, native),
+    let (profile, now, native, count) = match request {
+        ReportRequest::Begin(profile, native) => (profile, ledger.begin(profile), native, 0),
+        ReportRequest::Sample(profile, now, native, count) => (profile, now, native, count),
     };
     let phase = ledger.phases.get_mut(profile.phase).expect("started current phase");
     if !body_entered {
         phase.native_ok &= native == profile.minimized;
-        phase.samples += 1;
+        phase.samples += count;
         phase.observe_outstanding(now);
     }
     let completed = !body_entered && phase.producer_done.is_some_and(|done| {
@@ -549,7 +548,7 @@ impl NativeDriver {
         self.current = Some(profile);
     }
 
-    fn tick(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+    fn tick(&mut self, event_loop: &ActiveEventLoop, count: usize) -> Result<()> {
         anyhow::ensure!(
             self.peer
                 .as_ref()
@@ -576,7 +575,7 @@ impl NativeDriver {
             return Ok(());
         }
         let profile = self.current.expect("a current native phase");
-        let report = report_progress(&self.ledger, ReportRequest::Sample(profile, now, native),
+        let report = report_progress(&self.ledger, ReportRequest::Sample(profile, now, native, count),
             cfg!(feature = "test-mac-redraw-mutation"), &mut std::io::stdout())?;
         if !report.completed {
             return Ok(());
@@ -654,11 +653,11 @@ impl ApplicationHandler for NativeDriver {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
         let tick = self.harness_tick.clone();
-        tick.dispatch(self, |driver| driver.app.user_event(event_loop, ()), |driver| {
-            if driver.peer.is_none() || driver.outcome.is_some() {
+        tick.dispatch(self, |driver| driver.app.user_event(event_loop, ()), |driver, count| {
+            if driver.outcome.is_some() {
                 return;
             }
-            if let Err(error) = driver.tick(event_loop) {
+            if let Err(error) = driver.tick(event_loop, count) {
                 driver.fail(event_loop, error);
             }
         });
@@ -783,5 +782,6 @@ impl Drop for FixtureHome {
     }
 }
 
+#[allow(dead_code, reason = "harness=false native targets run none of these tests")]
 #[path = "native_harness_tests.rs"]
 mod harness_tests;
