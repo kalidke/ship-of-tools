@@ -377,3 +377,5 @@ every controlled end still kills each child's process group, and not a process t
 The pane timing fixture selects its own in-memory Laptop layout and reports the monitor shape and resolved columns. The runner's display no longer selects whether this fixture has an agent pane. Product layout selection and the wire protocol are unchanged.
 
 Progress, close and pane fixtures advance only on a pending tick from their own ticker. All production callbacks still reach App; a daemon wake does not add a harness sample or attach/close step. The marker is test-only and introduces no product event or wire change.
+
+The progress fixture aggregates actual accepted times into second bins and keeps running lateness and final-dequeue observations. Sampling cost is bounded by scheduled phase seconds. Ledger methods perform no output; phase reports and the close fixture's daemon-log output use owned snapshots after unlocking. The ten-minute workload, native minimization, producer control, actual fan-in/dequeue evidence and existing timing and queue limits are unchanged.

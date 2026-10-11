@@ -337,7 +337,8 @@ fn child(role: &str) -> Result<()> {
         return Err(error);
     }
     if let Some(log) = log {
-        for entry in log.lock().unwrap().iter() {
+        let entries = log.lock().unwrap().clone();
+        for entry in entries {
             println!("native: daemon saw {entry}");
         }
     }
