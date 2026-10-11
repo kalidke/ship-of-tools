@@ -35,10 +35,11 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
   that `sot_handoff_line` (comm library) gives `comm-session-start.sh` and `ccx`.
 - ccx's default handle `<repo>-cx-<host>` is built from the comm library's safe pieces (`sot_sanitize_component`, `_sot_handle_host`), so it is always a name `workspace.create` accepts; a derivation that cannot run stops the launch before the join and before codex (`agents/tests/test-ccx-launch.sh`).
 - Folder trust is recorded only when the OS-resolved root lies under the OS-resolved declared prefix. The key uses the child cwd's spelling; an already accepted entry is not rewritten. Outside, undeclared and failed preparation are observable and the agent still starts. The trust file follows the child's effective `CLAUDE_CONFIG_DIR`: account additions override inheritance; with no config override it is the home-level file. Automated evidence establishes preparation; actual child-config consumption remains a human done-test proof limit. Interactive trust recognition, parent coverage and no-dialog behavior remain outside the headless proof.
-- The daemon's own `PATH` need not hold `~/.local/bin` (as a Linux user service it carries only what `~/.bashrc`
-  exports above its non-interactive guard: `deploy/sotd.service`). So on Unix the daemon launches `claude` and `ccx`
-  by absolute path, searching `PATH` and then `~/.local/bin`, and puts `~/.local/bin` at the front of a leg's `PATH`
-  that lacks it (`agent_env`). `ccb` resolves `sotd` from `SOTD_BIN`, `PATH`, then the install paths.
+- The daemon's own `PATH` need not hold `~/.local/bin` (as a Linux user service it carries the systemd user manager's
+  environment plus what `~/.bashrc` exports above its non-interactive guard: `deploy/sotd.service`). So on Unix the
+  daemon launches `claude` and `ccx` by absolute path, searching `PATH` and then `~/.local/bin`, and puts
+  `~/.local/bin` at the front of a leg's `PATH` that lacks it (`agent_env`). `ccb` resolves `sotd` from `SOTD_BIN`,
+  `PATH`, then the install paths.
 - Every endpoint leaves the shell client through `_sot_emit_endpoint` (a whitelist of `unix:`, `pipe:` and `ssh:`);
   an explicit endpoint that it refuses is fatal; `sot_relay_endpoint` is what `sotd topology relay-endpoint` answers,
   takes no argument or variable override, and never falls back to the local daemon.

@@ -120,11 +120,12 @@ Each violation is `VIOLATION <kind> <path> <detail>`:
   colon after it. A subfolder is written `name/` and a file `name`; the slash must match the kind. Reports `missing:`
   and `extra:`.
 - `folder-size`: direct non-test source over 3,000 code lines or 12 files.
-- `named-path`: `VIOLATION named-path <page> <path>`. For each tracked page in the tool's list `NAMED_PATH_FILES`, every inline-backticked token outside fenced
-  blocks is a candidate. A trailing `:<n>` or `:<n>-<m>` and a trailing `::<item>` are stripped and one `{a,b,...}` group
-  is expanded. A token containing `<`, `>`, `*`, `$`, `~` or a space is skipped. A token whose first segment is not a
-  tracked top-level folder or root file is skipped. Any other must name a tracked file or a folder holding tracked
-  files, else it is a violation. A folder-argument run checks the listed pages too.
+- `named-path`: `VIOLATION named-path <page> <path>`. For each tracked page in the tool's list `NAMED_PATH_FILES`,
+  every inline-backticked token outside fenced blocks is a candidate. A trailing `:<n>` or `:<n>-<m>` and a trailing
+  `::<item>` are stripped and one `{a,b,...}` group is expanded. A token containing `<`, `>`, `*`, `$`, `~` or a space
+  is skipped. A token whose first segment is not a tracked top-level folder or root file is skipped. Any other must
+  name a tracked file or a folder holding tracked files, else it is a violation. A folder-argument run checks the
+  listed pages too.
 
 Covered folders: a crate root (a tracked Cargo.toml with `[package]`) covers its `src/`; a Julia package root (a tracked
 Project.toml) covers `src/`, `test/` and `ext/`. A covered folder needs no CLAUDE.md of its own (a covered folder that

@@ -71,8 +71,8 @@ pub(crate) fn capture_from(root: &Path, state_dir: &Path, proc_cgroup: &str) -> 
         if e.kind() == ErrorKind::NotFound {
             tracing::warn!(
                 path = %kill.display(),
-                "capsule workspace: no cgroup.kill for the row's scope ({}); this row's end reaches only the \
-                 agent's process group",
+                "capsule workspace: no cgroup.kill for the row's scope ({}); this scope is not ended through \
+                 its cgroup",
                 no_kill_cause(root, &scope)
             );
             return Ok(None);

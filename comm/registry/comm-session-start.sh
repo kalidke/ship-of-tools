@@ -95,7 +95,11 @@ fi
 if [ "$COLD_PRODUCER" = 0 ] && [ -z "$PIN_NAME" ] && [ -z "${NAME:-}" ] \
    && [ -n "${SELF_FILE:-}" ] && [ -f "$SELF_FILE" ]; then
     echo "BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a"
-    echo "REFUSED: $SELF_FILE already names a different, validated identity (see the diagnostic line above) and no SOT_COMM_NAME pin was given — refusing to join over it. The session's launcher pins a distinct SOT_COMM_NAME and, outside a row, a private SOT_COMM_SELF_FILE of its own; nothing started inside a session joins. See this skill's Identity line and references/reclaim-handle.md." >&2
+    # echo joins its arguments with single spaces, so the message prints as one line.
+    echo "REFUSED: $SELF_FILE already names a different, validated identity (see the diagnostic line above) and" \
+        "no SOT_COMM_NAME pin was given — refusing to join over it. The session's launcher pins a distinct" \
+        "SOT_COMM_NAME and, outside a row, a private SOT_COMM_SELF_FILE of its own; nothing started inside a" \
+        "session joins. See this skill's Identity line and references/reclaim-handle.md." >&2
     exit 0
 fi
 
