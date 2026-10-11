@@ -138,7 +138,7 @@ on a computer decides, through its lease, whether that computer's sessions end (
   on an unanswered request when its ack wait ends, or at a Ctrl+Q during that wait, stays open (`LeaveStep::Stay`;
   `Leases::stay` decides under the lock `install` takes, so a grant that lands first gets the leave and its own ack
   wait), and the Windows supervisor keeps an unanswered request open (`Open-SotLease`).
-- A Foreign lease outcome names a refused identity claim, not an absent backend or a proved different OS account; the notice names a leave that stayed first, and otherwise its precedence is Undetermined, Unsupported, Foreign, then Unreached after granted/pending/exempt suppression.
+- A Foreign lease outcome names a refused identity claim, not an absent backend or a proved different OS account; notice precedence is Undetermined, Unsupported, Foreign, then Unreached after granted/pending/exempt suppression, where a host whose lease request is still out is pending; when the standings name no cause, the notice names a leave that stayed, until the next leave.
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `startup::begin`, `lease::ticker`,

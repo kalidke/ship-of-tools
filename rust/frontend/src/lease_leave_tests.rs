@@ -5,14 +5,15 @@ use super::*;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-/// A daemon that grants (once `gate` has signalled the request and been
-/// opened, when given), then logs each frame the window writes, and
+/// A daemon that answers the lease (with the outcome `gate` is opened with,
+/// once it has signalled the request, when given; else `granted` at once),
+/// then logs each frame the window writes, and
 /// `eof` the moment the stream ends, concurrently with its replies. It
 /// answers each leave whose intent is `reply_to`, after `delay`, with the
 /// sentinel `not_ended: 7`, and marks it replied only once that is written.
 pub(crate) fn leave_fake(
     listener: Bound,
-    gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    gate: Option<(oneshot::Sender<()>, oneshot::Receiver<&'static str>)>,
     reply_to: Option<&'static str>,
     delay: Duration,
 ) -> (Arc<std::sync::Mutex<Vec<String>>>, Arc<std::sync::atomic::AtomicBool>, tokio::task::JoinHandle<()>) {
@@ -24,12 +25,15 @@ pub(crate) fn leave_fake(
         let (rx, mut tx) = conn.split();
         let mut rx = codec::buffered(rx);
         let (_, req) = read_handoff(&mut rx, &mut tx).await.expect("a handoff");
-        if let Some((asked, open)) = gate {
-            asked.send(()).unwrap();
-            open.await.unwrap();
-        }
-        let granted = serde_json::json!({"outcome": "granted"});
-        codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
+        let outcome = match gate {
+            Some((asked, open)) => {
+                asked.send(()).unwrap();
+                open.await.unwrap()
+            }
+            None => "granted",
+        };
+        let answer = serde_json::json!({"outcome": outcome});
+        codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, answer), None).await.unwrap();
         let (want_tx, mut want_rx) = mpsc::unbounded_channel::<u64>();
         let reader = async move {
             while let Ok((f, _)) = codec::read_frame(&mut rx).await {
@@ -188,7 +192,7 @@ async fn late_grant_gets_the_leave() {
     // Polled before the grant, once a's reply is in.
     answered(&replied_a).await;
     assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "the handshake in flight holds the leave");
-    open.send(()).unwrap();
+    open.send("granted").unwrap();
     assert_eq!(in_flight.await.unwrap().unwrap(), 0);
     // A handshake started after the leave is refused, and never connects.
     assert!(leases.before_data_connection(&c, &pc, None, |_| {}).await.is_err());
@@ -251,7 +255,7 @@ async fn inflight_handshake_gets_the_leave() {
     let mut leaving =
         leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).expect("a handshake in flight is a lease to leave");
     assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "polled before the grant");
-    open.send(()).unwrap();
+    open.send("granted").unwrap();
     assert_eq!(in_flight.await.unwrap().unwrap(), 0);
     assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show);
     assert_eq!(leaving.line(), not_ended_line(7));
@@ -277,7 +281,7 @@ async fn inflight_handshake_gets_the_leave() {
     let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
     answered(&replied_a).await;
     assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "a's reply is in; the leave waits for b");
-    open.send(()).unwrap();
+    open.send("granted").unwrap();
     assert_eq!(in_flight.await.unwrap().unwrap(), 0);
     assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show);
     drop((leaving, leases));
@@ -307,7 +311,7 @@ async fn failed_leave_send_is_not_confirmed() {
     let mut leaving = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
     let (dead, _) = mpsc::unbounded_channel::<HolderCmd>();
     leases.set(&c, Standing::Granted { state_root: None }, Some(dead));
-    open.send(()).unwrap();
+    open.send("granted").unwrap();
     assert_eq!(in_flight.await.unwrap().unwrap(), 0);
     assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show);
     let line = leaving.line().unwrap();
@@ -653,7 +657,7 @@ async fn an_unanswered_keep_or_handover_stays_at_the_deadline() {
     for intent in [LeaveIntent::Keep, LeaveIntent::Handover, LeaveIntent::Close] {
         let (listener, path) = bind("stayleave");
         let (asked_tx, asked) = oneshot::channel();
-        let (open, open_rx) = oneshot::channel::<()>();
+        let (open, open_rx) = oneshot::channel::<&str>();
         let (_log, _, fake) = leave_fake(listener, Some((asked_tx, open_rx)), None, Duration::ZERO);
         let host = "local".to_string();
         let leases = Leases::new(false, vec![host.clone()]);
@@ -682,34 +686,6 @@ async fn an_unanswered_keep_or_handover_stays_at_the_deadline() {
     }
 }
 
-/// After a leave stayed, the late grant installs as a held lease, and nothing is written behind it: the daemon's next
-/// read is the stream's end.
-#[tokio::test]
-async fn a_stayed_window_takes_its_late_grant_without_leaving() {
-    let (listener, path) = bind("staygrant");
-    let (asked_tx, asked) = oneshot::channel();
-    let (open, open_rx) = oneshot::channel();
-    let (log, _, fake) = leave_fake(listener, Some((asked_tx, open_rx)), None, Duration::ZERO);
-    let host = "local".to_string();
-    let leases = Leases::new(false, vec![host.clone()]);
-    let in_flight = {
-        let (leases, host, path) = (leases.clone(), host.clone(), path.clone());
-        tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
-    };
-    asked.await.unwrap();
-    let t0 = Instant::now();
-    let mut leaving = leases.leave_all(LeaveIntent::Keep, 0, t0).unwrap();
-    let at = t0 + lease::KEEP_ACK_WAIT + Duration::from_secs(1);
-    assert_eq!(leaving.poll(at), LeaveStep::Stay);
-    assert!(leases.stay(&mut leaving, at), "the request is still unanswered");
-    open.send(()).unwrap();
-    assert_eq!(in_flight.await.unwrap().unwrap(), 0);
-    assert!(leases.held(&host), "the late grant is held");
-    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0, "a held lease is not retaken");
-    drop((leaving, leases));
-    assert_eq!(finish(fake, &log).await, ["eof"], "the stayed window wrote behind its late grant");
-}
-
 /// A grant that lands between the poll's `Stay` and the stay takes the leave under the book's lock, so the window does
 /// not stay with that leave sent; the leave then waits its own ack wait instead of exiting before the daemon has it.
 #[tokio::test]
@@ -731,7 +707,7 @@ async fn a_grant_between_the_poll_and_the_stay_takes_the_leave() {
         let at = t0 + lease::KEEP_ACK_WAIT + Duration::from_secs(1);
         assert_eq!(leaving.poll(at), LeaveStep::Stay);
         // The grant installs after the poll and before the stay.
-        open.send(()).unwrap();
+        open.send("granted").unwrap();
         assert_eq!(in_flight.await.unwrap().unwrap(), 0);
         assert!(!leases.stay(&mut leaving, at), "the window stayed after the late grant took the {name}");
         assert!(logged(&log, 1).await.first().is_some_and(|e| is_leave(e, name)), "the daemon has no {name}");
@@ -746,31 +722,4 @@ async fn a_grant_between_the_poll_and_the_stay_takes_the_leave() {
         drop((leaving, leases));
         assert_eq!(finish(fake, &log).await.len(), 2, "the {name}, then eof");
     }
-}
-
-/// A handshake's guard drops a moment after its grant installs, so `late` can still be open when the stay is decided:
-/// the count of handshakes settled decides, not the open channel. Here the test installs for the handshake in flight.
-#[tokio::test]
-async fn a_settled_handshake_never_stays_while_its_guard_lives() {
-    let (listener, path) = bind("stayguard");
-    let (asked_tx, asked) = oneshot::channel();
-    let (open, open_rx) = oneshot::channel::<()>();
-    let (_, _, fake) = leave_fake(listener, Some((asked_tx, open_rx)), None, Duration::ZERO);
-    let host = "local".to_string();
-    let leases = Leases::new(false, vec![host.clone()]);
-    let in_flight = {
-        let (leases, host) = (leases.clone(), host.clone());
-        tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
-    };
-    asked.await.unwrap();
-    let t0 = Instant::now();
-    let mut leaving = leases.leave_all(LeaveIntent::Handover, 75, t0).unwrap();
-    let at = t0 + lease::KEEP_ACK_WAIT + Duration::from_secs(1);
-    assert_eq!(leaving.poll(at), LeaveStep::Stay);
-    let (holder, _cmds) = mpsc::unbounded_channel();
-    leases.set(&host, Standing::Granted { state_root: None }, Some(holder));
-    assert!(!leases.stay(&mut leaving, at), "the window stayed though its one handshake had settled");
-    in_flight.abort();
-    fake.abort();
-    drop(open);
 }

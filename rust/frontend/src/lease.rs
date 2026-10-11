@@ -74,6 +74,7 @@ pub fn pipe_hosts(connections: &[(HostKey, TransportConfig)]) -> Vec<HostKey> {
 /// Where one host's lease stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Standing {
+    /// No answer yet: none was asked for, or a request is out (`before_data_connection`).
     Pending,
     Granted { state_root: Option<String> },
     Foreign,
@@ -110,11 +111,11 @@ struct Book {
     slots: HashMap<HostKey, Slot>,
     /// Set by `leave_all`; from then on no handshake starts.
     leaving: Option<LeaveIntent>,
-    /// Lease handshakes in flight (`Handshake`).
+    /// Lease handshakes in flight that have not settled (`Handshake`).
     inflight: usize,
     /// Where a handshake in flight puts its one outcome for the `Leaving`
-    /// wait (`set`); open while one is in flight, so the leave is not done
-    /// until it closes.
+    /// wait (`install`); closed under the lock that settles the last one, so
+    /// it is open exactly while a handshake has not settled.
     late: Option<mpsc::UnboundedSender<PendingAck>>,
     /// Each daemon's newest nonzero not-ended count no presented frame has acked, keyed at
     /// its grant by the state root it named (else its label): `owed`, `notice_seen`.
@@ -123,15 +124,31 @@ struct Book {
     stayed: Option<LeaveIntent>,
 }
 
-/// A lease handshake in flight. Its drop, after its `set`, counts it down; the last one closes a leave's late-grant channel.
+/// A lease handshake in flight, counted in `inflight` until `settle` installs its one outcome and counts it down under
+/// the same lock. One cancelled first (its future dropped) is counted down by its drop.
 struct Handshake<'a>(&'a Leases);
+
+impl Handshake<'_> {
+    fn settle(self, book: &mut Book, host: &HostKey, standing: Standing, holder: Option<mpsc::UnboundedSender<HolderCmd>>) {
+        Leases::install(book, host, standing, holder);
+        book.count_down();
+        // Counted down: the drop, which is for a cancelled handshake, must not count it again.
+        std::mem::forget(self);
+    }
+}
 
 impl Drop for Handshake<'_> {
     fn drop(&mut self) {
-        let mut book = self.0.book.lock().unwrap();
-        book.inflight -= 1;
-        if book.inflight == 0 {
-            book.late = None;
+        self.0.book.lock().unwrap().count_down();
+    }
+}
+
+impl Book {
+    /// A handshake has settled or was cancelled; the last one closes a leave's late-grant channel.
+    fn count_down(&mut self) {
+        self.inflight -= 1;
+        if self.inflight == 0 {
+            self.late = None;
         }
     }
 }
@@ -179,6 +196,7 @@ impl Leases {
         self.book.lock().unwrap().slots.get(host).map(Self::resolved)
     }
 
+    #[cfg(test)]
     fn set(&self, host: &HostKey, standing: Standing, holder: Option<mpsc::UnboundedSender<HolderCmd>>) {
         Self::install(&mut self.book.lock().unwrap(), host, standing, holder);
     }
@@ -218,20 +236,22 @@ impl Leases {
         if self.exempt || self.held(host) {
             return Ok(0);
         }
-        let _handshake = {
+        let handshake = {
             let mut book = self.book.lock().unwrap();
             // The window is leaving: no new lease, and the failed-connect path.
             if book.leaving.is_some() {
                 return Err(anyhow!("this window is closing").context("window lease"));
             }
             book.inflight += 1;
+            // The host's last answer is stale while this request is out, and a grant may still come.
+            book.slots.insert(host.clone(), Slot { standing: Standing::Pending, holder: None });
             Handshake(self)
         };
         let ident = match self_identity() {
             Ok(i) => i,
             Err(e) => {
                 tracing::warn!(%host, error = %e, "window lease: cannot identify this process");
-                self.set(host, Standing::Undetermined, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Undetermined, None);
                 return Ok(0);
             }
         };
@@ -262,12 +282,12 @@ impl Leases {
         let (mut rx, tx) = match sent {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
-                self.set(host, Standing::Unreached, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Unreached, None);
                 tracing::warn!(%host, error = %format_args!("{e:#}"), "window lease: not taken");
                 return Err(e.context("window lease"));
             }
             Err(_) => {
-                self.set(host, Standing::Unreached, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Unreached, None);
                 tracing::warn!(%host, "window lease: the request was not sent in time");
                 return Err(anyhow!("the window lease request was not sent in time").context("window lease"));
             }
@@ -289,12 +309,12 @@ impl Leases {
             // Not a failed connect: the data connection's own hello is refused the same way and shows the
             // daemon's message on the blocking screen, which an `Err` here would never let it reach.
             Ok(Replies::Refused { code, error }) => {
-                self.set(host, Standing::Undetermined, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Undetermined, None);
                 tracing::warn!(%host, %code, %error, "window lease: the backend refused this window's hello");
                 return Ok(0);
             }
             Err(e) => {
-                self.set(host, Standing::Unreached, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Unreached, None);
                 tracing::warn!(%host, error = %format_args!("{e:#}"), "window lease: not taken");
                 return Err(anyhow::Error::from(e).context("window lease"));
             }
@@ -302,7 +322,7 @@ impl Leases {
         let res: FeLeaseRes = match serde_json::from_value(reply.payload) {
             Ok(r) => r,
             Err(_) => {
-                self.set(host, Standing::Unsupported, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Unsupported, None);
                 tracing::warn!(%host, "window lease: this backend does not know it");
                 return Ok(0);
             }
@@ -318,34 +338,35 @@ impl Leases {
                     if res.not_ended > 0 {
                         book.owed.insert(key, res.not_ended);
                     }
-                    Self::install(&mut book, host, Standing::Granted { state_root: res.state_root }, Some(holder));
+                    handshake.settle(&mut book, host, Standing::Granted { state_root: res.state_root }, Some(holder));
                 }
                 tracing::info!(%host, not_ended = res.not_ended, "window lease: granted");
                 Ok(res.not_ended)
             }
             LeaseOutcome::Foreign => {
-                self.set(host, Standing::Foreign, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Foreign, None);
                 tracing::warn!(%host, "window lease: the backend refused this window's identity claim");
                 Ok(0)
             }
             LeaseOutcome::Undetermined => {
-                self.set(host, Standing::Undetermined, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Undetermined, None);
                 tracing::warn!(%host, "window lease: the backend could not verify this window");
                 Ok(0)
             }
             LeaseOutcome::Closing => {
-                self.set(host, Standing::Unreached, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Unreached, None);
                 tracing::warn!(%host, "window lease: the backend is shutting down");
                 Err(anyhow!("this computer's backend is shutting down"))
             }
         }
     }
 
-    /// The status-line notice: a leave that stayed (until the next leave), else the one for the current standings.
+    /// The lease notice: the cause, when the standings leave closing unable to end the sessions; else a leave that
+    /// stayed, until the next leave.
     pub fn notice(&self) -> Option<&'static str> {
         let book = self.book.lock().unwrap();
         let standings: Vec<Standing> = book.slots.values().map(Self::resolved).collect();
-        book.stayed.map(exit::stay_line).or_else(|| lease_notice(self.exempt, &standings))
+        lease_notice(self.exempt, &standings).or_else(|| book.stayed.map(exit::stay_line))
     }
 
     /// The state roots of every granted lease.
@@ -417,7 +438,6 @@ impl Leases {
         }
         let mut leaving = Leaving::new(intent, exit_code, pending, now);
         leaving.late = Some(late);
-        leaving.unsettled = book.inflight;
         Some(leaving)
     }
 
@@ -486,10 +506,8 @@ pub struct Leaving {
     pub exit_code: i32,
     pending: Vec<PendingAck>,
     /// The outcomes of handshakes in flight when the leave began
-    /// (`Leases::set`); None once closed, when no handshake is in flight.
+    /// (`Leases::install`); None once closed, when none is left unsettled.
     late: Option<mpsc::UnboundedReceiver<PendingAck>>,
-    /// How many of the handshakes in flight when the leave began have not settled yet (`settle`).
-    unsettled: usize,
     outcomes: Vec<(HostKey, LeaveOutcome)>,
     deadline: Instant,
     /// The line the outcomes left to show, and when the poll first had it.
@@ -526,7 +544,6 @@ impl Leaving {
             exit_code,
             pending,
             late: None,
-            unsettled: 0,
             outcomes: Vec::new(),
             deadline: now + wait,
             shown: None,
@@ -593,7 +610,6 @@ impl Leaving {
             match late.try_recv() {
                 Ok(p) => {
                     self.pending.push(p);
-                    self.unsettled = self.unsettled.saturating_sub(1);
                     if self.intent != LeaveIntent::Close {
                         self.deadline = self.deadline.max(now + lease::KEEP_ACK_WAIT);
                     }
