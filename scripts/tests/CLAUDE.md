@@ -7,7 +7,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `lib-test-body.sh`: the shared completion verdict for one selected Rust test; ordered, unambiguous capture closure precedes the outer result; missing, ignored, mismatched and failed bodies cannot pass.
 - `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners, including combined captured-summary/truncation and scratch-path controls; accepts a compiled fixture executable by absolute path and validates its shell scratch root before cleanup.
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
-  and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies, and executed trust declaration delegation (`--trust-only`). Runs in the `rust.yml`
+  and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper and the network refusal. Runs in the
   `rust.yml` step "Test installer apply (bash)" (job `checks-linux`) and in `rc-gate.sh`.

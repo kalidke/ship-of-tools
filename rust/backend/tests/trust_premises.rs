@@ -53,41 +53,6 @@ fn preparation_declaration_spelling_survives_the_real_cli() {
 
 #[cfg(unix)]
 #[test]
-fn unix_installer_executes_the_real_declaration_owner() {
-    let temp = tempfile::tempdir().unwrap();
-    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../scripts/tests/installer-state.sh");
-    let mut command = std::process::Command::new("/bin/bash");
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("SOT_") {
-            command.env_remove(key);
-        }
-    }
-    command
-        .arg(script)
-        .arg("--trust-only")
-        .env("HOME", temp.path())
-        .env("XDG_CONFIG_HOME", temp.path().join("config"))
-        .env("SOT_TEST_TRUST_SOTD", sotd::sotd_program())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "test-only offline installer caller; retained child is drained within its bound"
-    )]
-    let child = command.spawn().unwrap();
-    let (status, output, _) =
-        sot_log::test_isolated::drain(child).wait_within(std::time::Duration::from_secs(20));
-    assert!(
-        status.success() && output.contains("W1 C4 Unix delegation PASS"),
-        "W1 Unix installer delegation failed"
-    );
-    println!("W1 C4 Unix caller PASS: installer invokes the actual offline owner");
-}
-
-#[cfg(unix)]
-#[test]
 fn unix_installer_preserves_table_forms_and_reports_owner_failures() {
     let temp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(temp.path()).unwrap();

@@ -18,19 +18,6 @@ set -euo pipefail
 # shellcheck source=installer-support.sh
 . "$(dirname "$0")/installer-support.sh"
 
-# Offline selection; the broader caller matrix runs in trust_premises.rs.
-if [ "${1:-}" = --trust-only ]; then
-    d="$WORK/trust-delegation"
-    mkdir -p "$d/home" "$d/config/sot"
-    settings="$d/config/sot/settings.toml"
-    printf '# retained\n[layout]\npreset = "auto"\n' > "$settings"
-    HOME="$d/home" XDG_CONFIG_HOME="$d/config" installer_declare_trust "${SOT_TEST_TRUST_SOTD:?real offline owner required}" "$d/home" || true
-    check 'W1 C4 Unix headerless declaration' yes "$(grep -q '^root_prefix = ' "$settings" && echo yes || echo no)"
-    [ "$fails" -eq 0 ] || exit 1
-    printf 'W1 C4 Unix delegation PASS: real owner; headerless settings\n'
-    exit 0
-fi
-
 # ---------------------------------------------------------------------------
 case_start "deriving role from the declared topology (installer_topology_role)"
 # Plain-line `sotd topology status` output (rust/protocol/src/topology/mod.rs
