@@ -23,6 +23,10 @@ use tokio::sync::oneshot::error::TryRecvError;
 use crate::net::dial::HostKey;
 use crate::net::transport::{connect_pipe, Dial, TransportConfig};
 
+#[path = "lease_exit.rs"]
+mod exit;
+pub(crate) use exit::{close_now, exit_intent, ExitReason, ExitStep};
+
 const NOTICE_UNDETERMINED: &str =
     "closing will not end sessions: this computer's backend could not verify this window";
 const NOTICE_UNSUPPORTED: &str =
@@ -744,50 +748,6 @@ where
         }
     });
     cmd_tx
-}
-
-/// Why the window is being asked to exit.
-#[derive(Clone, Copy)]
-pub(crate) enum ExitReason {
-    WindowClose,
-    QuitKey,
-    Relaunch(i32),
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ExitStep {
-    Ask,
-    Leave { intent: LeaveIntent, code: i32 },
-    Supersede,
-    Now { code: i32 },
-    Ignore,
-}
-
-/// What an exit request does. A window already leaving exits at once, with
-/// 0, on a second close, except that an X or OS close during a Keep
-/// supersedes it with a Close: the user's latest intent wins, so a second
-/// close during a Handover never relaunches. A relaunch then defers to the
-/// leave in progress.
-pub(crate) fn exit_intent(reason: ExitReason, leaving: Option<LeaveIntent>) -> ExitStep {
-    match (reason, leaving) {
-        (ExitReason::WindowClose, None) => ExitStep::Leave { intent: LeaveIntent::Close, code: 0 },
-        (ExitReason::QuitKey, None) => ExitStep::Ask,
-        (ExitReason::Relaunch(code), None) => ExitStep::Leave { intent: LeaveIntent::Handover, code },
-        (ExitReason::WindowClose, Some(LeaveIntent::Keep)) => ExitStep::Supersede,
-        (ExitReason::WindowClose | ExitReason::QuitKey, Some(_)) => ExitStep::Now { code: 0 },
-        (ExitReason::Relaunch(_), Some(_)) => ExitStep::Ignore,
-    }
-}
-
-/// A second close exits at once with `code` (0), and the leave in progress
-/// takes that code: winit still runs `about_to_wait` while it shuts down, and
-/// its poll exits with the leave's own code, so no restart code outlives a
-/// close.
-pub(crate) fn close_now(leaving: Option<&mut crate::lease::Leaving>, code: i32) -> i32 {
-    if let Some(l) = leaving {
-        l.exit_code = code;
-    }
-    code
 }
 
 #[cfg(test)]

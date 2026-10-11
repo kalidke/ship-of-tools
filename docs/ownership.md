@@ -261,7 +261,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | sotd exit 0, 1 and 101 (the main future's result) | exit code | server | `rust/backend/src/main.rs` `complete_main` |
 | sotd's end by INT and TERM (the fire, then death by the signal) | exit code | lifecycle | `rust/backend/src/lifecycle/signal_exit.rs` `install`; `rust/backend/src/lifecycle/shutdown.rs` `exit_by_signal` |
 | sotd exit 75 (update restart) | exit code | distribution | `rust/backend/src/update.rs` `exit_for_update` (committed under the lease by lifecycle's `Leases::commit_update`); `rust/protocol/src/ops/lease.rs` `EXIT_UPDATE_RESTART` |
-| sot exit 75/76 (relaunch, converge) | exit code | distribution | `rust/frontend/src/lease.rs` `exit_intent`, `close_now`; `rust/frontend/src/relaunch.rs` |
+| sot exit 75/76 (relaunch, converge) | exit code | distribution | `rust/frontend/src/lease_exit.rs` `exit_intent`, `close_now`; `rust/frontend/src/relaunch.rs` |
 | sot-capsule exit 0/69/70 (supervise) and 71 (run: storage exhaustion) | exit code | capsule | `rust/log/src/supervisor/mod.rs`; `rust/log/src/capsule/mod.rs` `EXIT_LEG_STORAGE_FULL`; `rust/log/src/bin/sot-capsule.rs` `leg_exit_code` |
 | `SOT_SOCKET`, `SOT_SESSION`, `SOT_WORKSPACE`, `SOT_WORKSPACE_ID`, `SOT_WORKSPACE_ROOT`, `SOT_MANUAL` | env | agents | `rust/backend/src/agents/awareness.rs` `awareness_env` |
 | `SOT_COMM_NAME`, `SOT_COMM_SELF_FILE` (issued at spawn) | env | messaging | `rust/backend/src/agents/env.rs` `agent_env`; read `comm/registry/comm-context.sh`; `comm/registry/comm-join.sh` |
@@ -295,7 +295,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `Signal` and its tree registry, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `ContainedStd`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `Contained::wait_until_exited`, `ContainedStd`, `fire`; `rust/backend/src/lifecycle/contain.rs` `Tree` |
 | process-start rule: each call of a function in `rust/clippy.toml`'s process-spawns group outside `Signal::spawn`, `Signal::spawn_std` and `Signal::output` is a reasoned exception; what the group does not hold is named in rust/backend/src/lifecycle/CLAUDE.md | rule | lifecycle | `rust/clippy.toml` (process-spawns group); `rust/backend/src/lifecycle/child_signal.rs` `Signal::spawn`, `Signal::spawn_std`, `Signal::output` |
 | `Leases`, its mutex and phase | state, lock | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `Phase` |
-| window exit decision (`ExitReason`, `ExitStep`, `exit_intent`, `close_now`) | state | lifecycle | `rust/frontend/src/lease.rs` `ExitReason`, `ExitStep`, `exit_intent`, `close_now` |
+| window exit decision (`ExitReason`, `ExitStep`, `exit_intent`, `close_now`) | state | lifecycle | `rust/frontend/src/lease_exit.rs` `ExitReason`, `ExitStep`, `exit_intent`, `close_now` |
 | no-lease notice and precedence | rule | lifecycle | `rust/frontend/src/lease.rs` `lease_notice` |
 | quit prompt, `request_quit` | UI | fe-ui | `rust/frontend/src/ui/app/exit.rs` `quit_prompt_step`, `request_quit`; `rust/frontend/src/ui/input/keypress.rs` `keyboard_input`; `rust/frontend/src/ui/input/global_keys.rs` `confirm_quit_key` |
 | returned-loop runtime shutdown | process rule | fe-ui | `rust/frontend/src/ui/app/mod.rs` `App::run`, `shutdown_transport` |

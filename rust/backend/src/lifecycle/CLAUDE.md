@@ -24,7 +24,7 @@ on a computer decides, through its lease, whether that computer's sessions end (
   exception's allow.
 - The Linux lifetime guard: `daemon_children::guard` (`require_one_thread`, `install`, `drain`, `guard_pid`).
 - The bounds and exit codes in `sot_protocol::ops::lease`.
-- The window's half, rust/frontend/src/lease.rs.
+- The window's half, rust/frontend/src/lease.rs, and its exit decision, rust/frontend/src/lease_exit.rs.
 
 ## Promises
 - The window's forced deliver_queued wait covers writes already queued to all holders with one std::time::Instant deadline; it does not wait for daemon acknowledgements and its deadline does not depend on the transport worker.
@@ -148,6 +148,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ## Folders
 - `rust/backend/src/lifecycle/`: this folder.
 - `rust/frontend/src/lease.rs`: a file, the window's half.
+- `rust/frontend/src/lease_exit.rs`: a file, the window's exit decision, re-exported by lease.rs.
 
 ## Files
 - `child_signal.rs`: the process-wide signal, the registry of contained trees and its creation mutex, the provisional
