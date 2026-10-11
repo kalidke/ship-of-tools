@@ -75,6 +75,15 @@ here rather than edited into the text, so the change is visible.
 - *Amended 2026-10-01 (rc9.12):* only a Linux daemon samples its own host
   (the sampler reads `/proc`); Windows never did, and macOS no longer runs it.
   "Samples the host it runs on" above holds on Linux only.
+- *Amended 2026-10-11 (0.6.6):* §5 now also covers a source that stops without dying: a hung sampler, a stalled
+  daemon, or a connection that no longer delivers ticks. The window marks a host `*` once no reading for it has
+  arrived for 5 s (`GAP_S`, the gap that already breaks a trace) and shows the age of the reading on screen. The
+  window's own clock decides; the age is the larger of the time since the reading arrived and its timestamp's age.
+  The `stale` flag still marks a source that died.
+- *Amended 2026-10-11 (0.6.6):* `monitor.subscribe` holds for one connection, so the window sends it again, with
+  `monitor.history`, at each new connection to the monitor host (`monitor_host()`: the declared hub when it is
+  dialled, else the first connection) while it holds the subscription (from the drawer's open to its close). Before,
+  a reconnect left an open drawer with no ticks until it was closed and reopened.
 
 Also worth naming, because it has cost a debugging session: the monitored host
 list is read ONCE, at daemon start. There is no reload path. A live roster would

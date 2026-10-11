@@ -1,6 +1,6 @@
 //! Session replies: a host's Connected event (dial record, proxy arming, its workspace-list
-//! request, the resume of the active view) and Disconnected; workspace.list, create and destroy;
-//! the picker's directory and account lists.
+//! request, the Monitor subscription the window holds, the resume of the active view) and
+//! Disconnected; workspace.list, create and destroy; the picker's directory and account lists.
 
 use crate::ui::*;
 
@@ -75,6 +75,7 @@ impl State {
         // send_to(&event_host, ...) rather than self.send: this
         // fires for every connection, active or not.
         let _ = self.send_to(&event_host, crate::net::transport::OutgoingReq::WorkspaceList);
+        self.resubscribe_monitor(&event_host);
         self.resume_view_if_active(event_host);
     }
 

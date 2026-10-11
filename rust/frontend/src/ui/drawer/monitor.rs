@@ -10,13 +10,14 @@
 // log/multiscale time axis + history-backed zoom is Task 5 (ADR 0020 §3).
 
 use std::collections::{HashMap, VecDeque};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use sot_protocol::{HostLatest, HostSeries, MonitorSample, ProcSample};
 use crate::ui::*;
 
 const RING_CAP: usize = 900; // ~15 min of 1 Hz live tail
 const WINDOW_S: f64 = 300.0; // default visible window (5 min)
-const GAP_S: f64 = 5.0; // break the trace across gaps wider than this (stale)
+const GAP_S: f64 = 5.0; // break the trace across gaps wider than this, and mark a host whose last reading is older (stale)
 
 // Trace colors. CPU warm, RAM dim, GPUs a distinct palette (a shared multi-GPU host has two).
 const CPU_COLOR: &str = "#f2a64d";
@@ -34,6 +35,9 @@ struct HostBuf {
     /// raw-tier history carry procs (downsampled tiers drop them) — a history
     /// prefill or a momentarily proc-less sample must not blank the line.
     top_procs: Vec<ProcSample>,
+    /// When this window last received a sample for the host, on its own clock: a sampler, daemon or connection that
+    /// stops sending leaves the last reading on screen, and only its age says so.
+    heard: Option<Instant>,
 }
 
 impl HostBuf {
@@ -44,9 +48,32 @@ impl HostBuf {
             cpu_cores: None,
             ram_total_gb: None,
             top_procs: Vec::new(),
+            heard: None,
         }
     }
+
+    /// The mark after the host's name: empty while a reading has arrived within `GAP_S`; otherwise, or when the
+    /// daemon reports the host's source down, `*` and the shown reading's age. The window's own clock decides; the
+    /// age is the larger of the time since the reading arrived and its timestamp's age, so a reading shown from
+    /// history reads its full age on clocks that agree.
+    fn mark(&self, now: Instant, now_epoch: f64) -> String {
+        let silent = self.heard.map(|t| now.saturating_duration_since(t).as_secs_f64());
+        if !self.stale && silent.is_none_or(|s| s <= GAP_S) {
+            return String::new();
+        }
+        let Some(last) = self.samples.back() else {
+            return " *".to_string();
+        };
+        let age = silent.unwrap_or(0.0).max(now_epoch - last.ts).max(0.0) as u64;
+        match age {
+            0..=59 => format!(" * {age}s"),
+            60..=3599 => format!(" * {}m", age / 60),
+            _ => format!(" * {}h", age / 3600),
+        }
+    }
+
     fn push(&mut self, s: MonitorSample) {
+        self.heard = Some(Instant::now());
         if let Some(c) = s.cpu_cores {
             self.cpu_cores = Some(c);
         }
@@ -67,8 +94,15 @@ impl HostBuf {
 pub struct MonitorView {
     hosts: Vec<String>,
     bufs: HashMap<String, HostBuf>,
-    /// Whether we've sent monitor.subscribe for the currently-open drawer.
-    pub subscribed: bool,
+    /// Whether this window holds a monitor subscription: from the Monitor drawer's open to its close by the toggle. It
+    /// is sent at the open and again at each new connection to the monitor host (`State::resubscribe_monitor`). Only
+    /// the `State` methods in this file change it.
+    subscribed: bool,
+    /// What the chart was last drawn for: the drawer's size in pixels, its text scale and each host's mark; `None`
+    /// before the first draw and while the drawer shows another tenant. A draw that fails to raster still records it,
+    /// so a failed draw is not retried every frame. Any difference redraws it, so a mark that ages past `GAP_S` with no
+    /// tick, a resize and a return to the Monitor tenant each show a true chart.
+    drawn: Option<(u32, u32, f64, Vec<String>)>,
 }
 
 impl MonitorView {
@@ -77,7 +111,14 @@ impl MonitorView {
             hosts: Vec::new(),
             bufs: HashMap::new(),
             subscribed: false,
+            drawn: None,
         }
+    }
+
+    /// Each host's mark (`HostBuf::mark`) at `now` on the window's monotonic clock and `now_epoch` on its wall clock,
+    /// in display order.
+    fn marks(&self, now: Instant, now_epoch: f64) -> Vec<String> {
+        self.hosts.iter().map(|h| self.bufs.get(h).map_or_else(String::new, |b| b.mark(now, now_epoch))).collect()
     }
 
     /// Roster from the monitor.subscribe response — fixes display order and
@@ -117,14 +158,11 @@ impl MonitorView {
         }
     }
 
-    pub fn has_data(&self) -> bool {
-        self.bufs.values().any(|b| !b.samples.is_empty())
-    }
-
     /// Render the small-multiples chart (one panel per host) as an SVG string
-    /// sized to the drawer rect in pixels.
+    /// sized to the drawer rect in pixels, each host's name followed by its
+    /// mark from `marks` (`MonitorView::marks`, in display order).
     #[allow(clippy::too_many_lines, reason = "renders the monitor chart as one SVG; predates the 100-line limit")]
-    pub fn render_svg(&self, w: u32, h: u32, scale: f64) -> String {
+    pub fn render_svg(&self, w: u32, h: u32, scale: f64, marks: &[String]) -> String {
         let w = w.max(1) as f64;
         let h = h.max(1) as f64;
         // The chart is laid out in logical px (sizes tuned at ~1x); `scale`
@@ -161,10 +199,11 @@ impl MonitorView {
             // ── Header line: host name (bold) + colored current-value readout.
             // The readout shows absolute cpu/ram % and per-GPU util/mem %, and
             // its colors are the legend for the traces below.
-            let (lcolor, lsuffix) = if buf.stale {
-                ("#e2b341", " *")
-            } else {
+            let mark = marks.get(i).map_or("", String::as_str);
+            let (lcolor, lsuffix) = if mark.is_empty() {
                 ("#cdd3de", "")
+            } else {
+                ("#e2b341", mark)
             };
             let base_y = py0 + label_fs;
             out.push_str(&format!(
@@ -369,6 +408,12 @@ fn flush_seg(out: &mut String, seg: &mut Vec<(f64, f64)>, color: &str, sw: f64, 
     seg.clear();
 }
 
+/// The window's monotonic clock, which decides staleness, and its wall clock in seconds, which ages a timestamp.
+fn clocks() -> (Instant, f64) {
+    let epoch = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    (Instant::now(), epoch)
+}
+
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -377,6 +422,49 @@ fn escape(s: &str) -> String {
 }
 
 impl State {
+    /// The toggle's half of the Monitor subscription's lifecycle (ADR 0020): a drawer toggled to the Monitor takes the
+    /// subscription, and one toggled to other content or closed releases it. Help, and a REPL run that takes the slot
+    /// without the toggle, keep it. Sampling is always on; the subscription gates only this connection's ticks.
+    pub(in crate::ui) fn sync_monitor_subscription(&mut self) {
+        let shown = self.drawer == DrawerContent::Monitor;
+        if shown && !self.monitor_view.subscribed {
+            self.subscribe_monitor();
+        } else if !shown && self.monitor_view.subscribed {
+            self.unsubscribe_monitor();
+        }
+    }
+
+    /// `--start-monitor`: the drawer opens at construction holding its subscription, which the monitor host's first
+    /// Connected sends (`resubscribe_monitor`), as every later one does.
+    pub(in crate::ui) fn hold_monitor_subscription(&mut self) {
+        self.monitor_view.subscribed = true;
+    }
+
+    /// Subscribe to the monitor host's ticks and prefill the chart from its history (ADR 0020). ADR 0042 L2a: always
+    /// `monitor_host`, the declared hub; the drawer never follows `active_host`.
+    fn subscribe_monitor(&mut self) {
+        let monitor_host = self.monitor_host();
+        let _ = self.send_to(&monitor_host, OutgoingReq::MonitorSubscribe);
+        let history = OutgoingReq::MonitorHistory { window_s: 300.0, points: 300, until: None, host: None };
+        let _ = self.send_to(&monitor_host, history);
+        self.monitor_view.subscribed = true;
+    }
+
+    /// Release the subscription: the monitor host stops sending this connection ticks.
+    fn unsubscribe_monitor(&mut self) {
+        let monitor_host = self.monitor_host();
+        let _ = self.send_to(&monitor_host, OutgoingReq::MonitorUnsubscribe);
+        self.monitor_view.subscribed = false;
+    }
+
+    /// The daemon starts every connection unsubscribed, so a new connection to the monitor host is sent the
+    /// subscription this window holds; without it the drawer would get no reading until it was reopened.
+    pub(in crate::ui) fn resubscribe_monitor(&mut self, connected: &HostKey) {
+        if self.monitor_view.subscribed && *connected == self.monitor_host() {
+            self.subscribe_monitor();
+        }
+    }
+
     pub(crate) fn on_monitor_subscribed(&mut self, hosts: Vec<String>) {
         self.monitor_view.set_roster(hosts);
         self.monitor_dirty = true;
@@ -405,22 +493,29 @@ impl State {
         repl_cells: ratatui::layout::Rect,
     ) {
         // Ctrl+M monitor drawer (ADR 0020): the chart shares the drawer rect.
-        // Regenerate the SVG → wgpu quad whenever data or size changed
-        // (`monitor_dirty`), mirroring the math-SVG rasterise path. Build into
-        // a local first so the immutable `&self.device/queue/quad_pipeline`
-        // borrows don't collide with the `self.monitor_quad` write.
+        // Regenerate the SVG → wgpu quad whenever the readings changed
+        // (`monitor_dirty`) or the chart on screen was drawn for another size,
+        // text scale or set of marks (`MonitorView::drawn`, `None` once the
+        // drawer shows another tenant), mirroring the math-SVG rasterise path.
+        // Build into a local first so the immutable
+        // `&self.device/queue/quad_pipeline` borrows don't collide with the
+        // `self.monitor_quad` write.
         self.repl_scrollback_px = cells_to_px(repl_scrollback_cells);
         self.repl_window = repl_window;
         self.monitor_rect_px = cells_to_px(repl_cells);
         if self.drawer == DrawerContent::Monitor {
             let mw = self.monitor_rect_px.w.max(1.0) as u32;
             let mh = self.monitor_rect_px.h.max(1.0) as u32;
-            if self.monitor_dirty && mw > 1 && mh > 1 {
-                // Scale the chart's text + gutters to match the chrome's
-                // effective text size (cell_h is BASE_CELL_H * scale), so the
-                // SVG's logical-px labels aren't tiny on a hi-DPI window.
-                let mon_scale = (self.cell_h / BASE_CELL_H) as f64;
-                let svg = self.monitor_view.render_svg(mw, mh, mon_scale);
+            // Scale the chart's text + gutters to match the chrome's
+            // effective text size (cell_h is BASE_CELL_H * scale), so the
+            // SVG's logical-px labels aren't tiny on a hi-DPI window.
+            let mon_scale = (self.cell_h / BASE_CELL_H) as f64;
+            // One clock read per frame. A reading that ages past GAP_S changes its host's mark with no tick to say
+            // so; the idle repaint brings this check round once a second.
+            let (now, now_epoch) = clocks();
+            let view = (mw, mh, mon_scale, self.monitor_view.marks(now, now_epoch));
+            if (self.monitor_dirty || self.monitor_view.drawn.as_ref() != Some(&view)) && mw > 1 && mh > 1 {
+                let svg = self.monitor_view.render_svg(mw, mh, mon_scale, &view.3);
                 let quad = quad_from_svg_bytes(
                     &self.device,
                     &self.queue,
@@ -432,9 +527,11 @@ impl State {
                 .ok();
                 self.monitor_quad = quad;
                 self.monitor_dirty = false;
+                self.monitor_view.drawn = Some(view);
             }
         } else {
             self.monitor_quad = None;
+            self.monitor_view.drawn = None;
         }
     }
 }
@@ -443,6 +540,12 @@ impl State {
 mod tests {
     use super::*;
     use sot_protocol::{GpuSample, HostLatest, HostSeries, MonitorSample};
+
+    /// Each host's mark on the window's clocks now.
+    fn marks_now(v: &MonitorView) -> Vec<String> {
+        let (now, now_epoch) = clocks();
+        v.marks(now, now_epoch)
+    }
 
     fn sample(ts: f64, cpu: f32, gpus: &[(u32, f32)]) -> MonitorSample {
         MonitorSample {
@@ -492,8 +595,7 @@ mod tests {
                 ],
             },
         ]);
-        assert!(v.has_data());
-        let svg = v.render_svg(800, 240, 1.0);
+        let svg = v.render_svg(800, 240, 1.0, &marks_now(&v));
         assert!(svg.starts_with("<svg"), "must be an svg root");
         assert!(svg.trim_end().ends_with("</svg>"), "must close the svg");
         assert!(svg.contains("host-a") && svg.contains("host-b"), "host labels present");
@@ -515,9 +617,45 @@ mod tests {
             stale: true,
             sample: None,
         });
-        let svg = v.render_svg(400, 100, 1.0);
+        let svg = v.render_svg(400, 100, 1.0, &marks_now(&v));
         // Stale marker " *" rides next to the host label (ADR 0020 §5).
         assert!(svg.contains("host-a *"), "stale host should be marked");
+    }
+
+    /// A host whose readings stop arriving is marked stale with the shown reading's age once no reading has come for
+    /// `GAP_S`: one that was live, and one prefilled from history whose last reading is an hour old. A new reading
+    /// clears the mark. The silence is a moved clock, so the test waits for nothing.
+    #[test]
+    fn a_reading_that_stops_arriving_is_marked_stale_with_its_age() {
+        let (start, epoch) = clocks();
+        let mut v = MonitorView::new();
+        v.set_roster(vec!["live-a".into(), "hung-b".into()]);
+        v.apply_tick(HostLatest { host: "live-a".into(), stale: false, sample: Some(sample(epoch, 10.0, &[])) });
+        v.apply_history(vec![HostSeries {
+            host: "hung-b".into(),
+            step_s: 1.0,
+            stale: false,
+            samples: vec![sample(epoch - 3600.0, 20.0, &[])],
+        }]);
+        let label = |v: &MonitorView, (now, now_epoch): (Instant, f64), host: &str| {
+            let svg = v.render_svg(800, 240, 1.0, &v.marks(now, now_epoch));
+            let at = svg.find(&format!(">{host}")).map_or(0, |i| i + 1);
+            svg[at..].split('<').next().unwrap_or("").to_string()
+        };
+        let silent = GAP_S + 0.5;
+        let later = (start + std::time::Duration::from_secs_f64(silent), epoch + silent);
+        let mut seen = vec![label(&v, (start, epoch), "live-a"), label(&v, (start, epoch), "hung-b")];
+        seen.extend([label(&v, later, "live-a"), label(&v, later, "hung-b")]);
+        v.apply_tick(HostLatest { host: "live-a".into(), stale: false, sample: Some(sample(later.1, 11.0, &[])) });
+        seen.push(label(&v, clocks(), "live-a"));
+        eprintln!("monitor-stale: {seen:?}");
+        let right = seen[0] == "live-a"
+            && seen[1] == "hung-b"
+            && seen[2].starts_with("live-a * ")
+            && seen[2].ends_with('s')
+            && seen[3] == "hung-b * 1h"
+            && seen[4] == "live-a";
+        assert!(right, "fresh, after {GAP_S}s silent, after a new reading: {seen:?}");
     }
 
     #[test]
@@ -548,7 +686,7 @@ mod tests {
             stale: false,
             sample: Some(sample(2.0, 51.0, &[])),
         });
-        let svg = v.render_svg(800, 240, 1.0);
+        let svg = v.render_svg(800, 240, 1.0, &marks_now(&v));
         assert!(svg.contains("julia\u{b7}alice 312%"), "proc entry should render");
         assert!(svg.contains("nv(idia)\u{b7}root 3%"), "second proc should render");
     }
@@ -556,8 +694,125 @@ mod tests {
     #[test]
     fn empty_view_still_renders_a_frame() {
         let v = MonitorView::new();
-        assert!(!v.has_data());
-        let svg = v.render_svg(200, 80, 1.0);
+        let svg = v.render_svg(200, 80, 1.0, &[]);
         assert!(svg.starts_with("<svg") && svg.trim_end().ends_with("</svg>"));
+    }
+}
+
+/// The Monitor's native State fixture: a `State` exists only inside a native window, so it runs in the
+/// window_minimized target's fixtures child (`ui/app/native_children.rs`).
+#[cfg(all(test, feature = "test-window-progress"))]
+mod native_fixture {
+    use super::*;
+    use crate::net::transport::{IncomingEvt, ResolvedDial};
+
+    impl State {
+        /// A new connection to the monitor host is sent the subscription this window holds, with its history prefill:
+        /// with the drawer open, and with Help shown over it. No other host's connection is sent one, and the hub's
+        /// is sent none once the drawer has closed.
+        #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+        pub(in crate::ui) fn a_held_monitor_subscription_is_sent_on_each_new_connection(&mut self) -> Result<()> {
+            let (hub, other) = ("<monitor-hub>".to_string(), "<host-other>".to_string());
+            let (hub_tx, mut hub_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (other_tx, mut other_rx) = tokio::sync::mpsc::unbounded_channel();
+            // The hub sorts second: only the declared hub, not the first connection, makes it the monitor host.
+            self.conns = vec![(other.clone(), other_tx), (hub.clone(), hub_tx)];
+            self.monitor_hub = Some(hub.clone());
+            self.active_host = other.clone();
+            let (events, receiver) = std::sync::mpsc::channel();
+            self.evt_rx = receiver;
+            let rows = [
+                ("open, the hub connects", DrawerContent::Monitor, true, &hub),
+                ("help over it, the hub connects", DrawerContent::Help, true, &hub),
+                ("open, another host connects", DrawerContent::Monitor, true, &other),
+                ("closed, the hub connects", DrawerContent::Closed, false, &hub),
+            ];
+            let mut seen = Vec::new();
+            for (label, drawer, held, host) in rows {
+                self.drawer = drawer;
+                self.monitor_view.subscribed = held;
+                let connected = IncomingEvt::Connected {
+                    session_id: "session".into(),
+                    revision: 0,
+                    host: None,
+                    project_root: None,
+                    proxy: false,
+                    resolved: ResolvedDial::Local,
+                    backend_version: "test".into(),
+                };
+                events
+                    .send((host.clone(), connected))
+                    .map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+                self.drain_events();
+                seen.push((label, monitor_ops(&mut hub_rx), monitor_ops(&mut other_rx)));
+            }
+            self.drawer = DrawerContent::Closed;
+            self.monitor_view.subscribed = false;
+            self.monitor_hub = None;
+            println!("monitor-resubscribe: {seen:?}");
+            let resent = |i: usize| seen[i].1 == ["subscribe", "history"];
+            let right = resent(0)
+                && resent(1)
+                && seen[2].1.is_empty()
+                && seen[3].1.is_empty()
+                && seen.iter().all(|(_, _, to_other)| to_other.is_empty());
+            anyhow::ensure!(right, "(row, monitor ops to the hub, to another host): {seen:?}");
+            Ok(())
+        }
+
+        /// The chart on screen is redrawn whenever what it was drawn for changes with no new reading, as when the
+        /// hub has stalled: on a resize, and on the drawer's return to the Monitor from Help.
+        #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+        pub(in crate::ui) fn a_monitor_chart_is_redrawn_on_resize_and_on_return(&mut self) -> Result<()> {
+            let (_, epoch) = clocks();
+            let reading = MonitorSample {
+                ts: epoch - 3630.0,
+                cpu_pct: 10.0,
+                ram_pct: 10.0,
+                cpu_cores: None,
+                ram_total_gb: None,
+                gpus: Vec::new(),
+                top_procs: Vec::new(),
+            };
+            self.monitor_view = MonitorView::new();
+            let series = HostSeries { host: "gpu-box".into(), step_s: 1.0, stale: true, samples: vec![reading] };
+            self.monitor_view.apply_history(vec![series]);
+            let rect = |w: f32, h: f32| move |_: ratatui::layout::Rect| ScreenRect { x: 0.0, y: 0.0, w, h };
+            let cells = ratatui::layout::Rect::default();
+            let rows = [
+                ("drawn", DrawerContent::Monitor, (640.0, 240.0)),
+                ("resized", DrawerContent::Monitor, (800.0, 300.0)),
+                ("help over it", DrawerContent::Help, (800.0, 300.0)),
+                ("back from help", DrawerContent::Monitor, (800.0, 300.0)),
+            ];
+            let mut seen = Vec::new();
+            for (label, drawer, (w, h)) in rows {
+                self.drawer = drawer;
+                self.layout_drawer_px(rect(w, h), cells, (0, 0), cells);
+                seen.push((label, self.monitor_quad.as_ref().map(|q| q.size_px)));
+            }
+            self.drawer = DrawerContent::Closed;
+            self.monitor_quad = None;
+            self.monitor_view = MonitorView::new();
+            println!("monitor-redraw: {seen:?}");
+            let right = seen[0].1 == Some((640, 240))
+                && seen[1].1 == Some((800, 300))
+                && seen[2].1.is_none()
+                && seen[3].1 == Some((800, 300));
+            anyhow::ensure!(right, "(row, the chart's size on screen): {seen:?}");
+            Ok(())
+        }
+    }
+
+    /// The monitor requests queued on one connection's channel, in order.
+    fn monitor_ops(rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>) -> Vec<&'static str> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|req| match req {
+                OutgoingReq::MonitorSubscribe => Some("subscribe"),
+                OutgoingReq::MonitorHistory { .. } => Some("history"),
+                OutgoingReq::MonitorUnsubscribe => Some("unsubscribe"),
+                _ => None,
+            })
+            .collect()
     }
 }
