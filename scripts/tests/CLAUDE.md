@@ -47,7 +47,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-launcher-leases.ps1`: launch-sot.ps1's ensure and lease order in the supervisor loop and the converge lease
   (sections 9-11 and 16 of the old suite), read as syntax trees and run against the fake `sotd.exe`. Runs in the
   `rust.yml` step "Test launcher leases", a bridge that ends before the lease is written (11f), and a request the
-  daemon answers late, kept open with its handover behind it (11g).
+  daemon answers late, kept open with its bridge through a collection and its handover behind it (11g).
 - `test-local-daemon-fake.ps1`: dot-sourced by both local-daemon suites: compiles the fake `sotd.exe` and defines
   `Clear-FakeEnv`, `New-FakePrefix` and `Stop-FakeOn`.
 - `test-local-daemon-own.ps1`: dot-sourced by test-local-daemon.ps1 after section 5b, in its scope: the bridge's

@@ -245,7 +245,7 @@ try {
         $out5b = & $script -Prefix $p3 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe5b -ProjectRoot $spacedProjectRoot 6>&1 2>&1
         Check '5b: the daemon starts' (Wait-Pipe $pipe5b) "pipe never opened; log: $out5b"
         $streams5b = @(Open-SotLease (Get-PipePath $pipe5b) $realSotd)
-        Check '5b: the real daemon grants the launcher a lease' ($streams5b.Count -eq 1) "got $($streams5b.Count); log: $($script:supLines5b -join ' | ')"
+        Check '5b: the real daemon grants the launcher a lease' (($streams5b.Count -eq 1) -and (($script:supLines5b -join ' ') -match 'lease granted')) "got $($streams5b.Count); log: $($script:supLines5b -join ' | ')"
         # Only a granted lease has an end that shuts the daemon down.
         if ($streams5b.Count -eq 1) {
             foreach ($c in $streams5b) { try { $c.Dispose() } catch { } }

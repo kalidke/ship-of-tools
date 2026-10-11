@@ -53,8 +53,9 @@ try {
     try {
         $out5b2 = & $script -Prefix $p3 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe5b2 -ProjectRoot $spacedProjectRoot 6>&1 2>&1
         if (-not (Wait-Pipe $pipe5b2)) { throw "the handover daemon never opened its pipe; log: $out5b2" }
+        $script:supLines5b = @()
         $global:SotLeases = @(Open-SotLease (Get-PipePath $pipe5b2) $realSotd)
-        Check '5b2: the real daemon grants the bridge-held lease' ($global:SotLeases.Count -eq 1) "got $($global:SotLeases.Count); log: $($script:supLines5b -join ' | ')"
+        Check '5b2: the real daemon grants the bridge-held lease' (($global:SotLeases.Count -eq 1) -and (($script:supLines5b -join ' ') -match 'lease granted')) "got $($global:SotLeases.Count); log: $($script:supLines5b -join ' | ')"
         if ($global:SotLeases.Count -eq 1) {
             Close-SotLeases
             Start-Sleep -Seconds 5

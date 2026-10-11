@@ -870,8 +870,9 @@ $HandoverBoundSeconds = 60
 # every launcher version keeps (ADR 0017, 0.6.6): append with +=, never reset;
 # only Close-SotLeases empties it, after closing each stream.
 if ($null -eq $global:SotLeases) { $global:SotLeases = @() }
-# The lease requests the daemon has not answered (Open-SotLease), each kept open for this process's life, since closing
-# one would read as a close if the daemon granted it later. Append only, never reset, under the same contract.
+# The bridge process of every lease request the daemon has not answered (Open-SotLease), each kept with its streams for
+# this process's life, since closing one would read as a close if the daemon granted it later. Append with +=, never
+# reset; Close-SotLeases leaves each one's stream open.
 if ($null -eq $global:SotLeasesUnanswered) { $global:SotLeasesUnanswered = @() }
 
 $stagedDir = Join-Path $env:LOCALAPPDATA 'sot\bin'
