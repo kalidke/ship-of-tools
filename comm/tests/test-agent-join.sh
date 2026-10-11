@@ -230,7 +230,7 @@ case_daemon_rejects_agent_join_warns_but_still_joins() {
 case_a_scratch_identity_never_declares_into_the_ambient_row() {
     mkdir -p "$WORK/proj-e"
     local root; root="$(realpath "$WORK/proj-e")"
-    # The field case, 2026-09-28: a hermetic test (or a lane) pins its own
+    # The field case, 2026-09-28: a hermetic test pins its own
     # identity but inherits $SOT_WORKSPACE_ID from the session that
     # launched it. Everything here is pinned for a successful declaration
     # -- a live row id and a reachable daemon -- and the ONE thing that

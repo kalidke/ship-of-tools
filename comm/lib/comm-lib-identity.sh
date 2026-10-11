@@ -188,7 +188,7 @@ sot_raw_host() {
 # stripped first; with no match the cut is at the first "__".
 #
 # The order is load-bearing and ran the other way until 2026-09-28. A test
-# or a lane pins its own scratch identity but inherits $SOT_WORKSPACE_ID
+# pins its own scratch identity but inherits $SOT_WORKSPACE_ID
 # from the session that launched it, so the ambient id let every hermetic
 # suite declare its throwaway handle into the live row it happened to run
 # inside — ninety-two such declarations in one morning, and the last one

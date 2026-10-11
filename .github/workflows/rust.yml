@@ -439,10 +439,12 @@ jobs:
   # The ubuntu build and test, one job per shard, so the slowest test binaries run side by side. SHARDS is the one table
   # of named shards, a row each: shard, target kind (test or bin), target name, then any libtest arguments. A target runs
   # whole (one row, no arguments) or split once (two rows, `X` and `--skip X`, as lane_bridge is). The shard `rest` runs
-  # every test executable the table does not name, then the doc tests. Before it runs anything, every shard fails unless
-  # the table's shards and `rest` are as many as the matrix's jobs and every split is such a pair; a matrix shard with no
-  # row fails too. Each binary's SERIAL lock guards only its own process, so binaries on different runners share
-  # nothing. Every command selects `--workspace`, so features unify as in one `cargo test --workspace`.
+  # every test executable the table does not name, then the doc tests, so no row names `rest`. The matrix lists the
+  # table's shards in the order they first appear, then `rest`. Before it runs anything, every shard fails unless no row
+  # names `rest`, every split is such a pair and the matrix runs that many jobs, and a job fails unless its shard is the
+  # one at its place (`strategy.job-index`) in that list. Each binary's SERIAL lock guards only its own process, so
+  # binaries on different runners share nothing. Every command selects `--workspace`, so features unify as in one
+  # `cargo test --workspace`.
   test-linux:
     name: build+test (ubuntu-latest, ${{ matrix.shard }})
     runs-on: ubuntu-latest
@@ -503,15 +505,17 @@ jobs:
       - name: Test shard ${{ matrix.shard }}
         shell: bash
         run: |
-          python3 - "${{ matrix.shard }}" "${{ strategy.job-total }}" <<'PYSHARD'
+          python3 - "${{ matrix.shard }}" "${{ strategy.job-index }}" "${{ strategy.job-total }}" <<'PYSHARD'
           import json, os, subprocess, sys
-          shard, total = sys.argv[1], int(sys.argv[2])
+          shard, index, total = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
           rows = [line.split(None, 3) for line in os.environ['SHARDS'].splitlines() if line.strip()]
           named = {(row[1], row[2]) for row in rows}
-          shards = {row[0] for row in rows}
+          order = [*dict.fromkeys(row[0] for row in rows), 'rest']
           TARGET_KINDS = ('bin', 'test', 'example', 'bench')
-          if len(shards) + 1 != total:
-              sys.exit(f'SHARDS names {len(shards)} shards and rest, but the matrix runs {total} jobs')
+          if order.count('rest') != 1:
+              sys.exit('SHARDS names the shard rest; rest runs only what the table does not name')
+          if total != len(order) or order[index] != shard:
+              sys.exit(f'job {index} of {total} (from 0) runs {shard}; the matrix must list {order} in that order')
           for target in named:
               split = [tuple(row[3].split()) if len(row) > 3 else () for row in rows if (row[1], row[2]) == target]
               if split != [()] and not (len(split) == 2 and any(len(a) == 1 and ('--skip', a[0]) in split for a in split)):
@@ -522,8 +526,6 @@ jobs:
               return subprocess.run(command).returncode != 0
           if shard != 'rest':
               mine = [row for row in rows if row[0] == shard]
-              if not mine:
-                  sys.exit('shard ' + shard + ' has no row in SHARDS')
               results = [failed(['--' + kind, name], libtest[0].split() if libtest else []) for _, kind, name, *libtest in mine]
           else:
               out = subprocess.run(['cargo', 'test', '--workspace', '--locked', '--no-run', '--message-format=json-render-diagnostics'],
@@ -538,7 +540,8 @@ jobs:
               rest = sorted(built - named)
               selection = ['--lib'] if any(kind not in TARGET_KINDS for kind, _ in rest) else []
               selection += [arg for kind, name in rest if kind in TARGET_KINDS for arg in ('--' + kind, name)]
-              print(f'shard coverage: {len(built)} test executables, {len(named)} named in {len(shards)} shards, {len(rest)} in rest', flush=True)
+              print(f'shard coverage: {len(built)} test executables, {len(named)} named in {len(order) - 1} shards, '
+                    f'{len(rest)} in rest', flush=True)
               results = [failed(selection), failed(['--doc'])]
           sys.exit(1 if any(results) else 0)
           PYSHARD
