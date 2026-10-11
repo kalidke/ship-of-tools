@@ -2,13 +2,16 @@
 //! and checked against its start time. The knote names the process instance, not the number, so an exit is seen however
 //! the process is reaped. A case signals only a pid its own code got back from its own spawn (`acquire_own`); every other
 //! identity is watched. No task-control right is needed, since nothing here ends a process the case did not start.
+//! The kernel attaches no knote to an unreaped zombie (ESRCH), so the case's own child, opened after its exit and before
+//! its reap, starts exited: the zombie pins its number, so ESRCH can mean nothing else.
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-/// The process's start time in microseconds (`proc_bsdinfo`), the birth identity next to its pid.
+/// The process's start time in microseconds (`proc_bsdinfo`), the birth identity next to its pid. `arg` 1 includes an
+/// unreaped zombie, as the backend's group check reads one (`lifecycle/contain.rs`).
 pub fn start_ticks(pid: i32) -> io::Result<u64> {
     // SAFETY: a zeroed proc_bsdinfo is a valid out-parameter for proc_pidinfo.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -18,14 +21,15 @@ pub fn start_ticks(pid: i32) -> io::Result<u64> {
         libc::proc_pidinfo(
             pid,
             libc::PROC_PIDTBSDINFO,
-            0,
+            1,
             (&mut info as *mut libc::proc_bsdinfo).cast(),
             size,
         )
     };
     if written != size {
+        let err = io::Error::last_os_error();
         return Err(io::Error::other(format!(
-            "no start time for pid {pid} (proc_pidinfo wrote {written} of {size} bytes)"
+            "no start time for pid {pid} (proc_pidinfo wrote {written} of {size} bytes: {err})"
         )));
     }
     Ok(info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
@@ -37,7 +41,8 @@ pub struct Identity {
     pub label: String,
     /// Whether this case's own code got the pid back from its own spawn. Only such an identity can be signalled.
     own: bool,
-    exits: OwnedFd,
+    /// `None`: the case's own child had already exited when it was opened.
+    exits: Option<OwnedFd>,
     /// `NOTE_EXIT` is delivered once and then detached: the first sight of the exit is kept.
     gone: AtomicBool,
 }
@@ -50,7 +55,7 @@ impl Identity {
     }
 
     /// Open the pid this case's own code got back from its own spawn and has not reaped: its number cannot have been
-    /// reused, and the identity can be signalled.
+    /// reused, and the identity can be signalled. A child that has already exited is held as exited.
     pub fn acquire_own(pid: i32, label: &str) -> io::Result<Identity> {
         Self::open(pid, None, label, true)
     }
@@ -58,6 +63,11 @@ impl Identity {
     fn open(pid: i32, created: Option<u64>, label: &str, own: bool) -> io::Result<Identity> {
         let before = start_ticks(pid)?;
         let exits = watch_exit(pid)?;
+        if exits.is_none() && !own {
+            return Err(io::Error::other(format!(
+                "pid {pid} exited before it could be watched"
+            )));
+        }
         // The knote attached to the instance the number named at that moment: it is the one read before only if the
         // start time still reads the same.
         let found = start_ticks(pid)?;
@@ -78,8 +88,8 @@ impl Identity {
             created: found,
             label: label.to_string(),
             own,
+            gone: AtomicBool::new(exits.is_none()),
             exits,
-            gone: AtomicBool::new(false),
         })
     }
 
@@ -88,6 +98,9 @@ impl Identity {
         if self.gone.load(Ordering::SeqCst) {
             return true;
         }
+        let Some(exits) = &self.exits else {
+            return true;
+        };
         let deadline = Instant::now() + bound;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -100,7 +113,7 @@ impl Identity {
             // SAFETY: a live kqueue this value owns, one real event for the answer, a real timeout.
             let rc = unsafe {
                 libc::kevent(
-                    self.exits.as_raw_fd(),
+                    exits.as_raw_fd(),
                     std::ptr::null(),
                     0,
                     &mut event,
@@ -153,9 +166,10 @@ impl Identity {
     }
 }
 
-/// A fresh kqueue holding one `NOTE_EXIT` knote on `pid`. `EV_RECEIPT` makes the attach result deterministic: the kernel
-/// writes back one error event carrying the errno (zero on success).
-fn watch_exit(pid: i32) -> io::Result<OwnedFd> {
+/// A fresh kqueue holding one `NOTE_EXIT` knote on `pid`, or `None` when the process is no longer there to attach to
+/// (ESRCH, an unreaped zombie included). `EV_RECEIPT` makes the attach result deterministic: the kernel writes back one
+/// error event carrying the errno (zero on success).
+fn watch_exit(pid: i32) -> io::Result<Option<OwnedFd>> {
     // SAFETY: `kqueue()` takes no arguments and returns a fresh descriptor or -1.
     let raw = unsafe { libc::kqueue() };
     if raw < 0 {
@@ -185,8 +199,12 @@ fn watch_exit(pid: i32) -> io::Result<OwnedFd> {
     if rc == 0 {
         return Err(io::Error::other("kevent(EV_RECEIPT) returned no receipt"));
     }
-    if (receipt.flags & libc::EV_ERROR) != 0 && receipt.data != 0 {
-        return Err(io::Error::from_raw_os_error(receipt.data as libc::c_int));
+    if (receipt.flags & libc::EV_ERROR) != 0 {
+        return match receipt.data as libc::c_int {
+            0 => Ok(Some(kq)),
+            libc::ESRCH => Ok(None),
+            errno => Err(io::Error::from_raw_os_error(errno)),
+        };
     }
-    Ok(kq)
+    Ok(Some(kq))
 }

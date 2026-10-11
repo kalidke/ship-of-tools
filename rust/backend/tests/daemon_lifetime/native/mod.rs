@@ -1,6 +1,6 @@
 //! The fixture's native process authority, one file per OS. An identity is a process the fixture opened while it was
-//! alive and has proved to be the one it meant; death is read from that identity, never from a number or a name, and
-//! the fixture ends what it started through it.
+//! alive and has proved to be the one it meant, or the case's own child opened after its exit and before its reap; death
+//! is read from that identity, never from a number or a name, and the fixture ends what it started through it.
 
 #[cfg(target_os = "linux")]
 mod linux;

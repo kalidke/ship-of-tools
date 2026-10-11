@@ -64,6 +64,7 @@ impl Fixture {
     }
 
     /// Hold the process this case's own code got `pid` back for from its own spawn and has not reaped: cleanup may end it.
+    /// A child that has already exited is held as exited.
     pub fn own(&mut self, pid: i32, label: &str) -> std::io::Result<usize> {
         let identity = Identity::acquire_own(pid, label)?;
         self.identities.push(identity);

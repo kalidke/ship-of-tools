@@ -30,7 +30,8 @@ fn error_of(err: &std::io::Error) -> &BirthError {
         .unwrap_or_else(|| panic!("not a BirthError: {err}"))
 }
 
-/// Begin `launch` and take authority over the gated child before anything else happens to it.
+/// Begin `launch` and take authority over the child as soon as `begin` returns. A child whose setup fails does not wait at
+/// its gate, so it may already have exited by then; it is held as exited.
 fn gated(fx: &mut Fixture, launch: Launch, label: &str) -> (Birth, usize) {
     let birth = launch.begin().expect("begin returns the owned child");
     let index = fx
@@ -181,6 +182,30 @@ fn setup_and_exec_errors_are_named_by_stage_and_errno_and_the_target_never_runs(
     assert_eq!(birth.wait().unwrap().code(), Some(127));
 
     assert!(!mark.exists(), "a target ran after a failed setup");
+    assert!(fx.cleanup().complete());
+}
+
+#[test]
+fn an_own_child_that_exited_before_it_was_held_is_held_as_exited() {
+    let mut fx = Fixture::new("held_after_its_exit");
+    // A group that does not exist: the child fails its setup and exits without waiting at its gate.
+    let mut launch = sh("exit 0");
+    launch.group(Group::Join(i32::MAX - 1));
+    let mut birth = launch.begin().expect("begin returns the owned child");
+    // Seen without a reap: until `wait`, the child's zombie keeps its number.
+    wait_for(BOUND, "the child's exit at its setup", || {
+        birth.exited(false).unwrap().then_some(())
+    });
+    let index = fx
+        .own(birth.pid(), "exited before it was held")
+        .expect("an own child that already exited is held");
+    assert!(
+        fx.identity(index).exited(Duration::ZERO),
+        "an own child held after its exit reads alive"
+    );
+    let err = birth.ready(BOUND).expect_err("the group step fails");
+    assert_eq!(error_of(&err).stage, Stage::Group, "{err}");
+    assert_eq!(birth.wait().unwrap().code(), Some(126));
     assert!(fx.cleanup().complete());
 }
 
