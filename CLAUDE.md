@@ -60,8 +60,9 @@ connection.
 - A folder holds at most 3,000 non-test code lines and 12 source files.
 - A function holds at most 100 lines.
 - The checks: `scripts/tests/check-layout.sh`, run by rust.yml's "Check the layout" with each exception and its reason
-  in `scripts/tests/check-layout.allow`; and rust.yml's "Function length" clippy step, whose count of allowances can
-  only fall. This page is the map tier and has no `## Files` list (a reasoned exception in that allow file).
+  in `scripts/tests/check-layout.allow`, which also pins the count of function-length allowances (it can only fall);
+  and rust.yml's "Function length" clippy step. This page is the map tier and has no `## Files` list (a reasoned
+  exception in that allow file).
 
 ## Rules
 - **Elegance first: simple and elegant leads to performance and security; as simple as possible, but no simpler.** Every

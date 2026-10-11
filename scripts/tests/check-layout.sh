@@ -303,8 +303,22 @@ for page in named_listed:
         if t not in tracked_set and not any(f.startswith(t + "/") for f in tracked):
             add("named-path", page, t)
 
+# too-many-lines: the lines of tracked .rs files under rust/ that name clippy::too_many_lines (each a reasoned allow on
+# a function over 100 code lines) number exactly the allow file's pin, `too-many-lines rust <n> <reason>`; no line pins
+# 0. The count can only fall. rust/vt100 is the vendored crate rust.yml's clippy steps exclude.
+ALLOWANCE, ALLOWANCE_SKIP = "clippy::too_many_lines", "rust/vt100/"
+pin_line = allow.get(("too-many-lines", "rust"))
+pin = 0
+if pin_line is not None:
+    if not (pin_line.split() or [""])[0].isdigit():
+        usage("the too-many-lines pin must start with its count: " + pin_line)
+    pin = int(pin_line.split()[0])
+n_allowances = sum(1 for f in tracked
+                   if f.startswith("rust/") and f.endswith(".rs") and not f.startswith(ALLOWANCE_SKIP)
+                   for ln in read(f).splitlines() if ALLOWANCE in ln)
+
 nv = na = ne = 0
-used = set()
+used = {("too-many-lines", "rust")}
 for kind, path, detail in violations:
     if any(k == kind and r.match(path) for k, r, _ in exempt):
         ne += 1
@@ -320,6 +334,12 @@ for kind, path in unused:
     print("UNUSED-ALLOW %s %s %s" % (kind, path, allow[(kind, path)]))
 if named_listed:
     print("named-path: %d tokens checked in %d files" % (named_checked, len(named_listed)))
+if n_allowances != pin:
+    nv += 1
+    print("VIOLATION too-many-lines rust %d allowances, pinned %d: %s" % (n_allowances, pin,
+          "the count rose; split the function instead of allowing it" if n_allowances > pin else
+          "the count fell; lower the pin to %d in the allow file in this commit" % n_allowances))
+print("too-many-lines: %d allowances in rust (pinned: %d)" % (n_allowances, pin))
 print("violations: %d, allowed: %d, exempt: %d, unused-allow: %d, folders checked: %d"
       % (nv, na, ne, len(unused), len(folders)))
 sys.exit(1 if nv or unused else 0)
