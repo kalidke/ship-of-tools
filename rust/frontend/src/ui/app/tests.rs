@@ -1,7 +1,7 @@
 //! Native workload observations around the real App/State and transport loop.
 //! The owned peer supplies events; only production callbacks drain them.
 
-use super::native_children::NativeChild;
+use super::native_children::{HarnessTick, NativeChild};
 use super::*;
 use crate::net::transport::{observe_native_fan_in, run_native_progress_transport, IncomingEvt};
 use std::collections::BTreeMap;
@@ -307,6 +307,7 @@ impl PeerTasks {
         mut outgoing: tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
         ledger: Arc<Mutex<NativeProgressLedger>>,
         proxy: EventLoopProxy<()>,
+        harness_tick: HarnessTick,
     ) -> Result<Self> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
@@ -341,6 +342,7 @@ impl PeerTasks {
             let mut tick = tokio::time::interval(Duration::from_secs(1));
             loop {
                 tick.tick().await;
+                harness_tick.post();
                 if proxy.send_event(()).is_err() {
                     return Ok(());
                 }
@@ -380,6 +382,7 @@ struct NativeDriver {
     fan_in: Option<std::sync::mpsc::Sender<(HostKey, IncomingEvt)>>,
     ledger: Arc<Mutex<NativeProgressLedger>>,
     proxy: EventLoopProxy<()>,
+    harness_tick: HarnessTick,
     outgoing: Option<tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>>,
     peer: Option<PeerTasks>,
     current: Option<Profile>,
@@ -422,6 +425,7 @@ impl NativeDriver {
             self.outgoing.take().expect("owned request receiver"),
             self.ledger.clone(),
             self.proxy.clone(),
+            self.harness_tick.clone(),
         );
         match peer {
             Ok(peer) => {
@@ -577,10 +581,15 @@ impl ApplicationHandler for NativeDriver {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
-        self.app.user_event(event_loop, ());
-        if let Err(error) = self.tick(event_loop) {
-            self.fail(event_loop, error);
-        }
+        let tick = self.harness_tick.clone();
+        tick.dispatch(self, |driver| driver.app.user_event(event_loop, ()), |driver| {
+            if driver.peer.is_none() || driver.outcome.is_some() {
+                return;
+            }
+            if let Err(error) = driver.tick(event_loop) {
+                driver.fail(event_loop, error);
+            }
+        });
     }
 }
 
@@ -629,6 +638,7 @@ pub(in crate::ui) fn minimized_window_drains_events_for_ten_minutes() -> Result<
         fan_in: None,
         ledger,
         proxy: event_loop.create_proxy(),
+        harness_tick: HarnessTick::default(),
         outgoing: Some(outgoing),
         peer: None,
         current: None,

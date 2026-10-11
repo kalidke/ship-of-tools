@@ -3,6 +3,7 @@
 use super::native_pane_daemon_tests::{locate, Daemon, Row};
 use super::native_pane_route_tests::{recipe_from, Route, RouteKind};
 use super::tests::{fixture_cli, FixtureHome};
+use super::native_children::HarnessTick;
 use super::*;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -264,6 +265,7 @@ struct PaneDriver<'a> {
     finished: bool,
     monitor_px: String,
     layout_reported: bool,
+    harness_tick: HarnessTick,
     failure: Option<anyhow::Error>,
 }
 
@@ -460,19 +462,17 @@ impl ApplicationHandler for PaneDriver<'_> {
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        self.app.window_event(event_loop, id, event);
-        self.after(event_loop);
+        HarnessTick::forward(self, |driver| driver.app.window_event(event_loop, id, event));
     }
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         self.app.new_events(event_loop, cause);
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.app.about_to_wait(event_loop);
-        self.after(event_loop);
+        HarnessTick::forward(self, |driver| driver.app.about_to_wait(event_loop));
     }
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
-        self.app.user_event(event_loop, ());
-        self.after(event_loop);
+        let tick = self.harness_tick.clone();
+        tick.dispatch(self, |driver| driver.app.user_event(event_loop, ()), |driver| driver.after(event_loop));
     }
 }
 
@@ -533,10 +533,16 @@ fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
         ledger: Arc::new(std::sync::Mutex::new(NativeProgressLedger::default())),
     };
     let stop = Arc::new(AtomicBool::new(false));
+    let harness_tick = HarnessTick::default();
     let ticks = {
         let stop = stop.clone();
+        let tick = harness_tick.clone();
         std::thread::spawn(move || {
-            while !stop.load(Ordering::SeqCst) && proxy.send_event(()).is_ok() {
+            while !stop.load(Ordering::SeqCst) {
+                tick.post();
+                if proxy.send_event(()).is_err() {
+                    break;
+                }
                 std::thread::sleep(Duration::from_millis(20));
             }
         })
@@ -545,7 +551,7 @@ fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     let (mut failure, mut finished) = (None, false);
     let result = crate::ui::init::with_native_startup(inputs, || {
         app.run_with(|app| {
-            let mut driver = PaneDriver { app, capture: &capture, role: role.to_string(), plan, idx: 0, cur: None, begun: Instant::now(), targets: Vec::new(), stop: stop.clone(), finished: false, monitor_px: "unavailable".to_string(), layout_reported: false, failure: None };
+            let mut driver = PaneDriver { app, capture: &capture, role: role.to_string(), plan, idx: 0, cur: None, begun: Instant::now(), targets: Vec::new(), stop: stop.clone(), finished: false, monitor_px: "unavailable".to_string(), layout_reported: false, harness_tick: harness_tick.clone(), failure: None };
             let result = event_loop.run_app(&mut driver);
             failure = driver.failure.take();
             finished = driver.finished;

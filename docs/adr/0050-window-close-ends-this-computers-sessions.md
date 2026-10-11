@@ -375,3 +375,5 @@ every controlled end still kills each child's process group, and not a process t
 ## Amendment (2026-10-11): native window harnesses
 
 The pane timing fixture selects its own in-memory Laptop layout and reports the monitor shape and resolved columns. The runner's display no longer selects whether this fixture has an agent pane. Product layout selection and the wire protocol are unchanged.
+
+Progress, close and pane fixtures advance only on a pending tick from their own ticker. All production callbacks still reach App; a daemon wake does not add a harness sample or attach/close step. The marker is test-only and introduces no product event or wire change.

@@ -14,7 +14,7 @@ hand-over it serves.
 - `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `user_event`,
   `new_events`.
 - `frame.rs`: `State::redraw`, one frame's sequence, its upkeep (`frame_upkeep`) and `ack_presented_lines`.
-- `native_children.rs`: the window_minimized target's children and parent: the start its two children share, the State fixtures' own child (the native-only fixtures of the result-routing, badge, account, canonical-row and Monitor commits, one `state-fixture name=... ok=...` line each, all run before the child judges) and the parent, which runs both children and then judges.
+- `native_children.rs`: the window_minimized target's children and parent: the start its two children share, the State fixtures' own child (the native-only fixtures of the result-routing, badge, account, canonical-row and Monitor commits, one `state-fixture name=... ok=...` line each, all run before the child judges) and the parent, which runs both children and then judges. It also owns HarnessTick, the test-only pending marker and dispatch shared by the progress, close and pane drivers.
 - `native_eventlog.rs`: Windows only: the Application log's Application Hang events (1002) for one fixture child; an unreadable log is an error.
 - `native_exit_tests.rs`: the opt-in main-thread native window-close fixture, using the actual App callbacks and test-owned inputs; the parent runs each close case as a child of its binary.
 - `native_pane_daemon_tests.rs`: the pane_timing parent's private daemon: its own roots, rows created Ready or seeded with no supervisor, planted screen sentinels, and one window lease the parent holds for its whole life; teardown is that lease's Close (zero not ended) and the daemon's own exit, and a parent that dies without the Close leaves the daemon to end every row and exit.
@@ -37,8 +37,8 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 - A harness instance (`ephemeral`) starts neither watcher thread: `resumed` skips `relaunch::spawn_watcher` and `spawn_command_watcher` for it.
 - Frames are capped at `FRAME_BUDGET` (`window_event`'s redraw arm and `about_to_wait`).
 - The idle repaint (the 1 s clock, the 80 ms flash and 16 ms help fades) keeps its armed deadline across wakes (`arm_idle`, which owns the slot): a wake brings it forward or leaves it, never later.
-- A pending `MainWake` becomes the window's own redraw in `user_event`; at most one wake event is outstanding. A native
-  driver offers each user event to `App::user_event` before its own tick, so its ticks request no redraw.
+- A pending `MainWake` becomes the window's own redraw in `user_event`; at most one wake event is outstanding.
+  A native driver forwards every user event to App before consuming its own ticker's pending mark; only a consumed mark advances its harness work, and its ticker requests no redraw. Pane window-event and wait callbacks forward to App without advancing the harness.
 - A frame runs in `redraw`'s fixed order: upkeep, the chrome draw, the pixel layout, the text prepare, one render pass,
   then the capture's staging, submit, present, the acks and the capture's write.
 - While the quit prompt is open, non-repeat Tab toggles and Enter confirms by logical key identity, every other non-repeat key cancels, and repeats do nothing; input routing consumes the event before modifier-only suppression and later dispatch.
