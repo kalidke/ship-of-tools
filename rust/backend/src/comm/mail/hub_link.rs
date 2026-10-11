@@ -26,7 +26,9 @@ const BACKOFF_CAP: Duration = Duration::from_secs(30);
 /// `PING_READ_DEADLINE`.
 const PING_EVERY: Duration = Duration::from_secs(30);
 /// How many ping intervals with no frame from the hub end the link, the hello's reply included. A live hub answers
-/// each ping. Frames, not bytes: nothing the hub sends this connection carries a blob, so each frame is one envelope
+/// each ping at once only while every request the link sends is one the hub answers at once in its connection loop
+/// (`hello`, `ping`, `agent.filed`): a request the hub awaits inline must not ride this link, or a busy hub is cut as a
+/// silent one. Frames, not bytes: nothing the hub sends this connection carries a blob, so each frame is one envelope
 /// under the codec's 1 MiB cap.
 const SILENT_PINGS: u32 = 3;
 
@@ -95,7 +97,7 @@ fn recipe_for(self_host: &str) -> Result<Option<sot_protocol::topology::ssh_brid
 /// The ssh command, for the signal to start. Tests swap the program for a stub, nothing else.
 fn spawn_link(recipe: &sot_protocol::topology::ssh_bridge::SshRecipe) -> Result<tokio::process::Command, String> {
     #[cfg(test)]
-    if let Some(program) = tests::STUB_PROGRAM.lock().unwrap().as_ref() {
+    if let Some(program) = tests::STUB_PROGRAM.with_borrow(Clone::clone) {
         let mut cmd = tokio::process::Command::new(program);
         cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
         return Ok(cmd);
@@ -141,12 +143,18 @@ async fn link_once(
         // child's tree.
         _ = sig.fired() => return Ok(()),
     };
-    if result.is_err() {
+    // A silent hub leaves ssh up: its last line is stale then, not the diagnosis.
+    if result.as_ref().is_err_and(|why| *why != silent()) {
         if let Some(line) = sot_protocol::topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
             return Err(format!("{}: {line}", result.unwrap_err()));
         }
     }
     result
+}
+
+/// Why a hub silent for `SILENT_PINGS` intervals ended the link.
+fn silent() -> String {
+    format!("nothing from the hub in {}s", (PING_EVERY * SILENT_PINGS).as_secs())
 }
 
 /// Read one frame, owning the reader's borrow and handing it back, so the loop below holds one read across its select:
@@ -192,9 +200,7 @@ where
                 next_id += 1;
                 continue;
             }
-            () = tokio::time::sleep_until(heard + silence) => {
-                return Err(format!("nothing from the hub in {}s", silence.as_secs()));
-            }
+            () = tokio::time::sleep_until(heard + silence) => return Err(silent()),
         };
         if !answered {
             if frame.kind == Kind::Res && frame.id == 1 {
@@ -337,7 +343,11 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    pub(super) static STUB_PROGRAM: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    thread_local! {
+        /// The program a link starts in place of ssh, per test thread: each test's runtime, and every link it spawns,
+        /// runs on its own thread.
+        pub(super) static STUB_PROGRAM: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    }
 
     /// The shutdown signal kills the ssh child and everything it started; the loop neither reconnects nor leaves a registered tree.
     #[cfg(unix)]
@@ -356,7 +366,7 @@ mod tests {
                 bg.display()
             ),
         );
-        *STUB_PROGRAM.lock().unwrap() = Some(stub.to_string_lossy().into_owned());
+        STUB_PROGRAM.set(Some(stub.to_string_lossy().into_owned()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
         let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", sig).await });
@@ -381,7 +391,7 @@ mod tests {
         assert!(descendant.gone(), "the link's descendant survived the shutdown");
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1, "reconnected after the fire");
-        *STUB_PROGRAM.lock().unwrap() = None;
+        STUB_PROGRAM.set(None);
     }
 
     fn setup(registry: &str, fe: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -544,6 +554,69 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// A stub ssh behind which the hub stopped: it prints a login warning on stderr, answers the hello, writes
+    /// `<dir>/said`, then stays up and silent.
+    #[cfg(unix)]
+    fn silent_hub_ssh(dir: &Path) -> String {
+        let reply = serde_json::to_string(&Frame::res(1, op::HELLO, serde_json::json!({ "ok": true }))).unwrap();
+        let (stub, said) = (dir.join("stub-ssh"), dir.join("said"));
+        let script = format!(
+            "#!/bin/sh\necho 'Warning: Permanently added hub (ED25519) to the list of known hosts.' >&2\nprintf '%s\\n' '{reply}'\n: > '{}'\nexec sleep 30\n",
+            said.display()
+        );
+        sot_log::test_exec::write_executable(&stub, script);
+        stub.to_string_lossy().into_owned()
+    }
+
+    /// A hub silent behind a live ssh ends the link with its own reason alone: ssh's last line is a stale login
+    /// warning, not the diagnosis. The cut ends the ssh tree, though ssh never exited.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_hub_ends_the_link_without_a_stale_ssh_line() {
+        let dir = tempfile::tempdir().unwrap();
+        STUB_PROGRAM.set(Some(silent_hub_ssh(dir.path())));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+        let link = tokio::spawn(async move { link_once(&recipe, "self", "sotd-self", sig).await });
+        // A running blocking task holds the paused clock, so the link has the stub's warning and reply before it waits.
+        let said = dir.path().join("said");
+        tokio::task::spawn_blocking(move || {
+            let began = Instant::now();
+            while !said.exists() {
+                assert!(began.elapsed() < Duration::from_secs(5), "the stub never spoke");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })
+        .await
+        .unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(1200), link).await.expect("the link outlived a silent hub").unwrap();
+        assert_eq!(ended, Err("nothing from the hub in 90s".to_string()));
+        assert!(sig.held_groups().is_empty(), "the cut link's ssh tree is still held");
+    }
+
+    /// A link cut for silence, its ssh still up, is dialled again, and the box never holds two links at once.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_link_cut_for_silence_is_dialled_again() {
+        let dir = tempfile::tempdir().unwrap();
+        STUB_PROGRAM.set(Some(silent_hub_ssh(dir.path())));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+        let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", sig).await });
+        // Each link is one process group. The paused clock runs the 90 s cut and the redial in a moment of real time.
+        let (began, mut seen) = (Instant::now(), Vec::new());
+        while seen.len() < 2 {
+            let held = sig.held_groups();
+            assert!(held.len() <= 1, "two links held at once: {held:?}");
+            seen.extend(held.into_iter().filter(|g| !seen.contains(g)).collect::<Vec<_>>());
+            assert!(began.elapsed() < Duration::from_secs(10), "no second link after a silence cut: {seen:?}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        sig.fire().expect("fire");
+        tokio::time::timeout(Duration::from_secs(3), task).await.expect("the link loop outlived the shutdown").expect("link task");
+        assert!(sig.held_groups().is_empty());
     }
 
     #[test]

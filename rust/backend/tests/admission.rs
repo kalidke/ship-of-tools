@@ -223,8 +223,8 @@ async fn a_second_os_account_on_one_host_is_refused_loudly() {
     env.kill_daemon_bounded().await;
 }
 
-/// Decision 1: a client that says hello and then only reads (the hub link does) is a control session at once and
-/// gets the broadcasts, with no second frame from it.
+/// Decision 1: a client that says hello and then only reads is a control session at once and gets the broadcasts,
+/// with no second frame from it (the hub link's next frame is its first `ping`, 30 s later).
 #[tokio::test]
 async fn a_connection_that_only_listens_after_its_hello_gets_broadcasts() {
     let _serial = SERIAL.lock().await;
