@@ -34,7 +34,9 @@ scripts/CLAUDE.md.
   Every leg of `test` and every shard of `test-linux` installs Julia 1.13 (`julia-actions/setup-julia`); in `test`
   before "Test workspace", and in the shard `sotd`, the step "Prepare the Julia depot the WGL page test reads" adds
   WGLMakie 0.13, precompiled, to a depot in the runner's temporary folder that `JULIA_DEPOT_PATH` names for the rest of
-  the job: the sidecar tests start that Julia, and the WGL page test adds WGLMakie from that depot offline.
+  the job: the sidecar tests start that Julia, and the WGL page test adds WGLMakie from that depot offline. The step
+  builds the depot over Julia's bundled depots and fails if the depot holds a compiled Pkg of its own, so the page
+  test's add reuses its caches and compiles only the shim.
   The heartbeat context-deadline suite runs independently on Ubuntu, macOS and Windows Git Bash. Its per-behavior and sensitivity receipts distinguish fixture entry, actual release times, hook exit, both EOFs and positive lifetime cleanup; MSYS budget coverage remains separate from native Python P5 and its termination acceptance gate.
   window-close-windows and window-close-macos run the opt-in main-thread native window_close suite on hosted Windows and macOS; a missing body, native window or required observation is not a passing result. Ordinary native close must exit 0 before 2.5 seconds without the backstop; deliberate stalled teardown must end under the three-second backstop with the decided code.
   window-minimized-windows and window-minimized-macos run the native ten-minute minimized-window event-progress check on hosted Windows and macOS; a runner without a usable native window is not a passing result.
