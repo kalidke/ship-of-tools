@@ -14,6 +14,10 @@ const BACKSTOP_EVENT: &str = "final teardown exceeded its bound";
 const ORDINARY_BOUND_MS: u128 = 2500;
 /// The held acknowledgement outlasts the three-second backstop; the second-close case never gets one.
 const HELD_ACK: Duration = Duration::from_millis(3600);
+/// How long a close child waits for the window's third frame before it fails, saying how many it drew.
+const FRAME_WAIT: Duration = Duration::from_secs(20);
+/// A child's whole bound; an overrun is ended and its output printed.
+const CHILD_BOUND: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Expect {
@@ -71,14 +75,18 @@ fn run_case(role: &str, stage: Option<&str>, expect: Expect) -> Result<()> {
     let started = Instant::now();
     let child = command.spawn()?;
     let pid = child.id();
-    let (status, out, err) = sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(60));
+    let super::native_children::Captured { status, out, err } = super::native_children::run_captured(child, CHILD_BOUND);
     let wall = started.elapsed();
     let shot = capture.exists();
     std::fs::remove_dir_all(&folder)?;
+    let Some(status) = status else {
+        anyhow::bail!("window-close {role}: the child did not finish within {CHILD_BOUND:?}:\n{out}{err}");
+    };
     if out.contains("not runnable here") || err.contains("not runnable here") {
         anyhow::bail!("window-close not runnable here: {role}: {out}{err}");
     }
     anyhow::ensure!(out.matches("native: body entered").count() == 1, "{role}: the body did not enter exactly once: {out}{err}");
+    anyhow::ensure!(!out.contains("native: frames="), "{role}: the window did not draw three frames: {out}{err}");
     if role != "capture" && !(out.contains("native: frame presented") && out.contains("native: terminal decision")) {
         // No desktop, or a lost device: nothing rendered, so nothing was proved. Never a pass.
         anyhow::bail!("window-close not runnable here: {role}: no rendered frame preceded the decision (status {status:?}): {out}{err}");
@@ -136,6 +144,7 @@ fn elapsed_ms(out: &str) -> Option<u128> {
 struct CloseDriver<'a> {
     app: &'a mut App,
     role: String,
+    begun: Instant,
     decided: Option<Instant>,
     second_due: Option<Instant>,
     stop: std::sync::Arc<AtomicBool>,
@@ -146,6 +155,13 @@ impl CloseDriver<'_> {
     fn decide(&mut self, event_loop: &ActiveEventLoop) {
         let Some(state) = self.app.state.as_mut() else { return };
         if state.frame_counter < 3 || self.role == "capture" {
+            let drawn = state.frame_counter;
+            if self.role != "capture" && self.failure.is_none() && self.begun.elapsed() > FRAME_WAIT {
+                println!("native: frames={drawn} after {FRAME_WAIT:?}");
+                self.failure = Some(anyhow::anyhow!("the window drew {drawn} frames in {FRAME_WAIT:?}; the decision needs 3"));
+                self.stop.store(true, Ordering::SeqCst);
+                event_loop.exit();
+            }
             return;
         }
         println!("native: frame presented");
@@ -282,7 +298,7 @@ fn child(role: &str) -> Result<()> {
     let (mut decided, mut failure) = (None, None);
     let result = crate::ui::init::with_native_startup(inputs, || {
         app.run_with(|app| {
-            let mut driver = CloseDriver { app, role: role.to_string(), decided: None, second_due: None, stop: stop.clone(), failure: None };
+            let mut driver = CloseDriver { app, role: role.to_string(), begun: Instant::now(), decided: None, second_due: None, stop: stop.clone(), failure: None };
             let result = event_loop.run_app(&mut driver);
             decided = driver.decided;
             failure = driver.failure.take();

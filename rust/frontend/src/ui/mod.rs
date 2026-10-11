@@ -2860,5 +2860,11 @@ pub(crate) use app::native_pane_tests::run_native_pane_timing;
 
 #[cfg(all(test, feature = "test-window-progress"))]
 pub(crate) fn run_native_window_progress() -> Result<()> {
-    app::tests::minimized_window_drains_events_for_ten_minutes()
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.as_slice() {
+        [] => app::native_children::window_progress_parent(),
+        [c, role] if c == "child" && role == "fixtures" => app::native_children::state_fixtures_child(),
+        [c, role] if c == "child" && role == "workload" => app::tests::minimized_window_drains_events_for_ten_minutes(),
+        _ => anyhow::bail!("window_minimized takes no argument, or `child fixtures` or `child workload`"),
+    }
 }

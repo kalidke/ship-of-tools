@@ -18,6 +18,8 @@ const DISPLAY_MARKER: &str = "not runnable here: display:";
 const READY_BOUND: Duration = Duration::from_secs(30);
 const RESUME_BOUND: Duration = Duration::from_secs(60);
 const CHILD_BOUND: Duration = Duration::from_secs(240);
+/// How long a child waits for its rows, three frames and the pane's size before its first switch.
+const SETUP_BOUND: Duration = Duration::from_secs(90);
 
 static FAIL_NEXT_CANDIDATE_FRAME: AtomicBool = AtomicBool::new(false);
 
@@ -116,21 +118,6 @@ fn daemon_scenario_path(daemon: &Daemon) -> std::path::PathBuf {
     daemon.endpoint_root().join("scenario.json")
 }
 
-/// Reads `pipe` to its end on a thread of its own.
-fn read_all(pipe: Option<impl std::io::Read + Send + 'static>) -> std::sync::mpsc::Receiver<String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut text = String::new();
-        if let Some(mut pipe) = pipe {
-            let mut bytes = Vec::new();
-            let _ = pipe.read_to_end(&mut bytes);
-            text = String::from_utf8_lossy(&bytes).into_owned();
-        }
-        let _ = tx.send(text);
-    });
-    rx
-}
-
 /// Runs one child with its stdin held open until it has exited, so a parent that dies takes the child with it.
 fn run_child(role: &str, scenario: &std::path::Path) -> Result<ChildRun> {
     let mut child = std::process::Command::new(std::env::current_exe()?)
@@ -142,21 +129,11 @@ fn run_child(role: &str, scenario: &std::path::Path) -> Result<ChildRun> {
         .spawn()?;
     println!("pane-timing child {role} started pid={}", child.id());
     let _stdin = child.stdin.take();
-    let (out_rx, err_rx) = (read_all(child.stdout.take()), read_all(child.stderr.take()));
-    let waited = sot_log::test_isolated::wait_until(&mut child, Instant::now() + CHILD_BOUND);
-    let out = out_rx.recv_timeout(Duration::from_secs(10)).unwrap_or_default();
-    let mut err = err_rx.recv_timeout(Duration::from_secs(10)).unwrap_or_default();
-    let ok = match &waited {
-        Ok(status) => {
-            println!("pane-timing child {role} status={status}");
-            status.success()
-        }
-        Err(e) => {
-            err.push_str(&format!("child {role} did not finish in its bound; cleanup: {e}\n"));
-            false
-        }
-    };
-    Ok(ChildRun { role: role.to_string(), ok, out, err })
+    let run = super::native_children::run_captured(child, CHILD_BOUND);
+    if let Some(status) = run.status {
+        println!("pane-timing child {role} status={status}");
+    }
+    Ok(ChildRun { role: role.to_string(), ok: run.status.is_some_and(|s| s.success()), out: run.out, err: run.err })
 }
 
 fn field(line: &str, name: &str) -> Option<String> {
@@ -285,7 +262,14 @@ impl PaneDriver<'_> {
         let Some(state) = self.app.state.as_ref() else { return Ok(false) };
         let listed = state.workspace_lists.get(HOST_KEY).is_some_and(|rows| self.plan.iter().all(|p| rows.iter().any(|r| r.slug == p.slug)));
         if !(listed && state.frame_counter >= 3 && state.pty_size.is_some()) {
-            anyhow::ensure!(self.begun.elapsed() < Duration::from_secs(90), "pane-timing setup failure: the window never listed its rows in 90 s");
+            if self.begun.elapsed() >= SETUP_BOUND {
+                // The window's own state at the bound: which of the three conditions failed, and its connection.
+                let rows: Vec<&str> = state.workspace_lists.get(HOST_KEY).map(|rows| rows.iter().map(|r| r.slug.as_str()).collect()).unwrap_or_default();
+                anyhow::bail!(
+                    "pane-timing setup failure: the window never listed its rows in {SETUP_BOUND:?}: listed={listed} rows={rows:?} frames={} pty_size={:?} status={:?}",
+                    state.frame_counter, state.pty_size, state.status
+                );
+            }
             return Ok(false);
         }
         let (cols, rows) = state.pty_size.unwrap_or((0, 0));

@@ -11,6 +11,8 @@ mod exit_process_tests;
 
 #[cfg(all(test, feature = "test-window-progress"))]
 pub(super) mod tests;
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(super) mod native_children;
 #[cfg(all(test, feature = "test-window-close"))]
 pub(super) mod native_exit_tests;
 #[cfg(all(test, feature = "test-window-close", windows))]
