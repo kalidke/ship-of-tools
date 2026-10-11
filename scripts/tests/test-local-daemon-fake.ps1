@@ -5,7 +5,7 @@
     # this file runs under (CI step `shell: powershell`). C# 5 syntax only.
     Write-Host "`n=== 7-8 setup. compile the fake daemon ===" -ForegroundColor Cyan
     if ($null -eq $envSaved) { $envSaved = @{} }
-    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG')) {
+    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR')) {
         if (-not $envSaved.ContainsKey($k)) { $envSaved[$k] = [Environment]::GetEnvironmentVariable($k) }
     }
     $fakeLocalAppData = Join-Path $root 'fakelocal'
@@ -24,6 +24,7 @@ public static class FakeSotd
     static object logLock = new object();
     static string outcome = "granted";
     static string helloRefusal = "";
+    static string holdDir = "";
 
     static void Log(string s)
     {
@@ -37,6 +38,13 @@ public static class FakeSotd
         int n;
         if (!string.IsNullOrEmpty(v) && int.TryParse(v, out n)) { return n; }
         return dflt;
+    }
+
+    // FAKE_SOTD_HOLD_DIR: a daemon slow to answer. Its reply to a hello or a lease waits until the test creates the
+    // file named for that op in this folder (hello, fe.lease), and nothing after the request is read until then (11g).
+    static void Hold(string op)
+    {
+        while (holdDir.Length > 0 && !File.Exists(Path.Combine(holdDir, op))) { Thread.Sleep(20); }
     }
 
     static void Serve(object o)
@@ -54,6 +62,7 @@ public static class FakeSotd
                 if (line.Contains("\"op\":\"hello\""))
                 {
                     // The daemon's admission (ADR 0049): a hello is answered accepted, or refused with FAKE_SOTD_HELLO_REFUSAL as its code.
+                    Hold("hello");
                     string reply = helloRefusal.Length == 0
                         ? "{\"session_id\":\"s\",\"revision\":0,\"snapshot_pending\":false}"
                         : "{\"error\":\"refused\",\"code\":\"" + helloRefusal + "\"}";
@@ -63,6 +72,7 @@ public static class FakeSotd
                 }
                 if (line.Contains("\"op\":\"fe.lease\""))
                 {
+                    Hold("fe.lease");
                     byte[] b = new UTF8Encoding(false).GetBytes(
                         "{\"v\":3,\"id\":1,\"kind\":\"res\",\"op\":\"fe.lease\",\"payload\":{\"outcome\":\"" + outcome + "\"}}\n");
                     srv.Write(b, 0, b.Length);
@@ -142,6 +152,8 @@ public static class FakeSotd
         if (!string.IsNullOrEmpty(oc)) { outcome = oc; }
         string hr = Environment.GetEnvironmentVariable("FAKE_SOTD_HELLO_REFUSAL");
         if (!string.IsNullOrEmpty(hr)) { helloRefusal = hr; }
+        string hd = Environment.GetEnvironmentVariable("FAKE_SOTD_HOLD_DIR");
+        if (!string.IsNullOrEmpty(hd)) { holdDir = hd; }
         int bindDelay = EnvInt("FAKE_SOTD_BIND_DELAY_MS", 0);
         // FAKE_SOTD_EXIT_ARM_FILE: once the test writes this file, when it starts measuring, the fake exits the number
         // of milliseconds the file holds later (sections 8a and 8b). The timer starts at the test's origin, not at this
@@ -191,7 +203,7 @@ public static class FakeSotd
     Check 'the fake daemon compiles' $compiled "Add-Type failed: $compileErr"
 
     function Clear-FakeEnv {
-        foreach ($k in @('FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG')) {
+        foreach ($k in @('FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR')) {
             Remove-Item "Env:\$k" -ErrorAction SilentlyContinue
         }
     }

@@ -259,6 +259,77 @@ try {
                 $script:child11f = $null
             }
 
+            # (g) a request the daemon has not answered is kept open with its bridge process, and its handover is
+            # written behind it, so a grant that comes later departs as that handover, not as a close (ADR 0050). The
+            # fake holds its hello reply and its lease reply until the test creates each one's file. Once the late hello
+            # reply is read, only the kept process holds the bridge's output: a collection must not close it, or the
+            # bridge ends on the lease reply, before any handover, and the daemon reads that end as a close.
+            $pipe11g = New-TestPipeName
+            $log11g = Join-Path $root 'lease11g.log'
+            $hold11g = Join-Path $root 'hold11g'
+            New-Item -ItemType Directory -Force -Path $hold11g | Out-Null
+            Clear-FakeEnv
+            $env:FAKE_SOTD_LOG = $log11g
+            $env:FAKE_SOTD_HOLD_DIR = $hold11g
+            $fake11g = Start-Process -FilePath $fakeExe -ArgumentList @('--socket', (Get-PipePath $pipe11g)) -WindowStyle Hidden -PassThru
+            $wait11gWas = $LeaseReplyWaitMs
+            $LeaseReplyWaitMs = 500
+            $global:SotLeasesUnanswered = @()
+            $child11g = $null
+            try {
+                Check '11g: the fake pipe is up' (Wait-Pipe $pipe11g) 'pipe never answered'
+                $script:supLines = @()
+                $streams11g = @(Open-SotLease (Get-PipePath $pipe11g) $realSotd)
+                Check '11g: an unanswered lease is kept' ($streams11g.Count -eq 1) "got $($streams11g.Count)"
+                Check '11g: the warning says the request is kept open' ((@($script:supLines | Where-Object { $_ -like '*has not answered the lease*keeping the request open*' })).Count -ge 1) "log: $($script:supLines -join ' | ')"
+                $kept11g = @($global:SotLeasesUnanswered)
+                Check '11g: the kept request is its bridge process, whose input is the stream' (($kept11g.Count -eq 1) -and ($kept11g[0] -is [System.Diagnostics.Process]) -and ($streams11g.Count -eq 1) -and ($kept11g[0].StandardInput.BaseStream -eq $streams11g[0])) "kept: $(@($kept11g | ForEach-Object { $_.GetType().Name }) -join ', ')"
+                Set-Content -LiteralPath (Join-Path $hold11g 'hello') -Value 'answer' -Encoding ASCII
+                $wait11g = [System.Diagnostics.Stopwatch]::StartNew()
+                do {
+                    $lines11g = @(Get-Content -LiteralPath $log11g -ErrorAction SilentlyContinue)
+                    if ($lines11g.Count -ge 2) { break }
+                    Start-Sleep -Milliseconds 50
+                } while ($wait11g.ElapsedMilliseconds -lt 10000)
+                if (($lines11g.Count -ge 2) -and $lines11g[1].Contains('"op":"fe.lease"')) {
+                    # A process object of the test's own for the bridge, for the checks and the cleanup below.
+                    $child11g = Get-Process -Id (($lines11g[1] | ConvertFrom-Json).payload.pid) -ErrorAction SilentlyContinue
+                    if ($child11g) { $null = $child11g.Handle }
+                }
+                # The fake reads the lease line only after it has written the hello reply, which reaches the read
+                # Open-SotLease left pending a moment later; these collections come after it.
+                for ($gc11g = 0; $gc11g -lt 5; $gc11g++) { [GC]::Collect(); [GC]::WaitForPendingFinalizers(); Start-Sleep -Milliseconds 100 }
+                Set-Content -LiteralPath (Join-Path $hold11g 'fe.lease') -Value 'answer' -Encoding ASCII
+                Check '11g: the kept bridge outlives a collection and the late lease reply' ($child11g -and -not $child11g.WaitForExit(2000)) "lines: $(@(Get-Content -LiteralPath $log11g -ErrorAction SilentlyContinue) -join ' | ')"
+                $global:SotLeases = $streams11g
+                Close-SotLeases
+                $wait11g = [System.Diagnostics.Stopwatch]::StartNew()
+                do {
+                    $lines11g = @(Get-Content -LiteralPath $log11g -ErrorAction SilentlyContinue)
+                    if ($lines11g.Count -ge 3) { break }
+                    Start-Sleep -Milliseconds 50
+                } while ($wait11g.ElapsedMilliseconds -lt 10000)
+                $handover11g = '{"v":3,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
+                Check '11g: the daemon then reads the handover' (($lines11g.Count -ge 3) -and ($lines11g[2] -ceq $handover11g)) "lines: $($lines11g -join ' | ')"
+                # Close-SotLeases closes no kept request: a second on, the bridge runs and the fake has read no eof.
+                $alive11g = $child11g -and -not $child11g.WaitForExit(1000)
+                $lines11g = @(Get-Content -LiteralPath $log11g -ErrorAction SilentlyContinue)
+                Check '11g: Close-SotLeases leaves the request open (no eof, the bridge alive)' ($alive11g -and ($lines11g -notcontains 'eof')) "alive $alive11g; lines: $($lines11g -join ' | ')"
+            } finally {
+                foreach ($b11g in @($global:SotLeasesUnanswered)) {
+                    try { $b11g.StandardInput.Close() } catch { }
+                    try { $b11g.Dispose() } catch { }
+                }
+                $global:SotLeasesUnanswered = @()
+                $LeaseReplyWaitMs = $wait11gWas
+                if ($child11g) {
+                    if (-not $child11g.WaitForExit(10000)) { $child11g.Kill() }
+                    $child11g.Dispose()
+                }
+                if ($fake11g -and -not $fake11g.HasExited) { Stop-Process -Id $fake11g.Id -Force -ErrorAction SilentlyContinue }
+                Clear-FakeEnv
+            }
+
             # (c) the boot identity is stable and numeric
             $b1 = Get-SotBootId; $b2 = Get-SotBootId
             Check '11c: Get-SotBootId is stable' ($b1 -ceq $b2) "got '$b1' then '$b2'"
@@ -326,19 +397,26 @@ try {
     }
     $old16 = @($launchAst.FindAll({ param($n) ($n -is [System.Management.Automation.Language.VariableExpressionAst]) -and $n.Extent.Text -eq '$script:convergeLeases' }, $true))
     Check '16d: no script-scoped lease list remains' ($old16.Count -eq 0) "found $($old16.Count) uses of `$script:convergeLeases"
-    $sets16 = @(foreach ($ast16 in @($launchAst, $leaseAst)) { $ast16.FindAll({ param($n)
-        ($n -is [System.Management.Automation.Language.AssignmentStatementAst]) -and
-        $n.Operator -eq [System.Management.Automation.Language.TokenKind]::Equals -and
-        $n.Left.Extent.Text -eq '$global:SotLeases' }, $true) })
-    $bad16 = @($sets16 | Where-Object {
-        $q = $_.Parent; $ok = $false
-        while ($q) {
-            if (($q -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $q.Name -eq 'Close-SotLeases') { $ok = $true }
-            if (($q -is [System.Management.Automation.Language.IfStatementAst]) -and ($q.Clauses[0].Item1.Extent.Text -match '\$null -eq \$global:SotLeases')) { $ok = $true }
-            $q = $q.Parent
-        }
-        -not $ok })
-    Check '16d: $global:SotLeases is set only when unset, or by Close-SotLeases' (($sets16.Count -ge 2) -and ($bad16.Count -eq 0)) "assignments $($sets16.Count), unguarded $($bad16.Count): $(@($bad16 | ForEach-Object { $_.Extent.Text }) -join ' | ')"
+    # Both lease lists are append only (launch-sot.ps1): assigned with = only where unset, and emptied only by
+    # Close-SotLeases ($global:SotLeases) or never ($global:SotLeasesUnanswered).
+    foreach ($list16 in @('SotLeases', 'SotLeasesUnanswered')) {
+        $own16 = $list16 -eq 'SotLeases'
+        $sets16 = @(foreach ($ast16 in @($launchAst, $leaseAst)) { $ast16.FindAll({ param($n)
+            ($n -is [System.Management.Automation.Language.AssignmentStatementAst]) -and
+            $n.Operator -eq [System.Management.Automation.Language.TokenKind]::Equals -and
+            $n.Left.Extent.Text -eq ('$global:' + $list16) }, $true) })
+        $bad16 = @($sets16 | Where-Object {
+            $q = $_.Parent; $ok = $false
+            while ($q) {
+                if ($own16 -and ($q -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $q.Name -eq 'Close-SotLeases') { $ok = $true }
+                if (($q -is [System.Management.Automation.Language.IfStatementAst]) -and ($q.Clauses[0].Item1.Extent.Text -ceq ('$null -eq $global:' + $list16))) { $ok = $true }
+                $q = $q.Parent
+            }
+            -not $ok })
+        $name16 = if ($own16) { '16d: $global:SotLeases is set only when unset, or by Close-SotLeases' } else { '16d: $global:SotLeasesUnanswered is set only when unset' }
+        $min16 = if ($own16) { 2 } else { 1 }
+        Check $name16 (($sets16.Count -ge $min16) -and ($bad16.Count -eq 0)) "assignments $($sets16.Count), unguarded $($bad16.Count): $(@($bad16 | ForEach-Object { $_.Extent.Text }) -join ' | ')"
+    }
     if ($compiled) {
         foreach ($fname in @('Get-SotBootId', 'Open-SotLease', 'Start-SotBridge')) {
             $fn = $leaseAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)

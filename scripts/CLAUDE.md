@@ -86,7 +86,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `sot-hosts.ps1`: reads `sotd topology plan` output and runs `topology sync`.
 - `sot-install-layout.ps1`: the pinned-checkout test, the shortcut target, the launcher code id, the first-launch install layout and offline trust declaration delegation.
 - `sot-freshness.ps1`: the armed update's apply, the dev pull's rebuild and the comm install, run before a window starts.
-- `sot-lease.ps1`: opens a lease on this computer's daemon, hands every lease over to the window, and starts the bridge (`Start-SotBridge`) for the lease and `sot-local-daemon.ps1`'s probe.
+- `sot-lease.ps1`: opens a lease on this computer's daemon, hands every lease over to the window, and starts the bridge (`Start-SotBridge`) for the lease and `sot-local-daemon.ps1`'s probe. A request the daemon has not answered within `$LeaseReplyWaitMs` is kept open, its bridge process held for the supervisor's life (`$global:SotLeasesUnanswered`), with its handover written behind it, since closing it could end the computer's sessions.
 - `relaunch-sot.ps1`: builds the window and drops the relaunch sentinel.
 - `shutdown-sot.ps1`: ordered local teardown.
 ### Dev and docs

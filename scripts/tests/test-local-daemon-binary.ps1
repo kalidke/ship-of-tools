@@ -54,9 +54,11 @@
         # once, so an encoding with a preamble (the UTF-8 BOM) reaches the bridge before the caller's first byte. The
         # child is a hidden powershell.exe with a console of its own, as the launcher is. It gives that console an
         # input encoding with a BOM, then runs the production lease (Open-SotLease) and probe (Test-SotPipeOpen,
-        # read from sot-local-daemon.ps1) against the fake bridge, which records in hex every byte it reads. The lease's
-        # bridge must read the hello first; the probe's must read nothing. This step's own console encoding is printed
-        # first: whether it has a preamble decides whether this step's lease and probe (5b, 4b, 5b2) see a BOM.
+        # read from sot-local-daemon.ps1) against the fake bridge, which records in hex every byte it reads, once its
+        # input ends. The lease's bridge must read the hello first; the probe's must read nothing. That bridge never
+        # answers, so the lease is kept unanswered (one stream), and the child closes the kept bridge's input and waits
+        # for it to exit. This step's own console encoding is printed first: whether it has a preamble decides whether
+        # this step's lease and probe (5b, 4b, 5b2) see a BOM.
         try {
             $enc7c = [Console]::InputEncoding
             Write-Host ("  this step's console input encoding: code page {0}, preamble [{1}]" -f $enc7c.CodePage, [BitConverter]::ToString($enc7c.GetPreamble()))
@@ -80,6 +82,7 @@ try {
     [Console]::InputEncoding = [System.Text.Encoding]::UTF8
     $env:FAKE_SOTD_STDIN_LOG = $LeaseLog
     $leases = @(Open-SotLease '\\.\pipe\sot-test-7c' $Exe)
+    foreach ($b in $global:SotLeasesUnanswered) { $b.StandardInput.Close(); $null = $b.WaitForExit(10000) }
     $env:FAKE_SOTD_STDIN_LOG = $ProbeLog
     $daemonExe = $Exe
     $open = Test-SotPipeOpen 'sot-test-7c'
@@ -99,7 +102,7 @@ try {
             $hello7c = [BitConverter]::ToString([System.Text.Encoding]::ASCII.GetBytes('{"v":3,"id":0,"kind":"req","op":"hello"'))
             $head7c = if ($gotLease7c.Length -gt 48) { $gotLease7c.Substring(0, 48) + '...' } else { $gotLease7c }
             Write-Host ("  7c reads: the lease's bridge [{0}], the probe's bridge [{1}]" -f $head7c, $gotProbe7c)
-            Check '7c: the child ran the lease and the probe, and its console input encoding was put back' ($report7c -ceq 'leases=0 probe=True restored=True') "child: $report7c"
+            Check '7c: the child ran the lease and the probe, and its console input encoding was put back' ($report7c -ceq 'leases=1 probe=True restored=True') "child: $report7c"
             Check '7c: the lease''s bridge reads its caller''s hello first' ($gotLease7c.StartsWith($hello7c)) "read [$head7c]"
             Check '7c: the probe''s bridge reads no byte' ($gotProbe7c -ceq '') "read [$gotProbe7c]"
         } finally {
