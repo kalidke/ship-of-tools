@@ -118,14 +118,14 @@ impl Redraw for NoWindow {
     fn request_redraw(&self) {}
 }
 
-/// A fake daemon on one end of an in-memory stream: answers the hello
-/// with `hello_reply`, then (when `answer_preamble`) answers the
-/// tree.root and preview.get preamble with an `{error}` payload, and
-/// holds the stream open until `hold` is dropped.
+/// A fake daemon on one end of an in-memory stream: answers the first
+/// `answered` requests (the hello with `hello_reply`, then the tree.root
+/// and preview.get preamble with an `{error}` payload), then falls silent
+/// and holds the stream open until `hold` is dropped.
 async fn run_against_fake_daemon(
     host: &str,
     hello_reply: serde_json::Value,
-    answer_preamble: bool,
+    answered: usize,
     gate: sot_protocol::topology::ssh_bridge::LinkGate,
 ) -> (
     tokio::task::JoinHandle<Result<()>>,
@@ -138,14 +138,14 @@ async fn run_against_fake_daemon(
     let daemon = tokio::spawn(async move {
         let (rx, mut tx) = tokio::io::split(far);
         let mut rx = codec::buffered(rx);
-        let (hello, _) = codec::read_frame(&mut rx).await.unwrap();
-        codec::write_frame(&mut tx, &Frame::res(hello.id, op::HELLO, hello_reply).with_rev(0), None).await.unwrap();
-        if answer_preamble {
-            for _ in 0..2 {
-                let (req, _) = codec::read_frame(&mut rx).await.unwrap();
-                let err = serde_json::json!({ "error": "cannot read the default directory", "code": "io" });
-                codec::write_frame(&mut tx, &Frame::res(req.id, &req.op, err).with_rev(0), None).await.unwrap();
-            }
+        for n in 0..answered {
+            let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+            let reply = if n == 0 {
+                hello_reply.clone()
+            } else {
+                serde_json::json!({ "error": "cannot read the default directory", "code": "io" })
+            };
+            codec::write_frame(&mut tx, &Frame::res(req.id, &req.op, reply).with_rev(0), None).await.unwrap();
         }
         let _ = hold_rx.await;
     });
@@ -181,7 +181,7 @@ async fn the_gate_is_up_after_the_hello_reply_and_down_when_the_session_ends() {
     let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
     gate.set_up(false);
     let (session, daemon, evt_rx, hold) =
-        run_against_fake_daemon("gate-test-up-down", hello_ok(), true, gate.clone()).await;
+        run_against_fake_daemon("gate-test-up-down", hello_ok(), 3, gate.clone()).await;
     let t0 = std::time::Instant::now();
     while evt_rx.try_recv().map_or(true, |(_, e)| !matches!(e, IncomingEvt::Connected { .. })) {
         assert!(t0.elapsed() < std::time::Duration::from_secs(5), "no Connected event");
@@ -202,7 +202,7 @@ async fn a_protocol_mismatch_reply_leaves_the_gate_up() {
     gate.set_up(false);
     let reply = serde_json::json!({ "error": "protocol skew", "code": "protocol_mismatch" });
     let (session, _daemon, _evt_rx, _hold) =
-        run_against_fake_daemon("gate-test-mismatch", reply, false, gate.clone()).await;
+        run_against_fake_daemon("gate-test-mismatch", reply, 1, gate.clone()).await;
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.unwrap().unwrap();
     assert!(result.unwrap_err().is::<HelloRefused>());
     assert!(gate.is_up(), "a refusal is a reply: the link is up");
@@ -221,7 +221,7 @@ async fn a_refused_hello_is_shown_whatever_its_code() {
     ] {
         let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
         let reply = serde_json::json!({ "error": error, "code": code });
-        let (session, _daemon, evt_rx, _hold) = run_against_fake_daemon("hello-refused", reply, false, gate).await;
+        let (session, _daemon, evt_rx, _hold) = run_against_fake_daemon("hello-refused", reply, 1, gate).await;
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.unwrap().unwrap();
         assert!(result.unwrap_err().is::<HelloRefused>(), "{code}");
         let mut shown = None;
@@ -244,12 +244,45 @@ async fn a_tree_root_error_reply_does_not_end_the_session() {
     let _env = crate::net::state::test_env::set_test_env();
     let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
     let (session, _daemon, _evt_rx, _hold) =
-        run_against_fake_daemon("gate-test-tree-root", hello_ok(), true, gate.clone()).await;
+        run_against_fake_daemon("gate-test-tree-root", hello_ok(), 3, gate.clone()).await;
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     assert!(!session.is_finished(), "the session must still be connected after 1 s");
     assert!(gate.is_up());
     session.abort();
     let _ = session.await;
+}
+
+/// Every reply the connect path waits for arrives within `CONNECT_REPLY_BOUND`, or the attempt ends with an error
+/// naming its step; `spawn` shows that error as the `Disconnected` reason, and the status line as `disconnected ·
+/// <reason>`. The daemon falls silent after answering `answered` requests: before the hello's reply, before
+/// tree.root's, before preview.get's. On a paused clock the bound runs at its real 30 s; a read with no bound never
+/// returns, and the row fails at twice the bound.
+#[tokio::test(start_paused = true)]
+async fn a_daemon_that_falls_silent_during_connect_ends_the_attempt_naming_the_step() {
+    let _env = crate::net::state::test_env::set_test_env();
+    // `CONNECT_REPLY_BOUND`, at the 30 s the fe-net charter promises.
+    let bound = std::time::Duration::from_secs(30);
+    for (answered, step) in [(0, "hello"), (1, "tree.root"), (2, "preview.get")] {
+        let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+        let started = tokio::time::Instant::now();
+        let (session, _daemon, evt_rx, _hold) =
+            run_against_fake_daemon("connect-silent", hello_ok(), answered, gate.clone()).await;
+        let waited = bound * 2;
+        let result = tokio::time::timeout(waited, session)
+            .await
+            .unwrap_or_else(|_| panic!("silent before the {step} reply: still waiting after {waited:?}"))
+            .unwrap();
+        let elapsed = started.elapsed();
+        let err = format!("{:#}", result.expect_err("a silent daemon cannot end the attempt in success"));
+        assert_eq!(err, format!("{step} reply timed out after {bound:?}"));
+        let late = std::time::Duration::from_secs(1);
+        assert!(elapsed >= bound && elapsed < bound + late, "{step}: ended after {elapsed:?}");
+        let connected =
+            std::iter::from_fn(|| evt_rx.try_recv().ok()).any(|(_, e)| matches!(e, IncomingEvt::Connected { .. }));
+        assert_eq!(connected, answered > 0, "{step}: Connected is shown exactly when the hello was answered");
+        assert!(!gate.is_up(), "{step}: the link gate is down once the attempt has ended");
+        println!("connect-silent: silent before the {step} reply -> \"{err}\" after {elapsed:?}");
+    }
 }
 
 

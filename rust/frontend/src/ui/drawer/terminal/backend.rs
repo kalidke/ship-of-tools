@@ -48,7 +48,7 @@ impl State {
         };
         let controller_id = self_comm_handle();
         let fe_down_to = self_comm_handle();
-        let waker = self.window.clone();
+        let wake = self.wake.clone();
         match sot_log::attach_client::client::FeAttachClient::attach(
             sot_log::lane::client::PlatformEndpoint::default(),
             sot_log::host::state_dir::state_dir_hash(&state_dir),
@@ -57,7 +57,7 @@ impl State {
             controller_id,
             fe_down_to,
             None,
-            Box::new(move || waker.request_redraw()),
+            Box::new(move || wake.wake()),
         ) {
             Ok(c) => {
                 tracing::info!("fe attach-only client attaching");

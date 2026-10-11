@@ -97,6 +97,8 @@ portable-pty = "0.9"
 [dev-dependencies]
 # `test_log`, through which every subscriber a test installs goes, and `test_scan`, through which this crate's source scans read the source (dev-only: resolver 2 keeps the feature out of builds).
 sot-log = { path = "../log", features = ["test-support"] }
+# `start_paused` test runtimes: the connect-reply bound is tested at its real 30 s on a paused clock.
+tokio = { workspace = true, features = ["test-util"] }
 
 # Windows-only: force the relaunched window to the OS foreground. winit's
 # focus_window() is blocked by the Win32 foreground lock for a freshly
@@ -122,6 +124,9 @@ winresource = "0.1"
 
 [features]
 test-window-progress = []
+# The minimized target's mutation leg: its transport wakes the window by a `Window` call from its own thread, as every
+# transport did before `MainWake`. On macOS the visible phase must then fail its lateness bound (rust.yml).
+test-mac-redraw-mutation = ["test-window-progress"]
 # The window_close target reuses the in-memory startup seam of the progress target.
 test-window-close = ["test-window-progress", "windows-sys/Win32_System_EventLog"]
 # The pane_timing target reuses the progress target's in-memory startup and the protocol's test-only ssh fixture command.

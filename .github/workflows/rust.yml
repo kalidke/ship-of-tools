@@ -49,7 +49,8 @@ jobs:
   window-minimized-windows:
     name: native minimized window (Windows)
     runs-on: windows-latest
-    timeout-minutes: 18
+    # Worst case: build up to 300 s, the fixtures child up to 120 s, the workload up to 780 s, about 1200 s in all.
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: rust
@@ -67,7 +68,8 @@ jobs:
   window-minimized-macos:
     name: native minimized window (macOS)
     runs-on: macos-latest
-    timeout-minutes: 18
+    # Worst case: build up to 300 s, the fixtures child up to 120 s, the workload up to 780 s, about 1200 s in all.
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: rust
@@ -82,10 +84,46 @@ jobs:
       - name: Prove native minimized workload and progress
         run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
 
+  window-minimized-macos-mutation:
+    name: native minimized window, MAC-REDRAW mutation leg, expected red (macOS)
+    runs-on: macos-latest
+    # Its worst case is the same target's: build up to 300 s, the fixtures child up to 120 s, the workload child up to
+    # its own 780 s bound if it hangs before the visible verdict, about 1200 s in all. 25 minutes lets the parent print
+    # its verdict rather than the job be cancelled.
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # MAC-REDRAW's red, shown in the same run: with the off-main `Window` call restored, the visible phase's held
+      # window thread must stall the transport past the lateness bound. The job passes only if that red is printed.
+      - name: Mutation leg, expected red (MAC-REDRAW)
+        shell: bash
+        run: |
+          set +e
+          cargo test -p sot-frontend --test window_minimized --features test-mac-redraw-mutation --locked > mutation.log 2>&1
+          rc=$?
+          grep -E "phase=completed|^mac-redraw-mutation|^Error" mutation.log
+          if grep -q "mac-redraw-mutation visible failures=.*workload_rate" mutation.log; then
+            echo "mac-redraw mutation: red as expected (exit $rc)"
+          else
+            echo "mac-redraw mutation: the off-main redraw did not fail the visible phase's lateness bound (exit $rc)"
+            exit 1
+          fi
+
   window-close-windows:
     name: native window close (Windows)
     runs-on: windows-latest
-    timeout-minutes: 15
+    # Worst case on Windows: about 4.5 min to Running, 11 cases each overrunning about 62 s, about 1 min of passing
+    # ones: about 17 min.
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: rust
@@ -103,7 +141,8 @@ jobs:
   window-close-macos:
     name: native window close (macOS)
     runs-on: macos-latest
-    timeout-minutes: 15
+    # As window-close-windows: every case runs, so up to 11 overruns of about 62 s each.
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: rust

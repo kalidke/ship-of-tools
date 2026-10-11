@@ -183,7 +183,8 @@ fn ordinary_startup() -> Result<()> {
         None
     };
 
-    let app = ui::App::new(evt_rx, rt, cli, evt_tx, conns, Some(pending_transports), leases);
+    let wake = ui::MainWake::new(event_loop.create_proxy());
+    let app = ui::App::new(evt_rx, rt, cli, evt_tx, conns, Some(pending_transports), leases, wake);
     app.run(event_loop)?;
     Ok(())
 }

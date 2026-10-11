@@ -45,7 +45,7 @@ pub(crate) fn resolve_monitor_host(
 
 /// One host's not-yet-spawned transport: the endpoint config plus the
 /// receiver half of that host's own outgoing-request channel. Held on `App`
-/// until `resumed()` has a window (and thus an `Arc<Window>` to hand each
+/// until `resumed()` has a window (and thus a `MainWake` to hand each
 /// transport task) — ADR 0042 L2a, the N-host generalisation of the old
 /// single `req_rx`.
 pub(crate) type PendingTransport = (
@@ -141,7 +141,7 @@ pub(crate) fn spawn_transports(
     rt: &tokio::runtime::Runtime,
     transports: Vec<PendingTransport>,
     evt_tx: &std::sync::mpsc::Sender<(HostKey, crate::net::transport::IncomingEvt)>,
-    window: &std::sync::Arc<winit::window::Window>,
+    wake: &crate::ui::MainWake,
     leases: &std::sync::Arc<crate::lease::Leases>,
     hosts: &mut HostTable,
 ) {
@@ -161,7 +161,7 @@ pub(crate) fn spawn_transports(
             config,
             evt_tx.clone(),
             req_rx,
-            window.clone(),
+            wake.clone(),
             hosts.reconnect_now.clone(),
             gate,
             leases.clone(),

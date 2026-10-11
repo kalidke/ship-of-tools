@@ -53,6 +53,7 @@ pub(super) fn native_child(ledger: Arc<Mutex<NativeProgressLedger>>) -> Result<N
         vec![(HOST.to_string(), req_tx)],
         None,
         crate::lease::Leases::new(true, Vec::new()),
+        MainWake::new(event_loop.create_proxy()),
     );
     let inputs = crate::ui::init::NativeStartupInputs {
         resume: crate::ui::persist::resume::GlobalState {

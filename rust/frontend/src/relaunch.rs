@@ -124,7 +124,7 @@ pub(crate) fn force_os_foreground(window: &winit::window::Window) -> bool {
 pub(crate) fn spawn_watcher(
     sentinel: std::path::PathBuf,
     flag: std::sync::Arc<std::sync::atomic::AtomicU8>,
-    waker: std::sync::Arc<winit::window::Window>,
+    wake: crate::ui::MainWake,
 ) {
     if let Err(e) = std::thread::Builder::new()
         .name("sot-relaunch-watch".to_string())
@@ -156,7 +156,7 @@ pub(crate) fn spawn_watcher(
                     if is_converge { 76 } else { 75 },
                     std::sync::atomic::Ordering::Relaxed,
                 );
-                waker.request_redraw();
+                wake.wake();
                 break;
             }
         })

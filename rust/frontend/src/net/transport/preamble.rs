@@ -1,4 +1,5 @@
-//! The connect preamble: after the hello, one tree.root and one preview.get of the default root.
+//! The connect preamble: after the hello, one tree.root and one preview.get of the default root, each reply within
+//! `CONNECT_REPLY_BOUND`.
 
 use super::*;
 
@@ -30,7 +31,7 @@ where
         None,
     )
     .await?;
-    let (frame, _) = codec::read_frame(&mut rx).await?;
+    let (frame, _) = read_connect_reply(&mut rx, op::TREE_ROOT).await?;
     note_revision(frame.rev, &mut session.memory, host, &mut session.gate);
     // Hold the root node id so preview.get can target it without hardcoding
     // the backend's id-format conventions in the frontend. Today files mode
@@ -90,7 +91,7 @@ where
         None,
     )
     .await?;
-    let (frame, blob) = codec::read_frame(&mut rx).await?;
+    let (frame, blob) = read_connect_reply(&mut rx, op::PREVIEW_GET).await?;
     note_revision(frame.rev, &mut session.memory, host, &mut session.gate);
     if frame.id == prev_id && frame.payload.get("error").is_some() {
         // Same rule as the tree.root preamble: with no readable root there

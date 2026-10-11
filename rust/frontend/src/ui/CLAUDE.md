@@ -21,8 +21,11 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
 - Daemon events are applied only on the UI thread, at the top of each frame: `State::drain_events` (events.rs) is called
   from `State::frame_upkeep` (app/frame.rs). It only routes: one arm per `IncomingEvt` variant, each calling
   `on_<variant>` in its owner's `replies.rs`, and no wildcard arm, so a new variant does not compile until routed.
-- Other threads reach the window only by `Window::request_redraw` (the relaunch watcher, the `FeAttachClient` wake
-  closure in agent_pane/attach.rs, page_proxy.rs).
+- Other threads reach the window only through `MainWake::wake` (app/mod.rs): the transports, the relaunch and
+  fe-command watchers, the drawer terminal's reader and the `FeAttachClient` wake closures (agent_pane/attach.rs, and
+  the Windows attach-only drawer in drawer/terminal/backend.rs). `State`'s window is a `MainWindow`, which is `!Send`, so no other thread holds it, and `create_window` returns it
+  directly: no bare `Arc<Window>` exists outside it and wgpu's surface; on macOS a `Window` call from
+  another thread waits for the frame being drawn.
 - An action resolves only if `help::Context::allows` it (input/keypress.rs passes it to the resolver), so help and
   dispatch cannot disagree.
 - Preview and concept replies require the current generation, host and workspace. Result-owned tree replies also require the currently listed canonical row and issuing result/attempt before active or parked tree installation and reveal effects; ordinary nav replies retain their tree-key routing.

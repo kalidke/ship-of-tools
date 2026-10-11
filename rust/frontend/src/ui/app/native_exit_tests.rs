@@ -242,6 +242,7 @@ impl ApplicationHandler for CloseDriver<'_> {
         self.app.about_to_wait(event_loop);
     }
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
+        self.app.user_event(event_loop, ());
         if self.second_due.is_some() {
             self.second_close(event_loop);
         } else if self.decided.is_none() {
@@ -292,7 +293,7 @@ fn child(role: &str) -> Result<()> {
         "second-close" => leased(Duration::from_secs(30)).map(|(r, l, g)| (Some(r), l, Some(g)))?,
         _ => (None, crate::lease::Leases::new(true, Vec::new()), None),
     };
-    let mut app = App::new(evt_rx, rt, cli, evt_tx, vec![("<host>".to_string(), req_tx)], None, leases);
+    let mut app = App::new(evt_rx, rt, cli, evt_tx, vec![("<host>".to_string(), req_tx)], None, leases, MainWake::new(proxy.clone()));
     let inputs = crate::ui::init::NativeStartupInputs {
         resume: crate::ui::persist::resume::GlobalState { window_w: Some(640.0), window_h: Some(480.0), ..Default::default() },
         topology: None,

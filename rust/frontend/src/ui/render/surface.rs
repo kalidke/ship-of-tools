@@ -162,14 +162,14 @@ pub(in crate::ui) struct GpuSurface {
     pub(in crate::ui) surface: wgpu::Surface<'static>,
 }
 
-pub(in crate::ui) fn create_gpu_surface(window: &Arc<Window>, settings: &Settings) -> Result<GpuSurface> {
+pub(in crate::ui) fn create_gpu_surface(window: &MainWindow, settings: &Settings) -> Result<GpuSurface> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
         ..Default::default()
     });
 
-    let surface = instance
-        .create_surface(window.clone())
+    let surface = window
+        .create_surface(&instance)
         .context("failed to create wgpu surface")?;
 
     // We draw glyph quads and image blits — a 2D workload an integrated

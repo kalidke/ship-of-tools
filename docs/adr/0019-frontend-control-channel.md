@@ -3,6 +3,10 @@
 **Status:** current — accepted.
 **Date:** 2026-05-29
 
+> **Amended 2026-10-10 (0.6.6):** a thread other than the window's wakes it only through `MainWake::wake`
+> (`rust/frontend/src/ui/app/mod.rs`), never a `Window` call: on macOS winit runs such a call on the main thread and
+> waits there for the frame being drawn. The window's handle in `State` is `!Send`.
+
 ## Context
 
 The dev `claude` runs inside the frontend's Terminal drawer (ADR 0016/0017) and

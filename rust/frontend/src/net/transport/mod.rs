@@ -44,8 +44,6 @@ use sot_protocol::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{self as tmpsc, UnboundedReceiver, UnboundedSender};
 
-use winit::window::Window;
-
 mod event;
 mod hello;
 mod ops;
@@ -66,6 +64,7 @@ use request::send_request;
 
 // The transport's interface: what code outside this folder names.
 pub(crate) use self::{
+    hello::read_connect_reply,
     event::{IncomingEvt, ResultTreeReply},
     ops::{
         AccountInfo, ConceptWriteResult, DefinitionInfo, DirCreateResult, DirEntry,
@@ -424,9 +423,10 @@ pub(crate) trait Redraw {
     fn request_redraw(&self);
 }
 
-impl Redraw for Arc<Window> {
+/// Never a winit call from here: on macOS it would wait for the window's thread (`MainWake`).
+impl Redraw for crate::ui::MainWake {
     fn request_redraw(&self) {
-        Window::request_redraw(self);
+        self.wake();
     }
 }
 
@@ -565,17 +565,18 @@ where
 }
 
 #[cfg(all(test, feature = "test-window-progress"))]
-pub(crate) async fn run_native_progress_transport<R, W>(
+pub(crate) async fn run_native_progress_transport<R, W, Wn>(
     rx: tokio::io::BufReader<R>,
     tx: W,
     host: HostKey,
     evt_tx: &StdSender<(HostKey, IncomingEvt)>,
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
-    window: &Arc<Window>,
+    window: &Wn,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
+    Wn: Redraw,
 {
     let mut pending = PendingGuard {
         map: HashMap::new(),

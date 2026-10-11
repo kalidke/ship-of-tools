@@ -19,6 +19,7 @@ impl State {
             tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
         )>,
         leases: Arc<crate::lease::Leases>,
+        wake: MainWake,
     ) -> Result<Self> {
         let launch = load_launch_inputs(&conns);
         let window =
@@ -51,6 +52,7 @@ impl State {
             evt_rx,
             conns,
             leases,
+            wake,
             launch,
             window,
             metrics,
@@ -210,7 +212,7 @@ fn create_window(
     persisted_geom: &crate::ui::persist::resume::GlobalState,
     init_w: f64,
     init_h: f64,
-) -> Result<Arc<Window>> {
+) -> Result<MainWindow> {
     // Cross-platform window icon, decoded at runtime from the logo PNG that is
     // embedded into the binary at compile time — no Windows .rc/winres
     // resource compiler, so the build needs no extra tooling and is identical
@@ -258,7 +260,7 @@ fn create_window(
     if persisted_geom.fullscreen == Some(true) || cli.start_fullscreen {
         attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
     }
-    let window = Arc::new(
+    let window = MainWindow::new(
         event_loop
             .create_window(attrs)
             .context("failed to create winit window")?,
@@ -279,7 +281,7 @@ pub(super) struct CellMetrics {
     pub(super) chrome_origin_y: f32,
 }
 
-fn compute_cell_metrics(cli: &crate::cli::Cli, window: &Arc<Window>) -> CellMetrics {
+fn compute_cell_metrics(cli: &crate::cli::Cli, window: &Window) -> CellMetrics {
     // Combined scale: OS DPR for HiDPI displays + user override.
     let scale = (cli.scale * window.scale_factor() as f32).max(0.5);
     tracing::info!(

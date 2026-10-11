@@ -8,8 +8,9 @@ pub(super) struct StartupParts {
         std::sync::mpsc::Receiver<(crate::net::dial::HostKey, crate::net::transport::IncomingEvt)>,
     pub(super) conns: Vec<(crate::net::dial::HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)>,
     pub(super) leases: Arc<crate::lease::Leases>,
+    pub(super) wake: MainWake,
     pub(super) launch: LaunchInputs,
-    pub(super) window: Arc<Window>,
+    pub(super) window: MainWindow,
     pub(super) metrics: CellMetrics,
     pub(super) gpu: GpuSurface,
     pub(super) text_grid: TextGrid,
@@ -30,7 +31,7 @@ impl State {
         parts: StartupParts,
     ) -> Self {
         let StartupParts {
-            evt_rx, conns, leases, launch, window, metrics, gpu, text_grid, solid, logos,
+            evt_rx, conns, leases, wake, launch, window, metrics, gpu, text_grid, solid, logos,
             preview_png, content, repo_dir, harness, want_terminal_init,
         } = parts;
         let LaunchInputs {
@@ -49,6 +50,7 @@ impl State {
         } = content;
         Self {
             window,
+            wake,
             surface,
             device,
             queue,
