@@ -70,7 +70,8 @@ scripts/CLAUDE.md.
   carries `#[allow(clippy::too_many_lines, reason = "...")]`. The step also reads the feature-gated native targets
   (test-pane-timing, test-window-close). "Check the layout" pins how many such allows `rust/` holds (not `rust/vt100`):
   the `too-many-lines` line of `scripts/tests/check-layout.allow`; a rise fails, and removing one means lowering that
-  number in the same commit.
+  number in the same commit. It also fails on a crate-level allow, a Cargo.toml or clippy.toml setting, or a clippy
+  line that loosens the lint without moving the count.
 - Disallowed methods are gated: the `rust.yml` step "Disallowed methods" runs clippy's `disallowed_methods` over every
   library, binary and build script on all three platforms. `rust/clippy.toml` holds one array in labelled groups, each
   opening with its rule. A sanctioned site carries `#[allow(clippy::disallowed_methods, reason = "...")]` on the one

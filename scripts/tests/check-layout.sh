@@ -316,6 +316,21 @@ if pin_line is not None:
 n_allowances = sum(1 for f in tracked
                    if f.startswith("rust/") and f.endswith(".rs") and not f.startswith(ALLOWANCE_SKIP)
                    for ln in read(f).splitlines() if ALLOWANCE in ln)
+# The forms that loosen the function-length gate without moving that count each fail too.
+LOOSENERS = [
+    (lambda f: f.endswith(".rs"), r"#!\[\s*(allow|expect)\s*\([^\]]*clippy::too_many_lines",
+     "a crate-level allow of clippy::too_many_lines (it allows every function in its crate)"),
+    (lambda f: os.path.basename(f) == "Cargo.toml",
+     r"(?m)^\s*too_many_lines\s*=\s*(\"(allow|warn)\"|\{[^}]*level\s*=\s*\"(allow|warn)\")",
+     "a Cargo.toml allows or warns the too_many_lines lint"),
+    (lambda f: os.path.basename(f) in ("clippy.toml", ".clippy.toml"), r"too-many-lines-threshold",
+     "a clippy.toml moves too-many-lines-threshold"),
+]
+loosened = [(f, why) for f in tracked if f.startswith("rust/") and not f.startswith(ALLOWANCE_SKIP)
+            for match, rx, why in LOOSENERS if match(f) and re.search(rx, read(f))]
+loosened += [(f, "a clippy line allows or warns clippy::too_many_lines") for f in tracked
+             if f.startswith(".github/workflows/")
+             and re.search(r"(-A|--allow|-W|--warn)[ =]clippy::too_many_lines", read(f))]
 
 nv = na = ne = 0
 used = {("too-many-lines", "rust")}
@@ -339,6 +354,9 @@ if n_allowances != pin:
     print("VIOLATION too-many-lines rust %d allowances, pinned %d: %s" % (n_allowances, pin,
           "the count rose; split the function instead of allowing it" if n_allowances > pin else
           "the count fell; lower the pin to %d in the allow file in this commit" % n_allowances))
+for f, why in loosened:
+    nv += 1
+    print("VIOLATION too-many-lines %s %s" % (f, why))
 print("too-many-lines: %d allowances in rust (pinned: %d)" % (n_allowances, pin))
 print("violations: %d, allowed: %d, exempt: %d, unused-allow: %d, folders checked: %d"
       % (nv, na, ne, len(unused), len(folders)))

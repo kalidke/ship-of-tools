@@ -131,6 +131,10 @@ Each violation is `VIOLATION <kind> <path> <detail>`:
   `clippy::too_many_lines` must number exactly the pin, the allow file's line `too-many-lines rust <n> <reason>` (no
   line pins 0; a pin that does not start with a number is a usage error). The count can only fall: a rise says to
   split the function, a fall says to lower the pin in the same commit. Every run checks it, folder arguments or not.
+  The forms that loosen the gate without moving the count each fail as `VIOLATION too-many-lines <file> <why>`: a
+  crate-level `#![allow(clippy::too_many_lines)]` (or `expect`) in a `.rs` under `rust/` (not `rust/vt100`),
+  `too_many_lines = "allow"` or `"warn"` in a Cargo.toml there, `too-many-lines-threshold` in a clippy.toml there,
+  and `-A`, `-W`, `--allow` or `--warn` `clippy::too_many_lines` in a workflow.
 
 Covered folders: a crate root (a tracked Cargo.toml with `[package]`) covers its `src/`; a Julia package root (a tracked
 Project.toml) covers `src/`, `test/` and `ext/`. A covered folder needs no CLAUDE.md of its own (a covered folder that

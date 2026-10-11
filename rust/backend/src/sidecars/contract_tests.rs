@@ -116,6 +116,59 @@ pub(crate) fn depot_path(owned: &Path, read: Option<&std::ffi::OsStr>) -> std::f
     std::env::join_paths(entries).expect("depot path")
 }
 
+/// The read depots of a fixture that reads one: `JULIA_DEPOT_PATH` when it names any, else Julia's own default list,
+/// as daemon_lifetime's `julia_depot_path` reads it.
+pub(crate) fn read_depots() -> std::ffi::OsString {
+    std::env::var_os("JULIA_DEPOT_PATH").filter(|list| !list.is_empty()).unwrap_or_else(|| {
+        let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            .expect("setup: no home folder, so no default Julia depot");
+        default_depots(Path::new(&home))
+    })
+}
+
+/// Julia's default depot list: `~/.julia`, then the empty entry it expands to its own bundled depots.
+fn default_depots(home: &Path) -> std::ffi::OsString {
+    std::env::join_paths([home.join(".julia"), PathBuf::new()]).expect("default depot list")
+}
+
+/// Fails setup unless Julia, on this process's `JULIA_DEPOT_PATH` (a fixture's, the owned depot first), finds exactly
+/// one fresh cache of Pkg outside the owned depot. Two mean a depot holding its own stdlib builds is read beside
+/// Julia's bundled depots, so which copy loads turns on cache timestamps; none means a depot built over Julia's
+/// bundled depots is named without them, so every cache in it is stale. Either way the WGL add would recompile rather
+/// than fail; this names the cause in seconds.
+pub(crate) fn one_fresh_pkg_cache() {
+    const PROBE: &str = r#"id = Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg")
+src = Base.locate_package(id)
+own(p) = startswith(p, DEPOT_PATH[1])
+foreach(println, filter(p -> !own(p) && Base.stale_cachefile(src, p; ignore_loaded = true) !== true,
+                        Base.find_all_in_cache_path(id)))"#;
+    let mut probe = std::process::Command::new(executable("julia"));
+    probe.args(["--startup-file=no", "-e", PROBE]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a read-only Julia probe, waited on within 60 s through test_isolated::drain"
+    )]
+    let child = probe.spawn().expect("setup: start the Pkg cache probe");
+    let (status, out, err) = sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(60));
+    assert!(status.success(), "setup: the Pkg cache probe failed: {err}");
+    let fresh: Vec<&str> = out.lines().collect();
+    assert!(
+        fresh.len() == 1,
+        "setup: Julia finds {} fresh Pkg caches outside the owned depot on JULIA_DEPOT_PATH={:?}, not one: {fresh:?}. \
+         Two: a depot holding its own stdlib builds is read beside Julia's bundled depots. None: a depot built over \
+         them is named without the empty entry that keeps them. Name the depot on the list it was built on.",
+        fresh.len(),
+        std::env::var_os("JULIA_DEPOT_PATH"),
+    );
+}
+
+#[test]
+fn julias_default_depot_list_is_the_home_depot_then_its_own() {
+    let list = default_depots(Path::new("home"));
+    let entries = std::env::split_paths(&list).collect::<Vec<_>>();
+    assert_eq!(entries, [Path::new("home").join(".julia"), PathBuf::new()]);
+}
+
 #[test]
 fn a_fixture_depot_path_keeps_a_read_list_whole() {
     let owned = PathBuf::from("owned");
