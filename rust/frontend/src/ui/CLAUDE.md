@@ -22,8 +22,9 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
   from `State::frame_upkeep` (app/frame.rs). It only routes: one arm per `IncomingEvt` variant, each calling
   `on_<variant>` in its owner's `replies.rs`, and no wildcard arm, so a new variant does not compile until routed.
 - Other threads reach the window only through `MainWake::wake` (app/mod.rs): the transports, the relaunch and
-  fe-command watchers, the drawer terminal's reader and the `FeAttachClient` wake closure in agent_pane/attach.rs.
-  `State`'s window is a `MainWindow`, which is `!Send`, so no other thread holds it; on macOS a `Window` call from
+  fe-command watchers, the drawer terminal's reader and the `FeAttachClient` wake closures (agent_pane/attach.rs, and
+  the Windows attach-only drawer in drawer/terminal/backend.rs). `State`'s window is a `MainWindow`, which is `!Send`, so no other thread holds it, and `create_window` returns it
+  directly: no bare `Arc<Window>` exists outside it and wgpu's surface; on macOS a `Window` call from
   another thread waits for the frame being drawn.
 - An action resolves only if `help::Context::allows` it (input/keypress.rs passes it to the resolver), so help and
   dispatch cannot disagree.

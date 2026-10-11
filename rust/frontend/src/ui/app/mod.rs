@@ -67,34 +67,58 @@ impl MainWake {
     }
 }
 
-/// The window as State holds it. The marker makes it `!Send`, so no clone of it reaches another thread or task, where
-/// a winit call would wait on the window's thread on macOS; such a thread holds a `MainWake` instead.
-#[derive(Clone)]
-pub(in crate::ui) struct MainWindow(Arc<Window>, std::marker::PhantomData<*const ()>);
+pub(in crate::ui) use main_window::MainWindow;
 
-impl MainWindow {
-    pub(in crate::ui) fn new(window: Arc<Window>) -> Self {
-        Self(window, std::marker::PhantomData)
+/// Its own module, so the `Arc<Window>` inside is private to it: outside, the window exists only as a `MainWindow` and
+/// inside wgpu's surface.
+mod main_window {
+    use std::sync::Arc;
+    use winit::window::Window;
+
+    /// The window as State holds it. The marker makes it `!Send`, so no clone of it reaches another thread or task,
+    /// where a winit call would wait on the window's thread on macOS; such a thread holds a `MainWake` instead.
+    #[derive(Clone)]
+    pub(in crate::ui) struct MainWindow(Arc<Window>, std::marker::PhantomData<*const ()>);
+
+    impl MainWindow {
+        pub(in crate::ui) fn new(window: Window) -> Self {
+            Self(Arc::new(window), std::marker::PhantomData)
+        }
+
+        /// The one handle that leaves this type: wgpu's surface keeps the window it draws into.
+        pub(in crate::ui) fn create_surface(
+            &self,
+            instance: &wgpu::Instance,
+        ) -> Result<wgpu::Surface<'static>, wgpu::CreateSurfaceError> {
+            instance.create_surface(Arc::clone(&self.0))
+        }
+
+        /// The minimized target's mutation leg only: the off-main `Window` call that MAC-REDRAW removed.
+        #[cfg(feature = "test-mac-redraw-mutation")]
+        pub(in crate::ui) fn off_main_for_the_mutation_leg(&self) -> Arc<Window> {
+            Arc::clone(&self.0)
+        }
     }
+
+    impl std::ops::Deref for MainWindow {
+        type Target = Window;
+        fn deref(&self) -> &Window {
+            &self.0
+        }
+    }
+
+    // The class guard, checked by every build on every OS: if `MainWindow` were `Send`, both impls below would apply
+    // and the call would be ambiguous, so the crate would not compile. `thread::spawn` and `tokio::spawn` require
+    // `Send`.
+    const _: fn() = || {
+        trait AmbiguousIfSend<A> {
+            fn check() {}
+        }
+        impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+        impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T {}
+        let _ = <MainWindow as AmbiguousIfSend<_>>::check;
+    };
 }
-
-impl std::ops::Deref for MainWindow {
-    type Target = Window;
-    fn deref(&self) -> &Window {
-        &self.0
-    }
-}
-
-// The class guard, checked by every build on every OS: if `MainWindow` were `Send`, both impls below would apply and
-// the call would be ambiguous, so the crate would not compile. `thread::spawn` and `tokio::spawn` require `Send`.
-const _: fn() = || {
-    trait AmbiguousIfSend<A> {
-        fn check() {}
-    }
-    impl<T: ?Sized> AmbiguousIfSend<()> for T {}
-    impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T {}
-    let _ = <MainWindow as AmbiguousIfSend<_>>::check;
-};
 
 pub struct App {
     state: Option<State>,

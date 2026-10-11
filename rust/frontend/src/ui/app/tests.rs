@@ -415,7 +415,7 @@ impl NativeDriver {
         #[cfg(not(feature = "test-mac-redraw-mutation"))]
         let wake = state.wake.clone();
         #[cfg(feature = "test-mac-redraw-mutation")]
-        let wake = OffMainRedraw(state.window.0.clone());
+        let wake = OffMainRedraw(state.window.off_main_for_the_mutation_leg());
         let peer = PeerTasks::start(
             wake,
             self.fan_in.take().expect("real App fan-in"),

@@ -6,7 +6,8 @@ hand-over it serves.
 
 ## Files
 - `mod.rs`: App, its constructor and run/finalizer boundary, `MainWake` (how another thread wakes the window) and
-  `MainWindow` (State's window handle, `!Send`, which a compile-time check asserts), plus FRAME_BUDGET and
+  `MainWindow` (State's window handle, `!Send`, which a compile-time check asserts; in its own module `main_window`,
+  so its `Arc<Window>` reaches only wgpu's surface, through `create_surface`), plus FRAME_BUDGET and
   NAV_FIRE_DEBOUNCE.
 - `exit_process_tests.rs`: bounded runtime and process-exit cases, run through the shared isolation helper.
 - `exit.rs`: quit_prompt_step, request_quit, begin_leave, leave, finish_exit, redraw_exits and the per-App ExitDeadline shared with State.

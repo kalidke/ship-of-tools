@@ -10,7 +10,7 @@ pub(super) struct StartupParts {
     pub(super) leases: Arc<crate::lease::Leases>,
     pub(super) wake: MainWake,
     pub(super) launch: LaunchInputs,
-    pub(super) window: Arc<Window>,
+    pub(super) window: MainWindow,
     pub(super) metrics: CellMetrics,
     pub(super) gpu: GpuSurface,
     pub(super) text_grid: TextGrid,
@@ -49,7 +49,7 @@ impl State {
             preview_svg, highlight_service, preview_md, md_rect_px, concept_rect_px,
         } = content;
         Self {
-            window: MainWindow::new(window),
+            window,
             wake,
             surface,
             device,
