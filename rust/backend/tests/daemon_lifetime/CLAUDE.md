@@ -13,7 +13,7 @@ of the backend's tests; the suites span subsystems, so this page names no charte
 - `guard.rs`: the Linux lifetime guard on real daemons: it mirrors the daemon's end and forwards signals, a stop of the guard stops the daemon with it and a TSTP that cannot stop the daemon stops neither, a lost guard ends the daemon, the relay refresh follows the guard, the prologue refuses a second thread before the durable parent is started (feature `daemon-lifetime-faults`); and `Run`, the guarded daemon the cases start and end (its guard, its capsules, its outcome file)
 - `ephemerals.rs`: a ready row whose REPL has started a tree detached (spinning or returned), the drain that outlasts a forking child and the guard that ends only its own subtree (these two need Julia) (feature `daemon-lifetime-faults`)
 - `fixture_owner.rs`: `Fixture`, the outside owner: it watches every process a case learns of, holds authority over the ones its own code spawned, saved results, bounded cleanup
-- `kill_probe.rs`: the kill probe: `/bin/kill` alone in its group sends itself SIGUSR1; its two controls and how its end is read (killed, survived, refused)
+- `kill_probe.rs`: the kill probe: `/bin/kill` alone in its group sends itself SIGUSR1; its three controls (SIGUSR1 at its default, ignored, blocked) and how its end is read (killed, survived, refused)
 - `observations.rs`: `wait_for`, and `BarrierDir`, the folder a process held at a phase barrier reports to
 - `native/`: the per-OS process authority (an identity opened while alive, or after its exit and before its reap; death read from it)
 - `native_premises.rs`: the native launcher and the fence claim on real children (gate, owning return, errors, claim lifetime, source group)

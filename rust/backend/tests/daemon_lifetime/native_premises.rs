@@ -1,12 +1,12 @@
 //! The native premises of the lane, each run on the real launcher and the real fence: a gated child is returned to
 //! its owner before it executes; its setup and exec errors are named; the claim a birth carries stays contended in
 //! the child's copy through the parent's close, the exec and the parent's death; a child's source group is its
-//! parent's. Every process is a real `sh`, `sleep` or `/bin/kill`; every identity is opened while alive or, after an
-//! exit, before the reap, and every death is read from it. Unix only: the launcher is the Unix half of
-//! `host::process_tree`.
+//! parent's. Every process is a real `sh`, `sleep` or `/bin/kill`, or this binary re-run as a role; every identity is
+//! opened while alive or, after an exit, before the reap, and every death is read from it. Unix only: the launcher is
+//! the Unix half of `host::process_tree`.
 
 use crate::fixture_owner::Fixture;
-use crate::kill_probe::{assert_kill_end, kill_control, with_usr1, KILL_PROBE};
+use crate::kill_probe::{assert_kill_end, kill_control, with_usr1, Usr1, KILL_PROBE};
 use crate::observations::wait_for;
 use sot_log::host::process_tree::{Birth, BirthError, Group, Launch, Stage};
 use sot_log::supervisor::birth_claim::BirthClaim;
@@ -302,10 +302,11 @@ fn session_and_group_placement_is_reported_by_the_child_itself() {
 fn the_target_gets_the_standard_streams_the_directory_the_environment_and_clean_signals() {
     let dir = tempfile::tempdir().unwrap();
     let mut fx = Fixture::new("target_surroundings");
-    // The kill probe (`kill_probe`), on every Unix: after its two controls, the launched probe, begun with SIGUSR1
+    // The kill probe (`kill_probe`), on every Unix: after its three controls, the launched probe, begun with SIGUSR1
     // ignored here and every signal blocked by the launcher across the fork, must be killed.
-    kill_control(&mut fx, libc::SIG_DFL, "killed");
-    kill_control(&mut fx, libc::SIG_IGN, "survived");
+    for usr1 in [Usr1::Default, Usr1::Ignored, Usr1::Blocked] {
+        kill_control(&mut fx, usr1);
+    }
     let (err_reader, err_writer) = std::io::pipe().unwrap();
     let mut launch = Launch::new("/bin/kill");
     launch.args(KILL_PROBE).group(Group::Own);
