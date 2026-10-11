@@ -23,6 +23,10 @@ use tokio::sync::oneshot::error::TryRecvError;
 use crate::net::dial::HostKey;
 use crate::net::transport::{connect_pipe, Dial, TransportConfig};
 
+#[path = "lease_exit.rs"]
+mod exit;
+pub(crate) use exit::{close_now, exit_intent, ExitReason, ExitStep};
+
 const NOTICE_UNDETERMINED: &str =
     "closing will not end sessions: this computer's backend could not verify this window";
 const NOTICE_UNSUPPORTED: &str =
@@ -70,6 +74,7 @@ pub fn pipe_hosts(connections: &[(HostKey, TransportConfig)]) -> Vec<HostKey> {
 /// Where one host's lease stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Standing {
+    /// No answer yet: none was asked for, or a request is out (`before_data_connection`).
     Pending,
     Granted { state_root: Option<String> },
     Foreign,
@@ -104,28 +109,46 @@ struct Slot {
 /// already in flight grants after `leave_all` took its snapshot still leaves.
 struct Book {
     slots: HashMap<HostKey, Slot>,
-    /// Set by `leave_all`; from then on no handshake starts.
+    /// Set by `leave_all` and cleared by a stay; while it is set, no handshake starts.
     leaving: Option<LeaveIntent>,
-    /// Lease handshakes in flight (`Handshake`).
+    /// Lease handshakes in flight that have not settled (`Handshake`).
     inflight: usize,
     /// Where a handshake in flight puts its one outcome for the `Leaving`
-    /// wait (`set`); open while one is in flight, so the leave is not done
-    /// until it closes.
+    /// wait (`install`): open exactly while a leave waits on a handshake it
+    /// counted; closed by a stay, or under the lock that settles the last one.
     late: Option<mpsc::UnboundedSender<PendingAck>>,
     /// Each daemon's newest nonzero not-ended count no presented frame has acked, keyed at
     /// its grant by the state root it named (else its label): `owed`, `notice_seen`.
     owed: BTreeMap<HostKey, u32>,
+    /// The intent of a leave that stayed (`Leases::stay`), until the next `leave_all`: `notice` names it.
+    stayed: Option<LeaveIntent>,
 }
 
-/// A lease handshake in flight. Its drop, after its `set`, counts it down; the last one closes a leave's late-grant channel.
+/// A lease handshake in flight, counted in `inflight` until `settle` installs its one outcome and counts it down under
+/// the same lock. One cancelled first (its future dropped) is counted down by its drop.
 struct Handshake<'a>(&'a Leases);
+
+impl Handshake<'_> {
+    fn settle(self, book: &mut Book, host: &HostKey, standing: Standing, holder: Option<mpsc::UnboundedSender<HolderCmd>>) {
+        Leases::install(book, host, standing, holder);
+        book.count_down();
+        // Counted down: the drop, which is for a cancelled handshake, must not count it again.
+        std::mem::forget(self);
+    }
+}
 
 impl Drop for Handshake<'_> {
     fn drop(&mut self) {
-        let mut book = self.0.book.lock().unwrap();
-        book.inflight -= 1;
-        if book.inflight == 0 {
-            book.late = None;
+        self.0.book.lock().unwrap().count_down();
+    }
+}
+
+impl Book {
+    /// A handshake has settled or was cancelled; the last one closes a leave's late-grant channel.
+    fn count_down(&mut self) {
+        self.inflight -= 1;
+        if self.inflight == 0 {
+            self.late = None;
         }
     }
 }
@@ -134,8 +157,8 @@ impl Drop for Handshake<'_> {
 pub struct Leases {
     exempt: bool,
     book: Mutex<Book>,
-    /// `lease::LEASE_REPLY_WAIT`: how long the request may take to send, and
-    /// when an unanswered one is warned about; tests shorten it.
+    /// `lease::LEASE_REPLY_WAIT`: when an unanswered request is warned about and named to the caller; tests shorten
+    /// it. The send keeps the constant, so a shortened wait never races a connect on a busy machine.
     reply_wait: Duration,
 }
 
@@ -147,7 +170,7 @@ impl Leases {
             .collect();
         Arc::new(Self {
             exempt,
-            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, owed: BTreeMap::new() }),
+            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, owed: BTreeMap::new(), stayed: None }),
             reply_wait: lease::LEASE_REPLY_WAIT,
         })
     }
@@ -173,6 +196,7 @@ impl Leases {
         self.book.lock().unwrap().slots.get(host).map(Self::resolved)
     }
 
+    #[cfg(test)]
     fn set(&self, host: &HostKey, standing: Standing, holder: Option<mpsc::UnboundedSender<HolderCmd>>) {
         Self::install(&mut self.book.lock().unwrap(), host, standing, holder);
     }
@@ -199,31 +223,35 @@ impl Leases {
 
     /// Claim the daemon on a dedicated connection before a data connection is
     /// made. Returns the count of sessions an earlier close could not end.
-    /// An `Err` is the transport's cue to back off and retry.
+    /// An `Err` is the transport's cue to back off and retry. `unanswered` is called once if the request is sent and
+    /// `reply_wait` passes with no reply; the wait goes on.
     #[allow(clippy::too_many_lines, reason = "claims the daemon on a dedicated connection before the data connection; predates the 100-line limit")]
     pub async fn before_data_connection(
         &self,
         host: &HostKey,
         path: &Path,
         token: Option<&str>,
+        unanswered: impl FnOnce(Duration),
     ) -> Result<u32> {
         if self.exempt || self.held(host) {
             return Ok(0);
         }
-        let _handshake = {
+        let handshake = {
             let mut book = self.book.lock().unwrap();
             // The window is leaving: no new lease, and the failed-connect path.
             if book.leaving.is_some() {
                 return Err(anyhow!("this window is closing").context("window lease"));
             }
             book.inflight += 1;
+            // The host's last answer is stale while this request is out, and a grant may still come.
+            book.slots.insert(host.clone(), Slot { standing: Standing::Pending, holder: None });
             Handshake(self)
         };
         let ident = match self_identity() {
             Ok(i) => i,
             Err(e) => {
                 tracing::warn!(%host, error = %e, "window lease: cannot identify this process");
-                self.set(host, Standing::Undetermined, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Undetermined, None);
                 return Ok(0);
             }
         };
@@ -234,7 +262,7 @@ impl Leases {
         // awaited for as long as the connection lasts, since the daemon may
         // still grant the lease and a dropped granted connection departs as a
         // Close.
-        let sent = tokio::time::timeout(self.reply_wait, async {
+        let sent = tokio::time::timeout(lease::LEASE_REPLY_WAIT, async {
             let stream = connect_pipe(path).await?;
             let (rx, mut tx) = stream.split();
             let rx = codec::buffered(rx);
@@ -254,12 +282,12 @@ impl Leases {
         let (mut rx, tx) = match sent {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
-                self.set(host, Standing::Unreached, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Unreached, None);
                 tracing::warn!(%host, error = %format_args!("{e:#}"), "window lease: not taken");
                 return Err(e.context("window lease"));
             }
             Err(_) => {
-                self.set(host, Standing::Unreached, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Unreached, None);
                 tracing::warn!(%host, "window lease: the request was not sent in time");
                 return Err(anyhow!("the window lease request was not sent in time").context("window lease"));
             }
@@ -271,6 +299,7 @@ impl Leases {
                 Ok(r) => r,
                 Err(_) => {
                     tracing::warn!(%host, waited = ?self.reply_wait, "window lease: no reply yet; still waiting, since dropping the request would read as a close");
+                    unanswered(self.reply_wait);
                     read.await
                 }
             }
@@ -280,12 +309,12 @@ impl Leases {
             // Not a failed connect: the data connection's own hello is refused the same way and shows the
             // daemon's message on the blocking screen, which an `Err` here would never let it reach.
             Ok(Replies::Refused { code, error }) => {
-                self.set(host, Standing::Undetermined, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Undetermined, None);
                 tracing::warn!(%host, %code, %error, "window lease: the backend refused this window's hello");
                 return Ok(0);
             }
             Err(e) => {
-                self.set(host, Standing::Unreached, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Unreached, None);
                 tracing::warn!(%host, error = %format_args!("{e:#}"), "window lease: not taken");
                 return Err(anyhow::Error::from(e).context("window lease"));
             }
@@ -293,7 +322,7 @@ impl Leases {
         let res: FeLeaseRes = match serde_json::from_value(reply.payload) {
             Ok(r) => r,
             Err(_) => {
-                self.set(host, Standing::Unsupported, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Unsupported, None);
                 tracing::warn!(%host, "window lease: this backend does not know it");
                 return Ok(0);
             }
@@ -309,34 +338,35 @@ impl Leases {
                     if res.not_ended > 0 {
                         book.owed.insert(key, res.not_ended);
                     }
-                    Self::install(&mut book, host, Standing::Granted { state_root: res.state_root }, Some(holder));
+                    handshake.settle(&mut book, host, Standing::Granted { state_root: res.state_root }, Some(holder));
                 }
                 tracing::info!(%host, not_ended = res.not_ended, "window lease: granted");
                 Ok(res.not_ended)
             }
             LeaseOutcome::Foreign => {
-                self.set(host, Standing::Foreign, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Foreign, None);
                 tracing::warn!(%host, "window lease: the backend refused this window's identity claim");
                 Ok(0)
             }
             LeaseOutcome::Undetermined => {
-                self.set(host, Standing::Undetermined, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Undetermined, None);
                 tracing::warn!(%host, "window lease: the backend could not verify this window");
                 Ok(0)
             }
             LeaseOutcome::Closing => {
-                self.set(host, Standing::Unreached, None);
+                handshake.settle(&mut self.book.lock().unwrap(), host, Standing::Unreached, None);
                 tracing::warn!(%host, "window lease: the backend is shutting down");
                 Err(anyhow!("this computer's backend is shutting down"))
             }
         }
     }
 
-    /// The status-line notice for the current standings, if any.
+    /// The lease notice: the cause, when the standings leave closing unable to end the sessions; else a leave that
+    /// stayed, until the next leave.
     pub fn notice(&self) -> Option<&'static str> {
-        let standings: Vec<Standing> =
-            self.book.lock().unwrap().slots.values().map(Self::resolved).collect();
-        lease_notice(self.exempt, &standings)
+        let book = self.book.lock().unwrap();
+        let standings: Vec<Standing> = book.slots.values().map(Self::resolved).collect();
+        lease_notice(self.exempt, &standings).or_else(|| book.stayed.map(exit::stay_line))
     }
 
     /// The state roots of every granted lease.
@@ -380,15 +410,17 @@ impl Leases {
 
     /// Ask every held lease's daemon to end (or keep) its sessions. None when
     /// no lease is held and no handshake is in flight: the window can exit at
-    /// once. From here no new lease is taken, and one that a handshake in
-    /// flight grants leaves too (`set`); the leave waits for each such
-    /// handshake. A second call (an X during a Keep) supersedes the first:
-    /// each holder writes the new line after the old one, and the old acks
-    /// are dropped.
+    /// once. From here until a stay no new lease is taken, and one that a
+    /// handshake in flight grants leaves too (`install`, from
+    /// `Handshake::settle`); the leave waits for each such handshake. A
+    /// second call (an X during a Keep) supersedes the first: each holder
+    /// writes the new line after the old one, and the old acks are dropped.
+    /// A stay's notice ends here.
     pub fn leave_all(&self, intent: LeaveIntent, exit_code: i32, now: Instant) -> Option<Leaving> {
         let mut book = self.book.lock().unwrap();
         let (late_tx, late) = mpsc::unbounded_channel();
         book.leaving = Some(intent);
+        book.stayed = None;
         book.late = (book.inflight > 0).then_some(late_tx);
         let mut pending = Vec::new();
         for (host, slot) in book.slots.iter() {
@@ -475,7 +507,7 @@ pub struct Leaving {
     pub exit_code: i32,
     pending: Vec<PendingAck>,
     /// The outcomes of handshakes in flight when the leave began
-    /// (`Leases::set`); None once closed, when no handshake is in flight.
+    /// (`Leases::install`); None once closed, when none is left unsettled.
     late: Option<mpsc::UnboundedReceiver<PendingAck>>,
     outcomes: Vec<(HostKey, LeaveOutcome)>,
     deadline: Instant,
@@ -492,6 +524,9 @@ pub enum LeaveStep {
     Wait(Instant),
     Show,
     Exit,
+    /// A Keep or Handover whose lease handshake is still unanswered at the deadline: the window stays open once
+    /// `Leases::stay` confirms it.
+    Stay,
 }
 
 impl Leaving {
@@ -533,22 +568,7 @@ impl Leaving {
             tracing::warn!(intent = ?self.intent, "window lease: no frame showed the leaving line; exiting without its ack");
             return LeaveStep::Exit;
         }
-        let mut closed = false;
-        if let Some(late) = self.late.as_mut() {
-            loop {
-                match late.try_recv() {
-                    Ok(p) => self.pending.push(p),
-                    Err(mpsc::error::TryRecvError::Empty) => break,
-                    Err(mpsc::error::TryRecvError::Disconnected) => {
-                        closed = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if closed {
-            self.late = None;
-        }
+        self.settle(now);
         let mut still = Vec::new();
         for (host, mut rx) in std::mem::take(&mut self.pending) {
             match rx.try_recv() {
@@ -562,6 +582,9 @@ impl Leaving {
         self.pending = still;
         if (!self.pending.is_empty() || self.late.is_some()) && now < self.deadline {
             return LeaveStep::Wait(self.deadline.min(now + LEAVE_POLL));
+        }
+        if self.must_stay() {
+            return LeaveStep::Stay;
         }
         let timed_out = std::mem::take(&mut self.pending).into_iter().map(|(h, _)| (h, LeaveOutcome::TimedOut));
         self.outcomes.extend(timed_out);
@@ -577,6 +600,28 @@ impl Leaving {
         self.shown = Some((line, now));
         self.acks = report.acks;
         LeaveStep::Show
+    }
+
+    /// Moves the outcomes of the handshakes that settled since the last call (`Leases::install`) into the wait, and
+    /// closes `late` once none is in flight. A Keep's or a Handover's leave taken by a late grant gets its own
+    /// `KEEP_ACK_WAIT` from here: exiting at once could end the window before the leave is written.
+    fn settle(&mut self, now: Instant) {
+        let Some(late) = self.late.as_mut() else { return };
+        loop {
+            match late.try_recv() {
+                Ok(p) => {
+                    self.pending.push(p);
+                    if self.intent != LeaveIntent::Close {
+                        self.deadline = self.deadline.max(now + lease::KEEP_ACK_WAIT);
+                    }
+                }
+                Err(mpsc::error::TryRecvError::Empty) => return,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.late = None;
+                    return;
+                }
+            }
+        }
     }
 
     /// A presented frame drew the line whole: the hold starts from it, and
@@ -746,50 +791,6 @@ where
     cmd_tx
 }
 
-/// Why the window is being asked to exit.
-#[derive(Clone, Copy)]
-pub(crate) enum ExitReason {
-    WindowClose,
-    QuitKey,
-    Relaunch(i32),
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ExitStep {
-    Ask,
-    Leave { intent: LeaveIntent, code: i32 },
-    Supersede,
-    Now { code: i32 },
-    Ignore,
-}
-
-/// What an exit request does. A window already leaving exits at once, with
-/// 0, on a second close, except that an X or OS close during a Keep
-/// supersedes it with a Close: the user's latest intent wins, so a second
-/// close during a Handover never relaunches. A relaunch then defers to the
-/// leave in progress.
-pub(crate) fn exit_intent(reason: ExitReason, leaving: Option<LeaveIntent>) -> ExitStep {
-    match (reason, leaving) {
-        (ExitReason::WindowClose, None) => ExitStep::Leave { intent: LeaveIntent::Close, code: 0 },
-        (ExitReason::QuitKey, None) => ExitStep::Ask,
-        (ExitReason::Relaunch(code), None) => ExitStep::Leave { intent: LeaveIntent::Handover, code },
-        (ExitReason::WindowClose, Some(LeaveIntent::Keep)) => ExitStep::Supersede,
-        (ExitReason::WindowClose | ExitReason::QuitKey, Some(_)) => ExitStep::Now { code: 0 },
-        (ExitReason::Relaunch(_), Some(_)) => ExitStep::Ignore,
-    }
-}
-
-/// A second close exits at once with `code` (0), and the leave in progress
-/// takes that code: winit still runs `about_to_wait` while it shuts down, and
-/// its poll exits with the leave's own code, so no restart code outlives a
-/// close.
-pub(crate) fn close_now(leaving: Option<&mut crate::lease::Leaving>, code: i32) -> i32 {
-    if let Some(l) = leaving {
-        l.exit_code = code;
-    }
-    code
-}
-
 #[cfg(test)]
 #[path = "lease_grant_tests.rs"]
 pub(crate) mod grant_tests;
@@ -839,7 +840,7 @@ mod delivery_tests {
             for host in ["pending-a", "pending-b"] {
                 let (listener, path) = bind("forcedclock");
                 let (log, _, peer) = leave_fake(listener, None, None, Duration::ZERO);
-                tokio::time::timeout(Duration::from_secs(5), leases.before_data_connection(&host.to_string(), &path, None)).await.unwrap().unwrap();
+                tokio::time::timeout(Duration::from_secs(5), leases.before_data_connection(&host.to_string(), &path, None, |_| {})).await.unwrap().unwrap();
                 peers.push((log, peer));
             }
         });
@@ -847,7 +848,7 @@ mod delivery_tests {
         let fast_peer = fast.block_on(async {
             let (listener, path) = bind("forcedready");
             let peer = leave_fake(listener, None, None, Duration::ZERO);
-            tokio::time::timeout(Duration::from_secs(5), leases.before_data_connection(&"ready".to_string(), &path, None)).await.unwrap().unwrap();
+            tokio::time::timeout(Duration::from_secs(5), leases.before_data_connection(&"ready".to_string(), &path, None, |_| {})).await.unwrap().unwrap();
             peer
         });
         let (closed, rx) = mpsc::unbounded_channel();

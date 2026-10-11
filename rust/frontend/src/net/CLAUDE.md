@@ -33,7 +33,9 @@ through the channel types below.
   the wait starts over only after a session that lasted `STABLE`, or at F5 (`redial_for`, `Redial`).
 - A burst of replies costs one reconnect-memory write per 2 s, and the last revision is flushed when the session ends
   (`StateSaveGate`, `SessionState`'s drop).
-- A pipe host is leased before its data connection (`connect_and_run` calls `Leases::before_data_connection`).
+- A pipe host is leased before its data connection (`connect_and_run` calls `Leases::before_data_connection`); a
+  sent lease request is never dropped, and one unanswered for `LEASE_REPLY_WAIT` (5 s) is named on the status line as a
+  disconnect (`before_data_connection`'s `unanswered`).
 - The gate goes down when the session ends, except after a hello refusal (`run_protocol`).
 - A blocked steady-state request or ping write never suspends the held reader; reply/event progress and pending cleanup remain on the connection task.
 - Unix parsing classifies generated hub-relay paths once; Relay remains distinct from Pipe through control, lease, page and lane selection.

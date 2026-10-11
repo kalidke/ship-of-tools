@@ -260,7 +260,7 @@ fn leased(delay: Duration) -> Result<(tokio::runtime::Runtime, std::sync::Arc<cr
     let log = rt.block_on(async {
         let (listener, path) = bind("t1native");
         let (log, _, _fake) = leave_fake(listener, None, Some("close"), delay);
-        tokio::time::timeout(Duration::from_secs(5), leases.before_data_connection(&host, &path, None)).await??;
+        tokio::time::timeout(Duration::from_secs(5), leases.before_data_connection(&host, &path, None, |_| {})).await??;
         anyhow::Ok(log)
     })?;
     Ok((rt, leases, log))

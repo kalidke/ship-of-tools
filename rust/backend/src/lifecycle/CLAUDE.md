@@ -24,7 +24,7 @@ on a computer decides, through its lease, whether that computer's sessions end (
   exception's allow.
 - The Linux lifetime guard: `daemon_children::guard` (`require_one_thread`, `install`, `drain`, `guard_pid`).
 - The bounds and exit codes in `sot_protocol::ops::lease`.
-- The window's half, rust/frontend/src/lease.rs.
+- The window's half, rust/frontend/src/lease.rs, and its exit decision, rust/frontend/src/lease_exit.rs.
 
 ## Promises
 - The window's forced deliver_queued wait covers writes already queued to all holders with one std::time::Instant deadline; it does not wait for daemon acknowledgements and its deadline does not depend on the transport worker.
@@ -134,7 +134,11 @@ on a computer decides, through its lease, whether that computer's sessions end (
     call after making the socket (`rust/log/src/lane/socket_unix/connect.rs:73`, `:80`), so an exec on another thread
     between the two calls inherits it.
 - A window started with `--ephemeral`, `--capture` or `--no-lease` never leases (the frontend's `lease_exempt`).
-- A Foreign lease outcome names a refused identity claim, not an absent backend or a proved different OS account; notice precedence is Undetermined, Unsupported, Foreign, then Unreached after granted/pending/exempt suppression.
+- No lease request is given up unanswered while its sessions are meant to stay: a Keep or a Handover still waiting
+  on an unanswered request when its ack wait ends, or at a Ctrl+Q during that wait, stays open (`LeaveStep::Stay`;
+  `Leases::stay` decides under the lock `install` takes, so a grant that lands first gets the leave and its own ack
+  wait), and the Windows supervisor keeps an unanswered request open (`Open-SotLease`).
+- A Foreign lease outcome names a refused identity claim, not an absent backend or a proved different OS account; notice precedence is Undetermined, Unsupported, Foreign, then Unreached after granted/pending/exempt suppression, where a host whose lease request is still out is pending; when the standings name no cause, the notice names a leave that stayed, until the next leave.
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `startup::begin`, `lease::ticker`,
@@ -148,6 +152,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ## Folders
 - `rust/backend/src/lifecycle/`: this folder.
 - `rust/frontend/src/lease.rs`: a file, the window's half.
+- `rust/frontend/src/lease_exit.rs`: a file, the window's exit decision, re-exported by lease.rs.
 
 ## Files
 - `child_signal.rs`: the process-wide signal, the registry of contained trees and its creation mutex, the provisional

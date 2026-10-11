@@ -205,6 +205,13 @@ impl ApplicationHandler for App {
                     event_loop.set_control_flow(ControlFlow::WaitUntil(now + crate::lease::NOT_ENDED_PRESENT_WAIT));
                     return;
                 }
+                Some(crate::lease::LeaveStep::Stay) => {
+                    // A grant that took the leave after the poll gets its ack wait: poll again.
+                    if !state.stay_open(now) {
+                        event_loop.set_control_flow(ControlFlow::WaitUntil(now + crate::lease::LEAVE_POLL));
+                    }
+                    return;
+                }
                 Some(crate::lease::LeaveStep::Exit) | None => {
                     let code = state.leaving.as_ref().map_or(0, |l| l.exit_code);
                     state.finish_exit(event_loop, code);

@@ -168,19 +168,31 @@ read by every end, a startup Cleanup included.
   `Granted` makes a holder task own the stream for the process's life; `Foreign`,
   `Undetermined` or an unsupported reply proceeds without it; `Closing`, an io error, or a request not sent within `LEASE_REPLY_WAIT` is a
   failed connect. Once the request is sent the window waits for the reply as long as the connection lasts, since
-  dropping it would read as this window closing (ruling a). A not-ended count is shown once per daemon, keyed by
-  the state root its grant names. With no granted lease it shows a persistent notice naming
-  the cause.
+  dropping it would read as this window closing (ruling a). From `LEASE_REPLY_WAIT` on, the status line names the
+  wait while that host is the active one (a wait on another host is only logged), and the host connects when the
+  daemon answers. A not-ended count is shown once per daemon, keyed by
+  the state root its grant names. With no granted or pending lease (a request still out is pending) it shows a
+  persistent notice naming the cause.
 - X, an OS close or Ctrl+Q then No sends `Close` and waits for the ack, up to 125 s; an X
   during a Keep's ack wait sends `Close` after the keep. Ctrl+Q then Yes sends `Keep`.
-  A self-relaunch (75 or 76) sends `Handover`. A not-ended count above zero is shown as
+  A self-relaunch (75 or 76) sends `Handover`. A Keep or a Handover whose lease request is still unanswered when
+  its ack wait ends does not exit, and neither does a Ctrl+Q during that wait: exiting would drop a request the daemon
+  may still grant, and that grant would read as a Close. The window stays open instead, decided under the lock that
+  installs a grant, so a grant that lands first takes the leave, which then waits `KEEP_ACK_WAIT` for its own ack;
+  until the next leave, the lease notice says the keep or the relaunch was not done whenever it has no cause to
+  name; a cause, which says closing will not end the sessions, comes first. Only a close (X, an OS close,
+  Ctrl+Q then No) leaves an unanswered request behind. With two local hosts, the other host's lease, if held, has
+  already departed by the Keep or the Handover when the window stays: after a Keep a later crash keeps that host's
+  sessions, and after a Handover that daemon shuts down at `HANDOVER_BOUND` and ends them (in practice there is one
+  local host). A not-ended count above zero is shown as
   "N sessions could not be ended and are still running" and acknowledged with
   `fe.notice_seen`.
 - Launchers start the daemon and wait for its socket up to `LAUNCH_WAIT`, never killing a
   daemon that is alive and has not bound yet. The stop script waits up to
   `DAEMON_LOCK_WAIT` for a closing daemon to exit by itself. On Windows, the supervisor holds
   a lease of its own from every relaunch (exit 75 or 76) until the next window is spawned,
-  then sends a `Handover`; a converge that finds the launcher code on disk changed re-invokes
+  then sends a `Handover`; a request the daemon has not answered within `LEASE_REPLY_WAIT` is kept open, never
+  closed, and its `Handover` is written behind it; a converge that finds the launcher code on disk changed re-invokes
   it in the same process, which keeps those leases and hands them over (ADR 0017).
 
 ## What was deleted
