@@ -426,13 +426,16 @@ pub mod op {
     /// Empty request (`PingReq`); the daemon answers `PingRes{ok:true}`
     /// with no side effect beyond proving the read half of this
     /// connection is still alive. Sent every `PING_INTERVAL` by the
-    /// frontend transport;
+    /// frontend transport, and every 30 s by the daemon's hub link
+    /// (`hub_link.rs`), which ends its link after three intervals with no
+    /// frame from the hub;
     /// the daemon gives an `fe`/`bridge` connection a `READ_DEADLINE`
     /// (server/conn.rs) and drops one that goes quiet that long, reaping it
     /// through the same `ClientGuard::drop` path as a clean exit.
-    /// `cli`/`agent` (one-shot) connections never send this and are never
-    /// deadline-gated. Opt-in by ping (manager compatibility fix): the
-    /// deadline arms on this connection's FIRST `ping`, never at hello —
+    /// `cli`/`agent` connections are never deadline-gated, the hub link
+    /// (role `cli`, the one `cli` that sends this) included. Opt-in by
+    /// ping (manager compatibility fix): the deadline arms on this
+    /// connection's FIRST `ping`, never at hello —
     /// an `fe`/`bridge` peer too old to send one (a frontend box or comm
     /// bridge that hasn't converged from main yet) is left untouched,
     /// exactly today's behavior, rather than reaped every `READ_DEADLINE`

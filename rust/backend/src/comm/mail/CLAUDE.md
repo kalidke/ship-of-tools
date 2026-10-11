@@ -41,3 +41,8 @@ files each `agent.message` whose `to` this box's registry lists through `file_co
   starting over only after a link that lasted `STABLE` (60 s), and never reconnects once the shutdown signal fires; the link's ssh starts through `Signal::spawn`, so its tree dies at
   the fire. `move_fe_inbox` runs
   before the first connection; a failed move leaves the old inbox in place.
+- Once its hello is answered the link pings the hub every 30 s (`PING_EVERY`), and it ends when no frame has come from
+  the hub for three intervals (`SILENT_PINGS`, 90 s, the hello's reply included), logging `hub link dropped: nothing
+  from the hub in 90s`. ssh's ServerAlive covers only a dead network or sshd, not a hub daemon or `sotd stdio-bridge`
+  stopped behind a live sshd. Frames count, not bytes: nothing the hub sends a `cli` connection carries a blob. The hub
+  never reaps the link (role `cli`).
