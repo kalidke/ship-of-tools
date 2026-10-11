@@ -235,9 +235,13 @@ pub(super) fn handle_response_frame(
             if let Some(ledger) = ledger {
                 let mut ledger = ledger.lock().expect("native progress ledger");
                 let tag = ledger.tag(host, &ev);
-                if evt_tx.send((host.clone(), ev)).is_ok() {
-                    ledger.accepted(tag);
+                if evt_tx.send((host.clone(), ev)).is_err() {
+                    // The proof's fan-in must outlive its transport. A send that fails is a broken proof, named at
+                    // the first failed send rather than read later as no event sent.
+                    drop(ledger);
+                    panic!("native fan-in: the fan-in receiver is gone");
                 }
+                ledger.accepted(tag);
                 return;
             }
         }
