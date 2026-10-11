@@ -644,3 +644,67 @@ fn second_close_during_handover_exits_zero_on_every_path() {
     assert_eq!(leaving.as_mut().map(|l| l.poll(t0)), Some(LeaveStep::Exit));
     assert_eq!(leaving.as_ref().map_or(0, |l| l.exit_code), 0, "about_to_wait's exit code after a close");
 }
+
+/// LEASE-ABANDON-EXIT: a Keep or a Handover whose lease request is still unanswered at its ack wait stays open, since
+/// exiting would drop a request the daemon may still grant, and that grant would depart as a Close. A Close still
+/// leaves at its own deadline.
+#[tokio::test]
+async fn an_unanswered_keep_or_handover_stays_at_the_deadline() {
+    for intent in [LeaveIntent::Keep, LeaveIntent::Handover, LeaveIntent::Close] {
+        let (listener, path) = bind("stayleave");
+        let (asked_tx, asked) = oneshot::channel();
+        let (open, open_rx) = oneshot::channel::<()>();
+        let (_log, _, fake) = leave_fake(listener, Some((asked_tx, open_rx)), None, Duration::ZERO);
+        let host = "local".to_string();
+        let leases = Leases::new(false, vec![host.clone()]);
+        let in_flight = {
+            let (leases, host) = (leases.clone(), host.clone());
+            tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
+        };
+        asked.await.unwrap();
+        let t0 = Instant::now();
+        let mut leaving = leases.leave_all(intent, 0, t0).expect("a handshake in flight is a lease to leave");
+        assert!(matches!(leaving.poll(t0), LeaveStep::Wait(_)), "polled before the deadline");
+        let wait = if intent == LeaveIntent::Close { lease::CLOSE_ACK_WAIT } else { lease::KEEP_ACK_WAIT };
+        let step = leaving.poll(t0 + wait + Duration::from_secs(1));
+        if intent == LeaveIntent::Close {
+            assert_eq!(step, LeaveStep::Show, "a Close leaves at its deadline");
+            assert_eq!(leaving.line().as_deref(), Some(LEAVE_UNCONFIRMED_CLOSE));
+        } else {
+            assert!(
+                !matches!(step, LeaveStep::Show | LeaveStep::Exit | LeaveStep::Wait(_)),
+                "a {intent:?} whose lease is unanswered left at the deadline: {step:?}"
+            );
+        }
+        in_flight.abort();
+        fake.abort();
+        drop(open);
+    }
+}
+
+/// After a leave stayed, the late grant installs as a held lease, and nothing is written behind it: the daemon's next
+/// read is the stream's end.
+#[tokio::test]
+async fn a_stayed_window_takes_its_late_grant_without_leaving() {
+    let (listener, path) = bind("staygrant");
+    let (asked_tx, asked) = oneshot::channel();
+    let (open, open_rx) = oneshot::channel();
+    let (log, _, fake) = leave_fake(listener, Some((asked_tx, open_rx)), None, Duration::ZERO);
+    let host = "local".to_string();
+    let leases = Leases::new(false, vec![host.clone()]);
+    let in_flight = {
+        let (leases, host, path) = (leases.clone(), host.clone(), path.clone());
+        tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
+    };
+    asked.await.unwrap();
+    let t0 = Instant::now();
+    let mut leaving = leases.leave_all(LeaveIntent::Keep, 0, t0).unwrap();
+    assert_eq!(leaving.poll(t0 + lease::KEEP_ACK_WAIT + Duration::from_secs(1)), LeaveStep::Stay);
+    leases.stay();
+    open.send(()).unwrap();
+    assert_eq!(in_flight.await.unwrap().unwrap(), 0);
+    assert!(leases.held(&host), "the late grant is held");
+    assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0, "a held lease is not retaken");
+    drop((leaving, leases));
+    assert_eq!(finish(fake, &log).await, ["eof"], "the stayed window wrote behind its late grant");
+}

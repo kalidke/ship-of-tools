@@ -424,6 +424,10 @@ impl Daemon {
                         problems.push(format!("the Close left sessions not ended: {}", leaving.line().unwrap_or_default()));
                         break;
                     }
+                    crate::lease::LeaveStep::Stay => {
+                        problems.push("the Close stayed open".to_string());
+                        break;
+                    }
                 }
             },
         }

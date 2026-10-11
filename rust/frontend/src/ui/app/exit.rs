@@ -201,6 +201,27 @@ impl State {
     pub(in crate::ui) fn finish_exit(&mut self, event_loop: &ActiveEventLoop, code: i32) {
         end_loop(&self.exit_deadline, code, || event_loop.exit());
     }
+
+    /// A Keep or Handover still waiting on an unanswered lease request when its ack wait ends (`LeaveStep::Stay`):
+    /// exiting would drop the request, and a later grant would end this computer's sessions, so the window stays open.
+    pub(in crate::ui) fn stay_open(&mut self) {
+        let intent = self.leaving.take().map(|l| l.intent);
+        self.leases.stay();
+        self.should_exit = false;
+        self.status = stay_line(intent).to_string();
+        self.window.request_redraw();
+    }
+}
+
+/// The status line of a leave that stayed open.
+fn stay_line(intent: Option<LeaveIntent>) -> &'static str {
+    match intent {
+        Some(LeaveIntent::Handover) => {
+            "relaunch not done · this computer's backend has not answered the window lease; the window stays open"
+        }
+        _ => "keep not done · this computer's backend has not answered the window lease, so its sessions cannot be kept \
+              yet; the window stays open",
+    }
 }
 
 #[cfg(test)]

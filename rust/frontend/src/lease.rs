@@ -417,6 +417,14 @@ impl Leases {
         Some(leaving)
     }
 
+    /// A leave that stayed (`LeaveStep::Stay`): the window goes on, so a handshake still in flight installs as usual,
+    /// with no leave behind it, and the next one is taken.
+    pub fn stay(&self) {
+        let mut book = self.book.lock().unwrap();
+        book.leaving = None;
+        book.late = None;
+    }
+
     /// A forced exit's last step: block until every holder has written each
     /// leave already queued to it (the write, not the reply), at most `bound`
     /// in all, so the stream's EOF never overtakes a queued Close.
@@ -499,6 +507,8 @@ pub enum LeaveStep {
     Wait(Instant),
     Show,
     Exit,
+    /// A Keep or Handover whose lease handshake is still unanswered at the deadline: the window stays open.
+    Stay,
 }
 
 impl Leaving {
@@ -569,6 +579,10 @@ impl Leaving {
         self.pending = still;
         if (!self.pending.is_empty() || self.late.is_some()) && now < self.deadline {
             return LeaveStep::Wait(self.deadline.min(now + LEAVE_POLL));
+        }
+        // Exiting would drop a request the daemon may still grant, and that grant would depart as a Close.
+        if self.late.is_some() && self.intent != LeaveIntent::Close {
+            return LeaveStep::Stay;
         }
         let timed_out = std::mem::take(&mut self.pending).into_iter().map(|(h, _)| (h, LeaveOutcome::TimedOut));
         self.outcomes.extend(timed_out);

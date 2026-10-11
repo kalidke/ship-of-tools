@@ -205,6 +205,10 @@ impl ApplicationHandler for App {
                     event_loop.set_control_flow(ControlFlow::WaitUntil(now + crate::lease::NOT_ENDED_PRESENT_WAIT));
                     return;
                 }
+                Some(crate::lease::LeaveStep::Stay) => {
+                    state.stay_open();
+                    return;
+                }
                 Some(crate::lease::LeaveStep::Exit) | None => {
                     let code = state.leaving.as_ref().map_or(0, |l| l.exit_code);
                     state.finish_exit(event_loop, code);

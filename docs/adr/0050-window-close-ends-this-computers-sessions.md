@@ -174,14 +174,18 @@ read by every end, a startup Cleanup included.
   the cause.
 - X, an OS close or Ctrl+Q then No sends `Close` and waits for the ack, up to 125 s; an X
   during a Keep's ack wait sends `Close` after the keep. Ctrl+Q then Yes sends `Keep`.
-  A self-relaunch (75 or 76) sends `Handover`. A not-ended count above zero is shown as
+  A self-relaunch (75 or 76) sends `Handover`. A Keep or a Handover whose lease request is still unanswered when
+  its ack wait ends does not exit: exiting would drop a request the daemon may still grant, and that grant would read
+  as a Close, so the window stays open and says so; only a Close leaves an unanswered request behind. A not-ended
+  count above zero is shown as
   "N sessions could not be ended and are still running" and acknowledged with
   `fe.notice_seen`.
 - Launchers start the daemon and wait for its socket up to `LAUNCH_WAIT`, never killing a
   daemon that is alive and has not bound yet. The stop script waits up to
   `DAEMON_LOCK_WAIT` for a closing daemon to exit by itself. On Windows, the supervisor holds
   a lease of its own from every relaunch (exit 75 or 76) until the next window is spawned,
-  then sends a `Handover`; a converge that finds the launcher code on disk changed re-invokes
+  then sends a `Handover`; a request the daemon has not answered within `LEASE_REPLY_WAIT` is kept open, never
+  closed, and its `Handover` is written behind it; a converge that finds the launcher code on disk changed re-invokes
   it in the same process, which keeps those leases and hands them over (ADR 0017).
 
 ## What was deleted
