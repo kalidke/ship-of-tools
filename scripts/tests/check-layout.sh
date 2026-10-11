@@ -320,6 +320,10 @@ n_allowances = sum(1 for f in tracked
 LOOSENERS = [
     (lambda f: f.endswith(".rs"), r"#!\[\s*(allow|expect)\s*\([^\]]*clippy::too_many_lines",
      "a crate-level allow of clippy::too_many_lines (it allows every function in its crate)"),
+    (lambda f: f.endswith(".rs"), r"cfg_attr\s*\([^\]]*\b(allow|expect)\s*\([^\]]*clippy::too_many_lines",
+     "a cfg_attr allow of clippy::too_many_lines (counted once, it may cover a whole crate)"),
+    (lambda f: f.endswith(".rs"), r"\b(allow|expect)\s*\([^)\]]*clippy::pedantic",
+     "an allow of clippy::pedantic (it allows too_many_lines with the rest of the group)"),
     (lambda f: os.path.basename(f) == "Cargo.toml",
      r"(?m)^\s*too_many_lines\s*=\s*(\"(allow|warn)\"|\{[^}]*level\s*=\s*\"(allow|warn)\")",
      "a Cargo.toml allows or warns the too_many_lines lint"),
@@ -328,9 +332,12 @@ LOOSENERS = [
 ]
 loosened = [(f, why) for f in tracked if f.startswith("rust/") and not f.startswith(ALLOWANCE_SKIP)
             for match, rx, why in LOOSENERS if match(f) and re.search(rx, read(f))]
-loosened += [(f, "a clippy line allows or warns clippy::too_many_lines") for f in tracked
-             if f.startswith(".github/workflows/")
-             and re.search(r"(-A|--allow|-W|--warn)[ =]clippy::too_many_lines", read(f))]
+WORKFLOW_LOOSENERS = [
+    (r"(-A|--allow|-W|--warn)[ =]?clippy::too_many_lines", "a clippy line allows or warns clippy::too_many_lines"),
+    (r"--cap-lints", "a clippy line caps lint levels (--cap-lints)"),
+]
+loosened += [(f, why) for f in tracked if f.startswith(".github/workflows/")
+             for rx, why in WORKFLOW_LOOSENERS if re.search(rx, read(f))]
 
 nv = na = ne = 0
 used = {("too-many-lines", "rust")}

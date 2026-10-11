@@ -133,9 +133,9 @@ fn default_depots(home: &Path) -> std::ffi::OsString {
 
 /// Fails setup unless Julia, on this process's `JULIA_DEPOT_PATH` (a fixture's, the owned depot first), finds exactly
 /// one fresh cache of Pkg outside the owned depot. Two mean a depot holding its own stdlib builds is read beside
-/// Julia's bundled depots, so which copy loads turns on cache timestamps; none means a depot built over Julia's
-/// bundled depots is named without them, so every cache in it is stale. Either way the WGL add would recompile rather
-/// than fail; this names the cause in seconds.
+/// Julia's bundled depots, so which copy loads turns on cache timestamps and the WGL add can recompile; none means a
+/// depot built over Julia's bundled depots is named without them, or was built by another Julia, so every cache in it
+/// is stale and the add recompiles. Either way this names the cause in seconds, not as a 600-s timeout.
 pub(crate) fn one_fresh_pkg_cache() {
     const PROBE: &str = r#"id = Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg")
 src = Base.locate_package(id)
@@ -156,7 +156,8 @@ foreach(println, filter(p -> !own(p) && Base.stale_cachefile(src, p; ignore_load
         fresh.len() == 1,
         "setup: Julia finds {} fresh Pkg caches outside the owned depot on JULIA_DEPOT_PATH={:?}, not one: {fresh:?}. \
          Two: a depot holding its own stdlib builds is read beside Julia's bundled depots. None: a depot built over \
-         them is named without the empty entry that keeps them. Name the depot on the list it was built on.",
+         them is named without the empty entry that keeps them, or was built by another Julia. Name the depot on the \
+         list it was built on, with the Julia that built it.",
         fresh.len(),
         std::env::var_os("JULIA_DEPOT_PATH"),
     );

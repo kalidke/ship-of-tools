@@ -221,6 +221,16 @@ loosen .github/workflows/rust.yml 'run: cargo clippy -- -A clippy::all -A clippy
 WANT="VIOLATION too-many-lines .github/workflows/rust.yml a clippy line"; check "too-many-lines workflow allow" 1 --allow "$tmp/allow" rust/a
 loosen .github/workflows/rust.yml 'run: cargo clippy -- -A clippy::all -D clippy::too_many_lines' 0
 NOT="VIOLATION"; check "too-many-lines workflow deny passes" 0 --allow "$tmp/allow" rust/a
+loosen rust/a/x.rs '#![cfg_attr(all(), allow(clippy::too_many_lines))]' 1
+WANT="VIOLATION too-many-lines rust/a/x.rs a cfg_attr allow"; check "too-many-lines cfg_attr allow" 1 --allow "$tmp/allow" rust/a
+loosen rust/a/x.rs '#[allow(clippy::pedantic)]' 0
+WANT="VIOLATION too-many-lines rust/a/x.rs an allow of clippy::pedantic"; check "too-many-lines item pedantic" 1 --allow "$tmp/allow" rust/a
+loosen rust/a/x.rs '#![allow(clippy::pedantic)]' 0
+WANT="VIOLATION too-many-lines rust/a/x.rs an allow of clippy::pedantic"; check "too-many-lines crate pedantic" 1 --allow "$tmp/allow" rust/a
+loosen .github/workflows/rust.yml 'run: cargo clippy -- -A clippy::all -Aclippy::too_many_lines' 0
+WANT="VIOLATION too-many-lines .github/workflows/rust.yml a clippy line allows"; check "too-many-lines workflow attached allow" 1 --allow "$tmp/allow" rust/a
+loosen .github/workflows/rust.yml 'run: cargo clippy -- --cap-lints warn -D clippy::too_many_lines' 0
+WANT="VIOLATION too-many-lines .github/workflows/rust.yml a clippy line caps"; check "too-many-lines workflow cap-lints" 1 --allow "$tmp/allow" rust/a
 
 # report
 newrepo; mkdir d; { lines 5 'x='; } > d/small.rs; { lines 30 'x='; echo '#[cfg(test)]'; echo 'mod t {'; echo '}'; } > d/big.rs; commit
