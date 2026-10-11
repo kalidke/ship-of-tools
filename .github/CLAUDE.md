@@ -27,11 +27,16 @@ scripts/CLAUDE.md.
   `scripts/tests/` bash suites, the comm hermetic suites and the agents CLI suites (the comm list names
   `test-stage-bin.sh`; among them `test-ccx-launch.sh`, which proves ccx's default handle)), `conpty-windows-2022`
   (ConPTY and capsule tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the
-  latest published tag into a clean container). The Test native harness helpers step runs the feature-gated sot binary's eight display-free native harness regression bodies through scripts/tests/run-filtered-tests.sh, which requires command and log-capture success and the exact eight-pass, zero-failed, zero-ignored summary. The step also executes test-filtered-tests.sh against the real harmless libtest fixture; native window acceptance remains in the dedicated hosted jobs.
+  latest published tag into a clean container). The step "Test native harness helpers" in `checks-linux` runs the
+  feature-gated sot binary's eight display-free native harness regression bodies through
+  scripts/tests/run-filtered-tests.sh, which requires command and log-capture success and exactly one libtest summary
+  line, starting with eight passed, zero failed and zero ignored; native window acceptance remains in the dedicated
+  hosted jobs.
   The step "Test selected Rust bodies" runs the portable real-libtest
   shell proofs in `test` on windows and macos and in `checks-linux` on ubuntu; it invokes no daemon or peer suite. On
-  ubuntu it also runs the candidate gate's finite selected-job and runtime-listing proofs; the full candidate gate is
-  not invoked by that proof step. The step "Test L3 storage exhaustion" in `checks-linux` makes a private 64 MiB ext4
+  ubuntu it also runs the candidate gate's finite selected-job and runtime-listing proofs and test-filtered-tests.sh,
+  the group runner's real-libtest controls; the full candidate gate is not invoked by that proof step. The step
+  "Test L3 storage exhaustion" in `checks-linux` makes a private 64 MiB ext4
   loop volume, runs `fault_storage` on it with `--include-ignored`, then unmounts it, releases the loop device and
   removes its folder; sudo is used only in that step, and a failed setup or teardown fails the job.
   Every leg of `test` and every shard of `test-linux` installs Julia 1.13 (`julia-actions/setup-julia`); in `test`
@@ -88,8 +93,10 @@ scripts/CLAUDE.md.
   environment and Quarto's Julia runner into the runner's depot once (one notebook run, one document rendered), and
   hands the cases those environments through `SOT_L2_PLUTO_MANIFEST` and `QUARTO_JULIA_PROJECT`.
 - The Windows containment tests that need julia, Git for Windows' bash or a job around the test process are `#[ignore]`
-  in `cargo test`; the job "containment, ignored tests (windows-latest)" runs them with julia installed
-  (rust/backend/src/lifecycle/contain.rs).
+  in `cargo test`; the job "containment, ignored tests (windows-latest)" runs exactly those (`--ignored`, filter
+  `lifecycle::contain::tests::`) with julia installed, through scripts/tests/run-filtered-tests.sh with their count, so a
+  selection that runs any other number of bodies fails. A commit that adds, removes or renames an `#[ignore]` test in
+  that module changes the step's count with it (rust/backend/src/lifecycle/contain.rs).
 - The `paths:` filters decide which pushes run `rust.yml` and `CI.yml`; a new top-level code folder joins the filter of
   the workflow that tests it. Both workflows skip a commit whose message starts `release: v`.
 - Release jobs pin every action by commit SHA, and only `publish` gets `contents: write`: the release is the updater's
