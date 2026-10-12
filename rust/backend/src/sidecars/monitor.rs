@@ -85,13 +85,16 @@ while :; do
   pout=$(cat /proc/[0-9]*/stat 2>/dev/null | awk -v prev="$proc_prev" '
     BEGIN { np = split(prev, a, " "); for (i = 1; i <= np; i++) { split(a[i], kv, ":"); p[kv[1]] = kv[2] } }
     {
-      line = $0
+      # A comm holding a newline splits its stat line: hold a record until the text after its last ")" has the 13
+      # fields utime and stime need (a comm is at most 15 bytes, too short to hold them), joining with a space.
+      line = (held == "") ? $0 : held " " $0
+      held = ""
       o = index(line, "(")
       r = match(line, /\)[^)]*$/)   # comm may contain spaces/parens; cut at the LAST ")"
-      if (!o || !r) next
+      if (!o) next
+      if (!r || split(substr(line, r + 2), f, " ") < 13) { held = line; next }
       comm = substr(line, o + 1, r - o - 1)
       pid = substr(line, 1, o - 2); gsub(/ /, "", pid)
-      split(substr(line, r + 2), f, " ")
       t = f[12] + f[13]             # utime + stime (stat fields 14, 15)
       state = state pid ":" t " "
       if (pid in p && t > p[pid]) { d[pid] = t - p[pid]; name[pid] = comm }

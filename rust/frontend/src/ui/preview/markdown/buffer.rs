@@ -9,11 +9,16 @@ use super::*;
 /// repos checked out with CRLF endings (e.g. RJTrack) while LF repos
 /// rendered fine. Display-only normalization: the edit buffer and the
 /// clipboard-yank paths read their own bytes elsewhere, so this doesn't
-/// touch what gets written or copied. Returns a borrow when there's no
-/// CR to strip (the common LF case) to avoid a needless allocation.
+/// touch what gets written or copied. U+0085, U+2028 and U+2029 become LF
+/// too: cosmic-text asserts one bidi paragraph per line, and U+2029 starts
+/// another, so one before right-to-left text would panic the shaper. Returns a
+/// borrow when there is nothing to change (the common LF case).
 pub(super) fn normalize_newlines(s: &str) -> std::borrow::Cow<'_, str> {
-    if s.contains('\r') {
-        std::borrow::Cow::Owned(s.replace("\r\n", "\n").replace('\r', "\n"))
+    if s.contains(['\r', '\u{85}', '\u{2028}', '\u{2029}']) {
+        std::borrow::Cow::Owned(
+            s.replace("\r\n", "\n")
+                .replace(['\r', '\u{85}', '\u{2028}', '\u{2029}'], "\n"),
+        )
     } else {
         std::borrow::Cow::Borrowed(s)
     }

@@ -60,6 +60,30 @@ pub(in crate::ui) struct ReplImageSlot {
     pub(in crate::ui) key: (u64, usize),
 }
 
+/// A program's output stream as a terminal shows it: `\r\n` and `\n` end a line,
+/// and within a line a lone `\r` returns to its start, so what follows
+/// overwrites it (a progress bar's updates make one row, not a blank row and a
+/// row each). Then the window's rule for each line (`cell_lines`); a blank line
+/// stays a row.
+fn stream_lines(text: &str) -> Vec<String> {
+    text.replace("\r\n", "\n")
+        .lines()
+        .flat_map(|line| {
+            let mut row: Vec<char> = Vec::new();
+            for part in line.split('\r') {
+                for (i, c) in part.chars().enumerate() {
+                    match row.get_mut(i) {
+                        Some(cell) => *cell = c,
+                        None => row.push(c),
+                    }
+                }
+            }
+            let rows = cell_lines(&row.into_iter().collect::<String>());
+            if rows.is_empty() { vec![String::new()] } else { rows }
+        })
+        .collect()
+}
+
 /// Project the REPL scrollback into ratatui `RtLine`s for the BR quadrant.
 /// One entry contributes a `julia> {code}` header line, then one line per
 /// rendered frame (stdout/stderr default+red, value green, error red with
@@ -133,12 +157,12 @@ pub(in crate::ui) fn build_repl_lines(
         for (frame_idx, frame) in entry.frames.iter().enumerate() {
             match frame {
                 ReplFrame::Stdout { text } => {
-                    for line in cell_lines(text) {
+                    for line in stream_lines(text) {
                         out.push(RtLine::from(line));
                     }
                 }
                 ReplFrame::Stderr { text } => {
-                    for line in cell_lines(text) {
+                    for line in stream_lines(text) {
                         out.push(RtLine::from(vec![Span::styled(
                             line,
                             Style::default().fg(Color::Red),
@@ -497,5 +521,21 @@ mod tests {
         let text = rendered_text(&lines);
         assert!(text.contains("(42 ms)"), "{text}");
         assert!(!text.contains("julia starting"), "{text}");
+    }
+
+    #[test]
+    fn a_carriage_return_in_output_overwrites_its_line() {
+        // Progress output: each frame starts with `\r`, and one frame overwrites part of its line.
+        let mut e = entry(1, "run()", false);
+        e.frames = ["\rProgress: 10%", "\rProgress: 20%", "abc\rxy\n", "\n", "done\r\n"]
+            .into_iter()
+            .map(|t| ReplFrame::Stdout { text: t.to_string() })
+            .collect();
+        let (lines, _, _) = build_repl_lines(&[e], &std::collections::HashMap::new(), 800.0, 600.0, 8.0, 16.0, false);
+        let text = rendered_text(&lines);
+        assert!(
+            text.contains("run()\nProgress: 10%\nProgress: 20%\nxyc\n\ndone"),
+            "{text:?}"
+        );
     }
 }

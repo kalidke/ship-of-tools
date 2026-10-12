@@ -234,6 +234,16 @@ fn normalize_newlines_collapses_crlf() {
 }
 
 #[test]
+fn a_paragraph_separator_starts_a_line_and_the_shaper_survives_it() {
+    // cosmic-text panics on a line holding a second bidi paragraph; a previewed file or a figure caption may hold
+    // U+2029, U+2028 or U+0085 before right-to-left text, and each must start a line instead.
+    let mut fonts = FontSystem::new();
+    let md = MarkdownPreview::new_plain(&mut fonts, "AA\u{2029}אב\u{2028}ג\u{85}ד", 800.0, 1.0);
+    assert_eq!(md.buffer.lines.len(), 4);
+    assert_eq!(normalize_newlines("a\u{2029}b\u{2028}c\u{85}d").as_ref(), "a\nb\nc\nd");
+}
+
+#[test]
 fn crlf_source_does_not_double_space() {
     // A CRLF (`\r\n`) file must shape to the same number of visual lines
     // as the LF equivalent. cosmic-text treats a stray `\r` as its own

@@ -720,14 +720,14 @@ mod tests {
         }
     }
 
-    /// The REPL log's lines for `untrusted_lines_stay_apart_in_the_chrome`: code holding a tab, output holding a lone
-    /// `\r`, an error holding a `\r\n`, and a value's MIME, an image's MIME and a page's address holding a `\n`.
+    /// The REPL log's lines for `untrusted_lines_stay_apart_in_the_chrome`: code holding a tab, output and an error
+    /// holding a `\r\n`, and a value's MIME, an image's MIME and a page's address holding a `\n`.
     fn untrusted_repl_lines() -> Vec<RtLine<'static>> {
         use crate::ui::drawer::repl::{lines::build_repl_lines, log::ReplEntry};
         use sot_protocol::ReplFrame::{Browser, Error, Image, Stdout, Value};
         let frames = vec![
             Stdout {
-                text: "AA10\rBB10\n".to_string(),
+                text: "AA10\r\nBB10\n".to_string(),
             },
             Error {
                 message: "AA11\r\nBB11".to_string(),
@@ -760,10 +760,10 @@ mod tests {
         build_repl_lines(&log, &HashMap::new(), 0.0, 0.0, 8.0, 16.0, false).0
     }
 
-    /// The chrome painted into a 200x60 buffer, row by row, with `status` and the nav rows `tree`, and every other
+    /// The chrome painted into a `size` buffer, row by row, with `status` and the nav rows `tree`, and every other
     /// text from outside the window holding a line break or a tab between a marker `AAnn` and its `BBnn`. The pinned
     /// preview's file name holds sixty more breaks, so its title is cut to fit.
-    fn paint_chrome(status: &str, tree: Vec<NavRow>) -> Vec<String> {
+    fn paint_chrome(size: (u16, u16), status: &str, tree: Vec<NavRow>) -> Vec<String> {
         let preset = crate::ui::persist::settings::LayoutPreset::default_laptop();
         let status = status.to_string();
         let prompt = Some(("delete AA05\rBB05? [y/N]".to_string(), String::new()));
@@ -834,7 +834,7 @@ mod tests {
             pty_size_observed: (0, 0),
             term_size_observed: (0, 0),
         };
-        let (w, h) = (200u16, 60u16);
+        let (w, h) = size;
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
         term.draw(|frame| view.paint(frame, tree, &mut Vec::new()))
             .unwrap();
@@ -854,6 +854,7 @@ mod tests {
         let status = "s AA01\nBB01 AA02\r\nBB02 AA03\rBB03 AA04\tBB04";
         let row = "> . AA13\nBB13".to_string();
         let rows = paint_chrome(
+            (200, 60),
             status,
             vec![(row, true, false, false, None, 0.0, false, false)],
         );
@@ -902,29 +903,30 @@ mod tests {
     }
 
     /// A status longer than the nav pane (a Quarto failure keeps up to 64 KiB: what failed, its ERROR lines with the
-    /// root cause first, Quarto's last lines, then a hint) shows its first and its last rows around a count of the
-    /// rows not shown, and leaves the rest of the pane to the tree.
+    /// root cause first, Quarto's last lines, then a hint) shows its lines whole by priority, never rows of one: at
+    /// a 36-cell nav (200x60) what failed, the whole root-cause line and the whole hint; at a 21-cell nav (120x36,
+    /// ten rows) what failed and the start of the root cause, and no piece of the hint. The tree keeps the rest.
     #[test]
-    fn a_long_status_keeps_its_first_and_last_rows() {
+    fn a_long_status_keeps_what_failed_its_cause_and_its_hint_whole() {
+        const HINT: &str = "Quarto read an incomplete Julia server transport line. Quarto 1.9.38 and later wait up to two seconds for the newline, so slow server startup can still cause this error. If using an older Quarto, upgrading to 1.9.38 or later may help.";
+        let cause = "ERROR: Julia server returned error after receiving \"isready\" command: Read invalid transport file that did not end with a newline";
         let flood: Vec<String> = (0..300).map(|n| format!("ERROR flood {n:03}")).collect();
         let frames: Vec<String> = (0..10).map(|n| format!("stack frame {n:02}")).collect();
         let status = format!(
-            "quarto.open failed · quarto render failed (execute=true):\nERROR root cause\n{}\n{}\nHINT the last line",
+            "quarto.open failed · quarto render failed (execute=true):\n{cause}\n{}\n{}\n{HINT}",
             flood.join("\n"),
             frames.join("\n")
         );
-        let rows = paint_chrome(&status, Vec::new());
-        let missing: Vec<&str> = [
-            "status: quarto.open failed",
-            "ERROR root cause",
-            "rows not shown",
-            "stack frame 09",
-            "HINT the last line",
-            "(no tree yet)",
-        ]
-        .into_iter()
-        .filter(|want| !rows.iter().any(|r| r.contains(want)))
-        .collect();
-        assert!(missing.is_empty(), "not shown: {missing:?} in {rows:#?}");
+        // (window, the texts that must show, the texts that must not)
+        let cases: [((u16, u16), &[&str], &[&str]); 2] = [
+            ((200, 60), &["status: quarto.open", "ERROR: Julia server", "newline", "not shown", "Quarto read", "may help.", "(no tree yet)"], &[]),
+            ((120, 36), &["status: quarto.open", "ERROR: Julia", "not shown", "(no tree yet)"], &["Quarto read", "may help."]),
+        ];
+        for (size, shown, hidden) in cases {
+            let rows = paint_chrome(size, &status, Vec::new());
+            let missing: Vec<&str> = shown.iter().copied().filter(|w| !rows.iter().any(|r| r.contains(w))).collect();
+            let leaked: Vec<&str> = hidden.iter().copied().filter(|w| rows.iter().any(|r| r.contains(w))).collect();
+            assert!(missing.is_empty() && leaked.is_empty(), "{size:?}: not shown {missing:?}, shown {leaked:?} in {rows:#?}");
+        }
     }
 }

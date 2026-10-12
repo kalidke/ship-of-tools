@@ -26,6 +26,10 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - The kernel runs only its own `julia/kernel` project (`run_one_generation`).
 - A dead monitor source shows as a `stale` tick and respawns after 5 s; its reason is logged once per change
   (`should_log`).
+- A process name reaches the daemon as `/proc` gives it: the sampler's awk joins a stat line a `\n` in the name split
+  (`SAMPLER_SH`), and the daemon decodes each line lossily and makes its control characters spaces before parsing it
+  (`next_or_pending`, `supervise`; tests `a_process_name_with_any_bytes_keeps_its_host_sampled`,
+  `a_process_name_with_a_newline_is_read_whole`, Linux only).
 - Only the hub runs the declared `[monitor]` roster, read once at start (`load_hosts`, `sampling_roster`); only a Linux
   daemon samples itself (`without_local_sampler`).
 - The Julia children's page servers listen on 127.0.0.1 and answer nothing without a secret drawn from the OS's

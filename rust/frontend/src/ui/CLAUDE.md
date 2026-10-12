@@ -38,10 +38,14 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
 - Text over 512 KiB, or binary, is summarized, never shaped: `PREVIEW_TEXT_CAP` in preview/pane.rs.
 - The window draws text from outside it (a daemon's reply, a REPL's output, an agent's words, a file's name, a
   paste) in a cell run, a strip name or the Monitor's chart only through `cell_lines`, one row per line, or
-  `cell_row`, its lines joined by ` ⏎ ` where only one row exists (chrome/status.rs), so none of them holds a control
-  character: ratatui drops a `\n` inside a span, the glyph layer draws a `\r` or a `\t` as a line break or a tab
-  stop, and usvg rejects a whole chart for one. Tests `untrusted_lines_stay_apart_in_the_chrome` (chrome/view.rs),
-  `strip_names_keep_their_lines_apart` (chrome/strip/items_tests.rs) and
+  `cell_row`, its lines joined by ` ⏎ ` where only one row exists (chrome/status.rs), so none of them holds a colour
+  code, a control character or a line or paragraph separator: ratatui drops a `\n` inside a span, the glyph layer
+  draws a `\r` or a `\t` as a line break or a tab stop, cosmic-text panics on a second bidi paragraph in one line,
+  and usvg rejects a whole chart for one (and for U+FFFE or U+FFFF, which the chart draws as U+FFFD). The preview's
+  shaper gets the same line ends (`normalize_newlines`, preview/markdown/buffer.rs). Tests
+  `untrusted_lines_stay_apart_in_the_chrome` (chrome/view.rs), `strip_names_keep_their_lines_apart` and
+  `a_strip_name_is_one_bidi_paragraph` (chrome/strip/items_tests.rs),
+  `a_paragraph_separator_starts_a_line_and_the_shaper_survives_it` (preview/markdown/tests.rs) and
   `a_control_character_in_a_name_leaves_the_chart_drawable` (drawer/monitor.rs).
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),
