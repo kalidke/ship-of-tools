@@ -232,8 +232,9 @@ def responsive(root, nonce, invoke):
     record = f"printf '%s %s %s %s\\n' {q(nonce)}"
     destination = q(root / "events")
     emit = lambda kind: f"{record} {kind} \"$$\" \"$SECONDS\" >> {destination}"
-    # The bound may deliver TERM to the leader and the group; the trap must record once.
-    cancellation = f"[ -n \"$C\" ] && exit 143; C=1; printf '%s cancelled %s %s\\n%s completed %s %s\\n' {q(nonce)} \"$$\" \"$SECONDS\" {q(nonce)} \"$$\" \"$SECONDS\" >> {destination}; exit 143"
+    # The bound sends TERM to the group and then to the body: the trap ignores TERM before it writes, so a second TERM
+    # cannot run it again and end the shell before its one record (trap_once).
+    cancellation = f"trap '' TERM; printf '%s cancelled %s %s\\n%s completed %s %s\\n' {q(nonce)} \"$$\" \"$SECONDS\" {q(nonce)} \"$$\" \"$SECONDS\" >> {destination}; exit 143"
     executable(body, f"#!/usr/bin/env bash\n"
                f"trap {q(cancellation)} TERM\n"
                f"{emit('ready-msys' if WINDOWS else 'ready-bash')}\n"
@@ -246,6 +247,44 @@ def responsive(root, nonce, invoke):
                "flock($f, LOCK_EX) or die $!; fcntl($f, F_SETFD, 0) or die $!; "
                "exec 'bash', $ARGV[1]; die $!;")
     return f"exec perl -e {q(program)} {q(root / 'lifetime')} {q(body)}\n"
+
+
+def trap_once(work, bash, runs=50):
+    # The responsive body records one cancellation however many TERMs arrive: TERM to its group, then to it, back to
+    # back, every 10 us until it ends, as the bound sends them (sot_bounded, comm-lib-base.sh), so a TERM lands inside
+    # the trap. Unix: Python sends no MSYS signal.
+    bad = []
+    for _ in range(runs):
+        root = work / uuid.uuid4().hex
+        root.mkdir()
+        (root / "lifetime").write_bytes(b"0")
+        body = subprocess.Popen([bash, "-c", responsive(root, root.name, "")], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        deadline = time.monotonic() + OBSERVE
+        while not ready_rows(events(root, root.name)) and body.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        for _ in range(200):  # a pair every 10 us; capped, since an endless flood can overflow bash's stack
+            if body.poll() is not None:
+                break
+            for send in (os.killpg, os.kill):
+                try:
+                    send(body.pid, signal.SIGTERM)
+                except OSError:
+                    pass  # an ending body may have no signalable member left
+            pause = time.perf_counter() + 0.00001
+            while time.perf_counter() < pause:
+                pass
+        try:
+            body.wait(timeout=OBSERVE)
+        except subprocess.TimeoutExpired:
+            body.kill()  # the body this control started
+            body.wait()
+        kinds = [r[1] for r in events(root, root.name) if r[1] in ("ready-bash", "cancelled", "completed")]
+        if kinds != ["ready-bash", "cancelled", "completed"]:
+            bad.append(",".join(kinds) or "nothing")
+    failure = f"{len(bad)} of {runs} TERM storms did not record one cancellation (first: {bad[0]})" if bad else None
+    print(f"{'FAIL' if failure else 'PASS'} trap-once: {failure or f'{runs} TERM storms, each recorded one cancellation'}", flush=True)
+    return dict(label="trap-once", mode="trap-once", failure=failure)
 
 
 def fixture_finished(root, rows):
@@ -820,16 +859,19 @@ def main():
     cases += [("P5", "native", "20")] if WINDOWS else [("artifact-remove", "artifact-remove", "20")]
     selected = set(sys.argv[3:])
     if selected:
-        assert selected <= {c[0] for c in cases}, "unknown selected case"
+        assert selected <= {c[0] for c in cases} | {"trap-once"}, "unknown selected case"
         cases = [c for c in cases if c[0] in selected or c[0] in ("success", "B2-10")]
     print("Coverage R2: " + ("Git Bash deferred TERM; ignored TERM not checked on Windows" if WINDOWS else "Unix ignored TERM"))
     print("Coverage budget: " + ("MSYS TERM-responsive Bash" if WINDOWS else "Unix TERM-responsive Bash"))
     print("Coverage " + ("artifact-remove: POSIX directory-mode fault not executed on Windows" if WINDOWS else "P5: Windows-only native case; not executed on this OS"))
     if WINDOWS:
         print("Coverage P5: native Python foreground child with stdout and stderr tokens")
+    print("Coverage trap-once: " + ("not run on Windows (Python sends no MSYS signal)" if WINDOWS else "TERM storms on the responsive body"))
     print("B4 range=0..9223372036854775807 input=999999999999999999999999999999999999; zero/overflow inherit ignored TERM")
     with concurrent.futures.ThreadPoolExecutor(max_workers=1 if WINDOWS else 4) as executor:
         results = list(executor.map(lambda c: run_case(work, stage, bash, *c), cases))
+    if not WINDOWS and (not selected or "trap-once" in selected):
+        results.append(trap_once(work, bash))
     COMPANION = next(f for f in results if f["label"] == "success")
     BUDGET_COMPANION = next(f for f in results if f["mode"] == "release")
     assert COMPANION["failure"] is None, "successful live companion failed"
