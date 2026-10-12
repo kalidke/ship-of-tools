@@ -39,6 +39,30 @@ use supervisor::{spawn_supervisor, Supervisor};
 /// restart gives up with an error. It bounds that asynchronous wait only, not lock acquisition or the OS calls.
 pub(crate) const REPL_RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long `repl.interrupt` waits for the child's answer once its submission is queued.
+pub(crate) const REPL_INTERRUPT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A submission refused because the REPL's queue was full: no caller waits on a REPL that is not taking its input.
+/// Its code on the wire is `repl_busy`, and `repl.execute`'s outcome is `busy`.
+#[derive(Debug)]
+pub(crate) struct ReplBusy;
+
+impl std::fmt::Display for ReplBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the REPL's queue is full")
+    }
+}
+
+impl std::error::Error for ReplBusy {}
+
+/// Queue one submission without waiting: a full queue is [`ReplBusy`].
+fn enqueue(tx: &mpsc::Sender<Submission>, sub: Submission) -> Result<()> {
+    tx.try_send(sub).map_err(|e| match e {
+        mpsc::error::TrySendError::Full(_) => anyhow::Error::new(ReplBusy),
+        mpsc::error::TrySendError::Closed(_) => anyhow!("repl supervisor channel closed"),
+    })
+}
+
 /// One streamed REPL frame relayed off the supervisor onto the per-backend
 /// broadcast bus. The supervisor reads each `repl.frame` evt line off the
 /// Julia child's stdout and fans it out here; every connection subscribes and
@@ -216,7 +240,7 @@ impl Repl {
 
     /// Request/response op that NEVER spawns a child: queue the submission on
     /// the live supervisor sender if one exists and await the terminal res
-    /// payload, else report `Ok(None)`. Used by `repl.interrupt`, which stays
+    /// payload, at most `REPL_INTERRUPT_WAIT`, else report `Ok(None)`. Used by `repl.interrupt`, which stays
     /// a simple req→one-res exchange (eval/run_file are fire-and-forget via
     /// `submit`; their frames stream over the broadcast bus instead). The
     /// no-spawn property is the daemon-side guard the #96 CLI pre-flight
@@ -236,16 +260,18 @@ impl Repl {
             }
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send(Submission {
-            op: op.to_string(),
-            payload,
-            reply: Some(reply_tx),
-            collector: None,
-        })
-        .await
-        .map_err(|_| anyhow!("repl supervisor channel closed"))?;
-        reply_rx
+        enqueue(
+            &tx,
+            Submission {
+                op: op.to_string(),
+                payload,
+                reply: Some(reply_tx),
+                collector: None,
+            },
+        )?;
+        tokio::time::timeout(REPL_INTERRUPT_WAIT, reply_rx)
             .await
+            .map_err(|_| anyhow!("the REPL did not answer {op} within {REPL_INTERRUPT_WAIT:?}"))?
             .map_err(|_| anyhow!("repl supervisor dropped reply channel"))?
             .map(Some)
     }
@@ -266,19 +292,21 @@ impl Repl {
         let tx = self.ensure_supervisor().await?;
         let (reply_tx, reply_rx) = oneshot::channel();
         let collector: ExecCollector = Arc::new(std::sync::Mutex::new(ExecAccum::default()));
-        tx.send(Submission {
-            op: op.to_string(),
-            payload,
-            reply: Some(reply_tx),
-            collector: Some(collector.clone()),
-        })
-        .await
-        .map_err(|_| anyhow!("repl supervisor channel closed"))?;
+        enqueue(
+            &tx,
+            Submission {
+                op: op.to_string(),
+                payload,
+                reply: Some(reply_tx),
+                collector: Some(collector.clone()),
+            },
+        )?;
         Ok((reply_rx, collector))
     }
 
     /// Fire-and-forget op: queue the submission with no reply channel and
-    /// return once it's enqueued. The supervisor does NOT insert it into
+    /// return once it's enqueued, or at once with [`ReplBusy`] when the queue
+    /// is full. The supervisor does NOT insert it into
     /// `pending`; its streamed `repl.frame` evts (including the terminal
     /// `done` frame) are fanned out over the broadcast bus, and the terminal
     /// res ack line is dropped. Used by `repl.eval` / `repl.run_file` so the
@@ -286,15 +314,15 @@ impl Repl {
     /// `repl.interrupt` must still be readable).
     pub async fn submit(&self, op: &str, payload: Value) -> Result<()> {
         let tx = self.ensure_supervisor().await?;
-        tx.send(Submission {
-            op: op.to_string(),
-            payload,
-            reply: None,
-            collector: None,
-        })
-        .await
-        .map_err(|_| anyhow!("repl supervisor channel closed"))?;
-        Ok(())
+        enqueue(
+            &tx,
+            Submission {
+                op: op.to_string(),
+                payload,
+                reply: None,
+                collector: None,
+            },
+        )
     }
 
     async fn ensure_supervisor(&self) -> Result<mpsc::Sender<Submission>> {
