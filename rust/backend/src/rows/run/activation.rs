@@ -175,8 +175,7 @@ pub fn resume_if_absent(
 /// Bounds how many re-probe PASSES [`ensure_started`] spends waiting
 /// for a transient phase to settle (a watchdog mid-restart; or
 /// simply a still-starting/still-recovering authority, watchdog or
-/// not) before falling back to reporting the row's phase unacted-on,
-/// exactly as it did before that wait existed. A pass count, not
+/// not) before the activation fails as unsettled. A pass count, not
 /// wall-clock time (round 9: a wall-clock deadline, even one started
 /// at the first `WaitForSettle`, still ticks down while this call
 /// merely waits to ACQUIRE the guard -- behind a watchdog's own
@@ -186,8 +185,8 @@ pub fn resume_if_absent(
 /// `SPAWN_SETTLE_DEADLINE` (2s) each time, so 50 passes can hold the
 /// row's guard for minutes on a row whose recovery keeps outlasting
 /// that deadline -- accepted rather than a second counter, since the
-/// fallback is always the honest "still unacted-on" report this
-/// function already gives, never a wrong decision.
+/// fallback is always a failed activation that names the unsettled
+/// row (`activation_error`), never a wrong decision.
 pub(super) const ACTIVATION_MAX_REPROBES: u32 = 50;
 
 /// How often [`ensure_started`] re-probes a transient phase while
@@ -205,6 +204,8 @@ const ADMISSION_PENDING_PASSES: u32 = 25;
 /// The ONE shared activation boundary for every caller: guard, inert-anchor refusal, then start/resume/(Selection-only) retire+reset. BLOCKING.
 /// `Ok(Some(()))` when this call started a supervisor (a start, a resume that spawned, or a retire's respawn) in any
 /// pass; `Ok(None)` when it started none, a terminal row's included. `pty.open` logs a start only for the first.
+/// `Err` when it failed or a bounded wait ran out (the settle budget, the pending authority); the row's
+/// `activation_error` then holds the same text until the next attempt.
 pub fn ensure_started(
     state_root: &Path,
     workspace_id: &str,
@@ -265,13 +266,11 @@ pub fn ensure_started(
                 crate::rows::ops::pty::record_test_activation_marker("waitforsettle");
                 reprobes += 1;
                 if reprobes > ACTIVATION_MAX_REPROBES {
-                    // The budget is spent: report what this activation
-                    // started, still unsettled, the spawn deferred to
-                    // whatever is already in flight. Pre-existing,
-                    // filed for later (round 10 record): no
-                    // `activation_error` is set -- exhaustion itself is
-                    // not surfaced as a caller-visible failure.
-                    return Ok(started.then_some(()));
+                    // The budget is spent and the row is still unsettled: a failed activation, as at the
+                    // pending bound below. Whatever owns the row is left to finish; the next attempt clears it.
+                    let detail = format!("the row did not settle within {ACTIVATION_MAX_REPROBES} re-probes; a start, a recovery or a watchdog's restart still owns it");
+                    ws.set_activation_error(Some(detail.clone()));
+                    return Err(detail);
                 }
                 drop(held);
                 // BLOCKING (this whole function is): plain sleep, no
@@ -519,6 +518,27 @@ mod start_report_tests {
         let started = ensure_started(state_root.path(), &id, "none", "", &slug, Path::new("/p/t"), ActivationIntent::Selection, reg.clone());
         assert_eq!(started, Ok(None), "a terminal row was reported started");
         assert_eq!(row.phase(), Phase::Terminal);
+    }
+
+    /// A row that never rests within the settle budget (here its watchdog owns an unreachable lane, as in a restart
+    /// backoff longer than the budget) is a failed activation, as at the pending bound: the caller gets the reason as an
+    /// error and the row's `activation_error` holds it. Fails while an exhausted wait returns as if it had resolved.
+    #[test]
+    fn a_wait_that_outlasts_the_settle_budget_fails_the_activation() {
+        let state_root = tempfile::tempdir().unwrap();
+        let reg = Workspaces::new();
+        let mut ws = Workspace::from_label("u", std::path::PathBuf::from("/p/u"), false, "none".into(), String::new(), String::new());
+        ws.runtime = "capsule".to_string();
+        let (id, slug) = (ws.workspace_id.clone(), ws.slug.clone());
+        reg.insert(ws);
+        let row = reg.resolve(Some(id.as_str())).expect("the row");
+        row.set_watchdog_owner(1);
+        let state_dir = super::super::state_dir_for(state_root.path(), &id);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        sot_log::supervisor::journal::pointer::publish(&state_dir, "a1b2c3d4-e5f6-4890-9abc-def012345678").unwrap();
+        let result = ensure_started(state_root.path(), &id, "none", "", &slug, Path::new("/p/u"), ActivationIntent::Selection, reg.clone());
+        assert!(result.is_err(), "an exhausted settle wait was reported as resolved: {result:?}");
+        assert_eq!(row.activation_error(), result.err(), "the row must carry the reason");
     }
 }
 
