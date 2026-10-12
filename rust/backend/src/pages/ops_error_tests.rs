@@ -1,111 +1,212 @@
-//! Failed-render replies exercised through the real handler with owned Unix stand-ins.
+//! Direct diagnostic tables and one isolated real-handler/writer boundary.
 
-use super::{handle_quarto_open, Session};
-use crate::paths::EnvGuard;
-use sot_log::test_isolated::{self, ChildWaitKind, FixtureOutcome, OutputFailure};
-use std::io::Write;
-use std::process::Stdio;
-use std::time::{Duration, Instant};
+use super::quarto_render_error;
+use sot_protocol::{codec, Frame};
 
 const REQUEST_ID: u64 = 407;
+const LIMIT: usize = 65_536;
 const TRANSPORT_ERROR: &str = "Read invalid transport file that did not end with a newline";
-const UPGRADE: &str = "Quarto before 1.9.38 can read the Julia server's transport file before its line is written. Upgrade Quarto to 1.9.38 or later.";
-const LOCK_ACTOR: &str = "SOT_TEST_QUARTO_ERROR_LOCK_ACTOR";
-const LOCK_READY: &str = "quarto-error-lock-holder-ready";
-const LOCK_STDERR: &str = "quarto-error-lock-holder-stderr";
-const CHILD: &str = "SOT_TEST_QUARTO_ERROR_CHILD";
+const HINT: &str = "Quarto read an incomplete Julia server transport line. Quarto 1.9.38 and later wait up to two seconds for the newline, so slow server startup can still cause this error. If using an older Quarto, upgrading to 1.9.38 or later may help.";
 
-fn isolated(name: &str) -> bool {
-    if std::env::var(CHILD).as_deref() == Ok(name) {
-        test_isolated::enter(name);
-        return true;
+fn diagnostic_frame(message: &str) -> Frame {
+    Frame::res(REQUEST_ID, sot_protocol::op::QUARTO_OPEN,
+        serde_json::json!({"error": message, "code": "quarto_render_failed"}))
+}
+
+fn assert_bounds(message: &str, case: &str) {
+    assert!(message.len() <= LIMIT,
+        "Quarto diagnostics exceed the 65536-byte message bound: case={case} bytes={}", message.len());
+    let frame = diagnostic_frame(message);
+    assert_eq!(frame.payload["code"], "quarto_render_failed");
+    let bytes = serde_json::to_vec(&frame).unwrap().len();
+    assert!(bytes <= codec::MAX_ENVELOPE_BYTES, "case={case} JSON bytes={bytes}");
+}
+
+fn stack_tail() -> String {
+    (0..10).map(|n| format!("stack frame {n:02}")).collect::<Vec<_>>().join("\n")
+}
+
+fn error_flood() -> Vec<u8> {
+    let mut stderr = String::from("ERROR root cause kept\n");
+    for n in 0..12_000 {
+        stderr.push_str(&format!("ERROR flood {n:05} {}\n", "x".repeat(90)));
     }
-    let outcome = supervise(name, CHILD, test_isolated::ISOLATION_TIMEOUT);
-    require_observations(&outcome);
-    assert!(outcome.wait.as_ref().is_ok_and(|status| status.success()),
-        "Quarto error fixture did not succeed: {}", failure_details(&outcome));
-    false
+    stderr.push_str(&format!("ERROR: {TRANSPORT_ERROR}\n"));
+    assert!(stderr.len() > 1_048_576, "ERROR fixture must exceed 1 MiB");
+    stderr.push_str(&stack_tail());
+    stderr.push('\n');
+    stderr.into_bytes()
 }
 
-fn supervise(name: &str, marker: &str, bound: Duration) -> FixtureOutcome<()> {
-    let deadline = Instant::now() + bound;
-    let (mut command, entry) = test_isolated::test_command(name);
-    command.env(marker, name).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[allow(clippy::disallowed_methods, reason = "test-only exact-body child immediately transferred to bounded test_isolated supervision")]
-    let child = command.spawn().expect("spawn the exact Quarto error test body");
-    let outcome = test_isolated::supervise_fixture_until(child, entry, deadline, |_, _, _| Ok(()));
-    outcome.report(name);
-    eprintln!("quarto-error-fixture status test={name} wait={:?}", outcome.wait);
-    report_stream(name, "stdout", &outcome.streams.stdout);
-    report_stream(name, "stderr", &outcome.streams.stderr);
-    outcome
-}
-
-fn report_stream(name: &str, stream: &str, result: &Result<String, OutputFailure>) {
-    eprintln!("--- quarto-error {stream} begin test={name} ---");
-    match result {
-        Ok(text) => eprintln!("{text}"),
-        Err(error) => eprintln!("{}\n[read error: {}]", error.captured, error.reason),
+fn assert_flood(message: &str) {
+    assert_bounds(message, "numbered flood");
+    assert_eq!(message.matches("ERROR root cause kept").count(), 1);
+    assert!(message.ends_with(&format!("{}\n{HINT}", stack_tail())));
+    assert_eq!(message.matches(HINT).count(), 1);
+    assert!(!message.contains(TRANSPORT_ERROR), "trigger must be beyond optional budget");
+    let kept: Vec<_> = message.lines().filter(|line| line.starts_with("ERROR flood ")).collect();
+    assert!(!kept.is_empty() && kept.len() < 12_000);
+    for (n, line) in kept.iter().enumerate() {
+        assert_eq!(*line, format!("ERROR flood {n:05} {}", "x".repeat(90)));
     }
-    eprintln!("--- quarto-error {stream} end test={name} ---");
-}
-
-fn failure_details(outcome: &FixtureOutcome<()>) -> String {
-    format!(
-        "work={:?}; wait={:?}; termination={:?}; entry={:?}; stdout={:?}; stderr={:?}",
-        outcome.work, outcome.wait, outcome.termination, outcome.entry,
-        outcome.streams.stdout, outcome.streams.stderr,
-    )
-}
-
-fn require_observations(outcome: &FixtureOutcome<()>) {
-    assert!(
-        outcome.work.is_ok() && outcome.termination.is_ok() && outcome.entry.is_ok()
-            && outcome.output.is_ok() && outcome.streams.stdout.is_ok() && outcome.streams.stderr.is_ok(),
-        "incomplete Quarto error fixture observations: {}", failure_details(outcome),
-    );
+    let marker = format!("[{} more ERROR lines omitted]", 12_001 - kept.len());
+    assert_eq!(message.matches(&marker).count(), 1);
+    assert_eq!(message.matches("more ERROR lines omitted]").count(), 1);
+    assert!(message.contains(&format!("{marker}\n{}", stack_tail())));
+    for n in 0..10 {
+        assert_eq!(message.matches(&format!("stack frame {n:02}")).count(), 1);
+    }
 }
 
 #[test]
-fn fixture_runs_while_parent_environment_lock_is_held() {
-    const NAME: &str = "pages::ops::error_tests::fixture_runs_while_parent_environment_lock_is_held";
-    if std::env::var(LOCK_ACTOR).as_deref() == Ok(NAME) {
-        test_isolated::enter(NAME);
-        let _held = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stdout = std::io::stdout().lock();
-        writeln!(stdout, "{LOCK_READY}").unwrap();
-        stdout.flush().unwrap();
-        drop(stdout);
-        let mut stderr = std::io::stderr().lock();
-        writeln!(stderr, "{LOCK_STDERR}").unwrap();
-        stderr.flush().unwrap();
-        drop(stderr);
-        retains_each_error_line_and_the_last_ten_lines();
-        return;
-    }
-    let outcome = supervise(NAME, LOCK_ACTOR, Duration::from_secs(45));
-    require_observations(&outcome);
-    let (stdout, stderr) = outcome.output.as_ref().unwrap();
-    assert!(stdout.contains(LOCK_READY) && stderr.contains(LOCK_STDERR),
-        "missing held-lock prerequisites: {}", failure_details(&outcome));
-    match &outcome.wait {
-        Err(error) if matches!(error.kind, ChildWaitKind::Expired) => {
-            println!("quarto-error-fixture probe: lock=held stdout=present stderr=present entry=once cleanup=confirmed wait=expired");
-            panic!("the diagnostic fixture blocked on ENV_TEST_LOCK before its handler timeout; {}", failure_details(&outcome));
+fn quarto_render_error_selection_table() {
+    let tail = stack_tail();
+    let mut cases: Vec<(&str, Vec<u8>, String)> = vec![
+        ("empty", b"".to_vec(), String::new()),
+        ("whitespace", b" \t\n\r\n".to_vec(), String::new()),
+        ("short", b"short stderr".to_vec(), ":\nshort stderr".into()),
+        ("CRLF", b"first\r\nsecond\r\n".to_vec(), ":\nfirst\nsecond".into()),
+        ("trailing newline", b"trailing newline\n".to_vec(), ":\ntrailing newline".into()),
+        ("lossy", b"ERROR invalid \xff\nframe\n".to_vec(), ":\nERROR invalid \u{fffd}\nframe".into()),
+        ("tail overlap", b"ERROR tail\nordinary\n".to_vec(), ":\nERROR tail\nordinary".into()),
+    ];
+    cases.push(("early error", format!("ERROR early\nordinary omitted\n{tail}\n").into_bytes(),
+        format!(":\nERROR early\n{tail}")));
+    cases.push(("ordinary tail", format!("ordinary omitted\n{tail}\n").into_bytes(), format!(":\n{tail}")));
+    let color = "\u{1b}[31mERROR colored\u{1b}[0m";
+    cases.push(("repeats and ANSI", format!("ERROR repeated\nordinary omitted\n{color}\nERROR repeated\n{tail}\n").into_bytes(),
+        format!(":\nERROR repeated\n{color}\nERROR repeated\n{tail}")));
+    for (case, stderr, suffix) in cases {
+        for execute in [false, true] {
+            assert_eq!(quarto_render_error(execute, &stderr),
+                format!("quarto render failed (execute={execute}){suffix}"), "case={case}");
         }
-        Ok(status) if status.success() => {
-            println!("quarto-error-fixture probe: lock=held stdout=present stderr=present entry=once cleanup=confirmed wait=exited status=success");
-        }
-        _ => panic!("wrong-cause held-lock result: {}", failure_details(&outcome)),
     }
 }
 
-fn install_stand_ins(dir: &std::path::Path, stderr: &[u8]) {
-    let bin = dir.join("bin");
-    std::fs::create_dir(&bin).unwrap();
-    sot_log::test_exec::write_executable(&bin.join("julia"), "#!/bin/sh\nexit 0\n");
-    let bytes = stderr.iter().map(|byte| format!("\\0{byte:03o}")).collect::<String>();
-    let body = r#"#!/bin/sh
+fn check_optional_boundary(execute: bool) {
+    let tail = stack_tail();
+    let base = quarto_render_error(execute, format!("ERROR first\n{tail}").as_bytes());
+    // Three optional occurrences: fitting candidate, nonfit, then small. Reserve their marker and separators.
+    let size = LIMIT - base.len() - "[3 more ERROR lines omitted]".len() - 2;
+    for extra in [0, 1] {
+        let optional = format!("ERROR exact {} END", "x".repeat(size + extra - "ERROR exact  END".len()));
+        let oversized = format!("ERROR oversized {} END", "x".repeat(LIMIT));
+        let stderr = format!("ERROR first\n{optional}\n{oversized}\nERROR small\n{tail}");
+        let message = quarto_render_error(execute, stderr.as_bytes());
+        assert_bounds(&message, "optional boundary");
+        assert_eq!(message.contains(&optional), extra == 0, "exact fit versus first nonfit");
+        assert!(!message.contains("ERROR oversized") && !message.contains("ERROR small"), "stop rather than skip");
+        assert!(message.ends_with(&format!("[{} more ERROR lines omitted]\n{tail}", 2 + extra)));
+        if extra == 0 { assert_eq!(message.len(), LIMIT); }
+    }
+}
+
+fn check_bound_corners(execute: bool) {
+    let tail = stack_tail();
+    let trigger = format!("ordinary {TRANSPORT_ERROR}\n{tail}");
+    let message = quarto_render_error(execute, trigger.as_bytes());
+    assert_bounds(&message, "unselected transport trigger");
+    assert_eq!(message, format!("quarto render failed (execute={execute}):\n{tail}\n{HINT}"));
+    let message = quarto_render_error(execute, format!("{}\nERROR first in tail\n{tail}", "ordinary\n".repeat(15)).as_bytes());
+    // The first ERROR is immediately outside this tail; also exercise one actually inside it.
+    assert_eq!(message.matches("ERROR first in tail").count(), 1);
+    let stderr = format!("{}\nERROR first inside tail\nend", "ordinary\n".repeat(15));
+    let message = quarto_render_error(execute, stderr.as_bytes());
+    assert_eq!(message.matches("ERROR first inside tail").count(), 1);
+    assert!(!message.contains("more ERROR lines omitted]"));
+    let stderr = format!("{}\n{tail}", "ERROR repeated\n".repeat(12_000));
+    let message = quarto_render_error(execute, stderr.as_bytes());
+    assert_bounds(&message, "repeated occurrences");
+    let kept = message.lines().filter(|line| *line == "ERROR repeated").count();
+    assert!(kept > 1 && kept < 12_000);
+    assert!(message.contains(&format!("[{} more ERROR lines omitted]", 12_000 - kept)));
+    let stderr = format!("ERROR {}\n{tail}", "\u{1b}\u{1}\t\"\\".repeat(20_000));
+    let message = quarto_render_error(execute, stderr.as_bytes());
+    assert_bounds(&message, "ANSI and JSON control expansion");
+    assert!(message.contains("[line truncated]") && message.contains(&tail));
+}
+
+fn check_mandatory_excerpts(execute: bool) {
+    let mut stderr = format!("ERROR FIRST {} FIRST-END\n", "界🙂".repeat(30_000));
+    for n in 0..10 { stderr.push_str(&format!("TAIL-{n:02} {} END-{n:02}\n", "界🙂".repeat(30_000))); }
+    let message = quarto_render_error(execute, stderr.as_bytes());
+    assert_bounds(&message, "huge UTF-8 mandatory lines");
+    assert_eq!(message.matches("[line truncated]").count(), 11);
+    assert_eq!(message.matches("ERROR FIRST").count(), 1);
+    assert!(message.contains("FIRST-END") && !message.contains('\u{fffd}'));
+    assert!(!message.contains("more ERROR lines omitted]"));
+    for n in 0..10 {
+        assert_eq!(message.matches(&format!("TAIL-{n:02}")).count(), 1);
+        assert_eq!(message.matches(&format!("END-{n:02}")).count(), 1);
+    }
+    let mut bytes = format!("ERROR invalid {}", "x".repeat(80_000)).into_bytes();
+    bytes.extend_from_slice(b"\xff END\n");
+    bytes.extend_from_slice(stack_tail().as_bytes());
+    let message = quarto_render_error(execute, &bytes);
+    assert_bounds(&message, "lossy mandatory clipping");
+    assert!(message.contains("[line truncated]") && message.contains("\u{fffd} END"));
+    assert!(message.ends_with(&stack_tail()));
+    let stderr = format!("ERROR short\n{}\n{}", "ordinary\n".repeat(15),
+        (0..10).map(|n| if n == 4 { format!("ERROR tail-{n:02} {} END", "x".repeat(90_000)) }
+            else { format!("tail-{n:02}") }).collect::<Vec<_>>().join("\n"));
+    let message = quarto_render_error(execute, stderr.as_bytes());
+    assert_bounds(&message, "short mandatory lines survive oversized peer");
+    assert!(message.contains("ERROR short\n") && message.contains("ERROR tail-04"));
+    assert_eq!(message.matches("[line truncated]").count(), 1);
+    for n in [0, 1, 2, 3, 5, 6, 7, 8, 9] { assert!(message.contains(&format!("tail-{n:02}"))); }
+}
+
+#[test]
+fn quarto_render_error_bound_table() {
+    for execute in [false, true] {
+        // At the parent this first assertion fails before checking the new guidance.
+        let message = quarto_render_error(execute, &error_flood());
+        assert_bounds(&message, "numbered flood");
+        assert_flood(&message);
+        check_optional_boundary(execute);
+        check_bound_corners(execute);
+        check_mandatory_excerpts(execute);
+    }
+    println!("quarto-bound table: message=within-65536 first-error=present tail=preserved errors=ordered omission=exact utf8=ok frame=within-cap");
+}
+
+#[test]
+fn quarto_render_error_hint_table() {
+    let tail = stack_tail();
+    for execute in [false, true] {
+        for stderr in [format!("ERROR: {TRANSPORT_ERROR}\n{tail}\n"),
+            format!("ordinary {TRANSPORT_ERROR}\nignored ordinary\n{tail}\n")] {
+            let message = quarto_render_error(execute, stderr.as_bytes());
+            assert!(message.contains(HINT),
+                "transport guidance must explain the newer reader's two-second wait and condition the upgrade");
+            assert_eq!(message.matches(HINT).count(), 1);
+            assert!(message.ends_with(HINT));
+        }
+        for stderr in ["ERROR unrelated failure\nstack frame\n", "ordinary failure\n",
+            "Read invalid transport file that did not end with a newlin\n",
+            "read invalid transport file that did not end with a newline\n"] {
+            let message = quarto_render_error(execute, stderr.as_bytes());
+            assert_eq!(message, format!("quarto render failed (execute={execute}):\n{}", stderr.trim_end_matches('\n')));
+            assert!(!message.contains(HINT) && !message.contains("1.9.38"));
+        }
+    }
+    println!("quarto-hint table: execute=both newer-wait=2s slow-start=explained upgrade=conditional controls=absent");
+}
+
+#[cfg(unix)]
+mod handler {
+    use super::*;
+    use crate::pages::ops::{handle_quarto_open, Session};
+    use crate::paths::EnvGuard;
+    use std::time::Duration;
+
+    fn install_stand_ins(dir: &std::path::Path, stderr: &[u8]) {
+        let bin = dir.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        sot_log::test_exec::write_executable(&bin.join("julia"), "#!/bin/sh\nexit 0\n");
+        let bytes = stderr.iter().map(|byte| format!("\\0{byte:03o}")).collect::<String>();
+        let body = r#"#!/bin/sh
 set -eu
 printf 'render\n' >> invocations
 out=''
@@ -122,126 +223,90 @@ printf '%b' 'FIXTURE_BYTES' >&2
 printf 'stderr-written\n' > completed
 exit 1
 "#;
-    sot_log::test_exec::write_executable(
-        &bin.join("quarto"),
-        body.replace("FIXTURE_BYTES", &bytes),
-    );
-    std::fs::write(dir.join("doc.qmd"), "---\nengine: julia\n---\n").unwrap();
-    let mut paths = vec![bin.clone()];
-    if let Some(preserved) = std::env::var_os("PATH") {
-        paths.extend(std::env::split_paths(&preserved));
+        sot_log::test_exec::write_executable(&bin.join("quarto"), body.replace("FIXTURE_BYTES", &bytes));
+        std::fs::write(dir.join("doc.qmd"), "---\nengine: julia\n---\n").unwrap();
+        let mut paths = vec![bin.clone()];
+        if let Some(preserved) = std::env::var_os("PATH") { paths.extend(std::env::split_paths(&preserved)); }
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+        std::env::set_var("SOT_JULIA_BIN", bin.join("julia"));
+        std::env::remove_var("QUARTO_JULIA");
     }
-    std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
-    std::env::set_var("SOT_JULIA_BIN", bin.join("julia"));
-    std::env::remove_var("QUARTO_JULIA");
-}
 
-fn failed_render(stderr: &[u8], execute: bool) -> String {
-    let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _restore = [EnvGuard::capture("PATH"), EnvGuard::capture("SOT_JULIA_BIN"), EnvGuard::capture("QUARTO_JULIA")];
-    let dir = tempfile::tempdir().unwrap();
-    assert!(dir.path().is_absolute());
-    // SAFETY: querying this thread's signal mask changes no disposition or mask.
-    let blocked = unsafe {
-        let mut mask: libc::sigset_t = std::mem::zeroed();
-        assert_eq!(libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &mut mask), 0);
-        libc::sigismember(&mask, libc::SIGCHLD) == 1
-    };
-    assert!(!blocked, "the handler fixture inherited blocked SIGCHLD");
-    install_stand_ins(dir.path(), stderr);
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let session = Session::new();
-    let replies = rt.block_on(async {
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            handle_quarto_open(
-                REQUEST_ID,
-                serde_json::json!({ "path": dir.path().join("doc.qmd"), "execute": execute }),
-                &session,
-            ),
-        ).await
-    }).unwrap_or_else(|error| panic!(
-        "the handler exceeded its five-second bound: {error}; stub entered={}, stderr written={}",
-        dir.path().join("invocations").exists(), dir.path().join("completed").exists(),
-    )).expect("handler reply");
-    assert_eq!(replies.len(), 1, "one failure reply");
-    let (frame, blob) = &replies[0];
-    assert_eq!(frame.id, REQUEST_ID);
-    assert_eq!(frame.op, sot_protocol::op::QUARTO_OPEN);
-    assert_eq!(frame.kind, sot_protocol::Kind::Res);
-    assert_eq!(frame.payload["code"], "quarto_render_failed");
-    assert!(blob.is_none(), "a failed render carries no blob");
-    assert_eq!(std::fs::read_to_string(dir.path().join("invocations")).unwrap(), "render\n", "render once");
-    assert!(!dir.path().join(format!("__sot-qmd-{REQUEST_ID}.html")).exists(), "partial HTML removed");
-    frame.payload["error"].as_str().expect("error text").to_owned()
-}
+    fn failed_render(stderr: &[u8], execute: bool) -> Frame {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = [EnvGuard::capture("PATH"), EnvGuard::capture("SOT_JULIA_BIN"), EnvGuard::capture("QUARTO_JULIA")];
+        let dir = tempfile::tempdir().unwrap();
+        assert!(dir.path().is_absolute());
+        // SAFETY: querying this thread's signal mask changes no disposition or mask.
+        let blocked = unsafe {
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            assert_eq!(libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &mut mask), 0);
+            libc::sigismember(&mask, libc::SIGCHLD) == 1
+        };
+        assert!(!blocked, "the handler fixture inherited blocked SIGCHLD");
+        install_stand_ins(dir.path(), stderr);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let session = Session::new();
+        let replies = rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), handle_quarto_open(REQUEST_ID,
+                serde_json::json!({"path": dir.path().join("doc.qmd"), "execute": execute}), &session)).await
+        }).unwrap_or_else(|error| panic!(
+            "the handler exceeded its five-second bound: {error}; stub entered={}, stderr written={}",
+            dir.path().join("invocations").exists(), dir.path().join("completed").exists(),
+        )).expect("handler reply");
+        assert_eq!(replies.len(), 1, "one failure reply");
+        let (frame, blob) = &replies[0];
+        assert_eq!(frame.id, REQUEST_ID);
+        assert_eq!(frame.op, sot_protocol::op::QUARTO_OPEN);
+        assert_eq!(frame.kind, sot_protocol::Kind::Res);
+        assert_eq!(frame.payload["code"], "quarto_render_failed");
+        assert!(blob.is_none(), "a failed render carries no blob");
+        assert_eq!(std::fs::read_to_string(dir.path().join("invocations")).unwrap(), "render\n", "render once");
+        assert!(!dir.path().join(format!("__sot-qmd-{REQUEST_ID}.html")).exists(), "partial HTML removed");
+        frame.clone()
+    }
 
-#[test]
-fn retains_each_error_line_and_the_last_ten_lines() {
-    if !isolated("pages::ops::error_tests::retains_each_error_line_and_the_last_ten_lines") {
-        return;
+    fn check_writer(frame: &Frame) -> bool {
+        let json_bytes = serde_json::to_vec(frame).unwrap().len();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let mut sink = Vec::new();
+            if let Err(error) = crate::server::reply::write_frame_to(&mut sink, frame, None).await {
+                let typed = error.downcast_ref::<codec::EnvelopeTooLarge>().expect("typed writer cap rejection");
+                assert_eq!(typed.len, json_bytes);
+                assert!(json_bytes > codec::MAX_ENVELOPE_BYTES && sink.is_empty());
+                println!("quarto-handler red: json=over-cap writer=EnvelopeTooLarge bytes-written=0");
+                return false;
+            }
+            assert!(json_bytes <= codec::MAX_ENVELOPE_BYTES);
+            assert_flood(frame.payload["error"].as_str().unwrap());
+            let next = Frame::res(REQUEST_ID + 1, "ping", serde_json::json!({"ok": true}));
+            crate::server::reply::write_frame_to(&mut sink, &next, None).await.unwrap();
+            let mut reader = std::io::Cursor::new(sink);
+            for expected in [frame, &next] {
+                let (actual, blob) = codec::read_frame(&mut reader).await.unwrap();
+                assert_eq!(actual.id, expected.id);
+                assert_eq!(actual.op, expected.op);
+                assert_eq!(actual.kind, expected.kind);
+                assert_eq!(actual.payload, expected.payload);
+                assert!(blob.is_none());
+            }
+            assert_eq!(reader.position() as usize, reader.get_ref().len());
+            true
+        })
     }
-    let repeated = "01 ERROR repeated cause";
-    let colored = "\u{1b}[31m03 ERROR colored cause\u{1b}[0m";
-    let mut lines = vec![repeated.to_owned(), "02 ordinary outside tail".to_owned(), colored.to_owned()];
-    lines.push(repeated.to_owned());
-    lines.extend((5..=13).map(|n| format!("{n:02} ordinary outside tail")));
-    let tail: Vec<_> = (14..=23).map(|n| {
-        if n == 17 { "17 ERROR tail cause".to_owned() } else { format!("{n:02} stack frame") }
-    }).collect();
-    lines.extend(tail.iter().cloned());
-    let stderr = format!("{}\n", lines.join("\n"));
-    let message = failed_render(stderr.as_bytes(), true);
-    assert!(message.contains(repeated), "retained ERROR text is missing: {message}");
-    let expected = format!("{repeated}\n{colored}\n{repeated}\n{}", tail.join("\n"));
-    assert_eq!(message.strip_prefix("quarto render failed (execute=true):\n"), Some(expected.as_str()), "the entire stderr selection");
-    assert_eq!(message.matches("17 ERROR tail cause").count(), 1, "tail overlap included once");
-    assert_eq!(message.matches(repeated).count(), 2, "identical ERROR occurrences both retained");
-}
 
-#[test]
-fn names_the_transport_race_and_upgrade() {
-    if !isolated("pages::ops::error_tests::names_the_transport_race_and_upgrade") {
-        return;
-    }
-    let error = format!("ERROR: {TRANSPORT_ERROR}");
-    let tail = (1..=10).map(|n| format!("stack frame {n}")).collect::<Vec<_>>().join("\n");
-    let stderr = format!("{error}\n{tail}\n");
-    for execute in [true, false] {
-        let message = failed_render(stderr.as_bytes(), execute);
-        assert!(message.contains(UPGRADE), "upgrade explanation is missing: {message}");
-        assert_eq!(message, format!("quarto render failed (execute={execute}):\n{error}\n{tail}\n{UPGRADE}"));
-    }
-}
-
-#[test]
-fn other_failures_do_not_name_the_transport_race() {
-    if !isolated("pages::ops::error_tests::other_failures_do_not_name_the_transport_race") {
-        return;
-    }
-    for stderr in ["ERROR unrelated failure\nstack frame\n", "ordinary failure\n"] {
-        let message = failed_render(stderr.as_bytes(), true);
-        assert_eq!(message, format!("quarto render failed (execute=true):\n{}", stderr.trim_end_matches('\n')));
-        assert!(!message.contains(UPGRADE));
-        assert!(!message.contains("1.9.38"));
-    }
-}
-
-#[test]
-fn stderr_boundaries_keep_the_existing_failure_prefix() {
-    if !isolated("pages::ops::error_tests::stderr_boundaries_keep_the_existing_failure_prefix") {
-        return;
-    }
-    let cases: &[(&[u8], &str)] = &[
-        (b"", ""),
-        (b" \t\n\r\n", ""),
-        (b"short stderr", ":\nshort stderr"),
-        (b"first\r\nsecond\r\n", ":\nfirst\nsecond"),
-        (b"trailing newline\n", ":\ntrailing newline"),
-        (b"ERROR invalid \xff\nframe\n", ":\nERROR invalid \u{fffd}\nframe"),
-    ];
-    for (stderr, suffix) in cases {
-        let message = failed_render(stderr, false);
-        assert_eq!(message, format!("quarto render failed (execute=false){suffix}"));
+    #[test]
+    fn quarto_failure_reply_survives_error_flood() {
+        if !sot_log::test_isolated::run_isolated(
+            "pages::ops::error_tests::handler::quarto_failure_reply_survives_error_flood",
+        ) { return; }
+        let mut accepted = true;
+        for execute in [false, true] {
+            let frame = failed_render(&error_flood(), execute);
+            accepted &= check_writer(&frame);
+        }
+        assert!(accepted, "large Quarto diagnostics were rejected at the server writer");
+        println!("quarto-handler probe: execute=both code=quarto_render_failed hint=present first-error=present tail=10 omitted=exact renders-per-call=1 partial-html=absent frame=within-cap writer=accepted next-frame=ok");
     }
 }

@@ -254,4 +254,12 @@ Range, content types and the empty-file case are shared with the video server.
 
 ## Amendment 2026-10-11: Quarto render diagnostics (QUARTO-ERROR)
 
-A failed `quarto.open` retains every stderr line containing `ERROR` together with the final ten stderr lines, in source order, with each occurrence included once. The Julia transport-file newline error also explains that Quarto before 1.9.38 can read the server's transport file before its line is written and recommends upgrading to 1.9.38 or later. The daemon attempts the render once; it does not retry this upstream race. The existing `quarto_render_failed` reply code and wire shape are unchanged. Handler stand-ins exercise the returned reply rather than scanning the implementation.
+A failed `quarto.open` selects ERROR occurrences and the final ten stderr occurrences for its diagnosis. The bounded-selection amendment below governs retention; this paragraph makes no unlimited-retention promise. The Julia transport-file newline error explains incomplete publication, the up-to-two-second wait in Quarto 1.9.38 and later, and slow server startup; upgrade advice is conditional on using an older release. The daemon attempts the render once. The existing `quarto_render_failed` reply code and wire shape are unchanged.
+
+## Amendment 2026-10-11: bounded Quarto failure replies (QUARTO-ERROR revisions 2 and 3)
+
+The complete diagnostic message is limited to 65,536 UTF-8 bytes. Reserve the applicable transport hint, first ERROR occurrence and final ten stderr occurrences; retain further ERROR occurrences in source order while they fit, then report exactly one `[N more ERROR lines omitted]` line when needed. Count omitted ERROR occurrences, not bytes; overlapping retained occurrences appear once. Mandatory lines are complete when they fit; if they alone exceed the budget, preserve every mandatory occurrence as an explicitly marked UTF-8-safe line excerpt.
+
+Match the transport newline error in full decoded stderr. Its hint survives an omitted triggering occurrence, describes incomplete publication and the newer reader's two-second limit, and conditions upgrade advice on an older release. It does not promise that 1.9.38 eliminates slow-start failures.
+
+The bounded response preserves `quarto_render_failed` through the existing envelope writer. Direct formatter tables exercise selection/guidance on every platform; one isolated Unix handler flood test observes actual frame size, writer acceptance, no blob, one render and partial-HTML cleanup. Full stderr capture and the separate held harness upgrade are unchanged.

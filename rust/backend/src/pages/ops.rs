@@ -499,26 +499,115 @@ async fn run_quarto(
     }
 }
 
+const QUARTO_ERROR_LIMIT: usize = 65_536;
+const QUARTO_TRANSPORT_HINT: &str = "Quarto read an incomplete Julia server transport line. Quarto 1.9.38 and later wait up to two seconds for the newline, so slow server startup can still cause this error. If using an older Quarto, upgrading to 1.9.38 or later may help.";
+
 fn quarto_render_error(execute: bool, stderr: &[u8]) -> String {
     let stderr = String::from_utf8_lossy(stderr);
     let lines: Vec<_> = stderr.lines().collect();
     let tail_start = lines.len().saturating_sub(10);
-    let selected = lines
-        .iter()
-        .enumerate()
-        .filter(|(index, line)| *index >= tail_start || line.contains("ERROR"))
-        .map(|(_, line)| *line)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let first_error = lines.iter().position(|line| line.contains("ERROR"));
     let mut message = format!("quarto render failed (execute={execute})");
-    if !selected.trim().is_empty() {
-        message.push_str(":\n");
-        message.push_str(&selected);
+    let hint = if stderr.contains("Read invalid transport file that did not end with a newline") {
+        QUARTO_TRANSPORT_HINT
+    } else { "" };
+    let selected: Vec<_> = lines.iter().enumerate()
+        .filter(|(index, line)| *index >= tail_start || line.contains("ERROR"))
+        .map(|(index, line)| (index, std::borrow::Cow::Borrowed(*line)))
+        .collect();
+    if selected.iter().all(|(_, line)| line.trim().is_empty()) {
+        return message;
     }
-    if stderr.contains("Read invalid transport file that did not end with a newline") {
-        message.push_str("\nQuarto before 1.9.38 can read the Julia server's transport file before its line is written. Upgrade Quarto to 1.9.38 or later.");
+    let hint_bytes = if hint.is_empty() { 0 } else { hint.len() + 1 };
+    let selection_bytes = selected.iter().map(|(_, line)| line.len() + 1).sum::<usize>() - 1;
+    let (retained, omitted) = if message.len() + 2 + selection_bytes + hint_bytes <= QUARTO_ERROR_LIMIT {
+        (selected, 0)
+    } else {
+        quarto_bounded_lines(&lines, tail_start, first_error,
+            QUARTO_ERROR_LIMIT - message.len() - 2 - hint_bytes)
+    };
+    message.push_str(":\n");
+    let mut output = Vec::new();
+    let mut marker = (omitted > 0).then(|| format!("[{omitted} more ERROR lines omitted]"));
+    for (index, line) in retained {
+        if index >= tail_start {
+            if let Some(marker) = marker.take() { output.push(marker); }
+        }
+        output.push(line.into_owned());
+    }
+    message.push_str(&output.join("\n"));
+    if !hint.is_empty() {
+        message.push('\n');
+        message.push_str(hint);
     }
     message
+}
+
+/// Reserve every mandatory occurrence before admitting a prefix of optional ERROR occurrences.
+fn quarto_bounded_lines<'a>(
+    lines: &[&'a str], tail_start: usize, first_error: Option<usize>, budget: usize,
+) -> (Vec<(usize, std::borrow::Cow<'a, str>)>, usize) {
+    let mandatory = |index: usize| index >= tail_start || Some(index) == first_error;
+    let mut retained: Vec<_> = lines.iter().enumerate()
+        .filter(|(index, _)| mandatory(*index))
+        .map(|(index, line)| (index, std::borrow::Cow::Borrowed(*line))).collect();
+    let optional: Vec<_> = lines.iter().enumerate()
+        .filter(|(index, line)| !mandatory(*index) && line.contains("ERROR")).collect();
+    let marker_bytes = if optional.is_empty() { 0 }
+        else { format!("[{} more ERROR lines omitted]", optional.len()).len() + 1 };
+    let line_budget = budget - (retained.len() - 1) - marker_bytes;
+    let lengths: Vec<_> = retained.iter().map(|(_, line)| line.len()).collect();
+    if lengths.iter().sum::<usize>() > line_budget {
+        let allocations = quarto_line_allocations(&lengths, line_budget);
+        for ((_, line), limit) in retained.iter_mut().zip(allocations) {
+            *line = quarto_line_excerpt(line, limit);
+        }
+    }
+    let used = retained.iter().map(|(_, line)| line.len()).sum::<usize>();
+    let mut remaining = line_budget - used;
+    let mut admitted = 0;
+    for (index, line) in &optional {
+        if line.len() + 1 > remaining { break; }
+        remaining -= line.len() + 1;
+        retained.push((*index, std::borrow::Cow::Borrowed(**line)));
+        admitted += 1;
+    }
+    retained.sort_by_key(|(index, _)| *index);
+    (retained, optional.len() - admitted)
+}
+
+/// Keep short mandatory lines complete, sharing the remaining budget among oversized lines.
+fn quarto_line_allocations(lengths: &[usize], mut budget: usize) -> Vec<usize> {
+    let mut allocations = vec![0; lengths.len()];
+    let mut pending: Vec<_> = (0..lengths.len()).collect();
+    while !pending.is_empty() {
+        let share = budget / pending.len();
+        if let Some(position) = pending.iter().position(|index| lengths[*index] <= share) {
+            let index = pending.remove(position);
+            allocations[index] = lengths[index];
+            budget -= lengths[index];
+        } else {
+            let count = pending.len();
+            for (position, index) in pending.into_iter().enumerate() {
+                let allocation = budget / (count - position);
+                allocations[index] = allocation;
+                budget -= allocation;
+            }
+            break;
+        }
+    }
+    allocations
+}
+
+fn quarto_line_excerpt<'a>(line: &std::borrow::Cow<'a, str>, budget: usize) -> std::borrow::Cow<'a, str> {
+    if line.len() <= budget { return line.clone(); }
+    const MARKER: &str = "[line truncated]";
+    let available = budget - MARKER.len();
+    let mut start = available / 2;
+    let mut end = line.len() - (available - start);
+    while !line.is_char_boundary(start) { start -= 1; }
+    while !line.is_char_boundary(end) { end += 1; }
+    std::borrow::Cow::Owned(format!("{}{MARKER}{}", &line[..start], &line[end..]))
 }
 
 /// `quarto.open` — render a Quarto/markdown doc to a self-contained HTML on
@@ -730,7 +819,7 @@ mod find_site_root_tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "ops_error_tests.rs"]
 mod error_tests;
 
