@@ -26,10 +26,10 @@ const BACKOFF_CAP: Duration = Duration::from_secs(30);
 /// `PING_READ_DEADLINE`.
 const PING_EVERY: Duration = Duration::from_secs(30);
 /// How many ping intervals with no frame from the hub end the link, the hello's reply included. A live hub answers
-/// each ping at once only while every request the link sends is one the hub answers at once in its connection loop
-/// (`hello`, `ping`, `agent.filed`): a request the hub awaits inline must not ride this link, or a busy hub is cut as a
-/// silent one. Frames, not bytes: nothing the hub sends this connection carries a blob, so each frame is one envelope
-/// under the codec's 1 MiB cap.
+/// each ping at once only while every request the link sends is one the hub answers at once: `hello` and `ping` in
+/// its connection loop, `agent.filed` as a job without a permit. A request the hub could make wait must not ride this
+/// link, or a busy hub is cut as a silent one. Frames, not bytes: nothing the hub sends this connection carries a
+/// blob, so each frame is one envelope under the codec's 1 MiB cap.
 const SILENT_PINGS: u32 = 3;
 
 pub async fn run() {

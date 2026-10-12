@@ -502,6 +502,163 @@ mod pty_not_starved {
     }
 }
 
+/// An instant op is never queued behind the pool: with the kernel still starting, eight `kernel.request`s hold and
+/// then queue for the connection's four permits, and a `workspace.list` sent after them is still answered within a
+/// second (it is `INLINE`; were every default op pooled it would wait for a permit and time out).
+#[cfg(unix)]
+mod instant_op_not_queued {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_instant_op_is_answered_while_kernel_previews_hold_the_pool() {
+        let stub_dir = tempfile::tempdir().expect("stub dir");
+        let stub = write_fake_kernel(stub_dir.path());
+        let env = Env::spawn_with("instantop", Some(&stub), &[], &[("SOT_LANE_FAKE_JULIA_HELLO_DELAY_S", "60")]);
+        let mut conn = poll_until_connected(&env.socket_path).await;
+        tokio::time::timeout(BOUND, do_hello(&mut conn)).await.expect("hello within BOUND");
+        for id in 2..10u64 {
+            codec::write_frame(
+                &mut conn,
+                &Frame::req(id, op::KERNEL_REQUEST, serde_json::json!({"kernel_op": "kernel.hello"})),
+                None,
+            )
+            .await
+            .expect("write kernel.request");
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        let sent = Instant::now();
+        codec::write_frame(&mut conn, &Frame::req(20, op::WORKSPACE_LIST, serde_json::json!({})), None)
+            .await
+            .expect("write workspace.list");
+        let reply = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read reply");
+                if frame.kind == Kind::Res && frame.id == 20 {
+                    return frame;
+                }
+            }
+        })
+        .await
+        .expect("workspace.list was not answered within 1 s while kernel requests held the pool");
+        println!("instant-op: workspace.list answered in {:?}: {}", sent.elapsed(), reply.payload);
+    }
+}
+
+/// A long op runs off the loop (DAEMON-INLINE): while a `quarto.open` is held
+/// by a `quarto` that waits for the test's release, a `ping` on the same
+/// connection is answered at once, and the held op's reply still comes back
+/// under its own id once released. Off the loop, the op still runs to its end
+/// when its connection closes, as it did inline.
+#[cfg(unix)]
+mod long_op_off_loop {
+    use super::*;
+
+    /// A `quarto` that marks its start, holds its render until the release
+    /// file exists, or its folder is gone, at most 60 s, marks a released end,
+    /// then fails.
+    const HELD_QUARTO: &str = r#"#!/bin/sh
+: > "$SOT_TEST_QUARTO_RELEASE.started"
+i=0
+while [ ! -e "$SOT_TEST_QUARTO_RELEASE" ] && [ -d "${SOT_TEST_QUARTO_RELEASE%/*}" ] && [ "$i" -lt 600 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+[ -e "$SOT_TEST_QUARTO_RELEASE" ] && : > "$SOT_TEST_QUARTO_RELEASE.ended"
+echo "held render released" >&2
+exit 1
+"#;
+
+    /// Releases the held render however the test ends.
+    struct Release(PathBuf);
+
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, b"go");
+        }
+    }
+
+    /// The next reply to one of `ids`, skipping events and other replies.
+    async fn next_reply(conn: &mut Conn, ids: &[u64]) -> Frame {
+        loop {
+            let (frame, _blob) = codec::read_frame(conn).await.expect("read reply");
+            if frame.kind == Kind::Res && ids.contains(&frame.id) {
+                return frame;
+            }
+        }
+    }
+
+    /// A daemon whose `quarto` is the held stand-in, a connection after its
+    /// hello, and a `quarto.open` (id 2) sent on it.
+    async fn held_render(tag: &str, stub_dir: &Path, release: &Release) -> (Env, Conn) {
+        let julia = write_fake_kernel(stub_dir);
+        sot_log::test_exec::write_executable(&stub_dir.join("quarto"), HELD_QUARTO);
+        let path = format!("{}:{}", stub_dir.display(), std::env::var("PATH").unwrap_or_default());
+        let release_path = release.0.to_string_lossy().into_owned();
+        let env = Env::spawn_with(
+            tag,
+            Some(&julia),
+            &[("doc.qmd", b"# held\n")],
+            &[("PATH", path.as_str()), ("SOT_TEST_QUARTO_RELEASE", release_path.as_str())],
+        );
+        let doc = env._tmp.path().join("project").join("doc.qmd");
+        let mut conn = poll_until_connected(&env.socket_path).await;
+        tokio::time::timeout(BOUND, do_hello(&mut conn)).await.expect("hello within BOUND");
+        let open = serde_json::json!({ "path": doc.to_string_lossy(), "execute": true });
+        codec::write_frame(&mut conn, &Frame::req(2, op::QUARTO_OPEN, open), None).await.expect("write quarto.open");
+        (env, conn)
+    }
+
+    /// Waits up to 10 s for `path` to exist.
+    async fn appears(path: &Path) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !path.exists() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        path.exists()
+    }
+
+    #[tokio::test]
+    async fn a_ping_is_answered_while_a_quarto_render_is_held() {
+        let stub_dir = tempfile::tempdir().expect("stub dir");
+        let release = Release(stub_dir.path().join("release"));
+        let (_env, mut conn) = held_render("longop", stub_dir.path(), &release).await;
+        let sent = Instant::now();
+        codec::write_frame(&mut conn, &Frame::req(3, op::PING, serde_json::json!({})), None)
+            .await
+            .expect("write ping");
+        let first = tokio::time::timeout(Duration::from_secs(5), next_reply(&mut conn, &[2, 3]))
+            .await
+            .expect("no reply within 5 s: the held quarto.open holds the connection's loop");
+        let answered = sent.elapsed();
+        assert_eq!((first.id, first.op.as_str()), (3, op::PING), "the ping's reply comes first: {first:?}");
+
+        drop(release);
+        let held = tokio::time::timeout(BOUND, next_reply(&mut conn, &[2])).await.expect("quarto.open's reply");
+        assert_eq!(held.op, op::QUARTO_OPEN);
+        assert_eq!(held.payload["code"], "quarto_render_failed", "{:?}", held.payload);
+        println!(
+            "long-op: ping answered in {answered:?} while quarto.open was held; quarto.open id {} answered {} after the release",
+            held.id, held.payload["code"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_held_render_runs_to_its_end_after_its_connection_closes() {
+        let stub_dir = tempfile::tempdir().expect("stub dir");
+        let release = Release(stub_dir.path().join("release"));
+        let (_env, conn) = held_render("longopclose", stub_dir.path(), &release).await;
+        let started = stub_dir.path().join("release.started");
+        assert!(appears(&started).await, "the held quarto never started");
+        drop(conn);
+        // Time for the daemon to read the close and end the connection's loop.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        drop(release);
+        let ended = stub_dir.path().join("release.ended");
+        assert!(appears(&ended).await, "the render was cut short when its connection closed");
+        println!("long-op: a held quarto.open ran to its end after its connection closed");
+    }
+}
+
 /// `pty.open` on a capsule row answers `attach_direct` immediately, never
 /// awaiting the activation it kicks off in the background.
 #[cfg(target_os = "linux")]

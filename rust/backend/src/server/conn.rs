@@ -2,13 +2,13 @@
 //! connection that becomes a pipe or a lease (`hand_off`) and its control loop (`serve_control`, with `select_once`
 //! for one pass of its select).
 
-use super::dispatch::dispatch;
+use super::dispatch::{dispatch, Shared};
 use super::events::{
     recv_or_pending, write_agent_message, write_agent_receipt, write_fe_command, write_monitor_tick,
     write_preview_changed, write_repl_frame, write_topology_changed, write_workspace_changed,
 };
 use super::hello::{admit_hello, handle_hello, parse_first_frame, register_hello, Admitted, HelloRefusal};
-use super::reply::{finish_dispatch, write_reply, HandlerOutput, OutTx, OFFLOOP_CONCURRENCY};
+use super::reply::{finish_dispatch, write_reply, HandlerOutput, Jobs, OutTx, OFFLOOP_CONCURRENCY};
 use super::*;
 use sot_protocol::HANDOFF_ROLE;
 
@@ -115,10 +115,8 @@ async fn read_owned<R: AsyncRead + Unpin>(
 /// requests, a badge-consuming `goto` fires them, an autostarted agent
 /// writes into its own pane, and a command-file `cycle_ws` could forge
 /// `read: true`) — deleted rather than patched.
-pub(super) fn touch_person_input(clients: &Clients, guard: &Option<ClientGuard>) {
-    if let Some(g) = guard {
-        clients.touch_person_input(g.serial());
-    }
+pub(super) fn touch_person_input(clients: &Clients, serial: u64) {
+    clients.touch_person_input(serial);
 }
 
 pub(super) async fn handle_connection<R, W>(
@@ -397,18 +395,19 @@ where
     let mut monitor_rx = workspaces.monitor_hub().map(|h| h.subscribe());
     let mut monitor_subscribed = false;
 
-    // Off-loop jobs (switch-latency Phase 1, joined by `kernel.request` in
-    // the kernel-dead-pane-starvation fix): `preview.get` / `concept.read`
-    // / `image.crop` / `kernel.request` run as their own tasks in `jobs`,
+    // Off-loop jobs (switch-latency Phase 1; the default since
+    // DAEMON-INLINE): every op the op table does not run inline
+    // (`dispatch::place`) runs as its own task in `jobs`, a pooled one
     // bounded to `OFFLOOP_CONCURRENCY` concurrent (the semaphore is acquired INSIDE
     // each job, never here, so queuing one never blocks reading the next
     // frame). `tx` stays this loop's alone — a job has no way to reach the
     // socket, so it hands its finished reply to `out_tx` and the loop
     // (`out_rx`, drained in the select below) writes it exactly like an
     // inline reply. Dropping `jobs` (this function returning, any path)
-    // aborts whatever's still running — no leaked tasks.
+    // detaches whatever is still running (`Jobs`): a job ends on its own
+    // bounds, and its reply, with nobody left to write it, is dropped.
     let (out_tx, mut out_rx): (OutTx, _) = mpsc::channel(OFFLOOP_CONCURRENCY);
-    let mut jobs: JoinSet<()> = JoinSet::new();
+    let mut jobs = Jobs(JoinSet::new());
     let job_sem = Arc::new(Semaphore::new(OFFLOOP_CONCURRENCY));
 
     // Connected-client registry entry (ADR 0010/0013): registered here, after the bus subscriptions above so no
@@ -420,9 +419,14 @@ where
     // `filer` (ADR 0048), read from the hello and never from a request body, which is what makes a receipt
     // unforgeable (`None` for a connection that declared no name, which therefore cannot vouch for anything).
     let client_guard = Some(register_hello(&hello, &clients));
-    let hello_host = hello.hello().host.clone();
-    let hello_name = hello.hello().name.clone();
     let is_long_lived_role = matches!(hello.hello().role.as_str(), "fe" | "bridge");
+    let shared = Shared {
+        session: session.clone(), mathjax, pluto, workspaces: workspaces.clone(), ws_events_tx, agent_events_tx,
+        agent_receipt_tx, fe_command_tx, clients: clients.clone(), topology_store, topo_changed_tx, leases,
+        serial: client_guard.as_ref().map_or(0, |g| g.serial()),
+        client_id: client_guard.as_ref().map(|g| g.client_id().to_string()).unwrap_or_default(),
+        hello_host: hello.hello().host.clone(), hello_name: hello.hello().name.clone(),
+    };
     let hello_reply = handle_hello(hello_id, hello.into_hello(), &session, &files_mode, label.as_deref(), &clients).await;
     for (frame, blob) in finish_dispatch(op::HELLO, hello_id, std::time::Instant::now(), hello_reply) {
         write_reply(tx, frame, blob).await?;
@@ -473,10 +477,8 @@ where
         }
 
         dispatch(
-            tx, frame, &session, &mathjax, &pluto, &workspaces, &ws_events_tx,
-            &agent_events_tx, &agent_receipt_tx, &fe_command_tx, &clients, &topology_store, &topo_changed_tx, &leases,
-            &client_guard, &hello_host, &hello_name, is_long_lived_role, &mut deadline_armed,
-            &mut read_deadline, &mut active_workspace, &mut monitor_subscribed, &mut jobs, &job_sem, &out_tx,
+            tx, frame, &shared, is_long_lived_role, &mut deadline_armed, &mut read_deadline, &mut active_workspace,
+            &mut monitor_subscribed, &mut jobs, &job_sem, &out_tx,
         )
         .await?;
     }

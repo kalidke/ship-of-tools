@@ -46,6 +46,6 @@ files each `agent.message` whose `to` this box's registry lists through `file_co
   from the hub in 90s` with no ssh line after it: ssh is up, so its last line is stale. ssh's ServerAlive covers only
   a dead network or sshd, not a hub daemon or `sotd stdio-bridge` stopped behind a live sshd. Frames count, not bytes:
   nothing the hub sends a `cli` connection carries a blob. The hub never reaps the link (role `cli`).
-- The silence rule holds only while every request the link sends is one the hub answers at once in its connection loop
-  (`hello`, `ping`, `agent.filed`). A request the hub awaits inline (`topology.set`, or any handler that waits on real
-  work) must not ride this link: it would hold the hub's loop, and a busy hub would be cut as a silent one.
+- The silence rule holds because the hub answers `hello` and `ping` in its connection loop and `agent.filed` as a job
+  without a permit, and the link sends nothing else. A request the hub could make wait must not ride this link: a busy
+  hub would be cut as a silent one.

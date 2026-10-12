@@ -143,7 +143,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | turn auditor (`claude -p`) | process | messaging | `comm/work_state/comm-turn-auditor.sh` |
 | sotd tokio runtime and accept loop | thread | server | `rust/backend/src/main.rs` `main`, `runtime` (built after the serving prologue); `rust/backend/src/server/listen.rs` `run_local` |
 | per-connection task and writer | thread | server | `rust/backend/src/server/conn.rs` `handle_connection`, `serve_control`; `rust/backend/src/server/reply.rs` `write_frame_within` |
-| off-loop job pool (4 per connection) | thread, lock | server | `rust/backend/src/server/reply.rs` `spawn_job`, `OFFLOOP_CONCURRENCY` |
+| off-loop jobs: the `POOLED` permits (4 per connection) and the jobs without one | thread, lock | server | `rust/backend/src/server/reply.rs` `spawn_job`, `OFFLOOP_CONCURRENCY`; `rust/backend/src/server/dispatch.rs` `place`, `INLINE`, `POOLED` |
 | lease ticker (1 s) | thread | lifecycle | `rust/backend/src/lifecycle/lease.rs` `ticker`, `tick` |
 | shutdown backstop thread | thread | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `run`, `shutdown_bound` |
 | hub link task | thread | messaging | `rust/backend/src/comm/mail/hub_link.rs` `spawn_link` |

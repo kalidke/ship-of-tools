@@ -18,9 +18,9 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   receipts, frontend commands and the monitor tick. Their payloads belong to their owners.
 - Each control session's task and state, in `serve_control`: roster guard (control sessions only), declared host and
   name, active workspace, monitor flag, read deadline, and the off-loop `JoinSet` and semaphore.
-- The op table: the `match` in `dispatch`, which hands each op to its owner's handler (four through the off-loop
-  pool) and keeps inline only the arms that touch connection state or must keep request order (`preview.set_scale`),
-  and the unknown-op reply.
+- The op table: `place` (the `INLINE` and `POOLED` lists, each op with its reason; every other op is a job), `dispatch`
+  (the arms that use the loop's state or writer, and the placement) and `serve` (every other op to its owner), and the
+  unknown-op reply.
 - sotd's entry (argv, umask 077, boot refusals, the log tee to `<state>/sotd.log`, which follows `XDG_STATE_HOME` and
   has no size bound or rotation), the client roster (`clients.rs`) and the revision ring (`session.rs`), all in the
   crate root.
@@ -65,8 +65,14 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   account may leave up to 2 MiB of nonpaged pool waiting per connection until the daemon reads it or closes the pipe.
 - Every control connection's `ping` is answered, whatever its role (`handle_ping`); a pinged `fe` or `bridge`
   connection silent for 90 s is reaped (the reaper arm in `select_once`, `ping_read_deadline`).
-- At most 4 off-loop jobs run per connection, and one queued 10 s is answered with a timeout and never runs
-  (`spawn_job`); `pty.*` and `monitor.*` run inline and never wait on that pool.
+- An op runs off the connection's loop unless `INLINE` names it; an `INLINE` op waits only on memory, the local disk or
+  a bounded capsule, registry, REPL or kernel step, or for `workspace.reauth` (sent only by a row's own client) on the
+  row's start lock, so the loop answers a `ping` at once. The three `POOLED` ops hold one of 4 permits per connection,
+  and one that waits 10 s for a permit is answered with a timeout and never runs (`spawn_job`); every other job takes no
+  permit. A pooled job's workspace hint is resolved to its canonical id before it queues, or answered
+  `unknown_workspace` with no job run (`canonicalize_workspace_id`). Job replies come back in the order the jobs
+  finish, each under its own request id. A job runs to its end when its connection closes (`Jobs`), and one whose
+  handler panics is answered `handler_error` naming the panic.
 - Accepting stops at the deciding lease departure, before any row is touched (`run_local`'s accept loop, then
   `shutdown::run`).
 
@@ -92,7 +98,7 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 - `hello.rs`: the hello: the admission (`parse_first_frame`, `admit_hello`, and `Admitted`, the only proof of it), the reply with its replay (`handle_hello`) and the roster entry (`register_hello`)
 - `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the listener (`bind_session`, with the pipe descriptor and its inbound buffer), the accept loop (`run_local`) and the accept-time admission (`admit_peer`, `same_account`)
 - `conn.rs`: one connection: the read-deadline reaper, its admission at the first frame (`handle_connection`), the handoff to a pipe or a lease (`hand_off`), the control loop (`serve_control`) and its select (`select_once`)
-- `dispatch.rs`: the op table: `dispatch` routes one request to its owner and writes the reply
+- `dispatch.rs`: the op table: `place` (the `INLINE` and `POOLED` lists), `dispatch` runs one request where it is placed, and `serve` hands it to its owner
 - `events.rs`: one `write_*` per bus turning a broadcast item into its evt frame, and `recv_or_pending` for the two buses a connection holds as `Option` (always `Some` in a served connection, `None` only in tests)
 - `reply.rs`: the write deadline, the frame writers, the reply and error containment, and the off-loop job pool
 - `pipe.rs`: the shared byte pipe after a connect frame (`pipe_bidirectional`) and the one error frame for a refused connect (`reject`)
@@ -101,7 +107,7 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 - Native listener tests observe accept-time rejection before connection-handler entry, a same-account control, and Windows access denial using the live session-pipe descriptor; hello account-conflict tests do not substitute for OS admission.
 
 ## Start here
-An op: the `match` in `dispatch`. Bind, accept and the lock: `run_local` and `lock_daemon`. Boot order and
+An op: `place`, then the `match` in `serve`. Bind, accept and the lock: `run_local` and `lock_daemon`. Boot order and
 buses: `run`. Write deadlines and the job pool: `reply.rs`.
 
 Records: ADR 0001, 0027, 0035, 0045, 0050.

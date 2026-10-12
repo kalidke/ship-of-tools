@@ -1,6 +1,6 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! A control session's replies, pinned through a real `sotd`: the op table's unknown-op answer, the
-//! `monitor.*` and `pty.open` arms that answer inline, the four off-loop ops, `workspace.activate`,
+//! `monitor.*` and `pty.open` arms that answer inline, the pooled ops and `concept.read`, `workspace.activate`,
 //! the evt-frame skip, the `ping` a connection with no hello is refused, the refused hellos (another protocol, one
 //! that does not parse), which close their connection and never enter the roster. Every request is read strictly:
 //! its reply is the next non-evt frame and no second reply follows it.
@@ -113,7 +113,7 @@ async fn control_session_replies_are_pinned() {
     let reply = strict(&mut conn, next(), op::PTY_OPEN, json!({"cols": 80, "rows": 24, "target": "nosuch"})).await;
     assert_eq!(reply.payload, json!({"error": "no workspace owns session \"nosuch\"", "code": "no_workspace"}));
 
-    // 5. The four off-loop ops, on an unknown row and on the default row.
+    // 5. The three pooled ops, on an unknown row and on the default row; then concept.read, a job without a permit.
     let list = strict(&mut conn, next(), op::WORKSPACE_LIST, json!({})).await.payload;
     let default_id = list["workspaces"]
         .as_array()
@@ -127,7 +127,6 @@ async fn control_session_replies_are_pinned() {
         (op::PREVIEW_GET, "preview.get payload: missing field `node_id`"),
         (op::IMAGE_CROP, "image.crop payload: missing field `node_id`"),
         (op::KERNEL_REQUEST, "kernel.request payload: missing field `kernel_op`"),
-        (op::CONCEPT_READ, "concept.read payload: missing field `target`"),
     ];
     for (name, default_row_error) in ops {
         let reply = strict(&mut conn, next(), name, json!({"workspace_id": "ws-nosuch"})).await;
@@ -145,6 +144,19 @@ async fn control_session_replies_are_pinned() {
             "{name} on the default row"
         );
     }
+
+    let reply = strict(&mut conn, next(), op::CONCEPT_READ, json!({"workspace_id": "ws-nosuch", "target": "t"})).await;
+    assert_eq!(
+        reply.payload,
+        json!({"error": "unknown workspace: Some(\"ws-nosuch\")", "code": "unknown_workspace"}),
+        "concept.read"
+    );
+    let reply = strict(&mut conn, next(), op::CONCEPT_READ, json!({"workspace_id": default_id})).await;
+    assert_eq!(
+        reply.payload,
+        json!({"error": "concept.read payload: missing field `target`", "code": "handler_error"}),
+        "concept.read on the default row"
+    );
 
     // 6. workspace.activate on an unknown row.
     let reply = strict(&mut conn, next(), op::WORKSPACE_ACTIVATE, json!({"workspace_id": "ws-nosuch"})).await;
