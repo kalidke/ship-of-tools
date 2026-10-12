@@ -29,9 +29,7 @@ scripts/CLAUDE.md.
   (ConPTY and capsule tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the
   latest published tag into a clean container). The step "Test native harness helpers" in `checks-linux` runs the
   feature-gated sot binary's eight display-free native harness regression bodies through
-  scripts/tests/run-filtered-tests.sh, which requires command and log-capture success and exactly one libtest summary
-  line, starting with eight passed, zero failed and zero ignored; native window acceptance remains in the dedicated
-  hosted jobs.
+  scripts/tests/run-filtered-tests.sh with the count 8; native window acceptance remains in the dedicated hosted jobs.
   The step "Test selected Rust bodies" runs the portable real-libtest
   shell proofs in `test` on windows and macos and in `checks-linux` on ubuntu; it invokes no daemon or peer suite. On
   ubuntu it also runs the candidate gate's finite selected-job and runtime-listing proofs and test-filtered-tests.sh,
@@ -95,8 +93,8 @@ scripts/CLAUDE.md.
 - The Windows containment tests that need julia, Git for Windows' bash or a job around the test process are `#[ignore]`
   in `cargo test`; the job "containment, ignored tests (windows-latest)" runs exactly those (`--ignored`, filter
   `lifecycle::contain::tests::`) with julia installed, through scripts/tests/run-filtered-tests.sh with their count, so a
-  selection that runs any other number of bodies fails. A commit that adds, removes or renames an `#[ignore]` test in
-  that module changes the step's count with it (rust/backend/src/lifecycle/contain.rs).
+  selection that runs any other number of bodies fails. A commit that changes how many `#[ignore]` tests that module
+  holds, or the module's path, changes the step's count or filter with it (rust/backend/src/lifecycle/contain.rs).
 - The `paths:` filters decide which pushes run `rust.yml` and `CI.yml`; a new top-level code folder joins the filter of
   the workflow that tests it. Both workflows skip a commit whose message starts `release: v`.
 - Release jobs pin every action by commit SHA, and only `publish` gets `contents: write`: the release is the updater's

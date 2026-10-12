@@ -58,28 +58,36 @@ def run(name, expected, selected, exact=True):
     return code, text, evidence['libtest'], bodies
 
 
-# name, expected count, selection, --exact, libtest's own summary, bodies that ran, runner accepts
+# name, expected count, selection, --exact, the log's summary lines in order, bodies that ran, runner accepts
 cases = [
-    ('absent', 1, ['absent'], True, 'ok. 0 passed; 0 failed; 0 ignored;', [], False),
-    ('ordinary', 1, ['ordinary'], True, 'ok. 1 passed; 0 failed; 0 ignored;', ['ordinary'], True),
-    ('group', 2, ['near'], False, 'ok. 2 passed; 0 failed; 0 ignored;', ['near', 'qualified-near'], True),
-    ('wrong-count', 1, ['near'], False, 'ok. 2 passed; 0 failed; 0 ignored;', ['near', 'qualified-near'], False),
-    ('ignored', 1, ['qualified::ignored_positive'], True, 'ok. 0 passed; 0 failed; 1 ignored;', [], False),
-    ('failed', 1, ['ordinary'], True, 'FAILED. 0 passed; 1 failed; 0 ignored;', ['ordinary'], False),
-    ('misleading', 1, ['misleading', 'ordinary'], True, 'ok. 2 passed; 0 failed; 0 ignored;',
-     ['misleading', 'ordinary'], False),
+    ('absent', 1, ['absent'], True, ['ok. 0 passed; 0 failed; 0 ignored;'], [], False),
+    ('ordinary', 1, ['ordinary'], True, ['ok. 1 passed; 0 failed; 0 ignored;'], ['ordinary'], True),
+    ('group', 2, ['near'], False, ['ok. 2 passed; 0 failed; 0 ignored;'], ['near', 'qualified-near'], True),
+    ('wrong-count', 1, ['near'], False, ['ok. 2 passed; 0 failed; 0 ignored;'], ['near', 'qualified-near'], False),
+    ('ignored', 1, ['ordinary', 'qualified::ignored_positive'], True, ['ok. 1 passed; 0 failed; 1 ignored;'],
+     ['ordinary'], False),
+    ('failed', 1, ['ordinary'], True, ['FAILED. 0 passed; 1 failed; 0 ignored;'], ['ordinary'], False),
+    # The first line is the summary the misleading body prints into its captured output.
+    ('misleading', 1, ['misleading', 'ordinary'], True,
+     ['ok. 1 passed; 0 failed; 0 ignored;', 'ok. 2 passed; 0 failed; 0 ignored;'], ['misleading', 'ordinary'], False),
 ]
 
 name = 'setup'
 try:
-    for name, expected, selected, exact, summary, ran, accepted in cases:
+    for name, expected, selected, exact, summaries, ran, accepted in cases:
         code, text, raw, bodies = run(name, expected, selected, exact)
-        check(any(line.startswith(f'test result: {summary}') for line in raw.splitlines()),
-              f'missing libtest summary: test result: {summary}')
+        lines = [line for line in raw.splitlines() if line.startswith('test result: ')]
+        check(len(lines) == len(summaries) and all(line.startswith(f'test result: {summary}')
+                                                   for line, summary in zip(lines, summaries)),
+              f'summary lines {lines}, want lines starting {summaries}')
         check(bodies == ran, f'bodies that ran: {bodies}, want {ran}')
         check((code == 0) == accepted, f'runner exit {code}: this selection must be '
               + ('accepted' if accepted else 'rejected'))
         check(not accepted or f'filtered-tests: expected={expected} ok=true' in text, 'missing count receipt')
+        found = [line.removeprefix('filtered-tests: found: ') for line in text.splitlines()
+                 if line.startswith('filtered-tests: found: ')]
+        check(accepted or name == 'failed' or found == lines,
+              f'runner reported {found}, want the summary lines {lines}')
         check(name != 'failed' or 'requested fixture panic' in raw, 'missing the failed body cause')
         print(f'filtered-count proof={name} ok=true', flush=True)
     name = 'invalid-count'

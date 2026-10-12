@@ -8,11 +8,14 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners, including combined captured-summary/truncation and scratch-path controls; accepts a compiled fixture executable by absolute path and validates its shell scratch root before cleanup.
 - `run-filtered-tests.sh`: shared runner for a filtered libtest group; tees a fresh invocation log and fails on a command or
   capture error, or unless the log holds exactly one libtest summary line and it starts with the expected positive pass
-  count, zero failed and zero ignored; used by the `rust.yml` steps "Test native harness helpers" (job `checks-linux`)
+  count, zero failed and zero ignored, and then prints the summary lines it found; used by the `rust.yml` steps "Test
+  native harness helpers" (job `checks-linux`)
   and "Test the ignored containment tests" (job `windows-ignored-containment`).
-- `test-filtered-tests.sh`: real-libtest controls for the group runner's completed, empty, ignored, wrong-count, failed and
-  captured-summary selections, argument validation and capture failure; a failing case prints its saved status, output
-  and libtest log; receives the existing compiled fixture by absolute path and uses its own temporary roots. Runs in the
+- `test-filtered-tests.sh`: real-libtest controls for the group runner's completed, empty, wrong-count, failed,
+  captured-summary and passed-beside-ignored selections, argument validation and capture failure; each case names every
+  summary line its log holds and, for a rejected selection, the lines the runner reports finding; a failing case prints
+  its saved status, output and libtest log; receives the existing compiled fixture by absolute path and uses its own
+  temporary roots. Runs in the
   `rust.yml` step "Test selected Rust bodies" (job `checks-linux`).
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
@@ -181,14 +184,15 @@ Last line: `violations: n, allowed: m, exempt: e, unused-allow: u, folders check
 behaviour it pins. For a Windows script change, the `.ps1` suite named for it above.
 
 ## Rules
-- A `rust.yml` step that filters libtest bodies runs through run-filtered-tests.sh with its verified positive count ("Test
-  native harness helpers" in `checks-linux`, "Test the ignored containment tests" in `windows-ignored-containment`), so a
-  filter that runs no body, or another number, fails. Two filter steps keep cargo's exit status, because a step of the
-  same run executes every body they select: "Folder trust premises (Windows and macOS)" filters `trust_declaration` and
-  `agents::folder_trust` in `test`, whose "Test workspace" runs every non-ignored sotd body; the `test-linux` row
-  `outage test lane_bridge outage::` is paired with `capsule test lane_bridge --skip outage::`, which runs every
-  lane_bridge body the first does not select. Single selected-body owners retain lib-test-body.sh and its stronger
-  identity verdict.
+- A `rust.yml` step that filters libtest bodies to run them as tests runs through run-filtered-tests.sh with its verified
+  positive count ("Test native harness helpers" in `checks-linux`, "Test the ignored containment tests" in
+  `windows-ignored-containment`), so a filter that runs no body, or another number, fails. Two filter steps keep cargo's
+  exit status, because a step of the same run executes every body they select: "Folder trust premises (Windows and
+  macOS)" filters `trust_declaration` and `agents::folder_trust` in `test`, whose "Test workspace" runs every
+  non-ignored sotd body; the `test-linux` row `outage test lane_bridge outage::` is paired with `capsule test
+  lane_bridge --skip outage::`, which runs every lane_bridge body the first does not select. The fixture selections of
+  "Test selected Rust bodies" are inputs, not tests: test-test-body.sh's `cargo_parity` case judges their logs. Single
+  selected-body owners retain lib-test-body.sh and its stronger identity verdict.
 - The checker accepts the outer result only after complete, unambiguous captured-output boundaries; a captured summary or truncated capture cannot supply that result.
 - The proof binds its shell scratch root to a validated absolute directory before installing cleanup; behavior controls observe the driver and cleanup paths under relative TMPDIR.
 - A shell owner that selects one Rust body consumes the completion verdict from lib-test-body.sh; a listed name, child exit zero or a zero-test summary alone is not execution proof.
