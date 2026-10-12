@@ -230,4 +230,26 @@ end
 
 PreviewPayload(mime, data) = PreviewPayload(mime, data, Dict{String,Any}())
 
+"""
+    read_within(cmd, seconds) -> Vector{UInt8}
+
+`read(cmd)` with a bound: the process is killed when `seconds` pass, and the error names the program and the bound.
+"""
+function read_within(cmd::Cmd, seconds::Real)
+    out = IOBuffer()
+    p = run(pipeline(cmd; stdout = out); wait = false)
+    timedout = Ref(false)
+    timer = Timer(seconds) do _
+        process_running(p) && (timedout[] = true; kill(p))
+    end
+    try
+        wait(p)
+    finally
+        close(timer)
+    end
+    timedout[] && error("$(basename(cmd.exec[1])) did not finish within $(seconds) s")
+    success(p) || throw(ProcessFailedException(p))
+    take!(out)
+end
+
 end # module

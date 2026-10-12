@@ -20,6 +20,7 @@ json-doc for the minimal shape; pdf-file for params and extras.
 - Extensions are lowercase and disjoint.
 - A missing external tool gives a text/markdown note, never a throw (the `preview` methods of ShipToolsPDFFile and
   ShipToolsVideoFile).
+- An external tool runs through `ConceptExplorerCore.read_within` with the plugin's `TOOL_BOUND` (20 s), because the kernel serves one request at a time.
 - julia-source's spans concatenate to the file byte for byte.
 - The video-file matches tests execute ConceptExplorerCore.matches against the five-suffix corpus, including leading-dot and mixed-case filenames; classification assertions do not require ffmpeg.
 - A new plugin brings kernel `[deps]`, `[sources]`, a `using` line, and a test CI.yml runs (today only pdf-file and

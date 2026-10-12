@@ -97,4 +97,26 @@ struct TestNoMatches <: FileType end
         @test isempty(methods(ast_hash))
         @test isempty(methods(applicable_annotations))
     end
+
+    @testset "read_within bounds an external tool" begin
+        # The bound is the test's own: a read_within with no timer would leave the task running, and the test fails
+        # at its 10 s instead of hanging.
+        if Sys.isunix()
+            began = time()
+            task = @async try
+                ConceptExplorerCore.read_within(`sleep 600`, 1)
+            catch e
+                e
+            end
+            @test timedwait(() -> istaskdone(task), 10) == :ok
+            if istaskdone(task)
+                err = fetch(task)
+                @test err isa ErrorException
+                @test occursin("sleep did not finish within 1 s", sprint(showerror, err))
+                @test time() - began < 3
+            end
+            @test ConceptExplorerCore.read_within(`echo hi`, 5) == b"hi\n"
+            @test_throws ProcessFailedException ConceptExplorerCore.read_within(`false`, 5)
+        end
+    end
 end
