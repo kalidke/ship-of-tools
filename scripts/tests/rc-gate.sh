@@ -12,7 +12,10 @@
 # Julia suites and the Rust tests, whose WGL page test adds WGLMakie from it), SSH_AUTH_SOCK and
 # CARGO_PROFILE_DEV_DEBUG when set. CARGO_TARGET_DIR is the gate's alone while it runs: its jobs run the binaries in it (the
 # tests.tsv paths, `sotd`, `sot-capsule`), and summary.txt's first line names one head and tree; a build of another
-# checkout into it would replace them mid-run. Every job gets the container's private XDG_RUNTIME_DIR and no
+# checkout into it would replace them mid-run. It belongs to one checkout for good: the first run names that checkout in
+# <target>/rc-gate-checkout, and a run for any other checkout is refused (exit 2) before anything is built, since cargo
+# keys a workspace crate by its path inside the workspace and trusts file times, so a second tree built into one target
+# can run the first tree's binaries. Every job gets the container's private XDG_RUNTIME_DIR and no
 # DBUS_SESSION_BUS_ADDRESS, so no test scope reaches the user's systemd manager. Needs jq. Exit 2 on bad args;
 # otherwise 0 (130 if interrupted) and the verdict is in <logdir>/summary.txt: it ends in ALLDONE, or ALLDONE FAILED
 # when any job's rc is nonzero, the job runner failed, a job never ran, the run was interrupted, or a test left a
@@ -288,6 +291,14 @@ if [ $# -lt 2 ] || [ -z "${CARGO_TARGET_DIR:-}" ] || ! [[ $CAP =~ ^[1-9][0-9]*$ 
   echo "usage: CARGO_TARGET_DIR=... rc-gate.sh <checkout> <logdir> [cap >= 1]" >&2
   exit 2
 fi
+# One target per checkout, for good: the first run names its checkout in the target; a run for another is refused.
+D=$(cd "$1" && pwd) || exit 2
+CLAIM=$CARGO_TARGET_DIR/rc-gate-checkout
+if [ -e "$CLAIM" ] && [ "$(cat "$CLAIM")" != "$D" ]; then
+  echo "rc-gate: $CARGO_TARGET_DIR holds the build of $(cat "$CLAIM"); give $D a target of its own" >&2
+  exit 2
+fi
+mkdir -p "$CARGO_TARGET_DIR" && printf '%s\n' "$D" > "$CLAIM" || exit 2
 R=/sys/fs/cgroup; [ -e "$R/cgroup.controllers" ] || R=/sys/fs/cgroup/unified
 CG=$R$(sed -n 's/^0:://p' /proc/self/cgroup)
 [ -r "$CG/cgroup.procs" ] || { echo "rc-gate: needs a cgroup v2 control group" >&2; exit 2; }
@@ -300,7 +311,6 @@ if [ -d "$2" ] && [ -n "$(ls -A "$2")" ]; then
   echo "rc-gate: logdir $2 exists and is not empty" >&2
   exit 2
 fi
-D=$(cd "$1" && pwd) || exit 2
 mkdir -p "$2" || exit 2
 L=$(cd "$2" && pwd)
 mkdir -p "$L/rust" "$L/steps"

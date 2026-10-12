@@ -41,6 +41,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `moved-check.sh`: compares the lines a commit range added and removed, to show a move left no residual.
 - `test-check-layout.sh`: self-test of `check-layout.sh` over throwaway repos.
 - `test-moved-check.sh`: self-test of `moved-check.sh` over throwaway repos.
+- `test-rc-gate-target.sh`: `rc-gate.sh` names its checkout in its target and refuses the target to any other checkout.
 - `on-host.sh`: `on-host.sh HOST DIR -- CMD [ARG...]` runs CMD in DIR on a second host through `ssh HOST bash -s`, with
   the host's SOT_ variables, XDG_STATE_HOME, JULIA_LOAD_PATH and JULIA_PROJECT unset first; prints nothing of its own.
 - `in-container.sh`: `in-container.sh [--user-manager] UNIT -- CMD [ARG...]` runs CMD as the main process of the transient
@@ -238,7 +239,8 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   SIGKILLs rc-gate, so a summary without `ALLDONE` is a failed run.
 - `CARGO_TARGET_DIR` is the gate's alone while it runs: its jobs run the binaries in it (the tests.tsv paths, `sotd`,
   `sot-capsule`), and summary.txt's first line names one head and tree; a build of another checkout into it would replace
-  them mid-run.
+  them mid-run. A target belongs to one checkout for good: the first run names it in `<target>/rc-gate-checkout` and a run
+  for any other checkout exits 2 before anything is built (cargo can run another tree's binaries from a shared target).
 - `rc-gate.sh` needs `node` on its PATH, as it needs `julia`, and gives its jobs node alone, through a link in `<logdir>/bin`, and `npm ci` done in `rust/backend/sidecars/mathjax` (the
   sotd contract tests and test-agent-layers use them); it refuses, exit 2, rather than install into the checkout it
   judges. A Rust test binary's stderr goes to `<key>.stderr` beside its log, so the body check reads stdout only.
