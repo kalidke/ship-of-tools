@@ -9,6 +9,7 @@
 use crate::ephemerals::{start_spinning_at, start_spinning_with};
 use crate::fixture_owner::Fixture;
 use crate::guard::{close_by_lease, lease, leave_with_close, Run};
+use crate::observations::{engage, held_points, open};
 use crate::routes::{all_ended, ready_row, supervisor_in};
 use crate::support::{call, connect_and_hello, Env};
 use crate::update_fixture;
@@ -21,17 +22,14 @@ use std::time::{Duration, Instant};
 /// The variables of an update case's daemon: a build the updater takes for a release, the update root and the folder of
 /// held points under `case`.
 fn vars(case: &Path, mode: &str, release_build: bool) -> Vec<(String, String)> {
-    std::fs::create_dir_all(case.join("gates")).expect("the folder of held points");
+    let (gates, folder) = held_points(case);
     let mut vars = vec![
         ("SOT_UPDATE_MODE".to_string(), mode.to_string()),
         (
             "SOT_UPDATE_ROOT".to_string(),
             case.join("updates").display().to_string(),
         ),
-        (
-            "SOT_TEST_GATES".to_string(),
-            case.join("gates").display().to_string(),
-        ),
+        (gates.to_string(), folder),
     ];
     if release_build {
         vars.push(("SOT_TEST_RELEASE_BUILD".to_string(), "1".to_string()));
@@ -41,17 +39,6 @@ fn vars(case: &Path, mode: &str, release_build: bool) -> Vec<(String, String)> {
 
 fn refs(vars: &[(String, String)]) -> Vec<(&str, &str)> {
     vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
-}
-
-/// Engage the held point `name` of the case: the daemon waits there until the case opens it.
-fn engage(case: &Path, name: &str) {
-    std::fs::write(case.join("gates").join(format!("{name}.hold")), b"hold")
-        .expect("engage a held point");
-}
-
-/// Open the held point `name` of the case.
-fn open(case: &Path, name: &str) {
-    std::fs::write(case.join("gates").join(name), b"go").expect("open a held point");
 }
 
 /// Whether the daemon's log says `needle` within `bound`.
