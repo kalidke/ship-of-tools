@@ -161,10 +161,8 @@ cases = [
 
 # One table in the runner's order. A string is a fragment of the runner's code that no row's edit text holds; a row,
 # placed where its edit text starts (rows that start together, in any order), removes one check by one exact edit, and
-# the case it names is the first to fail on that edit. Each row's text occurs once, and the runner, its comment lines
-# and the spaces and tabs around each fragment aside, reads as exactly this table, so code added to, removed from,
-# moved within or changed in the runner fails the suite until the table changes with it. A deleted row whose text
-# lies inside another row's goes unseen.
+# the case it names is the first to fail on that edit. What the table guarantees, and what review must still catch,
+# is the run-filtered-tests.sh rule in scripts/tests/CLAUDE.md.
 # Not checks, so no rows of their own, though inside rows' texts: 2>&1, as libtest prints its summary on stdout; set -u,
 # as line 3 counts the arguments before it reads one; each line's stream and tee's copy to stdout, which only a reader
 # sees.
@@ -229,7 +227,7 @@ try:
         print(f'filtered-count proof={name} ok=true', flush=True)
     print(f'filtered-count completed_cases={len(cases)} ok=true', flush=True)
     evidence.clear()
-    source = runner.read_text()
+    source = runner.read_bytes().decode()  # as bash reads it: a carriage return is a character, not a line break
     code = list(source)  # the runner with its comment lines and every row's edit text blanked, its newlines kept
     for comment in re.finditer('(?m)^[ \t]*#.*', source):
         code[comment.start():comment.end()] = '\0' * len(comment.group())

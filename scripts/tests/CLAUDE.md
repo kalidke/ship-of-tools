@@ -188,13 +188,16 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
 ## Rules
 - Each check run-filtered-tests.sh makes is a row of test-filtered-tests.sh's `MUTANTS`, with the case that fails
   first without it. `MUTANTS` is one table in the runner's order: each row where its edit text starts, and each
-  fragment of code no row's text holds as a string. The suite fails unless each row's text occurs once and the runner,
-  its comment lines and the spaces and tabs around each fragment aside, reads as exactly that table. So code added
-  to, removed from, moved within or changed in the runner fails the suite until the table changes with it; a new
-  check adds its row and, if no case fails without it, its case. Review still catches what the suite cannot see: a
-  deleted row whose text lies inside another row's, a check's code written into a fragment instead of a row, a
-  deleted case that is no row's first killer (`ignored`), tee-status's fail-open form (a stale log tee cannot open;
-  root can open any file, so no case can pin it) and blanks at a fragment's edge.
+  fragment of code no row's text holds as a string. The suite reads the runner's bytes and fails unless each row's
+  text occurs once and the runner reads as exactly that table, apart from comment lines and the spaces, tabs and line
+  breaks at a fragment's edges; a comment that holds a row's text, or a removed comment that a row's text ends in,
+  still fails. So code added to, removed from, moved within or changed in the runner fails the suite until the table
+  changes with it; a new check adds its row and, if no case fails without it, its case. Review still catches what
+  the suite cannot see: a deleted row whose text other rows' texts cover (one row's, or two together, as
+  argument-order's); a check's code written into a fragment instead of a row; a deleted case that is no row's first
+  killer (`ignored`), or a weakened case that still fails first on its rows' edits; tee-status's fail-open form (a
+  stale log tee cannot open; root can open any file, so no case can pin it); and spaces, tabs and line breaks at a
+  fragment's edge.
 - A `rust.yml` step that filters libtest bodies to run them as tests runs through run-filtered-tests.sh with its verified
   positive count ("Test native harness helpers" in `checks-linux`, "Test the ignored containment tests" in
   `windows-ignored-containment`), so a filter that runs no body, or another number, fails. Two filter steps keep cargo's
