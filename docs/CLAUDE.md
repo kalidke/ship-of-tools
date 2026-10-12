@@ -8,8 +8,8 @@ the commit that changes the code it describes, and a design that is not built is
 - `docs/`: the ADRs and their index, the manual (`src/`, `make.jl`, `Project.toml`), `INSTALL-AGENT.md`,
   `ENROLLING-A-HOST.md`, `USING.md`, `SESSION.md`, `SCREENSHOTS.md`, `plan.md`, the ownership table
   `ownership.md` and the demo project the screenshots are taken from.
-- Outside this folder: `requirements.md` and `README.md` at the root, the root `CLAUDE.md`, and the publish guard
-  (`.claude/settings.json`, `.claude/hooks/`). Each folder's own `CLAUDE.md` belongs to the subsystem that owns that folder.
+- Outside this folder: `requirements.md` and `README.md` at the root, and the root `CLAUDE.md`. Each folder's own
+  `CLAUDE.md` belongs to the subsystem that owns that folder.
 
 ## Promises
 - Line 3 of every ADR starts with one status token: `current`, `superseded by ADR NNNN` or `partly superseded by ADR
@@ -20,18 +20,17 @@ the commit that changes the code it describes, and a design that is not built is
 - `make.jl` stages four single-source pages into `src/` at build time (`requirements.md`, `plan.md`, `comm/PROTOCOL.md`
   and `ENROLLING-A-HOST.md`); the staged copies are gitignored. Its built-site checks fail the build on a literal
   `<kbd>` and on a link to a missing section id, and doctests run inside it with both documented modules loaded.
-- Published text names no private hostname, username or LAN detail; the publish guard scans commit, PR and issue
-  text for them, and the screenshots are generated from `fixtures/DemoProject`, never from a private workspace.
+- Published text names no private hostname, username or LAN detail, and the screenshots are generated from
+  `fixtures/DemoProject`, never from a private workspace.
 - Nothing below `docs/` carries a page: `adr/`, `fixtures/`, `tools/` and `src/` are described here, so `src/` holds only
   manual pages.
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `docs/make.jl`,
-`.github/workflows/CI.yml`, `.claude/hooks/publish-guard.sh`. Uses: `sot-fe preview`, `docs/tools/docs-media.sh`,
+`.github/workflows/CI.yml`. Uses: `sot-fe preview`, `docs/tools/docs-media.sh`,
 `scripts/install.sh`, `docs/INSTALL-AGENT.md`.
 
 ## Folders
-- `.claude/hooks/`: the publish guard, records' other home with the root `CLAUDE.md`.
 - `CLAUDE.md` (repo root): the design and conventions page every session loads.
 - `docs/adr/`: the decision records.
 - `docs/fixtures/`: `DemoProject`, the fixture project for docs media.

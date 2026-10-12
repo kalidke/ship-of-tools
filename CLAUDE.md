@@ -88,7 +88,7 @@ connection.
 - Read `requirements.md` before adding a feature. Change a CLAUDE.md, ADR status or manual page in the commit that
   changes the code it describes. Plots in Julia use CairoMakie.
 - The repo is public: no private host names, user names, LAN details or host-suffixed handles in commits, PRs, code
-  comments or docs. The publish guard in `.claude/hooks/` blocks commit and PR text that matches the private denylist.
+  comments or docs. A push is swept for private names before it leaves this machine.
 - The repo is canonical, not any machine's memory: the user works across computers, and per-machine session memory is
   never a prerequisite. Session memory holds working practices only; a fact about the code belongs in the CLAUDE.md of
   the folder that owns it.
