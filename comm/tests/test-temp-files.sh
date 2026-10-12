@@ -120,4 +120,30 @@ for s in TERM HUP INT; do tf_signal "C6 comm-send (comm.file through the daemon)
 tf_table '{"comm.file":{"error":"not here","code":"not_here"},"agent.send":"silent"}'
 for s in TERM HUP INT; do tf_signal "C7 comm-relay send (the agent.send leg)" "$s" "${SENDER[@]}" "$SCRIPTS_DIR/comm-relay.sh" send @t-stranger x; done
 
+# The heartbeat's context capture: two files in the comm home's state/, held while comm-context.sh runs under the
+# bound. The hook runs from a folder of its own whose comm-context.sh stand-in touches the silent mark and waits; each
+# run has its own session key, so the hook's 10 s throttle never skips one. Ended through its process group, and by
+# TERM to the hook alone, as a harness ends a hook (the bound, 2 s there, then ends the stand-in).
+mkdir -p "$WORK/hb"
+ln -s "$SCRIPTS_DIR/comm-status-heartbeat.sh" "$WORK/hb/comm-status-heartbeat.sh"
+printf '#!/bin/sh\n: > "%s"\nexec "%s" 600\n' "$TF_DIR/silent" "$(command -v sleep)" > "$WORK/hb/comm-context.sh"
+chmod +x "$WORK/hb/comm-context.sh"
+printf '{"tool_name":"Bash"}' > "$WORK/hb/envelope.json"
+c8_check() {
+    local f n=0
+    for f in "$SOT_COMM_HOME"/state/.hb-ctx-*; do
+        [ -e "$f" ] || continue
+        echo "    left: ${f##*/} in the comm home's state"; rm -rf -- "${f:?}"; n=$((n + 1))
+    done
+    [ "$n" -eq 0 ]
+}
+for s in TERM HUP INT; do
+    TF_CHECK=c8_check tf_signal "C8 heartbeat context (the hook's group)" "$s" sh -c 'f="$1"; shift; exec "$@" < "$f"' _ \
+        "$WORK/hb/envelope.json" env CLAUDE_CODE_SESSION_ID="tf-group-$s" SOT_HB_CTX_TIMEOUT_TICKS=1200 \
+        bash "$WORK/hb/comm-status-heartbeat.sh"
+done
+TF_CHECK=c8_check TF_SIGNAL_TARGET=leader tf_signal "C8 heartbeat context (the hook alone)" TERM sh -c 'f="$1"; shift; exec "$@" < "$f"' _ \
+    "$WORK/hb/envelope.json" env CLAUDE_CODE_SESSION_ID=tf-leader SOT_HB_CTX_TIMEOUT_TICKS=40 \
+    bash "$WORK/hb/comm-status-heartbeat.sh"
+
 tf_report

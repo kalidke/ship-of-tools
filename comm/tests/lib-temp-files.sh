@@ -12,7 +12,8 @@
 #                            an op the table does not name is answered {"ok":true}
 #   tf_row ROW PATH CMD...   one row: CMD with the jq stand-in in PATH's mode, then nothing may be left; on path ok,
 #                            the function TF_CHECK names (when set) checks the value arrived whole
-#   tf_signal ROW SIG CMD... one row: CMD until the daemon sees a silent op, SIG to its group, then nothing may be left
+#   tf_signal ROW SIG CMD... one row: CMD until the daemon sees a silent op, SIG to its group (or its leader), then
+#                            nothing may be left
 #   tf_report                the summary line; returns the count of failed rows
 #
 # The jq stand-in fails (path `fail`) or hangs (path `kill`) a call whose value carries TF_MARK, in a `--rawfile`
@@ -153,12 +154,14 @@ _tf_start() {
 
 _tf_group_gone() { ! kill -0 -- "-$TF_PID" 2>/dev/null; }
 
-# _tf_end [SIG] — SIG (if given) to the row's group; TF_PID's status in TF_RC; then a wait until the group is empty.
+# _tf_end [SIG [leader]] — SIG (if given) to the row's group, or to its leader alone; TF_PID's status in TF_RC; then a
+# wait until the group is empty.
 # The hang guard is a watch that SIGKILLs the group when it has not emptied within await's 30 s.
 _tf_end() {
     local watch
     rm -f -- "$TF_DIR/guard"
-    [ -z "${1:-}" ] || kill -"$1" -- "-$TF_PID" 2>/dev/null
+    if [ "${2:-}" = leader ]; then kill -"$1" "$TF_PID" 2>/dev/null
+    elif [ -n "${1:-}" ]; then kill -"$1" -- "-$TF_PID" 2>/dev/null; fi
     ( await _tf_group_gone || { : > "$TF_DIR/guard"; kill -KILL -- "-$TF_PID" 2>/dev/null; } ) &
     watch=$!
     wait "$TF_PID" 2> /dev/null; TF_RC=$?
@@ -213,15 +216,18 @@ tf_row() {
     _tf_verdict "$row" "$path" "$bad"
 }
 
-# tf_signal ROW SIG CMD... — CMD runs until the stand-in daemon receives an op the table makes silent; then SIG goes
-# to its group. CMD must end by that signal (status 128 + its number) and leave nothing in the temporary folders.
+# tf_signal ROW SIG CMD... — CMD runs until TF_DIR/silent appears (the stand-in daemon touches it on an op the table
+# makes silent; a row's own stand-in may too); then SIG goes to its group, or to CMD alone when TF_SIGNAL_TARGET is
+# leader. CMD must end by that signal (status 128 + its number), leave nothing in the temporary folders, and pass the
+# function TF_CHECK names, when set.
 tf_signal() {
     local row="$1" sig="$2" bad=0 want; shift 2
     case "$sig" in HUP) want=129 ;; INT) want=130 ;; TERM) want=143 ;; *) want="" ;; esac
     _tf_start ok "$@"
     if await test -e "$TF_DIR/silent"; then
-        _tf_end "$sig" || bad=1
+        _tf_end "$sig" "${TF_SIGNAL_TARGET:-}" || bad=1
         [ "$TF_RC" = "$want" ] || { echo "    exited $TF_RC, want $want (ended by $sig)"; bad=1; }
+        [ -z "${TF_CHECK:-}" ] || "$TF_CHECK" || bad=1
     else
         echo "    the daemon never received the silent request"; _tf_end KILL; bad=1
     fi
