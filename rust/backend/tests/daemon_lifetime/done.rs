@@ -297,7 +297,7 @@ pub async fn hold_quarto(
     held: &mut Held,
 ) {
     if inputs.quarto.is_none() {
-        eprintln!("Quarto 1.7.31 is not installed here: the Quarto half is NOT CHECKED");
+        eprintln!("Quarto is not installed here: the Quarto half is NOT CHECKED");
         return;
     }
     let doc = run.env.workspace_project_root.join("render.qmd");

@@ -47,7 +47,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 ## Connections
 
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `video.open`, `docs.open`,
-`quarto.open`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `record_browser_port`, `revoke_browser_ports`,
+`quarto.open`, `quarto_render_error`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `record_browser_port`, `revoke_browser_ports`,
 `is_servable_video`, `start_page_servers`, `remove_root`, `loopback_port_from_url`, `with_loopback_port`,
 `rust/protocol/src/page_url.rs`.
 Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`,
@@ -65,7 +65,8 @@ Elsewhere: rust/frontend/src/pages.rs (the window's page proxy).
 - `http.rs`: the response code both loopback servers share: content types, single ranges, file bodies, plain replies.
 - `mod.rs`: declares the folder's modules, `start_page_servers`, which binds the listeners at boot, and `bind_page_listener`, the one bind of a page listener.
   It also holds `random_token`, the one minter of video tokens, site nonces and pool secrets.
-- `ops.rs`: video.open, docs.open (and its site-root walk), quarto.open.
+- `ops.rs`: video.open, docs.open (and its site-root walk), quarto.open and its render-failure text.
+- `ops_error_tests.rs`: direct cross-platform tables for Quarto failure selection, bounded ERROR retention and transport guidance; one Unix real-handler flood stand-in through the shared `test_isolated::run_isolated` owner checks reply code, no blob, one render, partial-HTML removal and the real writer/decoder boundary.
 - `proxy.rs`: `proxy.connect`, the loopback allowlist, browser-port records.
 - `site/`: the static-site server (own page).
 - `video.rs`: the video listener, its token grants and the request handler.

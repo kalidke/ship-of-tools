@@ -211,6 +211,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | core's Julia `TreeNode` (never constructed outside core's tests; not the wire's `TreeNode`) | ABI | sidecars | `core/src/ConceptExplorerCore.jl` `TreeNode` |
 | core's Julia `PreviewPayload` (`mime`, `data`, `extras`: what a plugin's `preview` returns; the kernel sends it as `blob_base64`) | ABI | sidecars | `core/src/ConceptExplorerCore.jl` `PreviewPayload`; `julia/kernel/src/preview.jl` |
 | `video.open`, `docs.open`, `quarto.open` | op | pages | `rust/backend/src/pages/ops.rs` `handle_video_open`, `handle_docs_open`, `handle_quarto_open` |
+| Quarto render-failure text: bounded ERROR/tail selection and full-stderr transport guidance | rule | pages | `rust/backend/src/pages/ops.rs` `quarto_render_error`; `rust/backend/src/pages/ops_error_tests.rs` |
 | `proxy.connect` and the loopback allowlist | op, state | pages | `rust/backend/src/pages/proxy.rs` `handle_proxy_connect`, `allowed_proxy_ports` |
 | loopback page-URL grammar (`http` or `https`, host `127.0.0.1` or `localhost`, an explicit port) | rule | pages | `rust/protocol/src/page_url.rs` `loopback_port_from_url`, `with_loopback_port` |
 | video suffix and MIME decision in Rust | rule | wire | `rust/protocol/src/video_path.rs` `video_mime` |

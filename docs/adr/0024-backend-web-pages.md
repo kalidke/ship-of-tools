@@ -251,3 +251,11 @@ targets of tracked links under a declared root; never anything inside a `.git`
 directory below the folder it is served from, never an untracked repo file
 outside the content root, never anything through an untracked link.
 Range, content types and the empty-file case are shared with the video server.
+
+## Amendment 2026-10-11: Quarto render diagnostics (QUARTO-ERROR)
+
+A failed `quarto.open` keeps its complete diagnostic message within 65,536 UTF-8 bytes. Reserve applicable transport guidance, the first ERROR occurrence and final ten stderr occurrences; retain further ERROR occurrences in source order while they fit, then report one `[N more ERROR lines omitted]` line when needed. Count omitted ERROR occurrences, not bytes; overlapping retained occurrences appear once. Mandatory lines are complete when they fit; if they alone exceed the budget, clip only the oversized lines, each as an explicitly marked UTF-8-safe excerpt; the shorter mandatory lines stay whole.
+
+Match the transport newline error in full decoded stderr. Its hint survives an omitted triggering occurrence, including an all-blank selected tail. It explains incomplete Julia server transport publication: Quarto 1.9.38 and later wait up to two seconds for the newline, slow server startup can still fail, and upgrading may help when using an older release.
+
+The bounded response fits the existing envelope cap and preserves `quarto_render_failed` and its wire shape. The daemon captures full stderr and attempts the render once.
