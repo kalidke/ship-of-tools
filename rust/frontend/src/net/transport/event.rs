@@ -370,6 +370,14 @@ pub enum IncomingEvt {
         ex: f32,
         display: bool,
     },
+    /// A `math.render` that will not produce an SVG: the daemon's error reply, a reply that did not parse or had no
+    /// blob, or the connection ending before the reply (`PendingGuard`). The chrome stops waiting on the equation and
+    /// says why; the next rebuild of the preview asks again.
+    MathRenderFailed {
+        latex: String,
+        display: bool,
+        message: String,
+    },
     /// `markdown.tokenize` reply — backend-derived semantic spans for one
     /// fenced code block. Chrome keys the cache by `(lang, source_hash)`
     /// echoed from the outgoing request so a stale reply for a fence

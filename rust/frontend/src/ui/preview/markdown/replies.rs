@@ -3,6 +3,13 @@
 use crate::ui::*;
 
 impl State {
+    /// A render that will not come: stop waiting on the equation and say why. A failure forces no reflow, so the
+    /// removed key cannot loop; the next rebuild of the preview asks for the equation again.
+    pub(crate) fn on_math_render_failed(&mut self, latex: String, display: bool, message: String) {
+        self.math_pending.remove(&(latex, display));
+        self.status = format!("math · {message}");
+    }
+
     pub(crate) fn on_math_rendered(
         &mut self,
         latex: String,

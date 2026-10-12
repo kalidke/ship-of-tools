@@ -50,6 +50,7 @@
 < golden Event { op: "fe.sessions", payload: Object {"code": String("code-fe.sessions"), "error": String("err-fe.sessions")} }
 < golden ProjectScan { workspace_id: Some("ps.ws"), project_root: None, package_name: None, entry_file: None, modules: [], generation: 101 }
 < golden MarkdownTokens { lang: "mt.lang", source_hash: 102, spans: [] }
+< golden MathRenderFailed { latex: "mr.latex", display: true, message: "err-math.render [code-math.render]" }
 < golden ImageCropFailed { node_id: "ic.node", message: "err-image.crop" }
 < golden ConceptWriteDone { target: "cw.target", result: Error { code: "code-concept.write", message: "err-concept.write" } }
 < golden FileWriteDone { node_id: "fw.node", result: Error { code: "code-file.write", message: "err-file.write" } }

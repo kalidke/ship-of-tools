@@ -110,11 +110,7 @@ pub(crate) fn on_repl_eval(
     // `unknown_workspace`, `handler_error`) ends the eval with one error frame
     // naming the daemon's words and code, as `on_repl_run_file` ends a run.
     // Nothing else ends an eval the daemon refused: it streams no frames.
-    if let Some(error) = frame.payload.get("error").and_then(|v| v.as_str()) {
-        let message = match frame.payload.get("code").and_then(|v| v.as_str()) {
-            Some(code) => format!("{error} [{code}]"),
-            None => error.to_string(),
-        };
+    if let Some(message) = error_text(&frame.payload) {
         let frames = vec![ReplFrame::Error { message, stacktrace: Vec::new() }];
         emit(IncomingEvt::ReplEvalDone { eval_id, elapsed_ms: 0, frames });
         return;

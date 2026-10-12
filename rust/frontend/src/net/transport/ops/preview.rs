@@ -199,15 +199,22 @@ pub(crate) fn on_math_render(
     latex: String,
     display: bool,
 ) {
+    // Every way the render can fail ends its wait, with the words the status line shows: the daemon's own error
+    // reply, a reply that does not parse, and a reply without its blob.
     let is_display = display;
+    let failed = |message: String| {
+        tracing::warn!(latex_len = latex.len(), is_display, %message, "math.render failed");
+        emit(IncomingEvt::MathRenderFailed { latex: latex.clone(), display, message });
+    };
+    if let Some(message) = error_text(&frame.payload) {
+        return failed(message);
+    }
     match serde_json::from_value::<MathRenderRes>(frame.payload) {
         Ok(res) => {
             // SVG bytes ride as the framing blob.
             // `MathRenderRes::blob` carries the descriptor
             // (len/type) for documentation; the actual bytes
-            // are the `blob` argument from `read_frame`. Skip
-            // when the blob is missing — backend bug or a
-            // weird transport edge — log and move on.
+            // are the `blob` argument from `read_frame`.
             let _ = res.blob;
             match blob {
                 Some(svg_bytes) => {
@@ -218,19 +225,10 @@ pub(crate) fn on_math_render(
                         display: res.display,
                     });
                 }
-                None => {
-                    tracing::warn!(
-                        latex_len = latex.len(),
-                        is_display,
-                        "math.render reply missing blob bytes"
-                    );
-                }
+                None => failed("the reply carried no SVG".to_string()),
             }
         }
-        Err(e) => {
-            tracing::warn!(error = %e, latex_len = latex.len(), is_display,
-                "math.render res parse failed");
-        }
+        Err(e) => failed(format!("the reply did not parse: {e}")),
     }
 }
 

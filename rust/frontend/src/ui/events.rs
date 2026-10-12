@@ -152,6 +152,11 @@ impl State {
                     ex,
                     display,
                 } => self.on_math_rendered(latex, svg_bytes, ex, display),
+                crate::net::transport::IncomingEvt::MathRenderFailed {
+                    latex,
+                    display,
+                    message,
+                } => self.on_math_render_failed(latex, display, message),
                 crate::net::transport::IncomingEvt::MarkdownTokens {
                     lang,
                     source_hash,
