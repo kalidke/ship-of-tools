@@ -353,7 +353,11 @@ mod tests {
         }
 
         fn name(&self) -> &'static str {
-            *self.0.lock().unwrap_or_else(|e| e.into_inner())
+            match self.0.try_lock() {
+                Ok(phase) => *phase,
+                Err(std::sync::TryLockError::Poisoned(error)) => *error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => "phase snapshot busy",
+            }
         }
     }
 
@@ -525,6 +529,62 @@ mod tests {
             println!("wire fixture send-capacity={bytes} framed-bytes=100004");
         }
         (a, b)
+    }
+
+    #[test]
+    fn a_busy_phase_snapshot_returns_without_waiting() {
+        let phase = Phase(Arc::new(Mutex::new("large send")));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (holder_tx, holder_rx) = mpsc::channel();
+        let held = phase.clone();
+        std::thread::spawn(move || {
+            let guard = held.0.lock().unwrap_or_else(|error| error.into_inner());
+            let _ = ready_tx.send(());
+            let released = release_rx.recv_timeout(Duration::from_secs(5));
+            drop(guard);
+            let _ = holder_tx.send(released.is_ok());
+        });
+        let ready = ready_rx.recv_timeout(Duration::from_secs(1));
+        let (entry_tx, entry_rx) = mpsc::channel();
+        let (snapshot_tx, snapshot_rx) = mpsc::channel();
+        let (complete_tx, complete_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = entry_tx.send(());
+            let _ = snapshot_tx.send(phase.name());
+            let _ = complete_tx.send(());
+        });
+        let entered = entry_rx.recv_timeout(Duration::from_secs(1));
+        let snapshot = snapshot_rx.recv_timeout(Duration::from_secs(1));
+        let released = release_tx.send(());
+        let holder = holder_rx.recv_timeout(Duration::from_secs(2));
+        let complete = complete_rx.recv_timeout(Duration::from_secs(2));
+        let late = if snapshot.is_err() {
+            Some(snapshot_rx.recv_timeout(Duration::from_secs(1)))
+        } else {
+            None
+        };
+        assert!(ready.is_ok(), "phase holder readiness missing: {ready:?}");
+        assert!(entered.is_ok(), "snapshot entry missing: {entered:?}");
+        assert!(
+            released.is_ok(),
+            "phase holder release missing: {released:?}"
+        );
+        assert_eq!(holder, Ok(true), "phase holder completion missing");
+        assert!(
+            complete.is_ok(),
+            "snapshot completion missing: {complete:?}"
+        );
+        if let Some(late) = late {
+            assert_eq!(late, Ok("large send"), "late snapshot fixture failed");
+        }
+        println!("wire phase-proof holder=ready snapshot=entered holders=completed");
+        assert!(
+            snapshot.is_ok(),
+            "phase snapshot waited for a busy diagnostic mutex"
+        );
+        assert_eq!(snapshot.unwrap(), "phase snapshot busy");
+        println!("wire phase-proof busy=snapshot-returned holders=completed");
     }
 
     #[test]
