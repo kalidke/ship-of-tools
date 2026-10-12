@@ -111,44 +111,20 @@ pub(crate) fn read_data_roots(file: &Path, home: Option<&Path>) -> DataRoots {
 /// timed out.
 #[cfg(unix)]
 fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, (bool, String)> {
-    use std::io::Read;
-    use std::process::{Command, Stdio};
-    let mut cmd = Command::new("git");
+    let mut cmd = std::process::Command::new("git");
     cmd.arg("-C")
         .arg(dir)
         .args(["-c", "core.fsmonitor=false"])
         .args(args)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut c = crate::lifecycle::child_signal::process().spawn_std(&mut cmd).map_err(|e| (false, e.to_string()))?;
-    let mut so = c.stdout.take().expect("piped");
-    let mut se = c.stderr.take().expect("piped");
-    let t_out = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = so.read_to_end(&mut v);
-        v
-    });
-    let t_err = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = se.read_to_end(&mut v);
-        v
-    });
-    // Whatever git started dies with it, before the pipes are joined and the child is reaped.
-    let status = match c.wait_within(Duration::from_secs(10)) {
-        Ok(Some(status)) => status,
-        Ok(None) => return Err((false, "timed out after 10 s".into())),
-        Err(e) => return Err((false, e.to_string())),
-    };
-    let out = t_out.join().unwrap_or_default();
-    let err = t_err.join().unwrap_or_default();
-    if status.success() {
-        Ok(out)
+        .env_remove("GIT_INDEX_FILE");
+    // Whatever git started dies with it, within the bound.
+    let out = crate::lifecycle::child_signal::process().output(&mut cmd, Duration::from_secs(10)).map_err(|e| (false, e.to_string()))?;
+    if out.status.success() {
+        Ok(out.stdout)
     } else {
-        let first = String::from_utf8_lossy(&err).lines().next().unwrap_or("").to_string();
+        let first = String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("").to_string();
         Err((true, first))
     }
 }

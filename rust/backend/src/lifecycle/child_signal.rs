@@ -239,13 +239,14 @@ impl Signal {
 
     /// `Command::output` for a contained one-shot: stdin is null, and stdout
     /// and stderr are each read to their end on a thread of their own.
-    /// `ContainedStd::wait` observes exit and requests tree termination before
+    /// `ContainedStd::wait_within` observes exit and requests tree termination before
     /// joining both readers. Unix observes the leader unreaped; Windows observation
     /// uses child.wait() before the job request, retaining the job handle.
-    /// No bound is added, as `output` has none.
+    /// A child that has not exited within `within` has its tree killed, and the call is a `TimedOut` error saying so.
     pub(crate) fn output(
         &'static self,
         cmd: &mut std::process::Command,
+        within: std::time::Duration,
     ) -> std::io::Result<std::process::Output> {
         use std::process::Stdio;
         cmd.stdin(Stdio::null())
@@ -254,10 +255,13 @@ impl Signal {
         let mut child = self.spawn_std(cmd)?;
         let stdout = read_to_end_on_a_thread(child.stdout.take());
         let stderr = read_to_end_on_a_thread(child.stderr.take());
-        let status = child.wait();
+        let status = child.wait_within(within);
         let (stdout, stderr) = (stdout.join(), stderr.join());
+        let status = status?.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, format!("did not exit within {within:?}"))
+        })?;
         Ok(std::process::Output {
-            status: status?,
+            status,
             stdout: joined(stdout)?,
             stderr: joined(stderr)?,
         })
@@ -1000,7 +1004,7 @@ pub(crate) mod tests {
         let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
         let mut cmd = std::process::Command::new("sh");
         cmd.args(["-c", "sleep 3111 >/dev/null 2>&1 & echo $!"]);
-        let out = signal.output(&mut cmd).expect("output");
+        let out = signal.output(&mut cmd, std::time::Duration::from_secs(60)).expect("output");
         assert!(out.status.success());
         let descendant = Leftover::of_pid(
             String::from_utf8_lossy(&out.stdout)
@@ -1212,5 +1216,36 @@ pub(crate) mod tests {
         );
         drop(c);
         assert!(signal.held_groups().is_empty());
+    }
+}
+
+/// A contained one-shot that has not exited at its bound is an error naming the bound, and its tree is killed.
+#[cfg(all(test, unix))]
+mod output_bound_tests {
+    use super::tests::Leftover;
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn output_ends_at_its_bound() {
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let child = Leftover::of_file(pid_file.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut cmd = std::process::Command::new("sh");
+            cmd.arg("-c").arg(format!("echo $$ > '{}'\nexec sleep 3115", pid_file.display()));
+            let began = std::time::Instant::now();
+            let _ = tx.send((signal.output(&mut cmd, Duration::from_secs(1)).map(|o| o.status), began.elapsed()));
+        });
+        let (ended, took) = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|_| panic!("Signal::output had not returned after 5s"));
+        let err = ended.expect_err("a child past its bound");
+        println!("output-bound: {err} after {took:?}; the child is gone: {}", child.gone());
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(err.to_string(), "did not exit within 1s");
+        assert!(took < Duration::from_secs(4), "{took:?}");
+        assert!(child.gone(), "the child past its bound survived");
+        assert!(signal.held_groups().is_empty(), "the killed tree is still held");
     }
 }

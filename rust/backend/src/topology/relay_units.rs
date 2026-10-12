@@ -114,6 +114,9 @@ pub(super) fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
 const TUNNEL_TEMPLATE: (&str, &str) = ("sot-relay-tunnel@", ".service");
 const RELAY_TEMPLATE: (&str, &str) = ("sot-host-relay-", ".socket");
 
+/// The longest one `systemctl` call may run: systemd's own D-Bus timeout is the only other bound on one.
+const SYSTEMCTL_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A `systemctl` command. A test names its own program in `tests::STUB_SYSTEMCTL`, so none changes the process `PATH`.
 fn systemctl() -> std::process::Command {
     #[cfg(test)]
@@ -131,7 +134,7 @@ fn enabled_hosts((prefix, suffix): (&str, &str)) -> Result<Vec<String>, String> 
     let mut cmd = systemctl();
     cmd.args(["--user", "list-unit-files", &pattern, "--no-legend", "--no-pager"]);
     let out = crate::lifecycle::child_signal::process()
-        .output(&mut cmd)
+        .output(&mut cmd, SYSTEMCTL_BOUND)
         .map_err(|e| format!("systemctl --user list-unit-files: {e}"))?;
     if !out.status.success() {
         // systemd exits 1 when a PATTERN matched no unit files, with
@@ -347,7 +350,7 @@ fn supervised_by_systemd() -> Result<bool, String> {
     let what = format!("systemctl --user show -p MainPID --value {DAEMON_UNIT}");
     let mut cmd = systemctl();
     cmd.args(["--user", "show", "-p", "MainPID", "--value", DAEMON_UNIT]);
-    let out = crate::lifecycle::child_signal::process().output(&mut cmd).map_err(|e| format!("{what}: {e}"))?;
+    let out = crate::lifecycle::child_signal::process().output(&mut cmd, SYSTEMCTL_BOUND).map_err(|e| format!("{what}: {e}"))?;
     if !out.status.success() {
         return Err(format!("{what}: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
@@ -391,7 +394,7 @@ fn systemctl_stdout(args: &[&str]) -> Result<String, String> {
     let mut cmd = systemctl();
     cmd.args(args);
     let out = crate::lifecycle::child_signal::process()
-        .output(&mut cmd)
+        .output(&mut cmd, SYSTEMCTL_BOUND)
         .map_err(|e| format!("systemctl {}: {e}", args.join(" ")))?;
     if !out.status.success() {
         return Err(format!("systemctl {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));

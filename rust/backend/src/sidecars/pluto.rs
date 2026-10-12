@@ -34,8 +34,19 @@ pub struct Pluto {
 struct PlutoInner {
     project_dir: PathBuf,
     start_script: PathBuf,
-    submit: Mutex<Option<mpsc::Sender<Submission>>>,
+    submit: Mutex<Option<Running>>,
 }
+
+/// The supervisor of one running server: submissions go in on `submit`, and dropping `_ends` ends the server.
+struct Running {
+    submit: mpsc::Sender<Submission>,
+    _ends: oneshot::Sender<()>,
+}
+
+/// How long one open may take, from its submission to its `URL` or `ERR` line (Pluto loads the notebook before it
+/// answers). An open past it is an error, and its server is ended: replies are routed oldest-first, so a late `URL`
+/// would answer the next request.
+const PLUTO_OPEN_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 struct Submission {
     abs_path: String,
@@ -72,34 +83,50 @@ impl Pluto {
             .ok_or_else(|| anyhow!("pluto: path not utf-8: {}", abs_path.display()))?
             .to_string();
         let tx = self.ensure_supervisor().await?;
-        let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send(Submission {
-            abs_path: path_str,
-            reply: reply_tx,
-        })
-        .await
-        .map_err(|_| anyhow!("pluto supervisor channel closed"))?;
-        reply_rx
+        let opened = tokio::time::timeout(PLUTO_OPEN_BOUND, async {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            tx.send(Submission {
+                abs_path: path_str.clone(),
+                reply: reply_tx,
+            })
             .await
-            .map_err(|_| anyhow!("pluto supervisor dropped reply channel"))?
+            .map_err(|_| anyhow!("pluto supervisor channel closed"))?;
+            reply_rx
+                .await
+                .map_err(|_| anyhow!("pluto supervisor dropped reply channel"))?
+        })
+        .await;
+        if let Ok(result) = opened {
+            return result;
+        }
+        // A server that does not answer within the bound is ended, unless a later open has already replaced it.
+        let mut guard = self.inner.submit.lock().await;
+        if guard.as_ref().is_some_and(|running| running.submit.same_channel(&tx)) {
+            *guard = None;
+        }
+        Err(anyhow!(
+            "pluto did not answer the open of {path_str} within {}s; its server was ended",
+            PLUTO_OPEN_BOUND.as_secs()
+        ))
     }
 
     async fn ensure_supervisor(&self) -> Result<mpsc::Sender<Submission>> {
         let mut guard = self.inner.submit.lock().await;
-        if let Some(tx) = guard.as_ref() {
-            if !tx.is_closed() {
-                return Ok(tx.clone());
+        if let Some(running) = guard.as_ref() {
+            if !running.submit.is_closed() {
+                return Ok(running.submit.clone());
             }
         }
         let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
-        let tx = spawn_supervisor(
+        let running = spawn_supervisor(
             &julia_bin,
             &self.inner.project_dir,
             &self.inner.start_script,
             crate::lifecycle::child_signal::process(),
         )
         .await?;
-        *guard = Some(tx.clone());
+        let tx = running.submit.clone();
+        *guard = Some(running);
         Ok(tx)
     }
 }
@@ -109,7 +136,7 @@ async fn spawn_supervisor(
     project_dir: &Path,
     start_script: &Path,
     sig: &'static crate::lifecycle::child_signal::Signal,
-) -> Result<mpsc::Sender<Submission>> {
+) -> Result<Running> {
     if !start_script.exists() {
         return Err(anyhow!(
             "pluto start script missing at {}",
@@ -202,8 +229,9 @@ async fn spawn_supervisor(
     };
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(64);
-    tokio::spawn(supervisor_task(contained, stdin, stdout_lines, submit_rx, sig, grant, tmp));
-    Ok(submit_tx)
+    let (ends, ended) = oneshot::channel();
+    tokio::spawn(supervisor_task(contained, stdin, stdout_lines, submit_rx, ended, sig, grant, tmp));
+    Ok(Running { submit: submit_tx, _ends: ends })
 }
 
 /// The proxy grant of the current Pluto supervisor: `(generation, port)`, set by [`Grant::publish`] and cleared by
@@ -245,6 +273,7 @@ enum Cause {
     Signal,
     Exited(std::io::Result<()>),
     Closed,
+    Released,
     Stdout(String),
     Stdin(std::io::Error),
 }
@@ -256,6 +285,7 @@ impl Cause {
             Cause::Exited(Ok(())) => "the child exited".to_string(),
             Cause::Exited(Err(e)) => format!("the child's exit could not be observed: {e}"),
             Cause::Closed => "the owner dropped the sidecar".to_string(),
+            Cause::Released => "its handle ended it".to_string(),
             Cause::Stdout(why) => format!("stdout: {why}"),
             Cause::Stdin(e) => format!("stdin: {e}"),
         }
@@ -324,6 +354,7 @@ async fn supervisor_task(
     mut stdin: ChildStdin,
     mut stdout_lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     mut submit_rx: mpsc::Receiver<Submission>,
+    ended: oneshot::Receiver<()>,
     sig: &'static crate::lifecycle::child_signal::Signal,
     grant: Option<Grant>,
     tmp: crate::sidecars::child_tmp::ChildTmp,
@@ -339,6 +370,8 @@ async fn supervisor_task(
         // complete (the child, or a descendant holding the pipe, reads nothing) still gives way to the exit.
         let exited = contained.wait_until_exited();
         tokio::pin!(exited);
+        // Emptying the slot (an open past its bound, or the handle's drop) ends the child even mid-write.
+        tokio::pin!(ended);
         loop {
             tokio::select! {
                 biased;
@@ -348,6 +381,7 @@ async fn supervisor_task(
                 // The child's exit, not its pipes' EOF: a descendant that
                 // inherited stdout keeps it open past the leader's death.
                 r = &mut exited => break Cause::Exited(r),
+                _ = &mut ended => break Cause::Released,
                 sub = submit_rx.recv() => {
                     let Some(sub) = sub else { break Cause::Closed };
                     pending.push_back(sub.reply);
@@ -364,6 +398,7 @@ async fn supervisor_task(
                         biased;
                         _ = sig.fired() => Err(Cause::Signal),
                         r = &mut exited => Err(Cause::Exited(r)),
+                        _ = &mut ended => Err(Cause::Released),
                         r = write => r.map_err(Cause::Stdin),
                     };
                     // A write cut short may have sent part of the line: the
@@ -423,11 +458,11 @@ mod port_parse_tests {
     use super::spawn_supervisor;
     use std::time::Duration;
     use {
-        super::{bound_pluto_port, seams, Submission},
+        super::{bound_pluto_port, seams, Running, Submission},
         crate::lifecycle::child_signal::Signal,
         crate::sidecars::contract_tests::{executable, isolated, within},
         std::path::{Path, PathBuf},
-        tokio::sync::{mpsc, oneshot},
+        tokio::sync::oneshot,
     };
 
     /// The shutdown signal kills a Pluto child that has not yet said READY,
@@ -527,7 +562,7 @@ exit(0)
     struct Harness {
         dir: PathBuf,
         sig: &'static Signal,
-        tx: mpsc::Sender<Submission>,
+        tx: Running,
     }
 
     impl Harness {
@@ -551,7 +586,7 @@ exit(0)
 
         async fn submit(&self, path: String) -> oneshot::Receiver<anyhow::Result<String>> {
             let (reply, rx) = oneshot::channel();
-            self.tx.send(Submission { abs_path: path, reply }).await.expect("the supervisor admits a submission");
+            self.tx.submit.send(Submission { abs_path: path, reply }).await.expect("the supervisor admits a submission");
             rx
         }
 
@@ -777,5 +812,62 @@ exit(0)
         errors(only, "the request whose flush failed").await;
         within(REACT, "the grant is released", || !granted(port)).await;
         h.finish().await;
+    }
+}
+
+#[cfg(all(test, unix))]
+mod open_bound_tests {
+    use super::Pluto;
+    use crate::sidecars::contract_tests::{isolated, pin_env, within};
+    use std::time::Duration;
+
+    /// An open the server never answers is an error at `PLUTO_OPEN_BOUND`, and its server is ended: a second open
+    /// starts a second one. The stand-in for julia says READY, then reads its lines and answers none.
+    #[tokio::test]
+    async fn an_open_the_child_never_answers_fails_at_its_bound() {
+        if !isolated("sidecars::pluto::open_bound_tests::an_open_the_child_never_answers_fails_at_its_bound", Duration::from_secs(150)) {
+            return;
+        }
+        let dir = tempfile::Builder::new().prefix("sot-pluto-bound-").tempdir().unwrap();
+        let stub = dir.path().join("stub-julia");
+        let starts = dir.path().join("starts");
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!(
+                "#!/bin/sh\necho $$ >> '{}'\necho \"READY http://127.0.0.1:1/\"\nwhile read l; do :; done\n",
+                starts.display()
+            ),
+        );
+        let script = dir.path().join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        let _pin = pin_env(&stub, dir.path());
+        let pluto = Pluto::new(dir.path().to_path_buf(), script);
+        let started = || std::fs::read_to_string(&starts).map(|s| s.lines().map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
+
+        let t0 = std::time::Instant::now();
+        let err = tokio::time::timeout(Duration::from_secs(45), pluto.open_notebook(&dir.path().join("a.jl")))
+            .await
+            .expect("the open is still waiting at 45 s")
+            .expect_err("an open the child never answers");
+        let took = t0.elapsed();
+        let bound = Duration::from_secs(30); // PLUTO_OPEN_BOUND, written out so this test also runs on the unbounded code
+        assert!(took >= bound && took < bound + Duration::from_secs(5), "ended after {took:?}");
+        let text = format!("{err:#}");
+        assert!(text.contains("did not answer the open") && text.contains("within 30s"), "{text}");
+        let first = started();
+        assert_eq!(first.len(), 1);
+        let pid: libc::pid_t = first[0].parse().unwrap();
+        // SAFETY: signal 0 only probes.
+        within(Duration::from_secs(5), "the unanswering server is ended", || unsafe { libc::kill(pid, 0) != 0 }).await;
+
+        let next = {
+            let pluto = pluto.clone();
+            let path = dir.path().join("b.jl");
+            tokio::spawn(async move { pluto.open_notebook(&path).await })
+        };
+        within(Duration::from_secs(5), "the next open starts a second server", || started().len() == 2).await;
+        println!("pluto-bound: {text} after {took:?}; a second open started server {}", started().len());
+        next.abort();
+        drop(pluto);
     }
 }

@@ -128,7 +128,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `git` child of a site open | process | pages | `rust/backend/src/pages/site/links.rs` `run_git` |
 | `gio trash` and its wait budget | process, deadline | files | `rust/backend/src/files/io.rs` `trash_file`, `TRASH_WAIT`; `rust/backend/src/lifecycle/child_signal.rs` `ContainedStd::wait_within` |
 | hub-link ssh | process | messaging | `rust/backend/src/comm/mail/hub_link.rs` `recipe_for`, `link_once` |
-| comm forward ssh (guest to hub) | process | messaging | `rust/backend/src/comm/mail/forward.rs` `forward_comm_file` |
+| comm forward ssh (guest to hub) | process | topology | `rust/backend/src/topology/dial.rs` `dial_and_call`, called by `rust/backend/src/comm/mail/filer.rs` `file_comm` |
 | `sotd stdio-bridge` | process | topology | `rust/backend/src/topology/stdio_bridge.rs` `run`, `connect` |
 | relay-unit ssh per relayed connection | process | topology | `rust/protocol/src/topology/relay_units.rs` `relay_command_line`; `rust/protocol/src/topology/ssh_bridge.rs` `SshRecipe` |
 | window control ssh per host | process | fe-net | `rust/frontend/src/net/transport/mod.rs` `connect_and_run` |

@@ -140,6 +140,9 @@ const CAP1: usize = 1440; // ~24 h  @ 1 min
 const CAP2: usize = 720; //  ~30 d  @ 1 h
 const BROADCAST_CAP: usize = 256;
 const RESPAWN_BACKOFF: Duration = Duration::from_secs(5);
+/// A sampler that prints nothing for this long (twenty base intervals, which also covers a remote sampler's ssh
+/// connect) is ended and started again: `nvidia-smi` or an ssh session can hang with the sampler alive.
+const SAMPLER_SILENT: Duration = Duration::from_secs(20);
 
 /// A monitored host: display name plus how to run the sampler on it.
 #[derive(Debug, Clone)]
@@ -544,6 +547,8 @@ async fn supervise(
                 // ssh's own words for why the source died, kept only until
                 // the child does — one bounded string, never a growing log.
                 let mut stderr_line: Option<String> = None;
+                // When the sampler last printed, or was started.
+                let mut heard = tokio::time::Instant::now();
                 loop {
                     tokio::select! {
                         // The daemon is shutting down: the signal has already
@@ -552,6 +557,7 @@ async fn supervise(
                         line = next_or_pending(&mut stdout) => {
                             match line {
                                 Ok(Some(line)) => {
+                                    heard = tokio::time::Instant::now();
                                     let line = line.trim();
                                     if line.is_empty() {
                                         continue;
@@ -594,6 +600,10 @@ async fn supervise(
                                     stderr_line = Some(line.chars().take(200).collect());
                                 }
                             }
+                        }
+                        // Silent past the bound: the dropped tree is killed, and the stale tick and respawn follow.
+                        _ = tokio::time::sleep_until(heard + SAMPLER_SILENT) => {
+                            break format!("no sample in {}s", SAMPLER_SILENT.as_secs());
                         }
                     }
                 }

@@ -274,7 +274,9 @@ exit 1
         assert_eq!(frame.payload["code"], "quarto_render_failed");
         assert!(blob.is_none(), "a failed render carries no blob");
         assert_eq!(std::fs::read_to_string(dir.path().join("invocations")).unwrap(), "render\n", "render once");
-        assert!(!dir.path().join(format!("__sot-qmd-{REQUEST_ID}.html")).exists(), "partial HTML removed");
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("__sot-qmd-")).collect();
+        assert!(left.is_empty(), "partial HTML removed: {left:?}");
         frame.clone()
     }
 

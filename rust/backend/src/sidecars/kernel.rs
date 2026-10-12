@@ -66,6 +66,22 @@ const RESPAWN_BACKOFF_CAP: Duration = Duration::from_secs(30);
 /// loudly at hello but never kills the kernel.
 const KERNEL_PROTOCOL_VERSION: u32 = 1;
 
+/// How long a generation waits on its child before it ends the generation: `start` for the hello (a cold precompile of
+/// the kernel's own environment), `answer` once the hello has answered, counted from the later of the oldest request's
+/// write and the kernel's last answer (the longest answer a working kernel gives, HDF5Preview's first load included).
+#[derive(Clone, Copy)]
+pub(crate) struct KernelBounds {
+    pub(crate) start: Duration,
+    pub(crate) answer: Duration,
+}
+
+impl KernelBounds {
+    pub(crate) const PRODUCT: KernelBounds = KernelBounds {
+        start: Duration::from_secs(1800),
+        answer: Duration::from_secs(300),
+    };
+}
+
 #[derive(Clone)]
 pub struct Kernel {
     inner: Arc<KernelInner>,
@@ -132,6 +148,9 @@ pub enum KernelUnavailable {
     /// finished booting. NOT a failure of the kernel itself — a later
     /// request may succeed once startup completes.
     Starting { waited: Duration },
+    /// A running kernel did not answer this request within the caller's deadline. The kernel is still running; the
+    /// supervisor replaces it only once it has answered nothing for `KernelBounds::answer`.
+    NoAnswer { op: String, waited: Duration },
 }
 
 impl std::fmt::Display for KernelUnavailable {
@@ -140,6 +159,9 @@ impl std::fmt::Display for KernelUnavailable {
             KernelUnavailable::Dead { reason } => write!(f, "{reason}"),
             KernelUnavailable::Starting { waited } => {
                 write!(f, "kernel still starting (no response after {waited:?})")
+            }
+            KernelUnavailable::NoAnswer { op, waited } => {
+                write!(f, "the running kernel did not answer {op} within {waited:?}")
             }
         }
     }
@@ -236,31 +258,44 @@ impl Kernel {
         self.inner
             .supervisor_started
             .get_or_init(|| async move {
-                tokio::spawn(supervisor_loop(kernel_project, project_root, status, crate::lifecycle::child_signal::process()));
+                tokio::spawn(supervisor_loop(
+                    kernel_project,
+                    project_root,
+                    status,
+                    crate::lifecycle::child_signal::process(),
+                    KernelBounds::PRODUCT,
+                ));
             })
             .await;
     }
 }
 
-/// Submit one request to an already-`Running` kernel and await its reply,
-/// bounded by `timeout` (the CALLER's remaining budget, not a fresh one).
+/// Submit one request to an already-`Running` kernel and await its reply, the send included, bounded by `timeout`
+/// (the CALLER's remaining budget, not a fresh one): a full channel, behind a supervisor stuck writing to a kernel that
+/// reads nothing, counts against it.
 async fn submit_and_await(
     tx: &mpsc::Sender<Submission>,
     op: &str,
     payload: Value,
     timeout: Duration,
 ) -> Result<Value> {
-    let (reply_tx, reply_rx) = oneshot::channel();
-    tx.send(Submission {
-        op: op.to_string(),
-        payload,
-        reply: reply_tx,
-    })
-    .await
-    .map_err(|_| anyhow!("kernel supervisor channel closed"))?;
-    match tokio::time::timeout(timeout, reply_rx).await {
-        Ok(r) => r.map_err(|_| anyhow!("kernel supervisor dropped reply channel"))?,
-        Err(_) => Err(anyhow::Error::new(KernelUnavailable::Starting { waited: timeout })),
+    let call = async {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(Submission {
+            op: op.to_string(),
+            payload,
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| anyhow!("kernel supervisor channel closed"))?;
+        reply_rx.await.map_err(|_| anyhow!("kernel supervisor dropped reply channel"))?
+    };
+    match tokio::time::timeout(timeout, call).await {
+        Ok(r) => r,
+        Err(_) => Err(anyhow::Error::new(KernelUnavailable::NoAnswer {
+            op: op.to_string(),
+            waited: KERNEL_REQUEST_TIMEOUT,
+        })),
     }
 }
 
@@ -272,12 +307,14 @@ async fn submit_and_await(
 /// precompile ran), sleep, repeat — until `status`
 /// closes (every `Kernel` handle sharing it has been dropped), at which
 /// point this returns and the task ends. It also ends when `sig` fires, and
-/// never respawns after.
+/// never respawns after. A generation whose child answers nothing within
+/// `bounds` is ended and replaced the same way.
 async fn supervisor_loop(
     kernel_project: PathBuf,
     project_root: PathBuf,
     status: watch::Sender<Status>,
     sig: &'static crate::lifecycle::child_signal::Signal,
+    bounds: KernelBounds,
 ) {
     let mut redial = sot_log::host::redial::Redial::new(RESPAWN_BACKOFF_FLOOR, RESPAWN_BACKOFF_CAP);
     loop {
@@ -285,7 +322,7 @@ async fn supervisor_loop(
             return;
         }
         let _ = status.send(Status::Starting);
-        let (served_since, reason) = run_one_generation(&kernel_project, &project_root, &status, sig).await;
+        let (served_since, reason) = run_one_generation(&kernel_project, &project_root, &status, sig, bounds).await;
         if status.is_closed() || sig.is_fired() {
             return;
         }
@@ -328,6 +365,7 @@ async fn run_one_generation(
     project_root: &Path,
     status: &watch::Sender<Status>,
     sig: &'static crate::lifecycle::child_signal::Signal,
+    bounds: KernelBounds,
 ) -> (Option<tokio::time::Instant>, String) {
     let (julia_bin, source) = match julia_bin(kernel_project) {
         Ok(v) => v,
@@ -366,7 +404,7 @@ async fn run_one_generation(
         Ok(c) => c,
         Err(e) => return (None, format!("spawn {julia_bin} failed: {e}")),
     };
-    let outcome = serve_child(&mut contained, &julia_bin, status, sig).await;
+    let outcome = serve_child(&mut contained, &julia_bin, status, sig, bounds).await;
     // The child is ended and reaped before its folder goes, however the generation ended.
     if let Err(e) = tmp.retire(&mut contained).await {
         tracing::warn!(error = %e, "kernel child cleanup failed");
@@ -388,13 +426,88 @@ fn take_pipes(contained: &mut crate::lifecycle::child_signal::Contained) -> Resu
     Ok((stdin, stdout))
 }
 
-/// One generation's serving loop, from the hello until the child dies, every handle drops, or the daemon shuts down.
-/// `contained` stays with the caller, which ends it.
+/// One request in flight to the child: who waits for it, what it is, and when it was written.
+struct InFlight {
+    op: String,
+    since: tokio::time::Instant,
+    reply: oneshot::Sender<Result<Value>>,
+}
+
+impl InFlight {
+    fn new(op: &str, reply: oneshot::Sender<Result<Value>>) -> Self {
+        Self { op: op.to_string(), since: tokio::time::Instant::now(), reply }
+    }
+}
+
+type Pending = HashMap<u64, InFlight>;
+
+/// The oldest request in flight (ids rise with time).
+fn oldest(pending: &Pending) -> Option<&InFlight> {
+    pending.iter().min_by_key(|(id, _)| **id).map(|(_, in_flight)| in_flight)
+}
+
+/// When the generation must end for want of an answer. Before the hello has answered (`heard` is `None`): the oldest
+/// request's write time plus `start`. After: the later of that write time and `heard`, the kernel's last answer, plus
+/// `answer`, so a request queued behind slow answers is not counted as the kernel's silence. `None` while nothing is in
+/// flight, or when the bound is too long to add.
+fn next_due(pending: &Pending, heard: Option<tokio::time::Instant>, bounds: KernelBounds) -> Option<tokio::time::Instant> {
+    let since = oldest(pending)?.since;
+    match heard {
+        Some(heard) => since.max(heard).checked_add(bounds.answer),
+        None => since.checked_add(bounds.start),
+    }
+}
+
+/// Why the generation ended for want of an answer.
+fn late_reason(pending: &Pending, heard: Option<tokio::time::Instant>, bounds: KernelBounds) -> String {
+    match oldest(pending) {
+        Some(f) if heard.is_some() => format!("the kernel answered nothing for {:?} (oldest: {})", bounds.answer, f.op),
+        _ => format!("the kernel did not answer its hello within {:?}", bounds.start),
+    }
+}
+
+/// Resolves at `due`, never when there is none.
+async fn until(due: Option<tokio::time::Instant>) {
+    match due {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// How one request's write to the child ended: it finished, or the generation had to end first.
+enum Written {
+    Done(Result<()>),
+    Shutdown,
+    Dropped,
+    Late,
+}
+
+/// `write_request` raced against the shutdown, the owner's drop and the oldest request's deadline, so a child that
+/// reads nothing (a full pipe) cannot hold the generation.
+async fn write_raced(
+    stdin: &mut ChildStdin,
+    (id, op, payload): (u64, &str, &Value),
+    status: &watch::Sender<Status>,
+    sig: &'static crate::lifecycle::child_signal::Signal,
+    due: Option<tokio::time::Instant>,
+) -> Written {
+    tokio::select! {
+        biased;
+        _ = sig.fired() => Written::Shutdown,
+        _ = status.closed() => Written::Dropped,
+        _ = until(due) => Written::Late,
+        r = write_request(stdin, id, op, payload) => Written::Done(r),
+    }
+}
+
+/// One generation's serving loop, from the hello until the child dies, every handle drops, the daemon shuts down, or
+/// the child answers nothing within `bounds`. `contained` stays with the caller, which ends it.
 async fn serve_child(
     contained: &mut crate::lifecycle::child_signal::Contained,
     julia_bin: &str,
     status: &watch::Sender<Status>,
     sig: &'static crate::lifecycle::child_signal::Signal,
+    bounds: KernelBounds,
 ) -> (Option<tokio::time::Instant>, String) {
     let (mut stdin, stdout) = match take_pipes(contained) {
         Ok(pipes) => pipes,
@@ -402,10 +515,12 @@ async fn serve_child(
     };
 
     let (submit_tx, mut submit_rx) = mpsc::channel::<Submission>(64);
-    let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
+    let mut pending: Pending = HashMap::new();
     let mut next_id: u64 = 1;
     let mut stdout_lines = BufReader::new(stdout).lines();
     let mut served_since: Option<tokio::time::Instant> = None;
+    // When the kernel last answered a request, its hello included: `None` until the hello's answer.
+    let mut heard: Option<tokio::time::Instant> = None;
 
     // Submit `kernel.hello` to OURSELVES through the exact same
     // Submission/pending machinery every other op uses — one
@@ -413,9 +528,14 @@ async fn serve_child(
     let (hello_tx, mut hello_rx) = oneshot::channel();
     let hello_id = next_id;
     next_id += 1;
-    pending.insert(hello_id, hello_tx);
-    if let Err(e) = write_request(&mut stdin, hello_id, "kernel.hello", &json!({})).await {
-        return (None, format!("julia exited at once (path {julia_bin}): {e}"));
+    pending.insert(hello_id, InFlight::new("kernel.hello", hello_tx));
+    let due = next_due(&pending, None, bounds);
+    match write_raced(&mut stdin, (hello_id, "kernel.hello", &json!({})), status, sig, due).await {
+        Written::Done(Ok(())) => {}
+        Written::Done(Err(e)) => return (None, format!("julia exited at once (path {julia_bin}): {e}")),
+        Written::Shutdown => return (None, "the daemon is shutting down".to_string()),
+        Written::Dropped => return (None, "owning kernel handle dropped".to_string()),
+        Written::Late => return (None, late_reason(&pending, None, bounds)),
     }
 
     loop {
@@ -441,6 +561,7 @@ async fn serve_child(
                     Ok(Ok(payload)) => {
                         log_hello(&payload);
                         served_since = Some(tokio::time::Instant::now());
+                        heard = served_since;
                         let _ = status.send(Status::Running(submit_tx.clone()));
                     }
                     Ok(Err(e)) => {
@@ -463,16 +584,29 @@ async fn serve_child(
                 };
                 let id = next_id;
                 next_id += 1;
-                if let Err(e) = write_request(&mut stdin, id, &sub.op, &sub.payload).await {
-                    let _ = sub.reply.send(Err(anyhow!("kernel stdin: {e}")));
-                    let reason = format!("julia exited at once (path {julia_bin}): {e}");
-                    return (served_since, finish_generation(status, reason, pending).await);
-                }
-                pending.insert(id, sub.reply);
+                pending.insert(id, InFlight::new(&sub.op, sub.reply));
+                let due = next_due(&pending, heard, bounds);
+                let reason = match write_raced(&mut stdin, (id, &sub.op, &sub.payload), status, sig, due).await {
+                    Written::Done(Ok(())) => continue,
+                    Written::Done(Err(e)) => {
+                        if let Some(sent) = pending.remove(&id) {
+                            let _ = sent.reply.send(Err(anyhow!("kernel stdin: {e}")));
+                        }
+                        format!("julia exited at once (path {julia_bin}): {e}")
+                    }
+                    Written::Shutdown => return (served_since, "the daemon is shutting down".to_string()),
+                    Written::Dropped => return (served_since, "owning kernel handle dropped".to_string()),
+                    Written::Late => late_reason(&pending, heard, bounds),
+                };
+                return (served_since, finish_generation(status, reason, pending).await);
             }
             line = stdout_lines.next_line() => {
                 match line {
-                    Ok(Some(line)) => route_response(&line, &mut pending),
+                    Ok(Some(line)) => {
+                        if route_response(&line, &mut pending) && heard.is_some() {
+                            heard = Some(tokio::time::Instant::now());
+                        }
+                    }
                     Ok(None) => {
                         tracing::warn!("kernel child stdout closed");
                         let reason = format!(
@@ -488,6 +622,11 @@ async fn serve_child(
                     }
                 }
             }
+            // The child answered nothing for the bound: a wedged kernel is ended and replaced.
+            _ = until(next_due(&pending, heard, bounds)) => {
+                let reason = late_reason(&pending, heard, bounds);
+                return (served_since, finish_generation(status, reason, pending).await);
+            }
         }
     }
 }
@@ -499,14 +638,10 @@ async fn serve_child(
 /// never a stale `Running` — then deliver the typed
 /// `KernelUnavailable::Dead` to every affected in-flight submission (not a
 /// generic "kernel terminated" string).
-async fn finish_generation(
-    status: &watch::Sender<Status>,
-    reason: String,
-    mut pending: HashMap<u64, oneshot::Sender<Result<Value>>>,
-) -> String {
+async fn finish_generation(status: &watch::Sender<Status>, reason: String, mut pending: Pending) -> String {
     let _ = status.send(Status::Dead { reason: reason.clone() });
-    for (_id, reply) in pending.drain() {
-        let _ = reply.send(Err(anyhow::Error::new(KernelUnavailable::Dead {
+    for (_id, in_flight) in pending.drain() {
+        let _ = in_flight.reply.send(Err(anyhow::Error::new(KernelUnavailable::Dead {
             reason: reason.clone(),
         })));
     }
@@ -522,20 +657,22 @@ async fn write_request(stdin: &mut ChildStdin, id: u64, op: &str, payload: &Valu
     Ok(())
 }
 
-fn route_response(line: &str, pending: &mut HashMap<u64, oneshot::Sender<Result<Value>>>) {
+/// Hands an answer line to the request it answers; whether it answered one in flight.
+fn route_response(line: &str, pending: &mut Pending) -> bool {
     let parsed: Result<WireResponse, _> = serde_json::from_str(line);
     let resp = match parsed {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %sot_protocol::codec::unparsed(&e, line.len()), "kernel response parse failed");
-            return;
+            return false;
         }
     };
-    let Some(reply) = pending.remove(&resp.id) else {
+    let Some(in_flight) = pending.remove(&resp.id) else {
         tracing::debug!(id = resp.id, op = ?resp.op, "kernel response without pending request");
-        return;
+        return false;
     };
-    let _ = reply.send(Ok(resp.payload));
+    let _ = in_flight.reply.send(Ok(resp.payload));
+    true
 }
 
 /// Log `kernel.hello`'s payload against `KERNEL_PROTOCOL_VERSION` (ADR 0030
@@ -608,7 +745,7 @@ mod tests {
         STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (status, _keep) = watch::channel(Status::Starting);
-        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig));
+        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, KernelBounds::PRODUCT));
         let began = std::time::Instant::now();
         // Spawn completes before the stub's first line has run; fire only once
         // that line has written the counter, so the one-spawn precondition is true.
@@ -649,7 +786,7 @@ mod tests {
         STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (status, mut status_rx) = watch::channel(Status::Starting);
-        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig));
+        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, KernelBounds::PRODUCT));
         let tx = loop {
             let seen = status_rx.borrow_and_update().clone();
             if let Status::Running(tx) = seen {
@@ -704,7 +841,7 @@ mod tests {
         STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (status, _keep) = watch::channel(Status::Starting);
-        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig));
+        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, KernelBounds::PRODUCT));
         tokio::time::sleep(WINDOW).await;
         let spawns = std::fs::read_to_string(&counter).map_or(0, |s| s.lines().count());
         sig.fire().expect("fire");
@@ -747,7 +884,7 @@ mod tests {
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (status, mut keep) = watch::channel(Status::Starting);
         let root = dir.path().to_path_buf();
-        let generation = tokio::spawn(async move { run_one_generation(&project, &root, &status, sig).await });
+        let generation = tokio::spawn(async move { run_one_generation(&project, &root, &status, sig, KernelBounds::PRODUCT).await });
         tokio::time::timeout(Duration::from_secs(30), keep.wait_for(|s| matches!(s, Status::Running(_))))
             .await
             .expect("the stub answers hello")
@@ -803,7 +940,10 @@ mod tests {
             STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
             let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
             let (status, mut status_rx) = watch::channel(Status::Starting);
-            let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig));
+            // No deadline: a paused clock jumps to any armed timer whenever the runtime waits on the stub, which
+            // would end each generation at its hello bound and measure nothing here.
+            let unbounded = KernelBounds { start: Duration::MAX, answer: Duration::MAX };
+            let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, unbounded));
             let done = std::sync::Arc::new(AtomicBool::new(false));
             let watchdog = {
                 let done = std::sync::Arc::clone(&done);
@@ -926,5 +1066,179 @@ mod tests {
         });
         assert_eq!(logged.lines().filter(|l| l.contains("WARN")).count(), 1, "{logged}");
         assert!(!logged.contains("0123") && !logged.contains("41234"), "{logged}");
+    }
+}
+
+/// The kernel's deadlines: a running kernel's silence is named as such, a kernel that answers nothing is ended and
+/// replaced, and a request's send counts against its caller's bound.
+#[cfg(all(test, unix))]
+mod deadline_tests {
+    use super::*;
+
+    /// The lines of a stand-in kernel that read the hello and answer it.
+    fn hello_answer() -> String {
+        format!("read l\necho '{{\"id\":1,\"payload\":{{\"protocol\":{KERNEL_PROTOCOL_VERSION}}}}}'\n")
+    }
+
+    /// A kernel project whose stand-in appends a line to the returned counter at each spawn and then runs `script`.
+    fn stub_kernel(dir: &Path, name: &str, script: &str) -> (PathBuf, PathBuf) {
+        let counter = dir.join(format!("{name}-spawns"));
+        let stub = dir.join(format!("{name}-julia"));
+        sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho x >> {}\n{script}", counter.display()));
+        let project = dir.join(name);
+        std::fs::create_dir(&project).unwrap();
+        tests::STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
+        (project, counter)
+    }
+
+    /// A kernel project whose stand-in answers its hello (or not) and then reads and answers nothing.
+    fn wedged_kernel(dir: &Path, name: &str, hello: bool) -> (PathBuf, PathBuf) {
+        let answer = if hello { hello_answer() } else { String::new() };
+        stub_kernel(dir, name, &format!("{answer}exec sleep 600\n"))
+    }
+
+    /// The running kernel's submission channel, once its stand-in has answered the hello (each wait within 5 s).
+    async fn running(status_rx: &mut watch::Receiver<Status>) -> mpsc::Sender<Submission> {
+        loop {
+            if let Status::Running(tx) = status_rx.borrow_and_update().clone() {
+                return tx;
+            }
+            tokio::time::timeout(Duration::from_secs(5), status_rx.changed())
+                .await
+                .expect("the stub kernel never answered hello")
+                .expect("status channel");
+        }
+    }
+
+    fn spawns(counter: &Path) -> usize {
+        std::fs::read_to_string(counter).map_or(0, |s| s.lines().count())
+    }
+
+    /// Polls `condition` for up to `bound`.
+    async fn becomes(bound: Duration, mut condition: impl FnMut() -> bool) -> bool {
+        let until = Instant::now() + bound;
+        while !condition() {
+            if Instant::now() >= until {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        true
+    }
+
+    /// A caller's timeout on a running kernel does not say the kernel is starting, and a kernel that answered its
+    /// hello and then nothing is ended and started again once it has answered nothing for the answer bound.
+    #[tokio::test]
+    async fn a_wedged_kernel_is_named_and_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, counter) = wedged_kernel(dir.path(), "named", true);
+        let kernel = Kernel::new(project, dir.path().to_path_buf());
+        let err = kernel.request("project.scan", json!({})).await.expect_err("a kernel that answers nothing");
+        let named = format!("{err:#}");
+        drop(kernel);
+
+        let (project, counter2) = wedged_kernel(dir.path(), "replaced", true);
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (status, mut status_rx) = watch::channel(Status::Starting);
+        let bounds = KernelBounds { start: Duration::from_secs(1800), answer: Duration::from_secs(2) };
+        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, bounds));
+        let tx = running(&mut status_rx).await;
+        let reason = submit_and_await(&tx, "project.scan", json!({}), KERNEL_REQUEST_TIMEOUT).await.expect_err("a kernel that answers nothing");
+        let replaced = becomes(Duration::from_secs(15), || spawns(&counter2) >= 2).await;
+        println!("kernel-answer: {reason:#}; spawned {} times", spawns(&counter2));
+        sig.fire().expect("fire");
+        tokio::time::timeout(Duration::from_secs(3), task).await.expect("the supervisor loop outlived the shutdown").expect("task");
+        assert_eq!(spawns(&counter), 1);
+        assert!(!named.contains("still starting"), "a running kernel's silence is named as starting: {named}");
+        assert!(named.contains("the running kernel did not answer project.scan within 10s"), "{named}");
+        assert!(replaced, "a kernel that answered nothing was never replaced: spawned {} time(s) in 15 s", spawns(&counter2));
+        assert!(format!("{reason:#}").contains("answered nothing for 2s (oldest: project.scan)"), "{reason:#}");
+    }
+
+    /// A kernel that answers every request, each 2 s after the one before, is kept under a 3 s answer bound: the bound
+    /// counts from the later of the oldest request's write and the kernel's last answer, so the time a request waits
+    /// behind slow answers is not the kernel's silence.
+    #[tokio::test]
+    async fn a_kernel_answering_slowly_but_steadily_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let steady = r#"while read l; do sleep 2; id=$(printf '%s\n' "$l" | sed 's/.*"id":\([0-9]*\).*/\1/'); echo "{\"id\":$id,\"payload\":{}}"; done
+"#;
+        let (project, counter) = stub_kernel(dir.path(), "steady", &format!("{}{steady}", hello_answer()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (status, mut status_rx) = watch::channel(Status::Starting);
+        let bounds = KernelBounds { start: Duration::from_secs(1800), answer: Duration::from_secs(3) };
+        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, bounds));
+        let tx = running(&mut status_rx).await;
+        let calls: Vec<_> = (1..=3)
+            .map(|n| {
+                let tx = tx.clone();
+                tokio::spawn(async move { (n, submit_and_await(&tx, "test.slow", json!({}), Duration::from_secs(15)).await) })
+            })
+            .collect();
+        let mut failed = Vec::new();
+        for call in calls {
+            let (n, answer) = call.await.expect("request task");
+            if let Err(e) = answer {
+                failed.push(format!("request {n}: {e:#}"));
+            }
+        }
+        println!("kernel-steady: failed {failed:?}; spawned {} time(s)", spawns(&counter));
+        sig.fire().expect("fire");
+        tokio::time::timeout(Duration::from_secs(3), task).await.expect("the supervisor loop outlived the shutdown").expect("task");
+        assert!(failed.is_empty(), "a kernel answering every 2 s was cut: {failed:?}");
+        assert_eq!(spawns(&counter), 1, "a kernel answering every 2 s was replaced");
+    }
+
+    /// A kernel that never answers its hello within `start` is ended and replaced, and the reason names the hello.
+    #[tokio::test]
+    async fn a_kernel_that_never_says_hello_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, counter) = wedged_kernel(dir.path(), "mute", false);
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (status, mut status_rx) = watch::channel(Status::Starting);
+        let bounds = KernelBounds { start: Duration::from_secs(1), answer: Duration::from_secs(300) };
+        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, bounds));
+        let reason = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                status_rx.changed().await.expect("status channel");
+                if let Status::Dead { reason } = &*status_rx.borrow_and_update() {
+                    break reason.clone();
+                }
+            }
+        })
+        .await
+        .expect("a mute kernel was never ended");
+        assert_eq!(reason, "the kernel did not answer its hello within 1s");
+        assert!(becomes(Duration::from_secs(10), || spawns(&counter) >= 2).await, "a mute kernel was never replaced");
+        sig.fire().expect("fire");
+        tokio::time::timeout(Duration::from_secs(3), task).await.expect("the supervisor loop outlived the shutdown").expect("task");
+    }
+
+    /// A kernel that reads nothing fills its pipe, the supervisor sits in its write and the channel fills behind
+    /// it: every request still ends within the caller's bound, the send included.
+    #[tokio::test]
+    async fn a_full_channel_still_answers_within_the_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, _counter) = wedged_kernel(dir.path(), "full", true);
+        let kernel = Kernel::new(project, dir.path().to_path_buf());
+        let big = "x".repeat(64 * 1024);
+        let mut calls = Vec::new();
+        for n in 0..70 {
+            let (kernel, big) = (kernel.clone(), big.clone());
+            calls.push(tokio::spawn(async move {
+                let began = Instant::now();
+                let answered = tokio::time::timeout(Duration::from_secs(15), kernel.request("test.big", json!(big))).await.is_ok();
+                (n, answered, began.elapsed())
+            }));
+        }
+        let mut slowest = Duration::ZERO;
+        for call in calls {
+            let (n, answered, took) = call.await.expect("request task");
+            assert!(answered, "request {n} waited 15 s on a kernel that reads nothing");
+            slowest = slowest.max(took);
+        }
+        println!("kernel-full: 70 requests answered; the slowest after {slowest:?}");
+        assert!(slowest < Duration::from_secs(11), "the slowest request took {slowest:?}");
+        drop(kernel);
     }
 }

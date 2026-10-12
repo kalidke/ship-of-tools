@@ -34,6 +34,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   inherited one overridden, and a refusal by the resolver fails the render (`run_quarto`), `--no-execute` or not,
   since quarto runs `QUARTO_JULIA` for an `engine: julia` document even then; so a host without julia renders no
   document through quarto. The site's `git` child runs through `Signal::spawn_std` (`run_git`).
+- A `quarto render`, `--no-execute` or not, ends within 30 min (`QUARTO_RUN_BOUND`: Quarto 1.9 starts its Julia engine either way, and installs it on a first use), its tree killed and the error naming the bound; one render of a document runs at a time; each render writes its own output file.
 - A window's relay page proxy opens the same generated relay endpoint as its control connection, with a handoff hello and proxy.connect before the existing byte splice.
 - A remote window serves a page a daemon op returned (`docs.open`, `video.open`, `pluto.open`) on a loopback port the
   OS assigns it, one per host and daemon port, and opens the URL with only the port replaced; `proxy.connect` names the

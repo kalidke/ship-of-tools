@@ -161,6 +161,13 @@ fn report(r: Result<(), String>) -> i32 {
     }
 }
 
+/// The longest `topology set` waits on the hub's daemon, and its local running-rows check on this box's own.
+const SET_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+const LOCAL_CHECK_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The longest `topology sync` waits on its ssh: past it the tree is killed and the sync fails naming the bound.
+const SYNC_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// `ssh <hub> cat ~/.config/sot/hosts.toml` into this box's own copy,
 /// tmp + rename, only after the fetched text parses, and only when it
 /// differs from the copy here: on a shared-home box the "copy" IS the
@@ -176,10 +183,10 @@ fn sync(hub: Option<String>) -> Result<(), String> {
         println!("this box is the hub; nothing to sync");
         return Ok(());
     }
-    #[allow(clippy::disallowed_methods, reason = "`sotd topology sync` runs as its own CLI process, not in the daemon")]
-    let out = std::process::Command::new("ssh")
-        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", &hub, "cat ~/.config/sot/hosts.toml"])
-        .output()
+    let mut ssh = std::process::Command::new("ssh");
+    ssh.args(topology::ssh_bridge::SSH_OPTS).args([hub.as_str(), "cat ~/.config/sot/hosts.toml"]);
+    let out = crate::lifecycle::child_signal::process()
+        .output(&mut ssh, SYNC_BOUND)
         .map_err(|e| format!("ssh {hub}: {e}"))?;
     if !out.status.success() {
         return Err(format!("ssh {hub}: {}", String::from_utf8_lossy(&out.stderr).trim()));
@@ -269,7 +276,7 @@ fn set(words: &[String]) -> Result<(), String> {
 
     let endpoint = hub_endpoint(&topo, &me);
     let payload = serde_json::json!({ "edit": edit });
-    let res = crate::topology::dial::dial_and_call(&endpoint, &me, sot_protocol::op::TOPOLOGY_SET, payload)?;
+    let res = crate::topology::dial::dial_and_call(&endpoint, &me, sot_protocol::op::TOPOLOGY_SET, payload, SET_BOUND)?;
     if let Some(err) = res.get("error").and_then(|v| v.as_str()) {
         let code = res.get("code").and_then(|v| v.as_str()).unwrap_or("refused");
         return Err(format!("{err} ({code})"));
@@ -298,7 +305,7 @@ fn hub_endpoint(topo: &Topology, me: &str) -> String {
 /// truth the hub relies on.
 fn local_has_running_rows(me: &str) -> bool {
     let endpoint = topology::endpoint::local_endpoint();
-    let res = match crate::topology::dial::dial_and_call(&endpoint, me, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({})) {
+    let res = match crate::topology::dial::dial_and_call(&endpoint, me, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({}), LOCAL_CHECK_BOUND) {
         Ok(v) => v,
         Err(_) => return false,
     };
@@ -327,7 +334,7 @@ fn report_cache_divergence(topo: &Topology) {
     let Ok(local_text) = std::fs::read_to_string(&path) else { return };
     let local_hash = topology::hash_text(&local_text);
     let endpoint = hub_endpoint(topo, &me);
-    let Ok(res) = crate::topology::dial::dial_and_call(&endpoint, &me, sot_protocol::op::VERSION_QUERY, serde_json::json!({})) else {
+    let Ok(res) = crate::topology::dial::dial_and_call(&endpoint, &me, sot_protocol::op::VERSION_QUERY, serde_json::json!({}), super::status::PROBE_TIMEOUT) else {
         return;
     };
     let Some(hub_hash) = res.get("daemon").and_then(|d| d.get("hosts_toml_hash")).and_then(|v| v.as_str()) else {

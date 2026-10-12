@@ -365,6 +365,62 @@
             .expect("supervise task");
     }
 
+    /// A sampler that has gone silent for `SAMPLER_SILENT` (20 s) is ended and started again, with a stale tick between,
+    /// and the silent one's process is gone: `nvidia-smi` or an ssh session can hang with the sampler alive. Each start
+    /// appends a line to `starts`; the first writes its pid, which `exec` keeps for the sleep.
+    #[cfg(unix)]
+    async fn a_silent_sampler_is_restarted_after(name: &str, script: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("sampler");
+        let starts = dir.path().join("starts");
+        let line = r#"{"ts":1,"cpu":1.0,"ram":2.0}"#;
+        let body = script.replace("LINE", line);
+        let first = dir.path().join("first.pid");
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!("#!/bin/sh\necho x >> '{}'\n[ -s '{1}' ] || echo $$ > '{1}'\n{body}exec sleep 600\n", starts.display(), first.display()),
+        );
+        let first = crate::lifecycle::child_signal::tests::Leftover::of_file(first);
+        STUB_SAMPLER.lock().unwrap().push((name.to_string(), stub.to_string_lossy().into_owned()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (tick_tx, mut ticks) = broadcast::channel::<HostLatest>(16);
+        let host = MonitorHost { name: name.to_string(), ssh_alias: None, local: true };
+        let rings = Arc::new(Mutex::new(HashMap::from([(host.name.clone(), HostRing::new())])));
+        let task = tokio::spawn(supervise(host, tick_tx, rings, sig));
+        let started = || std::fs::read_to_string(&starts).unwrap_or_default().lines().count();
+        let began = std::time::Instant::now();
+        let mut seen = Vec::new();
+        while began.elapsed() < Duration::from_secs(30) && started() < 2 {
+            if let Ok(Ok(t)) = tokio::time::timeout(Duration::from_millis(500), ticks.recv()).await {
+                seen.push((began.elapsed().as_secs(), t.stale, t.sample.is_some()));
+            }
+        }
+        let n = started();
+        // Before the shutdown, which would end it anyway.
+        let first_gone = first.gone();
+        println!("monitor-silent: ticks {seen:?}; sampler started {n} times; the first gone: {first_gone}");
+        sig.fire().expect("fire");
+        let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+        assert!(n >= 2, "a sampler silent for 30 s was never started again: started {n} time(s), ticks {seen:?}");
+        let stale = seen.iter().find(|(_, stale, _)| *stale).expect("a stale tick marks the gap");
+        assert!((19..=25).contains(&stale.0), "the stale tick came after {} s, not at the 20 s bound: {seen:?}", stale.0);
+        assert!(first_gone, "the silent sampler's process still runs after the sampler was started again");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_silent_sampler_is_restarted() {
+        a_silent_sampler_is_restarted_after("stub-silent", "echo 'LINE'\n").await;
+    }
+
+    /// A sampler that never prints at all (an ssh connect that never finishes) is held to the same bound from its
+    /// start.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sampler_that_prints_nothing_is_restarted() {
+        a_silent_sampler_is_restarted_after("stub-mute", "").await;
+    }
+
 #[cfg(test)]
 mod config_tests {
     use super::*;

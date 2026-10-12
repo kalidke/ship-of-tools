@@ -28,6 +28,10 @@ struct PDFFile <: ConceptExplorerCore.FileType end
 # (zoom-triggered re-rasterize, deferred in ADR 0021).
 const RASTER_DPI = 144
 
+# The longest pdftoppm or pdfinfo may run, in seconds; the kernel serves one request at a time, so a stuck tool must
+# end.
+const TOOL_BOUND = 20
+
 ConceptExplorerCore.matches(::Type{PDFFile}, path::AbstractString) =
     endswith(lowercase(path), ".pdf")
 
@@ -99,7 +103,7 @@ function _preview_page(path::AbstractString, page::Int;
         # root yields 0 bytes silently, and without `-singlefile` the `-`
         # is treated as a filename prefix (`./--1.png` in the cwd). `-png`
         # keeps the frontend's existing image path.
-        read(`$pdftoppm -png $scale_args -f $p -l $p -singlefile $path`)
+        ConceptExplorerCore.read_within(`$pdftoppm -png $scale_args -f $p -l $p -singlefile $path`, TOOL_BOUND)
     catch e
         return _note("Couldn't rasterize page $p: $(sprint(showerror, e))")
     end
@@ -120,7 +124,7 @@ geometry" and use the fixed-DPI path.
 """
 function _pdf_info(pdfinfo::AbstractString, path::AbstractString)
     out = try
-        read(`$pdfinfo $path`, String)
+        String(ConceptExplorerCore.read_within(`$pdfinfo $path`, TOOL_BOUND))
     catch
         return nothing
     end

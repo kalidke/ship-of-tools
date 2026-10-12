@@ -26,6 +26,9 @@ struct VideoFile <: ConceptExplorerCore.FileType end
 
 const VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov", ".mkv", ".m4v")
 
+# The longest ffmpeg may run, in seconds; the kernel serves one request at a time, so a stuck tool must end.
+const TOOL_BOUND = 20
+
 ConceptExplorerCore.matches(::Type{VideoFile}, path::AbstractString) =
     any(endswith(lowercase(path), ext) for ext in VIDEO_EXTENSIONS)
 
@@ -43,7 +46,7 @@ function ConceptExplorerCore.preview(::Type{VideoFile}, path::AbstractString)
         return _note("`ffmpeg` not found on the kernel host — install it to show a video poster. Playback opens in the browser with `o`.")
     end
     poster = try
-        read(`$ffmpeg -loglevel error -ss 0 -i $path -frames:v 1 -f image2pipe -vcodec png -`)
+        ConceptExplorerCore.read_within(`$ffmpeg -loglevel error -ss 0 -i $path -frames:v 1 -f image2pipe -vcodec png -`, TOOL_BOUND)
     catch e
         return _note("Couldn't extract a poster frame: $(sprint(showerror, e))\n\nPlayback still opens in the browser with `o`.")
     end

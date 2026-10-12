@@ -442,9 +442,53 @@ fn has_root_relative_refs(html: &str) -> bool {
     false
 }
 
-/// Run one `quarto render` to its end. `None` means `sig` fired first: the
-/// signal has already killed the render's whole tree (quarto, and the engines
-/// its executable chunks start), whether or not the launcher was reaped.
+/// The longest a render may run, `--no-execute` included: the longest `repl.execute` run (`repl/execute.rs`). Quarto
+/// 1.9's Julia engine starts its server even when no code runs, and on its first use installs and precompiles it, so a
+/// shorter bound for the quick render would end a working first use.
+const QUARTO_RUN_BOUND: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// The renders in progress, by document: one render of a document at a time, since quarto's intermediates are named
+/// after the source and two renders of one document would corrupt each other.
+static RENDERING: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// A document's render lock, held for one render. The table's entry goes with the last render that holds or waits on it.
+struct DocumentLock {
+    key: std::path::PathBuf,
+    lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl DocumentLock {
+    /// Waits for the holder's render, which ends within its own bound.
+    async fn take(key: std::path::PathBuf) -> Self {
+        let lock = RENDERING.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_default().clone();
+        let guard = lock.clone().lock_owned().await;
+        Self { key, lock, guard: Some(guard) }
+    }
+}
+
+impl Drop for DocumentLock {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        let mut table = RENDERING.lock().unwrap_or_else(|e| e.into_inner());
+        // The table's own handle and this one: nobody else holds or waits.
+        if std::sync::Arc::strong_count(&self.lock) <= 2 {
+            table.remove(&self.key);
+        }
+    }
+}
+
+/// An output name no other render shares: the request id is per connection, so two connections can send one.
+fn quarto_out_name() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!("__sot-qmd-{}-{}.html", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Run one `quarto render` to its end, within `within`, one render of a document at a time. `None` means `sig` fired
+/// first: the signal has already killed the render's whole tree (quarto, and the engines its executable chunks
+/// start), whether or not the launcher was reaped. A render past `within` has its tree killed and is a `TimedOut`
+/// error naming the bound.
 /// Quarto is always given the daemon's own julia, replacing any
 /// `QUARTO_JULIA` it inherited; a julia the resolver refuses fails the
 /// render, `--no-execute` or not. The launcher is reaped only after its tree
@@ -455,6 +499,7 @@ async fn run_quarto(
     file_name: &std::ffi::OsStr,
     out_name: &str,
     execute: bool,
+    within: std::time::Duration,
     sig: &'static crate::lifecycle::child_signal::Signal,
 ) -> std::io::Result<Option<std::process::Output>> {
     use tokio::io::AsyncReadExt;
@@ -474,6 +519,7 @@ async fn run_quarto(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     cmd.env("QUARTO_JULIA", crate::sidecars::julia::resolve_bin().map_err(std::io::Error::other)?.0);
+    let _document = DocumentLock::take(cwd.join(file_name)).await;
     let mut contained = sig.spawn(&mut cmd)?;
     let (mut out, mut errs) = (contained.stdout.take(), contained.stderr.take());
     let work = async {
@@ -496,6 +542,13 @@ async fn run_quarto(
         // The daemon is shutting down: the signal has already killed the
         // render's tree.
         _ = sig.fired() => Ok(None),
+        _ = tokio::time::sleep(within) => {
+            let _ = contained.kill().await;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("quarto render did not finish within {within:?}"),
+            ))
+        }
     }
 }
 
@@ -616,7 +669,8 @@ fn quarto_line_excerpt<'a>(line: &std::borrow::Cow<'a, str>, budget: usize) -> s
 
 /// `quarto.open` — render a Quarto/markdown doc to a self-contained HTML on
 /// the backend host (which has quarto + the RAM) and return the bytes, base64.
-/// `execute = false` (`o`) = `--no-execute`: fast, quarto-only, no code run.
+/// `execute = false` (`o`) = `--no-execute`: no code chunk runs, though
+/// Quarto 1.9 still starts its Julia engine (installing it on a first use).
 /// `execute = true` (`O`) runs code chunks — needs the language kernels on
 /// this host. Renders into a unique temp subdir of the doc's own directory so
 /// relative resources resolve (and `--embed-resources` can inline them), then
@@ -658,14 +712,18 @@ pub async fn handle_quarto_open(
     // <name>` renders single-file in place (exit 0, no `.quarto`), resolves
     // relative resources, and the distinctive temp name avoids clobbering a
     // user's hand-rendered `<doc>.html`.
-    let out_name = format!("__sot-qmd-{req_id}.html");
+    let out_name = quarto_out_name();
     let html_path = parent.join(&out_name);
 
-    let output = match run_quarto("quarto", parent, file_name, &out_name, req.execute, crate::lifecycle::child_signal::process()).await {
+    let output = match run_quarto("quarto", parent, file_name, &out_name, req.execute, QUARTO_RUN_BOUND, crate::lifecycle::child_signal::process()).await {
         Ok(Some(o)) => o,
         Ok(None) => {
             let _ = tokio::fs::remove_file(&html_path).await;
             return err("the daemon is shutting down".to_string(), "shutting_down");
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+            let _ = tokio::fs::remove_file(&html_path).await;
+            return err(e.to_string(), "quarto_render_failed");
         }
         Err(e) => {
             return err(
@@ -836,13 +894,13 @@ mod quarto_shutdown_tests {
     /// Holds `ENV_TEST_LOCK` and pins the julia the daemon resolves, so a
     /// render does not depend on a julia being installed; restores both
     /// variables it touches.
-    struct JuliaPin {
+    pub(super) struct JuliaPin {
         _serial: std::sync::MutexGuard<'static, ()>,
         saved: [(&'static str, Option<std::ffi::OsString>); 2],
     }
 
     impl JuliaPin {
-        fn new(julia: &std::path::Path, quarto_julia: Option<&str>) -> Self {
+        pub(super) fn new(julia: &std::path::Path, quarto_julia: Option<&str>) -> Self {
             let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let saved = [
                 ("SOT_JULIA_BIN", std::env::var_os("SOT_JULIA_BIN")),
@@ -875,7 +933,7 @@ mod quarto_shutdown_tests {
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let program = stub.to_string_lossy().into_owned();
-        rt.block_on(run_quarto(&program, dir, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig))
+        rt.block_on(run_quarto(&program, dir, std::ffi::OsStr::new("doc.qmd"), "out.html", true, QUARTO_RUN_BOUND, sig))
     }
 
     /// The shutdown signal kills the render's whole process group, engines included.
@@ -890,7 +948,7 @@ mod quarto_shutdown_tests {
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
         let task = tokio::spawn(async move {
-            run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig).await
+            run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, QUARTO_RUN_BOUND, sig).await
         });
         let began = std::time::Instant::now();
         while !pid_file.exists() || std::fs::read_to_string(&pid_file).unwrap().trim().is_empty() {
@@ -922,7 +980,7 @@ mod quarto_shutdown_tests {
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
         let task = tokio::spawn(async move {
-            run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig).await
+            run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, QUARTO_RUN_BOUND, sig).await
         });
         let done = tokio::time::timeout(Duration::from_secs(3), task)
             .await
@@ -952,7 +1010,7 @@ mod quarto_shutdown_tests {
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let ran = rt.block_on(run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig));
+        let ran = rt.block_on(run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, QUARTO_RUN_BOUND, sig));
         for (key, value) in [("SOT_JULIA_BIN", saved.0), ("QUARTO_JULIA", saved.1)] {
             match value {
                 Some(v) => std::env::set_var(key, v),
@@ -987,7 +1045,7 @@ mod quarto_shutdown_tests {
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
         let task = tokio::spawn(async move {
-            run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig).await
+            run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, QUARTO_RUN_BOUND, sig).await
         });
         let began = std::time::Instant::now();
         while std::fs::read_to_string(&sleeper).map(|s| s.trim().is_empty()).unwrap_or(true) {
@@ -1053,12 +1111,83 @@ mod resolver_consumer_tests {
         let missing = dir.path().join("no-such-quarto").to_string_lossy().into_owned();
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         for execute in [true, false] {
-            let err = run_quarto(&missing, dir.path(), std::ffi::OsStr::new("doc.qmd"), "out.html", execute, sig)
+            let err = run_quarto(&missing, dir.path(), std::ffi::OsStr::new("doc.qmd"), "out.html", execute, QUARTO_RUN_BOUND, sig)
                 .await
                 .expect_err("a refused julia must fail the render");
             assert_eq!(err.kind(), std::io::ErrorKind::Other, "execute={execute}");
             assert_eq!(err.to_string(), refusal, "execute={execute}");
         }
         assert_eq!(sig.live(), 0);
+    }
+}
+
+/// A render ends at its bound, one render of a document runs at a time, and each render has its own output name.
+#[cfg(all(test, unix))]
+mod quarto_bound_tests {
+    use super::*;
+    use quarto_shutdown_tests::JuliaPin;
+    use std::time::Duration;
+
+    fn stub(dir: &std::path::Path, body: &str) -> String {
+        let p = dir.join("stub-quarto");
+        sot_log::test_exec::write_executable(&p, format!("#!/bin/sh\n{body}\n"));
+        p.to_string_lossy().into_owned()
+    }
+
+    fn private_signal() -> &'static crate::lifecycle::child_signal::Signal {
+        Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()))
+    }
+
+    /// A render that never ends is an error naming its bound, and its tree is killed.
+    #[tokio::test]
+    async fn a_render_past_its_bound_is_killed_and_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let _pin = JuliaPin::new(&dir.path().join("julia"), None);
+        let sig = private_signal();
+        let hung = stub(dir.path(), "exec sleep 600");
+        let began = std::time::Instant::now();
+        let ran = tokio::time::timeout(
+            Duration::from_secs(10),
+            run_quarto(&hung, dir.path(), std::ffi::OsStr::new("doc.qmd"), "a.html", false, Duration::from_secs(2), sig),
+        )
+        .await
+        .map_err(|_| "run_quarto had not returned after 10s")
+        .unwrap_or_else(|why| panic!("{why}"));
+        let err = ran.expect_err("a render past its bound");
+        println!("quarto-bound: {err} after {:?}", began.elapsed());
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(err.to_string(), "quarto render did not finish within 2s");
+        assert!(sig.held_groups().is_empty(), "the killed render's tree is still held");
+    }
+
+    /// Two renders of one document run one after the other: a stand-in that fails when it finds the other mid-render
+    /// is never overlapped.
+    #[tokio::test]
+    async fn two_renders_of_one_document_do_not_overlap() {
+        let dir = tempfile::tempdir().unwrap();
+        let _pin = JuliaPin::new(&dir.path().join("julia"), None);
+        let sig = private_signal();
+        let racy = stub(
+            dir.path(),
+            "mkdir \"$PWD/.render-of-doc\" 2>/dev/null || { echo overlap >&2; exit 3; }\nsleep 1\nrmdir \"$PWD/.render-of-doc\"",
+        );
+        let name = std::ffi::OsStr::new("doc.qmd");
+        let one = run_quarto(&racy, dir.path(), name, "a.html", true, QUARTO_RUN_BOUND, sig);
+        let two = run_quarto(&racy, dir.path(), name, "b.html", true, QUARTO_RUN_BOUND, sig);
+        let (a, b) = tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(one, two) })
+            .await
+            .expect("two renders of one document did not finish in 30 s");
+        let codes = [a, b].map(|r| r.ok().flatten().and_then(|o| o.status.code()));
+        println!("quarto-bound: exit codes {codes:?}");
+        assert_eq!(codes, [Some(0), Some(0)], "the renders overlapped");
+        assert!(!RENDERING.lock().unwrap().contains_key(&dir.path().join("doc.qmd")), "a finished document stays in the render table");
+    }
+
+    /// The request id is per connection, so the output name is not built from it.
+    #[test]
+    fn each_render_has_its_own_output_name() {
+        let (a, b) = (quarto_out_name(), quarto_out_name());
+        assert_ne!(a, b);
+        assert!(a.starts_with(&format!("__sot-qmd-{}-", std::process::id())) && a.ends_with(".html"), "{a}");
     }
 }

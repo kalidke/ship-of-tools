@@ -65,7 +65,8 @@ pub(crate) async fn file_comm(req: CommFileReq) -> Result<std::result::Result<()
                 Err(e) => return Err(crate::comm::mail::inbox::refusal::hosts_toml_unreadable(e)),
             };
             let endpoint = endpoint.map_err(|e| crate::comm::mail::inbox::refusal::hub_did_not_answer("the relay endpoint", &e))?;
-            crate::comm::mail::forward::forward_comm_file(&endpoint, &self_host, fwd, within, crate::lifecycle::child_signal::process()).map_err(|e| {
+            let payload = serde_json::to_value(fwd).map_err(|e| e.to_string());
+            payload.and_then(|payload| crate::topology::dial::dial_and_call(&endpoint, &self_host, sot_protocol::op::COMM_FILE, payload, within)).map_err(|e| {
                 let e = e.strip_prefix(&format!("{endpoint}: ")).unwrap_or(&e);
                 crate::comm::mail::inbox::refusal::hub_did_not_answer(&endpoint, e)
             })
