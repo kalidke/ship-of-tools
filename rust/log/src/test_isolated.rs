@@ -1004,50 +1004,41 @@ mod tests {
         entry.assert_once(pid);
     }
 
-    /// A drained child that hangs fails its parent with what it had said: the deadline, then both streams read so
-    /// far, each cut to its last `FAILURE_STREAM_BYTES` so a flood cannot fill the log.
+    /// A drained child that hangs fails its parent with what it had said, through the panicking and the returning wait
+    /// alike: the deadline, confirmed cleanup, then both streams read so far, each cut to its last
+    /// `FAILURE_STREAM_BYTES` so a flood cannot fill the log. Each form waits on a fresh child of its own.
     #[test]
-    fn a_hanging_drained_child_panics_with_its_streams() {
-        let (mut command, entry) = test_command("test_isolated::tests::a_role");
-        let child = command
-            .env(ROLE, "speak-then-stall")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn");
-        let pid = child.id();
-        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            drain(child).wait_within(Duration::from_secs(5))
-        }))
-        .expect_err("a child that never ends must fail its wait");
-        let text = panic_text(payload);
-        assert!(text.contains("did not complete within its absolute work deadline"), "{text}");
-        assert!(text.contains("said on stderr before the stall"), "the stderr read so far is missing: {text}");
-        assert!(text.contains("said on stdout before the stall"), "the stdout read so far is missing: {text}");
-        assert!(text.contains(&format!("last {FAILURE_STREAM_BYTES} of ")), "the stdout flood was not cut: {text}");
-        assert!(text.len() < 3 * FAILURE_STREAM_BYTES, "the failure carries {} bytes", text.len());
-        entry.assert_once(pid);
-    }
-
-    #[test]
-    fn a_hanging_drained_child_returns_its_streams() {
-        let (mut command, entry) = test_command("test_isolated::tests::a_role");
-        let child = command
-            .env(ROLE, "speak-then-stall")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn");
-        let pid = child.id();
-        let text = drain(child).try_wait_within(Duration::from_secs(5))
-            .expect_err("a child that never ends must return a failed wait");
-        entry.assert_once(pid);
-        assert!(text.contains("did not complete within its absolute work deadline"), "{text}");
-        assert!(text.contains("cleanup=confirmed"), "{text}");
-        assert!(text.contains("said on stderr before the stall"), "the stderr read so far is missing: {text}");
-        assert!(text.contains("said on stdout before the stall"), "the stdout read so far is missing: {text}");
-        assert!(text.contains(&format!("last {FAILURE_STREAM_BYTES} of ")), "the stdout flood was not cut: {text}");
-        assert!(text.len() < 3 * FAILURE_STREAM_BYTES, "the failure carries {} bytes", text.len());
+    fn a_hanging_drained_child_fails_with_its_streams_in_both_forms() {
+        let forms: [(&str, fn(Draining) -> String); 2] = [
+            ("panicking", |draining| {
+                let wait = || draining.wait_within(Duration::from_secs(5));
+                let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(wait));
+                panic_text(payload.expect_err("a child that never ends must fail its wait"))
+            }),
+            ("returning", |draining| {
+                let result = draining.try_wait_within(Duration::from_secs(5));
+                result.expect_err("a child that never ends must return a failed wait")
+            }),
+        ];
+        for (form, wait) in forms {
+            let (mut command, entry) = test_command("test_isolated::tests::a_role");
+            let child = command
+                .env(ROLE, "speak-then-stall")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn");
+            let pid = child.id();
+            let text = wait(drain(child));
+            entry.assert_once(pid);
+            assert!(text.contains("did not complete within its absolute work deadline"), "{form}: {text}");
+            assert!(text.contains("cleanup=confirmed"), "{form}: {text}");
+            assert!(text.contains("said on stderr before the stall"), "{form}: the stderr read so far is missing: {text}");
+            assert!(text.contains("said on stdout before the stall"), "{form}: the stdout read so far is missing: {text}");
+            assert!(text.contains(&format!("last {FAILURE_STREAM_BYTES} of ")), "{form}: the stdout flood was not cut: {text}");
+            assert!(text.len() < 3 * FAILURE_STREAM_BYTES, "{form}: the failure carries {} bytes", text.len());
+            println!("drained-hang-proof form={form} streams=retained cleanup=confirmed entry=once");
+        }
     }
 
     /// A child that never ends fails its parent at the bound, by name, and is killed.
