@@ -543,7 +543,7 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
         // anything; wait for a real OS-level process count instead.
         let process_deadline = Instant::now() + BOUND;
         loop {
-            if count_matching_processes(&pattern).unwrap_or(0) == 1 {
+            if count_matching_processes(&pattern).expect("pgrep") == 1 {
                 break;
             }
             assert!(

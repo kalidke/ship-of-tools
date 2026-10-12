@@ -376,9 +376,9 @@ async fn lane_connect_resumes_a_stopped_row() {
         tokio::spawn(async move {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 let pattern = pattern.clone();
-                let n = tokio::task::spawn_blocking(move || count_matching_processes(&pattern).unwrap_or(0))
+                let n = tokio::task::spawn_blocking(move || count_matching_processes(&pattern).expect("pgrep"))
                     .await
-                    .unwrap_or(0);
+                    .expect("the pgrep sampler's blocking count");
                 max_seen.fetch_max(n, std::sync::atomic::Ordering::Relaxed);
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -397,7 +397,7 @@ async fn lane_connect_resumes_a_stopped_row() {
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let _ = sampler.await;
+    sampler.await.expect("the pgrep sampler");
     assert!(
         max_seen.load(std::sync::atomic::Ordering::Relaxed) <= 1,
         "more than one supervise process matched at some sampled instant across the two concurrent initial dials"

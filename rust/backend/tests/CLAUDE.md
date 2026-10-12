@@ -51,6 +51,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `lane_bridge/`: rows and topology; a frontend attach client reaching a capsule row through a daemon and a test-owned relay, plus explicitly spawned SSH stand-ins
 - `switch_latency/`: server; a slow request does not block a later cheap reply on one connection; its `dead_kernel` module is sidecars
 - `window_lease/`: lifecycle; the close lifecycle's daemon half, one daemon per state root
+- `support_checks.rs`: rows; the shared support's own answers: a host check whose tool cannot answer fails with the tool's account (Linux)
 - `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs`
   (`sotd_command` and `sotd_command_at`; for a daemon a suite starts by label, `own_label`, `label_endpoint`,
   `sotd_daemon_at` and `sotd_client_of`; also loaded alone by suites that need nothing else), `registry.rs`

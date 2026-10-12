@@ -201,13 +201,13 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
     loop {
         client.pump();
         assert!(!client.is_dead(), "a lane-only drop must never go terminal: {}", client.status_line());
-        if count_matching_processes(&pattern).unwrap_or(0) >= 1 {
+        if count_matching_processes(&pattern).expect("pgrep") >= 1 {
             break;
         }
         assert!(Instant::now() < resumed_deadline, "the daemon never resumed the dropped row");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert_eq!(count_matching_processes(&pattern).unwrap_or(99), 1, "ensure_started must spawn exactly one new supervise process");
+    assert_eq!(count_matching_processes(&pattern).expect("pgrep"), 1, "ensure_started must spawn exactly one new supervise process");
 
     // Functional recovery, not merely a resumed process: a fresh input
     // through the SAME client lands, and the leg identity is unchanged.
@@ -253,7 +253,7 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
     let target = row["session_name"].as_str().expect("session_name").to_string();
 
     let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
-    assert_eq!(count_matching_processes(&pattern).unwrap_or(99), 0, "no supervise process must exist before the dial");
+    assert_eq!(count_matching_processes(&pattern).expect("pgrep"), 0, "no supervise process must exist before the dial");
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
@@ -291,7 +291,7 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
             saw_absent_answer = true;
         }
         assert_eq!(
-            count_matching_processes(&pattern).unwrap_or(99),
+            count_matching_processes(&pattern).expect("pgrep"),
             0,
             "a bridge dial must never start a row's first-ever run"
         );
