@@ -37,8 +37,15 @@ of the backend's tests; the suites span subsystems, so this page names no charte
 - A case that holds a real process at a phase barrier needs the barrier build: `sot-capsule` built with
   `--features native-barrier` into the target the tests run from, and `--features daemon-lifetime-faults` on the test
   run. An installed build has neither feature.
-- One case runs at a time in the binary (`Fixture::new` takes the lock): a gated child holds a copy of every descriptor its
-  parent had open until it execs or ends, so a case that reads a pipe to EOF would wait on another case's child.
+- Every `native_premises` case (its feature-gated pause cases too) and
+  `workers::a_distributed_worker_starts_in_a_session_of_its_own` take `Fixture::new` before opening descriptors,
+  including a case that forks nothing, and hold it to their end: a sibling case's gated child copies the open
+  descriptors until exec or exit, and could keep a pipe writer or a close-only fence alive after this case drops its
+  own copy. Role bodies enter only in their isolated process. The daemon cases (every other case; all are built only
+  with `daemon-lifetime-faults`, on Linux) take `SERIAL` before their `Env`, and some take `Fixture::new` after it. A
+  case that takes `SERIAL` alone does not have `Fixture`'s gate: it relies on every run of that feature being one
+  whole-binary run with `--test-threads=1` (both daemon-lifetime jobs of rust.yml); a parallel run of that feature is
+  not covered for such a case.
 - A role a case re-runs this binary for (`claim_parent_role`, `source_group_role`) enters through
   `sot_log::test_isolated::test_command` and `enter`, and does nothing in an ordinary run.
 - On macOS an identity is a kqueue `NOTE_EXIT` knote (`native/macos.rs`); the cases that need the Linux guard or `/proc`
