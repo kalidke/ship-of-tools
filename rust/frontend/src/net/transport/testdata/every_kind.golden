@@ -60,6 +60,7 @@
 < golden ScaleSetFailed { node_id: "pss.node", message: "code-preview.set_scale: err-preview.set_scale" }
 < golden FigureGetFailed { url: "fg.url" }
 < golden FunctionMethodsReceived { workspace_id: Some("fm.ws"), module: "fm.module", name: "fm.name", methods: [] }
+< golden ReplEvalDone { eval_id: 113, elapsed_ms: 0, frames: [Error { message: "err-repl.eval [code-repl.eval]", stacktrace: [] }] }
 < golden Event { op: "repl.interrupt", payload: Object {"code": String("code-repl.interrupt"), "error": String("err-repl.interrupt")} }
 < golden PtyOpenFailed { target: Some("po.target"), error: "code-pty.open" }
 < golden WorkspaceCreated { result: Err("err-workspace.create") }

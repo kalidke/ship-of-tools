@@ -31,5 +31,7 @@ arm in `send_request`; and an `on_<op>` with its `PendingKind` variant and arm i
   `send_repl_interrupt`, `send_monitor_unsubscribe`, `send_agent_send`.
 - send_figure_get and send_result_tree insert before writing, so PendingGuard reports their outstanding failures on connection teardown; ordinary send_<op> ordering remains write then insert.
 - Each matched result-tree root or children reply yields one tagged success or failure, including backend errors and malformed payloads; a result-root parse error is not dropped.
+- Every `repl.eval` error reply, whatever its code, ends that eval with one error frame naming the daemon's words
+  and code (`on_repl_eval`), as a `repl.run_file` error ends its run: a refused eval streams no frames to end it.
 - `on_file_download` alone puts its entry back, with its open file, until the chunk marked eof (one
   request id, many replies).
