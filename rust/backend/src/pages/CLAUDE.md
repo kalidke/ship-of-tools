@@ -46,10 +46,8 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 
 ## Connections
 
-Provides the `quarto.open` failure-replies row in `docs/integration.md`.
-
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `video.open`, `docs.open`,
-`quarto.open`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `record_browser_port`, `revoke_browser_ports`,
+`quarto.open`, `quarto_render_error`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `record_browser_port`, `revoke_browser_ports`,
 `is_servable_video`, `start_page_servers`, `remove_root`, `loopback_port_from_url`, `with_loopback_port`,
 `rust/protocol/src/page_url.rs`.
 Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`,

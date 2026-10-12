@@ -516,6 +516,10 @@ fn quarto_render_error(execute: bool, stderr: &[u8]) -> String {
         .map(|(index, line)| (index, std::borrow::Cow::Borrowed(*line)))
         .collect();
     if selected.iter().all(|(_, line)| line.trim().is_empty()) {
+        if !hint.is_empty() {
+            message.push('\n');
+            message.push_str(hint);
+        }
         return message;
     }
     let hint_bytes = if hint.is_empty() { 0 } else { hint.len() + 1 };
