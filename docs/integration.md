@@ -141,7 +141,6 @@ page (`Rules`), its `## Idea` or a code comment, and the row says which in its l
 | distribution | distribution | `updates/pending-<target>.json` and the `updates/.lock` folder, written by the Rust stager and taken by `sot-apply.sh`, `sot-apply.ps1`; callers of apply: the unit's `ExecStartPre=-`, the rendered `sot-launch` wrapper and `Invoke-PendingApply` | Apply verifies everything before it mutates, restores on a failure after mutation and exits 0; a rollback marks the bad tag so it is never armed again. |
 | distribution | distribution | `render_sot_launch` (`scripts/lib/sot-daemon.sh`, read from `repo/current` at each start); on Windows `launch-sot.ps1` re-runs the install steps at every launch | One launcher per user, and no window spawns without a lease held on the local daemon across the gap. |
 | records | distribution | `docs/make.jl`, run by the docs job of `.github/workflows/CI.yml` | The manual's built-site checks fail the build on a literal `<kbd>` and on a link to a missing section id. |
-| records | every subsystem | the publish guard `.claude/hooks/publish-guard.sh` on commit, PR and issue text | Published text names no private hostname, username or LAN detail. |
 
 ## Walk-throughs
 Each hop gives the process and subsystem, the repo path and function, what crosses, and the promise that holds there.
