@@ -442,9 +442,9 @@ fn has_root_relative_refs(html: &str) -> bool {
     false
 }
 
-/// The longest a `--no-execute` render may run: quarto alone, no code.
-const QUARTO_QUICK_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
-/// The longest an executing render may run: the longest `repl.execute` run (`repl/execute.rs`).
+/// The longest a render may run, `--no-execute` included: the longest `repl.execute` run (`repl/execute.rs`). Quarto
+/// 1.9's Julia engine starts its server even when no code runs, and on its first use installs and precompiles it, so a
+/// shorter bound for the quick render would end a working first use.
 const QUARTO_RUN_BOUND: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// The renders in progress, by document: one render of a document at a time, since quarto's intermediates are named
@@ -714,8 +714,7 @@ pub async fn handle_quarto_open(
     let out_name = quarto_out_name();
     let html_path = parent.join(&out_name);
 
-    let within = if req.execute { QUARTO_RUN_BOUND } else { QUARTO_QUICK_BOUND };
-    let output = match run_quarto("quarto", parent, file_name, &out_name, req.execute, within, crate::lifecycle::child_signal::process()).await {
+    let output = match run_quarto("quarto", parent, file_name, &out_name, req.execute, QUARTO_RUN_BOUND, crate::lifecycle::child_signal::process()).await {
         Ok(Some(o)) => o,
         Ok(None) => {
             let _ = tokio::fs::remove_file(&html_path).await;
