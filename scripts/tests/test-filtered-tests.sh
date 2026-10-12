@@ -228,6 +228,8 @@ try:
     print(f'filtered-count completed_cases={len(cases)} ok=true', flush=True)
     evidence.clear()
     source = runner.read_bytes().decode()  # as bash reads it: a carriage return is a character, not a line break
+    name = 'order'
+    check('\0' not in source, 'the runner holds a NUL byte, which bash drops')
     code = list(source)  # the runner with its comment lines and every row's edit text blanked, its newlines kept
     for comment in re.finditer('(?m)^[ \t]*#.*', source):
         code[comment.start():comment.end()] = '\0' * len(comment.group())

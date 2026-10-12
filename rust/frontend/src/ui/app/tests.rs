@@ -225,10 +225,10 @@ struct ProgressSnapshot {
 
 impl ProgressSnapshot {
     /// The workload kept 20 sends a second: every ten-second window holds 190 to 210 of them, so a stall that moves 11
-    /// sends past a second's edge fails (any stall over 1.5 s does). A minimized window needs no tighter bound: it
-    /// pings every 30 s and the daemon reaps a connection silent for 90 s, so it keeps its connection through any stall
-    /// under 60 s. In the visible phase no send may be over 250 ms late either: that is how a transport waiting on the
-    /// held window thread shows (MAC-REDRAW).
+    /// sends past a second's edge fails (any stall over about 1.55 s does). A minimized window needs no tighter bound:
+    /// it pings every 30 s and the daemon reaps a connection silent for 90 s, so it keeps its connection through any
+    /// stall under 60 s. In the visible phase no send may be over 250 ms late either: that is how a transport waiting
+    /// on the held window thread shows (MAC-REDRAW).
     fn rate_ok(&self) -> bool {
         let (min, max, late) = self.rate;
         (self.profile.minimized || late <= 250) && (self.profile.seconds < 10 || (min >= 190 && max <= 210))
