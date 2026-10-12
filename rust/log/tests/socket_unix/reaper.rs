@@ -456,23 +456,41 @@ fn worker_panic_is_reported_writer() {
     panicked_worker("reaper::worker_panic_is_reported_writer", Role::Writer);
 }
 
-/// A panicking worker with its peer held: only the unfinished peer is named by the expiry record.
+/// A panicking worker with its peer held: only the unfinished peer is named by the expiry record. A shutdown starts the
+/// expiry once the panic's join is seen, so the time the panic hook takes never decides which workers it names.
 fn panic_with_held_peer(test: &str, panicking: Role, held: Role) {
     if child_role(test) {
-        let f = fixture(test, 1);
-        f.server.set_teardown_deadline_for_test(SHORT);
+        let mut f = fixture(test, 1);
         let (client, a) = connect(&f, test, "a");
         f.server.inject_worker_panic_for_test(a, panicking);
         let hold = f.server.hold_worker_exit_for_test(a, held);
         named!(test, "a.close", Some(a), f.server.close(a));
-        let exit = format!("{}.exit", role_name(panicking));
+        let panicked = format!("worker={}", role_name(panicking));
         await_progress(
             &f.server,
             test,
-            "peer.exit",
-            "the panicking worker exited",
+            "panic.joined",
+            "the panic joined",
             Some(a),
-            |r| r.conn == Some(a) && r.step == exit,
+            |r| r.conn == Some(a) && r.step == "pending.panicked" && r.result == panicked,
+        );
+        named!(
+            test,
+            "listener.disconnect",
+            None,
+            f.server.disconnect_listener()
+        );
+        let ok = WaitContext::new(
+            test,
+            "workers.join",
+            "false while the held peer is unfinished",
+            None,
+            SHORT,
+        )
+        .workers(&mut f.server);
+        assert!(
+            !ok,
+            "shutdown reported success with the held peer unfinished"
         );
         let want = format!("worker={}", role_name(held));
         await_progress(
@@ -500,13 +518,13 @@ fn panic_with_held_peer(test: &str, panicking: Role, held: Role) {
         role_name(panicking)
     );
     let expiry_record = format!(
-        "sot-sock: connection close outlived its budget conn=0 worker={} elapsed_ms=",
+        "sot-sock: connection teardown failed conn=0 worker={} elapsed_ms=",
         role_name(held)
     );
     assert!(captured.text.lines().any(|l| l.contains(&panic_record)
         && l.ends_with("reason=worker-panicked outcome=panicked; worker join completed")));
     assert!(captured.text.lines().any(|l| l.contains(&expiry_record)
-        && l.ends_with("reason=close-budget-expired; unfinished workers remain owned")));
+        && l.ends_with("reason=deadline-expired; unfinished workers remain owned")));
     assert!(!captured.text.contains("worker=both"));
 }
 

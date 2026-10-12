@@ -412,7 +412,8 @@ fn worker_panic_is_reported_writer() {
     panicked_worker(Role::Writer);
 }
 
-/// A panicking worker with its peer held: only the unfinished peer is named by the expiry record.
+/// A panicking worker with its peer held: only the unfinished peer is named by the expiry record. A shutdown starts the
+/// expiry once the panic's join is seen, so the time the panic hook takes never decides which workers it names.
 fn panic_with_held_peer(panicking: Role, held: Role) {
     let name = |role: Role| {
         if role == Role::Reader {
@@ -422,20 +423,20 @@ fn panic_with_held_peer(panicking: Role, held: Role) {
         }
     };
     let id = fresh_voyage_id();
-    let server = PipeServer::bind(&id, 1).unwrap();
-    server.set_teardown_deadline_for_test(SHORT);
+    let mut server = PipeServer::bind(&id, 1).unwrap();
     let (client, a) = connect(&server, &id);
     server.inject_worker_panic_for_test(a, panicking);
     let hold = server.hold_worker_exit_for_test(a, held);
     server.close(a);
-    let exit = if panicking == Role::Reader {
-        "reader.exit"
-    } else {
-        "writer.exit"
-    };
-    await_progress(&server, "peer.exit", |r| {
-        r.conn == Some(a) && r.step == exit
+    let panicked = format!("worker={}", name(panicking));
+    await_progress(&server, "panic.joined", |r| {
+        r.conn == Some(a) && r.step == "pending.panicked" && r.result == panicked
     });
+    server.disconnect_listener();
+    assert!(
+        !server.join_workers(Instant::now() + SHORT),
+        "shutdown reported success with the held peer unfinished"
+    );
     let want = format!("worker={}", name(held));
     await_progress(&server, "expiry.record", |r| {
         r.conn == Some(a) && r.step == "pending.expired" && r.result == want
