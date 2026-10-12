@@ -2,6 +2,9 @@
 
     use super::*;
 
+    #[cfg(unix)]
+    const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     fn sample(ts: f64, cpu: f32) -> MonitorSample {
         MonitorSample {
             ts,
@@ -177,7 +180,7 @@
             .env("PATH", path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("spawn bash");
         {
@@ -189,13 +192,16 @@
                 .write_all(SAMPLER_SH.as_bytes())
                 .expect("feed sampler script");
         }
-        let out = child.wait_with_output().expect("sampler run");
+        let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
         let _ = std::fs::remove_dir_all(&dir);
 
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let line = stdout.lines().next().expect("one sample line");
-        let raw: RawSample = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("every N/A spelling must still parse: {e}\nline: {line}"));
+        let line = stdout
+            .lines()
+            .next()
+            .unwrap_or_else(|| panic!("no sample line: {status}, stderr: {stderr}"));
+        let raw: RawSample = serde_json::from_str(line).unwrap_or_else(|e| {
+            panic!("every N/A spelling must still parse: {e}\nline: {line}\n{status}, stderr: {stderr}")
+        });
         assert_eq!(raw.gpus.len(), 4, "all four rows survive");
         for g in &raw.gpus {
             assert!(g.m.is_none(), "gpu {} memory must be not-applicable, got {:?}", g.i, g.m);
@@ -222,29 +228,27 @@
         let vanished = dir.join("8.stat"); // never created: a pid that exited between glob and open
         let prog = "{ n++ } END { print n+0 }";
 
-        let old = std::process::Command::new("awk")
-            .arg(prog)
-            .arg(&vanished)
-            .arg(&survivor)
-            .output()
-            .expect("run awk directly on the argv list");
-        assert!(!old.status.success(), "awk must fail fatally on a missing ARGV file");
+        let old = sot_log::test_wait::run_within(
+            std::process::Command::new("awk").arg(prog).arg(&vanished).arg(&survivor),
+            BOUND,
+        );
+        assert!(!old.status.success(), "awk must fail fatally on a missing ARGV file: {old}");
         assert!(
             old.stdout.is_empty(),
-            "END never runs on the fatal path, so the survivor's record is lost too: {:?}",
-            String::from_utf8_lossy(&old.stdout)
+            "END never runs on the fatal path, so the survivor's record is lost too: {old}"
         );
 
-        let piped = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("cat {} {} 2>/dev/null | awk '{}'", vanished.display(), survivor.display(), prog))
-            .output()
-            .expect("run cat | awk");
-        assert!(piped.status.success());
+        let piped = sot_log::test_wait::run_within(
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("cat {} {} 2>/dev/null | awk '{}'", vanished.display(), survivor.display(), prog)),
+            BOUND,
+        )
+        .ok();
         assert_eq!(
-            String::from_utf8_lossy(&piped.stdout).trim(),
+            piped.stdout.trim(),
             "1",
-            "the fix: cat skips the vanished file and awk still counts the survivor"
+            "the fix: cat skips the vanished file and awk still counts the survivor: {piped}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

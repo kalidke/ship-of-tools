@@ -37,7 +37,7 @@ pub(crate) fn isolated(name: &str, bound: Duration) -> bool {
     let (status, output, errors) = sot_log::test_isolated::drain(child).wait_within(bound);
     print!("{output}{errors}");
     entry.assert_once(pid);
-    assert!(status.success(), "isolated test body {name} failed");
+    assert!(status.success(), "isolated test body {name} failed: {status}");
     false
 }
 
@@ -150,7 +150,10 @@ foreach(println, filter(p -> !own(p) && Base.stale_cachefile(src, p; ignore_load
     )]
     let child = probe.spawn().expect("setup: start the Pkg cache probe");
     let (status, out, err) = sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(60));
-    assert!(status.success(), "setup: the Pkg cache probe failed: {err}");
+    assert!(
+        status.success(),
+        "setup: the Pkg cache probe failed: {status}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"
+    );
     let fresh: Vec<&str> = out.lines().collect();
     assert!(
         fresh.len() == 1,
@@ -241,12 +244,14 @@ async fn repl_uses_private_signal() {
     ) {
         return;
     }
-    let root = tempfile::tempdir().expect("owned fixture root").keep();
+    let dir = tempfile::tempdir().expect("owned fixture root");
+    let root = dir.path().to_path_buf();
     owned_julia_env(&root);
     let sig = private_signal();
     let (frames, _keep) = broadcast::channel(64);
     let workspace = root.join("workspace");
     std::fs::create_dir(&workspace).expect("create the workspace");
+    let root = dir.keep();
     let repl = Repl::new(frames, Some("ws".into()), workspace, sig);
 
     let (reply, collector) = repl

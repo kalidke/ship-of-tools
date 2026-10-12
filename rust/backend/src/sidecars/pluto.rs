@@ -532,11 +532,13 @@ exit(0)
 
     impl Harness {
         async fn start(ready_url: &str, descendant: &str) -> Harness {
-            let dir = tempfile::tempdir().expect("owned fixture root").keep();
+            let root = tempfile::tempdir().expect("owned fixture root");
+            let dir = root.path().to_path_buf();
             let script = start_script(&dir, ready_url, descendant);
             let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
             let julia = executable("julia").to_string_lossy().into_owned();
             let tx = spawn_supervisor(&julia, &dir, &script, sig).await.expect("the fixture says READY");
+            let dir = root.keep();
             Harness { dir, sig, tx }
         }
 

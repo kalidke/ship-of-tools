@@ -231,6 +231,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     // Env is process-global; serialize the env-mutating tests so they don't
     // race each other (other crates' tests run in separate processes).
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -392,7 +394,9 @@ mod tests {
             // down; a real socket close EOFs, which this models).
             cw.shutdown().await.unwrap();
         };
-        let (dres, _) = tokio::join!(daemon_fut, client_fut);
+        let (dres, _) = tokio::time::timeout(BOUND, async { tokio::join!(daemon_fut, client_fut) })
+            .await
+            .expect("the piped upgrade within BOUND");
         dres.unwrap();
 
         std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
@@ -411,7 +415,9 @@ mod tests {
             let res = read_res(&mut cr).await;
             assert_eq!(res.get("code").and_then(|v| v.as_str()), Some("bad_port"));
         };
-        let (dres, _) = tokio::join!(daemon_fut, client_fut);
+        let (dres, _) = tokio::time::timeout(BOUND, async { tokio::join!(daemon_fut, client_fut) })
+            .await
+            .expect("the refused port within BOUND");
         dres.unwrap();
     }
 
@@ -444,7 +450,9 @@ mod tests {
             let res = read_res(&mut cr).await;
             assert_eq!(res.get("code").and_then(|v| v.as_str()), Some("bad_port"));
         };
-        let (dres, _) = tokio::join!(daemon_fut, client_fut);
+        let (dres, _) = tokio::time::timeout(BOUND, async { tokio::join!(daemon_fut, client_fut) })
+            .await
+            .expect("the rebound port's refusal within BOUND");
         dres.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 0, "the replacement saw a connection");
@@ -470,7 +478,9 @@ mod tests {
                 let res = read_res(&mut cr).await;
                 assert_eq!(res.get("code").and_then(|v| v.as_str()), Some(want));
             };
-            let (dres, _) = tokio::join!(daemon_fut, client_fut);
+            let (dres, _) = tokio::time::timeout(BOUND, async { tokio::join!(daemon_fut, client_fut) })
+                .await
+                .expect("the refused-port streak within BOUND");
             dres.unwrap();
         };
         for _ in 0..3 {
@@ -502,7 +512,9 @@ mod tests {
             let res = read_res(&mut cr).await;
             assert_eq!(res.get("code").and_then(|v| v.as_str()), Some("dial_failed"));
         };
-        let (dres, _) = tokio::join!(daemon_fut, client_fut);
+        let (dres, _) = tokio::time::timeout(BOUND, async { tokio::join!(daemon_fut, client_fut) })
+            .await
+            .expect("the dead port's dial failure within BOUND");
         dres.unwrap();
         std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
     }
