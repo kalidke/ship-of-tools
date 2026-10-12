@@ -52,10 +52,10 @@ fn scrub(text: &str) -> String {
     let mut text = text
         .lines()
         .map(|line| {
-            if line.trim_start().starts_with("On computer:") {
-                "On computer: <host>"
+            if let Some((prefix, _)) = line.split_once("On computer:") {
+                format!("{prefix}On computer: <host>")
             } else {
-                line
+                line.to_owned()
             }
         })
         .collect::<Vec<_>>()

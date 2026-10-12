@@ -9,6 +9,31 @@ const MODE: &str = "SOT_L3_COMMAND_MODE";
 const RAW_HOST: &str = "L3_SYNTHETIC_HOST_9";
 const RAW_PATH: &str = "/L3_SYNTHETIC_PATH_9";
 
+#[test]
+fn prefixed_native_command_output_is_scrubbed() {
+    let path = scratch().join("stdout-marker");
+    for (input, expected) in [
+        (
+            "test command_tests::native_command_child_role ... On computer: L3_SYNTHETIC_HOST_9",
+            "test command_tests::native_command_child_role ... On computer: <host>",
+        ),
+        ("On computer: L3_SYNTHETIC_HOST_9", "On computer: <host>"),
+        (
+            "  On computer: L3_SYNTHETIC_HOST_9",
+            "  On computer: <host>",
+        ),
+    ] {
+        let text = scrub(&format!("{input}\nordinary neighbor\n{}", path.display()));
+        assert_eq!(
+            text,
+            format!("{expected}\nordinary neighbor\n<scratch>/stdout-marker"),
+            "prefixed native host banner was not scrubbed"
+        );
+        assert!(!text.contains(RAW_HOST), "raw synthetic host retained");
+    }
+    println!("L3 command-proof prefixed-banner=scrubbed prefix=retained");
+}
+
 fn runner(mode: &str) -> (bool, String) {
     let (mut command, entry) = test_command(RUNNER);
     let child = command
