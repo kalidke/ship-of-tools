@@ -79,7 +79,7 @@ pub async fn start_spinning_at(
 }
 
 #[tokio::test]
-#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --ignored"]
+#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --include-ignored"]
 async fn the_drain_outlasts_a_forking_child() {
     let _serial = SERIAL.lock().await;
     let mut fx = Fixture::new("drain_outlasts_a_forking_child");
@@ -117,7 +117,7 @@ async fn the_drain_outlasts_a_forking_child() {
 }
 
 #[tokio::test]
-#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --ignored"]
+#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --include-ignored"]
 async fn the_guard_ends_only_its_own_subtree() {
     let _serial = SERIAL.lock().await;
     let mut fx = Fixture::new("guard_ends_only_its_own_subtree");

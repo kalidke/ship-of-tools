@@ -122,7 +122,7 @@ fn describe(status: Option<std::process::ExitStatus>) -> String {
 /// An update asked for by `update.apply` against an armed pointer exits 75: the ephemeral tree of a REPL ends with the daemon
 /// and the capsule stays.
 #[tokio::test]
-#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --ignored"]
+#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --include-ignored"]
 async fn update_apply_exits_75_ends_the_trees_and_leaves_the_capsule() {
     let _serial = SERIAL.lock().await;
     let mut fx = Fixture::new("update_apply_open_restart_75");
@@ -468,7 +468,7 @@ async fn the_prepare_command_ends_with_the_daemon() {
 /// archive with `tar`, the prepare adds the tag's worktree with `git`, the arm writes the pointer, and with no window
 /// attached the daemon exits 75. The REPL's tree ends and the capsule stays.
 #[tokio::test]
-#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --ignored"]
+#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --include-ignored"]
 async fn the_automatic_update_exits_75_when_no_window_is_attached() {
     let _serial = SERIAL.lock().await;
     let mut fx = Fixture::new("update_auto_open_restart_75");

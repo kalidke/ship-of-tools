@@ -251,7 +251,7 @@ async fn a_service_manager_counts_int_and_term_as_a_clean_stop() {
 }
 
 #[tokio::test]
-#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --ignored"]
+#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --include-ignored"]
 async fn a_close_that_outlasts_its_bound_ends_with_1_and_takes_the_ephemeral_trees() {
     let _serial = SERIAL.lock().await;
     let mut fx = Fixture::new("close_backstop_with_live_birth");

@@ -6,7 +6,7 @@
 //! does not assume a worker stays in the group of the process that launched it.
 //!
 //! Needs a Julia 1.12 (`SOT_JULIA_BIN`, else `julia` on the PATH), so it is `#[ignore]` in a plain `cargo test` and
-//! run by the harness job (`-- --ignored`); with no Julia it fails and never passes by skipping.
+//! run by the harness job (`-- --include-ignored`); with no Julia it fails and never passes by skipping.
 
 use crate::fixture_owner::Fixture;
 use std::process::{Command, Stdio};
@@ -24,7 +24,7 @@ rmprocs(worker)
 "#;
 
 #[test]
-#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --ignored"]
+#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --include-ignored"]
 fn a_distributed_worker_starts_in_a_session_of_its_own() {
     let julia = std::env::var_os("SOT_JULIA_BIN").unwrap_or_else(|| "julia".into());
     let mut fx = Fixture::new("distributed_worker_session");
@@ -79,7 +79,7 @@ fn a_distributed_worker_starts_in_a_session_of_its_own() {
 /// daemon exits 0 and the worker has ended by the time the guard has.
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 #[tokio::test]
-#[ignore = "needs Julia 1.12 and Pluto's environment (SOT_JULIA_BIN, SOT_L2_PLUTO_MANIFEST); run by the harness job with --ignored"]
+#[ignore = "needs Julia 1.12 and Pluto's environment (SOT_JULIA_BIN, SOT_L2_PLUTO_MANIFEST); run by the harness job with --include-ignored"]
 async fn a_closed_daemon_ends_plutos_notebook_worker() {
     use crate::done::{open_notebook, pluto_resource_root, read_pid, Wire};
     use crate::guard::{close_by_lease, Run};
@@ -142,7 +142,7 @@ async fn a_closed_daemon_ends_plutos_notebook_worker() {
 
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 #[tokio::test]
-#[ignore = "needs Julia 1.12 and Pluto's environment (SOT_JULIA_BIN, SOT_L2_PLUTO_MANIFEST) and, for its Quarto half, Quarto 1.7.31; run by the harness job with --ignored"]
+#[ignore = "needs Julia 1.12 and Pluto's environment (SOT_JULIA_BIN, SOT_L2_PLUTO_MANIFEST) and, for its Quarto half, Quarto; run by the harness job with --include-ignored"]
 async fn every_descendant_of_a_killed_daemon_ends() {
     use crate::done::{
         assert_oracle, hold_pluto, hold_quarto, hold_row, save_oracle, save_successor,

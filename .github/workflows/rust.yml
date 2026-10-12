@@ -202,7 +202,7 @@ jobs:
         run: cargo test -p sot-frontend --test pane_timing --features test-pane-timing --locked -- stand-in
 
   # ADR 0050, the daemon's lifetime, read on real daemons and real children (rust/backend/tests/daemon_lifetime). Linux runs
-  # the whole harness, the cases that need Julia 1.12 (the REPL, Pluto's environment) and Quarto 1.7.31 included; macOS runs
+  # the whole harness, the cases that need Julia 1.12 (the REPL, Pluto's environment) and Quarto 1.9.38 included; macOS runs
   # the premises on real children (its guard-free cases are the in-crate lifecycle tests of the `test` job below).
   daemon-lifetime-linux:
     name: daemon lifetime harness (Linux)
@@ -222,9 +222,11 @@ jobs:
         with:
           version: '1.12'
       - uses: julia-actions/cache@v3
+      # 1.9.38 or later: its reader waits up to two seconds for the Julia server's transport line; 1.7.31 retried
+      # without waiting and could fail on a line not yet written.
       - uses: quarto-dev/quarto-actions/setup@v2
         with:
-          version: 1.7.31
+          version: 1.9.38
       # Every Julia a case starts runs on a depot of the case's own, with this runner's depot behind it, read only. This
       # step fills the runner's depot once: Pluto's environment, with one notebook run so its worker side compiles too,
       # and Quarto's Julia runner, with one document rendered. SOT_L2_PLUTO_MANIFEST and QUARTO_JULIA_PROJECT hand the
@@ -248,7 +250,7 @@ jobs:
             Pluto.SessionActions.shutdown(session, notebook; keep_in_session = false, async = false)
             ran || error("the warm-up notebook did not run")' "$warm/notebook.jl"
           echo "SOT_L2_PLUTO_MANIFEST=$GITHUB_WORKSPACE/julia/pluto/Manifest.toml" >> "$GITHUB_ENV"
-          cp "$(quarto --paths | sed -n 2p)/julia/Project.toml" "$quarto_julia/"
+          cp "$(quarto --paths | sed -n 2p)/extension-subtrees/julia-engine/_extensions/julia-engine/Project.toml" "$quarto_julia/"
           julia --startup-file=no --project="$quarto_julia" -e 'using Pkg; Pkg.instantiate()'
           printf -- '---\nengine: julia\n---\n\n```{julia}\n1 + 1\n```\n' > "$warm/render.qmd"
           QUARTO_JULIA_PROJECT="$quarto_julia" QUARTO_JULIA="$(command -v julia)" quarto render "$warm/render.qmd" --to html

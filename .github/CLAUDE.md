@@ -81,7 +81,7 @@ scripts/CLAUDE.md.
   --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods`) on the merged
   tree before the merge.
 - The daemon-lifetime harness (`rust/backend/tests/daemon_lifetime`) has its own jobs: "daemon lifetime harness (Linux)"
-  runs every case with Julia 1.12 and Quarto 1.7.31 installed and the capsule built with its phase barriers, and "daemon
+  runs every case with Julia 1.12 and Quarto 1.9.38 installed and the capsule built with its phase barriers, and "daemon
   lifetime premises (macOS)" runs the premises on real children; neither is part of the plain runs of `test` and `test-linux`, which
   build the harness without its fault feature. Before the harness, the Linux job installs and compiles Pluto's
   environment and Quarto's Julia runner into the runner's depot once (one notebook run, one document rendered), and
