@@ -65,13 +65,16 @@ scripts/CLAUDE.md.
   needs it.
 - A suite runs only if a step names it: add a new suite to `rust.yml` (or `CI.yml` for Julia) by name, in the commit
   that adds it.
-- Function length is gated: the `rust.yml` step "Function length" runs clippy's `too_many_lines` (more than 100 code
-  lines) as an error, `vt100-ctt` excluded because it denies `clippy::all` in its own source. A function over the limit
-  carries `#[allow(clippy::too_many_lines, reason = "...")]`. The step also reads the feature-gated native targets
-  (test-pane-timing, test-window-close). "Check the layout" pins how many such allows `rust/` holds (not `rust/vt100`):
-  the `too-many-lines` line of `scripts/tests/check-layout.allow`; a rise fails, and removing one means lowering that
-  number in the same commit. It also fails on the text forms that loosen the lint without moving the count, exactly
-  those `scripts/tests/CLAUDE.md` lists; a form not listed there is not caught.
+- Function length is gated: the `rust.yml` step "Function length and test children" runs clippy's `too_many_lines` (more
+  than 100 code lines) as an error, `vt100-ctt` excluded because it denies `clippy::all` in its own source. A function
+  over the limit carries `#[allow(clippy::too_many_lines, reason = "...")]`. The step also reads the feature-gated
+  native targets (test-pane-timing, test-window-close). The same run reads `rust/clippy-tests/clippy.toml`
+  (`CLIPPY_CONF_DIR`), not `rust/clippy.toml`, and fails on a test that runs a child through `Command::output` or
+  `status` or `Child::wait_with_output` (std or tokio) instead of `sot_log::test_wait`; on checks-linux it adds
+  `daemon-lifetime-faults`, whose Linux modules hold such tests. "Check the layout" pins how many such allows `rust/`
+  holds (not `rust/vt100`): the `too-many-lines` line of `scripts/tests/check-layout.allow`; a rise fails, and removing
+  one means lowering that number in the same commit. It also fails on the text forms that loosen the lint without moving
+  the count, exactly those `scripts/tests/CLAUDE.md` lists; a form not listed there is not caught.
 - Disallowed methods are gated: the `rust.yml` step "Disallowed methods" runs clippy's `disallowed_methods` over every
   library, binary and build script on all three platforms. `rust/clippy.toml` holds one array in labelled groups, each
   opening with its rule. A sanctioned site carries `#[allow(clippy::disallowed_methods, reason = "...")]` on the one
