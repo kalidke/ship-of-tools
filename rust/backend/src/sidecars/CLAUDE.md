@@ -19,6 +19,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - A MathJax render answers within 10 s (`RENDER_BOUND`): one past it is a `mathjax_render_failed` error naming the
   timeout, and its node child is ended, even mid-write, so the next render starts a fresh one (`MathJax::render`,
   `supervisor_task`).
+- A Pluto open answers within `PLUTO_OPEN_BOUND` (30 s) or fails naming it, and the server that did not answer is ended, since its replies are matched oldest-first.
 - Pluto's proxy port is a supervisor-owned generation grant, published only after a loopback READY URL and released on every supervisor exit or cancellation before cleanup awaits. An old generation's release cannot erase its replacement's grant (`bound_pluto_port`).
 - Pluto polls child exit and its supplied Signal during each stdin write and flush. Cancelling a submission retires the supervisor, releases its grant and closes current, pending and queued replies before checked cleanup; it never resends a partial OPEN line.
 - A REPL restart explicitly retires and joins its owned supervisor before replacement; it never relies on Julia reaching stdin EOF. Errors retain retirement ownership and prevent replacement.
