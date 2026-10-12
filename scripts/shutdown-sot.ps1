@@ -96,6 +96,8 @@ function W([string]$m) { "$(Get-Date -Format o)  $m" | Tee-Object -FilePath $log
 # even with no plan at all (no sotd binary yet), matching the pre-L2b
 # single-tunnel contract.
 . (Join-Path $PSScriptRoot 'sot-hosts.ps1')
+# Start-SotRedirected and Stop-SotTree, which Invoke-SotWithin's remote reads run through (functions only).
+. (Join-Path $PSScriptRoot 'sot-lease.ps1')
 $repo = Resolve-Path -Path (Join-Path $PSScriptRoot '..')
 $sotdForPlan = $null
 foreach ($cand in @((Join-Path $repo 'rust\target\release\sotd.exe'), (Join-Path $env:LOCALAPPDATA 'sot\bin\sotd.exe'))) {

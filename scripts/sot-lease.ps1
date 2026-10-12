@@ -1,7 +1,8 @@
-# sot-lease.ps1 -- the launcher's leases on this computer's daemon: open one, hand every one over; and Start-SotBridge,
-# the one way a launch script starts the bridge. Dot-sourced by launch-sot.ps1, which keeps $LeaseReplyWaitMs,
-# $HandoverBoundSeconds, $global:SotLeases and $global:SotLeasesUnanswered, and by sot-local-daemon.ps1 for its probe.
-# Functions only.
+# sot-lease.ps1 -- the launcher's leases on this computer's daemon: open one, hand every one over; and the launch
+# scripts' redirected children: Start-SotRedirected starts each (the bridge, Start-SotBridge; a bounded run,
+# sot-hosts.ps1's Invoke-SotWithin), Stop-SotTree ends one with every process it started. Dot-sourced by launch-sot.ps1,
+# which keeps $LeaseReplyWaitMs, $HandoverBoundSeconds, $global:SotLeases and $global:SotLeasesUnanswered, by
+# sot-local-daemon.ps1 for its probe, and by shutdown-sot.ps1 for its bounded remote reads. Functions only.
 # ASCII ONLY in string literals (Windows PowerShell 5.1; see launch-sot.ps1).
 
 # The Windows boot identity: the registry BootId as an unsigned decimal string,
@@ -28,16 +29,16 @@ function ConvertTo-SotJsonString([string]$Text) {
     return '"' + $Text.Replace('\', '\\').Replace('"', '\"') + '"'
 }
 
-# Start the bridge, `<SotdExe> stdio-bridge --endpoint pipe:<PipePath>`, with its input, output and errors redirected,
-# and return the process: the one way the launcher's lease and sot-local-daemon.ps1's probe start it (ADR 0049, User
-# isolation). Its input carries exactly the bytes its caller writes. Windows PowerShell 5.1's .NET Framework opens a
-# redirected input as a writer in [Console]::InputEncoding and flushes it at once, which writes that encoding's
-# preamble (the UTF-8 BOM, when the console's input encoding has one) before the caller writes anything, and the
-# daemon cannot parse a hello behind it. So while the process starts, the console's input encoding is UTF-8 without a
-# preamble whenever the caller's has one, and the caller's is put back after. A console whose encoding cannot be set
-# throws, to the caller's own catch.
-function Start-SotBridge([string]$SotdExe, [string]$PipePath) {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo($SotdExe, ('stdio-bridge --endpoint "pipe:{0}"' -f $PipePath))
+# Start $FilePath with $Arguments (one command line) and its input, output and errors redirected, and return the
+# process: the one way a launch script starts a child it writes to. Its input carries exactly the bytes its caller
+# writes. Windows PowerShell 5.1's .NET Framework opens a redirected input as a writer in [Console]::InputEncoding and
+# flushes it at once, which writes that encoding's preamble (the UTF-8 BOM, when the console's input encoding has one)
+# before the caller writes anything, and the child cannot parse what follows (a daemon's hello, `bash -s`'s first
+# line). So while the process starts, the console's input encoding is UTF-8 without a preamble whenever the caller's
+# has one, and the caller's is put back after. Its output is read as UTF-8. A program that cannot start, or a console
+# whose encoding cannot be set, throws, to the caller's own catch.
+function Start-SotRedirected([string]$FilePath, [string]$Arguments) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo($FilePath, $Arguments)
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardInput = $true
@@ -52,6 +53,31 @@ function Start-SotBridge([string]$SotdExe, [string]$PipePath) {
     } finally {
         if ($swap) { [Console]::InputEncoding = $callerInput }
     }
+}
+
+# Start the bridge, `<SotdExe> stdio-bridge --endpoint pipe:<PipePath>`, through Start-SotRedirected: the one way the
+# launcher's lease and sot-local-daemon.ps1's probe start it (ADR 0049, User isolation).
+function Start-SotBridge([string]$SotdExe, [string]$PipePath) {
+    return Start-SotRedirected $SotdExe ('stdio-bridge --endpoint "pipe:{0}"' -f $PipePath)
+}
+
+# End $Proc and every process it started, at any depth (a ProxyCommand ssh started, a child holding the output). Windows
+# keeps a creator's id on a process after the creator exits, so a child whose parent is gone is still found; a process
+# created before its recorded parent is another program that was given a reused id, and is left alone. $Proc is ended
+# first, then one snapshot of the processes is walked.
+function Stop-SotTree([System.Diagnostics.Process]$Proc) {
+    $born = $Proc.StartTime
+    try { $Proc.Kill() } catch { }   # it may have exited already; what it started is walked either way
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $tree = @(@{ Id = $Proc.Id; Born = $born })
+    for ($i = 0; $i -lt $tree.Count; $i++) {
+        foreach ($c in $all) {
+            if ($c.ParentProcessId -eq $tree[$i].Id -and $c.CreationDate -ge $tree[$i].Born) {
+                $tree += @{ Id = [int]$c.ProcessId; Born = $c.CreationDate }
+            }
+        }
+    }
+    foreach ($t in @($tree | Select-Object -Skip 1)) { Stop-Process -Id $t.Id -Force -ErrorAction SilentlyContinue }
 }
 
 # Open a lease on the local daemon: emits the open stream when granted or unanswered, NOTHING otherwise (callers collect

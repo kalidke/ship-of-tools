@@ -89,10 +89,11 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `launch-splash.ps1`: the launch progress window.
 - `sot-local-daemon.ps1`: starts and stops this computer's `sotd`, and names the `sotd.exe` it runs (`-Resolve`).
 - `sot-hosts.ps1`: reads `sotd topology plan` output and runs `topology sync`; `Invoke-SotWithin`
-  runs a native command under a wall-clock bound (every script ssh call).
+  runs a native command under a wall-clock bound (every script ssh call): at the bound it ends the command with every
+  process it started, and a command that cannot start is a result (127).
 - `sot-install-layout.ps1`: the pinned-checkout test, the shortcut target, the launcher code id, the first-launch install layout and offline trust declaration delegation.
 - `sot-freshness.ps1`: the armed update's apply, the dev pull's rebuild and the comm install, run before a window starts.
-- `sot-lease.ps1`: opens a lease on this computer's daemon, hands every lease over to the window, and starts the bridge (`Start-SotBridge`) for the lease and `sot-local-daemon.ps1`'s probe. A request the daemon has not answered within `$LeaseReplyWaitMs` is kept open, its bridge process held for the supervisor's life (`$global:SotLeasesUnanswered`), with its handover written behind it, since closing it could end the computer's sessions.
+- `sot-lease.ps1`: opens a lease on this computer's daemon, hands every lease over to the window, and starts the bridge (`Start-SotBridge`) for the lease and `sot-local-daemon.ps1`'s probe; `Start-SotRedirected` starts every child a launch script writes to (the bridge and every bounded run) and `Stop-SotTree` ends one with every process it started. A request the daemon has not answered within `$LeaseReplyWaitMs` is kept open, its bridge process held for the supervisor's life (`$global:SotLeasesUnanswered`), with its handover written behind it, since closing it could end the computer's sessions.
 - `relaunch-sot.ps1`: builds the window and drops the relaunch sentinel.
 - `shutdown-sot.ps1`: ordered local teardown; its two remote journal reads run under `Invoke-SotWithin`.
 ### Dev and docs
@@ -134,7 +135,8 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   dev pair, else the complete install pair), and the daemon's start, probes and pipe-name query and the launcher's
   own query and lease (`-Resolve`) all run that `sotd.exe`. `-Stop` makes the same choice when a complete pair exists;
   if neither pair is complete, it can use a lone `sotd.exe`, dev first, to query and probe without starting a capsule.
-- On Windows the bridge is started only by `Start-SotBridge` (sot-lease.ps1), so its input carries exactly the bytes
+- On Windows every child a launch script writes to (the bridge, `Start-SotBridge`; every bounded run,
+  `Invoke-SotWithin`) is started only by `Start-SotRedirected` (sot-lease.ps1), so its input carries exactly the bytes
   its caller writes: while it starts the process, the console's input encoding is UTF-8 without a preamble whenever
   the caller's has one, which Windows PowerShell 5.1 would otherwise write first.
 - The bounds the launcher and the daemon share (`LAUNCH_WAIT` 160 s, `DAEMON_LOCK_WAIT` 150 s, the lease reply wait and

@@ -1,9 +1,11 @@
 # test-sot-within.ps1 -- the PowerShell launch scripts' network bounds. scripts/sot-hosts.ps1's Invoke-SotWithin, a
-# native command under a wall-clock bound: a stalled command ends at its bound with Code 124 and a line naming it, and
-# is killed; a command that finishes returns its output and exit code; stdin reaches the command. Then each script call
-# a test can reach, its stand-in first on a child PowerShell's PATH, never this process's: shutdown-sot.ps1's
-# Get-DaemonDisconnect (read as a syntax tree) against a stand-in ssh.exe, and sot-install-layout.ps1's tag fetch
-# against a stand-in git.exe.
+# native command under a wall-clock bound, started and ended by sot-lease.ps1's Start-SotRedirected and Stop-SotTree:
+# a stalled command ends at its bound with Code 124 and a line naming it, with every process it started; so does one
+# whose descendant holds its output after it exits; a command that finishes returns its output and exit code; stdin
+# reaches the command, and only the caller's bytes do, whatever the console's input encoding; a command that cannot
+# start is Code 127. Then each script call a test can reach, its stand-in first on a child PowerShell's PATH, never
+# this process's: shutdown-sot.ps1's Get-DaemonDisconnect (read as a syntax tree) against a stand-in ssh.exe, and
+# sot-install-layout.ps1's tag fetch against a stand-in git.exe.
 # Run under WINDOWS POWERSHELL 5.1: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\test-sot-within.ps1
 
 $ErrorActionPreference = 'Stop'
@@ -60,21 +62,54 @@ public class GitStub {
 . (Join-Path $scripts 'sot-lease.ps1')
 . (Join-Path $scripts 'sot-hosts.ps1')
 
+# The processes still running whose command line holds $Tag, polled for up to 5 s while the ended ones go (a check
+# only: nothing here signals them).
+function Get-Tagged([string]$Tag) {
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        $left = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { "$($_.CommandLine)" -like "*$Tag*" })
+        if ($left.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 200
+    } while ($clock.Elapsed.TotalSeconds -lt 5)
+    return $left
+}
+
 try {
     try {
-        Write-Host "`n=== a stalled command ends at its bound ===" -ForegroundColor Cyan
-        $marker = Join-Path $work 'stalled.pid'
+        Write-Host "`n=== a stalled command ends at its bound, with every process it started ===" -ForegroundColor Cyan
+        # cmd starts a background PowerShell (as ssh starts a ProxyCommand), then waits on a foreground one; both sleep 60 s,
+        # ending themselves if a run fails, and both carry the tag in their command lines.
+        $tag = 'sot-within-stalled-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         $clock = [System.Diagnostics.Stopwatch]::StartNew()
-        $r = Invoke-SotWithin 2 'powershell' @('-NoProfile', '-Command', "Set-Content -LiteralPath '$marker' -Value `$PID; Start-Sleep 60")
+        $r = Invoke-SotWithin 5 'cmd.exe' @('/c', "start /b powershell -NoProfile -Command Start-Sleep 60 # $tag & powershell -NoProfile -Command Start-Sleep 60 # $tag")
         $clock.Stop()
         Check 'the code is 124' ($r.Code -eq 124) "Code=$($r.Code)"
-        Check 'the output names the command and the bound' ($r.Output -ceq 'powershell did not finish within 2 s') "Output='$($r.Output)'"
-        Check 'it ends within 5 s' ($clock.Elapsed.TotalSeconds -lt 5) "took $($clock.Elapsed.TotalSeconds) s"
-        $childPid = 0
-        if (Test-Path -LiteralPath $marker) { $childPid = [int](Get-Content -LiteralPath $marker | Select-Object -First 1) }
-        Check 'the child recorded its pid' ($childPid -gt 0) 'the child never started'
-        Check 'the child is gone' ($childPid -gt 0 -and -not (Get-Process -Id $childPid -ErrorAction SilentlyContinue)) "pid $childPid still runs"
+        Check 'the output names the command and the bound' ($r.Output -ceq 'cmd.exe did not finish within 5 s') "Output='$($r.Output)'"
+        Check 'it ends within 10 s' ($clock.Elapsed.TotalSeconds -lt 10) "took $($clock.Elapsed.TotalSeconds) s"
+        $left = @(Get-Tagged $tag)
+        Check 'every process the command started is gone' ($left.Count -eq 0) "still running: $(@($left | ForEach-Object { "$($_.ProcessId) $($_.Name)" }) -join ', ')"
+
     } catch { Check 'stalled: the section ran' $false $_.Exception.Message }
+
+    try {
+        Write-Host "`n=== a command whose descendant holds its output after it exits ends at the bound ===" -ForegroundColor Cyan
+        # cmd exits at once and leaves a background PowerShell holding the output. Run in a child PowerShell held to 20 s, so
+        # a call that waits on that output fails the test instead of holding it.
+        $tag = 'sot-within-held-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $held = @'
+$ErrorActionPreference = 'Stop'
+. (Join-Path $env:SOT_TEST_SCRIPTS 'sot-lease.ps1')
+. (Join-Path $env:SOT_TEST_SCRIPTS 'sot-hosts.ps1')
+$clock = [System.Diagnostics.Stopwatch]::StartNew()
+$r = Invoke-SotWithin 2 'cmd.exe' @('/c', "start /b powershell -NoProfile -Command Start-Sleep 60 # $env:SOT_TEST_TAG")
+@{ code = $r.Code; output = $r.Output; took = $clock.Elapsed.TotalSeconds } | ConvertTo-Json -Compress
+'@
+        $r = ConvertFrom-Json (Invoke-Child 'held' $held @{ SOT_TEST_SCRIPTS = $scripts; SOT_TEST_TAG = $tag } 20).Out
+        Check 'the code is 124' ($r.code -eq 124) "code=$($r.code) output='$($r.output)'"
+        Check 'within 10 s' ($r.took -lt 10) "took $($r.took) s"
+        $left = @(Get-Tagged $tag)
+        Check 'the holder is gone' ($left.Count -eq 0) "still running: $(@($left | ForEach-Object { "$($_.ProcessId) $($_.Name)" }) -join ', ')"
+    } catch { Check 'held: the section ran' $false $_.Exception.Message }
 
     try {
         Write-Host "`n=== a command that finishes returns its output ===" -ForegroundColor Cyan
@@ -87,6 +122,41 @@ try {
         try { Invoke-SotWithin 5 'powershell' @('-NoProfile', '-Command', 'exit 0') ('x' * 4001) | Out-Null } catch { $threw = $true }
         Check 'a stdin over 4000 bytes is refused' $threw 'no error'
     } catch { Check 'finishes: the section ran' $false $_.Exception.Message }
+
+    try {
+        Write-Host "`n=== a command that cannot start is a result, not a throw ===" -ForegroundColor Cyan
+        $r = try { Invoke-SotWithin 5 'sot-no-such-program' @() } catch { @{ Code = 'threw'; Output = $_.Exception.Message } }
+        Check 'the code is 127' ($r.Code -eq 127) "Code=$($r.Code) Output='$($r.Output)'"
+        Check 'the output names the program' ($r.Output -like 'sot-no-such-program could not start: *') "Output='$($r.Output)'"
+
+    } catch { Check 'start: the section ran' $false $_.Exception.Message }
+
+    try {
+        Write-Host "`n=== the command reads only its caller's bytes, whatever the console's input encoding ===" -ForegroundColor Cyan
+        # A hidden PowerShell with a console of its own, as the launcher runs, sets its input encoding to UTF-8 with a BOM,
+        # which Windows PowerShell 5.1 writes into a redirected input before the caller's first byte, and runs a stand-in
+        # that prints every byte it reads, in hex.
+        $hexExe = Join-Path $work 'stdin-hex.exe'
+        Add-Type -TypeDefinition 'public class StdinHex { public static int Main() { var m = new System.IO.MemoryStream(); System.Console.OpenStandardInput().CopyTo(m); System.Console.Write(System.BitConverter.ToString(m.ToArray())); return 0; } }' -OutputAssembly $hexExe -OutputType ConsoleApplication
+        $bomOut = Join-Path $work 'bom.out'
+        Set-Content -LiteralPath (Join-Path $work 'bom.ps1') -Encoding ascii -Value @'
+param([string]$Scripts, [string]$Exe, [string]$Out)
+try {
+    . (Join-Path $Scripts 'sot-lease.ps1')
+    . (Join-Path $Scripts 'sot-hosts.ps1')
+    [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+    $r = Invoke-SotWithin 30 $Exe @() "x`n"
+    $kept = [Console]::InputEncoding.GetPreamble().Length -eq 3
+    Set-Content -LiteralPath $Out -Value ('read={0} code={1} restored={2}' -f $r.Stdout, $r.Code, $kept)
+} catch {
+    Set-Content -LiteralPath $Out -Value ('error=' + $_.Exception.Message)
+}
+'@
+        $child = Start-Process -FilePath 'powershell.exe' -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Scripts "{1}" -Exe "{2}" -Out "{3}"' -f (Join-Path $work 'bom.ps1'), $scripts, $hexExe, $bomOut) -WindowStyle Hidden -PassThru
+        if (-not $child.WaitForExit(60000)) { try { $child.Kill() } catch { }; throw 'the hidden child did not finish within 60 s' }
+        $got = if (Test-Path -LiteralPath $bomOut) { "$(Get-Content -LiteralPath $bomOut -Raw)".Trim() } else { '<no report>' }
+        Check 'the command read x and a newline, and nothing before them; the console encoding was put back' ($got -ceq 'read=78-0A code=0 restored=True') "child: $got"
+    } catch { Check 'bom: the section ran' $false $_.Exception.Message }
 
     try {
         Write-Host "`n=== shutdown-sot.ps1's remote read: the tree's ssh options, the command on stdin, a hung ssh named ===" -ForegroundColor Cyan

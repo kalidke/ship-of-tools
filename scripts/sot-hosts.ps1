@@ -144,9 +144,12 @@ $SotSshOpts = @('-T', '-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o
 
 # Runs a native command under a wall-clock bound: the whole call, so a hang in key exchange or authentication ends
 # at the bound as surely as a silent link. Returns @{ Code; Output; Stdout }: Output is stdout then stderr, Stdout
-# the stdout alone. On expiry the process is killed and Code is 124 with Output "<FilePath> did not finish within
-# <Seconds> s". $Stdin (at most 4000 bytes, so its write cannot block on a fresh pipe) is written and closed;
-# Windows PowerShell 5.1 has no ArgumentList, so each argument is quoted into one string here.
+# the stdout alone. The call ends when the command has exited and its output has closed, both within the bound; at the
+# bound the command and every process it started are ended (sot-lease.ps1's Stop-SotTree) and Code is 124 with Output
+# "<FilePath> did not finish within <Seconds> s"; a command that cannot start is Code 127 with Output "<FilePath>
+# could not start: <why>". It starts through sot-lease.ps1's Start-SotRedirected (its caller dot-sources that file
+# too), so its input carries only $Stdin (at most 4000 bytes, so its write cannot block on a fresh pipe), written and
+# closed. Windows PowerShell 5.1 has no ArgumentList, so each argument is quoted into one string here.
 function Invoke-SotWithin {
     param(
         [int]$Seconds,
@@ -161,26 +164,22 @@ function Invoke-SotWithin {
         if ($a -ne '' -and $a -notmatch '[\s"]') { $a }
         else { '"' + ($a -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
     }
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $FilePath
-    $psi.Arguments = ($quoted -join ' ')
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $psi.RedirectStandardInput = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $p = [System.Diagnostics.Process]::Start($psi)
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $p = Start-SotRedirected $FilePath ($quoted -join ' ')
+    } catch {
+        return @{ Code = 127; Output = "$FilePath could not start: $($_.Exception.GetBaseException().Message)"; Stdout = '' }
+    }
     $out = $p.StandardOutput.ReadToEndAsync()
     $err = $p.StandardError.ReadToEndAsync()
     try {
         if ($Stdin) { $p.StandardInput.Write($Stdin) }
         $p.StandardInput.Close()
     } catch { }   # the process already ended: its exit code says why
-    if (-not $p.WaitForExit($Seconds * 1000)) {
-        try { $p.Kill() } catch { }
-        [void]$p.WaitForExit(5000)
+    $left = { [int][Math]::Max(0, $Seconds * 1000 - $clock.ElapsedMilliseconds) }
+    if (-not ($p.WaitForExit((& $left)) -and [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($out, $err), (& $left)))) {
+        Stop-SotTree $p
         return @{ Code = 124; Output = "$FilePath did not finish within $Seconds s"; Stdout = '' }
     }
-    $p.WaitForExit()   # flushes the two async reads
     return @{ Code = $p.ExitCode; Output = ($out.Result + $err.Result); Stdout = $out.Result }
 }

@@ -42,8 +42,11 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
   `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test
   install layout (pinned-checkout predicate)".
-- `test-sot-within.ps1`: the PowerShell scripts' network bounds. `Invoke-SotWithin` (scripts/sot-hosts.ps1): a stalled
-  command ends at its bound with code 124 and is killed; a finished one returns its output and code. Each stand-in goes
+- `test-sot-within.ps1`: the PowerShell scripts' network bounds. `Invoke-SotWithin` (scripts/sot-hosts.ps1, through
+  sot-lease.ps1's `Start-SotRedirected` and `Stop-SotTree`): a stalled command ends at its bound with code 124, with
+  every process it started; so does one whose descendant holds its output after it exits; a finished one returns its
+  output and code; a hidden PowerShell whose console input encoding has a BOM writes only its caller's bytes; a command
+  that cannot start is code 127. Each stand-in goes
   first on a child PowerShell's PATH, never the test's: `shutdown-sot.ps1`'s `Get-DaemonDisconnect`, read as a syntax
   tree and run against a stand-in `ssh.exe`, passes the tree's ssh options and the command on stdin, and names a hung
   ssh; `sot-install-layout.ps1`'s tag fetch, against a stand-in `git.exe`, carries the stall bound. Runs in the
