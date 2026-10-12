@@ -224,13 +224,22 @@ struct ProgressSnapshot {
 }
 
 impl ProgressSnapshot {
+    /// The workload kept 20 sends a second: every ten-second window holds 190 to 210 of them, so a stall that moves 11
+    /// sends past a second's edge fails (any stall over 1.5 s does). A minimized window needs no tighter bound: it
+    /// pings every 30 s and the daemon reaps a connection silent for 90 s, so it keeps its connection through any stall
+    /// under 60 s. In the visible phase no send may be over 250 ms late either: that is how a transport waiting on the
+    /// held window thread shows (MAC-REDRAW).
+    fn rate_ok(&self) -> bool {
+        let (min, max, late) = self.rate;
+        (self.profile.minimized || late <= 250) && (self.profile.seconds < 10 || (min >= 190 && max <= 210))
+    }
+
     fn failures(&self) -> Vec<&'static str> {
         let mut failures = Vec::new();
-        let (min, max, late) = self.rate;
         if self.accepted != self.profile.expected {
             failures.push("workload_volume");
         }
-        if late > 250 || (self.profile.seconds >= 10 && (min < 190 || max > 210)) {
+        if !self.rate_ok() {
             failures.push("workload_rate");
         }
         if self.dequeued != self.accepted
@@ -254,9 +263,7 @@ impl ProgressSnapshot {
 
     fn write(&self, phase: &str, writer: &mut impl Write) -> std::io::Result<()> {
         let (min, max, late) = self.rate;
-        let workload_ok = self.accepted == self.profile.expected
-            && late <= 250
-            && (self.profile.seconds < 10 || (min >= 190 && max <= 210));
+        let workload_ok = self.accepted == self.profile.expected && self.rate_ok();
         writeln!(writer, "window-progress test={TEST} phase={phase} elapsed_s={} expected_sent={} sent={} dequeued={} outstanding={} max_outstanding={} min_10s_sent={min} max_10s_sent={max} max_lateness_ms={late} native_minimized={} workload_ok={workload_ok} samples={}",
             self.elapsed.as_secs(), self.profile.expected, self.accepted, self.dequeued, self.accepted - self.dequeued, self.max_outstanding, self.native, self.samples)?;
         writer.flush()

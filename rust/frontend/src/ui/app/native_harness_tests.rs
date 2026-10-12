@@ -175,6 +175,24 @@ fn workload_validator_rejects_stalls_and_late_sends() {
     assert_eq!(ledger.phases[VISIBLE.phase].snapshot(epoch + Duration::from_secs(2), false).failures(), ["workload_rate"]);
     ledger.phases.get_mut(VISIBLE.phase).unwrap().producer_done = Some(epoch - Duration::from_secs(4));
     assert!(ledger.phases[VISIBLE.phase].snapshot(epoch + Duration::from_secs(2), false).failures().contains(&"final_drain"));
+    // The hosted macOS minimized shape: sends 3500 to 3508, due from 175.000 s, all accepted at 175.449 s; every
+    // ten-second window holds 199 or 200 and the queue drains. A stall the product tolerates passes while minimized.
+    let mut events = scheduled(MINIMIZED);
+    for event in &mut events[3499..3508] {
+        event.1 = Duration::from_millis(175_449);
+    }
+    let (ledger, epoch) = seeded(MINIMIZED, &events, true);
+    let snapshot = ledger.phases[MINIMIZED.phase].snapshot(epoch + Duration::from_secs(600), true);
+    assert_eq!(snapshot.rate, (199, 200, 449));
+    assert!(snapshot.failures().is_empty(), "a late minimized send failed a held rate: {:?}", snapshot.failures());
+    // Sends 3509 to 3519, due from 175.450 s, accepted at 176.000 s: 11 cross a window edge, past its 10.
+    for event in &mut events[3508..3519] {
+        event.1 = Duration::from_secs(176);
+    }
+    let (ledger, epoch) = seeded(MINIMIZED, &events, true);
+    let snapshot = ledger.phases[MINIMIZED.phase].snapshot(epoch + Duration::from_secs(600), true);
+    assert_eq!(snapshot.rate, (189, 211, 550));
+    assert_eq!(snapshot.failures(), ["workload_rate"]);
     let events = scheduled(CONTROL);
     let (mut ledger, epoch) = seeded(CONTROL, &events, false);
     assert!(ledger.phases[CONTROL.phase].snapshot(epoch + Duration::from_secs(20), true).failures().contains(&"queue_progress"));
