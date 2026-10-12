@@ -42,6 +42,8 @@ use comrak::{
 };
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, Weight};
 
+use crate::ui::render::text::{set_buffer_rich_text, set_buffer_text};
+
 /// Body font em-size in unscaled pixels. Exposed so the chrome can
 /// convert MathJax SVG ex-units into the same unscaled-pixel space the
 /// markdown walk uses, before passing them in via `MathMetricsMap`.

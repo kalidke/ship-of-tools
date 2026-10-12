@@ -9,11 +9,17 @@ use super::*;
 /// repos checked out with CRLF endings (e.g. RJTrack) while LF repos
 /// rendered fine. Display-only normalization: the edit buffer and the
 /// clipboard-yank paths read their own bytes elsewhere, so this doesn't
-/// touch what gets written or copied. Returns a borrow when there's no
-/// CR to strip (the common LF case) to avoid a needless allocation.
+/// touch what gets written or copied. U+0085, U+2028 and U+2029 become LF
+/// too: a file's own line and paragraph separators end its lines. (Any other
+/// bidi paragraph separator becomes a space at the shaper's door,
+/// `set_buffer_text`.) Returns a borrow when there is nothing to change (the
+/// common LF case).
 pub(super) fn normalize_newlines(s: &str) -> std::borrow::Cow<'_, str> {
-    if s.contains('\r') {
-        std::borrow::Cow::Owned(s.replace("\r\n", "\n").replace('\r', "\n"))
+    if s.contains(['\r', '\u{85}', '\u{2028}', '\u{2029}']) {
+        std::borrow::Cow::Owned(
+            s.replace("\r\n", "\n")
+                .replace(['\r', '\u{85}', '\u{2028}', '\u{2029}'], "\n"),
+        )
     } else {
         std::borrow::Cow::Borrowed(s)
     }
@@ -133,7 +139,7 @@ impl MarkdownPreview {
             .family(Family::SansSerif)
             .metrics(Metrics::new(BODY_SIZE * scale, BODY_LINE_H * scale));
         let span_iter = spans.iter().map(|(s, a)| (s.as_str(), *a));
-        buffer.set_rich_text(font_system, span_iter, default_attrs, Shaping::Advanced);
+        set_buffer_rich_text(&mut buffer, font_system, span_iter, default_attrs, Shaping::Advanced);
         buffer.shape_until_scroll(font_system, false);
 
         Self {
@@ -160,7 +166,7 @@ impl MarkdownPreview {
         let mut buffer = Buffer::new(font_system, metrics);
         buffer.set_size(font_system, Some(width.max(1.0)), None);
         let attrs = Attrs::new().family(Family::Monospace).metrics(metrics);
-        buffer.set_text(font_system, &normalize_newlines(source), attrs, Shaping::Advanced);
+        set_buffer_text(&mut buffer, font_system, &normalize_newlines(source), attrs, Shaping::Advanced);
         buffer.shape_until_scroll(font_system, false);
         Self {
             buffer,
@@ -202,7 +208,7 @@ impl MarkdownPreview {
             .collect();
         let default_attrs = Attrs::new().family(Family::Monospace).metrics(metrics);
         let iter = owned.iter().map(|(s, a)| (s.as_str(), *a));
-        buffer.set_rich_text(font_system, iter, default_attrs, Shaping::Advanced);
+        set_buffer_rich_text(&mut buffer, font_system, iter, default_attrs, Shaping::Advanced);
         buffer.shape_until_scroll(font_system, false);
         Self {
             buffer,
@@ -244,7 +250,7 @@ impl MarkdownPreview {
 
         let default_attrs = Attrs::new().family(Family::Monospace).metrics(metrics);
         let iter = owned.iter().map(|(s, a)| (s.as_str(), *a));
-        buffer.set_rich_text(font_system, iter, default_attrs, Shaping::Advanced);
+        set_buffer_rich_text(&mut buffer, font_system, iter, default_attrs, Shaping::Advanced);
         buffer.shape_until_scroll(font_system, false);
 
         Self {

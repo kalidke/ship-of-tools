@@ -10,6 +10,33 @@ fn strip_truncate_ellipsizes_long_labels() {
 }
 
 #[test]
+fn strip_names_keep_their_lines_apart() {
+    // A session label or a box name is one row of the band: a line break shows as `⏎`, a tab as a space, and no
+    // control character reaches the glyph layer, which would start a new line there or jump to a tab stop.
+    assert_eq!(strip_truncate("AA\nBB"), "AA ⏎ BB");
+    assert_eq!(strip_truncate("AA\r\nBB\tCC"), "AA ⏎ BB CC");
+    assert_eq!(strip_label("AA\rBB", true), "●AA ⏎ BB");
+    assert_eq!(
+        strip_truncate(&format!("{}\n{}", "a".repeat(20), "b".repeat(20)))
+            .chars()
+            .count(),
+        STRIP_MAX_LABEL
+    );
+}
+
+#[test]
+fn a_strip_name_is_one_bidi_paragraph() {
+    // The band draws a name as one glyph line, and cosmic-text panics on a line holding a second bidi paragraph
+    // (U+2029, U+2028 or U+0085 before right-to-left text): the name must reach it as one row.
+    let name = strip_truncate("AA\u{2029}אב\u{2028}ג\u{85}ד");
+    let mut fonts = cosmic_text::FontSystem::new();
+    let mut buffer = cosmic_text::Buffer::new(&mut fonts, cosmic_text::Metrics::new(14.0, 20.0));
+    buffer.set_text(&mut fonts, &name, cosmic_text::Attrs::new(), cosmic_text::Shaping::Advanced);
+    buffer.shape_until_scroll(&mut fonts, false);
+    assert_eq!(name, "AA ⏎ אב ⏎ ג ⏎ ד");
+}
+
+#[test]
 fn strip_items_gives_a_lone_host_its_ship_too() {
     let slugs: Vec<WsKey> = vec![
         ("alpha".to_string(), "one".to_string()),

@@ -43,6 +43,22 @@ Base.flush(::CountingIO) = nothing
         @test isempty(rest3)
     end
 
+    @testset "an invalid byte holds back no later output" begin
+        # Only a character a chunk cut waits for its other bytes; an invalid byte anywhere else goes on at once.
+        s, rest = DR.utf8_prefix(UInt8[0x61, 0xff, 0x62])
+        @test codeunits(s) == UInt8[0x61, 0xff, 0x62]
+        @test isempty(rest)
+        s2, rest2 = DR.utf8_prefix(UInt8[0x61, 0xff, 0x62, 0xe3, 0x81])
+        @test codeunits(s2) == UInt8[0x61, 0xff, 0x62]
+        @test rest2 == UInt8[0xe3, 0x81]
+    end
+
+    @testset "write_json_string writes U+FFFD for a malformed character" begin
+        # Program output is bytes: every String must serialize, as valid UTF-8.
+        @test sprint(DR.write_json_string, String(UInt8[0x61, 0xff, 0x62, 0x01])) == "\"a\ufffdb\\u0001\""
+        @test sprint(DR.write_json_string, String(UInt8[0x78, 0xe3, 0x81])) == "\"x\ufffd\""
+    end
+
     @testset "value_frames_for: text/plain for a plain value" begin
         frames = DR.value_frames_for(42)
         @test length(frames) == 1

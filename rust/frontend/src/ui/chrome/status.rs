@@ -1,6 +1,55 @@
-//! The status line and its neighbours: wrapping, pinned nav rows, the clock, battery and version labels.
+//! The status line and its neighbours: the cell-text rule, wrapping, pinned nav rows, the clock, battery and version
+//! labels.
 
 use super::*;
+
+/// Text from outside the window (a daemon's reply, an agent's words, a file's name, a paste) as the rows a cell run
+/// may draw. ratatui drops a `\n` inside a span and gives a `\r` or a `\t` a cell of its own, which the glyph layer
+/// then draws as a line break or a tab stop, and cosmic-text panics on a second bidi paragraph in one line, so no
+/// control character or separator may reach a cell: an ANSI CSI sequence (a colour code) is removed whole; `\r\n`,
+/// `\n`, a lone `\r`, U+0085, U+2028 and U+2029 each end a row (a final one starts none, as in `str::lines`); and any
+/// other control character is a space.
+pub(in crate::ui) fn cell_lines(text: &str) -> Vec<String> {
+    strip_csi(text)
+        .replace("\r\n", "\n")
+        .replace(|c| matches!(c, '\r' | '\u{85}' | '\u{2028}' | '\u{2029}'), "\n")
+        .lines()
+        .map(|row| row.replace(char::is_control, " "))
+        .collect()
+}
+
+/// The same text where only one row exists: its rows joined by ` ⏎ `. Text with no control character or separator
+/// comes back as it is.
+pub(in crate::ui) fn cell_row(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains(|c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')) {
+        std::borrow::Cow::Owned(cell_lines(text).join(" ⏎ "))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+/// `text` without its ANSI CSI sequences: ESC `[`, parameter bytes 0x30-0x3F, intermediate bytes 0x20-0x2F and one
+/// final byte 0x40-0x7E. Any other ESC stays, for `cell_lines` to make a space.
+fn strip_csi(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains("\u{1b}[") {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let (mut out, mut rest) = (String::with_capacity(text.len()), text);
+    while let Some(i) = rest.find("\u{1b}[") {
+        out.push_str(&rest[..i]);
+        let seq = &rest[i + 2..];
+        let params = seq.find(|c| !matches!(c, '\u{30}'..='\u{3f}')).unwrap_or(seq.len());
+        let end = seq[params..].find(|c| !matches!(c, '\u{20}'..='\u{2f}')).map_or(seq.len(), |k| params + k);
+        if matches!(seq[end..].chars().next(), Some('\u{40}'..='\u{7e}')) {
+            rest = &seq[end + 1..];
+        } else {
+            out.push('\u{1b}');
+            rest = &rest[i + 1..];
+        }
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
+}
 
 /// Wrap a status text into lines of display cells: the first line has
 /// `first_w` cells (the pane's width less the "status: " label), the rest
@@ -57,13 +106,23 @@ fn wrap_status(text: &str, first_w: usize, rest_w: usize) -> Vec<String> {
     }
 }
 
-/// The nav pane's status lines: "status: " heads the first, and the text
-/// wraps under it at `width` cells.
-pub(in crate::ui) fn status_spans(status: &str, width: usize) -> Vec<RtLine<'static>> {
+/// The nav pane's status lines: "status: " heads the first, each line of the
+/// text (`cell_lines`) starts a row, and each wraps under it at `width` cells.
+/// At most `max_rows` rows (`status_rows`).
+pub(in crate::ui) fn status_spans(
+    status: &str,
+    width: usize,
+    max_rows: usize,
+) -> Vec<RtLine<'static>> {
     let label = "status: ";
     let text = Style::default().fg(Color::LightGreen);
     let first_w = width.saturating_sub(unicode_width::UnicodeWidthStr::width(label));
-    let mut segs = wrap_status(status, first_w, width).into_iter();
+    let wrapped: Vec<Vec<String>> = cell_lines(status)
+        .iter()
+        .enumerate()
+        .map(|(i, line)| wrap_status(line, if i == 0 { first_w } else { width }, width))
+        .collect();
+    let mut segs = status_rows(wrapped, max_rows).into_iter();
     let mut lines = vec![RtLine::from(vec![
         Span::styled(label, Style::default().fg(Color::DarkGray)),
         Span::styled(segs.next().unwrap_or_default(), text),
@@ -72,17 +131,54 @@ pub(in crate::ui) fn status_spans(status: &str, width: usize) -> Vec<RtLine<'sta
     lines
 }
 
+/// The rows of a status's wrapped lines that fit `max_rows` (at least 3). Past
+/// that, lines are picked by priority: the first (what failed), the second (its
+/// first cause), the last (how it ended, or a hint), then the rest in order. A
+/// line shows whole or not at all, except that the first two show their start,
+/// cut to the rows left, rather than nothing; the front lines stop at the first
+/// that does not fit, so one row, where the gap is, counts the lines not shown.
+fn status_rows(wrapped: Vec<Vec<String>>, max_rows: usize) -> Vec<String> {
+    let max_rows = max_rows.max(3);
+    if wrapped.iter().map(Vec::len).sum::<usize>() <= max_rows {
+        return wrapped.concat();
+    }
+    let n = wrapped.len();
+    let (mut room, mut front, mut shown, mut cut) = (max_rows - 1, Vec::new(), 0, false);
+    while shown < n.min(2) && room > 0 && !cut {
+        let take = wrapped[shown].len().min(room);
+        front.extend_from_slice(&wrapped[shown][..take]);
+        room -= take;
+        cut = take < wrapped[shown].len();
+        shown += 1;
+    }
+    let last = (!cut && shown < n && wrapped[n - 1].len() <= room).then_some(n - 1);
+    room -= last.map_or(0, |l| wrapped[l].len());
+    while !cut && shown < last.unwrap_or(n) && wrapped[shown].len() <= room {
+        room -= wrapped[shown].len();
+        front.extend_from_slice(&wrapped[shown]);
+        shown += 1;
+    }
+    let hidden = n - shown - usize::from(last.is_some());
+    front.push(match hidden {
+        0 => "…".to_string(),
+        1 => "… 1 line not shown".to_string(),
+        _ => format!("… {hidden} lines not shown"),
+    });
+    front.extend(last.into_iter().flat_map(|l| wrapped[l].iter().cloned()));
+    front
+}
+
 /// The nav pane's pinned rows, drawn under the scrolled list so no scroll
 /// hides them: the lease notice, then `line` (the not-ended count or
-/// `closing…`), then the open prompt, each wrapped at `width` cells. A pane
-/// too short for them all gives whole lines in priority order (the prompt,
-/// then `line`, then the notice) and drops the rest whole; a prompt that
-/// does not fit keeps only its last row. A prompt is its text and its choice
-/// (empty for none); the choice joins the last wrapped row if it fits there,
-/// else takes its own row, so the kept last row always holds it whole; in a
-/// pane narrower than the choice it is dropped, never cut. `line` may be two
-/// lines, kept or dropped together. Returns the height left to the
-/// list, the rows, and whether `line` was drawn whole.
+/// `closing…`), then the open prompt, each row of each (`cell_lines`)
+/// wrapped at `width` cells. A pane too short for them all gives whole lines
+/// in priority order (the prompt, then `line`, then the notice) and drops the
+/// rest whole; a prompt that does not fit keeps only its last row. A prompt
+/// is its text and its choice (empty for none); the choice joins the last
+/// wrapped row if it fits there, else takes its own row, so the kept last row
+/// always holds it whole; in a pane narrower than the choice it is dropped,
+/// never cut. `line` may be two lines, kept or dropped together. Returns the
+/// height left to the list, the rows, and whether `line` was drawn whole.
 pub(in crate::ui) fn nav_pinned_rows(
     prompt: Option<(&str, &str)>,
     notice: Option<&str>,
@@ -91,7 +187,13 @@ pub(in crate::ui) fn nav_pinned_rows(
     pane_height: usize,
 ) -> (usize, Vec<String>, bool) {
     let wrap = |text: Option<&str>| -> Vec<String> {
-        text.map(|t| t.split('\n').flat_map(|l| wrap_status(l, width, width)).collect()).unwrap_or_default()
+        text.map(|t| {
+            cell_lines(t)
+                .iter()
+                .flat_map(|l| wrap_status(l, width, width))
+                .collect()
+        })
+        .unwrap_or_default()
     };
     let prompt_in = prompt;
     let mut prompt = wrap(prompt.map(|(text, _)| text));
@@ -222,7 +324,8 @@ pub(in crate::ui) fn clock_label(now: chrono::NaiveDateTime, available_width: u1
 /// painted first with `─` everywhere on the edge; this writes the
 /// title text starting at `(x, y)` with the given style, replacing
 /// those cells. Title strings carry their own leading/trailing space
-/// so the line breaks cleanly on either side of the label.
+/// so the line breaks cleanly on either side of the label. The text is
+/// one row, so a line break in it shows as `cell_row`'s ` ⏎ `.
 pub(in crate::ui) fn write_title(
     buf: &mut ratatui::buffer::Buffer,
     x: u16,
@@ -235,7 +338,7 @@ pub(in crate::ui) fn write_title(
         return;
     }
     let cap = (max_w as usize).min(buf.area.width.saturating_sub(x) as usize);
-    let s: String = title.chars().take(cap).collect();
+    let s: String = cell_row(title).chars().take(cap).collect();
     buf.set_string(x, y, &s, style);
 }
 
@@ -330,6 +433,37 @@ mod tests {
     }
 
     #[test]
+    fn cell_text_table() {
+        // (text, its rows, its one row). A CSI sequence goes whole; `\r\n`, `\n`, a lone `\r`, U+0085, U+2028 and
+        // U+2029 end a row, a final one starts none; any other control character is a space.
+        let cases: &[(&str, &[&str], &str)] = &[
+            ("", &[], ""),
+            ("ready", &["ready"], "ready"),
+            ("a\nb", &["a", "b"], "a ⏎ b"),
+            ("a\r\nb", &["a", "b"], "a ⏎ b"),
+            ("a\rb", &["a", "b"], "a ⏎ b"),
+            ("a\r\r\nb", &["a", "", "b"], "a ⏎  ⏎ b"),
+            ("a\n\nb", &["a", "", "b"], "a ⏎  ⏎ b"),
+            ("tail\n", &["tail"], "tail"),
+            ("tail\r", &["tail"], "tail"),
+            ("a\tb\u{1b}[31mc", &["a bc"], "a bc"),
+            ("\u{1b}[1;31mERROR\u{1b}[0m x", &["ERROR x"], "ERROR x"),
+            ("a\u{1b}b", &["a b"], "a b"),
+            ("a\u{1b}[", &["a ["], "a ["),
+            ("a\u{85}b\u{2028}c\u{2029}d", &["a", "b", "c", "d"], "a ⏎ b ⏎ c ⏎ d"),
+            ("tail\u{2029}", &["tail"], "tail"),
+        ];
+        for (text, rows, row) in cases {
+            assert_eq!(cell_lines(text), *rows, "{text:?}");
+            assert_eq!(cell_row(text), *row, "{text:?}");
+        }
+        assert!(
+            matches!(cell_row("plain"), std::borrow::Cow::Borrowed(_)),
+            "clean text is not copied"
+        );
+    }
+
+    #[test]
     fn clock_label_includes_date_when_there_is_room() {
         assert_eq!(clock_label(fixed_now(), 25), "Mon Jan 1 05:07:09");
     }
@@ -384,10 +518,16 @@ mod tests {
 
     #[test]
     fn status_spans_show_text_once() {
-        let short: Vec<String> = status_spans("ready", 40).iter().map(line_text).collect();
+        let short: Vec<String> = status_spans("ready", 40, usize::MAX)
+            .iter()
+            .map(line_text)
+            .collect();
         assert_eq!(short, ["status: ready"]);
         let text = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima";
-        let lines: Vec<String> = status_spans(text, 20).iter().map(line_text).collect();
+        let lines: Vec<String> = status_spans(text, 20, usize::MAX)
+            .iter()
+            .map(line_text)
+            .collect();
         let segs = wrap_status(text, 12, 20);
         assert!(segs.len() > 2, "the text must wrap: {segs:?}");
         let mut want = vec![format!("status: {}", segs[0])];
@@ -398,6 +538,29 @@ mod tests {
         assert_eq!(all.matches("status: ").count(), 1);
         for seg in &segs {
             assert_eq!(all.matches(seg.as_str()).count(), 1, "{seg}");
+        }
+    }
+
+    #[test]
+    fn status_spans_pick_whole_lines_by_priority() {
+        // (text, width, max_rows, the rows shown). Whole when they fit; past the cap the first line, the second, the
+        // last, then the rest in order, each whole, but the first two cut rather than lost; never fewer than 3 rows.
+        let ten = (0..10).map(|n| format!("r{n}")).collect::<Vec<_>>().join("\n");
+        let (x, hint) = ("x".repeat(50), "hint ".repeat(10));
+        let long = format!("head\n{x}\nmid\n{}", hint.trim_end());
+        let y = "y".repeat(100);
+        let cases: &[(&str, usize, usize, &[&str])] = &[
+            (&ten, 40, 10, &["status: r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"]),
+            (&ten, 40, 9, &["status: r0", "r1", "r2", "r3", "r4", "r5", "r6", "… 2 lines not shown", "r9"]),
+            (&ten, 40, 4, &["status: r0", "r1", "… 7 lines not shown", "r9"]),
+            (&ten, 40, 0, &["status: r0", "r1", "… 8 lines not shown"]),
+            (&long, 20, 6, &["status: head", &x[..20], &x[..20], &x[..10], "mid", "… 1 line not shown"]),
+            (&long, 20, 4, &["status: head", &x[..20], &x[..20], "… 2 lines not shown"]),
+            (&y, 20, 3, &["status: yyyyyyyyyyyy", &y[..20], "…"]),
+        ];
+        for (text, width, max_rows, want) in cases {
+            let shown: Vec<String> = status_spans(text, *width, *max_rows).iter().map(line_text).collect();
+            assert_eq!(shown, *want, "width {width}, max_rows {max_rows}");
         }
     }
 

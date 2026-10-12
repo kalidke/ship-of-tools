@@ -250,6 +250,75 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The process names the daemon's real read loop gets from the real `SAMPLER_SH` (under `LC_ALL=C bash -s 2 1`,
+    /// as a remote host's non-interactive shell may run it: there awk passes a cut byte raw, where gawk 5.1 in a UTF-8
+    /// locale makes it U+FFFD itself) when `/proc` holds one process per name. Each name is a shell `printf` format,
+    /// so `\t`, `\n` and octal bytes arrive raw. The script's one `cat` reads `/proc/[0-9]*/stat`; this stub's gives
+    /// each process 100 more ticks of CPU time a call. Err when the host goes stale before a sample names them.
+    /// macOS lane disposition: Linux-only, as `sampler_script_treats_every_na_spelling_as_not_reported`: the script
+    /// reads `/proc`, and BSD `date` prints `%N` as `N`, so every line it writes there is invalid JSON.
+    #[cfg(target_os = "linux")]
+    async fn sampled_names(host: &str, names: &[&str]) -> Result<Vec<String>, String> {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = dir.path().join("calls");
+        let mut cat = format!("#!/bin/sh\nn=0\n[ -f '{c}' ] && read n < '{c}'\nn=$((n + 100))\necho $n > '{c}'\n", c = calls.display());
+        for (i, name) in names.iter().enumerate() {
+            cat.push_str(&format!("printf '{} ({name}) S 1 1 1 0 -1 0 0 0 0 0 %d 0\\n' $n\n", 4242 + i));
+        }
+        sot_log::test_exec::write_executable(&dir.path().join("cat"), &cat);
+        let sampler = dir.path().join("sampler");
+        sot_log::test_exec::write_executable(
+            &sampler,
+            &format!("#!/bin/sh\nexport LC_ALL=C PATH='{}':\"$PATH\"\nexec bash -s 2 1\n", dir.path().display()),
+        );
+        STUB_SAMPLER.lock().unwrap().push((host.to_string(), sampler.to_string_lossy().into_owned()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (tick_tx, mut ticks) = broadcast::channel::<HostLatest>(16);
+        let monitored = MonitorHost { name: host.to_string(), ssh_alias: None, local: true };
+        let rings = Arc::new(Mutex::new(HashMap::from([(host.to_string(), HostRing::new())])));
+        let task = tokio::spawn(supervise(monitored, tick_tx, rings, sig));
+        let mut samples = 0;
+        let got = loop {
+            let tick = tokio::time::timeout(Duration::from_secs(10), ticks.recv())
+                .await
+                .expect("no tick in 10 s")
+                .expect("tick channel");
+            match tick.sample {
+                Some(s) if !s.top_procs.is_empty() => break Ok(s.top_procs.into_iter().map(|p| p.name).collect::<Vec<_>>()),
+                Some(_) => samples += 1,
+                None => break Err(format!("the host went stale after {samples} sample(s), before one named both processes")),
+            }
+        };
+        sig.fire().expect("fire");
+        let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
+        got.map(|mut got| {
+            got.sort();
+            got
+        })
+    }
+
+    /// A process name is the bytes `/proc` gives: any byte but `/` and NUL, cut at 15 of them, maybe inside a
+    /// character: one named with a tab and a 0x01, one cut inside its fifth character.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_process_name_with_any_bytes_keeps_its_host_sampled() {
+        let names = sampled_names(
+            "stub-bytes",
+            &["a\\tb\\001c", "ab\\346\\227\\245\\346\\234\\254\\350\\252\\236\\343\\201\\256\\343"],
+        )
+        .await;
+        assert_eq!(names.unwrap_or_else(|e| panic!("{e}")), ["a b c", "ab日本語の\u{fffd}"]);
+    }
+
+    /// A name holding a `\n` splits its stat line in two: the process is still read whole, with a space for the
+    /// break, and a name that poses as another process's line (`x\n1 (sshd`) does not become pid 1's.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_process_name_with_a_newline_is_read_whole() {
+        let names = sampled_names("stub-newline", &["a\\nb", "x\\n1 (sshd"]).await;
+        assert_eq!(names.unwrap_or_else(|e| panic!("{e}")), ["a b", "x 1 (sshd"]);
+    }
+
     /// Program override per host name, so no test touches `bash` or `ssh`.
     pub(super) static STUB_SAMPLER: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 

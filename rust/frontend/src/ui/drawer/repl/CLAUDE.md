@@ -20,3 +20,5 @@ rust/frontend/src/ui/CLAUDE.md.
 - A history walk skips in-flight entries (`history_step_back`).
 - A Ctrl+C names every eval in flight, an entry whose done frame was lost included, so it reaches the running eval if it is any of them (`in_flight_eval_ids`).
 - A scrolled view stays on its rows while output grows (`pinned_repl_scroll`).
+- Program output shows as a terminal shows it: a lone `\r` returns to its line's start and what follows overwrites it
+  (`stream_lines`; test `a_carriage_return_in_output_overwrites_its_line`).

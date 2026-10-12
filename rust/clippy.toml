@@ -139,4 +139,18 @@ disallowed-methods = [
   { path = "std::net::TcpStream::connect_timeout", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
   { path = "tokio::net::TcpStream::connect", reason = "the control plane dials no TCP port (ADR 0049, User isolation); on Windows mio makes this socket inheritable: dial with tokio's TcpSocket" },
   { path = "tokio::net::TcpSocket::connect", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
+  # Text into the shaper (fe-ui): cosmic-text ends a buffer line only at \r and \n and panics on a line that holds two
+  # bidi paragraphs of different directions, so text enters a cosmic-text buffer only through set_buffer_text and
+  # set_buffer_rich_text (rust/frontend/src/ui/render/text.rs), which make every other bidi paragraph separator a
+  # space. The rule holds every function of cosmic-text 0.12 (default features) that makes or sets a line's text, and
+  # Editor::new, since an editor, its only Edit, takes text through its actions.
+  { path = "cosmic_text::Buffer::set_text", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
+  { path = "cosmic_text::Buffer::set_rich_text", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
+  { path = "cosmic_text::BorrowedWithFontSystem::set_text", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
+  { path = "cosmic_text::BorrowedWithFontSystem::set_rich_text", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
+  { path = "cosmic_text::BufferLine::new", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
+  { path = "cosmic_text::BufferLine::set_text", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
+  { path = "cosmic_text::ShapeLine::new", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
+  { path = "cosmic_text::ShapeLine::new_in_buffer", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
+  { path = "cosmic_text::Editor::new", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
 ]

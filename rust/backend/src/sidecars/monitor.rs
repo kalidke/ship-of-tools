@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sot_protocol::{GpuSample, HostLatest, HostSeries, MonitorHistoryReq, MonitorSample};
 use serde::Deserialize;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader, Split};
 use tokio::process::Command;
 use tokio::sync::broadcast;
 
@@ -85,13 +85,16 @@ while :; do
   pout=$(cat /proc/[0-9]*/stat 2>/dev/null | awk -v prev="$proc_prev" '
     BEGIN { np = split(prev, a, " "); for (i = 1; i <= np; i++) { split(a[i], kv, ":"); p[kv[1]] = kv[2] } }
     {
-      line = $0
+      # A comm holding a newline splits its stat line: hold a record until the text after its last ")" has the 13
+      # fields utime and stime need (a comm is at most 15 bytes, too short to hold them), joining with a space.
+      line = (held == "") ? $0 : held " " $0
+      held = ""
       o = index(line, "(")
       r = match(line, /\)[^)]*$/)   # comm may contain spaces/parens; cut at the LAST ")"
-      if (!o || !r) next
+      if (!o) next
+      if (!r || split(substr(line, r + 2), f, " ") < 13) { held = line; next }
       comm = substr(line, o + 1, r - o - 1)
       pid = substr(line, 1, o - 2); gsub(/ /, "", pid)
-      split(substr(line, r + 2), f, " ")
       t = f[12] + f[13]             # utime + stime (stat fields 14, 15)
       state = state pid ":" t " "
       if (pid in p && t > p[pid]) { d[pid] = t - p[pid]; name[pid] = comm }
@@ -505,14 +508,16 @@ fn should_log(prev: Option<&str>, next: &str) -> bool {
     !next.is_empty() && prev != Some(next)
 }
 
-/// `lines.next_line()`, or pending forever when there is no pipe to read.
-/// Lets `supervise` `select!` over stdout and stderr uniformly even though
-/// one of them may not have been captured.
+/// The next line of a sampler pipe, decoded lossily: a process name is the
+/// bytes `/proc` gives, cut at 15 of them, maybe inside a character, and a
+/// strict decode would end the source. Pending forever when there is no pipe
+/// to read, so `supervise` can `select!` over stdout and stderr uniformly even
+/// though one of them may not have been captured.
 async fn next_or_pending<R: AsyncBufRead + Unpin>(
-    lines: &mut Option<Lines<R>>,
+    lines: &mut Option<Split<R>>,
 ) -> std::io::Result<Option<String>> {
     match lines {
-        Some(l) => l.next_line().await,
+        Some(l) => Ok(l.next_segment().await?.map(|b| String::from_utf8_lossy(&b).into_owned())),
         None => std::future::pending().await,
     }
 }
@@ -534,8 +539,8 @@ async fn supervise(
         }
         let reason = match spawn_source(&host, sig).await {
             Ok(mut contained) => {
-                let mut stdout = contained.stdout.take().map(|s| BufReader::new(s).lines());
-                let mut stderr = contained.stderr.take().map(|s| BufReader::new(s).lines());
+                let mut stdout = contained.stdout.take().map(|s| BufReader::new(s).split(b'\n'));
+                let mut stderr = contained.stderr.take().map(|s| BufReader::new(s).split(b'\n'));
                 // ssh's own words for why the source died, kept only until
                 // the child does — one bounded string, never a growing log.
                 let mut stderr_line: Option<String> = None;
@@ -551,7 +556,9 @@ async fn supervise(
                                     if line.is_empty() {
                                         continue;
                                     }
-                                    match serde_json::from_str::<RawSample>(line) {
+                                    // A process name arrives raw (the script escapes only `\` and `"`), and JSON
+                                    // forbids a control character in a string; the script writes none elsewhere.
+                                    match serde_json::from_str::<RawSample>(&line.replace(char::is_control, " ")) {
                                         Ok(raw) => {
                                             let sample = raw.into_sample();
                                             if let Ok(mut rings) = rings.lock() {

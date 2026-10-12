@@ -33,7 +33,8 @@ impl ChromeView<'_> {
         // leaving line once presented (`Leaving::presented`).
         owed_drawn = line_whole && owed_line.is_some() && nav_line == owed_line;
         leaving_drawn = line_whole;
-        let mut body_lines = status_spans(&status, nav_w);
+        // The status takes at most half the list's rows, so the tree keeps the rest.
+        let mut body_lines = status_spans(&status, nav_w, nav_list_h / 2);
         let nav_cursor_body_pos = nav_cursor_body_pos + body_lines.len() - 1;
         body_lines.push(RtLine::from(""));
         if tree_empty {
@@ -126,16 +127,19 @@ impl ChromeView<'_> {
                             .fg(PENDING_ACCENT)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(text.clone(), style),
+                    Span::styled(cell_row(text).into_owned(), style),
                 ]));
             } else {
-                body_lines.push(RtLine::from(vec![Span::styled(text.clone(), style)]));
+                body_lines.push(RtLine::from(vec![Span::styled(
+                    cell_row(text).into_owned(),
+                    style,
+                )]));
             }
         }
         let tree_rows_body_end = body_lines.len();
         body_lines.push(RtLine::from(""));
         body_lines.push(RtLine::from(vec![Span::styled(
-            concept_status.clone(),
+            cell_row(concept_status).into_owned(),
             Style::default().fg(Color::LightMagenta),
         )]));
         body_lines.push(RtLine::from(""));

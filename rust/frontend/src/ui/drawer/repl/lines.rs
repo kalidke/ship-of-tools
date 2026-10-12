@@ -60,12 +60,37 @@ pub(in crate::ui) struct ReplImageSlot {
     pub(in crate::ui) key: (u64, usize),
 }
 
+/// A program's output stream as a terminal shows it: `\r\n` and `\n` end a line,
+/// and within a line a lone `\r` returns to its start, so what follows
+/// overwrites it (a progress bar's updates make one row, not a blank row and a
+/// row each). Then the window's rule for each line (`cell_lines`); a blank line
+/// stays a row.
+fn stream_lines(text: &str) -> Vec<String> {
+    text.replace("\r\n", "\n")
+        .lines()
+        .flat_map(|line| {
+            let mut row: Vec<char> = Vec::new();
+            for part in line.split('\r') {
+                for (i, c) in part.chars().enumerate() {
+                    match row.get_mut(i) {
+                        Some(cell) => *cell = c,
+                        None => row.push(c),
+                    }
+                }
+            }
+            let rows = cell_lines(&row.into_iter().collect::<String>());
+            if rows.is_empty() { vec![String::new()] } else { rows }
+        })
+        .collect()
+}
+
 /// Project the REPL scrollback into ratatui `RtLine`s for the BR quadrant.
 /// One entry contributes a `julia> {code}` header line, then one line per
 /// rendered frame (stdout/stderr default+red, value green, error red with
-/// dim stack lines). Multi-line frame bodies fan out into one line each so
-/// ratatui's word wrap doesn't munge them. In-flight entries get a dim
-/// `(running…)` placeholder until the response lands.
+/// dim stack lines). A frame body fans out into one line per row of
+/// `cell_lines`, and every other text is one row (`cell_row`), so no line
+/// glues to the next and no control character reaches a cell. In-flight
+/// entries get a dim `(running…)` placeholder until the response lands.
 ///
 /// Image frames whose quad is already decoded (`images`) reserve
 /// fit-to-width blank rows and report a `ReplImageSlot` — the paint pass
@@ -95,7 +120,7 @@ pub(in crate::ui) fn build_repl_lines(
             // of the `julia>` code echo, so the user can tell it apart from
             // their own input at a glance.
             out.push(RtLine::from(vec![Span::styled(
-                format!("⟨{label}⟩"),
+                format!("⟨{}⟩", cell_row(label)),
                 Style::default()
                     .fg(Color::LightMagenta)
                     .add_modifier(Modifier::BOLD),
@@ -118,7 +143,7 @@ pub(in crate::ui) fn build_repl_lines(
                 };
                 out.push(RtLine::from(vec![
                     prefix_span,
-                    Span::styled(seg.to_string(), Style::default()),
+                    Span::styled(cell_row(seg).into_owned(), Style::default()),
                 ]));
             }
         }
@@ -132,14 +157,14 @@ pub(in crate::ui) fn build_repl_lines(
         for (frame_idx, frame) in entry.frames.iter().enumerate() {
             match frame {
                 ReplFrame::Stdout { text } => {
-                    for line in text.lines() {
-                        out.push(RtLine::from(line.to_string()));
+                    for line in stream_lines(text) {
+                        out.push(RtLine::from(line));
                     }
                 }
                 ReplFrame::Stderr { text } => {
-                    for line in text.lines() {
+                    for line in stream_lines(text) {
                         out.push(RtLine::from(vec![Span::styled(
-                            line.to_string(),
+                            line,
                             Style::default().fg(Color::Red),
                         )]));
                     }
@@ -151,13 +176,13 @@ pub(in crate::ui) fn build_repl_lines(
                     let prefix = if mime == "text/plain" {
                         String::new()
                     } else {
-                        format!("[{mime}] ")
+                        format!("[{}] ", cell_row(mime))
                     };
-                    for (i, line) in text.lines().enumerate() {
+                    for (i, line) in cell_lines(text).into_iter().enumerate() {
                         let s = if i == 0 {
                             format!("{prefix}{line}")
                         } else {
-                            line.to_string()
+                            line
                         };
                         out.push(RtLine::from(vec![Span::styled(
                             s,
@@ -169,15 +194,20 @@ pub(in crate::ui) fn build_repl_lines(
                     message,
                     stacktrace,
                 } => {
-                    for line in message.lines() {
+                    for line in cell_lines(message) {
                         out.push(RtLine::from(vec![Span::styled(
-                            line.to_string(),
+                            line,
                             Style::default().fg(Color::LightRed),
                         )]));
                     }
                     for sf in stacktrace {
                         out.push(RtLine::from(vec![Span::styled(
-                            format!("    at {} ({}:{})", sf.function, sf.file, sf.line),
+                            format!(
+                                "    at {} ({}:{})",
+                                cell_row(&sf.function),
+                                cell_row(&sf.file),
+                                sf.line
+                            ),
                             Style::default()
                                 .fg(Color::DarkGray)
                                 .add_modifier(Modifier::DIM),
@@ -192,7 +222,10 @@ pub(in crate::ui) fn build_repl_lines(
                     // is defensive — if one ever lands here, render a compact
                     // caption rather than dropping it silently.
                     out.push(RtLine::from(vec![Span::styled(
-                        format!("↗ interactive figure · {}", crate::browser_open::origin_of(url)),
+                        format!(
+                            "↗ interactive figure · {}",
+                            cell_row(&crate::browser_open::origin_of(url))
+                        ),
                         Style::default().fg(Color::LightBlue),
                     )]));
                 }
@@ -240,7 +273,7 @@ pub(in crate::ui) fn build_repl_lines(
                         // Not decoded yet (arrives via the pre-draw pass a
                         // frame later) or decode failed: caption line.
                         out.push(RtLine::from(vec![Span::styled(
-                            format!("[image · {mime} · {} bytes]", bytes),
+                            format!("[image · {} · {} bytes]", cell_row(mime), bytes),
                             Style::default()
                                 .fg(Color::LightMagenta)
                                 .add_modifier(Modifier::DIM),
@@ -488,5 +521,21 @@ mod tests {
         let text = rendered_text(&lines);
         assert!(text.contains("(42 ms)"), "{text}");
         assert!(!text.contains("julia starting"), "{text}");
+    }
+
+    #[test]
+    fn a_carriage_return_in_output_overwrites_its_line() {
+        // Progress output: each frame starts with `\r`, and one frame overwrites part of its line.
+        let mut e = entry(1, "run()", false);
+        e.frames = ["\rProgress: 10%", "\rProgress: 20%", "abc\rxy\n", "\n", "done\r\n"]
+            .into_iter()
+            .map(|t| ReplFrame::Stdout { text: t.to_string() })
+            .collect();
+        let (lines, _, _) = build_repl_lines(&[e], &std::collections::HashMap::new(), 800.0, 600.0, 8.0, 16.0, false);
+        let text = rendered_text(&lines);
+        assert!(
+            text.contains("run()\nProgress: 10%\nProgress: 20%\nxyc\n\ndone"),
+            "{text:?}"
+        );
     }
 }

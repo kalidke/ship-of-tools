@@ -234,6 +234,16 @@ fn normalize_newlines_collapses_crlf() {
 }
 
 #[test]
+fn a_paragraph_separator_starts_a_line_and_the_shaper_survives_it() {
+    // cosmic-text panics on a line holding a second bidi paragraph; a previewed file or a figure caption may hold
+    // U+2029, U+2028 or U+0085 before right-to-left text, and each must start a line instead.
+    let mut fonts = FontSystem::new();
+    let md = MarkdownPreview::new_plain(&mut fonts, "AA\u{2029}אב\u{2028}ג\u{85}ד", 800.0, 1.0);
+    assert_eq!(md.buffer.lines.len(), 4);
+    assert_eq!(normalize_newlines("a\u{2029}b\u{2028}c\u{85}d").as_ref(), "a\nb\nc\nd");
+}
+
+#[test]
 fn crlf_source_does_not_double_space() {
     // A CRLF (`\r\n`) file must shape to the same number of visual lines
     // as the LF equivalent. cosmic-text treats a stray `\r` as its own
@@ -422,4 +432,34 @@ fn walk_output_for_every_arm_matches_the_golden() {
     }
     let want = std::fs::read_to_string(&golden).expect("golden missing: run once with SOT_BLESS_GOLDEN=1");
     assert!(actual == want, "walk output differs from {}:\n{actual}", golden.display());
+}
+
+#[test]
+fn a_plain_preview_is_one_bidi_paragraph_per_line() {
+    // cosmic-text ends a buffer line only at `\r` and `\n` and panics on a line holding two bidi paragraphs of
+    // different directions; a previewed file, a fatal error's text or a figure's label may hold U+001C, U+001D or
+    // U+001E, each of which ends a paragraph, before right-to-left text.
+    let md = MarkdownPreview::new_plain(&mut FontSystem::new(), "AA\u{1c}א\u{1d}ב\u{1e}ג\nEE", 800.0, 1.0);
+    let lines: Vec<&str> = md.buffer.lines.iter().map(|line| line.text()).collect();
+    assert_eq!(lines, ["AA א ב ג", "EE"]);
+}
+
+#[test]
+fn a_table_cell_is_one_bidi_paragraph_per_line() {
+    // A table is shaped as its own buffer from its rendered text, whose cells may hold any bidi paragraph separator
+    // before right-to-left text: each table row stays one line.
+    let p = make_preview("| h |\n|---|\n| AA\u{1c}א\u{85}ב\u{2029}ג |\n");
+    let (rendered, font_px, line_h_px) = p
+        .media_blocks
+        .iter()
+        .find_map(|block| match block {
+            MediaBlock::Table { rendered, font_px, line_h_px, .. } => Some((rendered.clone(), *font_px, *line_h_px)),
+            _ => None,
+        })
+        .expect("a table block");
+    let rows = rendered.lines().count();
+    let entry = media::table_buffer(&mut FontSystem::new(), rendered, font_px, line_h_px);
+    let lines: Vec<&str> = entry.buffer.lines.iter().map(|line| line.text()).collect();
+    assert!(lines.iter().any(|line| line.contains("AA א ב ג")), "{lines:?}");
+    assert_eq!(lines.iter().filter(|line| !line.is_empty()).count(), rows, "{lines:?}");
 }
