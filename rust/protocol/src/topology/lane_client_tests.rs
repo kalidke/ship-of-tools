@@ -4,7 +4,10 @@ use super::*;
 use std::sync::atomic::Ordering;
 use interprocess::local_socket::{prelude::*, GenericFilePath, Listener, ListenerOptions, Stream};
 use std::io::{Read, Write};
+use sot_log::test_wait::within;
 use std::time::Duration;
+
+const BOUND: Duration = Duration::from_secs(30);
 
 /// A fake daemon on a fresh local socket (a pipe on Windows): the one transport the lane client dials besides
 /// ssh, portable, no daemon process needed. On Unix the socket sits in a folder made 0700 here, never left to the
@@ -60,7 +63,7 @@ where
     let endpoint = daemon.endpoint();
     let handle = std::thread::spawn(move || respond(daemon.accept()));
     let result = endpoint.dial("row-1", "supervisor", None).map(|c| (c.peer.pid, c.peer.created));
-    handle.join().unwrap();
+    within(BOUND, "the fake daemon", move || handle.join()).unwrap();
     result
 }
 
@@ -129,7 +132,7 @@ fn the_dial_says_a_handoff_hello_first_in_the_same_write() {
     });
     let client = endpoint.dial("row-1", "supervisor", None).expect("handshake succeeds");
     drop(client);
-    let (hello, request) = handle.join().unwrap();
+    let (hello, request) = within(BOUND, "the fake daemon", move || handle.join()).unwrap();
     assert_eq!((hello.kind, hello.op.as_str()), (Kind::Req, op::HELLO));
     let hello: crate::HelloReq = serde_json::from_value(hello.payload).expect("a HelloReq");
     assert_eq!(hello.role, crate::HANDOFF_ROLE);
@@ -162,7 +165,7 @@ fn a_refused_hello_is_refused_with_its_code_and_message() {
             conn.write_all(&line).unwrap();
         });
         let result = endpoint.dial("row-1", "supervisor", None).map(|_| ());
-        handle.join().unwrap();
+        within(BOUND, "the fake daemon", move || handle.join()).unwrap();
         match result {
             Err(TransportError::Refused { code: got, detail }) => assert_eq!((got.as_str(), detail.as_str()), (code, "no thanks")),
             other => panic!("expected Refused{{{code}}}, got {other:?}"),
@@ -215,7 +218,7 @@ fn a_relay_dial_waits_for_its_gate_then_uses_the_local_connector() {
         .dial("row-1", "supervisor", None)
         .expect("an up gate dials the relay path");
     assert_eq!((client.peer.pid, client.peer.created), (41, 7));
-    handle.join().unwrap();
+    within(BOUND, "the fake daemon", move || handle.join()).unwrap();
 }
 
 /// `dial_failed` is the daemon's OWN dial/authenticate step failing
@@ -286,7 +289,7 @@ fn a_silent_daemon_is_unreachable_within_two_seconds() {
     assert!(matches!(result, Err(TransportError::Unreachable(_))), "got {result:?}");
     assert!(started.elapsed() < std::time::Duration::from_secs(3));
     let _ = release_tx.send(());
-    handle.join().unwrap();
+    within(BOUND, "the fake daemon", move || handle.join()).unwrap();
 
     // Case 2: accepts, then never answers — the handshake bound.
     let started = Instant::now();
@@ -334,9 +337,9 @@ fn cancel_unblocks_a_pending_read() {
     });
     std::thread::sleep(std::time::Duration::from_millis(50));
     client.cancel();
-    let (result, elapsed) = read_thread.join().unwrap();
+    let (result, elapsed) = within(BOUND, "the parked read", move || read_thread.join()).unwrap();
     let _ = release_tx.send(()); // only now may the peer close
-    handle.join().unwrap();
+    within(BOUND, "the fake daemon", move || handle.join()).unwrap();
 
     assert!(
         elapsed < std::time::Duration::from_secs(2),
@@ -386,7 +389,7 @@ fn a_wire_identity_that_differs_from_the_reported_peer_is_foreign() {
     }
     let mut exchange = FixedExchange;
     let outcome = endpoint.challenge(&client, &mut exchange, Instant::now() + std::time::Duration::from_secs(1));
-    handle.join().unwrap();
+    within(BOUND, "the fake daemon", move || handle.join()).unwrap();
     assert!(matches!(outcome, ChallengeOutcome::Foreign), "a mismatched pid must never be Proven");
 }
 
@@ -401,7 +404,7 @@ fn a_local_dial_starts_no_ssh_child() {
         let ep = daemon.endpoint().with_test_ssh_spawner(std::sync::Arc::new(|_| panic!("a local dial never starts ssh")));
         let peer = std::thread::spawn(move || { let mut conn = daemon.accept(); serve_hello(&mut conn); respond_with_ok_lane(&mut conn); });
         drop(ep.dial("row-local", kind, (kind == "voyage").then(|| "voyage".to_string())).unwrap());
-        peer.join().unwrap();
+        within(BOUND, "the fake daemon", move || peer.join()).unwrap();
         assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Unused));
     }
 }

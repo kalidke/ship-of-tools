@@ -552,6 +552,7 @@ pub(crate) mod tests {
     #[test]
     fn a_refused_hello_is_named() {
         use std::io::{BufRead, Write};
+        const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
         let dir = tempfile::Builder::new().prefix("sot-refuse-").permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700)).tempdir_in("/tmp").expect("tempdir");
         let path = dir.path().join("d.sock");
         let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
@@ -566,7 +567,7 @@ pub(crate) mod tests {
         });
         let endpoint = format!("unix:{}", path.display());
         let err = dial_and_call(&endpoint, "host-a", "topology.set", serde_json::json!({})).expect_err("a refused hello is an error");
-        daemon.join().unwrap();
+        sot_log::test_wait::within(BOUND, "the fake daemon", move || daemon.join()).unwrap();
         assert_eq!(err, format!("{endpoint}: hello refused: no thanks"));
     }
 

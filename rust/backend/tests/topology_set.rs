@@ -169,12 +169,16 @@ async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, host:
     // The single next frame is not necessarily the hello reply — a
     // broadcast evt can legitimately land first — so skip anything that
     // is not hello's own `res`, same as `call` below.
-    let frame = loop {
-        let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read hello reply");
-        if frame.kind == Kind::Res && frame.id == 1 {
-            break frame;
+    let frame = tokio::time::timeout(BOUND, async {
+        loop {
+            let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read hello reply");
+            if frame.kind == Kind::Res && frame.id == 1 {
+                break frame;
+            }
         }
-    };
+    })
+    .await
+    .expect("the hello reply within BOUND");
     assert!(frame.payload.get("error").is_none(), "hello refused: {:?}", frame.payload);
     (conn, 2)
 }
@@ -219,8 +223,8 @@ async fn a_guests_forward_files_at_the_hub_over_the_real_wire() {
     let hub = Env::spawn("fwd", "hub-a", GUEST_TOML);
     drop(connect_and_hello(&hub.socket_path, "probe", "hub-a").await);
     lock_record(&hub).await;
-    let now = Command::new("date").args(["-u", "+%Y-%m-%dT%H:%M:%SZ"]).output().expect("date").stdout;
-    let now = String::from_utf8(now).unwrap().trim().to_string();
+    let now = sot_log::test_wait::run_within(Command::new("date").args(["-u", "+%Y-%m-%dT%H:%M:%SZ"]), BOUND).ok().stdout;
+    let now = now.trim().to_string();
     let registry = serde_json::json!({"agents": {"peer": {"host": "hub-a", "last_seen": now}}});
     support::write_registry(&hub.comm_root, |doc| *doc = registry);
 

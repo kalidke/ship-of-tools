@@ -184,7 +184,10 @@ async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, role:
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await
         .expect("write hello");
-    let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read hello reply");
+    let (frame, _blob) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
+        .await
+        .expect("the hello reply within BOUND")
+        .expect("read hello reply");
     assert_eq!(frame.id, 1);
     assert!(frame.payload.get("error").is_none(), "hello refused: {:?}", frame.payload);
     (conn, 2)

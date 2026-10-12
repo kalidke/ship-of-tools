@@ -1,9 +1,11 @@
 #![cfg(target_os = "linux")]
 //! `sotd topology refresh` on a scratch hub: the real binary, a stand-in `systemctl` first on PATH. Wiring-level.
-use {std::path::PathBuf, tempfile::TempDir};
+use {std::path::PathBuf, std::time::Duration, tempfile::TempDir};
 
 #[path = "support/sotd.rs"]
 mod sotd;
+
+const BOUND: Duration = Duration::from_secs(30);
 
 const STALE_SERVICE: &str = include_str!("fixtures/relay/relay-service-rc9.8.unit");
 
@@ -33,22 +35,20 @@ fn hub() -> TempDir {
     t
 }
 
-/// Exit code, stdout, stderr of `sotd topology refresh` with every path inside `t`.
-fn refresh(t: &TempDir) -> (Option<i32>, String, String) {
+/// The whole account of `sotd topology refresh` with every path inside `t`.
+fn refresh(t: &TempDir) -> sot_log::test_wait::Ran {
     let mut cmd = sotd::sotd_command();
     // A cleared environment and a PATH of the scratch bin alone: no route reaches the real systemctl or the
     // user's service manager, even where the scratch stub cannot run (a noexec temp mount fails the test instead).
-    let out = cmd
+    let cmd = cmd
         .env_clear()
         .args(["topology", "refresh"])
         .env("HOME", t.path())
         .env("XDG_CONFIG_HOME", t.path().join("config"))
         .env("SOT_HOSTS", t.path().join("hosts.toml"))
         .env("SOT_SELF_HOST", "hub-box")
-        .env("PATH", t.path().join("bin"))
-        .output()
-        .unwrap();
-    (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
+        .env("PATH", t.path().join("bin"));
+    sot_log::test_wait::run_within(cmd, BOUND)
 }
 
 /// Round 4's two drop-ins, as systemd 249 reads them (systemd-analyze verify): an override behind lines ending in two
@@ -65,8 +65,8 @@ fn refreshed() -> TempDir {
     for (name, text) in [("no-mux.conf", EVEN_BACKSLASH), ("alias.conf", ALIAS), ("override.conf", OVERRIDE)] {
         std::fs::write(dropins(&t).join(name), text).unwrap();
     }
-    let (code, so, se) = refresh(&t);
-    assert_eq!(code, Some(0), "stdout={so}\nstderr={se}");
+    let ran = refresh(&t);
+    assert_eq!(ran.status.code(), Some(0), "{ran}");
     t
 }
 
@@ -76,17 +76,19 @@ fn verify(t: &TempDir) -> String {
     let run = t.path().join("run");
     std::fs::create_dir_all(&run).unwrap();
     std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let out = std::process::Command::new("systemd-analyze")
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("HOME", t.path())
-        .env("XDG_RUNTIME_DIR", &run)
-        .env("SYSTEMD_UNIT_PATH", format!("{}:", units(t).display())) // the trailing ':' keeps systemd's own dirs (basic.target)
-        .args(["--user", "verify"])
-        .arg(units(t).join("sot-host-relay-remote-a@probe.service"))
-        .output()
-        .expect("systemd-analyze on /usr/bin:/bin");
-    format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    // Its exit status is not asserted (verify exits non-zero for the findings the tests look for); the whole account is.
+    let ran = sot_log::test_wait::run_within(
+        std::process::Command::new("systemd-analyze")
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", t.path())
+            .env("XDG_RUNTIME_DIR", &run)
+            .env("SYSTEMD_UNIT_PATH", format!("{}:", units(t).display())) // the trailing ':' keeps systemd's own dirs (basic.target)
+            .args(["--user", "verify"])
+            .arg(units(t).join("sot-host-relay-remote-a@probe.service")),
+        BOUND,
+    );
+    ran.to_string()
 }
 
 #[test]
@@ -117,8 +119,8 @@ fn systemd_runs_the_generated_command_whatever_an_older_dropin_says() {
     std::fs::write(dropins(&t).join("zzz.conf"), "[Service]\nExecStart=\nExecStart=/nonexistent/late-ssh -T x sotd stdio-bridge\n").unwrap();
     let late = verify(&t);
     assert!(late.contains("Command /nonexistent/late-ssh is not executable"), "control: a later drop-in must win before refresh retires it\n{late}");
-    let (code, so, se) = refresh(&t);
-    assert_eq!(code, Some(0), "stdout={so}\nstderr={se}");
+    let ran = refresh(&t);
+    assert_eq!(ran.status.code(), Some(0), "{ran}");
     assert!(!dropins(&t).join("zzz.conf").exists());
     let after = verify(&t);
     assert!(!wrong(&after), "systemd does not run the generated command after the late drop-in was retired:\n{after}");
@@ -130,11 +132,11 @@ fn refresh_prints_each_rewrite_even_when_the_reload_then_fails() {
     std::fs::write(units(&t).join("sot-host-relay-remote-a.socket"), "stale\n").unwrap();
     std::fs::write(units(&t).join("sot-host-relay-remote-a@.service"), STALE_SERVICE).unwrap();
     std::fs::write(t.path().join("bin/reload-fails"), "").unwrap();
-    let (code, so, se) = refresh(&t);
-    assert!(code == Some(2) && se.contains("daemon-reload failed"), "code={code:?}\nstderr={se}");
+    let ran = refresh(&t);
+    assert!(ran.status.code() == Some(2) && ran.stderr.contains("daemon-reload failed"), "{ran}");
     for f in ["sot-host-relay-remote-a.socket", "sot-host-relay-remote-a@.service", "sot-host-relay-remote-a@.service.d/zz-sot-relay-command.conf"] {
         let want = format!("rewrote {}", units(&t).join(f).display());
-        assert!(so.lines().any(|l| l == want), "the rewrite of {f} went unreported because the reload after it failed\nstdout={so}");
+        assert!(ran.stdout.lines().any(|l| l == want), "the rewrite of {f} went unreported because the reload after it failed\n{ran}");
     }
 }
 
@@ -146,20 +148,20 @@ fn refresh_retires_a_dropin_that_sorts_after_the_command() {
     let env = "[Service]\nEnvironment=SOT_RELAY_TARGET=my-alias\n";
     std::fs::write(dropins(&t).join("zzz.conf"), OLD_OVERRIDE).unwrap();
     std::fs::write(dropins(&t).join("local.conf"), env).unwrap();
-    let (code, so, se) = refresh(&t);
-    assert_eq!(code, Some(0), "stdout={so}\nstderr={se}");
+    let ran = refresh(&t);
+    assert_eq!(ran.status.code(), Some(0), "{ran}");
     assert!(!dropins(&t).join("zzz.conf").exists());
     assert_eq!(std::fs::read_to_string(dropins(&t).join("zzz.conf.retired")).unwrap(), OLD_OVERRIDE);
     assert_eq!(std::fs::read_to_string(dropins(&t).join("local.conf")).unwrap(), env);
-    assert!(so.lines().any(|l| l.starts_with("retired ") && l.contains("zzz.conf")), "stdout={so}");
+    assert!(ran.stdout.lines().any(|l| l.starts_with("retired ") && l.contains("zzz.conf")), "{ran}");
 }
 
 #[test]
 fn refresh_reports_a_command_overridden_elsewhere() {
     let t = hub();
     std::fs::write(t.path().join("bin/show-out"), "ExecStart={ path=/usr/bin/ssh ; argv[]=/usr/bin/ssh -T x sotd stdio-bridge --label local ; }\nLoadState=loaded\n").unwrap();
-    let (code, _so, se) = refresh(&t);
-    assert!(code == Some(2) && se.contains("is overridden outside the hub's directory"), "code={code:?}\nstderr={se}");
+    let ran = refresh(&t);
+    assert!(ran.status.code() == Some(2) && ran.stderr.contains("is overridden outside the hub's directory"), "{ran}");
 }
 
 /// A drop-in elsewhere that appends a second command (no `ExecStart=` reset) keeps the hub's record but leaves the
@@ -171,6 +173,6 @@ fn refresh_reports_a_second_command_appended_elsewhere() {
     let ours = format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} ; }}", sot_protocol::topology::relay_units::relay_command_line());
     let old = "ExecStart={ path=/usr/bin/ssh ; argv[]=/usr/bin/ssh -T x sotd stdio-bridge --label local ; }";
     std::fs::write(t.path().join("bin/show-out"), format!("{ours}\n{old}\nLoadState=bad-setting\n")).unwrap();
-    let (code, _so, se) = refresh(&t);
-    assert!(code == Some(2) && se.contains("is overridden outside the hub's directory"), "code={code:?}\nstderr={se}");
+    let ran = refresh(&t);
+    assert!(ran.status.code() == Some(2) && ran.stderr.contains("is overridden outside the hub's directory"), "{ran}");
 }

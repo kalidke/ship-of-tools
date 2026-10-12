@@ -424,13 +424,14 @@ frontend = true
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = dir.join("config");
         std::fs::write(&cfg, OLD_ADVICE).unwrap();
-        let out = std::process::Command::new("ssh")
-            .arg("-F").arg(&cfg).arg("-G").args(&opts).arg("remote-a")
-            .output()
-            .expect("the OpenSSH client `ssh` must be on PATH for this test");
+        // The OpenSSH client `ssh` must be on PATH for this test: a missing one fails the run, naming it.
+        let ran = sot_log::test_wait::run_within(
+            std::process::Command::new("ssh").arg("-F").arg(&cfg).arg("-G").args(&opts).arg("remote-a"),
+            std::time::Duration::from_secs(30),
+        );
         let _ = std::fs::remove_dir_all(&dir);
-        let eff = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "ssh -G failed: {}", String::from_utf8_lossy(&out.stderr));
+        let ran = ran.ok();
+        let eff = &ran.stdout;
         let has = |want: &str| eff.lines().any(|l| l == want);
         assert!(has("controlmaster false"), "opts {opts:?}\n{eff}");
         assert!(has("controlpersist no"), "opts {opts:?}\n{eff}");

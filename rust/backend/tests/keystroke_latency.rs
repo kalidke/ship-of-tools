@@ -140,13 +140,13 @@ async fn measure(env: &Env) {
 fn fsync_per_op(dir: &Path) -> f64 {
     let f = dir.join("fsync-probe");
     let t0 = Instant::now();
-    let st = Command::new("dd")
-        .args(["if=/dev/zero", "bs=512", "count=200", "oflag=dsync"])
-        .arg(format!("of={}", f.display()))
-        .stderr(Stdio::null())
-        .status()
-        .expect("dd");
-    assert!(st.success());
+    sot_log::test_wait::run_within(
+        Command::new("dd")
+            .args(["if=/dev/zero", "bs=512", "count=200", "oflag=dsync"])
+            .arg(format!("of={}", f.display())),
+        BOUND,
+    )
+    .ok();
     let per = t0.elapsed().as_secs_f64() * 1000.0 / 200.0;
     let _ = std::fs::remove_file(&f);
     per

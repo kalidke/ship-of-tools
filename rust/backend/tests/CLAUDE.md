@@ -81,7 +81,7 @@ shows the shape.
 - On Linux the `sotd` a suite launches is the daemon's lifetime guard and the daemon is its child: killing the launched process
   ends the daemon a moment later, so `Env::kill_daemon_bounded` waits until the daemon's socket stops answering before it
   returns, and a restart never reaches the dying daemon.
-- Every wait is bounded: `support::poll_until` and `BOUND`; a suite waits on a child process with `sot_log::test_isolated`'s `wait_within` or `drain(..).wait_within(..)` (`stdio_bridge.rs`, `shell_dial.rs`); `session_env.rs`'s `OwnedRow` instead polls its daemon's exit with `try_wait` within `BOUND`, since it also runs while a test unwinds, where a second panic would abort.
+- Every wait is bounded: `support::poll_until` and `BOUND`; a suite runs a child to its end with `sot_log::test_wait::run_within` (`try_run_within` in a cleanup, which must not panic) or, when it writes the child's input, waits with `sot_log::test_isolated::drain(..).wait_within(..)` (`stdio_bridge.rs`, `shell_dial.rs`); a read, accept, receive or join on another party has a bound (`within`, `recv_timeout`, `tokio::time::timeout`); `session_env.rs`'s `OwnedRow` instead polls its daemon's exit with `try_wait` within `BOUND`, since it also runs while a test unwinds, where a second panic would abort.
 - A test that judges a drained child by its status or output puts the status and every stream it did not take itself in
   that assertion's message, so a hosted failure names its cause.
 - A test that reads a stream it accepted makes it blocking (macOS keeps a non-blocking listener's `O_NONBLOCK` on an

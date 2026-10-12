@@ -6,8 +6,9 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+const BOUND: Duration = Duration::from_secs(30);
 
 #[path = "support/sotd.rs"]
 mod sotd;
@@ -42,37 +43,18 @@ fn make_env(tmp: &Path) {
     }
 }
 
-fn sotd_help<S: AsRef<std::ffi::OsStr>>(tmp: &Path, args: &[S]) -> (i32, String, String) {
-    let mut child = sotd::sotd_command()
-        .args(args)
-        .env_clear()
-        .env("HOME", tmp.join("home"))
-        .env("XDG_CONFIG_HOME", tmp.join("cfg"))
-        .env("XDG_STATE_HOME", tmp.join("state"))
-        .env("XDG_RUNTIME_DIR", tmp.join("run"))
-        .env("PATH", format!("{}:/usr/bin:/bin", tmp.join("fakebin").display()))
-        .current_dir(tmp.join("home"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let start = Instant::now();
-    loop {
-        if child.try_wait().unwrap().is_some() {
-            break;
-        }
-        if start.elapsed() > Duration::from_secs(10) {
-            let _ = child.kill();
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let out = child.wait_with_output().unwrap();
-    (
-        out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+fn sotd_help<S: AsRef<std::ffi::OsStr>>(tmp: &Path, args: &[S]) -> sot_log::test_wait::Ran {
+    sot_log::test_wait::run_within(
+        sotd::sotd_command()
+            .args(args)
+            .env_clear()
+            .env("HOME", tmp.join("home"))
+            .env("XDG_CONFIG_HOME", tmp.join("cfg"))
+            .env("XDG_STATE_HOME", tmp.join("state"))
+            .env("XDG_RUNTIME_DIR", tmp.join("run"))
+            .env("PATH", format!("{}:/usr/bin:/bin", tmp.join("fakebin").display()))
+            .current_dir(tmp.join("home")),
+        BOUND,
     )
 }
 
@@ -108,9 +90,9 @@ fn help_never_acts() {
     for row in rows {
         for flag in ["--help", "-h"] {
             let args: Vec<&str> = row.iter().map(|a| if *a == "--help" { flag } else { *a }).collect();
-            let (code, stdout, stderr) = sotd_help(tmp, &args);
-            assert_eq!(code, 0, "{args:?}: exit; stdout={stdout:?} stderr={stderr:?}");
-            let second = stdout.lines().nth(1).unwrap_or("");
+            let ran = sotd_help(tmp, &args);
+            assert_eq!(ran.status.code(), Some(0), "{args:?}: {ran}");
+            let second = ran.stdout.lines().nth(1).unwrap_or("");
             assert!(
                 second.starts_with("Usage") || second.starts_with("usage"),
                 "{args:?}: line after the version line: {second:?}"
@@ -132,7 +114,7 @@ fn non_utf8_value_does_not_break_a_query() {
     make_env(tmp);
     let bad = OsStr::from_bytes(b"\xff");
     for args in [vec![OsStr::new("--help"), OsStr::new("--project-root"), bad], vec![OsStr::new("--version"), bad]] {
-        let (code, stdout, stderr) = sotd_help(tmp, &args);
-        assert_eq!(code, 0, "{args:?}: exit; stdout={stdout:?} stderr={stderr:?}");
+        let ran = sotd_help(tmp, &args);
+        assert_eq!(ran.status.code(), Some(0), "{args:?}: {ran}");
     }
 }
