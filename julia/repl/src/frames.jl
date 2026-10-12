@@ -127,12 +127,10 @@ end
 """
     stream_pipe(pipe, emit, kind)
 
-Drain `pipe` to eof, emitting `{kind, text}` frames as bytes arrive. Buffers a
-short trailing remainder so a UTF-8 multibyte char split across two
-`readavailable` chunks isn't emitted as invalid UTF-8 (`utf8_prefix` checks
-`isvalid` before releasing a chunk, so a split character waits for its other
-half rather than becoming a malformed `String` that `json_write` would then
-serialize as garbage).
+Drain `pipe` to eof, emitting `{kind, text}` frames as bytes arrive. Only a
+character that a `readavailable` chunk cut waits for its other bytes
+(`utf8_prefix`); any other invalid byte is program output and goes on at once,
+and `write_json_string` writes it as U+FFFD.
 """
 function stream_pipe(pipe, emit, kind)
     leftover = UInt8[]
@@ -153,18 +151,21 @@ function stream_pipe(pipe, emit, kind)
     return nothing
 end
 
-# Split `buf` into (longest valid-UTF8 prefix as String, remaining bytes).
-# Trims at most 3 trailing bytes to land on a char boundary (UTF-8 chars are
-# <=4 bytes, so a complete char's continuation bytes number <=3).
+# Split `buf` into (its bytes up to an incomplete character at its end, as a
+# String; that incomplete tail). A UTF-8 character is at most 4 bytes, so the
+# tail is a lead byte in the last 3 that needs more bytes than follow it. An
+# invalid byte anywhere else stays in the String: holding it would hold back
+# every later byte of the stream until it ended.
 function utf8_prefix(buf::Vector{UInt8})
     n = length(buf)
-    for cut in 0:min(3, n)
-        s = String(copy(@view buf[1:(n - cut)]))
-        if isvalid(s)
-            return (s, buf[(n - cut + 1):end])
-        end
+    for k in 1:min(3, n)
+        b = buf[n - k + 1]
+        b & 0xc0 == 0x80 && continue                # a continuation byte: its lead is further back
+        need = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1
+        need > k && return (String(buf[1:(n - k)]), buf[(n - k + 1):end])
+        break
     end
-    return ("", buf)
+    return (String(copy(buf)), UInt8[])
 end
 
 """

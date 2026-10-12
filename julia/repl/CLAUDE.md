@@ -24,6 +24,9 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 - `repl.ready` is the first envelope, and every envelope is written under `OUT_LOCK` (`serve`, `write_envelope`).
 - One eval at a time, and a second gets error then done (`handle_eval`). An eval releases that guard once, just before its done frame and res go out (`spawn_eval`), so a request sent the moment an answer arrives is accepted.
 - Text frames precede value or error, and done is last (`stream_eval_frames`).
+- Program output is bytes, not UTF-8: only a character a read cut waits for its other bytes (`utf8_prefix`), and the
+  JSON writer writes a malformed character as U+FFFD (`write_json_string`), so no byte holds back later output or
+  fails a frame.
 - Every request gets a terminal `res`; `spawn_eval` answers each eval once, a failure of its streaming machinery
   included.
 - An interrupt reaches an eval only in its user code (`run_user_code`), which is its code and the rendering of its value

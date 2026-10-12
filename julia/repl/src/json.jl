@@ -314,7 +314,8 @@ end
 # Escapes only what RFC 8259 requires (`"`, `\`, and control characters); any
 # other Unicode character is written as its native UTF-8 bytes, which is legal
 # JSON text and matches what a JSON parser on the other end (serde_json here)
-# expects.
+# expects. A malformed character (program output is bytes, not UTF-8) is written
+# as U+FFFD, so every String serializes, as valid UTF-8.
 function write_json_string(io::IO, s::AbstractString)
     print(io, '"')
     for c in s
@@ -328,6 +329,8 @@ function write_json_string(io::IO, s::AbstractString)
             print(io, "\\r")
         elseif c == '\t'
             print(io, "\\t")
+        elseif !isvalid(c)
+            print(io, '\ufffd')
         elseif Int(c) < 0x20
             print(io, "\\u", lpad(string(Int(c); base = 16), 4, '0'))
         else
