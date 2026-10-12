@@ -6,6 +6,7 @@ if [[ $# != 1 ]]; then
     exit 2
 fi
 python3 - "$1" "$(dirname -- "${BASH_SOURCE[0]}")/../.." <<'PY'
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,28 @@ output.mkdir(parents=True, exist_ok=True)
 runner = output.parent.parent / 'scripts/tests/run-filtered-tests.sh'
 flags = ['--test-threads=1', '--format', 'pretty', '--color', 'never', '--show-output']
 evidence = {}
+# Wrappers around the fixture: one reports success whatever libtest returns, one starts the output with a NUL byte.
+HIDE_STATUS = ('bash', '-c', '"$@"; exit 0', 'hide-status')
+NUL_FIRST = ('bash', '-c', 'printf "\\0"; exec "$@"', 'nul-first')
+USAGE = 'expected positive count, log, -- and command'
+FAILED = 'command or capture failed'
+WANT = 'want exactly one summary line, starting "test result: ok. 1 passed; 0 failed; 0 ignored;"'
+
+
+@dataclass
+class Case:
+    name: str
+    selection: list  # the fixture's arguments before the flags; None runs the runner with no command
+    summaries: list  # every log line starting "test result: ", in order, each by its prefix after that text
+    ran: list  # the fixture bodies that wrote their witness
+    status: int  # the runner's exit status
+    said: list  # every line the runner prints itself, in order, each by its prefix after "filtered-tests: "
+    count: int = 1
+    exact: bool = True
+    log: str = 'fresh'  # fresh, new-folder, stale (holds an earlier summary) or directory
+    wrap: tuple = ()
+    panic: bool = False
+    separator: bool = True
 
 
 def check(ok, detail):
@@ -30,75 +53,92 @@ def check(ok, detail):
         raise AssertionError(detail)
 
 
-def run(name, expected, selected, exact=True):
-    """The runner over the fixture in a fresh root: exit status, output, libtest log and the bodies that ran."""
+def starts(lines, prefixes):
+    return len(lines) == len(prefixes) and all(line.startswith(prefix) for line, prefix in zip(lines, prefixes))
+
+
+def run(case):
+    """The runner in a fresh root: exit status, output, libtest log and the bodies that ran, saved as evidence."""
     evidence.clear()
-    with tempfile.TemporaryDirectory(prefix=f'filtered-count-{name}.', dir=output) as temporary:
+    with tempfile.TemporaryDirectory(prefix=f'filtered-count-{case.name}.', dir=output) as temporary:
         root = Path(temporary).resolve()
         (root / 'iso-sh-fixture-request').touch()
-        if name == 'failed':
+        if case.panic:
             (root / 'iso-sh-panic-request').touch()
-        log = root if name == 'capture-error' else root / 'libtest.log'
-        argv = ['bash', str(runner), str(expected), str(log), '--', str(fixture), *selected]
-        argv += ['--exact'] if exact else []
+        log = root if case.log == 'directory' else root / ('new' if case.log == 'new-folder' else '.') / 'libtest.log'
+        if case.log == 'stale':
+            log.write_text('test result: ok. 9 passed; 0 failed; 0 ignored; left by an earlier run\n')
+        argv = ['bash', str(runner), str(case.count), str(log)] + (['--'] if case.separator else [])
+        if case.selection is not None:
+            argv += [*case.wrap, str(fixture), *case.selection] + (['--exact'] if case.exact else []) + flags
         try:
-            result = subprocess.run(argv + flags, cwd=root, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, timeout=60)
+            result = subprocess.run(argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
             code, child = result.returncode, result.stdout
         except subprocess.TimeoutExpired as error:
             code, child = 'timeout after 60 seconds', error.output or b''
-        bodies = sorted(path.name.removeprefix('witness-') for path in root.glob('witness-*'))
+        ran = sorted(path.name.removeprefix('witness-') for path in root.glob('witness-*'))
         text = child.decode('utf-8', 'replace')
-        evidence['status'] = json.dumps({'exit': code, 'witnesses': bodies})
+        evidence['status'] = json.dumps({'exit': code, 'witnesses': ran})
         evidence['output'] = text.replace(str(root), '<temporary-root>').replace(str(fixture), '<fixture>')
         evidence['libtest'] = log.read_text() if log.is_file() else ''
     for suffix, saved in evidence.items():
-        (output / f'filtered-count-{name}.{suffix}').write_text(saved + '\n')
+        (output / f'filtered-count-{case.name}.{suffix}').write_text(saved + '\n')
     check(isinstance(code, int), 'child wait timed out after 60 seconds')
-    return code, text, evidence['libtest'], bodies
+    return code, text, evidence['libtest'], ran
 
 
-# name, expected count, selection, --exact, the log's summary lines in order, bodies that ran, runner accepts
+def found(summary):
+    return f'found: test result: {summary}'
+
+
 cases = [
-    ('absent', 1, ['absent'], True, ['ok. 0 passed; 0 failed; 0 ignored;'], [], False),
-    ('ordinary', 1, ['ordinary'], True, ['ok. 1 passed; 0 failed; 0 ignored;'], ['ordinary'], True),
-    ('group', 2, ['near'], False, ['ok. 2 passed; 0 failed; 0 ignored;'], ['near', 'qualified-near'], True),
-    ('wrong-count', 1, ['near'], False, ['ok. 2 passed; 0 failed; 0 ignored;'], ['near', 'qualified-near'], False),
-    ('ignored', 1, ['ordinary', 'qualified::ignored_positive'], True, ['ok. 1 passed; 0 failed; 1 ignored;'],
-     ['ordinary'], False),
-    ('failed', 1, ['ordinary'], True, ['FAILED. 0 passed; 1 failed; 0 ignored;'], ['ordinary'], False),
-    # The first line is the summary the misleading body prints into its captured output.
-    ('misleading', 1, ['misleading', 'ordinary'], True,
-     ['ok. 1 passed; 0 failed; 0 ignored;', 'ok. 2 passed; 0 failed; 0 ignored;'], ['misleading', 'ordinary'], False),
+    Case('absent', ['absent'], ['ok. 0 passed; 0 failed; 0 ignored;'], [], 1,
+         [WANT, found('ok. 0 passed; 0 failed; 0 ignored;')]),
+    Case('ordinary', ['ordinary'], ['ok. 1 passed; 0 failed; 0 ignored;'], ['ordinary'], 0, ['expected=1 ok=true'],
+         log='new-folder'),
+    Case('group', ['near'], ['ok. 2 passed; 0 failed; 0 ignored;'], ['near', 'qualified-near'], 0,
+         ['expected=2 ok=true'], count=2, exact=False),
+    Case('wrong-count', ['near'], ['ok. 2 passed; 0 failed; 0 ignored;'], ['near', 'qualified-near'], 1,
+         [WANT, found('ok. 2 passed; 0 failed; 0 ignored;')], exact=False),
+    Case('ignored', ['qualified::ignored_positive'], ['ok. 0 passed; 0 failed; 1 ignored;'], [], 1,
+         [WANT, found('ok. 0 passed; 0 failed; 1 ignored;')]),
+    Case('ignored-beside', ['ordinary', 'qualified::ignored_positive'], ['ok. 1 passed; 0 failed; 1 ignored;'],
+         ['ordinary'], 1, [WANT, found('ok. 1 passed; 0 failed; 1 ignored;')]),
+    Case('failed', ['ordinary'], ['FAILED. 0 passed; 1 failed; 0 ignored;'], ['ordinary'], 1, [FAILED], panic=True),
+    Case('hidden-failure', ['ordinary', 'positive'], ['FAILED. 1 passed; 1 failed; 0 ignored;'],
+         ['ordinary', 'positive'], 1, [WANT, found('FAILED. 1 passed; 1 failed; 0 ignored;')], wrap=HIDE_STATUS,
+         panic=True),
+    # The first summary line is the one the misleading body prints into its captured output.
+    Case('misleading', ['misleading', 'ordinary'],
+         ['ok. 1 passed; 0 failed; 0 ignored;', 'ok. 2 passed; 0 failed; 0 ignored;'], ['misleading', 'ordinary'], 1,
+         [WANT, found('ok. 1 passed; 0 failed; 0 ignored;'), found('ok. 2 passed; 0 failed; 0 ignored;')]),
+    Case('no-summary', ['ordinary', '--list'], [], [], 1, [WANT, 'found: no summary line']),
+    Case('nul-byte', ['ordinary'], ['ok. 1 passed; 0 failed; 0 ignored;'], ['ordinary'], 0, ['expected=1 ok=true'],
+         wrap=NUL_FIRST),
+    Case('stale-log', ['ordinary'], ['ok. 1 passed; 0 failed; 0 ignored;'], ['ordinary'], 0, ['expected=1 ok=true'],
+         log='stale'),
+    Case('capture-error', ['ordinary'], [], ['ordinary'], 1, [FAILED], log='directory'),
+    Case('invalid-count', ['ordinary'], [], [], 2, [USAGE], count=0),
+    Case('no-separator', ['ordinary'], [], [], 2, [USAGE], separator=False),
+    Case('no-command', None, [], [], 2, [USAGE]),
 ]
 
 name = 'setup'
 try:
-    for name, expected, selected, exact, summaries, ran, accepted in cases:
-        code, text, raw, bodies = run(name, expected, selected, exact)
-        lines = [line for line in raw.splitlines() if line.startswith('test result: ')]
-        check(len(lines) == len(summaries) and all(line.startswith(f'test result: {summary}')
-                                                   for line, summary in zip(lines, summaries)),
-              f'summary lines {lines}, want lines starting {summaries}')
-        check(bodies == ran, f'bodies that ran: {bodies}, want {ran}')
-        check((code == 0) == accepted, f'runner exit {code}: this selection must be '
-              + ('accepted' if accepted else 'rejected'))
-        check(not accepted or f'filtered-tests: expected={expected} ok=true' in text, 'missing count receipt')
-        found = [line.removeprefix('filtered-tests: found: ') for line in text.splitlines()
-                 if line.startswith('filtered-tests: found: ')]
-        check(accepted or name == 'failed' or found == lines,
-              f'runner reported {found}, want the summary lines {lines}')
-        check(name != 'failed' or 'requested fixture panic' in raw, 'missing the failed body cause')
+    for case in cases:
+        name = case.name
+        code, text, raw, ran = run(case)
+        summaries = [line for line in raw.splitlines() if line.startswith('test result: ')]
+        said = [line.removeprefix('filtered-tests: ') for line in text.splitlines()
+                if line.startswith('filtered-tests: ')]
+        check(starts(summaries, ['test result: ' + summary for summary in case.summaries]),
+              f'summary lines {summaries}, want {case.summaries}')
+        check(ran == case.ran, f'bodies that ran: {ran}, want {case.ran}')
+        check(code == case.status, f'runner exit {code}, want {case.status}')
+        check(starts(said, case.said), f'runner said {said}, want {case.said}')
+        check(not case.panic or 'requested fixture panic' in raw, 'missing the failed body cause')
         print(f'filtered-count proof={name} ok=true', flush=True)
-    name = 'invalid-count'
-    code, text, raw, bodies = run(name, 0, ['ordinary'])
-    check(code == 2 and not bodies, f'runner exit {code}, bodies {bodies}: want usage exit 2 before the fixture')
-    print(f'filtered-count proof={name} ok=true', flush=True)
-    name = 'capture-error'
-    code, text, raw, bodies = run(name, 1, ['ordinary'])
-    check(code != 0 and 'Is a directory' in text, f'runner exit {code}: an unwritable log must fail the capture')
-    print(f'filtered-count proof={name} ok=true', flush=True)
-    print(f'filtered-count completed_cases={len(cases) + 2} ok=true', flush=True)
+    print(f'filtered-count completed_cases={len(cases)} ok=true', flush=True)
 except (AssertionError, OSError, UnicodeError) as error:
     print(f'filtered-count FAIL case={name}: {error}', file=sys.stderr)
     for suffix, saved in evidence.items():

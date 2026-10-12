@@ -6,17 +6,16 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 ## Files
 - `lib-test-body.sh`: the shared completion verdict for one selected Rust test; ordered, unambiguous capture closure precedes the outer result; missing, ignored, mismatched and failed bodies cannot pass.
 - `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners, including combined captured-summary/truncation and scratch-path controls; accepts a compiled fixture executable by absolute path and validates its shell scratch root before cleanup.
-- `run-filtered-tests.sh`: shared runner for a filtered libtest group; tees a fresh invocation log and fails on a command or
-  capture error, or unless the log holds exactly one libtest summary line and it starts with the expected positive pass
-  count, zero failed and zero ignored, and then prints the summary lines it found; used by the `rust.yml` steps "Test
-  native harness helpers" (job `checks-linux`)
-  and "Test the ignored containment tests" (job `windows-ignored-containment`).
-- `test-filtered-tests.sh`: real-libtest controls for the group runner's completed, empty, wrong-count, failed,
-  captured-summary and passed-beside-ignored selections, argument validation and capture failure; each case names every
-  summary line its log holds and, for a rejected selection, the lines the runner reports finding; a failing case prints
-  its saved status, output and libtest log; receives the existing compiled fixture by absolute path and uses its own
-  temporary roots. Runs in the
-  `rust.yml` step "Test selected Rust bodies" (job `checks-linux`).
+- `run-filtered-tests.sh`: shared runner for a filtered libtest group. A usage error exits 2. It tees the command's
+  output to a fresh log, creating the log's folder; a failed command or capture exits 1 with `command or capture
+  failed`. Otherwise it accepts only a log holding exactly one libtest summary line that starts with the expected
+  positive pass count, zero failed and zero ignored, and on rejection prints each summary line it found (or `no summary
+  line`). Used by the `rust.yml` steps "Test native harness helpers" (job `checks-linux`) and "Test the ignored
+  containment tests" (job `windows-ignored-containment`).
+- `test-filtered-tests.sh`: real-libtest controls of the group runner, one case per check it makes; each case pins its
+  log's summary lines, the fixture bodies that ran, the runner's exit status and every line the runner prints, and a
+  failing case prints its saved status, output and libtest log. It receives the existing compiled fixture by absolute
+  path and uses its own temporary roots. Runs in the `rust.yml` step "Test selected Rust bodies" (job `checks-linux`).
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
@@ -184,6 +183,10 @@ Last line: `violations: n, allowed: m, exempt: e, unused-allow: u, folders check
 behaviour it pins. For a Windows script change, the `.ps1` suite named for it above.
 
 ## Rules
+- Every check run-filtered-tests.sh makes has a test-filtered-tests.sh case that fails when the check is removed: the
+  arguments, the command's status through pipefail, the capture's status, a fresh log in a folder it creates, exactly
+  one summary line, its pass count, no failed body, zero ignored, an empty summary, a log holding a NUL byte, and each
+  line it prints. A new check comes with its case in the same commit.
 - A `rust.yml` step that filters libtest bodies to run them as tests runs through run-filtered-tests.sh with its verified
   positive count ("Test native harness helpers" in `checks-linux`, "Test the ignored containment tests" in
   `windows-ignored-containment`), so a filter that runs no body, or another number, fails. Two filter steps keep cargo's

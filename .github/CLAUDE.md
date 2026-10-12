@@ -29,7 +29,7 @@ scripts/CLAUDE.md.
   (ConPTY and capsule tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the
   latest published tag into a clean container). The step "Test native harness helpers" in `checks-linux` runs the
   feature-gated sot binary's eight display-free native harness regression bodies through
-  scripts/tests/run-filtered-tests.sh with the count 8; native window acceptance remains in the dedicated hosted jobs.
+  scripts/tests/run-filtered-tests.sh; native window acceptance remains in the dedicated hosted jobs.
   The step "Test selected Rust bodies" runs the portable real-libtest
   shell proofs in `test` on windows and macos and in `checks-linux` on ubuntu; it invokes no daemon or peer suite. On
   ubuntu it also runs the candidate gate's finite selected-job and runtime-listing proofs and test-filtered-tests.sh,
