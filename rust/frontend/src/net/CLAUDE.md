@@ -38,6 +38,12 @@ through the channel types below.
   disconnect (`before_data_connection`'s `unanswered`).
 - The gate goes down when the session ends, except after a hello refusal (`run_protocol`).
 - A blocked steady-state request or ping write never suspends the held reader; reply/event progress and pending cleanup remain on the connection task.
+- A connection that has brought no byte from the daemon for three ping intervals (90 s) ends with the disconnect
+  `nothing from the daemon in 90s`: the window's half of the daemon's own 90 s rule, which holds because the daemon
+  runs no op inline that can outlast it (server charter). Bytes, not frames, keep it: a large reply still arriving is
+  the daemon talking (`SILENT_PINGS`, `Heard` in transport/steady.rs); the reads after the outgoing side closed end at
+  the same bound. The loop polls its sends before its read and the deadline last, so a flood of events cannot starve a
+  request, and a frame already readable when the deadline passes is read, not cut.
 - Unix parsing classifies generated hub-relay paths once; Relay remains distinct from Pipe through control, lease, page and lane selection.
 
 ## Connections
