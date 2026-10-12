@@ -1,6 +1,8 @@
 //! Writing a reply: the write deadline, the one-writer frame writers and the off-loop job pool.
 
 use super::*;
+use futures_util::FutureExt;
+use std::panic::AssertUnwindSafe;
 
 /// Output of an op handler. The first frame is the response to the request;
 /// any additional frames are emitted in order and represent things like ring
@@ -161,20 +163,20 @@ pub(super) fn finish_dispatch(
 /// replies.
 pub(super) type OutTx = mpsc::Sender<(Frame, Option<Vec<u8>>)>;
 
-/// Per-connection cap on concurrently RUNNING off-loop jobs (`preview.get`,
-/// `concept.read`, `image.crop`, `kernel.request`). Names the invariant it
-/// protects: one connection's burst of these can't starve the tokio
-/// runtime's worker threads for every OTHER connection. Acquired INSIDE
-/// each spawned job, never before spawning, so request intake itself is
-/// never blocked by the cap — only how many jobs run at once, once already
-/// queued. `pty.*` ops never touch this semaphore at all — they dispatch
-/// INLINE, which is what keeps them served
-/// even while every slot here is busy (see `switch_latency/main.rs`'s
+/// Per-connection cap on concurrently RUNNING pooled jobs (the `POOLED` ops
+/// of `server/dispatch.rs`).
+/// Names the invariant it protects: one connection's burst of these can't
+/// starve the tokio runtime's worker threads for every OTHER connection.
+/// Acquired INSIDE each spawned job, never before spawning, so request
+/// intake itself is never blocked by the cap — only how many jobs run at
+/// once, once already queued. An inline op never touches this semaphore,
+/// which is what keeps `pty.*` served even while every slot here is busy
+/// (see `switch_latency/main.rs`'s
 /// `pty_not_starved::pty_screen_is_served_while_a_real_slow_kernel_request_is_pending`
-/// test).
+/// test), and neither does a job without a permit.
 pub(super) const OFFLOOP_CONCURRENCY: usize = 4;
 
-/// Cap on how long a queued off-loop job may wait for its `job_sem` PERMIT
+/// Cap on how long a queued pooled job may wait for its `job_sem` PERMIT
 /// before being discarded outright — never running the handler at all.
 /// Without this, N jobs queued behind a live-but-hung kernel each wait
 /// successive `OFFLOOP_CONCURRENCY`-sized batches with no overall bound: 40
@@ -184,25 +186,50 @@ pub(super) const OFFLOOP_CONCURRENCY: usize = 4;
 /// queue slot first waiting to even begin.
 const OFFLOOP_QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// A connection's off-loop jobs. A job runs to its end even after its
+/// connection closes, as an inline op always did: an op once read has its
+/// effect, and only its reply is lost. So the set detaches its jobs when it is
+/// dropped rather than aborting them, and each ends on its own bounds.
+pub(super) struct Jobs(pub(super) JoinSet<()>);
+
+impl Drop for Jobs {
+    fn drop(&mut self) {
+        self.0.detach_all();
+    }
+}
+
+impl std::ops::Deref for Jobs {
+    type Target = JoinSet<()>;
+    fn deref(&self) -> &JoinSet<()> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Jobs {
+    fn deref_mut(&mut self) -> &mut JoinSet<()> {
+        &mut self.0
+    }
+}
+
 /// Spawn one request's handler as its own task, off this connection's
-/// read/dispatch loop (switch-latency Phase 1): a slow `preview.get` no
-/// longer delays a later cheap request's reply on the same connection. `fut`
-/// is the actual handler call, already bound to its own owned copies of
+/// read/dispatch loop (switch-latency Phase 1): a slow request no longer
+/// delays a later cheap request's reply on the same connection. `fut` is
+/// the actual handler call, already bound to its own owned copies of
 /// whatever it needs (this task outlives the loop iteration that spawned
-/// it). A panic inside `fut` unwinds this whole task — caught by the
-/// `JoinSet` as a `JoinError`, which `handle_connection`'s own
-/// `jobs.join_next()` arm logs; that mirrors the inline dispatch path, which
-/// has never had panic containment either. Delivers its result through
-/// `out_tx` for the loop to write, exactly like an inline reply.
+/// it). A panic inside `fut` is caught and answered like any handler error
+/// (`"<op> panicked: <payload>"`), so the request's waiter always gets its
+/// reply. Delivers its result through `out_tx` for the loop to write,
+/// exactly like an inline reply.
 ///
-/// The deadline (`OFFLOOP_QUEUE_TIMEOUT`) starts HERE, before the permit is
-/// even requested — not after acquiring it — so a job queued behind a
-/// saturated cap for too long is discarded with the standard timeout error
-/// and `fut` never runs, rather than finally starting once nobody still
-/// cares about the answer.
+/// A pooled job (`semaphore` given) waits for a permit first, and the
+/// deadline (`OFFLOOP_QUEUE_TIMEOUT`) starts HERE, before the permit is even
+/// requested — not after acquiring it — so a job queued behind a saturated
+/// cap for too long is discarded with the standard timeout error and `fut`
+/// never runs, rather than finally starting once nobody still cares about
+/// the answer. A job without a permit (`None`) runs at once.
 pub(super) fn spawn_job<F>(
     jobs: &mut JoinSet<()>,
-    semaphore: Arc<Semaphore>,
+    semaphore: Option<Arc<Semaphore>>,
     out_tx: OutTx,
     req_id: u64,
     op_name: String,
@@ -212,23 +239,35 @@ pub(super) fn spawn_job<F>(
 {
     let started = std::time::Instant::now();
     jobs.spawn(async move {
-        let permit = match tokio::time::timeout(OFFLOOP_QUEUE_TIMEOUT, semaphore.acquire_owned())
-            .await
-        {
-            Ok(p) => p.expect("connection job semaphore is never closed"),
-            Err(_) => {
-                let err = anyhow::anyhow!(
-                    "{op_name} timed out after {OFFLOOP_QUEUE_TIMEOUT:?} waiting to run \
-                     (off-loop queue saturated)"
-                );
-                let out_frames = finish_dispatch(&op_name, req_id, started, Err(err));
-                for (frame, blob) in out_frames {
-                    let _ = out_tx.send((frame, blob)).await;
+        let permit = match semaphore {
+            None => None,
+            Some(semaphore) => match tokio::time::timeout(OFFLOOP_QUEUE_TIMEOUT, semaphore.acquire_owned()).await {
+                Ok(p) => Some(p.expect("connection job semaphore is never closed")),
+                Err(_) => {
+                    let err = anyhow::anyhow!(
+                        "{op_name} timed out after {OFFLOOP_QUEUE_TIMEOUT:?} waiting to run \
+                         (off-loop queue saturated)"
+                    );
+                    let out_frames = finish_dispatch(&op_name, req_id, started, Err(err));
+                    for (frame, blob) in out_frames {
+                        let _ = out_tx.send((frame, blob)).await;
+                    }
+                    return;
                 }
-                return;
+            },
+        };
+        let served = match AssertUnwindSafe(fut).catch_unwind().await {
+            Ok(served) => served,
+            Err(payload) => {
+                let text = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "a non-text payload".to_string());
+                Err(anyhow::anyhow!("{op_name} panicked: {text}"))
             }
         };
-        let out_frames = finish_dispatch(&op_name, req_id, started, fut.await);
+        let out_frames = finish_dispatch(&op_name, req_id, started, served);
         drop(permit);
         for (frame, blob) in out_frames {
             if out_tx.send((frame, blob)).await.is_err() {
@@ -240,14 +279,15 @@ pub(super) fn spawn_job<F>(
 }
 
 /// Resolve `payload`'s `workspace_id` hint to a concrete workspace INLINE,
-/// before a request is handed to an off-loop job, and rewrite the hint to
+/// before a request is handed to a pooled job, and rewrite the hint to
 /// that workspace's canonical id. Without this, a job queued behind others
 /// (semaphore contention) resolves its workspace only once it actually runs
 /// — if the hinted slug's workspace was destroyed and a new one created
 /// reusing the SAME slug in the meantime, the job would silently bind to the
 /// replacement. Canonical ids are never reused, so re-resolving by id at
 /// execution time (the handler's own first step) either finds the SAME
-/// workspace or correctly reports it gone — never someone else's.
+/// workspace or correctly reports it gone — never someone else's. A payload
+/// that names no workspace is left as it is, for its handler.
 ///
 /// Returns `Ok(true)` with `payload` rewritten when resolution succeeds,
 /// `Ok(false)` after already answering the same `unknown_workspace` error
@@ -268,6 +308,9 @@ where
         .get("workspace_id")
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    if hint.is_none() {
+        return Ok(true);
+    }
     match crate::rows::row_or_reply(workspaces, hint.as_deref(), req_id, op_name) {
         Ok(ws) => {
             if let serde_json::Value::Object(m) = payload {
@@ -474,6 +517,34 @@ mod tests {
             write_deadline(Some(&big)),
             WRITE_TIMEOUT + std::time::Duration::from_secs(5),
             "deadline = floor + size / MIN_BLOB_DRAIN_RATE"
+        );
+    }
+}
+
+#[cfg(test)]
+mod job_panic_tests {
+    use super::*;
+
+    fn boom() -> Result<HandlerOutput> {
+        panic!("probe panic")
+    }
+
+    /// A handler that panics is answered with the standard error reply naming the panic, not left to its waiter.
+    #[tokio::test]
+    async fn a_panicking_job_is_answered() {
+        let (out_tx, mut out_rx) = mpsc::channel(4);
+        let mut jobs: JoinSet<()> = JoinSet::new();
+        spawn_job(&mut jobs, Some(Arc::new(Semaphore::new(1))), out_tx, 7, "probe.op".to_string(), async { boom() });
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(2), out_rx.recv())
+            .await
+            .expect("a panicked job sent no reply within 2s")
+            .expect("the reply channel closed");
+        println!("job-panic: reply id {} payload {}", reply.0.id, reply.0.payload);
+        assert_eq!(reply.0.id, 7);
+        assert!(
+            reply.0.payload["error"].as_str().is_some_and(|e| e.contains("probe.op panicked: probe panic")),
+            "{}",
+            reply.0.payload
         );
     }
 }

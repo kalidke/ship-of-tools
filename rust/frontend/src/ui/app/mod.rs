@@ -94,7 +94,7 @@ mod main_window {
         }
 
         /// The minimized target's mutation leg only: the off-main `Window` call that MAC-REDRAW removed.
-        #[cfg(feature = "test-mac-redraw-mutation")]
+        #[cfg(all(test, feature = "test-mac-redraw-mutation"))]
         pub(in crate::ui) fn off_main_for_the_mutation_leg(&self) -> Arc<Window> {
             Arc::clone(&self.0)
         }

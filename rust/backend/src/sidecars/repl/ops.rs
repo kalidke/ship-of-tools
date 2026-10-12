@@ -43,7 +43,7 @@ pub async fn handle_repl_eval(
                 op::REPL_EVAL,
                 json!({
                     "error": format!("{e:#}"),
-                    "code": "repl_eval_failed",
+                    "code": submit_code(&e, "repl_eval_failed"),
                 }),
             ),
             None,
@@ -209,7 +209,7 @@ pub async fn handle_repl_run_file(
                 op::REPL_RUN_FILE,
                 json!({
                     "error": format!("{e:#}"),
-                    "code": "repl_run_file_failed",
+                    "code": submit_code(&e, "repl_run_file_failed"),
                 }),
             ),
             None,
@@ -239,6 +239,15 @@ pub async fn handle_repl_run_file(
         .with_rev(rev),
         None,
     )])
+}
+
+/// The code of a submission's error: `repl_busy` when the REPL's queue was full, else the op's own.
+fn submit_code(e: &anyhow::Error, failed: &'static str) -> &'static str {
+    if e.is::<crate::sidecars::repl::ReplBusy>() {
+        "repl_busy"
+    } else {
+        failed
+    }
 }
 
 /// Walk up from `path`'s parent looking for the nearest `Project.toml`.
@@ -305,7 +314,7 @@ pub async fn handle_repl_interrupt(
         }
         Err(e) => json!({
             "error": format!("{e:#}"),
-            "code": "repl_interrupt_failed",
+            "code": submit_code(&e, "repl_interrupt_failed"),
         }),
     };
     Ok(vec![(
@@ -369,5 +378,104 @@ done
             .collect();
         assert_eq!(logged.len(), 1, "one interrupt reached the child: {logged:?}");
         assert_eq!(logged[0]["payload"], named, "the child received the payload as sent");
+    }
+}
+
+/// No REPL submission waits on a child that reads nothing: an interrupt's answer is waited for at most 10 s
+/// (`REPL_INTERRUPT_WAIT`), and once the REPL's queue is full an eval, an interrupt and an execute are each refused at
+/// once (`repl_busy`, and `repl.execute`'s outcome `busy`).
+#[cfg(all(test, unix))]
+mod busy_tests {
+    use super::*;
+    use crate::sidecars::contract_tests::{pin_env, within, EnvPin};
+    use std::time::Duration;
+
+    /// A `julia` stand-in: it says it is ready, then never reads its input.
+    const DEAF: &str = "#!/bin/sh\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nexec sleep 60\n";
+
+    /// `fut`'s output, failing the test when it waits 15 s.
+    async fn bounded<F: std::future::Future>(what: &str, fut: F) -> F::Output {
+        tokio::time::timeout(Duration::from_secs(15), fut)
+            .await
+            .unwrap_or_else(|_| panic!("{what} waited 15 s on a REPL that reads nothing"))
+    }
+
+    /// The reply's `code`, or `accepted` for an eval's ack.
+    fn code_of(out: &HandlerOutput) -> String {
+        out[0].0.payload.get("code").and_then(|c| c.as_str()).unwrap_or("accepted").to_string()
+    }
+
+    /// A row whose REPL child is the deaf stand-in, started by one eval and ready. Fields drop in order: the row and
+    /// its child first, then the environment pin, then the folder.
+    struct Deaf {
+        session: Session,
+        workspaces: Workspaces,
+        id: String,
+        _pin: EnvPin,
+        _tmp: tempfile::TempDir,
+    }
+
+    async fn deaf_row() -> Deaf {
+        let tmp = tempfile::Builder::new().prefix("sot-repl-busy-").tempdir().unwrap();
+        let dir = tmp.path();
+        let resources = dir.join("resources");
+        std::fs::create_dir_all(resources.join("julia").join("repl")).unwrap();
+        let root = dir.join("row");
+        std::fs::create_dir_all(&root).unwrap();
+        let julia = dir.join("julia");
+        sot_log::test_exec::write_executable(&julia, DEAF);
+        let pin = pin_env(&julia, &resources);
+        let (frame_tx, _bus) = tokio::sync::broadcast::channel(256);
+        let workspaces = Workspaces::new();
+        workspaces.set_repl_frame_tx(frame_tx);
+        let session = Session::new();
+        let ws = crate::rows::Workspace::from_label("busyrow", root, false, "none".into(), String::new(), String::new());
+        let id = ws.workspace_id.clone();
+        workspaces.insert(ws);
+        let row = row_or_reply(&workspaces, Some(&id), 0, op::REPL_EVAL).unwrap_or_else(|_| panic!("setup: the row"));
+        let first = json!({ "workspace_id": id, "eval_id": 0, "code": "1" });
+        let started = bounded("eval 0", handle_repl_eval(0, first, &session, &workspaces)).await;
+        assert_eq!(code_of(&started.expect("handler")), "accepted");
+        within(Duration::from_secs(30), "the child is ready", || row.repl_state() == "ready").await;
+        Deaf { session, workspaces, id, _pin: pin, _tmp: tmp }
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_interrupt_ends_at_its_bound() {
+        let row = deaf_row().await;
+        let t0 = std::time::Instant::now();
+        let interrupt = handle_repl_interrupt(1, json!({ "workspace_id": row.id }), &row.session, &row.workspaces);
+        let unanswered = bounded("an interrupt", interrupt).await;
+        let waited = t0.elapsed();
+        assert_eq!(code_of(&unanswered.expect("handler")), "repl_interrupt_failed");
+        let bound = Duration::from_secs(10);
+        assert!(waited >= bound && waited < bound + Duration::from_secs(5), "{waited:?}");
+        println!("repl-busy: an unanswered interrupt -> repl_interrupt_failed after {waited:?}");
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_is_refused_at_once() {
+        let row = deaf_row().await;
+        let (session, workspaces, id) = (&row.session, &row.workspaces, &row.id);
+        let code = "x".repeat(64 * 1024);
+        let mut codes = Vec::new();
+        for n in 1..=20u64 {
+            let eval = json!({ "workspace_id": id, "eval_id": n, "code": code });
+            let out = bounded(&format!("eval {n}"), handle_repl_eval(n, eval, session, workspaces)).await;
+            codes.push(code_of(&out.expect("handler")));
+        }
+        let busy = codes.iter().filter(|c| *c == "repl_busy").count();
+        assert!(busy >= 1 && codes.iter().all(|c| c == "accepted" || c == "repl_busy"), "{codes:?}");
+        let interrupt = handle_repl_interrupt(21, json!({ "workspace_id": id }), session, workspaces);
+        let refused = bounded("an interrupt", interrupt).await;
+        assert_eq!(code_of(&refused.expect("handler")), "repl_busy");
+        let execute = json!({ "workspace_id": id, "input": { "kind": "eval", "code": "1" } });
+        let execute = crate::sidecars::repl::execute::handle_repl_execute(22, execute, session, workspaces);
+        let executed = bounded("an execute", execute).await;
+        assert_eq!(executed.expect("handler")[0].0.payload["outcome"], "busy");
+        println!(
+            "repl-busy: 20 evals to a full queue -> {} accepted, {busy} repl_busy; then interrupt -> repl_busy, execute -> busy",
+            20 - busy
+        );
     }
 }

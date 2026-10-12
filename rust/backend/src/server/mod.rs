@@ -20,7 +20,7 @@ use sot_protocol::{
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::clients::{ClientGuard, Clients};
+use crate::clients::Clients;
 use crate::files::tree::FilesMode;
 use crate::sidecars::mathjax::MathJax;
 use crate::paths;

@@ -400,13 +400,9 @@ pub async fn handle_repl_execute(
         Ok(x) => x,
         Err(e) => {
             close_exec_run(&frame_tx, &frame_ws, eval_id, submitted_at.elapsed().as_millis() as u64);
-            return Ok(exec_err_frame(
-                req_id,
-                &run_id,
-                &ws_id,
-                "repl_died",
-                format!("repl submit failed: {e:#}"),
-            ))
+            // A full queue is ADR 0033's `busy`, never a wait.
+            let outcome = if e.is::<crate::sidecars::repl::ReplBusy>() { "busy" } else { "repl_died" };
+            return Ok(exec_err_frame(req_id, &run_id, &ws_id, outcome, format!("repl submit failed: {e:#}")))
         }
     };
 

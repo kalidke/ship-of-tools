@@ -122,12 +122,12 @@ fn frame_bytes(frame: &Frame) -> Vec<u8> {
 }
 
 /// A ping that cannot be written yet holds nothing else up: the daemon's events arrive while it is not reading, and
-/// the ping then arrives whole.
-#[tokio::test]
+/// the ping then arrives whole. On a paused clock, so the daemon's first bytes come inside three ping intervals.
+#[tokio::test(start_paused = true)]
 async fn ping_write_does_not_block_reads() {
     let mut rig = rig(16, Duration::from_millis(20), 1);
     // Let the first ping come due; with the daemon not reading, it cannot be written whole.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
     for n in 0..3 {
         put(&mut rig.far_wr, &&event_frame(n)).await;
     }
@@ -249,4 +249,219 @@ async fn cancelling_during_a_write_flushes_the_figure_once() {
         .filter(|(_, e)| matches!(e, IncomingEvt::FigureGetFailed { url } if url == "fig://three"))
         .count();
     assert_eq!(failed, 1);
+}
+
+/// The window's half of the daemon's 90 s rule, on a paused clock at the real 30 s ping interval: a daemon that sends
+/// nothing ends the loop after three intervals, naming the silence; one that answers each ping keeps the connection;
+/// and one whose reply is still arriving keeps it while its bytes come, then ends three intervals after the last.
+/// Each row's rig is dropped before the next is built, since a rig holds the state folder's test lock.
+#[tokio::test(start_paused = true)]
+async fn a_daemon_silent_for_three_ping_intervals_ends_the_connection() {
+    const PING: Duration = Duration::from_secs(30);
+    let (silence, late) = (PING * 3, Duration::from_secs(1));
+    {
+        let started = tokio::time::Instant::now();
+        let silent = rig(1024, PING, 1);
+        let ended = tokio::time::timeout(PING * 10, silent.task)
+            .await
+            .expect("silent: still connected");
+        assert_eq!(
+            format!("{:#}", ended.unwrap().unwrap_err()),
+            "nothing from the daemon in 90s"
+        );
+        let at = started.elapsed();
+        assert!(
+            at >= silence && at < silence + late,
+            "silent: ended after {at:?}"
+        );
+        println!("steady-silence: silent daemon -> ended after {at:?}");
+    }
+    {
+        let answering = rig(1024, PING, 1);
+        let (mut rd, mut wr) = (answering.far_rd, answering.far_wr);
+        let pinged = tokio::spawn(async move {
+            let mut answered = 0u32;
+            while let Ok((frame, _)) = codec::read_frame(&mut rd).await {
+                if frame.op == op::PING {
+                    put(
+                        &mut wr,
+                        &Frame::res(frame.id, op::PING, serde_json::json!({})),
+                    )
+                    .await;
+                    answered += 1;
+                }
+            }
+            answered
+        });
+        tokio::time::sleep(PING * 20).await;
+        assert!(
+            !answering.task.is_finished(),
+            "answering: the loop ended though every ping was answered"
+        );
+        answering.task.abort();
+        // The far end's reads end when the aborted loop drops its writer; the test waits for that within its own bound.
+        let answered = tokio::time::timeout(Duration::from_secs(5), pinged)
+            .await
+            .expect("answering: the far end had not seen the connection end 5 s after the loop's abort")
+            .unwrap();
+        println!(
+            "steady-silence: answering daemon -> connected after {:?}, {answered} pings answered",
+            PING * 20
+        );
+    }
+    {
+        let mut trickling = rig(1024, PING, 1);
+        let blob = 10u32;
+        let reply = Frame::evt(
+            "test.trickle",
+            serde_json::json!({ "blob": { "len": blob, "mime": "x" } }),
+        );
+        put(&mut trickling.far_wr, &reply).await;
+        for _ in 0..blob {
+            tokio::time::sleep(PING * 2).await;
+            assert!(
+                !trickling.task.is_finished(),
+                "trickling: the loop ended while the reply was arriving"
+            );
+            trickling.far_wr.write_all(b"x").await.unwrap();
+        }
+        let last = tokio::time::Instant::now();
+        let ended = tokio::time::timeout(PING * 10, trickling.task)
+            .await
+            .expect("trickling: still connected");
+        assert_eq!(
+            format!("{:#}", ended.unwrap().unwrap_err()),
+            "nothing from the daemon in 90s"
+        );
+        let at = last.elapsed();
+        assert!(
+            at >= silence && at < silence + late,
+            "trickling: ended {at:?} after the last byte"
+        );
+        let lasted = PING * 2 * blob;
+        println!("steady-silence: trickling daemon -> connected for {lasted:?}, ended {at:?} after its last byte");
+    }
+}
+
+/// A reader whose one frame becomes readable at `after` from its first poll, on the Tokio clock, and that is silent
+/// after it.
+struct ReadyAt {
+    bytes: Vec<u8>,
+    after: Duration,
+    at: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+    sent: bool,
+}
+
+impl AsyncRead for ReadyAt {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = &mut *self;
+        if this.sent {
+            return std::task::Poll::Pending;
+        }
+        let after = this.after;
+        let at = this.at.get_or_insert_with(|| Box::pin(tokio::time::sleep(after)));
+        std::task::ready!(std::future::Future::poll(at.as_mut(), cx));
+        buf.put_slice(&this.bytes);
+        this.sent = true;
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// A frame that becomes readable on the very timer turn the silence deadline passes is read, not cut: the loop polls
+/// its read before the deadline. Each of 64 runs starts a loop whose reader turns ready at three ping intervals, so
+/// the read and the deadline are ready in one poll; a select that picked among them at random would cut some.
+#[tokio::test(start_paused = true)]
+async fn a_frame_ready_as_the_silence_deadline_passes_is_read_not_cut() {
+    const PING: Duration = Duration::from_secs(30);
+    let mut cut = 0;
+    for run in 0..64 {
+        let _env = crate::net::state::test_env::set_test_env();
+        let (events_tx, events) = std::sync::mpsc::channel();
+        let (_out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
+        let reader = ReadyAt { bytes: frame_bytes(&event_frame(run)), after: PING * 3, at: None, sent: false };
+        let task = tokio::spawn(async move {
+            let host: HostKey = "steady-test".to_string();
+            let mut pending = PendingGuard { map: HashMap::new(), evt_tx: &events_tx, host: host.clone() };
+            let mut session = SessionState {
+                host: host.clone(),
+                memory: crate::net::state::SessionMemory::fresh(),
+                gate: StateSaveGate::new(),
+            };
+            steady::steady_loop(
+                codec::buffered(reader),
+                tokio::io::sink(),
+                1,
+                &mut pending,
+                &mut session,
+                host,
+                &events_tx,
+                &mut out_rx,
+                &Quiet,
+                PING,
+            )
+            .await
+        });
+        tokio::time::sleep(PING * 3 + Duration::from_secs(1)).await;
+        if task.is_finished() {
+            let ended = task.await.unwrap().unwrap_err();
+            assert_eq!(format!("{ended:#}"), "nothing from the daemon in 90s");
+            cut += 1;
+        } else {
+            let read = events.try_iter().filter(|(_, e)| matches!(e, IncomingEvt::Event { .. })).count();
+            assert_eq!(read, 1, "run {run}: the loop is still connected but did not deliver the frame");
+            task.abort();
+        }
+    }
+    println!("steady-silence: a frame ready as the deadline passes -> {} of 64 read, {cut} cut", 64 - cut);
+    assert_eq!(cut, 0, "the silence deadline won over a frame that was ready");
+}
+
+/// A daemon that keeps the reader busy does not hold the window's requests: one queued during an endless flood of
+/// events still reaches the daemon. On two worker threads, with the window's events drained on their own thread, as
+/// the window runs its transport (a one-thread runtime lets the reader empty the pipe before each write).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_goes_out_while_the_daemon_floods_the_reader() {
+    let mut rig = rig(4 << 20, NEVER, 1);
+    let events = std::mem::replace(&mut rig.events, std::sync::mpsc::channel().1);
+    let read = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counted = read.clone();
+    std::thread::spawn(move || {
+        while events.recv().is_ok() {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    let mut far_wr = rig.far_wr;
+    let flood = tokio::spawn(async move {
+        let bytes = frame_bytes(&event_frame(1));
+        while far_wr.write_all(&bytes).await.is_ok() {}
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let sent = std::time::Instant::now();
+    rig.out_tx.as_ref().unwrap().send(OutgoingReq::FePresence).unwrap();
+    let got = tokio::time::timeout(Duration::from_secs(10), codec::read_frame(&mut rig.far_rd)).await;
+    let n = read.load(std::sync::atomic::Ordering::Relaxed);
+    match got {
+        Ok(Ok((req, _))) => println!("steady-flood: request {} out after {:?}; {n} events read", req.op, sent.elapsed()),
+        _ => panic!("steady-flood: no request out within 10s; {n} events read"),
+    }
+    flood.abort();
+}
+
+/// After the outgoing side closed, the reads still end at the silence bound: a daemon that then sends nothing ends the
+/// drain, naming the silence, three ping intervals after its last byte.
+#[tokio::test(start_paused = true)]
+async fn a_silent_daemon_ends_the_drain_after_the_outgoing_side_closed() {
+    const PING: Duration = Duration::from_secs(30);
+    let mut rig = rig(1024, PING, 1);
+    rig.out_tx = None;
+    let closed = tokio::time::Instant::now();
+    let ended = tokio::time::timeout(PING * 10, rig.task).await.expect("drain: still connected");
+    assert_eq!(format!("{:#}", ended.unwrap().unwrap_err()), "nothing from the daemon in 90s");
+    let at = closed.elapsed();
+    assert!(at >= PING * 3 && at < PING * 3 + Duration::from_secs(1), "drain: ended after {at:?}");
+    println!("steady-silence: silent daemon after the outgoing side closed -> ended after {at:?}");
 }

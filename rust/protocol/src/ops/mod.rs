@@ -429,14 +429,14 @@ pub mod op {
     /// frontend transport (role `fe`), and every 30 s by the daemon's hub link
     /// (`hub_link.rs`), which ends its link after three intervals with no
     /// frame from the hub;
-    /// the daemon gives an `fe`/`bridge` connection a `PING_READ_DEADLINE`
+    /// the daemon gives a connection that has pinged a `PING_READ_DEADLINE`
     /// (server/conn.rs) and drops one that goes quiet that long, reaping it
     /// through the same `ClientGuard::drop` path as a clean exit.
-    /// `cli`/`agent` connections are never deadline-gated, the hub link
-    /// (role `cli`, the one `cli` that sends this) included. Opt-in by
+    /// Any connection that has sent one is deadline-gated, the hub link
+    /// (role `cli`) included. Opt-in by
     /// ping (manager compatibility fix): the deadline arms on this
     /// connection's FIRST `ping`, never at hello —
-    /// an `fe`/`bridge` peer too old to send one (a frontend box or comm
+    /// a peer too old to send one (a frontend box or comm
     /// bridge that hasn't converged from main yet) is left untouched,
     /// exactly today's behavior, rather than reaped every `PING_READ_DEADLINE`
     /// forever. An old daemon that predates this op answers the generic

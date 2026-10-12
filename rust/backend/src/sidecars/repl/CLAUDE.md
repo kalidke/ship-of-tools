@@ -25,6 +25,11 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
 - Stop, channel close, child exit, pipe failure and shutdown share pending/streamed closeout and browser-grant revocation. Contained-tree termination requests are checked and the direct child is confirmed reaped before successful retirement; escaped descendants remain ADR 0050 residual 7.
 - A supervisor is joined before a replacement generation opens, so its retired output cannot restore a revoked browser grant. The existing lifecycle generation guard still bounds state transitions. The child's exit ends supervision independently of inherited pipes.
 - `Repl::request_if_running` never spawns (`repl.interrupt` must not pay a spawn to answer "not running").
+- No submission waits on the child: one to a full queue is refused at once (`enqueue`, `ReplBusy`), and
+  `repl.interrupt` waits at most `REPL_INTERRUPT_WAIT` (10 s) for the child's answer.
+- The REPL ops answer an error with one of these codes: `repl_busy` (the queue was full), `repl_eval_failed`,
+  `repl_run_file_failed`, `repl_interrupt_failed` and `repl_restart_failed`; `repl.execute` reports a full queue as its
+  outcome `busy` (ADR 0033).
 - A lifecycle transition applies only for the current spawn generation (`lifecycle_transition`), and a generation
   opens only after `.spawn()` succeeds (`lifecycle_begin_starting`).
 - A child's browser ports are recorded as its `browser` frames pass (`route_line`) and revoked when a new generation

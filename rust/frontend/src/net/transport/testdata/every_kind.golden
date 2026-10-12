@@ -50,6 +50,7 @@
 < golden Event { op: "fe.sessions", payload: Object {"code": String("code-fe.sessions"), "error": String("err-fe.sessions")} }
 < golden ProjectScan { workspace_id: Some("ps.ws"), project_root: None, package_name: None, entry_file: None, modules: [], generation: 101 }
 < golden MarkdownTokens { lang: "mt.lang", source_hash: 102, spans: [] }
+< golden MathRenderFailed { latex: "mr.latex", display: true, message: "err-math.render [code-math.render]" }
 < golden ImageCropFailed { node_id: "ic.node", message: "err-image.crop" }
 < golden ConceptWriteDone { target: "cw.target", result: Error { code: "code-concept.write", message: "err-concept.write" } }
 < golden FileWriteDone { node_id: "fw.node", result: Error { code: "code-file.write", message: "err-file.write" } }
@@ -60,6 +61,7 @@
 < golden ScaleSetFailed { node_id: "pss.node", message: "code-preview.set_scale: err-preview.set_scale" }
 < golden FigureGetFailed { url: "fg.url" }
 < golden FunctionMethodsReceived { workspace_id: Some("fm.ws"), module: "fm.module", name: "fm.name", methods: [] }
+< golden ReplEvalDone { eval_id: 113, elapsed_ms: 0, frames: [Error { message: "err-repl.eval [code-repl.eval]", stacktrace: [] }] }
 < golden Event { op: "repl.interrupt", payload: Object {"code": String("code-repl.interrupt"), "error": String("err-repl.interrupt")} }
 < golden PtyOpenFailed { target: Some("po.target"), error: "code-pty.open" }
 < golden WorkspaceCreated { result: Err("err-workspace.create") }

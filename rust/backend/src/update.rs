@@ -473,9 +473,10 @@ async fn run_check_once(
 /// Never errors on a failed check: the failure rides in `status`.
 pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
     let updater = Updater::from_env();
-    // Hard ceiling: this handler runs inline on the connection — a wedged
-    // network path must degrade to a status string, not stall the daemon's
-    // op loop (the curl budget is shorter still; this is the backstop).
+    // Hard ceiling: this handler runs as a job off the connection's loop
+    // (`place`), and a wedged network path must still degrade to a status
+    // string, not leave the window's check unanswered (the curl budget is
+    // shorter still; this is the backstop).
     let out = match tokio::time::timeout(Duration::from_secs(45), updater.check()).await {
         Ok(out) => out,
         Err(_) => CheckOutcome {
@@ -491,7 +492,7 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
     let out = overlay_stage_block(out);
     let mechanism = updater.mechanism().ok();
     // The status probes hit the filesystem (and git, for prepared) — bound
-    // them too, or a hung NFS checkout wedges this connection's op loop.
+    // them too, or a hung NFS checkout leaves the check unanswered.
     let (staged, prepared, armed) = match (&out.identity, &mechanism) {
         (Some(id), Some(cfg)) => {
             let stage_dir = sot_updater::stage_dir(&cfg.updates_root, id);

@@ -18,13 +18,13 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `comm_file.rs`: messaging; the inbox lock held by the daemon's filer and by the scripts' `sot_inbox_append`. It also executes declared-host join/self-slot agreement, unread activation and destroyed-handle prune in disposable homes.
 - `comm_send.rs`: messaging; the staged `comm-send.sh` against a real `sotd`: `filed` only for a live handle, nothing appended for a gone one, and an idle row's daemon keeps it live, so a send is filed while that daemon is down
 - `comm_wake.rs`: messaging; the comm wake tick on a real capsule row whose agent is a stub `claude`
-- `control_session.rs`: server; a control session's replies pinned over the wire: unknown op, `monitor.*`, `pty.open` refusals, the off-loop ops, the evt skip and the refused hellos
+- `control_session.rs`: server; a control session's replies pinned over the wire: unknown op, `monitor.*`, `pty.open` refusals, the pooled ops and `concept.read`, the evt skip and the refused hellos
 - `daemon_boot.rs`: server; a first boot seeds the default row as the inert anchor, and the registry poll relays a state change; on Linux, observes that a spawned daemon inherits no `SOT_` variable the test did not set
 - `hub_link.rs`: messaging; a hub `sotd` and a guest `sotd` joined by a stub `ssh`, broadcast filed on the guest
 - `keystroke_latency.rs`: rows and topology; ignored private-daemon keystroke timing and headless request-to-checkpoint switch timing, with explicit SSH prerequisites; T3 owns proof from the frontend attach request to the pane showing it
 - `live_socket.rs`: server; a second daemon on a live daemon's socket refuses and the first keeps answering
 - `old_watcher.rs`: server; a pre-0.6.6 wake watcher's hello and `pty.input` in its library's exact form: the hello is refused with `protocol_mismatch`, then the connection ends with no other byte
-- `ping_reaper.rs`: server; the reaper of half-open long-lived client roles, over the wire, and a `cli` connection's `ping` answered and never reaped
+- `ping_reaper.rs`: server; the reaper of half-open connections that have pinged, over the wire, including a `cli` connection (the hub link), answered and reaped when silent
 - `preview_order.rs`: server; a `preview.get` written behind a `preview.set_scale` on one connection carries the new scale
 - `relay_refresh.rs`: topology; `sotd topology refresh` on a scratch hub with a stand-in `systemctl`
 - `unit_pin.rs`: topology; `sotd topology pin` and `refresh` write host pins into a scratch systemd folder, real systemd
@@ -51,7 +51,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `daemon_lifetime/`: lifecycle; the harness of lane L2: native launcher and fence-claim premises on real children, a successor daemon against a held capsule birth, and, on Linux, the lifetime guard, the daemon's controlled outcomes and the update outcomes on real daemons (own page; needs the barrier build)
 - `capsule_workspaces/`: rows; a real `sotd` and a real detached `sot-capsule` over a real local socket (`main.rs` plus modules); `session_env.rs`: a session's `SOTD_BIN` is the daemon's own start path, over an inherited value and, on Linux, after an in-place update; each test's row ends through its own supervisor, and its folders are kept, with a report, when that end is not confirmed
 - `lane_bridge/`: rows and topology; a frontend attach client reaching a capsule row through a daemon and a test-owned relay, plus explicitly spawned SSH stand-ins
-- `switch_latency/`: server; a slow request does not block a later cheap reply on one connection; its `dead_kernel` module is sidecars
+- `switch_latency/`: server; a slow request does not block a later cheap reply on one connection, and a ping is answered while a long op (`quarto.open`) is held; its `dead_kernel` module is sidecars
 - `window_lease/`: lifecycle; the close lifecycle's daemon half, one daemon per state root
 - `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs`
   (`sotd_command` and `sotd_command_at`; for a daemon a suite starts by label, `own_label`, `label_endpoint`,

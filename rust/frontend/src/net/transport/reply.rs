@@ -89,6 +89,12 @@ pub(super) enum PendingKind {
     ReplEval {
         eval_id: u64,
     },
+    /// An eval the daemon accepted or announced (`repl.frame` `Started`) and has not yet ended with its `done` frame,
+    /// kept under the key `RUNNING_EVAL | eval_id` so `PendingGuard`'s `Drop` can end it when the connection does.
+    /// No reply carries this key; only the frames of the eval's own stream touch it.
+    EvalRunning {
+        eval_id: u64,
+    },
     /// ADR 0042 slice L1b fix 1: carries the `target` THIS request
     /// named (mirrors `PtyOpenReq.target`) — the reply (an ordinary
     /// size confirmation, or an `attach_direct` refusal) is always about
@@ -127,6 +133,10 @@ pub(super) enum PendingKind {
     /// A `monitor.history` awaiting its windowed per-host series (ADR 0020).
     MonitorHistory,
 }
+
+/// The key bit of a running eval's pending entry. Request ids count up from 1 per connection (`take_id`) and never
+/// reach it.
+const RUNNING_EVAL: u64 = 1 << 63;
 
 /// RAII wrapper around `run_protocol`'s per-connection reply-correlation
 /// map. `run_protocol` can exit through many paths — a bad read/write via
@@ -177,6 +187,23 @@ impl Drop for PendingGuard<'_> {
                         request,
                         error: "connection ended before result tree completion".into(),
                     },
+                },
+                PendingKind::MathRender { latex, display } => IncomingEvt::MathRenderFailed {
+                    latex,
+                    display,
+                    message: "the connection ended before the render's reply".into(),
+                },
+                // Exactly what an error reply already produces: no spans, so the block keeps its base highlighting.
+                PendingKind::MarkdownTokenize { lang, source_hash } => {
+                    IncomingEvt::MarkdownTokens { lang, source_hash, spans: Vec::new() }
+                }
+                PendingKind::EvalRunning { eval_id } => IncomingEvt::ReplEvalDone {
+                    eval_id,
+                    elapsed_ms: 0,
+                    frames: vec![ReplFrame::Error {
+                        message: "the connection to the daemon ended before this eval's end".into(),
+                        stacktrace: Vec::new(),
+                    }],
                 },
                 _ => continue,
             };
@@ -272,7 +299,14 @@ pub(super) fn handle_response_frame(
             PendingKind::SetScale { node_id, workspace_id, generation } => on_set_scale(frame, blob, &emit, node_id, workspace_id, generation),
             PendingKind::FigureGet { url } => on_figure_get(frame, blob, &emit, url),
             PendingKind::FunctionMethods { module, name, workspace_id } => on_function_methods(frame, &emit, module, name, workspace_id),
-            PendingKind::ReplEval { eval_id } => on_repl_eval(frame, &emit, eval_id),
+            PendingKind::ReplEval { eval_id } => {
+                if frame.payload.get("accepted").and_then(|v| v.as_bool()) == Some(true) {
+                    pending.insert(RUNNING_EVAL | eval_id, PendingKind::EvalRunning { eval_id });
+                }
+                on_repl_eval(frame, &emit, eval_id)
+            }
+            // Only the eval's own stream touches this entry, never a reply id (`RUNNING_EVAL`).
+            PendingKind::EvalRunning { .. } => {}
             PendingKind::PtyOpen { target } => on_pty_open(frame, &emit, target),
             PendingKind::DirectoryList => on_directory_list(frame, &emit),
             PendingKind::WorkspaceCreate => on_workspace_create(frame, &emit),
@@ -283,7 +317,12 @@ pub(super) fn handle_response_frame(
             PendingKind::VideoOpen => on_video_open(frame, &emit),
             PendingKind::DocsOpen => on_docs_open(frame, &emit),
             PendingKind::QuartoOpen => on_quarto_open(frame, blob, &emit),
-            PendingKind::ReplRunFile { eval_id, path, fresh } => on_repl_run_file(frame, &emit, eval_id, path, fresh),
+            PendingKind::ReplRunFile { eval_id, path, fresh } => {
+                if frame.payload.get("frames").is_some() {
+                    pending.insert(RUNNING_EVAL | eval_id, PendingKind::EvalRunning { eval_id });
+                }
+                on_repl_run_file(frame, &emit, eval_id, path, fresh)
+            }
             PendingKind::FileDownload { dest, file } => on_file_download(frame, blob, pending, &emit, dest, file),
             PendingKind::FileUpload => on_file_upload(frame, &emit),
             PendingKind::MonitorSubscribe => on_monitor_subscribe(frame, &emit),
@@ -292,20 +331,8 @@ pub(super) fn handle_response_frame(
         let _ = blob; // remaining ops carry no blob (download took its own)
         return;
     }
-    // Streamed REPL output frame (`repl.frame` evt, ADR 0009 phase-2). One
-    // frame, pushed as produced; the consumer appends it to the in-flight
-    // scrollback entry live (`Done` is terminal).
     if frame.kind == sot_protocol::Kind::Evt && frame.op == op::REPL_FRAME {
-        match serde_json::from_value::<ReplFrameEvt>(frame.payload) {
-            Ok(ev) => {
-                emit(IncomingEvt::ReplFrameStreamed {
-                    eval_id: ev.eval_id,
-                    workspace_id: ev.workspace_id,
-                    frame: ev.frame,
-                });
-            }
-            Err(e) => tracing::warn!(error = %e, "repl.frame evt parse failed"),
-        }
+        on_repl_frame(frame, pending, &emit);
         return;
     }
     // Live server-metrics tick (`monitor.tick` evt, ADR 0020). One sample per
@@ -325,6 +352,27 @@ pub(super) fn handle_response_frame(
     });
     if blob.is_some() {
         // Spike handlers don't emit unsolicited blobs; drop and move on.
+    }
+}
+
+/// A streamed REPL output frame (`repl.frame` evt, ADR 0009 phase-2). One frame, pushed as produced; the consumer
+/// appends it to the in-flight scrollback entry live (`Done` is terminal). The stream also keeps the eval's pending
+/// entry: `Started` opens it and `Done` closes it (`PendingKind::EvalRunning`).
+fn on_repl_frame(frame: Frame, pending: &mut HashMap<u64, PendingKind>, emit: &impl Fn(IncomingEvt)) {
+    match serde_json::from_value::<ReplFrameEvt>(frame.payload) {
+        Ok(ev) => {
+            match &ev.frame {
+                ReplFrame::Started { .. } => {
+                    pending.insert(RUNNING_EVAL | ev.eval_id, PendingKind::EvalRunning { eval_id: ev.eval_id });
+                }
+                ReplFrame::Done { .. } => {
+                    pending.remove(&(RUNNING_EVAL | ev.eval_id));
+                }
+                _ => {}
+            }
+            emit(IncomingEvt::ReplFrameStreamed { eval_id: ev.eval_id, workspace_id: ev.workspace_id, frame: ev.frame });
+        }
+        Err(e) => tracing::warn!(error = %e, "repl.frame evt parse failed"),
     }
 }
 
@@ -961,5 +1009,100 @@ mod tests {
             .collect();
         lost.sort_by_key(|a| a.result_serial);
         assert_eq!(lost, vec![attempt("id-a", 1, 1), attempt("id-a", 4, 5)]);
+    }
+}
+
+#[cfg(test)]
+mod wait_end_tests {
+    use super::*;
+    use sot_protocol::{ReplFrame, ReplFrameEvt};
+
+    fn shown(rx: &std::sync::mpsc::Receiver<(HostKey, IncomingEvt)>) -> Vec<String> {
+        rx.try_iter().map(|(_, e)| format!("{e:?}")).collect()
+    }
+
+    #[test]
+    fn a_math_render_error_reply_ends_its_wait() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let host: HostKey = "h".into();
+        let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+        pending.insert(13, PendingKind::MathRender { latex: "x^2".into(), display: true });
+        let frame = Frame::res(
+            13,
+            op::MATH_RENDER,
+            serde_json::json!({ "error": "mathjax render timed out after 10s", "code": "mathjax_render_failed" }),
+        );
+        handle_response_frame(frame, None, &mut pending, &evt_tx, &host);
+        let events = shown(&evt_rx);
+        println!("math-render-error: events={events:?}");
+        assert!(
+            matches!(events.as_slice(), [e] if e.starts_with("MathRenderFailed")),
+            "an error reply did not end the render's wait"
+        );
+    }
+
+    #[test]
+    fn a_lost_math_render_is_failed_when_the_connection_ends() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        {
+            let mut guard = PendingGuard { map: HashMap::new(), evt_tx: &evt_tx, host: "h".into() };
+            guard.insert(13, PendingKind::MathRender { latex: "x^2".into(), display: true });
+        }
+        let events = shown(&evt_rx);
+        println!("math-render-lost: events={events:?}");
+        assert!(
+            matches!(events.as_slice(), [e] if e.starts_with("MathRenderFailed")),
+            "no MathRenderFailed after the guard dropped"
+        );
+    }
+
+    #[test]
+    fn a_lost_markdown_tokenize_ends_when_the_connection_ends() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        {
+            let mut guard = PendingGuard { map: HashMap::new(), evt_tx: &evt_tx, host: "h".into() };
+            guard.insert(11, PendingKind::MarkdownTokenize { lang: "julia".into(), source_hash: 102 });
+        }
+        let events = shown(&evt_rx);
+        println!("markdown-tokenize-lost: events={events:?}");
+        assert_eq!(
+            events,
+            ["MarkdownTokens { lang: \"julia\", source_hash: 102, spans: [] }"],
+            "no end after the guard dropped"
+        );
+    }
+
+    /// An eval the daemon accepted, and a run another client started, end with one error frame when their connection
+    /// ends before their `done` frame; one whose `done` came is not ended twice.
+    #[test]
+    fn a_running_eval_ends_when_its_connection_ends() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let host: HostKey = "h".into();
+        {
+            let mut guard = PendingGuard { map: HashMap::new(), evt_tx: &evt_tx, host: host.clone() };
+            guard.insert(4, PendingKind::ReplEval { eval_id: 8 });
+            guard.insert(5, PendingKind::ReplEval { eval_id: 7 });
+            for (id, eval_id) in [(4, 8), (5, 7)] {
+                let ack = serde_json::json!({ "eval_id": eval_id, "elapsed_ms": 0, "frames": [], "accepted": true });
+                handle_response_frame(Frame::res(id, op::REPL_EVAL, ack), None, &mut guard, &evt_tx, &host);
+            }
+            let evt = |eval_id: u64, frame: ReplFrame| {
+                Frame::evt(
+                    op::REPL_FRAME,
+                    serde_json::to_value(ReplFrameEvt { eval_id, workspace_id: None, frame }).unwrap(),
+                )
+            };
+            let started = ReplFrame::Started { run_id: "r".into(), origin: "session".into(), display: "run.jl".into() };
+            handle_response_frame(evt(30, started), None, &mut guard, &evt_tx, &host);
+            handle_response_frame(evt(7, ReplFrame::Done { eval_id: 7, elapsed_ms: 5 }), None, &mut guard, &evt_tx, &host);
+            let _ = shown(&evt_rx);
+        }
+        let mut ended: Vec<String> = shown(&evt_rx);
+        ended.sort();
+        println!("repl-eval-lost: events at the connection's end={ended:?}");
+        assert!(
+            ended.len() == 2 && ended.iter().all(|e| e.starts_with("ReplEvalDone") && e.contains("Error")),
+            "the connection's end did not end evals 8 and 30 (and only those)"
+        );
     }
 }
