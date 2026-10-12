@@ -603,6 +603,10 @@ jobs:
       # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
       - name: Function length
         run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::too_many_lines
+      - name: Test native harness helpers
+        shell: bash
+        run: |
+          bash ../scripts/tests/run-filtered-tests.sh 8 ../dev/output/native-harness-helpers.log -- cargo test -p sot-frontend --bin sot --features test-pane-timing,test-window-close --locked ui::app::tests::harness_tests:: -- --test-threads=1 --format pretty --color never --show-output
       # rust/clippy.toml holds the rules this step enforces, one labelled group each, every group opening with its
       # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
       # that does not exist on a leg draws a warning there.
@@ -649,6 +653,7 @@ jobs:
                   subprocess.run(['cargo', 'test', '--config', 'target."cfg(all())".runner=' + json.dumps(['python3', str(runner), str(directory)]), '--manifest-path', str(manifest), '-p', 'sot-log', '--test', 'test_body_fixture', '--locked', name, '--'] + flags + ['--format', 'pretty', '--color', 'never', '--show-output', '--test-threads=1'], cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=True)
           PYCARGO
           ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh --all "$(cat ../dev/output/iso-sh-ci-path)"
+          bash ../scripts/tests/test-filtered-tests.sh "$(cat ../dev/output/iso-sh-ci-path)"
 
       - name: Test L3 storage exhaustion
         shell: bash
@@ -994,7 +999,8 @@ jobs:
         run: cargo test -p sot-backend --test capsule_workspaces -- --nocapture
 
   # The Windows containment tests that need julia, Git for Windows' bash or a job around the test process are `#[ignore]`
-  # in `cargo test` (rust/backend/src/lifecycle/contain.rs); this job runs them, with julia installed, on every run.
+  # in `cargo test` (rust/backend/src/lifecycle/contain.rs); this job runs them, with julia installed, on every run. The
+  # count is the number of `#[ignore]` tests in `lifecycle::contain::tests`: a selection that runs any other number fails.
   windows-ignored-containment:
     name: containment, ignored tests (windows-latest)
     runs-on: windows-latest
@@ -1013,7 +1019,9 @@ jobs:
         with:
           version: '1.12'
       - name: Test the ignored containment tests
-        run: cargo test -p sot-backend --bins contain -- --include-ignored --test-threads=1
+        shell: bash
+        run: |
+          bash ../scripts/tests/run-filtered-tests.sh 3 ../dev/output/containment-ignored.log -- cargo test -p sot-backend --bin sotd --locked lifecycle::contain::tests:: -- --ignored --test-threads=1
 
   p2-e2e:
     name: P2 e2e (real helper, offline)

@@ -2,6 +2,7 @@
 //! finalizer, driven from test-owned inputs. The parent runs each case as a child of its binary.
 
 use super::tests::{fixture_cli, FixtureHome};
+use super::native_children::HarnessTick;
 use super::*;
 use crate::ui::input::global_keys::confirm_quit_key;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -162,6 +163,7 @@ struct CloseDriver<'a> {
     decided: Option<Instant>,
     second_due: Option<Instant>,
     stop: std::sync::Arc<AtomicBool>,
+    harness_tick: HarnessTick,
     failure: Option<anyhow::Error>,
 }
 
@@ -242,12 +244,14 @@ impl ApplicationHandler for CloseDriver<'_> {
         self.app.about_to_wait(event_loop);
     }
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
-        self.app.user_event(event_loop, ());
-        if self.second_due.is_some() {
-            self.second_close(event_loop);
-        } else if self.decided.is_none() {
-            self.decide(event_loop);
-        }
+        let tick = self.harness_tick.clone();
+        tick.dispatch(self, |driver| driver.app.user_event(event_loop, ()), |driver, _count| {
+            if driver.second_due.is_some() {
+                driver.second_close(event_loop);
+            } else if driver.decided.is_none() {
+                driver.decide(event_loop);
+            }
+        });
     }
 }
 
@@ -302,10 +306,16 @@ fn child(role: &str) -> Result<()> {
         ledger: Arc::new(std::sync::Mutex::new(NativeProgressLedger::default())),
     };
     let stop = Arc::new(AtomicBool::new(false));
+    let harness_tick = HarnessTick::default();
     let ticks = {
         let stop = stop.clone();
+        let tick = harness_tick.clone();
         std::thread::spawn(move || {
-            while !stop.load(Ordering::SeqCst) && proxy.send_event(()).is_ok() {
+            while !stop.load(Ordering::SeqCst) {
+                tick.post();
+                if proxy.send_event(()).is_err() {
+                    break;
+                }
                 std::thread::sleep(Duration::from_millis(50));
             }
         })
@@ -313,7 +323,7 @@ fn child(role: &str) -> Result<()> {
     let (mut decided, mut failure) = (None, None);
     let result = crate::ui::init::with_native_startup(inputs, || {
         app.run_with(|app| {
-            let mut driver = CloseDriver { app, role: role.to_string(), begun: Instant::now(), decided: None, second_due: None, stop: stop.clone(), failure: None };
+            let mut driver = CloseDriver { app, role: role.to_string(), begun: Instant::now(), decided: None, second_due: None, stop: stop.clone(), harness_tick: harness_tick.clone(), failure: None };
             let result = event_loop.run_app(&mut driver);
             decided = driver.decided;
             failure = driver.failure.take();
@@ -327,7 +337,8 @@ fn child(role: &str) -> Result<()> {
         return Err(error);
     }
     if let Some(log) = log {
-        for entry in log.lock().unwrap().iter() {
+        let entries = log.lock().unwrap().clone();
+        for entry in entries {
             println!("native: daemon saw {entry}");
         }
     }

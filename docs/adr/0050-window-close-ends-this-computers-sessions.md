@@ -390,3 +390,15 @@ macOS after an abrupt daemon end (SIGKILL, abort, a crash): nothing in 0.6.6 end
 subreaper and no cgroup, a process group is left by `setsid` and Pluto's and Quarto's workers leave it, and macOS installs
 as experimental without service-manager wiring. This is a limit of an experimental platform, decided by the maintainer;
 every controlled end still kills each child's process group, and not a process that left it (residual 7).
+
+## Amendment (2026-10-11): native window harnesses
+
+The pane timing fixture selects its own in-memory Laptop layout and reports the monitor shape and resolved columns. The runner's display no longer selects whether this fixture has an agent pane. Product layout selection and the wire protocol are unchanged.
+
+A pane timing sample uses the first presentation receipt's own since_request_ns, with its checkpoint preceding that receipt. At the next harness tick the current pane cells must hold the row's planted sentinel, and that tick's driver elapsed time may exceed the receipt time by at most 50 ms. These cells are not evidence of the exact receipt frame; the product's receipt still follows presentation of its candidate frame. The sample also reports the open, checkpoint and attached phases.
+
+Progress, close and pane fixtures retain every post in their own pending tick counter. All production callbacks still reach App before consuming that count; a daemon wake may consume an already pending ticker batch. Native work runs once per positive consumption: progress credits the count within its running phase and observes the actual native state once per batch, while close and pane perform one step. An unmarked wake adds no sample or step. The counter is test-only and introduces no product event or wire change.
+
+The progress fixture aggregates actual accepted times into second bins and keeps running lateness and final-dequeue observations. Sampling cost is bounded by scheduled phase seconds. Ledger methods perform no output; phase reports and the close fixture's daemon-log output use owned snapshots after unlocking. The ten-minute workload, native minimization, producer control, actual fan-in/dequeue evidence and existing timing and queue limits are unchanged.
+
+Amended 2026-10-12: a send over 250 ms late fails the progress fixture's rate only in the visible phase, where the window's thread is held. A minimized window must keep its daemon connection: it pings every 30 s and the daemon reaps a window connection after 90 s of silence, so it survives any stall under 60 s. The ten-second windows (190 to 210 sends) fail any stall over about 1.55 s, so they alone bound a minimized phase's rate. The hosted macOS minimized stalls, 389 ms and 449 ms, sit far inside that deadline. sot holds no App Nap opt-out (no NSProcessInfo activity, no NSAppSleepDisabled), so macOS may nap a minimized window; how long a nap can defer its ping is not established here.

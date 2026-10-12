@@ -3,6 +3,7 @@
 use super::native_pane_daemon_tests::{locate, Daemon, Row};
 use super::native_pane_route_tests::{recipe_from, Route, RouteKind};
 use super::tests::{fixture_cli, FixtureHome};
+use super::native_children::HarnessTick;
 use super::*;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -165,6 +166,9 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
     }
     for run in runs.iter().filter(|r| r.role == "fault").chain(runs.iter().filter(|r| r.role != "fault")) {
         anyhow::ensure!(run.out.matches("pane-timing: body entered").count() == 1, "pane timing body did not enter exactly once: {}", run.role);
+        let layouts: Vec<_> = run.out.lines().filter(|l| l.starts_with("pane-timing layout ")).collect();
+        anyhow::ensure!(layouts.len() == 1, "{} must publish one layout receipt: {}", run.role, run.out);
+        println!("{}", layouts[0]);
         if run.role == "fault" {
             let line = run.out.lines().find(|l| l.starts_with("pane-timing fault")).ok_or_else(|| anyhow::anyhow!("fault child printed no verdict: {}", run.out))?;
             anyhow::ensure!(line.contains("ok=true"), "fault child verdict not ok: {line}");
@@ -238,7 +242,6 @@ struct Plan {
 struct Current {
     at: Instant,
     mark: usize,
-    seen: Option<Seen>,
 }
 
 struct Seen {
@@ -259,6 +262,9 @@ struct PaneDriver<'a> {
     targets: Vec<String>,
     stop: std::sync::Arc<AtomicBool>,
     finished: bool,
+    monitor_px: String,
+    layout_reported: bool,
+    harness_tick: HarnessTick,
     failure: Option<anyhow::Error>,
 }
 
@@ -272,6 +278,15 @@ impl PaneDriver<'_> {
         state.terminal.backend().project_lines(0.0, 0.0, 1.0, 1.0).into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n")
     }
 
+    /// The monitor shape and effective in-memory layout of this child.
+    fn layout_state(&self) -> String {
+        let Some(state) = self.app.state.as_ref() else { return "no State".to_string() };
+        let columns = state.settings.resolve_preset(state.monitor_aspect).columns.iter()
+            .map(|slot| slot.label()).collect::<Vec<_>>().join(",");
+        format!("monitor_px={} monitor_aspect={} preset={:?} columns={columns}",
+            self.monitor_px, state.monitor_aspect, state.settings.preset)
+    }
+
     /// The window's own state at the setup bound, so one run says which condition failed and why: the rows of every
     /// listed host key (a missing key is no list, `key:0` an empty one), the frame count, the pane's size, the active host
     /// and its status line (rebuilt only for the active host's events), and the window thread's last failed redraw.
@@ -282,8 +297,8 @@ impl PaneDriver<'_> {
         let text = self.capture.text();
         let redraw_failed = text.lines().filter(|l| l.contains("redraw failed")).last().unwrap_or("none").trim().to_string();
         format!(
-            "listed={listed} lists=[{}] frames={} pty_size={:?} active_host={} status={:?} last_redraw_failure={redraw_failed:?}",
-            lists.join(" "), state.frame_counter, state.pty_size, state.active_host, state.status
+            "listed={listed} lists=[{}] frames={} pty_size={:?} active_host={} status={:?} last_redraw_failure={redraw_failed:?} {}",
+            lists.join(" "), state.frame_counter, state.pty_size, state.active_host, state.status, self.layout_state()
         )
     }
 
@@ -314,7 +329,7 @@ impl PaneDriver<'_> {
         if let Some(state) = self.app.state.as_mut() {
             state.switch_to_workspace(HOST_KEY.to_string(), Some(slug), None, true);
         }
-        self.cur = Some(Current { at, mark, seen: None });
+        self.cur = Some(Current { at, mark });
         Ok(())
     }
 
@@ -327,24 +342,22 @@ impl PaneDriver<'_> {
             return Ok(());
         }
         let text = self.capture.text();
-        let (at, mark, seen_before) = {
+        let (at, mark) = {
             let c = self.cur.as_ref().unwrap();
-            (c.at, c.mark, c.seen.is_some())
+            (c.at, c.mark)
         };
         let new = &text[mark..];
         let plan = &self.plan[self.idx];
         let bound = if plan.resume { RESUME_BOUND } else { READY_BOUND };
-        if !seen_before {
-            if let Some(first) = receipts(new).first() {
-                self.check_fault_order(new)?;
-                let seen = Seen { total_ns: *first, driver_ns: at.elapsed().as_nanos(), open_ms: self.open_ms(), sentinel: self.cells().contains(&plan.nonce) };
-                return self.finish_sample(event_loop, Some(seen), "presented".to_string(), new.to_string());
-            } else if at.elapsed() > bound {
-                anyhow::ensure!(self.role != "fault", "fault child saw no receipt within {bound:?}");
-                return self.finish_sample(event_loop, None, "timeout".to_string(), new.to_string());
-            } else if let Some(outcome) = self.dead_client_outcome(plan.resume) {
-                return self.finish_sample(event_loop, None, outcome, new.to_string());
-            }
+        if let Some(first) = receipts(new).first() {
+            self.check_fault_order(new)?;
+            let seen = Seen { total_ns: *first, driver_ns: at.elapsed().as_nanos(), open_ms: self.open_ms(), sentinel: self.cells().contains(&plan.nonce) };
+            return self.finish_sample(event_loop, Some(seen), "presented".to_string(), new.to_string());
+        } else if at.elapsed() > bound {
+            anyhow::ensure!(self.role != "fault", "fault child saw no receipt within {bound:?}");
+            return self.finish_sample(event_loop, None, "timeout".to_string(), new.to_string());
+        } else if let Some(outcome) = self.dead_client_outcome(plan.resume) {
+            return self.finish_sample(event_loop, None, outcome, new.to_string());
         }
         Ok(())
     }
@@ -432,6 +445,14 @@ impl PaneDriver<'_> {
 impl ApplicationHandler for PaneDriver<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.app.resumed(event_loop);
+        if !self.layout_reported && self.app.state.is_some() {
+            self.monitor_px = event_loop.primary_monitor().map(|m| {
+                let size = m.size();
+                format!("{}x{}", size.width, size.height)
+            }).unwrap_or_else(|| "unavailable".to_string());
+            println!("pane-timing layout {}", self.layout_state());
+            self.layout_reported = true;
+        }
         if self.app.state.is_none() {
             println!("pane-timing not runnable here: display: native App/State startup did not complete");
             self.stop.store(true, Ordering::SeqCst);
@@ -440,18 +461,16 @@ impl ApplicationHandler for PaneDriver<'_> {
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         self.app.window_event(event_loop, id, event);
-        self.after(event_loop);
     }
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         self.app.new_events(event_loop, cause);
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.app.about_to_wait(event_loop);
-        self.after(event_loop);
     }
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
-        self.app.user_event(event_loop, ());
-        self.after(event_loop);
+        let tick = self.harness_tick.clone();
+        tick.dispatch(self, |driver| driver.app.user_event(event_loop, ()), |driver, _count| driver.after(event_loop));
     }
 }
 
@@ -464,6 +483,10 @@ fn plan_for(role: &str, scenario: &Scenario) -> Result<Vec<Plan>> {
     let mut out: Vec<Plan> = scenario.ready.iter().map(|v| plan(v, false)).collect();
     out.push(plan(scenario.seeded.get(n - 1).ok_or_else(|| anyhow::anyhow!("no seeded row for {role}"))?, true));
     Ok(out)
+}
+
+pub(super) fn pane_child_settings() -> Settings {
+    Settings { preset: crate::ui::persist::settings::PresetMode::Laptop, ..Settings::default() }
 }
 
 fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
@@ -503,15 +526,21 @@ fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     let inputs = crate::ui::init::NativeStartupInputs {
         resume: crate::ui::persist::resume::GlobalState { window_w: Some(1024.0), window_h: Some(768.0), ..Default::default() },
         topology: None,
-        settings: Settings::default(),
+        settings: pane_child_settings(),
         keybindings: KeyBindings::defaults(),
         ledger: Arc::new(std::sync::Mutex::new(NativeProgressLedger::default())),
     };
     let stop = Arc::new(AtomicBool::new(false));
+    let harness_tick = HarnessTick::default();
     let ticks = {
         let stop = stop.clone();
+        let tick = harness_tick.clone();
         std::thread::spawn(move || {
-            while !stop.load(Ordering::SeqCst) && proxy.send_event(()).is_ok() {
+            while !stop.load(Ordering::SeqCst) {
+                tick.post();
+                if proxy.send_event(()).is_err() {
+                    break;
+                }
                 std::thread::sleep(Duration::from_millis(20));
             }
         })
@@ -520,7 +549,7 @@ fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
     let (mut failure, mut finished) = (None, false);
     let result = crate::ui::init::with_native_startup(inputs, || {
         app.run_with(|app| {
-            let mut driver = PaneDriver { app, capture: &capture, role: role.to_string(), plan, idx: 0, cur: None, begun: Instant::now(), targets: Vec::new(), stop: stop.clone(), finished: false, failure: None };
+            let mut driver = PaneDriver { app, capture: &capture, role: role.to_string(), plan, idx: 0, cur: None, begun: Instant::now(), targets: Vec::new(), stop: stop.clone(), finished: false, monitor_px: "unavailable".to_string(), layout_reported: false, harness_tick: harness_tick.clone(), failure: None };
             let result = event_loop.run_app(&mut driver);
             failure = driver.failure.take();
             finished = driver.finished;

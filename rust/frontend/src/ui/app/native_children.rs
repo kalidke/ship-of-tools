@@ -8,6 +8,29 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use winit::event_loop::EventLoop;
 
+/// A harness ticker counts pending work before posting its unit-valued event.
+#[derive(Clone, Default)]
+pub(super) struct HarnessTick(Arc<std::sync::atomic::AtomicUsize>);
+
+impl HarnessTick {
+    pub(super) fn post(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(super) fn dispatch<D>(
+        &self,
+        driver: &mut D,
+        forward: impl FnOnce(&mut D),
+        work: impl FnOnce(&mut D, usize),
+    ) {
+        forward(driver);
+        let count = self.0.swap(0, std::sync::atomic::Ordering::AcqRel);
+        if count > 0 {
+            work(driver, count);
+        }
+    }
+}
+
 const FIXTURES_BOUND: Duration = Duration::from_secs(120);
 /// The three phases (2 s, 20 s, 600 s), their native transitions, the final drain and the first frames, with room.
 const WORKLOAD_BOUND: Duration = Duration::from_secs(780);

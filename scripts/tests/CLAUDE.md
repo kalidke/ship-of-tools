@@ -6,6 +6,19 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 ## Files
 - `lib-test-body.sh`: the shared completion verdict for one selected Rust test; ordered, unambiguous capture closure precedes the outer result; missing, ignored, mismatched and failed bodies cannot pass.
 - `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners, including combined captured-summary/truncation and scratch-path controls; accepts a compiled fixture executable by absolute path and validates its shell scratch root before cleanup.
+- `run-filtered-tests.sh`: shared runner for a filtered libtest group. A usage error exits 2. It makes the log's
+  folder before it runs the command, and exits 1 if it cannot; it tees the command's output to a fresh log, and a
+  failed command or capture exits 1 with `command or capture failed`. Otherwise it accepts only a log holding exactly
+  one libtest summary line that starts with the expected positive pass count, zero failed and zero ignored, and on
+  rejection prints each summary line it found (or `no summary line`). Used by the `rust.yml` steps "Test native
+  harness helpers" (job `checks-linux`) and "Test the ignored containment tests" (job `windows-ignored-containment`).
+- `test-filtered-tests.sh`: real-libtest controls of the group runner and its mutation table. Each case pins its log's
+  summary lines, the fixture bodies that ran, the runner's exit status and every line the runner prints, and a failing
+  case prints its saved status, output and libtest log. `MUTANTS` is one table in the runner's order: its rows remove
+  each of the runner's checks by one exact edit of a temporary copy, and its strings are the code no row's edit text
+  holds. The suite fails if the case a row names is not the first to fail on that copy, or if the runner does not read
+  as the table. It receives the existing compiled fixture by absolute path and uses its own temporary roots. Runs in
+  the `rust.yml` step "Test selected Rust bodies" (job `checks-linux`).
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
@@ -173,6 +186,27 @@ Last line: `violations: n, allowed: m, exempt: e, unused-allow: u, folders check
 behaviour it pins. For a Windows script change, the `.ps1` suite named for it above.
 
 ## Rules
+- Each check run-filtered-tests.sh makes is a row of test-filtered-tests.sh's `MUTANTS`, with the case that fails first
+  without it. `MUTANTS` is one table in the runner's order: each row where its edit text starts, and each fragment of
+  code no row's text holds as a string. The suite reads the runner's bytes, fails on a NUL byte (bash drops it), and
+  fails unless each row's text occurs once and the runner reads as exactly that table, apart from comment lines and the
+  spaces, tabs and line breaks at a fragment's edges; a comment that holds a row's text, or a removed comment that a
+  row's text ends in, still fails. So code added to, removed from, moved within or changed in the runner fails the suite
+  until the table changes with it; a new check adds its row and, if no case fails without it, its case. Review still
+  catches what the suite cannot see: a deleted row whose text other rows' texts cover (one row's, or two together, as
+  argument-order's); a check's code written into a fragment instead of a row; a deleted case that is no row's first
+  killer (`ignored`), or a weakened case that still fails first on its rows' edits; tee-status's fail-open form (a stale
+  log tee cannot open; root can open any file, so no case can pin it); and spaces, tabs and line breaks at a fragment's
+  edge.
+- A `rust.yml` step that filters libtest bodies to run them as tests runs through run-filtered-tests.sh with its verified
+  positive count ("Test native harness helpers" in `checks-linux`, "Test the ignored containment tests" in
+  `windows-ignored-containment`), so a filter that runs no body, or another number, fails. Two filter steps keep cargo's
+  exit status, because a step of the same run executes every body they select: "Folder trust premises (Windows and
+  macOS)" filters `trust_declaration` and `agents::folder_trust` in `test`, whose "Test workspace" runs every
+  non-ignored sotd body; the `test-linux` row `outage test lane_bridge outage::` is paired with `capsule test
+  lane_bridge --skip outage::`, which runs every lane_bridge body the first does not select. The fixture selections of
+  "Test selected Rust bodies" are inputs, not tests: test-test-body.sh's `cargo_parity` case judges their logs. Single
+  selected-body owners retain lib-test-body.sh and its stronger identity verdict.
 - The checker accepts the outer result only after complete, unambiguous captured-output boundaries; a captured summary or truncated capture cannot supply that result.
 - The proof binds its shell scratch root to a validated absolute directory before installing cleanup; behavior controls observe the driver and cleanup paths under relative TMPDIR.
 - A shell owner that selects one Rust body consumes the completion verdict from lib-test-body.sh; a listed name, child exit zero or a zero-test summary alone is not execution proof.

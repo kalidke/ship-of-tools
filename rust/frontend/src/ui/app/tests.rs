@@ -1,10 +1,11 @@
 //! Native workload observations around the real App/State and transport loop.
 //! The owned peer supplies events; only production callbacks drain them.
 
-use super::native_children::NativeChild;
+use super::native_children::{HarnessTick, NativeChild};
 use super::*;
 use crate::net::transport::{observe_native_fan_in, run_native_progress_transport, IncomingEvt};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::cell::Cell;
 use std::io::Write;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -50,12 +51,16 @@ const MINIMIZED: Profile = Profile {
 struct PhaseLedger {
     profile: Profile,
     epoch: Instant,
-    accepted: BTreeMap<usize, Instant>,
-    dequeued: BTreeMap<usize, Instant>,
+    accepted: BTreeSet<usize>,
+    dequeued: BTreeSet<usize>,
+    second_bins: Vec<usize>,
+    max_lateness_ms: u128,
+    final_dequeue: Option<Instant>,
     max_outstanding: usize,
     native_ok: bool,
     samples: usize,
     producer_done: Option<Instant>,
+    timing_visits: Cell<usize>,
 }
 
 #[derive(Default)]
@@ -73,12 +78,16 @@ impl NativeProgressLedger {
                     PhaseLedger {
                         profile,
                         epoch,
-                        accepted: BTreeMap::new(),
-                        dequeued: BTreeMap::new(),
+                        accepted: BTreeSet::new(),
+                        dequeued: BTreeSet::new(),
+                        second_bins: vec![0; profile.seconds as usize],
+                        max_lateness_ms: 0,
+                        final_dequeue: None,
                         max_outstanding: 0,
                         native_ok: true,
                         samples: 0,
                         producer_done: None,
+                        timing_visits: Cell::new(0),
                     }
                 )
                 .is_none(),
@@ -100,8 +109,11 @@ impl NativeProgressLedger {
     }
 
     pub(crate) fn accepted(&mut self, tag: Option<(String, usize)>) {
+        self.accepted_at(tag, Instant::now());
+    }
+
+    fn accepted_at(&mut self, tag: Option<(String, usize)>, now: Instant) {
         let Some((phase, seq)) = tag else { return };
-        let now = Instant::now();
         let state = self
             .phases
             .get_mut(&phase)
@@ -111,38 +123,40 @@ impl NativeProgressLedger {
             "workload sequence outside its profile"
         );
         assert!(
-            state.accepted.insert(seq, now).is_none(),
+            state.accepted.insert(seq),
             "duplicate successful fan-in send"
         );
+        let elapsed = now.duration_since(state.epoch);
+        if let Some(bin) = state.second_bins.get_mut(elapsed.as_secs() as usize) {
+            *bin += 1;
+        }
+        state.max_lateness_ms = state.max_lateness_ms.max(
+            now.saturating_duration_since(state.epoch + Duration::from_millis(seq as u64 * 50)).as_millis());
         state.observe_outstanding(now);
-        println!(
-            "window-progress event=accepted profile={phase} sequence={seq} elapsed_ms={}",
-            now.duration_since(state.epoch).as_millis()
-        );
     }
 
     pub(crate) fn dequeued(&mut self, host: &HostKey, event: &IncomingEvt) {
         let Some((phase, seq)) = self.tag(host, event) else {
             return;
         };
-        let now = Instant::now();
+        self.dequeued_at(phase, seq, Instant::now());
+    }
+
+    fn dequeued_at(&mut self, phase: String, seq: usize, now: Instant) {
         let state = self
             .phases
             .get_mut(&phase)
             .expect("dequeue has a started phase");
         assert!(
-            state.accepted.contains_key(&seq),
+            state.accepted.contains(&seq),
             "a dequeue preceded accepted-send accounting"
         );
         assert!(
-            state.dequeued.insert(seq, now).is_none(),
+            state.dequeued.insert(seq),
             "duplicate actual State dequeue"
         );
+        state.final_dequeue = Some(state.final_dequeue.map_or(now, |last| last.max(now)));
         state.observe_outstanding(now);
-        println!(
-            "window-progress event=dequeued profile={phase} sequence={seq} elapsed_ms={}",
-            now.duration_since(state.epoch).as_millis()
-        );
     }
 }
 
@@ -158,79 +172,164 @@ impl PhaseLedger {
     }
 
     fn rate(&self, elapsed: Duration) -> (usize, usize, u128) {
-        let full_seconds = elapsed.as_secs().min(self.profile.seconds as u64);
-        let windows: Vec<usize> = (0..=full_seconds.saturating_sub(10))
-            .filter(|_| full_seconds >= 10)
-            .map(|offset| {
-                self.accepted
-                    .values()
-                    .filter(|&&at| {
-                        let t = at.duration_since(self.epoch);
-                        t >= Duration::from_secs(offset) && t < Duration::from_secs(offset + 10)
-                    })
-                    .count()
-            })
-            .collect();
-        let lateness = self
-            .accepted
-            .iter()
-            .map(|(&seq, &at)| {
-                at.saturating_duration_since(self.epoch + Duration::from_millis(seq as u64 * 50))
-                    .as_millis()
-            })
-            .max()
-            .unwrap_or(0);
-        (
-            windows.iter().copied().min().unwrap_or(0),
-            windows.iter().copied().max().unwrap_or(0),
-            lateness,
-        )
+        let seconds = elapsed.as_secs().min(self.profile.seconds as u64) as usize;
+        if seconds < 10 {
+            return (0, 0, self.max_lateness_ms);
+        }
+        let mut sum: usize = self.second_bins[..10].iter().map(|&bin| {
+            self.timing_visits.set(self.timing_visits.get() + 1);
+            bin
+        }).sum();
+        let (mut min, mut max) = (sum, sum);
+        for end in 10..seconds {
+            self.timing_visits.set(self.timing_visits.get() + 2);
+            sum += self.second_bins[end];
+            sum -= self.second_bins[end - 10];
+            min = min.min(sum);
+            max = max.max(sum);
+        }
+        (min, max, self.max_lateness_ms)
     }
 
-    fn failures(&self, now: Instant) -> Vec<&'static str> {
+    fn snapshot(&self, now: Instant, native: bool) -> ProgressSnapshot {
+        ProgressSnapshot {
+            profile: self.profile,
+            elapsed: now.duration_since(self.epoch),
+            accepted: self.accepted.len(),
+            dequeued: self.dequeued.len(),
+            max_outstanding: self.max_outstanding,
+            native_ok: self.native_ok,
+            samples: self.samples,
+            producer_done: self.producer_done,
+            final_dequeue: self.final_dequeue,
+            rate: self.rate(now.duration_since(self.epoch)),
+            native,
+        }
+    }
+}
+
+/// All observations used by output and verdicts, owned independently of the ledger.
+struct ProgressSnapshot {
+    profile: Profile,
+    elapsed: Duration,
+    accepted: usize,
+    dequeued: usize,
+    max_outstanding: usize,
+    native_ok: bool,
+    samples: usize,
+    producer_done: Option<Instant>,
+    final_dequeue: Option<Instant>,
+    rate: (usize, usize, u128),
+    native: bool,
+}
+
+impl ProgressSnapshot {
+    /// The workload kept 20 sends a second: every ten-second window holds 190 to 210 of them, so a stall that moves 11
+    /// sends past a second's edge fails (any stall over about 1.55 s does). A minimized window needs no tighter bound:
+    /// it pings every 30 s and the daemon reaps a connection silent for 90 s, so it keeps its connection through any
+    /// stall under 60 s. In the visible phase no send may be over 250 ms late either: that is how a transport waiting
+    /// on the held window thread shows (MAC-REDRAW).
+    fn rate_ok(&self) -> bool {
+        let (min, max, late) = self.rate;
+        (self.profile.minimized || late <= 250) && (self.profile.seconds < 10 || (min >= 190 && max <= 210))
+    }
+
+    fn failures(&self) -> Vec<&'static str> {
         let mut failures = Vec::new();
-        let elapsed = now.duration_since(self.epoch);
-        let (min, max, late) = self.rate(elapsed);
-        if self.accepted.len() != self.profile.expected {
+        if self.accepted != self.profile.expected {
             failures.push("workload_volume");
         }
-        if late > 250 || (self.profile.seconds >= 10 && (min < 190 || max > 210)) {
+        if !self.rate_ok() {
             failures.push("workload_rate");
         }
-        if self.dequeued.len() != self.accepted.len()
-            || self.outstanding() != 0
+        if self.dequeued != self.accepted
             || self.max_outstanding > 200
         {
             failures.push("queue_progress");
         }
         if self.samples < self.profile.seconds as usize
             || !self.native_ok
-            || elapsed.as_secs() < self.profile.seconds as u64
+            || self.elapsed.as_secs() < self.profile.seconds as u64
         {
             failures.push("native_observation");
         }
         if self.producer_done.is_none()
-            || self
-                .dequeued
-                .values()
-                .any(|&at| at > self.producer_done.unwrap() + Duration::from_secs(5))
+            || self.final_dequeue.is_some_and(|at| at > self.producer_done.unwrap() + Duration::from_secs(5))
         {
             failures.push("final_drain");
         }
         failures
     }
 
-    fn print(&self, phase: &str, now: Instant, native: bool) {
-        let (min, max, late) = self.rate(now.duration_since(self.epoch));
-        let workload_ok = self.accepted.len() == self.profile.expected
-            && late <= 250
-            && (self.profile.seconds < 10 || (min >= 190 && max <= 210));
-        println!("window-progress test={TEST} phase={phase} elapsed_s={} expected_sent={} sent={} dequeued={} outstanding={} max_outstanding={} min_10s_sent={min} max_10s_sent={max} max_lateness_ms={late} native_minimized={native} workload_ok={workload_ok}",
-            now.duration_since(self.epoch).as_secs(), self.profile.expected, self.accepted.len(), self.dequeued.len(), self.outstanding(), self.max_outstanding);
-        std::io::stdout()
-            .flush()
-            .expect("flush native progress proof");
+    fn write(&self, phase: &str, writer: &mut impl Write) -> std::io::Result<()> {
+        let (min, max, late) = self.rate;
+        let workload_ok = self.accepted == self.profile.expected && self.rate_ok();
+        writeln!(writer, "window-progress test={TEST} phase={phase} elapsed_s={} expected_sent={} sent={} dequeued={} outstanding={} max_outstanding={} min_10s_sent={min} max_10s_sent={max} max_lateness_ms={late} native_minimized={} workload_ok={workload_ok} samples={}",
+            self.elapsed.as_secs(), self.profile.expected, self.accepted, self.dequeued, self.accepted - self.dequeued, self.max_outstanding, self.native, self.samples)?;
+        writer.flush()
     }
+}
+
+enum ReportRequest {
+    Begin(Profile, bool),
+    Sample(Profile, Instant, bool, usize),
+}
+
+struct ProgressReport {
+    epoch: Instant,
+    snapshot: ProgressSnapshot,
+    completed: bool,
+    failures: Vec<&'static str>,
+}
+
+impl ProgressReport {
+    fn write(&self, body_entered: bool, mutation: bool, writer: &mut impl Write) -> std::io::Result<()> {
+        self.snapshot.write(if body_entered { "body-entered" } else { "sample" }, writer)?;
+        if !self.completed {
+            return Ok(());
+        }
+        self.snapshot.write("completed", writer)?;
+        let profile = self.snapshot.profile;
+        if mutation && profile.phase == VISIBLE.phase {
+            writeln!(writer, "mac-redraw-mutation visible failures={}", self.failures.join(","))?;
+        } else if profile.stall && self.failures.contains(&"workload_volume")
+            && self.failures.contains(&"workload_rate") && !self.failures.contains(&"native_observation")
+        {
+            writeln!(writer, "window-progress control=stalled_minimized_producer_is_rejected expected_failure=workload_volume,workload_rate observed_failure={} control_bodies=1", self.failures.join(","))?;
+        } else if profile.phase == MINIMIZED.phase && self.failures.is_empty() {
+            writeln!(writer, "window-progress phase=completed expected_sent=12000 sent=12000 dequeued=12000 outstanding=0 workload_ok=true completed_bodies=1 samples={}", self.snapshot.samples)?;
+        }
+        writer.flush()
+    }
+}
+
+fn report_progress(
+    ledger: &Mutex<NativeProgressLedger>,
+    request: ReportRequest,
+    mutation: bool,
+    writer: &mut impl Write,
+) -> std::io::Result<ProgressReport> {
+    let mut ledger = ledger.lock().expect("native progress ledger");
+    let body_entered = matches!(request, ReportRequest::Begin(..));
+    let (profile, now, native, count) = match request {
+        ReportRequest::Begin(profile, native) => (profile, ledger.begin(profile), native, 0),
+        ReportRequest::Sample(profile, now, native, count) => (profile, now, native, count),
+    };
+    let phase = ledger.phases.get_mut(profile.phase).expect("started current phase");
+    if !body_entered {
+        phase.native_ok &= native == profile.minimized;
+        phase.samples += count;
+        phase.observe_outstanding(now);
+    }
+    let completed = !body_entered && phase.producer_done.is_some_and(|done| {
+        phase.outstanding() == 0 || now.duration_since(done) >= Duration::from_secs(5)
+    });
+    let snapshot = phase.snapshot(now, native);
+    let failures = if completed { snapshot.failures() } else { Vec::new() };
+    let report = ProgressReport { epoch: phase.epoch, snapshot, completed, failures };
+    drop(ledger);
+    report.write(body_entered, mutation, writer)?;
+    Ok(report)
 }
 
 async fn produce(
@@ -266,7 +365,7 @@ async fn produce(
                     .phases
                     .get_mut(profile.phase)
                     .expect("started producer phase");
-                if state.accepted.contains_key(&profile.expected) {
+                if state.accepted.contains(&profile.expected) {
                     state.producer_done = Some(Instant::now());
                     break;
                 }
@@ -307,6 +406,7 @@ impl PeerTasks {
         mut outgoing: tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
         ledger: Arc<Mutex<NativeProgressLedger>>,
         proxy: EventLoopProxy<()>,
+        harness_tick: HarnessTick,
     ) -> Result<Self> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
@@ -341,6 +441,7 @@ impl PeerTasks {
             let mut tick = tokio::time::interval(Duration::from_secs(1));
             loop {
                 tick.tick().await;
+                harness_tick.post();
                 if proxy.send_event(()).is_err() {
                     return Ok(());
                 }
@@ -380,6 +481,7 @@ struct NativeDriver {
     fan_in: Option<std::sync::mpsc::Sender<(HostKey, IncomingEvt)>>,
     ledger: Arc<Mutex<NativeProgressLedger>>,
     proxy: EventLoopProxy<()>,
+    harness_tick: HarnessTick,
     outgoing: Option<tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>>,
     peer: Option<PeerTasks>,
     current: Option<Profile>,
@@ -422,6 +524,7 @@ impl NativeDriver {
             self.outgoing.take().expect("owned request receiver"),
             self.ledger.clone(),
             self.proxy.clone(),
+            self.harness_tick.clone(),
         );
         match peer {
             Ok(peer) => {
@@ -438,10 +541,9 @@ impl NativeDriver {
     }
 
     fn begin(&mut self, profile: Profile, native: bool) {
-        let mut ledger = self.ledger.lock().expect("native progress ledger");
-        let epoch = ledger.begin(profile);
-        let state = &ledger.phases[profile.phase];
-        state.print("body-entered", epoch, native);
+        let report = report_progress(&self.ledger, ReportRequest::Begin(profile, native), false, &mut std::io::stdout())
+            .expect("write native progress proof");
+        let epoch = report.epoch;
         self.peer
             .as_ref()
             .expect("started peer")
@@ -453,7 +555,7 @@ impl NativeDriver {
         self.current = Some(profile);
     }
 
-    fn tick(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+    fn tick(&mut self, event_loop: &ActiveEventLoop, count: usize) -> Result<()> {
         anyhow::ensure!(
             self.peer
                 .as_ref()
@@ -480,32 +582,16 @@ impl NativeDriver {
             return Ok(());
         }
         let profile = self.current.expect("a current native phase");
-        let mut ledger = self.ledger.lock().expect("native progress ledger");
-        let phase = ledger
-            .phases
-            .get_mut(profile.phase)
-            .expect("started current phase");
-        phase.native_ok &= native == profile.minimized;
-        phase.samples += 1;
-        phase.observe_outstanding(now);
-        phase.print("sample", now, native);
-        let Some(done) = phase.producer_done else {
-            return Ok(());
-        };
-        if phase.outstanding() != 0 && now.duration_since(done) < Duration::from_secs(5) {
+        let report = report_progress(&self.ledger, ReportRequest::Sample(profile, now, native, count),
+            cfg!(feature = "test-mac-redraw-mutation"), &mut std::io::stdout())?;
+        if !report.completed {
             return Ok(());
         }
-        let failures = phase.failures(now);
-        phase.print("completed", now, native);
+        let failures = report.failures;
         // The mutation leg ends at the visible phase's verdict. Its transport may be waiting on this thread (the defect
         // it restores), so there is no orderly stop: it reports and ends the process.
         #[cfg(feature = "test-mac-redraw-mutation")]
         if profile.phase == VISIBLE.phase {
-            println!(
-                "mac-redraw-mutation visible failures={}",
-                failures.join(",")
-            );
-            std::io::stdout().flush()?;
             std::process::exit(i32::from(!failures.is_empty()));
         }
         if profile.stall {
@@ -515,7 +601,6 @@ impl NativeDriver {
                     && !failures.contains(&"native_observation"),
                 "stalled-producer control did not settle its two workload predicates: {failures:?}"
             );
-            println!("window-progress control=stalled_minimized_producer_is_rejected expected_failure=workload_volume,workload_rate observed_failure={} control_bodies=1", failures.join(","));
         } else {
             anyhow::ensure!(
                 failures.is_empty(),
@@ -524,10 +609,7 @@ impl NativeDriver {
                 failures.join(",")
             );
         }
-        drop(ledger);
         if profile.phase == MINIMIZED.phase {
-            println!("window-progress phase=completed expected_sent=12000 sent=12000 dequeued=12000 outstanding=0 workload_ok=true completed_bodies=1");
-            std::io::stdout().flush()?;
             self.outcome = Some(Ok(()));
             event_loop.exit();
         } else {
@@ -577,10 +659,15 @@ impl ApplicationHandler for NativeDriver {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
-        self.app.user_event(event_loop, ());
-        if let Err(error) = self.tick(event_loop) {
-            self.fail(event_loop, error);
-        }
+        let tick = self.harness_tick.clone();
+        tick.dispatch(self, |driver| driver.app.user_event(event_loop, ()), |driver, count| {
+            if driver.outcome.is_some() {
+                return;
+            }
+            if let Err(error) = driver.tick(event_loop, count) {
+                driver.fail(event_loop, error);
+            }
+        });
     }
 }
 
@@ -629,6 +716,7 @@ pub(in crate::ui) fn minimized_window_drains_events_for_ten_minutes() -> Result<
         fan_in: None,
         ledger,
         proxy: event_loop.create_proxy(),
+        harness_tick: HarnessTick::default(),
         outgoing: Some(outgoing),
         peer: None,
         current: None,
@@ -700,3 +788,7 @@ impl Drop for FixtureHome {
         }
     }
 }
+
+#[allow(dead_code, reason = "harness=false native targets run none of these tests")]
+#[path = "native_harness_tests.rs"]
+mod harness_tests;
