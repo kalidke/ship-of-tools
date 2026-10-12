@@ -15,7 +15,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - `supervisor_loop` respawns a dead kernel with a backoff from 250 ms doubling to 30 s on platform's `Redial`, started
   over only after a kernel that served `STABLE` (60 s) after its hello: a kernel that never answers, or answers and then
   dies, keeps the doubling however long its precompile ran (`run_one_generation` returns when it answered).
-- A kernel request, its send included, ends within `KERNEL_REQUEST_TIMEOUT`; a running kernel's timeout says `the running kernel did not answer <op>`, a starting one's `kernel still starting`. A kernel that answers nothing for `KernelBounds::answer` (300 s), or not its hello for `start` (1800 s), is ended with that reason and started again after the backoff.
+- A kernel request, its send included, ends within `KERNEL_REQUEST_TIMEOUT`; a running kernel's timeout says `the running kernel did not answer <op>`, a starting one's `kernel still starting`. A kernel that answers nothing for `KernelBounds::answer` (300 s, counted from the later of the oldest request's write and the kernel's last answer), or not its hello for `start` (1800 s), is ended with that reason and started again after the backoff.
 - Pluto and MathJax respawn on the next call after a death (`ensure_supervisor`).
 - A MathJax render answers within 10 s (`RENDER_BOUND`): one past it is a `mathjax_render_failed` error naming the
   timeout, and its node child is ended, even mid-write, so the next render starts a fresh one (`MathJax::render`,
