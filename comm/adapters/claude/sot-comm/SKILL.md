@@ -29,7 +29,7 @@ new mail only at its own next turn.
 
 | Intent | Command |
 |--------|---------|
-| Join (once per session) | `comm-join.sh --name <name> --expertise "a, b"` |
+| Join (once per session; `/sot-session-start` does it) | `comm-join.sh --expertise "a, b"` (the handle is derived: folder name plus box name) |
 | Who's online | `comm-list.sh` |
 | Direct message | `comm-send.sh @<name> "message"` |
 | Broadcast | `comm-send.sh --broadcast "message"` |
@@ -147,8 +147,8 @@ Creates a **sot workspace** (a session-strip row; the user cycles
 to it with Shift+ArrowRight / Shift+ArrowLeft) whose agent the daemon starts at once; its own
 `/sot-session-start` joins it under the name you chose, and any `--task`
 waits in its inbox as an ordinary message. **Addressable immediately** — the
-handle is pre-registered, so `comm-send.sh @<name>` queues even before it
-finishes joining. Label = repo name, never the task (`comm-spawn.sh` rejects
+handle is pre-registered, so `comm-send.sh @<name>` is filed into its inbox
+even before it finishes joining, and its session reads it at start. Label = repo name, never the task (`comm-spawn.sh` rejects
 task-named labels). One repo root holds one session: `comm-spawn.sh` refuses
 a root that already has a workspace, naming it; a second session on a repo is
 a worktree (`/worktree`). The new row appears in every window's strip on its
@@ -173,8 +173,8 @@ spawning: `references/spawning.md`.
   you; describe the problem, let them own the implementation.
 - **Anti-groupthink tags:** `[design]` `[question]` `[breaks]` `[challenge]`
   `[consensus]` (no `[consensus]` without a prior `[breaks]` in the thread).
-- Delivery is durable (queued to the recipient's inbox, picked up on
-  `comm-poll.sh`); liveness is a `last_seen` under ten minutes old (`comm-list.sh` shows
+- Delivery is the line in the recipient's inbox, read with `comm-poll.sh`;
+  nothing is queued anywhere. Liveness is a `last_seen` under ten minutes old (`comm-list.sh` shows
   live/stale), which your `poll`/`send`/`join`, your turns and your row's daemon (every minute) all refresh.
 
 ## Which frontend am I on

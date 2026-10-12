@@ -45,13 +45,10 @@ session bound to it. Don't hand-roll `git worktree add` here; see
 
 ## Bootstrapping a session that hasn't joined yet
 
-A session is only addressable by `@name` once it has joined — that's the
-consent model. If another session has the skill installed but hasn't
-joined, ask its owner to run `/sot-session-start` in that session, or type
-the nudge yourself: `comm-bootstrap.sh <slug|label|workspace_id>
-[suggested-name]` types a self-contained "run comm-join then reply to me"
-message into that row through the daemon's `pty.input` — the only path
-that bypasses the registry. Once the target joins it appears in
+A session is only addressable by `@name` once it has joined. Every row's
+session joins at its start (`/sot-session-start`); if another session has not
+joined, ask its owner to run `/sot-session-start` in that session. A sender
+never types into another session. Once the target joins it appears in
 `comm-list.sh` and you exchange messages normally with `@name`.
 
 ## Seeing the new row in the FE
