@@ -130,7 +130,6 @@ fn a_setuid_leader_is_waited_after_its_exit() {
         .wait()
         .unwrap_or_else(|error| panic!("setuid zombie leader was refused: {error}"));
     assert!(status.success(), "{status:?}");
-    println!("MAC-EPERM-FIX setuid PASS: zombie leader of another uid accepted");
 }
 #[test]
 fn a_request_in_the_leaders_exit_window_is_done() {
@@ -162,7 +161,7 @@ fn a_request_in_the_leaders_exit_window_is_done() {
         }
     }
     println!(
-        "MAC-EPERM-FIX window: rounds={ROUNDS} failed={} refused-accepted={refused_accepted}",
+        "exit window: rounds={ROUNDS} failed={} refused-accepted={refused_accepted}",
         failures.len()
     );
     assert!(
@@ -170,6 +169,10 @@ fn a_request_in_the_leaders_exit_window_is_done() {
         "{} of {ROUNDS} requests in the exit window failed; first: {:?}",
         failures.len(),
         &failures[..failures.len().min(2)]
+    );
+    assert!(
+        refused_accepted > 0,
+        "no request in {ROUNDS} rounds met a refused group request: the exit window was not exercised"
     );
 }
 struct LiveTree {
@@ -301,7 +304,7 @@ fn a_real_live_group_permission_denial_stays_an_error() {
 }
 #[test]
 fn a_failed_group_observation_keeps_the_original_eperm() {
-    for fault in 1..=5 {
+    for fault in 1..=7 {
         let (_dir, mut command) = zombie_command();
         let mut child = Box::leak(Box::new(Signal::new()))
             .spawn_std(&mut command)
@@ -321,7 +324,30 @@ fn a_failed_group_observation_keeps_the_original_eperm() {
             "query fault={fault}: original EPERM preserved; independent leader request checked"
         );
     }
-    println!("MAC-EPERM-FIX evidence PASS: 5 rejected observations name their step");
+}
+/// Faults 8-11 each leave the one member a single ended state; the request must accept every one of them alone.
+#[test]
+fn each_ended_member_state_is_accepted_alone() {
+    for (fault, state) in [
+        (8, "not shown"),
+        (9, "exiting"),
+        (10, "in another group"),
+        (11, "zombie"),
+    ] {
+        let (_dir, mut command) = zombie_command();
+        let mut child = Box::leak(Box::new(Signal::new()))
+            .spawn_std(&mut command)
+            .unwrap();
+        exited_eperm(child.id());
+        clear_events();
+        contain::macos::FAULT.with(|value| value.set(fault));
+        let result = child.wait();
+        contain::macos::FAULT.with(|value| value.set(0));
+        let status = result
+            .unwrap_or_else(|error| panic!("an ended member ({state}) alone was refused: {error}"));
+        assert_eq!(status.code(), Some(17), "fault={fault}");
+        accepted_observations();
+    }
 }
 fn assert_original_eperm(error: &std::io::Error) {
     let source = error
@@ -339,11 +365,13 @@ fn assert_original_eperm(error: &std::io::Error) {
 fn assert_fault_evidence(error: &std::io::Error, fault: u8) {
     let text = error.to_string();
     let (step, reason) = match fault {
-        1 => ("membership-first", "listing-failed"),
+        1 => ("membership-first", "listing-empty"),
         2 => ("membership-first", "listing-truncated"),
         3 => ("member", "query-failed"),
         4 => ("member", "live-member"),
-        _ => ("membership-second", "membership-grew"),
+        5 => ("membership-second", "membership-grew"),
+        6 => ("membership-first", "sizing-failed"),
+        _ => ("membership-first", "listing-failed"),
     };
     for required in [
         "macOS group EPERM:",
@@ -400,7 +428,6 @@ fn a_non_eperm_fixture_failure_reports_its_observation() {
     ] {
         assert!(text.contains(required), "missing {required}: {text}");
     }
-    println!("MAC-EPERM-FIX fixture evidence PASS: real non-EPERM request names rc, credentials, before and after");
 }
 #[test]
 fn injected_group_and_leader_failures_stay_checked() {

@@ -183,7 +183,8 @@ thread_local! {
     pub(crate) static REAP_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// A group and its unreaped leader are checked independently. macOS also recognizes a checked all-zombie group.
+/// A group and its unreaped leader are checked independently. On macOS a group request refused with EPERM is done when
+/// every member is no longer shown, exiting, a zombie or in another group (`macos::checked_no_live_group`).
 #[cfg(unix)]
 fn request(pid: i32, group: bool) -> std::io::Result<()> {
     // SAFETY: the caller retains the unreaped leader identity, and this only signals its own group or leader.
@@ -240,7 +241,7 @@ fn request(pid: i32, group: bool) -> std::io::Result<()> {
 pub(super) mod macos {
     use std::io;
 
-    // sys/proc_info.h in the macOS SDK. libc supplies both functions, PROC_PIDTBSDINFO and SZOMB, but not these.
+    // sys/proc_info.h in the macOS SDK. libc supplies proc_listpids, proc_pidinfo, __error and SZOMB, not these.
     const PROC_PGRP_ONLY: u32 = 2;
     const PROC_PIDT_SHORTBSDINFO: i32 = 13;
     const PROC_FLAG_INEXIT: u32 = 4;
@@ -368,8 +369,23 @@ pub(super) mod macos {
         // SAFETY: the SDK sizing call writes nothing; it returns room for every process plus 20.
         let sizing =
             unsafe { libc::proc_listpids(PROC_PGRP_ONLY, group as u32, std::ptr::null_mut(), 0) };
-        let bytes = usize::try_from(sizing).unwrap_or(0) + width;
+        #[cfg(test)]
+        let sizing = match (FAULT.with(|fault| fault.get()), step) {
+            (6, "membership-first") => 0,
+            _ => sizing,
+        };
+        if sizing <= 0 {
+            let errno = io::Error::last_os_error().raw_os_error();
+            observation
+                .evidence
+                .push(format!("{step} sizing={sizing} errno={errno:?}"));
+            observation.reject(step, "sizing-failed");
+            return None;
+        }
+        let bytes = sizing as usize + width;
         let mut pids = vec![0i32; bytes / width];
+        // SAFETY: errno is this thread's own; cleared, it tells an empty listing (no errno) from a failed one.
+        unsafe { *libc::__error() = 0 };
         // SAFETY: this writable buffer has exactly bytes bytes.
         let count = unsafe {
             libc::proc_listpids(
@@ -381,12 +397,14 @@ pub(super) mod macos {
         };
         let errno = (count <= 0)
             .then(|| io::Error::last_os_error().raw_os_error())
-            .flatten();
+            .flatten()
+            .filter(|&errno| errno != 0);
         #[cfg(test)]
-        let count = match (FAULT.with(|fault| fault.get()), step) {
-            (1, "membership-first") => 0,
-            (2, "membership-first") => bytes as i32,
-            _ => count,
+        let (count, errno) = match (FAULT.with(|fault| fault.get()), step) {
+            (1, "membership-first") => (0, None),
+            (2, "membership-first") => (bytes as i32, errno),
+            (7, "membership-first") => (0, Some(libc::EIO)),
+            _ => (count, errno),
         };
         let listed = usize::try_from(count).unwrap_or(0);
         pids.truncate(listed.min(bytes) / width);
@@ -398,7 +416,12 @@ pub(super) mod macos {
             "{step} sizing={sizing} count={count} errno={errno:?} pids={pids:?}"
         ));
         if count <= 0 {
-            observation.reject(step, "listing-failed");
+            let reason = if errno.is_some() {
+                "listing-failed"
+            } else {
+                "listing-empty"
+            };
+            observation.reject(step, reason);
             return None;
         }
         if listed >= bytes {
@@ -428,14 +451,29 @@ pub(super) mod macos {
             .then(|| io::Error::last_os_error().raw_os_error())
             .flatten();
         #[cfg(test)]
-        let count = match FAULT.with(|fault| fault.get()) {
-            3 => size - 1,
-            _ => count,
+        let (count, errno) = match FAULT.with(|fault| fault.get()) {
+            3 => (size - 1, errno),
+            8 => (0, Some(libc::ESRCH)),
+            _ => (count, errno),
         };
+        // Faults 4 and 8-11 leave one state each: live, not shown, exiting, in another group, a zombie.
         #[cfg(test)]
-        if FAULT.with(|fault| fault.get()) == 4 {
-            info.status = libc::SRUN;
-            info.flags = 0;
+        match FAULT.with(|fault| fault.get()) {
+            4 => {
+                info.status = libc::SRUN;
+                info.flags = 0;
+            }
+            9 => {
+                info.status = libc::SRUN;
+                info.flags = PROC_FLAG_INEXIT;
+            }
+            10 => {
+                info.pgid = group as u32 + 1;
+                info.status = libc::SRUN;
+                info.flags = 0;
+            }
+            11 => info.flags = 0,
+            _ => {}
         }
         let mut text = format!("member pid={pid} count={count} errno={errno:?}");
         if count == size {
@@ -450,10 +488,12 @@ pub(super) mod macos {
         }
         if count != size {
             observation.reject("member", "query-failed");
-        } else if info.pgid == group as u32
-            && info.status != libc::SZOMB
-            && info.flags & PROC_FLAG_INEXIT == 0
-        {
+            return;
+        }
+        let ended = info.pgid != group as u32
+            || info.status == libc::SZOMB
+            || info.flags & PROC_FLAG_INEXIT != 0;
+        if !ended {
             observation.reject("member", "live-member");
         }
     }
