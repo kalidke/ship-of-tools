@@ -242,21 +242,26 @@ fn owners() -> Vec<(&'static str, &'static str)> {
     owners
 }
 
+/// How long a bound case's bash may run before the test calls it hung. Bash's start, the owner's sourcing and every
+/// spawn count here, and a loaded Git Bash runner slows each by seconds (hosted Windows run 38252414920 spent about ten
+/// in start-up alone). The ceilings that judge the bound are timed inside the case (`CASE_CLOCK`); this only ends a hang.
+const HUNG: Duration = Duration::from_secs(120);
+
 /// The case's own clock: `t0=$(now_ms)` before the call it times and `took_since "$t0"` after it write the call's time
 /// to `$HOME/took.ms`, read by perl, the interpreter the bound itself runs on. So a ceiling measures the bound under
 /// test, never bash's start or the owner's sourcing, which took about ten seconds on a loaded hosted Windows runner.
 const CASE_CLOCK: &str = r#"now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
 took_since() { echo $(( $(now_ms) - $1 )) > "$HOME/took.ms"; }"#;
 
-/// Runs `script` after `source` (an [`owners`] line) and [`CASE_CLOCK`] under this platform's bash, within `BOUND`,
+/// Runs `script` after `source` (an [`owners`] line) and [`CASE_CLOCK`] under this platform's bash, within `HUNG`,
 /// and returns its stdout, the time of the call it timed, and its status and both streams for the caller's messages.
 /// Every line is printed, in a passing run's log too (CI runs the tests with --nocapture). A script that does not
-/// finish within `BOUND`, a bash that fails, or a script that timed no call fails the caller.
+/// finish within `HUNG`, a bash that fails, or a script that timed no call fails the caller.
 fn bound_case(source: &str, script: &str) -> (String, Duration, String) {
     let home = tempfile::tempdir().expect("scratch home");
     let mut child = shell(home.path(), &format!("{source}\n{CASE_CLOCK}\n{script}"), "").expect("bash");
     drop(child.stdin.take());
-    let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(HUNG);
     let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
     assert!(status.success(), "bash failed: {said}");
     let took = std::fs::read_to_string(home.path().join("took.ms"))
@@ -407,7 +412,7 @@ sot_bounded 0 true 2>/dev/null; echo "zero $?"
     let mut child = shell(home.path(), &script, "").expect("bash");
     drop(child.stdin.take());
     // About 8 s of one-second bounds and their grace periods on Unix.
-    let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND * 2);
+    let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(HUNG);
     // Every line, in the log of a run that passes too (CI runs the tests with --nocapture).
     eprintln!("the bound test's lines ({owner}):\n{stdout}its stderr:\n{stderr}");
     let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");

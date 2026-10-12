@@ -100,8 +100,8 @@ function Get-SotTopologyPlan {
 # refreshes this box's cache of the hub's hosts.toml (the hub is the only
 # writer -- see .sot/hosts.toml.example). Deliberately NOT inside
 # Get-SotTopologyPlan: that stays pure (a reader, no ssh, no writes), and
-# shutdown-sot.ps1, which dot-sources this file only to learn ports, must
-# never sync.
+# shutdown-sot.ps1, which dot-sources this file to learn ports and for
+# Invoke-SotWithin and $SotSshOpts (its remote journal reads), must never sync.
 #
 # Never throws and never fails a launch. A box that is itself the hub, an
 # unreachable hub, a fetched file that does not parse, or one that does not

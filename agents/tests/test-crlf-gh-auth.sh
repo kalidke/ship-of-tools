@@ -36,7 +36,9 @@
 #
 # HERMETIC: a temp $SOT_COMM_HOME and $GH_CONFIG_DIR, stub curl/gh/jq/sleep
 # confined to a PATH prefix, and no network. One `request` and one `poll` per
-# run, with every assertion made against those two runs' artifacts.
+# run carry the CRLF and curl assertions, made against those two runs'
+# artifacts; a third run, `status` against a gh stub that hangs, checks the
+# script's 30 s gh bound (the one slow case, about 31 s).
 #
 # Usage: agents/tests/test-crlf-gh-auth.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
