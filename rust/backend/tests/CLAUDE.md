@@ -104,4 +104,4 @@ shows the shape.
   source). A move of either src file changes that line in the same commit.
 
 - SSH stand-ins and k3b/k5 observe parent PATH and SHELL preservation through fixture setup, child execution and teardown; equality failures identify the phase without printing environment values.
-- Admission-expiry coverage reports the single first voyage's sanitized typed result, fresh-start count and expired-child reap before assertions; its ordinary gated fallback retains the production handshake bound and typed outcomes, before any worker recovery.
+- Admission-expiry coverage waits for the expired spare's exit as its parent sees it (`waitid` with WNOWAIT; `/proc`'s `Z` comes first for a child with a second thread), and reports the single first voyage's sanitized typed result, fresh-start count and expired-child reap before assertions; its ordinary gated fallback retains the production handshake bound and typed outcomes, before any worker recovery.

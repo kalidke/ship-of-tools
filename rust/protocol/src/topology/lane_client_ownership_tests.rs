@@ -59,13 +59,16 @@ impl Drop for PeerScript {
     fn drop(&mut self) { std::fs::remove_dir_all(&self.0).expect("remove owned peer folder"); }
 }
 
-fn counted_endpoint(failed_spawn: Option<usize>) -> (DaemonLaneEndpoint, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+/// `failed_spawn` names the start that fails; `dying_spawn` the one whose peer reads the hello and exits unanswered.
+fn counted_endpoint(failed_spawn: Option<usize>, dying_spawn: Option<usize>) -> (DaemonLaneEndpoint, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!("sot-spare-peer-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
     std::fs::create_dir(&path).unwrap();
     let script = std::sync::Arc::new(PeerScript(path));
     sot_log::test_exec::write_executable(&script.0.join("peer.py"), r#"import json, os, sys
 hello = json.loads(sys.stdin.readline())
+if sys.argv[1:] == ['dies-in-handshake']:
+    sys.exit(0)
 request = json.loads(sys.stdin.readline())
 assert hello['kind'] == 'req' and hello['op'] == 'hello'
 assert hello['payload']['role'] == 'handoff'
@@ -83,6 +86,7 @@ sys.stdin.buffer.read()
             return Err(std::io::Error::other("optional spare spawn failed"));
         }
         std::process::Command::new("python3").arg("-u").arg(script.0.join("peer.py"))
+            .args((dying_spawn == Some(n)).then_some("dies-in-handshake"))
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
             .spawn()
     }));
@@ -101,7 +105,7 @@ fn child_is_live(client: &DaemonLaneClient) -> bool {
 #[test]
 fn ssh_spare_spawn_and_consume_counts() {
     for (failed_spawn, counts) in [(None, [2, 3, 3, 4, 5]), (Some(1), [2, 4, 4, 5, 6])] {
-        let (ep, calls) = counted_endpoint(failed_spawn);
+        let (ep, calls) = counted_endpoint(failed_spawn, None);
         for (kind, expected) in ["supervisor", "supervisor", "voyage", "supervisor", "voyage"].into_iter().zip(counts) {
             let parked_pid = match &*ep.spare.lock().unwrap() {
                 VoyageSpare::Parked(child) => Some(child.child.lock().unwrap().id()),
@@ -116,11 +120,11 @@ fn ssh_spare_spawn_and_consume_counts() {
             drop(client);
         }
     }
-    let (ep, calls) = counted_endpoint(None);
+    let (ep, calls) = counted_endpoint(None, None);
     drop(ssh_step(&ep, "voyage").unwrap());
     drop(ssh_step(&ep, "supervisor").unwrap());
     assert_eq!(calls.load(Ordering::SeqCst), 2, "first voyage without a spare spends the endpoint");
-    let (ep, calls) = counted_endpoint(Some(1));
+    let (ep, calls) = counted_endpoint(Some(1), None);
     drop(ssh_step(&ep, "supervisor").unwrap());
     drop(ssh_step(&ep, "voyage").unwrap());
     assert_eq!(calls.load(Ordering::SeqCst), 3, "a failed spare spawn falls back to one ordinary voyage login");
@@ -128,7 +132,7 @@ fn ssh_spare_spawn_and_consume_counts() {
 
 #[test]
 fn a_dead_spare_uses_one_fresh_voyage_login() {
-    let (ep, calls) = counted_endpoint(None);
+    let (ep, calls) = counted_endpoint(None, None);
     drop(ssh_step(&ep, "supervisor").unwrap());
     if let VoyageSpare::Parked(client) = &*ep.spare.lock().unwrap() {
         client.cancel();
@@ -148,8 +152,19 @@ fn a_dead_spare_uses_one_fresh_voyage_login() {
 }
 
 #[test]
+fn a_spare_that_dies_in_its_handshake_uses_one_fresh_voyage_login() {
+    let (ep, calls) = counted_endpoint(None, Some(1));
+    drop(ssh_step(&ep, "supervisor").unwrap());
+    let voyage = ssh_step(&ep, "voyage");
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "a spare that dies after the check needs one ordinary fresh voyage login: {:?}", voyage.as_ref().err());
+    let fresh = voyage.expect("the ordinary voyage login answers");
+    assert!(child_is_live(&fresh), "the fallback voyage login is live");
+    assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Spent));
+}
+
+#[test]
 fn a_down_gate_never_invokes_the_test_spawner() {
-    let (ep, calls) = counted_endpoint(None);
+    let (ep, calls) = counted_endpoint(None, None);
     let LaneDial::Ssh(_, gate) = &ep.dial else { unreachable!() };
     gate.set_up(false);
     assert!(matches!(ssh_step(&ep, "supervisor"), Err(TransportError::LinkDown)));
@@ -165,7 +180,7 @@ fn a_down_gate_never_invokes_the_test_spawner() {
 
 #[test]
 fn endpoint_destruction_reaps_the_parked_spare() {
-    let (ep, _) = counted_endpoint(None);
+    let (ep, _) = counted_endpoint(None, None);
     drop(ssh_step(&ep, "supervisor").unwrap());
     #[cfg(windows)]
     let process = match &*ep.spare.lock().unwrap() {
@@ -208,7 +223,7 @@ fn endpoint_destruction_reaps_the_parked_spare() {
 
 #[test]
 fn abandonment_rearms_only_before_the_first_voyage() {
-    let (ep, calls) = counted_endpoint(None);
+    let (ep, calls) = counted_endpoint(None, None);
     drop(ssh_step(&ep, "supervisor").unwrap());
     let (mut output, pid) = match &*ep.spare.lock().unwrap() {
         VoyageSpare::Parked(child) => (child.out.try_clone().unwrap(), child.child.lock().unwrap().id()),

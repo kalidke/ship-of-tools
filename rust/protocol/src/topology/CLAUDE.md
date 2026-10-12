@@ -39,7 +39,7 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - A unit sotd writes into the user's systemd folder starts only where hosts.toml gives it: `sotd.service` on the hosts
   declared `daemon` or `frontend` (`sotd_hosts`), the reverse tunnels and relay sockets on the hub, each by a host pin
   that matches a host's name or its name and a domain (`host_pin`); with no hosts.toml `sotd.service` carries no pin.
-- On an SSH route an initial supervisor attempt may park at most one voyage login as an optional optimization; spare spawn failure leaves ordinary voyage fallback available. A local route parks none. The first voyage consumes a usable spare once or uses an ordinary gated dial; a spent endpoint starts no further spare, with pre-voyage abandonment governed by ADR 0045 (`start_spare`, `take_spare`).
+- On an SSH route an initial supervisor attempt may park at most one voyage login as an optional optimization; spare spawn failure leaves ordinary voyage fallback available. A local route parks none. The first voyage tries a live spare once; with none, or when its handshake fails however it failed, it uses an ordinary gated dial, whose result is the dial's; a spent endpoint starts no further spare, with pre-voyage abandonment governed by ADR 0045 (`start_spare`, `take_spare`).
 
 - `DaemonLaneEndpoint::new` fixes the endpoint's route and initializes its private spare state. Callers cannot replace the route or construct an endpoint literal; a shared `LinkGate` changes liveness only. Tests exercise dial sequences and owned-child lifetimes.
 

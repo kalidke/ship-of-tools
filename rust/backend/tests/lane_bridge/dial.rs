@@ -630,9 +630,13 @@ async fn an_expired_spare_uses_a_fresh_voyage_login() {
     let spare = pids.lock().unwrap()[1];
     let stat = format!("/proc/{spare}/stat");
     let deadline = Instant::now() + Duration::from_secs(30);
+    // The spare's exit as its parent sees it: `waitid` with WNOWAIT reports what `try_wait` will and leaves the child
+    // unreaped. `/proc`'s `Z` is the thread-group leader's alone and comes first while the stub's `upload` thread exits.
     loop {
-        let text = std::fs::read_to_string(&stat).expect("the retained child stays unreaped until consumption");
-        if text.rsplit_once(") ").unwrap().1.starts_with('Z') { break; }
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let waited = unsafe { libc::waitid(libc::P_PID, spare, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+        assert_eq!(waited, 0, "the retained child stays unreaped until consumption: {}", std::io::Error::last_os_error());
+        if unsafe { info.si_pid() } != 0 { break; }
         assert!(Instant::now() < deadline, "the private daemon never closed the idle bridge at admission expiry");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
