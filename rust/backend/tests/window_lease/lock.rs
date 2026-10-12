@@ -9,8 +9,13 @@ async fn second_daemon_refuses_live() {
     env.spawn_sotd();
     poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "the first daemon to accept").await;
 
+    let started = Instant::now();
     let ran = sot_log::test_wait::run_within(sotd_on(&env, &[]).as_std_mut(), BOUND);
+    let took = started.elapsed();
     assert!(!ran.status.success(), "the second daemon must refuse: {ran}");
+    // A daemon that answers on the socket is refused at once (`refuse_live_socket`; on Windows `lock_daemon`): only a
+    // predecessor that no longer answers is waited for.
+    assert!(took < Duration::from_secs(5), "the second daemon must refuse at once, not after {took:?}: {ran}");
     assert!(try_connect(&env.socket_path).await.is_some(), "the first daemon must still answer");
     env.kill_daemon_bounded().await;
 }

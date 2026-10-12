@@ -2,8 +2,9 @@
 """Cargo's test runner in CI: test-binary-bound.py SECONDS BINARY [ARG...] runs one test binary with its arguments,
 passing its output through unchanged. A binary still running after SECONDS is killed, and the runner names the tests
 libtest reported running for over 60 seconds that it never saw end, then exits 124; cargo's --no-fail-fast goes on to
-the next binary. Otherwise it exits with the binary's code."""
-import os, re, subprocess, sys, threading
+the next binary. Otherwise it ends as the binary ended: with its exit code, or, for a binary a signal ended, by that
+signal, after naming it."""
+import os, re, signal, subprocess, sys, threading
 
 bound, command = float(sys.argv[1]), sys.argv[2:]
 warned, ended = [], set()
@@ -40,4 +41,12 @@ except subprocess.TimeoutExpired:
     sys.exit(124)
 for thread in relays:
     thread.join(timeout=5)
+if code < 0:
+    # A signal ended the binary: name it, then end this runner by it, so cargo reports the signal, not an exit code of
+    # 128 + N. Python ignores SIGPIPE and handles SIGINT itself, so the signal's default action comes back first;
+    # SIGKILL's cannot be changed.
+    print(f"test-binary-bound: {command[0]} was ended by signal {-code} ({signal.strsignal(-code)})", file=sys.stderr, flush=True)
+    if -code != signal.SIGKILL:
+        signal.signal(-code, signal.SIG_DFL)
+    os.kill(os.getpid(), -code)
 sys.exit(code)

@@ -65,6 +65,8 @@ scripts/CLAUDE.md.
   needs it.
 - A suite runs only if a step names it: add a new suite to `rust.yml` (or `CI.yml` for Julia) by name, in the commit
   that adds it.
+- Every job has a `timeout-minutes` of its own, a few times its usual length: without one, a hung step holds its runner
+  for GitHub's default of 360 minutes.
 - Function length is gated: the `rust.yml` step "Function length and test children" runs clippy's `too_many_lines` (more
   than 100 code lines) as an error, `vt100-ctt` excluded because it denies `clippy::all` in its own source. A function
   over the limit carries `#[allow(clippy::too_many_lines, reason = "...")]`. The step also reads the feature-gated

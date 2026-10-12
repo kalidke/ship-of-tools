@@ -1074,6 +1074,8 @@ jobs:
   fresh-install-smoke:
     name: fresh install smoke (clean container)
     runs-on: ubuntu-latest
+    # Usually 3 to 4 minutes.
+    timeout-minutes: 15
     if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     container: ubuntu:22.04
     steps:

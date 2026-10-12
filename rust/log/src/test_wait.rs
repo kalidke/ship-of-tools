@@ -1,9 +1,9 @@
 //! Test-only (feature `test-support`): the bounded form of a test's wait on another party. [`run_within`] runs a child
-//! to its end and returns its whole account, [`Ran`]; [`try_run_within`] is its form that never panics, for a cleanup
-//! in `Drop`; [`within`] bounds any other blocking wait (a join, a receive, an accept, a read). A wait that overruns
-//! fails its test by name instead of holding the job, and a child that overruns is killed. A failure about a child
-//! carries its command, its exit status and the last [`FAILURE_STREAM_BYTES`] of each stream ([`tail`]), the form
-//! `test_isolated`'s drained waits use too.
+//! to its end and returns its whole account, [`Ran`]; [`try_run_within`] is its form that never panics, for a caller
+//! that takes the failure as a value (a cleanup in `Drop`, a probe whose failure a skip names); [`within`] bounds any
+//! other blocking wait (a join, a receive, an accept, a read). A wait that overruns fails its test by name instead of
+//! holding the job, and a child that overruns is killed. A failure about a child carries its command, its exit status
+//! and the last [`FAILURE_STREAM_BYTES`] of each stream ([`tail`]), the form `test_isolated`'s drained waits use too.
 
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::Duration;
@@ -126,7 +126,7 @@ mod tests {
         let (said, failed, flood) = (
             "echo said-on-stdout& echo said-on-stderr 1>&2",
             "echo said-on-stdout& echo said-on-stderr 1>&2& exit /b 3",
-            "for /L %i in (1,1,2000) do @echo 0123456789abcdef0123456789abcdef& exit /b 4",
+            "(for /L %i in (1,1,2000) do @echo 0123456789abcdef0123456789abcdef)& exit /b 4",
         );
         let ran = run_within(&mut shell(said), BOUND).ok();
         assert!(ran.stdout.contains("said-on-stdout") && ran.stderr.contains("said-on-stderr"), "{ran}");

@@ -1,9 +1,9 @@
 # The test-children rule (docs/ownership.md), read by rust.yml's "Function length and test children" step, which
 # names this folder in CLIPPY_CONF_DIR; every other clippy run reads rust/clippy.toml. A test runs a child to its end
-# only through sot_log::test_wait::run_within (try_run_within in a cleanup), or test_isolated::drain(..).wait_within
-# when it writes the child's input, so the wait has a bound and a failure carries the child's command, exit status and
-# both streams. No test carries an allow for these methods; production code calls them only under rust/clippy.toml's
-# process-spawns allows.
+# through sot_log::test_wait::run_within (or try_run_within, which returns the failure as a value), and waits on a
+# child it holds while it runs through test_isolated::drain(..).wait_within, or test_isolated::wait_within when it did
+# not pipe the child's streams, so the wait has a bound and a failure carries the child's account. No test carries an
+# allow for these methods; production code calls them only under rust/clippy.toml's process-spawns allows.
 disallowed-methods = [
   { path = "std::process::Command::output", reason = "run a test's child through sot_log::test_wait::run_within: bounded, with its status and both streams" },
   { path = "std::process::Command::status", reason = "run a test's child through sot_log::test_wait::run_within: bounded, with its status and both streams" },

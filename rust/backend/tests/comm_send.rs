@@ -53,9 +53,7 @@ impl Staged {
         let cwd = self.env._tmp.path().join("m4");
         std::fs::create_dir_all(&cwd).expect("mkdir cwd");
         sot_log::test_wait::run_within(
-            Command::new("timeout")
-                .arg("60")
-                .arg("bash")
+            Command::new("bash")
                 .arg(self.bin.join(name))
                 .args(args)
                 .env_clear()

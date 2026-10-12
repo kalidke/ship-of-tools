@@ -19,8 +19,8 @@ use super::*;
 /// sent here is the request itself. Bounded like every other wire round
 /// trip in this file ([`call`]'s own `BOUND`) — the blocking body runs
 /// on its own thread via `spawn_blocking`, abandoned (not cancelled) on
-/// timeout, exactly [`drain_stderr_bounded`]'s own "leak, never hang"
-/// tradeoff.
+/// timeout: it leaks a blocked thread rather than hang, the trade
+/// `sot_log::test_wait::within` makes.
 #[cfg(target_os = "linux")]
 async fn leg_survival(voyage_id: &str) -> sot_log::lane::wire::Survival {
     let voyage_id_owned = voyage_id.to_string();

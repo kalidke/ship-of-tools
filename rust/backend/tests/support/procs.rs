@@ -171,26 +171,6 @@ pub fn poll_until_no_process_matches(pattern: &str, timeout: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
-/// Drains `pipe` to EOF or `bound`, whichever comes first — mirrors
-/// `rows::spawn::detach::drain_stderr_bounded` (production, Codex
-/// SHOULD-FIX: a wrapper that has already exited can still leave stderr
-/// inherited by a still-running grandchild, and a plain `read_to_string`
-/// then blocks until EVERY holder of the pipe's write end closes it, not
-/// just the immediate child whose own exit was already observed —
-/// measured 7 s in production's own repro). Same off-thread-plus-
-/// `recv_timeout` shape, duplicated rather than shared for the same
-/// crate-boundary reason [`user_manager_available_for_test`]'s own doc
-/// gives for duplicating the probe itself.
-#[cfg(target_os = "linux")]
-fn drain_stderr_bounded(mut pipe: impl std::io::Read + Send + 'static, bound: Duration) -> String {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = String::new();
-        let _ = pipe.read_to_string(&mut buf);
-        let _ = tx.send(buf);
-    });
-    rx.recv_timeout(bound).unwrap_or_default()
-}
 
 /// A4b: the cgroup2 path of `pid`, the trimmed `0::` line of
 /// `/proc/<pid>/cgroup`.
@@ -302,39 +282,20 @@ pub fn aim_scope_guard(rel: &str, own_rel: &str, state_dir: &Path) -> String {
 /// (that function is private to its own crate) — the two probes are a
 /// handful of lines each and answer the same question for genuinely
 /// different callers, not worth a shared crate-boundary-crossing export.
-/// `Err`'s message is the probe's own stderr, verbatim where there is
-/// any, drained under its own separate bound — exactly what the caller
-/// prints on `SKIPPED:`.
+/// `Err` is the probe's whole account (its command, exit status and both
+/// streams), or why it has none, within production's own 5 s probe
+/// bound — exactly what the caller prints on `SKIPPED:`.
 #[cfg(target_os = "linux")]
 pub fn user_manager_available_for_test() -> Result<(), String> {
-    let mut child = Command::new("systemd-run")
-        .args(["--user", "--scope", "--quiet", "--", "/bin/true"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
-            break s;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("systemd-run --user --scope did not answer within 5s".to_string());
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    if status.success() {
-        return Ok(());
+    let ran = sot_log::test_wait::try_run_within(
+        Command::new("systemd-run").args(["--user", "--scope", "--quiet", "--", "/bin/true"]),
+        Duration::from_secs(5),
+    )?;
+    if ran.status.success() {
+        Ok(())
+    } else {
+        Err(ran.to_string())
     }
-    let stderr = child
-        .stderr
-        .take()
-        .map(|pipe| drain_stderr_bounded(pipe, Duration::from_secs(1)))
-        .unwrap_or_default();
-    Err(stderr.trim().to_string())
 }
 /// Stop the scratch unit [`Env::spawn_sotd_as_user_service`] started —
 /// NEVER the live `sotd`'s own unit, a distinct `sot-test-<uuid>.service`

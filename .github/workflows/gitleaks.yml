@@ -11,6 +11,8 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    # Usually under a minute.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
