@@ -383,6 +383,10 @@ jobs:
       # making the sweeps' actual coverage invisible (review finding).
       # --no-fail-fast: one failing test binary must not hide the others.
       - name: Test workspace
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
         run: cargo test --workspace --locked --no-fail-fast -- --nocapture
 
       # The PowerShell scripts are executed by nothing in CI, and no dev box in
@@ -542,6 +546,10 @@ jobs:
       # here. --no-fail-fast: one failing test binary must not hide the others.
       - name: Test shard ${{ matrix.shard }}
         shell: bash
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
         run: |
           python3 - "${{ matrix.shard }}" "${{ strategy.job-index }}" "${{ strategy.job-total }}" <<'PYSHARD'
           import json, os, subprocess, sys
@@ -744,6 +752,13 @@ jobs:
       - name: Test topology plan (bash)
         timeout-minutes: 5
         run: bash scripts/tests/test-topology-plan.sh
+        working-directory: .
+
+      # The runner the build+test jobs put between cargo and each test binary: a binary that hangs ends at its bound
+      # with the hung test named, and one that ends keeps its output and exit code. Hermetic, on stand-in binaries.
+      - name: Test the test-binary bound
+        timeout-minutes: 2
+        run: bash scripts/tests/test-test-binary-bound.sh
         working-directory: .
 
       # The installer's pure decisions and the sot-launch socket probe, run

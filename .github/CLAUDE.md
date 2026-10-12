@@ -75,6 +75,9 @@ scripts/CLAUDE.md.
   holds (not `rust/vt100`): the `too-many-lines` line of `scripts/tests/check-layout.allow`; a rise fails, and removing
   one means lowering that number in the same commit. It also fails on the text forms that loosen the lint without moving
   the count, exactly those `scripts/tests/CLAUDE.md` lists; a form not listed there is not caught.
+- The build+test jobs' "Test workspace" and "Test shard" run every test binary through
+  `scripts/tests/test-binary-bound.py` (`CARGO_TARGET_<triple>_RUNNER`): a binary still running at 900 s is killed, the
+  tests still running are named, and `--no-fail-fast` runs the rest.
 - Disallowed methods are gated: the `rust.yml` step "Disallowed methods" runs clippy's `disallowed_methods` over every
   library, binary and build script on all three platforms. `rust/clippy.toml` holds one array in labelled groups, each
   opening with its rule. A sanctioned site carries `#[allow(clippy::disallowed_methods, reason = "...")]` on the one
