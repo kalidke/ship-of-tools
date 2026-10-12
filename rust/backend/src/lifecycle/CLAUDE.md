@@ -80,16 +80,16 @@ on a computer decides, through its lease, whether that computer's sessions end (
 - `ContainedStd::wait_within` bounds the wait for a live leader. At the bound `Ok(None)` confirms successful
   tree-termination requests and a direct-child reap; it does not confirm descendant death. Probe, request and reap errors
   are returned, both reasons kept when a probe and a cleanup both fail. An OS termination or reap has no wall-clock ceiling.
-- A request is checked: a group and its unreaped leader are asked independently, only ESRCH counts as already gone,
-  and the owner reaps the leader only after the requests succeed. On macOS alone a group request refused with EPERM
-  counts as no live member only when the retained leader is seen exited unreaped and a complete libproc membership and
-  status query, taken twice, finds every member a zombie of that group (`contain::macos::checked_no_live_group`). A
-  live, failed or ambiguous observation remains an error, including its rejected step, captured member
-  PID/group/status/UID records and each membership listing taken before the rejection; unavailable fields are named
-  unknown. If the leader request succeeds, the returned group error preserves PermissionDenied and the original OS
-  error as a source; its contextual outer error has no raw OS errno. If group and leader requests both fail, the
-  existing Other-kind aggregate retains both displayed reasons without retaining a typed OS error source. The
-  real-EPERM fixture includes the same evidence before and after its request when its premise fails.
+- A request is checked: a group and its unreaped leader are asked independently, only ESRCH counts as already gone, and
+  the owner reaps the leader only after the requests succeed. On macOS alone a group request refused with EPERM counts
+  as no live member when a libproc listing of the group, each member's short status record and a second listing find
+  every member ended (not shown, exiting or a zombie) or in another group, and none added
+  (`contain::macos::checked_no_live_group`). A live, failed or ambiguous observation remains an error, including its
+  rejected step, captured member status records and each membership listing taken before the rejection. If the leader
+  request succeeds, the returned group error preserves PermissionDenied and the original OS error as a source; its
+  contextual outer error has no raw OS errno. If group and leader requests both fail, the existing Other-kind aggregate
+  retains both displayed reasons without retaining a typed OS error source. The real-EPERM fixture includes the same
+  evidence before and after its request when its premise fails.
 - `main` resets `SIGCHLD` to its default and unblocks it in the main thread before anything else (`reset_child_signal`),
   so neither an ignored nor a blocked one inherited from the parent can make the kernel reap a contained leader early or
   keep `Contained::wait` from seeing its exit; the main thread lives as long as the daemon, so the signal always has a
@@ -178,8 +178,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   or an unwind between creation and registration), on real processes. They are in-crate because they reach `Signal` and
   `contain`; the daemon-lifetime harness is a separate test binary and cannot.
 - `start_tests_windows.rs`: the Windows half: a suspended start cannot be outwaited, job requests are checked, a killed daemon's contained tree ends with it, and the suspended interval between creation and the job assignment is observed as ADR 0050's limit (a re-run of the test binary plays the daemon, inside a job of the case's own; `SOT_L2_NO_JOB_ASSIGNMENT` and `SOT_L2_PAUSE_ADOPT` are its two faults in `contain::assign`). That a capsule outlives a killed daemon is the capsule suite's adoption case (`capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning_a_second_one`), through the product's own capsule spawn.
-- `start_tests_macos.rs`: the macOS half: finished-group recognition before reap, rejected-observation error evidence,
-  and a real-request control of the EPERM fixture's before/after failure text.
+- `start_tests_macos.rs`: the macOS half: refused group requests judged by member state (a setuid zombie leader, a
+  leader in its exit window, a live member of other credentials, and each ended state alone), rejected-observation error
+  evidence, and a real-request control of the EPERM fixture's failure text.
 - `startup.rs`: the start's decision from `held.json` and acting on it.
 - `test_gates.rs`: the held points of the daemon-lifetime harness (feature `daemon-lifetime-faults`, `SOT_TEST_GATES`): a point waits until the case creates its file; an installed binary has none.
 

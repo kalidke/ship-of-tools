@@ -11,7 +11,7 @@
 //! containment identity across that wait. Explicit kill requests termination first.
 //! Requests run under the registry lock. [`crate::lifecycle::child_signal::Signal::spawn`]
 //! owns the registry; this module holds nothing but the platform calls.
-//! On macOS only, a real group-request EPERM counts as no live member only after checked observation confirms that the retained leader has exited without being reaped and a complete libproc process-group membership/status query finds no live member; live, failed or ambiguous observations preserve the original error, and leader requests and injected failures remain independently checked. No Unix signal or process-group identity query occurs after leader reap. Rejected observations return their step and captured member evidence with the group EPERM. When the leader request succeeds, the group error retains PermissionDenied and its original OS error source; a simultaneous leader failure keeps both displayed reasons in the existing aggregate.
+//! On macOS only, a group-request EPERM counts as no live member when a libproc listing, each member's short status record and a second listing show every member ended, exiting, a zombie or in another group, and none added; any other observation returns its step and evidence with the original EPERM as source. No Unix signal or process-group identity query occurs after leader reap.
 
 /// One child's containment. Explicit termination checks requests; Drop logs failures.
 pub(crate) struct Tree {
@@ -183,7 +183,8 @@ thread_local! {
     pub(crate) static REAP_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// A group and its unreaped leader are checked independently. macOS also recognizes a checked all-zombie group.
+/// A group and its unreaped leader are checked independently. On macOS a group request refused with EPERM is done when
+/// every member is no longer shown, exiting, a zombie or in another group (`macos::checked_no_live_group`).
 #[cfg(unix)]
 fn request(pid: i32, group: bool) -> std::io::Result<()> {
     // SAFETY: the caller retains the unreaped leader identity, and this only signals its own group or leader.
@@ -240,8 +241,33 @@ fn request(pid: i32, group: bool) -> std::io::Result<()> {
 pub(super) mod macos {
     use std::io;
 
-    // sys/proc_info.h in the macOS SDK. libc supplies both functions, proc_bsdinfo, PROC_PIDTBSDINFO and SZOMB.
+    // sys/proc_info.h in the macOS SDK. libc supplies proc_listpids, proc_pidinfo, __error and SZOMB, not these.
     const PROC_PGRP_ONLY: u32 = 2;
+    const PROC_PIDT_SHORTBSDINFO: i32 = 13;
+    const PROC_FLAG_INEXIT: u32 = 4;
+
+    /// `struct proc_bsdshortinfo`: unlike `proc_bsdinfo` its query has no same-user check.
+    #[repr(C)]
+    #[allow(
+        dead_code,
+        reason = "the SDK layout; the check reads five of its fields"
+    )]
+    struct ShortBsdInfo {
+        pid: u32,
+        ppid: u32,
+        pgid: u32,
+        status: u32,
+        comm: [u8; 16],
+        flags: u32,
+        uid: u32,
+        gid: u32,
+        ruid: u32,
+        rgid: u32,
+        svuid: u32,
+        svgid: u32,
+        rfu: u32,
+    }
+    const _: () = assert!(std::mem::size_of::<ShortBsdInfo>() == 64);
 
     #[cfg(test)]
     thread_local! {
@@ -258,12 +284,8 @@ pub(super) mod macos {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(
                 f,
-                "macOS group EPERM: {}; request={} errno={}",
-                self.observation,
-                self.request,
-                self.request
-                    .raw_os_error()
-                    .map_or_else(|| "unknown".to_string(), |errno| errno.to_string())
+                "macOS group EPERM: {}; request: {}",
+                self.observation, self.request
             )
         }
     }
@@ -282,19 +304,16 @@ pub(super) mod macos {
 
     #[derive(Debug)]
     pub(in crate::lifecycle) struct Observation {
-        leader: i32,
         rejection: Option<(&'static str, &'static str)>,
         evidence: Vec<String>,
     }
 
     impl std::fmt::Display for Observation {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            let (stage, reason) = self.rejection.unwrap_or(("accepted", "all-zombie"));
+            let (step, reason) = self.rejection.unwrap_or(("accepted", "all-ended"));
             write!(
                 f,
-                "step={stage} reason={reason} leader={} group={}; {}",
-                self.leader,
-                self.leader,
+                "step={step} reason={reason}; {}",
                 self.evidence.join("; ")
             )
         }
@@ -303,15 +322,15 @@ pub(super) mod macos {
     impl std::error::Error for Observation {}
 
     impl Observation {
-        fn reject(&mut self, stage: &'static str, reason: &'static str) {
+        fn reject(&mut self, step: &'static str, reason: &'static str) {
             if self.rejection.is_none() {
-                self.rejection = Some((stage, reason));
+                self.rejection = Some((step, reason));
             }
         }
     }
 
-    pub(in crate::lifecycle) fn checked_no_live_group(leader: i32) -> io::Result<()> {
-        let observation = observe(leader);
+    pub(in crate::lifecycle) fn checked_no_live_group(group: i32) -> io::Result<()> {
+        let observation = observe(group);
         if observation.rejection.is_some() {
             Err(io::Error::other(observation))
         } else {
@@ -319,317 +338,163 @@ pub(super) mod macos {
         }
     }
 
-    /// Read-only evidence while the caller retains the unreaped direct leader and group identity.
-    pub(in crate::lifecycle) fn observe(leader: i32) -> Observation {
+    /// Read-only evidence of a group whose number is the retained, unreaped leader's pid.
+    pub(in crate::lifecycle) fn observe(group: i32) -> Observation {
         let mut observation = Observation {
-            leader,
             rejection: None,
             evidence: Vec::new(),
         };
-        collect(&mut observation);
+        let Some(first) = members(&mut observation, group, "membership-first") else {
+            return observation;
+        };
+        for &pid in &first {
+            member(&mut observation, group, pid);
+        }
+        if observation.rejection.is_some() {
+            return observation;
+        }
+        // A pid that left the listing was reaped or left the group; only a pid that joined is a rejection.
+        if let Some(second) = members(&mut observation, group, "membership-second") {
+            if second.iter().any(|pid| !first.contains(pid)) {
+                observation.reject("membership-second", "membership-grew");
+            }
+        }
         observation
     }
 
-    fn collect(observation: &mut Observation) {
-        if !leader_exited(observation, "leader-first") {
-            return;
-        }
-        let Some(first) = members(observation, "membership-first", false) else {
-            return;
-        };
-        let identities = zombies(observation, &first, "member-first", false);
-        if observation.rejection.is_some() {
-            return;
-        }
-        let Some(second) = members(observation, "membership-second", true) else {
-            return;
-        };
-        // Preserve the membership verdict before additional read-only status diagnostics.
-        if first != second {
-            observation.reject("membership-compare", "membership-changed");
-        }
-        let repeated = zombies(observation, &second, "member-second", true);
-        if observation.rejection.is_some() {
-            return;
-        }
-        if identities != repeated {
-            observation.reject("member-compare", "creation-time-changed");
-            return;
-        }
-        leader_exited(observation, "leader-final");
-    }
-
-    fn leader_exited(observation: &mut Observation, stage: &'static str) -> bool {
-        let leader = observation.leader;
-        if leader <= 0 {
-            observation.reject(stage, "invalid-leader");
-            return false;
-        }
+    fn members(observation: &mut Observation, group: i32, step: &'static str) -> Option<Vec<i32>> {
         #[cfg(test)]
-        EVENTS.with(|events| events.borrow_mut().push("exited-unreaped"));
-        // SAFETY: observe only the exclusively retained direct child; WNOWAIT preserves its identity.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        let rc = unsafe {
-            libc::waitid(
-                libc::P_PID,
-                leader as _,
-                &mut info,
-                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-            )
-        };
-        let error = (rc != 0).then(io::Error::last_os_error);
-        if let Some(error) = error {
-            observation.evidence.push(format!("{stage} waitid rc={rc} errno={:?} error={error}; signal=unknown pid=unknown code=unknown", error.raw_os_error()));
-            observation.reject(stage, "waitid-failed");
-            return false;
-        }
-        let pid = unsafe { info.si_pid() };
-        observation.evidence.push(format!(
-            "{stage} waitid rc={rc} signal={} pid={pid} code={}",
-            info.si_signo, info.si_code
-        ));
-        if info.si_signo != libc::SIGCHLD
-            || pid != leader
-            || !matches!(
-                info.si_code,
-                libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED
-            )
-        {
-            observation.reject(stage, "leader-not-exited-unreaped");
-            return false;
-        }
-        true
-    }
-
-    fn members(
-        observation: &mut Observation,
-        stage: &'static str,
-        _recheck: bool,
-    ) -> Option<Vec<i32>> {
-        let leader = observation.leader;
-        #[cfg(test)]
-        EVENTS.with(|events| events.borrow_mut().push("members-any-uid"));
-        // SAFETY: the SDK sizing call writes nothing and queries the retained group without a UID filter.
-        let needed =
-            unsafe { libc::proc_listpids(PROC_PGRP_ONLY, leader as _, std::ptr::null_mut(), 0) };
-        let error = (needed <= 0).then(io::Error::last_os_error);
-        observation.evidence.push(format!(
-            "{stage} sizing={needed} errno={:?}",
-            error.as_ref().and_then(io::Error::raw_os_error)
-        ));
+        EVENTS.with(|events| events.borrow_mut().push("members"));
         let width = std::mem::size_of::<i32>();
-        let Some(mut capacity) = usize::try_from(needed)
-            .ok()
-            .filter(|n| *n > 0 && *n % width == 0)
-        else {
-            observation.reject(stage, "invalid-sizing");
+        // SAFETY: the SDK sizing call writes nothing; it returns room for every process plus 20.
+        let sizing =
+            unsafe { libc::proc_listpids(PROC_PGRP_ONLY, group as u32, std::ptr::null_mut(), 0) };
+        #[cfg(test)]
+        let sizing = match (FAULT.with(|fault| fault.get()), step) {
+            (6, "membership-first") => 0,
+            _ => sizing,
+        };
+        if sizing <= 0 {
+            let errno = io::Error::last_os_error().raw_os_error();
+            observation
+                .evidence
+                .push(format!("{step} sizing={sizing} errno={errno:?}"));
+            observation.reject(step, "sizing-failed");
             return None;
-        };
-        for attempt in 1..=4 {
-            let Some(bytes) = capacity
-                .checked_add(width)
-                .filter(|n| *n <= 4 * 1024 * 1024)
-            else {
-                observation.reject(stage, "capacity-exhausted");
-                return None;
-            };
-            let mut pids = vec![0i32; bytes / width];
-            // SAFETY: this writable buffer has exactly bytes bytes, bounded above by the existing ceiling.
-            let observed_count = unsafe {
-                libc::proc_listpids(
-                    PROC_PGRP_ONLY,
-                    leader as _,
-                    pids.as_mut_ptr().cast(),
-                    bytes as i32,
-                )
-            };
-            let error = (observed_count <= 0).then(io::Error::last_os_error);
-            observation.evidence.push(format!(
-                "{stage} attempt={attempt}/4 allocated={bytes} count={observed_count} errno={:?}",
-                error.as_ref().and_then(io::Error::raw_os_error)
-            ));
-            let raw_bytes = usize::try_from(observed_count).unwrap_or(0).min(bytes);
-            observation.evidence.push(format!(
-                "{stage} query-raw={:?}",
-                &pids[..raw_bytes / width]
-            ));
-            let count = observed_count;
-            #[cfg(test)]
-            let count = match FAULT.with(|fault| fault.get()) {
-                1 => -1,
-                2 => bytes as i32,
-                9 => 1,
-                _ => count,
-            };
-            #[cfg(test)]
-            if count != observed_count {
-                observation
-                    .evidence
-                    .push(format!("{stage} injected-count={count}"));
-            }
-            let Some(count) = usize::try_from(count)
-                .ok()
-                .filter(|n| *n > 0 && *n <= bytes && *n % width == 0)
-            else {
-                observation.reject(stage, "invalid-count");
-                return None;
-            };
-            pids.truncate(count / width);
-            if count == bytes {
-                capacity = bytes * 2;
-                continue;
-            }
-            #[cfg(test)]
-            match FAULT.with(|fault| fault.get()) {
-                5 => pids.retain(|&pid| pid != leader),
-                8 if _recheck => pids.clear(),
-                _ => {}
-            }
-            return validate_members(observation, stage, pids, _recheck);
         }
-        observation.reject(stage, "capacity-exhausted");
-        None
-    }
-
-    fn validate_members(
-        observation: &mut Observation,
-        stage: &'static str,
-        mut pids: Vec<i32>,
-        _recheck: bool,
-    ) -> Option<Vec<i32>> {
-        pids.sort_unstable();
-        let reason = if !pids.contains(&observation.leader) {
-            Some("leader-missing")
-        } else if pids.iter().any(|&pid| pid <= 0) {
-            Some("invalid-pid")
-        } else if pids.windows(2).any(|p| p[0] == p[1]) {
-            Some("duplicate-pid")
-        } else {
-            None
+        let bytes = sizing as usize + width;
+        let mut pids = vec![0i32; bytes / width];
+        // SAFETY: errno is this thread's own; cleared, it tells an empty listing (no errno) from a failed one.
+        unsafe { *libc::__error() = 0 };
+        // SAFETY: this writable buffer has exactly bytes bytes.
+        let count = unsafe {
+            libc::proc_listpids(
+                PROC_PGRP_ONLY,
+                group as u32,
+                pids.as_mut_ptr().cast(),
+                bytes as i32,
+            )
         };
+        let errno = (count <= 0)
+            .then(|| io::Error::last_os_error().raw_os_error())
+            .flatten()
+            .filter(|&errno| errno != 0);
+        #[cfg(test)]
+        let (count, errno) = match (FAULT.with(|fault| fault.get()), step) {
+            (1, "membership-first") => (0, None),
+            (2, "membership-first") => (bytes as i32, errno),
+            (7, "membership-first") => (0, Some(libc::EIO)),
+            _ => (count, errno),
+        };
+        let listed = usize::try_from(count).unwrap_or(0);
+        pids.truncate(listed.min(bytes) / width);
+        #[cfg(test)]
+        if FAULT.with(|fault| fault.get()) == 5 && step == "membership-second" {
+            pids.push(1);
+        }
         observation.evidence.push(format!(
-            "{stage} sorted={pids:?} validated={}",
-            reason.is_none()
+            "{step} sizing={sizing} count={count} errno={errno:?} pids={pids:?}"
         ));
-        if let Some(reason) = reason {
-            observation.reject(stage, reason);
-            // Only read status for positive members; no observation PID ever becomes a signal target.
-            let diagnostic: Vec<_> = pids.into_iter().filter(|pid| *pid > 0).collect();
-            zombies(
-                observation,
-                &diagnostic,
-                if _recheck {
-                    "member-second"
-                } else {
-                    "member-first"
-                },
-                _recheck,
-            );
+        if count <= 0 {
+            let reason = if errno.is_some() {
+                "listing-failed"
+            } else {
+                "listing-empty"
+            };
+            observation.reject(step, reason);
+            return None;
+        }
+        if listed >= bytes {
+            observation.reject(step, "listing-truncated");
             return None;
         }
         Some(pids)
     }
 
-    fn zombies(
-        observation: &mut Observation,
-        members: &[i32],
-        stage: &'static str,
-        recheck: bool,
-    ) -> Vec<(u64, u64)> {
-        members
-            .iter()
-            .filter_map(|&pid| zombie(observation, pid, stage, recheck))
-            .collect()
-    }
-
-    fn zombie(
-        observation: &mut Observation,
-        pid: i32,
-        stage: &'static str,
-        _recheck: bool,
-    ) -> Option<(u64, u64)> {
+    /// One listed pid: ended when it is no longer shown, is in another group, is a zombie or is exiting.
+    fn member(observation: &mut Observation, group: i32, pid: i32) {
         #[cfg(test)]
         EVENTS.with(|events| events.borrow_mut().push("status"));
-        // SAFETY: the SDK BSD layout is complete; arg=1 includes zombies. This only reads a retained group's evidence.
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of_val(&info) as i32;
-        let observed_count = unsafe {
+        // SAFETY: the buffer is the SDK layout; arg=1 includes zombies. This only reads evidence.
+        let mut info: ShortBsdInfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<ShortBsdInfo>() as i32;
+        let count = unsafe {
             libc::proc_pidinfo(
                 pid,
-                libc::PROC_PIDTBSDINFO,
+                PROC_PIDT_SHORTBSDINFO,
                 1,
-                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                (&mut info as *mut ShortBsdInfo).cast(),
                 size,
             )
         };
-        let error = (observed_count <= 0).then(io::Error::last_os_error);
-        let count = observed_count;
+        let errno = (count <= 0)
+            .then(|| io::Error::last_os_error().raw_os_error())
+            .flatten();
         #[cfg(test)]
-        let count = match FAULT.with(|fault| fault.get()) {
-            3 => -1,
-            4 => size - 1,
-            _ => count,
+        let (count, errno) = match FAULT.with(|fault| fault.get()) {
+            3 => (size - 1, errno),
+            8 => (0, Some(libc::ESRCH)),
+            _ => (count, errno),
         };
+        // Faults 4 and 8-11 leave one state each: live, not shown, exiting, in another group, a zombie.
         #[cfg(test)]
         match FAULT.with(|fault| fault.get()) {
-            6 => info.pbi_status = libc::SRUN,
-            7 => info.pbi_status = u32::MAX,
-            10 => info.pbi_pid = 0,
-            11 => info.pbi_pgid = 0,
-            12 if _recheck => info.pbi_start_tvusec = info.pbi_start_tvusec.wrapping_add(1),
+            4 => {
+                info.status = libc::SRUN;
+                info.flags = 0;
+            }
+            9 => {
+                info.status = libc::SRUN;
+                info.flags = PROC_FLAG_INEXIT;
+            }
+            10 => {
+                info.pgid = group as u32 + 1;
+                info.status = libc::SRUN;
+                info.flags = 0;
+            }
+            11 => info.flags = 0,
             _ => {}
         }
-        observation
-            .evidence
-            .push(bsd_text(stage, pid, count, size, &info, error.as_ref()));
-        let reason = if count <= 0 {
-            Some("query-failed")
-        } else if count != size {
-            Some("short-record")
-        } else if info.pbi_pid != pid as u32 {
-            Some("pid-mismatch")
-        } else if info.pbi_pgid != observation.leader as u32 {
-            Some("group-mismatch")
-        } else if info.pbi_status == libc::SZOMB {
-            None
-        } else if status_label(info.pbi_status) == "unknown" {
-            Some("unknown-status")
-        } else {
-            Some("live-member")
-        };
-        if let Some(reason) = reason {
-            observation.reject(stage, reason);
-            None
-        } else {
-            Some((info.pbi_start_tvsec, info.pbi_start_tvusec))
+        let mut text = format!("member pid={pid} count={count} errno={errno:?}");
+        if count == size {
+            text.push_str(&format!(
+                " group={} status={} flags={:#x} uid={} ruid={}",
+                info.pgid, info.status, info.flags, info.uid, info.ruid
+            ));
         }
-    }
-
-    fn bsd_text(
-        stage: &str,
-        pid: i32,
-        count: i32,
-        size: i32,
-        info: &libc::proc_bsdinfo,
-        error: Option<&io::Error>,
-    ) -> String {
-        let errno = error.and_then(io::Error::raw_os_error);
+        observation.evidence.push(text);
+        if errno == Some(libc::ESRCH) {
+            return;
+        }
         if count != size {
-            return format!("{stage} pid={pid} count={count} expected={size} errno={errno:?} status=unknown uid=unknown ruid=unknown");
+            observation.reject("member", "query-failed");
+            return;
         }
-        format!("{stage} pid={pid} count={count} expected={size} returned-pid={} group={} status={}({}) uid={} ruid={} created={}.{}",
-            info.pbi_pid, info.pbi_pgid, info.pbi_status, status_label(info.pbi_status),
-            info.pbi_uid, info.pbi_ruid, info.pbi_start_tvsec, info.pbi_start_tvusec)
-    }
-
-    fn status_label(status: u32) -> &'static str {
-        match status {
-            libc::SIDL => "idle",
-            libc::SRUN => "running",
-            libc::SSLEEP => "sleeping",
-            libc::SSTOP => "stopped",
-            libc::SZOMB => "zombie",
-            _ => "unknown",
+        let ended = info.pgid != group as u32
+            || info.status == libc::SZOMB
+            || info.flags & PROC_FLAG_INEXIT != 0;
+        if !ended {
+            observation.reject("member", "live-member");
         }
     }
 }
