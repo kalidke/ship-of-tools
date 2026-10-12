@@ -242,20 +242,29 @@ fn owners() -> Vec<(&'static str, &'static str)> {
     owners
 }
 
-/// Runs `script` after `source` (an [`owners`] line) under this platform's bash, within `BOUND`, and returns its
-/// stdout, how long it took, and its status and both streams for the caller's messages. Every line is printed, in a
-/// passing run's log too (CI runs the tests with --nocapture). A script that does not finish within `BOUND`, or a bash
-/// that fails, fails the caller.
+/// The case's own clock: `t0=$(now_ms)` before the call it times and `took_since "$t0"` after it write the call's time
+/// to `$HOME/took.ms`, read by perl, the interpreter the bound itself runs on. So a ceiling measures the bound under
+/// test, never bash's start or the owner's sourcing, which took about ten seconds on a loaded hosted Windows runner.
+const CASE_CLOCK: &str = r#"now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
+took_since() { echo $(( $(now_ms) - $1 )) > "$HOME/took.ms"; }"#;
+
+/// Runs `script` after `source` (an [`owners`] line) and [`CASE_CLOCK`] under this platform's bash, within `BOUND`,
+/// and returns its stdout, the time of the call it timed, and its status and both streams for the caller's messages.
+/// Every line is printed, in a passing run's log too (CI runs the tests with --nocapture). A script that does not
+/// finish within `BOUND`, a bash that fails, or a script that timed no call fails the caller.
 fn bound_case(source: &str, script: &str) -> (String, Duration, String) {
     let home = tempfile::tempdir().expect("scratch home");
-    let started = std::time::Instant::now();
-    let mut child = shell(home.path(), &format!("{source}\n{script}"), "").expect("bash");
+    let mut child = shell(home.path(), &format!("{source}\n{CASE_CLOCK}\n{script}"), "").expect("bash");
     drop(child.stdin.take());
     let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
-    let took = started.elapsed();
-    eprintln!("the case's lines:\n{stdout}its stderr:\n{stderr}it took {took:?}");
     let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
     assert!(status.success(), "bash failed: {said}");
+    let took = std::fs::read_to_string(home.path().join("took.ms"))
+        .ok()
+        .and_then(|ms| ms.trim().parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| panic!("the case timed no call: {said}"));
+    eprintln!("the case's lines:\n{stdout}its stderr:\n{stderr}its call took {took:?}");
     (stdout, took, said)
 }
 
@@ -268,7 +277,7 @@ fn the_comm_bound_holds_a_group_whose_leader_exited() {
     for (owner, source) in owners() {
         let (lines, took, said) = bound_case(
             source,
-            r#"out="$(sot_bounded 1 sh -c 'sleep 30 & echo $! > "$HOME/lead.pid"; exit 0')"; echo "leader exit $?"
+            r#"t0=$(now_ms); out="$(sot_bounded 1 sh -c 'sleep 30 & echo $! > "$HOME/lead.pid"; exit 0')"; rc=$?; took_since "$t0"; echo "leader exit $rc"
 kill -0 "$(cat "$HOME/lead.pid")" 2>/dev/null && echo "leader exit alive" || echo "leader exit gone"
 "#,
         );
@@ -285,7 +294,7 @@ fn the_comm_bound_ends_a_command_that_left_its_group() {
     for (owner, source) in owners() {
         let (lines, took, said) = bound_case(
             source,
-            r#"sot_bounded 1 sh -c 'echo $$ > "$HOME/leave.pid"; exec perl -e "setpgrp(0, getpgrp(getppid())) or die; exec q(sleep), q(30)"'; echo "leave $?"
+            r#"t0=$(now_ms); sot_bounded 1 sh -c 'echo $$ > "$HOME/leave.pid"; exec perl -e "setpgrp(0, getpgrp(getppid())) or die; exec q(sleep), q(30)"'; rc=$?; took_since "$t0"; echo "leave $rc"
 kill -0 "$(cat "$HOME/leave.pid")" 2>/dev/null && echo "leave alive" || echo "leave gone"
 "#,
         );
@@ -302,7 +311,7 @@ fn the_comm_bound_kills_a_deaf_command_one_grace_period_after_its_bound() {
     for (owner, source) in owners() {
         let (lines, took, said) = bound_case(
             source,
-            r#"sot_bounded 1 sh -c 'trap "" TERM; echo $$ > "$HOME/deaf.pid"; exec sleep 30'; echo "deaf $?"
+            r#"t0=$(now_ms); sot_bounded 1 sh -c 'trap "" TERM; echo $$ > "$HOME/deaf.pid"; exec sleep 30'; rc=$?; took_since "$t0"; echo "deaf $rc"
 kill -0 "$(cat "$HOME/deaf.pid")" 2>/dev/null && echo "deaf alive" || echo "deaf gone"
 "#,
         );
@@ -323,7 +332,7 @@ fn the_bound_names_its_expiry_when_the_command_catches_term() {
     for (owner, source) in owners() {
         let (lines, took, said) = bound_case(
             source,
-            r#"sot_bounded 1 bash -c 'sleep 30 & s=$!; echo $s > "$HOME/catch.pid"; trap "kill $s; exit 255" TERM; wait'; echo "catch $?"
+            r#"t0=$(now_ms); sot_bounded 1 bash -c 'sleep 30 & s=$!; echo $s > "$HOME/catch.pid"; trap "kill $s; exit 255" TERM; wait'; rc=$?; took_since "$t0"; echo "catch $rc"
 kill -0 "$(cat "$HOME/catch.pid")" 2>/dev/null && echo "catch alive" || echo "catch gone"
 "#,
         );

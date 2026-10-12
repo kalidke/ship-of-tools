@@ -39,7 +39,8 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
   stdio-bridge`; and `sot_bounded`, the bound each of the four timed comm calls runs under, through its one perl
   routine, on each platform's bash and perl, with a group that outlives its leader, a command that leaves its group,
   the grace period's length and a command that catches TERM as tests of their own, every case run against comm-lib's
-  copy and, on Unix, scripts/install.sh's (ADR 0049 `## User isolation`)
+  copy and, on Unix, scripts/install.sh's, each case's ceiling timing only its own call by perl's clock inside the case
+  (ADR 0049 `## User isolation`)
 - `status_integration.rs`: topology; `sotd status` against a real daemon the test starts and stops
 - `stdio_bridge.rs`: topology; `sotd stdio-bridge [--host | --endpoint]` with real pipes and real processes; the two
   cases with another account's listener (refusal, full backlog) need passwordless `sudo -n` and skip without it except
