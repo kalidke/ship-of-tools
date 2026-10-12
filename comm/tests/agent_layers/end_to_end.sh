@@ -319,10 +319,21 @@ run own "$WORK/self-lv.txt" "$JOIN" --name "$LV"; eq "setup: join $LV" "$RC" 0
 run child "$WORK/self-lv.txt" "$SCRIPTS_DIR/comm-leave.sh"
 eq  "child: leave refuses" "$RC" 1
 has "child: leave names the cause" "$OUT" "has no comm identity"
-if jq -e --arg n "$LV" '.agents[$n]' "$REG" >/dev/null 2>&1; then ok "child: the row is still registered"; else bad "child: the row is still registered"; fi
+# jq -e exits 0 for a row, 1 for none; any other exit is a registry jq could not read, never an answer.
+jq -e --arg n "$LV" '.agents[$n]' "$REG" >/dev/null; jrc=$?
+case $jrc in
+    0) ok "child: the row is still registered" ;;
+    1) bad "child: the row is still registered: rows $(jq -c '.agents | keys' "$REG")" ;;
+    *) bad "child: the row is still registered: jq could not read $REG (exit $jrc)" ;;
+esac
 run own "$WORK/self-lv.txt" "$SCRIPTS_DIR/comm-leave.sh"
 eq  "own: leave succeeds" "$RC" 0
-if jq -e --arg n "$LV" '.agents[$n]' "$REG" >/dev/null 2>&1; then bad "own: leave removed the row"; else ok "own: leave removed the row"; fi
+jq -e --arg n "$LV" '.agents[$n]' "$REG" >/dev/null; jrc=$?
+case $jrc in
+    0) bad "own: leave removed the row: it is still registered" ;;
+    1) ok "own: leave removed the row" ;;
+    *) bad "own: leave removed the row: jq could not read $REG (exit $jrc)" ;;
+esac
 
 # --- an ancestry that cannot be read is refused, not trusted ------------------------
 # The library is a copy with the chain walk forced to fail (a box with no /proc
