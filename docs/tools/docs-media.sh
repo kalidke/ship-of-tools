@@ -44,6 +44,8 @@ BIN="${SOT_MEDIA_BIN:-$PINNED_BIN}"
 [ -x "$BIN/sot" ] || BIN="$REPO/rust/target/release"
 FONT_SCALE="${SOT_MEDIA_FONT_SCALE:-1.5}"   # legible at ~1200 px display width
 W=1920; H=1080; FPS=30
+# The EXIT trap below is a cleanup trap (comm/lib/comm-lib-base.sh, cleanup traps): armed before anything is held.
+trap - HUP INT TERM
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-docs-media.XXXXXX")"
 DHOME=/home/demo                 # the HOME every demo process sees ...
 HOSTHOME="$WORK/home"            # ... and where it lives on this box
@@ -127,6 +129,7 @@ reap() {            # reap <pid> — TERM the group, then KILL stragglers
     wait "$p" 2>/dev/null || true
 }
 cleanup() {
+    trap '' HUP INT TERM   # a second signal must not cut the reaping or the rm short
     local i now
     for ((i=${#GROUPS_STARTED[@]}-1; i>=0; i--)); do reap "${GROUPS_STARTED[$i]}"; done
     # Anything else holding the scratch dir: the setsid'd capsule supervisors
@@ -143,7 +146,6 @@ cleanup() {
     if [ -n "${SOT_MEDIA_KEEP:-}" ]; then echo "kept $WORK" >&2; else rm -rf "${WORK:?}"; fi
 }
 trap cleanup EXIT
-trap 'exit 130' INT TERM
 
 # shellcheck source=docs-media-stage.sh
 . "$(dirname "${BASH_SOURCE[0]}")/docs-media-stage.sh"

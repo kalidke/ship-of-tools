@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # test-temp-files.sh — no agents script leaves a file in its temporary folders ($TMPDIR and $XDG_RUNTIME_DIR), on
 # success, on failure, or killed, and a signal ends `sot-gh-auth.sh poll`. The method is comm/tests/lib-temp-files.sh;
-# the messaging scripts' rows are comm/tests/test-temp-files.sh.
+# the messaging scripts' rows are comm/tests/test-temp-files.sh. It also holds the cleanup-trap rows of the two tools
+# outside agents that follow the rule (scripts/install.sh and docs/tools/docs-media.sh), from this checkout.
 #
 # HERMETIC: a temp $SOT_COMM_HOME, a stand-in daemon on a socket of the suite's own, stand-in curl, gh and sleep for
 # the sign-in, the scripts from the staged bin.
@@ -173,5 +174,23 @@ case "$(uname -s)" in
         TF_HOLD='sot-install.*' tf_signal "I2 install.sh's download folder (the signal twice)" HUP \
             "${FIRST[@]}" "$IS" env SOT_INSTALL_TAG=v0.0.1 bash "$INSTALLER" --version v0.0.1 ;;
 esac
+
+# docs/tools/docs-media.sh (Linux only, as the tool is), a copy in a repository layout of the row's own (the script
+# finds its repository from its own path): `agent-cut` with one recorded take waits in its first ffprobe call.
+# Stand-ins: ffprobe (touches the silent mark and waits) and pkill (does nothing: the cleanup kills by its work
+# folder's path, and a test kills nothing by pattern).
+if [ "$(uname -s)" = Linux ]; then
+    DM="$WORK/dm"; mkdir -p "$DM/docs/tools" "$DM/dev/output/docs-media-agent" "$DM/stub"
+    cp "${INSTALLER%/scripts/install.sh}/docs/tools/docs-media.sh" "${INSTALLER%/scripts/install.sh}/docs/tools/docs-media-stage.sh" \
+        "$DM/docs/tools/"
+    printf 'T_PROMPT=1\n' > "$DM/dev/output/docs-media-agent/times.sh"
+    printf '#!/bin/sh\n: > "%s"\nexec "%s" 600\n' "$TF_DIR/silent" "$TF_REAL_SLEEP" > "$DM/stub/ffprobe"
+    printf '#!/bin/sh\nexit 1\n' > "$DM/stub/pkill"
+    chmod +x "$DM/stub/ffprobe" "$DM/stub/pkill"
+    for s in HUP TERM; do
+        TF_HOLD='sot-docs-media.*' tf_signal "D1 docs-media.sh's cleanup trap (the signal twice)" "$s" \
+            "${FIRST[@]}" "$DM/stub" bash "$DM/docs/tools/docs-media.sh" agent-cut
+    done
+fi
 
 tf_report

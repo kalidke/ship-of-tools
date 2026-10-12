@@ -40,7 +40,7 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 - A cleanup trap (an EXIT trap that removes or undoes what its shell holds) starts `trap "" HUP INT TERM`, and its
   shell is armed with `trap - HUP INT TERM` before it holds anything (the comm library arms every shell that loads
   it): a shell that dies of a hang-up hangs up its group again, and without both a second signal ends the trap's rm
-  or the shell itself (comm/lib/comm-lib-base.sh, cleanup traps). agents/ and scripts/ follow the same rule.
+  or the shell itself (comm/lib/comm-lib-base.sh, cleanup traps). agents/, scripts/ and docs/tools/ follow the same rule.
 - A change to locking states its writer set and is proven by concurrent appends from two hosts to one inbox; there is
   no lease-lock fallback. A script change is tested through `tests/` from the staged bin, never against the live home.
 - Registry host facts and unpinned self-file keys agree with the daemon's declared host; the raw hostname remains a derived-handle component. A successful destroy retires only the admitted target daemon's slot.
