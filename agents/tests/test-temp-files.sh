@@ -17,6 +17,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-temp-files-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
 guard_fresh_home "$WORK"
 SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
+INSTALLER="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)/scripts/install.sh"
 tf_setup "$WORK" || exit 2
 # The comm home's path carries the mark, so comm-probe.sh's row root (under it) does.
 export SOT_COMM_HOME="$WORK/home-$TF_MARK" SOT_COMM_TEST_HOST=testhost
@@ -127,5 +128,50 @@ g2_check() {
 }
 TF_WANT_RC=7 TF_CHECK=g2_check tf_row "G2 sot-gh-auth poll (the network down)" ok env PATH="$GH:$PATH" TF_GH=down \
     bash "$SCRIPTS_DIR/sot-gh-auth.sh" poll
+
+# --- the same signal twice: a cleanup trap's rm must survive the second ------------------------------------------------
+# As comm/tests/test-temp-files.sh's C9-C14: each row holds the trap's rm of its file (TF_HOLD) until the signal has
+# reached the group a second time; the file must still go, and the script still ends by the signal. A row whose
+# command needs a folder of stand-ins first on PATH puts it before the row's own PATH (FIRST), never the suite's: the
+# held rm is on the row's.
+FIRST=(sh -c 'PATH="$0:$PATH"; export PATH; exec "$@"')
+gh_request
+g3_check() {
+    [ ! -e "$SOT_COMM_HOME/gh-device-auth.json" ] && return 0
+    echo "    the state file is still there"; rm -f -- "${SOT_COMM_HOME:?}/gh-device-auth.json"; return 1
+}
+TF_HOLD=gh-device-auth.json TF_CHECK=g3_check tf_signal "G3 sot-gh-auth poll's trap (the signal twice)" HUP \
+    "${FIRST[@]}" "$GH" env TF_GH=block bash "$SCRIPTS_DIR/sot-gh-auth.sh" poll
+
+# comm-spawn.sh's rollback: a daemon on this box (its declared host is this shell's), so the provisional row is
+# written; the create request is never answered; the rollback's with_lock removes the registry lock last.
+tf_table '{"version.query":{"daemon":{"host":"testhost"}},"workspace.list":{"workspaces":[]},"workspace.create":"silent"}'
+mkdir -p "$WORK/repo3"
+a14_check() {
+    local bad=0
+    if [ -e "$SOT_COMM_HOME/.registry.lock" ]; then
+        echo "    left: .registry.lock in the comm home"; rm -f -- "${SOT_COMM_HOME:?}/.registry.lock"; bad=1
+    fi
+    if jq -e '[.agents[] | select(.status == "spawning")] | length > 0' "$SOT_COMM_HOME/registry.json" > /dev/null; then
+        echo "    the provisional row is still there"; bad=1
+    fi
+    return "$bad"
+}
+TF_HOLD=.registry.lock TF_CHECK=a14_check tf_signal "A14 comm-spawn's rollback trap (the signal twice)" HUP \
+    env SOT_SELF_HOST=testhost "$SCRIPTS_DIR/comm-spawn.sh" "$WORK/repo3" --name t-roll "${EP[@]}"
+
+# scripts/install.sh, from this checkout: the prelude's copy of the tag's installer, then the body's download folder,
+# each while its first curl call waits (a stand-in that touches the silent mark). Linux and macOS only, where the
+# installer runs: on Git Bash it stops at its own OS check.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) ;;
+    *)
+        IS="$WORK/install-stub"; mkdir -p "$IS"
+        printf '#!/bin/sh\n: > "%s"\nexec "%s" 600\n' "$TF_DIR/silent" "$TF_REAL_SLEEP" > "$IS/curl"; chmod +x "$IS/curl"
+        TF_HOLD='tmp.*' tf_signal "I1 install.sh's copy of the tag's installer (the signal twice)" HUP \
+            "${FIRST[@]}" "$IS" bash "$INSTALLER" --version v0.0.1
+        TF_HOLD='sot-install.*' tf_signal "I2 install.sh's download folder (the signal twice)" HUP \
+            "${FIRST[@]}" "$IS" env SOT_INSTALL_TAG=v0.0.1 bash "$INSTALLER" --version v0.0.1 ;;
+esac
 
 tf_report

@@ -13,7 +13,8 @@
 #   tf_row ROW PATH CMD...   one row: CMD with the jq stand-in in PATH's mode, then nothing may be left; on path ok,
 #                            the function TF_CHECK names (when set) checks the value arrived whole
 #   tf_signal ROW SIG CMD... one row: CMD until the daemon sees a silent op, SIG to its group (or its leader), then
-#                            nothing may be left
+#                            nothing may be left; with TF_HOLD, SIG reaches the group a second time while a cleanup
+#                            trap's rm of a TF_HOLD file runs
 #   tf_report                the summary line; returns the count of failed rows
 #
 # The jq stand-in fails (path `fail`) or hangs (path `kill`) a call whose value carries TF_MARK, in a `--rawfile`
@@ -21,6 +22,12 @@
 # every call on path `ok`. A row on path `kill` waits for the hang, then SIGKILLs the row's process group: what
 # a script holds only on a path that a kill skips is then left behind. CMD runs in a process group of its own with
 # INT and QUIT at their defaults (a background job of a script starts with them ignored), stdin empty.
+#
+# The held rm: with TF_HOLD set (a glob), an `rm` first on CMD's PATH, once the row has armed it (just before its
+# signal), stops at an operand whose name matches TF_HOLD, marks TF_DIR/held and waits for TF_DIR/release before it
+# removes; every other rm is rm. A shell that dies of a hang-up hangs up its group again, and a second Ctrl-C or TERM
+# is ordinary: the hold puts that second signal exactly where it does harm, while a cleanup trap's rm runs. The test
+# process's own PATH never changes.
 
 TF_PASSED=0 TF_FAILED=0 TF_PID="" TF_RC="" TF_DAEMON_PID=""
 
@@ -31,8 +38,9 @@ tf_setup() {  # WORK
     TF_MARK="tfmark${RANDOM}${RANDOM}${RANDOM}"
     TF_SENT="/tf-sent $TF_MARK"
     TF_SOCK="$TF_DIR/s/d.sock"
-    export TF_DIR TF_REAL_JQ TF_MARK
-    _tf_write_jq && _tf_write_daemon || return 1
+    TF_REAL_RM="$(command -v rm)" && TF_REAL_SLEEP="$(command -v sleep)" || return 1
+    export TF_DIR TF_REAL_JQ TF_MARK TF_REAL_RM TF_REAL_SLEEP
+    _tf_write_jq && _tf_write_daemon && _tf_write_rm || return 1
     local bridge
     bridge="$(guard_bridge_stub "$TF_DIR/bridge")" || return 1
     printf '#!/bin/sh\nif [ "$1" = topology ] && [ "$2" = relay-endpoint ]; then echo "unix:%s"; exit 0; fi\nexec "%s" "$@"\n' \
@@ -72,7 +80,7 @@ fi
 if [ "$found" = 1 ]; then
     case "${TF_JQ_MODE:-ok}" in
         fail) : > "$TF_DIR/jq-hit"; exit 5 ;;
-        kill) : > "$TF_DIR/jq-hit"; exec sleep 600 ;;
+        kill) : > "$TF_DIR/jq-hit"; : > "$TF_DIR/silent"; exec sleep 600 ;;
     esac
 fi
 [ -n "$in" ] || exec "$TF_REAL_JQ" "${orig[@]}"
@@ -123,6 +131,22 @@ while True:
 PY
 }
 
+_tf_write_rm() {
+    mkdir -p "$TF_DIR/hold" && cat > "$TF_DIR/hold/rm" <<'RM' && chmod +x "$TF_DIR/hold/rm"
+#!/bin/sh
+# The held rm of lib-temp-files.sh.
+[ -e "$TF_DIR/armed" ] || exec "$TF_REAL_RM" "$@"
+for a in "$@"; do
+    case "${a##*/}" in
+        $TF_HOLD) : > "$TF_DIR/held"
+            while [ ! -e "$TF_DIR/release" ]; do "$TF_REAL_SLEEP" 0.05; done
+            break ;;
+    esac
+done
+exec "$TF_REAL_RM" "$@"
+RM
+}
+
 tf_table() {  # JSON
     printf '%s\n' "$1" > "$TF_DIR/table.json"
 }
@@ -145,8 +169,8 @@ tf_daemon_stop() {
 # PATH in MODE; its output in TF_DIR/out and TF_DIR/err.
 _tf_start() {
     local mode="$1"; shift
-    rm -f -- "$TF_DIR/jq-hit" "$TF_DIR/silent"
-    env PATH="$TF_DIR/bin:$PATH" TF_JQ_MODE="$mode" \
+    rm -f -- "$TF_DIR/jq-hit" "$TF_DIR/silent" "$TF_DIR/armed" "$TF_DIR/held" "$TF_DIR/release"
+    env PATH="${TF_HOLD:+$TF_DIR/hold:}$TF_DIR/bin:$PATH" TF_JQ_MODE="$mode" TF_HOLD="${TF_HOLD:-}" \
         perl -e '$SIG{INT} = $SIG{QUIT} = "DEFAULT"; setpgrp(0, 0) or die "setpgrp: $!"; exec { $ARGV[0] } @ARGV or die "exec: $!"' \
         "$@" < /dev/null > "$TF_DIR/out" 2> "$TF_DIR/err" &
     TF_PID=$!
@@ -217,15 +241,28 @@ tf_row() {
 }
 
 # tf_signal ROW SIG CMD... — CMD runs until TF_DIR/silent appears (the stand-in daemon touches it on an op the table
-# makes silent; a row's own stand-in may too); then SIG goes to its group, or to CMD alone when TF_SIGNAL_TARGET is
-# leader. CMD must end by that signal (status 128 + its number), leave nothing in the temporary folders, and pass the
-# function TF_CHECK names, when set.
+# makes silent; a row's own stand-in may too, and so does the jq stand-in when TF_SIGNAL_PATH is kill and the call
+# that carries the mark hangs); then SIG goes to its group, or to CMD alone when TF_SIGNAL_TARGET is leader. With
+# TF_HOLD, SIG goes to the group again once a cleanup trap's rm of a TF_HOLD file is held, and then the rm is released.
+# CMD must end by that signal (status 128 + its number), leave nothing in the temporary folders, and pass the function
+# TF_CHECK names, when set.
 tf_signal() {
     local row="$1" sig="$2" bad=0 want; shift 2
     case "$sig" in HUP) want=129 ;; INT) want=130 ;; TERM) want=143 ;; *) want="" ;; esac
-    _tf_start ok "$@"
+    _tf_start "${TF_SIGNAL_PATH:-ok}" "$@"
     if await test -e "$TF_DIR/silent"; then
-        _tf_end "$sig" "${TF_SIGNAL_TARGET:-}" || bad=1
+        if [ -n "${TF_HOLD:-}" ]; then
+            {   # stderr: the shell's own notice that the row's leader died of the signal
+                : > "$TF_DIR/armed"
+                kill -"$sig" -- "-$TF_PID"
+                if await test -e "$TF_DIR/held"; then kill -"$sig" -- "-$TF_PID"
+                else echo "    no rm of a $TF_HOLD file ran after the $sig"; bad=1; fi
+                : > "$TF_DIR/release"
+                _tf_end || bad=1
+            } 2>/dev/null
+        else
+            _tf_end "$sig" "${TF_SIGNAL_TARGET:-}" || bad=1
+        fi
         [ "$TF_RC" = "$want" ] || { echo "    exited $TF_RC, want $want (ended by $sig)"; bad=1; }
         [ -z "${TF_CHECK:-}" ] || "$TF_CHECK" || bad=1
     else

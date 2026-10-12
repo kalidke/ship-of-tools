@@ -154,11 +154,11 @@ nc_send() {
 }
 
 # A subshell: its EXIT trap removes the agent.send leg's scratch folder however the call ends (bash runs the trap
-# when INT, TERM or HUP ends the subshell, too).
+# when INT, TERM or HUP ends the subshell, too; comm-lib-base.sh, cleanup traps).
 send_frame() (  # $1 to, $2 text
     _require_endpoint "$1" || return 1
     local relay_tmp=""
-    trap '[ -z "$relay_tmp" ] || rm -rf -- "${relay_tmp:?}"' EXIT
+    trap 'trap "" HUP INT TERM; [ -z "$relay_tmp" ] || rm -rf -- "${relay_tmp:?}"' EXIT
     # Identity is already validated (sot_require_routable_identity, called
     # above for SUB=send before any transport setup — Codex review
     # round-2 finding 4/C) — every relay frame stamps `from:$NAME` on the

@@ -146,4 +146,53 @@ TF_CHECK=c8_check TF_SIGNAL_TARGET=leader tf_signal "C8 heartbeat context (the h
     "$WORK/hb/envelope.json" env CLAUDE_CODE_SESSION_ID=tf-leader SOT_HB_CTX_TIMEOUT_TICKS=40 \
     bash "$WORK/hb/comm-status-heartbeat.sh"
 
+# --- the same signal twice: a cleanup trap's rm must survive the second ----------------------------------------------
+# Each row holds the trap's rm of its file (TF_HOLD, lib-temp-files.sh's held rm) until the signal has reached the
+# group a second time, as a shell that dies of a hang-up sends it (and a second Ctrl-C or TERM does): the file must
+# still go, and the script still ends by the signal.
+tf_table '{"comm.file":"silent"}'
+for s in HUP INT TERM; do
+    TF_HOLD='sot-comm-file-*' tf_signal "C9 sot_comm_file's trap (the signal twice)" "$s" env SOT_SOCKET="$TF_SOCK" \
+        "${SENDER2[@]}" "$SCRIPTS_DIR/comm-send.sh" @t-peer x
+done
+TF_HOLD='sot-oneshot-*' tf_signal "C10 sot_oneshot_request's trap (the signal twice)" HUP env SOT_SOCKET="$TF_SOCK" \
+    "${SENDER2[@]}" "$SCRIPTS_DIR/comm-send.sh" @t-peer x
+
+# with_lock's trap: comm-status.sh holds the registry lock while the write's jq call, which carries the mark, hangs.
+c11_check() {
+    [ ! -e "$SOT_COMM_HOME/.registry.lock" ] && return 0
+    echo "    left: .registry.lock in the comm home"; rm -f -- "${SOT_COMM_HOME:?}/.registry.lock"; return 1
+}
+TF_SIGNAL_PATH=kill TF_HOLD=.registry.lock TF_CHECK=c11_check tf_signal "C11 with_lock's trap (the signal twice)" HUP \
+    "${SENDER[@]}" "$SCRIPTS_DIR/comm-status.sh" blocked "$TF_SENT"
+
+tf_table '{"comm.file":{"error":"not here","code":"not_here"},"agent.send":"silent"}'
+TF_HOLD='sot-comm-relay.*' tf_signal "C12 send_frame's trap (the signal twice)" HUP "${SENDER[@]}" \
+    "$SCRIPTS_DIR/comm-relay.sh" send @t-stranger x
+
+TF_HOLD='.hb-ctx-*' TF_CHECK=c8_check tf_signal "C13 the heartbeat context's trap (the signal twice)" HUP \
+    sh -c 'f="$1"; shift; exec "$@" < "$f"' _ "$WORK/hb/envelope.json" env CLAUDE_CODE_SESSION_ID=tf-hold \
+    SOT_HB_CTX_TIMEOUT_TICKS=1200 bash "$WORK/hb/comm-status-heartbeat.sh"
+
+# The Stop hook's trap removes the session's feedback record unless the hook blocked. The hook runs from a folder of
+# its own whose auditor stand-in touches the silent mark and waits; the record is there before the run.
+mkdir -p "$WORK/hooks-hold"
+ln -s "$SCRIPTS_DIR/comm-status-idle.sh" "$WORK/hooks-hold/comm-status-idle.sh"
+printf '#!/bin/sh\n: > "%s"\nexec "%s" 600\n' "$TF_DIR/silent" "$(command -v sleep)" > "$WORK/hooks-hold/comm-turn-auditor.sh"
+chmod +x "$WORK/hooks-hold/comm-turn-auditor.sh"
+env SOT_COMM_SELF_FILE="$WORK/self-hook-h" SOT_COMM_TEST_HOST=testhost "$SCRIPTS_DIR/comm-join.sh" --name t-hook-h \
+    > /dev/null 2>&1 || { echo "FATAL: could not join t-hook-h" >&2; exit 2; }
+{ jq -nc '{type:"user",message:{content:"go"}}'
+  jq -nc '{type:"assistant",message:{content:[{type:"text",text:"all set"}]}}'; } > "$WORK/turn-h.jsonl"
+jq -nc --arg p "$WORK/turn-h.jsonl" '{transcript_path:$p, stop_hook_active:false}' > "$WORK/stop-h.json"
+: > "$SOT_COMM_HOME/state/stop-feedback-tf-fb.jsonl"
+c14_check() {
+    [ ! -e "$SOT_COMM_HOME/state/stop-feedback-tf-fb.jsonl" ] && return 0
+    echo "    left: stop-feedback-tf-fb.jsonl in the comm home's state"
+    rm -f -- "${SOT_COMM_HOME:?}/state/stop-feedback-tf-fb.jsonl"; return 1
+}
+TF_HOLD='stop-feedback-*' TF_CHECK=c14_check tf_signal "C14 the Stop hook's trap (the signal twice)" HUP \
+    sh -c 'f="$1"; shift; exec "$@" < "$f"' _ "$WORK/stop-h.json" env CLAUDE_CODE_SESSION_ID=tf-fb \
+    SOT_COMM_SELF_FILE="$WORK/self-hook-h" SOT_COMM_TEST_HOST=testhost bash "$WORK/hooks-hold/comm-status-idle.sh"
+
 tf_report

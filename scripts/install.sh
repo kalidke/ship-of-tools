@@ -495,7 +495,8 @@ if [ -z "${SOT_INSTALL_TAG:-}" ]; then
         tag="${loc##*/}"
     fi
     case "$tag" in v[0-9]*) ;; *) die "could not resolve a release tag (got '$tag')" ;; esac
-    tmp="$(mktemp)"; trap 'rm -f "${tmp:?}"' EXIT
+    # A cleanup trap, armed first (comm/lib/comm-lib-base.sh, cleanup traps).
+    trap - HUP INT TERM; tmp="$(mktemp)"; trap 'trap "" HUP INT TERM; rm -f "${tmp:?}"' EXIT
     url="https://raw.githubusercontent.com/$REPO/$tag/scripts/install.sh"
     curl -fsSL -o "$tmp" "$url" || die "could not fetch $url"
     SOT_INSTALL_TAG="$tag" bash "$tmp" "$@"
@@ -610,7 +611,9 @@ for t in curl tar; do command -v "$t" >/dev/null || die "$t is required"; done
 
 # Downloader: the repo is public, so unauthenticated curl against the fixed
 # release-download URL works — no API call, no auth.
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-install.XXXXXX")"; trap 'rm -rf "${WORK:?}"' EXIT
+# A cleanup trap, armed first (comm/lib/comm-lib-base.sh, cleanup traps).
+trap - HUP INT TERM
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-install.XXXXXX")"; trap 'trap "" HUP INT TERM; rm -rf "${WORK:?}"' EXIT
 
 # VERSION is always known here: the prelude resolves and re-execs first.
 VERSION="${VERSION:-${SOT_INSTALL_TAG:-}}"

@@ -109,7 +109,7 @@ with_lock() {
     # preserving whatever EXIT trap the caller already had.
     local prev_trap rc=0
     prev_trap="$(trap -p EXIT)"
-    trap 'rm -f "${_SOT_REG_LOCK:?}" 2>/dev/null || true' EXIT
+    trap 'trap "" HUP INT TERM; rm -f "${_SOT_REG_LOCK:?}" 2>/dev/null || true' EXIT
     if "$@"; then
         :
     else

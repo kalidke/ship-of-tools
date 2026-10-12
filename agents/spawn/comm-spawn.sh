@@ -285,7 +285,7 @@ _spawn_rollback_report() {
         *) echo "comm-spawn: FAILED to roll back the provisional row for @$NAME (rc=$rc) — check by hand: jq '.agents[\"$NAME\"]' $REGISTRY" >&2 ;;
     esac
 }
-trap _spawn_rollback_report EXIT
+trap 'trap "" HUP INT TERM; _spawn_rollback_report' EXIT
 
 # --- resolve the daemon endpoint, and learn WHICH BOX it is on -----------
 # Both happen BEFORE either provisional write below (rc9.5), because every

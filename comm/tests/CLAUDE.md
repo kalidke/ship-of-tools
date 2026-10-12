@@ -13,7 +13,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `hub_files/`: parts of `test-hub-files.sh`: `lock_shell.sh`, `routes.sh`, `wire.sh`, `reader.sh`, `lock_faults.sh`
 - `join_disambiguation/`: parts of `test-join-disambiguation.sh`: derived handles, self-files, `declared_host.sh` (the declared host, the slot formatter and legacy-slot migration), `jq_args.sh`, pipe endpoints, send identity, slot guard, spawn and lock
 - `lib-home-guard.sh`: the guard every suite sources first; drops the host's comm identity and daemon routes, and gives `guard_fresh_home`, `guard_refuse_live_home`, `guard_stage_bin`, `in_row`, and `guard_bridge_stub`, the suites' stand-in for `sotd stdio-bridge --endpoint`
-- `lib-temp-files.sh`: what the two temp-file suites share: the jq stand-in that fails or hangs the call carrying a row's mark, the stand-in daemon, a run in a process group of its own, and the check that the temporary folders are empty
+- `lib-temp-files.sh`: what the two temp-file suites share: the jq stand-in that fails or hangs the call carrying a row's mark, the stand-in daemon, a run in a process group of its own, the held rm that keeps a cleanup trap's rm waiting while a row sends its signal a second time, and the check that the temporary folders are empty
 - `lib-wait.sh`: the waits the suites share: `await` (a check every 50 ms, a 30 s hang guard), `stopped` (a holder that stopped itself), `sleep_log` (the logging sleep that counts a command's waits)
 - `stage-bin.sh`: validates the flat bin source and publishes each completed destination by exclusive sibling temporary and rename, without preserving source permissions
 - `status_floor/`: parts of `test-status-floor.sh`: `reduction.sh`, `markers.sh`, `audit_and_races.sh`
@@ -41,7 +41,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-send-routes-to-relay.sh`: a registry miss goes to the wire; a listed handle that is not live is FAILED with nothing appended and no daemon asked, a live one files locally, never both; every script append, inbox redirection and `last_seen` file in the tracked tree is on a pinned list
 - `test-stage-bin.sh`: complete old/new staged bytes, chosen modes, visible failures and owned-temp cleanup through absolute fixture programs
 - `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks, closing markers and the turn auditor
-- `test-temp-files.sh`: no messaging script or library call leaves a file in its temporary folders, on success, on failure, killed, or ended by TERM, HUP or INT; the heartbeat leaves no context capture file in the comm home's state when a signal ends it
+- `test-temp-files.sh`: no messaging script or library call leaves a file in its temporary folders, on success, on failure, killed, or ended by TERM, HUP or INT, and when the signal comes twice; the heartbeat leaves no context capture file in the comm home's state when a signal ends it, and the registry lock and the Stop hook's feedback record go too
 
 ## Start here
 `lib-home-guard.sh`, then the shortest suite (`test-agent-join.sh`) as the pattern: source the guard, make a work

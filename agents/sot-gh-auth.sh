@@ -149,7 +149,9 @@ poll() {
     expires=$(jqr '.expires_in' "$STATE"); [ "$expires" -ge 1 ] 2>/dev/null || expires=899
     # The state file goes on ANY exit of the poll (success, error, abort, or INT,
     # TERM or HUP, which bash ends the poll on after running this trap): poll owns it.
-    trap 'rm -f -- "${STATE:?}"' EXIT
+    # A cleanup trap, armed here because this script does not load the comm library
+    # (comm/lib/comm-lib-base.sh, cleanup traps).
+    trap - HUP INT TERM; trap 'trap "" HUP INT TERM; rm -f -- "${STATE:?}"' EXIT
     echo "sot-gh-auth: waiting for you to authorize… (polling every ${interval}s, code TTL ~$((expires / 60))min)"
     while :; do
         sleep "$interval"

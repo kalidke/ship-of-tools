@@ -228,7 +228,8 @@ mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
 # block is printed by hand: jq itself may be the missing tool.
 if [ -n "$tp" ]; then
     fb_file="$HOME_DIR/state/stop-feedback-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').jsonl"
-    trap '[ -n "$blocked" ] || rm -f -- "${fb_file:?}" 2>/dev/null' EXIT
+    # A cleanup trap; this shell does not load the library, so it arms itself (comm-lib-base.sh, cleanup traps).
+    trap - HUP INT TERM; trap 'trap "" HUP INT TERM; [ -n "$blocked" ] || rm -f -- "${fb_file:?}" 2>/dev/null' EXIT
 fi
 
 tool_tick="$HOME_DIR/state/tool-fault-$(printf '%s' "$NAME.$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"

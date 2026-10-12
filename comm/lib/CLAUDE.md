@@ -27,8 +27,8 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
 ## Rules
 - Agent-layer input opens establish stderr redirection first; vanished process files preserve the existing chain/refusal result without a shell input-open diagnostic. The test table covers stat, cmdline and both winpid reads.
 - `comm-lib.sh` only sources its parts, and a part calls nothing while it is sourced: outside function bodies there are
-  assignments only, and comm-lib-base.sh's `umask 077`, which reads nothing, so the order of the parts changes no
-  behaviour. A new part is a new file here and a new line
+  assignments only, and comm-lib-base.sh's `umask 077` and `trap - HUP INT TERM` (cleanup traps), which read nothing,
+  so the order of the parts changes no behaviour. A new part is a new file here and a new line
   `source "$(dirname "${BASH_SOURCE[0]}")/<part>" || return 1` there, the form the installer inlines (a `source` or `.`
   command it sees anywhere else whose path names a part stops the install; it reads lines, not bash, so a command in a
   case arm, after an assignment or a command word, split over lines or in process substitution, a path built from a
@@ -88,7 +88,8 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   previous release uses it.
 - `sot_oneshot_request` and `sot_comm_file` hold their scratch files across a wait, so each runs in a subshell whose
   EXIT trap removes them; bash runs that trap when TERM, HUP or INT ends the subshell and then ends by the signal, so
-  the caller ends too. Only SIGKILL leaves them.
+  the caller ends too. The trap ignores a later HUP, INT or TERM (comm-lib-base.sh, cleanup traps). SIGKILL leaves
+  them, and so does a signal in the instant between a file's creation and its name reaching the trap.
 - A request sent behind its hello is decided by its own reply. `sot_oneshot_request` stops at a refused hello at once only
   when the code is not `protocol_mismatch` (a daemon of this release closes after refusing, and only it sends the other
   codes; an older daemon refuses only for the protocol and still answers the request), and names the refusal (`hello

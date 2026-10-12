@@ -30,6 +30,8 @@ READ_DIR="$COMM_HOME/read"
 _SOT_REG_LOCK="$COMM_HOME/.registry.lock"
 # Everything a comm script makes is its user's alone (ADR 0049, User isolation).
 umask 077
+# Every shell that loads this library arms its cleanup traps here, before it holds anything (cleanup traps, below).
+trap - HUP INT TERM
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -201,6 +203,21 @@ sot_jq_rawfile() {
     fi
     printf '%s' "$f"
 }
+
+# --- cleanup traps ---
+#
+# A cleanup trap is an EXIT trap that removes or undoes what its shell holds. bash runs it when HUP, INT or TERM ends
+# the shell, then ends by that signal. A second signal often follows: a shell that dies of a hang-up hangs up its jobs,
+# which without job control are its own process group, and a second Ctrl-C or TERM is ordinary. Two rules keep it
+# from leaving what the trap removes:
+# - The body first ignores the three (`trap "" HUP INT TERM`), so the rm it runs, and anything else it starts, cannot
+#   be ended by a later one. SIGKILL still can. bash still ends by the first signal once the trap is done.
+# - The shell is armed before it holds anything: `trap - HUP INT TERM`, which this library runs when it loads (above)
+#   and a shell that does not load it runs itself. bash learns a signal's disposition the first time a trap command
+#   names it, by setting the signal to its default for an instant, and a second hang-up in that instant ends the shell
+#   before its trap removes anything; learned at arming, the ignore in the body is one step. Arming resets the shell's
+#   own traps on the three, and a subshell inherits what its parent learned, so a shell with a cleanup trap keeps no
+#   trap of its own on HUP, INT or TERM, and nothing a cleanup trap's body runs in its own shell arms again.
 
 # sot_host — this shell's DECLARED host name for the wire only (ADR 0046
 # decision 1, manager review S1/S2): the ONE resolver matching
