@@ -44,6 +44,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
   cases with another account's listener (refusal, full backlog) need passwordless `sudo -n` and skip without it except
   on CI
 - `subcommand_help.rs`: server; every `sotd` subcommand's `--help` prints usage and dials nothing
+- `topology_sync.rs`: topology; `sotd topology sync` against a stand-in `ssh` that never answers: it ends at its 30 s bound, naming the ssh and the bound
 - `topology_set.rs`: topology; `topology.set` and `topology.changed` over the wire; a hub daemon started from umask 022 creates its comm files owner-only
 - `window_start.rs`: lifecycle; a daemon's start from `held.json`, resumed or ended rows
 - `daemon_lifetime/`: lifecycle; the harness of lane L2: native launcher and fence-claim premises on real children, a successor daemon against a held capsule birth, and, on Linux, the lifetime guard, the daemon's controlled outcomes and the update outcomes on real daemons (own page; needs the barrier build)

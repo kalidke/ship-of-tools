@@ -89,6 +89,7 @@ on a computer decides, through its lease, whether that computer's sessions end (
   so neither an ignored nor a blocked one inherited from the parent can make the kernel reap a contained leader early or
   keep `Contained::wait` from seeing its exit; the main thread lives as long as the daemon, so the signal always has a
   thread to reach.
+- `Signal::output(cmd, within)` runs a contained one-shot to its end or its bound; at the bound the tree is killed and the error says `did not exit within <bound>`.
 - Every call of a function in `rust/clippy.toml`'s process-spawns group sits in `Signal::spawn`, `Signal::spawn_std`
   or `Signal::output`, or in a statement whose `#[allow(clippy::disallowed_methods)]` gives its reason: rust.yml's
   "Disallowed methods" step fails on any other. The group holds every way std and tokio start a process, portable-pty's

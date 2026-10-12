@@ -161,6 +161,9 @@ fn report(r: Result<(), String>) -> i32 {
     }
 }
 
+/// The longest `topology sync` waits on its ssh: past it the tree is killed and the sync fails naming the bound.
+const SYNC_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// `ssh <hub> cat ~/.config/sot/hosts.toml` into this box's own copy,
 /// tmp + rename, only after the fetched text parses, and only when it
 /// differs from the copy here: on a shared-home box the "copy" IS the
@@ -176,10 +179,10 @@ fn sync(hub: Option<String>) -> Result<(), String> {
         println!("this box is the hub; nothing to sync");
         return Ok(());
     }
-    #[allow(clippy::disallowed_methods, reason = "`sotd topology sync` runs as its own CLI process, not in the daemon")]
-    let out = std::process::Command::new("ssh")
-        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", &hub, "cat ~/.config/sot/hosts.toml"])
-        .output()
+    let mut ssh = std::process::Command::new("ssh");
+    ssh.args(topology::ssh_bridge::SSH_OPTS).args([hub.as_str(), "cat ~/.config/sot/hosts.toml"]);
+    let out = crate::lifecycle::child_signal::process()
+        .output(&mut ssh, SYNC_BOUND)
         .map_err(|e| format!("ssh {hub}: {e}"))?;
     if !out.status.success() {
         return Err(format!("ssh {hub}: {}", String::from_utf8_lossy(&out.stderr).trim()));

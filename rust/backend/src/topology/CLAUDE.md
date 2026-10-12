@@ -38,6 +38,6 @@ for `sotd status`; `stdio_bridge.rs` `run` for the bridge.
 - In `refresh`, only `daemon-reload` is fatal.
 - `apply` and `refresh` converge the host pins (`converge_hub_pins`) before they enable, reload or restart a unit, on
   every run; `pin` writes only sotd.service's pin, runs no systemctl, and an invalid hosts.toml changes nothing.
-- The relay refresh's `systemctl` calls run through `Signal::output`, so what one leaves running dies with it.
+- The relay refresh's `systemctl` calls and `topology sync`'s ssh run through `Signal::output` with a bound (30 s each), so what one leaves running dies with it and none can hold the CLI.
 - The dial's ssh runs through `Signal::spawn_std`: dropping its `ChildGuard` in dial.rs, or a `Track::cancel`, kills
   the ssh tree through its `ContainedStd` before the child is reaped.
