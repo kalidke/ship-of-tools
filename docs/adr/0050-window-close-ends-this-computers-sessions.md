@@ -93,10 +93,11 @@ descendants that leave it remain residual 7. Each runs in its own process group 
 Unix termination requests precede the owner's direct-child reap. Windows async wait obtains the direct-child status
 before requesting job termination; Windows blocking and nonblocking exit observation uses wait or try_wait before the
 subsequent job request, with the job handle retaining containment identity. Explicit kill requests termination before
-waiting on either platform. On macOS only, a real group-request EPERM counts as no live member only after checked
-observation confirms that the retained leader has exited without being reaped and a complete libproc process-group
-membership and status query finds no live member; live, failed or ambiguous observations preserve the original error,
-and leader requests and injected failures remain independently checked. No Unix signal or process-group identity query
+waiting on either platform. On macOS only, a real group-request EPERM means the group holds no member the caller
+may signal; it counts as no live member when one libproc listing of the group, every listed member's short status record
+and a second listing show every member ended (not shown, exiting or a zombie) or in another group and no member added;
+a live member, a failed query or a grown listing preserves the original error, and leader requests and injected
+failures remain independently checked. No Unix signal or process-group identity query
 occurs after leader reap. Creation through adoption and registration shares the registry mutex with the permanent child
 signal. Fire attempts every registered tree and reports errors, without a child-count grace period or waiting for
 confirmed death; contained children can still outlive daemon exit. An OS creation or adoption that never returns can
@@ -108,13 +109,16 @@ record clears `closing`; rows not ended stay registered and running, and are cou
 never runs `pkill` or `tmux kill-server`.
 
 Amendment 2026-10-11 (macOS observation evidence): a rejected no-live-group observation is returned with the original
-group-request EPERM, including the rejected step, captured member PID/group/status/UID records and each membership
-listing taken before the rejection. Failed or short queries name unavailable fields as unknown. When the leader
+group-request EPERM, including the rejected step, captured member status records and each membership
+listing taken before the rejection. When the leader
 request succeeds, the contextual group error retains PermissionDenied and the original request error as a source; its
 outer raw OS errno is absent. When both requests fail, the existing Other-kind aggregate retains both displayed
 reasons without a typed OS error source. The real-EPERM fixture captures the same evidence before and after the
-request and reports it when its premise fails. This changes diagnostics, not the acceptance rule above; a
-cause-specific acceptance change waits for native evidence.
+request and reports it when its premise fails. Amendment 2026-10-12 (MAC-EPERM-FIX): the acceptance rule above replaced one that also required the leader to be seen
+exited by `waitid`, a second status pass and readable full status records; those rejected a zombie of another
+effective uid and a leader in its exit, both of which hold nothing alive. A member of other credentials forking in
+the instant of the observation can have its child counted ended; such a member is beyond any request the daemon
+makes.
 
 `gio trash` uses the contained blocking wait with a 5 s wait budget; a successful timeout cleanup means termination requests
 succeeded and the direct child was reaped before the recoverable workspace-trash fallback. Request and reap failures are
