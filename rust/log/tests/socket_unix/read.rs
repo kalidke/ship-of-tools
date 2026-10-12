@@ -75,18 +75,28 @@ impl WaitContext {
         result
     }
 
+    /// One read within the context's remaining time. The wait is a `poll` for readability, never `SO_RCVTIMEO`: Darwin
+    /// refuses that option with EINVAL once an AF_UNIX peer has gone, which would hide the data and EOF a closed peer
+    /// left. The setup phase takes the remainder; the read phase waits for it and then reads what is ready.
     pub(super) fn read_attempt(
         &self,
         server: Option<&SocketServer>,
         stream: &mut UnixStream,
         bytes: &mut [u8],
     ) -> std::io::Result<usize> {
+        let left = std::cell::Cell::new(Duration::ZERO);
         self.read_operations(
             server,
             stream,
             bytes,
-            |s, left| s.set_read_timeout(Some(left)),
-            |s, b| s.read(b),
+            |_, remaining| {
+                left.set(remaining);
+                Ok(())
+            },
+            |s, b| {
+                readable_within(s, left.get())?;
+                s.read(b)
+            },
         )
     }
 
@@ -99,6 +109,24 @@ impl WaitContext {
         let result = self.read_attempt(server, stream, bytes);
         self.io_outcome(&result, true, server);
         result
+    }
+}
+
+/// Waits until `stream` has data, EOF or an error to read, for at most `left` (rounded up to a millisecond); a wait
+/// that ends with nothing to read is `TimedOut`.
+fn readable_within(stream: &UnixStream, left: Duration) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let mut fd = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ms = libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX);
+    // SAFETY: one pollfd this function owns, for a descriptor `stream` keeps open for the call.
+    match unsafe { libc::poll(&mut fd, 1, ms) } {
+        0 => Err(std::io::Error::from(std::io::ErrorKind::TimedOut)),
+        n if n > 0 => Ok(()),
+        _ => Err(std::io::Error::last_os_error()),
     }
 }
 
