@@ -53,28 +53,66 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 # Every network call carries the bound its tool offers, so a stalled network ends in the tool's own error: curl gives
 # up on a connect past 15 s or a transfer under 1000 B/s for 60 s, git on an https transfer by the same rule (no
 # process timer on git: one killed mid-fetch is not worth a hang), and ssh runs the tree's one option set (the
-# rust/protocol topology's SSH_OPTS) under sot_within, which also ends a hang in key exchange or authentication.
+# rust/protocol topology's SSH_OPTS) under sot_bounded, which also ends a hang in key exchange or authentication.
 CURL_BOUND=(--connect-timeout 15 --speed-limit 1000 --speed-time 60)
 GIT_BOUND=(-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60)
 SSH_OPTS=(-T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10
           -o ControlMaster=no -o ControlPath=none -o ControlPersist=no)
 
-# sot_within SECS CMD...: CMD's status, or 124 and "<cmd> did not finish within <SECS>s" on stderr once SECS pass (the
-# watchdog sends TERM). No coreutils `timeout`: this runs on macOS. CMD runs in the background, so its stdin is
-# /dev/null: pass ssh -n.
-sot_within() {
-    local secs="$1" pid wd rc=0; shift
-    "$@" & pid=$!
-    ( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep "$secs" & s=$!; wait "$s"; kill -TERM "$pid" 2>/dev/null ) 2>/dev/null & wd=$!
-    wait "$pid" 2>/dev/null || rc=$?
-    if kill -0 "$wd" 2>/dev/null; then
-        kill -TERM "$wd" 2>/dev/null; wait "$wd" 2>/dev/null || true
-        return "$rc"
-    fi
-    wait "$wd" 2>/dev/null || true
-    [ "$rc" -eq 143 ] || return "$rc"
-    printf '%s did not finish within %ss\n' "$1" "$secs" >&2
-    return 124
+# sot_bounded SECS CMD [ARG...]: comm/lib/comm-lib-base.sh's command bound, which documents it, copied here because
+# this installer checks ssh before the checkout that holds comm-lib exists (the release archive carries no comm-lib).
+# rust/backend/tests/shell_dial.rs runs every case of the bound against both, so the two cannot drift. CMD's own
+# status, or 124 at the bound however CMD handles TERM (137 when that took KILL), the caller naming the expiry.
+sot_bounded() {
+    command -v perl >/dev/null 2>&1 || {
+        echo "sot_bounded: no perl to bound $2 with" >&2
+        return 125
+    }
+    perl -e '
+        use POSIX ();
+        my ($secs, @cmd) = @ARGV;
+        if ($secs !~ /^[1-9][0-9]*$/) { print STDERR "sot_bounded: the bound is a whole number of seconds above 0, not $secs\n"; exit 125; }
+        my %num = (TERM => POSIX::SIGTERM(), INT => POSIX::SIGINT(), HUP => POSIX::SIGHUP());
+        my $pid = fork;
+        if (!defined $pid) { print STDERR "sot_bounded: fork: $!\n"; exit 125; }
+        if (!$pid) {
+            if (!setpgrp(0, 0)) { print STDERR "sot_bounded: no process group for $cmd[0]: $!\n"; POSIX::_exit(125); }
+            exec { $cmd[0] } @cmd;
+            print STDERR "sot_bounded: $cmd[0]: $!\n";
+            POSIX::_exit(127);
+        }
+        setpgrp($pid, $pid);
+        my ($why, $late, $st) = ("", 0, undef);
+        $SIG{ALRM} = sub { $late = 1 };
+        $SIG{$_} = sub { $why ||= $_[0] } for qw(TERM INT HUP);
+        my $code = sub { $_[0] & 127 ? 128 + ($_[0] & 127) : $_[0] >> 8 };
+        my $left = sub {
+            $st = $? if !defined $st && waitpid($pid, POSIX::WNOHANG()) == $pid;
+            !defined $st || kill(0, -$pid);
+        };
+        my $wait = sub {
+            $late = 0;
+            alarm 1;
+            select(undef, undef, undef, 0.01) while $left->() && !$late;
+            alarm 0;
+            $left->();
+        };
+        alarm $secs;
+        select(undef, undef, undef, 0.01) while $left->() && !$why && !$late;
+        alarm 0;
+        exit($code->($st)) if !$left->();
+        $SIG{$_} = "IGNORE" for qw(TERM INT HUP);
+        my $own = $st;
+        my $end = sub { kill($_[0], -$pid); kill($_[0], $pid) if !defined $st };
+        $end->($why || "TERM");
+        my $hard = $wait->();
+        if ($hard) {
+            $end->("KILL");
+            print STDERR "sot_bounded: $cmd[0] or a member of its group was still running a second after KILL\n" if $wait->();
+        }
+        print STDERR "sot_bounded: $cmd[0] exited with status " . $code->($own) . " while its group ran on; the bound ended the group\n" if defined $own;
+        exit($why ? 128 + $num{$why} : $hard ? 137 : 124);
+    ' "$@"
 }
 
 # Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it): the first
@@ -754,9 +792,14 @@ else
                    read -r BE_ALIAS < /dev/tty
                    [ -n "$BE_ALIAS" ] || die "backend host is required for the remote layout"
                    printf "Verifying ssh to '%s'... " "$BE_ALIAS" > /dev/tty
-                   sot_within 30 ssh "${SSH_OPTS[@]}" -n "$BE_ALIAS" true \
-                       && echo "ok" > /dev/tty \
-                       || { echo "FAILED" > /dev/tty; die "key-based ssh to '$BE_ALIAS' doesn't work (ssh-copy-id first, or fix ~/.ssh/config)"; } ;;
+                   ssh_rc=0; sot_bounded 30 ssh "${SSH_OPTS[@]}" -n "$BE_ALIAS" true || ssh_rc=$?
+                   case "$ssh_rc" in
+                       0) echo "ok" > /dev/tty ;;
+                       124|137) echo "FAILED" > /dev/tty
+                                die "ssh to '$BE_ALIAS' did not finish within 30s (a network, sshd or remote login that stopped answering)" ;;
+                       *) echo "FAILED" > /dev/tty
+                          die "key-based ssh to '$BE_ALIAS' doesn't work (ssh-copy-id first, or fix ~/.ssh/config)" ;;
+                   esac ;;
                 3) ROLE=be-only ;;
                 *) die "no such choice: '$choice'" ;;
             esac

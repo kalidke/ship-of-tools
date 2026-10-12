@@ -68,7 +68,8 @@ sot_require_tools() {
 # stderr, and ends it SECS seconds (a whole number above 0) after it starts.
 # The bounded comm calls run under it: sot_ssh_bridge's ssh, sot_dial's bridge,
 # comm-list.sh's `sot-fe version`, comm-turn-auditor.sh's headless claude, and
-# the PostToolUse heartbeat's comm-context.sh.
+# the PostToolUse heartbeat's comm-context.sh. scripts/install.sh carries a copy for its ssh check, which runs before
+# the checkout holding this library exists; rust/backend/tests/shell_dial.rs runs every case against both.
 # One perl process owns the deadline and CMD's process group, which CMD gets before it runs, or it does not
 # run. The call returns when CMD has exited and no member of its group is left; until then the deadline holds, so a
 # descendant still holding CMD's output after CMD exits is ended at the bound too. At the bound, or when that perl is
