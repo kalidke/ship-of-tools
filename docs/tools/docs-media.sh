@@ -128,6 +128,13 @@ reap() {            # reap <pid> — TERM the group, then KILL stragglers
     kill -KILL -- "-$p" 2>/dev/null || true
     wait "$p" 2>/dev/null || true
 }
+# The comm library's two cleanup-trap helpers, copied: this script does not load the library
+# (comm/lib/comm-lib-base.sh, cleanup traps).
+sot_cleanup_signals() {
+    local s; _SOT_SIG=""
+    for s in HUP:129 INT:130 TERM:143; do trap "trap '' HUP INT TERM; _SOT_SIG=${s%:*}; exit ${s#*:}" "${s%:*}"; done
+}
+sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c 'kill -s "$1" "$$"' sh "$_SOT_SIG"; }; }
 cleanup() {
     trap '' HUP INT TERM   # a second signal must not cut the reaping or the rm short
     local i now
@@ -144,8 +151,12 @@ cleanup() {
         echo "WARNING: a demo handle appears in $REAL_REGISTRY" >&2
     fi
     if [ -n "${SOT_MEDIA_KEEP:-}" ]; then echo "kept $WORK" >&2; else rm -rf "${WORK:?}"; fi
+    sot_end_by_signal
 }
 trap cleanup EXIT
+# HUP, INT and TERM end the tool through cleanup and then by the signal. A Ctrl-C ends it even when the foreground child
+# catches INT and exits 0, after which bash would go on: the handler runs when the child returns.
+sot_cleanup_signals
 
 # shellcheck source=docs-media-stage.sh
 . "$(dirname "${BASH_SOURCE[0]}")/docs-media-stage.sh"

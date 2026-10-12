@@ -24,8 +24,8 @@
 #
 # Secrets hygiene: the access token is piped to gh via STDIN, and the device_code
 # to curl the same way: never argv (never in /proc/PID/cmdline), never a file.
-# No token/code is ever echoed. The polling path's EXIT trap removes the state
-# file however the poll ends; bash runs it on INT, TERM and HUP too.
+# No token/code is ever echoed. The polling path's cleanup trap removes the state
+# file however the poll ends, HUP, INT and TERM included.
 #
 # Usage:
 #   sot-gh-auth.sh            full flow: request a code, print it, poll to done
@@ -55,6 +55,14 @@ STATE="${SOT_COMM_HOME:-$HOME/.sot-comm}/gh-device-auth.json"
 GH_CFG_DIR="${GH_CONFIG_DIR:-$HOME/.config/gh}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "sot-gh-auth: missing required tool: $1" >&2; exit 3; }; }
+
+# The comm library's two cleanup-trap helpers, copied: this script does not load the library
+# (comm/lib/comm-lib-base.sh, cleanup traps).
+sot_cleanup_signals() {
+    local s; _SOT_SIG=""
+    for s in HUP:129 INT:130 TERM:143; do trap "trap '' HUP INT TERM; _SOT_SIG=${s%:*}; exit ${s#*:}" "${s%:*}"; done
+}
+sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c 'kill -s "$1" "$$"' sh "$_SOT_SIG"; }; }
 
 # Every value this script reads out of JSON goes through here, because a native
 # (non-MSYS) jq on Windows opens stdout in text mode and rewrites each \n it
@@ -147,11 +155,12 @@ poll() {
     device_code=$(jqr '.device_code' "$STATE")
     interval=$(jqr '.interval' "$STATE"); [ "$interval" -ge 1 ] 2>/dev/null || interval=5
     expires=$(jqr '.expires_in' "$STATE"); [ "$expires" -ge 1 ] 2>/dev/null || expires=899
-    # The state file goes on ANY exit of the poll (success, error, abort, or INT,
-    # TERM or HUP, which bash ends the poll on after running this trap): poll owns it.
-    # A cleanup trap, armed here because this script does not load the comm library
-    # (comm/lib/comm-lib-base.sh, cleanup traps).
-    trap - HUP INT TERM; trap 'trap "" HUP INT TERM; rm -f -- "${STATE:?}"' EXIT
+    # The state file goes on ANY exit of the poll (success, error, abort, or HUP,
+    # INT or TERM, which end the poll through this trap and then by the signal):
+    # poll owns it. A cleanup trap, armed here because this script does not load
+    # the comm library (comm/lib/comm-lib-base.sh, cleanup traps).
+    trap - HUP INT TERM; trap 'trap "" HUP INT TERM; rm -f -- "${STATE:?}"; sot_end_by_signal' EXIT
+    sot_cleanup_signals
     echo "sot-gh-auth: waiting for you to authorize… (polling every ${interval}s, code TTL ~$((expires / 60))min)"
     while :; do
         sleep "$interval"

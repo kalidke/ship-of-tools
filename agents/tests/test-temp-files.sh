@@ -2,10 +2,12 @@
 # test-temp-files.sh — no agents script leaves a file in its temporary folders ($TMPDIR and $XDG_RUNTIME_DIR), on
 # success, on failure, or killed, and a signal ends `sot-gh-auth.sh poll`. The method is comm/tests/lib-temp-files.sh;
 # the messaging scripts' rows are comm/tests/test-temp-files.sh. It also holds the cleanup-trap rows of the two tools
-# outside agents that follow the rule (scripts/install.sh and docs/tools/docs-media.sh), from this checkout.
+# outside agents that follow the rule: scripts/install.sh, run from this checkout, and a copy of
+# docs/tools/docs-media.sh in a folder of its own.
 #
-# HERMETIC: a temp $SOT_COMM_HOME, a stand-in daemon on a socket of the suite's own, stand-in curl, gh and sleep for
-# the sign-in, the scripts from the staged bin.
+# HERMETIC: a temp $SOT_COMM_HOME, a stand-in daemon on a socket of the suite's own, the agents scripts from the staged
+# bin; stand-in curl, gh and sleep for the sign-in, curl for the installer, ffprobe, ffmpeg and pkill for the media
+# tool.
 #
 # Usage: agents/tests/test-temp-files.sh
 # Exit: the count of failed rows.
@@ -143,6 +145,12 @@ g3_check() {
 }
 TF_HOLD=gh-device-auth.json TF_CHECK=g3_check tf_signal "G3 sot-gh-auth poll's trap (the signal twice)" HUP \
     "${FIRST[@]}" "$GH" env TF_GH=block bash "$SCRIPTS_DIR/sot-gh-auth.sh" poll
+# The rows marked "at once" send the signal twice, back to back (TF_AT_ONCE): the second comes while the shell acts on
+# the first, and bash 5.2.14 and later end a shell that leaves the signal to bash there (comm/lib/comm-lib-base.sh,
+# cleanup traps).
+gh_request
+TF_AT_ONCE=1 TF_CHECK=g3_check tf_signal "G4 sot-gh-auth poll's trap (the signal twice at once)" HUP \
+    "${FIRST[@]}" "$GH" env TF_GH=block bash "$SCRIPTS_DIR/sot-gh-auth.sh" poll
 
 # comm-spawn.sh's rollback: a daemon on this box (its declared host is this shell's), so the provisional row is
 # written; the create request is never answered; the rollback's with_lock removes the registry lock last.
@@ -155,23 +163,36 @@ a14_check() {
     fi
     if jq -e '[.agents[] | select(.status == "spawning")] | length > 0' "$SOT_COMM_HOME/registry.json" > /dev/null; then
         echo "    the provisional row is still there"; bad=1
+        # Removed, as every check removes what it reports, so the next row starts clean.
+        jq '.agents |= with_entries(select(.value.status != "spawning"))' "$SOT_COMM_HOME/registry.json" \
+            > "$WORK/registry.json" && mv -- "$WORK/registry.json" "$SOT_COMM_HOME/registry.json"
     fi
     return "$bad"
 }
 TF_HOLD=.registry.lock TF_CHECK=a14_check tf_signal "A14 comm-spawn's rollback trap (the signal twice)" HUP \
     env SOT_SELF_HOST=testhost "$SCRIPTS_DIR/comm-spawn.sh" "$WORK/repo3" --name t-roll "${EP[@]}"
+TF_AT_ONCE=1 TF_CHECK=a14_check tf_signal "A15 comm-spawn's rollback trap (the signal twice at once)" HUP \
+    env SOT_SELF_HOST=testhost "$SCRIPTS_DIR/comm-spawn.sh" "$WORK/repo3" --name t-roll2 "${EP[@]}"
+# A Ctrl-C stops the caller too: a bash that waits on comm-spawn.sh goes on if it exits normally, and stops if it ends
+# by INT.
+TF_CHECK=a14_check tf_signal "A16 comm-spawn ends by a Ctrl-C (its caller stops)" INT bash -c '"$@"; exit 7' _ \
+    env SOT_SELF_HOST=testhost "$SCRIPTS_DIR/comm-spawn.sh" "$WORK/repo3" --name t-roll3 "${EP[@]}"
 
 # scripts/install.sh, from this checkout: the prelude's copy of the tag's installer, then the body's download folder,
-# each while its first curl call waits (a stand-in that touches the silent mark). Linux and macOS only, where the
-# installer runs: on Git Bash it stops at its own OS check.
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) ;;
-    *)
-        IS="$WORK/install-stub"; mkdir -p "$IS"
-        printf '#!/bin/sh\n: > "%s"\nexec "%s" 600\n' "$TF_DIR/silent" "$TF_REAL_SLEEP" > "$IS/curl"; chmod +x "$IS/curl"
-        TF_HOLD='tmp.*' tf_signal "I1 install.sh's copy of the tag's installer (the signal twice)" HUP \
-            "${FIRST[@]}" "$IS" bash "$INSTALLER" --version v0.0.1
+# each while its first curl call waits (a stand-in that touches the silent mark). The prelude runs on every host. The
+# body passes its preflight only on the release matrix, Linux x86_64 and macOS arm64, and stops before its download
+# folder exists anywhere else, Git Bash included.
+IS="$WORK/install-stub"; mkdir -p "$IS"
+printf '#!/bin/sh\n: > "%s"\nexec "%s" 600\n' "$TF_DIR/silent" "$TF_REAL_SLEEP" > "$IS/curl"; chmod +x "$IS/curl"
+TF_HOLD='tmp.*' tf_signal "I1 install.sh's copy of the tag's installer (the signal twice)" HUP \
+    "${FIRST[@]}" "$IS" bash "$INSTALLER" --version v0.0.1
+TF_AT_ONCE=1 tf_signal "I5 install.sh's copy of the tag's installer (the signal twice at once)" HUP \
+    "${FIRST[@]}" "$IS" bash "$INSTALLER" --version v0.0.1
+case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64|Darwin-arm64)
         TF_HOLD='sot-install.*' tf_signal "I2 install.sh's download folder (the signal twice)" HUP \
+            "${FIRST[@]}" "$IS" env SOT_INSTALL_TAG=v0.0.1 bash "$INSTALLER" --version v0.0.1
+        TF_AT_ONCE=1 tf_signal "I6 install.sh's download folder (the signal twice at once)" HUP \
             "${FIRST[@]}" "$IS" env SOT_INSTALL_TAG=v0.0.1 bash "$INSTALLER" --version v0.0.1 ;;
 esac
 
@@ -190,7 +211,29 @@ if [ "$(uname -s)" = Linux ]; then
     for s in HUP TERM; do
         TF_HOLD='sot-docs-media.*' tf_signal "D1 docs-media.sh's cleanup trap (the signal twice)" "$s" \
             "${FIRST[@]}" "$DM/stub" bash "$DM/docs/tools/docs-media.sh" agent-cut
+        TF_AT_ONCE=1 tf_signal "D3 docs-media.sh's cleanup trap (the signal twice at once)" "$s" \
+            "${FIRST[@]}" "$DM/stub" bash "$DM/docs/tools/docs-media.sh" agent-cut
     done
+    # A Ctrl-C while a foreground child catches INT and exits 0: the tool must still end, with 130 (bash waits for such
+    # a child and would go on). The stand-ins here let agent-cut reach its first foreground ffmpeg: ffprobe answers a
+    # duration, ffmpeg's banner pass (output `-`) prints nothing, and the cut itself touches the silent mark, waits,
+    # and on INT ends its sleep and exits 0.
+    mkdir -p "$DM/stub-int"
+    printf 'T_FIG=5\n' >> "$DM/dev/output/docs-media-agent/times.sh"
+    printf '#!/bin/sh\necho 10\n' > "$DM/stub-int/ffprobe"
+    cat > "$DM/stub-int/ffmpeg" <<EOF
+#!/bin/sh
+for a in "\$@"; do [ "\$a" = - ] && exit 0; done
+trap 'kill "\$p" 2>/dev/null; exit 0' INT
+: > "$TF_DIR/silent"
+"$TF_REAL_SLEEP" 600 &
+p=\$!
+wait "\$p"
+EOF
+    cp "$DM/stub/pkill" "$DM/stub-int/pkill"
+    chmod +x "$DM/stub-int/ffprobe" "$DM/stub-int/ffmpeg"
+    tf_signal "D2 docs-media.sh under a Ctrl-C its child catches" INT \
+        "${FIRST[@]}" "$DM/stub-int" bash "$DM/docs/tools/docs-media.sh" agent-cut
 fi
 
 tf_report

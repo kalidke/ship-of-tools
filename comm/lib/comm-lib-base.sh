@@ -206,18 +206,31 @@ sot_jq_rawfile() {
 
 # --- cleanup traps ---
 #
-# A cleanup trap is an EXIT trap that removes or undoes what its shell holds. bash runs it when HUP, INT or TERM ends
-# the shell, then ends by that signal. A second signal often follows: a shell that dies of a hang-up hangs up its jobs,
-# which without job control are its own process group, and a second Ctrl-C or TERM is ordinary. Two rules keep it
-# from leaving what the trap removes:
-# - The body first ignores the three (`trap "" HUP INT TERM`), so the rm it runs, and anything else it starts, cannot
-#   be ended by a later one. SIGKILL still can. bash still ends by the first signal once the trap is done.
-# - The shell is armed before it holds anything: `trap - HUP INT TERM`, which this library runs when it loads (above)
-#   and a shell that does not load it runs itself. bash learns a signal's disposition the first time a trap command
-#   names it, by setting the signal to its default for an instant, and a second hang-up in that instant ends the shell
-#   before its trap removes anything; learned at arming, the ignore in the body is one step. Arming resets the shell's
-#   own traps on the three, and a subshell inherits what its parent learned, so a shell with a cleanup trap keeps no
-#   trap of its own on HUP, INT or TERM, and nothing a cleanup trap's body runs in its own shell arms again.
+# A cleanup trap is an EXIT trap that removes or undoes what its shell holds. Its body starts `trap "" HUP INT TERM`,
+# so nothing it runs can be ended by a later signal (SIGKILL still can), and ends with sot_end_by_signal. Right after
+# setting it, its shell runs sot_cleanup_signals, a subshell too (it keeps none of its parent's traps), and the names
+# the trap reads are not `local` (in a command substitution, bash 3.2's `exit` drops a function's locals before the
+# trap runs). Left to bash, which runs an EXIT trap when one of the three ends a shell, the trap is lost when a second
+# signal comes within a millisecond, as it often does (a shell that dies of a hang-up hangs up its jobs, which without
+# job control are its own group, and so does a terminal's shell when the terminal closes): bash 5.2.14 and later
+# (patch bash52-014) end the shell at a second HUP or TERM, before the trap's first command, and bash 3.2 never runs a
+# subshell's EXIT trap on HUP or TERM once its parent has set one; 5.0 and 5.1 finish it. A trapped signal acts when
+# the foreground command ends: a signal to the group ends that command too, one to the shell alone waits for it.
+# The shell is armed before it holds anything: `trap - HUP INT TERM`, which this library runs when it loads (above)
+# and a shell that does not load it runs itself. bash learns a signal's disposition the first time a trap command
+# names it, by setting the signal to its default for an instant, and a signal in that instant ends the shell before
+# its trap removes anything. Arming resets the shell's own traps on the three, so a shell traps them after it arms,
+# and nothing a cleanup trap's body runs in its own shell arms again. Left as they are: a second signal in the
+# microseconds before a handler's first command (bash drops it, and may warn `run_pending_traps: bad value`), SIGKILL.
+# sot_cleanup_signals: HUP, INT and TERM each ignore the three, note the signal and exit with 128 plus its number; the
+# note starts empty (a subshell's copy of one is not its own). sot_end_by_signal: a shell one of them ended then ends
+# by it, as an `sh` that signals itself (in a subshell `$$` names the script; bash 3.2 has no `$BASHPID`), so its
+# caller sees the signal, and a bash that waits on it stops on a Ctrl-C (it goes on when that exits normally).
+sot_cleanup_signals() {
+    local s; _SOT_SIG=""
+    for s in HUP:129 INT:130 TERM:143; do trap "trap '' HUP INT TERM; _SOT_SIG=${s%:*}; exit ${s#*:}" "${s%:*}"; done
+}
+sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c 'kill -s "$1" "$$"' sh "$_SOT_SIG"; }; }
 
 # sot_host — this shell's DECLARED host name for the wire only (ADR 0046
 # decision 1, manager review S1/S2): the ONE resolver matching

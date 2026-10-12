@@ -521,8 +521,8 @@ sot_hello_frame() {
 #     that backgrounds other work, and waiting any pipeline member waits
 #     the whole job — measured as a linger-long floor per call);
 #   - the call runs in a subshell, and its scratch folder (the transport's output and stderr, the writer's pid, the
-#     hello builder's words) is removed by that subshell's EXIT trap, which bash also runs when INT, TERM or HUP
-#     ends it (comm-lib-base.sh, cleanup traps).
+#     hello builder's words) is removed by that subshell's cleanup trap, through which HUP, INT and TERM end it too
+#     (comm-lib-base.sh, cleanup traps).
 # Read window: SOT_SEND_TIMEOUT, else the caller's SEND_TIMEOUT (sot-fe's
 # repl paths set --timeout up to minutes — the window MUST honor it), else
 # 10s. Uses ENDPOINT (unix:/path, pipe:name or ssh:target[/host]) from the caller's scope,
@@ -560,8 +560,10 @@ _sot_hello_refusal() {
 sot_oneshot_request() (
     local frame="$1" op="$2"
     local timeout_s="${SOT_SEND_TIMEOUT:-${SEND_TIMEOUT:-10}}"
-    local dir="" ncpid="" line="" deadline hello refused=""
-    trap 'trap "" HUP INT TERM; _sot_oneshot_stop; [ -z "$dir" ] || rm -rf -- "${dir:?}"' EXIT
+    local line="" deadline hello refused=""
+    dir="" ncpid=""   # not local: the cleanup trap reads them (comm-lib-base.sh, cleanup traps)
+    trap 'trap "" HUP INT TERM; _sot_oneshot_stop; [ -z "$dir" ] || rm -rf -- "${dir:?}"; sot_end_by_signal' EXIT
+    sot_cleanup_signals
     dir="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/sot-oneshot-XXXXXX")" || return 1
     # A process that cannot name its host or OS account sends nothing; the builder says why, and the caller is told.
     hello="$(sot_hello_frame 2>"$dir/he")" || {

@@ -144,6 +144,13 @@ emit_block() {  # BLOCK_JSON
     if [ -z "$w" ]; then print_block "$1"
     else print_block "$(printf '%s' "$1" | jq -c --arg w "$w" '.reason = $w + " " + .reason')"; fi
 }
+# The comm library's two cleanup-trap helpers, copied: this script does not load the library
+# (comm/lib/comm-lib-base.sh, cleanup traps).
+sot_cleanup_signals() {
+    local s; _SOT_SIG=""
+    for s in HUP:129 INT:130 TERM:143; do trap "trap '' HUP INT TERM; _SOT_SIG=${s%:*}; exit ${s#*:}" "${s%:*}"; done
+}
+sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c 'kill -s "$1" "$$"' sh "$_SOT_SIG"; }; }
 
 # Stop-hook input (JSON on stdin): {stop_hook_active, transcript_path, ...}.
 input="$(cat 2>/dev/null || true)"
@@ -229,7 +236,9 @@ mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
 if [ -n "$tp" ]; then
     fb_file="$HOME_DIR/state/stop-feedback-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').jsonl"
     # A cleanup trap; this shell does not load the library, so it arms itself (comm-lib-base.sh, cleanup traps).
-    trap - HUP INT TERM; trap 'trap "" HUP INT TERM; [ -n "$blocked" ] || rm -f -- "${fb_file:?}" 2>/dev/null' EXIT
+    trap - HUP INT TERM
+    trap 'trap "" HUP INT TERM; [ -n "$blocked" ] || rm -f -- "${fb_file:?}" 2>/dev/null; sot_end_by_signal' EXIT
+    sot_cleanup_signals
 fi
 
 tool_tick="$HOME_DIR/state/tool-fault-$(printf '%s' "$NAME.$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"

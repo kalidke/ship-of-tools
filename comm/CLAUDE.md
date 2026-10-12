@@ -37,10 +37,16 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
   (`heartbeat_agrees_with_the_shell`).
 - Scripts run under bash 3.2 and git-bash. Free text, and any value that may start with `/`, reaches jq on stdin
   (comm/lib/comm-lib-base.sh, free text and jq), never as a `jq --arg` value and never through a temporary file.
-- A cleanup trap (an EXIT trap that removes or undoes what its shell holds) starts `trap "" HUP INT TERM`, and its
-  shell is armed with `trap - HUP INT TERM` before it holds anything (the comm library arms every shell that loads
-  it): a shell that dies of a hang-up hangs up its group again, and without both a second signal ends the trap's rm
-  or the shell itself (comm/lib/comm-lib-base.sh, cleanup traps). agents/, scripts/ and docs/tools/ follow the same rule.
+- A cleanup trap (an EXIT trap that removes or undoes what its shell holds) starts `trap "" HUP INT TERM` and ends
+  with `sot_end_by_signal`. Right after setting it, its shell, a subshell too, runs `sot_cleanup_signals`, so HUP,
+  INT and TERM each end the shell through the trap and then by that signal; the names the trap reads are not
+  `local`; and the shell is armed with `trap - HUP INT TERM` before it holds anything (the comm library arms every
+  shell that loads it). A second signal often follows the first within a millisecond, and a trap left to bash is
+  then lost: bash 5.2.14 and later end the shell before the trap's first command, and bash 3.2 never runs a
+  subshell's EXIT trap on HUP or TERM once its parent has set one (comm/lib/comm-lib-base.sh, cleanup traps). The
+  product scripts of agents/, scripts/ and docs/tools/ follow the same rule, with a copy of the two helpers where
+  they do not load the library, except scripts/sot-apply.sh, whose signal handling is its own 0.6.6 item
+  (SOT-APPLY-SIGNAL); a test suite's own traps are the suite's.
 - A change to locking states its writer set and is proven by concurrent appends from two hosts to one inbox; there is
   no lease-lock fallback. A script change is tested through `tests/` from the staged bin, never against the live home.
 - Registry host facts and unpinned self-file keys agree with the daemon's declared host; the raw hostname remains a derived-handle component. A successful destroy retires only the admitted target daemon's slot.

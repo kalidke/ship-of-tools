@@ -136,8 +136,10 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   `tests/installer-state.sh`; change both sides together.
 - `sot_install_copy` has three byte-equal copies (`lib/sot-daemon.sh`, `install.sh`, `sot-apply.sh`), pinned by
   `one_copy_helper` in `tests/installer-apply.sh`; edit all three.
-- A cleanup trap follows comm/CLAUDE.md's rule: install.sh arms itself (`trap - HUP INT TERM`) before each of its
-  two `mktemp`s, and each trap's body starts `trap "" HUP INT TERM`.
+- install.sh's two cleanup traps follow comm/CLAUDE.md's rule: it arms itself (`trap - HUP INT TERM`) before each
+  of its two `mktemp`s, each trap's body starts `trap "" HUP INT TERM` and ends with `sot_end_by_signal`, and
+  `sot_cleanup_signals` runs right after each trap is set (a copy of the comm library's two helpers, beside `die`).
+  sot-apply.sh's trap does not yet: its signal handling is the 0.6.6 item SOT-APPLY-SIGNAL.
 - `.sh` files are POSIX sh plus `local` (`sot-apply.sh` runs under dash, macOS ships bash 3.2); `.ps1` files are Windows
   PowerShell 5.1 with ASCII-only string literals, parsed under 5.1 by the "Parse PowerShell scripts" step of
   `.github/workflows/rust.yml`.

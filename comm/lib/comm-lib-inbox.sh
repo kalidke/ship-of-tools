@@ -236,11 +236,13 @@ _sot_inbox_append_via_daemon() {  # HANDLE LINE
 # presence, never on `code` — an older daemon refuses the unknown op with no
 # code); `ok` is filed whatever the transport's exit status or stderr say; no
 # response is FAILED, and only then does the transport's stderr give the why.
-# A subshell: its EXIT trap removes the file that holds the request's stderr however the call ends (bash runs the
-# trap when INT, TERM or HUP ends the subshell, too; comm-lib-base.sh, cleanup traps).
+# A subshell: its cleanup trap removes the file that holds the request's stderr however the call ends, HUP, INT and
+# TERM included (comm-lib-base.sh, cleanup traps).
 sot_comm_file() (  # HANDLE LINE
-    local h="$1" frame resp reason code err="" diag window
-    trap 'trap "" HUP INT TERM; [ -z "$err" ] || rm -f -- "${err:?}"' EXIT
+    local h="$1" frame resp reason code diag window
+    err=""   # not local: the cleanup trap reads it (comm-lib-base.sh, cleanup traps)
+    trap 'trap "" HUP INT TERM; [ -z "$err" ] || rm -f -- "${err:?}"; sot_end_by_signal' EXIT
+    sot_cleanup_signals
     # The daemon may wait the whole inbox-lock bound before it files, so a read
     # window no longer than that reports FAILED for a line that WAS filed, and
     # the sender resends it: the lock wait plus 10s for the transport's setup.

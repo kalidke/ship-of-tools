@@ -144,19 +144,29 @@ _hb_context_budget() {
     _ctx_ticks=$((10#$_ctx_ticks))
     _ctx_secs=$((_ctx_ticks / 20 + (_ctx_ticks % 20 != 0)))
 }
+# The comm library's two cleanup-trap helpers, copied: this script does not load the library
+# (comm/lib/comm-lib-base.sh, cleanup traps).
+sot_cleanup_signals() {
+    local s; _SOT_SIG=""
+    for s in HUP:129 INT:130 TERM:143; do trap "trap '' HUP INT TERM; _SOT_SIG=${s%:*}; exit ${s#*:}" "${s%:*}"; done
+}
+sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c 'kill -s "$1" "$$"' sh "$_SOT_SIG"; }; }
 # _hb_context_text — comm-context.sh's output under the bound, on stdout; nothing
 # when the call is bounded or fails to start, or its capture files cannot be made
-# or removed. A subshell: its EXIT trap removes the capture files this call made
-# however it ends (bash runs the trap when TERM, HUP or INT ends the subshell;
-# comm-lib-base.sh, cleanup traps: the hook does not load the library, so the
-# subshell arms itself), and never a file it did not make.
+# or removed. A subshell: its cleanup trap removes the capture files this call made
+# however it ends, HUP, INT and TERM included (comm-lib-base.sh, cleanup traps:
+# the hook does not load the library, so the subshell arms itself and uses the
+# copies above), and never a file it did not make.
 _hb_context_text() (
     # Capture these before the library assigns SELF_DIR to its identity cache.
     local _ctx_exec="$SELF_DIR/comm-context.sh" _ctx_ticks _ctx_secs
-    local _ctx_state _ctx_out="" _ctx_err="" _ctx_rc _ctx_bytes _ctx=""
+    local _ctx_state _ctx_rc _ctx_bytes _ctx=""
+    _ctx_out="" _ctx_err=""   # not local: the cleanup trap reads them (comm-lib-base.sh, cleanup traps)
     trap - HUP INT TERM
     trap 'trap "" HUP INT TERM
-          { [ -z "$_ctx_out" ] || rm -f -- "$_ctx_out"; [ -z "$_ctx_err" ] || rm -f -- "$_ctx_err"; } 2>/dev/null' EXIT
+          { [ -z "$_ctx_out" ] || rm -f -- "$_ctx_out"; [ -z "$_ctx_err" ] || rm -f -- "$_ctx_err"; } 2>/dev/null
+          sot_end_by_signal' EXIT
+    sot_cleanup_signals
     [ -x "$_ctx_exec" ] || return 0
     _hb_context_budget || return 0
     _ctx_state="$(cd "$COMM_HOME/state" 2>/dev/null && pwd -P)" || {

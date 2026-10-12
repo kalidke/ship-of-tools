@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # test-temp-files.sh — no messaging script or library call leaves a file in its temporary folders ($TMPDIR and
-# $XDG_RUNTIME_DIR), on success, on failure, or killed. A script that made a temporary file for a value and removed
+# $XDG_RUNTIME_DIR), on success, on failure, killed, or ended by a signal, once or twice (C6-C14, C20-C25). A script
+# that made a temporary file for a value and removed
 # it by a later `rm` left it on every path that skipped the `rm`: a jq failure under `set -e`, a SIGKILL, a signal
 # that ended a call waiting on the daemon. Each row drives one script through those paths (lib-temp-files.sh) and
 # fails naming what was left. The agents scripts' rows are agents/tests/test-temp-files.sh.
@@ -192,6 +193,31 @@ c14_check() {
     rm -f -- "${SOT_COMM_HOME:?}/state/stop-feedback-tf-fb.jsonl"; return 1
 }
 TF_HOLD='stop-feedback-*' TF_CHECK=c14_check tf_signal "C14 the Stop hook's trap (the signal twice)" HUP \
+    sh -c 'f="$1"; shift; exec "$@" < "$f"' _ "$WORK/stop-h.json" env CLAUDE_CODE_SESSION_ID=tf-fb \
+    SOT_COMM_SELF_FILE="$WORK/self-hook-h" SOT_COMM_TEST_HOST=testhost bash "$WORK/hooks-hold/comm-status-idle.sh"
+
+# --- the same signal twice at once: the second comes while the shell acts on the first --------------------------------
+# C9-C14's sites with the signal sent twice, back to back (TF_AT_ONCE). bash 5.2.14 and later end a shell that leaves
+# the signal to bash at the second, before its cleanup trap's first command (comm-lib-base.sh, cleanup traps).
+tf_table '{"comm.file":"silent"}'
+for s in HUP INT TERM; do
+    TF_AT_ONCE=1 tf_signal "C20 sot_comm_file's and sot_oneshot_request's traps (the signal twice at once)" "$s" \
+        env SOT_SOCKET="$TF_SOCK" "${SENDER2[@]}" "$SCRIPTS_DIR/comm-send.sh" @t-peer x
+done
+TF_SIGNAL_PATH=kill TF_AT_ONCE=1 TF_CHECK=c11_check tf_signal "C21 with_lock's trap (the signal twice at once)" HUP \
+    "${SENDER[@]}" "$SCRIPTS_DIR/comm-status.sh" blocked "$TF_SENT"
+tf_table '{"comm.file":{"error":"not here","code":"not_here"},"agent.send":"silent"}'
+TF_AT_ONCE=1 tf_signal "C22 send_frame's trap (the signal twice at once)" HUP "${SENDER[@]}" \
+    "$SCRIPTS_DIR/comm-relay.sh" send @t-stranger x
+# A Ctrl-C stops the callers too: a bash that waits on a command and gets INT goes on when the command exits normally,
+# and stops when it ends by INT. comm-relay.sh waits on send_frame's subshell, and a shell waits on comm-relay.sh.
+tf_signal "C23 send_frame ends by a Ctrl-C (its callers stop)" INT bash -c '"$@"; exit 7' _ "${SENDER[@]}" \
+    "$SCRIPTS_DIR/comm-relay.sh" send @t-stranger x
+TF_AT_ONCE=1 TF_CHECK=c8_check tf_signal "C24 the heartbeat context's trap (the signal twice at once)" HUP \
+    sh -c 'f="$1"; shift; exec "$@" < "$f"' _ "$WORK/hb/envelope.json" env CLAUDE_CODE_SESSION_ID=tf-at-once \
+    SOT_HB_CTX_TIMEOUT_TICKS=1200 bash "$WORK/hb/comm-status-heartbeat.sh"
+: > "$SOT_COMM_HOME/state/stop-feedback-tf-fb.jsonl"
+TF_AT_ONCE=1 TF_CHECK=c14_check tf_signal "C25 the Stop hook's trap (the signal twice at once)" HUP \
     sh -c 'f="$1"; shift; exec "$@" < "$f"' _ "$WORK/stop-h.json" env CLAUDE_CODE_SESSION_ID=tf-fb \
     SOT_COMM_SELF_FILE="$WORK/self-hook-h" SOT_COMM_TEST_HOST=testhost bash "$WORK/hooks-hold/comm-status-idle.sh"
 

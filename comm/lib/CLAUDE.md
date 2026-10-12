@@ -8,7 +8,7 @@ messaging; charter: comm/CLAUDE.md.
 
 ## Files
 - `comm-lib.sh`: the loader; sources the seven parts below, in this order, and holds nothing else
-- `comm-lib-base.sh`: the platform test, the comm folder's paths (`COMM_HOME`, `REGISTRY`, the lock path), the clock, tool checks, the command bound (`sot_bounded`), jq and host helpers, ages, and `COMM_LIVE_SECS` (how old a `last_seen` may be and still be live)
+- `comm-lib-base.sh`: the platform test, the comm folder's paths (`COMM_HOME`, `REGISTRY`, the lock path), the clock, tool checks, the command bound (`sot_bounded`), jq and host helpers, the cleanup-trap helpers (`sot_cleanup_signals`, `sot_end_by_signal`), ages, and `COMM_LIVE_SECS` (how old a `last_seen` may be and still be live)
 - `comm-lib-client.sh`: the shell client of the daemon's wire: endpoints, the ssh bridge, the hello frame, `_sot_os_user` (this shell's OS account, on Windows the SID `_sot_windows_sid` reads), `sot_oneshot_request`, pty input and screen
 - `comm-lib-registry-lock.sh`: the registry lock: `with_lock` and the lock record's take, judge and fail steps
 - `comm-lib-registry.sh`: the registry file: `ensure_home`, the writers, the reads, a row's status and `sot_heartbeat_fresh` (is a `last_seen` live)
@@ -87,9 +87,10 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   release's scripts source this library: a release removes or changes a function or global only once no script of the
   previous release uses it.
 - `sot_oneshot_request` and `sot_comm_file` hold their scratch files across a wait, so each runs in a subshell whose
-  EXIT trap removes them; bash runs that trap when TERM, HUP or INT ends the subshell and then ends by the signal, so
-  the caller ends too. The trap ignores a later HUP, INT or TERM (comm-lib-base.sh, cleanup traps). SIGKILL leaves
-  them, and so does a signal in the instant between a file's creation and its name reaching the trap.
+  cleanup trap removes them; HUP, INT and TERM, once or twice, end the subshell through that trap and then by the
+  signal, so the caller ends too (comm-lib-base.sh, cleanup traps). `with_lock` traps the three for its hold when
+  its caller has no trap on them. SIGKILL leaves the files, and so does a signal in the instant between a file's
+  creation and its name reaching the trap.
 - A request sent behind its hello is decided by its own reply. `sot_oneshot_request` stops at a refused hello at once only
   when the code is not `protocol_mismatch` (a daemon of this release closes after refusing, and only it sends the other
   codes; an older daemon refuses only for the protocol and still answers the request), and names the refusal (`hello

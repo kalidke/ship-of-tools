@@ -14,7 +14,8 @@
 #                            the function TF_CHECK names (when set) checks the value arrived whole
 #   tf_signal ROW SIG CMD... one row: CMD until the daemon sees a silent op, SIG to its group (or its leader), then
 #                            nothing may be left; with TF_HOLD, SIG reaches the group a second time while a cleanup
-#                            trap's rm of a TF_HOLD file runs
+#                            trap's rm of a TF_HOLD file runs; with TF_AT_ONCE, SIG goes to the group twice, back to
+#                            back
 #   tf_report                the summary line; returns the count of failed rows
 #
 # The jq stand-in fails (path `fail`) or hangs (path `kill`) a call whose value carries TF_MARK, in a `--rawfile`
@@ -244,6 +245,7 @@ tf_row() {
 # makes silent; a row's own stand-in may too, and so does the jq stand-in when TF_SIGNAL_PATH is kill and the call
 # that carries the mark hangs); then SIG goes to its group, or to CMD alone when TF_SIGNAL_TARGET is leader. With
 # TF_HOLD, SIG goes to the group again once a cleanup trap's rm of a TF_HOLD file is held, and then the rm is released.
+# With TF_AT_ONCE, SIG goes to the group twice, back to back: the second comes while the shell acts on the first.
 # CMD must end by that signal (status 128 + its number), leave nothing in the temporary folders, and pass the function
 # TF_CHECK names, when set.
 tf_signal() {
@@ -258,6 +260,11 @@ tf_signal() {
                 if await test -e "$TF_DIR/held"; then kill -"$sig" -- "-$TF_PID"
                 else echo "    no rm of a $TF_HOLD file ran after the $sig"; bad=1; fi
                 : > "$TF_DIR/release"
+                _tf_end || bad=1
+            } 2>/dev/null
+        elif [ -n "${TF_AT_ONCE:-}" ]; then
+            {   # stderr: the shell's own notice that the row's leader died of the signal
+                kill -"$sig" -- "-$TF_PID"; kill -"$sig" -- "-$TF_PID"
                 _tf_end || bad=1
             } 2>/dev/null
         else
