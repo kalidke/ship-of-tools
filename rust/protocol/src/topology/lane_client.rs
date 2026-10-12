@@ -511,14 +511,6 @@ impl DaemonLaneEndpoint {
     }
 
     fn ssh_client(&self, kind: &str, recipe: &crate::topology::ssh_bridge::SshRecipe, gate: &crate::topology::ssh_bridge::LinkGate) -> Result<BridgedClient, TransportError> {
-        if kind == "voyage" {
-            if let Some(spare) = self.take_spare() {
-                if gate.is_up() {
-                    return Ok(spare);
-                }
-            }
-            return self.spawn_ssh(recipe, gate);
-        }
         let client = self.spawn_ssh(recipe, gate)?;
         if kind == "supervisor" {
             self.start_spare(|| self.spawn_ssh(recipe, gate));
@@ -565,6 +557,10 @@ impl DaemonLaneEndpoint {
                 return Err(TransportError::LinkDown);
             }
         }
+        #[cfg(any(test, feature = "test-handshake-bound"))]
+        let bound = self.test_handshake_bound.unwrap_or(CONNECT_BOUND);
+        #[cfg(not(any(test, feature = "test-handshake-bound")))]
+        let bound = CONNECT_BOUND;
         let stream = match &self.dial {
             #[cfg(unix)]
             LaneDial::Local(path) | LaneDial::Relay(path, _) => {
@@ -586,15 +582,20 @@ impl DaemonLaneEndpoint {
                 LaneStream::Pipe(client)
             }
             LaneDial::Ssh(recipe, gate) => {
+                // The first voyage spends the spare: a live one is tried once, and when its handshake fails for any
+                // reason (it can die after `take_spare`'s check) the ordinary gated login follows (ADR 0045 decision 3).
+                if kind == "voyage" {
+                    if let Some(spare) = self.take_spare().filter(|_| gate.is_up()) {
+                        if let Ok(client) = handshake(LaneStream::Bridged(spare), &hello, &frame, bound) {
+                            return Ok(client);
+                        }
+                    }
+                }
                 let client = self.ssh_client(kind, recipe, gate)?;
                 LaneStream::Bridged(client)
             }
         };
 
-        #[cfg(any(test, feature = "test-handshake-bound"))]
-        let bound = self.test_handshake_bound.unwrap_or(CONNECT_BOUND);
-        #[cfg(not(any(test, feature = "test-handshake-bound")))]
-        let bound = CONNECT_BOUND;
         let result = handshake(stream, &hello, &frame, bound);
         if kind == "supervisor" && result.is_err() {
             self.drop_spare();
