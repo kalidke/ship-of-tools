@@ -43,4 +43,9 @@ the parent's hold on a claim.
   lost first, which the watchdog treats as a crash and rechecks (`watchdog_may_act`).
 - The client is built once from the prologue's channel and never replaced: after the parent's loss every capsule start
   fails with "the durable parent is gone; restart the daemon", logged once (`proxy::client`).
-- The channel tests send large messages with a receiver already running and bound the whole exchange, including sender completion, descriptor reads and EOF. Linux exercises buffers smaller than the message; a silent-peer control proves the named deadline and owned-socket cleanup. Test bounds and buffer settings do not change the private channel's product contract. Failure-phase snapshots never wait for a diagnostic lock; a busy snapshot reports that limitation so deadline cleanup can start.
+- The channel tests (`wire.rs`) run each side of an exchange on a worker of one test owner, `Exchange`: a worker reports
+  each phase and its end on the owner's one channel; the bound starts once every worker has reported; the verdict is
+  the first worker failure as it arrives or, at the deadline, each unfinished worker's own phase; cleanup shuts down
+  every socket the exchange made and is confirmed only by every worker's reported end. A large message always has its
+  receiver running, and on Linux the buffers are smaller than the message. Test bounds, buffer settings and shutdowns
+  do not change the private channel's product contract.
