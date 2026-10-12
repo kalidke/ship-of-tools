@@ -435,7 +435,8 @@ jobs:
         run: .\scripts\tests\test-install-layout.ps1
         working-directory: .
 
-      # sot-hosts.ps1's Invoke-SotWithin: the bound every script ssh call runs under.
+      # The PowerShell scripts' network bounds: Invoke-SotWithin (sot-hosts.ps1), the bound every script ssh call
+      # runs under, and each script call a test can reach with a stand-in.
       - name: Test Invoke-SotWithin
         if: matrix.os == 'windows-latest'
         shell: powershell

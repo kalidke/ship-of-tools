@@ -40,12 +40,14 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
 - `rc-gate.sh`: the Linux candidate gate, run as the main process of its own test container (`in-container.sh`); a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
-  `Initialize-InstallLayout`'s trust delegation and its tag fetch's stall bound (scripts/sot-install-layout.ps1).
-  Runs in the `rust.yml` step "Test install layout (pinned-checkout predicate)".
-- `test-sot-within.ps1`: `Invoke-SotWithin` (scripts/sot-hosts.ps1): a stalled command ends at its bound with code 124
-  and is killed; a finished one returns its output and code; and `shutdown-sot.ps1`'s `Get-DaemonDisconnect`, read as
-  a syntax tree and run against a stand-in `ssh.exe`, passes the tree's ssh options and the command on stdin, and
-  names a hung ssh. Runs in the `rust.yml` step "Test Invoke-SotWithin".
+  `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test
+  install layout (pinned-checkout predicate)".
+- `test-sot-within.ps1`: the PowerShell scripts' network bounds. `Invoke-SotWithin` (scripts/sot-hosts.ps1): a stalled
+  command ends at its bound with code 124 and is killed; a finished one returns its output and code. Each stand-in goes
+  first on a child PowerShell's PATH, never the test's: `shutdown-sot.ps1`'s `Get-DaemonDisconnect`, read as a syntax
+  tree and run against a stand-in `ssh.exe`, passes the tree's ssh options and the command on stdin, and names a hung
+  ssh; `sot-install-layout.ps1`'s tag fetch, against a stand-in `git.exe`, carries the stall bound. Runs in the
+  `rust.yml` step "Test Invoke-SotWithin".
 - `test-local-daemon.ps1`: scripts/sot-local-daemon.ps1 start, stop and wait behaviour (sections 0-8 and 12-15: the
   refusal, the pipe name, a late bind, `-Stop`, log retention, `Get-StopWaitMs`). Runs in the `rust.yml` step "Test
   local daemon launcher".
