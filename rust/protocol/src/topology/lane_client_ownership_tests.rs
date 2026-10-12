@@ -83,7 +83,7 @@ sys.stdin.buffer.read()
         let n = counted.fetch_add(1, Ordering::SeqCst);
         assert!(command.get_args().any(|arg| arg == "ControlMaster=no"), "the seam uses the gated argv authority");
         if failed_spawn == Some(n) {
-            return Err(std::io::Error::other("optional spare spawn failed"));
+            return Err(std::io::Error::other("injected spawn failure"));
         }
         std::process::Command::new("python3").arg("-u").arg(script.0.join("peer.py"))
             .args((dying_spawn == Some(n)).then_some("dies-in-handshake"))
@@ -95,6 +95,21 @@ sys.stdin.buffer.read()
 
 fn ssh_step(ep: &DaemonLaneEndpoint, kind: &str) -> Result<DaemonLaneClient, TransportError> {
     ep.dial("row-owned-peer", kind, (kind == "voyage").then(|| "voyage".to_string()))
+}
+
+fn parked_pid(ep: &DaemonLaneEndpoint) -> u32 {
+    match &*ep.spare.lock().unwrap() {
+        VoyageSpare::Parked(child) => child.child.lock().unwrap().id(),
+        _ => panic!("the supervisor must park a spare"),
+    }
+}
+
+/// The owned child `pid` has been reaped: waitpid finds no child by that pid (ECHILD), so no waitable zombie remains.
+#[cfg(unix)]
+fn assert_reaped(pid: u32, why: &str) {
+    unsafe extern "C" { fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32; }
+    assert_eq!(unsafe { waitpid(pid as i32, std::ptr::null_mut(), 1) }, -1, "{why}");
+    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(10), "{why}: no child remains to reap");
 }
 
 fn child_is_live(client: &DaemonLaneClient) -> bool {
@@ -155,11 +170,33 @@ fn a_dead_spare_uses_one_fresh_voyage_login() {
 fn a_spare_that_dies_in_its_handshake_uses_one_fresh_voyage_login() {
     let (ep, calls) = counted_endpoint(None, Some(1));
     drop(ssh_step(&ep, "supervisor").unwrap());
+    let spare = parked_pid(&ep);
     let voyage = ssh_step(&ep, "voyage");
     assert_eq!(calls.load(Ordering::SeqCst), 3, "a spare that dies after the check needs one ordinary fresh voyage login: {:?}", voyage.as_ref().err());
+    #[cfg(unix)]
+    assert_reaped(spare, "the failed spare is reaped before the voyage returns");
+    #[cfg(windows)]
+    let _ = spare;
     let fresh = voyage.expect("the ordinary voyage login answers");
     assert!(child_is_live(&fresh), "the fallback voyage login is live");
     assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Spent));
+}
+
+#[test]
+fn a_spare_and_a_fresh_login_that_both_fail_return_the_fresh_error() {
+    let (ep, calls) = counted_endpoint(Some(2), Some(1));
+    drop(ssh_step(&ep, "supervisor").unwrap());
+    let spare = parked_pid(&ep);
+    let voyage = ssh_step(&ep, "voyage");
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "one fresh login follows the failed spare, and no other: {:?}", voyage.as_ref().err());
+    match voyage {
+        Err(TransportError::Unreachable(error)) => assert_eq!(error.to_string(), "injected spawn failure", "the voyage's error is the fresh login's, not the spare's"),
+        other => panic!("the voyage's error is the fresh login's, got {:?}", other.err()),
+    }
+    #[cfg(unix)]
+    assert_reaped(spare, "the failed spare is reaped although the fresh login failed too");
+    #[cfg(windows)]
+    let _ = spare;
 }
 
 #[test]
@@ -205,12 +242,7 @@ fn endpoint_destruction_reaps_the_parked_spare() {
     assert_eq!(rx.recv_timeout(Duration::from_secs(5)).expect("owned child stdout must close").unwrap(), 0);
     reader.join().unwrap();
     #[cfg(unix)]
-    {
-        unsafe extern "C" { fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32; }
-        // The retained owned pid cannot still be a waitable zombie after the owner's Drop.
-        assert_eq!(unsafe { waitpid(pid as i32, std::ptr::null_mut(), 1) }, -1, "the owned child must already be reaped");
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(10), "no child remains to reap");
-    }
+    assert_reaped(pid, "the owned child must already be reaped");
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
@@ -238,11 +270,7 @@ fn abandonment_rearms_only_before_the_first_voyage() {
     assert_eq!(rx.recv_timeout(Duration::from_secs(2)).expect("abandonment closes the owned spare").unwrap(), 0);
     reader.join().unwrap();
     #[cfg(unix)]
-    {
-        unsafe extern "C" { fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32; }
-        assert_eq!(unsafe { waitpid(pid as i32, std::ptr::null_mut(), 1) }, -1, "abandonment reaps its spare before retry");
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(10));
-    }
+    assert_reaped(pid, "abandonment reaps its spare before retry");
     #[cfg(windows)]
     let _ = pid;
     drop(ssh_step(&ep, "supervisor").unwrap());
