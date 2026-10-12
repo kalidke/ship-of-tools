@@ -154,6 +154,9 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
         anyhow::bail!("pane-timing not runnable here: {}: {}{}", r.role, r.out, r.err);
     }
     let mut ready: Vec<(String, u128, u128)> = Vec::new();
+    // Each child's first Ready attach is its window's first pane: one-time work no 2 s promise covers. It is recorded
+    // apart and held only to READY_BOUND, the driver's wait, past which it has no receipt and fails as a hang.
+    let mut first: Vec<(String, u128, u128)> = Vec::new();
     let mut resume = Vec::new();
     // The fault child first: its order assertion is the cause when a timing run's attribution also breaks.
     // Every failed child says what it saw, not only the first: one hosted run should settle what the gate is waiting on.
@@ -176,6 +179,7 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
             continue;
         }
         anyhow::ensure!(run.out.contains(&format!("pane-timing run={} completed", &run.role[4..])), "{} did not complete: {}", run.role, run.out);
+        let mut window_first = true;
         for line in run.out.lines().filter(|l| l.starts_with("pane-timing sample")) {
             let (kind, total) = (field(line, "kind").unwrap_or_default(), field(line, "total_ns").and_then(|v| v.parse::<u128>().ok()));
             if kind == "resume" {
@@ -189,11 +193,13 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
             anyhow::ensure!(field(line, "sentinel").as_deref() == Some("true"), "pane sample without its row's sentinel: {line}");
             let driver = field(line, "driver_ns").and_then(|v| v.parse::<u128>().ok()).unwrap_or(0);
             anyhow::ensure!(driver >= total && driver - total <= 50_000_000, "receipt elapsed and driver elapsed disagree by {}ns: {line}", driver.abs_diff(total));
-            ready.push((line.to_string(), total, driver));
+            let sample = (line.to_string(), total, driver);
+            if std::mem::take(&mut window_first) { first.push(sample) } else { ready.push(sample) }
         }
     }
-    anyhow::ensure!(ready.len() == 15, "wanted 15 cold Ready samples, got {}", ready.len());
-    for (line, ..) in &ready {
+    anyhow::ensure!(first.len() == 3 && ready.len() == 12, "wanted 3 first panes and 12 cold Ready samples, got {} and {}",
+        first.len(), ready.len());
+    for (line, ..) in first.iter().chain(&ready) {
         println!("{line} route={route}");
     }
     for line in &resume {
@@ -204,10 +210,13 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
     let bound = sot_log::lane::transport::CONNECT_BOUND.as_nanos();
     let ok = totals.iter().all(|t| *t <= bound);
     println!(
-        "pane-timing route={route} ready_pane_total_fits_connect_bound samples=15 max_ms={} p50_ms={} ok={ok}",
-        totals[14] / 1_000_000,
-        totals[7] / 1_000_000
+        "pane-timing route={route} ready_pane_total_fits_connect_bound samples=12 max_ms={} p50_ms={} ok={ok}",
+        totals[11] / 1_000_000,
+        totals[6] / 1_000_000
     );
+    let first_max = first.iter().map(|r| r.1).max().unwrap_or(0);
+    println!("pane-timing route={route} first_pane_recorded samples=3 max_ms={} ready_bound_ms={}", first_max / 1_000_000,
+        READY_BOUND.as_millis());
     println!("pane-timing route={route} resume_pane_records_the_whole_operation samples={}", resume.len());
     anyhow::ensure!(ok, "pane presentation missed CONNECT_BOUND: {:?}", Duration::from_nanos(*totals.last().unwrap() as u64));
     Ok(())
