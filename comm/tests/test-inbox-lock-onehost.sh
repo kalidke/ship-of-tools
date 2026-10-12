@@ -38,7 +38,9 @@
 # one will not start on --host.
 #
 # Needs a real NFSv3 host on this home, so it runs in no workflow (like
-# test-inbox-lock-twohost.sh). Requires cargo and jq here.
+# test-inbox-lock-twohost.sh). Requires cargo and jq here; the musl build
+# also needs Rust's x86_64-unknown-linux-musl target and a musl C compiler
+# (rust/log/src/host/process_tree/CLAUDE.md).
 #
 # It keeps the real HOME by design: its scratch home must live on the shared
 # mount every host sees: a fresh mktemp folder beside ~/.sot-comm, never

@@ -104,6 +104,15 @@ jobs:
         # linux ships only the frontend from this glibc build (sotd and
         # sot-capsule come from the musl build below), so build only that.
         run: cd rust && cargo build --release ${{ matrix.target == 'linux-x86_64' && '-p sot-frontend' || '--workspace' }} --locked
+      - name: Install the musl C compiler (linux)
+        if: matrix.target == 'linux-x86_64'
+        shell: bash
+        # sot-log's build script compiles the native launcher that sotd forks
+        # every capsule supervisor through (rust/log/src/host/process_tree/).
+        # For the musl target the cc crate looks on PATH for
+        # x86_64-linux-musl-gcc, then musl-gcc: a compiler with musl's own
+        # headers. musl-tools ships both; the runner image has neither.
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends musl-tools
       - name: Build sotd + sot-capsule (musl static, linux)
         if: matrix.target == 'linux-x86_64'
         shell: bash

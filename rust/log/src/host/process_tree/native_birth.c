@@ -41,10 +41,9 @@ static void write_record(int fd, uint32_t stage, int err) {
     } while (n < 0 && errno == EINTR);
 }
 
-/* The child's one way out before the exec: say where and why on the ready pipe, then leave. */
-/* Put one signal back to its default disposition. glibc refuses sigaction on the two signals its threads use
- * (32 and 33) with EINVAL, but a process can have inherited either ignored, and an ignored disposition survives the
- * exec; the kernel call has no such refusal. */
+/* Put one signal back to its default disposition. The libc refuses sigaction with EINVAL on the signals it keeps for
+ * itself (glibc 32 and 33, musl 32 to 34), but a process can have inherited one ignored, and an ignored disposition
+ * survives the exec; the kernel call has no such refusal. */
 static void reset_disposition(int sig) {
     struct sigaction dfl;
     memset(&dfl, 0, sizeof dfl);
@@ -65,6 +64,7 @@ static void reset_disposition(int sig) {
 #endif
 }
 
+/* The child's one way out before the exec: say where and why on the ready pipe, then leave. */
 static void child_fail(int ready_w, uint32_t stage, int err) {
     write_record(ready_w, stage, err);
     _exit(126);
