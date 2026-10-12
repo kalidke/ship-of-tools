@@ -297,11 +297,12 @@ async fn an_idle_row_with_a_ticking_footer_is_woken() {
 /// UTC `%Y-%m-%dT%H:%M:%SZ` for now plus `off` seconds.
 fn iso_at(off: i64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_secs() as i64;
-    let out = std::process::Command::new("date")
-        .args(["-u", "-d", &format!("@{}", now + off), "+%Y-%m-%dT%H:%M:%SZ"])
-        .output()
-        .expect("run date");
-    String::from_utf8(out.stdout).expect("utf8").trim().to_string()
+    let ran = sot_log::test_wait::run_within(
+        std::process::Command::new("date").args(["-u", "-d", &format!("@{}", now + off), "+%Y-%m-%dT%H:%M:%SZ"]),
+        BOUND,
+    )
+    .ok();
+    ran.stdout.trim().to_string()
 }
 
 /// Sets `agents.HANDLE` in the harness's registry, creating it if absent, under the registry lock.

@@ -12,11 +12,16 @@
 //! exec stub, and CI's windows-latest has Git Bash.
 
 use std::process::Command;
+use std::time::Duration;
+
+use sot_log::test_wait::{run_within, Ran};
 
 #[path = "support/sotd.rs"]
 mod sotd;
 
 const GIT_BASH: &str = "C:/Program Files/Git/bin/bash.exe";
+
+const BOUND: Duration = Duration::from_secs(30);
 
 fn own_name() -> String {
     std::env::current_exe()
@@ -40,8 +45,8 @@ fn parse_lines(text: &str) -> Vec<(u32, String, String)> {
         .collect()
 }
 
-fn lines_of(out: &std::process::Output) -> Vec<(u32, String, String)> {
-    parse_lines(&String::from_utf8_lossy(&out.stdout))
+fn lines_of(ran: &Ran) -> Vec<(u32, String, String)> {
+    parse_lines(&ran.stdout)
 }
 
 /// Whether LINES hold this test's own executable, its path in the command line.
@@ -59,10 +64,9 @@ fn own_path() -> String {
 
 #[test]
 fn first_line_is_the_direct_parent() {
-    let out = sotd::sotd_command().arg("ancestors").output().expect("run sotd");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let lines = lines_of(&out);
-    assert!(!lines.is_empty(), "no ancestors printed");
+    let ran = run_within(sotd::sotd_command().arg("ancestors"), BOUND).ok();
+    let lines = lines_of(&ran);
+    assert!(!lines.is_empty(), "no ancestors printed: {ran}");
     assert_eq!(lines[0].0, std::process::id(), "line 1's pid is not this test's: {lines:?}");
     assert!(
         lines[0].1.eq_ignore_ascii_case(&own_name()),
@@ -83,16 +87,18 @@ fn the_chain_survives_an_msys_shell() {
     assert!(std::path::Path::new(GIT_BASH).exists(), "Git Bash is missing at {GIT_BASH}");
     // `; true` keeps bash from exec-replacing itself with sotd, which would
     // leave no shell in the chain.
-    let out = Command::new(GIT_BASH)
-        .args(["-c", "\"$SOTD\" ancestors; true"])
-        .env("SOTD", sotd::sotd_program().to_string_lossy().replace('\\', "/"))
-        .output()
-        .expect("run bash");
-    let lines = lines_of(&out);
+    let ran = run_within(
+        Command::new(GIT_BASH)
+            .args(["-c", "\"$SOTD\" ancestors; true"])
+            .env("SOTD", sotd::sotd_program().to_string_lossy().replace('\\', "/")),
+        BOUND,
+    )
+    .ok();
+    let lines = lines_of(&ran);
     let at = lines
         .iter()
         .position(|l| l.1.eq_ignore_ascii_case("bash.exe"))
-        .unwrap_or_else(|| panic!("no bash.exe line in {lines:?}; stderr: {}", String::from_utf8_lossy(&out.stderr)));
+        .unwrap_or_else(|| panic!("no bash.exe line in {lines:?}: {ran}"));
     // Git's bash.exe is a wrapper around usr/bin/bash.exe, and MSYS adds fork
     // stubs: more than one bash.exe, and anything in between, is fine.
     let own = lines[at..].iter().find(|l| l.1.eq_ignore_ascii_case(&own_name()));
@@ -108,10 +114,8 @@ fn the_chain_survives_an_msys_shell() {
 #[test]
 fn from_starts_above_the_named_process() {
     let own = std::process::id();
-    let all = sotd::sotd_command().arg("ancestors").output().expect("run sotd");
-    let from = sotd::sotd_command().args(["ancestors", "--from", &own.to_string()]).output().expect("run sotd");
-    assert!(all.status.success(), "stderr: {}", String::from_utf8_lossy(&all.stderr));
-    assert!(from.status.success(), "stderr: {}", String::from_utf8_lossy(&from.stderr));
+    let all = run_within(sotd::sotd_command().arg("ancestors"), BOUND).ok();
+    let from = run_within(sotd::sotd_command().args(["ancestors", "--from", &own.to_string()]), BOUND).ok();
     let (all, from) = (lines_of(&all), lines_of(&from));
     assert_eq!(all.first().map(|l| l.0), Some(own), "the default walk starts at this test: {all:?}");
     assert_eq!(from, all[1..].to_vec(), "--from {own} is the default walk without its first line");
@@ -120,8 +124,8 @@ fn from_starts_above_the_named_process() {
 #[test]
 fn other_arguments_are_a_usage_error() {
     for args in [&["ancestors", "--from"][..], &["ancestors", "--from", "x"], &["ancestors", "extra"]] {
-        let out = sotd::sotd_command().args(args).output().expect("run sotd");
-        assert_eq!(out.status.code(), Some(2), "{args:?}: stdout {:?}", String::from_utf8_lossy(&out.stdout));
+        let ran = run_within(sotd::sotd_command().args(args), BOUND);
+        assert_eq!(ran.status.code(), Some(2), "{args:?}: {ran}");
     }
 }
 
@@ -133,15 +137,15 @@ fn the_cygwin_parent_carries_the_walk_past_an_msys_exec() {
     // parent has exited; it reads its Cygwin parent's Windows pid and walks from there.
     let inner = r#"read -r _ _ _ pp _ < /proc/$$/stat; read -r _ _ _ opp _ < /proc/$pp/stat; read -r w < /proc/$pp/winpid; echo "outer-ppid=$opp"; "$SOTD" ancestors --from "$w""#;
     // `; true` keeps the outer shell from exec-replacing itself with the inner one.
-    let out = Command::new(GIT_BASH)
-        .args(["-c", r#"bash -c "$INNER"; true"#])
-        .env("INNER", inner)
-        .env("SOTD", sotd::sotd_program().to_string_lossy().replace('\\', "/"))
-        .output()
-        .expect("run bash");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let (head, walk) = text.split_once('\n').unwrap_or((text.as_str(), ""));
-    assert_eq!(head.trim(), "outer-ppid=1", "stdout {text:?}; stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let ran = run_within(
+        Command::new(GIT_BASH)
+            .args(["-c", r#"bash -c "$INNER"; true"#])
+            .env("INNER", inner)
+            .env("SOTD", sotd::sotd_program().to_string_lossy().replace('\\', "/")),
+        BOUND,
+    );
+    let (head, walk) = ran.stdout.split_once('\n').unwrap_or((ran.stdout.as_str(), ""));
+    assert_eq!(head.trim(), "outer-ppid=1", "{ran}");
     let walk = parse_lines(walk);
     assert!(holds_this_test(&walk), "this test's {:?} is not above the outer shell: {walk:?}", own_name());
 }
@@ -152,17 +156,13 @@ fn an_exec_under_a_native_parent_keeps_the_chain() {
     // The shell Git's native launcher starts execs another MSYS shell: Cygwin keeps
     // the old Windows process as the new one's parent while a native parent waits.
     let inner = r#"read -r w < /proc/$$/winpid; "$SOTD" ancestors --from "$w""#;
-    let out = Command::new(GIT_BASH)
-        .args(["-c", r#"exec bash -c "$INNER""#])
-        .env("INNER", inner)
-        .env("SOTD", sotd::sotd_program().to_string_lossy().replace('\\', "/"))
-        .output()
-        .expect("run bash");
-    let walk = lines_of(&out);
-    assert!(
-        holds_this_test(&walk),
-        "this test's {:?} is not above the exec'd shell: {walk:?}; stderr: {}",
-        own_name(),
-        String::from_utf8_lossy(&out.stderr)
+    let ran = run_within(
+        Command::new(GIT_BASH)
+            .args(["-c", r#"exec bash -c "$INNER""#])
+            .env("INNER", inner)
+            .env("SOTD", sotd::sotd_program().to_string_lossy().replace('\\', "/")),
+        BOUND,
     );
+    let walk = lines_of(&ran);
+    assert!(holds_this_test(&walk), "this test's {:?} is not above the exec'd shell: {walk:?}: {ran}", own_name());
 }

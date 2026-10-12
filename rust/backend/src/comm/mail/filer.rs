@@ -218,6 +218,9 @@ mod comm_file_tests {
     use crate::comm::registry::registry::read_registry_fresh_with;
     use std::time::Duration;
 
+    #[cfg(unix)]
+    const BOUND: Duration = Duration::from_secs(30);
+
     const NOW: u64 = 1_790_000_000;
 
     type Verdict = std::result::Result<(), (String, String)>;
@@ -559,11 +562,10 @@ mod comm_file_tests {
             if let Some((k, v)) = extra {
                 cmd.env(k, v);
             }
-            let out = cmd.output().expect("run bash");
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            let shell = stdout.lines().next() == Some("0");
+            let ran = sot_log::test_wait::run_within(&mut cmd, BOUND);
+            let shell = ran.stdout.lines().next() == Some("0");
             let rust = heartbeat_fresh(if stamp.is_empty() { None } else { Some(&stamp) }, now);
-            assert_eq!(rust, shell, "bash {}, stamp {stamp:?}: {}", stdout.lines().nth(1).unwrap_or_default(), String::from_utf8_lossy(&out.stderr));
+            assert_eq!(rust, shell, "bash {}, stamp {stamp:?}: {ran}", ran.stdout.lines().nth(1).unwrap_or_default());
         }
     }
 

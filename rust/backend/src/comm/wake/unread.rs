@@ -134,6 +134,9 @@ fn counts(line: &[u8], handle: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     fn home(inbox: &str, cursor: Option<&str>) -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("inbox")).unwrap();
@@ -270,19 +273,19 @@ mod tests {
         ];
         for (inbox, cursor) in cases {
             let d = home(inbox, cursor);
-            let out = std::process::Command::new("bash")
-                .arg("-c")
-                .arg(r#"source "$1"; sot_cursor_offset a"#)
-                .arg("bash")
-                .arg(&lib)
-                .env("COMM_HOME", d.path())
-                .env("SOT_COMM_HOME", d.path())
-                .output()
-                .expect("run bash");
-            let err = String::from_utf8_lossy(&out.stderr);
-            assert!(out.status.success(), "the shell failed on inbox {inbox:?} cursor {cursor:?}: {err}");
-            let shell: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().expect("shell offset");
-            assert_eq!(cursor_offset(d.path(), "a"), shell, "inbox {inbox:?} cursor {cursor:?}: {err}");
+            let ran = sot_log::test_wait::run_within(
+                std::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(r#"source "$1"; sot_cursor_offset a"#)
+                    .arg("bash")
+                    .arg(&lib)
+                    .env("COMM_HOME", d.path())
+                    .env("SOT_COMM_HOME", d.path()),
+                BOUND,
+            );
+            assert!(ran.status.success(), "the shell failed on inbox {inbox:?} cursor {cursor:?}: {ran}");
+            let shell: u64 = ran.stdout.trim().parse().expect("shell offset");
+            assert_eq!(cursor_offset(d.path(), "a"), shell, "inbox {inbox:?} cursor {cursor:?}: {ran}");
         }
     }
 
@@ -326,21 +329,20 @@ mod tests {
         }
         for (inbox, cursor) in cases {
             let d = home(&inbox, cursor.as_deref());
-            let out = std::process::Command::new("bash")
-                .arg("-c")
-                .arg(r#"source "$1"; sot_unread a"#)
-                .arg("bash")
-                .arg(&lib)
-                .env("COMM_HOME", d.path())
-                .env("SOT_COMM_HOME", d.path())
-                .output()
-                .expect("run bash");
-            let err = String::from_utf8_lossy(&out.stderr);
-            assert!(out.status.success(), "the shell failed on inbox {inbox:?} cursor {cursor:?}: {err}");
+            let ran = sot_log::test_wait::run_within(
+                std::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(r#"source "$1"; sot_unread a"#)
+                    .arg("bash")
+                    .arg(&lib)
+                    .env("COMM_HOME", d.path())
+                    .env("SOT_COMM_HOME", d.path()),
+                BOUND,
+            );
+            assert!(ran.status.success(), "the shell failed on inbox {inbox:?} cursor {cursor:?}: {ran}");
             let got = scan(d.path(), "a", 0);
             let want = format!("{} {}", got.total, got.unread);
-            let shell = String::from_utf8_lossy(&out.stdout);
-            assert_eq!(shell.trim_end(), want, "inbox {inbox:?} cursor {cursor:?}: {err}");
+            assert_eq!(ran.stdout.trim_end(), want, "inbox {inbox:?} cursor {cursor:?}: {ran}");
         }
     }
 
