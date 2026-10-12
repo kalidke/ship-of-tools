@@ -138,6 +138,15 @@ function Test-OurOwner($proc) {
 function Get-Sup  { Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match $supRe -and $_.CommandLine -like "*$env:USERPROFILE*" } }
 function Get-FE   { Get-CimInstance Win32_Process -Filter "Name='sot.exe'" | Where-Object { Test-OurPath $_.ExecutablePath } }
 function Get-Tun  { Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" | Where-Object { $_.CommandLine -match $tunRe -and (Test-OurOwner $_) } }
+# The daemon's last 'frontend disconnected' line in its last $Lines journal lines, read over ssh under a bound on the
+# whole call (the tree's SSH_OPTS, the command on stdin to `bash -s`). An empty string is "no such line"; a call that
+# outlasts $Seconds throws the helper's words, which each caller's catch logs as a skipped check.
+function Get-DaemonDisconnect([string]$Alias, [int]$Lines, [int]$Seconds = 30) {
+    $cmd = "journalctl --user -u sotd.service --no-pager -n $Lines | grep -E 'frontend disconnected' | tail -1`n"
+    $r = Invoke-SotWithin $Seconds 'ssh' ($SotSshOpts + @($Alias, 'bash', '-s')) $cmd
+    if ($r.Code -eq 124) { throw $r.Output }
+    return $r.Stdout.Trim()
+}
 
 W "=== shutdown-sot start (ports=$($tunnelPorts -join ','), host=$SshAlias) ==="
 W ("pre: FE=[{0}] supervisor=[{1}] tunnel=[{2}]" -f `
@@ -151,8 +160,7 @@ W ("pre: FE=[{0}] supervisor=[{1}] tunnel=[{2}]" -f `
 $preDisc = ''
 if (-not $SkipDaemonVerify) {
     try {
-        $preDisc = ssh -o ConnectTimeout=8 -o BatchMode=yes $SshAlias `
-            "journalctl --user -u sotd.service --no-pager -n 400 | grep -E 'frontend disconnected' | tail -1" 2>$null
+        $preDisc = Get-DaemonDisconnect $SshAlias 400
         if ($preDisc) { W "daemon last disconnect (pre): $preDisc" } else { W "daemon: no prior disconnect line in tail" }
     } catch { W "daemon pre-check skipped: $($_.Exception.Message)" }
 }
@@ -173,8 +181,7 @@ if ($feKilled) { Start-Sleep -Seconds 2 } else { W "no live FE to drain; skippin
 #    the tunnel.
 if (-not $SkipDaemonVerify -and $feKilled) {
     try {
-        $postDisc = ssh -o ConnectTimeout=8 -o BatchMode=yes $SshAlias `
-            "journalctl --user -u sotd.service --no-pager -n 60 | grep -E 'frontend disconnected' | tail -1" 2>$null
+        $postDisc = Get-DaemonDisconnect $SshAlias 60
         if ($postDisc -and $postDisc -ne $preDisc) { W "daemon detach CONFIRMED (new disconnect): $postDisc" }
         elseif ($postDisc -and $postDisc -eq $preDisc) { W "no NEW disconnect line yet (matches pre) - FIN may still be in flight or the client was already gone; ADR-0027 reaper bounds any ghost at ~50s" }
         else { W "daemon detach line not found; ADR-0027 reaper bounds any ghost at ~50s" }

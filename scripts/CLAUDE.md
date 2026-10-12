@@ -93,7 +93,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `sot-freshness.ps1`: the armed update's apply, the dev pull's rebuild and the comm install, run before a window starts.
 - `sot-lease.ps1`: opens a lease on this computer's daemon, hands every lease over to the window, and starts the bridge (`Start-SotBridge`) for the lease and `sot-local-daemon.ps1`'s probe. A request the daemon has not answered within `$LeaseReplyWaitMs` is kept open, its bridge process held for the supervisor's life (`$global:SotLeasesUnanswered`), with its handover written behind it, since closing it could end the computer's sessions.
 - `relaunch-sot.ps1`: builds the window and drops the relaunch sentinel.
-- `shutdown-sot.ps1`: ordered local teardown.
+- `shutdown-sot.ps1`: ordered local teardown; its two remote journal reads run under `Invoke-SotWithin`.
 ### Dev and docs
 - `restart-backend.sh`: loads a freshly built `sotd` into a running dev daemon.
 ### Folders

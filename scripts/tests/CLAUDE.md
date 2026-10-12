@@ -44,7 +44,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   `Initialize-InstallLayout`'s trust delegation and its tag fetch's stall bound (scripts/sot-install-layout.ps1).
   Runs in the `rust.yml` step "Test install layout (pinned-checkout predicate)".
 - `test-sot-within.ps1`: `Invoke-SotWithin` (scripts/sot-hosts.ps1): a stalled command ends at its bound with code 124
-  and is killed; a finished one returns its output and code. Runs in the `rust.yml` step "Test Invoke-SotWithin".
+  and is killed; a finished one returns its output and code; and `shutdown-sot.ps1`'s `Get-DaemonDisconnect`, read as
+  a syntax tree and run against a stand-in `ssh.exe`, passes the tree's ssh options and the command on stdin, and
+  names a hung ssh. Runs in the `rust.yml` step "Test Invoke-SotWithin".
 - `test-local-daemon.ps1`: scripts/sot-local-daemon.ps1 start, stop and wait behaviour (sections 0-8 and 12-15: the
   refusal, the pipe name, a late bind, `-Stop`, log retention, `Get-StopWaitMs`). Runs in the `rust.yml` step "Test
   local daemon launcher".
