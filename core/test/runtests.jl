@@ -115,6 +115,19 @@ struct TestNoMatches <: FileType end
                 @test occursin("sleep did not finish within 1 s", sprint(showerror, err))
                 @test time() - began < 3
             end
+            # A tool that ignores TERM (ffmpeg blocked on a FIFO) is ended at the bound too: read_within kills it.
+            began = time()
+            task = @async try
+                ConceptExplorerCore.read_within(`sh -c 'trap "" TERM; exec sleep 12'`, 1)
+            catch e
+                e
+            end
+            @test timedwait(() -> istaskdone(task), 15) == :ok
+            if istaskdone(task)
+                err = fetch(task)
+                @test occursin("sh did not finish within 1 s", sprint(showerror, err))
+                @test time() - began < 3
+            end
             @test ConceptExplorerCore.read_within(`echo hi`, 5) == b"hi\n"
             @test_throws ProcessFailedException ConceptExplorerCore.read_within(`false`, 5)
         end

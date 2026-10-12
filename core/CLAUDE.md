@@ -16,7 +16,7 @@ file or wire op, and runs a process only in `read_within`. Part of sidecars; cha
   plugins may claim one path.
 - Keep the 3-arg `preview` fallback: the kernel always calls the 3-arg form.
 - No I/O and no wire here, except `read_within`.
-- `read_within(cmd, seconds)` is `read(cmd)` with a bound: the process is killed at the bound and the error names the
-  program and the bound; a plugin runs every external tool through it.
+- `read_within(cmd, seconds)` is `read(cmd)` with a bound: the process is killed at the bound (KILL, so a tool that
+  ignores TERM ends too) and the error names the program and the bound; a plugin runs every external tool through it.
 
 Records: ADR 0006 (its not-implemented note), ADR 0021, docs/src/extend/abi.md and filetype.md.
