@@ -233,7 +233,7 @@ pub(super) async fn run_local(
     workspaces: Workspaces,
     ws_events_tx: broadcast::Sender<WorkspaceChanged>,
     agent_events_tx: broadcast::Sender<AgentMessage>,
-    agent_receipt_tx: broadcast::Sender<AgentReceipt>,
+    links: crate::comm::mail::links::Links,
     fe_command_tx: broadcast::Sender<FeCommandEvt>,
     repl_frame_tx: broadcast::Sender<ReplFrameMsg>,
     clients: Clients,
@@ -288,7 +288,7 @@ pub(super) async fn run_local(
             let ws = workspaces.clone();
             let wse = ws_events_tx.clone();
             let age = agent_events_tx.clone();
-            let agr = agent_receipt_tx.clone();
+            let lk = links.clone();
             let fce = fe_command_tx.clone();
             let rfe = repl_frame_tx.clone();
             let cl = clients.clone();
@@ -297,7 +297,7 @@ pub(super) async fn run_local(
             tokio::spawn(async move {
                 let (rx, tx) = stream.split();
                 if let Err(e) = handle_connection(
-                    rx, tx, s, mj, pl, fm, wa, lb, ws, wse, age, agr, fce, rfe, cl, tps, tpe, peer,
+                    rx, tx, s, mj, pl, fm, wa, lb, ws, wse, age, lk, fce, rfe, cl, tps, tpe, peer,
                     le,
                 )
                 .await

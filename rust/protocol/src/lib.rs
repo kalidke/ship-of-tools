@@ -19,14 +19,14 @@ pub mod video_path;
 pub use codec::{read_frame, write_frame};
 pub use ir::{BlobDescriptor, PreviewPayload, TreeNode};
 pub use ops::{
-    op, AccountEntry, AccountsListReq, AccountsListRes, AgentFiledReq, AgentFiledRes,
-    AgentJoinReq, AgentJoinRes, AgentReceiptEvt, AgentSendReq, AgentSendRes, ClientVersion, CommFileReq, CommFileRes, ConceptListRes, ConceptReadReq, ConceptReadRes,
+    op, AccountEntry, AccountsListReq, AccountsListRes,
+    AgentJoinReq, AgentJoinRes, AgentSendReq, AgentSendRes, ClientVersion, CommFileReq, CommFileRes, ConceptListRes, ConceptReadReq, ConceptReadRes,
     ConceptWriteReq, ConceptWriteRes, DaemonVersion, DeclaredSession, DisconnectedBox, DirCreateReq, DirCreateRes, DirectoryEntry,
     DirectoryListReq, DirectoryListRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
     FeCommandSendRes,
     FePresenceReq, FePresenceRes, FeSessionsReq, FeSessionsRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq,
     FileReadReq, FileReadRes,
-    FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, GpuSample, HANDOFF_ROLE, HelloReq, HelloRes,
+    FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, GpuSample, HANDOFF_ROLE, HelloReq, LINK_ROLE, HelloRes,
     HostLatest, HostSeries, ImageCropReq, ImageCropRes, KernelRequestReq, LaneConnectReq,
     LaneConnectRes, MathRenderReq, MathRenderRes, MonitorHistoryReq, MonitorHistoryRes,
     MonitorSample, MonitorSubscribeReq,

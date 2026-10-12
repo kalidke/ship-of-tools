@@ -227,17 +227,16 @@ _sot_inbox_append_via_daemon() {  # HANDLE LINE
 }
 
 # sot_comm_file HANDLE LINE — THE one `comm.file` request and its verdict, for
-# the guard's daemon route above and comm-relay.sh's send_frame alike. LINE is
+# the guard's daemon route above and comm-relay.sh alike. LINE is
 # the inbox line (`from`, `to`, `msg`); ENDPOINT comes from the caller's scope.
-# 0 = filed; otherwise the reason is on stdout for the caller to print after
-# `FAILED -> @h: `, and the status is 2 when the daemon does not list HANDLE
-# (`not_here`), 1 for everything else. The response line decides, in this
-# order: an `error` is FAILED in the daemon's own words (keyed on its
+# 0 = filed; 1 = not, with the reason on stdout for the caller to print after
+# `FAILED -> @h: `; every refusal is final, `not_here` included. The response
+# line decides, in this order: an `error` is FAILED in the daemon's own words (keyed on its
 # presence, never on `code` — an older daemon refuses the unknown op with no
 # code); `ok` is filed whatever the transport's exit status or stderr say; no
 # response is FAILED, and only then does the transport's stderr give the why.
 sot_comm_file() {  # HANDLE LINE
-    local h="$1" frame resp reason code err diag window
+    local h="$1" frame resp reason err diag window
     # The daemon may wait the whole inbox-lock bound before it files, so a read
     # window no longer than that reports FAILED for a line that WAS filed, and
     # the sender resends it: the lock wait plus 10s for the transport's setup.
@@ -255,8 +254,6 @@ sot_comm_file() {  # HANDLE LINE
     reason="$(printf '%s' "$resp" | sot_jq -r '.payload.error // empty' 2>/dev/null)" || reason=""
     if [ -n "$reason" ]; then
         printf '%s\n' "$reason"
-        code="$(printf '%s' "$resp" | sot_jq -r '.payload.code // empty' 2>/dev/null)" || code=""
-        [ "$code" = not_here ] && return 2
         return 1
     fi
     # `-n` first: `jq -e` over empty input exits 0.

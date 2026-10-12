@@ -12,12 +12,12 @@ use super::*;
 pub(super) async fn dispatch<W>(
     tx: &mut W, frame: Frame, session: &Session, mathjax: &MathJax, pluto: &Pluto,
     workspaces: &Workspaces, ws_events_tx: &broadcast::Sender<WorkspaceChanged>,
-    agent_events_tx: &broadcast::Sender<AgentMessage>, agent_receipt_tx: &broadcast::Sender<AgentReceipt>,
+    agent_events_tx: &broadcast::Sender<AgentMessage>, links: &crate::comm::mail::links::Links,
     fe_command_tx: &broadcast::Sender<FeCommandEvt>, clients: &Clients,
     topology_store: &Arc<crate::topology::store::TopologyStore>,
     topo_changed_tx: &broadcast::Sender<crate::topology::store::TopologyChanged>, leases: &Arc<crate::lifecycle::lease::Leases>,
     client_guard: &Option<crate::clients::ClientGuard>, hello_host: &Option<String>,
-    hello_name: &Option<String>, is_long_lived_role: bool, deadline_armed: &mut bool,
+    is_long_lived_role: bool, deadline_armed: &mut bool,
     read_deadline: &mut tokio::time::Instant, active_workspace: &mut Option<String>, monitor_subscribed: &mut bool,
     jobs: &mut JoinSet<()>, job_sem: &Arc<Semaphore>, out_tx: &OutTx,
 ) -> Result<()>
@@ -181,32 +181,8 @@ where
             );
             crate::rows::ops::list::handle_workspace_activate(frame.id, frame.payload, &workspaces).await
         }
-        op::AGENT_SEND => {
-            crate::comm::mail::relay::handle_agent_send(
-                frame.id,
-                frame.payload,
-                &agent_events_tx,
-                &clients,
-                client_guard.as_ref().map(|g| g.serial()),
-            )
-            .await
-        }
-        op::AGENT_FILED => {
-            // The filer is this connection's DECLARED hello name, read
-            // here and nowhere else — the request body cannot name one
-            // (ADR 0048). `hello_name` is the same local `hello_host`
-            // is kept as, recorded before `register` consumes the req.
-            crate::comm::mail::relay::handle_agent_filed(
-                frame.id,
-                frame.payload,
-                &agent_receipt_tx,
-                hello_name.as_deref(),
-            )
-            .await
-        }
-        op::COMM_FILE => {
-            crate::comm::mail::filer::handle_comm_file(frame.id, frame.payload).await
-        }
+        op::AGENT_SEND => crate::comm::mail::relay::handle_agent_send(frame.id, frame.payload, &agent_events_tx).await,
+        op::COMM_FILE => crate::comm::mail::filer::handle_comm_file(frame.id, frame.payload, links).await,
         op::AGENT_JOIN => {
             crate::comm::registry::join::handle_agent_join(frame.id, frame.payload, &workspaces, &ws_events_tx)
                 .await

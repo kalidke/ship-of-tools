@@ -29,7 +29,7 @@ use crate::sidecars::pluto::Pluto;
 use crate::sidecars::repl::ReplFrameMsg;
 use crate::session::Session;
 use crate::files::watcher::PreviewChanged;
-use crate::comm::mail::bus::{AgentMessage, AgentReceipt};
+use crate::comm::mail::bus::AgentMessage;
 use crate::rows::WorkspaceChanged;
 use crate::rows::store;
 use crate::rows::Workspaces;
@@ -180,21 +180,12 @@ pub async fn run(opts: Opts) -> Result<()> {
         tokio::spawn(crate::comm::wake::run(comm_home, state_root, workspaces.clone(), crate::comm::wake::TICK));
     }
 
-    // Agent-relay bus: parallel to the workspace bus, typed `AgentMessage`.
-    // `agent.send` publishes here; each connection subscribes and writes an
-    // `agent.message` evt frame so a message reaches the other machine's
-    // in-terminal agent instantly over the SSH-forwarded socket (mirror of
-    // the workspace.changed wiring, plus a client→daemon publish leg).
+    // UI notification bus: `agent.send` publishes an empty-target notification here (the nav envelope, the ROI
+    // echo); each connection subscribes and writes it as an `agent.message` evt frame. It never carries mail.
     let (agent_events_tx, _agent_events_rx) = broadcast::channel::<AgentMessage>(256);
 
-    // Filer-receipt bus (ADR 0048): the return leg of the agent relay.
-    // `agent.filed` publishes here; each connection writes an
-    // `agent.receipt` evt frame, so the SENDER reads its own verdict on the
-    // connection it is already holding open. A separate typed bus rather
-    // than a second meaning for `AgentMessage` — one bus per event type is
-    // this file's own idiom (workspace.changed, fe.command, repl frames,
-    // topology) and a receipt is not a message.
-    let (agent_receipt_tx, _agent_receipt_rx) = broadcast::channel::<AgentReceipt>(256);
+    // The daemons linked to this one (`link`-role connections): `comm.file` offers them what this folder does not list.
+    let links = crate::comm::mail::links::Links::default();
 
     // FE-command bus (ADR 0025): parallel to the agent-relay bus, typed
     // `FeCommandEvt`. `fe.command.send` publishes here; each connection
@@ -241,7 +232,7 @@ pub async fn run(opts: Opts) -> Result<()> {
         let ws = workspaces.clone();
         let wse = ws_events_tx.clone();
         let age = agent_events_tx.clone();
-        let agr = agent_receipt_tx.clone();
+        let lk = links.clone();
         let fce = fe_command_tx.clone();
         let rfe = repl_frame_tx.clone();
         let cl = clients.clone();
@@ -250,7 +241,7 @@ pub async fn run(opts: Opts) -> Result<()> {
         let le = leases.clone();
         tasks.push(tokio::spawn(async move {
             run_local(
-                path, s, mj, pl, fm, wa, lb, ws, wse, age, agr, fce, rfe, cl, tps,
+                path, s, mj, pl, fm, wa, lb, ws, wse, age, lk, fce, rfe, cl, tps,
                 tpe, le,
             )
             .await

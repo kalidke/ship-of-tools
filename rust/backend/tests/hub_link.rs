@@ -1,9 +1,10 @@
 #![cfg(target_os = "linux")]
-//! The daemon's link to the hub (0031 B2): a real hub `sotd` and a real
+//! The daemon's link to the hub (decision 0031): a real hub `sotd` and a real
 //! `sotd` for a `frontend = true` host, joined by a stub `ssh` that relays
-//! to the hub's socket with `nc -U` (the `lane_bridge/main.rs` pattern). The
-//! hub's `agent.message` broadcast reaches the guest, which files for the
-//! handles its own registry lists and answers `agent.filed`.
+//! to the hub's socket with `nc -U` (the `lane_bridge/main.rs` pattern). A
+//! `comm.file` the hub's own folder does not list is offered to the guest over
+//! its link; the guest files for the handles its own registry lists, and the
+//! hub's answer is the guest's.
 //!
 //! `Env`, `connect_and_hello` and `call` are `topology_set.rs`'s, trimmed.
 
@@ -105,20 +106,37 @@ async fn connect_and_hello(socket_path: &Path, name: &str) -> Conn {
     }
 }
 
-/// Sends `agent.send` with sender-minted `id` and reports whether an
-/// `agent.receipt` for that id naming `filer` arrives within `within`.
-async fn send_and_wait_receipt(conn: &mut Conn, id: &str, to: &str, filer: &str, within: Duration) -> bool {
-    let req = serde_json::json!({"from": "kitt-sender", "to": to, "text": format!("hi {id}"), "id": id});
-    codec::write_frame(conn, &Frame::req(100, op::AGENT_SEND, req), None).await.expect("write agent.send");
-    let body = async {
-        loop {
-            let (frame, _) = codec::read_frame(conn).await.expect("read");
-            if frame.kind == Kind::Evt && frame.op == op::AGENT_RECEIPT && frame.payload["id"] == id {
-                return frame.payload["filer"] == filer;
-            }
+/// Sends one `comm.file` for `to` to the hub and returns the payload of its answer.
+async fn comm_file(conn: &mut Conn, id: u64, to: &str) -> serde_json::Value {
+    let req = serde_json::json!({"from": "sender-a", "to": to, "text": format!("hi {id}")});
+    codec::write_frame(conn, &Frame::req(id, op::COMM_FILE, req), None).await.expect("write comm.file");
+    loop {
+        let (frame, _) = codec::read_frame(conn).await.expect("read");
+        if frame.kind == Kind::Res && frame.id == id && frame.op == op::COMM_FILE {
+            return frame.payload;
         }
-    };
-    tokio::time::timeout(within, body).await.unwrap_or(false)
+    }
+}
+
+/// Asks the hub's roster (`version.query`) until it lists a connection named `name`, and fails when `BOUND` passes
+/// first.
+async fn wait_for_client(conn: &mut Conn, n: &mut u64, name: &str) {
+    let deadline = std::time::Instant::now() + BOUND;
+    loop {
+        *n += 1;
+        codec::write_frame(conn, &Frame::req(*n, op::VERSION_QUERY, serde_json::json!({})), None).await.expect("write version.query");
+        let listed = loop {
+            let (frame, _) = codec::read_frame(conn).await.expect("read");
+            if frame.kind == Kind::Res && frame.id == *n {
+                break frame.payload["clients"].as_array().is_some_and(|cs| cs.iter().any(|c| c["name"] == name));
+            }
+        };
+        if listed {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "no connection named {name} on the hub's roster within {BOUND:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 fn now_iso(offset_secs: i64) -> String {
@@ -145,11 +163,10 @@ fn inbox_lines(env: &Env, h: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
-// Items 1-3 of the lane: a listed live handle is filed and receipted by
-// `sotd-<box>`; an unlisted one and a listed one with no live session are
-// neither; and after the ssh child drops a new one is up and filing again.
+// A handle only the linked box lists is filed there and the hub answers `ok`; that box's refusal comes back as its
+// own words, and a handle no box lists is `not_here`; after the ssh child drops, a new link is up and filing again.
 #[tokio::test]
-async fn the_daemon_files_for_its_own_folder_over_a_link_that_restarts() {
+async fn the_hub_files_into_a_linked_box_and_answers_with_its_verdict() {
     let stubs = tempfile::tempdir().unwrap();
     let count = stubs.path().join("count");
     let hub = Env::start("hub", "hub-a", None);
@@ -163,38 +180,45 @@ async fn the_daemon_files_for_its_own_folder_over_a_link_that_restarts() {
     }});
     support::write_registry(&guest.comm_root, |doc| *doc = registry);
 
-    // The link comes up after the daemon does: send until a receipt arrives.
+    // 1. Once the guest's link is on the hub's roster, one comm.file for a handle only the guest lists is filed there.
     let mut n = 0;
-    let deadline = std::time::Instant::now() + BOUND;
-    loop {
-        n += 1;
-        if send_and_wait_receipt(&mut sender, &format!("up-{n}"), "live", "sotd-win-b", Duration::from_secs(2)).await {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline, "the link never filed");
-    }
-    assert_eq!(inbox_lines(&guest, "live").last().unwrap()["from"], "kitt-sender");
+    wait_for_client(&mut sender, &mut n, "sotd-win-b").await;
+    n += 1;
+    assert_eq!(comm_file(&mut sender, n, "live").await, serde_json::json!({"ok": true}), "the hub's answer for @live");
+    let line = inbox_lines(&guest, "live").last().cloned().expect("a line in the guest's inbox");
+    assert_eq!((line["from"].as_str(), line["msg"].as_str()), (Some("sender-a"), Some(format!("hi {n}").as_str())));
+    assert!(inbox_lines(&hub, "live").is_empty(), "the hub filed into its own folder");
 
-    // 2. Refusals file nothing and receipt nothing.
-    for to in ["nobody", "stale"] {
-        assert!(!send_and_wait_receipt(&mut sender, &format!("no-{to}"), to, "sotd-win-b", Duration::from_secs(2)).await, "{to} was receipted");
-        assert!(inbox_lines(&guest, to).is_empty(), "{to} was filed");
-    }
+    // 2. The guest's refusal is the answer; a handle no box lists is not_here. Neither files anything.
+    n += 1;
+    assert_eq!(
+        comm_file(&mut sender, n, "stale").await,
+        serde_json::json!({"error": "no live session holds @stale", "code": "no_live_session"})
+    );
+    n += 1;
+    assert_eq!(
+        comm_file(&mut sender, n, "nobody").await,
+        serde_json::json!({"error": "no box knows that handle: nobody", "code": "not_here"})
+    );
+    assert!(inbox_lines(&guest, "stale").is_empty() && inbox_lines(&guest, "nobody").is_empty(), "a refusal filed");
 
-    // 3. The first ssh child ends after 4 s; a second one is up and files.
+    // 3. The first ssh child ends after 4 s; once a second one is up, the next comm.file is filed again.
     let deadline = std::time::Instant::now() + BOUND;
     while std::fs::read_to_string(&count).unwrap_or_default().lines().count() < 2 {
         assert!(std::time::Instant::now() < deadline, "no second ssh child");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    // The roster can still list the first link for a moment, so this step asks until the answer is `ok`.
     let before = inbox_lines(&guest, "live").len();
     let deadline = std::time::Instant::now() + BOUND;
     loop {
         n += 1;
-        if send_and_wait_receipt(&mut sender, &format!("again-{n}"), "live", "sotd-win-b", Duration::from_secs(2)).await {
+        let answer = comm_file(&mut sender, n, "live").await;
+        if answer == serde_json::json!({"ok": true}) {
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "the restarted link never filed");
+        assert!(std::time::Instant::now() < deadline, "the restarted link never filed @live; the last answer: {answer}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert!(inbox_lines(&guest, "live").len() > before);
+    assert_eq!(inbox_lines(&guest, "live").len(), before + 1, "one ok, one line");
 }

@@ -369,35 +369,6 @@
         assert!(!snap.is_active_serial(b.serial()), "the untouched duplicate is never active");
     }
 
-    #[test]
-    fn receivers_for_matches_by_name_or_unconditionally_by_fe_role() {
-        // Roster: a bridge named "X", a frontend named "fe@h" (no bridge,
-        // per the module doc — an "fe" row always counts), and the
-        // requester itself ("cli", never its own receiver).
-        let clients = Clients::new();
-        let bridge = clients.register("client-x", "0.6.0", 1, "bridge".to_string(), None, None, Some("X".into()));
-        let fe = clients.register("client-fe", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@h".into()));
-        let me = clients.register("client-me", "0.6.0", 1, "cli".to_string(), None, None, Some("self".into()));
-        let _ = (&bridge, &fe);
-
-        let mut to_x = clients.receivers_for("X", me.serial());
-        to_x.sort();
-        assert_eq!(to_x, vec!["X".to_string(), "fe@h".to_string()], "the named match plus the always-on fe row");
-
-        let mut to_absent = clients.receivers_for("Y", me.serial());
-        to_absent.sort();
-        assert_eq!(to_absent, vec!["fe@h".to_string()], "no name matches, but fe still counts");
-
-        let mut broadcast = clients.receivers_for("", me.serial());
-        broadcast.sort();
-        assert_eq!(broadcast, vec!["X".to_string(), "fe@h".to_string()], "broadcast is every OTHER named row");
-
-        assert!(
-            !clients.receivers_for("self", me.serial()).contains(&"self".to_string()),
-            "self_serial is always excluded, even if `to` names the requester's own handle"
-        );
-    }
-
 #[cfg(test)]
 mod fe_sessions_tests {
     use super::{handle_fe_sessions, handle_version_query};

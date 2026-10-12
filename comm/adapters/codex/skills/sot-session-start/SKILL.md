@@ -40,9 +40,7 @@ with `comm-send.sh @handle "text"` and read its one result. When
 once, when a session first starts — not again on every resume.
 
 This is ADR 0049's design of record, landing in stages: a send's verdict now is
-`filed -> @h` or `FAILED -> @h: <reason>`, except that until B2 a handle the
-hub's folder does not list can still get `NOT CONFIRMED: sent for @h; …` or
-`filed -> @h (by <filer>, relay)`. The daemon wakes an idle Claude row by typing
+`filed -> @h` or `FAILED -> @h: <reason>`, and nothing else. The daemon wakes an idle Claude row by typing
 `[sot-comm] you have mail: run comm-poll.sh`; a Codex row is one the daemon
 cannot type into, so its end-of-turn check reads the mail. Every session a row
 starts runs this bootstrap first (`ccx` does it before Codex starts), so its

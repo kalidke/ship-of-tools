@@ -2,7 +2,8 @@
 # T5 — a stub bridge stands in for the hub on a unix: endpoint: each connection
 # is one run of it. Its `comm.file` answer is the payload in $HUB/answer
 # ("" = silence), given after $HUB/wait seconds; an `agent.send` is acked and
-# receipted by fe@far. Every frame it reads is logged by op. It answers
+# receipted by fe@far, as the hub of the retired receipt route did, so a sender
+# that still took that route would print a filed line. Every frame it reads is logged by op. It answers
 # `topology relay-endpoint` with the hub's socket, as topology does on the hub,
 # logs every endpoint it is asked to dial, and serves only that socket.
 HUB="$WORK/hub"
@@ -263,16 +264,12 @@ case_a_wire_send_prints_the_hubs_answer() {
 {"error":"not a handle: t-far","code":"bad_handle"}|1|FAILED -> @t-far: not a handle: t-far
 {"error":"no live session holds @t-far","code":"no_live_session"}|1|FAILED -> @t-far: no live session holds @t-far
 {"error":"the append failed: disk full","code":"file_failed"}|1|FAILED -> @t-far: the append failed: disk full
+{"error":"no box knows that handle: t-far","code":"not_here"}|1|FAILED -> @t-far: no box knows that handle: t-far
 {"error":"unknown op: comm.file"}|1|FAILED -> @t-far: unknown op: comm.file
 |1|FAILED -> @t-far: the daemon did not answer at unix:$WORK/hub.sock
 CASES
-    # not_here, and only it, falls back to the not-mine leg (deleted in B2).
-    write_hub_stub '{"error":"no box knows that handle: t-far","code":"not_here"}'; wire_send
-    [ "$SEND_RC" -eq 0 ] && [ "$SEND_OUT" = "filed -> @t-far (by fe@far, relay)" ] \
-        || { echo "  not_here: rc $SEND_RC ($SEND_OUT$SEND_ERR)"; return 1; }
-    [ "$(wc -l < "$HUB/agent-send.log")" -eq 1 ] || { echo "  not_here: no agent.send fallback"; return 1; }
     # The guard's own route reads the same answer with the same helper, and
-    # for it not_here is FAILED: this box's registry named the handle.
+    # for it not_here is FAILED with status 1, like every other refusal.
     fresh_route
     got="$(route_append "nfs rw,vers=3 A:/x" "nfs4 A:/x" unix:/own "" \
         '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":{"error":"no box knows that handle: t-peer","code":"not_here"}}')"; rc=$?

@@ -24,10 +24,8 @@ with `comm-send.sh @handle "text"` and read its one result. When
 `comm-poll.sh`. To wait for a reply, end your turn. Run the session-start step
 once, when a session first starts — not again on every resume.
 
-This is ADR 0049's design of record, landing in stages: a send's verdict now is
-`filed -> @h` or `FAILED -> @h: <reason>`, except that until B2 a handle the
-hub's folder does not list can still get `NOT CONFIRMED: sent for @h; …` or
-`filed -> @h (by <filer>, relay)`. The daemon wakes an idle row by typing
+This is ADR 0049's design of record: a send's verdict is `filed -> @h` or
+`FAILED -> @h: <reason>`, and nothing else. The daemon wakes an idle row by typing
 `[sot-comm] you have mail: run comm-poll.sh`, and every session a row starts
 runs this bootstrap first, so its handle is declared again. The call above ends with `BOOTSTRAP-ARM … WAKE: daemon`: there is
 nothing to arm, own or re-arm. Mail is read with `comm-poll.sh`.

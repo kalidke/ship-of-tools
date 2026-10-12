@@ -1,10 +1,12 @@
-//! Mail delivery in the daemon: the hub link that files relayed messages.
+//! Mail delivery in the daemon: `comm.file` and the append behind it, its offers to linked daemons and the link that
+//! answers them, a guest's forward to the hub, and the `agent.send` UI notification.
 
 pub(crate) mod bus;
 pub(crate) mod filer;
 pub(crate) mod forward;
 pub(crate) mod hub_link;
 pub(crate) mod inbox;
+pub(crate) mod links;
 pub(crate) mod relay;
 
 /// 0031 B1: the folder's hub names the lock manager its inbox appends go

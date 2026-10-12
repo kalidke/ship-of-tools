@@ -1,23 +1,21 @@
-// hub_link.rs — the daemon's own link to the hub (decision 0031 Part 3, B2).
+// hub_link.rs — the daemon's own link to the hub (decision 0031: a Windows box's daemon holds its own link to the hub,
+// so its rows receive with the window closed).
 //
-// A box whose topology entry is `frontend = true` reaches the hub over one
-// `ssh:` stdio child. The daemon holds it for as long as it runs, so mail for
-// a session here is filed with the frontend window open or closed. On it the
-// hub broadcasts every `agent.message`; this daemon files the ones whose `to`
-// its own comm folder lists, through the same function `comm.file` uses
-// (`comm::mail::filer::file_comm`), and answers `agent.filed {id}`. Nothing else rides
-// the link but a `ping` every 30 s; only a positive claim exists (`op::AGENT_FILED`).
-// A hub that sends no frame for three of those intervals ends the link, which
-// then redials: ssh's ServerAlive covers a dead network or sshd, never a hub
-// daemon or bridge stopped behind a live sshd (`SILENT_PINGS`).
+// A box whose topology entry is `frontend = true` reaches the hub over one `ssh:` stdio child, as a `link`-role
+// connection. The daemon holds it for as long as it runs. The hub sends it a `comm.file` request for each handle the
+// hub's own folder does not list (`comm::mail::links`); this daemon files it into its own folder through the function
+// `comm.file` uses (`comm::mail::filer::file_comm`) and answers it, `ok` or the refusal. It sends the hub nothing but
+// its hello and a `ping` every 30 s. A hub that sends no frame for three of those intervals ends the link, which then
+// redials: ssh's ServerAlive covers a dead network or sshd, never a hub daemon or bridge stopped behind a live sshd
+// (`SILENT_PINGS`).
 //
-// The topology is read once at start, like the frontend's tunnel set: a box
-// that is the hub, or has no `ssh:` endpoint to it, runs no link.
+// The topology is read once at start, like the frontend's tunnel set: a box that is the hub, or has no `ssh:` endpoint
+// to it, runs no link.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use sot_protocol::{codec, op, Frame, HelloReq, Kind};
+use sot_protocol::{codec, op, CommFileReq, Frame, HelloReq, Kind};
 
 
 const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
@@ -27,7 +25,7 @@ const BACKOFF_CAP: Duration = Duration::from_secs(30);
 const PING_EVERY: Duration = Duration::from_secs(30);
 /// How many ping intervals with no frame from the hub end the link, the hello's reply included. A live hub answers
 /// each ping at once only while every request the link sends is one the hub answers at once in its connection loop
-/// (`hello`, `ping`, `agent.filed`): a request the hub awaits inline must not ride this link, or a busy hub is cut as a
+/// (`hello`, `ping`): a request the hub awaits inline must not ride this link, or a busy hub is cut as a
 /// silent one. Frames, not bytes: nothing the hub sends this connection carries a blob, so each frame is one envelope
 /// under the codec's 1 MiB cap.
 const SILENT_PINGS: u32 = 3;
@@ -169,11 +167,11 @@ where
     W: tokio::io::AsyncWrite + Unpin,
     R: tokio::io::AsyncBufRead + Unpin,
 {
-    // The hub never reaps a `cli` connection, so the link holds its own deadline (`SILENT_PINGS`); it ignores every
-    // event but one.
+    // The hub reaps only `fe` and `bridge` connections, so the link holds its own deadline (`SILENT_PINGS`). It answers
+    // the hub's `comm.file` requests and ignores every other frame.
     let hello = HelloReq {
         name: Some(name.to_string()),
-        ..HelloReq::this_process(format!("sotd-hub-link-{}", std::process::id()), "cli", Some(self_host.to_string()))
+        ..HelloReq::this_process(format!("sotd-hub-link-{}", std::process::id()), sot_protocol::LINK_ROLE, Some(self_host.to_string()))
             .map_err(|err| err.to_string())?
     };
     let e = |what: &'static str| move |err: anyhow::Error| format!("{what}: {err}");
@@ -211,36 +209,27 @@ where
             }
             continue;
         }
-        if frame.kind != Kind::Evt || frame.op != op::AGENT_MESSAGE {
+        if frame.kind != Kind::Req || frame.op != op::COMM_FILE {
             continue;
         }
-        let field = |k: &str| frame.payload.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let (id, from, to, text) = (field("id"), field("from"), field("to"), field("text"));
-        // No id: nothing to claim. No `to`: a broadcast, never mail.
-        if id.is_empty() || to.is_empty() {
-            continue;
-        }
-        let req = hub_frame_req(from, to.clone(), text);
-        match crate::comm::mail::filer::file_comm(req).await {
-            Ok(Ok(())) => {
-                tracing::info!(%to, %id, "hub link filed");
-                let filed = serde_json::json!({ "id": id });
-                codec::write_frame(tx, &Frame::req(next_id, op::AGENT_FILED, filed), None).await.map_err(e("agent.filed"))?;
-                next_id += 1;
+        // The hub's offer: file it into this box's own folder, marked forwarded so a refusal here is final, and
+        // answer with the verdict.
+        let answer = match serde_json::from_value::<CommFileReq>(frame.payload) {
+            Ok(req) => {
+                let to = req.to.clone();
+                match crate::comm::mail::filer::file_comm(CommFileReq { forwarded: true, ..req }).await {
+                    Ok(Ok(())) => {
+                        tracing::info!(%to, "hub link filed");
+                        serde_json::json!({ "ok": true })
+                    }
+                    Ok(Err((code, error))) => serde_json::json!({ "error": error, "code": code }),
+                    Err(err) => serde_json::json!({ "error": format!("the filing failed: {err}"), "code": "file_failed" }),
+                }
             }
-            // Every linked daemon sees every message; a handle this box does not hold is the usual case.
-            Ok(Err((code, _))) if code == "not_here" => tracing::debug!(%to, "hub link: not here"),
-            Ok(Err((code, error))) => tracing::info!(%to, code, %error, "hub link refused"),
-            Err(err) => tracing::warn!(%to, "hub link: filing failed: {err}"),
-        }
+            Err(err) => serde_json::json!({ "error": format!("comm.file payload: {err}"), "code": "bad_request" }),
+        };
+        codec::write_frame(tx, &Frame::res(frame.id, op::COMM_FILE, answer), None).await.map_err(e("comm.file"))?;
     }
-}
-
-/// The filing request for a frame the hub sent. `forwarded: true` because it
-/// came from the hub: a box whose comm folder is not on its own disk refuses it
-/// rather than forwarding it back to the hub over ssh.
-fn hub_frame_req(from: String, to: String, text: String) -> sot_protocol::CommFileReq {
-    sot_protocol::CommFileReq { from, to, text, broadcast: false, forwarded: true }
 }
 
 // The one-time move of the old frontend inbox. Deleted with this file's caller
@@ -507,7 +496,7 @@ mod tests {
                     answered += u32::from(frame.op == op::PING);
                 }
                 () = tokio::time::sleep_until(due) => {
-                    let evt = Frame::evt(op::AGENT_RECEIPT, serde_json::json!({ "id": "x", "filer": "f" }));
+                    let evt = Frame::evt(op::AGENT_MESSAGE, serde_json::json!({ "from": "a", "to": "", "text": "x", "ts": "t" }));
                     let _ = codec::write_frame(&mut tx, &evt, None).await;
                     next = events.next();
                 }
@@ -617,11 +606,6 @@ mod tests {
         sig.fire().expect("fire");
         tokio::time::timeout(Duration::from_secs(3), task).await.expect("the link loop outlived the shutdown").expect("link task");
         assert!(sig.held_groups().is_empty());
-    }
-
-    #[test]
-    fn a_hub_frame_is_filed_as_forwarded() {
-        assert!(hub_frame_req("x".into(), "a".into(), "t".into()).forwarded);
     }
 
     #[test]

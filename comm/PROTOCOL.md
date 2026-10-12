@@ -278,12 +278,10 @@ shows.
 
 ## Delivery
 
-This section is ADR 0049's design of record. The mechanism below lands in
-stages; until each stage does, the two-mode delivery this
-replaces stays in place. The per-session relay bridge is gone on every box
-that shares the hub's comm folder: the hub files for every handle that folder
-lists, and a box that holds its own link to the hub (a Windows host) files for its
-own folder through its daemon, the frontend playing no part (decision 0031 B2).
+This section is ADR 0049's design of record. The hub files for every handle
+its own comm folder lists; a box with its own comm folder (a Windows host) holds
+its own link to the hub, and its daemon files for that folder the requests the
+hub offers it over the link, the frontend playing no part.
 
 **Words.** A *row* is a session running inside Ship of Tools. The *daemon*
 is the background program on each box that runs that box's rows; it keeps
@@ -365,7 +363,15 @@ lists the receiver:
    registry miss) writes ONE `comm.file` request to the relay endpoint, the
    hub, and reads ONE answer. The hub files for its own home: when its comm
    folder lists the handle and a session holds it, it adds the line under
-   the same inbox lock and answers `ok`.
+   the same inbox lock and answers `ok`. A handle its folder does not list
+   (`not_here`) it offers, as the same `comm.file` request marked
+   `forwarded`, to every daemon linked to it (a hello of role `link`), all at
+   once, and answers with theirs: the first `ok`; else the first refusal that
+   is not `not_here`, that box's own words; else `no box filed @<h>; the daemon
+   on <host> did not answer within <n>s` for a link that gave no answer in time; else
+   `no box knows that handle: <h>`. A linked daemon files the offer into its own
+   folder by the rules of route 1 and never offers or forwards it again. A
+   request that arrived `forwarded` is not offered.
 
 **The wait is chosen by lock kind, and bounded at 10 s (`SOT_INBOX_LOCK_WAIT_SECS`)
 on both paths.** The Linux NFSv4 client retries a blocked lock with a backoff
@@ -440,26 +446,12 @@ the transport's stderr is read only when no answer came, and then only
 lengthens the reason. The read window is the lock wait plus 10 seconds, so a
 hub that waited out the lock and then filed is not reported `FAILED`.
 
-**Landing in stages: a handle the hub's folder does not list
-(`not_here`) falls back to the older route** — `agent.send` offered to
-everything attached to the hub, decided on a filer's receipt. There, a
-receipt gives `filed -> @h (by <filer>, relay)` (exit 0); an ack with an empty roster
-and no receipt within 5 seconds gives `FAILED -> @h: nobody filed it within 5s: no box knows that handle, or the daemon that holds it is stopped or not linked to the hub`; an ack naming
-anyone with no receipt within 5 seconds gives `NOT CONFIRMED: sent for @h;
-nobody claimed it within 5s. Attached: …`, the roster a diagnostic and never
-a verdict — so a handle no box knows gives `NOT CONFIRMED` whenever anything
-is attached; an ack that carries an error gives `FAILED -> @h: <its error>`; a
-refused hello, where no receipt came and no ack decided, gives `FAILED -> @h:
-hello refused: <the daemon's own words>`; any other ack, or none, gives
-`FAILED -> @h: <reason>` when the transport failed with one to give, else
-`FAILED -> @h: the daemon did not answer at <endpoint>`. Every one of those but
-the receipt exits 1. A broadcast (`send --all`) still goes this way and prints
-`relayed -> <all> (<n> receiver(s)) via <endpoint>`, `FAILED -> <all>: <the
-ack's error>` or `FAILED -> <all>: hello refused: <the daemon's own words>`.
 With no daemon found at all a wire send prints
-`FAILED -> @h: no sotd daemon found; …` and exits 1.
-
-Known limit (B2): the hub's comm folder has not been shown to list every live row on every attached box. At the 2026-10-06 premise check, two attached boxes had no session; one of them had no frontend connected, so those two boxes were unobserved. A handle absent from that folder still uses the broadcast filer route and may end NOT CONFIRMED. Full B2 removal is blocked on the live-row registry premise; this checkout does not promise a binary verdict for that route.
+`FAILED -> @h: no sotd daemon found; …` and exits 1. `agent.send` is not
+mail: it carries the frontend's UI notifications (`sot-nav.sh`'s nav
+envelope, the ROI echo) with an empty `to`, published to every connection as
+`agent.message`; one that names a handle is refused
+(`mail_requires_comm_file`) and nothing is published.
 
 Nothing is queued anywhere, and a failed send is not retried by another
 route. To get an answer, send, end the turn, and be woken.

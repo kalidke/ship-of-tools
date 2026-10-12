@@ -4,7 +4,8 @@ Messaging between sessions is a pair of halves: the comm scripts at the repo's `
 delivery, of the address book and of the wake. Part of the backend; charter: comm/CLAUDE.md.
 
 ## Files
-- `mail/`: delivery: `comm.file`, the forward to the hub, the hub link, the relay of `agent.send` and `agent.filed`
+- `mail/`: delivery: `comm.file`, the forward to the hub, the offers to linked daemons and the hub link that answers
+  them, and the `agent.send` UI notification
 - `mod.rs`: declares the three folders and holds the comm folder rule (`sot_comm_home`)
 - `registry/`: the address book: which handle names which session, and the registry's lock, writes and poll
 - `wake/`: the wake: types a line into a session's free prompt when mail is unread

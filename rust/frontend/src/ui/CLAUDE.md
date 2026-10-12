@@ -68,7 +68,7 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `fe.command.send`, `fe.command`,
-`agents/sot-fe/sot-fe-request.sh`, `sot_ui`, `agent.message`, `agents/sot-fe/sot-nav.sh`, `comm-relay.sh send --all`.
+`agents/sot-fe/sot-fe-request.sh`, `sot_ui`, `agent.message`, `agents/sot-fe/sot-nav.sh`, `sot_oneshot_request`.
 Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
 `workspace.create`, `workspace.destroy`, `workspace.list`, `workspace.reauth`, `pty.input`, `pty.screen`,
 `workspace.changed`, `FeAttachClient`, `rust/backend/src/rows/run/headless.rs`,

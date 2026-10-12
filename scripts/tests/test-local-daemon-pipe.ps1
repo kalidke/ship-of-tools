@@ -63,7 +63,7 @@
             $wedged5c.Write($hb5c, 0, $hb5c.Length)
             $text5c = 'x' * 4096
             for ($k5c = 1; $k5c -le 3; $k5c++) {
-                $send5c = '{"v":3,"id":2,"kind":"req","op":"agent.send","payload":{"from":"t-sender","to":"t-nobody","text":"' + $text5c + '","id":"t-' + $k5c + '"}}'
+                $send5c = '{"v":3,"id":2,"kind":"req","op":"agent.send","payload":{"from":"t-sender","to":"","text":"' + $text5c + '"}}'
                 $null = Invoke-PipeTransport $pipe5c agent.send @($new5c, $send5c)
             }
             $gaveUp5c = $false

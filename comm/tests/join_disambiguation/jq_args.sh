@@ -59,14 +59,9 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     # idle hook's own inlined copy): a line count, or a legacy ISO timestamp
     # being converted to one. Neither can begin with "/", and the only writer of
     # that file is comm-poll.sh.
-    # `i` = the relay's own MSG_ID (ADR 0048): minted as
-    # `<epoch-ns>-<pid>-<random>` in comm-relay.sh and echoed back from the
-    # frame being receipted, so it is digits and dashes and can never begin
-    # with "/". The message BODY on those same jq calls still goes through
-    # --rawfile.
     # `one` = sot_registry_read's "a row was asked for" flag, `${1+1}`: "1"
     # or "", never "/".
-    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag o acc cur i one "
+    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag o acc cur one "
     local bad="" file name line match comment_lines
     [ -f "$SCRIPTS_DIR/comm-status-idle.sh" ] || { echo "  the staged bin holds no hooks"; return 1; }
     for file in "$SCRIPTS_DIR"/*.sh "$SCRIPTS_DIR/sot-fe"; do

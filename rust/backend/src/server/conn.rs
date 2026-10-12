@@ -4,7 +4,7 @@
 
 use super::dispatch::dispatch;
 use super::events::{
-    recv_or_pending, write_agent_message, write_agent_receipt, write_fe_command, write_monitor_tick,
+    recv_or_pending, write_agent_message, write_fe_command, write_monitor_tick,
     write_preview_changed, write_repl_frame, write_topology_changed, write_workspace_changed,
 };
 use super::hello::{admit_hello, handle_hello, parse_first_frame, register_hello, Admitted, HelloRefusal};
@@ -133,7 +133,7 @@ pub(super) async fn handle_connection<R, W>(
     workspaces: Workspaces,
     ws_events_tx: broadcast::Sender<WorkspaceChanged>,
     agent_events_tx: broadcast::Sender<AgentMessage>,
-    agent_receipt_tx: broadcast::Sender<AgentReceipt>,
+    links: crate::comm::mail::links::Links,
     fe_command_tx: broadcast::Sender<FeCommandEvt>,
     repl_frame_tx: broadcast::Sender<ReplFrameMsg>,
     clients: Clients,
@@ -195,7 +195,7 @@ where
 
     let ended = serve_control(
         &mut tx, buffered, first.id, hello, session, mathjax, pluto, files_mode, preview_changed_tx, label, workspaces,
-        ws_events_tx, agent_events_tx, agent_receipt_tx, fe_command_tx, repl_frame_tx, clients, topology_store,
+        ws_events_tx, agent_events_tx, links, fe_command_tx, repl_frame_tx, clients, topology_store,
         topo_changed_tx, leases,
     )
     .await;
@@ -270,7 +270,7 @@ async fn serve_control<R, W>(
     tx: &mut W, buffered: tokio::io::BufReader<R>, hello_id: u64, hello: Admitted, session: Session, mathjax: MathJax, pluto: Pluto, files_mode: Arc<FilesMode>,
     preview_changed_tx: broadcast::Sender<PreviewChanged>, label: Arc<Option<String>>, workspaces: Workspaces,
     ws_events_tx: broadcast::Sender<WorkspaceChanged>, agent_events_tx: broadcast::Sender<AgentMessage>,
-    agent_receipt_tx: broadcast::Sender<AgentReceipt>, fe_command_tx: broadcast::Sender<FeCommandEvt>,
+    links: crate::comm::mail::links::Links, fe_command_tx: broadcast::Sender<FeCommandEvt>,
     repl_frame_tx: broadcast::Sender<ReplFrameMsg>, clients: Clients,
     topology_store: Arc<crate::topology::store::TopologyStore>,
     topo_changed_tx: broadcast::Sender<crate::topology::store::TopologyChanged>, leases: Arc<crate::lifecycle::lease::Leases>,
@@ -368,12 +368,6 @@ where
     // per-receiver lag detection surfaces a connection that fell behind.
     let mut agent_events_rx = agent_events_tx.subscribe();
 
-    // One receipt subscription per connection (ADR 0048), beside the agent
-    // bus and created the same unconditional way. Every connection gets
-    // every receipt; the sender recognizes its own by `id` and ignores the
-    // rest — the daemon holds no delivery state to route by.
-    let mut agent_receipt_rx = agent_receipt_tx.subscribe();
-
     // One FE-command subscription per connection (ADR 0025). Like the agent
     // bus it's always present (channel created unconditionally in `run`). Each
     // connection writes its own `fe.command` evt frame; the broadcast's
@@ -411,17 +405,18 @@ where
     let mut jobs: JoinSet<()> = JoinSet::new();
     let job_sem = Arc::new(Semaphore::new(OFFLOOP_CONCURRENCY));
 
+    // A `link` connection is a daemon that files for its own comm folder: the hub offers it the `comm.file`
+    // requests its own folder cannot file, and reads its answers (`comm::mail::links`). It is attached before it is on
+    // the roster, so a connection the roster lists is already offered filings.
+    let hello_host = hello.hello().host.clone();
+    let mut link = (hello.hello().role == sot_protocol::LINK_ROLE).then(|| links.attach(hello_host.clone().unwrap_or_default()));
+
     // Connected-client registry entry (ADR 0010/0013): registered here, after the bus subscriptions above so no
     // event between them is lost and before the hello's reply so `clients_connected` counts this connection, and
     // held for its lifetime; the guard deregisters on any exit path (clean EOF, error, task drop). The roster holds
     // control sessions only. The connection's declared host (`HelloReq.host`, ADR 0046 decision 1) is what
-    // `topology.set`'s "can't remove yourself" refusal reads (`server/dispatch.rs`, `op::TOPOLOGY_SET`); its declared
-    // sot-comm name (`HelloReq.name`, the value `Clients::receivers_for` reports) is what `agent.filed` stamps as the
-    // `filer` (ADR 0048), read from the hello and never from a request body, which is what makes a receipt
-    // unforgeable (`None` for a connection that declared no name, which therefore cannot vouch for anything).
+    // `topology.set`'s "can't remove yourself" refusal reads (`server/dispatch.rs`, `op::TOPOLOGY_SET`).
     let client_guard = Some(register_hello(&hello, &clients));
-    let hello_host = hello.hello().host.clone();
-    let hello_name = hello.hello().name.clone();
     let is_long_lived_role = matches!(hello.hello().role.as_str(), "fe" | "bridge");
     let hello_reply = handle_hello(hello_id, hello.into_hello(), &session, &files_mode, label.as_deref(), &clients).await;
     for (frame, blob) in finish_dispatch(op::HELLO, hello_id, std::time::Instant::now(), hello_reply) {
@@ -431,7 +426,7 @@ where
     loop {
         let frame = match select_once(
             tx, &mut read_fut, &mut out_rx, &mut watcher_rx, &mut ws_events_rx, &mut topo_changed_rx,
-            &mut agent_events_rx, &mut agent_receipt_rx, &mut fe_command_rx, &mut repl_frame_rx, &mut monitor_rx,
+            &mut agent_events_rx, &mut link, &mut fe_command_rx, &mut repl_frame_rx, &mut monitor_rx,
             &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &workspaces,
             &client_guard,
         )
@@ -462,6 +457,11 @@ where
             read_deadline = tokio::time::Instant::now() + ping_read_deadline();
         }
 
+        // A link's response answers an offer the hub wrote to it.
+        if let (Kind::Res, Some(end)) = (&frame.kind, link.as_mut()) {
+            end.answer(frame);
+            continue;
+        }
         if frame.kind != Kind::Req {
             tracing::debug!(?frame.kind, op = %frame.op, "ignoring non-req frame");
             continue;
@@ -474,8 +474,8 @@ where
 
         dispatch(
             tx, frame, &session, &mathjax, &pluto, &workspaces, &ws_events_tx,
-            &agent_events_tx, &agent_receipt_tx, &fe_command_tx, &clients, &topology_store, &topo_changed_tx, &leases,
-            &client_guard, &hello_host, &hello_name, is_long_lived_role, &mut deadline_armed,
+            &agent_events_tx, &links, &fe_command_tx, &clients, &topology_store, &topo_changed_tx, &leases,
+            &client_guard, &hello_host, is_long_lived_role, &mut deadline_armed,
             &mut read_deadline, &mut active_workspace, &mut monitor_subscribed, &mut jobs, &job_sem, &out_tx,
         )
         .await?;
@@ -499,7 +499,7 @@ async fn select_once<R, W, F>(
     watcher_rx: &mut Option<broadcast::Receiver<PreviewChanged>>,
     ws_events_rx: &mut broadcast::Receiver<WorkspaceChanged>,
     topo_changed_rx: &mut broadcast::Receiver<crate::topology::store::TopologyChanged>,
-    agent_events_rx: &mut broadcast::Receiver<AgentMessage>, agent_receipt_rx: &mut broadcast::Receiver<AgentReceipt>,
+    agent_events_rx: &mut broadcast::Receiver<AgentMessage>, link: &mut Option<crate::comm::mail::links::LinkEnd>,
     fe_command_rx: &mut broadcast::Receiver<FeCommandEvt>, repl_frame_rx: &mut broadcast::Receiver<ReplFrameMsg>,
     monitor_rx: &mut Option<broadcast::Receiver<HostLatest>>, jobs: &mut JoinSet<()>,
     read_deadline: tokio::time::Instant, deadline_armed: bool, monitor_subscribed: bool,
@@ -538,8 +538,9 @@ where
             write_agent_message(tx, msg).await?;
             Ok(Woke::Again)
         }
-        rcp = agent_receipt_rx.recv() => {
-            write_agent_receipt(tx, rcp).await?;
+        offer = crate::comm::mail::links::next_offer(link) => {
+            let frame = link.as_mut().expect("only a link is offered a filing").request(offer)?;
+            write_reply(tx, frame, None).await?;
             Ok(Woke::Again)
         }
         fc = fe_command_rx.recv() => {
@@ -616,7 +617,7 @@ mod select_once_wire_tests {
         ws_events_rx: broadcast::Receiver<WorkspaceChanged>,
         topo_changed_rx: broadcast::Receiver<TopologyChanged>,
         agent_events_rx: broadcast::Receiver<AgentMessage>,
-        agent_receipt_rx: broadcast::Receiver<AgentReceipt>,
+        link: Option<crate::comm::mail::links::LinkEnd>,
         fe_command_rx: broadcast::Receiver<FeCommandEvt>,
         repl_frame_rx: broadcast::Receiver<ReplFrameMsg>,
         monitor_rx: Option<broadcast::Receiver<HostLatest>>,
@@ -631,7 +632,6 @@ mod select_once_wire_tests {
         ws_events: broadcast::Sender<WorkspaceChanged>,
         topo_changed: broadcast::Sender<TopologyChanged>,
         agent_events: broadcast::Sender<AgentMessage>,
-        agent_receipt: broadcast::Sender<AgentReceipt>,
         fe_command: broadcast::Sender<FeCommandEvt>,
         repl_frame: broadcast::Sender<ReplFrameMsg>,
         monitor: broadcast::Sender<HostLatest>,
@@ -642,7 +642,6 @@ mod select_once_wire_tests {
         let (ws_events, ws_events_rx) = broadcast::channel(1);
         let (topo_changed, topo_changed_rx) = broadcast::channel(1);
         let (agent_events, agent_events_rx) = broadcast::channel(1);
-        let (agent_receipt, agent_receipt_rx) = broadcast::channel(1);
         let (fe_command, fe_command_rx) = broadcast::channel(1);
         let (repl_frame, repl_frame_rx) = broadcast::channel(1);
         let (monitor, monitor_rx) = broadcast::channel(1);
@@ -655,7 +654,7 @@ mod select_once_wire_tests {
             ws_events_rx,
             topo_changed_rx,
             agent_events_rx,
-            agent_receipt_rx,
+            link: None,
             fe_command_rx,
             repl_frame_rx,
             monitor_rx: Some(monitor_rx),
@@ -664,7 +663,7 @@ mod select_once_wire_tests {
             buf: Vec::new(),
         };
         let s = Senders {
-            watcher, ws_events, topo_changed, agent_events, agent_receipt, fe_command, repl_frame, monitor,
+            watcher, ws_events, topo_changed, agent_events, fe_command, repl_frame, monitor,
         };
         (w, s)
     }
@@ -674,7 +673,7 @@ mod select_once_wire_tests {
             select_once(
                 &mut self.buf, &mut self.read_fut, &mut self.out_rx, &mut self.watcher_rx,
                 &mut self.ws_events_rx, &mut self.topo_changed_rx, &mut self.agent_events_rx,
-                &mut self.agent_receipt_rx, &mut self.fe_command_rx, &mut self.repl_frame_rx,
+                &mut self.link, &mut self.fe_command_rx, &mut self.repl_frame_rx,
                 &mut self.monitor_rx, &mut self.jobs, tokio::time::Instant::now(), false, true, &None,
                 &self.workspaces, &None,
             )
@@ -758,16 +757,8 @@ mod select_once_wire_tests {
     );
     bus_wire_tests!(
         agent_events, agent_events, op::AGENT_MESSAGE,
-        AgentMessage {
-            from: "a".into(), to: "b".into(), text: "hi".into(), ts: "2026-01-01T00:00:00Z".into(),
-            id: Some("x-1".into()),
-        },
-        json!({"from": "a", "to": "b", "text": "hi", "ts": "2026-01-01T00:00:00Z", "id": "x-1"})
-    );
-    bus_wire_tests!(
-        agent_receipt, agent_receipt, op::AGENT_RECEIPT,
-        AgentReceipt { id: "x-1".into(), filer: "fe@h".into() },
-        json!({"id": "x-1", "filer": "fe@h"})
+        AgentMessage { from: "a".into(), to: "".into(), text: "hi".into(), ts: "2026-01-01T00:00:00Z".into() },
+        json!({"from": "a", "to": "", "text": "hi", "ts": "2026-01-01T00:00:00Z"})
     );
     bus_wire_tests!(
         fe_command, fe_command, op::FE_COMMAND,
@@ -784,6 +775,25 @@ mod select_once_wire_tests {
         HostLatest { host: "h".into(), stale: true, sample: None },
         json!({"hosts": [{"host": "h", "stale": true}]})
     );
+
+    /// A link connection writes each offer as one `comm.file` request, marked forwarded, and the response it reads
+    /// back settles that offer.
+    #[tokio::test]
+    async fn a_link_writes_an_offer_as_a_comm_file_request_and_its_response_settles_it() {
+        let (mut w, _s) = wire();
+        let links = crate::comm::mail::links::Links::default();
+        w.link = Some(links.attach("win-b".into()));
+        let req = sot_protocol::CommFileReq { from: "s".into(), to: "h".into(), text: "hi".into(), broadcast: false, forwarded: false };
+        let asking = tokio::spawn(async move { links.offer(&req, std::time::Duration::from_secs(4)).await });
+        assert!(matches!(w.once_on("link").await, Woke::Again));
+        let mut rest = &w.buf[..];
+        let (f, _) = codec::read_frame(&mut rest).await.expect("one frame");
+        assert!(matches!(f.kind, Kind::Req));
+        assert_eq!(f.op, op::COMM_FILE);
+        assert_eq!((f.payload["to"].as_str(), f.payload["forwarded"].as_bool()), (Some("h"), Some(true)));
+        w.link.as_mut().expect("the link").answer(Frame::res(f.id, op::COMM_FILE, json!({"ok": true})));
+        assert_eq!(asking.await.expect("offer task"), Some(Ok(())));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn with_both_optional_buses_absent_and_every_bus_idle_nothing_wakes() {

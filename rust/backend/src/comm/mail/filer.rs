@@ -13,14 +13,26 @@ use crate::server::reply::HandlerOutput;
 
 /// File one frame into THIS daemon's comm folder (`comm.file`, 0031 B1): the
 /// hub files for its own home, and a guest on the hub's folder files only on
-/// a proven shared lock, forwarding everything else to the hub. The response
-/// is `{ok:true}` only when the line is in the file; every refusal is
-/// `{error, code}` and nothing was appended. The file work runs off the
-/// reactor, like the registry helpers.
-pub async fn handle_comm_file(req_id: u64, payload_json: serde_json::Value) -> Result<HandlerOutput> {
+/// a proven shared lock, forwarding everything else to the hub. A handle this
+/// folder does not list is offered to the daemons linked to this one
+/// (`Links::offer`), and the answer is theirs. The response is `{ok:true}` only
+/// when the line is in a file; every refusal is `{error, code}` and nothing was
+/// appended. The file work runs off the reactor, like the registry helpers.
+pub async fn handle_comm_file(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    links: &crate::comm::mail::links::Links,
+) -> Result<HandlerOutput> {
     let req: CommFileReq = serde_json::from_value(payload_json).context("comm.file payload")?;
     let (from, to) = (req.from.clone(), req.to.clone());
-    let verdict = file_comm(req).await?;
+    let mut verdict = file_comm(req.clone()).await?;
+    // A forwarded request has had its one hop; a link's own request is one.
+    if !req.forwarded && matches!(&verdict, Err((code, _)) if code == "not_here") {
+        let within = crate::comm::mail::inbox::inbox_lock_wait() + COMM_FORWARD_SLACK;
+        if let Some(offered) = links.offer(&req, within).await {
+            verdict = offered;
+        }
+    }
     let payload = match verdict {
         Ok(()) => {
             tracing::info!(%from, %to, "comm.file filed");

@@ -27,8 +27,8 @@
 #   6. A wire send (comm-relay.sh's send_frame) is one `comm.file` frame with
 #      no id, and prints the hub's answer: `filed -> @h`, or `FAILED -> @h:`
 #      and the daemon's own sentence, code or no code, or the no-answer
-#      sentence; `not_here` alone falls back to `agent.send`. The read window
-#      outlasts the hub's lock wait, so a line filed after it is not FAILED.
+#      sentence, `not_here` included, and nothing follows the answer. The read
+#      window outlasts the hub's lock wait, so a line filed after it is not FAILED.
 #   7. A hub-filed line and a locally-filed line read the same through
 #      comm-poll.sh, and both advance the one cursor.
 #   8. Every inbox lock descriptor is opened read-write (an NFS client
@@ -173,7 +173,7 @@ check "the wire is this box's daemon, else the relay; one that does not answer i
 check "the wire frame says whether the line was a broadcast copy" case_the_wire_frame_carries_the_broadcast_flag
 check "the lock identity matches the fixture set the Rust test reads" case_the_lock_identity_matches_the_shared_fixtures
 check "the wait is one number, 10, in both languages, and no lease constant is spelled" case_the_wait_is_one_number_and_no_lease_survives
-check "T5: a wire send is one comm.file frame and prints the hub's answer; not_here alone falls back" case_a_wire_send_prints_the_hubs_answer
+check "T5: a wire send is one comm.file frame and prints the hub's answer, not_here included" case_a_wire_send_prints_the_hubs_answer
 check "an inherited SOT_RELAY_ENDPOINT or SOT_SPAWN_ENDPOINT does not decide a relay send: topology's answer does, and the inherited endpoint is never dialled" case_an_inherited_endpoint_does_not_decide_the_relay_route
 check "the comm.file read window outlasts the hub's lock wait: a line filed after it is filed" case_the_read_window_outlasts_the_hubs_lock_wait
 check "T6: a hub-filed and a locally-filed line read alike and both advance the cursor" case_a_hub_line_and_a_local_line_read_alike

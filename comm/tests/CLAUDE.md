@@ -35,7 +35,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-registry-lock.sh`: the registry lock names its holder and is reclaimed only from a proven-dead holder
 - `test-registry-lock-twohost.sh`: the registry lock's fresh read and distinct machine ids across boxes (needs peer hosts)
 - `test-registry-twohost.sh`: registry writes on one box are read whole on another (needs peer hosts)
-- `test-relay-file-first.sh`: the relay's ack means the frame is filed; a listed handle never touches the wire
+- `test-relay-file-first.sh`: a relay send ends in the appender's verdict, `not_here` included; a listed handle never touches the wire; `sot-nav.sh` sends one UI notification
 - `test-rm-guard.sh`: the retained suite-bootstrap guard check and executed shared-await controls; removal and timing source catalogs are retired, with changed-entry cleanup observed by their owning suites
 - `test-send-routes-to-relay.sh`: a registry miss goes to the wire; a listed handle that is not live is FAILED with nothing appended and no daemon asked, a live one files locally, never both; every script append, inbox redirection and `last_seen` file in the tracked tree is on a pinned list
 - `test-stage-bin.sh`: complete old/new staged bytes, chosen modes, visible failures and owned-temp cleanup through absolute fixture programs
