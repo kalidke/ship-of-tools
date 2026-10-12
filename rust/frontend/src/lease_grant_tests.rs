@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+const BOUND: Duration = Duration::from_secs(30);
+
 /// A bound listener and, on Unix, the private folder its socket sits in. It derefs to the listener; dropping it drops
 /// the listener first, then removes the folder.
 pub(crate) struct Bound {
@@ -226,7 +228,8 @@ async fn notice_seen_timeout_keeps_the_lease() {
     let leases = Leases::new(false, vec![host.clone()]);
     assert_eq!(leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap(), 0);
     leases.notice_seen(&host, 2);
-    assert!(!eof_rx.await.unwrap(), "the fake daemon read an EOF after a slow notice_seen reply");
+    let eof = tokio::time::timeout(BOUND, eof_rx).await.expect("the fake daemon's EOF report within BOUND");
+    assert!(!eof.unwrap(), "the fake daemon read an EOF after a slow notice_seen reply");
     assert!(leases.held(&host), "a slow notice_seen reply must not end the lease");
 }
 
@@ -328,7 +331,8 @@ async fn slow_grant_is_held_not_dropped() {
     assert_eq!(leases.before_data_connection(&host, &path, None, named).await.unwrap(), 2);
     assert!(leases.held(&host));
     assert_eq!(accepts.load(Ordering::SeqCst), 1);
-    assert!(kept_rx.await.unwrap(), "a granted lease's connection was dropped or written to");
+    let kept = tokio::time::timeout(BOUND, kept_rx).await.expect("the fake daemon's report within BOUND");
+    assert!(kept.unwrap(), "a granted lease's connection was dropped or written to");
 }
 
 #[tokio::test]
@@ -423,11 +427,14 @@ async fn lease_stream_not_inherited() {
     let _stream = connect_pipe(&path).await.unwrap();
     let ours: Vec<String> = sockets().difference(&before).cloned().collect();
     assert!(!ours.is_empty(), "the connect must have opened a socket");
-    let out = std::process::Command::new("sh")
-        .args(["-c", "for f in /proc/self/fd/*; do readlink $f; done"])
-        .output()
-        .unwrap();
-    let seen = String::from_utf8_lossy(&out.stdout);
+    // The loop's own status is its last readlink, of the directory's descriptor that is already closed: not an answer.
+    // What it printed is, and an empty listing is a failed one.
+    let ran = sot_log::test_wait::run_within(
+        std::process::Command::new("sh").args(["-c", "for f in /proc/self/fd/*; do readlink $f; done"]),
+        BOUND,
+    );
+    assert!(!ran.stdout.is_empty(), "the descriptor listing printed nothing: {ran}");
+    let seen = &ran.stdout;
     for s in &ours {
         assert!(!seen.contains(s.as_str()), "{s} leaked into a child");
     }
