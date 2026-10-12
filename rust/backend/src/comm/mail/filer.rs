@@ -95,9 +95,10 @@ pub(crate) async fn file_comm(req: CommFileReq) -> Result<std::result::Result<()
     .context("comm.file join")
 }
 
-/// A guest's forward answers inside the script's read window (the lock wait
-/// plus 10 s): the hub's own lock wait plus this.
-const COMM_FORWARD_SLACK: std::time::Duration = std::time::Duration::from_secs(5);
+/// A guest's forward to the hub, and the hub's offer to a linked daemon, answer
+/// inside the script's read window (the lock wait plus 3 s): the other daemon's
+/// own lock wait plus this.
+const COMM_FORWARD_SLACK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// This host's name — the one `sotd topology` uses — or empty when it has
 /// none, which never matches a hub or a record's writer.
@@ -296,6 +297,23 @@ mod comm_file_tests {
         assert_eq!((v["to"].as_str(), v["repo"].as_str()), (Some(""), Some("daemon")));
         let req: CommFileReq = serde_json::from_value(json!({"from": "s", "to": "fresh", "text": "x"})).unwrap();
         assert!(!req.broadcast);
+    }
+
+    /// With no `SOT_INBOX_LOCK_WAIT_SECS` a filing waits 2 s for a held lock, the shell's default, and says so.
+    #[test]
+    fn the_default_wait_is_the_shells_two_seconds() {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _wait = crate::paths::EnvGuard::capture(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV);
+        std::env::remove_var(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV);
+        let d = home();
+        let held = std::fs::OpenOptions::new().read(true).create(true).append(true).open(d.path().join("inbox/fresh.lock")).unwrap();
+        held.lock().unwrap();
+        let filer = filer(crate::comm::mail::inbox::Role::Hub, "local m");
+        let wait = crate::comm::mail::inbox::inbox_lock_wait();
+        assert_eq!(
+            comm_file_verdict(Some(d.path()), &filer, no_forward, &req("fresh"), NOW, wait),
+            err("file_failed", "the inbox lock for @fresh was held for 2s — nothing was appended")
+        );
     }
 
     #[test]

@@ -24,7 +24,7 @@ messaging; charter: comm/CLAUDE.md.
 
 ## Rules
 - `file_frame` appends one line to `inbox/<h>.jsonl` under flock on `inbox/<h>.lock`, the lock comm-lib-inbox.sh's
-  `sot_inbox_append` takes, waiting at most `inbox_lock_wait` (`SOT_INBOX_LOCK_WAIT_SECS`, 10 by default in both
+  `sot_inbox_append` takes, waiting at most `inbox_lock_wait` (`SOT_INBOX_LOCK_WAIT_SECS`, 2 by default in both
   languages). The lock is released when its guard drops (`InboxLock`'s `Drop`), not when the last copy of its descriptor
   closes. `append_line` first cuts an unterminated tail back, syncs the line (`File::sync_data`) before `Ok`, and
   cuts the file back on any error. An `Err` is the sentence printed after `FAILED -> @h: `: nothing was appended.
@@ -36,7 +36,7 @@ messaging; charter: comm/CLAUDE.md.
   live holder: a `last_seen` under `LIVE_SECS` (600) (`heartbeat_fresh`, the twin of the shell's
   `sot_heartbeat_fresh`), stamped by the session and by the daemon running its row (`comm/registry/liveness.rs`). A
   forward skips both tests and returns the hub's answer verbatim.
-- `forward_comm_file` waits `inbox_lock_wait` plus `COMM_FORWARD_SLACK` (5 s) at most, or until the shutdown signal
+- `forward_comm_file` waits `inbox_lock_wait` plus `COMM_FORWARD_SLACK` (1 s) at most, or until the shutdown signal
   fires; either way it kills the ssh child and what it started before returning.
 - `handle_comm_file` offers a request this folder answers `not_here` to every linked daemon at once (`Links::offer`),
   unless it arrived `forwarded`, giving each `inbox_lock_wait` plus `COMM_FORWARD_SLACK`. The answer is the first `ok`;

@@ -34,8 +34,9 @@ use std::time::{Duration, Instant};
 
 /// The one knob, read under the same name as the script arm's.
 pub const INBOX_LOCK_WAIT_ENV: &str = "SOT_INBOX_LOCK_WAIT_SECS";
-/// The one number: `comm-lib.sh` defaults the same variable to 10.
-pub const INBOX_LOCK_WAIT_DEFAULT_SECS: u64 = 10;
+/// The one number: `comm-lib.sh` defaults the same variable to 2. A sender's read window is this plus 3 s (decision
+/// 0031's 5 s at the default).
+pub const INBOX_LOCK_WAIT_DEFAULT_SECS: u64 = 2;
 
 /// The wait a writer spends on a held lock before it gives up.
 pub fn inbox_lock_wait() -> Duration {

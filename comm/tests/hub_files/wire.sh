@@ -297,13 +297,28 @@ case_an_inherited_endpoint_does_not_decide_the_relay_route() {
 # The hub may wait its whole lock bound before it files; a read window no
 # longer than that would call a filed line FAILED and the sender would resend
 # it. A 1s lock wait and a caller's 1s send timeout: the window is still the
-# lock wait plus 10s, so an answer at 2s is filed.
+# lock wait plus 3s, so an answer at 2s is filed.
 case_the_read_window_outlasts_the_hubs_lock_wait() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     write_hub_stub '{"ok":true}' 2
     wire_send SOT_INBOX_LOCK_WAIT_SECS=1 SOT_SEND_TIMEOUT=1
     [ "$SEND_RC" -eq 0 ] && [ "$SEND_OUT" = "filed -> @t-far" ] \
         || { echo "  rc $SEND_RC ($SEND_OUT$SEND_ERR)"; return 1; }
+    return 0
+}
+
+# Decision 0031: no answer within 5 seconds is FAILED. With the default lock wait and no send timeout of the caller's,
+# a hub that answers only at 8 s is not waited for.
+case_no_answer_in_five_seconds_is_failed() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    write_hub_stub '{"ok":true}' 8
+    local t0=$SECONDS
+    wire_send SOT_INBOX_LOCK_WAIT_SECS= SOT_SEND_TIMEOUT=
+    local took=$((SECONDS - t0))
+    [ "$SEND_RC" -eq 1 ] || { echo "  rc $SEND_RC, want 1 ($SEND_OUT$SEND_ERR)"; return 1; }
+    contains "$SEND_ERR" "FAILED -> @t-far: the daemon did not answer at unix:$WORK/hub.sock" \
+        || { echo "  err: $SEND_ERR"; return 1; }
+    [ "$took" -lt 8 ] || { echo "  the send waited ${took}s for the 8 s answer"; return 1; }
     return 0
 }
 

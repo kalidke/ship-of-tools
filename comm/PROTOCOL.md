@@ -373,7 +373,7 @@ lists the receiver:
    folder by the rules of route 1 and never offers or forwards it again. A
    request that arrived `forwarded` is not offered.
 
-**The wait is chosen by lock kind, and bounded at 10 s (`SOT_INBOX_LOCK_WAIT_SECS`)
+**The wait is chosen by lock kind, and bounded at 2 s (`SOT_INBOX_LOCK_WAIT_SECS`)
 on both paths.** The Linux NFSv4 client retries a blocked lock with a backoff
 that doubles from 100 ms, so a local writer re-takes the lock before a remote
 waiter's next retry and a blocking waiter can sleep past a free lock. Under
@@ -381,7 +381,7 @@ waiter's next retry and a blocking waiter can sleep past a free lock. Under
 blocking every 15-25 ms (jittered) until the bound; under `local …` or
 `none@…` (NLM on v3, one machine's own kernel lock) a blocked waiter is woken
 on release, so they block, bounded. Past the bound nothing is appended and the
-answer is `FAILED -> @<h>: the inbox lock for @<h> was held for 10s — nothing
+answer is `FAILED -> @<h>: the inbox lock for @<h> was held for 2s — nothing
 was appended`. The reader's shared lock takes the same choice for its 3 s
 bound. `test-inbox-lock-twohost.sh` counts a concurrency case as proof only
 when its content checks pass and its two writers overlap; its unpaced liveness
@@ -429,7 +429,7 @@ the same way, so `filed` is never printed for a handle no live session holds. Th
 - `FAILED -> @h: <reason>` (exit 1), the reason being the daemon's own
   sentence whenever there is one: `no box knows that handle: <h>`,
   `no live session holds @h`, `not a handle: …`, a failed append; the inbox
-  lock held for 10 seconds (`the inbox lock for @h was held for 10s — nothing
+  lock held for 2 seconds (`the inbox lock for @h was held for 2s — nothing
   was appended`); a daemon older than the op (`unknown op: comm.file`); a daemon that refused
   this client's hello and answered nothing else (`hello refused: <the
   daemon's own words>`: this host has said hello as two OS accounts, or the
@@ -443,8 +443,11 @@ the same way, so `filed` is never printed for a handle no live session holds. Th
 
 **The answer decides, whatever the transport's exit status or stderr say**:
 the transport's stderr is read only when no answer came, and then only
-lengthens the reason. The read window is the lock wait plus 10 seconds, so a
-hub that waited out the lock and then filed is not reported `FAILED`.
+lengthens the reason. No answer within 5 seconds is `FAILED` (decision 0031): the
+read window is the lock wait plus 3 seconds, 5 at the default 2 s wait, and a
+daemon gives a guest's forward or an offer to a linked daemon the lock wait plus
+1 second, so an appender that waited out the lock and then filed is not reported
+`FAILED`. A larger `SOT_SEND_TIMEOUT` lengthens the window.
 
 With no daemon found at all a wire send prints
 `FAILED -> @h: no sotd daemon found; …` and exits 1. `agent.send` is not

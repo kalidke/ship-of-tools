@@ -19,7 +19,7 @@ case_two_writers_give_400_whole_lines() {
 }
 
 # T12 (shell arm) — a killed holder costs nothing: the OS released the lock, so the send
-# files (behind a lock still held it would run out its 10 s wait and fail).
+# files (behind a lock still held it would run out its 2 s wait and fail).
 case_a_killed_holder_frees_the_lock_at_once() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     start_holder 'exec sleep 60' || { echo "  holder never took the lock"; return 1; }
@@ -50,6 +50,23 @@ case_a_frozen_holder_makes_the_send_wait_then_fail() {
     run_send "@$PEER" "after the resume"
     [ "$SEND_RC" -eq 0 ] && [ "$(whole_lines "$INBOX/$PEER.jsonl")" = 2 ] \
         || { echo "  the next send did not file (rc $SEND_RC: $SEND_ERR)"; return 1; }
+    return 0
+}
+
+# The default wait (no SOT_INBOX_LOCK_WAIT_SECS) is 2 s: a frozen holder makes the send fail after it, inside decision
+# 0031's 5 s, saying so.
+case_the_default_wait_is_two_seconds() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    start_holder 'kill -STOP $$' || { echo "  holder never took the lock"; return 1; }
+    await stopped "$HOLDER" || { echo "  the holder never stopped"; kill -9 "$HOLDER"; return 1; }
+    local t0=$SECONDS
+    SOT_INBOX_LOCK_WAIT_SECS= run_send "@$PEER" "while frozen"
+    local took=$((SECONDS - t0))
+    kill -CONT "$HOLDER"; wait "$HOLDER" 2>/dev/null
+    [ "$SEND_RC" -eq 1 ] || { echo "  rc $SEND_RC, want 1 (out: $SEND_OUT)"; return 1; }
+    contains "$SEND_ERR" "FAILED -> @$PEER: the inbox lock for @$PEER was held for 2s — nothing was appended" \
+        || { echo "  err: $SEND_ERR"; return 1; }
+    [ "$took" -lt 5 ] || { echo "  the send took ${took}s"; return 1; }
     return 0
 }
 

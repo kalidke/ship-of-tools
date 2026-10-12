@@ -45,7 +45,7 @@
 # `<count> <crc>-<len>` of the last line the reader READ (hashed from the bytes
 # it holds, never re-read from the file), so a reader steps back one line when
 # a cut-back removed it.
-SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-10}"
+SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-2}"
 _sot_have_flock() { command -v flock >/dev/null 2>&1; }
 _sot_findmnt() { findmnt "$@"; }
 _sot_machine_id() { local m=""; { read -r m < /etc/machine-id; } 2>/dev/null; printf '%s' "$m"; }
@@ -237,10 +237,11 @@ _sot_inbox_append_via_daemon() {  # HANDLE LINE
 # response is FAILED, and only then does the transport's stderr give the why.
 sot_comm_file() {  # HANDLE LINE
     local h="$1" frame resp reason err diag window
-    # The daemon may wait the whole inbox-lock bound before it files, so a read
-    # window no longer than that reports FAILED for a line that WAS filed, and
-    # the sender resends it: the lock wait plus 10s for the transport's setup.
-    window=$(( SOT_INBOX_LOCK_WAIT_SECS + 10 ))
+    # Decision 0031: no answer within 5 seconds is FAILED. The daemon may wait the
+    # whole inbox-lock bound before it files, or a linked daemon may, behind the hub's
+    # one-second hop, so the window is the lock wait plus 3 s: 5 s at the default 2 s
+    # wait, and never shorter than the appender's own bound.
+    window=$(( SOT_INBOX_LOCK_WAIT_SECS + 3 ))
     [ "${SOT_SEND_TIMEOUT:-0}" -gt "$window" ] 2>/dev/null && window="$SOT_SEND_TIMEOUT"
     # The text reaches jq on stdin, never argv (the MSYS2 guard, sot_jq_rawfile).
     # A broadcast copy (the line's own `to` empty) must stay one after filing.
