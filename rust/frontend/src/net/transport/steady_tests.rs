@@ -299,7 +299,11 @@ async fn a_daemon_silent_for_three_ping_intervals_ends_the_connection() {
             "answering: the loop ended though every ping was answered"
         );
         answering.task.abort();
-        let answered = pinged.await.unwrap();
+        // The far end's reads end when the aborted loop drops its writer; the test waits for that within its own bound.
+        let answered = tokio::time::timeout(Duration::from_secs(5), pinged)
+            .await
+            .expect("answering: the far end had not seen the connection end 5 s after the loop's abort")
+            .unwrap();
         println!(
             "steady-silence: answering daemon -> connected after {:?}, {answered} pings answered",
             PING * 20
