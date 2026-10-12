@@ -172,37 +172,22 @@ sot_jq() {
 # (`LIVE_SECS`, rust/backend/src/comm/mail/filer.rs) applies to the same stamp.
 COMM_LIVE_SECS=600
 
-# --- MSYS2 argv-conversion guard for jq values that can legitimately
-# start with "/" ---
+# --- free text and jq ---
 #
-# capsule-comm-identity fix, field-measured on a Windows git-bash box: when
-# a NATIVE (non-MSYS) jq.exe is invoked, MSYS2's argv-to-Windows-path
-# conversion rewrites any ARGV ELEMENT that starts with "/" into a Windows
-# path before jq ever sees it — verified through the real relay, a message
-# beginning "/sot-session-start ..." arrived in the peer's inbox mangled
-# into a filesystem path. The rule is exact and easy to miss in ad hoc
-# testing: only the FIRST character of the whole argument matters (a bare
-# "/" corrupts too); "./", "~/", "//server", and every MID-string slash
-# are untouched; on a MULTI-LINE value only the FIRST line is mangled —
-# every later line survives intact, which is why this read as an isolated
-# typo rather than a systematic corruption. `--arg NAME "$value"` passes
-# $value as its own argv element, so any of the THREE values in this
-# codebase that can genuinely start with "/" — a message body
-# (comm-send.sh, comm-relay.sh) and a project root (comm-join.sh) — must
-# never go through `--arg`. Every OTHER `--arg` (handles, hosts, ids,
-# timestamps) is drawn from a restricted charset that can never start
-# with "/" and is untouched by this fix.
+# When a NATIVE jq.exe runs under git-bash, MSYS2 rewrites every argv element that starts with "/" into a Windows
+# path before jq sees it (field-measured: only the first character of the argument matters; "./", "~/", "//server"
+# and a slash inside the value are untouched; on a multi-line value only the first line changes). A message body, a
+# path, a project root, a label, a caption, code, findings and base64 can each start with "/", so none of them is
+# ever a `--arg` value: free text reaches jq on stdin. One value is jq's raw input,
+# `printf '%s' "$v" | jq -Rs ...` with the value as `.`. Several are a stream of JSON texts (`sot_json_escape` for
+# each free-text value, an object already built as itself) read with `jq -n` and `input`, one `input` per value in
+# stream order, so a value missing from the stream is jq's error, never a null or the next value in its place. A
+# value the registry write needs goes after the registry, `registry_replace --text`. Never a temporary file: a file
+# outlives a caller that fails or is killed before its `rm`.
 #
-# sot_jq_rawfile VALUE — writes VALUE verbatim (no added newline) to a
-# fresh temp file and prints its path, for use as `jq --rawfile NAME
-# <path> ...` in place of `--arg NAME "$VALUE"`: the risky VALUE now lives
-# in the file's CONTENT, read by jq via fread — never an argv element, so
-# never subject to the conversion. The file PATH argument itself is left
-# as an ordinary argument and SHOULD still convert when it starts with
-# "/" (that's the well-behaved half of the same MSYS2 mechanism — it's
-# what lets a native jq.exe find the file at all), so no
-# MSYS2_ARG_CONV_EXCL or similar exclusion is involved. The caller owns
-# the returned path and MUST `rm -f` it once jq has run.
+# sot_jq_rawfile VALUE — VALUE in a fresh temporary file, its path printed, for `jq --rawfile`; the caller removes
+# the file. No script of this release calls it. It stays because an install publishes this library before the
+# scripts, and the previous release's scripts call it (comm/lib/CLAUDE.md, Rules).
 sot_jq_rawfile() {
     local f
     f="$(mktemp "${TMPDIR:-/tmp}/sot-comm-jq.XXXXXX" 2>/dev/null)" || {

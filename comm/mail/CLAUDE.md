@@ -19,5 +19,7 @@ comm/CLAUDE.md.
   The `agent.send` leg of `comm-relay.sh` still ends in `NOT CONFIRMED` when no filer claims the send within 5 seconds.
 - Only `comm-poll.sh` moves `read/<h>.cursor`.
 - Readers count newline-terminated lines only.
-- A message body reaches jq through `sot_jq_rawfile`, never `--arg`.
+- A message body reaches jq on stdin, never as `--arg` and never through a temporary file.
+- `send_frame` runs in a subshell: its `agent.send` leg keeps the hello builder's words and a dying bridge's reason in
+  one scratch folder, which the subshell's EXIT trap removes (bash runs it when TERM, HUP or INT ends the subshell).
 - Senders type into no row (comm-send.sh's header); the daemon wakes the receiver.

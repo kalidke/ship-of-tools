@@ -49,8 +49,9 @@ flow (request → print code → poll).
   no-op otherwise).
 - Needs `gh`, `curl`, `jq` on PATH — checked up front, exits 3 naming the
   missing one.
-- Secrets never touch argv (token via stdin, device_code via a 0600 temp
-  file); state + temp file are removed by an EXIT/INT/TERM trap.
+- Secrets never touch argv or a file (the token and the device_code both go
+  via stdin); an EXIT trap removes the state file however the poll ends,
+  Ctrl-C and a TERM or HUP included, and the poll then ends.
 - Env overrides: `GH_HOST`, `SOT_GH_SCOPES` (default
   `repo read:org gist workflow`), `GH_OAUTH_CLIENT_ID` (default gh's public
   client_id — the device flow is designed for a public client_id; the

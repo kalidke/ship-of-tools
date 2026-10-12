@@ -22,13 +22,10 @@ send_repl_execute() {
     local payload req resp
     payload="$(jq -nc --arg w "$ws" --argjson in "$input_json" --argjson t "$ms" \
         '{workspace_id:$w, input:$in, timeout_ms:$t}')"
-    # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): ORIGIN is
-    # free-text from --origin (a user-set drawer label) and must never
-    # reach jq via --arg.
+    # ORIGIN is free text from --origin (a user-set drawer label): it reaches jq on stdin, as a JSON string after
+    # the payload (comm-lib-base.sh, free text and jq).
     if [ -n "$ORIGIN" ]; then
-        _origin_file="$(sot_jq_rawfile "$ORIGIN")" || exit 1
-        payload="$(printf '%s' "$payload" | jq -c --rawfile o "$_origin_file" '. + {origin:$o}')"
-        rm -f "${_origin_file:?}"
+        payload="$({ printf '%s\n' "$payload"; sot_json_escape "$ORIGIN"; } | jq -cn 'input as $p | $p + {origin: input}')"
     fi
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.execute", payload:$p}')"
     resp="$(sot_send "$req" repl.execute || true)"
@@ -79,13 +76,10 @@ send_repl_run_file() {
     # ReplRunFileReq: eval_id(u64)+path required, fresh:true, workspace_id routes
     # to the target REPL. eval_id only correlates streamed frames we don't
     # collect, so a fixed value is fine.
-    # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): $file is
-    # an absolute backend path (the caller's own doc above: "agents
-    # naturally hold an ABSOLUTE path") and must never reach jq via --arg.
-    local _run_file_path_file; _run_file_path_file="$(sot_jq_rawfile "$file")" || exit 1
-    payload="$(jq -nc --rawfile p "$_run_file_path_file" --arg w "$ws" \
-        '{eval_id:1, path:$p, fresh:true, workspace_id:$w}')"
-    rm -f "${_run_file_path_file:?}"
+    # $file is an absolute backend path (agents naturally hold one): it reaches jq on stdin
+    # (comm-lib-base.sh, free text and jq).
+    payload="$(printf '%s' "$file" | jq -Rsc --arg w "$ws" \
+        '{eval_id:1, path:., fresh:true, workspace_id:$w}')"
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.run_file", payload:$p}')"
     resp="$(sot_send "$req" repl.run_file || true)"
     if [ -z "$resp" ]; then

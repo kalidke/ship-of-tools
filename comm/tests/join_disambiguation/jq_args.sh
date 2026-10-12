@@ -9,9 +9,9 @@ case_jq_rawfile_helper_round_trips_leading_slash_value() {
     # which cannot reproduce that MSYS2-only conversion (it only fires for
     # a native, non-MSYS jq.exe) — what IS provable here is the fix's own
     # mechanics: sot_jq_rawfile's temp file round-trips a leading-slash
-    # value through `jq --rawfile` byte-for-byte, which is exactly what
-    # closes the bug wherever it actually runs (the ORIGINAL corruption is
-    # unreproducible on this platform; the FIX is not).
+    # value through `jq --rawfile` byte-for-byte. No script of this release
+    # calls it (they put free text on jq's stdin, test-temp-files.sh); it
+    # stays for the previous release's scripts during an install.
     local val f out
     val="/sot-session-start with a leading slash and trailing text"
     f="$(sot_jq_rawfile "$val")" || { echo "  sot_jq_rawfile failed"; return 1; }
@@ -29,10 +29,9 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     # NAME on this allowlist — handles/ids/hosts/timestamps/short enum-ish
     # tokens/already-relativized paths, none of which can legitimately
     # start with "/". A message body, an absolute/backend path, free
-    # text, code, or a label is NOT on it and must go through
-    # comm-lib.sh's sot_jq_rawfile (--rawfile) instead — see that helper's
-    # own comment for the MSYS2 argv-conversion mechanism this guards
-    # against. `--argjson` is exempt by construction (its value is JSON
+    # text, code, or a label is NOT on it and must reach jq on stdin
+    # instead — see comm-lib-base.sh, free text and jq, for the MSYS2
+    # argv-conversion mechanism this guards against. `--argjson` is exempt by construction (its value is JSON
     # text, which can never start with "/" — every valid top-level JSON
     # value starts with `{`, `[`, `"`, a digit, `t`, `f`, or `n`).
     #
@@ -62,8 +61,8 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     # `i` = the relay's own MSG_ID (ADR 0048): minted as
     # `<epoch-ns>-<pid>-<random>` in comm-relay.sh and echoed back from the
     # frame being receipted, so it is digits and dashes and can never begin
-    # with "/". The message BODY on those same jq calls still goes through
-    # --rawfile.
+    # with "/". The message BODY on those same jq calls still reaches jq on
+    # stdin.
     # `one` = sot_registry_read's "a row was asked for" flag, `${1+1}`: "1"
     # or "", never "/".
     local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag o acc cur i one "

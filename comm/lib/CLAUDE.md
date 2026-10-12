@@ -52,8 +52,8 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   names any other folder still loses its own group and other bits, and those of its children the list names, because
   nothing marks a folder as a comm folder before `ensure_home` writes the registry in it. A warning of a failed
   tightening comes only from a re-check of the end state, naming the entry still open.
-- One registry write (`registry_replace` under `with_lock`) and one read (`sot_registry_read`: 0 present, 1 absent, 2
-  unreadable).
+- One registry write (`registry_replace` under `with_lock`; free text after the registry with `--text`) and one read
+  (`sot_registry_read`: 0 present, 1 absent, 2 unreadable).
 - One inbox append (`sot_inbox_append`), one `comm.file` request (`sot_comm_file`) and one unread count (`sot_unread`,
   the wake's rule; a count that cannot be made returns 1, never 0).
 - One rule for a live `last_seen` (`sot_heartbeat_fresh`, `COMM_LIVE_SECS`), the twin of the filer's `heartbeat_fresh`.
@@ -62,7 +62,10 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   `pipe:` endpoint through `sotd stdio-bridge --endpoint`, which connects only to an endpoint this OS account serves,
   and an `ssh:` one through `sot_ssh_bridge`, whose far end is that box's own bridge (ADR 0049 `## User isolation`).
   A caller keeps the bridge's input open until it has read what it waits for.
-- A value that may start with `/` goes through `sot_jq_rawfile`, never `jq --arg`.
+- Free text reaches jq on stdin (comm-lib-base.sh, free text and jq): one value as raw input, several as a stream read
+  with `jq -n` and `input`, a registry write's with `registry_replace --text`; never as `jq --arg` and never through a
+  temporary file. `sot_jq_rawfile` has no caller in the tree; it stays for the previous release's scripts during an
+  install.
 - jq is a requirement of the shell client. A frame builder (`sot_json_escape`, `sot_hello_frame`, `sot_pty_input`, `sot_pty_screen`) either prints its one result and returns 0, or prints nothing, says `jq is missing` on stderr (`sot_require_tools`) and returns nonzero, before any connection; the client has no no-jq fallback.
 - A rule written in both shell and Rust changes in both in one commit (the lock record, the cursor, the lock identity, the unread count, the heartbeat).
 - The host piece of a derived handle is `_sot_handle_host` (sanitized to 12, plus a digest of the raw host when that changed it): `sot_derive_handle` and ccx's default `<repo>-cx-<host>` both build it, so a Codex default is always a name `workspace.create` accepts. ccx sources this library in a subshell (it sets `umask 077`) and stops the launch when the derivation fails.
@@ -83,6 +86,9 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
 - The installer publishes this folder before every script (comm/bin-folders.txt), so during an install the previous
   release's scripts source this library: a release removes or changes a function or global only once no script of the
   previous release uses it.
+- `sot_oneshot_request` and `sot_comm_file` hold their scratch files across a wait, so each runs in a subshell whose
+  EXIT trap removes them; bash runs that trap when TERM, HUP or INT ends the subshell and then ends by the signal, so
+  the caller ends too. Only SIGKILL leaves them.
 - A request sent behind its hello is decided by its own reply. `sot_oneshot_request` stops at a refused hello at once only
   when the code is not `protocol_mismatch` (a daemon of this release closes after refusing, and only it sends the other
   codes; an older daemon refuses only for the protocol and still answers the request), and names the refusal (`hello

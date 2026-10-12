@@ -35,8 +35,8 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 - A rule written in both shell and Rust changes in both in one commit; parity tests cover the cursor, the lock record,
   the lock identity, the unread count (`unread_agrees_with_the_shell`) and the heartbeat
   (`heartbeat_agrees_with_the_shell`).
-- Scripts run under bash 3.2 and git-bash; a value that may start with `/` never goes through `jq --arg`
-  (`sot_jq_rawfile`).
+- Scripts run under bash 3.2 and git-bash. Free text, and any value that may start with `/`, reaches jq on stdin
+  (comm/lib/comm-lib-base.sh, free text and jq), never as a `jq --arg` value and never through a temporary file.
 - A change to locking states its writer set and is proven by concurrent appends from two hosts to one inbox; there is
   no lease-lock fallback. A script change is tested through `tests/` from the staged bin, never against the live home.
 - Registry host facts and unpinned self-file keys agree with the daemon's declared host; the raw hostname remains a derived-handle component. A successful destroy retires only the admitted target daemon's slot.

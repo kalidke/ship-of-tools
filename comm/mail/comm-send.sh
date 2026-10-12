@@ -46,14 +46,6 @@ if ! why="$(sot_require_agent)"; then
 fi
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 
-# MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): MSG can
-# legitimately start with "/" (an agent naturally opens with a slash
-# command) and must never reach jq via --arg. Computed ONCE here (not per
-# recipient inside deliver()) since a --broadcast fans this same MSG out
-# to every target; cleaned up on exit however this script leaves.
-MSG_FILE="$(sot_jq_rawfile "$MSG")" || exit 1
-trap 'rm -f "${MSG_FILE:?}"' EXIT
-
 # Identity refusal, via the ONE shared helper (comm-lib.sh) also used by
 # comm-relay.sh and comm-bootstrap.sh (here without its agent gate, which ran
 # above, so a send walks the ancestry once): requires more than a merely nonempty
@@ -93,9 +85,6 @@ deliver() {  # $1 = target name
         # `exec` in the middle of that fan-out would abandon every remaining
         # target.
         if [ "$BROADCAST" = false ]; then
-            # The EXIT trap does not run across an `exec` (the process image
-            # is replaced), so drop the temp file by hand first.
-            rm -f "${MSG_FILE:?}"
             exec "$SCRIPT_DIR/comm-relay.sh" send "@$t" "$MSG"
         fi
         echo "no such handle: $t" >&2; return 1
@@ -125,9 +114,10 @@ deliver() {  # $1 = target name
     local to_stamp="$t"
     [ "$BROADCAST" = true ] && to_stamp=""
     ts="$(now_iso)"
+    # MSG can start with "/" (an agent opens with a slash command): it reaches jq on stdin (comm-lib-base.sh, free text and jq).
     local reason
-    if ! reason="$(jq -nc --arg from "$NAME" --arg to "$to_stamp" --arg repo "$REPO" --rawfile msg "$MSG_FILE" --arg ts "$ts" \
-        '{from:$from, to:$to, repo:$repo, msg:$msg, ts:$ts}' | sot_inbox_append "$t")"; then
+    if ! reason="$(printf '%s' "$MSG" | jq -Rsc --arg from "$NAME" --arg to "$to_stamp" --arg repo "$REPO" --arg ts "$ts" \
+        '{from:$from, to:$to, repo:$repo, msg:., ts:$ts}' | sot_inbox_append "$t")"; then
         echo "FAILED -> @$t: $reason" >&2
         return 1
     fi

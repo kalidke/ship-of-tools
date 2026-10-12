@@ -22,10 +22,10 @@
 # separate gh auth — different HOME.) Revoke with `gh auth logout` + revoking
 # "GitHub CLI" at https://github.com/settings/connections.
 #
-# Secrets hygiene: the access token is piped to gh via STDIN (never argv); the
-# device_code is passed to curl via a 0600 temp file (never argv → never in
-# /proc/PID/cmdline). No token/code is ever echoed. State + temp file are removed
-# by an EXIT/INT/TERM trap in the polling path.
+# Secrets hygiene: the access token is piped to gh via STDIN, and the device_code
+# to curl the same way: never argv (never in /proc/PID/cmdline), never a file.
+# No token/code is ever echoed. The polling path's EXIT trap removes the state
+# file however the poll ends; bash runs it on INT, TERM and HUP too.
 #
 # Usage:
 #   sot-gh-auth.sh            full flow: request a code, print it, poll to done
@@ -143,43 +143,40 @@ finish() {
 poll() {
     need gh; need curl; need jq; need tr
     [ -f "$STATE" ] || { echo "sot-gh-auth: no pending request — run 'sot-gh-auth.sh request' first" >&2; exit 6; }
-    # dcfile is not `local`: the EXIT trap below fires after poll() has returned.
     local device_code interval expires waited=0 tok access err
     device_code=$(jqr '.device_code' "$STATE")
     interval=$(jqr '.interval' "$STATE"); [ "$interval" -ge 1 ] 2>/dev/null || interval=5
     expires=$(jqr '.expires_in' "$STATE"); [ "$expires" -ge 1 ] 2>/dev/null || expires=899
-    # device_code -> 0600 temp file so it is passed to curl via --data-urlencode
-    # name@file (off argv, never in /proc/PID/cmdline). Trap removes both the temp
-    # and the state file on ANY exit (success, error, or abort) — poll owns them.
-    dcfile=$(mktemp "${TMPDIR:-/tmp}/sot-gh-dc.XXXXXX")
-    chmod 600 "$dcfile"
-    # Stripped again on the way out. The route this defends is a read added
-    # later that calls `jq -r` directly instead of `jqr`: the value would be
-    # dirty and curl would SEND the CR, which is the failure GitHub rejects.
-    # This line is what makes that a no-op rather than a broken exchange.
-    printf '%s' "$device_code" | tr -d '\r' > "$dcfile"
-    trap 'rm -f "${STATE:?}" "${dcfile:?}"' EXIT INT TERM
+    # The state file goes on ANY exit of the poll (success, error, abort, or INT,
+    # TERM or HUP, which bash ends the poll on after running this trap): poll owns it.
+    trap 'rm -f -- "${STATE:?}"' EXIT
     echo "sot-gh-auth: waiting for you to authorize… (polling every ${interval}s, code TTL ~$((expires / 60))min)"
     while :; do
         sleep "$interval"
         waited=$((waited + interval))
-        tok=$(curl -fsS -X POST "https://${HOST}/login/oauth/access_token" \
+        # The device code reaches curl on stdin (`device_code@-`). Stripped again on
+        # the way out: the route this defends is a read added later that calls
+        # `jq -r` directly instead of `jqr`, whose CR curl would SEND, the failure
+        # GitHub rejects. A lap whose request fails still reaches the expiry check.
+        if tok=$(printf '%s' "$device_code" | tr -d '\r' | curl -fsS -X POST "https://${HOST}/login/oauth/access_token" \
             -H "Accept: application/json" \
-            --data-urlencode "device_code@${dcfile}" \
+            --data-urlencode "device_code@-" \
             --data-urlencode "client_id=${CLIENT_ID}" \
-            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:device_code") \
-            || { echo "sot-gh-auth: token-poll network error; retrying" >&2; continue; }
-        access=$(printf '%s' "$tok" | jqr '.access_token // empty')
-        err=$(printf '%s' "$tok" | jqr '.error // empty')
-        if [ -n "$access" ]; then finish "$access"; return 0; fi
-        case "$err" in
-            authorization_pending) : ;;                       # not yet — keep waiting
-            slow_down)             interval=$((interval + 5)) ;;  # GitHub asked us to back off
-            expired_token) echo "sot-gh-auth: the code expired before you authorized — re-run for a fresh one." >&2; exit 7 ;;
-            access_denied) echo "sot-gh-auth: authorization was denied." >&2; exit 7 ;;
-            "")            echo "sot-gh-auth: unexpected empty token response; retrying" >&2 ;;
-            *)             echo "sot-gh-auth: token error: $err — $(printf '%s' "$tok" | jqr '.error_description // ""')" >&2; exit 7 ;;
-        esac
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:device_code"); then
+            access=$(printf '%s' "$tok" | jqr '.access_token // empty')
+            err=$(printf '%s' "$tok" | jqr '.error // empty')
+            if [ -n "$access" ]; then finish "$access"; return 0; fi
+            case "$err" in
+                authorization_pending) : ;;                       # not yet — keep waiting
+                slow_down)             interval=$((interval + 5)) ;;  # GitHub asked us to back off
+                expired_token) echo "sot-gh-auth: the code expired before you authorized — re-run for a fresh one." >&2; exit 7 ;;
+                access_denied) echo "sot-gh-auth: authorization was denied." >&2; exit 7 ;;
+                "")            echo "sot-gh-auth: unexpected empty token response; retrying" >&2 ;;
+                *)             echo "sot-gh-auth: token error: $err — $(printf '%s' "$tok" | jqr '.error_description // ""')" >&2; exit 7 ;;
+            esac
+        else
+            echo "sot-gh-auth: token-poll network error; retrying" >&2
+        fi
         if [ "$waited" -ge "$expires" ]; then
             echo "sot-gh-auth: timed out after ${waited}s (code TTL ~${expires}s) — re-run for a fresh code." >&2
             exit 7

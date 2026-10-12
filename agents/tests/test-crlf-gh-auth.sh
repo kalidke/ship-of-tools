@@ -5,8 +5,8 @@
 # the final \n and leaves the carriage return glued to the value, so on a Windows
 # box each of those reads was wrong in its own way:
 #
-#   * `device_code` — written to a 0600 file and handed to curl as
-#     `--data-urlencode device_code@<file>`, so the CR is SENT and GitHub
+#   * `device_code` — handed to curl on stdin as
+#     `--data-urlencode device_code@-`, so the CR is SENT and GitHub
 #     rejects the exchange;
 #   * `interval` / `expires_in` — `[ "$interval" -ge 1 ]` fails, so a silent
 #     default replaces the server's value;
@@ -78,8 +78,8 @@ JQ
 
     # curl: no network. Routed by endpoint. The token endpoint answers "pending"
     # once, then hands over the fake token. It also records whether the
-    # device_code FILE it was given holds a CR, which is what proves the
-    # write-time strip.
+    # device_code it read (stdin, for `device_code@-`) holds a CR, which is
+    # what proves the write-time strip.
     cat > "$STUB/curl" <<'CURL'
 #!/usr/bin/env bash
 url=""; for a in "$@"; do case "$a" in https://*) url="$a" ;; esac; done
