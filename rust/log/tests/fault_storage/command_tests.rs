@@ -447,7 +447,6 @@ fn a_signal_native_command_keeps_its_status() {
         command
             .env(MODE, "signal")
             .env("SOT_L3_COMMAND_READY", &ready)
-            .env("CARGO_TARGET_DIR", RAW_PATH)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
@@ -461,7 +460,9 @@ fn a_signal_native_command_keeps_its_status() {
     child
         .kill()
         .expect("end only the child returned by this spawn");
-    let observation = finish_bounded(child, Duration::from_secs(5), &[]);
+    // The child prints the synthetic root; this process scrubs it as an owned pair, since roots come from this
+    // process's own environment.
+    let observation = finish_bounded(child, Duration::from_secs(5), &[(RAW_PATH, "<target>")]);
     let diagnostic = observation.diagnostic("command");
     assert_entry(entry, pid, &observation);
     assert!(entered, "signal child readiness missing\n{diagnostic}");
