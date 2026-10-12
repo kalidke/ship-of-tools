@@ -107,6 +107,15 @@ are forgotten, their registration deleted and its directory synced before the fi
 record clears `closing`; rows not ended stay registered and running, and are counted. The product
 never runs `pkill` or `tmux kill-server`.
 
+Amendment 2026-10-11 (macOS observation evidence): a rejected no-live-group observation is returned with the original
+group-request EPERM, including the rejected step, captured member PID/group/status/UID records and each membership
+listing taken before the rejection. Failed or short queries name unavailable fields as unknown. When the leader
+request succeeds, the contextual group error retains PermissionDenied and the original request error as a source; its
+outer raw OS errno is absent. When both requests fail, the existing Other-kind aggregate retains both displayed
+reasons without a typed OS error source. The real-EPERM fixture captures the same evidence before and after the
+request and reports it when its premise fails. This changes diagnostics, not the acceptance rule above; a
+cause-specific acceptance change waits for native evidence.
+
 `gio trash` uses the contained blocking wait with a 5 s wait budget; a successful timeout cleanup means termination requests
 succeeded and the direct child was reaped before the recoverable workspace-trash fallback. Request and reap failures are
 diagnosed and take that fallback without claiming cleanup succeeded; descendant death before the fallback is not promised.
@@ -324,6 +333,16 @@ daemon's lifetime is tested on a Mac.
 Windows runs the crate's lifecycle tests: the per-child kill-on-close jobs, including that a killed daemon's
 contained tree ends with it, and the suspended interval above observed as the limit; that a capsule outlives a killed
 daemon there is the capsule suite's adoption case, through the product's own capsule spawn.
+
+Amendment 2026-10-11 (Windows async Drop coverage): the lifecycle suite includes
+`lifecycle::contain::tests::a_dropped_async_child_takes_its_windows_tree` beside the std Drop test. The async test
+observes a live leader and descendant through retained handles, checks that retaining the owner keeps them live,
+then requires both to exit after dropping the owner without firing the signal.
+
+Amendment 2026-10-11 (Windows fixture diagnostics): the fire, std Drop and async Drop tests send their fixture's
+stdout and stderr to files, so no reader can block the tree or supply its death. Readiness is the first complete
+numeric line of stdout; a leader that exits first ends the wait at once, and a failure reports a bounded excerpt of
+both files. Each of the three tests requires the leader and the descendant to exit.
 
 Not tested, and stated as limits: macOS after an abrupt end of the daemon (by decision, above); on macOS, an agent
 session end to end, and the successor and controlled-outcome cases, which are not built there (they drive the Linux

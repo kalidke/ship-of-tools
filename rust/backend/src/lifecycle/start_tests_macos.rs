@@ -1,5 +1,5 @@
-//! The macOS half of the start/fire tests: the recognition of a finished group before the reap, on real processes and
-//! with injected observation faults.
+//! The macOS half of the start/fire tests: finished-group recognition before reap on real processes,
+//! rejected-observation error evidence with injected faults, and a real-request Result control of fixture diagnostics.
 
 use super::unix::Watched;
 use crate::lifecycle::child_signal::{ContainedStd, Signal};
@@ -27,16 +27,36 @@ fn zombie_command() -> (tempfile::TempDir, Command) {
     (dir, Command::new(program))
 }
 fn exited_eperm(pid: u32) {
-    assert!(
-        contain::exited_pid(pid, true).unwrap(),
-        "leader must remain exited-unreaped"
-    );
+    check_exited_eperm(pid).expect("real EPERM fixture");
+}
+fn check_exited_eperm(pid: u32) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !contain::exited_pid(pid, false)
+        .map_err(|error| format!("observe retained owned leader: {error}"))?
+    {
+        if std::time::Instant::now() >= deadline {
+            return Err("leader must remain exited-unreaped within 15 s".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let before = contain::macos::observe(pid as i32);
+    let (uid, ruid) = unsafe { (libc::geteuid(), libc::getuid()) };
     // SAFETY: this test still exclusively owns the unreaped leader and its group.
-    let result = unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
-    let error = std::io::Error::last_os_error();
-    assert_eq!(result, -1, "fixture must demonstrate real group EPERM");
-    assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+    let rc = unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
+    let error = (rc != 0).then(std::io::Error::last_os_error);
+    let after = contain::macos::observe(pid as i32);
+    let errno = error
+        .as_ref()
+        .and_then(std::io::Error::raw_os_error)
+        .map_or_else(|| "none".to_string(), |errno| errno.to_string());
+    let evidence = format!("rc={rc} errno={errno} caller uid={uid} ruid={ruid} group={pid}; before: {before}; after: {after}");
+    if rc != -1 || error.as_ref().and_then(std::io::Error::raw_os_error) != Some(libc::EPERM) {
+        return Err(format!(
+            "fixture must demonstrate real group EPERM: {evidence}"
+        ));
+    }
     eprintln!("real group request: EPERM (errno=1); retained leader exited-unreaped");
+    Ok(())
 }
 fn clear_events() {
     contain::REQUEST_EVENTS.with(|events| events.borrow_mut().clear());
@@ -215,7 +235,9 @@ fn a_real_live_group_permission_denial_stays_an_error() {
         ["group", "leader"]
     );
     let error = result.expect_err("genuine live-member EPERM was accepted as absence");
-    assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+    assert!(error.to_string().contains("macOS group EPERM:"), "{error}");
+    assert!(error.to_string().contains("step=member-first"), "{error}");
+    assert_original_eperm(&error);
 }
 #[test]
 fn a_failed_group_observation_keeps_the_original_eperm() {
@@ -229,15 +251,140 @@ fn a_failed_group_observation_keeps_the_original_eperm() {
         contain::macos::FAULT.with(|value| value.set(fault));
         let result = child.wait();
         contain::macos::FAULT.with(|value| value.set(0));
-        child.wait().unwrap();
         let error = result.expect_err("failed or ambiguous zombie-group observation was accepted");
-        assert_eq!(error.raw_os_error(), Some(libc::EPERM), "fault={fault}");
+        assert_fault_evidence(&error, fault);
+        assert_original_eperm(&error);
+        child.wait().unwrap();
         let requests = contain::REQUEST_EVENTS.with(|events| events.borrow().clone());
         assert_eq!(requests, ["group", "leader", "group", "leader"]);
         eprintln!(
             "query fault={fault}: original EPERM preserved; independent leader request checked"
         );
     }
+    println!(
+        "MAC-EPERM evidence PASS: 12 rejected observations retain request errno and step evidence"
+    );
+}
+fn assert_original_eperm(error: &std::io::Error) {
+    let source = error
+        .get_ref()
+        .and_then(|inner| inner.source())
+        .and_then(|source| source.downcast_ref::<std::io::Error>());
+    assert!(
+        error.kind() == std::io::ErrorKind::PermissionDenied
+            && error.raw_os_error().is_none()
+            && source.and_then(std::io::Error::raw_os_error) == Some(libc::EPERM),
+        "group EPERM must keep PermissionDenied, no outer errno and the original EPERM as its source: kind={:?} {error}",
+        error.kind()
+    );
+}
+fn assert_fault_evidence(error: &std::io::Error, fault: u8) {
+    let text = error.to_string();
+    let stage = match fault {
+        1 | 2 | 5 | 9 => "membership-first",
+        8 => "membership-second",
+        12 => "member-compare",
+        _ => "member-first",
+    };
+    for required in [
+        "macOS group EPERM:",
+        &format!("step={stage}"),
+        "group=",
+        "errno=1",
+    ] {
+        assert!(
+            text.contains(required),
+            "fault={fault} missing {required}: {text}"
+        );
+    }
+    if fault == 3 {
+        assert!(
+            text.contains("step=member-first reason=query-failed"),
+            "fault=3 missing reason=query-failed: {text}"
+        );
+    }
+    if fault == 4 {
+        assert!(
+            text.contains("reason=short-record"),
+            "fault=4 missing reason=short-record: {text}"
+        );
+    }
+    let queries = contain::macos::EVENTS.with(|events| {
+        events
+            .borrow()
+            .iter()
+            .filter(|event| **event == "status")
+            .count()
+    });
+    let records =
+        text.matches("member-first pid=").count() + text.matches("member-second pid=").count();
+    assert_eq!(
+        records, queries,
+        "one stage record per captured BSD query: {text}"
+    );
+    if fault == 1 || fault == 9 {
+        assert!(
+            text.contains("injected-count="),
+            "fault={fault} missing injected count: {text}"
+        );
+    }
+    match fault {
+        3 | 4 => {
+            for required in ["status=unknown uid=unknown", "count=", "expected="] {
+                assert!(text.contains(required), "fault={fault}: {text}");
+            }
+        }
+        6 | 7 | 10 | 11 => {
+            for required in [
+                "pid=",
+                "returned-pid=",
+                "group=",
+                "status=",
+                "uid=",
+                "ruid=",
+            ] {
+                assert!(text.contains(required), "fault={fault}: {text}");
+            }
+        }
+        8 => {
+            assert!(text.contains("membership-first sorted=["), "{text}");
+            assert!(text.contains("membership-second sorted=[]"), "{text}");
+        }
+        12 => {
+            assert!(text.contains("member-first pid="), "{text}");
+            assert!(text.contains("member-second pid="), "{text}");
+            assert!(text.contains("creation-time-changed"), "{text}");
+            assert!(text.matches("created=").count() >= 2, "{text}");
+        }
+        _ => {}
+    }
+    assert!(
+        format!("{error:?}").contains("step="),
+        "Debug lost observation: {error:?}"
+    );
+}
+#[test]
+fn a_non_eperm_fixture_failure_reports_its_observation() {
+    let tree = LiveTree::new(false);
+    let pid = tree.child.as_ref().unwrap().id();
+    let text =
+        check_exited_eperm(pid).expect_err("same-credential group must fail the EPERM premise");
+    for required in [
+        "fixture must demonstrate real group EPERM",
+        "rc=0",
+        "errno=none",
+        "caller uid=",
+        "ruid=",
+        "group=",
+        "before:",
+        "after:",
+        "pid=",
+        "status=",
+        "uid=",
+    ] {
+        assert!(text.contains(required), "missing {required}: {text}");
+    }
+    println!("MAC-EPERM fixture evidence PASS: real non-EPERM request names rc, credentials, before and after");
 }
 #[test]
 fn injected_group_and_leader_failures_stay_checked() {

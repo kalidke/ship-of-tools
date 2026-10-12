@@ -11,7 +11,7 @@
 //! containment identity across that wait. Explicit kill requests termination first.
 //! Requests run under the registry lock. [`crate::lifecycle::child_signal::Signal::spawn`]
 //! owns the registry; this module holds nothing but the platform calls.
-//! On macOS only, a real group-request EPERM counts as no live member only after checked observation confirms that the retained leader has exited without being reaped and a complete libproc process-group membership/status query finds no live member; live, failed or ambiguous observations preserve the original error, and leader requests and injected failures remain independently checked. No Unix signal or process-group identity query occurs after leader reap.
+//! On macOS only, a real group-request EPERM counts as no live member only after checked observation confirms that the retained leader has exited without being reaped and a complete libproc process-group membership/status query finds no live member; live, failed or ambiguous observations preserve the original error, and leader requests and injected failures remain independently checked. No Unix signal or process-group identity query occurs after leader reap. Rejected observations return their step and captured member evidence with the group EPERM. When the leader request succeeds, the group error retains PermissionDenied and its original OS error source; a simultaneous leader failure keeps both displayed reasons in the existing aggregate.
 
 /// One child's containment. Explicit termination checks requests; Drop logs failures.
 pub(crate) struct Tree {
@@ -211,10 +211,13 @@ fn request(pid: i32, group: bool) -> std::io::Result<()> {
         Err(error) if group && error.raw_os_error() == Some(libc::EPERM) => {
             match macos::checked_no_live_group(pid) {
                 Ok(()) => Ok(()),
-                Err(observation) => {
-                    tracing::debug!(%observation, "macOS group EPERM: no-live observation rejected");
-                    Err(error)
-                }
+                Err(observation) => Err(std::io::Error::new(
+                    error.kind(),
+                    macos::RejectedGroup {
+                        request: error,
+                        observation,
+                    },
+                )),
             }
         }
         result => result,
@@ -246,35 +249,125 @@ pub(super) mod macos {
         pub(crate) static EVENTS: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    fn rejected() -> io::Error {
-        io::Error::other("incomplete, live or inconsistent macOS group observation")
+    pub(super) struct RejectedGroup {
+        pub(super) request: io::Error,
+        pub(super) observation: io::Error,
+    }
+
+    impl std::fmt::Display for RejectedGroup {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "macOS group EPERM: {}; request={} errno={}",
+                self.observation,
+                self.request,
+                self.request
+                    .raw_os_error()
+                    .map_or_else(|| "unknown".to_string(), |errno| errno.to_string())
+            )
+        }
+    }
+
+    impl std::fmt::Debug for RejectedGroup {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::fmt::Display::fmt(self, f)
+        }
+    }
+
+    impl std::error::Error for RejectedGroup {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.request)
+        }
+    }
+
+    #[derive(Debug)]
+    pub(in crate::lifecycle) struct Observation {
+        leader: i32,
+        rejection: Option<(&'static str, &'static str)>,
+        evidence: Vec<String>,
+    }
+
+    impl std::fmt::Display for Observation {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let (stage, reason) = self.rejection.unwrap_or(("accepted", "all-zombie"));
+            write!(
+                f,
+                "step={stage} reason={reason} leader={} group={}; {}",
+                self.leader,
+                self.leader,
+                self.evidence.join("; ")
+            )
+        }
+    }
+
+    impl std::error::Error for Observation {}
+
+    impl Observation {
+        fn reject(&mut self, stage: &'static str, reason: &'static str) {
+            if self.rejection.is_none() {
+                self.rejection = Some((stage, reason));
+            }
+        }
     }
 
     pub(in crate::lifecycle) fn checked_no_live_group(leader: i32) -> io::Result<()> {
-        leader_exited(leader)?;
-        let members = members(leader, false)?;
-        let identities = members
-            .iter()
-            .map(|&pid| zombie(pid, leader, false))
-            .collect::<io::Result<Vec<_>>>()?;
-        if members != self::members(leader, true)? {
-            return Err(rejected());
+        let observation = observe(leader);
+        if observation.rejection.is_some() {
+            Err(io::Error::other(observation))
+        } else {
+            Ok(())
         }
-        for (&pid, identity) in members.iter().zip(identities) {
-            if zombie(pid, leader, true)? != identity {
-                return Err(rejected());
-            }
-        }
-        leader_exited(leader)
     }
 
-    fn leader_exited(leader: i32) -> io::Result<()> {
+    /// Read-only evidence while the caller retains the unreaped direct leader and group identity.
+    pub(in crate::lifecycle) fn observe(leader: i32) -> Observation {
+        let mut observation = Observation {
+            leader,
+            rejection: None,
+            evidence: Vec::new(),
+        };
+        collect(&mut observation);
+        observation
+    }
+
+    fn collect(observation: &mut Observation) {
+        if !leader_exited(observation, "leader-first") {
+            return;
+        }
+        let Some(first) = members(observation, "membership-first", false) else {
+            return;
+        };
+        let identities = zombies(observation, &first, "member-first", false);
+        if observation.rejection.is_some() {
+            return;
+        }
+        let Some(second) = members(observation, "membership-second", true) else {
+            return;
+        };
+        // Preserve the membership verdict before additional read-only status diagnostics.
+        if first != second {
+            observation.reject("membership-compare", "membership-changed");
+        }
+        let repeated = zombies(observation, &second, "member-second", true);
+        if observation.rejection.is_some() {
+            return;
+        }
+        if identities != repeated {
+            observation.reject("member-compare", "creation-time-changed");
+            return;
+        }
+        leader_exited(observation, "leader-final");
+    }
+
+    fn leader_exited(observation: &mut Observation, stage: &'static str) -> bool {
+        let leader = observation.leader;
         if leader <= 0 {
-            return Err(rejected());
+            observation.reject(stage, "invalid-leader");
+            return false;
         }
         #[cfg(test)]
         EVENTS.with(|events| events.borrow_mut().push("exited-unreaped"));
-        // SAFETY: observe only the exclusively retained direct child; WNOWAIT never releases its identity.
+        // SAFETY: observe only the exclusively retained direct child; WNOWAIT preserves its identity.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
         let rc = unsafe {
             libc::waitid(
@@ -284,84 +377,183 @@ pub(super) mod macos {
                 libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
             )
         };
-        if rc != 0 {
-            return Err(io::Error::last_os_error());
+        let error = (rc != 0).then(io::Error::last_os_error);
+        if let Some(error) = error {
+            observation.evidence.push(format!("{stage} waitid rc={rc} errno={:?} error={error}; signal=unknown pid=unknown code=unknown", error.raw_os_error()));
+            observation.reject(stage, "waitid-failed");
+            return false;
         }
+        let pid = unsafe { info.si_pid() };
+        observation.evidence.push(format!(
+            "{stage} waitid rc={rc} signal={} pid={pid} code={}",
+            info.si_signo, info.si_code
+        ));
         if info.si_signo != libc::SIGCHLD
-            || unsafe { info.si_pid() } != leader
+            || pid != leader
             || !matches!(
                 info.si_code,
                 libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED
             )
         {
-            return Err(rejected());
+            observation.reject(stage, "leader-not-exited-unreaped");
+            return false;
         }
-        Ok(())
+        true
     }
 
-    fn members(leader: i32, _recheck: bool) -> io::Result<Vec<i32>> {
+    fn members(
+        observation: &mut Observation,
+        stage: &'static str,
+        _recheck: bool,
+    ) -> Option<Vec<i32>> {
+        let leader = observation.leader;
         #[cfg(test)]
         EVENTS.with(|events| events.borrow_mut().push("members-any-uid"));
-        // SAFETY: the SDK sizing call writes nothing and queries the retained group, without a uid filter.
+        // SAFETY: the SDK sizing call writes nothing and queries the retained group without a UID filter.
         let needed =
             unsafe { libc::proc_listpids(PROC_PGRP_ONLY, leader as _, std::ptr::null_mut(), 0) };
+        let error = (needed <= 0).then(io::Error::last_os_error);
+        observation.evidence.push(format!(
+            "{stage} sizing={needed} errno={:?}",
+            error.as_ref().and_then(io::Error::raw_os_error)
+        ));
         let width = std::mem::size_of::<i32>();
-        let mut capacity = usize::try_from(needed)
+        let Some(mut capacity) = usize::try_from(needed)
             .ok()
             .filter(|n| *n > 0 && *n % width == 0)
-            .ok_or_else(rejected)?;
-        for _ in 0..4 {
-            let bytes = capacity
+        else {
+            observation.reject(stage, "invalid-sizing");
+            return None;
+        };
+        for attempt in 1..=4 {
+            let Some(bytes) = capacity
                 .checked_add(width)
                 .filter(|n| *n <= 4 * 1024 * 1024)
-                .ok_or_else(rejected)?;
-            let size = i32::try_from(bytes).map_err(|_| rejected())?;
-            let mut pids = vec![0i32; bytes / width];
-            // SAFETY: the writable buffer has exactly size bytes and every returned entry is validated below.
-            let count = unsafe {
-                libc::proc_listpids(PROC_PGRP_ONLY, leader as _, pids.as_mut_ptr().cast(), size)
+            else {
+                observation.reject(stage, "capacity-exhausted");
+                return None;
             };
+            let mut pids = vec![0i32; bytes / width];
+            // SAFETY: this writable buffer has exactly bytes bytes, bounded above by the existing ceiling.
+            let observed_count = unsafe {
+                libc::proc_listpids(
+                    PROC_PGRP_ONLY,
+                    leader as _,
+                    pids.as_mut_ptr().cast(),
+                    bytes as i32,
+                )
+            };
+            let error = (observed_count <= 0).then(io::Error::last_os_error);
+            observation.evidence.push(format!(
+                "{stage} attempt={attempt}/4 allocated={bytes} count={observed_count} errno={:?}",
+                error.as_ref().and_then(io::Error::raw_os_error)
+            ));
+            let raw_bytes = usize::try_from(observed_count).unwrap_or(0).min(bytes);
+            observation.evidence.push(format!(
+                "{stage} query-raw={:?}",
+                &pids[..raw_bytes / width]
+            ));
+            let count = observed_count;
             #[cfg(test)]
             let count = match FAULT.with(|fault| fault.get()) {
                 1 => -1,
-                2 => size,
+                2 => bytes as i32,
                 9 => 1,
                 _ => count,
             };
-            let count = usize::try_from(count)
+            #[cfg(test)]
+            if count != observed_count {
+                observation
+                    .evidence
+                    .push(format!("{stage} injected-count={count}"));
+            }
+            let Some(count) = usize::try_from(count)
                 .ok()
                 .filter(|n| *n > 0 && *n <= bytes && *n % width == 0)
-                .ok_or_else(rejected)?;
+            else {
+                observation.reject(stage, "invalid-count");
+                return None;
+            };
+            pids.truncate(count / width);
             if count == bytes {
-                capacity = bytes.checked_mul(2).ok_or_else(rejected)?;
+                capacity = bytes * 2;
                 continue;
             }
-            pids.truncate(count / width);
             #[cfg(test)]
             match FAULT.with(|fault| fault.get()) {
                 5 => pids.retain(|&pid| pid != leader),
                 8 if _recheck => pids.clear(),
                 _ => {}
             }
-            pids.sort_unstable();
-            if !pids.contains(&leader)
-                || pids.iter().any(|&pid| pid <= 0)
-                || pids.windows(2).any(|p| p[0] == p[1])
-            {
-                return Err(rejected());
-            }
-            return Ok(pids);
+            return validate_members(observation, stage, pids, _recheck);
         }
-        Err(rejected())
+        observation.reject(stage, "capacity-exhausted");
+        None
     }
 
-    fn zombie(pid: i32, leader: i32, _recheck: bool) -> io::Result<(u64, u64)> {
+    fn validate_members(
+        observation: &mut Observation,
+        stage: &'static str,
+        mut pids: Vec<i32>,
+        _recheck: bool,
+    ) -> Option<Vec<i32>> {
+        pids.sort_unstable();
+        let reason = if !pids.contains(&observation.leader) {
+            Some("leader-missing")
+        } else if pids.iter().any(|&pid| pid <= 0) {
+            Some("invalid-pid")
+        } else if pids.windows(2).any(|p| p[0] == p[1]) {
+            Some("duplicate-pid")
+        } else {
+            None
+        };
+        observation.evidence.push(format!(
+            "{stage} sorted={pids:?} validated={}",
+            reason.is_none()
+        ));
+        if let Some(reason) = reason {
+            observation.reject(stage, reason);
+            // Only read status for positive members; no observation PID ever becomes a signal target.
+            let diagnostic: Vec<_> = pids.into_iter().filter(|pid| *pid > 0).collect();
+            zombies(
+                observation,
+                &diagnostic,
+                if _recheck {
+                    "member-second"
+                } else {
+                    "member-first"
+                },
+                _recheck,
+            );
+            return None;
+        }
+        Some(pids)
+    }
+
+    fn zombies(
+        observation: &mut Observation,
+        members: &[i32],
+        stage: &'static str,
+        recheck: bool,
+    ) -> Vec<(u64, u64)> {
+        members
+            .iter()
+            .filter_map(|&pid| zombie(observation, pid, stage, recheck))
+            .collect()
+    }
+
+    fn zombie(
+        observation: &mut Observation,
+        pid: i32,
+        stage: &'static str,
+        _recheck: bool,
+    ) -> Option<(u64, u64)> {
         #[cfg(test)]
         EVENTS.with(|events| events.borrow_mut().push("status"));
-        // SAFETY: libc's SDK layout is the full BSD record. arg=1 includes zombies (proc_info.c findzomb).
+        // SAFETY: the SDK BSD layout is complete; arg=1 includes zombies. This only reads a retained group's evidence.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let size = i32::try_from(std::mem::size_of_val(&info)).map_err(|_| rejected())?;
-        let count = unsafe {
+        let size = std::mem::size_of_val(&info) as i32;
+        let observed_count = unsafe {
             libc::proc_pidinfo(
                 pid,
                 libc::PROC_PIDTBSDINFO,
@@ -370,6 +562,8 @@ pub(super) mod macos {
                 size,
             )
         };
+        let error = (observed_count <= 0).then(io::Error::last_os_error);
+        let count = observed_count;
         #[cfg(test)]
         let count = match FAULT.with(|fault| fault.get()) {
             3 => -1,
@@ -385,14 +579,58 @@ pub(super) mod macos {
             12 if _recheck => info.pbi_start_tvusec = info.pbi_start_tvusec.wrapping_add(1),
             _ => {}
         }
-        if count != size
-            || info.pbi_pid != pid as u32
-            || info.pbi_pgid != leader as u32
-            || info.pbi_status != libc::SZOMB
-        {
-            return Err(rejected());
+        observation
+            .evidence
+            .push(bsd_text(stage, pid, count, size, &info, error.as_ref()));
+        let reason = if count <= 0 {
+            Some("query-failed")
+        } else if count != size {
+            Some("short-record")
+        } else if info.pbi_pid != pid as u32 {
+            Some("pid-mismatch")
+        } else if info.pbi_pgid != observation.leader as u32 {
+            Some("group-mismatch")
+        } else if info.pbi_status == libc::SZOMB {
+            None
+        } else if status_label(info.pbi_status) == "unknown" {
+            Some("unknown-status")
+        } else {
+            Some("live-member")
+        };
+        if let Some(reason) = reason {
+            observation.reject(stage, reason);
+            None
+        } else {
+            Some((info.pbi_start_tvsec, info.pbi_start_tvusec))
         }
-        Ok((info.pbi_start_tvsec, info.pbi_start_tvusec))
+    }
+
+    fn bsd_text(
+        stage: &str,
+        pid: i32,
+        count: i32,
+        size: i32,
+        info: &libc::proc_bsdinfo,
+        error: Option<&io::Error>,
+    ) -> String {
+        let errno = error.and_then(io::Error::raw_os_error);
+        if count != size {
+            return format!("{stage} pid={pid} count={count} expected={size} errno={errno:?} status=unknown uid=unknown ruid=unknown");
+        }
+        format!("{stage} pid={pid} count={count} expected={size} returned-pid={} group={} status={}({}) uid={} ruid={} created={}.{}",
+            info.pbi_pid, info.pbi_pgid, info.pbi_status, status_label(info.pbi_status),
+            info.pbi_uid, info.pbi_ruid, info.pbi_start_tvsec, info.pbi_start_tvusec)
+    }
+
+    fn status_label(status: u32) -> &'static str {
+        match status {
+            libc::SIDL => "idle",
+            libc::SRUN => "running",
+            libc::SSLEEP => "sleeping",
+            libc::SSTOP => "stopped",
+            libc::SZOMB => "zombie",
+            _ => "unknown",
+        }
     }
 }
 
@@ -498,30 +736,41 @@ fn resume_main_thread(pid: u32) -> std::io::Result<()> {
 #[cfg(all(test, windows))]
 mod tests {
     use crate::lifecycle::child_signal::Signal;
-    use std::time::Duration;
-    use tokio::io::{AsyncBufReadExt, BufReader};
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
     use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
 
-    /// A process opened while it is alive, so a later wait is on that process and not on a number.
+    /// A retained observation handle; a reported PID never becomes a termination target.
     struct Watched(windows_sys::Win32::Foundation::HANDLE);
 
     impl Watched {
-        fn open(pid: u32) -> Self {
-            // SAFETY: a plain open of a process by pid for SYNCHRONIZE; the handle is closed on drop.
-            let h = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
-            assert!(
-                !h.is_null(),
-                "process {pid} could not be opened to watch: {}",
-                std::io::Error::last_os_error()
-            );
-            Watched(h)
+        fn open(pid: u32) -> Result<Self, String> {
+            // SAFETY: an observation-only process handle, closed by Watched.
+            let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+            if handle.is_null() {
+                Err(format!(
+                    "process {pid} could not be opened to watch: {}",
+                    std::io::Error::last_os_error()
+                ))
+            } else {
+                Ok(Self(handle))
+            }
         }
 
-        fn exits_within(&self, ms: u32) -> bool {
-            // SAFETY: a wait on a handle this value owns.
-            unsafe { WaitForSingleObject(self.0, ms) == WAIT_OBJECT_0 }
+        fn exits_within(&self, ms: u32) -> Result<bool, String> {
+            // SAFETY: a wait on the retained observation handle; no process is signalled.
+            match unsafe { WaitForSingleObject(self.0, ms) } {
+                WAIT_OBJECT_0 => Ok(true),
+                WAIT_TIMEOUT => Ok(false),
+                WAIT_FAILED => Err(format!(
+                    "native process wait failed: {}",
+                    std::io::Error::last_os_error()
+                )),
+                result => Err(format!("unexpected native process wait result: {result}")),
+            }
         }
     }
 
@@ -532,41 +781,166 @@ mod tests {
         }
     }
 
-    /// Start `cmd` through a private signal, read the grandchild's pid from
-    /// its stdout (the first line that is a number: a grandchild that shares
-    /// the pipe, like `ping`, may print first), fire, and report whether that
-    /// pid is gone.
-    async fn fire_takes_the_grandchild(mut cmd: tokio::process::Command) -> bool {
-        let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
-        cmd.stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        let mut contained = sig.spawn(&mut cmd).expect("spawn through the signal");
-        let mut lines = BufReader::new(contained.stdout.take().unwrap()).lines();
-        let pid: u32 = tokio::time::timeout(Duration::from_secs(30), async {
+    /// One tree fixture's output: stdout and stderr are files in the fixture's own folder, so no reader exists to
+    /// block the tree or to supply its death. Readiness is stdout's first complete numeric line (a grandchild that
+    /// shares stdout, like `ping`, may write first); a failure carries a bounded excerpt of both files.
+    struct TreeFiles {
+        dir: tempfile::TempDir,
+        leader: Arc<AtomicU32>,
+    }
+
+    impl TreeFiles {
+        /// Points `cmd`'s standard handles at this fixture's files and records the root that `sig` creates.
+        fn new(sig: &'static Signal, cmd: &mut std::process::Command) -> Result<Self, String> {
+            let dir = tempfile::tempdir().map_err(|error| format!("fixture folder: {error}"))?;
+            let file = |name: &str| {
+                std::fs::File::create(dir.path().join(name))
+                    .map_err(|error| format!("fixture {name} file: {error}"))
+            };
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(file("stdout")?)
+                .stderr(file("stderr")?);
+            let leader = Arc::new(AtomicU32::new(0));
+            let recorded = leader.clone();
+            // The private signal creates exactly one tree, so its hook is never reset.
+            *sig.after_create.lock().unwrap() = Some(Box::new(move |pid| {
+                recorded.store(pid, Ordering::SeqCst);
+            }));
+            Ok(Self { dir, leader })
+        }
+
+        /// The recorded root, opened while its owner still holds it.
+        fn leader(&self) -> Result<Watched, String> {
+            Watched::open(self.leader.load(Ordering::SeqCst))
+        }
+
+        /// The descendant's PID from stdout's first complete numeric line. The leader is checked before stdout is
+        /// read, so a line written before it exited is still found; an exited leader or 30 s without one is an error.
+        fn ready(&self, leader: &Watched) -> Result<u32, String> {
+            let deadline = Instant::now() + Duration::from_secs(30);
             loop {
-                let line = lines
-                    .next_line()
-                    .await
-                    .expect("read")
-                    .expect("stdout closed before a pid arrived");
-                if let Ok(pid) = line.trim().parse() {
-                    return pid;
+                let exited = leader.exits_within(0)?;
+                let stdout = std::fs::read(self.dir.path().join("stdout"))
+                    .map_err(|error| format!("read fixture stdout: {error}"))?;
+                let complete = stdout
+                    .iter()
+                    .rposition(|&byte| byte == b'\n')
+                    .map_or(0, |end| end + 1);
+                if let Some(pid) = String::from_utf8_lossy(&stdout[..complete])
+                    .lines()
+                    .find_map(|line| line.trim().parse().ok())
+                {
+                    return Ok(pid);
                 }
+                if exited {
+                    return Err("fixture leader exited before descendant readiness".into());
+                }
+                if Instant::now() >= deadline {
+                    return Err("descendant readiness exceeded 30 s".into());
+                }
+                std::thread::sleep(Duration::from_millis(20));
             }
-        })
-        .await
-        .expect("the grandchild's pid never arrived");
-        let watched = Watched::open(pid);
-        sig.fire().expect("fire");
-        watched.exits_within(3000)
+        }
+
+        /// The observation, with both files' excerpts appended to an error.
+        fn result(&self, observation: Result<(), String>) -> Result<(), String> {
+            observation.map_err(|reason| {
+                format!(
+                    "{reason}\n{}\n{}",
+                    self.excerpt("stdout"),
+                    self.excerpt("stderr")
+                )
+            })
+        }
+
+        /// A stream's first 4 KiB and last 12 KiB, with the count of bytes left out between them.
+        fn excerpt(&self, name: &str) -> String {
+            let bytes = match std::fs::read(self.dir.path().join(name)) {
+                Ok(bytes) => bytes,
+                Err(error) => return format!("{name}: unreadable: {error}"),
+            };
+            let (head, tail) = if bytes.len() > 16 * 1024 {
+                (&bytes[..4 * 1024], &bytes[bytes.len() - 12 * 1024..])
+            } else {
+                (&bytes[..], &bytes[..0])
+            };
+            format!(
+                "{name}: {} bytes, {} omitted between head and tail\n{}\n{}",
+                bytes.len(),
+                bytes.len() - head.len() - tail.len(),
+                String::from_utf8_lossy(head),
+                String::from_utf8_lossy(tail)
+            )
+        }
+    }
+
+    /// Waits for readiness, applies `end` (the one termination under test), then requires the leader and the
+    /// descendant to exit within one shared 3 s deadline. An owner moved into `end` drops with it on every path.
+    fn tree_ends(
+        files: &TreeFiles,
+        end: impl FnOnce(&Watched, &Watched) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let leader = files.leader()?;
+        let descendant = Watched::open(files.ready(&leader)?)?;
+        end(&leader, &descendant)?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        for (label, watched) in [("leader", &leader), ("descendant", &descendant)] {
+            let millis = deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis() as u32;
+            if !watched.exits_within(millis)? {
+                return Err(format!("{label} survived past the shared 3 s deadline"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Fire alone supplies the death: the owner outlives the observation.
+    fn fire_takes_the_tree(mut cmd: tokio::process::Command) -> Result<(), String> {
+        let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let files = TreeFiles::new(sig, cmd.as_std_mut())?;
+        let owner = sig
+            .spawn(&mut cmd)
+            .map_err(|error| format!("spawn through the signal: {error}"))?;
+        let observation = tree_ends(&files, |_, _| {
+            sig.fire().map_err(|error| format!("fire: {error}"))
+        });
+        drop(owner);
+        files.result(observation)
+    }
+
+    fn std_drop_takes_the_tree(mut cmd: std::process::Command) -> Result<(), String> {
+        let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let files = TreeFiles::new(sig, &mut cmd)?;
+        let owner = sig
+            .spawn_std(&mut cmd)
+            .map_err(|error| format!("spawn_std: {error}"))?;
+        files.result(tree_ends(&files, move |_, _| {
+            drop(owner);
+            Ok(())
+        }))
+    }
+
+    /// Retaining the owner keeps the tree live; dropping it, with no fire, is the only termination.
+    fn async_drop_takes_the_tree(mut cmd: tokio::process::Command) -> Result<(), String> {
+        let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let files = TreeFiles::new(sig, cmd.as_std_mut())?;
+        let owner = sig
+            .spawn(&mut cmd)
+            .map_err(|error| format!("spawn through a private signal: {error}"))?;
+        files.result(tree_ends(&files, move |leader, descendant| {
+            if leader.exits_within(100)? || descendant.exits_within(0)? {
+                return Err("retained-owner control observed tree death".into());
+            }
+            drop(owner);
+            Ok(())
+        }))
     }
 
     fn ping_tree() -> std::process::Command {
         let mut cmd = std::process::Command::new("powershell");
         cmd.args([
-            "-NoProfile",
-            "-Command",
+            "-NoProfile", "-Command",
             "$p=Start-Process -PassThru -NoNewWindow ping -ArgumentList '-n','600','127.0.0.1'; $p.Id; Start-Sleep 600",
         ]);
         cmd
@@ -574,37 +948,65 @@ mod tests {
 
     #[tokio::test]
     async fn fire_kills_a_windows_tree() {
-        assert!(
-            fire_takes_the_grandchild(ping_tree().into()).await,
-            "the grandchild survived the shutdown"
-        );
+        fire_takes_the_tree(ping_tree().into()).expect("fire fixture");
     }
 
-    /// A blocking caller that drops its `ContainedStd` takes the tree.
     #[test]
     fn a_dropped_std_child_takes_its_windows_tree() {
-        use std::io::BufRead;
-        let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
-        let mut cmd = ping_tree();
-        cmd.stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        let mut child = sig.spawn_std(&mut cmd).expect("spawn_std");
-        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
-        let pid: u32 = loop {
-            let line = lines
-                .next()
-                .expect("stdout closed before a pid arrived")
-                .expect("read");
-            if let Ok(pid) = line.trim().parse() {
-                break pid;
-            }
-        };
-        let watched = Watched::open(pid);
-        drop(child);
-        assert!(
-            watched.exits_within(3000),
-            "the dropped child's descendant survived"
+        std_drop_takes_the_tree(ping_tree()).expect("std Drop fixture");
+    }
+
+    #[tokio::test]
+    async fn a_dropped_async_child_takes_its_windows_tree() {
+        async_drop_takes_the_tree(ping_tree().into()).expect("async Drop fixture");
+        println!("WINDOWS async Drop PASS: live leader and descendant exited after owner drop; signal not fired");
+    }
+
+    /// 128 KiB on each stream between a prefix and a suffix line, then exit with no numeric line.
+    fn pressure_command() -> std::process::Command {
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-Command",
+            concat!(
+                "$data='x' * 131072; ",
+                "[Console]::Out.WriteLine('STDOUT-PREFIX'); [Console]::Out.Write($data); ",
+                "[Console]::Out.WriteLine('STDOUT-SUFFIX'); [Console]::Out.Flush(); ",
+                "[Console]::Error.WriteLine('STDERR-PREFIX'); [Console]::Error.Write($data); ",
+                "[Console]::Error.WriteLine('STDERR-SUFFIX'); [Console]::Error.Flush(); exit 0"
+            ),
+        ]);
+        cmd
+    }
+
+    #[tokio::test]
+    async fn all_windows_tree_fixtures_keep_bounded_diagnostics() {
+        for mode in ["std", "async", "fire"] {
+            let cmd = pressure_command();
+            let result = match mode {
+                "std" => std_drop_takes_the_tree(cmd),
+                "async" => async_drop_takes_the_tree(cmd.into()),
+                _ => fire_takes_the_tree(cmd.into()),
+            };
+            let text = result.expect_err("a fixture that printed no PID became ready");
+            let missing: Vec<_> = [
+                "fixture leader exited before descendant readiness",
+                "STDOUT-PREFIX",
+                "STDOUT-SUFFIX",
+                "STDERR-PREFIX",
+                "STDERR-SUFFIX",
+            ]
+            .into_iter()
+            .filter(|item| !text.contains(item))
+            .collect();
+            assert!(
+                missing.is_empty() && text.len() < 34 * 1024,
+                "{mode} fixture: missing {missing:?} or longer than 34 KiB ({} bytes): {text}",
+                text.len()
+            );
+        }
+        println!(
+            "WINDOWS shared fixture diagnostics PASS: std, async and fire retain both streams"
         );
     }
 
@@ -648,10 +1050,7 @@ mod tests {
             "-e",
             "run(`cmd /c exit 0`); p=run(detach(`ping -n 600 127.0.0.1`);wait=false);println(getpid(p));flush(stdout);sleep(600)",
         ]);
-        assert!(
-            fire_takes_the_grandchild(cmd).await,
-            "the julia-detached grandchild survived the shutdown"
-        );
+        fire_takes_the_tree(cmd).expect("julia fire fixture");
     }
 
     #[tokio::test]
@@ -665,10 +1064,7 @@ mod tests {
             "-c",
             "ping -n 600 127.0.0.1 >/dev/null & cat /proc/$!/winpid; exec sleep 600",
         ]);
-        assert!(
-            fire_takes_the_grandchild(cmd).await,
-            "the MSYS-launched grandchild survived the shutdown"
-        );
+        fire_takes_the_tree(cmd).expect("MSYS fire fixture");
     }
 
     /// The daemon itself inside a job: a nested job must still contain.
@@ -686,9 +1082,6 @@ mod tests {
             std::io::Error::last_os_error()
         );
         std::mem::forget(outer);
-        assert!(
-            fire_takes_the_grandchild(ping_tree().into()).await,
-            "the grandchild survived the shutdown"
-        );
+        fire_takes_the_tree(ping_tree().into()).expect("fire fixture");
     }
 }
