@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
+use crate::test_wait::tail;
+
 /// The parent's wall-clock bound on one isolated test.
 pub const ISOLATION_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -457,10 +459,6 @@ pub fn drain(mut child: Child) -> Draining {
     Draining { child, out, err }
 }
 
-/// The most of each stream a failure carries: its last bytes, where a hang or a fault usually shows, so a child that
-/// wrote megabytes cannot flood the log.
-const FAILURE_STREAM_BYTES: usize = 8 * 1024;
-
 /// A failed drained wait: the child's exit or why it has none, then each stream as far as it was read (its last
 /// `FAILURE_STREAM_BYTES`), with the reason a stream did not end.
 fn failure_text(status: &Result<ExitStatus, ChildWaitError>, output: &FixtureOutput) -> String {
@@ -473,12 +471,8 @@ fn failure_text(status: &Result<ExitStatus, ChildWaitError>, output: &FixtureOut
             Ok(body) => (body.as_str(), String::new()),
             Err(failure) => (failure.captured.as_str(), format!(", did not end: {}", failure.reason)),
         };
-        let mut start = body.len().saturating_sub(FAILURE_STREAM_BYTES);
-        while !body.is_char_boundary(start) {
-            start += 1;
-        }
-        let cut = if start > 0 { format!(", last {} of {} bytes", body.len() - start, body.len()) } else { String::new() };
-        text.push_str(&format!("\n--- {name}{ended}{cut} ---\n{}", &body[start..]));
+        let (cut, body) = tail(body);
+        text.push_str(&format!("\n--- {name}{ended}{cut} ---\n{body}"));
     }
     text
 }
@@ -801,6 +795,7 @@ pub fn run_isolated_until(test_name: &str, deadline: Instant) -> Result<bool, Ch
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_wait::FAILURE_STREAM_BYTES;
 
     /// Which job `a_role` does in a child; unset in an ordinary run.
     const ROLE: &str = "SOT_TEST_ISOLATED_ROLE";

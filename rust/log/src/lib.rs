@@ -28,6 +28,8 @@ pub mod test_exec;
 pub mod test_foreign;
 #[cfg(feature = "test-support")]
 pub mod test_isolated;
+#[cfg(feature = "test-support")]
+pub mod test_wait;
 
 pub use host::lock_writer;
 #[cfg(windows)]
