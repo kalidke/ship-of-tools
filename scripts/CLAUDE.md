@@ -38,6 +38,10 @@ and the launch path fails open: no update step can stop a window from starting.
 - The comm installer publishes by copy then rename, prunes only names it recorded and writes `VERSION` last
   (`install_comm` in `src/comm.jl`).
 
+- Every network call `install.sh` makes carries a bound on its whole wait: ssh runs under `sot_within` with the tree's
+  `SSH_OPTS` (BatchMode, ConnectTimeout 10, ServerAlive 15 x 3), git with `http.lowSpeedLimit=1000` and
+  `http.lowSpeedTime=60`, curl with `CURL_BOUND` (connect 15 s, under 1000 B/s for 60 s).
+
 - Both installer paths delegate folder-trust declaration to the agents-owned offline command; a failure is reported
   and never described as a successful declaration.
 

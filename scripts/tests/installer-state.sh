@@ -779,6 +779,19 @@ kill "$RPID"; wait "$RPID" || true
 starts_with "restart judges this account's daemon on this socket" "running daemon pid 222 " "$restart_line"
 starts_with "restart judges this account's daemon by its exact label" "running daemon pid 333 " "$label_line"
 
+case_start "sot_within_ends_a_command_that_outlasts_its_bound"
+# A hung ssh ends at the installer's own bound, with the command named; a command that finishes returns its status.
+# The stalled call runs under the test's own 10 s timer, so a missing bound fails the elapsed check instead of hanging.
+export -f sot_within
+t0=$SECONDS; rc=0; err="$(timeout 10 bash -c 'sot_within 1 sleep 600' 2>&1)" || rc=$?
+check "a stalled command ends with 124" "124" "$rc"
+check "the line names the command and the bound" "sleep did not finish within 1s" "$err"
+check "it ends within 3 s of the bound" "yes" "$([ $((SECONDS - t0)) -lt 4 ] && echo yes || echo no)"
+rc=0; sot_within 5 true || rc=$?
+check "a command that finishes returns 0" "0" "$rc"
+rc=0; sot_within 5 sh -c 'exit 7' || rc=$?
+check "and its own status" "7" "$rc"
+
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'
 else

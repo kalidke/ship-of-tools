@@ -7,7 +7,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `lib-test-body.sh`: the shared completion verdict for one selected Rust test; ordered, unambiguous capture closure precedes the outer result; missing, ignored, mismatched and failed bodies cannot pass.
 - `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners, including combined captured-summary/truncation and scratch-path controls; accepts a compiled fixture executable by absolute path and validates its shell scratch root before cleanup.
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
-  and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
+  and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. `sot_within` ends a stalled
+  command at its bound. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper and the network refusal. Runs in the
   `rust.yml` step "Test installer apply (bash)" (job `checks-linux`) and in `rc-gate.sh`.
@@ -17,7 +18,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   hosts.toml sotd cannot read is still a declared topology; the tables of `installer_record_decision` and
   `installer_host_decision`; and `install.sh`, run end to end from a stub release on a host listed with neither key,
   on an unlisted host asking for a daemon, and with an unpacked sotd that cannot run, refuses and leaves every entry
-  under the prefix and `~/.local` as it was. Runs in the
+  under the prefix and `~/.local` as it was. It also reads the argv of the stand-in curl and git of
+  a run that reaches the base clone, the tag fetch and the Julia installer: each carries its stall bound. Runs in the
   `rust.yml` step "Test installer shared home (bash)"
   (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-support.sh`: the setup the installer suites source: install.sh and lib/sot-daemon.sh, `check`,

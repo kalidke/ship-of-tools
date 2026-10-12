@@ -82,6 +82,7 @@ JQ
     # write-time strip.
     cat > "$STUB/curl" <<'CURL'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SOT_TEST_TMP/curl.argv"
 url=""; for a in "$@"; do case "$a" in https://*) url="$a" ;; esac; done
 for a in "$@"; do
     case "$a" in
@@ -163,6 +164,9 @@ check "the token reached gh with no CR" "$(printf '%s' "$facts" | sed -n 's/^HAS
 check "and with every byte intact" "$(printf '%s' "$facts" | sed -n 's/^LEN=//p')" \
       "$(printf '%s' "$FAKE_TOKEN" | wc -c | tr -d ' ')"
 check "the device code curl was given had no CR" "$(cat "$TMP/dc.hascr" 2>/dev/null)" "0"
+# A stalled GitHub must end a request with curl's own error: every call carries the connect and stall bound.
+check "every curl call carries the stall bound" \
+    "$(grep -vc -e '--connect-timeout 15 --speed-limit 1000 --speed-time 60' "$TMP/curl.argv" || true)" "0"
 # Under a CRLF jq the `error` value carried a CR, every case arm missed, and the
 # poll died on the first response. Two calls to the token endpoint is the proof
 # it kept waiting instead.

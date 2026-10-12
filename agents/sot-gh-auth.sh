@@ -70,6 +70,10 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "sot-gh-auth: missing require
 # so jq's own failure still propagates.
 jqr() { jq -r "$@" | tr -d '\r'; }
 
+# Every curl call carries a bound: a connect past 15 s or a transfer under 1000 B/s for 60 s ends it with curl's own
+# error, which each call site reports. No total time limit: a slow transfer that keeps moving is not a hang.
+CURL_BOUND=(--connect-timeout 15 --speed-limit 1000 --speed-time 60)
+
 # exit 0 iff gh has a valid LIVE token for HOST (gh auth status hits the API).
 already_authed() { gh auth status --hostname "$HOST" >/dev/null 2>&1; }
 
@@ -87,7 +91,7 @@ guard_env() {
 request() {
     need gh; need curl; need jq; need tr
     local resp err device_code user_code verify interval expires
-    resp=$(curl -fsS -X POST "https://${HOST}/login/device/code" \
+    resp=$(curl "${CURL_BOUND[@]}" -fsS -X POST "https://${HOST}/login/device/code" \
         -H "Accept: application/json" \
         --data-urlencode "client_id=${CLIENT_ID}" \
         --data-urlencode "scope=${SCOPES}") \
@@ -163,7 +167,7 @@ poll() {
     while :; do
         sleep "$interval"
         waited=$((waited + interval))
-        tok=$(curl -fsS -X POST "https://${HOST}/login/oauth/access_token" \
+        tok=$(curl "${CURL_BOUND[@]}" -fsS -X POST "https://${HOST}/login/oauth/access_token" \
             -H "Accept: application/json" \
             --data-urlencode "device_code@${dcfile}" \
             --data-urlencode "client_id=${CLIENT_ID}" \

@@ -152,13 +152,24 @@ STUBEOF
     chmod +x "$rel"/*; chmod "$mode" "$rel/sotd"
     tar -czf "$d/rel/sot-9.9.9-linux-x86_64.tar.gz" -C "$d/rel" sot-9.9.9-linux-x86_64
     ( cd "$d/rel" && sha256sum sot-9.9.9-linux-x86_64.tar.gz > SHA256SUMS )
+    # curl and git record their argv in net.log: the stand-ins the network-bound case below reads. git answers a
+    # status with a clean tree and a rev-parse with one commit, so a run with a checkout in place reaches Julia.
     cat > "$d/stubs/curl" <<STUBEOF
 #!/bin/sh
+echo "curl \$*" >> "$d/net.log"
 out=""; url=""
 while [ \$# -gt 0 ]; do case "\$1" in -o) out="\$2"; shift ;; http*) url="\$1" ;; esac; shift; done
-case "\$url" in */releases/download/*) cp "$d/rel/\${url##*/}" "\$out" ;; esac
+case "\$url" in
+    */releases/download/*) cp "$d/rel/\${url##*/}" "\$out" ;;
+    */releases/latest) printf 'https://github.com/x/releases/tag/v9.9.9' ;;
+    */scripts/install.sh) printf 'exit 0\n' > "\$out" ;;
+esac
 STUBEOF
-    printf '#!/bin/sh\nexit 1\n' > "$d/stubs/git"
+    cat > "$d/stubs/git" <<STUBEOF
+#!/bin/sh
+echo "git \$*" >> "$d/net.log"
+case "\$*" in *"status --porcelain"*) ;; *rev-parse*) echo 0123abc ;; esac
+STUBEOF
     printf '#!/bin/sh\nexit 3\n' > "$d/stubs/systemctl"
     chmod +x "$d/stubs/curl" "$d/stubs/git" "$d/stubs/systemctl"
     env -i HOME="$d/home" PATH="$d/stubs:/usr/bin:/bin" SOT_INSTALL_TAG=v9.9.9 \
@@ -178,6 +189,24 @@ d="$WORK/noexec"; rc=0; out="$(shared_install_run "$d" "$me daemon" 644 --be-onl
 check "an unpacked sotd that cannot run stops the install" "1" "$rc"
 check "it names TMPDIR" "1" "$(says "$out" 'the unpacked sotd cannot run from .*noexec')"
 check "the install is unchanged" "$(cat "$d/before")" "$(snapshot "$d")"
+
+# ---------------------------------------------------------------------------
+case_start "every network call the installer makes carries its stall bound"
+# The stand-ins of the cases above log their argv. A run with the tag's checkout in place clones the base, fetches the
+# tag and asks for Julia; a run with no pinned tag resolves the latest release and fetches that tag's installer.
+d="$WORK/net-bounds"; mkdir -p "$d/prefix/repo/versions/v9.9.9/scripts/lib"
+cp "$(dirname "$0")/../lib/sot-daemon.sh" "$d/prefix/repo/versions/v9.9.9/scripts/lib/sot-daemon.sh"
+rc=0; out="$(shared_install_run "$d" "$me daemon" 755 --be-only --no-service --force-role-change)" || rc=$?
+check "a pinned run goes on to ask for Julia" "1" "$(says "$out" 'Julia install failed')"
+env -i HOME="$d/home" PATH="$d/stubs:/usr/bin:/bin" bash "$(dirname "$0")/../install.sh" --be-only --prefix "$d/prefix" >/dev/null 2>&1 || true
+check "the log holds the prelude, the downloads and the Julia installer's curl calls" "yes" \
+    "$([ "$(grep -c '^curl ' "$d/net.log")" -ge 6 ] && echo yes || echo no)"
+check "every curl call carries the connect and stall bound" "0" \
+    "$(grep '^curl ' "$d/net.log" | grep -vc -e '--connect-timeout 15 --speed-limit 1000 --speed-time 60' || true)"
+check "the log holds the base clone and the tag fetch" "1 1" \
+    "$(grep -c ' clone ' "$d/net.log") $(grep -c ' fetch --tags' "$d/net.log")"
+check "every git network call carries the stall bound" "0" \
+    "$(grep -e ' fetch ' -e ' clone ' "$d/net.log" | grep -vc -e '-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60' || true)"
 
 # ---------------------------------------------------------------------------
 printf '\n'

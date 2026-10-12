@@ -15,7 +15,8 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
 - The Claude launcher `ccb`, its PATH wrappers (`show-result`, `sot-fe`, `sot-gh-auth`) and the eleven skills that are
   not messaging's (`julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `sot-gh-auth`, `sot-install`,
   `sot-setup`, `sot-status`, `sot-statusline-setup`, `worktree`): `claude/`. The Codex launcher `ccx`: `codex/`.
-- `sot-gh-auth.sh`, the GitHub device-flow sign-in.
+- `sot-gh-auth.sh`, the GitHub device-flow sign-in; every curl call carries `CURL_BOUND` (connect 15 s, under
+  1000 B/s for 60 s), so a stalled GitHub ends the request with curl's own error.
 - Their suites: `tests/`.
 - Still elsewhere, listed so a reader finds them:
   - the shell daemon client in `comm/lib/comm-lib-client.sh` (`sot_daemon_endpoint`, `sot_relay_endpoint`,
