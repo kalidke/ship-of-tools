@@ -513,6 +513,9 @@ try {
         foreach ($code8d in @('protocol_mismatch', 'os_user_conflict')) {
             Clear-FakeEnv
             $env:FAKE_SOTD_HELLO_REFUSAL = $code8d
+            # Wait-Pipe's probe connects and closes while the fake pauses between making its pipe and waiting on it, every
+            # run: the fake must outlive that client, or the transport finds no pipe and prints nothing.
+            $env:FAKE_SOTD_ACCEPT_DELAY_MS = '300'
             $fakeLog8d = Join-Path $root "fake8d-$code8d.log"
             $env:FAKE_SOTD_LOG = $fakeLog8d
             $pipe8d = New-TestPipeName
@@ -524,14 +527,14 @@ try {
                 Check "8d ($code8d): the transport ends on its own" (-not $r8d.Hung) "still running after 20 s; stdout: $($r8d.Out -join ' | ') stderr: $($r8d.Err) fake saw: $fakeSaw8d"
                 $first8d = $null
                 if ($r8d.Out.Count -ge 1) { $first8d = $r8d.Out[0] | ConvertFrom-Json }
-                Check "8d ($code8d): the refused hello's reply is printed first" (($null -ne $first8d) -and ($first8d.op -eq 'hello') -and ($first8d.payload.code -eq $code8d)) "stdout: $($r8d.Out -join ' | ')"
+                Check "8d ($code8d): the refused hello's reply is printed first" (($null -ne $first8d) -and ($first8d.op -eq 'hello') -and ($first8d.payload.code -eq $code8d)) "stdout: $($r8d.Out -join ' | ') stderr: $($r8d.Err) fake exited: $($fake8d.HasExited)"
                 if ($code8d -eq 'protocol_mismatch') {
                     $second8d = $null
                     if ($r8d.Out.Count -eq 2) { $second8d = $r8d.Out[1] | ConvertFrom-Json }
                     Check "8d ($code8d): the request's own reply follows, and decides" (($null -ne $second8d) -and ($second8d.op -eq 'fe.lease')) "stdout: $($r8d.Out -join ' | ')"
                     Check "8d ($code8d): exit 0" ($r8d.Exit -eq 0) "got $($r8d.Exit)"
                 } else {
-                    Check "8d ($code8d): nothing else is printed" ($r8d.Out.Count -eq 1) "stdout: $($r8d.Out -join ' | ')"
+                    Check "8d ($code8d): nothing else is printed" ($r8d.Out.Count -eq 1) "stdout: $($r8d.Out -join ' | ') stderr: $($r8d.Err) fake exited: $($fake8d.HasExited)"
                     Check "8d ($code8d): exit 1" ($r8d.Exit -eq 1) "got $($r8d.Exit)"
                 }
             } finally {

@@ -5,7 +5,7 @@
     # this file runs under (CI step `shell: powershell`). C# 5 syntax only.
     Write-Host "`n=== 7-8 setup. compile the fake daemon ===" -ForegroundColor Cyan
     if ($null -eq $envSaved) { $envSaved = @{} }
-    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR')) {
+    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_ACCEPT_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR')) {
         if (-not $envSaved.ContainsKey($k)) { $envSaved[$k] = [Environment]::GetEnvironmentVariable($k) }
     }
     $fakeLocalAppData = Join-Path $root 'fakelocal'
@@ -155,6 +155,9 @@ public static class FakeSotd
         string hd = Environment.GetEnvironmentVariable("FAKE_SOTD_HOLD_DIR");
         if (!string.IsNullOrEmpty(hd)) { holdDir = hd; }
         int bindDelay = EnvInt("FAKE_SOTD_BIND_DELAY_MS", 0);
+        // FAKE_SOTD_ACCEPT_DELAY_MS: a pause between making each pipe instance and waiting on it (section 8d), so a client
+        // that connects and closes at once, as Wait-Pipe's probe does, is gone before the wait begins.
+        int acceptDelay = EnvInt("FAKE_SOTD_ACCEPT_DELAY_MS", 0);
         // FAKE_SOTD_EXIT_ARM_FILE: once the test writes this file, when it starts measuring, the fake exits the number
         // of milliseconds the file holds later (sections 8a and 8b). The timer starts at the test's origin, not at this
         // process's start, so setup never shortens the wait the test measures.
@@ -184,7 +187,17 @@ public static class FakeSotd
             NamedPipeServerStream srv = new NamedPipeServerStream(
                 name, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte,
                 PipeOptions.None, 65536, 65536);
-            srv.WaitForConnection();
+            if (acceptDelay > 0) { Thread.Sleep(acceptDelay); }
+            try { srv.WaitForConnection(); }
+            catch (IOException e)
+            {
+                // The client came and went before the wait (ERROR_NO_DATA, 232): this instance is spent, and the fake goes
+                // on to the next one. Uncaught, it ended the fake and left the next client no pipe to connect to. Any
+                // other failure still ends the fake.
+                if ((System.Runtime.InteropServices.Marshal.GetHRForException(e) & 0xFFFF) != 232) { throw; }
+                srv.Dispose();
+                continue;
+            }
             Thread w = new Thread(Serve);
             w.IsBackground = true;
             w.Start(srv);
@@ -203,7 +216,7 @@ public static class FakeSotd
     Check 'the fake daemon compiles' $compiled "Add-Type failed: $compileErr"
 
     function Clear-FakeEnv {
-        foreach ($k in @('FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR')) {
+        foreach ($k in @('FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_ACCEPT_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR')) {
             Remove-Item "Env:\$k" -ErrorAction SilentlyContinue
         }
     }
