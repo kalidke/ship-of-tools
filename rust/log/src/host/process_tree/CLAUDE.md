@@ -21,7 +21,9 @@ Part of platform; charter: rust/log/src/host/CLAUDE.md.
   byte or the owner's drop ends the child before it does (`Birth::release`, `cancel`, `Drop`).
 - Every endpoint the child must not hold is closed first (`close_in_child`); a descriptor that must cross the exec is
   named (`inherit_across_exec`), and only its copy in the child loses its close-on-exec flag.
-- Dispositions are reset to default and the mask to empty before the exec, the two glibc-reserved signals through the
-  kernel call (`reset_disposition`).
+- Dispositions are reset to default and the mask to empty before the exec, the signals the libc refuses (glibc's 32 and
+  33, musl's 32 to 34) through the kernel call (`reset_disposition`).
 - The launcher is compiled by `rust/log/build.rs` for the Unix targets, from a macOS host only for a macOS target; the
-  `native-barrier` build adds the test pauses and no installed build has them.
+  `native-barrier` build adds the test pauses and no installed build has them. A musl target needs a C compiler with
+  musl's headers: the cc crate looks on PATH for `x86_64-linux-musl-gcc`, then `musl-gcc` (Ubuntu's musl-tools ships
+  both; release.yml installs it).

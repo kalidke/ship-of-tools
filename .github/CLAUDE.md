@@ -51,8 +51,9 @@ scripts/CLAUDE.md.
   `julia-packages` (core, kernel, repl, the two preview plugins and SotLog), `docs` (builds the manual with
   `docs/make.jl`; a push to `main` deploys it).
 - `workflows/release.yml` ("Release"): a `v*` tag or dispatch (`publish` runs only when the ref is a tag). Jobs: `build`
-  (linux, windows and macos targets; the Linux `sotd` and `sot-capsule` are built musl static), `julia-check`, the three
-  smokes `smoke`, `smoke-windows` and `smoke-macos`, then `publish` (`SHA256SUMS`, `COMMIT`, git-cliff notes, the GitHub
+  (linux, windows and macos targets; the Linux `sotd` and `sot-capsule` are built musl static, with Ubuntu's
+  `musl-tools` installed first as the C compiler for sot-log's native launcher), `julia-check`, the three smokes
+  `smoke`, `smoke-windows` and `smoke-macos`, then `publish` (`SHA256SUMS`, `COMMIT`, git-cliff notes, the GitHub
   Release).
 - `workflows/gitleaks.yml`: a full-history secret scan on push to `main` and on pull requests.
 
