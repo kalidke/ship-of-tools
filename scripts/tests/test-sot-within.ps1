@@ -5,7 +5,8 @@
 # reaches the command, and only the caller's bytes do, whatever the console's input encoding; a command that cannot
 # start is Code 127. Then each script call a test can reach, its stand-in first on a child PowerShell's PATH, never
 # this process's: shutdown-sot.ps1's Get-DaemonDisconnect (read as a syntax tree) against a stand-in ssh.exe, and
-# sot-install-layout.ps1's tag fetch against a stand-in git.exe.
+# sot-install-layout.ps1's tag fetch and launch-sot.ps1's self-update pull (its stall bound, and git's stall error read
+# as offline) against a stand-in git.exe.
 # Run under WINDOWS POWERSHELL 5.1: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\test-sot-within.ps1
 
 $ErrorActionPreference = 'Stop'
@@ -228,6 +229,36 @@ Initialize-InstallLayout
         Check 'the layout fetched the tags' ($fetchLines.Count -eq 1) "fetch lines: $($fetchLines.Count)"
         Check 'the fetch carries the stall bound' (@($fetchLines | Where-Object { $_ -notmatch '-c http\.lowSpeedLimit=1000 -c http\.lowSpeedTime=60' }).Count -eq 0) "got: $($fetchLines -join '; ')"
     } catch { Check 'layout: the section ran' $false $_.Exception.Message }
+
+    try {
+        Write-Host "`n=== launch-sot.ps1's self-update pull: its stall bound, and git's stall error read as offline ===" -ForegroundColor Cyan
+        # The stand-in git.exe first on the child's PATH answers the pull with git's error for a transfer under
+        # http.lowSpeedLimit; the prelude, read from launch-sot.ps1 as a syntax tree, must launch the current build as offline.
+        New-Item -ItemType Directory -Force -Path (Join-Path $work 'dev-clone\.git') | Out-Null
+        $gitLog = Join-Path $work 'git-pull.log'
+        $pull = @'
+$ErrorActionPreference = 'Stop'
+$statuses = New-Object 'System.Collections.Generic.List[string]'
+function Set-LaunchStatus([string]$Text) { $statuses.Add($Text) | Out-Null }
+function Write-SupLog([string]$Text) { }
+$ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:SOT_TEST_SCRIPTS 'launch-sot.ps1'), [ref]$null, [ref]$null)
+$fn = $ast.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq 'Invoke-SelfUpdatePrelude' }, $true)
+. ([scriptblock]::Create($fn.Extent.Text))
+$script:sotPinned = $false
+$script:launchNotices = New-Object 'System.Collections.Generic.List[string]'
+$repo = $env:SOT_TEST_CLONE
+$NoUpdate = $false
+$Local = $false
+Remove-Item Env:\SOT_LAUNCH_REEXEC -ErrorAction SilentlyContinue
+Invoke-SelfUpdatePrelude
+@{ statuses = @($statuses) } | ConvertTo-Json -Compress
+'@
+        $r = ConvertFrom-Json (Invoke-Child 'pull' $pull @{ PATH = "$gitDir;$env:PATH"; SOT_TEST_SCRIPTS = $scripts; SOT_TEST_GIT_LOG = $gitLog; SOT_TEST_CLONE = (Join-Path $work 'dev-clone') }).Out
+        $pullLines = @(Get-Content -LiteralPath $gitLog -ErrorAction SilentlyContinue | Where-Object { $_ -match ' pull ' })
+        Check 'the prelude pulled once' ($pullLines.Count -eq 1) "pull lines: $($pullLines.Count)"
+        Check 'the pull carries the stall bound' (@($pullLines | Where-Object { $_ -notmatch '-c http\.lowSpeedLimit=1000 -c http\.lowSpeedTime=60' }).Count -eq 0) "got: $($pullLines -join '; ')"
+        Check 'a stalled pull launches the current build as offline' (@($r.statuses) -contains 'Offline - launching current build...') "statuses: $(@($r.statuses) -join ' | ')"
+    } catch { Check 'pull: the section ran' $false $_.Exception.Message }
 } finally { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
 
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })

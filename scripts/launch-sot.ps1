@@ -333,9 +333,10 @@ function Invoke-SelfUpdatePrelude {
                 # no new failure mode of its own) - fetch failures print a
                 # recognizable network-layer message regardless of transport
                 # (https or ssh remote); anything else ran against the local repo
-                # and is a refusal.
+                # and is a refusal. 'Operation too slow' is git's word for a
+                # transfer the pull's own stall bound (http.lowSpeedLimit) ended.
                 $pullText = (($pullOut | ForEach-Object { "$_" }) -join "`n")
-                $offlinePattern = 'Could not resolve host|Could not read from remote|Connection timed out|Network is unreachable|Could not connect|Operation timed out|Temporary failure in name resolution|No route to host|Connection refused|Host is down|ssh: connect to host'
+                $offlinePattern = 'Could not resolve host|Could not read from remote|Connection timed out|Network is unreachable|Could not connect|Operation timed out|Operation too slow|Temporary failure in name resolution|No route to host|Connection refused|Host is down|ssh: connect to host'
                 if ($pullText -match $offlinePattern) {
                     Set-LaunchStatus 'Offline - launching current build...'
                     Write-SupLog 'self-update: pull failed (offline) - launching existing binary'

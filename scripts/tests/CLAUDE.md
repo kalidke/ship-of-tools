@@ -49,8 +49,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   that cannot start is code 127. Each stand-in goes
   first on a child PowerShell's PATH, never the test's: `shutdown-sot.ps1`'s `Get-DaemonDisconnect`, read as a syntax
   tree and run against a stand-in `ssh.exe`, passes the tree's ssh options and the command on stdin, and names a hung
-  ssh; `sot-install-layout.ps1`'s tag fetch, against a stand-in `git.exe`, carries the stall bound. Runs in the
-  `rust.yml` step "Test Invoke-SotWithin".
+  ssh; `sot-install-layout.ps1`'s tag fetch, against a stand-in `git.exe`, carries the stall bound; and
+  `launch-sot.ps1`'s self-update pull, read as a syntax tree, carries it too and reads git's stall error as offline.
+  Runs in the `rust.yml` step "Test Invoke-SotWithin".
 - `test-local-daemon.ps1`: scripts/sot-local-daemon.ps1 start, stop and wait behaviour (sections 0-8 and 12-15: the
   refusal, the pipe name, a late bind, `-Stop`, log retention, `Get-StopWaitMs`). Runs in the `rust.yml` step "Test
   local daemon launcher".
