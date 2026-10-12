@@ -430,9 +430,16 @@ fn native_path(path: &Path) -> String {
     text.trim_end_matches('\\').to_string()
 }
 
+/// A volume constructed directly, outside `on_volume`, holds the volume gate while it lives and releases its image and
+/// folder when a failure unwinds through it. Run `native_volume_fill_free_sync` alone for the gate observation: in a
+/// parallel run a sibling volume test could be the holder.
 #[cfg(windows)]
 pub fn windows_unwind_control() {
     let volume = NativeVolume::new();
+    let owned = matches!(
+        ONE_VOLUME.try_lock(),
+        Err(std::sync::TryLockError::WouldBlock)
+    );
     let dir = volume.dir.as_ref().unwrap().path().to_path_buf();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _volume = volume;
@@ -443,21 +450,11 @@ pub fn windows_unwind_control() {
         "L3 HARNESS FAILURE: partial attach unwind retained resources"
     );
     println!("L3 harness windows after-attach-unwind=ok image-removal=ok");
-}
-
-#[cfg(windows)]
-#[test]
-fn direct_native_volume_creation_owns_the_gate() {
-    let volume = NativeVolume::new();
-    let owned = matches!(
-        ONE_VOLUME.try_lock(),
-        Err(std::sync::TryLockError::WouldBlock)
-    );
-    volume.close();
     assert!(
         owned,
         "a directly constructed native volume must own ONE_VOLUME"
     );
+    println!("L3 harness windows constructor-gate=owned");
 }
 
 #[cfg(any(target_os = "macos", windows))]
