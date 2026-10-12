@@ -677,7 +677,8 @@ mod tests {
     fn a_stalled_exchange_reports_its_phase_within_the_deadline() {
         for (label, phase) in [("receiver", "first receive"), ("sender", "large send")] {
             let origin = Instant::now();
-            let mut exchange = Exchange::new(Duration::from_millis(100));
+            let bound = Duration::from_millis(100);
+            let mut exchange = Exchange::new(bound);
             let (a, b) = exchange.pair();
             let (stuck, held) = if label == "receiver" { (b, a) } else { (a, b) };
             exchange.spawn(label, move |worker| {
@@ -696,7 +697,7 @@ mod tests {
             );
             assert!(error.contains("cleanup=confirmed"), "{error}");
             assert!(
-                origin.elapsed() < Duration::from_secs(3),
+                origin.elapsed() < SETUP + bound + CLEANUP,
                 "the exchange exceeded its setup, deadline and cleanup: {error}"
             );
             println!("wire stalled-proof worker={label} phase={phase} cleanup=confirmed");
