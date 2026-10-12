@@ -38,8 +38,8 @@ and the launch path fails open: no update step can stop a window from starting.
 - The comm installer publishes by copy then rename, prunes only names it recorded and writes `VERSION` last
   (`install_comm` in `src/comm.jl`).
 
-- Every network call `install.sh` makes carries a bound on its whole wait: ssh runs under `sot_within` with the tree's
-  `SSH_OPTS` (BatchMode, ConnectTimeout 10, ServerAlive 15 x 3), git with `http.lowSpeedLimit=1000` and
+- Every network call a product script makes carries a bound on its whole wait: ssh runs under `sot_within` (bash) or
+  `Invoke-SotWithin` (PowerShell, `sot-hosts.ps1`) with the tree's `SSH_OPTS`, git with `http.lowSpeedLimit=1000` and
   `http.lowSpeedTime=60`, curl with `CURL_BOUND` (connect 15 s, under 1000 B/s for 60 s).
 
 - Both installer paths delegate folder-trust declaration to the agents-owned offline command; a failure is reported
@@ -87,7 +87,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `launch-sot.ps1`: the supervisor: self-update, apply, handover, local daemon, respawn loop; it dot-sources the helper files below.
 - `launch-splash.ps1`: the launch progress window.
 - `sot-local-daemon.ps1`: starts and stops this computer's `sotd`, and names the `sotd.exe` it runs (`-Resolve`).
-- `sot-hosts.ps1`: reads `sotd topology plan` output and runs `topology sync`.
+- `sot-hosts.ps1`: reads `sotd topology plan` output and runs `topology sync`; `Invoke-SotWithin`
+  runs a native command under a wall-clock bound (every script ssh call).
 - `sot-install-layout.ps1`: the pinned-checkout test, the shortcut target, the launcher code id, the first-launch install layout and offline trust declaration delegation.
 - `sot-freshness.ps1`: the armed update's apply, the dev pull's rebuild and the comm install, run before a window starts.
 - `sot-lease.ps1`: opens a lease on this computer's daemon, hands every lease over to the window, and starts the bridge (`Start-SotBridge`) for the lease and `sot-local-daemon.ps1`'s probe. A request the daemon has not answered within `$LeaseReplyWaitMs` is kept open, its bridge process held for the supervisor's life (`$global:SotLeasesUnanswered`), with its handover written behind it, since closing it could end the computer's sessions.

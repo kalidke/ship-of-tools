@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# installer-apply.sh -- the sot-apply transaction, the one-copy helper and the network refusal.
+# installer-apply.sh -- the sot-apply transaction, the one-copy helper, the network refusal and the dev launcher's git bound.
 # Run: scripts/tests/installer-apply.sh
 
 set -euo pipefail
@@ -276,6 +276,21 @@ check "an unreachable network exits non-zero" "yes" "$([ "$rc" -ne 0 ] && echo y
 check "it names the network, not the release" "1 0" \
     "$(printf '%s\n' "$out" | grep -c 'cannot reach raw.githubusercontent.com to check release v0.0.1 (curl exit 6)' || true) $(printf '%s\n' "$out" | grep -c 'predates' || true)"
 check "the prefix was still never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
+
+# ---------------------------------------------------------------------------
+case_start "the dev launcher's git pull carries the stall bound"
+# A stand-in git records its argv and answers the pull with success; the launcher then goes on, finds no sotd, and
+# execs the stub frontend. The pull must not be able to hold the window back on a stalled network.
+d="$WORK/launch-pull"; mkdir -p "$d/repo/scripts/lib" "$d/repo/.git" "$d/home" "$d/stubs"
+cp "$(dirname "$0")/../launch-sot.sh" "$d/repo/scripts/launch-sot.sh"
+cp "$(dirname "$0")/../lib/sot-hosts.sh" "$(dirname "$0")/../lib/sot-daemon.sh" "$d/repo/scripts/lib/"
+printf '#!/bin/sh\necho "git $*" >> "%s/git.log"\n' "$d" > "$d/stubs/git"
+printf '#!/bin/sh\necho fe >> "%s/git.log"\n' "$d" > "$d/fe"
+chmod +x "$d/stubs/git" "$d/fe"
+( HOME="$d/home" PATH="$d/stubs:$TOOLS" SOT_PREFIX= SOT_FRONTEND_BIN="$d/fe" bash "$d/repo/scripts/launch-sot.sh" ) >/dev/null 2>&1 || true
+check "the launcher pulled, then started the frontend" "1 1" "$(grep -c ' pull ' "$d/git.log" || true) $(grep -c '^fe$' "$d/git.log" || true)"
+check "the pull carries the stall bound" "0" \
+    "$(grep ' pull ' "$d/git.log" | grep -vc -e '-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60' || true)"
 
 # ---------------------------------------------------------------------------
 printf '\n'

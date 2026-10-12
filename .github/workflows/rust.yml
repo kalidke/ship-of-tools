@@ -435,6 +435,14 @@ jobs:
         run: .\scripts\tests\test-install-layout.ps1
         working-directory: .
 
+      # sot-hosts.ps1's Invoke-SotWithin: the bound every script ssh call runs under.
+      - name: Test Invoke-SotWithin
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        timeout-minutes: 5
+        run: .\scripts\tests\test-sot-within.ps1
+        working-directory: .
+
       # ADR 0042 L1c: the launcher's local-daemon start/stop (sot-local-
       # daemon.ps1), driven against the sotd.exe this same job's "Build
       # workspace" step already built (target\debug, since that step has no

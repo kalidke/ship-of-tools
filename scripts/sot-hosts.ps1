@@ -135,3 +135,52 @@ function Invoke-SotTopologySync {
     $result.Output = ("$($output | Out-String)").Trim()
     return $result
 }
+
+# The tree's one ssh option set (rust/protocol/src/topology/ssh_bridge.rs SSH_OPTS): BatchMode never prompts,
+# ConnectTimeout bounds the connect and the server's banner, ServerAlive ends a link that stops answering, and no
+# multiplexing master can keep the call's pipes open. Every script ssh call passes it and runs under Invoke-SotWithin.
+$SotSshOpts = @('-T', '-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
+                '-o', 'ConnectTimeout=10', '-o', 'ControlMaster=no', '-o', 'ControlPath=none', '-o', 'ControlPersist=no')
+
+# Runs a native command under a wall-clock bound: the whole call, so a hang in key exchange or authentication ends
+# at the bound as surely as a silent link. Returns @{ Code; Output; Stdout }: Output is stdout then stderr, Stdout
+# the stdout alone. On expiry the process is killed and Code is 124 with Output "<FilePath> did not finish within
+# <Seconds> s". $Stdin (at most 4000 bytes, so its write cannot block on a fresh pipe) is written and closed;
+# Windows PowerShell 5.1 has no ArgumentList, so each argument is quoted into one string here.
+function Invoke-SotWithin {
+    param(
+        [int]$Seconds,
+        [string]$FilePath,
+        [string[]]$Arguments = @(),
+        [string]$Stdin = ''
+    )
+    if ([System.Text.Encoding]::UTF8.GetByteCount($Stdin) -gt 4000) {
+        throw 'Invoke-SotWithin: stdin is over 4000 bytes'
+    }
+    $quoted = foreach ($a in $Arguments) {
+        if ($a -ne '' -and $a -notmatch '[\s"]') { $a }
+        else { '"' + ($a -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
+    }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = ($quoted -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $out = $p.StandardOutput.ReadToEndAsync()
+    $err = $p.StandardError.ReadToEndAsync()
+    try {
+        if ($Stdin) { $p.StandardInput.Write($Stdin) }
+        $p.StandardInput.Close()
+    } catch { }   # the process already ended: its exit code says why
+    if (-not $p.WaitForExit($Seconds * 1000)) {
+        try { $p.Kill() } catch { }
+        [void]$p.WaitForExit(5000)
+        return @{ Code = 124; Output = "$FilePath did not finish within $Seconds s"; Stdout = '' }
+    }
+    $p.WaitForExit()   # flushes the two async reads
+    return @{ Code = $p.ExitCode; Output = ($out.Result + $err.Result); Stdout = $out.Result }
+}

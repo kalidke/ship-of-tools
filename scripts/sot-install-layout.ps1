@@ -208,7 +208,7 @@ function Initialize-InstallLayout {
                         Write-SupLog "install layout: tag $tag not in the local clone and -NoUpdate forbids fetching"
                     } else {
                         Write-SupLog "install layout: tag $tag not in the local clone - fetching tags"
-                        $fetchOut = git -C $repo fetch --tags --quiet 2>&1
+                        $fetchOut = git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 -C $repo fetch --tags --quiet 2>&1
                         foreach ($l in @($fetchOut)) { if ("$l".Trim()) { Write-SupLog "install layout: git fetch -> $l" } }
                     }
                 }

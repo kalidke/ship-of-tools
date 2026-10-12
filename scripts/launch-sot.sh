@@ -45,7 +45,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "${SOT_NO_UPDATE:-0}" != 1 ] && [ -z "${SOT_LAUNCH_REEXEC:-}" ] && [ -d "$REPO/.git" ]; then
     self_rel="scripts/launch-sot.sh"
     before="$(git -C "$REPO" rev-parse "HEAD:$self_rel" 2>/dev/null || true)"
-    if git -C "$REPO" pull --rebase --autostash >/dev/null 2>&1; then
+    if git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 -C "$REPO" pull --rebase --autostash >/dev/null 2>&1; then
         export SOT_LAUNCH_REBUILD=1   # pull ok -> the final exec builds once
         after="$(git -C "$REPO" rev-parse "HEAD:$self_rel" 2>/dev/null || true)"
         if [ -n "$after" ] && [ -n "$before" ] && [ "$after" != "$before" ]; then

@@ -300,7 +300,7 @@ function Invoke-SelfUpdatePrelude {
             $before = git -C $repo rev-parse "HEAD:$selfRel" 2>$null
             Set-LaunchStatus 'Checking for updates...'
             Write-SupLog 'self-update: git pull --rebase --autostash'
-            $pullOut = git -C $repo pull --rebase --autostash 2>&1
+            $pullOut = git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 -C $repo pull --rebase --autostash 2>&1
             Write-SupLog "self-update: git -> $($pullOut | Select-Object -Last 1)"
             if ($LASTEXITCODE -eq 0) {
                 $env:SOT_LAUNCH_REBUILD = '1'   # pull ok -> final invocation builds once
@@ -598,14 +598,13 @@ if (-not $token) { $token = [Environment]::GetEnvironmentVariable('SOT_TOKEN', '
 # nonfatal too now, exactly like
 # every other host -- see $defaultRemoteOk below).
 #
-# ssh options (codex follow-up, item 5, trimmed): BatchMode=yes (never
-# prompt for a password/passphrase -- that would hang, not fail, on a
-# misconfigured host) and ConnectionAttempts=1 (no silent retries) join
-# the existing ConnectTimeout=10 at every remote call site, default host
-# included. No separate per-host deadline machinery beyond that -- a wedged
-# remote command past the handshake is accepted as today's existing risk,
-# not one this slice takes on.
-$sshRemoteOpts = @('-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes', '-o', 'ConnectionAttempts=1')
+# ssh options: the tree's one set ($SotSshOpts, sot-hosts.ps1: BatchMode never
+# prompts, ConnectTimeout bounds the connect and the server's banner,
+# ServerAlive a network or sshd that stops answering) plus ConnectionAttempts=1
+# (no silent retries). The whole call runs under Invoke-SotWithin, so a hang
+# in key exchange or authentication ends at its bound too; the remote command
+# is bounded on the far side (systemd's start timeout, a 5 s socket loop).
+$sshRemoteOpts = $SotSshOpts + @('-o', 'ConnectionAttempts=1')
 
 function New-RemoteEnsureCommand {
     param(
@@ -621,11 +620,9 @@ function New-RemoteEnsureCommand {
     # daemon by path any more -- `systemctl --user start sotd` (report it
     # down if that fails), same as every shared-home lab box already runs
     # it. The remote socket is always QUERIED (`sotd session-socket-path
-    # sot`, on the remote's own PATH), never configured. Echoes stay
-    # paren-free AND semicolon-free - PS 5.1 hands this to ssh unquoted, so
-    # bash sees echo text bare: a ';' inside it splits the command and the
-    # tail runs as a bogus command whose stderr killed the whole launcher
-    # under EAP=Stop (the 2026-07-16 'force: command not found' hang).
+    # sot`, on the remote's own PATH), never configured. The
+    # text goes on stdin to `bash -s` (Invoke-SotWithin), never as an ssh
+    # argument, so no quoting rule of PowerShell 5.1 applies to it.
     $restartFlag = if ($Restart) { '1' } else { '0' }
     $cmd = @"
 export PATH="`$HOME/.local/share/sot/bin:`$HOME/.cargo/bin:`$HOME/.local/bin:`$PATH"
@@ -696,17 +693,13 @@ if ($backendHost) {
     # rev 2: default launches only check staleness / start-if-down (never restart a
     # running shared daemon); -RestartBackend forces `systemctl --user restart sotd`.
     Set-LaunchStatus $(if ($RestartBackend) { "Restarting backend on $backendHost..." } else { "Checking backend on $backendHost..." })
-    # Relax 'Stop' -> 'Continue' around native ssh (same reason as the git pull
-    # above): under 'Stop' + 2>&1 in PS 5.1, ANY remote stderr line throws and
-    # kills the launcher silently. Gate on $LASTEXITCODE below instead.
-    $savedEAP = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    $remoteStatus = ssh $sshRemoteOpts $backendHost $remoteCmd 2>&1
-    $remoteExit = $LASTEXITCODE
-    $ErrorActionPreference = $savedEAP
-    $remoteStatusText = ($remoteStatus | Out-String)
+    # 120 s: the far side's own bounds (systemd's 90 s start and the 5 s socket
+    # loop) plus the 10 s connect. A 124 is the helper's own expiry.
+    $remoteRun = Invoke-SotWithin 120 'ssh' ($sshRemoteOpts + @($backendHost, 'bash', '-s')) $remoteCmd
+    $remoteExit = $remoteRun.Code
+    $remoteStatusText = $remoteRun.Output
     if ($remoteExit -ne 0) {
-        Write-SupLog "default remote: '$backendHost' unreachable (ssh exit $remoteExit) - continuing without it"
+        Write-SupLog "default remote: '$backendHost' unreachable (ssh exit $remoteExit$(if ($remoteExit -eq 124) { ': ' + $remoteRun.Output })) - continuing without it"
     } elseif ($remoteStatusText -match 'socket MISSING') {
         Write-SupLog "default remote: '$backendHost' backend did not create its socket - continuing without it"
     } else {

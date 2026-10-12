@@ -192,6 +192,33 @@ try {
         foreach ($key in $savedSot.Keys) { [Environment]::SetEnvironmentVariable($key, $savedSot[$key], 'Process') }
     }
 
+    Write-Host "`n=== 5. the tag fetch carries the stall bound ===" -ForegroundColor Cyan
+    # A stand-in git.cmd first on PATH records its argv; a stand-in staged sotd.exe reports a version no clone has a
+    # tag for, so Initialize-InstallLayout fetches tags and stops at "tag unavailable".
+    $savedPath = $env:PATH
+    try {
+        $gitDir = Join-Path $root 'stub-git'
+        New-Item -ItemType Directory -Force -Path $gitDir | Out-Null
+        $gitLog = Join-Path $root 'git.log'
+        Set-Content -LiteralPath (Join-Path $gitDir 'git.cmd') -Value "@echo off`r`necho git %* >> `"$gitLog`"`r`nexit /b 0" -Encoding ascii
+        $env:PATH = "$gitDir;$env:PATH"
+        $prefixDir = Join-Path $root 'prefix5'
+        New-Item -ItemType Directory -Force -Path (Join-Path $prefixDir 'bin') | Out-Null
+        Add-Type -TypeDefinition 'public class W2Sotd { public static int Main(string[] args) { if (args.Length > 0 && args[0] == "--version") System.Console.WriteLine("sotd 9.9.9 (stand-in)"); return 0; } }' -OutputAssembly (Join-Path $prefixDir 'bin\sotd.exe') -OutputType ConsoleApplication
+        $repoCurrent = Join-Path $prefixDir 'repo\current'
+        $repo = Join-Path $root 'clone5'
+        New-Item -ItemType Directory -Force -Path (Join-Path $repo '.git') | Out-Null
+        $backendExe = ''
+        $NoUpdate = $false
+        function Set-LaunchStatus([string]$Text) { }
+        $script:launchNotices = New-Object 'System.Collections.Generic.List[string]'
+        Invoke-TrustFixture
+        $fetchLines = @(Get-Content -LiteralPath $gitLog -ErrorAction SilentlyContinue | Where-Object { $_ -match ' fetch ' })
+        Check '5: the layout fetched the tags' ($fetchLines.Count -eq 1) "fetch lines: $($fetchLines.Count)"
+        Check '5: the fetch carries the stall bound' (@($fetchLines | Where-Object { $_ -notmatch '-c http\.lowSpeedLimit=1000 -c http\.lowSpeedTime=60' }).Count -eq 0) "got: $($fetchLines -join '; ')"
+    } catch { Check '5: section ran' $false $_.Exception.Message }
+    finally { $env:PATH = $savedPath }
+
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
