@@ -251,3 +251,7 @@ targets of tracked links under a declared root; never anything inside a `.git`
 directory below the folder it is served from, never an untracked repo file
 outside the content root, never anything through an untracked link.
 Range, content types and the empty-file case are shared with the video server.
+
+## Amendment 2026-10-11: Quarto render diagnostics (QUARTO-ERROR)
+
+A failed `quarto.open` retains every stderr line containing `ERROR` together with the final ten stderr lines, in source order, with each occurrence included once. The Julia transport-file newline error also explains that Quarto before 1.9.38 can read the server's transport file before its line is written and recommends upgrading to 1.9.38 or later. The daemon attempts the render once; it does not retry this upstream race. The existing `quarto_render_failed` reply code and wire shape are unchanged. Handler stand-ins exercise the returned reply rather than scanning the implementation.

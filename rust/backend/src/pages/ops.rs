@@ -499,6 +499,28 @@ async fn run_quarto(
     }
 }
 
+fn quarto_render_error(execute: bool, stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    let lines: Vec<_> = stderr.lines().collect();
+    let tail_start = lines.len().saturating_sub(10);
+    let selected = lines
+        .iter()
+        .enumerate()
+        .filter(|(index, line)| *index >= tail_start || line.contains("ERROR"))
+        .map(|(_, line)| *line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut message = format!("quarto render failed (execute={execute})");
+    if !selected.trim().is_empty() {
+        message.push_str(":\n");
+        message.push_str(&selected);
+    }
+    if stderr.contains("Read invalid transport file that did not end with a newline") {
+        message.push_str("\nQuarto before 1.9.38 can read the Julia server's transport file before its line is written. Upgrade Quarto to 1.9.38 or later.");
+    }
+    message
+}
+
 /// `quarto.open` — render a Quarto/markdown doc to a self-contained HTML on
 /// the backend host (which has quarto + the RAM) and return the bytes, base64.
 /// `execute = false` (`o`) = `--no-execute`: fast, quarto-only, no code run.
@@ -561,26 +583,8 @@ pub async fn handle_quarto_open(
     };
     if !output.status.success() {
         let _ = tokio::fs::remove_file(&html_path).await;
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail = stderr
-            .lines()
-            .rev()
-            .take(10)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
         return err(
-            format!(
-                "quarto render failed (execute={}){}",
-                req.execute,
-                if tail.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!(":\n{tail}")
-                }
-            ),
+            quarto_render_error(req.execute, &output.stderr),
             "quarto_render_failed",
         );
     }
@@ -725,6 +729,10 @@ mod find_site_root_tests {
         let _ = std::fs::remove_dir_all(&ws);
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "ops_error_tests.rs"]
+mod error_tests;
 
 #[cfg(all(test, unix))]
 mod quarto_shutdown_tests {

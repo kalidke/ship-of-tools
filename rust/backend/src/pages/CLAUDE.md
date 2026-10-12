@@ -34,6 +34,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   inherited one overridden, and a refusal by the resolver fails the render (`run_quarto`), `--no-execute` or not,
   since quarto runs `QUARTO_JULIA` for an `engine: julia` document even then; so a host without julia renders no
   document through quarto. The site's `git` child runs through `Signal::spawn_std` (`run_git`).
+- A failed `quarto.open` keeps every stderr line containing `ERROR` and the final ten stderr lines, in source order, each occurrence once (`quarto_render_error`). The Julia transport-file newline error also names the premature read in Quarto before 1.9.38 and recommends upgrading to 1.9.38 or later. A render is attempted once.
 - A window's relay page proxy opens the same generated relay endpoint as its control connection, with a handoff hello and proxy.connect before the existing byte splice.
 - A remote window serves a page a daemon op returned (`docs.open`, `video.open`, `pluto.open`) on a loopback port the
   OS assigns it, one per host and daemon port, and opens the URL with only the port replaced; `proxy.connect` names the
@@ -65,7 +66,8 @@ Elsewhere: rust/frontend/src/pages.rs (the window's page proxy).
 - `http.rs`: the response code both loopback servers share: content types, single ranges, file bodies, plain replies.
 - `mod.rs`: declares the folder's modules, `start_page_servers`, which binds the listeners at boot, and `bind_page_listener`, the one bind of a page listener.
   It also holds `random_token`, the one minter of video tokens, site nonces and pool secrets.
-- `ops.rs`: video.open, docs.open (and its site-root walk), quarto.open.
+- `ops.rs`: video.open, docs.open (and its site-root walk), quarto.open and its render-failure text.
+- `ops_error_tests.rs`: Unix handler stand-ins proving ERROR retention, transport-race guidance, unrelated-error guidance and stderr boundaries.
 - `proxy.rs`: `proxy.connect`, the loopback allowlist, browser-port records.
 - `site/`: the static-site server (own page).
 - `video.rs`: the video listener, its token grants and the request handler.
