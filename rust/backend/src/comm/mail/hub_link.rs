@@ -169,8 +169,10 @@ where
     W: tokio::io::AsyncWrite + Unpin,
     R: tokio::io::AsyncBufRead + Unpin,
 {
-    // The hub never reaps a `cli` connection, so the link holds its own deadline (`SILENT_PINGS`); it ignores every
-    // event but one.
+    // The hub reaps the link after 90 s with no frame from it, as it reaps any connection that has pinged, and the
+    // link holds its own deadline for the hub (`SILENT_PINGS`); it ignores every event but one. The select polls the
+    // ping tick first, then the read, then the deadline, so a burst of broadcasts cannot starve the ping that keeps
+    // this link alive on the hub.
     let hello = HelloReq {
         name: Some(name.to_string()),
         ..HelloReq::this_process(format!("sotd-hub-link-{}", std::process::id()), "cli", Some(self_host.to_string()))
@@ -189,16 +191,16 @@ where
     loop {
         let frame = tokio::select! {
             biased;
-            (rx, got) = &mut read => {
-                read.set(read_owned(rx));
-                heard = tokio::time::Instant::now();
-                got.map_err(e(if answered { "read" } else { "hello reply" }))?.0
-            }
             _ = ping.tick(), if answered => {
                 let req = Frame::req(next_id, op::PING, serde_json::json!({}));
                 codec::write_frame(tx, &req, None).await.map_err(e("ping"))?;
                 next_id += 1;
                 continue;
+            }
+            (rx, got) = &mut read => {
+                read.set(read_owned(rx));
+                heard = tokio::time::Instant::now();
+                got.map_err(e(if answered { "read" } else { "hello reply" }))?.0
             }
             () = tokio::time::sleep_until(heard + silence) => return Err(silent()),
         };

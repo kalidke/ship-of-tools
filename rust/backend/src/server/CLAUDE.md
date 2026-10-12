@@ -63,8 +63,9 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   session pipe's inbound buffer holds both (`bind_session`, `PIPE_INBOUND_BYTES`), so a refusal, which the pipe holds
   open until the client has read it, never waits on a client still blocked in its own write. The cost: a client of this
   account may leave up to 2 MiB of nonpaged pool waiting per connection until the daemon reads it or closes the pipe.
-- Every control connection's `ping` is answered, whatever its role (`handle_ping`); a pinged `fe` or `bridge`
-  connection silent for 90 s is reaped (the reaper arm in `select_once`, `ping_read_deadline`).
+- Every control connection's `ping` is answered, whatever its role (`handle_ping`); a connection that has
+  pinged and is then silent for 90 s is reaped, whatever its role (the reaper arm in `select_once`,
+  `ping_read_deadline`).
 - An op runs off the connection's loop unless `INLINE` names it; an `INLINE` op waits only on memory, the local disk or
   a bounded capsule, registry, REPL or kernel step, or for `workspace.reauth` (sent only by a row's own client) on the
   row's start lock, so the loop answers a `ping` at once. The three `POOLED` ops hold one of 4 permits per connection,

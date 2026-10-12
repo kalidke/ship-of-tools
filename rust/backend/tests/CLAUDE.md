@@ -24,7 +24,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `keystroke_latency.rs`: rows and topology; ignored private-daemon keystroke timing and headless request-to-checkpoint switch timing, with explicit SSH prerequisites; T3 owns proof from the frontend attach request to the pane showing it
 - `live_socket.rs`: server; a second daemon on a live daemon's socket refuses and the first keeps answering
 - `old_watcher.rs`: server; a pre-0.6.6 wake watcher's hello and `pty.input` in its library's exact form: the hello is refused with `protocol_mismatch`, then the connection ends with no other byte
-- `ping_reaper.rs`: server; the reaper of half-open long-lived client roles, over the wire, and a `cli` connection's `ping` answered and never reaped
+- `ping_reaper.rs`: server; the reaper of half-open connections that have pinged, over the wire, including a `cli` connection (the hub link), answered and reaped when silent
 - `preview_order.rs`: server; a `preview.get` written behind a `preview.set_scale` on one connection carries the new scale
 - `relay_refresh.rs`: topology; `sotd topology refresh` on a scratch hub with a stand-in `systemctl`
 - `unit_pin.rs`: topology; `sotd topology pin` and `refresh` write host pins into a scratch systemd folder, real systemd

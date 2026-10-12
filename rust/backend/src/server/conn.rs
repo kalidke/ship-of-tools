@@ -39,7 +39,7 @@ impl Abandon for interprocess::local_socket::tokio::SendHalf {
 /// bound the connection is closed with nothing written.
 const ADMISSION_READ_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Read deadline for a connection whose declared role is `fe` or `bridge`
+/// Read deadline for a connection that has pinged
 /// (topology plan §F step 2, D10 — the half-open-roster fix). Since 0.4.0
 /// the daemon has had no keepalive, and `WRITE_TIMEOUT` above never fires
 /// for a tunnelled peer (its writes always drain into sshd's Unix-socket
@@ -48,8 +48,8 @@ const ADMISSION_READ_BOUND: std::time::Duration = std::time::Duration::from_secs
 /// as dead: drop it and reap it through the same `ClientGuard::drop` path
 /// as a clean exit (`clients.rs:329`). Three times the client-side `ping`
 /// interval (30s — the frontend transport): one missed tick is noise, three in a row is a dead peer.
-/// `cli`/`agent` (one-shot) connections never gate on this — see
-/// `is_long_lived_role` at its declaration site.
+/// A connection that never pings (a one-shot `cli` or `agent`, or a peer too
+/// old to ping) never gates on this.
 const PING_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// `SOT_TEST_PING_READ_DEADLINE_MS` overrides [`PING_READ_DEADLINE`] for
@@ -281,25 +281,22 @@ where
     tracing::debug!("connection ready");
 
 
-    // Half-open long-lived-role reaper (topology plan §F step 2). A
-    // tunnelled `fe`/`bridge` connection reaches this daemon as sshd's
-    // Unix-socket side, so `WRITE_TIMEOUT` above never fires for it — a
-    // half-open peer's death is otherwise noticed only when the OS-level
-    // TCP side gives up (15 min to 2 h). `is_long_lived_role` is true
-    // exactly when this connection's declared role is `fe`/`bridge`
-    // (`cli`/`agent`, one-shot roles, are never deadline-gated) — it is
-    // only ELIGIBILITY, not the gate itself.
+    // Half-open reaper (topology plan §F step 2). A tunnelled connection
+    // (a window, a bridge, a guest daemon's hub link) reaches this daemon
+    // as sshd's Unix-socket side, so `WRITE_TIMEOUT` above never fires for
+    // it — a half-open peer's death is otherwise noticed only when the
+    // OS-level TCP side gives up (15 min to 2 h).
     //
     // Opt-in by ping (manager compatibility fix, post-review): the gate is
     // `deadline_armed`, which flips true only on this connection's FIRST
-    // `ping` — never at hello. An `fe`/`bridge` peer too old to send ping
-    // (a frontend box or a comm bridge that hasn't converged from main
-    // yet) is eligible but never arms, so it keeps TODAY's behaviour
-    // exactly: never reaped by this path. Arming at hello instead would
-    // have dropped every such peer every 90s forever (endless reconnect
-    // churn, a message-loss window each cycle) — the stale-roster defect
-    // this step fixes then persists only for clients too old to ping,
-    // which is correct and self-healing as they upgrade.
+    // `ping`, whatever its role — never at hello. A peer too old to send
+    // ping (a frontend box or a comm bridge that hasn't converged from main
+    // yet) never arms, so it keeps TODAY's behaviour exactly: never reaped
+    // by this path. Arming at hello instead would have dropped every such
+    // peer every 90s forever (endless reconnect churn, a message-loss
+    // window each cycle) — the stale-roster defect this step fixes then
+    // persists only for clients too old to ping, which is correct and
+    // self-healing as they upgrade.
     //
     // Once armed, `read_deadline` is a fixed point in time — bumped
     // forward to `now + ping_read_deadline()` every time ANY frame is read
@@ -419,7 +416,6 @@ where
     // `filer` (ADR 0048), read from the hello and never from a request body, which is what makes a receipt
     // unforgeable (`None` for a connection that declared no name, which therefore cannot vouch for anything).
     let client_guard = Some(register_hello(&hello, &clients));
-    let is_long_lived_role = matches!(hello.hello().role.as_str(), "fe" | "bridge");
     let shared = Shared {
         session: session.clone(), mathjax, pluto, workspaces: workspaces.clone(), ws_events_tx, agent_events_tx,
         agent_receipt_tx, fe_command_tx, clients: clients.clone(), topology_store, topo_changed_tx, leases,
@@ -477,7 +473,7 @@ where
         }
 
         dispatch(
-            tx, frame, &shared, is_long_lived_role, &mut deadline_armed, &mut read_deadline, &mut active_workspace,
+            tx, frame, &shared, &mut deadline_armed, &mut read_deadline, &mut active_workspace,
             &mut monitor_subscribed, &mut jobs, &job_sem, &out_tx,
         )
         .await?;
@@ -564,15 +560,14 @@ where
             }
             Ok(Woke::Again)
         }
-        // Topology plan §F step 2: an ARMED `fe`/`bridge` connection
-        // (has sent at least one `ping`) that has since sent no
+        // Topology plan §F step 2: an ARMED connection (has sent at
+        // least one `ping`, whatever its role) that has since sent no
         // frame at all within `ping_read_deadline()` is dead — reap
-        // it exactly like a clean EOF. Guarded on `deadline_armed`,
-        // not merely `is_long_lived_role`, so this arm stays inert
-        // — never even polled — before hello, for `cli`/`agent`
-        // connections, AND for an `fe`/`bridge` peer that has never
-        // sent a `ping` at all (opt-in by ping: see the arming
-        // comment above `is_long_lived_role`'s declaration).
+        // it exactly like a clean EOF. Guarded on `deadline_armed`, so
+        // this arm stays inert — never even polled — before hello and
+        // for a peer that has never sent a `ping` at all (opt-in by
+        // ping: see the arming comment where `deadline_armed` is
+        // declared).
         () = tokio::time::sleep_until(read_deadline), if deadline_armed => {
             tracing::info!("no frame within the read deadline; reaping half-open connection");
             Ok(Woke::Reap)

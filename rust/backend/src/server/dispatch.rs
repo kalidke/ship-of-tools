@@ -104,7 +104,7 @@ pub(super) struct Shared {
 /// Runs one request frame where [`place`] puts it: an inline op here, before the loop reads again, and any other as a
 /// job whose reply returns over `out_tx`.
 pub(super) async fn dispatch<W>(
-    tx: &mut W, frame: Frame, shared: &Shared, is_long_lived_role: bool, deadline_armed: &mut bool,
+    tx: &mut W, frame: Frame, shared: &Shared, deadline_armed: &mut bool,
     read_deadline: &mut tokio::time::Instant, active_workspace: &mut Option<String>, monitor_subscribed: &mut bool,
     jobs: &mut JoinSet<()>, job_sem: &Arc<Semaphore>, out_tx: &OutTx,
 ) -> Result<()>
@@ -119,13 +119,12 @@ where
     let served = match frame.op.as_str() {
         op::PING => {
             // Opt-in arming (manager compatibility fix, post-review):
-            // this connection's FIRST `ping`, and only if hello already
-            // marked it role-eligible, arms the read-deadline reaper --
-            // never hello itself. A peer that never pings (an old
-            // frontend or comm bridge not yet converged from main)
-            // stays permanently unarmed and keeps today's behaviour:
+            // this connection's FIRST `ping`, whatever its role, arms the
+            // read-deadline reaper -- never hello itself. A peer that never
+            // pings (an old frontend or comm bridge not yet converged from
+            // main) stays permanently unarmed and keeps today's behaviour:
             // never reaped by this path.
-            if is_long_lived_role && !*deadline_armed {
+            if !*deadline_armed {
                 *deadline_armed = true;
                 *read_deadline = tokio::time::Instant::now() + ping_read_deadline();
             }

@@ -1,5 +1,5 @@
 #![cfg(any(windows, target_os = "linux"))]
-//! Half-open long-lived-role reaper (topology plan §F step 2): server-level
+//! Half-open reaper (topology plan §F step 2): server-level
 //! regression tests through the REAL wire protocol against a real `sotd`,
 //! same posture as `active_frontend.rs` (no protocol doubles, no mocked
 //! `handle_connection`) -- `Env`/`connect_and_hello`/`call`/`client_row` are this file's own copies;
@@ -22,7 +22,7 @@
 //!   the above.
 //!
 //! A fifth case pins the hub link's premise: a `cli` connection's `ping` is
-//! answered and never arms the reaper.
+//! answered, and once it has pinged the hub reaps it when it falls silent.
 
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
@@ -349,27 +349,26 @@ async fn pinging_fe_connection_stays_in_the_roster() {
         .expect("pinging connection exchange did not finish within BOUND");
 }
 
-/// The hub link says hello as `cli`, pings every 30 s, and ends a hub silent
-/// for 90 s, so a real hub must answer a `cli` connection's `ping`, and the
-/// ping must arm nothing. A daemon that answered `ping` only for `fe` and
-/// `bridge` fails the first assertion; one that armed the reaper for every
-/// role fails the second `call`.
+/// The hub link says hello as `cli` and pings every 30 s; once it has pinged, a hub reaps it when it falls silent,
+/// as it reaps any connection that has pinged.
 #[tokio::test]
-async fn a_cli_connection_is_answered_its_ping_and_never_reaped() {
-    let env = Env::spawn("cliping", Some(TEST_DEADLINE_MS));
-    let (mut conn, id) = connect_and_hello(&env.socket_path, "cliping-cli", "cli").await;
-
+async fn a_cli_connection_that_pings_is_answered_and_reaped_when_silent() {
+    let env = Env::spawn("clireap", Some(TEST_DEADLINE_MS));
+    let (mut conn, id) = connect_and_hello(&env.socket_path, "clireap-cli", "cli").await;
     let body = async {
         let first = call(&mut conn, id, op::PING, serde_json::json!({})).await;
         assert_eq!(first.get("ok").and_then(|v| v.as_bool()), Some(true), "a cli ping was not answered: {first}");
-        // Silent for three deadlines: a pinged `fe` connection is reaped within one.
-        tokio::time::sleep(Duration::from_millis(TEST_DEADLINE_MS * 3)).await;
-        let again = call(&mut conn, id + 1, op::PING, serde_json::json!({})).await;
-        assert_eq!(again.get("ok").and_then(|v| v.as_bool()), Some(true), "the cli connection was reaped: {again}");
+        loop {
+            match codec::read_frame(&mut conn).await {
+                Err(_) => break,
+                Ok((f, _)) if f.kind == Kind::Evt => continue,
+                Ok(other) => panic!("expected the daemon to close the silent cli connection, got: {other:?}"),
+            }
+        }
+        wait_until_absent(&env.socket_path, "clireap-cli", Duration::from_secs(5)).await;
     };
-    tokio::time::timeout(BOUND, body)
-        .await
-        .expect("the cli connection's pings were not answered within BOUND");
+    tokio::time::timeout(BOUND, body).await.expect("the cli connection was not reaped within BOUND");
+    println!("cli-reap: the silent cli connection was reaped");
 }
 
 /// Regression guard: a clean exit (the client closes its own socket) must
