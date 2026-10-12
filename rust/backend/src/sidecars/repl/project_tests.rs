@@ -408,7 +408,7 @@ fn os_argv(pid: u32) -> Option<Vec<String>> {
         ),
     ]);
     let out = crate::lifecycle::child_signal::process()
-        .output(&mut command)
+        .output(&mut command, Duration::from_secs(30))
         .expect("read the child's command line");
     assert!(out.status.success(), "the command-line reader: the CIM query failed");
     let text = String::from_utf8_lossy(&out.stdout);
@@ -527,7 +527,7 @@ fn read_tree(root: u32) -> Vec<u32> {
     let mut command = std::process::Command::new("ps");
     command.args(["-A", "-o", "pid=,pgid="]);
     let out = crate::lifecycle::child_signal::process()
-        .output(&mut command)
+        .output(&mut command, Duration::from_secs(30))
         .expect("read the process table");
     assert!(out.status.success(), "the tree reader: ps failed");
     String::from_utf8_lossy(&out.stdout)
@@ -549,7 +549,7 @@ fn read_tree(root: u32) -> Vec<u32> {
         "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }",
     ]);
     let out = crate::lifecycle::child_signal::process()
-        .output(&mut command)
+        .output(&mut command, Duration::from_secs(30))
         .expect("read the process table");
     assert!(out.status.success(), "the tree reader: the CIM query failed");
     let edges: Vec<(u32, u32)> = String::from_utf8_lossy(&out.stdout)

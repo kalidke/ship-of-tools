@@ -815,7 +815,7 @@ exit(0)
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod open_bound_tests {
     use super::Pluto;
     use crate::sidecars::contract_tests::{isolated, pin_env, within};
@@ -823,7 +823,6 @@ mod open_bound_tests {
 
     /// An open the server never answers is an error at `PLUTO_OPEN_BOUND`, and its server is ended: a second open
     /// starts a second one. The stand-in for julia says READY, then reads its lines and answers none.
-    #[cfg(unix)]
     #[tokio::test]
     async fn an_open_the_child_never_answers_fails_at_its_bound() {
         if !isolated("sidecars::pluto::open_bound_tests::an_open_the_child_never_answers_fails_at_its_bound", Duration::from_secs(150)) {
