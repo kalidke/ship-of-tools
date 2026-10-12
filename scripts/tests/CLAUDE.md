@@ -6,19 +6,19 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 ## Files
 - `lib-test-body.sh`: the shared completion verdict for one selected Rust test; ordered, unambiguous capture closure precedes the outer result; missing, ignored, mismatched and failed bodies cannot pass.
 - `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners, including combined captured-summary/truncation and scratch-path controls; accepts a compiled fixture executable by absolute path and validates its shell scratch root before cleanup.
-- `run-filtered-tests.sh`: shared runner for a filtered libtest group. A usage error exits 2. It tees the command's
-  output to a fresh log, creating the log's folder; a failed command or capture exits 1 with `command or capture
-  failed`. Otherwise it accepts only a log holding exactly one libtest summary line that starts with the expected
-  positive pass count, zero failed and zero ignored, and on rejection prints each summary line it found (or `no summary
-  line`). Used by the `rust.yml` steps "Test native harness helpers" (job `checks-linux`) and "Test the ignored
-  containment tests" (job `windows-ignored-containment`).
+- `run-filtered-tests.sh`: shared runner for a filtered libtest group. A usage error exits 2. It makes the log's
+  folder before it runs the command, and exits 1 if it cannot; it tees the command's output to a fresh log, and a
+  failed command or capture exits 1 with `command or capture failed`. Otherwise it accepts only a log holding exactly
+  one libtest summary line that starts with the expected positive pass count, zero failed and zero ignored, and on
+  rejection prints each summary line it found (or `no summary line`). Used by the `rust.yml` steps "Test native
+  harness helpers" (job `checks-linux`) and "Test the ignored containment tests" (job `windows-ignored-containment`).
 - `test-filtered-tests.sh`: real-libtest controls of the group runner and its mutation table. Each case pins its log's
   summary lines, the fixture bodies that ran, the runner's exit status and every line the runner prints, and a failing
-  case prints its saved status, output and libtest log. `MUTANTS` removes each of the runner's checks by one exact
-  edit of a temporary copy; the suite fails if the case a row names is not the first to fail on that copy, or if the
-  runner's code outside the rows' edit texts differs from `PLAIN`. It receives the existing compiled fixture by
-  absolute path and uses its own temporary roots. Runs in the `rust.yml` step "Test selected Rust bodies" (job
-  `checks-linux`).
+  case prints its saved status, output and libtest log. `MUTANTS` is one table in the runner's order: its rows remove
+  each of the runner's checks by one exact edit of a temporary copy, and its strings are the code no row's edit text
+  holds. The suite fails if the case a row names is not the first to fail on that copy, or if the runner does not read
+  as the table. It receives the existing compiled fixture by absolute path and uses its own temporary roots. Runs in
+  the `rust.yml` step "Test selected Rust bodies" (job `checks-linux`).
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
@@ -187,10 +187,14 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
 
 ## Rules
 - Each check run-filtered-tests.sh makes is a row of test-filtered-tests.sh's `MUTANTS`, with the case that fails
-  first without it. Every row's edit text occurs once in the runner, and the runner's code outside them all is
-  `PLAIN`, in order (comment lines and spacing aside), so a change to the runner's code fails the suite until the
-  table changes with it: a new check adds its row and, if no case fails without it, its case. Deleting a row whose
-  text lies inside another row's leaves no code uncovered, so review must catch that.
+  first without it. `MUTANTS` is one table in the runner's order: each row where its edit text starts, and each
+  fragment of code no row's text holds as a string. The suite fails unless each row's text occurs once and the runner,
+  its comment lines and the spaces and tabs around each fragment aside, reads as exactly that table. So code added
+  to, removed from, moved within or changed in the runner fails the suite until the table changes with it; a new
+  check adds its row and, if no case fails without it, its case. Review still catches what the suite cannot see: a
+  deleted row whose text lies inside another row's, a check's code written into a fragment instead of a row, a
+  deleted case that is no row's first killer (`ignored`), tee-status's fail-open form (a stale log tee cannot open;
+  root can open any file, so no case can pin it) and blanks at a fragment's edge.
 - A `rust.yml` step that filters libtest bodies to run them as tests runs through run-filtered-tests.sh with its verified
   positive count ("Test native harness helpers" in `checks-linux`, "Test the ignored containment tests" in
   `windows-ignored-containment`), so a filter that runs no body, or another number, fails. Two filter steps keep cargo's

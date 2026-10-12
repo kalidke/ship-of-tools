@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -50,9 +51,9 @@ class Case:
     ran: list  # the fixture bodies that wrote their witness
     status: int  # the runner's exit status
     said: list  # every line the runner prints itself, in order, each by its prefix after "filtered-tests: "
-    count: object = 1
+    count: object = 1  # the runner's first argument; None runs the runner with no arguments
     exact: bool = True
-    log: str = 'fresh'  # fresh, new-folder, stale (holds an earlier summary) or directory
+    log: str = 'fresh'  # fresh, new-folder, under-file (its folder is a file), stale (holds a summary) or directory
     wrap: tuple = ()
     panic: bool = False
     separator: bool = True
@@ -76,10 +77,15 @@ def run(case, judged, save):
         (root / 'iso-sh-fixture-request').touch()
         if case.panic:
             (root / 'iso-sh-panic-request').touch()
-        log = root if case.log == 'directory' else root / ('new' if case.log == 'new-folder' else '.') / 'libtest.log'
+        folder = root / {'new-folder': 'new', 'under-file': 'file'}.get(case.log, '.')
+        log = root if case.log == 'directory' else folder / 'libtest.log'
+        if case.log == 'under-file':
+            folder.touch()  # mkdir -p fails on a file, whoever runs it
         if case.log == 'stale':
             log.write_text('test result: ok. 9 passed; 0 failed; 0 ignored; left by an earlier run\n')
-        argv = ['bash', str(judged), str(case.count), str(log)] + (['--'] if case.separator else []) + [*case.command]
+        argv = ['bash', str(judged)]
+        if case.count is not None:
+            argv += [str(case.count), str(log)] + (['--'] if case.separator else []) + [*case.command]
         if case.selection is not None:
             argv += [*case.wrap, str(fixture), *case.selection] + (['--exact'] if case.exact else []) + flags
         try:
@@ -112,6 +118,11 @@ def holds(case, judged, save=False):
     check(not case.panic or 'requested fixture panic' in raw, 'missing the failed body cause')
 
 
+def names(entries):
+    """The table's entries by name: a row's is its first field, a fragment's is its text."""
+    return [entry if isinstance(entry, str) else entry[0] for entry in entries]
+
+
 ONE = 'ok. 1 passed; 0 failed; 0 ignored;'
 cases = [
     Case('absent', ['absent'], ['ok. 0 passed; 0 failed; 0 ignored;'], [], 1,
@@ -138,63 +149,77 @@ cases = [
     Case('nul-byte', ['ordinary'], [ONE], ['ordinary'], 0, ['expected=1 ok=true'], wrap=NUL_FIRST),
     Case('stale-log', ['ordinary'], [ONE], ['ordinary'], 0, ['expected=1 ok=true'], log='stale'),
     Case('capture-error', ['ordinary'], [], ['ordinary'], 1, [FAILED], log='directory'),
+    Case('folder-error', ['ordinary'], [], [], 1, [], log='under-file'),
     Case('invalid-count', ['ordinary'], [], [], 2, [USAGE], count=0),
     Case('count-suffix', ['ordinary'], [], [], 2, [USAGE], count='1x'),
     Case('count-prefix', ['ordinary'], [], [], 2, [USAGE], count='x1'),
     Case('no-separator', ['ordinary'], [], [], 2, [USAGE], separator=False),
     Case('no-command', None, [], [], 2, [USAGE]),
     Case('bare-command', None, [], [], 1, [want(1), 'found: no summary line'], command=('true',)),
+    Case('no-arguments', None, [], [], 2, [USAGE], count=None),
 ]
 
-# Each mutant removes one check from the runner by one exact edit; the case named last is the first to fail on it.
-# Every row's edit text occurs once in the runner, and the runner's code outside them all is PLAIN, in order (comment
-# lines and spacing aside), so a change to the runner's code fails the suite until this table changes with it.
-# Not checks, so no rows of their own, though inside rows' texts: 2>&1, as libtest prints its summary on stdout; set -e
-# and -u, as a failed mkdir fails tee next and the arguments are counted before use; each line's stream and tee's copy
-# to stdout, which only a reader sees.
-PLAIN = ['if [[', ']]; then', 'fi', 'filtered_count=$1', 'filtered_log=$2', 'shift 3', 'filtered_summary=$(',
-         '"$filtered_log"', '$filtered_summary !=', ']]; then']
+# One table in the runner's order. A string is a fragment of the runner's code that no row's edit text holds; a row,
+# placed where its edit text starts (rows that start together, in any order), removes one check by one exact edit, and
+# the case it names is the first to fail on that edit. Each row's text occurs once, and the runner, its comment lines
+# and the spaces and tabs around each fragment aside, reads as exactly this table, so code added to, removed from,
+# moved within or changed in the runner fails the suite until the table changes with it. A deleted row whose text
+# lies inside another row's goes unseen.
+# Not checks, so no rows of their own, though inside rows' texts: 2>&1, as libtest prints its summary on stdout; set -u,
+# as line 3 counts the arguments before it reads one; each line's stream and tee's copy to stdout, which only a reader
+# sees.
 WANT_LINE = ('    printf \'filtered-tests: want exactly one summary line, starting "test result: ok. %s passed; '
              '0 failed; 0 ignored;"\\n\' \\\n        "$filtered_count" >&2\n')
 FOUND_LINE = '    sed \'s/^/filtered-tests: found: /\' <<< "${filtered_summary:-no summary line}" >&2\n'
 RECEIPT = 'printf \'filtered-tests: expected=%s ok=true\\n\' "$filtered_count"\n'
 MUTANTS = [
+    ('pipefail', 'set -euo pipefail', 'set -eu', 'fail-after-ok'),
+    ('errexit', 'set -euo pipefail', 'set -uo pipefail', 'folder-error'),
+    'if [[',
+    ('argument-order', '$# -lt 4 || ! $1 =~ ^[1-9][0-9]*$ || ', '! $1 =~ ^[1-9][0-9]*$ || $# -lt 4 || ',
+     'no-arguments'),
     ('arguments', '$# -lt 4 || ', '', 'no-command'),
     ('argument-boundary', '$# -lt 4', '$# -le 4', 'bare-command'),
     ('positive-count', '! $1 =~ ^[1-9][0-9]*$ || ', '', 'invalid-count'),
     ('count-start', '^[1-9][0-9]*$', '[1-9][0-9]*$', 'count-prefix'),
     ('count-end', '^[1-9][0-9]*$', '^[1-9][0-9]*', 'count-suffix'),
     ('separator', ' || $3 != --', '', 'no-separator'),
-    ('pipefail', 'set -euo pipefail', 'set -eu', 'fail-after-ok'),
+    ']]; then',
+    ('usage-line', "    echo 'filtered-tests: expected positive count, log, -- and command' >&2\n", '',
+     'invalid-count'),
+    ('usage-exit', '    exit 2\n', '    exit 1\n', 'invalid-count'),
+    'fi', 'filtered_count=$1', 'filtered_log=$2', 'shift 3',
+    ('log-folder', 'mkdir -p -- "$(dirname -- "$filtered_log")"\n', '', 'ordinary'),
     ('capture-status', 'if ! "$@" 2>&1 | tee "$filtered_log"; then',
      'if ! { "$@" 2>&1 | tee "$filtered_log"; true; }; then', 'fail-after-ok'),
     ('tee-status', '| tee "$filtered_log"; then', '| { tee "$filtered_log" || true; }; then', 'capture-error'),
     ('fresh-log', '| tee "$filtered_log"', '| tee -a "$filtered_log"', 'stale-log'),
-    ('log-folder', 'mkdir -p -- "$(dirname -- "$filtered_log")"\n', '', 'ordinary'),
-    ('line-start', "grep -a '^test result: '", "grep -a 'test result: '", 'mid-line'),
-    ('no-match', ' || true)', ')', 'no-summary'),
-    ('one-summary', "$filtered_summary == *$'\\n'* ||\n    ", '', 'misleading'),
-    ('pass-count', 'ok. $filtered_count passed;', 'ok. "*" passed;', 'absent'),
-    ('no-failure', '"test result: ok. $filtered_count passed; 0 failed;',
-     '"test result: "*" $filtered_count passed; "*" failed;', 'hidden-failure'),
-    ('zero-ignored', ' 0 failed; 0 ignored;"*', ' 0 failed;"*', 'ignored-beside'),
-    ('empty-summary', 'if [[ $filtered_summary ==', 'if [[ -n $filtered_summary ]] && [[ $filtered_summary ==',
-     'no-summary'),
-    ('empty-report', '${filtered_summary:-no summary line}', '${filtered_summary}', 'no-summary'),
-    ('nul-byte', 'grep -a ', 'grep ', 'nul-byte'),
-    ('usage-line', "    echo 'filtered-tests: expected positive count, log, -- and command' >&2\n", '',
-     'invalid-count'),
-    ('usage-exit', '    exit 2\n', '    exit 1\n', 'invalid-count'),
     ('capture-line', "    echo 'filtered-tests: command or capture failed' >&2\n", '', 'fail-after-ok'),
     ('capture-exit', '    exit 1\nfi\n#', '    exit 0\nfi\n#', 'fail-after-ok'),
+    'filtered_summary=$(',
+    ('line-start', "grep -a '^test result: '", "grep -a 'test result: '", 'mid-line'),
+    ('nul-byte', 'grep -a ', 'grep ', 'nul-byte'),
+    '"$filtered_log"',
+    ('no-match', ' || true)', ')', 'no-summary'),
+    ('empty-summary', 'if [[ $filtered_summary ==', 'if [[ -n $filtered_summary ]] && [[ $filtered_summary ==',
+     'no-summary'),
+    ('one-summary', "$filtered_summary == *$'\\n'* ||\n    ", '', 'misleading'),
+    '$filtered_summary !=',
+    ('no-failure', '"test result: ok. $filtered_count passed; 0 failed;',
+     '"test result: "*" $filtered_count passed; "*" failed;', 'hidden-failure'),
+    ('pass-count', 'ok. $filtered_count passed;', 'ok. "*" passed;', 'absent'),
+    ('zero-ignored', ' 0 failed; 0 ignored;"*', ' 0 failed;"*', 'ignored-beside'),
+    ']]; then',
     ('want-line', WANT_LINE, '', 'absent'),
     ('want-count', '        "$filtered_count" >&2\n', '        1 >&2\n', 'wrong-count'),
     ('found-lines', FOUND_LINE, '', 'absent'),
+    ('empty-report', '${filtered_summary:-no summary line}', '${filtered_summary}', 'no-summary'),
     ('reject-exit', '    exit 1\nfi\nprintf', '    exit 0\nfi\nprintf', 'absent'),
     ('found-on-accept', RECEIPT, FOUND_LINE.strip() + '\n' + RECEIPT, 'ordinary'),
     ('receipt', RECEIPT, '', 'ordinary'),
     ('receipt-count', 'ok=true\\n\' "$filtered_count"', 'ok=true\\n\' 1', 'group'),
 ]
+ROWS = [entry for entry in MUTANTS if isinstance(entry, tuple)]
 
 name = 'setup'
 try:
@@ -205,19 +230,25 @@ try:
     print(f'filtered-count completed_cases={len(cases)} ok=true', flush=True)
     evidence.clear()
     source = runner.read_text()
-    code = list(source)  # the runner with every row's edit text blanked, its newlines kept
-    for mutant, old, new, killer in MUTANTS:
-        name = f'mutant {mutant}'
-        check(source.count(old) == 1, f'its edit text occurs {source.count(old)} times in the runner')
-        start = source.index(old)
-        code[start:start + len(old)] = [c if c == '\n' else '\0' for c in old]
-    name = 'plain'
-    plain = [part.strip() for line, left in zip(source.split('\n'), ''.join(code).split('\n'))
-             if not line.lstrip().startswith('#') for part in left.split('\0') if part.strip()]
-    check(plain == PLAIN, f'the runner code no row edits is {plain}, want PLAIN {PLAIN}')
-    print(f'filtered-count plain={len(PLAIN)} ok=true', flush=True)
+    code = list(source)  # the runner with its comment lines and every row's edit text blanked, its newlines kept
+    for comment in re.finditer('(?m)^[ \t]*#.*', source):
+        code[comment.start():comment.end()] = '\0' * len(comment.group())
+    found = []  # (offset, entry): each row where its edit text starts, each fragment of code left where it starts
+    for row in ROWS:
+        name = f'mutant {row[0]}'
+        check(source.count(row[1]) == 1, f'its edit text occurs {source.count(row[1])} times in the runner')
+        start = source.index(row[1])
+        code[start:start + len(row[1])] = [c if c == '\n' else '\0' for c in row[1]]
+        found.append((start, row))
+    found += [(piece.start(), piece.group().strip(' \t')) for piece in re.finditer('[^\0\n]+', ''.join(code))
+              if piece.group().strip(' \t')]
+    name = 'order'
+    order = [entry for _, entry in sorted(found, key=lambda item: item[0])]
+    check(order == MUTANTS, f'the runner reads {names(order)}, the table {names(MUTANTS)}')
+    print(f'filtered-count order={len(MUTANTS)} ok=true', flush=True)
     with tempfile.TemporaryDirectory(prefix='filtered-count-mutants.', dir=output) as temporary:
-        for mutant, old, new, killer in MUTANTS:
+        for mutant, old, new, killer in ROWS:
+            evidence.clear()
             name = f'mutant {mutant}'
             judged = Path(temporary) / f'{mutant}.sh'
             judged.write_text(source.replace(old, new))
@@ -230,7 +261,7 @@ try:
                     break
             check(first == killer, f'first failing case {first}, want {killer}')
             print(f'filtered-count mutant={mutant} killed_by={killer} ok=true', flush=True)
-    print(f'filtered-count mutants={len(MUTANTS)} ok=true', flush=True)
+    print(f'filtered-count mutants={len(ROWS)} ok=true', flush=True)
 except (AssertionError, OSError, UnicodeError) as error:
     print(f'filtered-count FAIL case={name}: {error}', file=sys.stderr)
     for suffix, saved in evidence.items():
