@@ -42,6 +42,9 @@
 #   SOT_GH_SCOPES       requested scopes (default: repo read:org gist workflow)
 #   GH_HOST             host (default github.com)
 set -euo pipefail
+# comm-lib, which every install of this script carries beside it (the comm install's bin folder, or stage-bin.sh's):
+# the command bound (sot_bounded) and the JSON reader that strips a Windows jq's carriage returns (sot_jq).
+. "$(dirname "${BASH_SOURCE[0]}")/comm-lib.sh" || { echo "sot-gh-auth: cannot read comm-lib.sh beside this script" >&2; exit 3; }
 
 usage() { sed -n '2,43p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
@@ -56,26 +59,26 @@ GH_CFG_DIR="${GH_CONFIG_DIR:-$HOME/.config/gh}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "sot-gh-auth: missing required tool: $1" >&2; exit 3; }; }
 
-# Every value this script reads out of JSON goes through here, because a native
-# (non-MSYS) jq on Windows opens stdout in text mode and rewrites each \n it
-# writes to \r\n: command substitution strips the final \n and leaves the
-# carriage return glued to the value. Each read below then breaks differently --
-# a CR in `device_code` is what curl sends, and GitHub rejects the exchange; a CR
-# in `interval`/`expires_in` fails the numeric test so a silent default replaces
-# the server's value; a CR in `error` makes every `case` arm miss, so an
-# authorization that is merely pending is reported as a fatal token error; and a
-# CR in the access token is stored in hosts.yml and then sent on every request.
-# This script deliberately sources nothing (it must run on a box with no comm
-# install), so the strip lives here rather than in comm-lib.sh. `pipefail` is on,
-# so jq's own failure still propagates.
-jqr() { jq -r "$@" | tr -d '\r'; }
-
 # Every curl call carries a bound: a connect past 15 s or a transfer under 1000 B/s for 60 s ends it with curl's own
 # error, which each call site reports. No total time limit: a slow transfer that keeps moving is not a hang.
 CURL_BOUND=(--connect-timeout 15 --speed-limit 1000 --speed-time 60)
 
+# Every gh call that reaches GitHub (all but `auth setup-git`, which writes git's config) runs under sot_bounded, so a
+# GitHub that stops answering ends it at GH_BOUND. gh_net names that expiry on the script's own stderr (fd 3, which a
+# call's own redirections leave alone) and returns the bound's status, 124.
+GH_BOUND=30
+exec 3>&2
+gh_net() {
+    local rc=0
+    sot_bounded "$GH_BOUND" gh "$@" 3>&- || rc=$?
+    case "$rc" in
+        124|137) echo "sot-gh-auth: gh $1 $2 did not finish within ${GH_BOUND}s (is ${HOST} reachable?)" >&3; return 124 ;;
+    esac
+    return "$rc"
+}
+
 # exit 0 iff gh has a valid LIVE token for HOST (gh auth status hits the API).
-already_authed() { gh auth status --hostname "$HOST" >/dev/null 2>&1; }
+already_authed() { gh_net auth status --hostname "$HOST" >/dev/null 2>&1; }
 
 # gh honors GH_TOKEN/GITHUB_TOKEN over hosts.yml — if one is set, re-auth is a
 # no-op (that env token is what's in effect, and gh auth status would falsely
@@ -96,16 +99,16 @@ request() {
         --data-urlencode "client_id=${CLIENT_ID}" \
         --data-urlencode "scope=${SCOPES}") \
         || { echo "sot-gh-auth: device-code request failed (network? host '${HOST}'?)" >&2; exit 5; }
-    err=$(printf '%s' "$resp" | jqr '.error // empty')
+    err=$(printf '%s' "$resp" | sot_jq -r '.error // empty')
     if [ -n "$err" ]; then
-        echo "sot-gh-auth: GitHub rejected the device-code request: $err — $(printf '%s' "$resp" | jqr '.error_description // ""')" >&2
+        echo "sot-gh-auth: GitHub rejected the device-code request: $err — $(printf '%s' "$resp" | sot_jq -r '.error_description // ""')" >&2
         exit 5
     fi
-    device_code=$(printf '%s' "$resp" | jqr '.device_code')
-    user_code=$(printf '%s' "$resp" | jqr '.user_code')
-    verify=$(printf '%s' "$resp" | jqr '.verification_uri')
-    interval=$(printf '%s' "$resp" | jqr '.interval')
-    expires=$(printf '%s' "$resp" | jqr '.expires_in')
+    device_code=$(printf '%s' "$resp" | sot_jq -r '.device_code')
+    user_code=$(printf '%s' "$resp" | sot_jq -r '.user_code')
+    verify=$(printf '%s' "$resp" | sot_jq -r '.verification_uri')
+    interval=$(printf '%s' "$resp" | sot_jq -r '.interval')
+    expires=$(printf '%s' "$resp" | sot_jq -r '.expires_in')
     # Persist for a later `poll`. The device_code is sensitive during its ~15min
     # window (it exchanges for the token once you authorize) — write it 0600.
     # NOTE: no cleanup trap here on purpose — the split flow needs this to survive
@@ -129,16 +132,16 @@ finish() {
     # STDIN, never argv. --insecure-storage forces hosts.yml (shared-HOME cluster
     # coverage) instead of an OS keyring.
     # Stripped again on the way out, against the same route as the device
-    # code -- a later read that bypasses `jqr`. Here the cost of missing it is
+    # code -- a later read that bypasses `sot_jq`. Here the cost of missing it is
     # highest: a CR stored in hosts.yml is sent on every request afterwards.
-    printf '%s' "$access" | tr -d '\r' | gh auth login --hostname "$HOST" --git-protocol https \
+    printf '%s' "$access" | tr -d '\r' | gh_net auth login --hostname "$HOST" --git-protocol https \
         --with-token --insecure-storage \
-        || { echo "sot-gh-auth: gh rejected the token" >&2; exit 8; }
+        || { [ $? -eq 124 ] || echo "sot-gh-auth: gh rejected the token" >&2; exit 8; }
     gh auth setup-git --hostname "$HOST" 2>/dev/null || true
     chmod 600 "${GH_CFG_DIR}/hosts.yml" 2>/dev/null || true
-    who=$(gh api user -q .login 2>/dev/null || echo '?')
+    who=$(gh_net api user -q .login 2>/dev/null || echo '?')
     echo "sot-gh-auth: ✓ authenticated as ${who} on ${HOST}."
-    gh auth status --hostname "$HOST" 2>&1 || true   # confirm account + scopes
+    gh_net auth status --hostname "$HOST" 2>&1 || true   # confirm account + scopes
     echo "  token stored 0600 in ${GH_CFG_DIR}/hosts.yml — shared Linux HOME covers the NFS"
     echo "  shared-home multi-host setup; the Windows FE auths separately."
     echo "  revoke: gh auth logout -h ${HOST}  +  revoke 'GitHub CLI' at https://github.com/settings/connections"
@@ -149,16 +152,16 @@ poll() {
     [ -f "$STATE" ] || { echo "sot-gh-auth: no pending request — run 'sot-gh-auth.sh request' first" >&2; exit 6; }
     # dcfile is not `local`: the EXIT trap below fires after poll() has returned.
     local device_code interval expires waited=0 tok access err
-    device_code=$(jqr '.device_code' "$STATE")
-    interval=$(jqr '.interval' "$STATE"); [ "$interval" -ge 1 ] 2>/dev/null || interval=5
-    expires=$(jqr '.expires_in' "$STATE"); [ "$expires" -ge 1 ] 2>/dev/null || expires=899
+    device_code=$(sot_jq -r '.device_code' "$STATE")
+    interval=$(sot_jq -r '.interval' "$STATE"); [ "$interval" -ge 1 ] 2>/dev/null || interval=5
+    expires=$(sot_jq -r '.expires_in' "$STATE"); [ "$expires" -ge 1 ] 2>/dev/null || expires=899
     # device_code -> 0600 temp file so it is passed to curl via --data-urlencode
     # name@file (off argv, never in /proc/PID/cmdline). Trap removes both the temp
     # and the state file on ANY exit (success, error, or abort) — poll owns them.
     dcfile=$(mktemp "${TMPDIR:-/tmp}/sot-gh-dc.XXXXXX")
     chmod 600 "$dcfile"
     # Stripped again on the way out. The route this defends is a read added
-    # later that calls `jq -r` directly instead of `jqr`: the value would be
+    # later that calls `jq -r` directly instead of `sot_jq`: the value would be
     # dirty and curl would SEND the CR, which is the failure GitHub rejects.
     # This line is what makes that a no-op rather than a broken exchange.
     printf '%s' "$device_code" | tr -d '\r' > "$dcfile"
@@ -173,8 +176,8 @@ poll() {
             --data-urlencode "client_id=${CLIENT_ID}" \
             --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:device_code") \
             || { echo "sot-gh-auth: token-poll network error; retrying" >&2; continue; }
-        access=$(printf '%s' "$tok" | jqr '.access_token // empty')
-        err=$(printf '%s' "$tok" | jqr '.error // empty')
+        access=$(printf '%s' "$tok" | sot_jq -r '.access_token // empty')
+        err=$(printf '%s' "$tok" | sot_jq -r '.error // empty')
         if [ -n "$access" ]; then finish "$access"; return 0; fi
         case "$err" in
             authorization_pending) : ;;                       # not yet — keep waiting
@@ -182,7 +185,7 @@ poll() {
             expired_token) echo "sot-gh-auth: the code expired before you authorized — re-run for a fresh one." >&2; exit 7 ;;
             access_denied) echo "sot-gh-auth: authorization was denied." >&2; exit 7 ;;
             "")            echo "sot-gh-auth: unexpected empty token response; retrying" >&2 ;;
-            *)             echo "sot-gh-auth: token error: $err — $(printf '%s' "$tok" | jqr '.error_description // ""')" >&2; exit 7 ;;
+            *)             echo "sot-gh-auth: token error: $err — $(printf '%s' "$tok" | sot_jq -r '.error_description // ""')" >&2; exit 7 ;;
         esac
         if [ "$waited" -ge "$expires" ]; then
             echo "sot-gh-auth: timed out after ${waited}s (code TTL ~${expires}s) — re-run for a fresh code." >&2
@@ -193,7 +196,7 @@ poll() {
 
 case "${1:-full}" in
     -h|--help) usage; exit 0 ;;
-    status)    need gh; gh auth status --hostname "$HOST"; exit $? ;;
+    status)    need gh; gh_net auth status --hostname "$HOST"; exit $? ;;
     request)
         guard_env
         if already_authed; then echo "sot-gh-auth: already authenticated on ${HOST} — nothing to do (run 'gh auth logout' to force re-auth)."; exit 0; fi
@@ -201,7 +204,7 @@ case "${1:-full}" in
     poll)      guard_env; poll ;;
     full)
         guard_env
-        if already_authed; then echo "sot-gh-auth: already authenticated on ${HOST}."; gh auth status --hostname "$HOST"; exit 0; fi
+        if already_authed; then echo "sot-gh-auth: already authenticated on ${HOST}."; gh_net auth status --hostname "$HOST"; exit 0; fi
         request; echo; poll ;;
     *) echo "sot-gh-auth: unknown command '$1' (see --help)" >&2; exit 2 ;;
 esac

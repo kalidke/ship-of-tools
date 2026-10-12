@@ -46,6 +46,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAL_JQ="$(command -v jq)"
+REAL_SLEEP="$(command -v sleep)"
 FAKE_TOKEN='FAKE-TOKEN-not-a-real-credential'
 PASS=0; FAIL=0
 
@@ -117,7 +118,10 @@ case "$*" in
         printf 'HAS_CR=%s\nLEN=%s\n' "$cr" "$(printf '%s' "$bytes" | wc -c | tr -d ' ')" \
             > "$SOT_TEST_TMP/gh.token-facts"
         exit 0 ;;
-    *"auth status"*) echo "stub: not logged in" >&2; exit 1 ;;
+    *"auth status"*)
+        # A GitHub that stops answering: the real sleep, which ends itself.
+        [ "${SOT_TEST_GH_HANG:-}" = 1 ] && exec "$SOT_TEST_REAL_SLEEP" 60
+        echo "stub: not logged in" >&2; exit 1 ;;
     *"setup-git"*)   exit 0 ;;
     *"api user"*)    echo "tester"; exit 0 ;;
     *) exit 0 ;;
@@ -184,6 +188,22 @@ elif LC_ALL=C grep -qF "$FAKE_TOKEN" "$TMP/poll.out" "$TMP/poll.err" "$TMP/req.o
 else
     ok "the script never printed the token"
 fi
+
+# --- status: a GitHub that stops answering ends gh's wait at the script's bound, named -----------------------------
+# gh hangs on `auth status`; the run is held to the test's own 45 s bound (comm-lib's sot_bounded, staged beside the
+# script).
+began=$SECONDS
+rc=0
+( . "$(dirname "$GH_AUTH")/comm-lib.sh" || exit 2
+  unset GH_TOKEN GITHUB_TOKEN
+  export PATH="$STUB:$PATH" SOT_COMM_HOME="$TMP/comm" GH_CONFIG_DIR="$TMP/gh" SOT_TEST_TMP="$TMP" \
+         SOT_TEST_GH_HANG=1 SOT_TEST_REAL_SLEEP="$REAL_SLEEP"
+  sot_bounded 45 bash "$GH_AUTH" status >"$TMP/hang.out" 2>"$TMP/hang.err" ) || rc=$?
+took=$((SECONDS - began))
+check "a hung gh auth status ends the script with 124" "$rc" "124"
+check "at the script's 30 s bound, not the test's 45 s" "$([ "$took" -lt 40 ] && echo yes || echo "no, after ${took}s")" "yes"
+check "its line names the call and the bound" \
+    "$(grep -c 'sot-gh-auth: gh auth status did not finish within 30s' "$TMP/hang.err" || true)" "1"
 
 rm -rf "${TMP:?}"
 printf 'PASS=%s FAIL=%s\n' "$PASS" "$FAIL"
