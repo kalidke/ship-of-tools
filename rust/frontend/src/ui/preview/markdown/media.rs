@@ -16,6 +16,37 @@ pub(in crate::ui) struct TableBufferEntry {
     pub(in crate::ui) natural_w_px: f32,
 }
 
+/// One table's buffer at its natural width. 10_000 px is wider than any
+/// realistic GFM table so the box-drawing lines lay out without soft-wrap;
+/// `None` for height matches the main preview buffer's "extend past the rect"
+/// policy.
+pub(in crate::ui) fn table_buffer(
+    font_system: &mut cosmic_text::FontSystem,
+    rendered: String,
+    font_px: f32,
+    line_h_px: f32,
+) -> TableBufferEntry {
+    let metrics = cosmic_text::Metrics::new(font_px, line_h_px);
+    let mut buf = cosmic_text::Buffer::new(font_system, metrics);
+    buf.set_size(font_system, Some(10_000.0), None);
+    let attrs = cosmic_text::Attrs::new()
+        .family(cosmic_text::Family::Monospace)
+        .metrics(metrics);
+    crate::ui::render::text::set_buffer_text(&mut buf, font_system, &rendered, attrs, cosmic_text::Shaping::Advanced);
+    buf.shape_until_scroll(font_system, false);
+    let mut natural_w_px: f32 = 0.0;
+    for run in buf.layout_runs() {
+        if run.line_w > natural_w_px {
+            natural_w_px = run.line_w;
+        }
+    }
+    TableBufferEntry {
+        rendered,
+        buffer: buf,
+        natural_w_px,
+    }
+}
+
 /// Bottom of the last whole `pitch`-tall row of a buffer whose first row's
 /// top is at `top`, clipped at `limit`: a table reaching the pane bottom stops
 /// at a row boundary instead of slicing one. `top` (nothing drawn) when not
@@ -222,34 +253,8 @@ impl State {
         self.table_buffers.clear();
         self.md_table_scroll_px = 0.0;
         for (rendered, font_px, line_h_px) in snapshots {
-            let metrics = cosmic_text::Metrics::new(font_px, line_h_px);
-            let mut buf = cosmic_text::Buffer::new(self.text.font_system_mut(), metrics);
-            // 10_000 px is wider than any realistic GFM table so the
-            // box-drawing lines lay out without soft-wrap. `None` for
-            // height matches the main preview buffer's "extend past
-            // the rect" policy.
-            buf.set_size(self.text.font_system_mut(), Some(10_000.0), None);
-            let attrs = cosmic_text::Attrs::new()
-                .family(cosmic_text::Family::Monospace)
-                .metrics(metrics);
-            buf.set_text(
-                self.text.font_system_mut(),
-                &rendered,
-                attrs,
-                cosmic_text::Shaping::Advanced,
-            );
-            buf.shape_until_scroll(self.text.font_system_mut(), false);
-            let mut natural_w_px: f32 = 0.0;
-            for run in buf.layout_runs() {
-                if run.line_w > natural_w_px {
-                    natural_w_px = run.line_w;
-                }
-            }
-            self.table_buffers.push(TableBufferEntry {
-                rendered,
-                buffer: buf,
-                natural_w_px,
-            });
+            let entry = table_buffer(self.text.font_system_mut(), rendered, font_px, line_h_px);
+            self.table_buffers.push(entry);
         }
     }
 

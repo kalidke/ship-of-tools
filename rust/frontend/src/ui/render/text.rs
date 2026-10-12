@@ -11,6 +11,53 @@ use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, Style,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
 };
+use std::borrow::Cow;
+
+/// The bidi paragraph separators cosmic-text does not end a buffer line at. Unicode ends a bidi paragraph at `\n`,
+/// `\r`, U+001C, U+001D, U+001E, U+0085 and U+2029 (bidi class B); cosmic-text 0.12's `Buffer::set_text` ends a line
+/// only at `\r` and `\n`, and shaping a line that holds two paragraphs of different directions panics
+/// (`ShapeLine::new_in_buffer`).
+const PARAGRAPH_SEPARATORS: [char; 5] = ['\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2029}'];
+
+/// `text` with each of `PARAGRAPH_SEPARATORS` a space, so every line cosmic-text shapes is one bidi paragraph. A
+/// caller that wants one to end a line makes it `\n` first (`normalize_newlines`, preview/markdown/buffer.rs).
+fn one_paragraph_per_line(text: &str) -> Cow<'_, str> {
+    if text.contains(PARAGRAPH_SEPARATORS) {
+        Cow::Owned(text.replace(PARAGRAPH_SEPARATORS, " "))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// `Buffer::set_text` through `one_paragraph_per_line`: with `set_buffer_rich_text`, the one way text enters a
+/// cosmic-text buffer (rust/clippy.toml's text-into-the-shaper group refuses every other).
+pub(crate) fn set_buffer_text(
+    buffer: &mut Buffer,
+    font_system: &mut FontSystem,
+    text: &str,
+    attrs: Attrs,
+    shaping: Shaping,
+) {
+    #[allow(clippy::disallowed_methods, reason = "text into the shaper: the one way in, through one_paragraph_per_line")]
+    buffer.set_text(font_system, &one_paragraph_per_line(text), attrs, shaping);
+}
+
+/// `Buffer::set_rich_text` with each span through `one_paragraph_per_line`.
+pub(crate) fn set_buffer_rich_text<'r, 's, I>(
+    buffer: &mut Buffer,
+    font_system: &mut FontSystem,
+    spans: I,
+    default_attrs: Attrs,
+    shaping: Shaping,
+) where
+    I: IntoIterator<Item = (&'s str, Attrs<'r>)>,
+{
+    let spans: Vec<(Cow<'s, str>, Attrs<'r>)> =
+        spans.into_iter().map(|(text, attrs)| (one_paragraph_per_line(text), attrs)).collect();
+    let spans = spans.iter().map(|(text, attrs)| (text.as_ref(), *attrs));
+    #[allow(clippy::disallowed_methods, reason = "text into the shaper: the one way in, through one_paragraph_per_line")]
+    buffer.set_rich_text(font_system, spans, default_attrs, shaping);
+}
 
 /// One run of text to render at a baseline position (top-left of the line
 /// box, in physical pixels relative to the surface). `color` overrides the
@@ -215,7 +262,8 @@ impl TextLayer {
     pub fn monospace_advance(&mut self) -> Option<f32> {
         let mut buf = Buffer::new(&mut self.font_system, self.metrics);
         buf.set_size(&mut self.font_system, Some(2000.0), None);
-        buf.set_text(
+        set_buffer_text(
+            &mut buf,
             &mut self.font_system,
             "xxxxxxxxxx",
             Attrs::new().family(Family::Monospace),
@@ -296,12 +344,7 @@ impl TextLayer {
             if line.italic {
                 attrs = attrs.style(Style::Italic);
             }
-            buf.set_text(
-                &mut self.font_system,
-                &line.text,
-                attrs,
-                Shaping::Advanced,
-            );
+            set_buffer_text(buf, &mut self.font_system, &line.text, attrs, Shaping::Advanced);
             buf.shape_until_scroll(&mut self.font_system, false);
             *sig = new_sig;
             reshape_count += 1;
@@ -449,7 +492,7 @@ impl TextLayer {
             if line.italic {
                 attrs = attrs.style(Style::Italic);
             }
-            buf.set_text(&mut self.font_system, &line.text, attrs, Shaping::Advanced);
+            set_buffer_text(buf, &mut self.font_system, &line.text, attrs, Shaping::Advanced);
             buf.shape_until_scroll(&mut self.font_system, false);
             *sig = new_sig;
         }
@@ -516,5 +559,50 @@ impl TextLayer {
 
     pub fn trim(&mut self) {
         self.atlas.trim();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each bidi paragraph separator, and the line separator and non-characters of earlier findings, between
+    /// left-to-right and right-to-left text: no line cosmic-text shapes holds two paragraphs, so none panics, and `\n`
+    /// and `\r` still end a line. Then the list itself: every character on which cosmic-text's own paragraph split
+    /// (`BidiParagraphs`, Unicode's bidi class B) splits is `\n`, `\r` or one of `PARAGRAPH_SEPARATORS`.
+    #[test]
+    fn the_shaper_gets_one_bidi_paragraph_per_line() {
+        let mut fonts = FontSystem::new();
+        // (the character between `AA` and `אב`, the buffer's lines)
+        let cases: &[(char, &[&str])] = &[
+            ('\n', &["AA", "אב"]),
+            ('\r', &["AA", "אב"]),
+            ('\u{1c}', &["AA אב"]),
+            ('\u{1d}', &["AA אב"]),
+            ('\u{1e}', &["AA אב"]),
+            ('\u{85}', &["AA אב"]),
+            ('\u{2029}', &["AA אב"]),
+            ('\u{2028}', &["AA\u{2028}אב"]),
+            ('\u{fffe}', &["AA\u{fffe}אב"]),
+            ('\u{ffff}', &["AA\u{ffff}אב"]),
+        ];
+        for &(c, want) in cases {
+            let text = format!("AA{c}אב");
+            let mut plain = Buffer::new(&mut fonts, Metrics::new(14.0, 18.0));
+            set_buffer_text(&mut plain, &mut fonts, &text, Attrs::new(), Shaping::Advanced);
+            let mut rich = Buffer::new(&mut fonts, Metrics::new(14.0, 18.0));
+            let spans = [("AA", Attrs::new()), (&text[2..], Attrs::new().weight(Weight::BOLD))];
+            set_buffer_rich_text(&mut rich, &mut fonts, spans, Attrs::new(), Shaping::Advanced);
+            for (how, buffer) in [("set_buffer_text", &mut plain), ("set_buffer_rich_text", &mut rich)] {
+                buffer.shape_until_scroll(&mut fonts, false);
+                let lines: Vec<&str> = buffer.lines.iter().map(|line| line.text()).collect();
+                assert_eq!(lines, want, "{how} {c:?}");
+            }
+        }
+        let splits: Vec<char> = (0..=0x10ffff)
+            .filter_map(char::from_u32)
+            .filter(|c| cosmic_text::BidiParagraphs::new(&format!("a{c}b")).count() > 1)
+            .collect();
+        assert_eq!(splits, ['\n', '\r', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2029}']);
     }
 }

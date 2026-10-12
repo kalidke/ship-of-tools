@@ -7,7 +7,8 @@ rust/frontend/src/ui/CLAUDE.md. ADRs 0003, 0011 and 0012 give the design.
 
 ## Files
 - `mod.rs`: declares the files and the folder below and re-exports `surface` and `capture` into `ui`.
-- `text.rs`: `TextLayer`, the glyph-atlas text layer and its one `FontSystem`.
+- `text.rs`: `TextLayer`, the glyph-atlas text layer and its one `FontSystem`, and the one way text enters a cosmic-text
+  buffer (`set_buffer_text`, `set_buffer_rich_text`).
 - `cells.rs`: `WgpuBackend`, the ratatui `Backend` that keeps a cell grid, and its projection into text lines.
 - `quad.rs`: `QuadPipeline`, the textured-quad pipeline every bitmap goes through.
 - `surface.rs`: base cell metrics, startup logos, `cell_grid_for`, `clear_color_for_surface`, `State::resize` and

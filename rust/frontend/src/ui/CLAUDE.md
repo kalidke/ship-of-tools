@@ -47,6 +47,12 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
   `a_strip_name_is_one_bidi_paragraph` (chrome/strip/items_tests.rs),
   `a_paragraph_separator_starts_a_line_and_the_shaper_survives_it` (preview/markdown/tests.rs) and
   `a_control_character_in_a_name_leaves_the_chart_drawable` (drawer/monitor.rs).
+- Text enters a cosmic-text buffer only through `set_buffer_text` and `set_buffer_rich_text` (render/text.rs), which
+  make every bidi paragraph separator but `\n` and `\r` (U+001C, U+001D, U+001E, U+0085, U+2029) a space: cosmic-text
+  ends a buffer line only at `\r` and `\n` and panics on a line holding two paragraphs of different directions.
+  `rust/clippy.toml`'s text-into-the-shaper group refuses every other way in. Tests
+  `the_shaper_gets_one_bidi_paragraph_per_line` (render/text.rs), `a_plain_preview_is_one_bidi_paragraph_per_line` and
+  `a_table_cell_is_one_bidi_paragraph_per_line` (preview/markdown/tests.rs).
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),
   `resumed` (app/handler.rs); a relaunch command is refused for them (control/dispatch.rs).
