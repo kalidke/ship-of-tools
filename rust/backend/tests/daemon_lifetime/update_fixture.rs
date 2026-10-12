@@ -6,7 +6,7 @@
 use crate::support::{sot_capsule_exe, sotd_program};
 use sot_updater::fetch::hash::sha256_bytes;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 /// The release the fixture offers: newer than any build the suite runs.
 pub const VERSION: &str = "9.9.9";
@@ -21,20 +21,16 @@ pub struct Release {
 }
 
 fn run(program: &str, dir: &Path, args: &[&str]) -> String {
-    let out = Command::new(program)
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap_or_else(|e| panic!("run {program}: {e}"));
-    assert!(
-        out.status.success(),
-        "{program} {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
+    let ran = sot_log::test_wait::run_within(
+        Command::new(program)
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1"),
+        crate::support::BOUND,
+    )
+    .ok();
+    ran.stdout.trim().to_string()
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {

@@ -147,16 +147,11 @@ async fn int_and_term_end_a_stalled_daemon_whatever_mask_it_inherited() {
     }
 }
 
-/// `systemctl --user` for one of this case's own units; its status and its output.
-fn systemctl(args: &[&str]) -> (bool, String) {
-    let out = std::process::Command::new("systemctl")
-        .arg("--user")
-        .args(args)
-        .output()
-        .expect("run systemctl --user");
-    (
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
+/// `systemctl --user` for one of this case's own units; its whole account.
+fn systemctl(args: &[&str]) -> sot_log::test_wait::Ran {
+    sot_log::test_wait::run_within(
+        std::process::Command::new("systemctl").arg("--user").args(args),
+        crate::support::BOUND,
     )
 }
 
@@ -191,7 +186,8 @@ async fn a_service_manager_counts_int_and_term_as_a_clean_stop() {
         let env = Env::new("msvc");
         let unit = format!("sot-l2-term-{how}-{}.service", std::process::id());
         let set = |k: &str, v: &std::ffi::OsStr| format!("--setenv={k}={}", v.to_string_lossy());
-        let started = std::process::Command::new("systemd-run")
+        let mut started = std::process::Command::new("systemd-run");
+        started
             .args(["--user", "--unit", &unit, "--service-type=exec"])
             .args(["--property=Restart=on-failure", "--property=RestartSec=1"])
             .arg(set("XDG_STATE_HOME", env.state_root.as_os_str()))
@@ -209,17 +205,12 @@ async fn a_service_manager_counts_int_and_term_as_a_clean_stop() {
             .arg("--socket")
             .arg(&env.socket_path)
             .arg("--project-root")
-            .arg(&env.daemon_project_root)
-            .status()
-            .expect("systemd-run the case's unit");
-        assert!(
-            started.success(),
-            "{how}: systemd-run --user --unit {unit} failed ({started})"
-        );
+            .arg(&env.daemon_project_root);
+        sot_log::test_wait::run_within(&mut started, crate::support::BOUND).ok();
         let answered = answers_within(&env.socket_path, crate::support::BOUND).await;
         let stimulus = match how {
-            "stop" => systemctl(&["stop", &unit]).0,
-            _ => systemctl(&["kill", "--kill-who=main", "--signal=TERM", &unit]).0,
+            "stop" => systemctl(&["stop", &unit]),
+            _ => systemctl(&["kill", "--kill-who=main", "--signal=TERM", &unit]),
         };
         // Long enough for the end, then for a restart a failed end would bring (RestartSec=1).
         let mut ended = false;
@@ -231,11 +222,11 @@ async fn a_service_manager_counts_int_and_term_as_a_clean_stop() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         let restarted = answers_within(&env.socket_path, Duration::from_secs(5)).await;
-        let (_, shown) = systemctl(&["show", &unit, "--property=ActiveState,Result,NRestarts"]);
+        let shown = systemctl(&["show", &unit, "--property=ActiveState,Result,NRestarts"]).stdout;
         systemctl(&["stop", &unit]);
         systemctl(&["reset-failed", &unit]);
         assert!(answered, "{how}: the unit's daemon never answered");
-        assert!(stimulus, "{how}: systemctl refused the stimulus");
+        assert!(stimulus.status.success(), "{how}: systemctl refused the stimulus: {stimulus}");
         assert!(ended, "{how}: the unit's daemon did not end");
         assert!(
             !restarted,
@@ -289,44 +280,40 @@ async fn a_close_that_outlasts_its_bound_ends_with_1_and_takes_the_ephemeral_tre
 #[tokio::test]
 async fn early_commands_and_boot_refusals_keep_their_statuses() {
     let _serial = SERIAL.lock().await;
-    let output = crate::support::sotd_command()
-        .args(["agent-exec", "no-such-agent-kind"])
-        .output()
-        .expect("run sotd agent-exec");
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("sotd agent-exec:"),
-        "{output:?}"
+    let ran = sot_log::test_wait::run_within(
+        crate::support::sotd_command().args(["agent-exec", "no-such-agent-kind"]),
+        crate::support::BOUND,
     );
+    assert_eq!(ran.status.code(), Some(2), "{ran}");
+    assert!(ran.stderr.contains("sotd agent-exec:"), "{ran}");
 
     let dir = tempfile::tempdir().expect("a temporary folder");
     let alone = dir.path().join("sotd");
     std::fs::copy(crate::support::sotd_program(), &alone).expect("copy sotd alone into a folder");
     let env = Env::new("early");
-    let output = crate::support::sotd_command_at(&alone)
-        .arg("--socket")
-        .arg(&env.socket_path)
-        .arg("--project-root")
-        .arg(&env.daemon_project_root)
-        .env("XDG_STATE_HOME", &env.state_root)
-        .env("XDG_CONFIG_HOME", &env.config_root)
-        .env("HOME", &env.home_root)
-        .env("SOT_SELF_HOST", crate::support::TEST_STATE_HOST)
-        .env("SOT_RUNTIME_DIR", env._runtime_tmp.path())
-        .output()
-        .expect("run a sotd with no capsule beside it");
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("sot-capsule is missing"),
-        "{output:?}"
+    let ran = sot_log::test_wait::run_within(
+        crate::support::sotd_command_at(&alone)
+            .arg("--socket")
+            .arg(&env.socket_path)
+            .arg("--project-root")
+            .arg(&env.daemon_project_root)
+            .env("XDG_STATE_HOME", &env.state_root)
+            .env("XDG_CONFIG_HOME", &env.config_root)
+            .env("HOME", &env.home_root)
+            .env("SOT_SELF_HOST", crate::support::TEST_STATE_HOST)
+            .env("SOT_RUNTIME_DIR", env._runtime_tmp.path()),
+        crate::support::BOUND,
     );
+    assert_eq!(ran.status.code(), Some(1), "{ran}");
+    assert!(ran.stderr.contains("sot-capsule is missing"), "{ran}");
 
-    let output = crate::support::sotd_command()
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .arg("--socket")
-        .arg(&env.socket_path)
-        .output()
-        .expect("run sotd with no home");
-    assert_eq!(output.status.code(), Some(78), "{output:?}");
+    let ran = sot_log::test_wait::run_within(
+        crate::support::sotd_command()
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .arg("--socket")
+            .arg(&env.socket_path),
+        crate::support::BOUND,
+    );
+    assert_eq!(ran.status.code(), Some(78), "{ran}");
 }

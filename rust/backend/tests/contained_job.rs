@@ -126,7 +126,10 @@ async fn close_by_lease(socket: &Path) {
         &Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap()),
     )
     .await;
-    let (reply, _) = codec::read_frame(&mut conn).await.expect("the lease reply");
+    let (reply, _) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
+        .await
+        .expect("the lease reply within BOUND")
+        .expect("the lease reply");
     let _: FeLeaseRes = serde_json::from_value(reply.payload).expect("a lease reply");
     let _ = codec::write_frame(
         &mut conn,
@@ -339,17 +342,15 @@ async fn a_killed_test_job_leaves_no_row() {
         (Some(r), false) => end_leftover_row(r).await,
         _ => true,
     };
-    let _ = std::process::Command::new("systemctl")
-        .args([
+    let _ = sot_log::test_wait::try_run_within(
+        std::process::Command::new("systemctl").args([
             "--user",
             "stop",
             &format!("{unit}.service"),
             &format!("{unit}.scope"),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        ]),
+        BOUND,
+    );
     if let (Some(r), false) = (&record, freed) {
         kill_job_group(&r["child_cgroup"], &unit);
         freed = wait_free(Path::new(&r["state_dir"]), &r["voyage"], 10).await;

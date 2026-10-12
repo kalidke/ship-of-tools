@@ -43,7 +43,8 @@ async fn reached(barriers: &BarrierDir, phase: &str, ticket: usize) -> Report {
     barriers.reached(phase, ticket, BOUND)
 }
 
-/// One request on a connection of its own, its answer's payload, or `None` when the daemon ended first. Never panics.
+/// One request on a connection of its own, its answer's payload, or `None` when the daemon ended first. A connection
+/// the daemon neither answers nor ends within `BOUND` fails the caller.
 async fn request(
     socket: std::path::PathBuf,
     op_name: &'static str,
@@ -53,7 +54,10 @@ async fn request(
     codec::write_frame(&mut conn, &Frame::req(id, op_name, payload), None)
         .await
         .ok()?;
-    let (answer, _) = codec::read_frame(&mut conn).await.ok()?;
+    let (answer, _) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
+        .await
+        .expect("the daemon's answer within BOUND")
+        .ok()?;
     Some(answer.payload)
 }
 
@@ -182,7 +186,10 @@ async fn close(socket: std::path::PathBuf) -> serde_json::Value {
         &Frame::req(1, op::FE_LEASE, serde_json::to_value(&lease).unwrap()),
     )
     .await;
-    let (granted, _) = codec::read_frame(&mut conn).await.expect("the lease reply");
+    let (granted, _) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
+        .await
+        .expect("the lease reply within BOUND")
+        .expect("the lease reply");
     assert_eq!(
         granted.payload["outcome"], "granted",
         "{:?}",
@@ -195,8 +202,9 @@ async fn close(socket: std::path::PathBuf) -> serde_json::Value {
     )
     .await
     .expect("send the close");
-    let (answer, _) = codec::read_frame(&mut conn)
+    let (answer, _) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
         .await
+        .expect("the close's answer within BOUND")
         .expect("read the close's answer");
     answer.payload
 }

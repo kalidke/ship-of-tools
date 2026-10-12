@@ -10,6 +10,9 @@
 
 use crate::fixture_owner::Fixture;
 use std::process::{Command, Stdio};
+use std::time::Duration;
+
+const BOUND: Duration = Duration::from_secs(30);
 
 /// What the script prints: the master's and the worker's pid, session and group, one `who pid sid pgid` line each.
 const SCRIPT: &str = r#"
@@ -40,14 +43,8 @@ fn a_distributed_worker_starts_in_a_session_of_its_own() {
     // Authority over the master first; the worker is learned from what the master reports and only watched.
     fx.own(master.id() as i32, "julia master")
         .expect("an identity for the master");
-    let out = master.wait_with_output().expect("the script ends");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(
-        out.status.success(),
-        "the script failed: {}\n{}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let (status, text, stderr) = sot_log::test_isolated::drain(master).wait_within(BOUND);
+    assert!(status.success(), "the script failed: {status}\n{stderr}");
     let row = |who: &str| -> Vec<i32> {
         text.lines()
             .find_map(|line| line.strip_prefix(who)?.strip_prefix(' '))
@@ -83,7 +80,6 @@ fn a_distributed_worker_starts_in_a_session_of_its_own() {
 async fn a_closed_daemon_ends_plutos_notebook_worker() {
     use crate::done::{open_notebook, pluto_resource_root, read_pid, Wire};
     use crate::guard::{close_by_lease, Run};
-    use std::time::Duration;
     let _serial = crate::SERIAL.lock().await;
     let mut fx = Fixture::new("a_closed_daemon_ends_plutos_notebook_worker");
     let case = tempfile::tempdir().expect("the case's folder");

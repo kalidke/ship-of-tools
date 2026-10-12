@@ -7,6 +7,9 @@
 use crate::fixture_owner::Fixture;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{ExitStatus, Stdio};
+use std::time::Duration;
+
+const BOUND: Duration = Duration::from_secs(30);
 
 /// `/bin/kill`'s arguments: SIGUSR1 to group 0, which is its own group when it is alone in it.
 pub const KILL_PROBE: [&str; 3] = ["-s", "USR1", "0"];
@@ -73,12 +76,12 @@ pub fn kill_control(fx: &mut Fixture, usr1: Usr1) {
     let child = with_usr1(disposition, || control.spawn())
         .expect("spawn the kill control (EPERM: it was not alone in its group)");
     fx.own(child.id() as i32, "kill control").unwrap();
-    let out = child.wait_with_output().unwrap();
+    let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
     let want = if usr1 == Usr1::Default {
         "killed"
     } else {
         "survived"
     };
     let who = format!("the {usr1:?} control");
-    assert_kill_end(&who, out.status, &out.stderr, want);
+    assert_kill_end(&who, status, stderr.as_bytes(), want);
 }

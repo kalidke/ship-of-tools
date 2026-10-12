@@ -6,6 +6,7 @@ use std::time::Duration;
 
 const BOOT: &str = "boot-a";
 const T0: u64 = 1_000_000;
+const BOUND: Duration = Duration::from_secs(30);
 
 fn id(pid: u32) -> ProcessIdentity {
     ProcessIdentity { boot: BOOT.into(), pid, created: 7000 + u64::from(pid) }
@@ -627,7 +628,9 @@ async fn failed_grant_reply_still_departs() {
         theirs.read_line(&mut grant).await.unwrap();
         theirs.get_mut().write_all(&line(2, op::FE_LEAVING, FeLeavingReq { intent: LeaveIntent::Keep })).await.unwrap();
     };
-    let (held, ()) = tokio::join!(hold_over(ours, id(1), &f.leases), window);
+    let (held, ()) = tokio::time::timeout(BOUND, async { tokio::join!(hold_over(ours, id(1), &f.leases), window) })
+        .await
+        .expect("the Keep's departure within BOUND");
     assert!(held.is_err(), "the Keep's reply was written");
     assert_eq!(f.on_disk(), None, "a failed write after a Keep departed as a close");
     assert!(tokio::time::timeout(Duration::from_millis(50), f.leases.gone()).await.is_err(), "a Keep shut down");
