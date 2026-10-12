@@ -51,7 +51,7 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: relay_host_for_path, `SshRecipe::new`,
-`is_plain_host_name`, `LinkGate`, `SSH_OPTS`, `DaemonLaneEndpoint`, `SshRecipe`, `recipe_for`, `dial_and_call_tracked`,
+`is_plain_host_name`, `LinkGate`, `SSH_OPTS`, `DaemonLaneEndpoint`, `SshRecipe`, `recipe_for`, `dial_and_call`,
 `sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
 `scripts/lib/sot-daemon.sh`, `sotd stdio-bridge`, `TopologyStore`, `topology.set`, `topology.changed`, `sot_ssh_bridge`,
 `_sot_is_plain_host_name`, `comm/lib/comm-lib-client.sh`, `sot_slug`, `comm/lib/comm-lib-identity.sh`, `slug`,

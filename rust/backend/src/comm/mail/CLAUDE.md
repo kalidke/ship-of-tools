@@ -6,7 +6,6 @@ messaging; charter: comm/CLAUDE.md.
 ## Files
 - `bus.rs`: the payloads of the daemon's `agent.message` and `agent.receipt` broadcast buses
 - `filer.rs`: `comm.file`: the verdict on one frame, and the append or forward behind it
-- `forward.rs`: a guest daemon's `comm.file` forward to the hub, bounded by a deadline and the shutdown signal
 - `hub_link.rs`: the link to the hub that files relayed `agent.message` frames into this box's inboxes
 - `inbox.rs`: the daemon's append of one frame to an inbox file under the shared lock, and the record of who may append
 - `inbox_tests.rs`: the tests of `inbox.rs`
@@ -32,7 +31,7 @@ files each `agent.message` whose `to` this box's registry lists through `file_co
   live holder: a `last_seen` under `LIVE_SECS` (600) (`heartbeat_fresh`, the twin of the shell's
   `sot_heartbeat_fresh`), stamped by the session and by the daemon running its row (`comm/registry/liveness.rs`). A
   forward skips both tests and returns the hub's answer verbatim.
-- `forward_comm_file` waits `inbox_lock_wait` plus `COMM_FORWARD_SLACK` (5 s) at most, or until the shutdown signal
+- The comm forward (`dial_and_call`) waits `inbox_lock_wait` plus `COMM_FORWARD_SLACK` (5 s) at most, or until the shutdown signal
   fires; either way it kills the ssh child and what it started before returning.
 - `handle_agent_send` broadcasts one `AgentMessage` (`to == ""` is a broadcast); `handle_agent_filed` broadcasts one
   `AgentReceipt` whose `filer` is the answering connection's hello name, and refuses `bad_filer` when it has none.

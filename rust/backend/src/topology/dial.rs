@@ -86,7 +86,7 @@ struct ChildGuard {
 /// How a forwarding caller reaches the ssh child a dial thread owns: the
 /// child itself while its guard holds it unreaped, and a flag that tells a
 /// thread that has not spawned yet not to bother.
-pub(crate) struct Track {
+struct Track {
     sig: &'static crate::lifecycle::child_signal::Signal,
     /// The dial thread's child while its guard holds it unreaped; `None` before the spawn and from the moment the
     /// guard starts reaping.
@@ -95,13 +95,13 @@ pub(crate) struct Track {
 }
 
 impl Track {
-    pub(crate) fn new(sig: &'static crate::lifecycle::child_signal::Signal) -> Self {
+    fn new(sig: &'static crate::lifecycle::child_signal::Signal) -> Self {
         Self { sig, child: std::sync::Mutex::new(None), cancelled: std::sync::atomic::AtomicBool::new(false) }
     }
 
     /// Kill the child's tree, if there is one yet; the dial thread's blocking
     /// read then fails and its `ChildGuard` drops.
-    pub(crate) fn cancel(&self) {
+    fn cancel(&self) {
         use std::sync::atomic::Ordering::SeqCst;
         self.cancelled.store(true, SeqCst);
         // Held across the kill: the guard takes the child out of this slot before it drops, and the kill reaches the
@@ -250,11 +250,57 @@ fn connect(endpoint: &str, sig: &'static crate::lifecycle::child_signal::Signal)
 /// arriving before the matching `res` (unlikely on a connection this
 /// short-lived, but the wire protocol allows it) are skipped rather than
 /// treated as a protocol violation.
-pub fn dial_and_call(endpoint: &str, self_host: &str, req_op: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
-    dial_and_call_tracked(endpoint, self_host, req_op, payload, None)
+///
+/// The call owns its deadline: it runs on a thread of its own and waits at most `within`, or until the daemon's
+/// shutdown signal, and at either it cancels its [`Track`] (a bridged ssh child's tree is killed) and returns an error
+/// naming the endpoint and the op. A local socket's or pipe's blocked read is left to its thread, which ends with the
+/// connection.
+pub fn dial_and_call(
+    endpoint: &str,
+    self_host: &str,
+    req_op: &str,
+    payload: serde_json::Value,
+    within: std::time::Duration,
+) -> Result<serde_json::Value, String> {
+    dial_and_call_on(crate::lifecycle::child_signal::process(), endpoint, self_host, req_op, payload, within)
 }
 
-pub(crate) fn dial_and_call_tracked(
+/// [`dial_and_call`] under `sig`, the signal that starts the ssh child and ends the wait.
+fn dial_and_call_on(
+    sig: &'static crate::lifecycle::child_signal::Signal,
+    endpoint: &str,
+    self_host: &str,
+    req_op: &str,
+    payload: serde_json::Value,
+    within: std::time::Duration,
+) -> Result<serde_json::Value, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (e, h, op) = (endpoint.to_string(), self_host.to_string(), req_op.to_string());
+    let track = std::sync::Arc::new(Track::new(sig));
+    let dial_track = std::sync::Arc::clone(&track);
+    std::thread::spawn(move || {
+        let _ = tx.send(dial_and_call_tracked(&e, &h, &op, payload, Some(dial_track)));
+    });
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        let step = deadline.saturating_duration_since(std::time::Instant::now()).min(std::time::Duration::from_millis(50));
+        match rx.recv_timeout(step) {
+            Ok(done) => return done,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(format!("{endpoint}: the dial thread ended")),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if sig.is_fired() {
+            track.cancel();
+            return Err(format!("{endpoint}: the daemon is shutting down"));
+        }
+        if std::time::Instant::now() >= deadline {
+            track.cancel();
+            return Err(format!("{endpoint}: no reply to {req_op} within {}s", within.as_secs()));
+        }
+    }
+}
+
+fn dial_and_call_tracked(
     endpoint: &str,
     self_host: &str,
     req_op: &str,
@@ -489,7 +535,7 @@ pub(crate) mod tests {
         prepend_to_path(dir.path());
 
         let started = std::time::Instant::now();
-        let err = dial_and_call("ssh:hub", "selfbox", "topology.set", serde_json::json!({}))
+        let err = dial_and_call("ssh:hub", "selfbox", "topology.set", serde_json::json!({}), std::time::Duration::from_secs(60))
             .expect_err("a child that answers nothing must be an error, not a hang");
         let waited = started.elapsed();
         assert!(
@@ -504,6 +550,46 @@ pub(crate) mod tests {
             "the error must name the endpoint and the step that failed, got: {err}"
         );
         assert!(holder.gone(), "the refused login's descendant outlived the error path");
+    }
+
+    /// A forwarded call is cut short by its own timeout or by the shutdown signal, and either way the ssh child dies
+    /// and is reaped.
+    #[cfg(unix)]
+    #[test]
+    fn a_dial_ends_at_its_timeout_or_the_shutdown_and_kills_its_ssh_child() {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_guard = EnvGuard::capture("PATH");
+        let payload = serde_json::json!({"from": "a", "to": "b", "text": "t"});
+        let alive = |pid: i32| unsafe { libc::kill(pid, 0) == 0 };
+        for by_shutdown in [false, true] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let pid_file = dir.path().join("pid");
+            write_ssh_script(dir.path(), &format!("echo $$ > '{}'\nexec sleep 30\n", pid_file.display()));
+            prepend_to_path(dir.path());
+            let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+            let within = std::time::Duration::from_secs(if by_shutdown { 20 } else { 1 });
+            let firer = std::thread::spawn({
+                let pid_file = pid_file.clone();
+                move || {
+                    if by_shutdown {
+                        assert!(wait_for_marker(&pid_file));
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        sig.fire().expect("fire");
+                    }
+                }
+            });
+            let began = std::time::Instant::now();
+            let result = dial_and_call_on(sig, "ssh:hub", "self", sot_protocol::op::COMM_FILE, payload.clone(), within);
+            firer.join().unwrap();
+            assert!(result.is_err());
+            assert!(began.elapsed() < std::time::Duration::from_secs(5), "the dial outlived its bound");
+            let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+            let gone = (0..100).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                !alive(pid)
+            });
+            assert!(gone, "the ssh child survived (shutdown={by_shutdown}) or was not reaped");
+        }
     }
 
     /// A cancel kills the tracked child's tree through the guard's own handle on every platform, and the guard's drop
@@ -565,7 +651,8 @@ pub(crate) mod tests {
             conn.write_all(&line).expect("write the refusal");
         });
         let endpoint = format!("unix:{}", path.display());
-        let err = dial_and_call(&endpoint, "host-a", "topology.set", serde_json::json!({})).expect_err("a refused hello is an error");
+        let err = dial_and_call(&endpoint, "host-a", "topology.set", serde_json::json!({}), std::time::Duration::from_secs(60))
+            .expect_err("a refused hello is an error");
         daemon.join().unwrap();
         assert_eq!(err, format!("{endpoint}: hello refused: no thanks"));
     }
@@ -657,5 +744,33 @@ pub(crate) mod tests {
             0,
             "the dial sent another account's listener bytes"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod deadline_tests {
+    /// A daemon that accepts and never answers the hello is an error at the dial's own bound, naming the endpoint and
+    /// the op.
+    #[test]
+    fn a_silent_daemon_is_an_error_at_the_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let _held = std::thread::spawn(move || {
+            let (s, _) = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(20));
+            drop(s);
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ep = format!("unix:{}", path.display());
+        let began = std::time::Instant::now();
+        std::thread::spawn(move || {
+            let _ = tx.send(super::dial_and_call(&ep, "probe-host", "version.query", serde_json::json!({}), std::time::Duration::from_secs(1)));
+        });
+        let result = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| panic!("dial_and_call had not returned after 10s"));
+        let err = result.expect_err("a daemon that never answers");
+        println!("dial-bound: {err} after {:?}", began.elapsed());
+        assert!(err.ends_with(": no reply to version.query within 1s") && err.starts_with("unix:"), "{err}");
+        assert!(began.elapsed() < std::time::Duration::from_secs(3), "{:?}", began.elapsed());
     }
 }

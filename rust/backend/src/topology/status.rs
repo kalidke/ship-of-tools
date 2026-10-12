@@ -34,7 +34,7 @@ use sot_protocol::topology::{self, HostDecl, Topology};
 /// command. Generous for a loopback or already-tunnelled socket, short
 /// enough that a handful of dead hosts still returns quickly since every
 /// probe runs concurrently (`gather`'s `JoinSet`), not in series.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(crate) const USAGE: &str = "\
 Usage: sotd status [--json]
@@ -331,23 +331,19 @@ pub fn render_json(r: &Report) -> String {
 
 /// One host's probe, run on a blocking thread (the wire client
 /// (`topology::dial::dial_and_call`) is plain blocking `std::net`/
-/// `std::os::unix::net` I/O, same as every other CLI caller of it) under
-/// [`PROBE_TIMEOUT`]. `spawn_blocking`'s own thread is not cancelled on
-/// timeout — nothing here awaits it further, so a truly wedged connect can
-/// leak one thread until this short-lived process exits, never hanging the
-/// command itself (item 4).
+/// `std::os::unix::net` I/O, same as every other CLI caller of it), each dial
+/// under [`PROBE_TIMEOUT`]: the dial owns its deadline, so a wedged connect
+/// ends the call with an error naming the endpoint and the op, and never
+/// hangs the command itself (item 4).
 async fn probe_one(endpoint: String, self_host: String) -> Probe {
-    let ep = endpoint.clone();
-    let sh = self_host.clone();
-    match tokio::time::timeout(PROBE_TIMEOUT, tokio::task::spawn_blocking(move || probe_blocking(&ep, &sh))).await {
-        Ok(Ok(probe)) => probe,
-        Ok(Err(_)) => Probe::Unreachable("probe thread panicked".to_string()),
-        Err(_) => Probe::Unreachable(format!("no reply within {}s", PROBE_TIMEOUT.as_secs())),
+    match tokio::task::spawn_blocking(move || probe_blocking(&endpoint, &self_host)).await {
+        Ok(probe) => probe,
+        Err(_) => Probe::Unreachable("probe thread panicked".to_string()),
     }
 }
 
 fn probe_blocking(endpoint: &str, self_host: &str) -> Probe {
-    let v = match crate::topology::dial::dial_and_call(endpoint, self_host, sot_protocol::op::VERSION_QUERY, serde_json::json!({})) {
+    let v = match crate::topology::dial::dial_and_call(endpoint, self_host, sot_protocol::op::VERSION_QUERY, serde_json::json!({}), PROBE_TIMEOUT) {
         Ok(v) => v,
         Err(e) => return Probe::Unreachable(e),
     };
@@ -358,7 +354,7 @@ fn probe_blocking(endpoint: &str, self_host: &str) -> Probe {
     // A daemon that answers version.query but not workspace.list still
     // gets an `Up` row (build/host/clients are real) — rows just read as
     // empty rather than sinking the whole probe to `Unreachable`.
-    let rows = crate::topology::dial::dial_and_call(endpoint, self_host, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({}))
+    let rows = crate::topology::dial::dial_and_call(endpoint, self_host, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({}), PROBE_TIMEOUT)
         .ok()
         .and_then(|v| serde_json::from_value::<sot_protocol::ops::WorkspaceListRes>(v).ok())
         .map(|r| r.workspaces)
