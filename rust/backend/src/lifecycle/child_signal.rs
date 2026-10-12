@@ -1005,7 +1005,7 @@ pub(crate) mod tests {
         let mut cmd = std::process::Command::new("sh");
         cmd.args(["-c", "sleep 3111 >/dev/null 2>&1 & echo $!"]);
         let out = signal.output(&mut cmd, std::time::Duration::from_secs(60)).expect("output");
-        assert!(out.status.success());
+        assert!(out.status.success(), "{}: {}", out.status, String::from_utf8_lossy(&out.stderr));
         let descendant = Leftover::of_pid(
             String::from_utf8_lossy(&out.stdout)
                 .trim()
@@ -1034,17 +1034,14 @@ pub(crate) mod tests {
     #[test]
     fn an_ignored_sigchld_is_reset_at_startup() {
         let name = "lifecycle::child_signal::tests::ignored_sigchld_scenario";
-        let out = std::process::Command::new(std::env::current_exe().expect("current_exe"))
-            .args(["--exact", name, "--test-threads=1", "--nocapture"])
-            .env("SOT_TEST_SIGCHLD_CHILD", "1")
-            .output()
-            .expect("re-execute the test binary");
-        let text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
+        let ran = sot_log::test_wait::run_within(
+            std::process::Command::new(std::env::current_exe().expect("current_exe"))
+                .args(["--exact", name, "--test-threads=1", "--nocapture"])
+                .env("SOT_TEST_SIGCHLD_CHILD", "1"),
+            sot_log::test_isolated::ISOLATION_TIMEOUT,
         );
-        assert!(out.status.success(), "the child run failed:\n{text}");
+        let text = format!("{}{}", ran.stdout, ran.stderr);
+        assert!(ran.status.success(), "the child run failed:\n{ran}");
         assert!(
             text.contains(&format!("test {name} ... ok")),
             "the scenario did not run:\n{text}"
@@ -1088,13 +1085,9 @@ pub(crate) mod tests {
                 Ok(())
             });
         }
-        let out = cmd.output().expect("re-execute the test binary");
-        let text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        assert!(out.status.success(), "the child run failed:\n{text}");
+        let ran = sot_log::test_wait::run_within(&mut cmd, sot_log::test_isolated::ISOLATION_TIMEOUT);
+        let text = format!("{}{}", ran.stdout, ran.stderr);
+        assert!(ran.status.success(), "the child run failed:\n{ran}");
         assert!(
             text.contains(&format!("test {name} ... ok")),
             "the scenario did not run:\n{text}"
@@ -1122,7 +1115,7 @@ pub(crate) mod tests {
                 .await
                 .expect("the wait never saw the leader's exit")
                 .expect("wait");
-            assert!(status.success());
+            assert!(status.success(), "the leader ended: {status}");
         });
     }
 

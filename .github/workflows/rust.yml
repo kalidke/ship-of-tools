@@ -313,8 +313,11 @@ jobs:
         run: cargo build --workspace --locked
       # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
       # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
-      - name: Function length
-        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::too_many_lines
+      # CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_log::test_wait (docs/ownership.md).
+      - name: Function length and test children
+        env:
+          CLIPPY_CONF_DIR: "${{ github.workspace }}/rust/clippy-tests"
+        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::too_many_lines -D clippy::disallowed_methods
       # rust/clippy.toml holds the rules this step enforces, one labelled group each, every group opening with its
       # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
       # that does not exist on a leg draws a warning there.
@@ -380,6 +383,10 @@ jobs:
       # making the sweeps' actual coverage invisible (review finding).
       # --no-fail-fast: one failing test binary must not hide the others.
       - name: Test workspace
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
         run: cargo test --workspace --locked --no-fail-fast -- --nocapture
 
       # The PowerShell scripts are executed by nothing in CI, and no dev box in
@@ -548,6 +555,10 @@ jobs:
       # here. --no-fail-fast: one failing test binary must not hide the others.
       - name: Test shard ${{ matrix.shard }}
         shell: bash
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
         run: |
           python3 - "${{ matrix.shard }}" "${{ strategy.job-index }}" "${{ strategy.job-total }}" <<'PYSHARD'
           import json, os, subprocess, sys
@@ -610,8 +621,11 @@ jobs:
           workspaces: rust
       # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
       # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
-      - name: Function length
-        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::too_many_lines
+      # CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_log::test_wait (docs/ownership.md).
+      - name: Function length and test children
+        env:
+          CLIPPY_CONF_DIR: "${{ github.workspace }}/rust/clippy-tests"
+        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close,sot-backend/daemon-lifetime-faults --locked -- -A clippy::all -D clippy::too_many_lines -D clippy::disallowed_methods
       - name: Test native harness helpers
         shell: bash
         run: |
@@ -752,6 +766,13 @@ jobs:
       - name: Test topology plan (bash)
         timeout-minutes: 5
         run: bash scripts/tests/test-topology-plan.sh
+        working-directory: .
+
+      # The runner the build+test jobs put between cargo and each test binary: a binary that hangs ends at its bound
+      # with the hung test named, and one that ends keeps its output and exit code. Hermetic, on stand-in binaries.
+      - name: Test the test-binary bound
+        timeout-minutes: 2
+        run: bash scripts/tests/test-test-binary-bound.sh
         working-directory: .
 
       # The installer's pure decisions and the sot-launch socket probe, run
@@ -1037,6 +1058,7 @@ jobs:
   p2-e2e:
     name: P2 e2e (real helper, offline)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     steps:
       - uses: actions/checkout@v7
@@ -1071,6 +1093,8 @@ jobs:
   fresh-install-smoke:
     name: fresh install smoke (clean container)
     runs-on: ubuntu-latest
+    # Usually 3 to 4 minutes.
+    timeout-minutes: 15
     if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     container: ubuntu:22.04
     steps:

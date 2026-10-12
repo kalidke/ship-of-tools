@@ -96,13 +96,18 @@ async fn connect_and_hello(socket_path: &Path, name: &str) -> Conn {
         ..HelloReq::this_process(name, "cli", Some("hub-a".to_string())).expect("this process's account")
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None).await.expect("write hello");
-    loop {
-        let (frame, _) = codec::read_frame(&mut conn).await.expect("read hello reply");
-        if frame.kind == Kind::Res && frame.id == 1 {
-            assert!(frame.payload.get("error").is_none(), "hello refused: {:?}", frame.payload);
-            return conn;
+    tokio::time::timeout(BOUND, async {
+        loop {
+            let (frame, _) = codec::read_frame(&mut conn).await.expect("read hello reply");
+            if frame.kind == Kind::Res && frame.id == 1 {
+                assert!(frame.payload.get("error").is_none(), "hello refused: {:?}", frame.payload);
+                return;
+            }
         }
-    }
+    })
+    .await
+    .expect("the hello reply within BOUND");
+    conn
 }
 
 /// Sends `agent.send` with sender-minted `id` and reports whether an
@@ -122,8 +127,12 @@ async fn send_and_wait_receipt(conn: &mut Conn, id: &str, to: &str, filer: &str,
 }
 
 fn now_iso(offset_secs: i64) -> String {
-    let out = Command::new("date").args(["-u", "-d", &format!("{offset_secs} seconds"), "+%Y-%m-%dT%H:%M:%SZ"]).output().expect("date");
-    String::from_utf8(out.stdout).unwrap().trim().to_string()
+    let ran = sot_log::test_wait::run_within(
+        Command::new("date").args(["-u", "-d", &format!("{offset_secs} seconds"), "+%Y-%m-%dT%H:%M:%SZ"]),
+        BOUND,
+    )
+    .ok();
+    ran.stdout.trim().to_string()
 }
 
 /// A stub `ssh`: the first invocation lives 4 s (a link that drops), every later one relays for good.

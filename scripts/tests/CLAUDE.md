@@ -93,6 +93,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   `sotd`. Runs in the `rust.yml` step "Test topology plan".
 - `test-topology-plan.sh`: `sot_topology_plan` (scripts/lib/sot-hosts.sh) against a fake `sotd`. Runs in the `rust.yml` step
   "Test topology plan (bash)" (job `checks-linux`) and in `rc-gate.sh`.
+- `test-binary-bound.py`: cargo's test runner in the build+test jobs: each test binary ends at its bound (900 s in CI), naming the tests libtest reported running that never ended
+- `test-test-binary-bound.sh`: its check, on stand-in binaries
 
 ## Tools
 

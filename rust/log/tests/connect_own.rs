@@ -122,12 +122,13 @@ mod unix {
     #[test]
     fn a_listener_seen_from_an_unmapped_user_namespace_is_refused() {
         use std::process::{Command, Stdio};
-        let unshare = Command::new("unshare")
-            .args(["-U", "true"])
-            .stdin(Stdio::null())
-            .status();
-        if !matches!(unshare, Ok(status) if status.success()) {
-            eprintln!("skipped: `unshare -U` cannot create a user namespace here: {unshare:?}");
+        let unshare = sot_log::test_wait::try_run_within(
+            Command::new("unshare").args(["-U", "true"]),
+            sot_log::test_isolated::ISOLATION_TIMEOUT,
+        );
+        if !matches!(&unshare, Ok(ran) if ran.status.success()) {
+            let why = unshare.map_or_else(|why| why, |ran| ran.to_string());
+            eprintln!("skipped: `unshare -U` cannot create a user namespace here: {why}");
             return;
         }
         let (dir, path, listener) = listener_in_folder(0o700);

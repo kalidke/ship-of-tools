@@ -710,8 +710,7 @@ mod tests {
             let junction = dir.path().join("j1");
             let mut mklink = std::process::Command::new("cmd");
             mklink.args(["/C", "mklink", "/J"]).arg(&junction).arg(alias.parent().unwrap());
-            let made = crate::lifecycle::child_signal::process().output(&mut mklink, std::time::Duration::from_secs(30)).expect("run mklink");
-            assert!(made.status.success(), "setup: the owned junction could not be made");
+            sot_log::test_wait::run_within(&mut mklink, std::time::Duration::from_secs(30)).ok();
             let link_dir = dir.path().join("links");
             std::fs::create_dir_all(&link_dir).unwrap();
             let via_link = link_dir.join(JULIA_EXE);

@@ -517,7 +517,8 @@ impl Env {
         let setenv = |k: &str, v: &std::ffi::OsStr| format!("--setenv={k}={}", v.to_string_lossy());
         let path = std::env::var_os("PATH").unwrap_or_default();
         let home = std::env::var_os("HOME").unwrap_or_default();
-        let status = Command::new("systemd-run")
+        let mut command = Command::new("systemd-run");
+        command
             .arg("--user")
             .arg("--unit")
             .arg(&unit)
@@ -535,36 +536,26 @@ impl Env {
             .arg("--socket")
             .arg(&self.socket_path)
             .arg("--project-root")
-            .arg(&self.daemon_project_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("systemd-run --user --unit spawn_sotd_as_user_service");
-        assert!(status.success(), "systemd-run --user --unit {unit} failed to start ({status})");
+            .arg(&self.daemon_project_root);
+        sot_log::test_wait::run_within(&mut command, BOUND).ok();
         // Tracked BEFORE returning, not after — a panic between here and
         // the caller ever reading the return value must still leave
         // `Drop` able to find and stop it.
         *self.user_service_unit.borrow_mut() = Some(unit.clone());
         // `--service-type=exec` (set above) makes `systemd-run` itself
         // return only once the unit's own `execve` has actually happened
-        // — MainPID is therefore already populated the moment `status()`
+        // — MainPID is therefore already populated the moment `run_within`
         // returns, no poll needed.
-        let pid_output = Command::new("systemctl")
-            .arg("--user")
-            .arg("show")
-            .arg(&unit)
-            .arg("--property=MainPID")
-            .arg("--value")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .expect("systemctl --user show MainPID");
-        let pid: u32 = String::from_utf8_lossy(&pid_output.stdout)
+        let pid_ran = sot_log::test_wait::run_within(
+            Command::new("systemctl").args(["--user", "show"]).arg(&unit).args(["--property=MainPID", "--value"]),
+            BOUND,
+        )
+        .ok();
+        let pid: u32 = pid_ran
+            .stdout
             .trim()
             .parse()
-            .unwrap_or_else(|e| panic!("parse MainPID for {unit}: {e}"));
+            .unwrap_or_else(|e| panic!("parse MainPID for {unit}: {e}: {pid_ran}"));
         (unit, pid)
     }
 
@@ -640,14 +631,7 @@ impl Drop for Env {
         // sweep) — never the asserting version test bodies use.
         #[cfg(target_os = "linux")]
         if let Some(unit) = self.user_service_unit.get_mut().take() {
-            let _ = Command::new("systemctl")
-                .arg("--user")
-                .arg("stop")
-                .arg(&unit)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            let _ = sot_log::test_wait::try_run_within(Command::new("systemctl").args(["--user", "stop"]).arg(&unit), BOUND);
         }
 
         // (1) the daemon, first. `&mut self` here (not `&self`), so
@@ -674,20 +658,19 @@ impl Drop for Env {
         {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let pids = own_capsule_pids(&self.state_root);
+                // A listing that cannot answer ends the sweep: a Drop cannot fail, and the next check that asks
+                // fails with the listing's account.
+                let Ok(pids) = try_own_capsule_pids(&self.state_root) else {
+                    break;
+                };
                 if pids.is_empty() || Instant::now() >= deadline {
                     break;
                 }
                 for pid in pids {
-                    let _ = Command::new("taskkill")
-                        .arg("/F")
-                        .arg("/T")
-                        .arg("/PID")
-                        .arg(pid.to_string())
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
+                    let _ = sot_log::test_wait::try_run_within(
+                        Command::new("taskkill").args(["/F", "/T", "/PID"]).arg(pid.to_string()),
+                        BOUND,
+                    );
                 }
                 std::thread::sleep(Duration::from_millis(200));
             }
@@ -712,23 +695,11 @@ impl Drop for Env {
             let combined_pattern = self.leg_pgrep_pattern();
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
-                let _ = Command::new("pkill")
-                    .arg("-9")
-                    .arg("-f")
-                    .arg(&supervise_pattern)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                let _ = Command::new("pkill")
-                    .arg("-9")
-                    .arg("-f")
-                    .arg(&run_pattern)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                if !any_process_matches(&combined_pattern) || Instant::now() >= deadline {
+                let _ = sot_log::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&supervise_pattern), BOUND);
+                let _ = sot_log::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&run_pattern), BOUND);
+                // A pgrep that cannot answer ends the sweep: a Drop cannot fail, and the next check that asks fails
+                // with pgrep's account.
+                if !matches!(count_matching_processes(&combined_pattern), Ok(n) if n > 0) || Instant::now() >= deadline {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(50));

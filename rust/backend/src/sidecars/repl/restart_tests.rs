@@ -80,7 +80,8 @@ impl Fixture {
     }
 
     fn new(julia: bool) -> Self {
-        let root = tempfile::tempdir().expect("owned fixture root").keep();
+        let dir = tempfile::tempdir().expect("owned fixture root");
+        let root = dir.path().to_path_buf();
         if julia {
             owned_julia_env(&root);
         }
@@ -91,6 +92,7 @@ impl Fixture {
         let sig = private_signal();
         let (tx, frames) = broadcast::channel(256);
         let repl = Repl::new(tx, Some("ws-restart".into()), first.clone(), sig);
+        let root = dir.keep();
         Fixture {
             root,
             first,

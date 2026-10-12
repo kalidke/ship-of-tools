@@ -44,11 +44,13 @@ pub fn build_leg_pgrep_pattern(exe: &Path, subcommand: &str, state_root: &Path) 
 /// command-line quoting to get wrong); a path is embedded as a
 /// single-quoted literal with its quotes doubled, and matched with
 /// `.ToLower().Contains(...)`, never `-like`, since a path may hold `[`.
-/// Empty when PowerShell itself cannot be run. The script ends with an
+/// `Err`, with PowerShell's account, whenever it could not answer (it did not start, did not end within `BOUND`, or
+/// exited non-zero): a listing that fails must never read as "no capsule is running". Never panics, so [`Env`]'s `Drop`
+/// can call it; [`own_capsule_pids`] is its panicking form. The script ends with an
 /// empty line: `-Command -` runs a multi-line statement read from stdin
 /// only once an empty line follows it.
 #[cfg(windows)]
-pub fn own_capsule_pids(state_root: &Path) -> Vec<u32> {
+pub fn try_own_capsule_pids(state_root: &Path) -> Result<Vec<u32>, String> {
     use std::io::Write;
     // A path as given AND as the filesystem names it: a TEMP in 8.3 short
     // form (`RUNNER~1`) reaches a capsule's command line in long form, and
@@ -84,22 +86,24 @@ pub fn own_capsule_pids(state_root: &Path) -> Vec<u32> {
         exe = lits(&sot_capsule_exe()),
         root = lits(state_root),
     );
-    let Ok(mut child) = Command::new("powershell")
+    let mut child = Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
-    else {
-        return Vec::new();
-    };
+        .map_err(|error| format!("start powershell for the capsule process list: {error}"))?;
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(script.as_bytes());
     }
-    let Ok(out) = child.wait_with_output() else {
-        return Vec::new();
-    };
-    let mut found: Vec<(u8, u32)> = String::from_utf8_lossy(&out.stdout)
+    // The script is the child's input, so this waits through `drain` rather than `run_within`.
+    let (status, stdout, stderr) = sot_log::test_isolated::drain(child)
+        .try_wait_within(BOUND)
+        .map_err(|failure| format!("the capsule process list: {failure}"))?;
+    if !status.success() {
+        return Err(format!("the capsule process list failed: {status}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"));
+    }
+    let mut found: Vec<(u8, u32)> = stdout
         .lines()
         .filter_map(|l| {
             let (pid, kind) = l.trim().split_once(' ')?;
@@ -112,7 +116,14 @@ pub fn own_capsule_pids(state_root: &Path) -> Vec<u32> {
         })
         .collect();
     found.sort();
-    found.into_iter().map(|(_, pid)| pid).collect()
+    Ok(found.into_iter().map(|(_, pid)| pid).collect())
+}
+
+/// [`try_own_capsule_pids`], failing the caller with its reason when the listing cannot be read.
+#[cfg(windows)]
+#[allow(dead_code)]
+pub fn own_capsule_pids(state_root: &Path) -> Vec<u32> {
+    try_own_capsule_pids(state_root).unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// `PATH` with every directory removed that contains a file named any of
@@ -133,16 +144,9 @@ pub fn path_without(names: &[&str]) -> std::ffi::OsString {
 /// below (to prove both "before" and "after").
 #[cfg(target_os = "linux")]
 pub fn any_process_matches(pattern: &str) -> bool {
-    Command::new("pgrep")
-        .arg("-f")
-        .arg(pattern)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    count_matching_processes(pattern).unwrap_or_else(|error| panic!("{error}")) > 0
 }
+
 /// G3 (LU4 review round 2): the SAME bounded, sweep-until-empty shape
 /// `Env`'s own `Drop` uses for its active pkill loop, but read-only — no
 /// re-signalling, since by the time a caller here needs it `Drop` has
@@ -166,26 +170,6 @@ pub fn poll_until_no_process_matches(pattern: &str, timeout: Duration) -> bool {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-/// Drains `pipe` to EOF or `bound`, whichever comes first — mirrors
-/// `rows::spawn::detach::drain_stderr_bounded` (production, Codex
-/// SHOULD-FIX: a wrapper that has already exited can still leave stderr
-/// inherited by a still-running grandchild, and a plain `read_to_string`
-/// then blocks until EVERY holder of the pipe's write end closes it, not
-/// just the immediate child whose own exit was already observed —
-/// measured 7 s in production's own repro). Same off-thread-plus-
-/// `recv_timeout` shape, duplicated rather than shared for the same
-/// crate-boundary reason [`user_manager_available_for_test`]'s own doc
-/// gives for duplicating the probe itself.
-#[cfg(target_os = "linux")]
-fn drain_stderr_bounded(mut pipe: impl std::io::Read + Send + 'static, bound: Duration) -> String {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = String::new();
-        let _ = pipe.read_to_string(&mut buf);
-        let _ = tx.send(buf);
-    });
-    rx.recv_timeout(bound).unwrap_or_default()
 }
 
 /// A4b: the cgroup2 path of `pid`, the trimmed `0::` line of
@@ -298,39 +282,20 @@ pub fn aim_scope_guard(rel: &str, own_rel: &str, state_dir: &Path) -> String {
 /// (that function is private to its own crate) — the two probes are a
 /// handful of lines each and answer the same question for genuinely
 /// different callers, not worth a shared crate-boundary-crossing export.
-/// `Err`'s message is the probe's own stderr, verbatim where there is
-/// any, drained under its own separate bound — exactly what the caller
-/// prints on `SKIPPED:`.
+/// `Err` is the probe's whole account (its command, exit status and both
+/// streams), or why it has none, within production's own 5 s probe
+/// bound — exactly what the caller prints on `SKIPPED:`.
 #[cfg(target_os = "linux")]
 pub fn user_manager_available_for_test() -> Result<(), String> {
-    let mut child = Command::new("systemd-run")
-        .args(["--user", "--scope", "--quiet", "--", "/bin/true"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
-            break s;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("systemd-run --user --scope did not answer within 5s".to_string());
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    if status.success() {
-        return Ok(());
+    let ran = sot_log::test_wait::try_run_within(
+        Command::new("systemd-run").args(["--user", "--scope", "--quiet", "--", "/bin/true"]),
+        Duration::from_secs(5),
+    )?;
+    if ran.status.success() {
+        Ok(())
+    } else {
+        Err(ran.to_string())
     }
-    let stderr = child
-        .stderr
-        .take()
-        .map(|pipe| drain_stderr_bounded(pipe, Duration::from_secs(1)))
-        .unwrap_or_default();
-    Err(stderr.trim().to_string())
 }
 /// Stop the scratch unit [`Env::spawn_sotd_as_user_service`] started —
 /// NEVER the live `sotd`'s own unit, a distinct `sot-test-<uuid>.service`
@@ -349,16 +314,7 @@ pub fn user_manager_available_for_test() -> Result<(), String> {
 /// backing this unit is actually dead.
 #[cfg(target_os = "linux")]
 pub fn stop_user_service(unit: &str, daemon_pid: u32) {
-    let status = Command::new("systemctl")
-        .arg("--user")
-        .arg("stop")
-        .arg(unit)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .expect("run systemctl --user stop");
-    assert!(status.success(), "systemctl --user stop {unit} failed ({status})");
+    sot_log::test_wait::run_within(Command::new("systemctl").args(["--user", "stop", unit]), BOUND).ok();
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -382,14 +338,7 @@ pub fn stop_user_service(unit: &str, daemon_pid: u32) {
 #[allow(dead_code)]
 pub fn kill_supervisor_only(state_root: &Path) {
     let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", state_root);
-    let _ = Command::new("pkill")
-        .arg("-9")
-        .arg("-f")
-        .arg(&pattern)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let _ = sot_log::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&pattern), BOUND);
     assert!(
         poll_until_no_process_matches(&pattern, BOUND),
         "a supervisor process still matches {pattern:?} after SIGKILL"
@@ -398,19 +347,19 @@ pub fn kill_supervisor_only(state_root: &Path) {
 
 /// The number of live processes whose command line matches `pattern` —
 /// [`any_process_matches`]'s counting twin, needed by the stale-attach
-/// tests to prove "at most ONE," not merely "at least one." `Err`
-/// only when `pgrep` itself could not be run at all (Codex review,
-/// 2026-09-11: a query failure must fail the test, never silently count
-/// as "zero processes" — a false "at most one" proves nothing). `pgrep`
-/// exiting 1 (no match) is a normal, successful `Ok(0)`, not an error.
+/// tests to prove "at most ONE," not merely "at least one." `Err`, with
+/// pgrep's account, whenever `pgrep` could not answer (it did not start,
+/// did not end within `BOUND`, or exited other than 0 or 1): a query
+/// failure must fail the test, never count as "zero processes". `pgrep`
+/// exiting 1 (no match) is `Ok(0)`. Never panics, so [`Env`]'s `Drop` can
+/// call it.
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 pub fn count_matching_processes(pattern: &str) -> std::io::Result<usize> {
-    let output = Command::new("pgrep")
-        .arg("-f")
-        .arg(pattern)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()?;
-    Ok(String::from_utf8_lossy(&output.stdout).lines().filter(|l| !l.trim().is_empty()).count())
+    let ran = sot_log::test_wait::try_run_within(Command::new("pgrep").args(["-f", pattern]), BOUND)
+        .map_err(std::io::Error::other)?;
+    match ran.status.code() {
+        Some(0 | 1) => Ok(ran.stdout.lines().filter(|l| !l.trim().is_empty()).count()),
+        _ => Err(std::io::Error::other(format!("pgrep could not answer: {ran}"))),
+    }
 }

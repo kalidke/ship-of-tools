@@ -37,14 +37,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sot_protocol::op;
-// Linux-only: every `Command`/`Stdio` call site left in this file after
+// Linux-only: every `Command` call site left in this file after
 // the ADR 0045 lane B4b support-module lift (`kill_supervisor_only`,
 // `count_matching_processes`; `kill_leg_only` stays here) and every `Frame`/`codec::`
 // call site (the `lane.connect` fixtures) live inside
 // `#[cfg(target_os = "linux")]` helpers -- an unguarded import here would
 // warn unused on Windows.
 #[cfg(target_os = "linux")]
-use std::process::{Command, Stdio};
+use std::process::Command;
 #[cfg(target_os = "linux")]
 use sot_protocol::{codec, Frame};
 // LU5a: only the Linux-only unqualified-state-root refusal test below
@@ -310,14 +310,7 @@ async fn state_dir_from_list(conn: &mut Conn, next_id: &mut u64, workspace_id: &
 #[cfg(target_os = "linux")]
 fn kill_leg_only(state_root: &Path) {
     let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "run", state_root);
-    let _ = Command::new("pkill")
-        .arg("-9")
-        .arg("-f")
-        .arg(&pattern)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let _ = sot_log::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&pattern), BOUND);
     assert!(
         poll_until_no_process_matches(&pattern, BOUND),
         "a leg process still matches {pattern:?} after SIGKILL"

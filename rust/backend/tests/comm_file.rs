@@ -98,14 +98,16 @@ const NO_DAEMON: &str = r#"sot_daemon_endpoint() { printf 'unix:/nonexistent/sot
 
 /// `sot_inbox_lock_identity DIR` from the script arm.
 fn script_identity(dir: &Path) -> String {
-    let out = Command::new("bash")
-        .arg("-c")
-        .arg(format!(r#"source "$1"; {NO_DAEMON}; sot_inbox_lock_identity "$2""#))
-        .args(["_", comm_lib().to_str().unwrap(), dir.to_str().unwrap()])
-        .env_remove("SOT_SOCKET")
-        .output()
-        .unwrap();
-    String::from_utf8(out.stdout).unwrap().trim_end().to_string()
+    let ran = sot_log::test_wait::run_within(
+        Command::new("bash")
+            .arg("-c")
+            .arg(format!(r#"source "$1"; {NO_DAEMON}; sot_inbox_lock_identity "$2""#))
+            .args(["_", comm_lib().to_str().unwrap(), dir.to_str().unwrap()])
+            .env_remove("SOT_SOCKET"),
+        BOUND,
+    )
+    .ok();
+    ran.stdout.trim_end().to_string()
 }
 
 // Identity parity on the real mounts: the daemon's mountinfo walk and the
@@ -132,17 +134,18 @@ fn the_filer_and_the_script_take_the_same_lock() {
     let script = {
         let home = d.path().to_path_buf();
         std::thread::spawn(move || {
-            let st = Command::new("bash")
-                .arg("-c")
-                .arg(format!(r#"source "$1"; {NO_DAEMON}; for i in $(seq 0 199); do
+            sot_log::test_wait::run_within(
+                Command::new("bash")
+                    .arg("-c")
+                    .arg(format!(r#"source "$1"; {NO_DAEMON}; for i in $(seq 0 199); do
                         printf '{{"from":"sh","to":"t3","repo":"r","msg":"sh-%s","ts":"t"}}\n' "$i" \
                           | sot_inbox_append t3 >/dev/null || exit 1; done"#))
-                .args(["_", comm_lib().to_str().unwrap()])
-                .env_remove("SOT_SOCKET")
-                .env("SOT_COMM_HOME", &home)
-                .status()
-                .unwrap();
-            assert!(st.success(), "the script arm refused a line");
+                    .args(["_", comm_lib().to_str().unwrap()])
+                    .env_remove("SOT_SOCKET")
+                    .env("SOT_COMM_HOME", &home),
+                BOUND,
+            )
+            .ok();
         })
     };
     for i in 0..200 {
@@ -192,9 +195,8 @@ fn a_frozen_holder_makes_the_filer_wait_then_fail() {
     let e = file_frame(&inbox, "rust", "f", false, "frozen", "t", Duration::from_secs(1), "local t").unwrap_err();
     assert!(t0.elapsed() >= Duration::from_secs(1));
     assert_eq!(e, "the inbox lock for @f was held for 1s — nothing was appended");
-    let st = Command::new("kill").args(["-CONT", &h.id().to_string()]).status().unwrap();
-    assert!(st.success());
-    h.wait().unwrap();
+    sot_log::test_wait::run_within(Command::new("kill").args(["-CONT", &h.id().to_string()]), BOUND).ok();
+    sot_log::test_isolated::wait_within(&mut h, BOUND);
     assert_eq!(whole_lines(&inbox.join("f.jsonl")), ["resumed"]);
     file_frame(&inbox, "rust", "f", false, "after", "t", Duration::from_secs(1), "local t").unwrap();
     assert_eq!(whole_lines(&inbox.join("f.jsonl")), ["resumed", "after"]);
@@ -361,44 +363,37 @@ fn t11_rust_sends_one() {
 /// Stages the scripts and runs `comm-join.sh` for row `ws` as that row's session, on the raw host `raw` under the declared host `declared`.
 fn join_in_row(env: &Env, ws: &str, handle: &str, raw: &str, declared: &str) {
     let bin = env._tmp.path().join("bin");
-    let staged = Command::new("bash")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../comm/tests/stage-bin.sh"
-        ))
-        .arg(&bin)
-        .output()
-        .unwrap();
-    assert!(
-        staged.status.success(),
-        "staging failed: {}",
-        String::from_utf8_lossy(&staged.stdout)
-    );
+    sot_log::test_wait::run_within(
+        Command::new("bash")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../comm/tests/stage-bin.sh"
+            ))
+            .arg(&bin),
+        BOUND,
+    )
+    .ok();
     // Beneath a stand-in for the row's capsule (the process walk reads only the command line), as the session is.
-    let join = Command::new("bash")
-        .args(["-c", "exec -a sot-capsule bash -c 'shift; \"$@\"; exit $?' _ \"/in-row/state/workspaces/$0/voyages/v0\" timeout 60 bash \"$1\" --name \"$2\""])
-        .arg(ws)
-        .arg(bin.join("comm-join.sh"))
-        .arg(handle)
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("HOME", &env.home_root)
-        .env("SOT_COMM_HOME", &env.comm_root)
-        .env("SOT_COMM_TEST_HOST", raw)
-        .env("SOT_SELF_HOST", declared)
-        .env("SOT_SOCKET", &env.socket_path)
-        .env("SOT_WORKSPACE_ID", ws)
-        .env("XDG_RUNTIME_DIR", env._runtime_tmp.path())
-        .env("TMPDIR", env._tmp.path())
-        .current_dir(&env.workspace_project_root)
-        .output()
-        .expect("run comm-join.sh");
-    assert!(
-        join.status.success(),
-        "join: {} {}",
-        String::from_utf8_lossy(&join.stdout),
-        String::from_utf8_lossy(&join.stderr)
-    );
+    sot_log::test_wait::run_within(
+        Command::new("bash")
+            .args(["-c", "exec -a sot-capsule bash -c 'shift; \"$@\"; exit $?' _ \"/in-row/state/workspaces/$0/voyages/v0\" timeout 60 bash \"$1\" --name \"$2\""])
+            .arg(ws)
+            .arg(bin.join("comm-join.sh"))
+            .arg(handle)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", &env.home_root)
+            .env("SOT_COMM_HOME", &env.comm_root)
+            .env("SOT_COMM_TEST_HOST", raw)
+            .env("SOT_SELF_HOST", declared)
+            .env("SOT_SOCKET", &env.socket_path)
+            .env("SOT_WORKSPACE_ID", ws)
+            .env("XDG_RUNTIME_DIR", env._runtime_tmp.path())
+            .env("TMPDIR", env._tmp.path())
+            .current_dir(&env.workspace_project_root),
+        BOUND,
+    )
+    .ok();
 
 }
 

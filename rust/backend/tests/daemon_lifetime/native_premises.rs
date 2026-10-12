@@ -159,20 +159,27 @@ fn setup_and_exec_errors_are_named_by_stage_and_errno_and_the_target_never_runs(
         (Stage::Cwd, libc::ENOTDIR),
         "{err}"
     );
+    assert!(
+        fx.identity(index).exited(BOUND),
+        "the child that failed its cwd step did not exit within {BOUND:?}"
+    );
     assert_eq!(birth.wait().unwrap().code(), Some(126));
-    assert!(fx.identity(index).exited(BOUND));
 
     // A group that does not exist.
     let mut launch = sh("echo entered > \"$MARK\"");
     launch.env("MARK", &mark).group(Group::Join(i32::MAX - 1));
-    let (mut birth, _) = gated(&mut fx, launch, "bad group");
+    let (mut birth, index) = gated(&mut fx, launch, "bad group");
     let err = birth.ready(BOUND).expect_err("the group step fails");
     assert_eq!(error_of(&err).stage, Stage::Group, "{err}");
+    assert!(
+        fx.identity(index).exited(BOUND),
+        "the child that failed its group step did not exit within {BOUND:?}"
+    );
     assert_eq!(birth.wait().unwrap().code(), Some(126));
 
     // A target that cannot be executed: the child is ready, and the error comes after the release.
     let launch = Launch::new(dir.path().join("no-such-program"));
-    let (mut birth, _) = gated(&mut fx, launch, "bad exec");
+    let (mut birth, index) = gated(&mut fx, launch, "bad exec");
     birth.ready(BOUND).expect("set up fine");
     birth.release().unwrap();
     let err = birth.exec_result(BOUND).expect_err("the exec step fails");
@@ -180,6 +187,10 @@ fn setup_and_exec_errors_are_named_by_stage_and_errno_and_the_target_never_runs(
         (error_of(&err).stage, error_of(&err).errno),
         (Stage::Exec, libc::ENOENT),
         "{err}"
+    );
+    assert!(
+        fx.identity(index).exited(BOUND),
+        "the child whose exec failed did not exit within {BOUND:?}"
     );
     assert_eq!(birth.wait().unwrap().code(), Some(127));
 
@@ -454,20 +465,22 @@ fn the_claim_outlives_its_parents_death() {
     let mut fx = Fixture::new("claim_outlives_parent");
     let (mut command, entry) =
         sot_log::test_isolated::test_command("native_premises::claim_parent_role");
-    let mut parent = command
+    let parent = command
         .env("SOT_L2_ROLE_DIR", dir.path())
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("start the role");
-    let parent_status = parent.wait().expect("the role ended");
+    let parent_pid = parent.id();
+    let (parent_status, out, err) =
+        sot_log::test_isolated::drain(parent).wait_within(sot_log::test_isolated::ISOLATION_TIMEOUT);
     assert_eq!(
         parent_status.signal(),
         Some(libc::SIGKILL),
-        "the role was meant to die by SIGKILL: {parent_status}"
+        "the role was meant to die by SIGKILL: {parent_status}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"
     );
-    entry.assert_once(parent.id());
+    entry.assert_once(parent_pid);
 
     let text =
         std::fs::read_to_string(dir.path().join("child.txt")).expect("the role named its child");

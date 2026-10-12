@@ -6,6 +6,8 @@ use std::process::{Child, Command, Stdio};
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+const BOUND: Duration = Duration::from_secs(30);
+
 /// Set, the next post-settle re-read fails once (the review's EMFILE/EIO).
 pub(super) static FAIL_REREAD: AtomicBool = AtomicBool::new(false);
 
@@ -78,30 +80,39 @@ fn shell(home: &Path, body: &str) -> (Group, String) {
             .spawn()
             .unwrap(),
     ));
-    let mut line = String::new();
-    BufReader::new(c.0.as_mut().unwrap().stdout.as_mut().unwrap()).read_line(&mut line).unwrap();
+    let mut stdout = c.0.as_mut().unwrap().stdout.take().unwrap();
+    // The reader goes to a thread of its own and comes back with the line, so the child's stdout stays open.
+    let (stdout, line) = sot_log::test_wait::within(BOUND, "the shell holder's first line", move || {
+        let mut line = String::new();
+        BufReader::new(&mut stdout).read_line(&mut line).unwrap();
+        (stdout, line)
+    });
+    c.0.as_mut().unwrap().stdout = Some(stdout);
     (c, line.trim().to_string())
 }
 
-fn run(home: &Path, body: &str) -> String {
-    let out = Command::new("bash")
-        .arg("-c")
-        .arg(format!(". '{LIB}'; {body}"))
-        .env("SOT_COMM_HOME", home)
-        .env("SOT_COMM_TEST_LOCK_SETTLE", "0.05")
-        .output()
-        .unwrap();
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
+fn run(home: &Path, body: &str) -> sot_log::test_wait::Ran {
+    sot_log::test_wait::run_within(
+        Command::new("bash")
+            .arg("-c")
+            .arg(format!(". '{LIB}'; {body}"))
+            .env("SOT_COMM_HOME", home)
+            .env("SOT_COMM_TEST_LOCK_SETTLE", "0.05"),
+        BOUND,
+    )
 }
 
 /// A shell holder SIGKILLed inside its critical section.
 fn dead_shell_holder(home: &Path) {
-    let _ = Command::new("bash")
-        .arg("-c")
-        .arg(format!(". '{LIB}'; with_lock kill -9 $$"))
-        .env("SOT_COMM_HOME", home)
-        .status()
-        .unwrap();
+    use std::os::unix::process::ExitStatusExt;
+    let ran = sot_log::test_wait::run_within(
+        Command::new("bash")
+            .arg("-c")
+            .arg(format!(". '{LIB}'; with_lock kill -9 $$"))
+            .env("SOT_COMM_HOME", home),
+        BOUND,
+    );
+    assert_eq!(ran.status.signal(), Some(9), "the holder was meant to die by SIGKILL: {ran}");
     assert!(home.join(".registry.lock").is_file(), "the killed holder left its lock");
 }
 
@@ -115,10 +126,12 @@ fn the_shell_and_rust_records_are_byte_equal_and_judged_alike() {
     let me = Me::now();
     assert!(matches!(judge(&shell_id, &me).0, Verdict::Alive));
     let q = format!("_sot_lock_self_id; _sot_lock_judge '{shell_id}'; echo $_SOT_LOCK_VERDICT");
-    assert_eq!(run(&home, &q), "ALIVE");
+    let ran = run(&home, &q);
+    assert_eq!(ran.stdout.trim(), "ALIVE", "{ran}");
     child.end();
     assert!(matches!(judge(&shell_id, &me).0, Verdict::Dead));
-    assert_eq!(run(&home, &q), "DEAD");
+    let ran = run(&home, &q);
+    assert_eq!(ran.stdout.trim(), "DEAD", "{ran}");
     let _ = fs::remove_dir_all(&home);
 }
 
@@ -216,7 +229,8 @@ fn a_marker_this_process_abandoned_is_adopted_by_its_next_writer() {
         .unwrap();
     assert!(second.is_ok(), "the next writer adopted the marker: {second:?}");
     assert!(!lock.exists(), "released");
-    assert_eq!(run(&home, "with_lock true && echo held"), "held", "a shell writer is not wedged");
+    let ran = run(&home, "with_lock true && echo held");
+    assert_eq!(ran.stdout.trim(), "held", "a shell writer is not wedged: {ran}");
     assert!(acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50)).is_ok(), "nor a later sotd writer");
     let markers = fs::read_dir(&home).unwrap().filter(|e| {
         e.as_ref().unwrap().file_name().to_string_lossy().starts_with(".registry.lock.reclaim.")
@@ -448,8 +462,8 @@ fn one_rust_thread_and_two_shell_waiters_hold_one_at_a_time() {
         drop(held);
         let pids: Vec<u32> = waiters.iter().map(|w| w.id()).collect();
         for w in waiters {
-            let out = w.wait_with_output().unwrap();
-            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "held", "round {round}");
+            let (status, stdout, stderr) = sot_log::test_isolated::drain(w).wait_within(BOUND);
+            assert_eq!(stdout.trim(), "held", "round {round}: {status}, stderr: {stderr}");
         }
         assert!(!lock.exists(), "round {round}: released");
         // A shell waiter that reads another waiter's record, which then releases, exits and is reaped

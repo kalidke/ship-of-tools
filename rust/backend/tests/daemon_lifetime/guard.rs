@@ -418,7 +418,7 @@ pub async fn lease_on(socket: &Path) -> crate::support::Conn {
         &Frame::req(1, op::FE_LEASE, serde_json::to_value(&lease).unwrap()),
     )
     .await;
-    let (reply, _) = codec::read_frame(&mut conn).await.expect("the lease reply");
+    let (reply, _) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn)).await.expect("the lease reply within BOUND").expect("the lease reply");
     assert_eq!(reply.payload["outcome"], "granted", "{:?}", reply.payload);
     conn
 }

@@ -5,6 +5,8 @@ use super::*;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+const BOUND: Duration = Duration::from_secs(30);
+
 /// A daemon that answers the lease (with the outcome `gate` is opened with,
 /// once it has signalled the request, when given; else `granted` at once),
 /// then logs each frame the window writes, and
@@ -187,7 +189,7 @@ async fn late_grant_gets_the_leave() {
         let leases = leases.clone();
         tokio::spawn(async move { leases.before_data_connection(&b, &pb, None, |_| {}).await })
     };
-    asked.await.unwrap();
+    tokio::time::timeout(BOUND, asked).await.expect("the fake\'s lease request within BOUND").unwrap();
     let mut leaving = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
     // Polled before the grant, once a's reply is in.
     answered(&replied_a).await;
@@ -251,7 +253,7 @@ async fn inflight_handshake_gets_the_leave() {
         let (leases, host) = (leases.clone(), host.clone());
         tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
     };
-    asked.await.unwrap();
+    tokio::time::timeout(BOUND, asked).await.expect("the fake\'s lease request within BOUND").unwrap();
     let mut leaving =
         leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).expect("a handshake in flight is a lease to leave");
     assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "polled before the grant");
@@ -277,7 +279,7 @@ async fn inflight_handshake_gets_the_leave() {
         let leases = leases.clone();
         tokio::spawn(async move { leases.before_data_connection(&b, &pb, None, |_| {}).await })
     };
-    asked.await.unwrap();
+    tokio::time::timeout(BOUND, asked).await.expect("the fake\'s lease request within BOUND").unwrap();
     let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
     answered(&replied_a).await;
     assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "a's reply is in; the leave waits for b");
@@ -307,7 +309,7 @@ async fn failed_leave_send_is_not_confirmed() {
         let leases = leases.clone();
         tokio::spawn(async move { leases.before_data_connection(&b, &pb, None, |_| {}).await })
     };
-    asked.await.unwrap();
+    tokio::time::timeout(BOUND, asked).await.expect("the fake\'s lease request within BOUND").unwrap();
     let mut leaving = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
     let (dead, _) = mpsc::unbounded_channel::<HolderCmd>();
     leases.set(&c, Standing::Granted { state_root: None }, Some(dead));
@@ -336,7 +338,7 @@ async fn inflight_handshake_ended_unanswered_is_not_confirmed() {
         let (leases, host) = (leases.clone(), host.clone());
         tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
     };
-    asked.await.unwrap();
+    tokio::time::timeout(BOUND, asked).await.expect("the fake\'s lease request within BOUND").unwrap();
     let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
     fake.abort();
     assert!(in_flight.await.unwrap().is_err(), "the connection ended unanswered");
@@ -665,7 +667,7 @@ async fn an_unanswered_keep_or_handover_stays_at_the_deadline() {
             let (leases, host) = (leases.clone(), host.clone());
             tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
         };
-        asked.await.unwrap();
+        tokio::time::timeout(BOUND, asked).await.expect("the fake\'s lease request within BOUND").unwrap();
         let t0 = Instant::now();
         let mut leaving = leases.leave_all(intent, 0, t0).expect("a handshake in flight is a lease to leave");
         assert!(matches!(leaving.poll(t0), LeaveStep::Wait(_)), "polled before the deadline");
@@ -700,7 +702,7 @@ async fn a_cancelled_handshake_leaves_nothing_to_wait_for() {
         let (leases, host) = (leases.clone(), host.clone());
         tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
     };
-    asked.await.unwrap();
+    tokio::time::timeout(BOUND, asked).await.expect("the fake\'s lease request within BOUND").unwrap();
     in_flight.abort();
     assert!(in_flight.await.unwrap_err().is_cancelled(), "the handshake was cancelled in flight");
     assert!(leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).is_none(), "a cancelled handshake holds the Keep");
@@ -723,7 +725,7 @@ async fn a_grant_between_the_poll_and_the_stay_takes_the_leave() {
             let (leases, host) = (leases.clone(), host.clone());
             tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
         };
-        asked.await.unwrap();
+        tokio::time::timeout(BOUND, asked).await.expect("the fake\'s lease request within BOUND").unwrap();
         let t0 = Instant::now();
         let mut leaving = leases.leave_all(intent, code, t0).unwrap();
         let at = t0 + lease::KEEP_ACK_WAIT + Duration::from_secs(1);

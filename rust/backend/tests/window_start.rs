@@ -172,7 +172,7 @@ async fn assert_adopted(env: &Env, row: &Row, why: &str) {
 fn kill_row_capsule(row: &Row) {
     let legs = row_legs(row);
     assert!(support::any_process_matches(&legs), "no leg of row {} matches {legs}", row.id);
-    let _ = std::process::Command::new("pkill").args(["-9", "-f", &legs]).status();
+    let _ = sot_log::test_wait::try_run_within(std::process::Command::new("pkill").args(["-9", "-f", &legs]), BOUND);
     assert!(support::poll_until_no_process_matches(&legs, BOUND), "row {}'s legs survived the kill", row.id);
 }
 

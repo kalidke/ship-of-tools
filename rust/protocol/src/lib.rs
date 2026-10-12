@@ -130,6 +130,9 @@ impl Frame {
 #[cfg(test)]
 mod client_wire_tests {
     use std::process::Command;
+    use std::time::Duration;
+
+    const BOUND: Duration = Duration::from_secs(30);
 
     /// The bash a shell client runs under: Git Bash on Windows, `bash` elsewhere. `None` only where Git Bash is
     /// missing and no CI is running; in CI a missing bash fails the test.
@@ -153,21 +156,18 @@ mod client_wire_tests {
         let lib =
             format!("{}/../../comm/lib/comm-lib.sh", env!("CARGO_MANIFEST_DIR")).replace('\\', "/");
         let home = tempfile::tempdir().expect("scratch home");
-        let out = Command::new(bash)
-            .args(["-c", &format!(". '{lib}' && sot_hello_frame")])
-            .env("HOME", home.path())
-            .env("SOT_COMM_HOME", home.path().join(".sot-comm"))
-            .env("SOT_SELF_HOST", "hello-test-host")
-            .env_remove("SOT_WORKSPACE")
-            .output()
-            .expect("run bash");
-        assert!(
-            out.status.success(),
-            "sot_hello_frame failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        let ran = sot_log::test_wait::run_within(
+            Command::new(bash)
+                .args(["-c", &format!(". '{lib}' && sot_hello_frame")])
+                .env("HOME", home.path())
+                .env("SOT_COMM_HOME", home.path().join(".sot-comm"))
+                .env("SOT_SELF_HOST", "hello-test-host")
+                .env_remove("SOT_WORKSPACE"),
+            BOUND,
+        )
+        .ok();
         let frame: super::Frame =
-            serde_json::from_slice(&out.stdout).expect("the shell hello is one JSON frame");
+            serde_json::from_str(&ran.stdout).expect("the shell hello is one JSON frame");
         assert_eq!(
             (frame.kind, frame.op.as_str()),
             (super::Kind::Req, "hello"),
@@ -210,23 +210,29 @@ mod client_wire_tests {
             let lib = format!("{}/../../comm/lib/comm-lib.sh", env!("CARGO_MANIFEST_DIR")).replace('\\', "/");
             let scratch = std::env::temp_dir().join(format!("sot-protocol-os-user-{}", std::process::id()));
             std::fs::create_dir_all(&scratch).expect("scratch home");
-            let out = Command::new(bash)
-                .args(["-c", &format!(". '{lib}' && _sot_os_user")])
-                .env("HOME", &scratch)
-                .env("SOT_COMM_HOME", scratch.join(".sot-comm"))
-                .output()
-                .expect("run bash");
+            let ran = sot_log::test_wait::run_within(
+                Command::new(bash)
+                    .args(["-c", &format!(". '{lib}' && _sot_os_user")])
+                    .env("HOME", &scratch)
+                    .env("SOT_COMM_HOME", scratch.join(".sot-comm")),
+                BOUND,
+            );
             let _ = std::fs::remove_dir_all(&scratch);
-            assert!(out.status.success(), "_sot_os_user failed: {}", String::from_utf8_lossy(&out.stderr));
-            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), own, "the shell client's account");
+            let ran = ran.ok();
+            assert_eq!(ran.stdout.trim(), own, "the shell client's account: {ran}");
         }
         #[cfg(windows)]
         {
-            let out = Command::new("powershell")
-                .args(["-NoProfile", "-Command", "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"])
-                .output()
-                .expect("run powershell");
-            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), own, "the launcher's account");
+            let ran = sot_log::test_wait::run_within(
+                Command::new("powershell").args([
+                    "-NoProfile",
+                    "-Command",
+                    "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+                ]),
+                BOUND,
+            )
+            .ok();
+            assert_eq!(ran.stdout.trim(), own, "the launcher's account: {ran}");
         }
     }
 }

@@ -7,7 +7,7 @@
 //! `capsule_workspaces`.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use sot_protocol::op;
@@ -36,39 +36,38 @@ impl Staged {
             std::thread::sleep(Duration::from_millis(100));
         }
         let bin = env._tmp.path().join("bin");
-        let staged = Command::new("bash")
-            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../comm/tests/stage-bin.sh"))
-            .arg(&bin)
-            .output()
-            .expect("stage-bin");
-        assert!(staged.status.success(), "staging failed: {}", String::from_utf8_lossy(&staged.stdout));
+        sot_log::test_wait::run_within(
+            Command::new("bash")
+                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../comm/tests/stage-bin.sh"))
+                .arg(&bin),
+            BOUND,
+        )
+        .ok();
         let this = Self { env, bin };
-        let join = this.script("comm-join.sh", &["--name", "m4-sender"]);
-        assert!(join.status.success(), "join: {} {}", String::from_utf8_lossy(&join.stdout), String::from_utf8_lossy(&join.stderr));
+        this.script("comm-join.sh", &["--name", "m4-sender"]).ok();
         this
     }
 
     /// One staged script, run as a session of this box would run it.
-    fn script(&self, name: &str, args: &[&str]) -> Output {
+    fn script(&self, name: &str, args: &[&str]) -> sot_log::test_wait::Ran {
         let cwd = self.env._tmp.path().join("m4");
         std::fs::create_dir_all(&cwd).expect("mkdir cwd");
-        Command::new("timeout")
-            .arg("60")
-            .arg("bash")
-            .arg(self.bin.join(name))
-            .args(args)
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", &self.env.home_root)
-            .env("SOT_COMM_HOME", &self.env.comm_root)
-            .env("SOT_COMM_SELF_FILE", self.env._tmp.path().join("self.txt"))
-            .env("SOT_COMM_TEST_HOST", TEST_STATE_HOST)
-            .env("SOT_SOCKET", &self.env.socket_path)
-            .env("XDG_RUNTIME_DIR", self.env._runtime_tmp.path())
-            .env("TMPDIR", self.env._tmp.path())
-            .current_dir(cwd)
-            .output()
-            .expect("run script")
+        sot_log::test_wait::run_within(
+            Command::new("bash")
+                .arg(self.bin.join(name))
+                .args(args)
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env("HOME", &self.env.home_root)
+                .env("SOT_COMM_HOME", &self.env.comm_root)
+                .env("SOT_COMM_SELF_FILE", self.env._tmp.path().join("self.txt"))
+                .env("SOT_COMM_TEST_HOST", TEST_STATE_HOST)
+                .env("SOT_SOCKET", &self.env.socket_path)
+                .env("XDG_RUNTIME_DIR", self.env._runtime_tmp.path())
+                .env("TMPDIR", self.env._tmp.path())
+                .current_dir(cwd),
+            BOUND,
+        )
     }
 
     fn registry(&self) -> serde_json::Value {
@@ -89,11 +88,12 @@ impl Staged {
 /// `YYYY-MM-DDTHH:MM:SSZ` for `now - ago` seconds, from the box's own `date`.
 fn stamp(ago: u64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let out = Command::new("date")
-        .args(["-u", "-d", &format!("@{}", now - ago), "+%Y-%m-%dT%H:%M:%SZ"])
-        .output()
-        .expect("date");
-    String::from_utf8(out.stdout).unwrap().trim().to_string()
+    let ran = sot_log::test_wait::run_within(
+        Command::new("date").args(["-u", "-d", &format!("@{}", now - ago), "+%Y-%m-%dT%H:%M:%SZ"]),
+        BOUND,
+    )
+    .ok();
+    ran.stdout.trim().to_string()
 }
 
 #[test]
@@ -105,16 +105,14 @@ fn a_send_to_a_handle_no_live_session_holds_is_failed_and_appends_nothing() {
     b.add_entries(&[("m4-gone", stamp(3600)), ("m4-live", stamp(0))]);
 
     let gone = b.script("comm-send.sh", &["@m4-gone", "into the void"]);
-    let (out, err) = (String::from_utf8_lossy(&gone.stdout), String::from_utf8_lossy(&gone.stderr));
-    assert_eq!(gone.status.code(), Some(1), "stdout {out} stderr {err}");
-    assert!(err.contains("FAILED -> @m4-gone: no live session holds @m4-gone"), "stdout {out} stderr {err}");
-    assert!(!out.contains("filed"), "stdout {out}");
+    assert_eq!(gone.status.code(), Some(1), "{gone}");
+    assert!(gone.stderr.contains("FAILED -> @m4-gone: no live session holds @m4-gone"), "{gone}");
+    assert!(!gone.stdout.contains("filed"), "{gone}");
     assert!(!b.env.comm_root.join("inbox/m4-gone.jsonl").exists(), "a line was appended for a handle nobody holds");
 
     let live = b.script("comm-send.sh", &["@m4-live", "hello"]);
-    let (out, err) = (String::from_utf8_lossy(&live.stdout), String::from_utf8_lossy(&live.stderr));
-    assert_eq!(live.status.code(), Some(0), "stdout {out} stderr {err}");
-    assert!(out.contains("filed -> @m4-live"), "stdout {out} stderr {err}");
+    assert_eq!(live.status.code(), Some(0), "{live}");
+    assert!(live.stdout.contains("filed -> @m4-live"), "{live}");
     let inbox = std::fs::read_to_string(b.env.comm_root.join("inbox/m4-live.jsonl")).expect("inbox");
     assert_eq!(inbox.lines().count(), 1, "{inbox}");
     let line: serde_json::Value = serde_json::from_str(inbox.lines().next().unwrap()).unwrap();
@@ -171,9 +169,8 @@ async fn an_idle_row_stays_live_while_its_daemon_is_down() {
     b.env.kill_daemon_bounded().await;
 
     let sent = b.script("comm-send.sh", &["@m4-idle", "while its daemon is down"]);
-    let (out, err) = (String::from_utf8_lossy(&sent.stdout), String::from_utf8_lossy(&sent.stderr));
-    assert_eq!(sent.status.code(), Some(0), "stdout {out} stderr {err}");
-    assert!(out.contains("filed -> @m4-idle"), "stdout {out} stderr {err}");
+    assert_eq!(sent.status.code(), Some(0), "{sent}");
+    assert!(sent.stdout.contains("filed -> @m4-idle"), "{sent}");
     let inbox = std::fs::read_to_string(b.env.comm_root.join("inbox/m4-idle.jsonl")).expect("inbox");
     assert_eq!(inbox.lines().count(), 1, "{inbox}");
     let line: serde_json::Value = serde_json::from_str(inbox.lines().next().unwrap()).unwrap();

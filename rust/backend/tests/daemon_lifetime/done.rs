@@ -50,20 +50,18 @@ pub fn pluto_resource_root(case: &Path, julia: &str) -> PathBuf {
             std::fs::copy(manifest, dir.join("Manifest.toml")).expect("copy the Pluto manifest");
         }
         None => {
-            let out = std::process::Command::new(julia)
-                .arg(format!("--project={}", dir.display()))
-                .args(["-e", "using Pkg; Pkg.instantiate()"])
-                .env(
-                    "JULIA_DEPOT_PATH",
-                    crate::julia_depot_path(&case.join("julia-depot")),
-                )
-                .output()
-                .expect("run julia to instantiate Pluto");
-            assert!(
-                out.status.success(),
-                "instantiating Pluto failed:\n{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
+            // Pkg.instantiate fetches over the network: a bound of its own, well past a cold registry.
+            sot_log::test_wait::run_within(
+                std::process::Command::new(julia)
+                    .arg(format!("--project={}", dir.display()))
+                    .args(["-e", "using Pkg; Pkg.instantiate()"])
+                    .env(
+                        "JULIA_DEPOT_PATH",
+                        crate::julia_depot_path(&case.join("julia-depot")),
+                    ),
+                Duration::from_secs(600),
+            )
+            .ok();
         }
     }
     root
@@ -84,11 +82,8 @@ pub fn have_quarto() -> Option<PathBuf> {
     let quarto = std::env::split_paths(&path)
         .map(|d| d.join("quarto"))
         .find(|p| p.is_file())?;
-    std::process::Command::new(&quarto)
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
+    // A Quarto that is there and fails `--version` names itself; an absent one is `None` above.
+    sot_log::test_wait::run_within(std::process::Command::new(&quarto).arg("--version"), BOUND).ok();
     Some(quarto)
 }
 

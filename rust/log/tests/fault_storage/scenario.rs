@@ -243,7 +243,10 @@ fn three_rows_hold_and_resume_on_a_full_volume() {
         let (_, stopped_voyage) = before.last().expect("three rows");
         sot_log::attach_client::supervisor_client::stop(&stopped.state_dir)
             .expect("L3 a held row must accept a Stop while storage is full");
-        let status = stopped.guard.as_mut().unwrap().child_mut().wait().unwrap();
+        let status = sot_log::test_isolated::wait_within(
+            stopped.guard.as_mut().unwrap().child_mut(),
+            sot_log::test_isolated::ISOLATION_TIMEOUT,
+        );
         assert_eq!(
             status.code(),
             Some(0),

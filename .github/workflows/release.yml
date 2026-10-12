@@ -31,6 +31,8 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    # Usually 3 to 11 minutes; with a cold cache up to 30.
+    timeout-minutes: 60
     continue-on-error: ${{ matrix.experimental }}
     env:
       # The one thing that marks these binaries as OFFICIAL release artifacts
@@ -193,6 +195,8 @@ jobs:
     # "resolves + loads at the tag" is the release-blocking property.
     name: julia envs resolve + load
     runs-on: ubuntu-latest
+    # Usually about a minute.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
@@ -215,6 +219,8 @@ jobs:
     name: smoke test (linux artifact)
     needs: [build]
     runs-on: ubuntu-latest
+    # Usually under a minute.
+    timeout-minutes: 10
     container: ubuntu:20.04
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -304,6 +310,8 @@ jobs:
     name: smoke test (windows artifact)
     needs: [build]
     runs-on: windows-latest
+    # Usually under a minute.
+    timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -343,6 +351,8 @@ jobs:
     name: smoke test (macOS artifact)
     needs: [build]
     runs-on: macos-14
+    # Usually under a minute.
+    timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -415,6 +425,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: [build, smoke, smoke-windows, smoke-macos, julia-check]
     runs-on: ubuntu-latest
+    # Usually under a minute.
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

@@ -204,15 +204,20 @@ fn trash_timeout_reports_cleanup_before_fallback() {
 #[test]
 fn confirmed_zero_is_system_trash() {
     let fixture = Fixture::exit(0);
+    let log = sot_log::test_log::capture();
     let result = trash_with_command(
         signal(),
         &mut fixture.command(),
         &fixture.source(),
         fixture.dir.path(),
-        Duration::from_secs(5),
+        sot_log::test_isolated::ISOLATION_TIMEOUT,
         |child| assert!(child.confirmed_reaped()),
     );
-    assert!(result.unwrap().is_none());
+    assert!(
+        matches!(result, Ok(None)),
+        "a zero exit within the budget is system trash; the case took {result:?}; the trash log: {}",
+        log.text()
+    );
     assert!(
         fixture.source().exists(),
         "synthetic zero fixture must not move bytes"
@@ -234,15 +239,16 @@ fn nonzero_and_missing_commands_take_recoverable_fallback() {
             &mut command,
             &fixture.source(),
             fixture.dir.path(),
-            Duration::from_secs(5),
+            sot_log::test_isolated::ISOLATION_TIMEOUT,
             |_| {},
         );
         assert_fallback(result, &fixture.source(), fixture.dir.path());
-        assert!(log.text().contains(if missing {
-            "system trash spawn failed"
-        } else {
-            "system trash exited unsuccessfully"
-        }));
+        let want = if missing { "system trash spawn failed" } else { "system trash exited unsuccessfully" };
+        assert!(
+            log.text().contains(want),
+            "missing={missing}: the trash log lacks {want:?}; the trash log: {}",
+            log.text()
+        );
     }
 }
 
@@ -295,12 +301,12 @@ fn failed_fallback_remains_an_error() {
         |_| {},
     )
     .unwrap_err();
-    assert!(error.to_string().contains("create_dir_all"));
+    assert!(error.to_string().contains("create_dir_all"), "{error:#}");
     assert_eq!(
         std::fs::read(fixture.source()).unwrap(),
         b"recoverable bytes"
     );
-    assert!(log.text().contains("recoverable trash fallback failed"));
+    assert!(log.text().contains("recoverable trash fallback failed"), "{}", log.text());
 }
 
 fn cleanup_failure(kind: &str, reason: &str) {
@@ -372,8 +378,9 @@ fn the_system_trash_command_gets_null_standard_streams() {
         "#!/bin/sh\nexec 3> \"$2.fds\"\nfor f in stdin stdout stderr; do\n  if [ \"/dev/$f\" -ef /dev/null ]; then echo \"$f null\" >&3; else echo \"$f inherited\" >&3; fi\ndone\n",
     );
     let source = fixture.source();
-    let status = trash_command(&fixture.program, &source).status().unwrap();
-    assert!(status.success());
+    let mut child = trash_command(&fixture.program, &source).spawn().unwrap();
+    let status = sot_log::test_isolated::wait_within(&mut child, sot_log::test_isolated::ISOLATION_TIMEOUT);
+    assert!(status.success(), "the trash program ended: {status}");
     assert_eq!(
         std::fs::read_to_string(format!("{}.fds", source.display())).unwrap(),
         "stdin null\nstdout null\nstderr null\n"

@@ -4,20 +4,23 @@ use super::*;
 use std::os::unix::fs::symlink;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Far outside the serials other tests in this file use.
 static NEXT_SERIAL: AtomicU64 = AtomicU64::new(8_100_000_000);
 
 fn git(dir: &Path, args: &[&str]) {
-    let st = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .status()
-        .expect("run git");
-    assert!(st.success(), "git {args:?} failed");
+    sot_log::test_wait::run_within(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE"),
+        BOUND,
+    )
+    .ok();
 }
 
 fn write(path: &Path, bytes: &[u8]) {

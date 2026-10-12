@@ -6,7 +6,6 @@
 
 mod support;
 
-use std::process::Stdio;
 use std::time::Duration;
 
 use support::{poll_until, try_connect, Env, TEST_STATE_HOST};
@@ -22,9 +21,8 @@ async fn a_second_daemon_on_a_live_socket_refuses_and_the_first_still_answers() 
     // The second daemon has its own state, config and comm home, as the
     // stray test daemon did: only the socket path is shared.
     let second = Env::new("live2");
-    let out = tokio::time::timeout(
-        BOUND,
-        tokio::process::Command::from(support::sotd_command())
+    let ran = sot_log::test_wait::run_within(
+        support::sotd_command()
             .arg("--socket")
             .arg(&first.socket_path)
             .arg("--project-root")
@@ -34,18 +32,12 @@ async fn a_second_daemon_on_a_live_socket_refuses_and_the_first_still_answers() 
             .env("SOT_SELF_HOST", TEST_STATE_HOST)
             .env("SOT_RUNTIME_DIR", second._runtime_tmp.path())
             .env("HOME", &second.home_root)
-            .env("SOT_COMM_HOME", &second.comm_root)
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .expect("the second daemon did not exit within BOUND")
-    .expect("spawn the second sotd");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "the second daemon must refuse; stderr: {stderr}");
+            .env("SOT_COMM_HOME", &second.comm_root),
+        BOUND,
+    );
+    assert!(!ran.status.success(), "the second daemon must refuse: {ran}");
     let want = format!("another daemon is already listening on {}", first.socket_path.display());
-    assert!(stderr.contains(&want), "stderr must name the live socket: {stderr}");
+    assert!(ran.stderr.contains(&want), "stderr must name the live socket: {ran}");
     assert!(first.socket_path.exists(), "the live socket file must survive");
     assert!(try_connect(&first.socket_path).await.is_some(), "the first daemon must still answer");
     first.kill_daemon_bounded().await;

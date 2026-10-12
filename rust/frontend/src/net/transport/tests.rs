@@ -189,7 +189,10 @@ async fn the_gate_is_up_after_the_hello_reply_and_down_when_the_session_ends() {
     }
     assert!(gate.is_up(), "a hello reply proves the link");
     drop(hold);
-    daemon.await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(30), daemon)
+        .await
+        .expect("the fake daemon's end within 30 s")
+        .unwrap();
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.unwrap().unwrap();
     assert!(result.is_err(), "the daemon closing ends the session");
     assert!(!gate.is_up(), "the gate is down by the time run_protocol has returned");

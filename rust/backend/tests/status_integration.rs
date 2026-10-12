@@ -67,19 +67,15 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
     // Before anything dials: in `sotd status`'s own environment,
     // `local_endpoint()` derives this test's endpoint. `sotd topology
     // relay-endpoint` prints it (this box is the hub) and dials nothing.
-    let out = tokio::time::timeout(
+    let ran = sot_log::test_wait::run_within(
+        client(&env, &hosts_toml, &label, &["topology", "relay-endpoint"]).as_std_mut(),
         BOUND,
-        client(&env, &hosts_toml, &label, &["topology", "relay-endpoint"]).output(),
-    )
-    .await
-    .expect("sotd topology relay-endpoint did not exit within BOUND")
-    .expect("spawn sotd topology relay-endpoint");
+    );
     let scheme = if cfg!(windows) { "pipe" } else { "unix" };
     assert_eq!(
-        String::from_utf8_lossy(&out.stdout).trim(),
+        ran.stdout.trim(),
         format!("{scheme}:{}", socket_path.display()),
-        "a client of this test's daemon derives another endpoint; stderr {}",
-        String::from_utf8_lossy(&out.stderr)
+        "a client of this test's daemon derives another endpoint: {ran}"
     );
 
     let child = support::sotd_daemon_at(&label)
@@ -135,17 +131,10 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
     // `sotd status --json` — a SEPARATE, real one-shot process (the same
     // binary, the same env), not a library call into `topology::status` — this
     // is the actual CLI a launcher or the `sot-status` skill would run.
-    let out = tokio::time::timeout(
-        BOUND,
-        client(&env, &hosts_toml, &label, &["status", "--json"]).output(),
-    )
-    .await
-    .expect("sotd status did not exit within BOUND")
-    .expect("spawn sotd status");
-    assert!(out.status.success(), "sotd status exited {:?}: stderr {}", out.status, String::from_utf8_lossy(&out.stderr));
+    let ran = sot_log::test_wait::run_within(client(&env, &hosts_toml, &label, &["status", "--json"]).as_std_mut(), BOUND).ok();
 
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("sotd status --json did not print valid json: {e}\n{}", String::from_utf8_lossy(&out.stdout)));
+    let v: serde_json::Value = serde_json::from_str(&ran.stdout)
+        .unwrap_or_else(|e| panic!("sotd status --json did not print valid json: {e}\n{ran}"));
     assert_eq!(v["hub_reachable"], true, "{v:#}");
     let row = v["rows"]
         .as_array()

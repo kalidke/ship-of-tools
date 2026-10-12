@@ -353,7 +353,8 @@ fn a_client_that_takes_this_accounts_euid_after_connecting_is_still_another_acco
     let path = dir.path().join("s.sock");
     let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
     let Some((mut helper, helper_pid)) = start_transition_helper(NAME, "connect", &path) else { return };
-    let (conn, _) = listener.accept().expect("accept the helper's connection");
+    let (conn, _) = sot_log::test_wait::within(TIMEOUT, "the helper's connection", move || listener.accept())
+        .expect("accept the helper's connection");
     let read = peer_euid_pid_created(conn.as_raw_fd());
     drop(helper.stdin.take());
     let _ = helper.wait();

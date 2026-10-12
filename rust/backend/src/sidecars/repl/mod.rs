@@ -31,6 +31,9 @@ mod project_tests;
 #[cfg(test)]
 mod restart_tests;
 
+#[cfg(test)]
+mod tree_argv_tests;
+
 use lifecycle::ReplLifecycle;
 use lifecycle::{LifecycleCell, SharedLifecycle};
 use supervisor::{spawn_supervisor, Supervisor};

@@ -15,7 +15,7 @@
     # input a stray key can sit at depth <= 0 and escape detection.
     @test_nowarn ShipTools._json_toplevel_keys(txt)
     if !isnothing(Sys.which("jq"))
-        @test success(pipeline(`jq empty $hooks_path`; stderr = devnull))
+        @test success(pipeline(`jq empty $hooks_path`))
     end
 
     # (2) EXACTLY one top-level key. The struct is deny_unknown_fields, so
@@ -83,7 +83,7 @@ end
     @test occursin("\"sot-comm\"", first(payloads))
     if !isnothing(Sys.which("jq"))
         for txt in payloads
-            @test success(pipeline(pipeline(IOBuffer(txt), `jq empty`); stderr = devnull))
+            @test success(pipeline(pipeline(IOBuffer(txt), `jq empty`)))
         end
     end
 

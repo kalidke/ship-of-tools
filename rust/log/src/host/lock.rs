@@ -370,9 +370,9 @@ mod tests {
                 });
             }
             // `spawn` returns only after the child has exec'd.
-            let status = cmd.status().unwrap();
+            let mut child = cmd.spawn().unwrap();
             drop((ready_w, go_r));
-            status
+            crate::test_isolated::wait_within(&mut child, crate::test_isolated::ISOLATION_TIMEOUT)
         });
         // Writes `go` on drop, so a failing `check` still lets the child exec.
         struct Go(std::io::PipeWriter);
@@ -472,11 +472,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
         std::fs::create_dir(&state).unwrap();
-        let out = spawn_role("daemon", dir.path()).output().unwrap();
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "daemon role failed:\n{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+        let ran = crate::test_wait::run_within(&mut spawn_role("daemon", dir.path()), crate::test_isolated::ISOLATION_TIMEOUT);
+        assert!(ran.status.success(), "daemon role failed:\n{ran}");
         // Guards the zero-tests-matched hazard: exit 0 alone cannot catch it.
-        assert!(stdout.contains("1 passed"), "daemon role ran no test:\n{stdout}");
+        assert!(ran.stdout.contains("1 passed"), "daemon role ran no test:\n{ran}");
         assert!(dir.path().join("alive").exists());
         assert!(!dir.path().join("done").exists());
         // The daemon is gone; the supervisor lives until `go`. A new daemon's

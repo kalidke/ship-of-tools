@@ -409,9 +409,9 @@ mod tests {
 
         fn wait<T>(&self, receiver: &std::sync::mpsc::Receiver<T>, event: &str, panic: &str) -> T {
             self.wait_entry(event);
-            // A genuine hang is bounded by the hosted job's own guard; no local deadline claims progress.
-            let result = receiver.recv();
-            if result.is_err() { self.watchdog(event, "Disconnected"); }
+            // At 60 s a hang fails here, naming the wait and the gate's state.
+            let result = receiver.recv_timeout(std::time::Duration::from_secs(60));
+            if let Err(error) = &result { self.watchdog(event, &format!("{error:?}")); }
             result.expect(panic)
         }
 
@@ -572,7 +572,7 @@ mod tests {
         let starters: Vec<_> = (0..2).map(|_| { let gate = gate.clone(); let recipe = recipe.clone(); std::thread::spawn(move || gate.spawn_sync(&recipe).expect("admitted start")) }).collect();
         let mut pauses = 0;
         for _ in 0..2 {
-            let (_, claimed) = entries.recv().expect("an admission entry");
+            let (_, claimed) = entries.recv_timeout(std::time::Duration::from_secs(30)).expect("an admission entry within 30 s");
             if claimed { pauses += 1; hook.release(&release); }
         }
         let mut reaped = true;

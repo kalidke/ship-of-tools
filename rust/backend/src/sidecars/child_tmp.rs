@@ -89,7 +89,7 @@ mod tests {
         let mut cmd = long_child();
         let mut child = sig.spawn(&mut cmd).expect("spawn the child");
         let status = tmp.retire(&mut child).await.expect("retire the child");
-        assert!(!status.success(), "the child was ended, not left to exit");
+        assert!(!status.success(), "the child was ended, not left to exit: {status}");
         within(Duration::from_secs(30), "the folder is removed after the reap", || !folder.exists()).await;
     }
 }

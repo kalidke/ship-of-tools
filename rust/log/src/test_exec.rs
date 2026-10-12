@@ -19,10 +19,13 @@ pub fn write_executable(path: &Path, body: impl AsRef<[u8]>) {
             .arg("sh")
             .arg(path)
             .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("spawn the writer");
         child.stdin.take().expect("the writer's stdin").write_all(body.as_ref()).expect("feed the writer");
-        assert!(child.wait().expect("wait for the writer").success(), "the writer failed for {}", path.display());
+        let (status, _, stderr) =
+            crate::test_isolated::drain(child).wait_within(crate::test_isolated::ISOLATION_TIMEOUT);
+        assert!(status.success(), "the writer failed for {}: {status}, stderr: {stderr}", path.display());
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod the program");
     }
     #[cfg(not(unix))]

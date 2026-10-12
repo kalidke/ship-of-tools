@@ -2,6 +2,8 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+const BOUND: Duration = Duration::from_secs(30);
+
 #[cfg(unix)]
 pub(crate) fn spawn_stub_child() -> std::process::Child {
     std::process::Command::new("cat")
@@ -46,7 +48,7 @@ fn bridged_cancel_unblocks_a_parked_read_via_kill() {
     // nothing to return until either bytes arrive or the child dies.
     std::thread::sleep(std::time::Duration::from_millis(100));
     client.cancel();
-    let (result, elapsed) = read_thread.join().unwrap();
+    let (result, elapsed) = sot_log::test_wait::within(BOUND, "the parked read", move || read_thread.join()).unwrap();
     assert!(elapsed < std::time::Duration::from_secs(2), "cancel() must unblock the read promptly, took {elapsed:?}");
     match result {
         Ok(0) | Err(TransportError::Cancelled) | Err(TransportError::Io { .. }) => {}

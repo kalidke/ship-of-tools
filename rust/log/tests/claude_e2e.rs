@@ -101,10 +101,12 @@ impl FakeApi {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("node on PATH");
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .expect("fake api prints its port");
+        let stdout = child.stdout.take().unwrap();
+        let line = sot_log::test_wait::within(Duration::from_secs(30), "the fake api's port line", move || {
+            let mut line = String::new();
+            BufReader::new(stdout).read_line(&mut line).expect("fake api prints its port");
+            line
+        });
         let port: u16 = line.trim().parse().expect("fake api port line");
         FakeApi { child, port, reqlog }
     }

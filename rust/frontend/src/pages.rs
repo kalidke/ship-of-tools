@@ -830,8 +830,15 @@ mod tests {
                 .unwrap();
             let (rd, mut wr) = conn.into_split();
             let mut rd = tokio::io::BufReader::new(rd);
-            let (hello, _) = codec::read_frame(&mut rd).await.unwrap();
-            let (req, _) = codec::read_frame(&mut rd).await.unwrap();
+            let bound = std::time::Duration::from_secs(30);
+            let (hello, _) = tokio::time::timeout(bound, codec::read_frame(&mut rd))
+                .await
+                .expect("the relay's hello within 30 s")
+                .unwrap();
+            let (req, _) = tokio::time::timeout(bound, codec::read_frame(&mut rd))
+                .await
+                .expect("the relay's proxy.connect within 30 s")
+                .unwrap();
             assert_eq!(req.op, op::PROXY_CONNECT);
             let mut out = Vec::new();
             let accepted = serde_json::json!({ "session_id": "s", "revision": 0, "snapshot_pending": false });

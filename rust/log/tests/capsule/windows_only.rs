@@ -520,11 +520,12 @@ fn release_and_read_reply(helper: &mut std::process::Child) -> String {
     let mut stdin = helper.stdin.take().expect("helper stdin");
     writeln!(stdin, "go").expect("write go signal");
     drop(stdin);
-    let mut line = String::new();
-    std::io::BufReader::new(helper.stdout.take().expect("helper stdout"))
-        .read_line(&mut line)
-        .expect("read helper reply");
-    line.trim().to_string()
+    let stdout = helper.stdout.take().expect("helper stdout");
+    sot_log::test_wait::within(std::time::Duration::from_secs(30), "the helper's reply line", move || {
+        let mut line = String::new();
+        std::io::BufReader::new(stdout).read_line(&mut line).expect("read helper reply");
+        line.trim().to_string()
+    })
 }
 
 /// ADR 0043 decision 32 as amended 2026-10-03: the leg job
@@ -548,7 +549,10 @@ fn the_leg_job_refuses_a_breakaway() {
 
     let reply = release_and_read_reply(&mut helper);
     if let Some(pid) = reply.strip_prefix("pid=") {
-        let _ = std::process::Command::new("taskkill").args(["/F", "/PID", pid]).status();
+        let _ = sot_log::test_wait::try_run_within(
+            std::process::Command::new("taskkill").args(["/F", "/PID", pid]),
+            std::time::Duration::from_secs(30),
+        );
     }
     let _ = helper.wait();
     assert_eq!(reply, "err=5", "the leg job let a child break away");

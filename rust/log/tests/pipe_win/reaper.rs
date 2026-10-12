@@ -45,20 +45,24 @@ fn reached(server: &PipeServer, what: &str, hold: &Pause) {
 }
 
 /// Connect one client and consume its `Accepted`.
-fn connect(server: &PipeServer, id: &str) -> (sot_log::lane::pipe_win::PipeClient, ConnId) {
-    let client = connect_voyage_pipe(id).unwrap();
+fn connect(server: &PipeServer, id: &str) -> (std::sync::Arc<sot_log::lane::pipe_win::PipeClient>, ConnId) {
+    let client = std::sync::Arc::new(connect_voyage_pipe(id).unwrap());
     let conn = expect_accepted(server, TIMEOUT);
     (client, conn)
 }
 
-fn read_exact(client: &sot_log::lane::pipe_win::PipeClient, want: usize) {
-    let mut got = 0;
-    let mut buf = [0u8; 64];
-    while got < want {
-        let n = client.read(&mut buf[..want - got]).unwrap();
-        assert!(n > 0, "peer closed before {want} bytes");
-        got += n;
-    }
+/// Reads `want` bytes from the client within `TIMEOUT`, on a thread of its own (the client is shared with it).
+fn read_exact(client: &std::sync::Arc<sot_log::lane::pipe_win::PipeClient>, want: usize) {
+    let client = std::sync::Arc::clone(client);
+    sot_log::test_wait::within(TIMEOUT, "the peer's bytes", move || {
+        let mut got = 0;
+        let mut buf = [0u8; 64];
+        while got < want {
+            let n = client.read(&mut buf[..want - got]).unwrap();
+            assert!(n > 0, "peer closed before {want} bytes");
+            got += n;
+        }
+    });
 }
 
 /// Every event until `Closed` has been seen for each of `wanted`.
@@ -137,7 +141,7 @@ fn held_writer_does_not_delay_another_closed() {
 
 /// Fill the events channel with exactly 64 real `Sent` markers of `conn`, draining its client bytes and observing
 /// every successful enqueue; no 65th event is produced.
-fn fill_with_sent(server: &PipeServer, conn: ConnId, client: &sot_log::lane::pipe_win::PipeClient) {
+fn fill_with_sent(server: &PipeServer, conn: ConnId, client: &std::sync::Arc<sot_log::lane::pipe_win::PipeClient>) {
     for marker in 0..64u64 {
         server
             .send(conn, vec![marker as u8; 16], Some(marker))
@@ -685,7 +689,7 @@ fn server_thread_panic(thread: &str) {
         client
     } else {
         server.inject_acceptor_panic_for_test();
-        connect_voyage_pipe(&id).unwrap()
+        std::sync::Arc::new(connect_voyage_pipe(&id).unwrap())
     };
     await_progress(&server, "panic.injected", |r| r.result == "panic injected");
     server.disconnect_listener();

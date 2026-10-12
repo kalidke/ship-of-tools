@@ -208,18 +208,17 @@ fn cancelled_client_rejects_later_submissions() {
     let id = fresh_voyage_id();
     let path = voyage_socket_path(&id).unwrap();
     let server = io_named!(test, "bind", None, SocketServer::bind(&id, 2)).unwrap();
-    let client = SocketClient::from_stream_for_test(
+    let client = Arc::new(SocketClient::from_stream_for_test(
         io_named!(test, "connect", None, UnixStream::connect(&path)).unwrap(),
         0,
-    );
+    ));
     let _conn_id = expect_accepted(&server, test, "accept", TIMEOUT);
 
     named!(test, "cancel", Some(_conn_id), client.cancel());
 
-    let mut buf = [0u8; 16];
     assert!(
         matches!(
-            io_named!(test, "read", Some(_conn_id), client.read(&mut buf)),
+            io_named!(test, "read", Some(_conn_id), { let c = Arc::clone(&client); sot_log::test_wait::within(TIMEOUT, "the cancelled client's read", move || c.read(&mut [0u8; 16])) }),
             Err(TransportError::Cancelled)
         ),
         "a cancelled client must permanently reject a later read"
@@ -235,7 +234,7 @@ fn cancelled_client_rejects_later_submissions() {
     // Idempotent: cancelling again must not panic or change the outcome.
     named!(test, "cancel", Some(_conn_id), client.cancel());
     assert!(matches!(
-        io_named!(test, "read", Some(_conn_id), client.read(&mut buf)),
+        io_named!(test, "read", Some(_conn_id), { let c = Arc::clone(&client); sot_log::test_wait::within(TIMEOUT, "the cancelled client's read", move || c.read(&mut [0u8; 16])) }),
         Err(TransportError::Cancelled)
     ));
 
@@ -332,10 +331,9 @@ fn a_terminal_write_failure_latches_the_connection_closed() {
     );
 
     retry.io_outcome(&result, false, Some(&server));
-    let mut buf = [0u8; 16];
     assert!(
         matches!(
-            io_named!(test, "read", Some(conn_id), client.read(&mut buf)),
+            io_named!(test, "read", Some(conn_id), { let c = Arc::clone(&client); sot_log::test_wait::within(TIMEOUT, "the latched client's read", move || c.read(&mut [0u8; 16])) }),
             Err(TransportError::Cancelled)
         ),
         "a client whose write already failed terminally must reject a later read"
@@ -648,12 +646,11 @@ fn excess_connection_at_capacity_is_seen_as_early_eof() {
     let _first = io_named!(test, "connect", None, UnixStream::connect(&path)).unwrap();
     let _first_conn = expect_accepted(&server, test, "accept", TIMEOUT);
 
-    let second = SocketClient::from_stream_for_test(
+    let second = Arc::new(SocketClient::from_stream_for_test(
         io_named!(test, "connect", None, UnixStream::connect(&path)).unwrap(),
         0,
-    );
-    let mut buf = [0u8; 16];
-    let n = io_named!(test, "read", None, second.read(&mut buf))
+    ));
+    let n = io_named!(test, "read", None, { let c = Arc::clone(&second); sot_log::test_wait::within(TIMEOUT, "the excess connection's read", move || c.read(&mut [0u8; 16])) })
         .expect("read should observe an ordered EOF, not an error");
     assert_eq!(n, 0, "expected the excess connection to see EOF promptly");
 

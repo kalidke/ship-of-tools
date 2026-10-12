@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(target_os = "linux")]
+const BOUND: Duration = Duration::from_secs(30);
+
 fn read_lines(p: &Path) -> Vec<serde_json::Value> {
     let s = std::fs::read_to_string(p).unwrap();
     assert!(s.ends_with('\n'), "not LF-terminated: {s:?}");
@@ -117,14 +120,15 @@ fn scripts_lib() -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn shell(home: &Path, path: &str, script: &str) -> std::process::Output {
-    std::process::Command::new("bash")
-        .arg("-c")
-        .arg(format!("source {}; {script}", scripts_lib()))
-        .env("SOT_COMM_HOME", home)
-        .env("PATH", path)
-        .output()
-        .unwrap()
+fn shell(home: &Path, path: &str, script: &str) -> sot_log::test_wait::Ran {
+    sot_log::test_wait::run_within(
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!("source {}; {script}", scripts_lib()))
+            .env("SOT_COMM_HOME", home)
+            .env("PATH", path),
+        BOUND,
+    )
 }
 
 // The stubbed fsync failure, Rust arm: `sync` starts a reader, waits until
@@ -144,7 +148,7 @@ fn failing_sync_with_reader(
 ) -> (String, String) {
     let inbox = home.join("inbox");
     std::fs::create_dir_all(&inbox).unwrap();
-    let id = shell(home, &std::env::var("PATH").unwrap(), r#"sot_inbox_lock_identity "$INBOX_DIR""#);
+    let id = shell(home, &std::env::var("PATH").unwrap(), r#"sot_inbox_lock_identity "$INBOX_DIR""#).ok();
     std::fs::write(home.join("inbox-lock-manager"), &id.stdout).unwrap();
     file_frame(&inbox, "a", "h", false, "one", "t", Duration::from_secs(5), "local t").unwrap();
     let child = std::cell::RefCell::new(None);
@@ -162,7 +166,7 @@ fn failing_sync_with_reader(
         if reader_blocks {
             until_a_waiter_blocks_on(&inbox.join("h.lock"));
         } else {
-            c.wait().unwrap();
+            sot_log::test_isolated::wait_within(&mut c, BOUND);
         }
         *child.borrow_mut() = Some(c);
         Err(std::io::Error::other("stubbed fsync failure"))
@@ -170,8 +174,8 @@ fn failing_sync_with_reader(
     let r = file_frame_with(&inbox, "a", "h", false, "inflight", "t", Duration::from_secs(5), "local t", sync);
     assert!(r.unwrap_err().contains("stubbed fsync failure"));
     assert_eq!(read_lines(&inbox.join("h.jsonl")).len(), 1, "the in-flight line was not cut back");
-    let out = child.into_inner().unwrap().wait_with_output().unwrap();
-    (String::from_utf8_lossy(&out.stdout).into(), String::from_utf8_lossy(&out.stderr).into())
+    let (_, stdout, stderr) = sot_log::test_isolated::drain(child.into_inner().unwrap()).wait_within(BOUND);
+    (stdout, stderr)
 }
 
 // The kernel's word that a reader or filer is blocked behind the lock:
@@ -237,9 +241,8 @@ fn an_unlocked_reader_steps_back_one_line_after_a_cut_back() {
     assert_eq!(out.trim(), "2", "the unlocked reader should have counted the in-flight line");
     file_frame(&d.path().join("inbox"), "a", "h", false, "real", "t", Duration::from_secs(5), "local t").unwrap();
     let o = shell(d.path(), np, r#"sot_cursor_offset h"#);
-    assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "1");
-    assert!(String::from_utf8_lossy(&o.stderr)
-        .contains("the last line read from @h's inbox was cut back; reading from the line before it"));
+    assert_eq!(o.stdout.trim(), "1", "{o}");
+    assert!(o.stderr.contains("the last line read from @h's inbox was cut back; reading from the line before it"), "{o}");
     assert_eq!(read_lines(&d.path().join("inbox/h.jsonl"))[1]["msg"], "real");
 }
 

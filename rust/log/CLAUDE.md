@@ -54,8 +54,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 - `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests, and brings
-  `test_log`, `test_exec`, `test_scan`, `test_isolated` and, on Unix, `test_foreign` (the backend, frontend and updater
-  turn it on in their dev-dependencies).
+  `test_log`, `test_exec`, `test_scan`, `test_isolated`, `test_wait` and, on Unix, `test_foreign` (the backend, frontend
+  and updater turn it on in their dev-dependencies).
 - `build.rs`: stamps the lane build id (`SOT_LOG_BUILD_SHA`) from the full git sha, or `SOT_BUILD_ID`, and compiles the
   native launcher (`src/host/process_tree/native_birth.c`) for the Unix targets.
 - `claude-sdk-helper/`: the Node helper that drives one Claude Agent SDK session.
@@ -66,6 +66,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/test_barrier.rs`: `hold`, a named phase barrier a real process can be held at (Unix, feature `native-barrier`, which no installed build enables; inert unless `SOT_TEST_BARRIER_DIR` names a folder).
 - `src/test_exec.rs`: `write_executable`, the test-program writer (feature `test-support`); its Linux FIFO proof observes actual parent descriptors while the child writer is active, without a permission-spelling catalog.
 - `src/test_isolated.rs`: shared exact-body isolation, scoped direct-fixture supervision and bounded child/output waits (feature `test-support`); `Draining::wait_and_read` returns child and stream observations without panicking; `try_wait_within` returns a checked tuple or failure text so a caller can scrub it before reporting, and `wait_within` is its panicking adapter. Both checked forms retain the child's status or wait failure, both stream failures and each stream's last 8 KiB. Readiness errors retain termination/entry checks, and byte-captured output renders invalid UTF-8 with explicit byte escapes. Wrapped fixtures retain launcher status and both streams, validate the native role/PID witness against exact entry, and share direct fixtures' wait/drain/finalization implementation.
+- `src/test_wait.rs`: the bounded form of a test's wait (feature `test-support`): `run_within` runs a child to its end and returns `Ran` (its status and both streams), whose `Display` is the account every failure about it carries, each stream cut to its last 8 KiB by `tail`, which `test_isolated`'s drained waits share; `try_run_within` is its form that never panics, for a caller that takes the failure as a value (a cleanup, a probe whose failure a skip names); `within` bounds any other blocking wait on a thread of its own.
 - `src/test_log.rs`: timestamp-free `capture()` and formatting-preserving `install()` (feature `test-support`), with behavioral tests of the capture format, first-callsite routing, parallel isolation and guard restoration.
 - `src/test_foreign.rs`: `ForeignListener`, a socket another OS account (`nobody`) listens on, for the User isolation
   tests, and `elevation_or_skip`, the one rule for a test that needs root: it skips only when `sudo -n true` fails (a
