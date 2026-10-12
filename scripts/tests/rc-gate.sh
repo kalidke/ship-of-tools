@@ -25,8 +25,9 @@
 # rc-gate, so summary.txt gets no ALLDONE line; a summary without one is a failed run.
 # A selected Rust job's result is zero only when its exact body completed successfully. A missing,
 # ignored-only or mismatched body produces a failed result even if the executable exited zero.
-# Ignored names from split binaries are reported as skipped and are not ordinary jobs. Aggregate
-# raw test counts are informational; the checked job results decide ALLDONE or ALLDONE FAILED.
+# Ignored names from split binaries are reported as skipped and are not ordinary jobs. The checked job
+# results alone decide ALLDONE or ALLDONE FAILED, and the summary sums no test counts: a test that re-runs its binary
+# prints the child's own libtest summary into the job's log, so a sum of summary lines miscounts.
 
 SELF=$(readlink -f "$0")
 source "$(dirname "$SELF")/lib-test-body.sh" || exit 2
@@ -374,21 +375,6 @@ LEFT=$(cat "$L/leftovers.txt" 2> /dev/null)
 # the verdict is being written: from here no signal changes it
 trap '' INT TERM HUP
 
-PASSED=0 FAILED=0 IGNORED=0 FL=0 BIN=0 SEEN=" "
-for f in "$L"/rust/*.log; do
-  [ -e "$f" ] || continue
-  k=$(basename "$f" .log)
-  case $k in
-    *__*)
-      p=${k%%__*}
-      case $SEEN in *" $p "*) ;; *) SEEN+="$p "; BIN=$((BIN + 1)) ;; esac ;;
-    *) BIN=$((BIN + $(grep -c '^test result' "$f"))) ;;
-  esac
-  read -r p1 f1 i1 < <(awk '/^test result/ {p+=$4; f+=$6; i+=$8} END {print p+0, f+0, i+0}' "$f")
-  PASSED=$((PASSED + p1)) FAILED=$((FAILED + f1)) IGNORED=$((IGNORED + i1))
-  FL=$((FL + $(grep -c '^test .* FAILED$' "$f")))
-done
-
 # one sweep over every result file: a failure or a job that never ran is a failure
 RC=0
 NOTES=
@@ -404,7 +390,7 @@ for f in "$L"/rust/*.rc "$L"/steps/*.rc; do
   esac
 done
 [ "$BUILD_RC" -eq 0 ] || RC=$BUILD_RC
-rc rust-workspace "$RC" "binaries=$BIN passed=$PASSED failed=$FAILED ignored=$IGNORED $FL FAILED-lines"
+rc rust-workspace "$RC"
 [ -n "$NOTES" ] && printf '%s' "$NOTES" >> "$L/summary.txt"
 [ "$XS" -eq 0 ] || rc pipeline "$XS"
 [ -z "$LEFT" ] || sed 's/^/leftover /' <<< "$LEFT" >> "$L/summary.txt"
