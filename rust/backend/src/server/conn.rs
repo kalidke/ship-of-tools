@@ -103,22 +103,6 @@ async fn read_owned<R: AsyncRead + Unpin>(
     (rx, res)
 }
 
-/// Stamp this connection's `last_person_input_at` if it has registered.
-/// Call ONLY from the `fe.presence` op arm (2026-09-08 review rework,
-/// design point A) — that op alone is trustworthy evidence of a person,
-/// because the frontend sends it from its own real keyboard/mouse input
-/// handlers, throttled there, never from a command-file or other
-/// automated path. An EARLIER design stamped this from ordinary
-/// navigation ops (`tree.root`, `preview.get`, `pty.write`, a
-/// `workspace.activate` with `read: true`); review found every one of
-/// them had an automated producer too (reconnect re-announces tree/preview
-/// requests, a badge-consuming `goto` fires them, an autostarted agent
-/// writes into its own pane, and a command-file `cycle_ws` could forge
-/// `read: true`) — deleted rather than patched.
-pub(super) fn touch_person_input(clients: &Clients, serial: u64) {
-    clients.touch_person_input(serial);
-}
-
 pub(super) async fn handle_connection<R, W>(
     rx: R,
     mut tx: W,

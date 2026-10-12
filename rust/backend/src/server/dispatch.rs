@@ -1,7 +1,7 @@
 //! The control session's op table: `place` says where each request op runs, `dispatch` runs one request frame
 //! there, and `serve` hands it to its owner.
 
-use super::conn::{ping_read_deadline, test_slow_concept_read_delay, touch_person_input};
+use super::conn::{ping_read_deadline, test_slow_concept_read_delay};
 use crate::rows::ops::pty::handle_pty_open;
 use crate::rows::reauth::answer_workspace_reauth;
 use crate::sidecars::ops::{handle_monitor_history, handle_monitor_subscribe, handle_monitor_unsubscribe};
@@ -298,11 +298,15 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
             crate::clients::handle_fe_command_send(req_id, payload, &shared.fe_command_tx, clients).await
         }
         op::FE_PRESENCE => {
-            // The ONLY place `last_person_input_at` is stamped from
-            // (2026-09-08 review rework, design point A) — see
-            // `touch_person_input`'s doc for why every other op that
-            // used to stamp it was removed instead of patched.
-            touch_person_input(clients, shared.serial);
+            // The ONLY place `last_person_input_at` is stamped from (2026-09-08 review rework, design point A): this op
+            // alone is trustworthy evidence of a person, because the frontend sends it from its own real keyboard and
+            // mouse input handlers, throttled there, never from a command file or another automated path. An earlier
+            // design stamped it from ordinary navigation ops (`tree.root`, `preview.get`, `pty.write`, a
+            // `workspace.activate` with `read: true`); every one of them had an automated producer too (reconnect
+            // re-announces tree and preview requests, a badge-consuming `goto` fires them, an autostarted agent
+            // writes into its own pane, a command-file `cycle_ws` could forge `read: true`), so they were deleted,
+            // not patched.
+            clients.touch_person_input(shared.serial);
             crate::clients::handle_fe_presence(req_id).await
         }
         op::FE_SESSIONS => crate::clients::handle_fe_sessions(req_id, payload, clients, Some(shared.serial)).await,
