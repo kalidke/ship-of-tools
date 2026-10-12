@@ -66,7 +66,9 @@
 //!
 //! A text write that fails after it may have landed (any phase but a stale `input` refusal) is treated as typed: the
 //! line is owed its Enter and is not typed again, so a write that was lost for good costs the row its wake until
-//! [`REPEAT_AFTER`] (the Complete bound) or a read inbox.
+//! [`REPEAT_AFTER`] (the Complete bound) or a read inbox. An Enter refused as stale (another controller took the pen
+//! after the typing) wrote nothing, so the line still owes it; an Enter whose delivery is unknown is not owed, since
+//! one that landed leaves the box empty.
 //! Enter alone also goes to a box that holds exactly the wake line for another reason: a line recalled from history with Up or returned to the box by Esc, once it has held still for
 //! [`STILL_FOR`]. The check cannot tell it from a line the wake left (it never reads the cursor column).
 //!
@@ -292,7 +294,8 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
 /// One typed without Enter is owed it (`enter_owed`): a later tick sends Enter alone once the line shows alone ([`Decision::Complete`]).
 /// A text write refused as stale (phase `input`, nothing written) is a refusal, decided by the next tick's screen read
 /// and warned once per streak ([`settle`]); any other text-write failure may have landed, so it counts as typed and
-/// owes its Enter ([`WakeOutcome::TextUnknown`]). An attach or checkpoint failure is no row this tick.
+/// owes its Enter ([`WakeOutcome::TextUnknown`]). An Enter refused as stale wrote nothing, so it is owed
+/// ([`WakeOutcome::EnterRefused`]). An attach or checkpoint failure is no row this tick.
 fn step_of(handle: &str, out: Result<WakeOutcome, HeadlessError>, seen: (Option<&'static str>, String), total: u64, now: Instant) -> Step {
     let (reason, border) = seen;
     match out {
@@ -304,6 +307,10 @@ fn step_of(handle: &str, out: Result<WakeOutcome, HeadlessError>, seen: (Option<
         }
         Ok(WakeOutcome::TextUnknown { detail }) => {
             tracing::warn!(handle, border = ?border, "comm wake: text not confirmed ({detail}); the line may have landed, so it is not typed again and its Enter is owed");
+            Step::Woke(Woken { line: total, at: now, enter_owed: true })
+        }
+        Ok(WakeOutcome::EnterRefused { detail }) => {
+            tracing::warn!(handle, border = ?border, "comm wake: Enter refused ({detail}); the line was typed, so it is not typed again and its Enter is owed");
             Step::Woke(Woken { line: total, at: now, enter_owed: true })
         }
         Ok(WakeOutcome::Unconfirmed { step: "enter", detail }) => {
@@ -424,6 +431,17 @@ mod tests {
             }
             _ => panic!("a text write refused as stale is a refusal"),
         }
+    }
+
+    /// An Enter the leg refused as stale (phase `input`) wrote nothing (`send_and_wait_recorded`), so the typed line
+    /// still owes it: a later tick sends Enter alone once the box holds just the line. Fails while the stale Enter
+    /// is booked as possibly delivered (`enter_owed: false`), which leaves the line unsent until REPEAT_AFTER.
+    #[test]
+    fn an_enter_refused_as_stale_is_still_owed() {
+        let stale = HeadlessError { phase: "input", detail: "input refused as stale (the take epoch changed); this op is never retried".into(), submitted: true };
+        let out = attempt::wake_outcome(Err(stale));
+        let step = step_of("h", Ok(out), (None, "b".to_string()), 7, Instant::now());
+        assert!(matches!(step, Step::Woke(Woken { line: 7, enter_owed: true, .. })), "an Enter refused as stale must stay owed");
     }
 
     #[test]
