@@ -274,9 +274,16 @@ mod tests {
     use std::os::fd::IntoRawFd;
 
     /// A supervisor whose parent is gone before the takeover still becomes the authority: the acknowledgement cannot be
-    /// delivered (the channel has no reader), and the inherited claim stays this supervisor's fence.
+    /// delivered (the channel has no reader), and the inherited claim stays this supervisor's fence. The claim is a
+    /// close-only fence held through an inheritable copy, so a fork by any other test of this binary could keep it held
+    /// after the drop below: the body runs in a process of its own.
     #[test]
     fn a_takeover_nobody_reads_keeps_the_claim() {
+        if !crate::test_isolated::run_isolated(
+            "supervisor::main_loop::tests::a_takeover_nobody_reads_keeps_the_claim",
+        ) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let claim = super::super::birth_claim::BirthClaim::take(dir.path())
             .expect("claim the fence for a birth");

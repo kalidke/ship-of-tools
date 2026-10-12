@@ -37,4 +37,7 @@ Part of the capsule; charter: rust/log/CLAUDE.md.
 - Storage exhaustion never charges `consecutive_unstable_legs` and never enters Terminal; the wait itself ends Terminal only for a probe error that is not storage exhaustion, a probe still running after 60 s, or a probe worker gone without a result. A leg exit 71, a recovery, end_run or reset worker failing with it, and a leg death of unknown status whose immediate probe meets it all hold the authority in `Lifecycle::StorageFull` (`storage/`); status reports `starting` meanwhile. Nothing waits before the fence and the lane: a storage failure while making the voyages folder, taking the fence or binding exits 69, as any other bootstrap failure does.
 - `first_leg_only` stays in a leg's argv while no producer has run in this process (`producer_ran`, set when a leg is Ready or adopted) and is stripped from every leg after: respawn, reset, later voyage (`leg_argv`, the one place a leg's argv is chosen).
 - A reset that fails with storage exhaustion records no Failed terminal; its operation stays active and the re-run recovery finishes it (`reset_failure`).
+- `take_authority`'s test holds a close-only claim through an inheritable copy, so it runs its body in a process of
+  its own (`test_isolated::run_isolated`): a fork by another test of this binary would copy the claim and keep the
+  fence held after the test lets go.
 - `LegLease::create` is atomic on Linux through `pipe2(O_CLOEXEC)`; its checked macOS fallback retains a creation-to-flagging window. Lane binding starts threads before lease creation.
