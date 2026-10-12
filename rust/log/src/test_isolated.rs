@@ -994,7 +994,7 @@ mod tests {
             .spawn()
             .expect("spawn");
         let pid = child.id();
-        let (status, stdout, _) = drain(child).try_wait_within(ISOLATION_TIMEOUT).unwrap();
+        let (status, stdout, _) = drain(child).wait_within(ISOLATION_TIMEOUT);
         assert!(status.success(), "{status}");
         assert!(
             stdout.len() >= 64 * 4096,
@@ -1030,13 +1030,13 @@ mod tests {
                 .expect("spawn");
             let pid = child.id();
             let text = wait(drain(child));
-            entry.assert_once(pid);
             assert!(text.contains("did not complete within its absolute work deadline"), "{form}: {text}");
             assert!(text.contains("cleanup=confirmed"), "{form}: {text}");
             assert!(text.contains("said on stderr before the stall"), "{form}: the stderr read so far is missing: {text}");
             assert!(text.contains("said on stdout before the stall"), "{form}: the stdout read so far is missing: {text}");
             assert!(text.contains(&format!("last {FAILURE_STREAM_BYTES} of ")), "{form}: the stdout flood was not cut: {text}");
             assert!(text.len() < 3 * FAILURE_STREAM_BYTES, "{form}: the failure carries {} bytes", text.len());
+            entry.assert_once(pid);
             println!("drained-hang-proof form={form} streams=retained cleanup=confirmed entry=once");
         }
     }

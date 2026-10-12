@@ -46,6 +46,9 @@ the parent's hold on a claim.
 - The channel tests (`wire.rs`) run each side of an exchange on a worker of one test owner, `Exchange`: a worker reports
   each phase and its end on the owner's one channel; the bound starts once every worker has reported; the verdict is
   the first worker failure as it arrives or, at the deadline, each unfinished worker's own phase; cleanup shuts down
-  every socket the exchange made and is confirmed only by every worker's reported end. A large message always has its
-  receiver running, and on Linux the buffers are smaller than the message. Test bounds, buffer settings and shutdowns
-  do not change the private channel's product contract.
+  every socket the exchange made and is confirmed only by every worker's reported end. A worker blocks only on a socket
+  of its exchange, never on a clock that races the bound. A message the test expects to arrive always has its receiver
+  running, and on Linux the buffers are smaller than the large one; the one exception is the stalled control
+  (`a_stalled_exchange_reports_its_phase_within_the_deadline`), whose sender writes to a peer the test holds unread, to
+  show that cleanup ends a blocked send. Test bounds, buffer settings and shutdowns do not change the private channel's
+  product contract.

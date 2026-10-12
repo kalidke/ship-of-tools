@@ -703,13 +703,16 @@ mod tests {
         }
     }
 
-    /// A worker's failure is the verdict when it arrives, though a worker spawned before it runs past the bound.
+    /// A worker's failure is the verdict when it arrives, though a worker spawned before it is still blocked. Workers
+    /// block only on a socket of their exchange, which cleanup's shutdown ends, never on a clock: no start order can
+    /// change the verdict.
     #[test]
     fn a_later_worker_failure_is_reported_while_an_earlier_one_runs() {
         let mut exchange = Exchange::new(Duration::from_secs(1));
-        exchange.spawn("waiting", |worker| {
+        let (silent, waiting) = exchange.pair();
+        exchange.spawn("waiting", move |worker| {
             worker.phase("waiting");
-            std::thread::sleep(Duration::from_millis(1500));
+            let _ = waiting.recv();
         });
         exchange.spawn("failing", |worker| {
             worker.phase("failing");
@@ -718,6 +721,7 @@ mod tests {
         let error = exchange
             .finish()
             .expect_err("a failed worker must fail the exchange");
+        drop(silent);
         assert!(
             error.contains("worker two failed on purpose"),
             "a later worker's failure was hidden behind an earlier worker: {error}"
@@ -730,25 +734,30 @@ mod tests {
         println!("wire completion-proof verdict={error}");
     }
 
+    /// A deadline names each unfinished worker with its own phase. Both block on silent peers until cleanup's shutdown.
     #[test]
     fn a_deadline_names_each_unfinished_workers_phase() {
         let mut exchange = Exchange::new(Duration::from_millis(300));
-        for (label, phase) in [("sender", "large send"), ("receiver", "first receive")] {
+        let mut silent = Vec::new();
+        for (label, phase) in [("first", "first receive"), ("second", "second receive")] {
+            let (peer, end) = exchange.pair();
+            silent.push(peer);
             exchange.spawn(label, move |worker| {
                 worker.phase(phase);
-                std::thread::sleep(Duration::from_millis(800));
+                let _ = end.recv();
             });
         }
         let error = exchange
             .finish()
             .expect_err("two stuck workers must expire");
+        drop(silent);
         assert!(
-            error.contains("phase=large send") && error.contains("phase=first receive"),
-            "the deadline named one shared phase, not each unfinished worker's: {error}"
+            error.contains("phase=first receive") && error.contains("phase=second receive"),
+            "the deadline did not name each unfinished worker's phase: {error}"
         );
         assert!(
             error.starts_with(
-                "wire exchange deadline: sender phase=large send, receiver phase=first receive"
+                "wire exchange deadline: first phase=first receive, second phase=second receive"
             ),
             "{error}"
         );

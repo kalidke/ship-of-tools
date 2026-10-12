@@ -52,8 +52,6 @@ fn prefixed_native_command_output_is_scrubbed() {
     println!("L3 command-proof terminators=retained");
 }
 
-type RunnerObservation = NativeObservation;
-
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     payload
         .downcast_ref::<String>()
@@ -62,7 +60,7 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "panic without text".into())
 }
 
-fn runner(mode: &str) -> RunnerObservation {
+fn runner(mode: &str) -> NativeObservation {
     let (mut command, entry) = test_command(RUNNER);
     let child = command
         .env(MODE, mode)
@@ -81,7 +79,7 @@ fn runner(mode: &str) -> RunnerObservation {
     let (status, stdout, stderr) = drain(child)
         .try_wait_within(ISOLATION_TIMEOUT)
         .unwrap_or_else(|error| panic!("native-command runner drain failed: {}", scrub(&error)));
-    let observation = RunnerObservation {
+    let observation = NativeObservation {
         status,
         stdout,
         stderr,
@@ -98,7 +96,7 @@ fn runner(mode: &str) -> RunnerObservation {
     observation
 }
 
-fn assert_scrubbed(observation: &RunnerObservation) {
+fn assert_scrubbed(observation: &NativeObservation) {
     let text = observation.combined();
     let diagnostic = observation.diagnostic("runner");
     assert!(
@@ -131,7 +129,7 @@ fn assert_scrubbed(observation: &RunnerObservation) {
     );
 }
 
-fn assert_failure(observation: &RunnerObservation, mode: &str) {
+fn assert_failure(observation: &NativeObservation, mode: &str) {
     let text = observation.combined();
     let diagnostic = observation.diagnostic("runner");
     assert!(
@@ -164,7 +162,7 @@ fn assert_failure(observation: &RunnerObservation, mode: &str) {
     assert_scrubbed(observation);
 }
 
-fn assert_success(observation: &RunnerObservation) {
+fn assert_success(observation: &NativeObservation) {
     let diagnostic = observation.diagnostic("runner");
     assert!(
         observation.status.success(),
@@ -184,34 +182,22 @@ fn a_native_command_failure_is_scrubbed_before_it_is_reported() {
     println!("L3 command-proof deadline=observed cleanup=confirmed hook=scrubbed entry=once");
 }
 
+/// One nonzero runner shows three things: its failure is scrubbed before either panic hook prints it; the success
+/// verifier's rejection of it keeps the runner's status and both streams; and the runner's own failure keeps the
+/// command's status and its two streams apart.
 #[test]
 fn a_nonzero_native_command_failure_is_scrubbed() {
     let observation = runner("nonzero");
     assert_failure(&observation, "nonzero");
-    println!("L3 command-proof nonzero=7 hook=scrubbed entry=once");
-}
-
-#[test]
-fn successful_native_command_output_is_scrubbed() {
-    let observation = runner("success");
-    assert_success(&observation);
-    println!("L3 command-proof success=0 output=scrubbed entry=once");
-}
-
-#[test]
-fn a_failed_success_runner_keeps_its_observations() {
-    let observation = runner("nonzero");
-    nonzero_prerequisites(&observation);
-    let text = observation.combined();
     let diagnostic = observation.diagnostic("runner");
     assert!(
-        text.contains("L3 command-child entered=once"),
-        "child entry missing\n{diagnostic}"
-    );
-    assert!(
-        text.contains("L3 command-finish exit=7"),
+        observation.status.code() == Some(101)
+            && observation
+                .combined()
+                .contains("L3 HARNESS FAILURE: native fixture command failed"),
         "nonzero runner prerequisite missing\n{diagnostic}"
     );
+    println!("L3 command-proof nonzero=7 hook=scrubbed entry=once");
     let rejected = std::panic::catch_unwind(|| assert_success(&observation));
     let payload = rejected.expect_err(&format!(
         "a failed runner passed the success verifier\n{diagnostic}"
@@ -229,6 +215,25 @@ fn a_failed_success_runner_keeps_its_observations() {
         "success assertion discarded runner status or captured streams\n{diagnostic}"
     );
     println!("L3 command-proof failed-success=status-and-streams-retained entry=once");
+    let streams = observation
+        .stderr
+        .split_once("command stdout:\n")
+        .and_then(|(_, text)| text.split_once("\ncommand stderr:\n"));
+    assert!(
+        observation.stderr.contains("command status=")
+            && observation.stderr.contains("code=Some(7) success=false")
+            && streams.is_some_and(|(stdout, stderr)| stdout.contains("<target>/stdout-marker")
+                && stderr.contains("<target>/stderr-marker")),
+        "native runner discarded command status or separate streams\n{diagnostic}"
+    );
+    println!("L3 command-proof runner-command=status-and-streams-retained entry=once");
+}
+
+#[test]
+fn successful_native_command_output_is_scrubbed() {
+    let observation = runner("success");
+    assert_success(&observation);
+    println!("L3 command-proof success=0 output=scrubbed entry=once");
 }
 
 #[test]
@@ -344,39 +349,6 @@ fn native_command_child_role() {
         "success" | "owned" => {}
         _ => panic!("unknown native command control"),
     }
-}
-
-fn nonzero_prerequisites(observation: &RunnerObservation) {
-    let text = observation.combined();
-    let diagnostic = observation.diagnostic("runner");
-    assert!(
-        !observation.status.success()
-            && observation.status.code() == Some(101)
-            && text.contains("L3 command-child entered=once")
-            && text.contains("L3 command-finish exit=7")
-            && text.contains("L3 HARNESS FAILURE: native fixture command failed"),
-        "nonzero runner prerequisite missing\n{diagnostic}"
-    );
-    assert_scrubbed(observation);
-}
-
-#[test]
-fn a_native_runner_failure_keeps_separate_streams() {
-    let observation = runner("nonzero");
-    nonzero_prerequisites(&observation);
-    let diagnostic = observation.diagnostic("runner");
-    let streams = observation
-        .stderr
-        .split_once("command stdout:\n")
-        .and_then(|(_, text)| text.split_once("\ncommand stderr:\n"));
-    assert!(
-        observation.stderr.contains("command status=")
-            && observation.stderr.contains("code=Some(7) success=false")
-            && streams.is_some_and(|(stdout, stderr)| stdout.contains("<target>/stdout-marker")
-                && stderr.contains("<target>/stderr-marker")),
-        "native runner discarded command status or separate streams\n{diagnostic}"
-    );
-    println!("L3 command-proof runner-command=status-and-streams-retained entry=once");
 }
 
 fn owned_command() -> (

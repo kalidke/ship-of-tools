@@ -47,5 +47,3 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
 - An op's handler lives with the state it reads or writes; `server/dispatch.rs` (`dispatch`) only routes.
 - Integration tests need `cargo build -p sot-log --bin sot-capsule` first.
 - `sidecars/mathjax` is found at run time by `paths::resource_dir` and never moves.
-- A test writing a large message to a socket or pipe runs its reader concurrently instead of depending on kernel buffer
-  capacity, and bounds that exchange with an absolute deadline and a named failure phase; no scope or join waits past it.
