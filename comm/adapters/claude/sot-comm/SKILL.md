@@ -132,7 +132,7 @@ you. Full reference: `sot-fe --help`; rarer essays: `references/fe-verbs.md`.
 |------|------|
 | `preview <ws> <path> [--caption <t>]` | preview `<path>` and expand the file tree to it: at once when the FE is on `<ws>`, else badged until the user visits (only `--urgent --fe <host>` switches) |
 | `reveal <ws> <path>` | the same as `preview` (one code path in the FE) |
-| `goto <ws> [--boot]` | switch the FE to a workspace |
+| `goto <ws>` | switch the FE to a workspace |
 | `mode <mode>` | switch the FE's active mode |
 | `notify <text>` | one-line notice |
 | `open-url <http(s)-url>` | open in the FE machine's OS browser |

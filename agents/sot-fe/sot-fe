@@ -17,7 +17,7 @@
 #   sot-fe preview <workspace> <path> [--urgent] [--fe <host>] [--roi x,y,w,h]
 #                                     [--caption <text>]
 #   sot-fe reveal  <workspace> <path> [--urgent] [--fe <host>] [--caption <text>]
-#   sot-fe goto    <workspace>        [--boot] [--fe <host>]
+#   sot-fe goto    <workspace>        [--fe <host>]
 #   sot-fe mode    <mode>             [--fe <host>]
 #   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <host>]
 #   sot-fe open-url <http(s)-url>                  [--fe <host>]
@@ -192,9 +192,6 @@
 #                  when the user arrives minutes later. Re-previewing the same file
 #                  WITHOUT --caption clears it. Capped at 300 chars by the FE
 #                  (warned here); newlines/control chars collapse to spaces.
-#   --boot         (goto) seed autostart so the FE boots ccb on the switch — the
-#                  scriptable spawn->goto->boot primitive. Send DIRECTED (--fe
-#                  <host>); a broadcast --boot would switch+boot on EVERY FE.
 #   --fresh        (repl run) RESTART the workspace's persistent REPL into
 #                  <path>'s project before including it (op repl.run_file,
 #                  fresh:true) — the way to clear a STALE kernel from a backend
@@ -237,7 +234,6 @@ ENDPOINT=""
 FE=""          # --fe <host> → wire `target` fe@<host>
 URGENT=false
 CONVERGE=false   # --converge → relaunch exits 76 (pull + rebuild) instead of 75
-BOOT=false
 LEVEL=""
 NOTIFY_WS=""
 TIMEOUT=""     # repl: wall-clock budget in seconds
@@ -256,7 +252,6 @@ while [ $# -gt 0 ]; do
         --converge) CONVERGE=true; shift ;;
         --endpoint) ENDPOINT="$2"; shift 2 ;;
         --urgent)   URGENT=true; shift ;;
-        --boot)     BOOT=true; shift ;;
         --fresh)    FRESH=true; shift ;;
         --level)    LEVEL="$2"; shift 2 ;;
         --ws)       NOTIFY_WS="$2"; shift 2 ;;
@@ -402,12 +397,8 @@ case "$CMD" in
         ;;
     goto)
         WS="${POS[0]:-}"
-        [ -n "$WS" ] || { echo "usage: sot-fe goto <workspace> [--boot] [--fe <host>]" >&2; exit 1; }
-        if [ "$BOOT" = true ]; then
-            ARGS="$(jq -nc --arg w "$WS" '{workspace:$w, boot:true}')"
-        else
-            ARGS="$(jq -nc --arg w "$WS" '{workspace:$w}')"
-        fi
+        [ -n "$WS" ] || { echo "usage: sot-fe goto <workspace> [--fe <host>]" >&2; exit 1; }
+        ARGS="$(jq -nc --arg w "$WS" '{workspace:$w}')"
         send_fe_command goto_workspace "$ARGS"
         ;;
     mode)

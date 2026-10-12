@@ -64,9 +64,3 @@ opposite fixes.
   ≤300 chars). **Sticky** to that (workspace, file): survives switches and
   re-previews. Re-previewing the same file WITHOUT `--caption` clears it, so
   pass the new caption when you regenerate with different parameters.
-
-## `goto --boot`
-
-Seeds autostart so the FE boots `ccb` on the switch — the scriptable
-spawn→goto→boot primitive. Send this **directed** (`--fe <handle>`); a
-broadcast `--boot` would switch and boot every attached FE.

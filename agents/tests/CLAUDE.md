@@ -10,6 +10,7 @@ does (`working-directory: agents/tests`).
 - `test-ccx-resume-default.sh`: every `ccx` starts fresh and resumes only on an explicit `--continue`, whatever its environment; `--capsule` changes nothing; the first prompt names the session's handoff when one exists
 - `test-crlf-gh-auth.sh`: `sot-gh-auth.sh` reads JSON values correctly under a jq that writes CRLF
 - `test-despawn-resolve.sh`: `comm-despawn.sh` resolves first, fails and changes nothing on an unknown name, removes a registry row only after a confirmed destroy; `comm-worktree-clean.sh` despawns once
+- `test-sot-fe-goto.sh`: `sot-fe goto` has no `--boot`: the flag is refused as unknown and nothing is sent
 - `test-sot-fe-reauth.sh`: `sot-fe reauth` moves only the row it runs in
 - `test-sot-fe-version.sh`: `sot-fe version` asks the daemon what build it is
 - `test-spawn-capsule-workspace.sh`: `comm-spawn.sh` never destroys a row it did not create; a bash row (`--agent none`) claims no handle and writes no registry row or inbox

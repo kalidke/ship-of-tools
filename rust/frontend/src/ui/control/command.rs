@@ -105,7 +105,6 @@ pub(in crate::ui) fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, sel
             let workspace = str_arg("workspace")?;
             Some(FeCommand::Workspace {
                 slug: Some(workspace),
-                boot: bool_arg("boot"),
             })
         }
         "goto_mode" => {
@@ -166,12 +165,6 @@ pub(in crate::ui) enum FeCommand {
     Workspace {
         #[serde(default)]
         slug: Option<String>,
-        /// `--boot`: before switching, seed the target workspace's autostart
-        /// flag so attach_session_to_bl boots ccb on attach — a scriptable
-        /// spawn->goto->boot that's unconditional of what workspace.list has
-        /// reported yet (sidesteps the registry-flag timing). Wire arg "boot".
-        #[serde(default)]
-        boot: bool,
     },
     /// Cycle the active workspace by `dir` (+1 next, -1 prev); wraps. Defaults
     /// to +1 so `{"cmd":"cycle_ws"}` means "next".
@@ -679,27 +672,8 @@ mod tests {
             None,
         );
         match route_fe_command(&evt, "fe@host-a") {
-            Some(FeCommand::Workspace { slug, boot }) => {
+            Some(FeCommand::Workspace { slug }) => {
                 assert_eq!(slug.as_deref(), Some("demo"));
-                assert!(!boot, "boot defaults false when arg absent");
-            }
-            other => panic!("expected Workspace, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn route_goto_workspace_boot_flag() {
-        // `sot-fe goto --boot <ws>` → args carry boot:true → FeCommand
-        // seeds autostart before the switch (scriptable spawn->goto->boot).
-        let evt = fe_evt(
-            "goto_workspace",
-            serde_json::json!({"workspace": "demo", "boot": true}),
-            Some("fe@host-a"),
-        );
-        match route_fe_command(&evt, "fe@host-a") {
-            Some(FeCommand::Workspace { slug, boot }) => {
-                assert_eq!(slug.as_deref(), Some("demo"));
-                assert!(boot, "boot:true must thread through");
             }
             other => panic!("expected Workspace, got {other:?}"),
         }

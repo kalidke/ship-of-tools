@@ -1734,7 +1734,6 @@ mod result_tests {
                 },
                 FeCommand::Workspace {
                     slug: Some("unknown".into()),
-                    boot: false,
                 },
             ] {
                 self.dispatch_fe_command(Some(b), command);
@@ -1752,7 +1751,6 @@ mod result_tests {
                 Some(&b),
                 FeCommand::Workspace {
                     slug: Some("id-b".into()),
-                    boot: false,
                 },
             );
             let requests: Vec<_> = std::iter::from_fn(|| b_rx.try_recv().ok()).collect();
@@ -1778,7 +1776,6 @@ mod result_tests {
                 Some(a),
                 FeCommand::Workspace {
                     slug: Some("default".into()),
-                    boot: false,
                 },
             );
             anyhow::ensure!(
@@ -2158,7 +2155,6 @@ mod result_tests {
     fn goto_command(slug: &str) -> FeCommand {
         FeCommand::Workspace {
             slug: Some(slug.into()),
-            boot: false,
         }
     }
 

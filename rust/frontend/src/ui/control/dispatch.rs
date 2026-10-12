@@ -84,14 +84,13 @@ impl State {
     #[allow(clippy::too_many_lines, reason = "the FE-control command table: one arm per command; predates the 100-line limit")]
     pub(in crate::ui) fn dispatch_fe_command(&mut self, from_host: Option<&HostKey>, cmd: FeCommand) {
         match cmd {
-            FeCommand::Workspace { slug, boot } => {
+            FeCommand::Workspace { slug } => {
                 let host = from_host.unwrap_or(&self.active_host).clone();
                 match self.result_route(&host, slug.as_deref().unwrap_or(""), true, true) {
                     ResultRoute::Switch(target) => self.switch_to_resolved_workspace(target, false),
                     ResultRoute::Refusal(reason) => self.refuse_result(&reason),
                     _ => unreachable!("goto always switches a resolved target"),
                 }
-                let _ = boot;
             }
             FeCommand::CycleWs { dir } => {
                 let dir = if dir == 0 { 1 } else { dir };
