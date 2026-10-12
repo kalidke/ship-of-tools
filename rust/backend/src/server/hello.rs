@@ -204,8 +204,8 @@ pub async fn handle_hello(
 
 /// Enters a control session in the client roster, holding its declared host, role and name for the connection's
 /// life. Called after the connection's bus subscriptions and before the hello's reply, so `clients_connected` counts
-/// it and no event between the two is lost. Only a long-lived role (`fe`, `bridge`) is eligible for the read
-/// deadline, which the connection's first `ping` arms (`serve_control`); a handoff connection is never listed.
+/// it and no event between the two is lost. Whatever its role, a connection's first `ping` arms its read deadline
+/// (`dispatch`) and every frame after resets it (`serve_control`); a handoff connection is never listed.
 pub(super) fn register_hello(admitted: &Admitted, clients: &Clients) -> crate::clients::ClientGuard {
     let req = admitted.hello();
     clients.register(

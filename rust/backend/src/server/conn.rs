@@ -560,10 +560,10 @@ where
 }
 
 /// `ping` (topology plan §F step 2): a bare liveness ack, no side effect
-/// beyond answering. Resetting this connection's read deadline is done in
-/// `server/dispatch.rs`'s dispatch loop, ON EVERY frame it reads from an `fe`/
-/// `bridge` connection (not only `ping` ones) — this handler stays a pure
-/// echo so it needs no registry access, unlike `fe.presence`.
+/// beyond answering. The first `ping` arms the connection's read deadline,
+/// whatever its role (`dispatch`), and `serve_control` resets it on EVERY
+/// frame it reads after that (not only `ping` ones) — this handler stays a
+/// pure echo so it needs no registry access, unlike `fe.presence`.
 pub async fn handle_ping(req_id: u64) -> Result<HandlerOutput> {
     Ok(vec![(
         Frame::res(

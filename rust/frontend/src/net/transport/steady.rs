@@ -150,9 +150,9 @@ where
     };
     let silence = ping_every * SILENT_PINGS;
     let mut read_fut = Some(Box::pin(read_owned(rx)));
-    // Topology plan §F step 2 (the half-open-roster fix): this connection is always `fe`-declared, one of the
-    // daemon's two long-lived roles, so it always pings. `Interval::tick` is cancellation-safe: an iteration that
-    // takes another arm leaves it armed.
+    // Topology plan §F step 2 (the half-open-roster fix): the window pings every control connection it holds, which
+    // arms the daemon's reaper for it (any connection that has pinged is reaped when silent). `Interval::tick` is
+    // cancellation-safe: an iteration that takes another arm leaves it armed.
     let mut ping_interval = tokio::time::interval(ping_every);
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ping_interval.tick().await; // first tick fires immediately; consume it
