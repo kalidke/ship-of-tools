@@ -33,8 +33,8 @@ scripts/CLAUDE.md.
   The step "Test selected Rust bodies" runs the portable real-libtest
   shell proofs in `test` on windows and macos and in `checks-linux` on ubuntu; it invokes no daemon or peer suite. On
   ubuntu it also runs the candidate gate's finite selected-job and runtime-listing proofs and test-filtered-tests.sh,
-  the group runner's real-libtest controls and mutation table; the full candidate gate is not invoked by that proof step. The step
-  "Test L3 storage exhaustion" in `checks-linux` makes a private 64 MiB ext4
+  the group runner's real-libtest controls and mutation table; the full candidate gate is not invoked by that proof
+  step. The step "Test L3 storage exhaustion" in `checks-linux` makes a private 64 MiB ext4
   loop volume, runs `fault_storage` on it with `--include-ignored`, then unmounts it, releases the loop device and
   removes its folder; sudo is used only in that step, and a failed setup or teardown fails the job.
   Every leg of `test` and every shard of `test-linux` installs Julia 1.13 (`julia-actions/setup-julia`); in `test`

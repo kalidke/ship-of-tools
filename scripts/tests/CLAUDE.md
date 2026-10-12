@@ -15,8 +15,10 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-filtered-tests.sh`: real-libtest controls of the group runner and its mutation table. Each case pins its log's
   summary lines, the fixture bodies that ran, the runner's exit status and every line the runner prints, and a failing
   case prints its saved status, output and libtest log. `MUTANTS` removes each of the runner's checks by one exact
-  edit of a temporary copy, and the suite fails unless the case it names is the first to fail on that copy. It receives the existing compiled fixture by absolute
-  path and uses its own temporary roots. Runs in the `rust.yml` step "Test selected Rust bodies" (job `checks-linux`).
+  edit of a temporary copy; the suite fails if the case a row names is not the first to fail on that copy, or if the
+  runner's code outside the rows' edit texts differs from `PLAIN`. It receives the existing compiled fixture by
+  absolute path and uses its own temporary roots. Runs in the `rust.yml` step "Test selected Rust bodies" (job
+  `checks-linux`).
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
@@ -185,8 +187,10 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
 
 ## Rules
 - Each check run-filtered-tests.sh makes is a row of test-filtered-tests.sh's `MUTANTS`, with the case that fails
-  without it. A row whose edit text no longer occurs exactly once in the runner fails the suite, so a commit that
-  changes the runner changes the table; a new check adds its row and, if no case fails without it, its case.
+  first without it. Every row's edit text occurs once in the runner, and the runner's code outside them all is
+  `PLAIN`, in order (comment lines and spacing aside), so a change to the runner's code fails the suite until the
+  table changes with it: a new check adds its row and, if no case fails without it, its case. Deleting a row whose
+  text lies inside another row's leaves no code uncovered, so review must catch that.
 - A `rust.yml` step that filters libtest bodies to run them as tests runs through run-filtered-tests.sh with its verified
   positive count ("Test native harness helpers" in `checks-linux`, "Test the ignored containment tests" in
   `windows-ignored-containment`), so a filter that runs no body, or another number, fails. Two filter steps keep cargo's

@@ -127,7 +127,6 @@ cases = [
     Case('ignored-beside', ['ordinary', 'qualified::ignored_positive'], ['ok. 1 passed; 0 failed; 1 ignored;'],
          ['ordinary'], 1, [want(1), found('ok. 1 passed; 0 failed; 1 ignored;')]),
     Case('fail-after-ok', ['ordinary'], [ONE], ['ordinary'], 1, [FAILED], wrap=FAIL_AFTER),
-    Case('failed', ['ordinary'], ['FAILED. 0 passed; 1 failed; 0 ignored;'], ['ordinary'], 1, [FAILED], panic=True),
     Case('hidden-failure', ['ordinary', 'positive'], ['FAILED. 1 passed; 1 failed; 0 ignored;'],
          ['ordinary', 'positive'], 1, [want(1), found('FAILED. 1 passed; 1 failed; 0 ignored;')], wrap=HIDE_STATUS,
          panic=True),
@@ -138,7 +137,6 @@ cases = [
     Case('no-summary', ['ordinary', '--list'], [], [], 1, [want(1), 'found: no summary line']),
     Case('nul-byte', ['ordinary'], [ONE], ['ordinary'], 0, ['expected=1 ok=true'], wrap=NUL_FIRST),
     Case('stale-log', ['ordinary'], [ONE], ['ordinary'], 0, ['expected=1 ok=true'], log='stale'),
-    # The capture half of the status check: tee fails, the command does not; fail-after-ok kills its mutant first.
     Case('capture-error', ['ordinary'], [], ['ordinary'], 1, [FAILED], log='directory'),
     Case('invalid-count', ['ordinary'], [], [], 2, [USAGE], count=0),
     Case('count-suffix', ['ordinary'], [], [], 2, [USAGE], count='1x'),
@@ -149,7 +147,13 @@ cases = [
 ]
 
 # Each mutant removes one check from the runner by one exact edit; the case named last is the first to fail on it.
-# An edit whose text no longer occurs exactly once fails the suite, so a change to the runner changes this table.
+# Every row's edit text occurs once in the runner, and the runner's code outside them all is PLAIN, in order (comment
+# lines and spacing aside), so a change to the runner's code fails the suite until this table changes with it.
+# Not checks, so no rows of their own, though inside rows' texts: 2>&1, as libtest prints its summary on stdout; set -e
+# and -u, as a failed mkdir fails tee next and the arguments are counted before use; each line's stream and tee's copy
+# to stdout, which only a reader sees.
+PLAIN = ['if [[', ']]; then', 'fi', 'filtered_count=$1', 'filtered_log=$2', 'shift 3', 'filtered_summary=$(',
+         '"$filtered_log"', '$filtered_summary !=', ']]; then']
 WANT_LINE = ('    printf \'filtered-tests: want exactly one summary line, starting "test result: ok. %s passed; '
              '0 failed; 0 ignored;"\\n\' \\\n        "$filtered_count" >&2\n')
 FOUND_LINE = '    sed \'s/^/filtered-tests: found: /\' <<< "${filtered_summary:-no summary line}" >&2\n'
@@ -164,9 +168,11 @@ MUTANTS = [
     ('pipefail', 'set -euo pipefail', 'set -eu', 'fail-after-ok'),
     ('capture-status', 'if ! "$@" 2>&1 | tee "$filtered_log"; then',
      'if ! { "$@" 2>&1 | tee "$filtered_log"; true; }; then', 'fail-after-ok'),
+    ('tee-status', '| tee "$filtered_log"; then', '| { tee "$filtered_log" || true; }; then', 'capture-error'),
     ('fresh-log', '| tee "$filtered_log"', '| tee -a "$filtered_log"', 'stale-log'),
     ('log-folder', 'mkdir -p -- "$(dirname -- "$filtered_log")"\n', '', 'ordinary'),
     ('line-start', "grep -a '^test result: '", "grep -a 'test result: '", 'mid-line'),
+    ('no-match', ' || true)', ')', 'no-summary'),
     ('one-summary', "$filtered_summary == *$'\\n'* ||\n    ", '', 'misleading'),
     ('pass-count', 'ok. $filtered_count passed;', 'ok. "*" passed;', 'absent'),
     ('no-failure', '"test result: ok. $filtered_count passed; 0 failed;',
@@ -197,11 +203,22 @@ try:
         holds(case, runner, save=True)
         print(f'filtered-count proof={name} ok=true', flush=True)
     print(f'filtered-count completed_cases={len(cases)} ok=true', flush=True)
+    evidence.clear()
     source = runner.read_text()
+    code = list(source)  # the runner with every row's edit text blanked, its newlines kept
+    for mutant, old, new, killer in MUTANTS:
+        name = f'mutant {mutant}'
+        check(source.count(old) == 1, f'its edit text occurs {source.count(old)} times in the runner')
+        start = source.index(old)
+        code[start:start + len(old)] = [c if c == '\n' else '\0' for c in old]
+    name = 'plain'
+    plain = [part.strip() for line, left in zip(source.split('\n'), ''.join(code).split('\n'))
+             if not line.lstrip().startswith('#') for part in left.split('\0') if part.strip()]
+    check(plain == PLAIN, f'the runner code no row edits is {plain}, want PLAIN {PLAIN}')
+    print(f'filtered-count plain={len(PLAIN)} ok=true', flush=True)
     with tempfile.TemporaryDirectory(prefix='filtered-count-mutants.', dir=output) as temporary:
         for mutant, old, new, killer in MUTANTS:
             name = f'mutant {mutant}'
-            check(source.count(old) == 1, f'its edit text occurs {source.count(old)} times in the runner')
             judged = Path(temporary) / f'{mutant}.sh'
             judged.write_text(source.replace(old, new))
             first = None
