@@ -250,6 +250,58 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A process name is the bytes `/proc` gives: any byte but `/` and NUL, cut at 15 of them, maybe inside a
+    /// character. The real sampler script, reading a stand-in `/proc` through a stub `cat`, must still give the daemon
+    /// a sample naming both processes below, not a dropped line or an ended source.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_process_name_with_any_bytes_keeps_its_host_sampled() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = dir.path().join("calls");
+        // The script's one `cat` reads `/proc/[0-9]*/stat`; this one prints two processes whose CPU time grows by 100
+        // ticks a call: one named with a tab and a 0x01, one cut inside its fifth character.
+        sot_log::test_exec::write_executable(
+            &dir.path().join("cat"),
+            &format!(
+                "#!/bin/sh\nn=0\n[ -f '{c}' ] && read n < '{c}'\nn=$((n + 100))\necho $n > '{c}'\n\
+                 printf '4242 (a\\tb\\001c) S 1 1 1 0 -1 0 0 0 0 0 %d 0\\n' $n\n\
+                 printf '4243 (ab\\346\\227\\245\\346\\234\\254\\350\\252\\236\\343\\201\\256\\343) S 1 1 1 0 -1 0 0 0 0 0 %d 0\\n' $n\n",
+                c = calls.display()
+            ),
+        );
+        // The C locale, as a remote host's non-interactive shell may run the script: there awk passes the cut byte
+        // raw (in a UTF-8 locale gawk 5.1 turns it into U+FFFD itself).
+        let sampler = dir.path().join("sampler");
+        sot_log::test_exec::write_executable(
+            &sampler,
+            &format!("#!/bin/sh\nexport LC_ALL=C PATH='{}':\"$PATH\"\nexec bash -s 2 1\n", dir.path().display()),
+        );
+        let name = "stub-bytes".to_string();
+        STUB_SAMPLER.lock().unwrap().push((name.clone(), sampler.to_string_lossy().into_owned()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (tick_tx, mut ticks) = broadcast::channel::<HostLatest>(16);
+        let host = MonitorHost { name: name.clone(), ssh_alias: None, local: true };
+        let rings = Arc::new(Mutex::new(HashMap::from([(name.clone(), HostRing::new())])));
+        let task = tokio::spawn(supervise(host, tick_tx, rings, sig));
+        let mut samples = 0;
+        let names = loop {
+            let tick = tokio::time::timeout(Duration::from_secs(10), ticks.recv())
+                .await
+                .expect("no tick in 10 s")
+                .expect("tick channel");
+            match tick.sample {
+                Some(s) if !s.top_procs.is_empty() => break s.top_procs.into_iter().map(|p| p.name).collect::<Vec<_>>(),
+                Some(_) => samples += 1,
+                None => panic!("the host went stale after {samples} sample(s), before one named both processes"),
+            }
+        };
+        sig.fire().expect("fire");
+        let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
+        let mut names = names;
+        names.sort();
+        assert_eq!(names, ["a b c", "ab日本語の\u{fffd}"]);
+    }
+
     /// Program override per host name, so no test touches `bash` or `ssh`.
     pub(super) static STUB_SAMPLER: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 
