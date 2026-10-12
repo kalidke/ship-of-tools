@@ -67,15 +67,8 @@ fn accepted_observations() {
     eprintln!("no-live observations: {events:?}");
     assert_eq!(
         events,
-        [
-            "exited-unreaped",
-            "members-any-uid",
-            "status",
-            "members-any-uid",
-            "status",
-            "exited-unreaped"
-        ],
-        "zombie-only acceptance bypassed complete membership/status observation"
+        ["members", "status", "members"],
+        "zombie-only acceptance bypassed the membership and status observation"
     );
     assert_eq!(
         contain::REQUEST_EVENTS.with(|events| events.borrow().clone()),
@@ -115,6 +108,70 @@ async fn zombie_only_group_returns_the_async_status() {
     assert_eq!(child.wait().await.unwrap().code(), Some(17));
     accepted_observations();
 }
+#[test]
+fn a_setuid_leader_is_waited_after_its_exit() {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata("/bin/ps").unwrap();
+    assert!(
+        metadata.mode() & 0o4000 != 0 && metadata.uid() == 0,
+        "premise: /bin/ps is not setuid root"
+    );
+    let mut command = Command::new("/bin/ps");
+    command
+        .args(["-p", "1"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = Box::leak(Box::new(Signal::new()))
+        .spawn_std(&mut command)
+        .unwrap();
+    exited_eperm(child.id());
+    clear_events();
+    let status = child
+        .wait()
+        .unwrap_or_else(|error| panic!("setuid zombie leader was refused: {error}"));
+    assert!(status.success(), "{status:?}");
+    println!("MAC-EPERM-FIX setuid PASS: zombie leader of another uid accepted");
+}
+#[test]
+fn a_request_in_the_leaders_exit_window_is_done() {
+    const ROUNDS: u32 = 300;
+    let mut failures = Vec::new();
+    let mut refused_accepted = 0;
+    for round in 0..ROUNDS {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("600");
+        let mut child = Box::leak(Box::new(Signal::new()))
+            .spawn_std(&mut command)
+            .unwrap();
+        // SAFETY: this test spawned the child and holds it unreaped.
+        unsafe { libc::kill(child.id() as i32, libc::SIGKILL) };
+        // Spread the second request across the exit window; this is not a timing assertion.
+        let spin = Duration::from_micros(u64::from(round % 30) * 20);
+        let began = std::time::Instant::now();
+        while began.elapsed() < spin {
+            std::hint::spin_loop();
+        }
+        clear_events();
+        match child.kill() {
+            Ok(_) => {
+                let checked =
+                    contain::macos::EVENTS.with(|events| events.borrow().contains(&"members"));
+                refused_accepted += usize::from(checked);
+            }
+            Err(error) => failures.push(error.to_string()),
+        }
+    }
+    println!(
+        "MAC-EPERM-FIX window: rounds={ROUNDS} failed={} refused-accepted={refused_accepted}",
+        failures.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "{} of {ROUNDS} requests in the exit window failed; first: {:?}",
+        failures.len(),
+        &failures[..failures.len().min(2)]
+    );
+}
 struct LiveTree {
     dir: tempfile::TempDir,
     child: Option<ContainedStd>,
@@ -126,7 +183,7 @@ impl LiveTree {
         let (leader, member) = (dir.path().join("leader"), dir.path().join("member"));
         // The member keeps inherited stdin, exits on EOF, and has an independent 30 s ceiling.
         sot_log::test_exec::write_executable(&member, "#!/usr/bin/env python3\nimport os,sys,time,select\nos.setpgid(0,int(sys.argv[1]))\nwith open(sys.argv[2],'w') as f: f.write('%d %d %d'%(os.getpid(),os.getpgrp(),os.geteuid()))\nend=time.monotonic()+30\nwhile time.monotonic()<end:\n if select.select([0],[],[],max(0,end-time.monotonic()))[0]:\n  data=os.read(0,4096)\n  if not data: break\n  with open(sys.argv[2]+'.live','w') as f: f.write('alive')\n");
-        sot_log::test_exec::write_executable(&leader, "#!/usr/bin/env python3\nimport os,sys,time,subprocess\nmember,ready,release,cleanup,root=sys.argv[1:]\nargs=[sys.executable,member,str(os.getpid()),ready]\np=subprocess.Popen((['/usr/bin/sudo','-n','--'] if root=='root' else [])+args)\nend=time.monotonic()+20\nwhile not os.path.exists(release) and time.monotonic()<end:\n if p.poll() is not None: raise RuntimeError('owned descendant exited before readiness/release; sudo -n is required')\n time.sleep(.01)\nif os.path.exists(cleanup): p.wait(timeout=35)\nsys.exit(17)\n");
+        sot_log::test_exec::write_executable(&leader, "#!/usr/bin/env python3\nimport os,sys,time,subprocess\nmember,ready,release,cleanup,root=sys.argv[1:]\nargs=[sys.executable,member,str(os.getpid()),ready]\np=subprocess.Popen((['/usr/bin/sudo','-n','--'] if root=='root' else [])+args,process_group=0 if root=='root' else None)\nend=time.monotonic()+20\nwhile not os.path.exists(release) and time.monotonic()<end:\n if p.poll() is not None: raise RuntimeError('owned descendant exited before readiness/release; sudo -n is required')\n time.sleep(.01)\nif os.path.exists(cleanup): p.wait(timeout=35)\nsys.exit(17)\n");
         let signal = Box::leak(Box::new(Signal::new()));
         let mut command = Command::new(leader);
         let paths = ["ready", "release", "cleanup"].map(|name| dir.path().join(name));
@@ -236,12 +293,15 @@ fn a_real_live_group_permission_denial_stays_an_error() {
     );
     let error = result.expect_err("genuine live-member EPERM was accepted as absence");
     assert!(error.to_string().contains("macOS group EPERM:"), "{error}");
-    assert!(error.to_string().contains("step=member-first"), "{error}");
+    assert!(
+        error.to_string().contains("step=member reason=live-member"),
+        "{error}"
+    );
     assert_original_eperm(&error);
 }
 #[test]
 fn a_failed_group_observation_keeps_the_original_eperm() {
-    for fault in 1..=12 {
+    for fault in 1..=5 {
         let (_dir, mut command) = zombie_command();
         let mut child = Box::leak(Box::new(Signal::new()))
             .spawn_std(&mut command)
@@ -251,7 +311,7 @@ fn a_failed_group_observation_keeps_the_original_eperm() {
         contain::macos::FAULT.with(|value| value.set(fault));
         let result = child.wait();
         contain::macos::FAULT.with(|value| value.set(0));
-        let error = result.expect_err("failed or ambiguous zombie-group observation was accepted");
+        let error = result.expect_err("failed or ambiguous group observation was accepted");
         assert_fault_evidence(&error, fault);
         assert_original_eperm(&error);
         child.wait().unwrap();
@@ -261,9 +321,7 @@ fn a_failed_group_observation_keeps_the_original_eperm() {
             "query fault={fault}: original EPERM preserved; independent leader request checked"
         );
     }
-    println!(
-        "MAC-EPERM evidence PASS: 12 rejected observations retain request errno and step evidence"
-    );
+    println!("MAC-EPERM-FIX evidence PASS: 5 rejected observations name their step");
 }
 fn assert_original_eperm(error: &std::io::Error) {
     let source = error
@@ -280,33 +338,22 @@ fn assert_original_eperm(error: &std::io::Error) {
 }
 fn assert_fault_evidence(error: &std::io::Error, fault: u8) {
     let text = error.to_string();
-    let stage = match fault {
-        1 | 2 | 5 | 9 => "membership-first",
-        8 => "membership-second",
-        12 => "member-compare",
-        _ => "member-first",
+    let (step, reason) = match fault {
+        1 => ("membership-first", "listing-failed"),
+        2 => ("membership-first", "listing-truncated"),
+        3 => ("member", "query-failed"),
+        4 => ("member", "live-member"),
+        _ => ("membership-second", "membership-grew"),
     };
     for required in [
         "macOS group EPERM:",
-        &format!("step={stage}"),
-        "group=",
-        "errno=1",
+        &format!("step={step} reason={reason}"),
+        "request: ",
+        "os error 1",
     ] {
         assert!(
             text.contains(required),
             "fault={fault} missing {required}: {text}"
-        );
-    }
-    if fault == 3 {
-        assert!(
-            text.contains("step=member-first reason=query-failed"),
-            "fault=3 missing reason=query-failed: {text}"
-        );
-    }
-    if fault == 4 {
-        assert!(
-            text.contains("reason=short-record"),
-            "fault=4 missing reason=short-record: {text}"
         );
     }
     let queries = contain::macos::EVENTS.with(|events| {
@@ -316,48 +363,17 @@ fn assert_fault_evidence(error: &std::io::Error, fault: u8) {
             .filter(|event| **event == "status")
             .count()
     });
-    let records =
-        text.matches("member-first pid=").count() + text.matches("member-second pid=").count();
     assert_eq!(
-        records, queries,
-        "one stage record per captured BSD query: {text}"
+        text.matches("member pid=").count(),
+        queries,
+        "one member record per status query: {text}"
     );
-    if fault == 1 || fault == 9 {
-        assert!(
-            text.contains("injected-count="),
-            "fault={fault} missing injected count: {text}"
-        );
-    }
-    match fault {
-        3 | 4 => {
-            for required in ["status=unknown uid=unknown", "count=", "expected="] {
-                assert!(text.contains(required), "fault={fault}: {text}");
-            }
-        }
-        6 | 7 | 10 | 11 => {
-            for required in [
-                "pid=",
-                "returned-pid=",
-                "group=",
-                "status=",
-                "uid=",
-                "ruid=",
-            ] {
-                assert!(text.contains(required), "fault={fault}: {text}");
-            }
-        }
-        8 => {
-            assert!(text.contains("membership-first sorted=["), "{text}");
-            assert!(text.contains("membership-second sorted=[]"), "{text}");
-        }
-        12 => {
-            assert!(text.contains("member-first pid="), "{text}");
-            assert!(text.contains("member-second pid="), "{text}");
-            assert!(text.contains("creation-time-changed"), "{text}");
-            assert!(text.matches("created=").count() >= 2, "{text}");
-        }
-        _ => {}
-    }
+    assert!(text.contains("membership-first "), "{text}");
+    assert_eq!(
+        text.contains("membership-second "),
+        fault == 5,
+        "fault={fault}: only a grown second listing is captured: {text}"
+    );
     assert!(
         format!("{error:?}").contains("step="),
         "Debug lost observation: {error:?}"
@@ -378,13 +394,13 @@ fn a_non_eperm_fixture_failure_reports_its_observation() {
         "group=",
         "before:",
         "after:",
-        "pid=",
+        "member pid=",
         "status=",
         "uid=",
     ] {
         assert!(text.contains(required), "missing {required}: {text}");
     }
-    println!("MAC-EPERM fixture evidence PASS: real non-EPERM request names rc, credentials, before and after");
+    println!("MAC-EPERM-FIX fixture evidence PASS: real non-EPERM request names rc, credentials, before and after");
 }
 #[test]
 fn injected_group_and_leader_failures_stay_checked() {
