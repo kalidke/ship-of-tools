@@ -435,6 +435,15 @@ jobs:
         run: .\scripts\tests\test-install-layout.ps1
         working-directory: .
 
+      # The PowerShell scripts' network bounds: Invoke-SotWithin (sot-hosts.ps1), the bound every script ssh call
+      # runs under, and each script call a test can reach with a stand-in.
+      - name: Test Invoke-SotWithin
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        timeout-minutes: 5
+        run: .\scripts\tests\test-sot-within.ps1
+        working-directory: .
+
       # ADR 0042 L1c: the launcher's local-daemon start/stop (sot-local-
       # daemon.ps1), driven against the sotd.exe this same job's "Build
       # workspace" step already built (target\debug, since that step has no
@@ -854,8 +863,10 @@ jobs:
           bash test-sot-fe-reauth.sh
           # ccx's default handle is built from the comm library's safe pieces; a failed derivation stops the launch.
           bash test-ccx-launch.sh
-          # The carriage-return rule for the token: a \r kept on it is a token
-          # GitHub rejects. Hermetic, under a second.
+          # The carriage-return rule for the token (a \r kept on it is a token
+          # GitHub rejects), every curl's stall bound, and the script's 30 s bound
+          # on a gh call that hangs. Hermetic; about 31 s, all but one second the
+          # hung-gh case.
           bash test-crlf-gh-auth.sh
 
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a

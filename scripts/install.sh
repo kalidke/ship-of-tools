@@ -50,6 +50,71 @@ GLIBC_FLOOR_FE="2.35"
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Every network call carries the bound its tool offers, so a stalled network ends in the tool's own error: curl gives
+# up on a connect past 15 s or a transfer under 1000 B/s for 60 s, git on an https transfer by the same rule (no
+# process timer on git: one killed mid-fetch is not worth a hang), and ssh runs the tree's one option set (the
+# rust/protocol topology's SSH_OPTS) under sot_bounded, which also ends a hang in key exchange or authentication.
+CURL_BOUND=(--connect-timeout 15 --speed-limit 1000 --speed-time 60)
+GIT_BOUND=(-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60)
+SSH_OPTS=(-T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10
+          -o ControlMaster=no -o ControlPath=none -o ControlPersist=no)
+
+# sot_bounded SECS CMD [ARG...]: comm/lib/comm-lib-base.sh's command bound, which documents it, copied here because
+# this installer checks ssh before the checkout that holds comm-lib exists (the release archive carries no comm-lib).
+# rust/backend/tests/shell_dial.rs runs every case of the bound against both, so the two cannot drift. CMD's own
+# status, or 124 at the bound however CMD handles TERM (137 when that took KILL), the caller naming the expiry.
+sot_bounded() {
+    command -v perl >/dev/null 2>&1 || {
+        echo "sot_bounded: no perl to bound $2 with" >&2
+        return 125
+    }
+    perl -e '
+        use POSIX ();
+        my ($secs, @cmd) = @ARGV;
+        if ($secs !~ /^[1-9][0-9]*$/) { print STDERR "sot_bounded: the bound is a whole number of seconds above 0, not $secs\n"; exit 125; }
+        my %num = (TERM => POSIX::SIGTERM(), INT => POSIX::SIGINT(), HUP => POSIX::SIGHUP());
+        my $pid = fork;
+        if (!defined $pid) { print STDERR "sot_bounded: fork: $!\n"; exit 125; }
+        if (!$pid) {
+            if (!setpgrp(0, 0)) { print STDERR "sot_bounded: no process group for $cmd[0]: $!\n"; POSIX::_exit(125); }
+            exec { $cmd[0] } @cmd;
+            print STDERR "sot_bounded: $cmd[0]: $!\n";
+            POSIX::_exit(127);
+        }
+        setpgrp($pid, $pid);
+        my ($why, $late, $st) = ("", 0, undef);
+        $SIG{ALRM} = sub { $late = 1 };
+        $SIG{$_} = sub { $why ||= $_[0] } for qw(TERM INT HUP);
+        my $code = sub { $_[0] & 127 ? 128 + ($_[0] & 127) : $_[0] >> 8 };
+        my $left = sub {
+            $st = $? if !defined $st && waitpid($pid, POSIX::WNOHANG()) == $pid;
+            !defined $st || kill(0, -$pid);
+        };
+        my $wait = sub {
+            $late = 0;
+            alarm 1;
+            select(undef, undef, undef, 0.01) while $left->() && !$late;
+            alarm 0;
+            $left->();
+        };
+        alarm $secs;
+        select(undef, undef, undef, 0.01) while $left->() && !$why && !$late;
+        alarm 0;
+        exit($code->($st)) if !$left->();
+        $SIG{$_} = "IGNORE" for qw(TERM INT HUP);
+        my $own = $st;
+        my $end = sub { kill($_[0], -$pid); kill($_[0], $pid) if !defined $st };
+        $end->($why || "TERM");
+        my $hard = $wait->();
+        if ($hard) {
+            $end->("KILL");
+            print STDERR "sot_bounded: $cmd[0] or a member of its group was still running a second after KILL\n" if $wait->();
+        }
+        print STDERR "sot_bounded: $cmd[0] exited with status " . $code->($own) . " while its group ran on; the bound ended the group\n" if defined $own;
+        exit($why ? 128 + $num{$why} : $hard ? 137 : 124);
+    ' "$@"
+}
+
 # Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it): the first
 # copies below run before the checkout that holds the library exists.
 sot_install_copy() {  # <src> <dst> [mode]
@@ -490,14 +555,14 @@ if [ -z "${SOT_INSTALL_TAG:-}" ]; then
     tag="" prev=""
     for a in "$@"; do [ "$prev" = --version ] && tag="$a"; prev="$a"; done
     if [ -z "$tag" ]; then
-        loc="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")" \
+        loc="$(curl "${CURL_BOUND[@]}" -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")" \
             || die "could not resolve the latest release of $REPO"
         tag="${loc##*/}"
     fi
     case "$tag" in v[0-9]*) ;; *) die "could not resolve a release tag (got '$tag')" ;; esac
     tmp="$(mktemp)"; trap 'rm -f "${tmp:?}"' EXIT
     url="https://raw.githubusercontent.com/$REPO/$tag/scripts/install.sh"
-    curl -fsSL -o "$tmp" "$url" || die "could not fetch $url"
+    curl "${CURL_BOUND[@]}" -fsSL -o "$tmp" "$url" || die "could not fetch $url"
     SOT_INSTALL_TAG="$tag" bash "$tmp" "$@"
     exit
 fi
@@ -623,7 +688,7 @@ say "installing Ship of Tools $VERSION into $PREFIX"
 # body with an old tree: it runs the tag's own installer. curl's exit 22 is an
 # HTTP error (the file is absent); any other failure is the network.
 lib_rc=0
-curl -fsSI -o /dev/null "https://raw.githubusercontent.com/$REPO/$VERSION/scripts/lib/sot-daemon.sh" || lib_rc=$?
+curl "${CURL_BOUND[@]}" -fsSI -o /dev/null "https://raw.githubusercontent.com/$REPO/$VERSION/scripts/lib/sot-daemon.sh" || lib_rc=$?
 [ "$lib_rc" -ne 22 ] \
     || die "release $VERSION predates this installer (no scripts/lib/sot-daemon.sh); install it with its own installer: run the one-liner without SOT_INSTALL_TAG, or that tag's scripts/install.sh"
 [ "$lib_rc" -eq 0 ] \
@@ -633,7 +698,7 @@ curl -fsSI -o /dev/null "https://raw.githubusercontent.com/$REPO/$VERSION/script
 ASSETS=("SHA256SUMS" "sot-$VER-$TARGET.tar.gz")
 
 dl() {
-    curl -fsSL -o "$WORK/$1" "https://github.com/$REPO/releases/download/$VERSION/$1" \
+    curl "${CURL_BOUND[@]}" -fsSL -o "$WORK/$1" "https://github.com/$REPO/releases/download/$VERSION/$1" \
         || die "asset $1 not found on release $VERSION"
 }
 say "downloading ${#ASSETS[@]} assets"
@@ -727,9 +792,14 @@ else
                    read -r BE_ALIAS < /dev/tty
                    [ -n "$BE_ALIAS" ] || die "backend host is required for the remote layout"
                    printf "Verifying ssh to '%s'... " "$BE_ALIAS" > /dev/tty
-                   ssh -o BatchMode=yes -o ConnectTimeout=8 "$BE_ALIAS" true 2>/dev/null \
-                       && echo "ok" > /dev/tty \
-                       || { echo "FAILED" > /dev/tty; die "key-based ssh to '$BE_ALIAS' doesn't work (ssh-copy-id first, or fix ~/.ssh/config)"; } ;;
+                   ssh_rc=0; sot_bounded 30 ssh "${SSH_OPTS[@]}" -n "$BE_ALIAS" true || ssh_rc=$?
+                   case "$ssh_rc" in
+                       0) echo "ok" > /dev/tty ;;
+                       124|137) echo "FAILED" > /dev/tty
+                                die "ssh to '$BE_ALIAS' did not finish within 30s (a network, sshd or remote login that stopped answering)" ;;
+                       *) echo "FAILED" > /dev/tty
+                          die "key-based ssh to '$BE_ALIAS' doesn't work (ssh-copy-id first, or fix ~/.ssh/config)" ;;
+                   esac ;;
                 3) ROLE=be-only ;;
                 *) die "no such choice: '$choice'" ;;
             esac
@@ -852,14 +922,14 @@ command -v git >/dev/null || die "git is required (the install includes a repo c
 if [ ! -d "$BASE" ]; then
     say "creating base clone (blobless, no checkout)"
     # Public repo: plain https clone, no auth needed.
-    git clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
+    git "${GIT_BOUND[@]}" clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
         || die "base clone failed"
 fi
 # --force on the tag fetch: a release tag force-moved upstream (e.g. the
 # public-flip history rewrite) otherwise makes the whole fetch abort with
 # "would clobber existing tag", blocking every upgrade re-run (issue #4).
 # The checkouts are READ-ONLY BY CONVENTION, so force-updating tags is safe.
-git -C "$BASE" fetch --tags --force origin || die "fetch failed"
+git "${GIT_BOUND[@]}" -C "$BASE" fetch --tags --force origin || die "fetch failed"
 want="$(git -C "$BASE" rev-parse "refs/tags/$VERSION^{commit}" 2>/dev/null)" \
     || die "tag $VERSION not present after fetch"
 if [ -d "$CHECKOUT" ]; then
@@ -934,7 +1004,7 @@ elif command -v juliaup >/dev/null 2>&1; then
     export PATH="$HOME/.juliaup/bin:$PATH"
 else
     say "installing Julia (juliaup, channel $chan)"
-    curl -fsSL https://install.julialang.org | sh -s -- --yes --default-channel "$chan"
+    curl "${CURL_BOUND[@]}" -fsSL https://install.julialang.org | sh -s -- --yes --default-channel "$chan"
     export PATH="$HOME/.juliaup/bin:$PATH"
 fi
 command -v julia >/dev/null || die "Julia install failed; julia is still not on PATH"

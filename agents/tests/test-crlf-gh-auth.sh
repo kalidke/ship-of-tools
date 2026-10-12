@@ -36,7 +36,9 @@
 #
 # HERMETIC: a temp $SOT_COMM_HOME and $GH_CONFIG_DIR, stub curl/gh/jq/sleep
 # confined to a PATH prefix, and no network. One `request` and one `poll` per
-# run, with every assertion made against those two runs' artifacts.
+# run carry the CRLF and curl assertions, made against those two runs'
+# artifacts; a third run, `status` against a gh stub that hangs, checks the
+# script's 30 s gh bound (the one slow case, about 31 s).
 #
 # Usage: agents/tests/test-crlf-gh-auth.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -46,6 +48,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAL_JQ="$(command -v jq)"
+REAL_SLEEP="$(command -v sleep)"
 FAKE_TOKEN='FAKE-TOKEN-not-a-real-credential'
 PASS=0; FAIL=0
 
@@ -82,6 +85,7 @@ JQ
     # write-time strip.
     cat > "$STUB/curl" <<'CURL'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SOT_TEST_TMP/curl.argv"
 url=""; for a in "$@"; do case "$a" in https://*) url="$a" ;; esac; done
 for a in "$@"; do
     case "$a" in
@@ -116,7 +120,10 @@ case "$*" in
         printf 'HAS_CR=%s\nLEN=%s\n' "$cr" "$(printf '%s' "$bytes" | wc -c | tr -d ' ')" \
             > "$SOT_TEST_TMP/gh.token-facts"
         exit 0 ;;
-    *"auth status"*) echo "stub: not logged in" >&2; exit 1 ;;
+    *"auth status"*)
+        # A GitHub that stops answering: the real sleep, which ends itself.
+        [ "${SOT_TEST_GH_HANG:-}" = 1 ] && exec "$SOT_TEST_REAL_SLEEP" 60
+        echo "stub: not logged in" >&2; exit 1 ;;
     *"setup-git"*)   exit 0 ;;
     *"api user"*)    echo "tester"; exit 0 ;;
     *) exit 0 ;;
@@ -163,6 +170,9 @@ check "the token reached gh with no CR" "$(printf '%s' "$facts" | sed -n 's/^HAS
 check "and with every byte intact" "$(printf '%s' "$facts" | sed -n 's/^LEN=//p')" \
       "$(printf '%s' "$FAKE_TOKEN" | wc -c | tr -d ' ')"
 check "the device code curl was given had no CR" "$(cat "$TMP/dc.hascr" 2>/dev/null)" "0"
+# A stalled GitHub must end a request with curl's own error: every call carries the connect and stall bound.
+check "every curl call carries the stall bound" \
+    "$(grep -vc -e '--connect-timeout 15 --speed-limit 1000 --speed-time 60' "$TMP/curl.argv" || true)" "0"
 # Under a CRLF jq the `error` value carried a CR, every case arm missed, and the
 # poll died on the first response. Two calls to the token endpoint is the proof
 # it kept waiting instead.
@@ -180,6 +190,22 @@ elif LC_ALL=C grep -qF "$FAKE_TOKEN" "$TMP/poll.out" "$TMP/poll.err" "$TMP/req.o
 else
     ok "the script never printed the token"
 fi
+
+# --- status: a GitHub that stops answering ends gh's wait at the script's bound, named -----------------------------
+# gh hangs on `auth status`; the run is held to the test's own 45 s bound (comm-lib's sot_bounded, staged beside the
+# script).
+began=$SECONDS
+rc=0
+( . "$(dirname "$GH_AUTH")/comm-lib.sh" || exit 2
+  unset GH_TOKEN GITHUB_TOKEN
+  export PATH="$STUB:$PATH" SOT_COMM_HOME="$TMP/comm" GH_CONFIG_DIR="$TMP/gh" SOT_TEST_TMP="$TMP" \
+         SOT_TEST_GH_HANG=1 SOT_TEST_REAL_SLEEP="$REAL_SLEEP"
+  sot_bounded 45 bash "$GH_AUTH" status >"$TMP/hang.out" 2>"$TMP/hang.err" ) || rc=$?
+took=$((SECONDS - began))
+check "a hung gh auth status ends the script with 124" "$rc" "124"
+check "at the script's 30 s bound, not the test's 45 s" "$([ "$took" -lt 40 ] && echo yes || echo "no, after ${took}s")" "yes"
+check "its line names the call and the bound" \
+    "$(grep -c 'sot-gh-auth: gh auth status did not finish within 30s' "$TMP/hang.err" || true)" "1"
 
 rm -rf "${TMP:?}"
 printf 'PASS=%s FAIL=%s\n' "$PASS" "$FAIL"

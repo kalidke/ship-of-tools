@@ -100,8 +100,8 @@ function Get-SotTopologyPlan {
 # refreshes this box's cache of the hub's hosts.toml (the hub is the only
 # writer -- see .sot/hosts.toml.example). Deliberately NOT inside
 # Get-SotTopologyPlan: that stays pure (a reader, no ssh, no writes), and
-# shutdown-sot.ps1, which dot-sources this file only to learn ports, must
-# never sync.
+# shutdown-sot.ps1, which dot-sources this file to learn ports and for
+# Invoke-SotWithin and $SotSshOpts (its remote journal reads), must never sync.
 #
 # Never throws and never fails a launch. A box that is itself the hub, an
 # unreachable hub, a fetched file that does not parse, or one that does not
@@ -134,4 +134,52 @@ function Invoke-SotTopologySync {
     $result.Ok = ($exit -eq 0)
     $result.Output = ("$($output | Out-String)").Trim()
     return $result
+}
+
+# The tree's one ssh option set (rust/protocol/src/topology/ssh_bridge.rs SSH_OPTS): BatchMode never prompts,
+# ConnectTimeout bounds the connect and the server's banner, ServerAlive ends a link that stops answering, and no
+# multiplexing master can keep the call's pipes open. Every script ssh call passes it and runs under Invoke-SotWithin.
+$SotSshOpts = @('-T', '-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
+                '-o', 'ConnectTimeout=10', '-o', 'ControlMaster=no', '-o', 'ControlPath=none', '-o', 'ControlPersist=no')
+
+# Runs a native command under a wall-clock bound: the whole call, so a hang in key exchange or authentication ends
+# at the bound as surely as a silent link. Returns @{ Code; Output; Stdout }: Output is stdout then stderr, Stdout
+# the stdout alone. The call ends when the command has exited and its output has closed, both within the bound; at the
+# bound the command and every process it started are ended (sot-lease.ps1's Stop-SotTree) and Code is 124 with Output
+# "<FilePath> did not finish within <Seconds> s"; a command that cannot start is Code 127 with Output "<FilePath>
+# could not start: <why>". It starts through sot-lease.ps1's Start-SotRedirected (its caller dot-sources that file
+# too), so its input carries only $Stdin (at most 4000 bytes, so its write cannot block on a fresh pipe), written and
+# closed. Windows PowerShell 5.1 has no ArgumentList, so each argument is quoted into one string here.
+function Invoke-SotWithin {
+    param(
+        [int]$Seconds,
+        [string]$FilePath,
+        [string[]]$Arguments = @(),
+        [string]$Stdin = ''
+    )
+    if ([System.Text.Encoding]::UTF8.GetByteCount($Stdin) -gt 4000) {
+        throw 'Invoke-SotWithin: stdin is over 4000 bytes'
+    }
+    $quoted = foreach ($a in $Arguments) {
+        if ($a -ne '' -and $a -notmatch '[\s"]') { $a }
+        else { '"' + ($a -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
+    }
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $p = Start-SotRedirected $FilePath ($quoted -join ' ')
+    } catch {
+        return @{ Code = 127; Output = "$FilePath could not start: $($_.Exception.GetBaseException().Message)"; Stdout = '' }
+    }
+    $out = $p.StandardOutput.ReadToEndAsync()
+    $err = $p.StandardError.ReadToEndAsync()
+    try {
+        if ($Stdin) { $p.StandardInput.Write($Stdin) }
+        $p.StandardInput.Close()
+    } catch { }   # the process already ended: its exit code says why
+    $left = { [int][Math]::Max(0, $Seconds * 1000 - $clock.ElapsedMilliseconds) }
+    if (-not ($p.WaitForExit((& $left)) -and [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($out, $err), (& $left)))) {
+        Stop-SotTree $p
+        return @{ Code = 124; Output = "$FilePath did not finish within $Seconds s"; Stdout = '' }
+    }
+    return @{ Code = $p.ExitCode; Output = ($out.Result + $err.Result); Stdout = $out.Result }
 }

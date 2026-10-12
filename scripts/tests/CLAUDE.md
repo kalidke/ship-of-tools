@@ -22,7 +22,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
-- `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper and the network refusal. Runs in the
+- `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper, the network refusal and the dev launcher's git stall bound. Runs in the
   `rust.yml` step "Test installer apply (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-shared-home.sh`: a home several hosts share holds one install. Every path that writes, re-renders or
   retires `sotd.service` (`installer_enable_local_service`, `installer_retire_local_service`, `sot_rerender_owned`) pins
@@ -30,7 +30,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   hosts.toml sotd cannot read is still a declared topology; the tables of `installer_record_decision` and
   `installer_host_decision`; and `install.sh`, run end to end from a stub release on a host listed with neither key,
   on an unlisted host asking for a daemon, and with an unpacked sotd that cannot run, refuses and leaves every entry
-  under the prefix and `~/.local` as it was. Runs in the
+  under the prefix and `~/.local` as it was. It also reads the argv of the stand-in curl and git of
+  a run that reaches the base clone, the tag fetch and the Julia installer: each carries its stall bound. Runs in the
   `rust.yml` step "Test installer shared home (bash)"
   (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-support.sh`: the setup the installer suites source: install.sh and lib/sot-daemon.sh, `check`,
@@ -52,8 +53,18 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
 - `rc-gate.sh`: the Linux candidate gate, run as the main process of its own test container (`in-container.sh`); a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
-  `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test install layout
-  (pinned-checkout predicate)".
+  `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test
+  install layout (pinned-checkout predicate)".
+- `test-sot-within.ps1`: the PowerShell scripts' network bounds. `Invoke-SotWithin` (scripts/sot-hosts.ps1, through
+  sot-lease.ps1's `Start-SotRedirected` and `Stop-SotTree`): a stalled command ends at its bound with code 124, with
+  every process it started; so does one whose descendant holds its output after it exits; a finished one returns its
+  output and code; a hidden PowerShell whose console input encoding has a BOM writes only its caller's bytes; a command
+  that cannot start is code 127. Each stand-in goes
+  first on a child PowerShell's PATH, never the test's: `shutdown-sot.ps1`'s `Get-DaemonDisconnect`, read as a syntax
+  tree and run against a stand-in `ssh.exe`, passes the tree's ssh options and the command on stdin, and names a hung
+  ssh; `sot-install-layout.ps1`'s tag fetch, against a stand-in `git.exe`, carries the stall bound; and
+  `launch-sot.ps1`'s self-update pull, read as a syntax tree, carries it too and reads git's stall error as offline.
+  Runs in the `rust.yml` step "Test Invoke-SotWithin".
 - `test-local-daemon.ps1`: scripts/sot-local-daemon.ps1 start, stop and wait behaviour (sections 0-8 and 12-15: the
   refusal, the pipe name, a late bind, `-Stop`, log retention, `Get-StopWaitMs`). Runs in the `rust.yml` step "Test
   local daemon launcher".
