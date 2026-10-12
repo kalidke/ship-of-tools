@@ -669,7 +669,8 @@ fn quarto_line_excerpt<'a>(line: &std::borrow::Cow<'a, str>, budget: usize) -> s
 
 /// `quarto.open` — render a Quarto/markdown doc to a self-contained HTML on
 /// the backend host (which has quarto + the RAM) and return the bytes, base64.
-/// `execute = false` (`o`) = `--no-execute`: fast, quarto-only, no code run.
+/// `execute = false` (`o`) = `--no-execute`: no code chunk runs, though
+/// Quarto 1.9 still starts its Julia engine (installing it on a first use).
 /// `execute = true` (`O`) runs code chunks — needs the language kernels on
 /// this host. Renders into a unique temp subdir of the doc's own directory so
 /// relative resources resolve (and `--embed-resources` can inline them), then

@@ -233,24 +233,33 @@ PreviewPayload(mime, data) = PreviewPayload(mime, data, Dict{String,Any}())
 """
     read_within(cmd, seconds) -> Vector{UInt8}
 
-`read(cmd)` with a bound: the process is killed when `seconds` pass (KILL, so a tool that ignores TERM ends too), and
-the error names the program and the bound.
+`read(cmd)` with a bound: when `seconds` pass the process is killed (KILL, so a tool that ignores TERM ends too) and
+its output pipe is closed, so a descendant still holding that pipe cannot hold the call; the error names the program
+and the bound. As `read(cmd)` does, it reads through `open(cmd)`, whose stdin is `devnull`.
 """
 function read_within(cmd::Cmd, seconds::Real)
-    out = IOBuffer()
-    p = run(pipeline(cmd; stdout = out); wait = false)
-    timedout = Ref(false)
+    p = open(cmd)
+    done, timedout = Ref(false), Ref(false)
     timer = Timer(seconds) do _
-        process_running(p) && (timedout[] = true; kill(p, Base.SIGKILL))
+        done[] && return
+        timedout[] = true
+        process_running(p) && kill(p, Base.SIGKILL)
+        close(p.out)
     end
-    try
+    out = try
+        bytes = read(p.out)
         wait(p)
+        bytes
+    catch
+        timedout[] || rethrow()
+        UInt8[]
     finally
+        done[] = true
         close(timer)
     end
     timedout[] && error("$(basename(cmd.exec[1])) did not finish within $(seconds) s")
     success(p) || throw(ProcessFailedException(p))
-    take!(out)
+    out
 end
 
 end # module

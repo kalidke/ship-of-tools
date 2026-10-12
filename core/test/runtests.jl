@@ -128,6 +128,19 @@ struct TestNoMatches <: FileType end
                 @test occursin("sh did not finish within 1 s", sprint(showerror, err))
                 @test time() - began < 3
             end
+            # A descendant that holds the output past the bound does not hold the call: the pipe is closed at the bound.
+            began = time()
+            task = @async try
+                ConceptExplorerCore.read_within(`sh -c 'sleep 6 & exec sleep 600'`, 1)
+            catch e
+                e
+            end
+            @test timedwait(() -> istaskdone(task), 15) == :ok
+            if istaskdone(task)
+                err = fetch(task)
+                @test occursin("sh did not finish within 1 s", sprint(showerror, err))
+                @test time() - began < 3
+            end
             @test ConceptExplorerCore.read_within(`echo hi`, 5) == b"hi\n"
             @test_throws ProcessFailedException ConceptExplorerCore.read_within(`false`, 5)
         end
