@@ -67,7 +67,7 @@ Elsewhere: rust/frontend/src/pages.rs (the window's page proxy).
 - `mod.rs`: declares the folder's modules, `start_page_servers`, which binds the listeners at boot, and `bind_page_listener`, the one bind of a page listener.
   It also holds `random_token`, the one minter of video tokens, site nonces and pool secrets.
 - `ops.rs`: video.open, docs.open (and its site-root walk), quarto.open and its render-failure text.
-- `ops_error_tests.rs`: Unix handler stand-ins proving ERROR retention, transport-race guidance, unrelated-error guidance and stderr boundaries.
+- `ops_error_tests.rs`: Unix handler stand-ins proving ERROR retention, transport-race guidance, unrelated-error guidance and stderr boundaries. Each diagnostic body runs by exact name through `test_isolated` with a 30-second work deadline covering the environment lock, fixture setup and handler calls, followed by the shared owner's bounded cleanup/output checks. A held-parent-lock regression observes isolation, child status and both output streams.
 - `proxy.rs`: `proxy.connect`, the loopback allowlist, browser-port records.
 - `site/`: the static-site server (own page).
 - `video.rs`: the video listener, its token grants and the request handler.
