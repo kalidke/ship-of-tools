@@ -5,14 +5,17 @@
 
 #![cfg(unix)]
 
-use std::process::Stdio;
-use tokio::process::Command;
+use sot_log::test_wait::{try_run_within, Ran};
+use std::process::Command;
+use std::time::Duration;
+
+const BOUND: Duration = Duration::from_secs(30);
 
 /// Run a client in bash that connects to `port`, prints `M` once it is connected, then waits up to 5 s for one byte and
-/// prints it; `as_nobody` runs it as the account `nobody`. `None` when the command could not run at all. So the output
+/// prints it; `as_nobody` runs it as the account `nobody`. The child's whole account, or why it has none. So its stdout
 /// is `M` for a client that connected and got nothing, `Ms` for one that was served, and empty for one that never
-/// connected.
-async fn first_byte(port: u16, as_nobody: bool) -> Option<String> {
+/// connected. It runs on a blocking thread: its other end is the server on this test's own runtime.
+async fn first_byte(port: u16, as_nobody: bool) -> Result<Ran, String> {
     let script = r#"exec 3<>/dev/tcp/127.0.0.1/$0 && { printf M; read -r -t 5 -n 1 b <&3; printf %s "$b"; }"#;
     let mut cmd = if as_nobody {
         let mut c = Command::new("sudo");
@@ -23,14 +26,16 @@ async fn first_byte(port: u16, as_nobody: bool) -> Option<String> {
         c.args(["-c", script]);
         c
     };
-    let out = cmd
-        .arg(port.to_string())
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .await
-        .ok()?;
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    cmd.arg(port.to_string());
+    tokio::task::spawn_blocking(move || try_run_within(&mut cmd, BOUND)).await.expect("the client's blocking task")
+}
+
+/// What a client run came to, for a message.
+fn account(run: &Result<Ran, String>) -> String {
+    match run {
+        Ok(ran) => ran.to_string(),
+        Err(why) => why.clone(),
+    }
 }
 
 /// A test that cannot run here says so and passes, except on CI, where a silent skip is a failure to be seen.
@@ -44,16 +49,9 @@ fn skip(reason: &str) {
 
 #[tokio::test]
 async fn a_client_of_another_account_gets_no_byte() {
-    let nobody_runs = Command::new("sudo")
-        .args(["-n", "-u", "nobody", "true"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await
-        .is_ok_and(|s| s.success());
-    if !nobody_runs {
-        return skip("`sudo -n -u nobody` does not work here");
+    let probe = try_run_within(Command::new("sudo").args(["-n", "-u", "nobody", "true"]), BOUND);
+    if !matches!(&probe, Ok(ran) if ran.status.success()) {
+        return skip(&format!("`sudo -n -u nobody` does not work here: {}", account(&probe)));
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -65,19 +63,20 @@ async fn a_client_of_another_account_gets_no_byte() {
         },
     ));
     let mine = first_byte(port, false).await;
-    if mine.as_deref() != Some("Ms") {
+    if !matches!(&mine, Ok(ran) if ran.stdout == "Ms") {
         server.abort();
         return skip(&format!(
-            "a client of this account got {mine:?}, so bash's /dev/tcp client does not work here"
+            "a client of this account was not served, so bash's /dev/tcp client does not work here: {}",
+            account(&mine)
         ));
     }
     let theirs = first_byte(port, true).await;
     server.abort();
     // `M` and nothing after it: the client connected (so the test reached the owner check) and no byte came back.
-    assert_eq!(
-        theirs.as_deref(),
-        Some("M"),
-        "another account's client was served, or never connected: {theirs:?}"
+    assert!(
+        matches!(&theirs, Ok(ran) if ran.stdout == "M"),
+        "another account's client was served, or never connected: {}",
+        account(&theirs)
     );
     eprintln!("admission-proof test=a_client_of_another_account_gets_no_byte endpoint=page boundary=owner-query fixture=native-account rejected=true dispatched=0 bodies=1");
 }

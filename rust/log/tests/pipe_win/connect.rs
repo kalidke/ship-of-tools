@@ -12,7 +12,7 @@ fn server_and_client_exchange_bytes_and_sent_carries_marker() {
     }
     let id = fresh_voyage_id();
     let server = PipeServer::bind(&id, 4).unwrap();
-    let client = connect_voyage_pipe(&id).unwrap();
+    let client = std::sync::Arc::new(connect_voyage_pipe(&id).unwrap());
     let conn_id = expect_accepted(&server, TIMEOUT);
 
     let outbound = b"hello from client";
@@ -22,11 +22,16 @@ fn server_and_client_exchange_bytes_and_sent_carries_marker() {
 
     let inbound = b"hello from server";
     server.send(conn_id, inbound.to_vec(), Some(42)).unwrap();
-    let mut buf = vec![0u8; inbound.len()];
-    let mut got = 0;
-    while got < buf.len() {
-        got += client.read(&mut buf[got..]).unwrap();
-    }
+    let reader = std::sync::Arc::clone(&client);
+    let want = inbound.len();
+    let buf = sot_log::test_wait::within(TIMEOUT, "the server's bytes", move || {
+        let mut buf = vec![0u8; want];
+        let mut got = 0;
+        while got < buf.len() {
+            got += reader.read(&mut buf[got..]).unwrap();
+        }
+        buf
+    });
     assert_eq!(buf, inbound);
 
     match next_event(&server, TIMEOUT) {
@@ -470,8 +475,11 @@ fn pipe_denies_a_token_without_the_owner_grant() {
                 matches!(next_event(&server, TIMEOUT), LaneEvent::Bytes(_, ref bytes) if bytes == b"a")
             );
             server.send(conn, b"m".to_vec(), Some(9)).unwrap();
-            let mut marker = [0];
-            owner.read_exact(&mut marker).unwrap();
+            let (owner, marker) = sot_log::test_wait::within(TIMEOUT, "the owner's marker", move || {
+                let mut marker = [0];
+                owner.read_exact(&mut marker).unwrap();
+                (owner, marker)
+            });
             assert_eq!(marker, *b"m");
             assert!(matches!(
                 next_event(&server, TIMEOUT),

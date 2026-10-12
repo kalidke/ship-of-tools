@@ -488,8 +488,11 @@ fn connect_voyage_socket_authentication_pass_against_a_genuine_server() {
 
     let reply = wire::encode_mgmt_reply(&MgmtReply::ProbeOk).unwrap();
     server.send(conn_id, reply.clone(), None).expect("send probe_ok");
-    let mut buf = [0u8; 512];
-    let n = client.read(&mut buf).expect("read probe_ok");
+    let (buf, n) = sot_log::test_wait::within(TIMEOUT, "the probe_ok read", move || {
+        let mut buf = [0u8; 512];
+        let n = client.read(&mut buf).expect("read probe_ok");
+        (buf, n)
+    });
     assert_eq!(&buf[..n], reply.as_slice());
 }
 

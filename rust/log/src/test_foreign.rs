@@ -71,24 +71,34 @@ const BOUND: Duration = Duration::from_secs(20);
 
 /// Whether this process can run a program as root without asking: it is root, or `sudo -n true` succeeds.
 pub fn can_elevate() -> bool {
+    elevation().is_ok()
+}
+
+/// [`can_elevate`] with its reason: `Err` carries the probe's account (the command, its status and streams, or why it
+/// did not run) when this process is not root and `sudo -n true` cannot run or fails.
+fn elevation() -> Result<(), String> {
     // SAFETY: geteuid has no preconditions and cannot fail.
     if unsafe { libc::geteuid() } == 0 {
-        return true;
+        return Ok(());
     }
-    matches!(
-        Command::new("sudo").args(["-n", "true"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status(),
-        Ok(status) if status.success()
-    )
+    let ran = crate::test_wait::try_run_within(Command::new("sudo").args(["-n", "true"]), BOUND)?;
+    if ran.status.success() {
+        Ok(())
+    } else {
+        Err(ran.to_string())
+    }
 }
 
 /// The one skip rule for a test that needs root: `true` when it can go on. When root is not available it says so and
 /// returns `false`, so the test passes, except on CI, where this panics.
 pub fn elevation_or_skip(what: &str) -> bool {
-    if can_elevate() {
-        return true;
+    match elevation() {
+        Ok(()) => true,
+        Err(why) => {
+            let _ = skip::<()>(&format!("{what} needs root, and `sudo -n true` fails here: {why}"));
+            false
+        }
     }
-    let _ = skip::<()>(&format!("{what} needs root, and `sudo -n true` fails here"));
-    false
 }
 
 /// Ends `child` within `BOUND`: closes its input and waits. `Some(status)` when it exited on its own; `None` when it

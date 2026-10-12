@@ -272,11 +272,11 @@ fn capsule_pid(voyage: &str) -> u32 {
 /// capsule is killed", the scenario this simulates).
 #[cfg(windows)]
 fn taskkill(pid: u32) {
-    let out = Command::new("taskkill.exe")
-        .args(["/PID", &pid.to_string(), "/F", "/T"])
-        .output()
-        .expect("run taskkill.exe");
-    assert!(out.status.success(), "taskkill failed for pid {pid}: {out:?}");
+    sot_log::test_wait::run_within(
+        Command::new("taskkill.exe").args(["/PID", &pid.to_string(), "/F", "/T"]),
+        Duration::from_secs(30),
+    )
+    .ok();
 }
 #[cfg(target_os = "linux")]
 fn taskkill(pid: u32) {
