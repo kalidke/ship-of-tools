@@ -408,8 +408,13 @@ impl PaneDriver<'_> {
             let (total, driver, sentinel) = seen.as_ref().map_or(("-".to_string(), "-".to_string(), "-".to_string()), |s| (s.total_ns.to_string(), s.driver_ns.to_string(), if plan.resume { "-".to_string() } else { s.sentinel.to_string() }));
             let open_ms = seen.as_ref().and_then(|s| s.open_ms).map_or("-1".to_string(), |v| v.to_string());
             let kind = if plan.resume { "resume" } else { "ready" };
+            // The receipt's frame, each since the request: began, prepared, drew, encoded, submitted (recorded only).
+            let receipt = new.lines().find(|l| l.contains(RECEIPT)).unwrap_or_default();
+            let [redraw_ms, prepared_ms, drawable_ms, encoded_ms, submitted_ms] =
+                ["redraw_ms", "prepared_ms", "drawable_ms", "encoded_ms", "submitted_ms"]
+                    .map(|name| field(receipt, name).unwrap_or_else(|| "-1".into()));
             println!(
-                "pane-timing sample run={} kind={kind} row={} total_ns={total} driver_ns={driver} open_ms={open_ms} checkpoint_ms={checkpoint_ms} attached_ms={attached_ms} sentinel={sentinel} outcome={outcome}",
+                "pane-timing sample run={} kind={kind} row={} total_ns={total} driver_ns={driver} open_ms={open_ms} checkpoint_ms={checkpoint_ms} attached_ms={attached_ms} redraw_ms={redraw_ms} prepared_ms={prepared_ms} drawable_ms={drawable_ms} encoded_ms={encoded_ms} submitted_ms={submitted_ms} sentinel={sentinel} outcome={outcome}",
                 &self.role, plan.slug
             );
             if seen.is_none() {

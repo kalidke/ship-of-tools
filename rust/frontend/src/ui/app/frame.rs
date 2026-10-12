@@ -5,6 +5,7 @@ use super::*;
 
 impl State {
     pub(in crate::ui) fn redraw(&mut self) -> Result<()> {
+        let began = std::time::Instant::now();
         self.frame_upkeep();
         let (preview_cells, repl_cells, repl_scrollback_cells, repl_window, llm_selection, owed, owed_line,
             owed_drawn, leaving_drawn, presentation_candidate) = self.draw_chrome()?;
@@ -40,6 +41,7 @@ impl State {
         let (scalebar_draw, media_paint_targets) = self.prepare_preview_text(lines, media_paint_targets,
             preview_rect, image_rect, png_rect, md_rect, preview_scroll_px, show_md, show_edit, show_fatal, &caption_draw)?;
         let (help_overlay_rect, overlay_lines) = self.prepare_overlays()?;
+        let prepared = std::time::Instant::now();
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -48,6 +50,7 @@ impl State {
             }
             Err(e) => return Err(e.into()),
         };
+        let drawable = std::time::Instant::now();
 
         let view = frame
             .texture
@@ -91,10 +94,12 @@ impl State {
             return Err(anyhow::anyhow!("fixture: candidate frame failed before present"));
         }
         let (readback, capture_target, capture_now, selfie_target) = self.stage_frame_capture(&mut encoder, &frame);
+        let encoded = std::time::Instant::now();
         self.queue.submit(std::iter::once(encoder.finish()));
+        let submitted = std::time::Instant::now();
         frame.present();
         if let Some(candidate) = presentation_candidate {
-            self.log_presentation(candidate);
+            self.log_presentation(candidate, [began, prepared, drawable, encoded, submitted]);
         }
         self.acknowledge_presented_result();
         self.ack_presented_lines(owed_drawn, owed, owed_line, leaving_drawn);

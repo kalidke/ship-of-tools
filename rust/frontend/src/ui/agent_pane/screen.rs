@@ -1,6 +1,7 @@
 //! Which screen the agent pane paints: the held, client and blank choice, the reason overlay and the discard notice.
 
 use super::*;
+use std::time::Instant;
 
 /// ADR 0042 slice L1b fix 2, narrowed post-notmux: which state the
 /// session pane's input routes to RIGHT NOW — tracked independently of
@@ -244,14 +245,24 @@ impl State {
         (pane_screen, pane_overlay, facts)
     }
 
-    /// Offers a candidate to the owner and logs its outcome.
-    pub(in crate::ui) fn log_presentation(&mut self, candidate: PresentationCandidate) {
-        match self.pane_presentation.complete(candidate, std::time::Instant::now()) {
-            Presentation::Receipt { elapsed, .. } => tracing::info!(
-                since_request_ms = elapsed.as_millis() as u64,
-                since_request_ns = elapsed.as_nanos() as u64,
-                "session pane: capsule screen presented"
-            ),
+    /// Offers a candidate to the owner and logs its outcome. A receipt also gives, each since the request, when its
+    /// frame began, had prepared its text, got its drawable, finished encoding and was submitted (`stamps`, in order).
+    pub(in crate::ui) fn log_presentation(&mut self, candidate: PresentationCandidate, stamps: [Instant; 5]) {
+        let now = Instant::now();
+        match self.pane_presentation.complete(candidate, now) {
+            Presentation::Receipt { elapsed, .. } => {
+                let since = |at: Instant| elapsed.saturating_sub(now.saturating_duration_since(at)).as_millis();
+                tracing::info!(
+                    since_request_ms = elapsed.as_millis() as u64,
+                    since_request_ns = elapsed.as_nanos() as u64,
+                    redraw_ms = since(stamps[0]) as u64,
+                    prepared_ms = since(stamps[1]) as u64,
+                    drawable_ms = since(stamps[2]) as u64,
+                    encoded_ms = since(stamps[3]) as u64,
+                    submitted_ms = since(stamps[4]) as u64,
+                    "session pane: capsule screen presented"
+                )
+            }
             Presentation::NoOrigin => tracing::warn!("session pane: capsule screen presented without a request origin"),
             Presentation::Stale => {}
         }
