@@ -14,9 +14,7 @@
     # (1) Real JSON. Also covers the scanner's one blind spot: on malformed
     # input a stray key can sit at depth <= 0 and escape detection.
     @test_nowarn ShipTools._json_toplevel_keys(txt)
-    if !isnothing(Sys.which("jq"))
-        @test success(pipeline(`jq empty $hooks_path`))
-    end
+    @test success(pipeline(`jq empty $hooks_path`))
 
     # (2) EXACTLY one top-level key. The struct is deny_unknown_fields, so
     # anything else here silently disables every hook.
@@ -81,10 +79,8 @@ end
     end
     @test occursin("\"sot-local\"", first(payloads))
     @test occursin("\"sot-comm\"", first(payloads))
-    if !isnothing(Sys.which("jq"))
-        for txt in payloads
-            @test success(pipeline(pipeline(IOBuffer(txt), `jq empty`)))
-        end
+    for txt in payloads
+        @test success(pipeline(pipeline(IOBuffer(txt), `jq empty`)))
     end
 
     # The same-commit convention: a modified file must NOT match the

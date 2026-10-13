@@ -300,7 +300,9 @@ check, pinning a version, and rolling back are in
 
 - **linux-x86_64** or **macos-aarch64** release artifacts (a
   **windows-x86_64** zip also ships for the Windows frontend path below).
-- **git**, **curl** and **tar**.
+- **git**, **curl**, **tar** and **jq**. The comm scripts read and write
+  JSON with jq, so the installer stops without it and names the command that
+  installs it (`sudo apt-get install jq`, or `brew install jq` on macOS).
 - A **coding agent** (Claude Code or Codex), installed and logged in on every
   machine that runs sessions. The installer does not install one.
 - **Julia 1.12** or newer. The installer installs it with juliaup when
@@ -342,7 +344,10 @@ folder prefix in `%LOCALAPPDATA%\sot\config\settings.toml` (a `[trust]` table,
 written once and never rewritten), so a session the daemon starts there does not
 stop at the agent's folder-trust dialog. The step-by-step walkthrough is
 [INSTALL-AGENT.md §2b](https://github.com/kalidke/ship-of-tools/blob/main/docs/INSTALL-AGENT.md)
-(written for a coding agent, equally followable by hand).
+(written for a coding agent, equally followable by hand). A Windows box's
+comm scripts need **jq** on `PATH` too (`winget install jqlang.jq`): the
+launcher's comm install stops without it, changes nothing, and names that
+command in a startup notice.
 
 On **macOS aarch64** the bash installer works, but there is no launchd
 service; local roles start `sotd` on demand. See [Platforms](@ref platforms)

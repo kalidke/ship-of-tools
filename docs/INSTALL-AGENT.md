@@ -46,12 +46,16 @@ case "$(uname -s)" in
   Linux)  ldd --version | head -1 ;;   # frontend needs glibc >= 2.35
   Darwin) sw_vers -productVersion ;;   # macOS aarch64 artifact only
 esac
-command -v git curl tar   # all required
+command -v git curl tar jq   # all required
 command -v node npm       # OPTIONAL — math rendering in markdown previews
 command -v pdftoppm pdfinfo  # OPTIONAL (poppler-utils) — PDF previews
 command -v ffmpeg         # OPTIONAL — video poster frames in previews
 ```
 
+- **jq absent** → a blocker: the comm scripts read and write JSON with it,
+  and the installer stops without it. Install it with
+  `sudo apt-get install jq` (Linux), `brew install jq` (macOS) or
+  `winget install jqlang.jq` (Windows).
 - **node/npm absent** → not a blocker: the installer skips the MathJax
   sidecar deps with a warning and math in markdown previews shows raw LaTeX.
   Tell the human; if they want math, install node and re-run (or run
@@ -301,7 +305,10 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
    environments (`julia/kernel`, `julia/repl`, `julia/pluto`), which takes a
    few minutes — so a box that wants **local** REPLs or Pluto needs Julia on
    `PATH` (juliaup); without it the launcher says so in a startup notice and
-   the frontend still runs against the remote backend.
+   the frontend still runs against the remote backend. With Julia there, the
+   launch also installs the comm scripts (`ShipTools.update_comm()`), which
+   need jq on `PATH` (`winget install jqlang.jq`): without it that step
+   changes nothing and its startup notice names the command.
 
 ## 2c. macOS
 

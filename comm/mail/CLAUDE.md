@@ -20,4 +20,7 @@ comm/CLAUDE.md.
 - Only `comm-poll.sh` moves `read/<h>.cursor`.
 - Readers count newline-terminated lines only.
 - A message body reaches jq on stdin, never as `--arg` and never through a temporary file.
+- Without jq a send's one line is `FAILED -> @h: sot-comm: cannot send: jq is missing (install it)` (comm-send.sh
+  checks after its agent gate, comm-relay.sh first), and a poll prints `FAILED: ` and each missing tool's line on
+  stdout and stderr (`sot_require_tools`).
 - Senders type into no row (comm-send.sh's header); the daemon wakes the receiver.

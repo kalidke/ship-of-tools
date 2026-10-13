@@ -37,13 +37,19 @@ done
 
 [ -z "$MSG" ] && { echo "usage: comm-send.sh @name \"msg\" | --broadcast \"msg\"" >&2; exit 1; }
 
+# refuse WHY — the send's one result when it stops before any recipient: FAILED with WHY, then exit 1.
+refuse() {
+    if [ "$BROADCAST" = true ]; then echo "FAILED -> --broadcast: $1" >&2; else echo "FAILED -> @$TARGET: $1" >&2; fi
+    exit 1
+}
+
 # A second agent inside the session never sends as the row's handle. The gate
 # comes before the context call (which can heal a self file or create the
 # registry), so a refused child touches nothing.
-if ! why="$(sot_require_agent)"; then
-    if [ "$BROADCAST" = true ]; then echo "FAILED -> --broadcast: $why" >&2; else echo "FAILED -> @$TARGET: $why" >&2; fi
-    exit 1
-fi
+why="$(sot_require_agent)" || refuse "$why"
+# jq reads every registry row and builds every line a send files: without it the send stops here, naming jq, before
+# the context call (comm-relay.sh stops the same way).
+why="$(sot_require_tools "send" jq 2>&1)" || refuse "$why"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 
 # Identity refusal, via the ONE shared helper (comm-lib.sh) also used by
@@ -51,10 +57,7 @@ eval "$("$SCRIPT_DIR/comm-context.sh")"
 # above, so a send walks the ancestry once): requires more than a merely nonempty
 # NAME — see the helper's own comment. Checked BEFORE any transport work so
 # an unresolved sender always sees THIS refusal, never a daemon error.
-if ! why="$(_sot_identity_routable)"; then
-    if [ "$BROADCAST" = true ]; then echo "FAILED -> --broadcast: $why" >&2; else echo "FAILED -> @$TARGET: $why" >&2; fi
-    exit 1
-fi
+why="$(_sot_identity_routable)" || refuse "$why"
 
 deliver() {  # $1 = target name
     local t="$1" thost ts row reg_rc=0

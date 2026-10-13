@@ -105,8 +105,12 @@ registry_touch() {  # name — bump last_seen if present
 # jq emits nothing for an empty file and fails on an unparseable one, so an unreadable
 # read can never produce a tmp that passes: it aborts, and the registry's inode and bytes stay as they were.
 # The check slurps: jq 1.6's -e exits 0 on a file with no document, and judges two by the last.
+# A missing jq is named in the FAILED line (sot_require_tools), as sot_registry_read names it.
 registry_replace() {
     local text="" has_text="" filter why
+    if ! why="$(sot_require_tools "update the registry" jq 2>&1)"; then
+        echo "FAILED: $why, so nothing was written" >&2; return 1
+    fi
     if [ "${1:-}" = --text ]; then has_text=1 text="${2-}"; shift 2; fi
     filter="$1"; shift
     if { sot_registry_bytes && { [ -z "$has_text" ] || printf '%s' "$text" | jq -Rs .; }; } \

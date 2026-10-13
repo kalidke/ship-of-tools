@@ -678,6 +678,13 @@ if [ "$OS" = Linux ] && command -v stat >/dev/null 2>&1; then
     check_remote_fs 'the state dir' "${XDG_STATE_HOME:-$HOME/.local/state}"
 fi
 for t in curl tar; do command -v "$t" >/dev/null || die "$t is required"; done
+# jq is the comm scripts' JSON reader and writer (comm/lib/CLAUDE.md): without it no send or poll works, so the install
+# stops here, before it downloads a release or changes anything, naming the command that installs jq
+# (ShipTools.install_comm stops the same way).
+if ! command -v jq >/dev/null; then
+    case "$OS" in Darwin) jq_install="brew install jq" ;; *) jq_install="sudo apt-get install jq" ;; esac
+    die "sot-comm needs jq, which is not on PATH: install it with \`$jq_install\`, then run this installer again"
+fi
 # The glibc floor for the frontend binary is checked further down, once the
 # role is resolved (WANT_FRONTEND) — that now needs the declared topology,
 # read via the sotd unpacked below, so it can't run this early any more.

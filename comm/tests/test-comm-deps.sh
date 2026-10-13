@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # test-comm-deps.sh — a missing jq, flock or perl is said loudly, never passed
-# silently: comm-poll.sh and comm-session-start.sh print one line naming the
-# tool and exit nonzero; the Stop hook blocks ONCE per episode naming it,
+# silently: comm-poll.sh prints a FAILED line naming the tool and
+# comm-session-start.sh a line naming it, and both exit nonzero; without jq a
+# send's and a leave's one line is FAILED naming it; the Stop hook blocks ONCE per episode naming it,
 # prefixes every later block, and clears when the tool is back. Runs against a
 # temp $SOT_COMM_HOME; never touches the real ~/.sot-comm.
 #
@@ -65,7 +66,8 @@ for tool in jq flock perl; do
     P="$(path_without "$tool")"
     MSG="$tool is missing (install it)"
     out="$(POLL "$P")"; rc=$?
-    has "poll names $tool on stdout" "$out" "$MSG"
+    check "poll fails naming $tool first on stdout" "$(printf '%s\n' "$out" | head -n 1)" "FAILED: sot-comm: cannot poll for mail: $MSG"
+    check "every line poll prints without $tool is FAILED" "$(printf '%s\n' "$out" | grep -vc '^FAILED: ')" "0"
     [ "$rc" -ne 0 ] && ok "poll exits nonzero without $tool" || bad "poll exits nonzero without $tool"
     out="$(START "$P")"; rc=$?
     has "session start names $tool on stdout" "$out" "$MSG"
@@ -145,8 +147,8 @@ for fn in "sot_json_escape x" "sot_hello_frame" "sot_pty_screen ws" "sot_pty_inp
     has "JQ: $fn names jq on stderr" "$(cat "$WORK/deps.err")" "jq is missing"
 done
 
-# comm-relay.sh send, comm-join.sh and comm-send.sh with jq off the PATH: nonzero, jq named on stderr, and the
-# registry and the self file untouched.
+# comm-relay.sh send, comm-join.sh, comm-send.sh and comm-leave.sh with jq off the PATH: nonzero, jq named on stderr
+# (a send's and a leave's one line is FAILED naming it), and the registry and the self file untouched.
 before="$(cksum < "$REGISTRY"; cksum < "$SOT_COMM_SELF_FILE")"
 err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-relay.sh" send @peer hi 2>&1 >/dev/null)"; rc=$?
 check "JQ: comm-relay.sh send exits 1 without jq" "$rc" "1"
@@ -160,9 +162,13 @@ err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-join.sh" --name other 2>&1 >/de
 has "JQ: comm-join.sh names jq on stderr" "$err" "jq is missing"
 check "JQ: relay and join wrote neither the registry nor the self file" "$(cksum < "$REGISTRY"; cksum < "$SOT_COMM_SELF_FILE")" "$before"
 err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-send.sh" @peer hi 2>&1 >/dev/null)"; rc=$?
-[ "$rc" -ne 0 ] && ok "JQ: comm-send.sh exits nonzero without jq" || bad "JQ: comm-send.sh exits nonzero without jq"
-has "JQ: comm-send.sh names jq on stderr" "$err" "jq is missing"
-case "$err" in *"jq is missing"*"FAILED ->"*) ok "JQ: comm-send.sh names jq ahead of its FAILED line" ;; *) bad "JQ: comm-send.sh names jq ahead of its FAILED line (got: $err)" ;; esac
+check "JQ: comm-send.sh exits 1 without jq" "$rc" "1"
+check "JQ: comm-send.sh's one line is FAILED naming jq" "$err" "FAILED -> @peer: sot-comm: cannot send: jq is missing (install it)"
+err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-send.sh" --broadcast hi 2>&1 >/dev/null)"; rc=$?
+check "JQ: a broadcast's one line is FAILED naming jq" "$rc:$err" "1:FAILED -> --broadcast: sot-comm: cannot send: jq is missing (install it)"
+err="$(PATH="$PJ" "$BASH_BIN" "$SCRIPTS_DIR/comm-leave.sh" 2>&1 >/dev/null)"; rc=$?
+check "JQ: comm-leave.sh's one line is FAILED naming jq" "$rc:$err" "1:FAILED: sot-comm: cannot update the registry: jq is missing (install it), so nothing was written"
+check "JQ: send and leave wrote neither the registry nor the self file" "$(cksum < "$REGISTRY"; cksum < "$SOT_COMM_SELF_FILE")" "$before"
 
 # A mode this script no longer has (the retired --context) must fail loudly
 # and write nothing, not fall through to the joining default.

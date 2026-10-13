@@ -1,5 +1,32 @@
 # Tests for src/install.jl and src/comm_bin.jl: update_comm reporting, pruning, the one-file library and sot-fe, the refusal, and install_comm's publish order and failures.
 
+@testset "install_comm stops before any change when jq is not on PATH" begin
+    mktempdir() do home
+        stamp = joinpath(home, ".sot-comm", "VERSION")
+        mkpath(dirname(stamp))
+        write(stamp, "earlier")
+        err = mktempdir() do nojq
+            in_home(home, "PATH" => nojq) do
+                try
+                    ShipTools.install_comm(clis = [:claude]); nothing
+                catch e
+                    e
+                end
+            end
+        end
+        @test err isa ErrorException
+        @test err.msg == "sot-comm needs jq, which is not on PATH: install it with " *
+                         "`$(ShipTools._jq_install_command())`, then run ShipTools.update_comm() again"
+        # Nothing changed: the earlier stamp stays, and no script, skill or hook was installed.
+        @test read(stamp, String) == "earlier"
+        @test readdir(dirname(stamp)) == ["VERSION"]
+        @test !ispath(joinpath(home, ".claude"))
+    end
+    @test ShipTools._jq_install_command(:NT) == "winget install jqlang.jq"
+    @test ShipTools._jq_install_command(:Darwin) == "brew install jq"
+    @test ShipTools._jq_install_command(:Linux) == "sudo apt-get install jq"
+end
+
 @testset "update_comm reports an INCOMPLETE install honestly" begin
     mktempdir() do home
         adapters = first(ShipTools.CLAUDE_SKILL_SRCS)

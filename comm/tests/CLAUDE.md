@@ -19,7 +19,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `status_floor/`: parts of `test-status-floor.sh`: `reduction.sh`, `markers.sh`, `audit_and_races.sh`
 - `test-agent-join.sh`: `comm-join.sh` declares the row's handle to its daemon over the owner endpoint, never the relay
 - `test-agent-layers.sh`: a process acts as a handle only with at most one agent between it and its row's capsule
-- `test-comm-deps.sh`: a missing jq, flock or perl is named by poll, session start and the Stop hook, never passed silently; a mail tool that is a perl module perl loads (Time::HiRes) is not missing
+- `test-comm-deps.sh`: a missing jq, flock or perl is named by poll (in a FAILED line), session start and the Stop hook, never passed silently; without jq a send's and a leave's one line is FAILED naming it; a mail tool that is a perl module perl loads (Time::HiRes) is not missing
 - `test-comm-e2e-readers.sh`: real readers on a real shared home lose no line (needs a v4 peer and a v3 host)
 - `test-comm-matrix-verdict.sh`: the acceptance matrix's verdict logic tells a false failure from a false success
 - `test-comm-private.sh`: every comm writer makes the comm folder its user's alone, an older folder is tightened at join, user files keep the caller's umask
