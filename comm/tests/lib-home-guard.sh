@@ -22,9 +22,10 @@
 # leads PATH: on Windows the library takes SOTD_BIN or LOCALAPPDATA's sotd.exe and
 # probes its pipe through that binary, so LOCALAPPDATA holds a copy of the refusing
 # sotd.exe and discovery finds nothing that answers. Every stub sotd, the guard's (those
-# stubs and guard_bridge_stub's) and each one a suite hands a comm script through SOTD_BIN
-# or PATH, carries GUARD_EMPTY_WALK right after its #!: it answers one question,
-# `ancestors --from <pid>`, with an empty walk and exit 0. On Windows a gated comm script
+# stubs and guard_bridge_stub's) and each one a suite writes, carries GUARD_EMPTY_WALK right
+# after its #! (a suite's own stand-in for the walk itself, SIMWIN's or a faked Windows
+# box's, answers with that walk): it answers one question, `ancestors --from <pid>`, with
+# an empty walk and exit 0. On Windows a gated comm script
 # reads its native ancestors through that binary (comm-lib-agent-layers.sh), so a suite's
 # walk ends at the top of its own MSYS processes, as a Linux run's ends at init. The real
 # walk is pinned by rust/backend/tests/ancestors.rs, the shell's by test-agent-layers.sh

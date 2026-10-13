@@ -18,8 +18,7 @@ case_pipe_endpoint_oneshot_request_matches_reply() {
     # for its op, until its input ends, as the real bridge closes at input end.
     argvlog="$WORK/fake-bridge-oneshot-argv.log"
     rm -f "${argvlog:?}"
-    cat > "$stub" <<'FAKEBRIDGE'
-#!/bin/sh
+    { printf '#!/bin/sh\n%s\n' "$GUARD_EMPTY_WALK"; cat <<'FAKEBRIDGE'
 [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
 printf '%s\n' "$3" >> "$FAKE_BRIDGE_ARGV"
 while IFS= read -r line; do
@@ -31,6 +30,7 @@ while IFS= read -r line; do
     esac
 done
 FAKEBRIDGE
+    } > "$stub"
     chmod +x "$stub"
 
     frame='{"v":1,"id":2,"kind":"req","op":"workspace.list","payload":{}}'
@@ -59,16 +59,17 @@ FAKEBRIDGE
 }
 
 case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_sotd() {
-    # No sotd anywhere it is looked for: no SOTD_BIN, none on PATH or under
-    # HOME, and a pgrep that finds no live one. sot_dial says so, and the
-    # request fails CLEANLY: empty stdout, nonzero return, that line on stderr.
+    # No sotd anywhere it is looked for: no SOTD_BIN, none on PATH, under HOME
+    # or under LOCALAPPDATA (a Windows box's, where the guard keeps its own
+    # refusing sotd.exe), and a pgrep that finds no live one. sot_dial says so,
+    # and the request fails CLEANLY: empty stdout, nonzero return, that line on stderr.
     local emptybin frame out rc err
     emptybin="$WORK/no-sotd-bin"
-    mkdir -p "$emptybin" "$WORK/no-sotd-home"
+    mkdir -p "$emptybin" "$WORK/no-sotd-home" "$WORK/no-sotd-localappdata"
     printf '#!/bin/sh\nexit 1\n' > "$emptybin/pgrep"
     chmod +x "$emptybin/pgrep"
     frame='{"v":1,"id":2,"kind":"req","op":"workspace.list","payload":{}}'
-    out="$(unset SOTD_BIN; PATH="$emptybin:/usr/bin:/bin" HOME="$WORK/no-sotd-home" SCRIPT_DIR="$SCRIPTS_DIR" \
+    out="$(unset SOTD_BIN; PATH="$emptybin:/usr/bin:/bin" HOME="$WORK/no-sotd-home" LOCALAPPDATA="$WORK/no-sotd-localappdata" SCRIPT_DIR="$SCRIPTS_DIR" \
         ENDPOINT='pipe:sot-testuser-local' SOT_SEND_TIMEOUT=5 \
         sot_oneshot_request "$frame" workspace.list 2>"$WORK/no-sotd.err")"
     rc=$?
@@ -87,12 +88,12 @@ case_pipe_endpoint_oneshot_request_names_the_bridges_refusal() {
     local stub frame out rc err
     stub="$WORK/fake-bridge-refusing/sotd"
     mkdir -p "${stub%/*}"
-    cat > "$stub" <<'FAKEBRIDGE'
-#!/bin/sh
+    { printf '#!/bin/sh\n%s\n' "$GUARD_EMPTY_WALK"; cat <<'FAKEBRIDGE'
 [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
 printf 'sotd stdio-bridge: %s: not connecting: another OS account serves this pipe\n' "$3" >&2
 exit 1
 FAKEBRIDGE
+    } > "$stub"
     chmod +x "$stub"
     frame='{"v":1,"id":2,"kind":"req","op":"workspace.list","payload":{}}'
     out="$(SOTD_BIN="$stub" SCRIPT_DIR="$SCRIPTS_DIR" \
@@ -135,8 +136,7 @@ FAKEPGREP
 
     appdata="$WORK/win-discovery-localappdata"
     mkdir -p "$appdata/sot/bin"
-    cat > "$appdata/sot/bin/sotd.exe" <<'FAKESOTD'
-#!/bin/sh
+    { printf '#!/bin/sh\n%s\n' "$GUARD_EMPTY_WALK"; cat <<'FAKESOTD'
 if [ "$1" = "session-socket-path" ] && [ "$2" = "local" ]; then
     printf '%s\n' '\\.\pipe\sot-fakeuser-local'
     exit 0
@@ -157,6 +157,7 @@ if [ "$1" = "stdio-bridge" ] && [ "$2" = "--endpoint" ]; then
 fi
 exit 1
 FAKESOTD
+    } > "$appdata/sot/bin/sotd.exe"
     chmod +x "$appdata/sot/bin/sotd.exe"
 
     out="$(

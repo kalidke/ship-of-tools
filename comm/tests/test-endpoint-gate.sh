@@ -103,11 +103,11 @@ case_planned_relay_endpoint_uses_sotd_bin_with_no_live_socket_needed() {
     # 5): a bare executable file is enough.
     local dir
     dir="$(fake_bin_dir)"
-    cat > "$dir/sotd" <<'EOF'
-#!/bin/sh
+    { printf '#!/bin/sh\n%s\n' "$GUARD_EMPTY_WALK"; cat <<'EOF'
 [ "$1" = "topology" ] && [ "$2" = "relay-endpoint" ] && { echo "ssh:hub"; exit 0; }
 exit 1
 EOF
+    } > "$dir/sotd"
     chmod +x "$dir/sotd"
     local out
     out="$(SOTD_BIN="$dir/sotd" sot_relay_endpoint)"
@@ -120,11 +120,11 @@ case_relay_endpoint_scripts_newer_than_binary_discards_stale_tcp_answer() {
     # -- discarded by the gate, no other source to fall back to.
     local dir
     dir="$(fake_bin_dir)"
-    cat > "$dir/sotd" <<'EOF'
-#!/bin/sh
+    { printf '#!/bin/sh\n%s\n' "$GUARD_EMPTY_WALK"; cat <<'EOF'
 [ "$1" = "topology" ] && [ "$2" = "relay-endpoint" ] && { echo "tcp:127.0.0.1:18743"; exit 0; }
 exit 1
 EOF
+    } > "$dir/sotd"
     chmod +x "$dir/sotd"
     local out rc
     out="$(SOTD_BIN="$dir/sotd" sot_relay_endpoint 2>/dev/null)"
@@ -149,11 +149,11 @@ case_daemonless_box_no_sotd_on_path_is_no_endpoint() {
 case_daemonless_box_no_file_answers_its_own_socket() {
     local dir
     dir="$(fake_bin_dir)"
-    cat > "$dir/sotd" <<'EOF'
-#!/bin/sh
+    { printf '#!/bin/sh\n%s\n' "$GUARD_EMPTY_WALK"; cat <<'EOF'
 [ "$1" = "topology" ] && [ "$2" = "relay-endpoint" ] && { echo "unix:/run/user/1000/sot/sessions/sot.sock"; exit 0; }
 exit 1
 EOF
+    } > "$dir/sotd"
     chmod +x "$dir/sotd"
     local out
     out="$(SOTD_BIN="$dir/sotd" sot_relay_endpoint)"
@@ -165,14 +165,14 @@ EOF
 case_daemonless_box_not_a_listed_host_is_no_endpoint_with_the_binarys_own_line() {
     local dir out rc
     dir="$(fake_bin_dir)"
-    cat > "$dir/sotd" <<'EOF'
-#!/bin/sh
+    { printf '#!/bin/sh\n%s\n' "$GUARD_EMPTY_WALK"; cat <<'EOF'
 if [ "$1" = "topology" ] && [ "$2" = "relay-endpoint" ]; then
     echo "sotd: 'this-box' is not a listed host" >&2
     exit 1
 fi
 exit 1
 EOF
+    } > "$dir/sotd"
     chmod +x "$dir/sotd"
     out="$(SOTD_BIN="$dir/sotd" sot_relay_endpoint 2>"$WORK/err3")"
     rc=$?
