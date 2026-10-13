@@ -1,0 +1,32 @@
+# TEMPORARY, SMALL-066's macOS proof of the C1 test fix and of the merged line's bash 3.2 step; never merged. Pushed
+# alone on tmp/ci-small-mac (lane/small-066b with the fix), read, then the branch is deleted. Nothing here pushes,
+# publishes or reads a secret. The steps are rust.yml's two macOS steps after the build, with the two temp-files suites
+# run apart (rust.yml joins them with &&, so the agents suite has never run on a Mac) and each step run whatever the one
+# before it showed.
+name: tmp small-mac
+on:
+  push:
+    branches: [tmp/ci-small-mac]
+jobs:
+  tmp-small-mac:
+    name: tmp the temp-files suites and every suite under /bin/bash 3.2 (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test comm temp files (hermetic)
+        shell: bash
+        timeout-minutes: 10
+        run: bash comm/tests/test-temp-files.sh
+      - name: Test agents temp files (hermetic)
+        if: always()
+        shell: bash
+        timeout-minutes: 10
+        run: bash agents/tests/test-temp-files.sh
+      - name: Comm and agents suites under /bin/bash 3.2
+        if: always()
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install bash
+          "$(brew --prefix bash)/bin/bash" scripts/tests/under-bash.sh /bin/bash
