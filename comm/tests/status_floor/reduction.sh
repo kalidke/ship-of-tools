@@ -301,6 +301,25 @@ case_tool_call_refreshes_old_stamp_only() {
     local at2; at2="$(status_at)"
     [ "$at1" = "$at2" ] || { echo "    status_at changed on a fresh stamp: $at1 -> $at2"; return 1; }
 }
+# macOS's date has no -d: the heartbeat reads a stamp's age through sot_epoch, which falls back to BSD's -j -f, so a
+# stamp 30 s old is fresh there too and the hook leaves it. On Linux a stand-in date first on PATH is BSD's: it refuses
+# -d and answers -j -f and -r through GNU's.
+case_a_fresh_stamp_holds_under_a_bsd_date() {
+    seed idle; W "$GENUINE"
+    local t d="$WORK/bsd-date" g
+    t="$(perl -MPOSIX=strftime -e 'print strftime("%Y-%m-%dT%H:%M:%SZ", gmtime(time - 30))')"
+    jq --arg n "$NAME" --arg t "$t" '.agents[$n].status_at = $t' "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+    if [ "$(uname -s)" = Linux ]; then
+        g="$(command -v date)"; mkdir -p "$d"
+        printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = -d ] && { echo "date: illegal option -- d" >&2; exit 1; }; done\n' > "$d/date"
+        printf 'case "$2" in -j) exec %s -u -d "$5" "$6" ;; -r) exec %s -u -d "@$3" "$4" ;; esac\nexec %s "$@"\n' "$g" "$g" "$g" >> "$d/date"
+        chmod +x "$d/date"
+        PATH="$d:$PATH" HB
+    else
+        HB
+    fi
+    [ "$(status_at)" = "$t" ] || { echo "    a 30 s old stamp was rewritten: $t -> $(status_at)"; return 1; }
+}
 case_headless_child_hooks_stand_down() {
     seed idle; W "$GENUINE"; "$ST" blocked "q?" >/dev/null; floor_now
     expect blocked/-/q/-/- parked || return 1

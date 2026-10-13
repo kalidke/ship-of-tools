@@ -411,7 +411,7 @@ _sot_lock_field() {  # ID N — the ID's Nth colon field
 # last saw it: the holder's host, pid and start tick, and the recovery.
 _sot_lock_fail_text() {
     local age="unknown" mtime="" who="${_SOT_LOCK_WHO:-${_SOT_LOCK_HOLDER:-}}"
-    mtime="$(stat -c %Y "$_SOT_REG_LOCK" 2>/dev/null)" || mtime=""
+    mtime="$(sot_mtime "$_SOT_REG_LOCK")" || mtime=""
     [ -n "$mtime" ] && age="$(( $(date +%s) - mtime ))s"
     if [ -n "${_SOT_LOCK_BYHAND:-}" ]; then
         echo "ERROR: registry lock $_SOT_REG_LOCK still held ($age old): $_SOT_LOCK_WHY. If its holder is dead, remove $_SOT_REG_LOCK by hand and retry."

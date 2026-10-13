@@ -32,6 +32,11 @@ _SOT_REG_LOCK="$COMM_HOME/.registry.lock"
 umask 077
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# sot_epoch STAMP — STAMP (YYYY-MM-DDTHH:MM:SSZ, UTC) in seconds since the epoch, by GNU date's -d or BSD's -j -f
+# (macOS); nothing and status 1 when neither reads it. sot_mtime FILE — FILE's modification time the same way, by GNU
+# stat's -c or BSD's -f.
+sot_epoch() { date -u -d "$1" +%s 2>/dev/null || LC_ALL=C date -u -j -f %Y-%m-%dT%H:%M:%SZ "$1" +%s 2>/dev/null; }
+sot_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
 # sot_mail_tools — the tools every path that reads mail runs, one line: jq
 # parses every frame; flock and perl are the inbox's read and write lock,

@@ -215,6 +215,7 @@ check "an AskUserQuestion answer inside the heartbeat throttle window still floo
 check "a parked question survives a foreign AskUserQuestion answer with no marker" case_parked_question_survives_a_foreign_askuserquestion_answer
 check "a tool call on a floor-less row writes nothing" case_tool_call_on_floorless_row_changes_nothing
 check "a tool call refreshes a stale stamp only, not a fresh one" case_tool_call_refreshes_old_stamp_only
+check "a fresh stamp holds under a BSD date, which has no -d (macOS)" case_a_fresh_stamp_holds_under_a_bsd_date
 check "headless child hooks stand down on SOT_COMM_HOOKS=off" case_headless_child_hooks_stand_down
 check "a pre-amendment working row floors gray and drops its legacy keys" case_pre_field_working_row_floors_gray
 check "a short exchange on a waiting row is never nudged" case_short_exchange_on_waiting_row_never_nudged
