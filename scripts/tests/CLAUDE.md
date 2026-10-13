@@ -30,9 +30,10 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   hosts.toml sotd cannot read is still a declared topology; the tables of `installer_record_decision` and
   `installer_host_decision`; and `install.sh`, run end to end from a stub release on a host listed with neither key,
   on an unlisted host asking for a daemon, and with an unpacked sotd that cannot run, refuses and leaves every entry
-  under the prefix and `~/.local` as it was. It also reads the argv of the stand-in curl and git of
+  under the prefix and `~/.local` as it was; run without jq, it stops with the one line naming the command that installs
+  jq on this OS, before any curl call or change. It also reads the argv of the stand-in curl and git of
   a run that reaches the base clone, the tag fetch and the Julia installer: each carries its stall bound. install.sh's
-  PATH is the stand-ins and a tool dir of its own (`mk_tools` plus tar, gzip and tr), never the host's /usr/bin, where a
+  PATH is the stand-ins and a tool dir of its own (`mk_tools` plus tar, gzip, tr and jq), never the host's /usr/bin, where a
   Julia (the hosted ubuntu-24.04 image links one there) would skip the Julia installer. Runs in the
   `rust.yml` step "Test installer shared home (bash)"
   (job `checks-linux`) and in `rc-gate.sh`.

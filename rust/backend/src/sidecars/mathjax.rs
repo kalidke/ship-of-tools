@@ -7,10 +7,11 @@
 // responses back by request id.
 //
 // API: Callers
-// `.render(latex, display).await` for SVG bytes, within `RENDER_BOUND`. On
-// child death the supervisor drains in-flight oneshots with an error, then
-// lazily relaunches on the next request; a render past its bound ends its
-// child the same way.
+// `.render(latex, display).await` for SVG bytes: within `START_BOUND` the
+// child says it is ready, then within `RENDER_BOUND` it answers. On child
+// death the supervisor drains in-flight oneshots with an error, then lazily
+// relaunches on the next request; a render past either bound ends its child
+// the same way.
 //
 // Lazy start: the child isn't spawned until the first render request, so
 // backends launched without ever serving math don't pay the node-process
@@ -25,7 +26,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, Command};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
 #[derive(Clone)]
 pub struct MathJax {
@@ -48,14 +49,25 @@ struct MathJaxInner {
     sig: &'static crate::lifecycle::child_signal::Signal,
 }
 
-/// The supervisor of one running child: submissions go in on `submit`, and dropping `_ends` ends the child.
+/// The supervisor of one running child: submissions go in on `submit`, `ready` turns true at the child's ready line,
+/// and dropping `_ends` ends the child.
 struct Running {
     submit: mpsc::Sender<Submission>,
+    ready: watch::Receiver<bool>,
     _ends: oneshot::Sender<()>,
 }
 
-/// How long one render may take, from its submission to its SVG: the kernel's `KERNEL_REQUEST_TIMEOUT` twin. A render
-/// past it is an error, and its child is ended so the next render starts a fresh one.
+/// How long a render waits for its child to be ready (node's start and its import of mathjax-full) before
+/// `RENDER_BOUND` starts, so a cold start on a loaded box is not counted against a render. A child not ready by then
+/// is ended.
+const START_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The child's first stdout line, written once its modules are loaded (`render.mjs`).
+const READY_LINE: &str = r#"{"ready":true}"#;
+
+/// How long one render may take, from its submission to a ready child to its SVG: the kernel's
+/// `KERNEL_REQUEST_TIMEOUT` twin. A render past it is an error, and its child is ended so the next render starts a
+/// fresh one.
 const RENDER_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
 
 struct Submission {
@@ -110,11 +122,23 @@ impl MathJax {
         crate::paths::resource_dir("rust/backend/sidecars/mathjax/render.mjs")
     }
 
-    /// Convert LaTeX to SVG via the sidecar, within `RENDER_BOUND`. Spawns the
-    /// child on first call, reuses across subsequent calls, relaunches on
-    /// death. A render past its bound ends that child.
+    /// Convert LaTeX to SVG via the sidecar, within `START_BOUND` for the
+    /// child to be ready and then `RENDER_BOUND`. Spawns the child on first
+    /// call, reuses across subsequent calls, relaunches on death. A render
+    /// past either bound ends that child.
     pub async fn render(&self, latex: &str, display: bool) -> Result<RenderedSvg> {
-        let tx = self.ensure_supervisor().await?;
+        let (tx, mut ready) = self.ensure_supervisor().await?;
+        let started = tokio::time::timeout(START_BOUND, ready.wait_for(|ready| *ready))
+            .await
+            .map(|ready| ready.is_ok());
+        match started {
+            Ok(true) => {}
+            Ok(false) => return Err(anyhow!("mathjax child ended before it was ready")),
+            Err(_) => {
+                self.end(&tx).await;
+                return Err(anyhow!("mathjax child was not ready within {START_BOUND:?}; it was ended"));
+            }
+        }
         let rendered = tokio::time::timeout(RENDER_BOUND, async {
             let (reply_tx, reply_rx) = oneshot::channel();
             tx.send(Submission {
@@ -132,27 +156,30 @@ impl MathJax {
         if let Ok(result) = rendered {
             return result;
         }
-        // A child that does not answer within the bound is ended, unless a
-        // later render has already replaced it.
-        let mut guard = self.inner.submit.lock().await;
-        if guard.as_ref().is_some_and(|running| running.submit.same_channel(&tx)) {
-            *guard = None;
-        }
+        self.end(&tx).await;
         Err(anyhow!("mathjax render timed out after {RENDER_BOUND:?}; its child was ended"))
     }
 
-    async fn ensure_supervisor(&self) -> Result<mpsc::Sender<Submission>> {
+    /// Ends the child a render waited on past its bound, unless a later render has already replaced it.
+    async fn end(&self, tx: &mpsc::Sender<Submission>) {
+        let mut guard = self.inner.submit.lock().await;
+        if guard.as_ref().is_some_and(|running| running.submit.same_channel(tx)) {
+            *guard = None;
+        }
+    }
+
+    async fn ensure_supervisor(&self) -> Result<(mpsc::Sender<Submission>, watch::Receiver<bool>)> {
         let mut guard = self.inner.submit.lock().await;
         if let Some(running) = guard.as_ref() {
             if !running.submit.is_closed() {
-                return Ok(running.submit.clone());
+                return Ok((running.submit.clone(), running.ready.clone()));
             }
             // Supervisor died; fall through and relaunch.
         }
         let running = spawn_supervisor(&self.inner.node_bin, &self.inner.script_path, self.inner.sig)?;
-        let tx = running.submit.clone();
+        let handles = (running.submit.clone(), running.ready.clone());
         *guard = Some(running);
-        Ok(tx)
+        Ok(handles)
     }
 }
 
@@ -190,6 +217,7 @@ fn spawn_supervisor(
         .context("mathjax child stderr missing")?;
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(64);
+    let (ready_tx, ready) = watch::channel(false);
     let (ends, ended) = oneshot::channel();
 
     // Stderr drain — pure logging, never on the result path.
@@ -200,8 +228,8 @@ fn spawn_supervisor(
         }
     });
 
-    tokio::spawn(supervisor_task(contained, stdin, stdout, submit_rx, ended, sig));
-    Ok(Running { submit: submit_tx, _ends: ends })
+    tokio::spawn(supervisor_task(contained, stdin, stdout, submit_rx, ready_tx, ended, sig));
+    Ok(Running { submit: submit_tx, ready, _ends: ends })
 }
 
 async fn supervisor_task(
@@ -209,6 +237,7 @@ async fn supervisor_task(
     mut stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
+    ready: watch::Sender<bool>,
     ended: oneshot::Receiver<()>,
     sig: &'static crate::lifecycle::child_signal::Signal,
 ) {
@@ -220,6 +249,18 @@ async fn supervisor_task(
     // this child even while the service waits on it, a write to a child that
     // reads nothing included.
     let serve = async {
+        // Renders wait for the child's ready line before their own bound starts.
+        tokio::select! {
+            biased;
+            _ = sig.fired() => return,
+            line = stdout_lines.next_line() => {
+                if !matches!(line, Ok(Some(ref line)) if line == READY_LINE) {
+                    tracing::warn!("mathjax child ended or wrote another line before its ready line");
+                    return;
+                }
+                let _ = ready.send(true);
+            }
+        }
         loop {
             tokio::select! {
                 biased;
@@ -323,7 +364,7 @@ mod tests {
     use super::*;
 
     /// A render the child never answers is an error at `RENDER_BOUND` and ends that child, and the next render starts
-    /// a fresh one. The stand-in for node is `sh` running a script that reads and never answers.
+    /// a fresh one. The stand-in for node is `sh` running a script that says it is ready, then reads and never answers.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_render_past_its_bound_is_an_error_and_ends_its_child() {
@@ -332,8 +373,11 @@ mod tests {
         let dir = tempfile::Builder::new().prefix("sot-mathjax-bound-").tempdir().unwrap();
         let script = dir.path().join("render.sh");
         let starts = dir.path().join("starts");
-        std::fs::write(&script, format!("echo started >> '{}'\nwhile read -r line; do :; done\n", starts.display()))
-            .unwrap();
+        std::fs::write(
+            &script,
+            format!("echo started >> '{}'\necho '{{\"ready\":true}}'\nwhile read -r line; do :; done\n", starts.display()),
+        )
+        .unwrap();
         let sig: &'static crate::lifecycle::child_signal::Signal =
             Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let mathjax = MathJax {
@@ -370,6 +414,39 @@ mod tests {
         next.abort();
         drop(mathjax);
         within(Duration::from_secs(5), "the fresh child ends with its handle", || sig.live() == 0).await;
+    }
+
+    /// A child that never says it is ready fails the render at `START_BOUND`, naming its start, not at `RENDER_BOUND`,
+    /// and is ended. The stand-in for node is `sh` running a script that reads and never answers.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_child_never_ready_is_ended_at_its_start_bound() {
+        use crate::sidecars::contract_tests::within;
+        use std::time::Duration;
+        let dir = tempfile::Builder::new().prefix("sot-mathjax-start-").tempdir().unwrap();
+        let script = dir.path().join("render.sh");
+        std::fs::write(&script, "while read -r line; do :; done\n").unwrap();
+        let sig: &'static crate::lifecycle::child_signal::Signal =
+            Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let mathjax = MathJax {
+            inner: Arc::new(MathJaxInner {
+                script_path: script,
+                node_bin: "/bin/sh".to_string(),
+                submit: Mutex::new(None),
+                sig,
+            }),
+        };
+        let t0 = std::time::Instant::now();
+        let err = tokio::time::timeout(Duration::from_secs(90), mathjax.render("x", false))
+            .await
+            .expect("the render is still waiting at 90 s")
+            .expect_err("a child that never says it is ready");
+        let took = t0.elapsed();
+        println!("mathjax-start: {err:#} after {took:?}");
+        let bound = Duration::from_secs(60); // START_BOUND, written out so this test also runs on the code without it
+        assert!(format!("{err:#}").contains("was not ready within 60s"), "{err:#}");
+        assert!(took >= bound && took < bound + Duration::from_secs(5), "ended after {took:?}");
+        within(Duration::from_secs(5), "the child that never said ready is ended", || sig.live() == 0).await;
     }
 
     /// ADR 0049, User isolation: a MathJax line that does not parse is logged by position and length, never its bytes.

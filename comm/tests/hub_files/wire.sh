@@ -42,39 +42,35 @@ wire_send() {
     return 0
 }
 
-# On Windows `_sot_os_user` is the process token's user SID, read by the first of three probes (`whoami` called
-# directly, `whoami` through `cmd`, PowerShell) that prints one; a box where none does fails loudly and says what each
-# printed. Faked here with OS=Windows_NT and stubs first on PATH.
+# On Windows `_sot_os_user` is the process token's user SID, read by the first of two probes that prints one: Windows'
+# own whoami, by full path under SYSTEMROOT (in Git Bash a bare `whoami`, and cmd's, is Git's), then PowerShell; a box
+# where neither does fails loudly and says what each printed. Faked here with OS=Windows_NT, a SYSTEMROOT of stubs, and
+# a bare `whoami` and `cmd` first on PATH with another SID, which must never be asked.
 case_the_windows_account_is_the_sid_from_the_first_probe_that_prints_one() {
     local d="$WORK/sidfake" got err
-    sid_of() {  # <stubs...> -- run _sot_os_user with $d as the only probe dir
-        got="$(cd "$WORK" && PATH="$d:$PATH" OS=Windows_NT SOT_COMM_TEST_HOST="$HOST_PIN" bash -c '. "$1/comm-lib.sh"; _sot_os_user' _ "$SCRIPTS_DIR" 2>"$WORK/err.txt")" || true
+    sid_of() {  # run _sot_os_user with $d/bin first on PATH and $d/root as SYSTEMROOT
+        got="$(cd "$WORK" && PATH="$d/bin:$PATH" SYSTEMROOT="$d/root" OS=Windows_NT SOT_COMM_TEST_HOST="$HOST_PIN" bash -c '. "$1/comm-lib.sh"; _sot_os_user' _ "$SCRIPTS_DIR" 2>"$WORK/err.txt")" || true
         err="$(cat "$WORK/err.txt")"
     }
-    stub() {  # <name> <output...>
-        local n="$1"; shift
-        printf '#!/bin/sh\nprintf "%%s\\r\\n" %s\n' "$(printf "'%s' " "$@")" > "$d/$n"; chmod +x "$d/$n"
+    stub() {  # <file> <output...>
+        local f="$1"; shift
+        printf '#!/bin/sh\nprintf "%%s\\r\\n" %s\n' "$(printf "'%s' " "$@")" > "$f"; chmod +x "$f"
     }
-    rm -rf "${d:?}"; mkdir -p "$d"
-    stub whoami '"fakehost\\fakeuser","S-1-5-21-1-2-3-1001"'
-    sid_of; [ "$got" = "S-1-5-21-1-2-3-1001" ] || { echo "  whoami probe: got '$got' ($err)"; return 1; }
-    rm -rf "${d:?}"; mkdir -p "$d"
-    stub whoami 'not a sid'
-    stub cmd '"fakehost\\fakeuser","S-1-5-21-1-2-3-1002"'
-    sid_of; [ "$got" = "S-1-5-21-1-2-3-1002" ] || { echo "  cmd probe: got '$got' ($err)"; return 1; }
-    rm -rf "${d:?}"; mkdir -p "$d"
-    stub whoami 'not a sid'
-    stub cmd 'also not'
-    stub powershell.exe 'S-1-5-21-1-2-3-1003'
+    fresh() {  # the bare whoami and cmd Git Bash would find first, each with a SID no probe may return
+        rm -rf "${d:?}"; mkdir -p "$d/bin" "$d/root/System32"
+        stub "$d/bin/whoami" '"fakehost\\fakeuser","S-1-5-21-9-9-9-9"'
+        stub "$d/bin/cmd" '"fakehost\\fakeuser","S-1-5-21-9-9-9-9"'
+    }
+    fresh; stub "$d/root/System32/whoami.exe" '"fakehost\\fakeuser","S-1-5-21-1-2-3-1001"'
+    sid_of; [ "$got" = "S-1-5-21-1-2-3-1001" ] || { echo "  whoami.exe probe: got '$got' ($err)"; return 1; }
+    fresh; stub "$d/root/System32/whoami.exe" 'not a sid'; stub "$d/bin/powershell.exe" 'S-1-5-21-1-2-3-1003'
     sid_of; [ "$got" = "S-1-5-21-1-2-3-1003" ] || { echo "  powershell probe: got '$got' ($err)"; return 1; }
-    rm -rf "${d:?}"; mkdir -p "$d"
-    stub whoami 'not a sid'
-    stub cmd 'also not'
-    stub powershell.exe 'nor this'
+    fresh; stub "$d/root/System32/whoami.exe" 'not a sid'; stub "$d/bin/powershell.exe" 'nor this'
     sid_of
     [ -z "$got" ] || { echo "  no probe: got '$got'"; return 1; }
-    contains "$err" "no probe printed this process's user SID" && contains "$err" "[whoami: not a sid]" && contains "$err" "[cmd: also not]" \
-        && contains "$err" "_sot_os_user: this process's OS account is unreadable" || { echo "  err: $err"; return 1; }
+    contains "$err" "no probe printed this process's user SID" && contains "$err" "[whoami: not a sid]" \
+        && contains "$err" "[powershell: nor this]" && contains "$err" "_sot_os_user: this process's OS account is unreadable" \
+        || { echo "  err: $err"; return 1; }
     return 0
 }
 
@@ -230,12 +226,14 @@ fi
 exit 1
 FAKESOTD
 } > "$WINAPP/sot/bin/sotd.exe"
-# `cmd //c "whoami /user /fo csv /nh"`, the hello's `os_user` on Windows (comm-lib-client.sh `_sot_os_user`).
-printf '#!/bin/sh\nprintf '"'"'"fakehost\\\\fakeuser","S-1-5-21-1-2-3-1001"\\r\\n'"'"'\n' > "$WINFAKE/cmd"
-chmod +x "$WINFAKE/uname" "$WINAPP/sot/bin/sotd.exe" "$WINFAKE/cmd"
+# Windows' `whoami /user /fo csv /nh` under SYSTEMROOT, the hello's `os_user` on Windows (comm-lib-client.sh
+# `_sot_windows_sid`).
+mkdir -p "$WINFAKE/root/System32"
+printf '#!/bin/sh\nprintf '"'"'"fakehost\\\\fakeuser","S-1-5-21-1-2-3-1001"\\r\\n'"'"'\n' > "$WINFAKE/root/System32/whoami.exe"
+chmod +x "$WINFAKE/uname" "$WINAPP/sot/bin/sotd.exe" "$WINFAKE/root/System32/whoami.exe"
 win_send() {  # ANSWER
     rm -f "${WINHUB:?}"/*.log; printf '%s' "$1" > "$WINHUB/answer"
-    SEND_OUT="$(cd "$WORK" && unset OS OSTYPE SOT_SOCKET SOTD_BIN && PATH="$WINFAKE:$PATH" LOCALAPPDATA="$WINAPP" \
+    SEND_OUT="$(cd "$WORK" && unset OS OSTYPE SOT_SOCKET SOTD_BIN && PATH="$WINFAKE:$PATH" LOCALAPPDATA="$WINAPP" SYSTEMROOT="$WINFAKE/root" \
         SOT_COMM_SELF_FILE="$WORK/self-sender.txt" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_SEND_TIMEOUT=3 \
         SOT_INBOX_LOCK_WAIT_SECS=1 "$WINBIN/comm-send.sh" @t-peer "/win text on stdin only" 2>"$WORK/err.txt")"
     SEND_RC=$?

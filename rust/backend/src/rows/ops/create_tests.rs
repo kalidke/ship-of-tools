@@ -1,4 +1,4 @@
-//! Tests of create.rs: the duplicate-root and same-slug gates, and the refusal test pinning every refusal and the order of the gates.
+//! Tests of create.rs: the duplicate-root and same-slug gates, the refusal test pinning every refusal and the order of the gates, and the root a create stores.
 
 use super::*;
 
@@ -344,5 +344,29 @@ mod refusal_tests {
             "label": "p4", "project_root": root, "agent": "robot", "runtime": "tmux",
         })).await;
         assert_eq!(got["code"], "bad_agent");
+    }
+}
+
+mod root_tests {
+    use super::requested_root;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    fn req(root: &str) -> sot_protocol::WorkspaceCreateReq {
+        serde_json::from_value(json!({"label": "r", "project_root": root})).expect("a create request")
+    }
+
+    #[test]
+    fn a_plain_root_is_created_as_sent() {
+        assert_eq!(requested_root(&req("/home/k/proj")), PathBuf::from("/home/k/proj"));
+    }
+
+    /// A verbatim root is created plain, the form the store's load gives it, so the row's working directory and its
+    /// `SOT_WORKSPACE_ROOT` are never `\\?\…`.
+    #[cfg(windows)]
+    #[test]
+    fn a_verbatim_root_is_created_plain() {
+        assert_eq!(requested_root(&req(r"\\?\C:\Users\k\proj")), PathBuf::from(r"C:\Users\k\proj"));
+        assert_eq!(requested_root(&req(r"\\?\UNC\srv\share\x")), PathBuf::from(r"\\srv\share\x"));
     }
 }

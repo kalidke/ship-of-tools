@@ -80,8 +80,11 @@ Echo the collected answers back as a short plan before proceeding.
   - Windows → MSVC or GNU (see §2a)
   - macOS → Xcode Command Line Tools: `xcode-select --install` (user-prompted)
   - Linux → `cc`/`gcc` (usually present; else system pkg)
-- **`jq` + `awk`** for the Linux/mac statusline (§8) — usually present; `jq` may
-  need a user-level/system install.
+- **`jq`** on every OS: the comm scripts read and write JSON with it, and every
+  comm install (`scripts/install.sh`, `ShipTools.update_comm()`) stops without
+  it. Windows `winget install jqlang.jq`; macOS `brew install jq`; Linux
+  `sudo apt-get install jq`.
+- **`awk`** for the Linux/mac statusline (§8) — usually present.
 
 ---
 
@@ -318,13 +321,18 @@ join-time endpoint.
 
 **No-Julia fallback (frontend-client machines):** `ShipTools.update_comm()` needs
 Julia, which FE clients don't install (§3). `update_comm()` copies files, joining each
-library's parts into one; this copies the repo's files as they are (idempotent), then join as above:
+library's parts into one; this copies the repo's files as they are (idempotent), then join as above.
+Like every comm install it stops without jq (§1):
 ```sh
-bash "$REPO/comm/tests/stage-bin.sh" ~/.sot-comm/bin
-for d in comm/adapters/claude/sot-comm agents/claude/sot-install; do
-  mkdir -p ~/.claude/skills/"$(basename "$d")"
-  cp -f "$REPO/$d/SKILL.md" ~/.claude/skills/"$(basename "$d")"/SKILL.md
-done
+if command -v jq >/dev/null; then
+  bash "$REPO/comm/tests/stage-bin.sh" ~/.sot-comm/bin
+  for d in comm/adapters/claude/sot-comm agents/claude/sot-install; do
+    mkdir -p ~/.claude/skills/"$(basename "$d")"
+    cp -f "$REPO/$d/SKILL.md" ~/.claude/skills/"$(basename "$d")"/SKILL.md
+  done
+else
+  echo "sot-comm needs jq, which is not on PATH: install it (§1), then run this again" >&2
+fi
 ```
 The fallback publishes each completed file by a sibling temporary and rename, without preserving source permissions; failure stops it. It stages the repository loader-and-parts form, and does not publish a whole bin generation atomically.
 Note this XDG `$HOME` may be **per-machine**, so its registry is local to the

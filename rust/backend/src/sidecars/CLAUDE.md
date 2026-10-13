@@ -17,8 +17,10 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   dies, keeps the doubling however long its precompile ran (`run_one_generation` returns when it answered).
 - A kernel request, its send included, ends within `KERNEL_REQUEST_TIMEOUT`; a running kernel's timeout says `the running kernel did not answer <op>`, a starting one's `kernel still starting`. A kernel that answers nothing for `KernelBounds::answer` (300 s, counted from the later of the oldest request's write and the kernel's last answer), or not its hello for `start` (1800 s), is ended with that reason and started again after the backoff.
 - Pluto and MathJax respawn on the next call after a death (`ensure_supervisor`).
-- A MathJax render answers within 10 s (`RENDER_BOUND`): one past it is a `mathjax_render_failed` error naming the
-  timeout, and its node child is ended, even mid-write, so the next render starts a fresh one (`MathJax::render`,
+- A MathJax render waits up to 60 s (`START_BOUND`) for its node child's ready line, which node writes once its
+  modules are loaded, and then answers within 10 s (`RENDER_BOUND`), so a cold start is not counted against a render;
+  renders that arrive during a start share it. Past either bound the render is a `mathjax_render_failed` error naming
+  it, and its node child is ended, even mid-write, so the next render starts a fresh one (`MathJax::render`,
   `supervisor_task`).
 - A Pluto open answers within `PLUTO_OPEN_BOUND` (30 s) or fails naming it, and the server that did not answer is ended, since its replies are matched oldest-first.
 - Pluto's proxy port is a supervisor-owned generation grant, published only after a loopback READY URL and released on every supervisor exit or cancellation before cleanup awaits. An old generation's release cannot erase its replacement's grant (`bound_pluto_port`).
@@ -70,7 +72,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ## Files
 - `mod.rs`: declares the eight modules and `WireRequest`.
 - `child_tmp.rs`: a Julia child's own temporary folder (`ChildTmp`), made before its spawn; `retire` ends the child and removes the folder after its reap.
-- `contract_tests.rs`: native REPL/MathJax private-Signal spawn, shutdown closeout and owned-child observations, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions.
+- `contract_tests.rs`: native REPL/MathJax private-Signal spawn, shutdown closeout and owned-child observations, a
+  node child slower to start than a render's bound, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions.
 - `julia.rs`: which julia binary runs (`resolve_bin`).
 - `kernel.rs`: the per-row kernel and its supervisor.
 - `repl/`: the per-row Julia REPL child.
@@ -88,8 +91,8 @@ for a sampler's life.
 - The kernel resolves julia at every generation (`julia_bin` in kernel.rs), Pluto at every start (`ensure_supervisor`)
   and the REPL at every spawn, and a resolver error fails the spawn; MathJax resolves node once, in `MathJax::new`.
 - A wire shape changes together with its other side: kernel NDJSON and `KERNEL_PROTOCOL_VERSION` with julia/kernel;
-  Pluto's `READY`/`OPEN`/`URL`/`ERR` lines with julia/pluto/start.jl; MathJax `{id, tex, display}` with
-  rust/backend/sidecars/mathjax/render.mjs.
+  Pluto's `READY`/`OPEN`/`URL`/`ERR` lines with julia/pluto/start.jl; MathJax's `{"ready":true}` line and
+  `{id, tex, display}` with rust/backend/sidecars/mathjax/render.mjs.
 - A supervisor uses the `Signal` it was given for spawn and `fired()`; it never selects a different shutdown signal inside its service loop.
 - A test that finds julia or node through the process environment (`contract_tests::executable`, `julia::resolve_bin`)
   runs its body in `isolated`, or holds `paths::ENV_TEST_LOCK` from that read through its spawn; the ignored Windows

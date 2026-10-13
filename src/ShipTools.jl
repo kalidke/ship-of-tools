@@ -18,10 +18,11 @@
 # agent's state in the state-nav is event-driven — instant and automatic, no
 # model cooperation. Wiring them touches every Claude account's
 # settings.json, but via NON-clobbering jq merges (_add_comm_hook!) that add
-# one entry per event only if absent and preserve every existing hook; if jq
-# is missing the exact JSON to add by hand is printed, and if a file won't
-# parse it is left alone untouched (a missing file is created fresh in the
-# install's own Claude dir only, since there is nothing there to preserve).
+# one entry per event only if absent and preserve every existing hook (the
+# install stops before them without jq); a file that won't parse is left
+# untouched and the exact JSON to add by hand is printed (a missing file is
+# created fresh in the install's own Claude dir only, since there is nothing
+# there to preserve).
 #
 
 module ShipTools

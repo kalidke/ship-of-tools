@@ -262,23 +262,27 @@ case_occupied_root_refused_derived_name() {
 
 # stub_windows_tools map|fail — what a Windows box has on PATH for a pipe:
 # endpoint: the stand-in bridge (carries stdin to the stub daemon's socket and its
-# replies back), cmd (answers the hello's account lookup) and cygpath. `map` acts as cygpath -m for this test (/x ->
-# C:/mapped/x; a C:/ path comes back unchanged); `fail` exits 1. Call it AFTER
+# replies back), a SYSTEMROOT whose System32/whoami.exe answers the hello's account lookup, and cygpath. `map` acts
+# as cygpath -m for this test (/x ->
+# C:/mapped/x; a C:/ path comes back unchanged; it takes the -m and -l the library passes); `fail` exits 1. Call it AFTER
 # start_stub_daemon: GUARD_PIPE_SOCKET names the current $SOCK.
 stub_windows_tools() {
     mkdir -p "$WORK/bin"
     case "$1" in
         map) cat > "$WORK/bin/cygpath" <<'EOF'
 #!/usr/bin/env bash
-[ "$1" = "-m" ] && shift
+while [ "${1#-}" != "$1" ]; do shift; done
 case "$1" in C:/*) printf '%s\n' "$1" ;; *) printf 'C:/mapped%s\n' "$1" ;; esac
 EOF
             ;;
         fail) printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/bin/cygpath" ;;
     esac
-    # `cmd //c "whoami /user /fo csv /nh"`, the hello's `os_user` on Windows (comm-lib-client.sh `_sot_os_user`).
-    printf '#!/bin/sh\nprintf '"'"'"fakehost\\\\fakeuser","S-1-5-21-1-2-3-1001"\\r\\n'"'"'\n' > "$WORK/bin/cmd"
-    chmod +x "$WORK/bin/cygpath" "$WORK/bin/cmd"
+    # Windows' `whoami /user /fo csv /nh` under SYSTEMROOT, the hello's `os_user` on Windows (comm-lib-client.sh
+    # `_sot_windows_sid`).
+    mkdir -p "$WORK/sysroot/System32"
+    printf '#!/bin/sh\nprintf '"'"'"fakehost\\\\fakeuser","S-1-5-21-1-2-3-1001"\\r\\n'"'"'\n' > "$WORK/sysroot/System32/whoami.exe"
+    chmod +x "$WORK/bin/cygpath" "$WORK/sysroot/System32/whoami.exe"
+    export SYSTEMROOT="$WORK/sysroot"
 }
 wire_root() { jq -r 'select(.op=="workspace.create") | .payload.project_root' "$REQLOG"; }
 

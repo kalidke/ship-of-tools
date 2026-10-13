@@ -7,12 +7,12 @@ source "$SCRIPT_DIR/comm-lib.sh"
 # before the context call, so a refused child touches nothing.
 _why="$(sot_require_agent)" || { echo "comm-poll: $_why" >&2; exit 1; }
 # jq parses every frame; flock and perl are the inbox's read and write lock on
-# Linux. Without one, mail is never seen and nothing said so: say it, here,
-# on stdout too (the session reads poll's stdout).
+# Linux. Without one, mail is never seen and nothing said so: say it, here, as
+# a FAILED line per missing tool, on stdout too (the session reads poll's stdout).
 _poll_tools="$(sot_mail_tools)"
 # shellcheck disable=SC2086
 if ! _poll_missing="$(sot_require_tools "poll for mail" $_poll_tools 2>&1)"; then
-    printf '%s\n' "$_poll_missing" | tee /dev/stderr
+    printf '%s\n' "$_poll_missing" | sed 's/^/FAILED: /' | tee /dev/stderr
     exit 1
 fi
 eval "$("$SCRIPT_DIR/comm-context.sh")"

@@ -128,8 +128,8 @@ Each settings.json edit is a **non-destructive jq merge** (via [`_add_comm_hook!
 it adds one entry for that event only if absent and preserves every other hook
 (repo-boundary-guard, tmux-send-guard, … are untouched). A missing settings.json is created fresh in one dir only, the create dir of [`_claude_settings_targets`], and
 never under `~/.claude-auth`; an
-unparseable one, or any file when `jq` is unavailable, is left alone and
-the exact JSON to add by hand is printed.
+unparseable one is left alone and the exact JSON to add by hand is printed.
+jq is on PATH here: `install_comm` stops before any adapter without it.
 """
 function _install_claude_hooks(claude_dir::AbstractString;
                               unhooked::Vector{String} = String[])
@@ -192,7 +192,7 @@ Idempotently add a Claude Code hook for `event` (`"UserPromptSubmit"`,
 `"Notification"`, `"Stop"`, …) running `~/.sot-comm/bin/<script>` to
 `settings`, preserving all existing config. Uses `jq` so the
 merge is structural, not a clobbering rewrite. Falls back to printing the
-exact JSON to add by hand when jq is missing or the file can't be parsed —
+exact JSON to add by hand when the file can't be parsed —
 never overwrites a file it could not safely read. Returns `false` when it
 warned and left the file as it was, `true` otherwise (already present, added).
 
@@ -211,10 +211,6 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString, settings
     mfield = isempty(m) ? "" : """ "matcher": "$m", """
     manual = """  "hooks": { "$event": [ {$mfield "hooks": [ { "type": "command", "command": "$cmd" } ] } ] }"""
 
-    if Sys.which("jq") === nothing
-        @warn "jq not found — add the comm $event hook to settings.json by hand" file = settings entry = manual
-        return false
-    end
     if !isfile(settings)
         mkpath(dirname(settings))
         write(settings, "{}")
@@ -301,12 +297,11 @@ idle). Commands are removed one at a time, a group is dropped only when left
 empty and an event only when it has no groups, so every non-comm hook is
 preserved, including a user's own script whose name merely resembles a comm one
 (only commands under `.sot-comm/bin/` are comm commands), even one sharing a group with a comm command. A current hook is left
-in place, so a re-run rewrites nothing. No-op if `jq` is missing or settings.json
-is absent/unparseable (a fresh `~/.claude` has nothing to prune yet either way).
-Returns `false` when the file could not be pruned (no `jq`, or an error), `true` otherwise.
+in place, so a re-run rewrites nothing. No-op if settings.json is
+absent/unparseable (a fresh `~/.claude` has nothing to prune yet either way).
+Returns `false` when the file could not be pruned (an error), `true` otherwise.
 """
 function _remove_stale_comm_hooks!(settings::AbstractString)
-    Sys.which("jq") === nothing && return false
     isfile(settings) || return true  # nothing to prune; the add creates it
     # Remove each comm command that is not current (see the docstring), one
     # by one; a group is dropped only when that leaves it empty, then any

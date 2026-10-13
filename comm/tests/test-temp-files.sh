@@ -47,11 +47,18 @@ SENDER2=(env SOT_COMM_HOME="$WORK/home2" SOT_COMM_SELF_FILE="$WORK/home2/self-se
 echo "test-temp-files.sh (messaging): $(bash --version | head -n 1)"
 
 # --- a value that carries the mark: ok, fail, kill -----------------------------------------------------------------
+# The value arrives whole on the route the library takes: the inbox where this box appends itself (Linux with flock(1),
+# the record matching), else the daemon's comm.file (macOS, which ships no flock(1), files every send through it).
 c1_check() {
-    jq -e --arg m "$TF_SENT" 'select(.msg == $m)' "$SOT_COMM_HOME/inbox/t-peer.jsonl" > /dev/null \
-        || { echo "    the inbox holds no line whose msg is the value"; return 1; }
+    if [ -n "$(bash -c 'source "$1"; _sot_inbox_lock_ours "$2"' _ "$SCRIPTS_DIR/comm-lib.sh" "$SOT_COMM_HOME/inbox")" ]; then
+        jq -e --arg m "$TF_SENT" 'select(.msg == $m)' "$SOT_COMM_HOME/inbox/t-peer.jsonl" > /dev/null \
+            || { echo "    the inbox holds no line whose msg is the value"; return 1; }
+    else
+        jq -e --arg m "$TF_SENT" 'select(.to == "t-peer" and .text == $m)' "$TF_DIR/filed.jsonl" > /dev/null \
+            || { echo "    the daemon was filed no line whose text is the value"; return 1; }
+    fi
 }
-for p in ok fail kill; do TF_CHECK=c1_check tf_row "C1 comm-send (local append)" "$p" "${SENDER[@]}" "$SCRIPTS_DIR/comm-send.sh" @t-peer "$TF_SENT"; done
+for p in ok fail kill; do TF_CHECK=c1_check tf_row "C1 comm-send (its own route)" "$p" "${SENDER[@]}" "$SCRIPTS_DIR/comm-send.sh" @t-peer "$TF_SENT"; done
 
 tf_table '{"comm.file":{"ok":true}}'
 for p in ok fail kill; do tf_row "C2 comm-relay send (the filing)" "$p" "${SENDER[@]}" "$SCRIPTS_DIR/comm-relay.sh" send @t-stranger "$TF_SENT"; done

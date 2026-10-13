@@ -285,22 +285,35 @@ fn setup_and_read_failures_have_distinct_captured_phases() {
     }
 }
 
+/// The step's one timeout, at its original deadline: its read waited the time left and nothing came
+/// (`phase=read result=timeout`), or the time was already spent when an attempt began, so the attempt ended before
+/// any I/O (`phase=deadline.remaining result=timeout`). Which of the two a run shows is the runner's scheduling.
 pub(super) fn check_timeout(capture: &Captured, test: &str, step: &str) {
     let lines = phase_lines(capture, test, step);
-    let setup = lines
-        .iter()
-        .position(|l| l.contains("phase=deadline.setup result=ok "))
-        .expect("successful timeout setup missing");
-    let begin = lines
-        .iter()
-        .position(|l| l.contains("phase=read result=begin "))
-        .expect("read entry missing");
     let end = lines
         .iter()
-        .position(|l| l.contains("phase=read result=timeout "))
+        .position(|l| {
+            l.contains("phase=read result=timeout ") || l.contains("phase=deadline.remaining result=timeout ")
+        })
         .expect("read timeout phase missing");
-    assert!(setup < begin && begin < end, "read phase order changed");
-    assert!(lines[end].contains("kind=WouldBlock ") || lines[end].contains("kind=TimedOut "));
+    if lines[end].contains("phase=read ") {
+        let setup = lines
+            .iter()
+            .position(|l| l.contains("phase=deadline.setup result=ok "))
+            .expect("successful timeout setup missing");
+        let begin = lines
+            .iter()
+            .position(|l| l.contains("phase=read result=begin "))
+            .expect("read entry missing");
+        assert!(setup < begin && begin < end, "read phase order changed");
+        assert!(lines[end].contains("kind=WouldBlock ") || lines[end].contains("kind=TimedOut "));
+    } else {
+        assert!(
+            lines[end].contains("kind=TimedOut ") && lines[end].ends_with("reason=absolute deadline expired before I/O"),
+            "{}",
+            lines[end]
+        );
+    }
     assert_eq!(
         capture
             .text
@@ -347,6 +360,8 @@ fn real_reads(test: &str) {
     assert_eq!(wait.deadline, deadline);
     let (_root, server, mut client, conn, _id) = diagnostics::server(test);
     server.send(conn, b"p".to_vec(), Some(1)).unwrap();
+    // The server's writer thread puts the byte on the socket in its own time; the step's clock starts once it is there.
+    readable_within(&client, TIMEOUT).expect("setup: the server's byte reaches the socket");
     let wait = WaitContext::new(
         test,
         "partial.timeout",
@@ -361,6 +376,11 @@ fn real_reads(test: &str) {
         1
     );
     assert_eq!(byte, *b"p");
+    if std::env::var("SOT_TEST_SOCKET_HISTORY").as_deref() == Ok("late") {
+        // A runner that runs this thread again only after the step's time is spent: the next read begins past its
+        // deadline.
+        wait.pause(Duration::from_millis(200));
+    }
     wait.pause(Duration::from_millis(50));
     let error = wait
         .read(Some(&server), &mut client, &mut byte)
@@ -383,26 +403,38 @@ fn real_reads_preserve_eof_data_and_original_deadline() {
     if child_role(test) {
         return real_reads(test);
     }
-    let captured = capture(test, sot_log::test_isolated::ISOLATION_TIMEOUT, None);
-    assert!(captured
-        .text
-        .contains("read-preservation data=xy eof=0 partial=p deadline=original bodies=1"));
-    check_timeout(&captured, test, "partial.timeout");
-    let lines = phase_lines(&captured, test, "data.eof");
-    assert!(lines
-        .iter()
-        .any(|l| l.contains("phase=read result=ok bytes=0 ")));
-    assert!(captured.text.contains("transport-progress snapshot "));
-    assert_eq!(
-        captured
+    // "late": the step's thread runs again only after its time is spent, as on a loaded runner.
+    for variant in ["ordinary", "late"] {
+        let captured = capture_variant(test, sot_log::test_isolated::ISOLATION_TIMEOUT, None, variant);
+        assert!(captured
             .text
-            .lines()
-            .filter(|l| l.starts_with("socket-test ")
-                && l.contains("step=data.eof ")
-                && l.ends_with("result=ok"))
-            .count(),
-        1
-    );
+            .contains("read-preservation data=xy eof=0 partial=p deadline=original bodies=1"));
+        if variant == "late" {
+            assert!(
+                phase_lines(&captured, test, "partial.timeout")
+                    .iter()
+                    .any(|l| l.contains("phase=deadline.remaining result=timeout ")),
+                "setup: the late read began before its deadline"
+            );
+        }
+        check_timeout(&captured, test, "partial.timeout");
+        let lines = phase_lines(&captured, test, "data.eof");
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("phase=read result=ok bytes=0 ")));
+        assert!(captured.text.contains("transport-progress snapshot "));
+        assert_eq!(
+            captured
+                .text
+                .lines()
+                .filter(|l| l.starts_with("socket-test ")
+                    && l.contains("step=data.eof ")
+                    && l.ends_with("result=ok"))
+                .count(),
+            1
+        );
+        eprintln!("read-preservation-proof variant={variant}");
+    }
 }
 
 pub(super) fn check_snapshot(captured: &Captured) {

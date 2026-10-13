@@ -27,8 +27,8 @@ STUBEOF
     printf '#!/bin/sh\nprintf "loginctl %%s\\n" "$*" >> "%s/log"\n' "$d" > "$d/stubs/loginctl"
     chmod +x "$d/prefix/bin/sotd" "$d/stubs/systemctl" "$d/stubs/loginctl"
 }
-# install.sh's tools: the library's, and the archive tools it unpacks a release with.
-INSTALL_TOOLS="$WORK/install-tools"; mk_tools "$INSTALL_TOOLS" tar gzip tr
+# install.sh's tools: the library's, the archive tools it unpacks a release with, and jq, which its preflight requires.
+INSTALL_TOOLS="$WORK/install-tools"; mk_tools "$INSTALL_TOOLS" tar gzip tr jq
 # The line number of the first log line equal to <line>, or 0.
 at() { grep -n -x -F -- "$2" "$1/log" | head -1 | cut -d: -f1 || true; }
 PIN_LINE() { printf 'sotd topology pin --dir %s/home/.config/systemd/user' "$1"; }
@@ -188,6 +188,19 @@ check "the shared install is unchanged" "$(cat "$d/before")" "$(snapshot "$d")"
 d="$WORK/noexec"; rc=0; out="$(shared_install_run "$d" "$me daemon" 644 --be-only)" || rc=$?
 check "an unpacked sotd that cannot run stops the install" "1" "$rc"
 check "it names TMPDIR" "1" "$(says "$out" 'the unpacked sotd cannot run from .*noexec')"
+check "the install is unchanged" "$(cat "$d/before")" "$(snapshot "$d")"
+
+# ---------------------------------------------------------------------------
+case_start "an_install_without_jq_stops_before_it_downloads_or_changes_anything"
+# The same run with jq off install.sh's PATH: the preflight names the command that installs jq on this OS, and no curl
+# call is made and nothing under the prefix or ~/.local changes.
+NOJQ_TOOLS="$WORK/install-tools-nojq"; mk_tools "$NOJQ_TOOLS" tar gzip tr
+case "$(uname -s)" in Darwin) jq_install="brew install jq" ;; *) jq_install="sudo apt-get install jq" ;; esac
+d="$WORK/nojq"; rc=0; out="$(INSTALL_TOOLS="$NOJQ_TOOLS" shared_install_run "$d" "$me daemon" 755 --be-only)" || rc=$?
+check "an install without jq stops" "1" "$rc"
+check "its one jq line names the command that installs it" "1" \
+    "$(says "$out" "sot-comm needs jq, which is not on PATH: install it with .$jq_install., then run this installer again")"
+check "it downloads nothing" "0" "$(cat "$d/net.log" 2>/dev/null | grep -c '^curl ' || true)"
 check "the install is unchanged" "$(cat "$d/before")" "$(snapshot "$d")"
 
 # ---------------------------------------------------------------------------

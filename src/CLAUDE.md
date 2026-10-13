@@ -41,6 +41,8 @@ scripts/CLAUDE.md.
   `_install_launchers`).
 - A move under comm/ edits only comm/bin-folders.txt and src/sources.jl, never src/ code or test/.
 - Remove `VERSION` first and write it last (`install_comm`).
+- `install_comm` checks jq before anything else and stops without it, changing nothing, with one line naming the
+  command that installs it (`_jq_install_command`); everything after, the hook merge included, may assume jq.
 - `install_comm` creates a missing comm folder 0700 and never changes an existing one's mode; making the comm folder
   private is `ensure_home`'s (comm/lib).
 - Never drop a hook that is not ours, and never create a settings.json under ~/.claude-auth

@@ -39,9 +39,15 @@ comm/bin-folders.txt into `\$SOT_COMM_HOME/bin` (default `~/.sot-comm/bin`),
 each part inside the file that sources it (`_comm_bin_text`),
 whatever `clis`, and installs the adapter for each CLI in `clis`
 (`:claude` skills/hooks, `:codex` skills/hooks/plugin). Idempotent — safe to
-re-run to update an existing install.
+re-run to update an existing install. Without jq on PATH it stops before it
+changes anything, with one line naming the command that installs jq
+(`_jq_install_command`).
 """
 function install_comm(; clis = [:claude, :codex])
+    # jq is the comm scripts' JSON reader and writer: without it no send or poll works. The install stops here, so an
+    # earlier install and its stamp stay as they were (scripts/install.sh's preflight stops the same way).
+    Sys.which("jq") === nothing && error("sot-comm needs jq, which is not on PATH: install it with " *
+                                         "`$(_jq_install_command())`, then run ShipTools.update_comm() again")
     bin = joinpath(comm_home(), "bin")
     mkpath(comm_home(); mode = 0o700)
     mkpath(bin)
@@ -92,6 +98,16 @@ function install_comm(; clis = [:claude, :codex])
     @info "Next: in your session run  ~/.sot-comm/bin/comm-join.sh --name <handle>  (or use the /sot-comm skill)"
     return nothing
 end
+
+"""
+    _jq_install_command(kernel = Sys.KERNEL)
+
+The command that installs jq on the OS `kernel` names (`Sys.KERNEL`): winget on Windows, Homebrew on macOS, apt
+elsewhere. `install_comm` names it when it stops without jq; scripts/install.sh names the macOS and Linux ones.
+"""
+_jq_install_command(kernel::Symbol = Sys.KERNEL) =
+    Sys.iswindows(kernel) ? "winget install jqlang.jq" :
+    Sys.isapple(kernel) ? "brew install jq" : "sudo apt-get install jq"
 
 """
     update_comm(; clis = [:claude, :codex])

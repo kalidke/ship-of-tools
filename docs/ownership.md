@@ -206,7 +206,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | kernel stdio ops (`kernel.hello`, `file.preview`, `file.parse`, `project.scan`, `markdown.tokenize`) | wire (stdio) | sidecars | `julia/kernel/src/ShipToolsKernel.jl`; `julia/kernel/src/preview.jl`; `julia/kernel/src/project_scan.jl`; `julia/kernel/src/tokenize.jl` |
 | REPL stdio frames, `repl.ready` | wire (stdio) | sidecars | `julia/repl/src/ShipToolsRepl.jl`; `julia/repl/src/frames.jl` |
 | Pluto `READY`/`OPEN`/`URL`/`ERR` lines | wire (stdio) | sidecars | `julia/pluto/start.jl` |
-| MathJax `{id, tex, display}` | wire (stdio) | sidecars | `rust/backend/sidecars/mathjax/render.mjs` |
+| MathJax `{"ready":true}`, then `{id, tex, display}` | wire (stdio) | sidecars | `rust/backend/sidecars/mathjax/render.mjs` |
 | a child's output read as lines: the bytes up to each `\n`, decoded lossily, so no byte a child writes ends its reader; the strict line readers are refused | rule | wire | `rust/protocol/src/child_lines.rs` `ChildLines`, `blocking_child_lines`; `rust/clippy.toml` (child-output group) |
 | plugin ABI (`FileType`, `matches`, `preview`, `file_type_for`) | ABI | sidecars | `core/src/ConceptExplorerCore.jl` `FileType`, `file_type_for` |
 | core's Julia `TreeNode` (never constructed outside core's tests; not the wire's `TreeNode`) | ABI | sidecars | `core/src/ConceptExplorerCore.jl` `TreeNode` |

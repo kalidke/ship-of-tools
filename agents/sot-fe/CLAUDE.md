@@ -25,5 +25,8 @@ concept.
 - `--timeout` is validated once, at flag parse.
 - Free text reaches jq on stdin, never as an argument and never through a temporary file.
 - An unknown flag is an error, never a positional.
+- An absolute path a verb sends relative goes through `sot_relative_to` (comm-lib-client.sh): `preview` and `reveal`
+  against git's root, `sot-nav.sh` against `SOT_WORKSPACE_ROOT`. A path a verb sends the daemon to open (`docs`,
+  `repl run`) goes through `sot_daemon_path`.
 - A part defines functions only and is sourced before the dispatch runs; a new verb's function goes in the part of its
   concept, and a new part gets a `source "$SCRIPT_DIR/<part>"` line in the entry, the form the installer inlines.

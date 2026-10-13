@@ -59,6 +59,7 @@ case_a_frozen_holder_makes_the_send_wait_then_fail() {
 # The default wait (no SOT_INBOX_LOCK_WAIT_SECS) is 2 s: a frozen holder makes the send fail after it, inside decision
 # 0031's 5 s, saying so.
 case_the_default_wait_is_two_seconds() {
+    linux_only "the default wait is 2 s: a frozen holder makes the send fail inside 5 s, saying so" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     start_holder 'kill -STOP $$' || { echo "  holder never took the lock"; return 1; }
     await stopped "$HOLDER" || { echo "  the holder never stopped"; kill -9 "$HOLDER"; return 1; }

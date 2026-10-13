@@ -9,7 +9,7 @@ messaging; charter: comm/CLAUDE.md.
 ## Files
 - `comm-lib.sh`: the loader; sources the seven parts below, in this order, and holds nothing else
 - `comm-lib-base.sh`: the platform test, the comm folder's paths (`COMM_HOME`, `REGISTRY`, the lock path), the clock, tool checks, the command bound (`sot_bounded`), jq and host helpers, the cleanup-trap helpers (`sot_cleanup_signals`, `sot_end_by_signal`), ages, and `COMM_LIVE_SECS` (how old a `last_seen` may be and still be live)
-- `comm-lib-client.sh`: the shell client of the daemon's wire: endpoints, the ssh bridge, the hello frame, `_sot_os_user` (this shell's OS account, on Windows the SID `_sot_windows_sid` reads), `sot_oneshot_request`, pty input and screen
+- `comm-lib-client.sh`: the shell client of the daemon's wire: endpoints, the ssh bridge, the hello frame, `_sot_os_user` (this shell's OS account, on Windows the SID `_sot_windows_sid` reads), `sot_oneshot_request`, pty input and screen, and a path's spellings (`sot_native_path`, `sot_relative_to`, `sot_same_root`, `sot_daemon_path`)
 - `comm-lib-registry-lock.sh`: the registry lock: `with_lock` and the lock record's take, judge and fail steps
 - `comm-lib-registry.sh`: the registry file: `ensure_home`, the writers, the reads, a row's status and `sot_heartbeat_fresh` (is a `last_seen` live)
 - `comm-lib-inbox.sh`: the inbox append and its lock, `sot_comm_file`, the read cursor, the line counts and `sot_unread` (the unread count)
@@ -66,7 +66,15 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   with `jq -n` and `input`, a registry write's with `registry_replace --text`; never as `jq --arg` and never through a
   temporary file. `sot_jq_rawfile` has no caller in the tree; it stays for the previous release's scripts during an
   install.
-- jq is a requirement of the shell client. A frame builder (`sot_json_escape`, `sot_hello_frame`, `sot_pty_input`, `sot_pty_screen`) either prints its one result and returns 0, or prints nothing, says `jq is missing` on stderr (`sot_require_tools`) and returns nonzero, before any connection; the client has no no-jq fallback.
+- jq is a requirement of the shell client. A frame builder (`sot_json_escape`, `sot_hello_frame`, `sot_pty_input`, `sot_pty_screen`) either prints its one result and returns 0, or prints nothing, says `jq is missing` on stderr (`sot_require_tools`) and returns nonzero, before any connection; the client has no no-jq fallback. The registry's read and write name a missing jq the same way (`sot_registry_read`, and `registry_replace` in its FAILED line), never as an unreadable registry.
+- A path is made relative to git's or a daemon's root only by `sot_relative_to`, a registry or self-file root is
+  compared with another only by `sot_same_root`, and a path is put in Windows' spelling only by `sot_native_path`, the
+  library's one cygpath conversion (`cygpath -m -l`; `sot_daemon_path`, the spelling of every path a script sends a
+  daemon inside a payload, where Git Bash converts nothing, uses it for a `pipe:` daemon): on Windows git
+  prints `C:/...` with long names (and `realpath` keeps it), a native daemon `C:\...`, and the shell `/c/...` or
+  `/tmp/...`, whose folder can carry a short 8.3 name.
+- A Windows program Git Bash also ships (`whoami`) is called by full path under `SYSTEMROOT`: by its bare name, Git Bash
+  (and a `cmd` started from it) runs Git's coreutils one (`_sot_windows_sid`).
 - A rule written in both shell and Rust changes in both in one commit (the lock record, the cursor, the lock identity, the unread count, the heartbeat).
 - The host piece of a derived handle is `_sot_handle_host` (sanitized to 12, plus a digest of the raw host when that changed it): `sot_derive_handle` and ccx's default `<repo>-cx-<host>` both build it, so a Codex default is always a name `workspace.create` accepts. ccx sources this library in a subshell (it sets `umask 077`) and stops the launch when the derivation fails.
 - HOST, registry host facts and unpinned self-slot keys use sot_host, the declared-host twin. HANDLE_HOST is the raw host component (`sot_raw_host`: raw `hostname -s`, case kept, a non-empty `SOT_COMM_TEST_HOST` first) used only for derived handles and validated legacy-slot migration; an explicit self-file or name pin is kept verbatim. Context and despawn format slots through _sot_self_slot. Despawn cleans the admitted target daemon's slot only after confirmed destroy.

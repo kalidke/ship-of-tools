@@ -297,17 +297,14 @@ case "$CMD" in
         # (string prefix) — NOT `git -C <dir>` / realpath on the file — so a file
         # under a symlinked dir (e.g. data/results/myproject -> external storage) keeps its
         # in-repo relative path instead of resolving out to the external storage root.
-        case "$PATH_ARG" in
-            /*)
-                _repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
-                if [ -n "$_repo_root" ] && [ "$PATH_ARG" != "${PATH_ARG#"$_repo_root"/}" ]; then
-                    PATH_ARG="${PATH_ARG#"$_repo_root"/}"
-                else
-                    echo "ERROR: '$PATH_ARG' is absolute and not under the current repo (${_repo_root:-<not in a repo>}). Pass a path relative to the workspace root — the file nav can only show files inside the repo." >&2
-                    exit 1
-                fi
-                ;;
-        esac
+        # On Windows git prints its root as C:/... and the shell spells a path /c/... or
+        # /tmp/...: sot_relative_to (comm-lib-client.sh) compares them in one spelling.
+        _repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+        if ! _rel="$(sot_relative_to "$_repo_root" "$PATH_ARG")"; then
+            echo "ERROR: '$PATH_ARG' is absolute and not under the current repo (${_repo_root:-<not in a repo>}). Pass a path relative to the workspace root — the file nav can only show files inside the repo." >&2
+            exit 1
+        fi
+        PATH_ARG="$_rel"
         ARGS="$(jq -nc --arg w "$WS" --arg p "$PATH_ARG" '{workspace:$w, path:$p}')"
         [ "$URGENT" = true ] && ARGS="$(printf '%s' "$ARGS" | jq -c '. + {urgent:true}')"
         # --roi x,y,w,h: aim the FE viewport at a SOURCE-IMAGE-PIXEL rect (ADR-0022
@@ -385,6 +382,12 @@ case "$CMD" in
             [A-Za-z]:\\*) : ;;
             *)  echo "ERROR: sot-fe docs needs an ABSOLUTE backend path -- /unix/style or C:\windows\style (docs.open stats it raw, not a repo-relative node_id)." >&2; exit 1 ;;
         esac
+        # The daemon stats the path as sent, inside a JSON payload, where Git Bash converts
+        # nothing: a pipe: daemon, a native Windows process, gets its own spelling
+        # (sot_daemon_path); any other daemon gets the path as written.
+        ENDPOINT="$(resolve_endpoint)" || { echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path, ssh:target[/host], or (Windows) pipe:name (or \$SOT_FE_ENDPOINT)." >&2; exit 1; }
+        PATH_ARG="$(sot_daemon_path "$PATH_ARG")" \
+            || { echo "ERROR: cannot give the path in the spelling of the daemon at $ENDPOINT (cygpath failed)" >&2; exit 1; }
         # PATH_ARG is absolute here (the case above enforced it): it reaches jq on stdin
         # (comm-lib-base.sh, free text and jq).
         ARGS="$(printf '%s' "$PATH_ARG" | jq -Rsc --arg w "$WS" '{workspace:$w, path:.}')"
@@ -437,6 +440,11 @@ case "$CMD" in
             run)
                 WS="${POS[1]:-}"; FILE="${POS[2]:-}"
                 [ -n "$WS" ] && [ -n "$FILE" ] || { echo "usage: sot-fe repl run <workspace> <path> [--fresh] [--timeout <s>]" >&2; exit 1; }
+                # The REPL opens the file as sent, inside a JSON payload: a pipe: daemon gets
+                # its own spelling (sot_daemon_path), any other the path as written.
+                ENDPOINT="$(resolve_endpoint)" || { echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path, ssh:target[/host], or (Windows) pipe:name (or \$SOT_FE_ENDPOINT)." >&2; exit 1; }
+                FILE="$(sot_daemon_path "$FILE")" \
+                    || { echo "ERROR: cannot give the path in the spelling of the daemon at $ENDPOINT (cygpath failed)" >&2; exit 1; }
                 if [ "$FRESH" = true ]; then
                     # Bounce the persistent REPL into <path>'s project, then include.
                     send_repl_run_file "$FILE" "$WS"
