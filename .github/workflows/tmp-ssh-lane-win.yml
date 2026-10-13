@@ -1,0 +1,30 @@
+# TEMPORARY, lane/ssh-burst's Windows leg on a hosted runner; never merged. Pushed alone on tmp/ci-ssh-lane-win (the lane's
+# head), read, then the branch is deleted. Nothing here pushes, publishes or reads a secret. The question is in the
+# lead's item file SSH-LANE-WIN.md.
+name: tmp ssh-lane-win
+on:
+  push:
+    branches: [tmp/ci-ssh-lane-win]
+jobs:
+  tmp-ssh-lane-win:
+    name: tmp lane/ssh-burst, protocol lib and attach_client (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: sot-protocol's lib tests (SSH-BURST)
+        run: cargo test -p sot-protocol --lib --locked
+      - name: sot-log's attach_client tests (LOGIN-CAP)
+        if: always()
+        shell: bash
+        run: |
+          cargo test -p sot-log --lib --locked -- attach_client:: 2>&1 | tee "$RUNNER_TEMP/ac.log"
+          grep -E 'parked_rows_open_no_login_while_the_user_steps_through_them|test result' "$RUNNER_TEMP/ac.log"
+          grep -q 'parked_rows_open_no_login_while_the_user_steps_through_them ... ok' "$RUNNER_TEMP/ac.log"
