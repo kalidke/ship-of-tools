@@ -9,7 +9,8 @@
 #                            with the stand-in daemon's socket and carries `stdio-bridge` to it (guard_bridge_stub)
 #   tf_daemon_start          the stand-in daemon on TF_SOCK; every request op is answered from the table
 #   tf_table JSON            the table: an op's payload, or "silent" (no answer; the request touches TF_DIR/silent);
-#                            an op the table does not name is answered {"ok":true}
+#                            an op the table does not name is answered {"ok":true}; every comm.file request's payload
+#                            is kept, a line each, in TF_DIR/filed.jsonl
 #   tf_row ROW PATH CMD...   one row: CMD with the jq stand-in in PATH's mode, then nothing may be left; on path ok,
 #                            the function TF_CHECK names (when set) checks the value arrived whole; with TF_BEFORE,
 #                            the function it names runs once the daemon sees a silent op
@@ -96,6 +97,7 @@ _tf_write_daemon() {
 # The stand-in daemon of lib-temp-files.sh: SOCKET TABLE SILENT READY.
 import json, socket, sys, threading
 sock_path, table_path, silent_path, ready_path = sys.argv[1:5]
+filed_path = table_path.rsplit("/", 1)[0] + "/filed.jsonl"
 srv = socket.socket(socket.AF_UNIX)
 srv.bind(sock_path)
 srv.listen(64)
@@ -111,6 +113,9 @@ def serve(conn):
             if not isinstance(req, dict) or req.get("kind") != "req":
                 continue
             op = req.get("op")
+            if op == "comm.file":
+                with open(filed_path, "a") as f:
+                    f.write(json.dumps(req.get("payload")) + "\n")
             try:
                 with open(table_path) as t:
                     table = json.load(t)
