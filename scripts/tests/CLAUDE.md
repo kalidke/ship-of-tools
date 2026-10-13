@@ -262,11 +262,11 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   --test-threads=1`, the Julia cases on the gate's `julia` (`SOT_JULIA_BIN`), after preparing Pluto's environment in the
   gate's depot as rust.yml's job does (`fixtures/warm_pluto.jl`, its log `<logdir>/lifetime-warm.log`; a failure there
   is the job's result) and handing the cases its manifest (`SOT_L2_PLUTO_MANIFEST`); the harness's end is 3600 s, not a
-  job's 1200, since it took 963-1035 s inside a whole gate on a shared test host. Two parts go unchecked there: no user
-  manager answers in the gate's container, so `a_service_manager_counts_int_and_term_as_a_clean_stop` prints `SKIPPED`
-  and passes (it runs by name under `--user-manager`, `rust/backend/tests/CLAUDE.md`), and where the jobs' PATH (cargo,
-  node, /usr/bin, /bin) holds no `quarto`, the done test's Quarto half prints NOT CHECKED (the hosted job checks it). A
-  failed build leaves the job's result `unrun`, a failure.
+  job's 1200, since it took 963 s inside a whole gate and 1035 s alone, on a shared test host. Two parts go unchecked
+  there: no user manager answers in the gate's container, so `a_service_manager_counts_int_and_term_as_a_clean_stop`
+  prints `SKIPPED` and passes (it runs by name under `--user-manager`, `rust/backend/tests/CLAUDE.md`), and where the
+  jobs' PATH (cargo, node, /usr/bin, /bin) holds no `quarto`, the done test's Quarto half prints NOT CHECKED (the hosted
+  job checks it). A failed build leaves the job's result `unrun`, a failure.
 - `rc-gate.sh` needs `node` on its PATH, as it needs `julia`, and gives its jobs node alone, through a link in `<logdir>/bin`, and `npm ci` done in `rust/backend/sidecars/mathjax` (the
   sotd contract tests and test-agent-layers use them); it refuses, exit 2, rather than install into the checkout it
   judges. A Rust test binary's stderr goes to `<key>.stderr` beside its log, so the body check reads stdout only.

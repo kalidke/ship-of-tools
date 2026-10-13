@@ -35,8 +35,8 @@
 SELF=$(readlink -f "$0")
 source "$(dirname "$SELF")/lib-test-body.sh" || exit 2
 TO=(timeout -k 10 1200)
-# The lifetime harness runs every case one at a time, 963-1035 s inside a whole gate on a shared test host: an end of its own, inside
-# the 75 min rust.yml gives its job.
+# The lifetime harness runs every case one at a time: 963 s inside a whole gate and 1035 s alone, on a shared test
+# host. So it has an end of its own, inside the 75 min rust.yml gives its job.
 LTO=(timeout -k 10 3600)
 SPLIT=(capsule_workspaces comm_wake lane_bridge fe_client)
 JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/video-file julia/sotlog)
