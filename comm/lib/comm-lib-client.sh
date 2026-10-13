@@ -98,9 +98,9 @@ _sot_emit_endpoint() {
 }
 
 # _sot_live_sotd_exes — the binary of each process of THIS account `pgrep -u <uid> -af sotd` lists whose
-# /proc/<pid>/exe is named `sotd` or `sotd.exe`, one per line, in pgrep's order;
-# nothing on Windows (no pgrep on a stock git-bash PATH) or where /proc cannot
-# be read. pgrep matches any command line that mentions sotd (`tail -f
+# binary (Linux: /proc/<pid>/exe; macOS, which has no /proc: `ps -o comm=`, the absolute path it was started from)
+# is named `sotd` or `sotd.exe`, one per line, in pgrep's order; nothing on Windows (no pgrep on a stock git-bash
+# PATH). pgrep matches any command line that mentions sotd (`tail -f
 # .../sotd.log`, `gdb sotd`, `watch ...`), and both callers below would run or
 # return such a process's binary: only a binary named sotd is ever listed.
 # Another account's sotd is never this account's daemon (ADR 0049, User isolation).
@@ -110,7 +110,12 @@ _sot_live_sotd_exes() {
     while IFS= read -r line; do
         pid="${line%% *}"
         case "$pid" in ''|*[!0-9]*) continue ;; esac
-        exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
+        if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+            exe="$(ps -o comm= -p "$pid" 2>/dev/null)" || continue
+            case "$exe" in /*) ;; *) continue ;; esac
+        else
+            exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
+        fi
         [ -x "$exe" ] || continue
         case "${exe##*/}" in sotd|sotd.exe) printf '%s\n' "$exe" ;; esac
     done < <(pgrep -u "$(id -u)" -af 'sotd' 2>/dev/null || true)

@@ -270,7 +270,11 @@ EOF
 # =========================================================================
 
 # exe_is PID PATH — PID's executable image is PATH (a readable link alone is not: a child before its exec shows its wrapper's).
-exe_is() { [ "$(readlink "/proc/$1/exe" 2>/dev/null)" = "$2" ]; }
+# The binary of pid $1 is $2: /proc on Linux, `ps -o comm=` on macOS, as _sot_live_sotd_exes reads it.
+exe_is() {
+    if [ "$(uname -s)" = Darwin ]; then [ "$(ps -o comm= -p "$1" 2>/dev/null)" = "$2" ]
+    else [ "$(readlink "/proc/$1/exe" 2>/dev/null)" = "$2" ]; fi
+}
 
 case_ssh_bridge_third_arg_bounds_it_and_an_empty_one_stays_unbounded() {
     local dir
