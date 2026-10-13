@@ -252,8 +252,11 @@ a stream; the record keeps its colons.
   and one can remove the lock the other retook; this is very improbable. A lock
   whose record stays unreadable (a permission or I/O error) is never reclaimed,
   and its FAILED line says only that its record could not be read; it is
-  removed by hand. Where a box's two arms disagree about its comm home's mount
-  (no findmnt, stacked mounts), the arm that proves a death can be mid-reclaim
+  removed by hand. Where a box's two arms disagree about whether it proves a
+  death (no findmnt or stacked mounts; on macOS, a shell whose PATH finds a
+  date or ps that is not the system's, as Homebrew's coreutils gnubin puts
+  first, so it writes no proof while the daemon does), the arm that proves a
+  death can be mid-reclaim
   while a person, told by the other arm's line, removes the lock by hand; two
   writers need that removal and a new holder's link to land between the
   reclaimer's re-read and its unlink.

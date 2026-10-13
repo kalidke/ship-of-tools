@@ -54,7 +54,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   `test-*.sh` in `comm/tests` and `agents/tests` but the five that need peer hosts, and the four suites here that
   `checks-linux` runs. Prints `under-bash: PASS|FAIL` lines and exits with the count of FAIL lines, 2 on a wrong setup.
   Runs in the `rust.yml` job `bash32-linux` (GNU bash 3.2.57, every hermetic suite) and in `test` on macOS
-  (`/bin/bash` under the scripts, the suites that pass on macOS, run by Homebrew's bash, which the step installs).
+  (`/bin/bash` under the scripts, every hermetic suite, run by Homebrew's bash, which the step installs).
 - `in-container.sh`: `in-container.sh [--user-manager] UNIT -- CMD [ARG...]` runs CMD as the main process of the transient
   `systemd --user` service UNIT.service, the test container (Linux): a private empty `XDG_RUNTIME_DIR` and no
   `DBUS_SESSION_BUS_ADDRESS`, so every capsule row stays in its control group, and every process left in it is SIGKILLed

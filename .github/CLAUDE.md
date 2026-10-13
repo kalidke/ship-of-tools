@@ -14,7 +14,7 @@ scripts/CLAUDE.md.
 - `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `docs/tools/**`, `comm/**`, `agents/**`, `.github/wgl-depot.sh` and the file
   itself) and dispatch. Jobs: `test` (build and test on windows and macos, after `npm ci` for the MathJax helper's modules; on windows the
   PowerShell 5.1 parse and the `scripts/tests/` `.ps1` suites; on macos "Comm and agents suites under /bin/bash 3.2",
-  `scripts/tests/under-bash.sh /bin/bash` over the hermetic suites that pass on macOS, run by Homebrew's bash, which the
+  `scripts/tests/under-bash.sh /bin/bash` over every hermetic suite, run by Homebrew's bash, which the
   step installs: the macOS image's only bash is /bin/bash 3.2), `test-linux` (the ubuntu build and test, one job per
   shard, named "build+test (ubuntu-latest, <shard>)": its `SHARDS` table names the test targets of the shards `outage`,
   `capsule`, `wake` and `sotd`, each target whole or split once as `X` and `--skip X`; the shard `rest` runs every other

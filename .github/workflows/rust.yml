@@ -491,8 +491,8 @@ jobs:
         run: bash comm/tests/test-heartbeat-ctx-wait.sh
 
       # comm/CLAUDE.md and scripts/CLAUDE.md promise the scripts run under bash 3.2, and macOS's /bin/bash is 3.2.57.
-      # under-bash.sh parses each shipped script with it, then runs these suites, the hermetic ones that pass on macOS,
-      # with /bin/bash first on PATH as `bash`, so every script they start gets 3.2. bash32-linux runs every one. The
+      # under-bash.sh parses each shipped script with it, then runs every hermetic suite, as bash32-linux does, with
+      # /bin/bash first on PATH as `bash`, so every script they start gets 3.2. The
       # suites' own code needs bash 4 or later, and the image's only bash is /bin/bash: Homebrew's runs them
       # (under-bash.sh refuses an older one).
       - name: Comm and agents suites under /bin/bash 3.2
@@ -502,22 +502,7 @@ jobs:
         working-directory: .
         run: |
           HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install bash
-          "$(brew --prefix bash)/bin/bash" scripts/tests/under-bash.sh /bin/bash -- \
-            comm/tests/test-agent-join.sh \
-            comm/tests/test-agent-layers.sh \
-            comm/tests/test-comm-matrix-verdict.sh \
-            comm/tests/test-comm-poll-cursor.sh \
-            comm/tests/test-comm-private.sh \
-            comm/tests/test-heartbeat-ctx-wait.sh \
-            comm/tests/test-rm-guard.sh \
-            comm/tests/test-stage-bin.sh \
-            comm/tests/test-status-floor.sh \
-            agents/tests/test-ccb-agent-exec.sh \
-            agents/tests/test-ccx-launch.sh \
-            agents/tests/test-crlf-gh-auth.sh \
-            agents/tests/test-sot-fe-reauth.sh \
-            agents/tests/test-sot-fe-version.sh \
-            scripts/tests/test-topology-plan.sh
+          "$(brew --prefix bash)/bin/bash" scripts/tests/under-bash.sh /bin/bash
 
   # The ubuntu build and test, one job per shard, so the slowest test binaries run side by side. SHARDS is the one table
   # of named shards, a row each: shard, target kind (test or bin), target name, then any libtest arguments. A target runs
