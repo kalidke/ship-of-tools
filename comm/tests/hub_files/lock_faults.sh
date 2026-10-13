@@ -254,6 +254,15 @@ case_the_home_guard_refuses_a_live_comm_home() {
     h="$(HOME="$t" bash -c '. "$1"; printf %s "$_GUARD_ACCT"' _ "$SCRIPT_DIR/lib-home-guard.sh")"
     [ -n "$h" ] || { echo "  sourcing recorded no account home"; return 1; }
     [ "$h" != "$t" ] || { echo "  the account home recorded is HOME's ('$h'), not the one the system records"; return 1; }
+    # Windows: a bash started with HOME already swapped gets that HOME from getpwnam, so the guard also records the
+    # account's profile folder from the registry, and a comm home under it is refused.
+    if command -v cygpath > /dev/null 2>&1; then
+        h="$(HOME="$t" bash -c '. "$1"; printf %s "$_GUARD_PROFILE"' _ "$SCRIPT_DIR/lib-home-guard.sh")"
+        case "$h" in /*) ;; *) echo "  the guard recorded no profile folder from the registry: '$h'"; return 1 ;; esac
+        guard_run "$t" "$h/.sot-comm/x"
+        [ "$GUARD_RC" -eq 2 ] && contains "$GUARD_OUT" FATAL \
+            || { echo "  the profile's comm home was not refused: rc $GUARD_RC, $GUARD_OUT"; return 1; }
+    fi
     if command -v getent >/dev/null 2>&1; then
         [ "$h" = "$(getent passwd "$(id -un)" | cut -d: -f6)" ] \
             || { echo "  the account home '$h' is not getent's"; return 1; }
@@ -278,15 +287,19 @@ case_the_home_guard_refuses_a_live_comm_home() {
             esac
         done
     fi
+    # What sourcing records under the stubbed `id`: the account home, then how many live homes it records besides the
+    # profile folder, which comes from the registry and not from the name (Windows records it whatever the name).
+    acct_record() {
+        PATH="$t/id-bin:$PATH" HOME="$t" SOT_COMM_HOME= bash -c '. "$1"; n=${#_GUARD_LIVE[@]}
+            [ -z "$_GUARD_PROFILE" ] || n=$((n - 1)); printf %s "$_GUARD_ACCT|$n"' _ "$SCRIPT_DIR/lib-home-guard.sh"
+    }
     printf '#!/bin/sh\necho "x\\$(touch %s/evaluated)"\n' "$t" > "$t/id-bin/id"
-    h="$(PATH="$t/id-bin:$PATH" HOME="$t" SOT_COMM_HOME= bash -c '. "$1"; printf %s "$_GUARD_ACCT|${#_GUARD_LIVE[@]}"' \
-        _ "$SCRIPT_DIR/lib-home-guard.sh")"
+    h="$(acct_record)"
     [ "$h" = "|1" ] && [ ! -e "$t/evaluated" ] || { echo "  an invalid name recorded an account home: $h"; return 1; }
     # a name that starts with a digit, or is - or all digits, is never `~name`
     for n in - 0 12; do
         printf '#!/bin/sh\necho %s\n' "$n" > "$t/id-bin/id"
-        h="$(PATH="$t/id-bin:$PATH" HOME="$t" SOT_COMM_HOME= bash -c '. "$1"; printf %s "$_GUARD_ACCT|${#_GUARD_LIVE[@]}"' \
-            _ "$SCRIPT_DIR/lib-home-guard.sh")"
+        h="$(acct_record)"
         [ "$h" = "|1" ] || { echo "  the name '$n' recorded an account home: $h"; return 1; }
     done
     h="$(SOT_COMM_NAME=n SOT_COMM_SELF_FILE=f SOT_WORKSPACE_ID=w SOT_SOCKET=s SOT_FE_ENDPOINT=e \

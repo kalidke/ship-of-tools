@@ -6,7 +6,9 @@
 # Sourcing records the live comm homes: $HOME/.sot-comm, the account's own
 # home as the system records it plus /.sot-comm (`~name` for `id -un`, which
 # reads getpwnam on every platform; a HOME swapped by env -i or by an earlier
-# guard is not the live folder; a name not starting [A-Za-z_] or outside [A-Za-z0-9._-] records none),
+# guard is not the live folder; a name not starting [A-Za-z_] or outside [A-Za-z0-9._-] records none), on Windows
+# also the account's profile folder plus /.sot-comm from the registry (Git Bash's getpwnam answers with a HOME set
+# before bash started, as the box harness sets it: `db_home: env windows …`, hosted run 38387089840),
 # and any inherited SOT_COMM_HOME. It then drops the host's comm identity and
 # its daemon route: SOT_COMM_HOME, SOT_COMM_NAME, SOT_COMM_SELF_FILE,
 # SOT_WORKSPACE_ID, SOT_SOCKET and every exported *_ENDPOINT, plus the host
@@ -66,6 +68,17 @@ case "$_GUARD_USER" in
     *) eval "_GUARD_ACCT=~$_GUARD_USER" ;;  # the name is checked: no shell syntax, and no ~-, ~+ or ~0 form
 esac
 case "$_GUARD_ACCT" in /*) _GUARD_LIVE+=("$_GUARD_ACCT/.sot-comm") ;; *) _GUARD_ACCT="" ;; esac
+# Windows: the profile folder is the account's ProfileImagePath, keyed by its SID, which Windows' own whoami gives (by
+# full path: Git Bash's whoami shadows it). Neither reads HOME or USERPROFILE.
+_GUARD_PROFILE=""
+if command -v cygpath > /dev/null 2>&1; then
+    _guard_sid="$(MSYS2_ARG_CONV_EXCL='*' "$(cygpath -u "${SYSTEMROOT:-C:\Windows}")/System32/whoami.exe" /user /fo csv /nh \
+        2>/dev/null | tr -d '\r' | sed -n 's/.*,"\(S-1-[0-9-]*\)"$/\1/p')"
+    _guard_pip="/proc/registry/HKEY_LOCAL_MACHINE/SOFTWARE/Microsoft/Windows NT/CurrentVersion/ProfileList/$_guard_sid/ProfileImagePath"
+    if [ -n "$_guard_sid" ] && [ -r "$_guard_pip" ]; then
+        _GUARD_PROFILE="$(cygpath -u "$(tr -d '\0' < "$_guard_pip")")" && _GUARD_LIVE+=("$_GUARD_PROFILE/.sot-comm")
+    fi
+fi
 [ -z "${SOT_COMM_HOME:-}" ] || _GUARD_LIVE+=("$SOT_COMM_HOME")
 unset SOT_COMM_HOME SOT_COMM_NAME SOT_COMM_SELF_FILE SOT_WORKSPACE_ID SOT_SOCKET CLAUDE_CODE_SESSION_ID
 for _guard_v in $(compgen -e); do
