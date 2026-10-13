@@ -62,6 +62,18 @@ tree_of() {
         [ "$t" != f ] || sha256_of "$p"
     done
 }
+# bsd_stat_date DIR — stand-ins for BSD's (macOS's) stat and date, on Linux: they refuse GNU's -c and -d, and answer
+# -f %m and -r through GNU's.
+bsd_stat_date() {
+    mkdir -p "$1"
+    printf '#!/bin/sh\n[ "$1" = -f ] && [ "$2" = %%m ] && exec %s -c %%Y "$3"\necho "stat: illegal option -- $1" >&2; exit 1\n' \
+        "$(command -v stat)" > "$1/stat"
+    printf '#!/bin/sh\ncase "$1" in -d) echo "date: illegal option -- d" >&2; exit 1 ;; -r) s="$2"; shift 2; exec %s -d "@$s" "$@" ;; esac\nexec %s "$@"\n' \
+        "$(command -v date)" "$(command -v date)" > "$1/date"
+    chmod +x "$1/stat" "$1/date"
+}
+# stale_line LINE — LINE with each printed time (YYYY-MM-DD HH:MM:SS) as D.
+stale_line() { printf '%s\n' "$1" | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}/D/g'; }
 # linux_check DESC EXPECTED ACTUAL — check on Linux; elsewhere a SKIP line. A systemd unit is Linux's: install.sh and
 # sot-apply.sh run systemctl, bounded by GNU timeout, only for a unit they own, which a Mac never has.
 linux_check() {

@@ -750,9 +750,9 @@ SD
 cat > "$d/stubs/ps" <<PS
 #!/bin/sh
 case "\$1" in
-    -u) cat "$d/ps-own" ;;
+    -u) cat "\${PS_OWN:-$d/ps-own}" ;;
     -eo) printf '111 /other/bin/sotd --project-root /other --label sot\n333 /x/bin/sotd --project-root /x --label sot\n222 /x/bin/sotd --project-root /x --label sot --socket $d/sot.sock\n' ;;
-    -p) echo 5 ;;
+    -p) case "\$*" in *etimes=*) echo 3600 ;; *) echo 01:00:00 ;; esac ;;
 esac
 PS
 # This account's processes as `ps -o pid=,comm=,args=` lists them. Before the daemon on exactly this socket: a process
@@ -771,12 +771,21 @@ python3 -c 'import socket,sys,time; s=socket.socket(socket.AF_UNIX); s.bind(sys.
 RPID=$!
 for _ in {1..100}; do [ -S "$d/sot.sock" ] && break; sleep 0.05; done
 [ -S "$d/sot.sock" ] || { echo 'FAIL restart socket fixture did not bind' >&2; kill "$RPID"; wait "$RPID" || true; exit 1; }
-restart_line="$(env -u SOT_SOCKET -u SOT_BACKEND_LABEL PATH="$d/stubs:$PATH" bash "$d/repo/scripts/restart-backend.sh" --check)" || true
+# restart-backend.sh --check's stdout, its stderr in $d/err; [PATH-FIRST] goes before the stubs.
+restart_check() { env -u SOT_SOCKET -u SOT_BACKEND_LABEL PATH="${1:+$1:}$d/stubs:$PATH" bash "$d/repo/scripts/restart-backend.sh" --check 2>"$d/err" || true; }
+restart_line="$(restart_check)"; restart_err="$(cat "$d/err")"
+# macOS's ps prints the program's path as its comm; Linux runs it again with BSD's stat and date, as macOS has them.
+sed -E 's#^([0-9]+) sotd #\1 /x/bin/sotd #' "$d/ps-own" > "$d/ps-path"; path_line="$(PS_OWN="$d/ps-path" restart_check)"
+bsd_out=""; [ "$(uname -s)" != Linux ] || { bsd_stat_date "$d/bsd"; bsd_out="$(stale_line "$(restart_check "$d/bsd")")|$(cat "$d/err")"; }
 # No daemon on this socket: the one whose label is exactly this one, never one whose label only begins with it.
 printf '555 sotd /x/bin/sotd --project-root /x --label sot-dev\n333 sotd /x/bin/sotd --project-root /x --label sot\n' > "$d/ps-own"
 label_line="$(env -u SOT_SOCKET -u SOT_BACKEND_LABEL PATH="$d/stubs:$PATH" bash "$d/repo/scripts/restart-backend.sh" --check)" || true
 kill "$RPID"; wait "$RPID" || true
 starts_with "restart judges this account's daemon on this socket" "running daemon pid 222 " "$restart_line"
+check "a binary newer than an hour-old daemon is STALE, both times printed, nothing on stderr" \
+    "running daemon pid 222 is STALE — started D, binary built D|" "$(stale_line "$restart_line")|$restart_err"
+[ "$(uname -s)" != Linux ] || check "the same with BSD's stat and date" "running daemon pid 222 is STALE — started D, binary built D|" "$bsd_out"
+starts_with "a comm that is the program's path (macOS's ps) names the same daemon" "running daemon pid 222 " "$path_line"
 starts_with "restart judges this account's daemon by its exact label" "running daemon pid 333 " "$label_line"
 
 if [ "$fails" -eq 0 ]; then
