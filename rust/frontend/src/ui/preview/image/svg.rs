@@ -135,6 +135,8 @@ fn one_paragraph_svg(bytes: &[u8]) -> Cow<'_, [u8]> {
 }
 
 /// `text` with each numeric character reference to one of `PARAGRAPH_SEPARATORS` (`&#x2029;`, `&#8233;`, …) a space.
+/// A reference is its digit run and the `;` right after it, so each character is read once (the window's thread runs
+/// this before usvg parses a file of any size) and a sign before the digits is no reference.
 fn separator_references_as_spaces(text: &str) -> Cow<'_, str> {
     if !text.contains("&#") {
         return Cow::Borrowed(text);
@@ -146,9 +148,10 @@ fn separator_references_as_spaces(text: &str) -> Cow<'_, str> {
             Some(hex) => (16, hex),
             None => (10, tail),
         };
-        let after = digits.find(';').and_then(|end| {
+        let end = digits.find(|c: char| !c.is_digit(radix)).unwrap_or(digits.len());
+        let after = digits[end..].strip_prefix(';').and_then(|after| {
             let c = u32::from_str_radix(&digits[..end], radix).ok().and_then(char::from_u32)?;
-            PARAGRAPH_SEPARATORS.contains(&c).then(|| &digits[end + 1..])
+            PARAGRAPH_SEPARATORS.contains(&c).then_some(after)
         });
         match after {
             Some(after) => {
@@ -190,6 +193,19 @@ mod tests {
                 _ => 0,
             })
             .sum()
+    }
+
+    /// A reference is read by its digit run alone, so the scan is linear: a megabyte of `&#` before one `;` (reading to
+    /// that far `;` from each `&#` made it quadratic, seconds on the window's thread) ends well within the bound, and a
+    /// sign before the digits is no reference.
+    #[test]
+    fn separator_references_are_read_in_one_pass() {
+        let long = format!("{};", "&#".repeat(512 * 1024));
+        let unchanged = sot_log::test_wait::within(std::time::Duration::from_secs(10), "a 1 MiB reference scan", move || {
+            *separator_references_as_spaces(&long) == *long
+        });
+        assert!(unchanged, "a run of `&#` with no separator in it changed");
+        assert_eq!(separator_references_as_spaces("AA&#x+2029;BB&#x2029;CC&#8233;DD&#x2029"), "AA&#x+2029;BB CC DD&#x2029");
     }
 
     /// An SVG's text in each generic family is drawn, on every platform: each names a family this machine holds.
