@@ -55,3 +55,21 @@ jobs:
           echo "w3h root tilde=$(tilde root) getent=$(getent passwd root 2>&1 | head -n 1)"
           rm -rf "$t"
           exit 0
+      - name: The account's home when a native parent swaps HOME and USERPROFILE, as the box harness does
+        if: always()
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          # Step 2 swapped HOME inside Git Bash, whose children inherit the account record from their parent; the box harness
+          # sets HOME and USERPROFILE in PowerShell and then starts bash, so bash's runtime reads them at its own start
+          # (db_home: env windows cygwin desc). This starts bash the harness's way, before and after the swap.
+          $s = Join-Path $env:RUNNER_TEMP 'w3n.sh'
+          $text = 'u="$(id -un)"; printf "HOME=%s tilde=%s guard=%s\n" "$HOME" "$(eval "printf %s ~$u")" "$(. comm/tests/lib-home-guard.sh; printf %s "$_GUARD_ACCT")"'
+          [IO.File]::WriteAllText($s, $text + "`n")
+          $bash = 'C:\Program Files\Git\bin\bash.exe'
+          $t = Join-Path $env:RUNNER_TEMP 'w3n-home'; New-Item -ItemType Directory -Force $t | Out-Null
+          "w3n as-run " + (& $bash --noprofile --norc $s)
+          $env:HOME = $t; $env:USERPROFILE = $t
+          "w3n swapped(HOME=USERPROFILE=$t) " + (& $bash --noprofile --norc $s)
+          Remove-Item Env:HOME
+          "w3n swapped(no HOME, USERPROFILE=$t) " + (& $bash --noprofile --norc $s)
