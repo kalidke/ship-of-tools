@@ -192,7 +192,8 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
             anyhow::ensure!(checkpoint.is_some_and(|c| (c as u128) * 1_000_000 <= total), "receipt before its checkpoint: {line}");
             anyhow::ensure!(field(line, "sentinel").as_deref() == Some("true"), "pane sample without its row's sentinel: {line}");
             let driver = field(line, "driver_ns").and_then(|v| v.parse::<u128>().ok()).unwrap_or(0);
-            anyhow::ensure!(driver >= total && driver - total <= 50_000_000, "receipt elapsed and driver elapsed disagree by {}ns: {line}", driver.abs_diff(total));
+            let unseen = field(line, "unseen_ns").and_then(|v| v.parse::<u128>().ok()).unwrap_or(u128::MAX);
+            anyhow::ensure!(unseen <= total && total <= driver, "receipt elapsed outside the driver's bracket [unseen_ns, driver_ns]: {line}");
             let sample = (line.to_string(), total, driver);
             if std::mem::take(&mut window_first) { first.push(sample) } else { ready.push(sample) }
         }
@@ -248,14 +249,18 @@ struct Plan {
     resume: bool,
 }
 
+/// The switch's clocks: the request was made between `at` and `returned`, and its receipt was not yet logged at `unseen`.
 struct Current {
     at: Instant,
+    returned: Instant,
+    unseen: Instant,
     mark: usize,
 }
 
 struct Seen {
     total_ns: u128,
     driver_ns: u128,
+    unseen_ns: u128,
     open_ms: Option<u128>,
     sentinel: bool,
 }
@@ -338,7 +343,8 @@ impl PaneDriver<'_> {
         if let Some(state) = self.app.state.as_mut() {
             state.switch_to_workspace(HOST_KEY.to_string(), Some(slug), None, true);
         }
-        self.cur = Some(Current { at, mark });
+        let returned = Instant::now();
+        self.cur = Some(Current { at, returned, unseen: returned, mark });
         Ok(())
     }
 
@@ -350,17 +356,19 @@ impl PaneDriver<'_> {
             }
             return Ok(());
         }
+        let checked = Instant::now();
         let text = self.capture.text();
-        let (at, mark) = {
+        let (at, returned, unseen, mark) = {
             let c = self.cur.as_ref().unwrap();
-            (c.at, c.mark)
+            (c.at, c.returned, c.unseen, c.mark)
         };
         let new = &text[mark..];
         let plan = &self.plan[self.idx];
         let bound = if plan.resume { RESUME_BOUND } else { READY_BOUND };
         if let Some(first) = receipts(new).first() {
             self.check_fault_order(new)?;
-            let seen = Seen { total_ns: *first, driver_ns: at.elapsed().as_nanos(), open_ms: self.open_ms(), sentinel: self.cells().contains(&plan.nonce) };
+            let unseen_ns = unseen.saturating_duration_since(returned).as_nanos();
+            let seen = Seen { total_ns: *first, driver_ns: at.elapsed().as_nanos(), unseen_ns, open_ms: self.open_ms(), sentinel: self.cells().contains(&plan.nonce) };
             return self.finish_sample(event_loop, Some(seen), "presented".to_string(), new.to_string());
         } else if at.elapsed() > bound {
             anyhow::ensure!(self.role != "fault", "fault child saw no receipt within {bound:?}");
@@ -368,6 +376,7 @@ impl PaneDriver<'_> {
         } else if let Some(outcome) = self.dead_client_outcome(plan.resume) {
             return self.finish_sample(event_loop, None, outcome, new.to_string());
         }
+        self.cur.as_mut().unwrap().unseen = checked;
         Ok(())
     }
 
@@ -414,7 +423,7 @@ impl PaneDriver<'_> {
             let ok = failed && sentinel;
             println!("pane-timing fault frame_failed_before_present={failed} order=failure-then-receipt sentinel={sentinel} ok={ok}");
         } else {
-            let (total, driver, sentinel) = seen.as_ref().map_or(("-".to_string(), "-".to_string(), "-".to_string()), |s| (s.total_ns.to_string(), s.driver_ns.to_string(), if plan.resume { "-".to_string() } else { s.sentinel.to_string() }));
+            let (total, driver, unseen, sentinel) = seen.as_ref().map_or(("-".to_string(), "-".to_string(), "-".to_string(), "-".to_string()), |s| (s.total_ns.to_string(), s.driver_ns.to_string(), s.unseen_ns.to_string(), if plan.resume { "-".to_string() } else { s.sentinel.to_string() }));
             let open_ms = seen.as_ref().and_then(|s| s.open_ms).map_or("-1".to_string(), |v| v.to_string());
             let kind = if plan.resume { "resume" } else { "ready" };
             // The receipt's frame, each since the request: began, prepared, drew, encoded, submitted (recorded only).
@@ -423,7 +432,7 @@ impl PaneDriver<'_> {
                 ["redraw_ms", "prepared_ms", "drawable_ms", "encoded_ms", "submitted_ms"]
                     .map(|name| field(receipt, name).unwrap_or_else(|| "-1".into()));
             println!(
-                "pane-timing sample run={} kind={kind} row={} total_ns={total} driver_ns={driver} open_ms={open_ms} checkpoint_ms={checkpoint_ms} attached_ms={attached_ms} redraw_ms={redraw_ms} prepared_ms={prepared_ms} drawable_ms={drawable_ms} encoded_ms={encoded_ms} submitted_ms={submitted_ms} sentinel={sentinel} outcome={outcome}",
+                "pane-timing sample run={} kind={kind} row={} total_ns={total} driver_ns={driver} unseen_ns={unseen} open_ms={open_ms} checkpoint_ms={checkpoint_ms} attached_ms={attached_ms} redraw_ms={redraw_ms} prepared_ms={prepared_ms} drawable_ms={drawable_ms} encoded_ms={encoded_ms} submitted_ms={submitted_ms} sentinel={sentinel} outcome={outcome}",
                 &self.role, plan.slug
             );
             if seen.is_none() {
@@ -466,6 +475,8 @@ impl ApplicationHandler for PaneDriver<'_> {
             }).unwrap_or_else(|| "unavailable".to_string());
             println!("pane-timing layout {}", self.layout_state());
             self.layout_reported = true;
+            // The setup wait counts from the window's existence: building it is startup, which only CHILD_BOUND bounds.
+            self.begun = Instant::now();
         }
         if self.app.state.is_none() {
             println!("pane-timing not runnable here: display: native App/State startup did not complete");

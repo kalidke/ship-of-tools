@@ -636,12 +636,16 @@ impl ApplicationHandler for NativeDriver {
         if self.fan_in.is_none() {
             self.fan_in = self.app.evt_tx.clone();
         }
+        let building = self.app.state.is_none();
         self.app.resumed(event_loop);
         if self.app.state.is_none() && self.outcome.is_none() {
             self.fail(
                 event_loop,
                 anyhow::anyhow!("not runnable here: native App/State startup did not complete"),
             );
+        } else if building {
+            // The first-frames wait counts from the window's existence: building it is startup, which only WORKLOAD_BOUND bounds.
+            self.transition = Instant::now();
         }
     }
 
