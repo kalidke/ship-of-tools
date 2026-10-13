@@ -50,17 +50,16 @@ SLUG="${SOT_WORKSPACE:-}"
 [ -n "$SLUG" ] || die "SOT_WORKSPACE unset — not in a sot workspace session (or the home-base default, which has no workspace)"
 
 # The FE's files: node ids are workspace-relative, so send a relative path.
-# An absolute path is relativized against the workspace root; a path that is
-# already relative passes through unchanged.
+# An absolute path is relativized against the workspace root, the two compared
+# in one spelling (sot_relative_to: on Windows the daemon spells the root C:\...
+# and the shell a path /c/...); a path that is already relative passes through.
+source "$SCRIPT_DIR/comm-lib.sh"
 ROOT="${SOT_WORKSPACE_ROOT:-}"
 case "$REL" in
-    /*)
+    /*|[A-Za-z]:[\\/]*)
         [ -n "$ROOT" ] || die "absolute path given but SOT_WORKSPACE_ROOT unset"
-        case "$REL" in
-            "$ROOT"/*) REL="${REL#"$ROOT"/}" ;;
-            "$ROOT")   REL="." ;;
-            *) die "path '$REL' is not under workspace root '$ROOT'" ;;
-        esac
+        _rel="$(sot_relative_to "$ROOT" "$REL")" || die "path '$REL' is not under workspace root '$ROOT'"
+        REL="$_rel"
         ;;
 esac
 
@@ -77,7 +76,6 @@ fi
 # One request on a fresh daemon connection (comm-lib's sot_oneshot_request). Its `ok` means the daemon published the
 # notification, not that any FE acted (the FE acts only if its current workspace matches "$SLUG"). Identity is the
 # one a send needs: a process that may not act as this row's handle drives no FE either.
-source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 why="$(sot_require_routable_identity)" || die "$why"
 ENDPOINT="$(sot_relay_endpoint || true)"

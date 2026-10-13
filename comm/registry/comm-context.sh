@@ -127,7 +127,7 @@ if [ -f "$SELF_FILE" ]; then
     if [ "$HAS_ROOT_LINE" = 1 ]; then
         # v2 self-file: root= present. Empty/mismatched is unconditionally
         # stale (ADR 0028) — never routed through the legacy-heal path.
-        if [ -z "$SELF_ROOT" ] || [ "$SELF_ROOT" != "$PROJECT_ROOT" ]; then
+        if [ -z "$SELF_ROOT" ] || ! sot_same_root "$SELF_ROOT" "$PROJECT_ROOT"; then
             reason="root='$SELF_ROOT'"
             [ -z "$SELF_ROOT" ] && reason="an empty/malformed root="
             echo "comm-context: self-file identity '$NAME' has $reason which doesn't match this project ('$PROJECT_ROOT') — stale; discarding (forces fresh derivation)" >&2
@@ -153,7 +153,7 @@ if [ -f "$SELF_FILE" ]; then
             echo "comm-context: could not read/parse the sot-comm registry while validating self-file identity '$NAME' — refusing to trust or heal a basename match with no verifiable registry evidence; discarding" >&2
             NAME=""
         elif [ "$reg_status" = "present" ] && [ -n "$reg_root" ]; then
-            if [ "$reg_root" = "$PROJECT_ROOT" ]; then
+            if sot_same_root "$reg_root" "$PROJECT_ROOT"; then
                 heal=1
             else
                 echo "comm-context: self-file identity '$NAME' has no root= (legacy) and the registry's own root for it ('$reg_root') doesn't match this project ('$PROJECT_ROOT') — stale; refusing to self-heal a basename match against contrary registry evidence; discarding" >&2

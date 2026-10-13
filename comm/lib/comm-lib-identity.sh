@@ -58,7 +58,7 @@ sot_self_file_project_conflict() {
     local name="${lines[0]:-}" repo_line="${lines[1]:-}" root_line="${lines[2]:-}" claim=""
     [ -n "$name" ] || return 1
     case "$root_line" in root=?*) claim="root='${root_line#root=}'"
-        [ "${root_line#root=}" = "$root" ] && return 1 ;;
+        sot_same_root "${root_line#root=}" "$root" && return 1 ;;
     esac
     if [ -z "$claim" ]; then
         case "$repo_line" in repo=?*) claim="repo='${repo_line#repo=}' (legacy slot, no root=)"
@@ -147,7 +147,7 @@ _sot_self_slot_migrate_locked() {
     name="$(printf '%s' "${content%x}" | sed -n 1p)"
     [ -n "$name" ] || return 2
     IFS=$'\t' read -r status reg_root <<< "$(sot_registry_entry_status "$name")"
-    [ "$status" = present ] && [ "$reg_root" = "$root" ] || return 2
+    [ "$status" = present ] && sot_same_root "$reg_root" "$root" || return 2
     row="$(sot_registry_read "$name")" || return 2
     row_ws="$(printf '%s' "$row" | sot_jq -r '.workspace_id // ""' 2>/dev/null)" || return 2
     [ "$row_ws" = "$ws" ] || return 2
@@ -272,7 +272,7 @@ _sot_identity_routable() {
         absent) echo "your identity @$NAME has no registry row; reclaim it with $qdir/comm-join.sh --name $qname"; return 1 ;;
         *) echo "the registry could not be read, so identity @$NAME is unverified; nothing was sent"; return 1 ;;
     esac
-    if [ -n "$reg_root" ] && [ "$reg_root" != "${PROJECT_ROOT:-}" ]; then
+    if [ -n "$reg_root" ] && ! sot_same_root "$reg_root" "${PROJECT_ROOT:-}"; then
         echo "your sot-comm identity '@$NAME' is registered to a DIFFERENT project's root ('$reg_root') — refusing to send with a misrouting from-handle. Reclaim it: $qdir/comm-join.sh --name $qname"
         return 1
     fi
@@ -439,7 +439,7 @@ _sot_handle_host() {
 _sot_tier_claimable() {
     local mode="$1" root="$2" status="$3" held="$4"
     [ "$status" = "absent" ] && return 0
-    [ "$mode" = "reclaim" ] && [ "$held" = "$root" ] && return 0
+    [ "$mode" = "reclaim" ] && sot_same_root "$held" "$root" && return 0
     return 1
 }
 

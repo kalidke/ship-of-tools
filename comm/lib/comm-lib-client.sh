@@ -641,22 +641,55 @@ _sot_oneshot_stop() {
     fi
 }
 
+# sot_native_path PATH — PATH in the one spelling its folder has on this box: in Git Bash (where `cygpath` exists)
+# Windows' own with long names, `cygpath -m -l` (C:/...), which git and a native daemon print and to which the /c/...,
+# /tmp/..., C:\... and C:/... spellings of one folder all come (the shell's /tmp can be a short 8.3 name,
+# C:/Users/RUNNER~1/..., where git prints the long one); elsewhere PATH as written. A path that does not exist has no
+# long name to find, and gets `cygpath -m`'s. The library's one cygpath conversion. Prints nothing and returns 1 when
+# cygpath fails.
+sot_native_path() {
+    local out
+    command -v cygpath > /dev/null 2>&1 || { printf '%s\n' "$1"; return 0; }
+    out="$(cygpath -m -l "$1" 2>/dev/null)" || out="$(cygpath -m "$1" 2>/dev/null)"
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out"
+}
+
+# sot_same_root A B — rc 0 when A and B name one folder, compared in one spelling (sot_native_path): every registry
+# and self-file root is compared this way, since on Windows a root from git (C:/..., which realpath keeps) and one
+# from the shell (/c/... or /tmp/...) spell one folder two ways.
+sot_same_root() {
+    local a b
+    [ "$1" = "$2" ] && return 0
+    a="$(sot_native_path "$1")" && b="$(sot_native_path "$2")" && [ "$a" = "$b" ]
+}
+
+# sot_relative_to ROOT PATH — PATH relative to ROOT, the two compared in one spelling (sot_native_path), so git's or a
+# native daemon's C:/... root and the shell's /c/... path agree on Windows: `.` for ROOT itself; rc 1 for an absolute
+# PATH outside ROOT, or with no ROOT. A relative PATH prints as written. Lexical: no link is resolved.
+sot_relative_to() {
+    local root path
+    case "$2" in /*|[A-Za-z]:[\\/]*) ;; *) printf '%s\n' "$2"; return 0 ;; esac
+    [ -n "$1" ] && root="$(sot_native_path "$1")" && path="$(sot_native_path "$2")" || return 1
+    case "$path" in
+        "${root%/}") printf '.\n' ;;
+        "${root%/}"/*) printf '%s\n' "${path#"${root%/}"/}" ;;
+        *) return 1 ;;
+    esac
+}
+
 # sot_daemon_path PATH — PATH in the spelling of the daemon at ENDPOINT (the
 # caller's scope, as sot_oneshot_request reads it). A pipe: daemon is a native
 # Windows process: it reads git-bash's /c/Users/... as a folder on the current
 # drive and answers no_such_path, and MSYS converts paths only in a native
 # program's argv, never inside a JSON payload, so the path goes through
-# `cygpath -m` (C:/Users/...). Every other daemon reads the path as written.
+# `cygpath -m` (C:/Users/..., sot_native_path). Every other daemon reads the path as written.
 # Keyed on the endpoint, never on this shell: a Windows caller reaching a Unix
 # daemon over ssh: sends the path unchanged. Prints nothing and returns 1 when
 # the conversion fails.
 sot_daemon_path() {
-    local out
     case "$ENDPOINT" in
-        pipe:*)
-            out="$(cygpath -m "$1" 2>/dev/null)" && [ -n "$out" ] || return 1
-            printf '%s\n' "$out"
-            ;;
+        pipe:*) command -v cygpath > /dev/null 2>&1 && sot_native_path "$1" ;;
         *) printf '%s\n' "$1" ;;
     esac
 }

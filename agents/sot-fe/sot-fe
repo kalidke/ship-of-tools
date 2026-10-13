@@ -297,17 +297,14 @@ case "$CMD" in
         # (string prefix) — NOT `git -C <dir>` / realpath on the file — so a file
         # under a symlinked dir (e.g. data/results/myproject -> external storage) keeps its
         # in-repo relative path instead of resolving out to the external storage root.
-        case "$PATH_ARG" in
-            /*)
-                _repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
-                if [ -n "$_repo_root" ] && [ "$PATH_ARG" != "${PATH_ARG#"$_repo_root"/}" ]; then
-                    PATH_ARG="${PATH_ARG#"$_repo_root"/}"
-                else
-                    echo "ERROR: '$PATH_ARG' is absolute and not under the current repo (${_repo_root:-<not in a repo>}). Pass a path relative to the workspace root — the file nav can only show files inside the repo." >&2
-                    exit 1
-                fi
-                ;;
-        esac
+        # On Windows git prints its root as C:/... and the shell spells a path /c/... or
+        # /tmp/...: sot_relative_to (comm-lib-client.sh) compares them in one spelling.
+        _repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+        if ! _rel="$(sot_relative_to "$_repo_root" "$PATH_ARG")"; then
+            echo "ERROR: '$PATH_ARG' is absolute and not under the current repo (${_repo_root:-<not in a repo>}). Pass a path relative to the workspace root — the file nav can only show files inside the repo." >&2
+            exit 1
+        fi
+        PATH_ARG="$_rel"
         ARGS="$(jq -nc --arg w "$WS" --arg p "$PATH_ARG" '{workspace:$w, path:$p}')"
         [ "$URGENT" = true ] && ARGS="$(printf '%s' "$ARGS" | jq -c '. + {urgent:true}')"
         # --roi x,y,w,h: aim the FE viewport at a SOURCE-IMAGE-PIXEL rect (ADR-0022
