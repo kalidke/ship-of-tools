@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -194,7 +194,7 @@ fn spawn_supervisor(
 
     // Stderr drain — pure logging, never on the result path.
     tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr).lines();
+        let mut reader = sot_protocol::child_lines::ChildLines::new(stderr);
         while let Ok(Some(line)) = reader.next_line().await {
             tracing::debug!(target: "mathjax.stderr", "{line}");
         }
@@ -214,7 +214,7 @@ async fn supervisor_task(
 ) {
     let mut pending: HashMap<u64, oneshot::Sender<Result<RenderedSvg>>> = HashMap::new();
     let mut next_id: u64 = 1;
-    let mut stdout_lines = BufReader::new(stdout).lines();
+    let mut stdout_lines = sot_protocol::child_lines::ChildLines::new(stdout);
 
     // The service races the slot: emptying it (a render past its bound) ends
     // this child even while the service waits on it, a write to a child that

@@ -153,4 +153,13 @@ disallowed-methods = [
   { path = "cosmic_text::ShapeLine::new", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
   { path = "cosmic_text::ShapeLine::new_in_buffer", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
   { path = "cosmic_text::Editor::new", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
+  # A child's output by lines (wire): a child may write any byte, and a strict UTF-8 line reader fails at the first
+  # (ending a kernel's generation, a REPL, Pluto, or a stderr drain whose closed pipe then fails the child's next
+  # write), so a child's output is read by lines only through sot_protocol::child_lines (ChildLines,
+  # blocking_child_lines), which decode each line lossily. The rule holds the strict line readers of tokio and std; a
+  # stream that is not a child's output (a program's own stdin from its parent) carries an allow that names it.
+  { path = "tokio::io::AsyncBufReadExt::lines", reason = "read a child's output by lines through sot_protocol::child_lines (ChildLines, blocking_child_lines), which decodes each line lossily" },
+  { path = "tokio::io::AsyncBufReadExt::read_line", reason = "read a child's output by lines through sot_protocol::child_lines (ChildLines, blocking_child_lines), which decodes each line lossily" },
+  { path = "std::io::BufRead::lines", reason = "read a child's output by lines through sot_protocol::child_lines (ChildLines, blocking_child_lines), which decodes each line lossily" },
+  { path = "std::io::BufRead::read_line", reason = "read a child's output by lines through sot_protocol::child_lines (ChildLines, blocking_child_lines), which decodes each line lossily" },
 ]

@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sot_protocol::{GpuSample, HostLatest, HostSeries, MonitorHistoryReq, MonitorSample};
 use serde::Deserialize;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader, Split};
+use tokio::io::{AsyncRead, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::broadcast;
 
@@ -511,16 +511,16 @@ fn should_log(prev: Option<&str>, next: &str) -> bool {
     !next.is_empty() && prev != Some(next)
 }
 
-/// The next line of a sampler pipe, decoded lossily: a process name is the
-/// bytes `/proc` gives, cut at 15 of them, maybe inside a character, and a
-/// strict decode would end the source. Pending forever when there is no pipe
-/// to read, so `supervise` can `select!` over stdout and stderr uniformly even
-/// though one of them may not have been captured.
-async fn next_or_pending<R: AsyncBufRead + Unpin>(
-    lines: &mut Option<Split<R>>,
+/// The next line of a sampler pipe (`ChildLines`: a process name is the
+/// bytes `/proc` gives, cut at 15 of them, maybe inside a character), or
+/// pending forever when there is no pipe to read, so `supervise` can `select!`
+/// over stdout and stderr uniformly even though one of them may not have been
+/// captured.
+async fn next_or_pending<R: AsyncRead + Unpin>(
+    lines: &mut Option<sot_protocol::child_lines::ChildLines<R>>,
 ) -> std::io::Result<Option<String>> {
     match lines {
-        Some(l) => Ok(l.next_segment().await?.map(|b| String::from_utf8_lossy(&b).into_owned())),
+        Some(l) => l.next_line().await,
         None => std::future::pending().await,
     }
 }
@@ -542,8 +542,8 @@ async fn supervise(
         }
         let reason = match spawn_source(&host, sig).await {
             Ok(mut contained) => {
-                let mut stdout = contained.stdout.take().map(|s| BufReader::new(s).split(b'\n'));
-                let mut stderr = contained.stderr.take().map(|s| BufReader::new(s).split(b'\n'));
+                let mut stdout = contained.stdout.take().map(sot_protocol::child_lines::ChildLines::new);
+                let mut stderr = contained.stderr.take().map(sot_protocol::child_lines::ChildLines::new);
                 // ssh's own words for why the source died, kept only until
                 // the child does — one bounded string, never a growing log.
                 let mut stderr_line: Option<String> = None;

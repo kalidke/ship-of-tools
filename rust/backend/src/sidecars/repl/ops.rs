@@ -331,6 +331,56 @@ mod interrupt_tests {
     use crate::sidecars::contract_tests::{pin_env, within};
     use std::time::Duration;
 
+    /// A `julia` stand-in that says it is ready and answers each interrupt with a note holding a byte that is not UTF-8.
+    const STUB_BYTE: &str = r#"#!/bin/sh
+printf '{"v":1,"id":0,"kind":"evt","op":"repl.ready","payload":{}}\n'
+while read -r line; do
+  id=$(printf '%s' "$line" | sed -e 's/.*"id":\([0-9]*\).*/\1/')
+  case "$line" in
+    *repl.interrupt*) printf '{"v":1,"id":%s,"kind":"res","op":"repl.interrupt","payload":{"interrupted":true,"note":"a\377b"}}\n' "$id" ;;
+  esac
+done
+"#;
+
+    /// A REPL child's line may hold any byte: its answer arrives with U+FFFD for the byte, and the same child answers
+    /// the next request.
+    #[tokio::test]
+    async fn a_repl_line_holding_an_invalid_byte_keeps_the_child() {
+        // Removed when dropped, after a failed assertion too.
+        let tmp = tempfile::Builder::new().prefix("sot-repl-byte-").tempdir().unwrap();
+        let dir = tmp.path();
+        let resources = dir.join("resources");
+        std::fs::create_dir_all(resources.join("julia").join("repl")).unwrap();
+        let root = dir.join("row");
+        std::fs::create_dir_all(&root).unwrap();
+        let julia = dir.join("julia");
+        sot_log::test_exec::write_executable(&julia, STUB_BYTE);
+        let _pin = pin_env(&julia, &resources);
+
+        let (frame_tx, _bus) = tokio::sync::broadcast::channel(256);
+        let workspaces = Workspaces::new();
+        workspaces.set_repl_frame_tx(frame_tx);
+        let session = Session::new();
+        let ws = crate::rows::Workspace::from_label("byterow", root, false, "none".into(), String::new(), String::new());
+        let id = ws.workspace_id.clone();
+        workspaces.insert(ws);
+        let row = row_or_reply(&workspaces, Some(&id), 0, op::REPL_EVAL).unwrap_or_else(|_| panic!("setup: the row"));
+        handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 7, "code": "1" }), &session, &workspaces)
+            .await
+            .expect("setup: the eval starts the child");
+        within(Duration::from_secs(30), "the child is ready", || row.repl_state() == "ready").await;
+
+        let mut answers = Vec::new();
+        for req in 2..4 {
+            let out = handle_repl_interrupt(req, json!({ "workspace_id": id, "eval_ids": [7] }), &session, &workspaces)
+                .await
+                .expect("handler");
+            answers.push(out[0].0.payload.clone());
+        }
+        let answered = json!({ "interrupted": true, "note": "a\u{fffd}b" });
+        assert_eq!(answers, [answered.clone(), answered]);
+    }
+
     /// A `julia` stand-in: it says it is ready, then logs each request line beside itself and answers it.
     const STUB: &str = r#"#!/bin/sh
 printf '{"v":1,"id":0,"kind":"evt","op":"repl.ready","payload":{}}\n'

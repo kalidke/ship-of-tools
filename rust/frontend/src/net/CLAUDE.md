@@ -56,7 +56,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `file.write`, `file.delete`, `file.download`, `file.upload`, `dir.create`, `repl.eval`, `repl.run_file`,
 `repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`, `monitor.subscribe`,
 `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `video.open`, `docs.open`, `quarto.open`,
-`proxy.connect`, `ensure_proxy_for_url`, `pipe_one`.
+`proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `ChildLines`.
 
 ## Folders
 - `transport/`: the per-host connection task: connect, hello, the steady loop, reply matching.

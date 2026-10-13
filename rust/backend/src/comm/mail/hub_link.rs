@@ -126,8 +126,7 @@ async fn link_once(
     {
         let last_stderr = std::sync::Arc::clone(&last_stderr);
         tokio::spawn(async move {
-            use tokio::io::AsyncBufReadExt;
-            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            let mut lines = sot_protocol::child_lines::ChildLines::new(stderr);
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.trim().is_empty() {
                     if let Ok(mut g) = last_stderr.lock() {
@@ -570,6 +569,23 @@ mod tests {
         );
         sot_log::test_exec::write_executable(&stub, script);
         stub.to_string_lossy().into_owned()
+    }
+
+    /// ssh's stderr may hold a byte that is not UTF-8 (a far host's banner, a remote's error): a link that fails still
+    /// names ssh's last line, with U+FFFD for the byte.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_link_names_an_ssh_line_that_is_not_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("stub-ssh");
+        sot_log::test_exec::write_executable(&stub, "#!/bin/sh\nprintf 'Permission denied \\351 (publickey).\\n' >&2\nexit 255\n".to_string());
+        STUB_PROGRAM.set(Some(stub.to_string_lossy().into_owned()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(30), link_once(&recipe, "self", "sotd-self", sig)).await;
+        STUB_PROGRAM.set(None);
+        let why = ended.expect("the link ends when its ssh exits").expect_err("a stub that exits fails the link");
+        assert!(why.ends_with(": Permission denied \u{fffd} (publickey)."), "{why}");
     }
 
     /// A hub silent behind a live ssh ends the link with its own reason alone: ssh's last line is a stale login

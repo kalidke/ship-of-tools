@@ -109,6 +109,7 @@ fn main() {
             // Flood only after one line arrives on stdin, so the test, not
             // the spawn, decides when the flood starts.
             let mut go = String::new();
+            #[allow(clippy::disallowed_methods, reason = "this test helper's own stdin: the test's go line, not a child's output")]
             std::io::stdin().lock().read_line(&mut go).expect("read go line");
             assert_eq!(go.trim_end(), "go", "the flood waits for the test's go line");
         }
@@ -170,6 +171,7 @@ fn main() {
             .expect("spawn grandchild");
         let stdout = grandchild.stdout.take().expect("grandchild stdout");
         let mut line = String::new();
+        #[allow(clippy::disallowed_methods, reason = "this test helper's own --child, whose one line is the pid this binary prints")]
         std::io::BufReader::new(stdout)
             .read_line(&mut line)
             .expect("read grandchild pid line");
@@ -227,6 +229,7 @@ fn spawn_breakaway(args: &[String]) {
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 
     let mut go = String::new();
+    #[allow(clippy::disallowed_methods, reason = "this test helper's own stdin: the test's go signal, not a child's output")]
     std::io::stdin().lock().read_line(&mut go).expect("read go signal");
 
     let (exe, rest) = args.split_first().expect("spawn-breakaway needs an exe");

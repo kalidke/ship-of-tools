@@ -55,7 +55,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `capsule_guard`, `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`,
 `sot_pty_input`, `sot_dial`, `capsule_supervisor_env`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `sot_host`, `comm/lib/comm-lib-base.sh`,
-`install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`.
+`install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`, `ChildLines`.
 
 `handle_agent_join` is provided to server dispatch; rows consume the registry binding/read/prune functions.
 
