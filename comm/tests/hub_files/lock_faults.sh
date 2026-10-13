@@ -225,14 +225,16 @@ guard_run() {  # T COMM_HOME — the guard's verdict on COMM_HOME under HOME=T
         _ "$SCRIPT_DIR/lib-home-guard.sh" "$2" 2>&1)" || GUARD_RC=$?
 }
 # dir_link TARGET LINK — a real directory link at LINK, or a failure: Git Bash's `ln -s` copies the folder unless
-# native symlinks are allowed, and a copy is no link to refuse. So a native symlink, else, where `cygpath` says the
-# box is Windows, a junction (`mklink /J`, no privilege needed), each checked with `-L`.
+# native symlinks are allowed, and a copy is no link to refuse. So where `cygpath` says the box is Windows, a junction,
+# which needs no privilege: `cmd //c mklink //J`, whose doubled slash keeps Git Bash from rewriting the switch as a
+# path (a single `/J` reached mklink as `Invalid switch`); elsewhere `ln -s`. Either is checked with `-L`.
 dir_link() {
     rm -rf "${2:?}"
-    MSYS=winsymlinks:nativestrict ln -sfn "$1" "$2" 2>/dev/null && [ -L "$2" ] && return 0
-    rm -rf "${2:?}"
-    command -v cygpath > /dev/null 2>&1 && cmd //c mklink /J "$(cygpath -w "$2")" "$(cygpath -w "$1")" > /dev/null 2>&1 &&
-        [ -L "$2" ]
+    if command -v cygpath > /dev/null 2>&1; then
+        cmd //c mklink //J "$(cygpath -w "$2")" "$(cygpath -w "$1")" > /dev/null 2>&1 && [ -L "$2" ]
+    else
+        ln -sfn "$1" "$2" && [ -L "$2" ]
+    fi
 }
 
 case_the_home_guard_refuses_a_live_comm_home() {
@@ -251,24 +253,31 @@ case_the_home_guard_refuses_a_live_comm_home() {
     # says: getpwnam's answer, which getent gives too where it exists.
     h="$(HOME="$t" bash -c '. "$1"; printf %s "$_GUARD_ACCT"' _ "$SCRIPT_DIR/lib-home-guard.sh")"
     [ -n "$h" ] || { echo "  sourcing recorded no account home"; return 1; }
+    [ "$h" != "$t" ] || { echo "  the account home recorded is HOME's ('$h'), not the one the system records"; return 1; }
     if command -v getent >/dev/null 2>&1; then
         [ "$h" = "$(getent passwd "$(id -un)" | cut -d: -f6)" ] \
             || { echo "  the account home '$h' is not getent's"; return 1; }
     fi
     mkdir -p "$t/id-bin"
     printf '#!/bin/sh\necho root\n' > "$t/id-bin/id"; chmod +x "$t/id-bin/id"
+    # The stubbed account is root, whose home the system records apart from the caller's HOME. Git Bash has no root
+    # account (`~root` stays as written), so there this half has no account to stand in, and says so.
     local root=~root
-    for h in "$root/.sot-comm/x" "$t/other"; do
-        GUARD_RC=0
-        GUARD_OUT="$(PATH="$t/id-bin:$PATH" HOME="$t" bash -c '. "$1"; guard_refuse_live_home "$2"; echo passed' \
-            _ "$SCRIPT_DIR/lib-home-guard.sh" "$h" 2>&1)" || GUARD_RC=$?
-        case "$h" in
-            "$root"/*) [ "$GUARD_RC" -eq 2 ] && contains "$GUARD_OUT" FATAL \
-                || { echo "  the account's own home was not refused: rc $GUARD_RC, $GUARD_OUT"; return 1; } ;;
-            *) [ "$GUARD_RC" -eq 0 ] && [ "$GUARD_OUT" = passed ] \
-                || { echo "  '$h' was refused under the stubbed account: rc $GUARD_RC, $GUARD_OUT"; return 1; } ;;
-        esac
-    done
+    if [ "${root#/}" = "$root" ]; then
+        echo "SKIP: the stubbed account's own home: this system has no root account (~root stays '$root')"
+    else
+        for h in "$root/.sot-comm/x" "$t/other"; do
+            GUARD_RC=0
+            GUARD_OUT="$(PATH="$t/id-bin:$PATH" HOME="$t" bash -c '. "$1"; guard_refuse_live_home "$2"; echo passed' \
+                _ "$SCRIPT_DIR/lib-home-guard.sh" "$h" 2>&1)" || GUARD_RC=$?
+            case "$h" in
+                "$root"/*) [ "$GUARD_RC" -eq 2 ] && contains "$GUARD_OUT" FATAL \
+                    || { echo "  the account's own home was not refused: rc $GUARD_RC, $GUARD_OUT"; return 1; } ;;
+                *) [ "$GUARD_RC" -eq 0 ] && [ "$GUARD_OUT" = passed ] \
+                    || { echo "  '$h' was refused under the stubbed account: rc $GUARD_RC, $GUARD_OUT"; return 1; } ;;
+            esac
+        done
+    fi
     printf '#!/bin/sh\necho "x\\$(touch %s/evaluated)"\n' "$t" > "$t/id-bin/id"
     h="$(PATH="$t/id-bin:$PATH" HOME="$t" SOT_COMM_HOME= bash -c '. "$1"; printf %s "$_GUARD_ACCT|${#_GUARD_LIVE[@]}"' \
         _ "$SCRIPT_DIR/lib-home-guard.sh")"
