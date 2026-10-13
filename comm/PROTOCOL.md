@@ -139,10 +139,11 @@ Every write to `registry.json` (the scripts' `with_lock`, the daemon's
 `with_comm_registry_lock`) holds `.registry.lock`, a regular file whose one line
 names its holder: `name:machine:boot:pidns:pid:start` — the host name, Linux
 `/etc/machine-id`, the kernel's `boot_id`, the pid namespace, the pid, and that
-pid's start tick (field 22 of `/proc/<pid>/stat`). A field that cannot be read
-is `-`, which never equals anything; off Linux, and where the comm home's
-mount proves no fresh read (Proof of death), the last four proof fields are
-`-`. In file names ':' is written '.', because Windows reads a ':' in a name as
+pid's start tick (field 22 of `/proc/<pid>/stat`); on macOS the host UUID, the
+boot session UUID, `darwin`, the pid and its start in whole seconds since the
+epoch. A field that cannot be read is `-`, which never equals anything; on
+other systems, and where the comm home's mount proves no fresh read (Proof of
+death), the last four proof fields are `-`. In file names ':' is written '.', because Windows reads a ':' in a name as
 a stream; the record keeps its colons.
 
 - **Take.** Write the record to a temp file and `link(2)` it to the lock (the
@@ -154,14 +155,15 @@ a stream; the record keeps its colons.
   hard links: every filesystem listed under Reclaim does, and so does NTFS; on
   FAT every write fails (the best-effort touches silently), and a ruled one
   FAILs naming "cannot hard-link in <dir>: <errno>".
-- **Proof of death** (Linux only, and only from the holder's own machine): the
+- **Proof of death** (Linux and macOS, and only from the holder's own machine): the
   same boot and pid namespace, with the pid gone or its start tick changed; or
   the same machine-id AND the same host name with a different boot. This
   assumes a machine-id is unique to one machine: a cloned image that shares one
   would read a live clone as rebooted. A box proves a death only where its
   comm home's mount, the one on top where mounts are stacked, makes a read
   fresh: ext2, ext3, ext4, xfs, btrfs, zfs, f2fs or tmpfs, or nfs or nfs4
-  without `nocto`; on any other (overlayfs, say) its records have no proof
+  without `nocto`, or on macOS the Mac's own disk (`MNT_LOCAL`); on any
+  other (overlayfs, a Mac's network home) its records have no proof
   fields, so its dead holders are removed by hand. No timeout proves anything,
   so a frozen holder, one on another machine, or any unprovable one, is never
   forced.

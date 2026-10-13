@@ -4,6 +4,11 @@
 # records plan, decision 5: its top-level flow and its -Local-gated section cannot move into a dot-sourced file without changing behaviour
 file-size scripts/launch-sot.ps1 top-level flow and -Local-gated section stay in one file
 
+# MAC-BASH32: macOS's proof of death took comm/lib past 3,000 lines. Its parts sit beside their loader, comm-lib.sh,
+# which the installer inlines into one file (comm/lib/CLAUDE.md). Removed in 0.6.7, when COMM-SIMPLE deletes the
+# registry lock (comm-lib-registry-lock.sh).
+folder-size comm/lib the parts sit beside the loader the installer inlines; until 0.6.7, when COMM-SIMPLE deletes comm-lib-registry-lock.sh
+
 # skeleton E10: entry-point paths under scripts/ are a published interface
 folder-size scripts entry-point paths are a published interface
 

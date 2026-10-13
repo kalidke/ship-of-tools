@@ -48,7 +48,14 @@
 SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-10}"
 _sot_have_flock() { command -v flock >/dev/null 2>&1; }
 _sot_findmnt() { findmnt "$@"; }
-_sot_machine_id() { local m=""; { read -r m < /etc/machine-id; } 2>/dev/null; printf '%s' "$m"; }
+# _sot_machine_id — this machine's id, as inbox.rs's machine_id: Linux's /etc/machine-id; macOS's host UUID
+# (IOPlatformUUID, what gethostuuid(2) gives); else nothing.
+_sot_machine_id() {
+    local m=""; { read -r m < /etc/machine-id; } 2>/dev/null
+    [ -n "$m" ] || [ "$(uname -s 2>/dev/null)" != Darwin ] \
+        || m="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | sed -n 's/.*"IOPlatformUUID" = "\([^"]*\)".*/\1/p')"
+    printf '%s' "$m"
+}
 # sot_inbox_lock_identity DIR — the lock manager an append to DIR goes
 # through, by the rule comm/mail/inbox.rs's record uses: `nfs4 <source>`,
 # `local <machine-id>` on a local block filesystem, else `none@<machine-id>`,

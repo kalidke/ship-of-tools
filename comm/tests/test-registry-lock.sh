@@ -63,7 +63,11 @@
 #     (review F1);
 #  26 a holder this box cannot prove dead names its host, and, if it is
 #     dead, by hand where nothing there runs again or a comm command there
-#     says it cannot prove a death (reviews F2, R3-B1).
+#     says it cannot prove a death (reviews F2, R3-B1);
+#  27 macOS's padded lstart line is trimmed before date reads it (stand-ins
+#     off macOS);
+#  28 on macOS a holder whose ps read fails is gone only on kill's ESRCH
+#     (review F3).
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 . "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh"
@@ -129,6 +133,16 @@ chmod +x "$NOHIRES/perl"
 NOPROOF="$WORK/noproof"; mkdir -p "$NOPROOF"
 printf '#!/bin/sh\n[ "$1" = -s ] && { echo Darwin; exit 0; }\nexec %s "$@"\n' "$(command -v uname)" > "$NOPROOF/uname"
 chmod +x "$NOPROOF/uname"
+# macOS's readers on Linux (t27): a Darwin uname, a ps whose lstart line ends in spaces as macOS pads it, and a date that
+# keeps the line it was given in $WORK/date.arg and reads `-j -f` through GNU's -d.
+MACSHIM="$WORK/macshim"; mkdir -p "$MACSHIM"; cp "$NOPROOF/uname" "$MACSHIM/uname"
+printf '#!/bin/sh\nprintf "%%s\\n" "Tue Oct 13 03:10:56 2026    "\n' > "$MACSHIM/ps"
+printf '#!/bin/sh\n[ "$1" = -j ] || exec %s "$@"\nprintf %%s "$4" > "%s"\nexec %s -u -d "$4" +%%s\n' \
+    "$(command -v date)" "$WORK/date.arg" "$(command -v date)" > "$MACSHIM/date"
+chmod +x "$MACSHIM/ps" "$MACSHIM/date"
+# A ps that cannot read any pid, beside the Darwin uname (t28).
+PSFAIL="$WORK/psfail"; mkdir -p "$PSFAIL"; cp "$NOPROOF/uname" "$PSFAIL/uname"
+printf '#!/bin/sh\nexit 1\n' > "$PSFAIL/ps"; chmod +x "$PSFAIL/ps"
 
 # A holder SIGKILLed in its critical section; prints the record it left.
 dead_holder() { lib 'with_lock kill -9 $$' 2>/dev/null; cat "$P"; }
@@ -407,6 +421,36 @@ t26() {
         || { echo "another pid namespace: $out"; return 1; }
 }
 check "26: a holder this box cannot prove dead is named with its host, and by hand only if it is dead and nothing there can prove it" t26
+
+# macOS pads `ps -o lstart=` with spaces, which date warns of: the reader trims them before date reads the line, and a
+# start is read with nothing on stderr (macOS's own tools there; elsewhere the stand-ins above, whose line is
+# 1791861056).
+t27() {
+    local out
+    if [ "$(uname -s)" = Darwin ]; then
+        out="$(lib '_sot_lock_start $$ && echo "$_SOT_LOCK_START"' 2>"$WORK/err")"
+        [[ "$out" =~ ^[0-9]+$ ]] || { echo "no start: [$out] $(cat "$WORK/err")"; return 1; }
+    else
+        out="$(PATH="$MACSHIM:$PATH" lib '_sot_lock_start $$ && echo "$_SOT_LOCK_START"' 2>"$WORK/err")"
+        [ "$out" = 1791861056 ] || { echo "the stand-ins' start: [$out] $(cat "$WORK/err")"; return 1; }
+        [ "$(cat "$WORK/date.arg")" = "Tue Oct 13 03:10:56 2026" ] || { echo "date read [$(cat "$WORK/date.arg")]"; return 1; }
+    fi
+    [ ! -s "$WORK/err" ] || { echo "stderr: $(cat "$WORK/err")"; return 1; }
+}
+check "27: macOS's padded lstart line is trimmed before date reads it, with nothing on stderr" t27
+
+# On macOS a holder is gone only when kill(2) says ESRCH, as lock.rs's proc_pidinfo: a ps that cannot read a live pid
+# proves nothing (review F3). The stand-ins: a Darwin uname and a ps that reads no pid.
+t28() {
+    local out p judge="_SOT_LOCK_SELF='h:M:B:darwin'; _sot_lock_judge"
+    sleep 30 & p=$!; PIDS+=("$p")
+    out="$(PATH="$PSFAIL:$PATH" lib "$judge 'h:M:B:darwin:$p:1'; echo \"\$_SOT_LOCK_VERDICT: \$_SOT_LOCK_WHY\"")"
+    kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+    [ "$out" = "UNPROVABLE: its process cannot be read" ] || { echo "a live pid that ps cannot read: $out"; return 1; }
+    out="$(PATH="$PSFAIL:$PATH" lib "$judge 'h:M:B:darwin:$p:1'; echo \"\$_SOT_LOCK_VERDICT: \$_SOT_LOCK_WHY\"")"
+    [ "$out" = "DEAD: it has exited" ] || { echo "an ended pid: $out"; return 1; }
+}
+check "28: on macOS a holder whose ps read fails is gone only when kill says no such process" t28
 
 t10() {
     reset; local t0 ms tries

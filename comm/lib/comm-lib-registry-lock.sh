@@ -13,7 +13,11 @@
 # link never replaces anything. The daemon's `comm/registry/lock.rs` takes
 # the same lock with the same record.
 #
-# Proof of death is Linux-only, and only from the holder's own machine: the
+# On macOS (no /proc) the record is the host UUID, the boot session UUID,
+# `darwin` (no pid namespaces), the pid and its start in whole seconds since
+# the epoch, as `ps -o lstart=` and lock.rs's proc_pidinfo read it.
+#
+# Proof of death (Linux and macOS) is only from the holder's own machine: the
 # same boot and pid namespace with the pid gone or its start changed, or the
 # same machine-id AND host name with another boot. That assumes a machine-id
 # is unique to one machine: a cloned image sharing one would read a live
@@ -138,25 +142,24 @@ _sot_lock_over() {
 
 # _sot_lock_self_id — set _SOT_LOCK_ID to THIS process's holder record, and
 # _SOT_LOCK_SELF to `name:machine:boot:pidns` where this shell can prove a
-# death (Linux, with a /proc that is its own), else to "". Call it in the
-# process that will hold the lock, never as `id=$(_sot_lock_self_id)`: a
-# command substitution is a subshell, and its pid dies at once, so every
-# waiter on this machine would reclaim a live holder (review S5). bash 3.2
-# has no BASHPID, so there the recorded pid is `$$`, which /proc/self then
-# contradicts: nothing is proved from that record, and only the FAILED text is
-# affected while no script runs two with_lock subshells at once: sibling
-# subshells share `$$`, so they would share one ID and one temp file, and the
-# take's `-ef` test would read a sibling's link as its own. No caller does.
-# A box whose comm home's mount proves no fresh read (_sot_lock_vouch) proves
-# no death: its record has no proof fields, so its dead holder is named by
-# hand rather than refused at every reclaim (review F1).
+# death (Linux, with a /proc that is its own; macOS, whose boot session and
+# process start it reads), else to "". Call it in the process that will hold
+# the lock, never as `id=$(_sot_lock_self_id)`: a command substitution is a
+# subshell, and its pid dies at once, so every waiter on this machine would
+# reclaim a live holder (review S5). The pid is this process's own: BASHPID,
+# or on bash 3.2, which has none, a child sh's parent. A box whose comm home's
+# mount proves no fresh read (_sot_lock_vouch) proves no death: its record has
+# no proof fields, so its dead holder is named by hand rather than refused at
+# every reclaim (review F1).
 _sot_lock_self_id() {
-    local name machine=- boot=- pidns=- pid="${BASHPID:-$$}" start=- self_pid="" ns=""
+    local name machine=- boot=- pidns=- pid="${BASHPID:-}" start=- self_pid="" ns="" os b
+    [ -n "$pid" ] || pid="$(exec sh -c 'echo "$PPID"')"
     name="$(sot_host 2>/dev/null)" || name=""
     name="${name//[!A-Za-z0-9._-]/_}"
     name="${name:--}"
     _SOT_LOCK_SELF="" _SOT_LOCK_HOLDER="" _SOT_LOCK_WHO="" _SOT_LOCK_BYHAND="" _SOT_LOCK_GONE=""
-    if [ "$(uname -s 2>/dev/null)" = Linux ]; then
+    os="$(uname -s 2>/dev/null)"
+    if [ "$os" = Linux ]; then
         read -r self_pid _ 2>/dev/null </proc/self/stat || true
     fi
     if [ "$self_pid" = "$pid" ] && _sot_lock_vouch; then
@@ -166,6 +169,10 @@ _sot_lock_self_id() {
         case "$ns" in 'pid:['*']') pidns="${ns#pid:[}"; pidns="${pidns%]}" ;; esac
         if _sot_lock_start "$pid"; then start="$_SOT_LOCK_START"; fi
         machine="${machine:--}"; boot="${boot:--}"; pidns="${pidns:--}"
+        _SOT_LOCK_SELF="$name:$machine:$boot:$pidns"
+    elif [ "$os" = Darwin ] && _sot_lock_vouch && b="$(sysctl -n kern.bootsessionuuid 2>/dev/null)" && [ -n "$b" ] \
+        && _sot_lock_start "$pid"; then
+        machine="$(_sot_machine_id)"; machine="${machine:--}"; boot="$b" pidns=darwin start="$_SOT_LOCK_START"
         _SOT_LOCK_SELF="$name:$machine:$boot:$pidns"
     fi
     _SOT_LOCK_WHY="it was released just now"
@@ -185,6 +192,13 @@ _sot_lock_is_me() {
 # parentheses (challenge_unix.rs's process_start_ticks, the same parse).
 _sot_lock_start() {
     local line="" f=()
+    if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+        # Whole seconds since the epoch, lock.rs's pbi_start_tvsec. ps pads the line with spaces, which date warns of.
+        line="$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$1" 2>/dev/null)" && line="${line%"${line##*[! ]}"}" && [ -n "$line" ] \
+            && line="$(LC_ALL=C TZ=UTC0 date -j -f '%a %b %e %T %Y' "$line" +%s 2>/dev/null)" \
+            && [[ "$line" =~ ^[0-9]+$ ]] && _SOT_LOCK_START="$line"
+        return
+    fi
     { IFS= read -r line </proc/"$1"/stat; } 2>/dev/null || [ -n "$line" ] || return 1
     read -r -a f <<<"${line##*)}" || true
     [[ "${f[19]:-}" =~ ^[0-9]+$ ]] || return 1
@@ -244,6 +258,12 @@ _sot_lock_fresh() {
     [[ "$_SOT_LOCK_READ" =~ ^[^:]*:[^:]*:[^:]*:[^:]*:[0-9]+:[^:]*$ ]]
 }
 
+# _sot_lock_gone PID — 0 when no process has PID: no /proc/PID on Linux; on macOS, kill(2) answers ESRCH, as
+# lock.rs's proc_pidinfo does. A read that fails for any other reason proves nothing (review F3).
+_sot_lock_gone() {
+    if [ "$(uname -s 2>/dev/null)" = Darwin ]; then perl -e 'exit !(!kill(0, $ARGV[0]) && $!{ESRCH})' "$1"; else [ ! -e "/proc/$1" ]; fi
+}
+
 # _sot_lock_judge ID — set _SOT_LOCK_VERDICT to DEAD, ALIVE or UNPROVABLE,
 # and _SOT_LOCK_WHY to the reason a person reads.
 _sot_lock_judge() {
@@ -260,10 +280,10 @@ _sot_lock_judge() {
             else
                 _SOT_LOCK_VERDICT=ALIVE; _SOT_LOCK_WHY="it is running"
             fi
-        elif [ ! -e "/proc/$pid" ]; then
+        elif _sot_lock_gone "$pid"; then
             _SOT_LOCK_VERDICT=DEAD; _SOT_LOCK_WHY="it has exited"
         else
-            _SOT_LOCK_WHY="its /proc entry cannot be read"
+            _SOT_LOCK_WHY="its process cannot be read"
         fi
     elif [ "$machine" != - ] && [ "$boot" != - ] && [ "$me_boot" != - ] && [ "$name" != - ] \
         && [ "$machine" = "$me_machine" ] && [ "$name" = "$me_name" ] && [ "$boot" != "$me_boot" ]; then
@@ -277,10 +297,18 @@ _sot_lock_judge() {
 
 # _sot_lock_vouch — 0 when the comm home's mount makes the fresh read fresh:
 # ext2/3/4, xfs, btrfs, zfs, f2fs or tmpfs, or nfs/nfs4 without `nocto`; the
-# mount on top, the last line of `findmnt -T`, when one is stacked. Asked by
-# _sot_lock_self_id: where it says no, this box proves no death.
+# mount on top, the last line of `findmnt -T`, when one is stacked. On macOS:
+# the Mac's own disk (MNT_LOCAL: `local` in `mount`'s line for the top mount
+# there; inbox.rs's own_disk). Asked by _sot_lock_self_id: where it says no,
+# this box proves no death.
 _sot_lock_vouch() {
-    local fs="" opts=""
+    local fs="" opts="" mp
+    if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+        mp="$(df -P "${_SOT_REG_LOCK%/*}" 2>/dev/null | awk 'NR == 2 { print $NF }')"
+        case "$(mount 2>/dev/null | grep -F " on $mp (" | tail -n 1)" in *", local"*) return 0 ;; esac
+        _SOT_LOCK_WHY="the comm home is not on this Mac's own disk, so no read of it is proved fresh"
+        return 1
+    fi
     read -r fs opts < <(_sot_findmnt -n -o FSTYPE,OPTIONS -T "${_SOT_REG_LOCK%/*}" 2>/dev/null | tail -n 1) || true
     case "$fs" in
         ext2|ext3|ext4|xfs|btrfs|zfs|f2fs|tmpfs|nfs|nfs4) ;;
