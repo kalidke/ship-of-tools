@@ -19,26 +19,47 @@ use resvg::usvg::{fontdb, Options, Tree};
 use crate::ui::render::quad::{Quad, QuadPipeline};
 use crate::ui::render::text::{one_paragraph_per_line, PARAGRAPH_SEPARATORS};
 
-/// System-font database, populated once on first SVG. On Linux fontconfig
-/// makes "serif" / "sans-serif" resolve transparently; on Windows usvg's
-/// default fontdb is empty and `font-family="serif"` falls back to nothing,
-/// dropping text glyphs entirely — `load_system_fonts()` is what closes that
-/// gap.
+/// System-font database, populated once on first SVG. usvg's default fontdb
+/// is empty, so `font-family="serif"` would fall back to nothing and drop the
+/// text's glyphs; `load_system_fonts()` fills it, and `held_generic_families`
+/// points each generic family at a font it holds.
 fn system_fontdb() -> Arc<fontdb::Database> {
     static DB: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
     DB.get_or_init(|| {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
-        // Pin sensible generic-family defaults so `font-family="serif"` (the
-        // shape MathJax SVG emits) resolves on every platform, not just where
-        // fontconfig happens to map it for us.
-        db.set_serif_family("Times New Roman");
-        db.set_sans_serif_family("Arial");
-        db.set_monospace_family("Consolas");
+        held_generic_families(&mut db);
         tracing::info!(count = db.len(), "usvg system fontdb loaded");
         Arc::new(db)
     })
     .clone()
+}
+
+/// Points each generic family (`serif`, `sans-serif`, `monospace`, the families MathJax's text and the Monitor's
+/// labels ask for) at a family `db` holds, so text in one is drawn. `load_system_fonts` has named them: fontconfig's
+/// choice on Linux, else fontdb's Times New Roman, Arial and Courier New, which Windows and macOS ship. A name `db` does
+/// not hold (fontconfig's first preference missing from a lean Linux) becomes the family of the first face it does
+/// hold, a monospaced one for `monospace`.
+fn held_generic_families(db: &mut fontdb::Database) {
+    use fontdb::Family::{Monospace, SansSerif, Serif};
+    for generic in [Serif, SansSerif, Monospace] {
+        let name = db.family_name(&generic);
+        if db.faces().any(|face| face.families.iter().any(|(family, _)| family == name)) {
+            continue;
+        }
+        let monospaced = matches!(generic, Monospace);
+        let held = db
+            .faces()
+            .find(|face| face.monospaced || !monospaced)
+            .and_then(|face| face.families.first())
+            .map(|(family, _)| family.clone());
+        match (generic, held) {
+            (Serif, Some(family)) => db.set_serif_family(family),
+            (SansSerif, Some(family)) => db.set_sans_serif_family(family),
+            (Monospace, Some(family)) => db.set_monospace_family(family),
+            _ => {}
+        }
+    }
 }
 
 /// Rasterise SVG bytes into an RGBA8 bitmap of exactly `(target_w,
@@ -169,6 +190,21 @@ mod tests {
                 _ => 0,
             })
             .sum()
+    }
+
+    /// An SVG's text in each generic family is drawn, on every platform: each names a family this machine holds.
+    #[test]
+    fn svg_text_in_each_generic_family_is_drawn() {
+        let drawn: Vec<(&str, usize)> = ["serif", "sans-serif", "monospace"]
+            .into_iter()
+            .map(|family| {
+                let svg = format!(
+                    r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="50"><text x="0" y="30" font-family="{family}" font-size="20">AA BB</text></svg>"#
+                );
+                (family, glyphs(svg_tree(svg.as_bytes()).expect("the SVG parses").root()))
+            })
+            .collect();
+        assert!(drawn.iter().all(|&(_, n)| n > 0), "{drawn:?}");
     }
 
     /// usvg shapes only a text chunk's first bidi paragraph: the text after a U+2029 or a U+0085, written as itself or

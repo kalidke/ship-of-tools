@@ -21,6 +21,9 @@ rust/frontend/src/ui/CLAUDE.md.
 ## Rules
 - png.rs decodes by sniffing the bytes, not the file name (`with_guessed_format` in its decode path).
 - svg.rs rasterizes at exactly the pixel size the caller asks and never fits to the rect (`quad_from_svg_bytes`).
+- An SVG's text in a generic family (`serif`, `sans-serif`, `monospace`) draws in a family this machine holds:
+  fontconfig's choice on Linux, fontdb's defaults elsewhere, else the first face held (`held_generic_families`; test
+  `svg_text_in_each_generic_family_is_drawn`).
 - Every image-geometry consumer takes `image_rect_for_caption`'s rect, never the pane rect.
 - An ROI is in source-image pixels, the same on any display (`visible_roi_px`, `solve_roi_view`; ADR 0022).
 - One source pixel never grows past 16x16 screen pixels (`png_zoom_max`, `MAX_PX_PER_SRC_PX`).
