@@ -45,8 +45,8 @@ of the backend's tests; the suites span subsystems, so this page names no charte
   own copy. Role bodies enter only in their isolated process. The daemon cases (every other case; all are built only
   with `daemon-lifetime-faults`, on Linux) take `SERIAL` before their `Env`, and some take `Fixture::new` after it. A
   case that takes `SERIAL` alone does not have `Fixture`'s gate: it relies on every run of that feature being one
-  whole-binary run with `--test-threads=1` (both daemon-lifetime jobs of rust.yml); a parallel run of that feature is
-  not covered for such a case.
+  whole-binary run with `--test-threads=1` (both daemon-lifetime jobs of rust.yml, and rc-gate's `job_lifetime`); a
+  parallel run of that feature is not covered for such a case.
 - A role a case re-runs this binary for (`claim_parent_role`, `source_group_role`) enters through
   `sot_log::test_isolated::test_command` and `enter`, and does nothing in an ordinary run.
 - An ordering the product leaves to chance (a close against its backstop, a close against an update) is the case's: it

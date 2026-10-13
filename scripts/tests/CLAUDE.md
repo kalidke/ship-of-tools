@@ -54,7 +54,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   `$VAR` and `${VAR}`); the exit status is CMD's when CMD exits, and a CMD killed by a signal gives 255; a failed start
   leaves no `/tmp/sot-job-*`.
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
-- `rc-gate.sh`: the Linux candidate gate, run as the main process of its own test container (`in-container.sh`); a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy.
+- `rc-gate.sh`: the Linux candidate gate, run as the main process of its own test container (`in-container.sh`); a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy. It runs the daemon lifetime harness as rust.yml's Linux job does (`job_lifetime`).
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
   `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test
   install layout (pinned-checkout predicate)".
@@ -256,6 +256,16 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   `sot-capsule`), and summary.txt's first line names one head and tree; a build of another checkout into it would replace
   them mid-run. A target belongs to one checkout for good: the first run names it in `<target>/rc-gate-checkout` and a run
   for any other checkout exits 2 before anything is built (cargo can run another tree's binaries from a shared target).
+- `rc-gate.sh` builds the daemon lifetime harness as rust.yml's Linux job does (`sot-capsule` with `native-barrier`, the
+  harness with `daemon-lifetime-faults`) in `<target>/daemon-lifetime`, a target of its own, since those features would
+  replace the `sotd` and `sot-capsule` the other jobs run; `job_lifetime` runs every case with `--include-ignored
+  --test-threads=1`, the Julia cases on the gate's `julia` (`SOT_JULIA_BIN`), after preparing Pluto's environment in the
+  gate's depot as rust.yml's job does (`fixtures/warm_pluto.jl`, its log `<logdir>/lifetime-warm.log`; a failure there
+  is the job's result) and handing the cases its manifest (`SOT_L2_PLUTO_MANIFEST`). Two parts go unchecked there: no user
+  manager answers in the gate's container, so `a_service_manager_counts_int_and_term_as_a_clean_stop` prints `SKIPPED`
+  and passes (it runs by name under `--user-manager`, `rust/backend/tests/CLAUDE.md`), and where the jobs' PATH (cargo,
+  node, /usr/bin, /bin) holds no `quarto`, the done test's Quarto half prints NOT CHECKED (the hosted job checks it). A
+  failed build leaves the job's result `unrun`, a failure.
 - `rc-gate.sh` needs `node` on its PATH, as it needs `julia`, and gives its jobs node alone, through a link in `<logdir>/bin`, and `npm ci` done in `rust/backend/sidecars/mathjax` (the
   sotd contract tests and test-agent-layers use them); it refuses, exit 2, rather than install into the checkout it
   judges. A Rust test binary's stderr goes to `<key>.stderr` beside its log, so the body check reads stdout only.
