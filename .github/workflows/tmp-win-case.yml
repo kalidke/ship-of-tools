@@ -1,0 +1,89 @@
+# TEMPORARY, WIN-PATH-CASE on a hosted Windows runner; never merged. Pushed alone on tmp/ci-win-case (lane/small-066b's
+# head), read, then the branch is deleted. Nothing here pushes, publishes or reads a secret. The step is part 2 of the
+# item file WIN-PATH-CASE.md; its question is written there.
+name: tmp win-case
+on:
+  push:
+    branches: [tmp/ci-win-case]
+jobs:
+  tmp-win-case:
+    name: tmp WIN-PATH-CASE, one folder's spellings in case (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: The case probe
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set +e -u
+          # WIN-PATH-CASE (SMALL-066B O5). After a cd into a mixed-case folder in its stored case (U), in lower case (L), and in
+          # Windows' spelling with a lower-case drive letter (D), each program's spelling of the folder, raw and as W7 compares
+          # it (cygpath -m -l: comm/lib/comm-lib-client.sh sot_native_path). The last line says whether any two compared
+          # spellings differ only in case. The C lines run W7's functions at this checkout; they are information, not the verdict.
+          base="$(cygpath -u "${RUNNER_TEMP:-${TEMP:-}}")" && [ -d "$base" ] || { echo "case: no temp folder"; exit 2; }
+          top="$base/SotCase$$/MixedCaseProj"
+          mkdir -p "$top" && (cd "$top" && git init -q && : > a.txt) || { echo "case: could not make $top"; exit 2; }
+          lc="$(printf '%s' "$top" | tr 'A-Z' 'a-z')"
+          w="$(cygpath -m "$top")"; dl="$(printf '%s' "${w:0:1}" | tr 'A-Z' 'a-z')${w:1}"
+          stored() {  # PATH (/x/... form, any case): each name as its parent folder lists it, the picker's names (directory.list)
+              local out="" rest="${1#/}" c m
+              case "$1" in /?/*) out="${1:0:2}" rest="${1#/?/}" ;; esac
+              shopt -s nocaseglob
+              IFS=/ read -r -a parts <<< "$rest"
+              for c in "${parts[@]}"; do
+                  m=( "$out/${c%?}"["${c: -1}"] )
+                  [ -e "${m[0]}" ] || { shopt -u nocaseglob; printf 'NOT FOUND at %s/%s' "$out" "$c"; return; }
+                  out="${m[0]}"
+              done
+              shopt -u nocaseglob
+              printf '%s' "$out"
+          }
+          names=() vals=()
+          row() {  # TAG NAME RAW — print RAW and its compared spelling, keep the compared one
+              local n
+              n="$(cygpath -m -l "$3" 2>&1)"
+              echo "case $1 $2: raw '$3' -> '$n'"
+              names+=("$1:$2") vals+=("$n")
+          }
+          for tag in U L D; do
+              case "$tag" in U) to="$top" ;; L) to="$lc" ;; D) to="$dl" ;; esac
+              cd "$to" || { echo "case $tag: cd '$to' failed"; continue; }
+              echo "case $tag: cd '$to'"
+              g="$(git rev-parse --show-toplevel 2>&1)"
+              row "$tag" "pwd" "$(pwd)"
+              row "$tag" "pwd-P" "$(pwd -P)"
+              row "$tag" "git" "$g"
+              row "$tag" "realpath-git" "$(realpath "$g" 2>&1)"
+              row "$tag" "realpath-dot" "$(realpath . 2>&1)"
+              row "$tag" "cmd-child" "$(cmd //c cd 2>&1 | tr -d '\r')"
+              row "$tag" "stored" "$(stored "$(cygpath -u "$PWD")")"
+              echo "case $tag: pwd -W '$(pwd -W 2>&1)', cygpath -m (no -l) '$(cygpath -m "$PWD" 2>&1)'"
+              if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -f "$GITHUB_WORKSPACE/comm/tests/stage-bin.sh" ]; then
+                  bin="${RUNNER_TEMP:-$base}/case-bin"
+                  [ -d "$bin" ] || (cd "$GITHUB_WORKSPACE" && SOT_COMM_HOME="${RUNNER_TEMP:-$base}/case-comm" \
+                      bash comm/tests/stage-bin.sh "$bin" > /dev/null 2>&1)
+                  export SOT_COMM_HOME="${RUNNER_TEMP:-$base}/case-comm"
+                  echo "case $tag C1 sot_same_root(realpath git, realpath .): $(bash -c '. "$1/comm-lib.sh"; sot_same_root "$2" "$3" && echo same || echo different' _ "$bin" "$(realpath "$g")" "$(realpath .)" 2>&1)"
+                  echo "case $tag C2 sot_relative_to(git, \$PWD/a.txt): '$(bash -c '. "$1/comm-lib.sh"; sot_relative_to "$2" "$3" || echo refused' _ "$bin" "$g" "$PWD/a.txt" 2>&1)'"
+              fi
+          done
+          cd "$base" && rm -rf "$base/SotCase$$" "${RUNNER_TEMP:-$base}/case-bin" "${RUNNER_TEMP:-$base}/case-comm"
+          v="AGREE: every compared spelling is one string"
+          i=0
+          while [ "$i" -lt "${#vals[@]}" ]; do
+              j=$((i + 1))
+              while [ "$j" -lt "${#vals[@]}" ]; do
+                  a="${vals[$i]}" b="${vals[$j]}"
+                  if [ "$a" != "$b" ]; then
+                      if [ "$(printf '%s' "$a" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$b" | tr 'A-Z' 'a-z')" ]; then
+                          v="DISAGREE in case: ${names[$i]} '$a' vs ${names[$j]} '$b'"; break 2
+                      fi
+                      v="DIFFER beyond case: ${names[$i]} '$a' vs ${names[$j]} '$b'"
+                  fi
+                  j=$((j + 1))
+              done
+              i=$((i + 1))
+          done
+          [ "${#vals[@]}" -ge 2 ] || v="NO RESULT: fewer than two spellings were read"
+          echo "case-probe: $v"
