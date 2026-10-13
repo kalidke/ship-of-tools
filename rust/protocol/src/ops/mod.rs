@@ -195,62 +195,26 @@ pub mod op {
     /// ("created" | "destroyed"), `slug`, and `workspace_id`; the frontend
     /// reacts by re-issuing `workspace.list`.
     pub const WORKSPACE_CHANGED: &str = "workspace.changed";
-    /// Client→daemon request: relay an agent-to-agent message through the
-    /// backend so it reaches every connected frontend instantly over the
-    /// SSH-forwarded socket (the only live cross-machine link). The daemon
-    /// stamps a `ts` and publishes onto a broadcast channel; each connection
-    /// turns it into an `AGENT_MESSAGE` evt. Payload is `AgentSendReq`
-    /// (`{from, to, text}`; `to == ""` means broadcast/all). Response is a
-    /// `AgentSendRes{ok, receivers}` ack. Structurally mirrors `WORKSPACE_CHANGED`
-    /// but adds the client→daemon publish leg.
+    /// Client→daemon request: one UI notification (the nav envelope, the ROI echo). The daemon stamps a `ts` and
+    /// publishes it onto a broadcast channel; each connection writes it as an `AGENT_MESSAGE` evt. Payload
+    /// `AgentSendReq { from, to, text }` with `to` empty; response `AgentSendRes { ok }`, which is not a filing. A
+    /// request whose `to` names a handle is mail and is refused `mail_requires_comm_file`.
     pub const AGENT_SEND: &str = "agent.send";
-    /// Server→client push fired for every relayed agent message (see
-    /// `AGENT_SEND`). Mirrors `workspace.changed`: the daemon broadcasts to
-    /// every connection so the in-terminal agent on the other machine receives
-    /// the message instantly instead of polling the slow git bus. Payload
-    /// carries `{from, to, text, ts}`; the daemon whose comm folder lists `to`
-    /// files it (`hub_link.rs`) and answers `agent.filed`.
+    /// Server→client push of one `AGENT_SEND` notification, to every connection. Payload `{from, to, text, ts}`,
+    /// `to` empty. The frontend acts on a nav envelope; nothing files it.
     pub const AGENT_MESSAGE: &str = "agent.message";
-    /// Client→daemon request (ADR 0048): whoever APPENDED a relayed frame
-    /// to an inbox says so. Payload `AgentFiledReq { id }` — the
-    /// sender-minted id the frame carried, and nothing else. The daemon
-    /// stamps `filer` from THIS connection's declared hello `name`, fans
-    /// the result out as an `AGENT_RECEIPT` evt, and answers
-    /// `AgentFiledRes { ok }`. A connection with no declared name has
-    /// nothing to be named as and is refused `bad_filer`. The daemon keeps
-    /// no delivery state: it relays a receipt exactly as it relays a
-    /// message.
-    ///
-    /// **Only a POSITIVE claim exists.** A filer knows it appended; it
-    /// cannot know that no OTHER filer did, and `agent.message` reaches
-    /// every connection, so a "did not file" answer would be a global
-    /// assertion made from local knowledge — every attached frontend would
-    /// deny a handle it does not host, and whichever denial arrived first
-    /// would overrule the truth. Absence of a receipt is the only negative,
-    /// and it is the sender's own conclusion, not anyone's claim.
-    pub const AGENT_FILED: &str = "agent.filed";
-    /// Server→client push fired for every `AGENT_FILED` (ADR 0048), to
-    /// every connection like `AGENT_MESSAGE` — the sender recognizes its
-    /// own by `id` and ignores the rest. Payload `AgentReceiptEvt { id,
-    /// filer }`. This is the only honest verdict for a cross-box send: the
-    /// append IS the delivery, so only the appender can report one.
-    ///
-    /// `filer` is ATTRIBUTION, not authentication: nothing validates a
-    /// hello `name`, and the frame id reaches every client, so any
-    /// authenticated client could vouch under any name. It replaces a
-    /// name-suffix guess with a claim from something that says it did the
-    /// work, checkable against the roster — not a proof against a hostile
-    /// client, which is not the threat model here.
-    pub const AGENT_RECEIPT: &str = "agent.receipt";
     /// Client→daemon request (0031 B1): append this frame to `to`'s inbox in
     /// THIS daemon's comm folder — the hub files for its own home, and a
     /// guest on the hub's folder forwards what it cannot prove it may append.
+    /// A handle the hub's folder does not list, the hub offers to each daemon
+    /// linked to it (a `LINK_ROLE` connection) as this same request, sent
+    /// daemon→client with `forwarded` set, and answers with theirs.
     /// Payload `CommFileReq { from, to, text, broadcast, forwarded }`;
     /// response `CommFileRes { ok: true }` only when the line is in the file,
     /// else the standard `{error, code}` with `code` one of `bad_handle`,
     /// `not_here` (this folder does not list `to`), `no_live_session`,
     /// `file_failed` — and nothing was appended.
-    /// One verb per job: `AGENT_SEND` still means "publish onto the bus".
+    /// This is the only mail verb: `AGENT_SEND` carries UI notifications.
     pub const COMM_FILE: &str = "comm.file";
     /// Client→daemon request: a session inside a workspace declares its
     /// sot-comm handle to the daemon that spawned/pinned its env (ADR
@@ -433,7 +397,7 @@ pub mod op {
     /// (server/conn.rs) and drops one that goes quiet that long, reaping it
     /// through the same `ClientGuard::drop` path as a clean exit.
     /// Any connection that has sent one is deadline-gated, the hub link
-    /// (role `cli`) included. Opt-in by
+    /// (role `link`) included. Opt-in by
     /// ping (manager compatibility fix): the deadline arms on this
     /// connection's FIRST `ping`, never at hello —
     /// a peer too old to send one (a frontend box or comm

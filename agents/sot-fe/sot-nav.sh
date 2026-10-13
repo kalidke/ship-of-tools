@@ -2,16 +2,13 @@
 # sot-nav.sh — drive the Ship of Tools frontend nav from inside a session.
 #
 # A Claude session running in a sot workspace pane can point the FE at a
-# file: switch to Files mode, select the path, show its preview. It rides the
-# sot-comm relay as a BROADCAST agent.message carrying a structured
-# {"sot_ui":{...}} envelope. The frontend intercepts that envelope (gated on
-# workspace) and drives nav locally — the envelope is NEVER rendered as chat.
-#
-# Why broadcast (vs a directed send): the daemon broadcasts every agent.message
-# to all connected FEs anyway, and a to=="" frame FILES SILENTLY for sessions
-# (it does not wake them — see comm-relay.sh and the daemon's wake). So one broadcast reaches every FE without spamming peer sessions;
-# each FE acts only if the envelope's workspace matches the workspace it is
-# currently viewing.
+# file: switch to Files mode, select the path, show its preview. It is a UI
+# notification, not mail: one `agent.send` with an empty `to`, carrying a
+# structured {"sot_ui":{...}} envelope, which the daemon at this box's relay
+# endpoint publishes to every connection as `agent.message`. No inbox is
+# written and nobody is woken. The frontend intercepts the envelope (gated on
+# workspace) and drives nav locally; it is NEVER rendered as chat. Each FE acts
+# only if the envelope's workspace matches the workspace it is viewing.
 #
 # Awareness: requires SOT_WORKSPACE (the workspace slug), which the backend
 # stamps into the capsule leg's env when it spawns the row. SOT_SESSION=1
@@ -77,8 +74,18 @@ if [ -n "${SOT_NAV_DRY_RUN:-}" ]; then
     exit 0
 fi
 
-# Fire-and-forget broadcast over the relay. send_frame prints "relayed -> <all>"
-# on daemon ack; that means the daemon accepted the frame, not that any FE acted
-# (the FE acts only if its current workspace matches "$SLUG").
-"$SCRIPT_DIR/comm-relay.sh" send --all "$ENVELOPE"
+# One request on a fresh daemon connection (comm-lib's sot_oneshot_request). Its `ok` means the daemon published the
+# notification, not that any FE acted (the FE acts only if its current workspace matches "$SLUG"). Identity is the
+# one a send needs: a process that may not act as this row's handle drives no FE either.
+source "$SCRIPT_DIR/comm-lib.sh"
+eval "$("$SCRIPT_DIR/comm-context.sh")"
+why="$(sot_require_routable_identity)" || die "$why"
+ENDPOINT="$(sot_relay_endpoint || true)"
+[ -n "$ENDPOINT" ] || die "no sotd daemon found; \`sotd topology relay-endpoint\` gave no endpoint for this box"
+FRAME="$(printf '%s' "$ENVELOPE" | jq -Rsc --arg f "$NAME" '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:"",text:.}}')"
+RESP="$(sot_oneshot_request "$FRAME" agent.send)" || RESP=""
+if ! printf '%s' "$RESP" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
+    why="$(printf '%s' "$RESP" | jq -r '.payload.error // empty' 2>/dev/null)" || why=""
+    die "the daemon at $ENDPOINT did not publish the notification${why:+: $why}"
+fi
 echo "sot-nav: nav.preview workspace=$SLUG path=$REL (broadcast)"

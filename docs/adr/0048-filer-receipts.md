@@ -10,6 +10,8 @@ commits has none of it**, and the test is a grep: no `agent.receipt` under
 
 > *Note (2026-09-30, ADR 0049 B1): the clause "the filer's receipt survives as the hub route's single `filed` answer" is now true only for the leg to a box with its own disk, until B2. For a handle the hub's comm folder lists, the appending daemon answers `filed`/`FAILED` itself, and no per-session bridge files or claims anything.*
 
+> *Note (2026-10-12, ADR 0049 B2): no receipt survives. `agent.filed` and `agent.receipt` are deleted; the hub offers a handle its folder does not list to each linked daemon as a `comm.file` request, and that daemon's answer is the verdict. The text below records the earlier design.*
+
 ## Context
 
 `comm/PROTOCOL.md`'s own rule is that the append IS the delivery: a frame in a

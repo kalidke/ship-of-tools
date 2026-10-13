@@ -308,11 +308,11 @@ never hand-writes or regenerates the scripts here.
 Install the comm scripts + Claude skill adapters (idempotent), then join:
 ```sh
 julia --project=. -e 'using ShipTools; ShipTools.update_comm()'   # from $REPO; copies to ~/.sot-comm/bin + ~/.claude/skills
-~/.sot-comm/bin/comm-join.sh --name <handle>             # registers in ~/.sot-comm/registry.json
+~/.sot-comm/bin/comm-join.sh                             # registers this session's derived handle (folder + box name)
 ~/.sot-comm/bin/comm-list.sh                             # verify the handle shows up
 ```
-**`comm-join.sh` takes only `--name` (and optional `--expertise "a, b"`)** — there
-is no `--endpoint` flag; it registers this session in the local file registry.
+**`comm-join.sh` takes no endpoint**; it registers this session in the local file
+registry.
 Cross-machine messaging rides the relay over the backend tunnel at runtime, not a
 join-time endpoint.
 

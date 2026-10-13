@@ -45,7 +45,7 @@
 # `<count> <crc>-<len>` of the last line the reader READ (hashed from the bytes
 # it holds, never re-read from the file), so a reader steps back one line when
 # a cut-back removed it.
-SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-10}"
+SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-2}"
 _sot_have_flock() { command -v flock >/dev/null 2>&1; }
 _sot_findmnt() { findmnt "$@"; }
 # _sot_machine_id — this machine's id, as inbox.rs's machine_id: Linux's /etc/machine-id; macOS's host UUID
@@ -234,27 +234,26 @@ _sot_inbox_append_via_daemon() {  # HANDLE LINE
 }
 
 # sot_comm_file HANDLE LINE — THE one `comm.file` request and its verdict, for
-# the guard's daemon route above and comm-relay.sh's send_frame alike. LINE is
+# the guard's daemon route above and comm-relay.sh alike. LINE is
 # the inbox line (`from`, `to`, `msg`); ENDPOINT comes from the caller's scope.
-# 0 = filed; otherwise the reason is on stdout for the caller to print after
-# `FAILED -> @h: `, and the status is 2 when the daemon does not list HANDLE
-# (`not_here`), 1 for everything else. The response line decides, in this
-# order: an `error` is FAILED in the daemon's own words (keyed on its
+# 0 = filed; 1 = not, with the reason on stdout for the caller to print after
+# `FAILED -> @h: `; every refusal is final, `not_here` included. The response
+# line decides, in this order: an `error` is FAILED in the daemon's own words (keyed on its
 # presence, never on `code` — an older daemon refuses the unknown op with no
 # code); `ok` is filed whatever the transport's exit status or stderr say; no
 # response is FAILED, and only then does the transport's stderr give the why.
 # A subshell: its cleanup trap removes the file that holds the request's stderr however the call ends, HUP, INT and
 # TERM included (comm-lib-base.sh, cleanup traps).
 sot_comm_file() (  # HANDLE LINE
-    local h="$1" frame resp reason code diag window
+    local h="$1" frame resp reason diag window
     err=""   # not local: the cleanup trap reads it (comm-lib-base.sh, cleanup traps)
     trap 'trap "" HUP INT TERM; [ -z "$err" ] || rm -f -- "${err:?}"; sot_end_by_signal' EXIT
     sot_cleanup_signals
-    # The daemon may wait the whole inbox-lock bound before it files, so a read
-    # window no longer than that reports FAILED for a line that WAS filed, and
-    # the sender resends it: the lock wait plus 10s for the transport's setup.
-    window=$(( SOT_INBOX_LOCK_WAIT_SECS + 10 ))
-    [ "${SOT_SEND_TIMEOUT:-0}" -gt "$window" ] 2>/dev/null && window="$SOT_SEND_TIMEOUT"
+    # Decision 0031: no answer within 5 seconds is FAILED. The daemon may wait the
+    # whole inbox-lock bound before it files, or a linked daemon may, behind the hub's
+    # one-second hop, so the window is the lock wait plus 3 s: 5 s at the default 2 s
+    # wait, and never shorter than the appender's own bound.
+    window=$(( SOT_INBOX_LOCK_WAIT_SECS + 3 ))
     # The text reaches jq on stdin, never argv (comm-lib-base.sh, free text and jq).
     # A broadcast copy (the line's own `to` empty) must stay one after filing.
     frame="$(printf '%s' "$2" | jq -c --arg t "$h" \
@@ -267,8 +266,6 @@ sot_comm_file() (  # HANDLE LINE
     reason="$(printf '%s' "$resp" | sot_jq -r '.payload.error // empty' 2>/dev/null)" || reason=""
     if [ -n "$reason" ]; then
         printf '%s\n' "$reason"
-        code="$(printf '%s' "$resp" | sot_jq -r '.payload.code // empty' 2>/dev/null)" || code=""
-        [ "$code" = not_here ] && return 2
         return 1
     fi
     # `-n` first: `jq -e` over empty input exits 0.

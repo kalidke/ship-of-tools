@@ -256,28 +256,6 @@ impl Clients {
         self.inner.lock().unwrap().by_conn.len()
     }
 
-    /// Connection names positioned to receive an `agent.send` addressed to
-    /// `to` (`to == ""` is the broadcast form — see `AgentSendReq`), read
-    /// with ONE lock acquisition. A row counts when its `serial` isn't
-    /// `self_serial` (a sender is never its own receiver) AND either its
-    /// declared `name` matches `to` exactly, or its `role` is `"fe"`
-    /// unconditionally — a Windows-hosted handle runs no bridge (its
-    /// frontend files every broadcast frame straight into its own inbox
-    /// rather than filtering client-side like a bridge does), so gating
-    /// `"fe"` rows on a name match would turn every send to a Windows
-    /// session into a false "no receiver". `to == ""` counts every OTHER
-    /// row with a non-empty declared `name`. Rows with no declared `name`
-    /// never appear in the result — there's nothing to report them as.
-    pub fn receivers_for(&self, to: &str, self_serial: u64) -> Vec<String> {
-        let g = self.inner.lock().unwrap();
-        g.by_conn
-            .values()
-            .filter(|c| c.serial != self_serial)
-            .filter(|c| to.is_empty() || c.name.as_deref() == Some(to) || c.role == "fe")
-            .filter_map(|c| c.name.clone())
-            .collect()
-    }
-
     /// Stamp `last_person_input_at = now` for the connection at `serial` —
     /// the ONLY thing that should call this is the `fe.presence` handler
     /// (2026-09-08 review rework, design point A). A no-op if `serial`

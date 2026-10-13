@@ -6,13 +6,13 @@ rust/protocol/CLAUDE.md.
 
 ## Files
 - `mod.rs`: the `op` module of op-name constants and the `mod` / `pub use` lines that keep every payload at `ops::X`
-- `session.rs`: the connection and client roster: hello, ping, version.query, fe.command, fe.presence, fe.sessions, topology.set
+- `session.rs`: the connection and client roster: hello (its roles, `HANDOFF_ROLE` and `LINK_ROLE`), ping, version.query, fe.command, fe.presence, fe.sessions, topology.set
 - `session_tests.rs`: wire tests for the session family (hello, version.query, fe.presence, fe.command)
 - `browse.rs`: what a client reads and writes of a workspace: trees, preview, files, concept notes, math, transfers
 - `repl.rs`: the persistent Julia REPL: eval, run_file, execute and its streamed frames
 - `pty.rs`: a row's agent pane: pty.open and the named-row input and screen ops
 - `workspace.rs`: rows and accounts: workspace create, list, activate, destroy, reauth, accounts.list
-- `agent.rs`: agent messaging: agent.send, agent.filed, agent.receipt, comm.file, agent.join
+- `agent.rs`: agent messaging: comm.file (mail; the hub also sends it to a `link` connection), agent.join, and agent.send (UI notifications)
 - `pages.rs`: browser pages (pluto, video, docs, quarto) and proxy.connect
 - `monitor.rs`: the monitor drawer's samples and subscriptions
 - `update.rs`: update.check and update.apply

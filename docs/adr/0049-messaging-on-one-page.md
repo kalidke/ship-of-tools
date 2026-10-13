@@ -2,17 +2,18 @@
 
 **Status:** current — accepted as the design of record; supersedes ADR 0047 (ping wake) and ADR
 0048 (filer receipts). Built: the daemon's wake, the inbox lock, one row per handle
-(`comm/CLAUDE.md` says what one row per handle leaves unbuilt), and one meaning of `filed` (every
-route checks the receiver's liveness, one fact in the registry, before it appends). The hub's
-fallback for a handle its folder does not list (`agent.send`, ending `NOT CONFIRMED`) stays until
-B2. The rest lands in stages, and the per-session watcher, listener and bridge machinery it
-replaces stays in place until each stage does.
+(`comm/CLAUDE.md` says what one row per handle leaves unbuilt), one meaning of `filed` (every
+route checks the receiver's liveness, one fact in the registry, before it appends), and B2: the hub
+offers a handle its folder does not list to the daemons linked to it and answers with theirs, so a
+send ends `filed` or `FAILED` and nothing else. The rest lands in stages, and the per-session
+watcher, listener and bridge machinery it replaces stays in place until each stage does.
 
 2026-10-10: A subagent uses no mail (decision 0031, amended); Cases says so.
 
-2026-10-06: B2 premise amendment for 0.6.6.
-
-Known limit (B2): the hub's comm folder has not been shown to list every live row on every attached box. At the 2026-10-06 premise check, two attached boxes had no session; one of them had no frontend connected, so those two boxes were unobserved. A handle absent from that folder still uses the broadcast filer route and may end NOT CONFIRMED. Full B2 removal is blocked on the live-row registry premise; this checkout does not promise a binary verdict for that route.
+2026-10-12: B2 built. The 10-06 premise (every live row listed in the hub's folder) is false for
+every box with its own comm folder, whose rows join there; so the hub offers what its folder does not
+list over each box's link, a request answered by that box's daemon, and the broadcast filer, its
+receipts and `NOT CONFIRMED` are deleted.
 
 2026-10-04: User isolation added (release captain's ruling); decision 0031 holds the
 guarantees, this ADR the design.
@@ -39,7 +40,7 @@ The owner asked for the fix as "agree on the one page comm system and then clean
   offers it to every linked daemon, and the one holding that inbox files it and says so.
   A daemon on a box with its own disk keeps its own link to the hub, opened when it
   starts and reopened if it drops, so the box is reachable whenever its rows run,
-  window open or not; its sessions send through that same link. A liveness check runs
+  window open or not. A liveness check runs
   first, on one fact in the comm folder's registry: the receiver's `last_seen` is under ten
   minutes old. The session stamps it as it works, and the daemon that runs its row stamps it
   every minute while the row runs, so an idle row stays live, through a daemon restart too,

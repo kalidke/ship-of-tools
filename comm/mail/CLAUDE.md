@@ -7,7 +7,7 @@ comm/CLAUDE.md.
 
 ## Files
 - `comm-send.sh`: directed and broadcast sends; the registry decides a local append or the wire (it execs `comm-relay.sh send` for a handle it cannot name), and a listed handle that is not live is refused before anything is appended.
-- `comm-relay.sh`: the send that rides the daemon: `comm.file` for a handle the hub lists, else `agent.send` and a wait for a filer's receipt; the retired `bridge` verb only sleeps.
+- `comm-relay.sh`: the send for a handle this box's registry does not list: one `comm.file` request to the relay endpoint, whose answer is the verdict; the retired `bridge` verb only sleeps.
 - `comm-poll.sh`: shows the inbox lines past the read cursor, then advances it; the only writer of the cursor.
 
 ## Start here
@@ -16,11 +16,8 @@ comm/CLAUDE.md.
 ## Rules
 - `filed -> @h` is printed only on the appender's word (`sot_inbox_append`, `sot_comm_file` in comm-lib-inbox.sh), and
   only for a live handle: `deliver` refuses a listed handle whose `last_seen` `sot_heartbeat_fresh` does not call fresh.
-  The `agent.send` leg of `comm-relay.sh` still ends in `NOT CONFIRMED` when no filer claims the send within 5 seconds.
+  A daemon's refusal is final, `not_here` included: no second request or route follows it.
 - Only `comm-poll.sh` moves `read/<h>.cursor`.
 - Readers count newline-terminated lines only.
 - A message body reaches jq on stdin, never as `--arg` and never through a temporary file.
-- `send_frame` runs in a subshell: its `agent.send` leg keeps the hello builder's words and a dying bridge's reason in
-  one scratch folder, which the subshell's cleanup trap removes however it ends, a second HUP, INT or TERM included
-  (comm/lib/comm-lib-base.sh, cleanup traps).
 - Senders type into no row (comm-send.sh's header); the daemon wakes the receiver.

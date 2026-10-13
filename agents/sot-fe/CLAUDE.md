@@ -11,7 +11,7 @@ text in place of its `source` line, and `sot-nav.sh` flat into the comm bin (`co
 - `sot-fe-repl.sh`: the REPL verbs: run a file, eval, interrupt, status
 - `sot-fe-row.sh`: type into a row, read its screen, move it to another account
 - `sot-fe-version.sh`: the version report (`send_version`)
-- `sot-nav.sh`: the nav envelope (`nav.preview`) broadcast with `comm-relay.sh send --all`
+- `sot-nav.sh`: the nav envelope (`nav.preview`), sent as one empty-target `agent.send` through `sot_oneshot_request`
 
 ## Start here
 The `case "$CMD"` dispatch at the foot of `sot-fe`, then the `send_*` function its verb calls, in the part of its

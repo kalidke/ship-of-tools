@@ -23,8 +23,8 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
   non-messaging skills, `sot-gh-auth.sh` moved to `agents/`.
 
 ## Promises
-- `filed` is printed only on the appender's word: a local append that synced, a daemon's `comm.file` answer `ok`, or a
-  filer's receipt carrying this send's id, and only for a live handle: one whose registry `last_seen` is under 600 s
+- `filed` is printed only on the appender's word: a local append that synced, or a daemon's `comm.file` answer `ok`
+  (the hub's own, or the one a linked daemon gave the hub), and only for a live handle: one whose registry `last_seen` is under 600 s
   old (`sot_heartbeat_fresh`, `heartbeat_fresh`), stamped by the session and, every minute, by the daemon running its
   row. `FAILED` appended nothing.
 - Every appender takes flock on `inbox/<h>.lock` and appends locally only when its own lock manager equals line 1 of
@@ -59,10 +59,10 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides:
-`remove_comm_agents_for_workspace`, `handle_agent_join`, `comm_handle_for_workspace`, `clear_comm_unread`,
+`remove_comm_agents_for_workspace`, `handle_agent_join`, `handle_comm_file`, `handle_agent_send`, `Links`, `comm_handle_for_workspace`, `clear_comm_unread`,
 `read_comm_agents`, `host_matches`, `last_joiner`, `spawn_registry_poll`, `workspace.changed`, `workspace.list`,
 `comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`, `agents/spawn/comm-probe.sh`,
-`agents/spawn/comm-bootstrap.sh`, `sot_sanitize_component`, `_sot_handle_host`. Provides also: HOST (the declared host), HANDLE_HOST (the raw handle component), and _sot_self_slot for the agents shell edge. Uses: `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`, `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `ping`, `SshRecipe`, `recipe_for`, `dial_and_call`, `dispatch`, `LinkGate`, `Redial`, `STABLE`, `Signal::spawn`,
+`agents/spawn/comm-bootstrap.sh`, `sot_sanitize_component`, `_sot_handle_host`. Provides also: HOST (the declared host), HANDLE_HOST (the raw handle component), and _sot_self_slot for the agents shell edge. Uses: `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`, `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `ping`, `LINK_ROLE`, `SshRecipe`, `recipe_for`, `dial_and_call`, `dispatch`, `LinkGate`, `Redial`, `STABLE`, `Signal::spawn`,
 `Contained`, `Signal`, `child_signal::process`, `Workspace::agent_handle`, `set_agent_handle`, `attach`,
 `send_text`, `send_enter`, `rust/backend/src/rows/run/headless.rs`, `Workspaces::resolve`, `row_or_reply`,
 `capsule_guard`, `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`,
@@ -79,14 +79,15 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `registry/`: the address book scripts: identity, join, leave, list, self-audit, lock recovery, session start.
 - `tests/`: the hermetic suites that prove the scripts, run from a staged flat bin (see its page).
 - `work_state/`: `comm-status.sh`, `comm-turn-auditor.sh` and the status hooks (`work_state/hooks/`), the row colour's reduction.
-- `rust/backend/src/comm/mail/`: the daemon's delivery: `comm.file` (`file_comm`), `agent.send` and `agent.filed`
-  (`relay.rs`), the `agent.message` and `agent.receipt` buses, the hub link (`run`), and the append (`file_frame`).
+- `rust/backend/src/comm/mail/`: the daemon's delivery: `comm.file` (`file_comm`), its offers to linked daemons
+  (`links.rs`) and the hub link that answers them (`run`), the append (`file_frame`), and the `agent.send` UI
+  notification and its `agent.message` bus (`relay.rs`).
 - `rust/backend/src/comm/registry/`: the daemon's address book: `agent.join` (`handle_agent_join`), the registry lock
   (`acquire`), reads, the destroy prune and `clear_comm_unread`.
 - `rust/backend/src/comm/wake/`: the wake tick (`check_row`), the screen reading and the one attach.
 
 ## Files
-- `PROTOCOL.md`: the contract every client implements: layout, registry, inbox, cursor, locks, the receipt rule.
+- `PROTOCOL.md`: the contract every client implements: layout, registry, inbox, cursor, locks, the one result.
 - `adapters/`: Claude and Codex adapters (see Folders).
 - `bin-folders.txt`: the folders whose files install flat into `~/.sot-comm/bin`, one repo path per line, in publish order: `lib` first, so no new script starts before the new library.
 - `lib/`: the shell library (see Folders).

@@ -17,10 +17,8 @@ once, when a session first starts — not again on every resume. If a comm
 script says this process has no comm identity (you were started inside another
 session) or cannot read its own ancestry: stop; do not retry or join.
 
-This is ADR 0049's design of record, landing in stages: a send's verdict now is
-`filed -> @h` or `FAILED -> @h: <reason>`, except that until B2 a handle the
-hub's folder does not list can still get `NOT CONFIRMED: sent for @h; …` or
-`filed -> @h (by <filer>, relay)`. The daemon wakes an idle row by typing
+This is ADR 0049's design of record: a send's verdict is `filed -> @h` or
+`FAILED -> @h: <reason>`, and nothing else. The daemon wakes an idle row by typing
 `[sot-comm] you have mail: run comm-poll.sh`; a send types nothing itself. There
 is nothing to arm, own or re-arm. A session outside any row is never woken while idle — it sees
 new mail only at its own next turn.
@@ -31,7 +29,7 @@ new mail only at its own next turn.
 
 | Intent | Command |
 |--------|---------|
-| Join (once per session) | `comm-join.sh --name <name> --expertise "a, b"` |
+| Join (once per session; `/sot-session-start` does it) | `comm-join.sh --expertise "a, b"` (the handle is derived: folder name plus box name, unless the launcher pinned one) |
 | Who's online | `comm-list.sh` |
 | Direct message | `comm-send.sh @<name> "message"` |
 | Broadcast | `comm-send.sh --broadcast "message"` |
@@ -89,25 +87,22 @@ it picks the route itself (`comm-relay.sh` is the plumbing underneath, not a
 verb you call). A handle this box's registry names is filed through this box's comm folder
 (`filed -> @handle` — the file IS the ack, read at that session's next turn
 boundary), but only when it is live: its session was active, or the daemon running its row stamped it, in the last ten minutes; one it cannot name goes to the hub as one `comm.file` request, and
-the hub's answer is the verdict: `filed -> @handle` means the hub appended your
-frame. A failure is loud, non-zero and one form:
+the hub's answer is the verdict: `filed -> @handle` means the hub, or the daemon of
+the box that holds that inbox, appended your frame. A failure is loud, non-zero and
+one form:
 
 - `FAILED -> @h: <reason>` — the reason is the daemon's own sentence
-  (`no box knows that handle: h` — check the spelling first; `no live session
-  holds @h`; `nobody filed it within 5s: …` — no box confirmed it in time (the line names the causes); it may still be filed late, so ask the recipient before resending; `unknown op: comm.file` — the hub is older than this route), or
-  `the daemon did not answer at <endpoint>` with the transport's own complaint
+  (`no box knows that handle: h` — check the spelling first; `no linked box
+  knows that handle: h; not linked: <boxes>` — it may be on one of those boxes,
+  whose daemon is stopped or not linked to the hub; `no live session holds @h`;
+  `the daemon on <host> did not answer within <n>s; @h may still be filed` — the
+  box that may hold it did not answer the hub in time, so ask the recipient
+  before resending; `unknown op: comm.file` — the hub is older than this route),
+  or `the daemon did not answer at <endpoint>` with the transport's own complaint
   after it when it had one.
 
-Until B2, a handle the hub's folder does not list falls back to the older
-route, decided on a filer's receipt: `filed -> @h (by <filer>, relay)` means
-that named filer appended your frame, and `NOT CONFIRMED: sent for @h; nobody
-claimed it within 5s. Attached: …` means the frame was sent and may well have
-been filed but nobody claimed it — a misspelled handle, a frontend too old to
-claim, or a filer that was simply slow. The `Attached:` list is a diagnostic,
-not a delivery.
-
-A refusal means nothing was appended; with no answer, or `NOT CONFIRMED`, the
-frame may have landed and only the claim that it did is missing.
+A refusal means nothing was appended; with no answer the frame may have landed
+and only the word that it did is missing, so ask the recipient before resending.
 There is no "only a reply proves it" rule any more.
 
 ## Naming — from the repo, never the task
@@ -154,9 +149,10 @@ comm-spawn.sh mysim ~/projects/MySim --expertise "simulation workflows" \
 Creates a **sot workspace** (a session-strip row; the user cycles
 to it with Shift+ArrowRight / Shift+ArrowLeft) whose agent the daemon starts at once; its own
 `/sot-session-start` joins it under the name you chose, and any `--task`
-waits in its inbox as an ordinary message. **Addressable immediately** — the
-handle is pre-registered, so `comm-send.sh @<name>` queues even before it
-finishes joining. Label = repo name, never the task (`comm-spawn.sh` rejects
+waits in its inbox as an ordinary message. **Addressable at once on this box**
+— a spawn here pre-registers the handle, so `comm-send.sh @<name>` is filed into
+its inbox even before it finishes joining, and its session reads it at start; a
+spawn on another box is addressable once its session has joined there. Label = repo name, never the task (`comm-spawn.sh` rejects
 task-named labels). One repo root holds one session: `comm-spawn.sh` refuses
 a root that already has a workspace, naming it; a second session on a repo is
 a worktree (`/worktree`). The new row appears in every window's strip on its
@@ -181,8 +177,8 @@ spawning: `references/spawning.md`.
   you; describe the problem, let them own the implementation.
 - **Anti-groupthink tags:** `[design]` `[question]` `[breaks]` `[challenge]`
   `[consensus]` (no `[consensus]` without a prior `[breaks]` in the thread).
-- Delivery is durable (queued to the recipient's inbox, picked up on
-  `comm-poll.sh`); liveness is a `last_seen` under ten minutes old (`comm-list.sh` shows
+- Delivery is the line in the recipient's inbox, read with `comm-poll.sh`;
+  nothing is queued anywhere. Liveness is a `last_seen` under ten minutes old (`comm-list.sh` shows
   live/stale), which your `poll`/`send`/`join`, your turns and your row's daemon (every minute) all refresh.
 
 ## Which frontend am I on

@@ -43,7 +43,7 @@ pub(super) const INLINE: &[(&str, &str)] = &[
     (op::PTY_SCREEN, "a screen read follows the input sent before it"),
     (op::REPL_EVAL, "submissions reach a REPL in the order they were sent"),
     (op::REPL_RUN_FILE, "submissions reach a REPL in the order they were sent"),
-    (op::AGENT_SEND, "messages are relayed in the order sent, each ack before the receipt it provokes (ADR 0048)"),
+    (op::AGENT_SEND, "UI notifications are published in the order they were sent"),
     (op::FILE_UPLOAD, "an upload's chunks are written in the order they were sent"),
     (op::FILE_WRITE, "a later request on this connection sees the write"),
     (op::FILE_DELETE, "a later request on this connection sees the delete"),
@@ -87,7 +87,7 @@ pub(super) struct Shared {
     pub(super) workspaces: Workspaces,
     pub(super) ws_events_tx: broadcast::Sender<WorkspaceChanged>,
     pub(super) agent_events_tx: broadcast::Sender<AgentMessage>,
-    pub(super) agent_receipt_tx: broadcast::Sender<AgentReceipt>,
+    pub(super) links: crate::comm::mail::links::Links,
     pub(super) fe_command_tx: broadcast::Sender<FeCommandEvt>,
     pub(super) clients: Clients,
     pub(super) topology_store: Arc<TopologyStore>,
@@ -96,9 +96,8 @@ pub(super) struct Shared {
     /// This connection's roster serial and client id, from its hello.
     pub(super) serial: u64,
     pub(super) client_id: String,
-    /// The hello's declared host and sot-comm name.
+    /// The hello's declared host.
     pub(super) hello_host: Option<String>,
-    pub(super) hello_name: Option<String>,
 }
 
 /// Runs one request frame where [`place`] puts it: an inline op here, before the loop reads again, and any other as a
@@ -268,29 +267,8 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         }
         op::WORKSPACE_LIST => crate::rows::ops::list::handle_workspace_list(req_id, payload, workspaces).await,
         op::ACCOUNTS_LIST => crate::agents::ops::handle_accounts_list(req_id, payload).await,
-        op::AGENT_SEND => {
-            crate::comm::mail::relay::handle_agent_send(
-                req_id,
-                payload,
-                &shared.agent_events_tx,
-                clients,
-                Some(shared.serial),
-            )
-            .await
-        }
-        op::AGENT_FILED => {
-            // The filer is this connection's DECLARED hello name, read
-            // here and nowhere else — the request body cannot name one
-            // (ADR 0048).
-            crate::comm::mail::relay::handle_agent_filed(
-                req_id,
-                payload,
-                &shared.agent_receipt_tx,
-                shared.hello_name.as_deref(),
-            )
-            .await
-        }
-        op::COMM_FILE => crate::comm::mail::filer::handle_comm_file(req_id, payload).await,
+        op::AGENT_SEND => crate::comm::mail::relay::handle_agent_send(req_id, payload, &shared.agent_events_tx).await,
+        op::COMM_FILE => crate::comm::mail::filer::handle_comm_file(req_id, payload, &shared.links).await,
         op::AGENT_JOIN => {
             crate::comm::registry::join::handle_agent_join(req_id, payload, workspaces, ws_events_tx).await
         }

@@ -135,11 +135,8 @@ case_send_files_and_types_nothing() {
     return 0
 }
 
+# A relay send to an endpoint nothing listens on is FAILED, naming the endpoint.
 case_relay_send_fails_loudly_with_no_reachable_daemon() {
-    # Codex review round-3 finding 3: an EMPTY response from nc_send used
-    # to pass `jq -e` — zero JSON inputs means jq never sees a falsy last
-    # value to react to, so the check silently succeeded. A missing/
-    # unreachable Unix socket used to print "relayed" and exit 0.
     local root h self errfile out rc err
     mkdir -p "$WORK/relay-noack/proj20"
     root="$(realpath "$WORK/relay-noack/proj20")"
@@ -157,7 +154,6 @@ case_relay_send_fails_loudly_with_no_reachable_daemon() {
     rc=$?
     err="$(cat "$errfile" 2>/dev/null || true)"
     [ "$rc" -ne 0 ] || { echo "  comm-relay.sh send succeeded with no reachable daemon: $out"; return 1; }
-    contains "$out" "relayed ->" && { echo "  claimed 'relayed' despite no reachable daemon: $out"; return 1; }
     contains "$err" "FAILED -> @somebody: the daemon did not answer at unix:$WORK/no-such-daemon-anywhere.sock" \
         || { echo "  missing the no-answer FAILED line: $err"; return 1; }
     return 0

@@ -20,8 +20,8 @@ but they are plain scripts in `~/.sot-comm/bin`:
 
 ```bash
 comm-list.sh                                 # who is reachable, and their state
-comm-relay.sh send @other-session "message"  # fire-and-forget
-comm-relay.sh send --all "message"           # broadcast to every session
+comm-send.sh @other-session "message"        # one result: filed, or FAILED with the reason
+comm-send.sh --broadcast "message"           # filed to every live session, one result each
 comm-poll.sh                                 # catch up on anything that arrived while you were away
 ```
 

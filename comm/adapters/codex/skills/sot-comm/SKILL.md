@@ -15,7 +15,7 @@ do not retry or join.
 ```bash
 ~/.sot-comm/bin/comm-send.sh @<handle> "message"       # durable, registry-based
 ~/.sot-comm/bin/comm-send.sh --broadcast "message"
-~/.sot-comm/bin/comm-poll.sh                           # read queued inbox (a busy inbox exits 75: run it again)
+~/.sot-comm/bin/comm-poll.sh                           # read your unread mail (a busy inbox exits 75: run it again)
 ~/.sot-comm/bin/comm-list.sh                           # registered sessions
 ~/.sot-comm/bin/comm-status.sh waiting "watching X"    # purple until you report
 ~/.sot-comm/bin/comm-status.sh blocked "need Y"        # red
@@ -23,9 +23,8 @@ do not retry or join.
 ~/.sot-comm/bin/sot-fe preview <workspace> <path>      # badge/show result in FE
 ```
 
-Local text is not visible to peers. If you receive `[relay] from ...` or an
-`@handle` request, answer with `comm-send.sh` or `comm-relay.sh`, not only in
-assistant text.
+Local text is not visible to peers. When a peer's message asks you something,
+answer with `comm-send.sh`, not only in assistant text.
 
 ## Socket-Only Backend
 

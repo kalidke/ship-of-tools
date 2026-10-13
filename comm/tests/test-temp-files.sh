@@ -118,8 +118,6 @@ done
 tf_table '{"comm.file":"silent"}'
 for s in TERM HUP INT; do tf_signal "C6 comm-send (comm.file through the daemon)" "$s" env SOT_SOCKET="$TF_SOCK" "${SENDER2[@]}" "$SCRIPTS_DIR/comm-send.sh" @t-peer x; done
 
-tf_table '{"comm.file":{"error":"not here","code":"not_here"},"agent.send":"silent"}'
-for s in TERM HUP INT; do tf_signal "C7 comm-relay send (the agent.send leg)" "$s" "${SENDER[@]}" "$SCRIPTS_DIR/comm-relay.sh" send @t-stranger x; done
 
 # The heartbeat's context capture: two files in the comm home's state/, held while comm-context.sh runs under the
 # bound. The hook runs from a folder of its own whose comm-context.sh stand-in touches the silent mark and waits; each
@@ -167,10 +165,6 @@ c11_check() {
 TF_SIGNAL_PATH=kill TF_HOLD=.registry.lock TF_CHECK=c11_check tf_signal "C11 with_lock's trap (the signal twice)" HUP \
     "${SENDER[@]}" "$SCRIPTS_DIR/comm-status.sh" blocked "$TF_SENT"
 
-tf_table '{"comm.file":{"error":"not here","code":"not_here"},"agent.send":"silent"}'
-TF_HOLD='sot-comm-relay.*' tf_signal "C12 send_frame's trap (the signal twice)" HUP "${SENDER[@]}" \
-    "$SCRIPTS_DIR/comm-relay.sh" send @t-stranger x
-
 TF_HOLD='.hb-ctx-*' TF_CHECK=c8_check tf_signal "C13 the heartbeat context's trap (the signal twice)" HUP \
     sh -c 'f="$1"; shift; exec "$@" < "$f"' _ "$WORK/hb/envelope.json" env CLAUDE_CODE_SESSION_ID=tf-hold \
     SOT_HB_CTX_TIMEOUT_TICKS=1200 bash "$WORK/hb/comm-status-heartbeat.sh"
@@ -206,12 +200,10 @@ for s in HUP INT TERM; do
 done
 TF_SIGNAL_PATH=kill TF_AT_ONCE=1 TF_CHECK=c11_check tf_signal "C21 with_lock's trap (the signal twice at once)" HUP \
     "${SENDER[@]}" "$SCRIPTS_DIR/comm-status.sh" blocked "$TF_SENT"
-tf_table '{"comm.file":{"error":"not here","code":"not_here"},"agent.send":"silent"}'
-TF_AT_ONCE=1 tf_signal "C22 send_frame's trap (the signal twice at once)" HUP "${SENDER[@]}" \
-    "$SCRIPTS_DIR/comm-relay.sh" send @t-stranger x
 # A Ctrl-C stops the callers too: a bash that waits on a command and gets INT goes on when the command exits normally,
-# and stops when it ends by INT. comm-relay.sh waits on send_frame's subshell, and a shell waits on comm-relay.sh.
-tf_signal "C23 send_frame ends by a Ctrl-C (its callers stop)" INT bash -c '"$@"; exit 7' _ "${SENDER[@]}" \
+# and stops when it ends by INT. comm-relay.sh waits on sot_comm_file's subshell, and a shell waits on comm-relay.sh.
+tf_table '{"comm.file":"silent"}'
+tf_signal "C23 comm-relay's one request ends by a Ctrl-C (its callers stop)" INT bash -c '"$@"; exit 7' _ "${SENDER[@]}" \
     "$SCRIPTS_DIR/comm-relay.sh" send @t-stranger x
 TF_AT_ONCE=1 TF_CHECK=c8_check tf_signal "C24 the heartbeat context's trap (the signal twice at once)" HUP \
     sh -c 'f="$1"; shift; exec "$@" < "$f"' _ "$WORK/hb/envelope.json" env CLAUDE_CODE_SESSION_ID=tf-at-once \

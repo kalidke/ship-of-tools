@@ -14,10 +14,13 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
 - The session socket or pipe: `run_local` secures its private directory, refuses a socket a live daemon answers on
   (`refuse_live_socket`), binds it (`bind_session`: on Windows the owner-only pipe descriptor and an inbound buffer that
   holds a client's hello and its request, each at most the envelope cap), accepts, and unlinks at shutdown.
-- The eight buses `run` creates: repl frames, preview changes, workspace events, topology writes, agent messages, agent
-  receipts, frontend commands and the monitor tick. Their payloads belong to their owners.
-- Each control session's task and state, in `serve_control`: roster guard (control sessions only), declared host and
-  name, active workspace, monitor flag, read deadline, and the off-loop `JoinSet` and semaphore.
+- The seven buses `run` creates: repl frames, preview changes, workspace events, topology writes, agent messages (UI
+  notifications), frontend commands and the monitor tick. Their payloads belong to their owners. `run` also creates the
+  hub's `Links`, which a `link`-role connection attaches to (messaging's `comm::mail::links`): such a connection writes
+  the `comm.file` requests offered to it and hands back their responses.
+- Each control session's task and state, in `serve_control`: roster guard (control sessions only), declared host, its
+  link end for a `link` connection, active workspace, monitor flag, read deadline, and the off-loop `JoinSet` and
+  semaphore.
 - The op table: `place` (the `INLINE` and `POOLED` lists, each op with its reason; every other op is a job), `dispatch`
   (the arms that use the loop's state or writer, and the placement) and `serve` (every other op to its owner), and the
   unknown-op reply.
@@ -88,7 +91,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `set_watch_bus`, `set_monitor_hub`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`, `owner_protected_pipe_descriptor`,
 `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`, `start_page_servers`, `remove_root`,
-`handle_agent_join`.
+`handle_agent_join`, `handle_comm_file`, `handle_agent_send`, `Links`.
 
 ## Folders
 The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clients.rs` (the roster) and `session.rs`

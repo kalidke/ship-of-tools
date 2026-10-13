@@ -207,20 +207,12 @@ where
 {
     match msg {
         Ok(m) => {
-            // `id` is what makes a receipt possible at all (ADR 0048):
-            // without it in THIS payload the filer has nothing to attribute
-            // its claim to, and the sender waits out its 5 s for a verdict
-            // that can never arrive. Omitted when absent — an older sender
-            // minted none.
-            let mut payload = serde_json::json!({
+            let payload = serde_json::json!({
                 "from": m.from,
                 "to": m.to,
                 "text": m.text,
                 "ts": m.ts,
             });
-            if let Some(id) = m.id {
-                payload["id"] = serde_json::Value::String(id);
-            }
             let frame = Frame::evt(op::AGENT_MESSAGE, payload);
             write_frame_to(tx, &frame, None).await?;
             Ok(true)
@@ -234,39 +226,6 @@ where
         }
         Err(broadcast::error::RecvError::Closed) => {
             tracing::debug!("agent relay bus channel closed");
-            Ok(false)
-        }
-    }
-}
-
-/// Translates one filer receipt into an `agent.receipt` evt frame on the
-/// wire. Mirrors `write_agent_message`. Two fields, both always present:
-/// the frame's arrival is the claim, so there is nothing optional to omit.
-pub(super) async fn write_agent_receipt<W>(
-    tx: &mut W,
-    rcp: Result<AgentReceipt, broadcast::error::RecvError>,
-) -> Result<bool>
-where
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    match rcp {
-        Ok(r) => {
-            let frame = Frame::evt(
-                op::AGENT_RECEIPT,
-                serde_json::json!({ "id": r.id, "filer": r.filer }),
-            );
-            write_frame_to(tx, &frame, None).await?;
-            Ok(true)
-        }
-        Err(broadcast::error::RecvError::Lagged(n)) => {
-            tracing::warn!(
-                skipped = n,
-                "agent receipt bus lagged on this connection; client missed receipts"
-            );
-            Ok(false)
-        }
-        Err(broadcast::error::RecvError::Closed) => {
-            tracing::debug!("agent receipt bus channel closed");
             Ok(false)
         }
     }
@@ -381,72 +340,6 @@ where
             tracing::debug!("monitor bus channel closed");
             Ok(false)
         }
-    }
-}
-
-#[cfg(test)]
-mod agent_relay_wire_tests {
-    use super::*;
-    use crate::comm::mail::bus::{AgentMessage, AgentReceipt};
-
-    fn one_frame(buf: &[u8]) -> serde_json::Value {
-        let line = String::from_utf8(buf.to_vec()).expect("utf8 frame");
-        serde_json::from_str(line.trim_end()).expect("one JSON line")
-    }
-
-    #[tokio::test]
-    async fn agent_message_carries_the_id_only_when_the_sender_minted_one() {
-        // The test that would have caught the payload being built by hand
-        // (ADR 0048): `write_agent_message` uses an explicit `json!`, so a
-        // new field on `AgentMessage` reaches the wire only if it is added
-        // HERE. Without the id on the wire no filer can attribute a claim
-        // and no receipt is ever possible.
-        let msg = AgentMessage {
-            from: "a".into(),
-            to: "peer-otherbox".into(),
-            text: "hi".into(),
-            ts: "2026-01-01T00:00:00Z".into(),
-            id: Some("x-1".into()),
-        };
-        let mut buf: Vec<u8> = Vec::new();
-        assert!(write_agent_message(&mut buf, Ok(msg.clone()))
-            .await
-            .expect("write"));
-        let f = one_frame(&buf);
-        assert_eq!(f["op"], op::AGENT_MESSAGE);
-        assert_eq!(f["payload"]["id"], "x-1");
-
-        let mut buf2: Vec<u8> = Vec::new();
-        let old = AgentMessage { id: None, ..msg };
-        assert!(write_agent_message(&mut buf2, Ok(old))
-            .await
-            .expect("write"));
-        let f2 = one_frame(&buf2);
-        assert!(
-            f2["payload"].get("id").is_none(),
-            "an older sender minted no id; the key must be absent, got {}",
-            f2["payload"]
-        );
-    }
-
-    #[tokio::test]
-    async fn agent_receipt_frame_is_the_id_and_the_filer_and_nothing_else() {
-        let mut buf: Vec<u8> = Vec::new();
-        assert!(write_agent_receipt(
-            &mut buf,
-            Ok(AgentReceipt { id: "x-1".into(), filer: "fe@otherbox".into() }),
-        )
-        .await
-        .expect("write"));
-        let f = one_frame(&buf);
-        assert_eq!(f["op"], op::AGENT_RECEIPT);
-        assert_eq!(f["kind"], "evt");
-        assert_eq!(f["payload"]["id"], "x-1");
-        assert_eq!(f["payload"]["filer"], "fe@otherbox");
-        // No negative form on the wire: a frame that never arrives is the
-        // only "not filed", and it is the sender's own conclusion.
-        assert!(f["payload"].get("filed").is_none(), "got {}", f["payload"]);
-        assert!(f["payload"].get("reason").is_none(), "got {}", f["payload"]);
     }
 }
 

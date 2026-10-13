@@ -31,11 +31,9 @@ edits hot-reload.
 
 On a Windows frontend box whose session identity still lives in a legacy
 shared no-pane self-file (no recorded `root=`), the comm scripts' identity
-check refuses to send until you re-join with an explicit name:
-`comm-join.sh --name <your handle>` (a named join records the registry root
-and rewrites the self-file). A plain Claude Code restart doesn't fix this;
-the normal `/sot-session-start` bootstrap does, because it performs the
-named join.
+check refuses to send until the session joins again. A plain Claude Code
+restart doesn't fix this; `/sot-session-start` does: its join records the
+registry root and rewrites the self-file.
 
 ## Cross-machine note
 

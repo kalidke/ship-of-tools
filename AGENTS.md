@@ -12,11 +12,11 @@ Code sessions follow `CLAUDE.md`; **you follow this**.
   unless overridden). The CLI toolbox lives in `~/.sot-comm/bin/`:
   - `comm-send.sh @<handle> "<msg>"` — file a message in another session's
     inbox; its one result is `filed -> @<handle>` or `FAILED -> @<handle>: <why>`.
-  - `comm-poll.sh` — read queued messages.
+  - `comm-poll.sh` — read your unread messages.
   - `comm-status.sh <state> "<summary>"` — set your row's state (below).
 - An idle row is woken by the typed line `[sot-comm] you have mail: run
-  comm-poll.sh`: run it. Inbound messages (a typed line starting `[relay] from`
-  counts too) are teammate messages, not user prompts.
+  comm-poll.sh`: run it. Inbound messages are teammate messages, not user
+  prompts.
 - Peers include Claude Code sessions; coordinate with them exactly as with
   humans: reply to asks, announce pushes, never assume a message was read
   without a reply.

@@ -19,7 +19,7 @@
 #      the fake daemon gets exactly one `comm.file` and the inbox is unchanged.
 #      The wire is this box's own daemon, else the relay endpoint, and one that
 #      does not answer is FAILED with no second route tried.
-#   4. The wait is ONE number, 10, in both languages, and no stale/patience/
+#   4. The wait is ONE knob, 2 s by default, in both languages, and no stale/patience/
 #      reclaim constant is spelled at all — the lease is deleted and this
 #      keeps it deleted.
 #   5. The lock identity: the same fixture set comm/mail/inbox_tests.rs's unit test reads
@@ -27,8 +27,8 @@
 #   6. A wire send (comm-relay.sh's send_frame) is one `comm.file` frame with
 #      no id, and prints the hub's answer: `filed -> @h`, or `FAILED -> @h:`
 #      and the daemon's own sentence, code or no code, or the no-answer
-#      sentence; `not_here` alone falls back to `agent.send`. The read window
-#      outlasts the hub's lock wait, so a line filed after it is not FAILED.
+#      sentence, `not_here` included, and nothing follows the answer. The read
+#      window outlasts the hub's lock wait, so a line filed after it is not FAILED.
 #   7. A hub-filed line and a locally-filed line read the same through
 #      comm-poll.sh, and both advance the one cursor.
 #   8. Every inbox lock descriptor is opened read-write (an NFS client
@@ -154,6 +154,7 @@ check "the home guard refuses a live comm home, and only that" case_the_home_gua
 check "two writers through the lock give 400 whole lines" case_two_writers_give_400_whole_lines
 check "a holder killed with -9 frees the lock and the send files" case_a_killed_holder_frees_the_lock_at_once
 check "a frozen holder makes the send wait its bound and report FAILED, never filed" case_a_frozen_holder_makes_the_send_wait_then_fail
+check "the default wait is 2 s: a frozen holder makes the send fail inside 5 s, saying so" case_the_default_wait_is_two_seconds
 check "an append that fails under the lock is FAILED with its error" case_a_failed_write_is_failed_not_filed
 check "a script whose lock identity equals the record appends locally" case_a_shared_nfs4_lock_manager_appends_locally
 check "a two-line record whose line 1 matches appends locally" case_a_two_line_record_whose_line_1_matches_appends_locally
@@ -173,10 +174,11 @@ check "no perl on the PATH goes to the wire, never a local append" case_no_perl_
 check "the wire is this box's daemon, else the relay; one that does not answer is FAILED with no second route" case_the_wire_is_the_own_daemon_else_the_relay_and_only_one
 check "the wire frame says whether the line was a broadcast copy" case_the_wire_frame_carries_the_broadcast_flag
 check "the lock identity matches the fixture set the Rust test reads" case_the_lock_identity_matches_the_shared_fixtures
-check "the wait is one number, 10, in both languages, and no lease constant is spelled" case_the_wait_is_one_number_and_no_lease_survives
-check "T5: a wire send is one comm.file frame and prints the hub's answer; not_here alone falls back" case_a_wire_send_prints_the_hubs_answer
+check "the wait is one knob in both languages, and no lease constant is spelled" case_the_wait_is_one_number_and_no_lease_survives
+check "T5: a wire send is one comm.file frame and prints the hub's answer, not_here included" case_a_wire_send_prints_the_hubs_answer
 check "an inherited SOT_RELAY_ENDPOINT or SOT_SPAWN_ENDPOINT does not decide a relay send: topology's answer does, and the inherited endpoint is never dialled" case_an_inherited_endpoint_does_not_decide_the_relay_route
 check "the comm.file read window outlasts the hub's lock wait: a line filed after it is filed" case_the_read_window_outlasts_the_hubs_lock_wait
+check "no answer within 5 seconds is FAILED (decision 0031)" case_no_answer_in_five_seconds_is_failed
 check "T6: a hub-filed and a locally-filed line read alike and both advance the cursor" case_a_hub_line_and_a_local_line_read_alike
 
 check "a dead writer's partial line is never counted; the next send cuts it and says so; nothing is skipped" case_a_dead_writers_partial_line_is_never_counted_and_is_cut

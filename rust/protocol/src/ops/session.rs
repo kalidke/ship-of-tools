@@ -40,7 +40,8 @@ pub struct HelloReq {
     /// This connection's declared role: `"fe"` a frontend, `"bridge"` a
     /// session's listener loop, `"cli"` a one-shot call from a shell,
     /// `"agent"` a one-shot call from inside a session (ADR 0046 decision
-    /// 1), or [`HANDOFF_ROLE`] (`"handoff"`), a connection whose next frame
+    /// 1), [`LINK_ROLE`] (`"link"`), a daemon's link to the hub, or
+    /// [`HANDOFF_ROLE`] (`"handoff"`), a connection whose next frame
     /// leaves the control loop. Required since protocol 2: an empty role is
     /// never `"fe"`.
     #[serde(default)]
@@ -73,6 +74,11 @@ pub struct HelloReq {
 /// `proxy.connect`, `lane.connect` or `fe.lease`, and the daemon takes it out of the control loop after answering
 /// the hello. Any other frame next is `bad_request`. Every other role is a control session at once.
 pub const HANDOFF_ROLE: &str = "handoff";
+
+/// The hello role of a daemon's link to the hub: a daemon whose comm folder is on its own disk, which the hub cannot
+/// append to. The hub sends it `comm.file` requests for the handles its own folder does not list, and the link
+/// answers each with the ordinary `comm.file` response.
+pub const LINK_ROLE: &str = "link";
 
 impl HelloReq {
     /// This process's hello: the wire protocol and product version it speaks, `role`, the declared `host` and

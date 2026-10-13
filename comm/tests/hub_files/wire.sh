@@ -2,7 +2,8 @@
 # T5 — a stub bridge stands in for the hub on a unix: endpoint: each connection
 # is one run of it. Its `comm.file` answer is the payload in $HUB/answer
 # ("" = silence), given after $HUB/wait seconds; an `agent.send` is acked and
-# receipted by fe@far. Every frame it reads is logged by op. It answers
+# receipted by fe@far, as the hub of the retired receipt route did, so a sender
+# that still took that route would print a filed line. Every frame it reads is logged by op. It answers
 # `topology relay-endpoint` with the hub's socket, as topology does on the hub,
 # logs every endpoint it is asked to dial, and serves only that socket.
 HUB="$WORK/hub"
@@ -282,16 +283,12 @@ case_a_wire_send_prints_the_hubs_answer() {
 {"error":"not a handle: t-far","code":"bad_handle"}|1|FAILED -> @t-far: not a handle: t-far
 {"error":"no live session holds @t-far","code":"no_live_session"}|1|FAILED -> @t-far: no live session holds @t-far
 {"error":"the append failed: disk full","code":"file_failed"}|1|FAILED -> @t-far: the append failed: disk full
+{"error":"no box knows that handle: t-far","code":"not_here"}|1|FAILED -> @t-far: no box knows that handle: t-far
 {"error":"unknown op: comm.file"}|1|FAILED -> @t-far: unknown op: comm.file
 |1|FAILED -> @t-far: the daemon did not answer at unix:$WORK/hub.sock
 CASES
-    # not_here, and only it, falls back to the not-mine leg (deleted in B2).
-    write_hub_stub '{"error":"no box knows that handle: t-far","code":"not_here"}'; wire_send
-    [ "$SEND_RC" -eq 0 ] && [ "$SEND_OUT" = "filed -> @t-far (by fe@far, relay)" ] \
-        || { echo "  not_here: rc $SEND_RC ($SEND_OUT$SEND_ERR)"; return 1; }
-    [ "$(wc -l < "$HUB/agent-send.log")" -eq 1 ] || { echo "  not_here: no agent.send fallback"; return 1; }
     # The guard's own route reads the same answer with the same helper, and
-    # for it not_here is FAILED: this box's registry named the handle.
+    # for it not_here is FAILED with status 1, like every other refusal.
     fresh_route
     got="$(route_append "nfs rw,vers=3 A:/x" "nfs4 A:/x" unix:/own "" \
         '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":{"error":"no box knows that handle: t-peer","code":"not_here"}}')"; rc=$?
@@ -319,13 +316,28 @@ case_an_inherited_endpoint_does_not_decide_the_relay_route() {
 # The hub may wait its whole lock bound before it files; a read window no
 # longer than that would call a filed line FAILED and the sender would resend
 # it. A 1s lock wait and a caller's 1s send timeout: the window is still the
-# lock wait plus 10s, so an answer at 2s is filed.
+# lock wait plus 3s, so an answer at 2s is filed.
 case_the_read_window_outlasts_the_hubs_lock_wait() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     write_hub_stub '{"ok":true}' 2
     wire_send SOT_INBOX_LOCK_WAIT_SECS=1 SOT_SEND_TIMEOUT=1
     [ "$SEND_RC" -eq 0 ] && [ "$SEND_OUT" = "filed -> @t-far" ] \
         || { echo "  rc $SEND_RC ($SEND_OUT$SEND_ERR)"; return 1; }
+    return 0
+}
+
+# Decision 0031: no answer within 5 seconds is FAILED. With the default lock wait and no send timeout of the caller's,
+# a hub that answers only at 5.5 s is not waited for, and the send ends by 6 s.
+case_no_answer_in_five_seconds_is_failed() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    write_hub_stub '{"ok":true}' 5.5
+    local t0=$SECONDS
+    wire_send SOT_INBOX_LOCK_WAIT_SECS= SOT_SEND_TIMEOUT=
+    local took=$((SECONDS - t0))
+    [ "$SEND_RC" -eq 1 ] || { echo "  rc $SEND_RC, want 1 ($SEND_OUT$SEND_ERR)"; return 1; }
+    contains "$SEND_ERR" "FAILED -> @t-far: the daemon did not answer at unix:$WORK/hub.sock" \
+        || { echo "  err: $SEND_ERR"; return 1; }
+    [ "$took" -le 6 ] || { echo "  the send took ${took}s"; return 1; }
     return 0
 }
 

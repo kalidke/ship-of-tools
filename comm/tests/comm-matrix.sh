@@ -31,7 +31,7 @@
 # WHAT IT IS FOR. A sender's receipt and an actual delivery are different facts,
 # and every comm outage so far has been the gap between them. This instrument
 # names that gap in both directions:
-#   FALSE FAILURE — the echo arrived but the sender said NOT CONFIRMED.
+#   FALSE FAILURE — the echo arrived but the sender said FAILED.
 #   FALSE SUCCESS — the sender said filed but no echo ever came.
 # Any of them is a FAIL even though the classic one-sided check would pass.
 #
@@ -48,10 +48,9 @@ MATRIX_POLL="${SOT_MATRIX_POLL:-0.5}"    # inbox re-read interval
 
 # matrix_claimed_filed RC OUT TARGET — did the SENDER claim delivery? The claim
 # is the literal receipt line, never the exit code alone: comm-send.sh prints
-# "  filed -> @x" and comm-relay.sh "filed -> @x" (on the not-mine leg, until
-# B2 deletes it, "filed -> @x (by …, relay)"), while "FAILED -> @x: …" and that
-# leg's "NOT CONFIRMED" are the honest negatives. Both facts must agree; an rc 0 with no receipt line is not
-# a claim anyone made.
+# "  filed -> @x" and comm-relay.sh "filed -> @x", while "FAILED -> @x: …" is
+# the honest negative. Both facts must agree; an rc 0 with no receipt line is
+# not a claim anyone made.
 matrix_claimed_filed() {
     local rc="$1" out="$2" target="$3"
     [ "$rc" = "0" ] || return 1
@@ -60,15 +59,13 @@ matrix_claimed_filed() {
 }
 
 # matrix_refused_for_handle OUT — is this refusal ABOUT THE TARGET HANDLE?
-# A "FAILED -> @x: …" line carries the daemon's own answer about the handle,
-# and "NOT CONFIRMED" (somebody might have filed it, nobody said so) survives
-# on the not-mine leg until B2 deletes it. The no-answer FAILED line, and every
-# other error — an unresolved sender identity — is about this END of the send
-# and settles nothing about the other.
+# A "FAILED -> @x: …" line carries the daemon's own answer about the handle.
+# The no-answer FAILED line, and every other error — an unresolved sender
+# identity — is about this END of the send and settles nothing about the other.
 matrix_refused_for_handle() {
     case "$1" in
         *"FAILED -> @"*": the daemon did not answer at "*) return 1 ;;
-        *"FAILED -> @"*|*"NOT CONFIRMED"*) return 0 ;;
+        *"FAILED -> @"*) return 0 ;;
     esac
     return 1
 }
@@ -149,8 +146,6 @@ matrix_line_verdict() {
 #   echo + rc 0        the reverse leg delivered and its sender knew it
 #   echo + rc non-zero FALSE FAILURE on that box
 #   no echo            SKIP: the forward line already reports the failure
-# A receipt filed `by fe@…` on a box with no frontend of its own is the known
-# mis-attribution, so it is called out here where the literal line is in hand.
 matrix_reverse_verdict() {
     local file="$1" me="$2" nonce="$3" verdict vrc
     if ! matrix_find_prefix "$file" "$me" "ECHO $nonce" >/dev/null 2>&1; then
@@ -166,12 +161,6 @@ matrix_reverse_verdict() {
         printf 'FAIL\tFALSE FAILURE on that box — its echo arrived, its sender said rc=%s\n' "${vrc:-?}"
         return 0
     fi
-    case "$verdict" in
-        *"by fe@"*) if ! _sot_is_windows; then
-                        printf 'FAIL\tfiled by a frontend (fe@) for a handle on a box that has none\n'
-                        return 0
-                    fi ;;
-    esac
     printf 'PASS\tdelivered, and its sender said so\n'
 }
 

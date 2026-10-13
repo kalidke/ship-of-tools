@@ -2,8 +2,9 @@
 //! A control session's replies, pinned through a real `sotd`: the op table's unknown-op answer, the
 //! `monitor.*` and `pty.open` arms that answer inline, the pooled ops and `concept.read`, `workspace.activate`,
 //! the evt-frame skip, the `ping` a connection with no hello is refused, the refused hellos (another protocol, one
-//! that does not parse), which close their connection and never enter the roster. Every request is read strictly:
-//! its reply is the next non-evt frame and no second reply follows it.
+//! that does not parse), which close their connection and never enter the roster; and mail's one verb: a directed
+//! `agent.send` is refused, `agent.filed` is no op, and a UI notification carries no receipt fields. Every request is
+//! read strictly: its reply is the next non-evt frame and no second reply follows it.
 
 mod support;
 
@@ -207,5 +208,67 @@ async fn control_session_replies_are_pinned() {
     let after_good = listed(&strict(&mut conn, next(), op::VERSION_QUERY, json!({})).await);
     assert!(after_good.iter().any(|i| i == "mw18-after-bad"), "the valid hello is listed: {after_good:?}");
     drop(good);
+    env.kill_daemon_bounded().await;
+}
+
+/// The next `agent.message` event on `conn`, its payload; fails when none comes within `BOUND`.
+async fn next_agent_message(conn: &mut Conn) -> serde_json::Value {
+    loop {
+        let (frame, _blob) = tokio::time::timeout(BOUND, codec::read_frame(conn))
+            .await
+            .expect("no agent.message within BOUND")
+            .expect("read_frame");
+        if frame.kind == Kind::Evt && frame.op == op::AGENT_MESSAGE {
+            return frame.payload;
+        }
+    }
+}
+
+/// Mail has one verb, `comm.file`: an `agent.send` that names a handle is refused, and no connection receives it.
+#[tokio::test]
+async fn a_directed_agent_send_is_refused_and_reaches_nobody() {
+    let env = Env::new("mailsend");
+    env.spawn_sotd();
+    let (mut conn, id) = connect_and_hello(&env.socket_path).await;
+    let (mut watcher, _) = connect_and_hello(&env.socket_path).await;
+    let reply = strict(&mut conn, id, op::AGENT_SEND, json!({"from": "a", "to": "peer-b", "text": "mail", "id": "x-1"})).await;
+    assert_eq!(
+        reply.payload,
+        json!({"error": "mail must use comm.file", "code": "mail_requires_comm_file"}),
+        "a directed agent.send was answered as published"
+    );
+    strict(&mut conn, id + 1, op::AGENT_SEND, json!({"from": "a", "to": "", "text": "after"})).await;
+    let evt = next_agent_message(&mut watcher).await;
+    assert_eq!(evt["text"], "after", "the refused directed send reached another connection: {evt}");
+    env.kill_daemon_bounded().await;
+}
+
+/// `agent.filed`, the retired receipt route's claim, is no op.
+#[tokio::test]
+async fn agent_filed_is_an_unknown_op() {
+    let env = Env::new("mailfiled");
+    env.spawn_sotd();
+    let (mut conn, id) = connect_and_hello(&env.socket_path).await;
+    let reply = strict(&mut conn, id, "agent.filed", json!({"id": "x-1"})).await;
+    assert_eq!(reply.payload, json!({"error": "unknown op: agent.filed"}));
+    env.kill_daemon_bounded().await;
+}
+
+/// A UI notification (an `agent.send` with an empty `to`) is answered `ok` alone and reaches every connection as an
+/// `agent.message` of `from`, `to`, `text` and `ts`: nothing of the retired receipt route.
+#[tokio::test]
+async fn a_ui_notification_carries_no_receipt_fields() {
+    let env = Env::new("mailnote");
+    env.spawn_sotd();
+    let (mut conn, id) = connect_and_hello(&env.socket_path).await;
+    let (mut watcher, _) = connect_and_hello(&env.socket_path).await;
+    let text = r#"{"sot_ui":{"v":1,"cmd":"nav.preview","workspace":"w","mode":"files","path":"a.md"}}"#;
+    let reply = strict(&mut conn, id, op::AGENT_SEND, json!({"from": "a", "to": "", "text": text, "id": "x-2"})).await;
+    assert_eq!(reply.payload, json!({"ok": true}), "the notification's answer");
+    let evt = next_agent_message(&mut watcher).await;
+    let mut keys: Vec<&str> = evt.as_object().expect("an object").keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["from", "text", "to", "ts"], "{evt}");
+    assert_eq!((evt["from"].as_str(), evt["to"].as_str(), evt["text"].as_str()), (Some("a"), Some(""), Some(text)));
     env.kill_daemon_bounded().await;
 }

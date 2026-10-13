@@ -13,14 +13,38 @@ use crate::server::reply::HandlerOutput;
 
 /// File one frame into THIS daemon's comm folder (`comm.file`, 0031 B1): the
 /// hub files for its own home, and a guest on the hub's folder files only on
-/// a proven shared lock, forwarding everything else to the hub. The response
-/// is `{ok:true}` only when the line is in the file; every refusal is
-/// `{error, code}` and nothing was appended. The file work runs off the
-/// reactor, like the registry helpers.
-pub async fn handle_comm_file(req_id: u64, payload_json: serde_json::Value) -> Result<HandlerOutput> {
+/// a proven shared lock, forwarding everything else to the hub. A handle this
+/// folder does not list is offered to the daemons linked to this one
+/// (`Links::offer`), and the answer is theirs; a `not_here` names the boxes that
+/// should hold a link and hold none (`hub_link::unlinked`). The response is `{ok:true}` only
+/// when the line is in a file; every refusal is `{error, code}` and nothing was
+/// appended. The file work runs off the reactor, like the registry helpers.
+pub async fn handle_comm_file(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    links: &crate::comm::mail::links::Links,
+) -> Result<HandlerOutput> {
     let req: CommFileReq = serde_json::from_value(payload_json).context("comm.file payload")?;
     let (from, to) = (req.from.clone(), req.to.clone());
-    let verdict = file_comm(req).await?;
+    let mut verdict = file_comm(req.clone()).await?;
+    // A forwarded request has had its one hop; a link's own request is one.
+    if !req.forwarded && matches!(&verdict, Err((code, _)) if code == "not_here") {
+        let within = crate::comm::mail::inbox::inbox_lock_wait() + COMM_FORWARD_SLACK;
+        if let Some(offered) = links.offer(&req, within).await {
+            verdict = offered;
+        }
+        // A box that should hold a link and holds none may hold the handle: the refusal names it.
+        if matches!(&verdict, Err((code, _)) if code == "not_here") {
+            let attached = links.hosts();
+            let unlinked = tokio::task::spawn_blocking(move || crate::comm::mail::hub_link::unlinked(&attached))
+                .await
+                .context("comm.file topology join")?;
+            if !unlinked.is_empty() {
+                let text = format!("no linked box knows that handle: {}; not linked: {}", req.to, unlinked.join(", "));
+                verdict = Err(("not_here".into(), text));
+            }
+        }
+    }
     let payload = match verdict {
         Ok(()) => {
             tracing::info!(%from, %to, "comm.file filed");
@@ -34,9 +58,37 @@ pub async fn handle_comm_file(req_id: u64, payload_json: serde_json::Value) -> R
     Ok(vec![(Frame::res(req_id, op::COMM_FILE, payload), None)])
 }
 
+/// A linked daemon's answer to the hub's offer (`hub_link.rs`): `not_here` unless this box's own folder lists `to`
+/// under this box's host, `self_host`; only then do the route, the liveness and the append decide (`file_comm`, the
+/// request marked `forwarded`). A box that does not hold the handle never answers with a refusal of its own, so the
+/// first refusal the hub reads is the holder's.
+pub(crate) async fn file_offer(req: CommFileReq, self_host: &str) -> Result<std::result::Result<(), (String, String)>> {
+    let (home, to, host) = (crate::comm::sot_comm_home(), req.to.clone(), self_host.to_string());
+    let holds = tokio::task::spawn_blocking(move || home.is_some_and(|h| lists_under(&h.join("registry.json"), &to, &host)))
+        .await
+        .context("comm.file offer join")?;
+    if !holds {
+        return Ok(Err(not_here(&req.to)));
+    }
+    file_comm(CommFileReq { forwarded: true, ..req }).await
+}
+
+/// Whether the registry at `path` lists `to` under `host`. A registry that cannot be read lists nobody.
+fn lists_under(path: &std::path::Path, to: &str, host: &str) -> bool {
+    read_registry_fresh(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|root| root["agents"][to]["host"].as_str() == Some(host))
+}
+
+/// The refusal for a handle no folder that was asked lists: `(code, sentence)`.
+pub(crate) fn not_here(to: &str) -> (String, String) {
+    ("not_here".to_string(), format!("no box knows that handle: {to}"))
+}
+
 /// The filing behind `comm.file`, callable in-process: the hub link
-/// (`hub_link.rs`) files what arrives on its connection through this same
-/// function. `Err` inside the `Ok` is the refusal `(code, sentence)`.
+/// (`hub_link.rs`) files an offer through this same function (`file_offer`).
+/// `Err` inside the `Ok` is the refusal `(code, sentence)`.
 pub(crate) async fn file_comm(req: CommFileReq) -> Result<std::result::Result<(), (String, String)>> {
     tokio::task::spawn_blocking(move || {
         let home = crate::comm::sot_comm_home();
@@ -84,9 +136,10 @@ pub(crate) async fn file_comm(req: CommFileReq) -> Result<std::result::Result<()
     .context("comm.file join")
 }
 
-/// A guest's forward answers inside the script's read window (the lock wait
-/// plus 10 s): the hub's own lock wait plus this.
-const COMM_FORWARD_SLACK: std::time::Duration = std::time::Duration::from_secs(5);
+/// A guest's forward to the hub, and the hub's offer to a linked daemon, answer
+/// inside the script's read window (the lock wait plus 3 s): the other daemon's
+/// own lock wait plus this.
+const COMM_FORWARD_SLACK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// This host's name — the one `sotd topology` uses — or empty when it has
 /// none, which never matches a hub or a record's writer.
@@ -139,9 +192,8 @@ fn comm_file_verdict(
     if !valid_name(to) {
         return Err(("bad_handle".into(), format!("not a handle: {to:?}")));
     }
-    let not_here = || ("not_here".to_string(), format!("no box knows that handle: {to}"));
     let Some(home) = comm_home else {
-        return Err(not_here());
+        return Err(not_here(to));
     };
     let record_path = home.join(crate::comm::mail::inbox::LOCK_RECORD);
     let record = std::fs::read_to_string(&record_path).ok();
@@ -168,7 +220,7 @@ fn comm_file_verdict(
     // A missing registry lists nobody; bytes that are not a registry are no
     // answer at all, never "not here".
     let agents = match read_registry_fresh(&home.join("registry.json")) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_here()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_here(to)),
         Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
             .ok()
             .and_then(|root| root.get("agents").filter(|a| a.is_object()).cloned()),
@@ -180,7 +232,7 @@ fn comm_file_verdict(
     let entry = agents.get(to);
     let field = |k: &str| entry.and_then(|e| e.get(k)).and_then(|v| v.as_str());
     if field("host").map_or(true, str::is_empty) {
-        return Err(not_here());
+        return Err(not_here(to));
     }
     if !heartbeat_fresh(field("last_seen"), now_secs) {
         return Err(("no_live_session".into(), format!("no live session holds @{to}")));
@@ -288,6 +340,23 @@ mod comm_file_tests {
         assert_eq!((v["to"].as_str(), v["repo"].as_str()), (Some(""), Some("daemon")));
         let req: CommFileReq = serde_json::from_value(json!({"from": "s", "to": "fresh", "text": "x"})).unwrap();
         assert!(!req.broadcast);
+    }
+
+    /// With no `SOT_INBOX_LOCK_WAIT_SECS` a filing waits 2 s for a held lock, the shell's default, and says so.
+    #[test]
+    fn the_default_wait_is_the_shells_two_seconds() {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _wait = crate::paths::EnvGuard::capture(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV);
+        std::env::remove_var(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV);
+        let d = home();
+        let held = std::fs::OpenOptions::new().read(true).create(true).append(true).open(d.path().join("inbox/fresh.lock")).unwrap();
+        held.lock().unwrap();
+        let filer = filer(crate::comm::mail::inbox::Role::Hub, "local m");
+        let wait = crate::comm::mail::inbox::inbox_lock_wait();
+        assert_eq!(
+            comm_file_verdict(Some(d.path()), &filer, no_forward, &req("fresh"), NOW, wait),
+            err("file_failed", "the inbox lock for @fresh was held for 2s — nothing was appended")
+        );
     }
 
     #[test]

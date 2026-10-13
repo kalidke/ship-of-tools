@@ -28,9 +28,8 @@
 #
 # A row whose responder is NOT running still declares its handle (the daemon
 # records `agent_name` at workspace.create, rows/workspace.rs `from_label`), so the
-# frontend's receipt — which comes from declared rows —
-# stays honest and the matrix's delivery lines keep meaning something when the
-# echo is missing. That separation is the whole instrument.
+# matrix's delivery lines keep meaning something when the echo is missing. That
+# separation is the whole instrument.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

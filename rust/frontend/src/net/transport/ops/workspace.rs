@@ -366,20 +366,11 @@ pub(crate) async fn send_agent_send<W: AsyncWrite + Unpin>(
     tracing::debug!(%from, %to, id, "→ agent.send");
     codec::write_frame(
         &mut tx,
-        &Frame::req(
-            id,
-            op::AGENT_SEND,
-            // No `id` (ADR 0048): this send is
-            // fire-and-forget — nothing here reads a
-            // receipt, so minting one would only ask a
-            // filer to answer into a void.
-            serde_json::to_value(AgentSendReq { from, to, text, id: None })?,
-        ),
+        &Frame::req(id, op::AGENT_SEND, serde_json::to_value(AgentSendReq { from, to, text })?),
         None,
     )
     .await?;
-    // Fire-and-forget: the ack carries `{ok, receivers}` and we
-    // track neither, so no pending entry (an unmatched response id
+    // Fire-and-forget: the ack carries `{ok}` and nothing tracks it, so no pending entry (an unmatched response id
     // is silently ignored).
     Ok(())
 }

@@ -4,7 +4,7 @@
 # delivery are different facts, and the two ways they disagree are the two
 # faults every one-sided check has missed.
 #
-#   FALSE FAILURE — the echo arrived but the sender said NOT CONFIRMED. The
+#   FALSE FAILURE — the echo arrived but the sender said FAILED. The
 #                   path works; only the receipt is broken. A one-sided check
 #                   reports an outage that is not there.
 #   FALSE SUCCESS — the sender said filed and nothing ever arrived. A one-sided
@@ -13,8 +13,7 @@
 #                   success lines.
 #
 # The literal sender lines below are the real ones (comm-send.sh's two-space
-# "  filed -> @x", comm-relay.sh's "FAILED -> @x: …" and, on the not-mine leg
-# until B2, "NOT CONFIRMED" and "(by …, relay)"), and the
+# "  filed -> @x", comm-relay.sh's "filed -> @x" and "FAILED -> @x: …"), and the
 # inbox fixtures are real inbox lines. Nothing pre-computes the verdict's
 # inputs: every case feeds raw sender output and a raw inbox file.
 #
@@ -45,8 +44,10 @@ NONCE="a1b2c3d4e5f6"
 OTHER="0f0f0f0f0f0f"
 
 FILED="  filed -> @probe-kitt (woke)"
-FILED_RELAY="filed -> @probe-asus2024 (by bridge@kitt, relay)"
-NOT_CONFIRMED="NOT CONFIRMED: sent for @probe-kitt; nobody claimed it within 5s. Attached: fe@kitt."
+FILED_OTHER="filed -> @probe-other"
+NOT_LIVE="FAILED -> @probe-peer: no live session holds @probe-peer"
+# The retired relay's third result. No current sender prints it; it is here only to show it is no refusal.
+NOT_CONFIRMED="NOT CONFIRMED: sent for @probe-nosuchrow-box; nobody claimed it within 5s. Attached: fe@box-a."
 NO_SUCH="FAILED -> @probe-nosuchrow-box: no box knows that handle: probe-nosuchrow-box"
 NO_ANSWER="FAILED -> @probe-nosuchrow-box: the daemon did not answer at ssh:hub"
 
@@ -68,7 +69,7 @@ note_of()  { printf '%s\n' "${1#*	}"; }
 # --- the two faults the instrument exists for --------------------------------
 
 inbox_reset; inbox_msg "ECHO $NONCE from @probe-kitt woke:typed"
-v="$(matrix_line_verdict echo 1 "$NOT_CONFIRMED" probe-kitt "$INBOX" "$ME" "$NONCE")"
+v="$(matrix_line_verdict echo 1 "$NOT_LIVE" probe-peer "$INBOX" "$ME" "$NONCE")"
 check "FALSE FAILURE is a FAIL (the echo arrived, the sender denied it)" "FAIL" "$(state_of "$v")"
 case "$(note_of "$v")" in *"FALSE FAILURE"*) r=named ;; *) r="$(note_of "$v")" ;; esac
 check "FALSE FAILURE is named in the note" "named" "$r"
@@ -86,7 +87,7 @@ v="$(matrix_line_verdict echo 0 "$FILED" probe-kitt "$INBOX" "$ME" "$NONCE")"
 check "claimed AND echoed is a PASS" "PASS" "$(state_of "$v")"
 
 inbox_reset
-v="$(matrix_line_verdict echo 1 "$NOT_CONFIRMED" probe-kitt "$INBOX" "$ME" "$NONCE")"
+v="$(matrix_line_verdict echo 1 "$NOT_LIVE" probe-peer "$INBOX" "$ME" "$NONCE")"
 check "refused AND silent is a FAIL (a real outage)" "FAIL" "$(state_of "$v")"
 
 inbox_reset
@@ -105,6 +106,11 @@ inbox_reset
 v="$(matrix_line_verdict nodelivery 1 "$IDENT_ERR" probe-nosuchrow-kitt "$INBOX" "$ME" "$NONCE")"
 check "a send that failed before the handle was in question is a SKIP, not a PASS" "SKIP" "$(state_of "$v")"
 
+# The retired third result names no refusal about the handle: a SKIP, not a PASS.
+inbox_reset
+v="$(matrix_line_verdict nodelivery 1 "$NOT_CONFIRMED" probe-nosuchrow-box "$INBOX" "$ME" "$NONCE")"
+check "a retired NOT CONFIRMED line is no handle refusal: a SKIP, not a PASS" "SKIP" "$(state_of "$v")"
+
 # The same for a daemon that never answered: its FAILED line is about this end.
 inbox_reset
 v="$(matrix_line_verdict nodelivery 1 "$NO_ANSWER" probe-nosuchrow-box "$INBOX" "$ME" "$NONCE")"
@@ -117,8 +123,8 @@ v="$(matrix_line_verdict echo 0 "$FILED" probe-kitt "$INBOX" "$ME" "$NONCE")"
 check "another line's echo does not satisfy this nonce" "FAIL" "$(state_of "$v")"
 
 inbox_reset; inbox_msg "ECHO $NONCE from @probe-kitt woke:typed"
-v="$(matrix_line_verdict echo 0 "$FILED_RELAY" probe-kitt "$INBOX" "$ME" "$NONCE")"
-check "a receipt naming a DIFFERENT target is not this line's claim" "FAIL" "$(state_of "$v")"
+v="$(matrix_line_verdict echo 0 "$FILED_OTHER" probe-peer "$INBOX" "$ME" "$NONCE")"
+check "a filed line naming a DIFFERENT target is not this line's claim" "FAIL" "$(state_of "$v")"
 
 inbox_reset
 printf '{"from":"probe-kitt","to":"%s","msg":"ECHO %s par\n' "$ME" "$NONCE" >> "$INBOX"
@@ -133,12 +139,12 @@ check "the per-handle inbox is this handle's own, whatever a line's \`to\` says"
 # --- the reverse direction, judged from the other box's VERDICT line ---------
 
 inbox_reset; inbox_msg "ECHO $NONCE from @probe-asus2024 woke:typed"
-inbox_msg "VERDICT $NONCE @probe-asus2024->@$ME rc=0 filed -> @$ME (by bridge@kitt, relay)"
+inbox_msg "VERDICT $NONCE @probe-peer->@$ME rc=0 filed -> @$ME"
 check "reverse: echo plus rc=0 is a PASS" "PASS" \
     "$(state_of "$(matrix_reverse_verdict "$INBOX" "$ME" "$NONCE")")"
 
 inbox_reset; inbox_msg "ECHO $NONCE from @probe-asus2024 woke:typed"
-inbox_msg "VERDICT $NONCE @probe-asus2024->@$ME rc=1 NOT CONFIRMED: sent for @$ME; nobody claimed it within 5s."
+inbox_msg "VERDICT $NONCE @probe-peer->@$ME rc=1 FAILED -> @$ME: the daemon did not answer at ssh:hub"
 v="$(matrix_reverse_verdict "$INBOX" "$ME" "$NONCE")"
 check "reverse: echo plus a non-zero rc is a FALSE FAILURE on that box" "FAIL" "$(state_of "$v")"
 case "$(note_of "$v")" in *"FALSE FAILURE"*) r=named ;; *) r="$(note_of "$v")" ;; esac
@@ -147,16 +153,6 @@ check "reverse: the FALSE FAILURE is named" "named" "$r"
 inbox_reset
 check "reverse: nothing back at all is a SKIP, not a verdict" "SKIP" \
     "$(state_of "$(matrix_reverse_verdict "$INBOX" "$ME" "$NONCE")")"
-
-inbox_reset; inbox_msg "ECHO $NONCE from @probe-asus2024 woke:typed"
-inbox_msg "VERDICT $NONCE @probe-asus2024->@$ME rc=0 filed -> @$ME (by fe@kitt, relay)"
-if _sot_is_windows; then
-    check "reverse: a frontend filer is unremarkable on Windows" "PASS" \
-        "$(state_of "$(matrix_reverse_verdict "$INBOX" "$ME" "$NONCE")")"
-else
-    check "reverse: a frontend filed for a box with no frontend is a FAIL" "FAIL" \
-        "$(state_of "$(matrix_reverse_verdict "$INBOX" "$ME" "$NONCE")")"
-fi
 
 echo
 echo "$PASS passed, $FAIL failed"
