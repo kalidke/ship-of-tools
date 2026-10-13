@@ -1,0 +1,45 @@
+# TEMPORARY, SMALL-066 W7 on a hosted Windows runner; never merged. Pushed alone on tmp/ci-small-w7 (W6's commit, then
+# W7's), read, then the branch is deleted. Nothing here pushes, publishes or reads a secret. The step's text is the
+# block w7-hosted-step.sh in the lane's brief: the A lines check how git, the shell and a native program spell one folder
+# and need no W7 code; the B lines run W7's compare at this checkout (they fail before W7, which is the red).
+name: tmp small-w7
+on:
+  push:
+    branches: [tmp/ci-small-w7]
+jobs:
+  tmp-w7-paths-windows:
+    name: tmp W7, a Windows row's absolute path (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: W7's premises (A) and compare (B)
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set +e -u
+          # W7's hosted check (SMALL-066). On Windows git prints a folder as C:/..., the shell as /tmp/... or /c/..., and a native
+          # program as C:\...; W7 compares them in cygpath -m's spelling (comm/lib/comm-lib-client.sh: sot_native_path,
+          # sot_relative_to). The A lines check the premises and need no W7 code; the B lines run W7 at this checkout.
+          fail=0
+          want() { if [ "$2" = "$3" ]; then echo "w7 $1 ok: $2"; else echo "w7 $1 FAILED: got '$2', want '$3'"; fail=$((fail + 1)); fi; }
+          d="$(mktemp -d)"; cd "$d" && git init -q && : > a.txt || exit 2
+          top="$(git rev-parse --show-toplevel)"; here="$(pwd)"; win="$(cygpath -w "$here")"
+          echo "w7 toplevel=$top pwd=$here native=$win"
+          want A1 "$(cygpath -m "$top")" "$(cygpath -m "$here")"
+          want A2 "$(cygpath -m "$win")" "$(cygpath -m "$here")"
+          want A3 "$(realpath "$top")" "$(pwd -P)"
+          cd "$GITHUB_WORKSPACE" || exit 2
+          export SOT_COMM_HOME="$RUNNER_TEMP/w7-comm"
+          bin="$RUNNER_TEMP/w7-bin"
+          bash comm/tests/stage-bin.sh "$bin" > /dev/null || exit 2
+          want B1 "$(bash -c '. "$1/comm-lib.sh"; sot_relative_to "$2" "$3"' _ "$bin" "$top" "$here/a.txt")" "a.txt"
+          want B2 "$(bash -c '. "$1/comm-lib.sh"; sot_relative_to "$2" "$3"' _ "$bin" "$top" "$win\\a.txt")" "a.txt"
+          want B3 "$(SOT_WORKSPACE=ws SOT_WORKSPACE_ROOT="$win" SOT_NAV_DRY_RUN=1 bash "$bin/sot-nav.sh" preview "$here/a.txt" \
+              | jq -r .sot_ui.path | tr -d '\r')" "a.txt"
+          err="$(cd "$here" && bash "$bin/sot-fe" preview ws "$here/a.txt" --endpoint "unix:$RUNNER_TEMP/nobody.sock" --timeout 1 2>&1 >/dev/null)"
+          case "$err" in *"not under the current repo"*) want B4 "refused" "past the path check" ;; *) want B4 "past the path check" "past the path check" ;; esac
+          echo "w7 B4 stderr: $(printf '%s' "$err" | head -n 2 | tr '\r\n' '  ')"
+          rm -rf "$d"
+          echo "w7 failed=$fail"
+          exit "$fail"
