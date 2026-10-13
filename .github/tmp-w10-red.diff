@@ -1,0 +1,9 @@
+--- a/rust/backend/src/rows/ops/create.rs
++++ b/rust/backend/src/rows/ops/create.rs
+@@ -567,5 +567,5 @@
+ /// every comparison in that spelling.
+ fn requested_root(req: &sot_protocol::WorkspaceCreateReq) -> std::path::PathBuf {
+-    crate::paths::simplify_verbatim(std::path::PathBuf::from(&req.project_root))
++    std::path::PathBuf::from(&req.project_root)
+ }
+ 

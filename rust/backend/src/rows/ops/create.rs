@@ -473,7 +473,7 @@ pub async fn handle_workspace_create(
         serde_json::from_value(payload_json).context("workspace.create payload")?;
     tracing::info!(label = %req.label, project_root = %req.project_root, boot, "workspace.create");
 
-    let project_root = std::path::PathBuf::from(&req.project_root);
+    let project_root = requested_root(&req);
     if let Err(out) = check_create_root(req_id, &req, &project_root, workspaces) {
         return Ok(out);
     }
@@ -558,6 +558,14 @@ pub async fn handle_workspace_create(
         Frame::res(req_id, op::WORKSPACE_CREATE, serde_json::to_value(res)?).with_rev(rev),
         None,
     )])
+}
+
+/// The row's project root as created: the request's path in its plain form. A Windows verbatim `\\?\` root (what
+/// `std::fs::canonicalize` returns there) is simplified, as the store does on load (`rows/store/mod.rs`): CreateProcess
+/// rejects one as a working directory, and the row's root reaches the agent's environment (`SOT_WORKSPACE_ROOT`) and
+/// every comparison in that spelling.
+fn requested_root(req: &sot_protocol::WorkspaceCreateReq) -> std::path::PathBuf {
+    crate::paths::simplify_verbatim(std::path::PathBuf::from(&req.project_root))
 }
 
 #[cfg(test)]

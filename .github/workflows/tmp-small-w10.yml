@@ -1,0 +1,44 @@
+# TEMPORARY, SMALL-066 W10 on a hosted Windows runner; never merged. Pushed alone on tmp/ci-small-w10 (lane/small-066b
+# plus W10's planned diff), read, then the branch is deleted. Nothing here pushes, publishes or reads a secret. The
+# question is in the lead's item file: the #[cfg(windows)] root test passes at W10 and fails with W10 undone.
+name: tmp small-w10
+on:
+  push:
+    branches: [tmp/ci-small-w10]
+jobs:
+  green:
+    name: tmp W10 green, the create root tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: The root tests at W10
+        shell: bash
+        working-directory: rust
+        run: |
+          cargo test -p sot-backend --bins --locked rows::ops::create::tests::root_tests 2>&1 | tee "$RUNNER_TEMP/green.log"
+          grep -E 'root_tests::.* \.\.\. |test result' "$RUNNER_TEMP/green.log"
+          grep -q 'a_verbatim_root_is_created_plain ... ok' "$RUNNER_TEMP/green.log"
+          grep -q 'a_plain_root_is_created_as_sent ... ok' "$RUNNER_TEMP/green.log"
+  red:
+    name: tmp W10 red, the create root tests with W10 undone (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: The root tests with requested_root back to PathBuf::from
+        shell: bash
+        run: |
+          git apply .github/tmp-w10-red.diff
+          cd rust
+          cargo test -p sot-backend --bins --locked rows::ops::create::tests::root_tests 2>&1 | tee "$RUNNER_TEMP/red.log" || true
+          grep -E 'root_tests::.* \.\.\. |test result' "$RUNNER_TEMP/red.log"
+          grep -q 'a_verbatim_root_is_created_plain ... FAILED' "$RUNNER_TEMP/red.log"
