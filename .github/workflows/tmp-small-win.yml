@@ -1,0 +1,115 @@
+# TEMPORARY, SMALL-066's Windows proofs on a hosted runner; never merged. Pushed alone on tmp/ci-small-win (lane/small-066b
+# at W7, W3's 07196a833, then W3b's and W3c's planned diffs), read, then the branch is deleted. Nothing here pushes,
+# publishes or reads a secret. The steps are the planner's blocks: W3's guard case on its own, W3c's account home with
+# bash started the box harness's way, W7's path spellings (R1), and W8's mechanism (needs no W8 code).
+name: tmp small-win
+on:
+  push:
+    branches: [tmp/ci-small-win]
+jobs:
+  tmp-small-win:
+    name: tmp W3 and W3c, W7 and W8 (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - name: W3's revised case on its own
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set +e -u
+          # W3's case on its own: test-hub-files.sh's setup, then only its first check, the home guard's (the whole suite does
+          # not end on Windows, a 0.6.7 item). Its lines: PASS or FAIL with the reason, and any SKIP it states.
+          one=comm/tests/w3-one-case.sh
+          sed -n '1,/^check "the home guard refuses a live comm home, and only that"/p' comm/tests/test-hub-files.sh > "$one"
+          printf '%s\n' 'echo "---"' 'echo "PASS=$PASS FAIL=$FAIL"' '[ "$FAIL" -eq 0 ]' >> "$one"
+          echo "w3 checks in the runner: $(grep -c '^check ' "$one")"
+          /usr/bin/timeout -k 10 180 bash "$one"; rc=$?
+          echo "w3 case rc=$rc"
+          rm -f "$one"
+          exit "$rc"
+      - name: W3c, the account's real profile as a live comm home, bash started the harness's way
+        if: always()
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          # W3c's proof: bash started the box harness's way (HOME and USERPROFILE set in PowerShell, then bash.exe) records the
+          # account's real profile folder as a live comm home, and refuses a comm home under it, before and after the swap.
+          $s = Join-Path $env:RUNNER_TEMP 'w3c.sh'
+          $text = @'
+          real="$(cygpath -u "$1")"
+          . comm/tests/lib-home-guard.sh
+          printf 'HOME=%s acct=%s profile=%s ' "$HOME" "$_GUARD_ACCT" "$_GUARD_PROFILE"
+          ( guard_refuse_live_home "$real/.sot-comm/x" ) > /dev/null 2>&1; echo "refuses-real=$?"
+          '@
+          $text = $text -replace "`r", ''  # (lead) the bash script gets LF line ends whatever the runner wrote
+          [IO.File]::WriteAllText($s, $text + "`n")
+          $bash = 'C:\Program Files\Git\bin\bash.exe'
+          $real = $env:USERPROFILE
+          $t = Join-Path $env:RUNNER_TEMP 'w3c-home'; New-Item -ItemType Directory -Force $t | Out-Null
+          $fail = 0
+          foreach ($case in 'as-run', 'swapped') {
+            if ($case -eq 'swapped') { $env:HOME = $t; $env:USERPROFILE = $t }
+            $out = & $bash --noprofile --norc $s $real
+            "w3c $case $out"
+            if ("$out" -notmatch 'refuses-real=2') { $fail++ }
+          }
+          "w3c failed=$fail"
+          exit $fail
+      - name: W7, one folder in every Windows spelling (R1)
+        if: always()
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set +e -u
+          # W7's hosted check (SMALL-066). On Windows git prints a folder as C:/... with long names, the shell as /tmp/... or
+          # /c/... (its /tmp can be an 8.3 short name), and a native program as C:\...; W7 compares them in cygpath -m -l's
+          # spelling (comm/lib/comm-lib-client.sh: sot_native_path, sot_relative_to, sot_same_root). The A lines check the
+          # premises and need no W7 code; the B lines run W7 at this checkout.
+          fail=0
+          want() { if [ "$2" = "$3" ]; then echo "w7 $1 ok: $2"; else echo "w7 $1 FAILED: got '$2', want '$3'"; fail=$((fail + 1)); fi; }
+          d="$(mktemp -d)"; cd "$d" && git init -q && : > a.txt || exit 2
+          top="$(git rev-parse --show-toplevel)"; here="$(pwd)"; win="$(cygpath -w "$here")"
+          echo "w7 toplevel=$top pwd=$here native=$win"
+          want A1 "$(cygpath -m -l "$top")" "$(cygpath -m -l "$here")"
+          want A2 "$(cygpath -m -l "$win")" "$(cygpath -m -l "$here")"
+          want A3 "$(realpath "$top")" "$top"
+          echo "w7 A4 (a path that does not exist): -l gives '$(cygpath -m -l "$here/nope" 2>&1)' rc=$?, -m gives '$(cygpath -m "$here/nope")'"
+          cd "$GITHUB_WORKSPACE" || exit 2
+          export SOT_COMM_HOME="$RUNNER_TEMP/w7-comm"
+          bin="$RUNNER_TEMP/w7-bin"
+          bash comm/tests/stage-bin.sh "$bin" > /dev/null || exit 2
+          want B1 "$(bash -c '. "$1/comm-lib.sh"; sot_relative_to "$2" "$3"' _ "$bin" "$top" "$here/a.txt")" "a.txt"
+          want B2 "$(bash -c '. "$1/comm-lib.sh"; sot_relative_to "$2" "$3"' _ "$bin" "$top" "$win\\a.txt")" "a.txt"
+          want B3 "$(SOT_WORKSPACE=ws SOT_WORKSPACE_ROOT="$win" SOT_NAV_DRY_RUN=1 bash "$bin/sot-nav.sh" preview "$here/a.txt" \
+              | jq -r .sot_ui.path | tr -d '\r')" "a.txt"
+          want B5 "$(bash -c '. "$1/comm-lib.sh"; sot_same_root "$2" "$3" && echo same' _ "$bin" "$(realpath "$top")" "$(realpath "$here")")" "same"
+          err="$(cd "$here" && bash "$bin/sot-fe" preview ws "$here/a.txt" --endpoint "unix:$RUNNER_TEMP/nobody.sock" --timeout 1 2>&1 >/dev/null)"
+          case "$err" in *"not under the current repo"*) want B4 "refused" "past the path check" ;; *) want B4 "past the path check" "past the path check" ;; esac
+          echo "w7 B4 stderr: $(printf '%s' "$err" | head -n 2 | tr '\r\n' '  ')"
+          rm -rf "$d"
+          echo "w7 failed=$fail"
+          exit "$fail"
+      - name: W8, a path in an argument, in JSON and in a file, to native programs
+        if: always()
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set +e -u
+          # W8's hosted check (SMALL-066): Git Bash converts a POSIX path only in a native program's arguments; inside a JSON
+          # payload or a file it reaches the program as written, and a native program reads /tmp/... or /c/... as a folder on its
+          # current drive. So a path a script sends a native daemon in a payload must be put in Windows' spelling first.
+          fail=0
+          want() { if [ "$2" = "$3" ]; then echo "w8 $1 ok: $2"; else echo "w8 $1 FAILED: got '$2', want '$3'"; fail=$((fail + 1)); fi; }
+          d="$(mktemp -d)"; : > "$d/a.txt"; posix="$d/a.txt"; native="$(cygpath -m -l "$posix")"
+          echo "w8 posix=$posix native=$native"
+          arg="$(jq -rn --arg p "$posix" '$p' | tr -d '\r')"
+          case "$arg" in [A-Za-z]:/*) want M1 "converted" "converted" ;; *) want M1 "as written: $arg" "converted" ;; esac
+          want M2 "$(printf '{"path":"%s"}' "$posix" | jq -r .path | tr -d '\r')" "$posix"
+          printf '%s' "$posix" > "$d/f"
+          want M3 "$(jq -Rr . "$d/f" | tr -d '\r')" "$posix"
+          want M4 "$(powershell -NoProfile -Command "Test-Path -LiteralPath '$posix'" | tr -d '\r')" "False"
+          want M5 "$(powershell -NoProfile -Command "Test-Path -LiteralPath '$native'" | tr -d '\r')" "True"
+          rm -rf "$d"
+          echo "w8 failed=$fail"
+          exit "$fail"
