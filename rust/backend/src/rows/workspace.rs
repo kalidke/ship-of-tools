@@ -338,6 +338,12 @@ impl Workspace {
             .clone())
     }
 
+    /// The root as this row's `FilesMode` resolved it, the spelling of every path its watcher reports; `None` until
+    /// `files_mode` has succeeded (`Workspaces::insert` calls it to start the row's watcher). Memory only.
+    pub fn canonical_root(&self) -> Option<&std::path::Path> {
+        self.files_mode.get().map(|fm| fm.root_path())
+    }
+
     /// Lazily get this workspace's `ConceptStore`. Rooted at the
     /// workspace's `project_root/.concept/` exactly as today's single-
     /// store backend did, just per-workspace.
