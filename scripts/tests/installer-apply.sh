@@ -13,7 +13,7 @@ set -euo pipefail
 SRC="$(cd "$(dirname "$0")/../.." && pwd)"
 mk_apply_fixture() {  # <dir> <owned-unit 0|1> <owned-wrapper 0|1>
     local d="$1" ou="$2" ow="$3" h="$1/home" P="$1/prefix" co="$1/co" other=/other/prefix
-    local stage="$1/prefix/updates/v9.9.9-linux-x86_64" top=sot-v9.9.9-linux-x86_64 sha unit_owner wrap_owner
+    local stage="$1/prefix/updates/v9.9.9-$TGT" top="sot-v9.9.9-$TGT" sha unit_owner wrap_owner
     mkdir -p "$h/.config/systemd/user" "$h/.local/bin" "$P/bin" "$P/updates" "$P/repo" "$d/prev-co" \
         "$co/scripts/lib" "$co/deploy" "$stage/$top" "$d/stubs"
     mk_stubs "$d/stubs"
@@ -27,14 +27,14 @@ mk_apply_fixture() {  # <dir> <owned-unit 0|1> <owned-wrapper 0|1>
     ( cd "$co" && git init -q . && git add . && git -c user.name=t -c user.email=t@t commit -q -m c )
     printf 'new-sot\n' > "$stage/$top/sot"; printf 'new-sotd\n' > "$stage/$top/sotd"
     printf 'asset\n' > "$stage/$top.tar.gz"
-    sha="$(sha256sum "$stage/$top.tar.gz" | cut -d' ' -f1)"
+    sha="$(sha256_of "$stage/$top.tar.gz" | cut -d' ' -f1)"
     printf '{}\n' > "$stage/manifest.json"
-    printf '{\n  "tag": "v9.9.9",\n  "target": "linux-x86_64",\n  "checkout": "%s",\n  "commit": "%s",\n  "asset": "%s.tar.gz",\n  "asset_sha256": "%s"\n}\n' \
-        "$co" "$(cd "$co" && git rev-parse HEAD)" "$top" "$sha" > "$P/updates/pending-linux-x86_64.json"
+    printf '{\n  "tag": "v9.9.9",\n  "target": "'"$TGT"'",\n  "checkout": "%s",\n  "commit": "%s",\n  "asset": "%s.tar.gz",\n  "asset_sha256": "%s"\n}\n' \
+        "$co" "$(cd "$co" && git rev-parse HEAD)" "$top" "$sha" > "$P/updates/pending-$TGT.json"
     unit_owner="$other"; [ "$ou" = 1 ] && unit_owner="$P"
     wrap_owner="$other"; [ "$ow" = 1 ] && wrap_owner="$P"
     printf '[Service]\nExecStart=%s/bin/sotd --x\nRestart=always\n' "$unit_owner" > "$h/.config/systemd/user/sotd.service"
-    printf '#!/usr/bin/env bash\nPENDING="%s/updates/pending-linux-x86_64.json"\nstart_daemon_if_needed() {\n:\n}\n' "$wrap_owner" > "$h/.local/bin/sot-launch"
+    printf '#!/usr/bin/env bash\nPENDING="%s/updates/pending-'"$TGT"'.json"\nstart_daemon_if_needed() {\n:\n}\n' "$wrap_owner" > "$h/.local/bin/sot-launch"
     chmod 0755 "$h/.local/bin/sot-launch"
     cp "$h/.config/systemd/user/sotd.service" "$d/unit.orig"; cp "$h/.local/bin/sot-launch" "$d/wrap.orig"
 }
@@ -53,8 +53,8 @@ d="$WORK/ap1"; mk_apply_fixture "$d" 1 1; run_apply "$d"
 U="$d/home/.config/systemd/user/sotd.service"
 check "the applied tag is recorded" "1" "$(grep -c '"tag": "v9.9.9"' "$d/prefix/install.json" || true)"
 check "the owned unit now restarts on failure" "1" "$(grep -c '^Restart=on-failure$' "$U" || true)"
-check "exactly one daemon-reload" "1" "$(reloads "$d")"
-check "the unit backup equals the original" "same" "$(cmp -s "$d/unit.orig" "$d/prefix/updates/sotd.service.prev-linux-x86_64" && echo same || echo differ)"
+linux_check "exactly one daemon-reload" "1" "$(reloads "$d")"
+check "the unit backup equals the original" "same" "$(cmp -s "$d/unit.orig" "$d/prefix/updates/sotd.service.prev-$TGT" && echo same || echo differ)"
 
 # ---------------------------------------------------------------------------
 case_start "apply_skips_foreign_unit"
@@ -62,17 +62,17 @@ d="$WORK/ap2"; mk_apply_fixture "$d" 0 0; run_apply "$d"
 check "the applied tag is recorded" "1" "$(grep -c '"tag": "v9.9.9"' "$d/prefix/install.json" || true)"
 check "a foreign unit is byte-identical" "same" "$(cmp -s "$d/unit.orig" "$d/home/.config/systemd/user/sotd.service" && echo same || echo differ)"
 check "no daemon-reload" "0" "$(reloads "$d")"
-check "no unit backup" "no" "$([ -e "$d/prefix/updates/sotd.service.prev-linux-x86_64" ] && echo yes || echo no)"
+check "no unit backup" "no" "$([ -e "$d/prefix/updates/sotd.service.prev-$TGT" ] && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
 case_start "apply_rerenders_owned_wrapper"
 d="$WORK/ap3"; mk_apply_fixture "$d" 1 1
-W="$d/home/.local/bin/sot-launch"; ino0="$(stat -c %i "$W")"
+W="$d/home/.local/bin/sot-launch"; ino0="$(ls -i "$W" | awk '{print $1}')"
 run_apply "$d"
 check "the wrapper carries the marker" "1" "$(grep -c '^# sot-launch: all-in-one$' "$W" || true)"
 check "the wrapper is executable" "yes" "$([ -x "$W" ] && echo yes || echo no)"
-check "the wrapper is a new inode" "changed" "$([ "$(stat -c %i "$W")" != "$ino0" ] && echo changed || echo same)"
-check "the wrapper backup equals the original" "same" "$(cmp -s "$d/wrap.orig" "$d/prefix/updates/sot-launch.prev-linux-x86_64" && echo same || echo differ)"
+check "the wrapper is a new inode" "changed" "$([ "$(ls -i "$W" | awk '{print $1}')" != "$ino0" ] && echo changed || echo same)"
+check "the wrapper backup equals the original" "same" "$(cmp -s "$d/wrap.orig" "$d/prefix/updates/sot-launch.prev-$TGT" && echo same || echo differ)"
 
 # ---------------------------------------------------------------------------
 case_start "apply_skips_foreign_wrapper"
@@ -87,10 +87,10 @@ chmod 0555 "$d/home/.local/bin"
 run_apply "$d"
 chmod 0755 "$d/home/.local/bin"
 check "the unit is byte-equal to the original" "same" "$(cmp -s "$d/unit.orig" "$d/home/.config/systemd/user/sotd.service" && echo same || echo differ)"
-check "two daemon-reloads (re-render, restore)" "2" "$(reloads "$d")"
+linux_check "two daemon-reloads (re-render, restore)" "2" "$(reloads "$d")"
 check "sotd is back to its pre-apply content" "old-sotd" "$(cat "$d/prefix/bin/sotd")"
 check "repo/current points at the previous checkout" "$d/prev-co" "$(readlink "$d/prefix/repo/current")"
-check "the pending pointer is still armed" "yes" "$([ -f "$d/prefix/updates/pending-linux-x86_64.json" ] && echo yes || echo no)"
+check "the pending pointer is still armed" "yes" "$([ -f "$d/prefix/updates/pending-$TGT.json" ] && echo yes || echo no)"
 check "the wrapper is byte-equal to the original" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ run_apply "$d" --rollback
 check "the unit is byte-equal to the original" "same" "$(cmp -s "$d/unit.orig" "$d/home/.config/systemd/user/sotd.service" && echo same || echo differ)"
 check "the wrapper is byte-equal to the original" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
 check "the wrapper is executable" "yes" "$([ -x "$d/home/.local/bin/sot-launch" ] && echo yes || echo no)"
-check "a daemon-reload followed the restore" "2" "$(reloads "$d")"
+linux_check "a daemon-reload followed the restore" "2" "$(reloads "$d")"
 check "the checkout flipped back" "$d/prev-co" "$(readlink "$d/prefix/repo/current")"
 
 # ---------------------------------------------------------------------------
@@ -112,10 +112,10 @@ run_apply "$d"
 chmod 0755 "$d/home/.local/bin"
 check "install.json still names the old tag" "1" "$(grep -c '"tag": "v9.9.8"' "$d/prefix/install.json" || true)"
 check "install.json still names the old commit" "1" "$(grep -c '"commit": "aaa"' "$d/prefix/install.json" || true)"
-check "the pending pointer is still armed" "yes" "$([ -f "$d/prefix/updates/pending-linux-x86_64.json" ] && echo yes || echo no)"
+check "the pending pointer is still armed" "yes" "$([ -f "$d/prefix/updates/pending-$TGT.json" ] && echo yes || echo no)"
 run_apply "$d"
 check "a second apply installs the new tag" "1 new-sotd no" \
-    "$(grep -c '"tag": "v9.9.9"' "$d/prefix/install.json" || true) $(cat "$d/prefix/bin/sotd") $([ -f "$d/prefix/updates/pending-linux-x86_64.json" ] && echo yes || echo no)"
+    "$(grep -c '"tag": "v9.9.9"' "$d/prefix/install.json" || true) $(cat "$d/prefix/bin/sotd") $([ -f "$d/prefix/updates/pending-$TGT.json" ] && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
 case_start "partial_wrapper_write_restores"
@@ -131,7 +131,7 @@ chmod +x "$d/stubs/cat"
 run_apply "$d"
 check "the apply fails at the re-render and restores" "1" "$(grep -c 're-rendering the unit or wrapper failed .* restoring previous binaries' "$d/out" || true)"
 check "the old wrapper is byte-identical" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
-check "the pending pointer is kept" "yes" "$([ -f "$d/prefix/updates/pending-linux-x86_64.json" ] && echo yes || echo no)"
+check "the pending pointer is kept" "yes" "$([ -f "$d/prefix/updates/pending-$TGT.json" ] && echo yes || echo no)"
 check "no temp file is left beside the wrapper" "0" "$(find "$d/home/.local/bin" -name 'sot-launch.new*' | wc -l | tr -d ' ')"
 
 # ---------------------------------------------------------------------------
@@ -189,8 +189,8 @@ case_start "backup_failure_replaces_nothing"
 # An older apply's backups, then the second binary's backup fails half-written.
 d="$WORK/ap11"; mk_apply_fixture "$d" 1 1
 printf 'older-sot\n' > "$d/prefix/bin/sot.prev"; printf 'older-sotd\n' > "$d/prefix/bin/sotd.prev"
-printf 'older-unit\n' > "$d/prefix/updates/sotd.service.prev-linux-x86_64"
-printf 'older-wrap\n' > "$d/prefix/updates/sot-launch.prev-linux-x86_64"
+printf 'older-unit\n' > "$d/prefix/updates/sotd.service.prev-$TGT"
+printf 'older-wrap\n' > "$d/prefix/updates/sot-launch.prev-$TGT"
 cp "$d/prefix/bin/sot-apply" "$d/apply.orig"
 half_cp_stub "$d" '*/bin/sotd.prev*'
 run_apply "$d"
@@ -199,7 +199,7 @@ check "the failed backup is named" "1" "$(grep -c 'backing up sotd failed' "$d/o
 check "no installed file changed" "old-sot old-sotd same same same" \
     "$(cat "$d/prefix/bin/sot") $(cat "$d/prefix/bin/sotd") $(cmp -s "$d/apply.orig" "$d/prefix/bin/sot-apply" && echo same || echo differ) $(cmp -s "$d/unit.orig" "$d/home/.config/systemd/user/sotd.service" && echo same || echo differ) $(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
 check "the old backup set is intact" "older-sot older-sotd older-unit older-wrap" \
-    "$(cat "$d/prefix/bin/sot.prev") $(cat "$d/prefix/bin/sotd.prev") $(cat "$d/prefix/updates/sotd.service.prev-linux-x86_64") $(cat "$d/prefix/updates/sot-launch.prev-linux-x86_64")"
+    "$(cat "$d/prefix/bin/sot.prev") $(cat "$d/prefix/bin/sotd.prev") $(cat "$d/prefix/updates/sotd.service.prev-$TGT") $(cat "$d/prefix/updates/sot-launch.prev-$TGT")"
 check "no .new is left" "0" "$(find "$d/prefix" "$d/home" -name '*.new*' | wc -l | tr -d ' ')"
 check "repo/current and install.json are unchanged" "$d/prev-co 1" \
     "$(readlink "$d/prefix/repo/current") $(grep -c '"tag": "v9.9.8"' "$d/prefix/install.json" || true)"
@@ -268,7 +268,7 @@ check "it says the release predates this installer" "1" \
 check "the prefix was never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
 check "no release asset was requested" "0" "$(grep -c 'releases/download' "$d/curl.log" || true)"
 # A network failure (curl exit 6) is said as one, never as an old release.
-sed -i 's/exit 22 ;; esac/exit 6 ;; esac/' "$d/stubs/curl"
+sed -i.bak 's/exit 22 ;; esac/exit 6 ;; esac/' "$d/stubs/curl"
 rc=0
 out="$(env -i HOME="$d/home" PATH="$d/stubs:/usr/bin:/bin" CURL_LOG="$d/curl.log" SOT_INSTALL_TAG=v0.0.1 \
     bash "$(dirname "$0")/../install.sh" --local --no-service --prefix "$d/prefix" 2>&1)" || rc=$?

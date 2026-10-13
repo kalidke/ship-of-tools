@@ -74,7 +74,7 @@ status_stub() {  # <dir> <exit> <stderr line>: a sotd whose `topology status` fa
 d="$WORK/unreadable"; status_stub "$d" 2 "sotd topology: hosts.toml line 2: expected key = value"
 rc=0; out="$(installer_topology_unreadable "$d/prefix/bin/sotd")" || rc=$?
 check "an invalid hosts.toml is a declared topology" "0" "$rc"
-check "its error is reported" "yes" "$(case "$out" in *"line 2"*) echo yes ;; *) echo no ;; esac)"
+check "its error is reported" "yes" "$(case "$out" in (*"line 2"*) echo yes ;; (*) echo no ;; esac)"
 d="$WORK/missing"; status_stub "$d" 2 "sotd topology: no hosts.toml at /x/hosts.toml (run sotd topology sync --hub ALIAS)"
 rc=0; installer_topology_unreadable "$d/prefix/bin/sotd" >/dev/null || rc=$?; check "a missing hosts.toml is no topology" "1" "$rc"
 d="$WORK/readable"; status_stub "$d" 0 ""
@@ -89,7 +89,7 @@ printf '[Service]\nExecStart=%s/bin/sotd --x\n' "$d/prefix" > "$d/home/.config/s
 ( HOME="$d/home"; PATH="$d/stubs:$TOOLS"; sot_rerender_owned "$d/prefix" linux-x86_64 "$d/co" ) >/dev/null 2>&1 || true
 pin="$(at "$d" "$(PIN_LINE "$d")")"; reload="$(at "$d" 'systemctl --user daemon-reload')"
 check "the unit is re-rendered" "1" "$(grep -c '^Restart=on-failure$' "$d/home/.config/systemd/user/sotd.service" || true)"
-check "pin, then reload" "yes" "$([ "${pin:-0}" -gt 0 ] && [ "$pin" -lt "${reload:-0}" ] && echo yes || echo no)"
+linux_check "pin, then reload" "yes" "$([ "${pin:-0}" -gt 0 ] && [ "$pin" -lt "${reload:-0}" ] && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
 case_start "record_decision_table"
@@ -125,18 +125,15 @@ case_start "an_install_from_a_host_that_runs_no_daemon_changes_nothing_in_the_sh
 # A daemon host's install, as an update leaves it: binaries, their .prev rollback copies, rollback state and the record.
 # install.sh then runs end to end from a stub release on a host the declared topology runs no sotd on.
 me="$(hostname | cut -d. -f1 | tr '[:upper:]' '[:lower:]')"
-snapshot() {  # every entry of every type under the prefix and ~/.local, and every file's hash
-    find "$1/prefix" "$1/home/.local" -printf '%y %p\n' 2>/dev/null | sort
-    find "$1/prefix" "$1/home/.local" -type f -exec sha256sum {} + 2>/dev/null | sort
-}
+snapshot() { tree_of "$1/prefix" "$1/home/.local"; }  # every entry of every type, and every file's hash
 shared_install_run() {  # <dir> <topology status lines> <mode of the release's sotd> <install.sh args...>
     local d="$1" table="$2" mode="$3"; shift 3
-    local rel="$d/rel/sot-9.9.9-linux-x86_64"
+    local rel="$d/rel/sot-9.9.9-$TGT"
     mkdir -p "$d/home" "$d/prefix/bin" "$d/prefix/updates" "$rel" "$d/stubs"
     for b in sot sotd sot-capsule sot-apply; do
         printf 'daemon host %s\n' "$b" > "$d/prefix/bin/$b"; printf 'previous %s\n' "$b" > "$d/prefix/bin/$b.prev"
     done
-    printf '{"tag": "v9.9.7"}\n' > "$d/prefix/updates/last-good-linux-x86_64.json"
+    printf '{"tag": "v9.9.7"}\n' > "$d/prefix/updates/last-good-$TGT.json"
     installer_manifest_json "$d/prefix" "$d/home/.config/sot" systemd 9.9.8 v9.9.8 abc 2026-10-09T00:00:00Z "" 1 0 \
         > "$d/prefix/install.json"
     snapshot "$d" > "$d/before"
@@ -150,8 +147,8 @@ esac
 STUBEOF
     for b in sot sot-capsule sot-apply; do printf '#!/bin/sh\nexit 0\n' > "$rel/$b"; done
     chmod +x "$rel"/*; chmod "$mode" "$rel/sotd"
-    tar -czf "$d/rel/sot-9.9.9-linux-x86_64.tar.gz" -C "$d/rel" sot-9.9.9-linux-x86_64
-    ( cd "$d/rel" && sha256sum sot-9.9.9-linux-x86_64.tar.gz > SHA256SUMS )
+    tar -czf "$d/rel/sot-9.9.9-$TGT.tar.gz" -C "$d/rel" "sot-9.9.9-$TGT"
+    ( cd "$d/rel" && sha256_of "sot-9.9.9-$TGT.tar.gz" > SHA256SUMS )
     # curl and git record their argv in net.log: the stand-ins the network-bound case below reads. git answers a
     # status with a clean tree and a rev-parse with one commit, so a run with a checkout in place reaches Julia.
     cat > "$d/stubs/curl" <<STUBEOF

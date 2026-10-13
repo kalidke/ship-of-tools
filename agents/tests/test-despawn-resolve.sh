@@ -133,10 +133,10 @@ reg_has() { jq -e --arg n "$1" '.agents | has($n)' "$CH/registry.json" >/dev/nul
 
 run_despawn() {
     local who="$1"
-    DESPAWN_OUT="$(env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION \
+    DESPAWN_OUT="$(bounded 30 env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION \
         ${DESPAWN_PATH:+PATH="$DESPAWN_PATH"} XDG_CONFIG_HOME="$CH/xdg" \
         SOT_COMM_HOME="$CH" SOT_COMM_SELF_FILE="$CH/self.txt" \
-        timeout 30 "$SCRIPTS_DIR/comm-despawn.sh" "$who" --endpoint "${DESPAWN_EP:-unix:$SOCK}" 2>"$CH/stderr.tmp")"
+        "$SCRIPTS_DIR/comm-despawn.sh" "$who" --endpoint "${DESPAWN_EP:-unix:$SOCK}" 2>"$CH/stderr.tmp")"
     DESPAWN_RC=$?
     DESPAWN_ERR="$(cat "$CH/stderr.tmp" 2>/dev/null || true)"
 }
@@ -368,10 +368,10 @@ make_worktree() {
 
 run_clean() {  # [flag] — --force unless given ("" for none)
     local opt="${1---force}"
-    CLEAN_OUT="$(cd "$WORK/wt/proj" && env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION -u SOT_SPAWN_ENDPOINT \
+    CLEAN_OUT="$(cd "$WORK/wt/proj" && bounded 60 env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION -u SOT_SPAWN_ENDPOINT \
         SOT_SPAWN_ENDPOINT="unix:$SOCK" XDG_CONFIG_HOME="$CH/xdg" \
         SOT_COMM_HOME="$CH" SOT_COMM_SELF_FILE="$CH/self.txt" \
-        timeout 60 "$SCRIPTS_DIR/comm-worktree-clean.sh" x $opt 2>&1)"
+        "$SCRIPTS_DIR/comm-worktree-clean.sh" x $opt 2>&1)"
     CLEAN_RC=$?
 }
 

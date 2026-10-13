@@ -133,9 +133,10 @@ _sot_ancestor_chain() {
                 # Cygwin's processes by winpid, read once and before any sotd snapshot: a
                 # process sotd prints is an ancestor, so it was created before this scan and
                 # is alive at the snapshot, and the pid it holds there names it here too.
-                local -A cyg; scanned=1
+                local -a cyg; scanned=1
                 for f in "$_SOT_PROC"/[0-9]*/winpid; do
-                    IFS= read -r a 2>/dev/null < "$f" && [ -n "$a" ] || continue
+                    IFS= read -r a 2>/dev/null < "$f" || continue
+                    case "$a" in ''|*[!0-9]*) continue ;; esac
                     f="${f%/winpid}"; cyg[$a]="${f##*/}"
                 done
             fi

@@ -203,7 +203,7 @@ floor="${row%%|*}"; at="${row#*|}"
 # every tool call of a busy turn).
 [ -n "$floor" ] || exit 0
 now_s=$(date -u +%s)
-at_s=$(date -u -d "$at" +%s 2>/dev/null || echo 0)
+at_s=$( . "$hb_lib" >/dev/null 2>&1 && sot_epoch "$at" ) || at_s=0
 [ $((now_s - at_s)) -ge 60 ] || exit 0
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

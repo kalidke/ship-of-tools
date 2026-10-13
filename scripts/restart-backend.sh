@@ -13,7 +13,7 @@
 #
 # It kills the running daemon by EXPLICIT pid (never `pkill -f`, which self-
 # matches this very shell) and relaunches the on-disk binary detached +
-# reparented (setsid), logging to dev/output/sotd-restart.<host>.log in this
+# reparented (a session of its own), logging to dev/output/sotd-restart.<host>.log in this
 # checkout (one writer per file: the home and so the checkout are shared between
 # hosts; the daemon also keeps its own private log under its state dir). The
 # daemon identity is the per-user socket derived from `--label sot`, not a
@@ -44,14 +44,15 @@ fi
 
 # This account's daemon only (ADR 0049, User isolation: another user's `sotd --label sot` is never judged, killed or
 # reported as this one). Among this account's processes named `sotd` (the kernel's `comm`, so a program that only
-# mentions sotd in its arguments is not one), the one started with `--socket` and exactly this socket, else the first
+# mentions sotd in its arguments is not one; macOS's ps prints the program's path, so its last part is compared), the
+# one started with `--socket` and exactly this socket, else the first
 # started with `--label` and exactly this label. Both are literal comparisons of whole arguments: the values reach awk
 # through its environment, never as a pattern or an escape, and a socket or label that only begins with this one is
 # another daemon's.
 find_pid() {
     ps -u "$(id -u)" -o pid=,comm=,args= | FIND_SOCKET="$SOCKET" FIND_LABEL="$LABEL" awk '
         BEGIN { sock = " --socket " ENVIRON["FIND_SOCKET"] " "; label = " --label " ENVIRON["FIND_LABEL"] " " }
-        $2 != "sotd" { next }
+        { n = $2; sub(/.*\//, "", n) } n != "sotd" { next }
         { args = $0; sub(/^ *[0-9]+ +[^ ]+ +/, "", args); args = " " args " " }
         index(args, sock) { print $1; found = 1; exit }
         index(args, label) && first == "" { first = $1 }
@@ -59,20 +60,28 @@ find_pid() {
     '
 }
 
+# The times, read and printed with GNU's or BSD's (macOS's) tools: the binary's mtime by stat -c or -f, the daemon's
+# age by ps's portable etime ([[dd-]hh:]mm:ss), and a time printed by date -d @ or -r.
+age_of() {  # PID — its seconds since it started
+    ps -p "$1" -o etime= 2>/dev/null | awk '{ t = $1; d = 0; if (i = index(t, "-")) { d = substr(t, 1, i - 1); t = substr(t, i + 1) }
+        n = split(t, f, ":"); s = 0; for (k = 1; k <= n; k++) s = s * 60 + f[k]; print d * 86400 + s }'
+}
+at() { date -d "@$1" '+%F %T' 2>/dev/null || date -r "$1" '+%F %T'; }
+
 OLD=$(find_pid)
-BIN_MTIME=$(stat -c %Y "$BIN")
+BIN_MTIME=$(stat -c %Y "$BIN" 2>/dev/null || stat -f %m "$BIN")
 if [ -n "$OLD" ]; then
     if ! sot_socket_open "$BIN" "$SOCKET"; then
         STALE=1
         echo "running daemon pid $OLD has no socket at $SOCKET"
     else
-        START_EPOCH=$(( $(date +%s) - $(ps -p "$OLD" -o etimes= | tr -d ' ') ))
+        START_EPOCH=$(( $(date +%s) - $(age_of "$OLD") ))
         if [ "$BIN_MTIME" -gt "$START_EPOCH" ]; then
             STALE=1
-            echo "running daemon pid $OLD is STALE — started $(date -d "@$START_EPOCH" '+%F %T'), binary built $(date -d "@$BIN_MTIME" '+%F %T')"
+            echo "running daemon pid $OLD is STALE — started $(at "$START_EPOCH"), binary built $(at "$BIN_MTIME")"
         else
             STALE=0
-            echo "running daemon pid $OLD is CURRENT — started $(date -d "@$START_EPOCH" '+%F %T') >= binary $(date -d "@$BIN_MTIME" '+%F %T')"
+            echo "running daemon pid $OLD is CURRENT — started $(at "$START_EPOCH") >= binary $(at "$BIN_MTIME")"
         fi
     fi
 else
@@ -93,7 +102,7 @@ if systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
     for _ in $(seq 1 30); do sot_socket_open "$BIN" "$SOCKET" && break; sleep 0.5; done
     NEW=$(find_pid)
     if [ -n "$NEW" ] && sot_socket_open "$BIN" "$SOCKET"; then
-        echo "backend restarted via systemd: pid $NEW on $SOCKET (binary built $(date -d "@$BIN_MTIME" '+%F %T'))"
+        echo "backend restarted via systemd: pid $NEW on $SOCKET (binary built $(at "$BIN_MTIME"))"
         exit 0
     fi
     echo "ERROR: systemd sotd did not bind $SOCKET after restart — reinstall the socket-based unit or see: systemctl --user status sotd" >&2; exit 1
@@ -108,17 +117,21 @@ if [ -n "$OLD" ]; then
     if kill -0 "$OLD" 2>/dev/null; then echo "force-killing $OLD"; kill -9 "$OLD" 2>/dev/null; sleep 1; fi
 fi
 
-# Relaunch detached + reparented (setsid -> own session, outlives this script;
-# nohup -> ignore SIGHUP). Parent dies -> daemon reparents to init (ppid 1).
+# Relaunch detached + reparented: a session of its own (no controlling terminal, so neither a closed terminal nor a
+# Ctrl-C in it reaches the daemon), SIGHUP ignored (nohup), and init its parent once this script exits. The session is
+# perl's POSIX::setsid, as macOS ships no setsid(1); setsid() refuses a process group leader, which an interactive
+# shell makes of a background job, so perl first forks one that is not.
 mkdir -p "$(dirname "$LOG")"
 ( umask 077 && : >>"$LOG" )   # private to this user even if it is new
-setsid nohup "$BIN" --project-root "$ROOT" --label "$LABEL" >>"$LOG" 2>&1 &
+nohup perl -MPOSIX -e 'if (getpgrp() == $$) { my $p = fork; defined $p or die "fork: $!\n"; exit 0 if $p }
+    POSIX::setsid(); exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"' \
+    "$BIN" --project-root "$ROOT" --label "$LABEL" >>"$LOG" 2>&1 </dev/null &
 disown 2>/dev/null || true
 
 for _ in $(seq 1 30); do sot_socket_open "$BIN" "$SOCKET" && break; sleep 0.5; done
 NEW=$(find_pid)
 if [ -n "$NEW" ] && sot_socket_open "$BIN" "$SOCKET"; then
-    echo "backend restarted: pid $NEW on $SOCKET (binary built $(date -d "@$BIN_MTIME" '+%F %T'))"
+    echo "backend restarted: pid $NEW on $SOCKET (binary built $(at "$BIN_MTIME"))"
 else
     echo "ERROR: backend did not bind $SOCKET after restart — see $LOG" >&2; exit 1
 fi

@@ -155,6 +155,25 @@ case_a_protocol_refusal_does_not_decide_the_oneshot_request() {
     return 0
 }
 
+# A daemon answers and holds the connection, as a live one does: the one-shot returns the reply and ends its transport,
+# and that end prints nothing on the caller's stderr (bash 3.2 reports a background job a signal ended, "Terminated").
+case_a_reply_on_an_open_connection_leaves_stderr_empty() {
+    rm -rf "${HUB:?}"; mkdir -p "$HUB"
+    { printf '#!/bin/sh\n'; cat <<'STUB'
+[ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
+IFS= read -r line
+printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"ok":true}}\n'
+IFS= read -r line
+printf '{"v":1,"id":1,"kind":"res","op":"version.query","payload":{"ok":true}}\n'
+exec cat > /dev/null
+STUB
+    } > "$HUB/sotd"; chmod +x "$HUB/sotd"
+    oneshot_version_query
+    [ "$ONESHOT_RC" -eq 0 ] || { echo "  rc $ONESHOT_RC, want 0 (out: $ONESHOT_OUT err: $ONESHOT_ERR)"; return 1; }
+    printf '%s' "$ONESHOT_OUT" | jq -e '.op == "version.query"' >/dev/null 2>&1 || { echo "  reply: $ONESHOT_OUT"; return 1; }
+    [ -z "$ONESHOT_ERR" ] || { echo "  stderr: $ONESHOT_ERR"; return 1; }
+}
+
 # S4 — a directed wire send with no daemon found is that send's FAILED line.
 case_a_wire_send_with_no_daemon_is_failed() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
@@ -312,6 +331,7 @@ case_the_read_window_outlasts_the_hubs_lock_wait() {
 
 # T6 — the hub's line (file_frame's shape, repo "daemon") and a local one.
 case_a_hub_line_and_a_local_line_read_alike() {
+    linux_only "T6: a hub-filed and a locally-filed line read alike and both advance the cursor" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local out n
     append_one "$PEER" '{"from":"t-sender","to":"t-peer","repo":"r","msg":"local line","ts":"2026-09-30T00:00:01Z"}' \

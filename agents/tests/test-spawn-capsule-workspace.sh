@@ -11,6 +11,7 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home
 . "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-wait.sh" || exit 2
+export -f bounded   # in_row's stand-in capsule is a fresh bash -c, which runs `bounded` only from the environment
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -148,10 +149,10 @@ run_spawn() {
     SPAWN_HOME="$WORK/home-$SPAWNN"
     mkdir -p "$SPAWN_HOME"
     local errfile="$WORK/spawn-stderr-$SPAWNN.tmp"
-    SPAWN_OUT="$(cd "$WORK" && in_row spawn-test env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION \
+    SPAWN_OUT="$(cd "$WORK" && in_row spawn-test bounded 30 env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION \
         ${SPAWN_PATH:+PATH="$SPAWN_PATH"} GUARD_PIPE_SOCKET="$SOCK" XDG_CONFIG_HOME="$SPAWN_HOME/xdg-config" \
         SOT_COMM_HOME="$SPAWN_HOME" SOT_COMM_SELF_FILE="$SPAWN_HOME/self.txt" \
-        timeout 30 "$SPAWN" ${name:+--name "$name"} "$REPO_PATH" --endpoint "${SPAWN_EP:-unix:$SOCK}" "$@" 2>"$errfile")"
+        "$SPAWN" ${name:+--name "$name"} "$REPO_PATH" --endpoint "${SPAWN_EP:-unix:$SOCK}" "$@" 2>"$errfile")"
     SPAWN_RC=$?
     SPAWN_ERR="$(cat "$errfile" 2>/dev/null || true)"
 }
@@ -304,7 +305,11 @@ case_capsule_ready_over_pipe_endpoint() {
 
 # The spelling is the daemon's, not the caller's: a Windows caller reaching a
 # non-pipe daemon sends the path as resolved here.
+# A Windows caller (OS=Windows_NT) is stood in for only where comm-spawn reads its ancestry from /proc, as on Windows
+# (Cygwin's): with no /proc it refuses, rightly, a caller it cannot read.
+needs_proc() { [ -r "/proc/$$/stat" ] && return 0; echo "SKIP: $1: a Windows caller is stood in for only where /proc holds the ancestry"; return 1; }
 case_windows_caller_nonpipe_daemon_keeps_root() {
+    needs_proc "Windows caller, non-pipe daemon" || return 0
     local wsid="ws-win" slug="win1"
     start_stub_daemon "$wsid" "$slug" \
         "$(entry "$wsid" "$slug" capsule starting)" \
@@ -322,6 +327,7 @@ case_windows_caller_nonpipe_daemon_keeps_root() {
 # A failed conversion refuses before the derived-name claim, the earliest
 # registry write: nothing claimed, nothing to roll back.
 case_pipe_conversion_failure_refuses_before_any_write() {
+    needs_proc "pipe: endpoint, cygpath fails" || return 0
     start_stub_daemon ws-cvt cvt1 "$(entry ws-cvt cvt1 capsule ready)"
     stub_windows_tools fail
     OS=Windows_NT SPAWN_EP='pipe:\\.\pipe\sot-stub' SPAWN_PATH="$WORK/bin:$PATH" \

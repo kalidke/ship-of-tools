@@ -270,7 +270,14 @@ EOF
 # =========================================================================
 
 # exe_is PID PATH — PID's executable image is PATH (a readable link alone is not: a child before its exec shows its wrapper's).
-exe_is() { [ "$(readlink "/proc/$1/exe" 2>/dev/null)" = "$2" ]; }
+# The binary of pid $1 is $2: /proc on Linux, `ps -o comm=` on macOS, as _sot_live_sotd_exes reads it. macOS prints
+# the path the process was started from, so its folder is resolved to the physical path $2 names.
+exe_is() {
+    local e
+    if [ "$(uname -s)" = Darwin ]; then e="$(ps -o comm= -p "$1" 2>/dev/null)" && [ -n "$e" ] \
+        && [ "$(cd "${e%/*}" 2>/dev/null && pwd -P)/${e##*/}" = "$2" ]
+    else [ "$(readlink "/proc/$1/exe" 2>/dev/null)" = "$2" ]; fi
+}
 
 case_ssh_bridge_third_arg_bounds_it_and_an_empty_one_stays_unbounded() {
     local dir
@@ -402,7 +409,7 @@ EOF
     # a child still before its exec has a readable link to the wrapper that started it.
     local stub_exe; stub_exe="$(cd "$dir" && pwd -P)/sotd"
     await exe_is "$pid" "$stub_exe"
-    exe_is "$pid" "$stub_exe" || { echo "  the stub is not running $stub_exe (its exe is '$(readlink "/proc/$pid/exe" 2>/dev/null)')"; return 1; }
+    exe_is "$pid" "$stub_exe" || { echo "  the stub is not running $stub_exe (its exe is '$(readlink "/proc/$pid/exe" 2>/dev/null)', ps says '$(ps -o comm= -p "$pid" 2>/dev/null)')"; return 1; }
 
     # A DECOY first, then the real stub: round-2 item 2's own regression
     # guard. `_sot_sotd_bin`'s /proc loop used to take the FIRST match

@@ -12,8 +12,10 @@ scripts/CLAUDE.md.
 
 ## Workflows
 - `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `docs/tools/**`, `comm/**`, `agents/**`, `.github/wgl-depot.sh` and the file
-  itself) and dispatch. Jobs: `test` (build and test on windows and macos, after `npm ci` for the MathJax helper's modules, and on windows the
-  PowerShell 5.1 parse and the `scripts/tests/` `.ps1` suites), `test-linux` (the ubuntu build and test, one job per
+  itself) and dispatch. Jobs: `test` (build and test on windows and macos, after `npm ci` for the MathJax helper's modules; on windows the
+  PowerShell 5.1 parse and the `scripts/tests/` `.ps1` suites; on macos "Comm and agents suites under /bin/bash 3.2",
+  `scripts/tests/under-bash.sh /bin/bash` over every hermetic suite, run by Homebrew's bash, which the
+  step installs: the macOS image's only bash is /bin/bash 3.2), `test-linux` (the ubuntu build and test, one job per
   shard, named "build+test (ubuntu-latest, <shard>)": its `SHARDS` table names the test targets of the shards `outage`,
   `capsule`, `wake` and `sotd`, each target whole or split once as `X` and `--skip X`; the shard `rest` runs every other
   test executable cargo builds, then the doc tests, so no row names `rest`; the matrix lists the table's shards in the
@@ -27,7 +29,9 @@ scripts/CLAUDE.md.
   `scripts/tests/` bash suites, the comm hermetic suites and the agents CLI suites (the comm list names
   `test-stage-bin.sh`; among them `test-ccx-launch.sh`, which proves ccx's default handle)), `conpty-windows-2022`
   (ConPTY and capsule tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the
-  latest published tag into a clean container). The step "Test native harness helpers" in `checks-linux` runs the
+  latest published tag into a clean container), `bash32-linux` ("scripts under bash 3.2.57 (ubuntu-latest)": builds GNU
+  bash 3.2.57 from its tarball, sha256 pinned, and runs `scripts/tests/under-bash.sh` with it over every hermetic
+  suite). The step "Test native harness helpers" in `checks-linux` runs the
   feature-gated sot binary's eight display-free native harness regression bodies through
   scripts/tests/run-filtered-tests.sh; native window acceptance remains in the dedicated hosted jobs.
   The step "Test selected Rust bodies" runs the portable real-libtest

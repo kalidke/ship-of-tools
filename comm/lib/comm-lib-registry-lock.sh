@@ -13,7 +13,11 @@
 # link never replaces anything. The daemon's `comm/registry/lock.rs` takes
 # the same lock with the same record.
 #
-# Proof of death is Linux-only, and only from the holder's own machine: the
+# On macOS (no /proc) the record is the host UUID, the boot session UUID,
+# `darwin` (no pid namespaces), the pid and its start in whole seconds since
+# the epoch, as `ps -o lstart=` and lock.rs's proc_pidinfo read it.
+#
+# Proof of death (Linux and macOS) is only from the holder's own machine: the
 # same boot and pid namespace with the pid gone or its start changed, or the
 # same machine-id AND host name with another boot. That assumes a machine-id
 # is unique to one machine: a cloned image sharing one would read a live
@@ -38,43 +42,17 @@
 # is FAILED naming it. Where the deadline is checked is comm/PROTOCOL.md's
 # Bounds.
 #
-# Release is TRAP-based, not a plain post-command `rm` (Codex review F2
-# second half / F7): a caller's `set -e` aborts the WHOLE SCRIPT the moment
-# `"$@"` fails, at that exact statement — skipping every line after it in
-# this function, including a plain `rm` written below the call. That
-# leaked the lock forever on any callee failure (a corrupt registry.json
-# making `registry_put`'s jq fail, for example). An EXIT trap still fires
-# on that abort, so the lock comes off either way.
-#
-# The PRIOR EXIT trap (if any) is saved and restored, not just cleared:
-# bash has one EXIT trap per shell, not a stack, and a caller may already
-# have its own (e.g. comm-spawn.sh's provisional-row rollback) active
-# around a with_lock call — blindly clearing it here would silently
-# disarm the caller's cleanup for the rest of the script. This restore now
-# runs on EVERY path, including a directly-failing "$@" (Codex review PR
-# #148 round 2, finding 4): a bare `"$@"` statement under the caller's
-# `set -e` used to abort the WHOLE SCRIPT right there, skipping every line
-# below it in this function — the lock still came off (its own release
-# trap fired on that abort), but the restore of the CALLER's prior trap
-# never ran, silently losing it for the rest of the script. Capturing the
-# callee's status via `if "$@"; then :; else rc=$?; fi` — the standard
-# idiom for "run this and don't let -e kill us on failure" — means release
-# and restore always execute before this function returns, on every path.
+# Release is by an EXIT trap, which still fires when a caller's `set -e`
+# aborts the script inside "$@", so the lock comes off however "$@" ends. The
+# caller's own EXIT trap (bash has one per shell) is saved and put back, and
+# "$@"'s status is captured, never left to `set -e`, so release and restore
+# run on every path.
 SOT_LOCK_WAIT_SECS=10
 with_lock() {
     local deadline="" took retook=""
-    # Test seam (F10): let a test PROVE a background waiter has reached its
-    # first lock attempt, instead of racing it with a sleep. Touched once,
-    # right before that attempt; unset (the default) this is a no-op.
-    #
-    # `touch --`, NOT `: > FILE` (Codex review round 2, finding 6): a bare
-    # `>` redirect TRUNCATES whatever already sits at that path — if this
-    # var ever leaked into a production environment pointed at a real
-    # file, every with_lock call would zero it. `touch` only updates/
-    # creates, and unlike `>` it doesn't attempt to OPEN-FOR-WRITE (which
-    # would block forever against a FIFO with no reader, right here in the
-    # lock's own hot path) — and `|| true` keeps a bad path from tripping
-    # this function's own `set -e`-sensitive callers.
+    # Test seam: touched once, right before the first take, so a test can prove
+    # a background waiter reached it; unset, a no-op. `touch --`, never `: >`,
+    # which would truncate a real file or block on a FIFO the variable named.
     [ -n "${SOT_COMM_TEST_LOCK_BARRIER:-}" ] && { touch -- "$SOT_COMM_TEST_LOCK_BARRIER" 2>/dev/null || true; }
     _sot_lock_self_id
     while :; do
@@ -164,26 +142,27 @@ _sot_lock_over() {
 
 # _sot_lock_self_id — set _SOT_LOCK_ID to THIS process's holder record, and
 # _SOT_LOCK_SELF to `name:machine:boot:pidns` where this shell can prove a
-# death (Linux, with a /proc that is its own), else to "". Call it in the
-# process that will hold the lock, never as `id=$(_sot_lock_self_id)`: a
-# command substitution is a subshell, and its pid dies at once, so every
-# waiter on this machine would reclaim a live holder (review S5). bash 3.2
-# has no BASHPID, so there the recorded pid is `$$`, which /proc/self then
-# contradicts: nothing is proved from that record, and only the FAILED text is
-# affected while no script runs two with_lock subshells at once: sibling
-# subshells share `$$`, so they would share one ID and one temp file, and the
-# take's `-ef` test would read a sibling's link as its own. No caller does.
+# death (Linux, with a /proc that is its own; macOS, whose boot session and
+# process start it reads), else to "". Call it in the process that will hold
+# the lock, never as `id=$(_sot_lock_self_id)`: a command substitution is a
+# subshell, and its pid dies at once, so every waiter on this machine would
+# reclaim a live holder (review S5). The pid is this process's own: BASHPID,
+# or on bash 3.2, which has none, a child sh's parent. A box whose comm home's
+# mount proves no fresh read (_sot_lock_vouch) proves no death: its record has
+# no proof fields, so its dead holder is named by hand rather than refused at
+# every reclaim (review F1).
 _sot_lock_self_id() {
-    local name machine=- boot=- pidns=- pid="${BASHPID:-$$}" start=- self_pid="" ns=""
+    local name machine=- boot=- pidns=- pid="${BASHPID:-}" start=- self_pid="" ns="" os b
+    [ -n "$pid" ] || pid="$(exec sh -c 'echo "$PPID"')"
     name="$(sot_host 2>/dev/null)" || name=""
     name="${name//[!A-Za-z0-9._-]/_}"
     name="${name:--}"
     _SOT_LOCK_SELF="" _SOT_LOCK_HOLDER="" _SOT_LOCK_WHO="" _SOT_LOCK_BYHAND="" _SOT_LOCK_GONE=""
-    _SOT_LOCK_WHY="it was released just now"
-    if [ "$(uname -s 2>/dev/null)" = Linux ]; then
+    os="$(uname -s 2>/dev/null)"
+    if [ "$os" = Linux ]; then
         read -r self_pid _ 2>/dev/null </proc/self/stat || true
     fi
-    if [ "$self_pid" = "$pid" ]; then
+    if [ "$self_pid" = "$pid" ] && _sot_lock_vouch; then
         machine="$(_sot_machine_id)"
         IFS= read -r boot 2>/dev/null </proc/sys/kernel/random/boot_id || true
         ns="$(readlink "/proc/$pid/ns/pid" 2>/dev/null)" || ns=""
@@ -191,7 +170,12 @@ _sot_lock_self_id() {
         if _sot_lock_start "$pid"; then start="$_SOT_LOCK_START"; fi
         machine="${machine:--}"; boot="${boot:--}"; pidns="${pidns:--}"
         _SOT_LOCK_SELF="$name:$machine:$boot:$pidns"
+    elif [ "$os" = Darwin ] && _sot_lock_vouch && b="$(sysctl -n kern.bootsessionuuid 2>/dev/null)" && [ -n "$b" ] \
+        && _sot_lock_start "$pid"; then
+        machine="$(_sot_machine_id)"; machine="${machine:--}"; boot="$b" pidns=darwin start="$_SOT_LOCK_START"
+        _SOT_LOCK_SELF="$name:$machine:$boot:$pidns"
     fi
+    _SOT_LOCK_WHY="it was released just now"
     _SOT_LOCK_ID="$name:$machine:$boot:$pidns:$pid:$start"
 }
 
@@ -208,6 +192,13 @@ _sot_lock_is_me() {
 # parentheses (challenge_unix.rs's process_start_ticks, the same parse).
 _sot_lock_start() {
     local line="" f=()
+    if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+        # Whole seconds since the epoch, lock.rs's pbi_start_tvsec. ps pads the line with spaces, which date warns of.
+        line="$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$1" 2>/dev/null)" && line="${line%"${line##*[! ]}"}" && [ -n "$line" ] \
+            && line="$(LC_ALL=C TZ=UTC0 date -j -f '%a %b %e %T %Y' "$line" +%s 2>/dev/null)" \
+            && [[ "$line" =~ ^[0-9]+$ ]] && _SOT_LOCK_START="$line"
+        return
+    fi
     { IFS= read -r line </proc/"$1"/stat; } 2>/dev/null || [ -n "$line" ] || return 1
     read -r -a f <<<"${line##*)}" || true
     [[ "${f[19]:-}" =~ ^[0-9]+$ ]] || return 1
@@ -267,6 +258,12 @@ _sot_lock_fresh() {
     [[ "$_SOT_LOCK_READ" =~ ^[^:]*:[^:]*:[^:]*:[^:]*:[0-9]+:[^:]*$ ]]
 }
 
+# _sot_lock_gone PID — 0 when no process has PID: no /proc/PID on Linux; on macOS, kill(2) answers ESRCH, as
+# lock.rs's proc_pidinfo does. A read that fails for any other reason proves nothing (review F3).
+_sot_lock_gone() {
+    if [ "$(uname -s 2>/dev/null)" = Darwin ]; then perl -e 'exit !(!kill(0, $ARGV[0]) && $!{ESRCH})' "$1"; else [ ! -e "/proc/$1" ]; fi
+}
+
 # _sot_lock_judge ID — set _SOT_LOCK_VERDICT to DEAD, ALIVE or UNPROVABLE,
 # and _SOT_LOCK_WHY to the reason a person reads.
 _sot_lock_judge() {
@@ -283,10 +280,10 @@ _sot_lock_judge() {
             else
                 _SOT_LOCK_VERDICT=ALIVE; _SOT_LOCK_WHY="it is running"
             fi
-        elif [ ! -e "/proc/$pid" ]; then
+        elif _sot_lock_gone "$pid"; then
             _SOT_LOCK_VERDICT=DEAD; _SOT_LOCK_WHY="it has exited"
         else
-            _SOT_LOCK_WHY="its /proc entry cannot be read"
+            _SOT_LOCK_WHY="its process cannot be read"
         fi
     elif [ "$machine" != - ] && [ "$boot" != - ] && [ "$me_boot" != - ] && [ "$name" != - ] \
         && [ "$machine" = "$me_machine" ] && [ "$name" = "$me_name" ] && [ "$boot" != "$me_boot" ]; then
@@ -300,12 +297,18 @@ _sot_lock_judge() {
 
 # _sot_lock_vouch — 0 when the comm home's mount makes the fresh read fresh:
 # ext2/3/4, xfs, btrfs, zfs, f2fs or tmpfs, or nfs/nfs4 without `nocto`; the
-# mount on top, the last line of `findmnt -T`, when one is stacked. Reached
-# only on Linux, except by comm-registry-lock-clear.sh, whose person vouches
-# elsewhere.
+# mount on top, the last line of `findmnt -T`, when one is stacked. On macOS:
+# the Mac's own disk (MNT_LOCAL: `local` in `mount`'s line for the top mount
+# there; inbox.rs's own_disk). Asked by _sot_lock_self_id: where it says no,
+# this box proves no death.
 _sot_lock_vouch() {
-    local fs="" opts=""
-    [ -n "${_SOT_LOCK_SELF:-}" ] || return 0
+    local fs="" opts="" mp
+    if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+        mp="$(df -P "${_SOT_REG_LOCK%/*}" 2>/dev/null | awk 'NR == 2 { print $NF }')"
+        case "$(mount 2>/dev/null | grep -F " on $mp (" | tail -n 1)" in *", local"*) return 0 ;; esac
+        _SOT_LOCK_WHY="the comm home is not on this Mac's own disk, so no read of it is proved fresh"
+        return 1
+    fi
     read -r fs opts < <(_sot_findmnt -n -o FSTYPE,OPTIONS -T "${_SOT_REG_LOCK%/*}" 2>/dev/null | tail -n 1) || true
     case "$fs" in
         ext2|ext3|ext4|xfs|btrfs|zfs|f2fs|tmpfs|nfs|nfs4) ;;
@@ -316,7 +319,7 @@ _sot_lock_vouch() {
     esac
 }
 
-# _sot_lock_step [--forced | DEADLINE] — one reclaim attempt against the lock
+# _sot_lock_step [DEADLINE] — one reclaim attempt against the lock
 # as it stands. 0 = this step saw the lock go, retake at once; 1 = not (a lock
 # released since the take, or one whose record could not be read, is a try,
 # keeps the last holder named, clears _SOT_LOCK_BYHAND and sets _SOT_LOCK_GONE
@@ -333,14 +336,9 @@ _sot_lock_vouch() {
 # ends the walk: no reclaim can pass it (a daemon's own marker, left naming
 # it when it died during its reclaim; review B1), so the lock is removed by
 # hand. Past its first marker the walk stops at DEADLINE, a _sot_lock_now
-# value. --forced (the clear command) takes a person's word for the
-# unprovable holder the lock names, never against a proof that it is alive,
-# and never for a marker's creator: a reclaimer that cannot be proved dead
-# here may be pending on its own machine, and would remove the next holder's
-# lock (review B1).
+# value; with none (the clear command) it walks to the end.
 _sot_lock_step() {
-    local x chain=() m c y r deadline=""
-    [ "${1:-}" = --forced ] || deadline="${1:-}"
+    local x chain=() m c y r deadline="${1:-}"
     _sot_lock_fresh "$_SOT_REG_LOCK"; r=$?
     if [ "$r" != 0 ]; then
         # First, as cat on a directory fails, so a directory arrives as 2.
@@ -370,14 +368,12 @@ _sot_lock_step() {
             return 1
         fi
         _sot_lock_judge "$x"
-        [ "${1:-}" = --forced ] && [ "${#chain[@]}" = 1 ] && [ "$_SOT_LOCK_VERDICT" = UNPROVABLE ] && _SOT_LOCK_VERDICT=DEAD
         if [ "$_SOT_LOCK_VERDICT" != DEAD ]; then
             _SOT_LOCK_WHO="$x"
             [ "$x" = "$_SOT_LOCK_HOLDER" ] \
                 || _SOT_LOCK_WHY="it is dead, but its reclaim by ${x%%:*} pid $(_sot_lock_field "$x" 5) did not finish: $_SOT_LOCK_WHY"
             return 1
         fi
-        if [ "${#chain[@]}" = 1 ] && ! _sot_lock_vouch; then _SOT_LOCK_WHO="$x"; return 1; fi
         m="$_SOT_REG_LOCK.reclaim.${x//:/.}"
         if _sot_lock_take "$m"; then break; else c=$?; fi
         if [ "$c" = 2 ] || ! _sot_lock_fresh "$m"; then
@@ -415,14 +411,47 @@ _sot_lock_field() {  # ID N — the ID's Nth colon field
     printf '%s' "${f[$2 - 1]:--}"
 }
 
+# _sot_lock_fix — the recovery the FAILED line and the clear's refusal name for
+# the lock as the last step saw it: nothing when no record blocks; by hand when
+# no reclaim can clear it (_SOT_LOCK_BYHAND); for a record the step judged
+# (_SOT_LOCK_WHO), by its reason in _SOT_LOCK_WHY, a comm command where it can
+# be proved dead, or, if it is dead, by hand where no box can prove it: no
+# proof fields, or a host that will not run again or whose comm command says
+# it cannot prove a death. Every by-hand clause stands under "if it is dead": a
+# live holder is never proved dead, so "cannot prove it" alone would name a
+# live lock (review R3-B1). A bare rm races a reclaimer pending where the
+# holder ran (review B1), and none can be pending where nothing proves its
+# death (review F2). A holder the step did not judge (one that took the lock
+# during the reclaim) is never named by hand (review SF2). lock.rs's
+# `fail_text` says the same.
+_sot_lock_fix() {
+    local x="${_SOT_LOCK_WHO:-${_SOT_LOCK_HOLDER:-}}" p="$_SOT_REG_LOCK" h
+    h="${x%%:*}"
+    if [ -n "${_SOT_LOCK_BYHAND:-}" ]; then
+        echo "If its holder is dead, remove $p by hand and retry."
+    elif [ -z "$x" ]; then
+        return 0
+    elif [ -z "${_SOT_LOCK_WHO:-}" ]; then
+        echo "If it is dead, run any comm command on $h."
+    elif [[ "$x" =~ ^[^:]*:-:-:-:[0-9]+:-$ ]]; then
+        echo "No box can prove $h pid $(_sot_lock_field "$x" 5) dead (its record has no proof fields): if it is, remove $p by hand."
+    elif [[ "$_SOT_LOCK_WHY" == *"in another pid namespace" ]]; then
+        echo "If it is dead: run any comm command on $h in its pid namespace, or, if nothing will run there again or a comm command there says it cannot prove a death, remove $p by hand."
+    elif [[ "$_SOT_LOCK_WHY" == *"on another machine" || "$_SOT_LOCK_WHY" == *"cannot prove a death" ]]; then
+        echo "If it is dead: run any comm command on $h, or, if $h will not run again or a comm command there says it cannot prove a death, remove $p by hand."
+    else
+        echo "If it is dead, run any comm command on $h."
+    fi
+}
+
 # _sot_lock_fail_text — the one FAILED line for the lock as _sot_lock_step
 # last saw it: the holder's host, pid and start tick, and the recovery.
 _sot_lock_fail_text() {
-    local age="unknown" mtime="" who="${_SOT_LOCK_WHO:-${_SOT_LOCK_HOLDER:-}}"
-    mtime="$(stat -c %Y "$_SOT_REG_LOCK" 2>/dev/null)" || mtime=""
+    local age="unknown" mtime=""
+    mtime="$(sot_mtime "$_SOT_REG_LOCK")" || mtime=""
     [ -n "$mtime" ] && age="$(( $(date +%s) - mtime ))s"
     if [ -n "${_SOT_LOCK_BYHAND:-}" ]; then
-        echo "ERROR: registry lock $_SOT_REG_LOCK still held ($age old): $_SOT_LOCK_WHY. If its holder is dead, remove $_SOT_REG_LOCK by hand and retry."
+        echo "ERROR: registry lock $_SOT_REG_LOCK still held ($age old): $_SOT_LOCK_WHY. $(_sot_lock_fix)"
         return 0
     fi
     if [ -z "${_SOT_LOCK_HOLDER:-}" ]; then
@@ -433,5 +462,5 @@ _sot_lock_fail_text() {
         echo "ERROR: registry lock $_SOT_REG_LOCK was held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) when last read ($_SOT_LOCK_WHY); it may have been released since. Retry."
         return 0
     fi
-    echo "ERROR: registry lock $_SOT_REG_LOCK is held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) ($age old): $_SOT_LOCK_WHY. If it is dead, run any comm command on ${who%%:*}, or run comm-registry-lock-clear.sh."
+    echo "ERROR: registry lock $_SOT_REG_LOCK is held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) ($age old): $_SOT_LOCK_WHY. $(_sot_lock_fix)"
 }

@@ -61,6 +61,7 @@ START() { PATH="$1" "$BASH_BIN" "$SCRIPTS_DIR/comm-session-start.sh" 2>/dev/null
 STOP()  { printf '{}' | PATH="$1" CLAUDE_CODE_SESSION_ID=deps-sess "$BASH_BIN" "$HOOKS_DIR/comm-status-idle.sh" 2>/dev/null; }
 
 for tool in jq flock perl; do
+    [ "$tool" = jq ] || linux_only "$tool missing: the mail tools are Linux's flock and perl" || continue
     P="$(path_without "$tool")"
     MSG="$tool is missing (install it)"
     out="$(POLL "$P")"; rc=$?
@@ -177,10 +178,12 @@ check "an unknown argument leaves registry.json byte-identical" "$(cksum < "$REG
 # the next Stop knows it as the hook's own and not a new prompt: with jq
 # present and flock missing, the feedback file is written.
 rm -rf "${SOT_COMM_HOME:?}/state"; mkdir -p "$SOT_COMM_HOME/state"
-printf '{"transcript_path":"%s"}' "$WORK/tp.jsonl" \
-    | PATH="$(path_without flock)" CLAUDE_CODE_SESSION_ID=fb-sess "$BASH_BIN" "$HOOKS_DIR/comm-status-idle.sh" >/dev/null 2>&1
-fbn="$(ls "$SOT_COMM_HOME"/state/stop-feedback-fb-sess.jsonl 2>/dev/null | wc -l)"
-check "flock missing: the block's feedback is recorded" "$fbn" "1"
+if linux_only "flock missing: the block's feedback is recorded"; then
+    printf '{"transcript_path":"%s"}' "$WORK/tp.jsonl" \
+        | PATH="$(path_without flock)" CLAUDE_CODE_SESSION_ID=fb-sess "$BASH_BIN" "$HOOKS_DIR/comm-status-idle.sh" >/dev/null 2>&1
+    fbn="$(ls "$SOT_COMM_HOME"/state/stop-feedback-fb-sess.jsonl 2>/dev/null | wc -l)"
+    check "flock missing: the block's feedback is recorded" "$fbn" "1"
+fi
 rm -rf "${SOT_COMM_HOME:?}/state"; mkdir -p "$SOT_COMM_HOME/state"
 
 # With jq missing and stop_hook_active true, a Stop never blocks twice in a row.
@@ -230,8 +233,9 @@ wait "$LOOPB" 2>/dev/null
 
 # Before bash 5 the registry lock's clock is perl's Time::HiRes, so the mail
 # tools list it there, and the check names the module when perl cannot load
-# it. bash 5 cannot be made to take that branch (BASH_VERSINFO is read-only),
-# so the check itself is tested here, with a perl that has no Time::HiRes.
+# it. A bash cannot be made to take the other version's branch (BASH_VERSINFO
+# is read-only), so the check itself is tested here, with a perl that has no
+# Time::HiRes, and the list by the bash the scripts run under.
 REAL_PERL="$(command -v perl)"
 mkdir -p "$WORK/nohires"
 cat > "$WORK/nohires/perl" <<NOHIRES
@@ -245,7 +249,19 @@ check "no Time::HiRes: the tool check fails" "$rc" "1"
 check "no Time::HiRes: one line names it" "$out" "sot-comm: cannot read mail: perl's Time::HiRes is missing (install it)"
 out="$(bash -c ". '$SCRIPTS_DIR/comm-lib.sh'; sot_require_tools 'read mail' jq Time::HiRes" 2>&1)"; rc=$?
 check "Time::HiRes present: the tool check passes" "$rc:$out" "0:"
-check "bash 5 on Linux: the mail tools need no Time::HiRes" "$(bash -c ". '$SCRIPTS_DIR/comm-lib.sh'; sot_mail_tools")" "jq flock perl"
+if [ "$(uname -s)" = Linux ]; then
+    want="jq flock perl"; [ "$(bash -c 'echo "${BASH_VERSINFO[0]}"')" -ge 5 ] || want="$want Time::HiRes"
+    check "on Linux the mail tools are jq, flock and perl, and perl's Time::HiRes before bash 5" "$(bash -c ". '$SCRIPTS_DIR/comm-lib.sh'; sot_mail_tools")" "$want"
+fi
+
+# A mail tool can be a perl module perl loads (Time::HiRes, before bash 5): the Stop hook takes the library's word, which
+# tests it with perl, never `command -v`. The list is stubbed so every bash takes that branch.
+cp -r "$SCRIPTS_DIR" "$WORK/bin-hires" && printf '%s\n' 'sot_mail_tools() { echo "jq Time::HiRes"; }' >> "$WORK/bin-hires/comm-lib.sh"
+ln -sfn "$WORK/bin-hires" "$SOT_COMM_HOME/bin"
+rm -rf "${SOT_COMM_HOME:?}/state" "${INBOX_DIR:?}/$NAME.jsonl" "${READ_DIR:?}/$NAME.cursor"
+check "a mail tool perl loads is not missing: the stop hook prints no block" "$(STOP "$PATH")" ""
+check "a mail tool perl loads is not missing: no tool tick" "$(ls "$SOT_COMM_HOME"/state/tool-fault-*.tick 2>/dev/null)" ""
+ln -sfn "$SCRIPTS_DIR" "$SOT_COMM_HOME/bin"
 
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

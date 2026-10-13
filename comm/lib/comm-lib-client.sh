@@ -98,9 +98,9 @@ _sot_emit_endpoint() {
 }
 
 # _sot_live_sotd_exes — the binary of each process of THIS account `pgrep -u <uid> -af sotd` lists whose
-# /proc/<pid>/exe is named `sotd` or `sotd.exe`, one per line, in pgrep's order;
-# nothing on Windows (no pgrep on a stock git-bash PATH) or where /proc cannot
-# be read. pgrep matches any command line that mentions sotd (`tail -f
+# binary (Linux: /proc/<pid>/exe; macOS, which has no /proc: `ps -o comm=`, the absolute path it was started from)
+# is named `sotd` or `sotd.exe`, one per line, in pgrep's order; nothing on Windows (no pgrep on a stock git-bash
+# PATH). pgrep matches any command line that mentions sotd (`tail -f
 # .../sotd.log`, `gdb sotd`, `watch ...`), and both callers below would run or
 # return such a process's binary: only a binary named sotd is ever listed.
 # Another account's sotd is never this account's daemon (ADR 0049, User isolation).
@@ -110,7 +110,12 @@ _sot_live_sotd_exes() {
     while IFS= read -r line; do
         pid="${line%% *}"
         case "$pid" in ''|*[!0-9]*) continue ;; esac
-        exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
+        if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+            exe="$(ps -o comm= -p "$pid" 2>/dev/null)" || continue
+            case "$exe" in /*) ;; *) continue ;; esac
+        else
+            exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
+        fi
         [ -x "$exe" ] || continue
         case "${exe##*/}" in sotd|sotd.exe) printf '%s\n' "$exe" ;; esac
     done < <(pgrep -u "$(id -u)" -af 'sotd' 2>/dev/null || true)
@@ -539,7 +544,8 @@ sot_hello_frame() {
 # Console.In.ReadLine never wakes for data that arrives after it began --
 # every named-pipe one-shot timed out with no hello logged (2026-09-18).
 _sot_oneshot_sender() {
-    printf '%s\n' "$BASHPID" > "$4"
+    # This subshell's pid: BASHPID, or on bash 3.2 (which has none) a child's parent.
+    if [ -n "${BASHPID:-}" ]; then echo "$BASHPID"; else sh -c 'echo "$PPID"'; fi > "$4"
     printf '%s\n%s\n' "$1" "$2"
     exec sleep "$3"
 }
@@ -585,6 +591,10 @@ sot_oneshot_request() {
     _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
         | sot_dial "$ENDPOINT" "$timeout_s" > "$tmp" 2>"$tmp.err" &
     ncpid=$!
+    # Out of the job table, so no shell reports its end: bash 3.2 prints a background job that a signal ended
+    # ("Terminated") on this shell's stderr, and the kills below end this one after every reply. A job that has ended
+    # already is out of the table, and disown fails harmlessly.
+    disown "$ncpid" 2>/dev/null || true
     # Accept only a COMPLETE res line: op precedes payload on the wire, so a
     # grep hit can be a line the transport is still appending. jq gates acceptance
     # (the hello builder above already required it).

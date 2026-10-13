@@ -147,7 +147,7 @@ send_version() {
                         fi
                         [ -n "$c" ] && sline="$sline $c"
                         if [ -n "$d" ]; then
-                            local sat; sat="$(date -u -d "$d" +%s 2>/dev/null || echo 0)"
+                            local sat; sat="$(sot_epoch "$d" || echo 0)"
                             [ "$sat" -gt 0 ] && sline="$sline · $(fmt_age $((nows - sat)))"
                         fi
                         echo "$sline"

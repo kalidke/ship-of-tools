@@ -9,7 +9,7 @@ comm/CLAUDE.md.
 - `join.rs`: `agent.join`: a session declares its handle on its row
 - `liveness.rs`: the row liveness stamp: each Starting or Ready row's handle gets a fresh `last_seen` every minute (`run`, `held`, `held_handles`)
 - `lock.rs`: the daemon's arm of the registry lock, `.registry.lock`
-- `lock_tests.rs`: the lock's tests, including the shell-parity test (Linux)
+- `lock_tests.rs`: the lock's tests, including the shell-parity test (Linux and macOS)
 - `mod.rs`: declares the files
 - `poll.rs`: the registry poll task (`spawn_registry_poll`) and its change detection (`project_comm_registry`)
 - `registry.rs`: the daemon's registry reads, prune, unread clear, row binding and UTC stamps
@@ -53,8 +53,8 @@ prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LIN
   `project_comm_registry` changes between polls; `last_seen` is not in the projection.
 - `acquire` takes `<comm home>/.registry.lock`, the lock comm-lib-registry-lock.sh's `with_lock` takes. Both write the same one-line
   record, `name:machine:boot:pidns:pid:start`, by `link(2)` of a temp file that already holds it (`take`); a test
-  holds them byte-equal (`the_shell_and_rust_records_are_byte_equal_and_judged_alike`, Linux).
-- A holder is proved dead on Linux only, and only from its own machine (`judge`). A waiter that proves holder D dead
+  holds them byte-equal (`the_shell_and_rust_records_are_byte_equal_and_judged_alike`, Linux and macOS).
+- A holder is proved dead on Linux and macOS only, and only from its own machine (`judge`). A waiter that proves holder D dead
   takes `.registry.lock.reclaim.<D>`, settles, rereads, and removes the lock only if it still names D (`step`). Nothing
   else is forced: at its bound a waiter fails closed and names the holder (`Blocked::fail_text`).
 - One daemon thread at a time is inside the protocol (`TURN`). `Held` removes the file when dropped, a panic included.

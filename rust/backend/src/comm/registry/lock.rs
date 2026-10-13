@@ -5,7 +5,7 @@
 //!
 //! The lock is the FILE `<comm home>/.registry.lock`, one line naming its
 //! holder, `name:machine:boot:pidns:pid:start`, made by `link(2)` of a temp
-//! file that already holds that line. A holder is proved dead on Linux only,
+//! file that already holds that line. A holder is proved dead on Linux and macOS only,
 //! and only from its own machine; nothing else is ever forced, so a waiter
 //! fails closed at its bound naming the holder. A waiter that proves the
 //! holder D dead takes the marker `.registry.lock.reclaim.<D>`, settles, reads
@@ -75,7 +75,7 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
         }
         std::thread::sleep(POLL.min(deadline - now));
     };
-    let me = Me::now();
+    let me = Me::now(lock);
     let mut last = Blocked { holder: None, who: None, why: "it was released just now".into(), by_hand: false, gone: false };
     let (mut first, mut retook) = (true, false);
     loop {
@@ -86,7 +86,7 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
         }
         // A failed retake: the FAILED line names whoever took it.
         if std::mem::take(&mut retook) {
-            #[cfg(all(test, target_os = "linux"))]
+            #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
             let _ = tests::GONE_AFTER_RETAKE.swap(false, std::sync::atomic::Ordering::SeqCst).then(|| fs::remove_file(lock));
             last.holder = fresh(lock, me.mine.is_some()).ok();
         }
@@ -96,7 +96,7 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
         first = false;
         match step(lock, &me, settle, deadline) {
             Ok(()) => {
-                #[cfg(all(test, target_os = "linux"))]
+                #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
                 let _ = tests::AFTER_STEP.lock().unwrap().take().map(|d2| fs::write(lock, d2));
                 last = Blocked { holder: None, who: None, why: RETAKEN.into(), by_hand: false, gone: false };
                 retook = true;
@@ -116,16 +116,20 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
 const RETAKEN: &str = "another process took it as soon as a dead holder's lock was removed";
 
 /// This process's record, and what it proves with: `name:machine:boot:pidns`
-/// where it can prove a death (Linux, with a `/proc` that is its own).
+/// where it can prove a death (Linux, with a `/proc` that is its own; macOS,
+/// whose boot session and process start it reads), and
+/// only where `lock`'s mount proves a fresh read (`vouch`): elsewhere the
+/// record has no proof fields, so its dead holder is named by hand rather than
+/// refused at every reclaim (review F1).
 struct Me {
     id: String,
     mine: Option<[String; 4]>,
 }
 
 impl Me {
-    fn now() -> Me {
+    fn now(lock: &Path) -> Me {
         let pid = std::process::id();
-        if !proc_is_mine(pid) {
+        if !proc_is_mine(pid) || vouch(lock).is_err() {
             return Me { id: format!("{}:-:-:-:{pid}:-", host_field()), mine: None };
         }
         let id = record_for(pid);
@@ -166,7 +170,13 @@ fn proc_is_mine(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS: proof needs the boot session and this process's start, as the shell's `_sot_lock_self_id` requires.
+#[cfg(target_os = "macos")]
+fn proc_is_mine(pid: u32) -> bool {
+    sot_log::identity::challenge::boot_identity().is_ok_and(|b| !b.is_empty()) && proc_start(pid).is_ok()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn proc_is_mine(_pid: u32) -> bool {
     false
 }
@@ -185,7 +195,15 @@ fn proof_fields(pid: u32) -> [String; 4] {
         .map(|f| f.unwrap_or_else(|| "-".into()))
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS: the host UUID, the boot session UUID, `darwin` (no pid namespaces) and the start in seconds.
+#[cfg(target_os = "macos")]
+fn proof_fields(pid: u32) -> [String; 4] {
+    let boot = sot_log::identity::challenge::boot_identity().ok().filter(|b| !b.is_empty());
+    [crate::comm::mail::inbox::machine_id(), boot, Some("darwin".into()), proc_start(pid).ok()]
+        .map(|f| f.unwrap_or_else(|| "-".into()))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn proof_fields(_pid: u32) -> [String; 4] {
     ["-", "-", "-", "-"].map(str::to_string)
 }
@@ -267,7 +285,7 @@ fn judge(id: &str, me: &Me) -> (Verdict, &'static str) {
             Ok(t) if known(start) && t != start => (Verdict::Dead, "its pid now names another process"),
             Ok(_) => (Verdict::Alive, "it is running"),
             Err(Some(e)) if e.kind() == std::io::ErrorKind::NotFound => (Verdict::Dead, "it has exited"),
-            Err(_) => (Verdict::Unprovable, "its /proc entry cannot be read"),
+            Err(_) => (Verdict::Unprovable, "its process cannot be read"),
         }
     } else if known(machine) && known(boot) && known(me_boot) && known(name)
         && machine == me_machine && name == me_name && boot != me_boot
@@ -285,7 +303,28 @@ fn proc_start(pid: u32) -> std::io::Result<String> {
     sot_log::identity::challenge_unix::process_start_ticks(pid).map(|t| t.to_string())
 }
 
-#[cfg(not(target_os = "linux"))]
+/// The start of `pid` in whole seconds since the epoch (`proc_pidinfo`'s `pbi_start_tvsec`, what the shell's
+/// `ps -o lstart=` prints); `NotFound` when no process has the pid.
+#[cfg(target_os = "macos")]
+fn proc_start(pid: u32) -> std::io::Result<String> {
+    // SAFETY: a zeroed proc_bsdinfo is a valid out-parameter for proc_pidinfo.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: one proc_bsdinfo of the stated size is written for the pid, or nothing.
+    let written = unsafe {
+        libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size)
+    };
+    if written == size {
+        return Ok(info.pbi_start_tvsec.to_string());
+    }
+    let e = std::io::Error::last_os_error();
+    if e.raw_os_error() == Some(libc::ESRCH) {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, e));
+    }
+    Err(e)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn proc_start(_pid: u32) -> std::io::Result<String> {
     Err(std::io::Error::other("no /proc"))
 }
@@ -321,7 +360,16 @@ fn vouch(lock: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS: the comm home is on this Mac's own disk (`MNT_LOCAL`, `inbox::own_disk`), where every read is the disk's.
+#[cfg(target_os = "macos")]
+fn vouch(lock: &Path) -> Result<(), String> {
+    if crate::comm::mail::inbox::own_disk(lock.parent().unwrap_or(Path::new(".")), "") {
+        return Ok(());
+    }
+    Err("the comm home is not on this Mac's own disk, so no read of it is proved fresh".into())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn vouch(_lock: &Path) -> Result<(), String> {
     Ok(())
 }
@@ -379,13 +427,30 @@ impl Blocked {
             );
         }
         let who = self.who.as_deref().unwrap_or(holder);
+        // The shell's `_sot_lock_fix`: if it is dead, by hand where no box can prove it (no proof fields, or a host that
+        // will not run again or whose comm command says it cannot prove a death), as no reclaimer can be pending there
+        // (reviews B1, F2); every by-hand clause stands under "If it is dead", as a live holder is never proved dead
+        // (review R3-B1). Else a comm command on its host.
+        let w = parse(who).unwrap_or_default();
+        let host = who.split(':').next().unwrap_or("-");
+        let fix = if self.who.is_none() {
+            // A holder the step did not judge (it took the lock during the reclaim) is never named by hand (review SF2).
+            format!("If it is dead, run any comm command on {host}.")
+        } else if w.len() == 6 && [1, 2, 3, 5].iter().all(|&i| w[i] == "-") {
+            format!("No box can prove {} pid {} dead (its record has no proof fields): if it is, remove {p} by hand.", w[0], w[4])
+        } else if self.why.ends_with("in another pid namespace") {
+            format!("If it is dead: run any comm command on {host} in its pid namespace, or, if nothing will run there again or a comm command there says it cannot prove a death, remove {p} by hand.")
+        } else if self.why.ends_with("on another machine") || self.why.ends_with("cannot prove a death") {
+            format!("If it is dead: run any comm command on {host}, or, if {host} will not run again or a comm command there says it cannot prove a death, remove {p} by hand.")
+        } else {
+            format!("If it is dead, run any comm command on {host}.")
+        };
         format!(
-            "registry lock {p} is held by {} pid {} start {} ({age} old): {}. If it is dead, run any comm command on {}, or run comm-registry-lock-clear.sh.",
+            "registry lock {p} is held by {} pid {} start {} ({age} old): {}. {fix}",
             f.first().unwrap_or(&"-"),
             f.get(4).unwrap_or(&"-"),
             f.get(5).unwrap_or(&"-"),
             self.why,
-            who.split(':').next().unwrap_or("-"),
         )
     }
 }
@@ -409,7 +474,7 @@ fn step(lock: &Path, me: &Me, settle: Duration, deadline: Instant) -> Result<(),
     };
     let only_by_hand = |why: String| Err(Some(Blocked { holder: None, who: None, why, by_hand: true, gone: false }));
     let d = fresh(lock, proves);
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     let d = if tests::FAIL_FIRST_READ.swap(false, std::sync::atomic::Ordering::SeqCst) { Err(None) } else { d };
     let d = match d {
         Ok(d) => d,
@@ -456,11 +521,6 @@ fn step(lock: &Path, me: &Me, settle: Duration, deadline: Instant) -> Result<(),
             };
             return blocked(Some(&d), Some(&x), why);
         }
-        if chain.len() == 1 {
-            if let Err(why) = vouch(lock) {
-                return blocked(Some(&d), Some(&x), why);
-            }
-        }
         let marker = marker_for(lock, &x);
         match take(lock, &marker, &me.id) {
             Ok(true) => break,
@@ -477,10 +537,10 @@ fn step(lock: &Path, me: &Me, settle: Duration, deadline: Instant) -> Result<(),
         }
     }
     std::thread::sleep(settle);
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     let _ = tests::GONE_IN_SETTLE.swap(false, std::sync::atomic::Ordering::SeqCst).then(|| fs::remove_file(lock));
     let reread = fresh(lock, proves);
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     let reread = if tests::FAIL_REREAD.swap(false, std::sync::atomic::Ordering::SeqCst) { Err(None) } else { reread };
     let result = match reread {
         Ok(now) if chain.contains(&now) => {
@@ -505,6 +565,6 @@ fn marker_for(lock: &Path, x: &str) -> PathBuf {
     PathBuf::from(format!("{}.reclaim.{}", lock.display(), x.replace(':', ".")))
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 #[path = "lock_tests.rs"]
 mod tests;

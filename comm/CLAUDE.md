@@ -37,6 +37,8 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
   (`heartbeat_agrees_with_the_shell`).
 - Scripts run under bash 3.2 and git-bash; a value that may start with `/` never goes through `jq --arg`
   (`sot_jq_rawfile`).
+- CI keeps the bash 3.2 promise: the job `bash32-linux` runs every hermetic comm and agents suite with every script
+  under GNU bash 3.2.57, and macOS's `test` leg the ones that pass there under `/bin/bash` (`scripts/tests/under-bash.sh`).
 - A change to locking states its writer set and is proven by concurrent appends from two hosts to one inbox; there is
   no lease-lock fallback. A script change is tested through `tests/` from the staged bin, never against the live home.
 - Registry host facts and unpinned self-file keys agree with the daemon's declared host; the raw hostname remains a derived-handle component. A successful destroy retires only the admitted target daemon's slot.

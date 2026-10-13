@@ -12,12 +12,13 @@ files; nothing about them needs a live broker.
 **One lock guards the registry.** Every registry write holds
 `~/.sot-comm/.registry.lock`, a file naming its holder's host, pid and start. A
 holder that died on this machine is reclaimed by the next comm command here,
-on Linux, in the same pid namespace, on a filesystem `comm/PROTOCOL.md` lists,
+on Linux or macOS, in the same pid namespace, on a filesystem `comm/PROTOCOL.md` lists,
 through one marker file per dead holder,
 so exactly one waiter removes it; a holder that is alive, frozen, or on
 another machine is never forced, and the failure names it along with the
-recovery: run any comm command on its host, or run
-`comm-registry-lock-clear.sh`. The rules are in `comm/PROTOCOL.md`.
+recovery: run any comm command on its host, or, for a holder no box can prove dead (no
+proof fields, or a host that will not run again or whose comm commands say they cannot prove a death), remove the lock
+by hand. The rules are in `comm/PROTOCOL.md`.
 
 **Delivery is a file.** A send to a handle this host's registry names is
 appended to that handle's inbox directly only when this host provably shares

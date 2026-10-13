@@ -1,6 +1,7 @@
 # Part of test-hub-files.sh, sourced by it: the shell arm under the lock (writers, killed and frozen holders, torn and NUL tails).
 # T3 (shell arm) — two writers, 200 lines each, one inbox.
 case_two_writers_give_400_whole_lines() {
+    linux_only "two writers through the lock give 400 whole lines" || return 0
     local h="t-two" f="$INBOX/t-two.jsonl" w n
     rm -f "${f:?}"
     for w in a b; do
@@ -21,6 +22,7 @@ case_two_writers_give_400_whole_lines() {
 # T12 (shell arm) — a killed holder costs nothing: the OS released the lock, so the send
 # files (behind a lock still held it would run out its 10 s wait and fail).
 case_a_killed_holder_frees_the_lock_at_once() {
+    linux_only "a holder killed with -9 frees the lock and the send files" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     start_holder 'exec sleep 60' || { echo "  holder never took the lock"; return 1; }
     kill -9 "$HOLDER"; wait "$HOLDER" 2>/dev/null
@@ -33,6 +35,7 @@ case_a_killed_holder_frees_the_lock_at_once() {
 
 # T12 (shell arm) — a frozen holder makes the sender wait, then FAILED.
 case_a_frozen_holder_makes_the_send_wait_then_fail() {
+    linux_only "a frozen holder makes the send wait its bound and report FAILED, never filed" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     start_holder 'printf "%s" "{\"from\":\"holder\"," >&8; kill -STOP $$; printf "%s\n" "\"msg\":\"resumed\"}" >&8' \
         || { echo "  holder never took the lock"; return 1; }
@@ -55,6 +58,7 @@ case_a_frozen_holder_makes_the_send_wait_then_fail() {
 
 # An append that fails under the lock is FAILED with the error, not `filed`.
 case_a_failed_write_is_failed_not_filed() {
+    linux_only "an append that fails under the lock is FAILED with its error" || return 0
     local out rc=0
     mkdir -p "$INBOX/t-dir.jsonl"   # a directory: the append cannot open it
     out="$(append_one t-dir '{"from":"a","msg":"m"}')" || rc=$?
@@ -67,6 +71,7 @@ case_a_failed_write_is_failed_not_filed() {
 # S2 — a torn tail (a writer that died mid-line) is CUT back to the last
 # newline, the cut is noted on the sender's stderr, and the new line is whole.
 case_a_torn_tail_is_cut_before_the_new_line() {
+    linux_only "S2: a torn tail is cut back to the last newline and the new line is whole" || return 0
     local out rc=0 f="$INBOX/t-torn.jsonl"
     printf '%s\n%s' '{"a":1}' '{"from":"died",' > "$f"
     out="$(append_one t-torn '{"from":"a","msg":"whole"}' 2>&1)" || rc=$?
@@ -86,6 +91,7 @@ case_a_torn_tail_is_cut_before_the_new_line() {
 # bytes; the file holds 1000; SIGXFSZ ignored so perl's write sees EFBIG):
 # FAILED, and the file is byte-identical. The fsync itself is read, not tested.
 case_a_write_cut_short_leaves_the_file_byte_identical() {
+    linux_only "S2: a write cut short by the file-size limit is FAILED and leaves the file byte-identical" || return 0
     local out rc=0 f="$INBOX/t-fsize.jsonl" long
     printf '{"msg":"%s"}\n' "$(printf '%0989d' 0)" > "$f"
     [ "$(wc -c < "$f")" -eq 1000 ] || { echo "  setup: $(wc -c < "$f") bytes"; return 1; }
@@ -101,6 +107,7 @@ case_a_write_cut_short_leaves_the_file_byte_identical() {
 # S-a — a tail of NUL bytes (NFS after a client crash) is cut like any other;
 # a file of only NULs is cut to empty.
 case_a_nul_tail_is_cut_before_the_new_line() {
+    linux_only "S-a: a NUL-filled tail is cut, and a file of only NULs is cut to empty" || return 0
     local out rc=0 f="$INBOX/t-nul.jsonl"
     printf '{"from":"old"}\n\0\0\0' > "$f"
     out="$(append_one t-nul '{"from":"a","msg":"whole"}' 2>&1)" || rc=$?

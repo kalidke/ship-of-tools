@@ -161,11 +161,11 @@ run_spawn() {
     SPAWN_HOME="$WORK/home-$SPAWNN"
     mkdir -p "$SPAWN_HOME"
     local errfile="$WORK/spawn-stderr-$SPAWNN.tmp"
-    SPAWN_OUT="$(cd "$WORK" && env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION \
+    SPAWN_OUT="$(cd "$WORK" && bounded 30 env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION \
         XDG_CONFIG_HOME="$SPAWN_HOME/xdg-config" \
         SOT_SELF_HOST="$SELF_HOST_NAME" \
         SOT_COMM_HOME="$SPAWN_HOME" SOT_COMM_SELF_FILE="$SPAWN_HOME/self.txt" \
-        timeout 30 "$SPAWN" "$REPO_PATH" --endpoint "unix:$SOCK" "$@" 2>"$errfile")"
+        "$SPAWN" "$REPO_PATH" --endpoint "unix:$SOCK" "$@" 2>"$errfile")"
     SPAWN_RC=$?
     SPAWN_ERR="$(cat "$errfile" 2>/dev/null || true)"
 }

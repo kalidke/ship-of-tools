@@ -162,21 +162,15 @@ CTX="$HOME_DIR/bin/comm-context.sh"; [ -x "$CTX" ] || CTX="$SELF_DIR/comm-contex
 # sees its mail, so the hook SAYS so instead of passing: it must not need the
 # missing tool to do it, so the joined-agent test below falls back to grep and
 # the block is printed by hand. flock and perl are the inbox lock, Linux only.
-# The list and the message are comm-lib.sh's (sot_mail_tools, sot_require_tools),
-# read in a subshell like the other lib reads here.
-tool_miss=""; tool_warn=""
-_mail_tools="$( . "$FE_LIB" 2>/dev/null; sot_mail_tools 2>/dev/null)" || _mail_tools=""
-[ -n "$_mail_tools" ] || _mail_tools="jq"
-for _t in $_mail_tools; do
-    command -v "$_t" >/dev/null 2>&1 && continue
-    tool_miss="${tool_miss:+$tool_miss }$_t"
-done
-if [ -n "$tool_miss" ]; then
-    # shellcheck disable=SC2086
-    tool_warn="$( . "$FE_LIB" 2>/dev/null
-        sot_require_tools "check mail at turn end" $tool_miss 2>&1 | tr '\n' ' ')"
-    tool_warn="${tool_warn% }"
-fi
+# The list, the test and the message are comm-lib.sh's (sot_mail_tools,
+# sot_require_tools), read in a subshell like the other lib reads here: an
+# entry can be a perl module (Time::HiRes, before bash 5), not a command. The
+# warning names each missing tool. A lib that cannot be read warns of nothing:
+# the mail read below needs it too.
+# shellcheck disable=SC2046
+tool_warn="$( . "$FE_LIB" 2>/dev/null || exit 0
+    sot_require_tools "check mail at turn end" $(sot_mail_tools) 2>&1 | tr '\n' ' ')"
+tool_warn="${tool_warn% }"
 # sot_registry_read: 0 a row, 1 no row, 2 unreadable (a lib that cannot be
 # sourced is 2 too, never "no row"). Only "no row" ends here; unreadable goes
 # on to the mail gate, which reads the inbox files, not the registry. Without
@@ -221,7 +215,7 @@ mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
 # With no transcript path the key can fall to $PPID, which no later run shares,
 # so nothing could find the record again: record nothing, and remove nothing.
 # A missing tool: ONE block per episode, through a tick file keyed like the
-# lock fault's (handle and session) and holding the missing tools, so a new
+# lock fault's (handle and session) and holding the warning, so a new
 # tool going missing blocks again; every later block is prefixed by the warning
 # (emit_block) and the first turn end with the tools present clears the tick.
 # Failing open, like the other ticks, when the tick cannot be recorded. The
@@ -232,7 +226,7 @@ if [ -n "$tp" ]; then
 fi
 
 tool_tick="$HOME_DIR/state/tool-fault-$(printf '%s' "$NAME.$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
-if [ -z "$tool_miss" ]; then
+if [ -z "$tool_warn" ]; then
     rm -f "${tool_tick:?}" 2>/dev/null
 else
     echo "$tool_warn" >&2
@@ -240,9 +234,9 @@ else
     # stable session key, so the tick could never match and every Stop would
     # block again.
     case "$input" in *'"stop_hook_active":true'*) turn_floor; exit 0 ;; esac
-    if [ "$(cat "$tool_tick" 2>/dev/null || true)" != "$tool_miss" ]; then
+    if [ "$(cat "$tool_tick" 2>/dev/null || true)" != "$tool_warn" ]; then
         mkdir -p "$HOME_DIR/state" 2>/dev/null || true
-        if printf '%s' "$tool_miss" 2>/dev/null > "$tool_tick"; then
+        if printf '%s' "$tool_warn" 2>/dev/null > "$tool_tick"; then
             print_block "$(printf '{"decision":"block","reason":"%s"}' "$tool_warn")"
             exit 0
         fi

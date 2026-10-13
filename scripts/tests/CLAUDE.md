@@ -45,6 +45,16 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-rc-gate-target.sh`: `rc-gate.sh` names its checkout in its target and refuses the target to any other checkout.
 - `on-host.sh`: `on-host.sh HOST DIR -- CMD [ARG...]` runs CMD in DIR on a second host through `ssh HOST bash -s`, with
   the host's SOT_ variables, XDG_STATE_HOME, JULIA_LOAD_PATH and JULIA_PROJECT unset first; prints nothing of its own.
+- `under-bash.sh`: `under-bash.sh BASH [-- SUITE...]` checks the shell scripts under BASH, the bash 3.2 that
+  comm/CLAUDE.md and scripts/CLAUDE.md promise. Every tracked shell script outside a tests folder under `comm/`,
+  `agents/` and `scripts/` must parse under BASH; then each SUITE runs from its own folder with a folder holding
+  `bash -> BASH` first on PATH, so each script it starts through `env bash`, `bash x.sh` or `bash -c` gets BASH (a
+  `#!/bin/bash` script only where BASH is /bin/bash). A suite here runs on BASH itself (it sources the scripts it
+  tests); any other on the bash running under-bash.sh (4 or later). With no SUITE it runs every hermetic suite: each
+  `test-*.sh` in `comm/tests` and `agents/tests` but the five that need peer hosts, and the four suites here that
+  `checks-linux` runs. Prints `under-bash: PASS|FAIL` lines and exits with the count of FAIL lines, 2 on a wrong setup.
+  Runs in the `rust.yml` job `bash32-linux` (GNU bash 3.2.57, every hermetic suite) and in `test` on macOS
+  (`/bin/bash` under the scripts, every hermetic suite, run by Homebrew's bash, which the step installs).
 - `in-container.sh`: `in-container.sh [--user-manager] UNIT -- CMD [ARG...]` runs CMD as the main process of the transient
   `systemd --user` service UNIT.service, the test container (Linux): a private empty `XDG_RUNTIME_DIR` and no
   `DBUS_SESSION_BUS_ADDRESS`, so every capsule row stays in its control group, and every process left in it is SIGKILLed
@@ -230,6 +240,9 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
 - A suite runs only if a step of `.github/workflows/rust.yml` or a job of `rc-gate.sh` names it; a new suite is added
   to the step list in the commit that adds it. `rc-gate.sh` lists the three installer/topology shell suites and the finite selected-body proof here by name
   (`SHELL_ALL` in `producer`).
+- `installer-state.sh`, `installer-apply.sh`, `installer-shared-home.sh` and `test-topology-plan.sh` run wholly under
+  bash 3.2 in `under-bash.sh`'s run, since they source the scripts they test, so they hold under 3.2 themselves: inside
+  `$( )` a `case` pattern opens with `(`, because 3.2 ends the substitution at a bare pattern's `)`.
 - `installer-support.sh` sources `install.sh` with `SOT_INSTALL_SOURCE_ONLY=1` and `lib/sot-daemon.sh` for both installer
   suites; `installer-state.sh` reads `rust/protocol/src/ops/lease.rs` for the pinned bounds (`launcher_bounds_match_ops`), so a
   rename there breaks it.

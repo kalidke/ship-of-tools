@@ -65,6 +65,7 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_HOOKS="$(cd "$SCRIPT_DIR/../work_state/hooks" && pwd)"
@@ -405,7 +406,7 @@ case_a_registry_that_opens_but_will_not_read_is_retried_and_a_lasting_one_is_unr
 
 case_comm_list_labels_by_the_one_heartbeat_rule() {
     local out n100 n3600
-    n100="$(date -u -d '100 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"; n3600="$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
+    n100="$(stamp_ago 100)"; n3600="$(stamp_ago 3600)"
     put_reg "$(jq -n --arg a "$n100" --arg b "$n3600" '{protocol_version: 1, agents: {
         young: {host: "testhost", repo: "p", last_seen: $a, expertise: []},
         old: {host: "testhost", repo: "p", last_seen: $b, expertise: []}}}')"

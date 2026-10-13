@@ -25,6 +25,7 @@ fresh_route() { rm -f "${WORK:?}/wire.log"; printf '%s\n' '{"msg":"before"}' > "
 wire_count() { [ -e "$WORK/wire.log" ] && wc -l < "$WORK/wire.log" || echo 0; }
 
 case_a_shared_nfs4_lock_manager_appends_locally() {
+    linux_only "a script whose lock identity equals the record appends locally" || return 0
     local out rc
     fresh_route
     out="$(route_append "nfs4 rw,vers=4.2,local_lock=none A:/x" "nfs4 A:/x" unix:/own ssh:hub "$OK_ANSWER")"; rc=$?
@@ -37,6 +38,7 @@ case_a_shared_nfs4_lock_manager_appends_locally() {
 # The hub's record is two lines, its lock manager then its writer's machine id;
 # a script compares line 1 only.
 case_a_two_line_record_whose_line_1_matches_appends_locally() {
+    linux_only "a two-line record whose line 1 matches appends locally" || return 0
     local out rc
     fresh_route
     out="$(route_append "nfs4 rw,vers=4.2,local_lock=none A:/x" "nfs4 A:/x"$'\n'"m-a" unix:/own ssh:hub "$OK_ANSWER")"; rc=$?
@@ -50,6 +52,7 @@ case_a_two_line_record_whose_line_1_matches_appends_locally() {
 # NFSv3, a record naming this machine's own `none@<machine-id>` appends
 # locally under its one kernel lock (another machine's goes to the wire, below).
 case_a_v3_record_naming_this_machine_appends_locally() {
+    linux_only "a v3 record naming this machine's own none@<machine-id> appends locally" || return 0
     local out rc
     fresh_route
     out="$(route_append "nfs rw,vers=3 A:/x" "none@0123456789abcdef0123456789abcdef"$'\n'"0123456789abcdef0123456789abcdef" \
@@ -91,6 +94,7 @@ CASES
 # flock(1), a matching record and a PATH holding every tool but perl, the
 # send is one comm.file frame and the inbox is unchanged.
 case_no_perl_goes_to_the_wire() {
+    linux_only "no perl on the PATH goes to the wire, never a local append" || return 0
     local d out rc
     mkdir -p "$WORK/noperl"
     for d in ${PATH//:/ }; do ln -s "$d"/* "$WORK/noperl/" 2>/dev/null; done
@@ -139,6 +143,7 @@ case_the_wire_frame_carries_the_broadcast_flag() {
 # Identity parity: the fixture set comm/mail/inbox_tests.rs's unit test reads, through
 # the REAL identity function with findmnt pointed at each fixture.
 case_the_lock_identity_matches_the_shared_fixtures() {
+    linux_only "the lock identity matches the fixture set the Rust test reads" || return 0
     local fx="$SCRIPT_DIR/fixtures/inbox-lock-identity" file path want got n=0
     command -v findmnt >/dev/null 2>&1 || { echo "  no findmnt on this box"; return 1; }
     while IFS=$'\t' read -r file path want; do

@@ -53,7 +53,8 @@ sot_self_file_project_conflict() {
     local self_file="$1" repo="$2" root="$3"
     case "$self_file" in *__nopane.txt) return 1 ;; esac
     [ -f "$self_file" ] || return 1
-    local -a lines; mapfile -t lines < "$self_file" 2>/dev/null || return 1
+    local -a lines=(); local l
+    while IFS= read -r l || [ -n "$l" ]; do lines+=("$l"); done < "$self_file" 2>/dev/null || return 1
     local name="${lines[0]:-}" repo_line="${lines[1]:-}" root_line="${lines[2]:-}" claim=""
     [ -n "$name" ] || return 1
     case "$root_line" in root=?*) claim="root='${root_line#root=}'"

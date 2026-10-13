@@ -17,6 +17,7 @@ count_of() { printf '%s\n' "$1" | grep -c -F -- "$2"; }
 # The holder writes its partial and stops itself; the case kills it only once it
 # has stopped, so the partial is on disk first.
 case_a_dead_writers_partial_line_is_never_counted_and_is_cut() {
+    linux_only "a dead writer's partial line is never counted; the next send cuts it and says so; nothing is skipped" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     run_send "@$PEER" "first"
     poll_peer
@@ -46,6 +47,7 @@ case_a_dead_writers_partial_line_is_never_counted_and_is_cut() {
 # line is delivered exactly once. No duration is bounded: on a starved CPU the
 # hook's own work takes seconds, and a hang is the run's timeout's to catch.
 case_a_frozen_writer_makes_a_reader_try_again_never_skip_or_hang() {
+    linux_only "a frozen writer makes a poll and the end-of-turn hook say try again after their read bound; nothing is skipped" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     run_send "@$PEER" "one"; poll_peer
     local cur; cur="$(peer_cursor)"
@@ -148,6 +150,7 @@ RD
 }
 
 case_a_reader_on_the_shared_lock_never_counts_a_line_that_is_cut_back() {
+    linux_only "stubbed fsync failure (shell arm), locked reader: waits, counts nothing, skips nothing" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     run_send "@$PEER" "one"; poll_peer
     stub_fsync_append locked || return 1
@@ -163,6 +166,7 @@ case_a_reader_on_the_shared_lock_never_counts_a_line_that_is_cut_back() {
 }
 
 case_an_unlocked_reader_steps_back_one_line_after_a_cut_back() {
+    linux_only "stubbed fsync failure (shell arm), unlocked reader: steps back one line and skips nothing" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     # The reader's identity differs from the record and the writer's does not,
     # with flock on PATH for both: the reader really is on the unlocked path.
@@ -211,6 +215,7 @@ case_the_cursor_takes_a_bare_count_a_ts_and_a_hash_and_steps_back_one() {
 # wrapper `flock` records the flags of its inherited fd 9; the low two bits of
 # the last octal digit are the access mode (2 = O_RDWR).
 case_every_inbox_lock_descriptor_is_read_write() {
+    linux_only "B-1: the reader's and the writer's lock descriptor are both opened read-write" || return 0
     local real fl line n=0 d
     real="$(command -v flock)"
     mkdir -p "$WORK/fbin9"
@@ -277,6 +282,7 @@ case_a_cursor_one_past_the_end_steps_back_one_and_further_gives_zero() {
 # append still files while it does (held off by the display, it would run out its
 # 10 s wait and fail).
 case_a_slow_display_does_not_hold_off_a_writer() {
+    linux_only "S-2: a slow display does not hold off a writer" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local i pid real
     real="$(command -v jq)"
@@ -304,6 +310,7 @@ case_a_slow_display_does_not_hold_off_a_writer() {
 # A wrapper logs each flock call; the case reads the form each kind uses, with no
 # holder (contention under the polling kind is the two-writers case's).
 case_the_lock_wait_is_chosen_by_lock_kind() {
+    linux_only "the lock wait is chosen by lock kind: nfs4 polls, local and none@ block" || return 0
     local mid=0123456789abcdef0123456789abcdef kind mnt rec want real
     real="$(command -v flock)"
     mkdir -p "$WORK/fbin"

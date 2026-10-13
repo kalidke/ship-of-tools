@@ -26,7 +26,7 @@ any=false
 while IFS=$'\037' read -r name host repo seen exp state summary status_at; do
     [ -z "$name" ] && continue
     any=true
-    seens="$(date -u -d "$seen" +%s 2>/dev/null || echo 0)"
+    seens="$(sot_epoch "$seen" || echo 0)"
     age=$((nows - seens))
     if sot_heartbeat_fresh "$seen"; then status="live"; else status="stale ${age}s"; fi
     me=""; [ "$name" = "$NAME" ] && me="  <- me"
@@ -38,7 +38,7 @@ while IFS=$'\037' read -r name host repo seen exp state summary status_at; do
     line="    [$state]"
     [ -n "$summary" ] && line="$line $summary"
     if [ -n "$status_at" ]; then
-        sat="$(date -u -d "$status_at" +%s 2>/dev/null || echo 0)"
+        sat="$(sot_epoch "$status_at" || echo 0)"
         [ "$sat" -gt 0 ] && line="$line · $(fmt_age $((nows - sat)))"
     fi
     echo "$line"
