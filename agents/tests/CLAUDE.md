@@ -23,6 +23,8 @@ does (`working-directory: agents/tests`).
 ## Rules
 - Each suite sources `comm/tests/lib-home-guard.sh` before any command but `set`; `comm/tests/test-rm-guard.sh` fails a
   suite under `agents/` that does not.
+- The job `bash32-linux` runs every suite here with every script under bash 3.2 (`scripts/tests/under-bash.sh`); code a
+  suite hands to the bash on PATH holds under 3.2 (comm/tests/CLAUDE.md).
 - The stub daemon's socket is awaited with `await` (comm/tests/lib-wait.sh), signalled by the socket itself, never by a
   fixed wall-clock wait.
 - Scripts run from the copy `guard_stage_bin` makes in the suite's work directory, never from `agents/spawn/` or

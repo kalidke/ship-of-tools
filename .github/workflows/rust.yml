@@ -490,6 +490,35 @@ jobs:
         working-directory: .
         run: bash comm/tests/test-heartbeat-ctx-wait.sh
 
+      # comm/CLAUDE.md and scripts/CLAUDE.md promise the scripts run under bash 3.2, and macOS's /bin/bash is 3.2.57.
+      # under-bash.sh parses each shipped script with it, then runs these suites, the hermetic ones that pass on macOS,
+      # with /bin/bash first on PATH as `bash`, so every script they start gets 3.2. bash32-linux runs every one. The
+      # suites' own code needs bash 4 or later, and the image's only bash is /bin/bash: Homebrew's runs them
+      # (under-bash.sh refuses an older one).
+      - name: Comm and agents suites under /bin/bash 3.2
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        timeout-minutes: 30
+        working-directory: .
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install bash
+          "$(brew --prefix bash)/bin/bash" scripts/tests/under-bash.sh /bin/bash -- \
+            comm/tests/test-agent-join.sh \
+            comm/tests/test-agent-layers.sh \
+            comm/tests/test-comm-matrix-verdict.sh \
+            comm/tests/test-comm-poll-cursor.sh \
+            comm/tests/test-comm-private.sh \
+            comm/tests/test-heartbeat-ctx-wait.sh \
+            comm/tests/test-rm-guard.sh \
+            comm/tests/test-stage-bin.sh \
+            comm/tests/test-status-floor.sh \
+            agents/tests/test-ccb-agent-exec.sh \
+            agents/tests/test-ccx-launch.sh \
+            agents/tests/test-crlf-gh-auth.sh \
+            agents/tests/test-sot-fe-reauth.sh \
+            agents/tests/test-sot-fe-version.sh \
+            scripts/tests/test-topology-plan.sh
+
   # The ubuntu build and test, one job per shard, so the slowest test binaries run side by side. SHARDS is the one table
   # of named shards, a row each: shard, target kind (test or bin), target name, then any libtest arguments. A target runs
   # whole (one row, no arguments) or split once (two rows, `X` and `--skip X`, as lane_bridge is). The shard `rest` runs
@@ -895,6 +924,31 @@ jobs:
           # on a gh call that hangs. Hermetic; about 31 s, all but one second the
           # hung-gh case.
           bash test-crlf-gh-auth.sh
+
+  # comm/CLAUDE.md and scripts/CLAUDE.md promise the scripts run under bash 3.2. GNU bash 3.2.57, built from its
+  # tarball (sha256 pinned), parses each shipped script and is the bash every hermetic suite's scripts run under
+  # (scripts/tests/under-bash.sh, whose default is every hermetic suite, so a new suite joins by its name alone).
+  bash32-linux:
+    name: scripts under bash 3.2.57 (ubuntu-latest)
+    runs-on: ubuntu-latest
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build bash 3.2.57
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o bash-3.2.57.tar.gz https://ftp.gnu.org/gnu/bash/bash-3.2.57.tar.gz
+          echo "3fa9daf85ebf35068f090ce51283ddeeb3c75eb5bc70b1a4a7cb05868bfe06a4  bash-3.2.57.tar.gz" | sha256sum -c -
+          tar -xzf bash-3.2.57.tar.gz
+          cd bash-3.2.57
+          ./configure --without-bash-malloc --disable-nls \
+            CFLAGS='-O1 -std=gnu89 -Wno-implicit-function-declaration -Wno-implicit-int' > configure.log 2>&1 \
+            || { tail -n 40 configure.log; exit 1; }
+          make > make.log 2>&1 || { tail -n 40 make.log; exit 1; }
+      - name: Scripts under bash 3.2.57
+        timeout-minutes: 30
+        run: bash scripts/tests/under-bash.sh "$RUNNER_TEMP/bash-3.2.57/bash"
 
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
   # `ClosePseudoConsole` that returns immediately — it cannot exercise the

@@ -111,7 +111,7 @@ check "and stays enabled" \
     "1" "$(grep -c -- '^systemctl --user enable --now sotd.service$' "$d/log" || true)"
 
 # The one exception: --backend <alias> names a remote backend explicitly.
-d="$WORK/fe-backend"; fe_install "$d" "$(case "$(installer_role_from_flags remote)" in *"daemon:1"*) echo 1 ;; *) echo 0 ;; esac)" 1 be-alias
+d="$WORK/fe-backend"; fe_install "$d" "$(case "$(installer_role_from_flags remote)" in (*"daemon:1"*) echo 1 ;; (*) echo 0 ;; esac)" 1 be-alias
 check "--backend: an enabled local unit is still disabled, none enabled" \
     "1 0" "$(grep -c -- '--user disable --now sotd.service' "$d/log" || true) $(grep -c 'enable --now' "$d/log" || true)"
 check "--backend: the wrapper names the remote backend and carries no ensure" \
@@ -440,7 +440,7 @@ check "and does so in under 5 s" "yes" "$([ "$ENS_SECS" -lt 5 ] && echo yes || e
 check "the log is under its prefix" "yes" "$([ -n "$(newest_log "$d/prefix/logs")" ] && echo yes || echo no)"
 log_now="$(newest_log "$d/prefix/logs")"
 check "the error names this start's own log" "yes" \
-    "$([ -n "$log_now" ] && case "$ENS_ERR" in *"see $log_now"*) echo yes ;; *) echo no ;; esac || echo no)"
+    "$([ -n "$log_now" ] && case "$ENS_ERR" in (*"see $log_now"*) echo yes ;; (*) echo no ;; esac || echo no)"
 
 # ---------------------------------------------------------------------------
 case_start "ensure_keeps_old_logs"

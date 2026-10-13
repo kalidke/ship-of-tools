@@ -136,7 +136,7 @@ cached_read "" "$PEER" rust "$ROUNDS"
 # (b) and (k)
 SETTLE=0.2
 c="$(new_case b)"
-sh_at "" "$c" 'hold() { echo $BASHPID; kill -STOP $BASHPID; }; with_lock hold' > "$DIR/b.out" &
+sh_at "" "$c" 'hold() { echo $$; kill -STOP $$; }; with_lock hold' > "$DIR/b.out" &
 for i in $(seq 100); do [ -s "$DIR/b.out" ] && break; sleep 0.05; done
 hp="$(cat "$DIR/b.out")"; LOCAL_PIDS+=("$hp")
 err="$(sh_at "$PEER" "$c" 'SOT_LOCK_WAIT_SECS=0.2 with_lock true' 2>&1)"; rc=$?
@@ -149,7 +149,7 @@ verdict "(b) a killed holder here: the peer FAILs, then a waiter here reclaims" 
     "$([ "$rc" != 0 ] && [ "$rc2" = 0 ] && [ ! -e "$c/.registry.lock" ] || echo "peer rc=$rc here rc=$rc2")"
 
 c="$(new_case k)"
-sh_at "$PEER" "$c" 'with_lock kill -9 $BASHPID' 2>/dev/null
+sh_at "$PEER" "$c" 'with_lock kill -9 $$' 2>/dev/null
 rec="$(cat "$c/.registry.lock")"
 err="$(sh_at "" "$c" 'SOT_LOCK_WAIT_SECS=0.2 with_lock true' 2>&1)"; rc=$?
 want="ERROR: registry lock $c/.registry.lock is held by $(field "$rec" 1) pid $(field "$rec" 5) start $(field "$rec" 6) (AGE old): it is on another machine. If it is dead, run any comm command on $(field "$rec" 1), or run comm-registry-lock-clear.sh."
@@ -168,7 +168,7 @@ race() {
     crit="crit() { mkdir '$c/cs' || echo OVERLAP; sleep 0.02; rmdir '$c/cs'; echo held; }
         wait_as() { _sot_lock_self_id; echo \"\$_SOT_LOCK_ID\" > '$c/id.'\$1; with_lock crit; }"
     for round in $(seq 100); do
-        sh_at "" "$c" 'with_lock kill -9 $BASHPID' 2>/dev/null; cp "$c/.registry.lock" "$c/d"
+        sh_at "" "$c" 'with_lock kill -9 $$' 2>/dev/null; cp "$c/.registry.lock" "$c/d"
         ls -A "$c" | grep '^\.registry\.lock\.reclaim\.' | sort > "$DIR/c-before"
         rm -f "${c:?}"/id.*
         sh_at "$other" "$c" "$crit; wait_as r1 & wait_as r2 & wait" > "$DIR/c-remote" 2>&1 &

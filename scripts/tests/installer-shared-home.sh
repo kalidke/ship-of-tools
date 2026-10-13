@@ -74,7 +74,7 @@ status_stub() {  # <dir> <exit> <stderr line>: a sotd whose `topology status` fa
 d="$WORK/unreadable"; status_stub "$d" 2 "sotd topology: hosts.toml line 2: expected key = value"
 rc=0; out="$(installer_topology_unreadable "$d/prefix/bin/sotd")" || rc=$?
 check "an invalid hosts.toml is a declared topology" "0" "$rc"
-check "its error is reported" "yes" "$(case "$out" in *"line 2"*) echo yes ;; *) echo no ;; esac)"
+check "its error is reported" "yes" "$(case "$out" in (*"line 2"*) echo yes ;; (*) echo no ;; esac)"
 d="$WORK/missing"; status_stub "$d" 2 "sotd topology: no hosts.toml at /x/hosts.toml (run sotd topology sync --hub ALIAS)"
 rc=0; installer_topology_unreadable "$d/prefix/bin/sotd" >/dev/null || rc=$?; check "a missing hosts.toml is no topology" "1" "$rc"
 d="$WORK/readable"; status_stub "$d" 0 ""

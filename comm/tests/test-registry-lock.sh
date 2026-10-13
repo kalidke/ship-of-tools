@@ -109,12 +109,16 @@ reset() {
     return 0
 }
 SELF="$(lib '_sot_lock_self_id; echo "$_SOT_LOCK_SELF"')"   # name:machine:boot:pidns
+# A perl that cannot load Time::HiRes, the clock before bash 5 (t13).
+NOHIRES="$WORK/nohires"; mkdir -p "$NOHIRES"
+printf '#!/bin/sh\ncase "$*" in *Time::HiRes*) exit 2 ;; esac\nexec %s "$@"\n' "$(command -v perl)" > "$NOHIRES/perl"
+chmod +x "$NOHIRES/perl"
 
 # A holder SIGKILLed in its critical section; prints the record it left.
-dead_holder() { lib 'with_lock kill -9 $BASHPID' 2>/dev/null; cat "$P"; }
+dead_holder() { lib 'with_lock kill -9 $$' 2>/dev/null; cat "$P"; }
 # A holder that holds until $WORK/go exists; $1 = STOP freezes it in-lock.
 live_holder() {
-    bash -c ". '$LIB'; hold() { : > '$WORK/ready'; ${1:+kill -STOP \$BASHPID;} while [ ! -e '$WORK/go' ]; do sleep 0.05; done; }; with_lock hold" &
+    bash -c ". '$LIB'; hold() { : > '$WORK/ready'; ${1:+kill -STOP \$\$;} while [ ! -e '$WORK/go' ]; do sleep 0.05; done; }; with_lock hold" &
     HOLDER=$!; PIDS+=("$HOLDER")
     await test -e "$WORK/ready" || { echo "the holder never took the lock"; return 1; }
     [ -z "${1:-}" ] || await stopped "$HOLDER" || { echo "the holder never stopped"; return 1; }
@@ -123,7 +127,7 @@ end_holder() { touch "$WORK/go"; kill -CONT "$HOLDER" 2>/dev/null; wait "$HOLDER
 # A process that prints its own record to $WORK/r and then freezes (STOP) or dies (KILL).
 record_then() {
     rm -f "${WORK:?}/r"
-    bash -c ". '$LIB'; _sot_lock_self_id; echo \"\$_SOT_LOCK_ID\" > '$WORK/r.tmp'; mv '$WORK/r.tmp' '$WORK/r'; kill -$1 \$BASHPID" &
+    bash -c ". '$LIB'; _sot_lock_self_id; echo \"\$_SOT_LOCK_ID\" > '$WORK/r.tmp'; mv '$WORK/r.tmp' '$WORK/r'; kill -$1 \$\$" &
     R=$!; PIDS+=("$R")
     await test -s "$WORK/r"
     [ "$1" = KILL ] && wait "$R" 2>/dev/null
@@ -382,9 +386,18 @@ t12() {
 }
 check "12: a zero wait against a chain of dead holders makes one step and its retake, and fails at once" t12
 
-# The clock: bash 5's EPOCHREALTIME, digits only in any locale (review SF3).
+# The clock: bash 5's EPOCHREALTIME, digits only in any locale (review SF3); before bash 5, perl's Time::HiRes.
 t13() {
     reset; local out loc
+    if [ "$(lib 'echo "${BASH_VERSINFO[0]}"')" -lt 5 ]; then
+        out="$(lib '_sot_lock_now 0.5 && echo "$_SOT_LOCK_NOW"')"
+        [[ "$out" =~ ^[0-9]{16}$ ]] || { echo "perl clock: $out"; return 1; }
+        live_holder || return 1
+        out="$(PATH="$NOHIRES:$PATH" lib 'with_lock true' 2>&1)" && { echo "took a live lock"; end_holder; return 1; }
+        contains "$out" "is held, and there is no clock to wait by: perl's Time::HiRes is missing (install it)" \
+            && ! contains "$out" "it is running" || { echo "no Time::HiRes: $out"; end_holder; return 1; }
+        end_holder; return 0
+    fi
     out="$(lib 'unset EPOCHREALTIME; EPOCHREALTIME="1727712345,123456"; _sot_lock_now 0.5 && echo "$_SOT_LOCK_NOW"')"
     [ "$out" = 1727712345623456 ] || { echo "comma stub: $out"; return 1; }
     loc="$(locale -a 2>/dev/null | grep -m1 -iE '^(de_DE|fr_FR|nl_NL|ru_RU)\.utf-?8$')"
@@ -403,7 +416,7 @@ t13() {
     done
     end_holder
 }
-check "13: the clock is EPOCHREALTIME's digits in any locale, and no clock is FAILED naming it" t13
+check "13: the clock is EPOCHREALTIME's digits in any locale (perl's before bash 5), and no clock is FAILED naming it" t13
 
 # A daemon that died during its own reclaim leaves reclaim.<D> naming D.
 # `timeout` turns the endless walk this replaced into a failure, not a hang.
@@ -425,7 +438,7 @@ t15() {
     local out
     out="$(lib '_sot_lock_self_id; _sot_lock_is_me "$_SOT_LOCK_ID" && echo mine')"
     [ "$out" = mine ] || { echo "this process, with its proof: $out"; return 1; }
-    out="$(lib '_sot_lock_self_id; _SOT_LOCK_SELF=""; _SOT_LOCK_ID="${_SOT_LOCK_ID%%:*}:-:-:-:$BASHPID:-"
+    out="$(lib '_sot_lock_self_id; _SOT_LOCK_SELF=""; _SOT_LOCK_ID="${_SOT_LOCK_ID%%:*}:-:-:-:$$:-"
         _sot_lock_is_me "$_SOT_LOCK_ID" && echo mine || echo not')"
     [ "$out" = not ] || { echo "the same host name and pid, with no proof: $out"; return 1; }
     # A call site put back to a bare comparison would pass the two above.

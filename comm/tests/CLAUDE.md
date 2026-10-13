@@ -18,7 +18,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `status_floor/`: parts of `test-status-floor.sh`: `reduction.sh`, `markers.sh`, `audit_and_races.sh`
 - `test-agent-join.sh`: `comm-join.sh` declares the row's handle to its daemon over the owner endpoint, never the relay
 - `test-agent-layers.sh`: a process acts as a handle only with at most one agent between it and its row's capsule
-- `test-comm-deps.sh`: a missing jq, flock or perl is named by poll, session start and the Stop hook, never passed silently
+- `test-comm-deps.sh`: a missing jq, flock or perl is named by poll, session start and the Stop hook, never passed silently; a mail tool that is a perl module perl loads (Time::HiRes) is not missing
 - `test-comm-e2e-readers.sh`: real readers on a real shared home lose no line (needs a v4 peer and a v3 host)
 - `test-comm-matrix-verdict.sh`: the acceptance matrix's verdict logic tells a false failure from a false success
 - `test-comm-private.sh`: every comm writer makes the comm folder its user's alone, an older folder is tightened at join, user files keep the caller's umask
@@ -59,7 +59,12 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
 - Five suites need peer hosts and are not hermetic: `test-comm-e2e-readers.sh`, `test-inbox-lock-onehost.sh`,
   `test-inbox-lock-twohost.sh`, `test-registry-twohost.sh` and `test-registry-lock-twohost.sh`.
 - CI runs the hermetic list in `.github/workflows/rust.yml`; `scripts/tests/rc-gate.sh` runs every `test-*.sh` here but
-  those five. The suites of the row-lifecycle CLIs, the launchers and `sot-gh-auth.sh` are in `agents/tests/` and source this folder's guard.
+  those five, and so does the job `bash32-linux`, with every script under bash 3.2 (`scripts/tests/under-bash.sh`). The
+  suites of the row-lifecycle CLIs, the launchers and `sot-gh-auth.sh` are in `agents/tests/` and source this folder's
+  guard.
+- Code a suite hands to the bash on PATH (`bash -c`, a fixture script, a staged script) holds under bash 3.2, as the
+  scripts do: in a `bash -c` shell the pid is `$$` (3.2 has no `$BASHPID`), and a case on a branch chosen by the bash
+  version tests the branch the bash on PATH takes. The suite's own code runs on bash 4 or later.
 - A shell rule that has a Rust twin is checked by a text scan or a parity test here (`test-hub-files.sh` T13 over
   `inbox.rs`, `test-registry-lock.sh` t15 over `lock.rs`); change both arms in one commit.
 - A hermetic suite's verdict does not depend on how fast the host runs, down to the one speed bound left: the run's own
