@@ -119,8 +119,8 @@ status_txn() {
     row="$(sot_registry_read "$NAME")" || row_rc=$?
     case "$row_rc" in 0) ;; 1) return 0 ;; *) echo "$UNREADABLE" >&2; return 1 ;; esac   # row gone: no-op
     # A question or wait always carries readable text: with none given and none
-    # of its own on the row, the stamp is refused (inside the lock, no write,
-    # before any temp file exists).
+    # of its own on the row, the stamp is refused (inside the lock, with no
+    # write).
     if [ -z "$SUM" ] && { [ "$VERB" = blocked ] || [ "$VERB" = waiting ]; }; then
         local fld=waiting out; [ "$VERB" = blocked ] && fld=question
         # One read, one character: does the verb's own text have any? Only the
@@ -130,13 +130,12 @@ status_txn() {
             echo "comm-status.sh: $VERB needs its text -- stamp discarded" >&2; return 2
         fi
     fi
-    # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): SUM is
-    # free-text and must never reach jq via --arg.
-    local sum_file; sum_file="$(sot_jq_rawfile "$SUM")" || return 1
-    local ts rc=0
+    # SUM is free text: it reaches jq on stdin, after the registry (registry_replace --text; comm-lib-base.sh, free text and jq).
+    local ts
     ts="$(now_iso)"
-    registry_replace '
-      .agents[$n] |= (
+    registry_replace --text "$SUM" '
+      input as $sum
+      | .agents[$n] |= (
         del(.turn_origin, .sticky, .sticky_at)
         | if $st == "prompt" then .floor = $o
             | (if $o == "user" then del(.question, .done) else . end)
@@ -166,9 +165,6 @@ status_txn() {
         | .summary = (if .state == "blocked" then .question
                       elif .state == "waiting" then .waiting else (.note // "") end)
         | .status_at = $t | .last_seen = $t)
-    ' --arg n "$NAME" --arg st "$VERB" --arg o "$ORIGIN" --arg t "$ts" --arg h "$HAVE" \
-      --rawfile sum "$sum_file" || rc=$?
-    rm -f "${sum_file:?}"
-    return $rc
+    ' --arg n "$NAME" --arg st "$VERB" --arg o "$ORIGIN" --arg t "$ts" --arg h "$HAVE"
 }
 with_lock status_txn

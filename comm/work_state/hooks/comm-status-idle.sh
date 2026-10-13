@@ -144,6 +144,13 @@ emit_block() {  # BLOCK_JSON
     if [ -z "$w" ]; then print_block "$1"
     else print_block "$(printf '%s' "$1" | jq -c --arg w "$w" '.reason = $w + " " + .reason')"; fi
 }
+# The comm library's two cleanup-trap helpers, copied: this script does not load the library
+# (comm/lib/comm-lib-base.sh, cleanup traps).
+sot_cleanup_signals() {
+    local s; _SOT_SIG=""
+    for s in HUP:129 INT:130 TERM:143; do trap "trap '' HUP INT TERM; _SOT_SIG=${s%:*}; set +e; exit ${s#*:}" "${s%:*}"; done
+}
+sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c 'kill -s "$1" "$$"' sh "$_SOT_SIG"; }; }
 
 # Stop-hook input (JSON on stdin): {stop_hook_active, transcript_path, ...}.
 input="$(cat 2>/dev/null || true)"
@@ -222,7 +229,10 @@ mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
 # block is printed by hand: jq itself may be the missing tool.
 if [ -n "$tp" ]; then
     fb_file="$HOME_DIR/state/stop-feedback-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').jsonl"
-    trap '[ -n "$blocked" ] || rm -f -- "${fb_file:?}" 2>/dev/null' EXIT
+    # A cleanup trap; this shell does not load the library, so it arms itself (comm-lib-base.sh, cleanup traps).
+    trap - HUP INT TERM
+    trap 'trap "" HUP INT TERM; [ -n "$blocked" ] || rm -f -- "${fb_file:?}" 2>/dev/null; sot_end_by_signal' EXIT
+    sot_cleanup_signals
 fi
 
 tool_tick="$HOME_DIR/state/tool-fault-$(printf '%s' "$NAME.$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
@@ -454,18 +464,13 @@ if [ -n "$marker_state" ]; then
     if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
         findings="$(SOT_AUDITOR_CHECKS=artifact audit 2>/dev/null)"; arc=$?
         if [ "$arc" -eq 0 ] && [ -n "$findings" ]; then
-            # Same MSYS2 argv-conversion guard as the general auditor path
-            # below: findings is free text and must not reach jq via --arg.
-            _findings_file="$(mktemp "${TMPDIR:-/tmp}/sot-comm-idle-marker-findings.XXXXXX" 2>/dev/null)"
-            if [ -n "$_findings_file" ] && printf '%s' "$findings" > "$_findings_file" 2>/dev/null; then
-                emit_block "$(jq -nc --rawfile f "$_findings_file" '{
-                  decision: "block",
-                  reason: ("Your closing block names a result that was never surfaced: " + $f + " -- badge it now via the show-result skill (show-result <path>), then end the turn. Your row is already stamped from the marker -- do not write a second sitrep block.")
-                }')"
-                rm -f "${_findings_file:?}"
-                exit 0
-            fi
-            [ -z "${_findings_file:-}" ] || rm -f -- "${_findings_file:?}" 2>/dev/null
+            # findings is free text: it reaches jq on stdin, never argv (comm-lib-base.sh, free text and jq; this
+            # hook sources no library, so the form is written out here).
+            emit_block "$(printf '%s' "$findings" | jq -Rsc '{
+              decision: "block",
+              reason: ("Your closing block names a result that was never surfaced: " + . + " -- badge it now via the show-result skill (show-result <path>), then end the turn. Your row is already stamped from the marker -- do not write a second sitrep block.")
+            }')"
+            exit 0
         fi
     fi
     turn_floor
@@ -561,27 +566,11 @@ if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
     findings="$(audit 2>/dev/null)"; arc=$?
     if [ "$arc" -eq 0 ]; then
         if [ -n "$findings" ]; then
-            # MSYS2 argv-conversion guard: on Windows git-bash, a NATIVE
-            # jq.exe rewrites any argv element starting with "/" into a
-            # Windows path before jq sees it -- findings is free text from
-            # an LLM judge and could legitimately start with "/", so it
-            # must not reach jq via --arg. This hook stays standalone (no
-            # comm-lib.sh source, matching every other hook here), so the
-            # fix is inlined rather than calling comm-lib.sh's
-            # sot_jq_rawfile.
-            _findings_file="$(mktemp "${TMPDIR:-/tmp}/sot-comm-idle-findings.XXXXXX" 2>/dev/null)"
-            if [ -n "$_findings_file" ] && printf '%s' "$findings" > "$_findings_file" 2>/dev/null; then
-                emit_block "$(jq -nc --rawfile f "$_findings_file" '{
+            # findings is free text from an LLM judge: it reaches jq on stdin, never argv (comm-lib-base.sh, free text and jq).
+            emit_block "$(printf '%s' "$findings" | jq -Rsc '{
                   decision: "block",
-                  reason: ("Turn-end audit: " + $f + " -- IF a finding is real, act on it now AND clearly RESTATE it for the user: blocked -> restate the exact question you are awaiting (one standalone sentence, as BOTH the comm-status summary and the final line of your reply); waiting -> state plainly what is being monitored and what completion looks like (same two places); artifact -> badge it via the show-result skill. IF a finding is wrong (rhetorical question, artifact already shown, job already done), just end the turn normally. This audit will not re-fire for the same situation.")
+                  reason: ("Turn-end audit: " + . + " -- IF a finding is real, act on it now AND clearly RESTATE it for the user: blocked -> restate the exact question you are awaiting (one standalone sentence, as BOTH the comm-status summary and the final line of your reply); waiting -> state plainly what is being monitored and what completion looks like (same two places); artifact -> badge it via the show-result skill. IF a finding is wrong (rhetorical question, artifact already shown, job already done), just end the turn normally. This audit will not re-fire for the same situation.")
                 }')"
-                rm -f "${_findings_file:?}"
-            else
-                # Temp file failed -- degrade rather than risk a corrupted
-                # --arg on Windows; the legacy grep fallback below still runs.
-                [ -z "${_findings_file:-}" ] || rm -f -- "${_findings_file:?}" 2>/dev/null
-                turn_floor
-            fi
             exit 0
         fi
         turn_floor; exit 0

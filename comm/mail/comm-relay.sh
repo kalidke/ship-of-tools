@@ -153,37 +153,31 @@ nc_send() {
     return "$rc"
 }
 
-send_frame() {  # $1 to, $2 text
+# A subshell: its cleanup trap removes the agent.send leg's scratch folder however the call ends, HUP, INT and TERM
+# included (comm-lib-base.sh, cleanup traps).
+send_frame() (  # $1 to, $2 text
     _require_endpoint "$1" || return 1
+    relay_tmp=""   # not local: the cleanup trap reads it (comm-lib-base.sh, cleanup traps)
+    trap 'trap "" HUP INT TERM; [ -z "$relay_tmp" ] || rm -rf -- "${relay_tmp:?}"; sot_end_by_signal' EXIT
+    sot_cleanup_signals
     # Identity is already validated (sot_require_routable_identity, called
     # above for SUB=send before any transport setup — Codex review
     # round-2 finding 4/C) — every relay frame stamps `from:$NAME` on the
     # wire, and a peer's reply routes off that field, so this is never
     # called with an unroutable NAME.
-    # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): the
-    # message text ($2) can legitimately start with "/" and must never
-    # reach jq via --arg — see that helper's comment for the mechanism.
-    # The EXIT trap (Codex round finding 9, mirrors comm-send.sh's own
-    # MSG_FILE cleanup) is what actually guarantees this temp file never
-    # leaks: a `jq` failure under `set -e` exits immediately, skipping a
-    # bare `rm -f` placed after it.
-    # Not `local`: the EXIT trap below fires after this function has returned.
-    msg_file="$(sot_jq_rawfile "$2")" || return 1
-    trap 'rm -f "${msg_file:?}"' EXIT
+    # The message text ($2) can start with "/": it reaches jq on stdin (comm-lib-base.sh, free text and jq).
     # A directed send is ONE `comm.file` request and ONE verdict (0031 B1): the
     # daemon that appends answers, so the answer is the whole record.
     local filing=""
-    [ -n "$1" ] && filing="$(jq -nc --arg f "$NAME" --arg t "$1" --rawfile m "$msg_file" '{from:$f,to:$t,msg:$m}')"
+    [ -n "$1" ] && filing="$(printf '%s' "$2" | jq -Rsc --arg f "$NAME" --arg t "$1" '{from:$f,to:$t,msg:.}')"
     # ADR 0048: one opaque id per send, minted HERE and nowhere else. It is
     # what makes a filer's receipt attributable to exactly this frame —
     # without it two concurrent sends to one handle can swap verdicts and a
     # single success can vouch for a failure. Drawn from digits and dashes
-    # only, so `--arg` is correct for it (the MSYS2 argv-conversion guard
-    # applies to the message BODY, which still goes through --rawfile).
+    # only, so `--arg` is correct for it (the message BODY still reaches jq on stdin).
     local MSG_ID; MSG_ID="$(date +%s%N)-$$-$RANDOM"
-    local frame; frame="$(jq -nc --arg f "$NAME" --arg t "$1" --arg i "$MSG_ID" --rawfile m "$msg_file" \
-        '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:$t,text:$m,id:$i}}')"
-    rm -f "${msg_file:?}"
+    local frame; frame="$(printf '%s' "$2" | jq -Rsc --arg f "$NAME" --arg t "$1" --arg i "$MSG_ID" \
+        '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:$t,text:.,id:$i}}')"
     if [ -n "$1" ]; then
         local reason rc=0
         reason="$(sot_comm_file "$1" "$filing")" || rc=$?
@@ -206,21 +200,21 @@ send_frame() {  # $1 to, $2 text
     # The loop body runs in THIS shell (process substitution, never a pipe),
     # so the verdict variables below survive it.
     local line op ack_ok=false ack_array=false ack_error=""
-    local rcpt_seen=false rcpt_filer="" hello_refused="" hello_code="" hello hello_why
+    local rcpt_seen=false rcpt_filer="" hello_refused="" hello_code="" hello hello_why=""
+    # The leg's scratch folder holds the hello builder's words and a dying bridge's reason.
+    relay_tmp="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-relay.XXXXXX")" || relay_tmp=""
+    [ -z "$relay_tmp" ] || hello_why="$relay_tmp/hello-why"
     # The hello is built once, here, before any transport starts: a process that cannot name its host or OS account
     # sends nothing, and the builder's own words are the verdict.
-    hello_why="$(mktemp "${TMPDIR:-/tmp}/sot-comm-hello.XXXXXX")" || hello_why=""
     hello="$(sot_hello_frame 2>"${hello_why:-/dev/null}")" || {
         local why; why="$(tr '\n' ' ' < "${hello_why:-/dev/null}" | sed 's/ $//')"
-        [ -z "$hello_why" ] || rm -f -- "${hello_why:?}"
         if [ -z "$1" ]; then echo "FAILED -> <all>: $why" >&2; else echo "FAILED -> @$1: $why" >&2; fi
         return 1; }
-    [ -z "$hello_why" ] || rm -f -- "${hello_why:?}"
     local -a receivers=()
     # Not `local`: nc_send below runs inside the process substitution's own
     # subshell (a fork, not this loop), so only a path on disk -- not a
     # variable -- carries a dying/timed-out bridge's reason back here.
-    _SOT_BRIDGE_FAIL_FILE="$(mktemp "${TMPDIR:-/tmp}/sot-comm-bridge-fail.XXXXXX")" || _SOT_BRIDGE_FAIL_FILE=""
+    _SOT_BRIDGE_FAIL_FILE="${relay_tmp:+$relay_tmp/bridge-fail}"
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         op="$(printf '%s' "$line" | sot_jq -r '.op // empty' 2>/dev/null || true)"
@@ -293,13 +287,12 @@ send_frame() {  # $1 to, $2 text
     # the bridge's own 5s timeout, the very bound the receipt window IS,
     # instead of NOT CONFIRMED and the roster that diagnoses it.
     #
-    # Reading the reason is not consulting it: it is gathered here (and the
-    # file removed either way) so the branches below stay one decision.
+    # Reading the reason is not consulting it: it is gathered here so the
+    # branches below stay one decision.
     local bridge_reason=""
     if [ -n "$_SOT_BRIDGE_FAIL_FILE" ] && [ -s "$_SOT_BRIDGE_FAIL_FILE" ]; then
         bridge_reason="$(cat "$_SOT_BRIDGE_FAIL_FILE")"
     fi
-    [ -z "${_SOT_BRIDGE_FAIL_FILE:-}" ] || rm -f -- "${_SOT_BRIDGE_FAIL_FILE:?}"
 
     # 1. A receipt carrying this sender's own frame id (the loop above
     # accepts no other) is the whole verdict, and nothing outranks it.
@@ -373,7 +366,7 @@ send_frame() {  # $1 to, $2 text
         echo "FAILED -> @$1: the daemon did not answer at $ENDPOINT" >&2
     fi
     return 1
-}
+)
 
 # FILE-FIRST (messaging ruling, 2026-09-26). A target with a row in THIS box's
 # registry shares this $SOT_COMM_HOME, so comm-send.sh files it: refused when the

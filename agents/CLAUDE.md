@@ -50,6 +50,8 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
   takes no argument or variable override, and never falls back to the local daemon.
 - Every code file directly in this folder installs flat into `~/.sot-comm/bin`, because `comm/bin-folders.txt` lists
   `agents`; `claude/` and `codex/` are never in that list, so their files install only through `src/sources.jl`.
+- A cleanup trap follows comm/CLAUDE.md's rule (`sot-gh-auth.sh` and the spawn CLIs load the comm library, which arms
+  them and has the two cleanup-trap helpers).
 - A skill body is a template: Claude Code substitutes `$<digit>` and `$ARGUMENTS` into the text before the model reads
   it, so a skill carries no `$` followed by a digit; the sot-setup skill's launcher script finds its folder by
   `BASH_SOURCE`, not `$0`. No test enforces the rule.

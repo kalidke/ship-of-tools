@@ -94,14 +94,9 @@ probe_row_id() {
 probe_create() {
     local handle="$1" req resp wsid root
     root="$(probe_root "$handle")" || return 1
-    # The root goes through `sot_jq_rawfile`, never `--arg`: on git-bash with a
-    # native jq, MSYS2 rewrites any argv element that starts with "/" into a
-    # Windows path, and a project root is one of the three values in this tree
-    # that legitimately does.
-    local rootfile; rootfile="$(sot_jq_rawfile "$root")" || return 1
-    req="$(jq -nc --arg l "$handle" --rawfile p "$rootfile" --arg an "$handle" \
-        '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:$p,autostart_claude:false,agent:"none",agent_name:$an,task:"",boot:true}}')"
-    rm -f "${rootfile:?}"
+    # The root can start with "/": it reaches jq on stdin (comm-lib-base.sh, free text and jq).
+    req="$(printf '%s' "$root" | jq -Rsc --arg l "$handle" --arg an "$handle" \
+        '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:.,autostart_claude:false,agent:"none",agent_name:$an,task:"",boot:true}}')"
     resp="$(probe_request "$req" workspace.create)" || return 1
     wsid="$(printf '%s' "$resp" | sot_jq -r '.payload.workspace_id // empty' 2>/dev/null)"
     [ -n "$wsid" ] || {

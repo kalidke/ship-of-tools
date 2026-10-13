@@ -15,6 +15,11 @@ does (`working-directory: agents/tests`).
 - `test-sot-fe-version.sh`: `sot-fe version` asks the daemon what build it is
 - `test-spawn-capsule-workspace.sh`: `comm-spawn.sh` never destroys a row it did not create; a bash row (`--agent none`) claims no handle and writes no registry row or inbox
 - `test-spawn-remote-no-local-row.sh`: a spawn onto another box writes no registry row or inbox here
+- `test-temp-files.sh`: no agents script leaves a file in its temporary folders, on success, on failure, killed, or ended by TERM, HUP or INT; a signal ends `sot-gh-auth.sh poll`, and so does the code's expiry with the network down; with the signal sent twice (during the trap's rm, or back to back), the poll's state file, comm-spawn's rollback, scripts/install.sh's prelude copy (every host) and download folder (Linux x86_64, macOS
+  arm64) still go, and on Linux docs/tools/docs-media.sh's work folder; a Ctrl-C ends docs-media.sh even when its
+  child catches it, and a Ctrl-C during comm-spawn.sh stops the shell that ran it; comm-spawn's
+  rollback says it left a row that changed meanwhile, on a Ctrl-C and on a failed create; the media tool's rows run on
+  the suite's own bash, when that is 4 or later
 
 ## Start here
 `test-spawn-capsule-workspace.sh` as the pattern: source the guard, make a work directory, `guard_fresh_home`,

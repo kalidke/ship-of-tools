@@ -348,11 +348,9 @@ case "$CMD" in
                 if [ "${#_cap_trimmed}" -gt 300 ]; then
                     echo "warn: --caption is ${#_cap_trimmed} chars — the frontend will truncate it to 300" >&2
                 fi
-                # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile):
-                # a caption is free text and must never reach jq via --arg.
-                _cap_file="$(sot_jq_rawfile "$_cap_trimmed")" || exit 1
-                ARGS="$(printf '%s' "$ARGS" | jq -c --rawfile c "$_cap_file" '. + {caption:$c}')"
-                rm -f "${_cap_file:?}"
+                # A caption is free text: it reaches jq on stdin, as a JSON string after ARGS
+                # (comm-lib-base.sh, free text and jq).
+                ARGS="$({ printf '%s\n' "$ARGS"; sot_json_escape "$_cap_trimmed"; } | jq -cn 'input as $a | $a + {caption: input}')"
             fi
         fi
         send_fe_command "$CMD" "$ARGS"
@@ -387,12 +385,9 @@ case "$CMD" in
             [A-Za-z]:\\*) : ;;
             *)  echo "ERROR: sot-fe docs needs an ABSOLUTE backend path -- /unix/style or C:\windows\style (docs.open stats it raw, not a repo-relative node_id)." >&2; exit 1 ;;
         esac
-        # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile):
-        # PATH_ARG is REQUIRED absolute here (the case above just enforced
-        # it) and must never reach jq via --arg.
-        _docs_path_file="$(sot_jq_rawfile "$PATH_ARG")" || exit 1
-        ARGS="$(jq -nc --arg w "$WS" --rawfile p "$_docs_path_file" '{workspace:$w, path:$p}')"
-        rm -f "${_docs_path_file:?}"
+        # PATH_ARG is absolute here (the case above enforced it): it reaches jq on stdin
+        # (comm-lib-base.sh, free text and jq).
+        ARGS="$(printf '%s' "$PATH_ARG" | jq -Rsc --arg w "$WS" '{workspace:$w, path:.}')"
         send_fe_command docs "$ARGS"
         ;;
     goto)
@@ -412,12 +407,8 @@ case "$CMD" in
     notify)
         TEXT="${POS[0]:-}"
         [ -n "$TEXT" ] || { echo "usage: sot-fe notify <text> [--level <l>] [--ws <workspace>] [--fe <host>]" >&2; exit 1; }
-        # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): TEXT
-        # is free-text notification content and must never reach jq via
-        # --arg.
-        _notify_text_file="$(sot_jq_rawfile "$TEXT")" || exit 1
-        ARGS="$(jq -nc --rawfile t "$_notify_text_file" '{text:$t}')"
-        rm -f "${_notify_text_file:?}"
+        # TEXT is free text: it reaches jq on stdin (comm-lib-base.sh, free text and jq).
+        ARGS="$(printf '%s' "$TEXT" | jq -Rsc '{text:.}')"
         [ -n "$LEVEL" ]     && ARGS="$(printf '%s' "$ARGS" | jq -c --arg l "$LEVEL" '. + {level:$l}')"
         [ -n "$NOTIFY_WS" ] && ARGS="$(printf '%s' "$ARGS" | jq -c --arg w "$NOTIFY_WS" '. + {workspace:$w}')"
         send_fe_command notify "$ARGS"
@@ -450,12 +441,8 @@ case "$CMD" in
                     # Bounce the persistent REPL into <path>'s project, then include.
                     send_repl_run_file "$FILE" "$WS"
                 else
-                    # MSYS2 argv-conversion guard (comm-lib.sh's
-                    # sot_jq_rawfile): FILE is a filesystem path and must
-                    # never reach jq via --arg.
-                    _run_file_input_file="$(sot_jq_rawfile "$FILE")" || exit 1
-                    INPUT="$(jq -nc --rawfile p "$_run_file_input_file" '{kind:"run_file", path:$p}')"
-                    rm -f "${_run_file_input_file:?}"
+                    # FILE is a path: it reaches jq on stdin (comm-lib-base.sh, free text and jq).
+                    INPUT="$(printf '%s' "$FILE" | jq -Rsc '{kind:"run_file", path:.}')"
                     send_repl_execute "$INPUT" "$WS"
                 fi
                 ;;
@@ -470,12 +457,8 @@ case "$CMD" in
                 else
                     echo "usage: sot-fe repl eval <workspace> (--code <c> | --stdin)  — code from --code or piped stdin" >&2; exit 1
                 fi
-                # MSYS2 argv-conversion guard (comm-lib.sh's
-                # sot_jq_rawfile): EVAL_CODE is arbitrary Julia source and
-                # must never reach jq via --arg.
-                _eval_code_file="$(sot_jq_rawfile "$EVAL_CODE")" || exit 1
-                INPUT="$(jq -nc --rawfile c "$_eval_code_file" '{kind:"eval", code:$c}')"
-                rm -f "${_eval_code_file:?}"
+                # EVAL_CODE is Julia source: it reaches jq on stdin (comm-lib-base.sh, free text and jq).
+                INPUT="$(printf '%s' "$EVAL_CODE" | jq -Rsc '{kind:"eval", code:.}')"
                 send_repl_execute "$INPUT" "$WS"
                 ;;
             interrupt)

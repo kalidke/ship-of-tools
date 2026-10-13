@@ -84,21 +84,18 @@ with_lock() {
         _sot_lock_over "$deadline" && return 1
     done
     # Lock acquired — guarantee release via EXIT trap (see header comment),
-    # preserving whatever EXIT trap the caller already had.
-    local prev_trap rc=0
+    # preserving whatever EXIT trap the caller already had. A cleanup trap: the hold
+    # runs under sot_cleanup_signals unless the caller is a cleanup shell or a cleanup
+    # trap's body (comm-lib-base.sh, cleanup traps), read once the EXIT trap is set.
+    local prev_trap prev_sig held="" rc=0
     prev_trap="$(trap -p EXIT)"
-    trap 'rm -f "${_SOT_REG_LOCK:?}" 2>/dev/null || true' EXIT
-    if "$@"; then
-        :
-    else
-        rc=$?
-    fi
+    trap 'trap "" HUP INT TERM; rm -f "${_SOT_REG_LOCK:?}" 2>/dev/null || true; sot_end_by_signal' EXIT
+    prev_sig="$(trap -p HUP INT TERM)"
+    case "$prev_sig" in *"'' SIGHUP"*"'' SIGTERM"*|*_SOT_SIG=*) ;; *) held=1; sot_cleanup_signals ;; esac
+    "$@" || rc=$?
     rm -f "${_SOT_REG_LOCK:?}" 2>/dev/null || true
-    if [ -n "$prev_trap" ]; then
-        eval "$prev_trap"
-    else
-        trap - EXIT
-    fi
+    if [ -n "$prev_trap" ]; then eval "$prev_trap"; else trap - EXIT; fi
+    [ -z "$held" ] || trap - HUP INT TERM
     return $rc
 }
 

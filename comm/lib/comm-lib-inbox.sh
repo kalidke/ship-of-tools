@@ -243,14 +243,19 @@ _sot_inbox_append_via_daemon() {  # HANDLE LINE
 # presence, never on `code` — an older daemon refuses the unknown op with no
 # code); `ok` is filed whatever the transport's exit status or stderr say; no
 # response is FAILED, and only then does the transport's stderr give the why.
-sot_comm_file() {  # HANDLE LINE
-    local h="$1" frame resp reason code err diag window
+# A subshell: its cleanup trap removes the file that holds the request's stderr however the call ends, HUP, INT and
+# TERM included (comm-lib-base.sh, cleanup traps).
+sot_comm_file() (  # HANDLE LINE
+    local h="$1" frame resp reason code diag window
+    err=""   # not local: the cleanup trap reads it (comm-lib-base.sh, cleanup traps)
+    trap 'trap "" HUP INT TERM; [ -z "$err" ] || rm -f -- "${err:?}"; sot_end_by_signal' EXIT
+    sot_cleanup_signals
     # The daemon may wait the whole inbox-lock bound before it files, so a read
     # window no longer than that reports FAILED for a line that WAS filed, and
     # the sender resends it: the lock wait plus 10s for the transport's setup.
     window=$(( SOT_INBOX_LOCK_WAIT_SECS + 10 ))
     [ "${SOT_SEND_TIMEOUT:-0}" -gt "$window" ] 2>/dev/null && window="$SOT_SEND_TIMEOUT"
-    # The text reaches jq on stdin, never argv (the MSYS2 guard, sot_jq_rawfile).
+    # The text reaches jq on stdin, never argv (comm-lib-base.sh, free text and jq).
     # A broadcast copy (the line's own `to` empty) must stay one after filing.
     frame="$(printf '%s' "$2" | jq -c --arg t "$h" \
         '{v:1,id:1,kind:"req",op:"comm.file",payload:{from:.from,to:$t,text:.msg,broadcast:(.to == "")}}')" || {
@@ -258,7 +263,7 @@ sot_comm_file() {  # HANDLE LINE
     err="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/sot-comm-file-XXXXXX")" || err=""
     resp="$(SOT_SEND_TIMEOUT="$window" sot_oneshot_request "$frame" comm.file 2>"${err:-/dev/null}")" || resp=""
     diag=""
-    if [ -n "$err" ]; then diag="$(tr '\n' ' ' < "$err")"; rm -f "${err:?}"; fi
+    [ -z "$err" ] || diag="$(tr '\n' ' ' < "$err")"
     reason="$(printf '%s' "$resp" | sot_jq -r '.payload.error // empty' 2>/dev/null)" || reason=""
     if [ -n "$reason" ]; then
         printf '%s\n' "$reason"
@@ -283,7 +288,7 @@ sot_comm_file() {  # HANDLE LINE
     esac
     printf 'the daemon did not answer at %s%s\n' "$ENDPOINT" "${diag:+: $diag}"
     return 1
-}
+)
 
 # --- the read cursor: a LINE OFFSET into inbox/<handle>.jsonl ----------------
 #

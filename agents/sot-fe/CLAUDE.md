@@ -23,7 +23,7 @@ concept.
 - Every request is one `sot_send`, which is one `sot_oneshot_request` (comm-lib-client.sh) that prepends the hello frame
   (`sot_hello_frame`).
 - `--timeout` is validated once, at flag parse.
-- Free text reaches jq through `sot_jq_rawfile`, never as an argument.
+- Free text reaches jq on stdin, never as an argument and never through a temporary file.
 - An unknown flag is an error, never a positional.
 - A part defines functions only and is sourced before the dispatch runs; a new verb's function goes in the part of its
   concept, and a new part gets a `source "$SCRIPT_DIR/<part>"` line in the entry, the form the installer inlines.

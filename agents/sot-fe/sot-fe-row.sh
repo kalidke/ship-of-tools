@@ -35,18 +35,10 @@ send_pty_input() {
         origin_for_use="$( (eval "$("$SCRIPT_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null; printf '%s' "${NAME:-}") 2>/dev/null || true)"
         [ -n "$origin_for_use" ] || origin_for_use="sot-fe"
     fi
-    # MSYS2 argv-conversion guard: base64 can BEGIN with '/', which git-bash
-    # would rewrite into a Windows path under --arg — so the payload goes
-    # through sot_jq_rawfile like origin below.
-    local _data_file; _data_file="$(sot_jq_rawfile "$data_b64")" || exit 1
-    payload="$(jq -nc --arg w "$ws_id" --rawfile d "$_data_file" --argjson e "$enter" \
-        '{workspace_id:$w, data_b64:$d, enter:$e}')"
-    # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): origin is
-    # free text (a comm handle or a user-set --origin) and must never reach
-    # jq via --arg.
-    local _origin_file; _origin_file="$(sot_jq_rawfile "$origin_for_use")" || exit 1
-    payload="$(printf '%s' "$payload" | jq -c --rawfile o "$_origin_file" '. + {origin:$o}')"
-    rm -f "${_origin_file:?}"
+    # base64 can begin with '/', and origin is free text (a comm handle or a user-set --origin): both reach jq
+    # on stdin, as two JSON strings (comm-lib-base.sh, free text and jq).
+    payload="$({ sot_json_escape "$data_b64"; sot_json_escape "$origin_for_use"; } \
+        | jq -cn --arg w "$ws_id" --argjson e "$enter" 'input as $d | {workspace_id:$w, data_b64:$d, enter:$e, origin:input}')"
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"pty.input", payload:$p}')"
     resp="$(sot_send "$req" pty.input || true)"
     if [ -z "$resp" ]; then
@@ -130,7 +122,7 @@ send_workspace_reauth() {
     local payload req
     # `acc` and `id` are the allowlisted names for a validated account name
     # and an id; neither value can begin with "/" (the MSYS2 argv-conversion
-    # hazard those names exist to bound), so neither needs --rawfile.
+    # hazard those names exist to bound), so neither needs to reach jq on stdin.
     payload="$(jq -nc --arg w "$ws_id" --arg acc "$account" --arg id "$resume" \
         '{workspace_id:$w, account:$acc, resume:$id}')"
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"workspace.reauth", payload:$p}')"

@@ -44,6 +44,8 @@ BIN="${SOT_MEDIA_BIN:-$PINNED_BIN}"
 [ -x "$BIN/sot" ] || BIN="$REPO/rust/target/release"
 FONT_SCALE="${SOT_MEDIA_FONT_SCALE:-1.5}"   # legible at ~1200 px display width
 W=1920; H=1080; FPS=30
+# The EXIT trap below is a cleanup trap (comm/lib/comm-lib-base.sh, cleanup traps): armed before anything is held.
+trap - HUP INT TERM
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-docs-media.XXXXXX")"
 DHOME=/home/demo                 # the HOME every demo process sees ...
 HOSTHOME="$WORK/home"            # ... and where it lives on this box
@@ -126,7 +128,15 @@ reap() {            # reap <pid> — TERM the group, then KILL stragglers
     kill -KILL -- "-$p" 2>/dev/null || true
     wait "$p" 2>/dev/null || true
 }
+# The comm library's two cleanup-trap helpers, copied: this script does not load the library
+# (comm/lib/comm-lib-base.sh, cleanup traps).
+sot_cleanup_signals() {
+    local s; _SOT_SIG=""
+    for s in HUP:129 INT:130 TERM:143; do trap "trap '' HUP INT TERM; _SOT_SIG=${s%:*}; set +e; exit ${s#*:}" "${s%:*}"; done
+}
+sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c 'kill -s "$1" "$$"' sh "$_SOT_SIG"; }; }
 cleanup() {
+    trap '' HUP INT TERM   # a second signal must not cut the reaping or the rm short
     local i now
     for ((i=${#GROUPS_STARTED[@]}-1; i>=0; i--)); do reap "${GROUPS_STARTED[$i]}"; done
     # Anything else holding the scratch dir: the setsid'd capsule supervisors
@@ -141,9 +151,12 @@ cleanup() {
         echo "WARNING: a demo handle appears in $REAL_REGISTRY" >&2
     fi
     if [ -n "${SOT_MEDIA_KEEP:-}" ]; then echo "kept $WORK" >&2; else rm -rf "${WORK:?}"; fi
+    sot_end_by_signal
 }
 trap cleanup EXIT
-trap 'exit 130' INT TERM
+# HUP, INT and TERM end the tool through cleanup and then by the signal. A Ctrl-C ends it even when the foreground child
+# catches INT and exits 0, after which bash would go on: the handler runs when the child returns.
+sot_cleanup_signals
 
 # shellcheck source=docs-media-stage.sh
 . "$(dirname "${BASH_SOURCE[0]}")/docs-media-stage.sh"

@@ -381,13 +381,9 @@ sot_daemon_endpoint() {
 sot_pty_input() {
     local wsid="$1" data="$2" frame
     sot_require_tools "send text to a session" jq || return 1
-    # base64 can begin with "/" (MSYS2 path conversion): --rawfile, never --arg.
-    local _data_file; _data_file="$(sot_jq_rawfile "$data")" || return 1
-    frame="$(jq -nc --arg w "$wsid" --rawfile d "$_data_file" \
-        '{v:1,id:1,kind:"req",op:"pty.input",payload:{workspace_id:$w,data_b64:$d,enter:true}}')"
-    local rc=$?
-    rm -f "${_data_file:?}"
-    [ "$rc" -eq 0 ] || return 1
+    # base64 can begin with "/": it reaches jq on stdin (comm-lib-base.sh, free text and jq).
+    frame="$(printf '%s' "$data" | jq -Rsc --arg w "$wsid" \
+        '{v:1,id:1,kind:"req",op:"pty.input",payload:{workspace_id:$w,data_b64:.,enter:true}}')" || return 1
     # ~18s is the daemon's own worst case for one enter=true write.
     SOT_SEND_TIMEOUT="${SOT_SEND_TIMEOUT:-20}" sot_oneshot_request "$frame" "pty.input"
 }
@@ -520,17 +516,18 @@ sot_hello_frame() {
 # the first hardening round:
 #   - the WRITER lingers for the whole read window (the bridge closes the connection when its
 #     input ends; some nc variants did too, racing the reply — the original bug);
-#   - the transport drains into a TEMP FILE we poll for the matching op line (fresh
+#   - the transport drains into a file in the call's scratch folder, polled for the matching op line (fresh
 #     connections receive ALL broadcast evt traffic — multi-MB repl frames
 #     queued ahead of the res just stream past);
 #   - a match is accepted only when jq parses the line (an op match can be
 #     an UNTERMINATED line still being appended — op precedes payload);
-#   - teardown kills the KNOWN pid only (never `kill %%`/`wait <member>`:
-#     the jobspec can resolve to an unrelated background job in a caller
+#   - teardown kills the KNOWN pids only, the transport's and the writer's sleep (`_sot_oneshot_stop`; never
+#     `kill %%`/`wait <member>`: the jobspec can resolve to an unrelated background job in a caller
 #     that backgrounds other work, and waiting any pipeline member waits
-#     the whole job — measured as a linger-long floor per call). The
-#     writer's sleep is left to die alone — bounded by the window, writes
-#     nothing, holds nothing.
+#     the whole job — measured as a linger-long floor per call);
+#   - the call runs in a subshell, and its scratch folder (the transport's output and stderr, the writer's pid, the
+#     hello builder's words) is removed by that subshell's cleanup trap, through which HUP, INT and TERM end it too
+#     (comm-lib-base.sh, cleanup traps).
 # Read window: SOT_SEND_TIMEOUT, else the caller's SEND_TIMEOUT (sot-fe's
 # repl paths set --timeout up to minutes — the window MUST honor it), else
 # 10s. Uses ENDPOINT (unix:/path, pipe:name or ssh:target[/host]) from the caller's scope,
@@ -566,16 +563,18 @@ _sot_hello_refusal() {
     printf '%s\n' "${got#*$'\t'}"
 }
 
-sot_oneshot_request() {
+sot_oneshot_request() (
     local frame="$1" op="$2"
     local timeout_s="${SOT_SEND_TIMEOUT:-${SEND_TIMEOUT:-10}}"
-    local tmp ncpid line="" deadline hello refused=""
-    tmp="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/sot-oneshot-XXXXXX")" || return 1
+    local line="" deadline hello refused=""
+    dir="" ncpid=""   # not local: the cleanup trap reads them (comm-lib-base.sh, cleanup traps)
+    trap 'trap "" HUP INT TERM; _sot_oneshot_stop; [ -z "$dir" ] || rm -rf -- "${dir:?}"; sot_end_by_signal' EXIT
+    sot_cleanup_signals
+    dir="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/sot-oneshot-XXXXXX")" || return 1
     # A process that cannot name its host or OS account sends nothing; the builder says why, and the caller is told.
-    hello="$(sot_hello_frame 2>"$tmp.he")" || {
-        printf 'sot_oneshot_request: no hello: %s\n' "$(tr '\n' ' ' < "$tmp.he" | sed 's/ $//')" >&2
-        rm -f "${tmp:?}" "${tmp:?}.he"; return 1; }
-    rm -f "${tmp:?}.he"
+    hello="$(sot_hello_frame 2>"$dir/he")" || {
+        printf 'sot_oneshot_request: no hello: %s\n' "$(tr '\n' ' ' < "$dir/he" | sed 's/ $//')" >&2
+        return 1; }
     # Every scheme goes through sot_dial (ADR 0049, User isolation). The sender
     # holds the write side open with a sleep, because the bridge closes the
     # connection when its input ends. It is `exec`'d so the recorded pid IS the
@@ -588,8 +587,8 @@ sot_oneshot_request() {
     # identical), read back below once the wait loop ends with no reply.
     local target="$ENDPOINT"
     case "$ENDPOINT" in ssh:*) target="${ENDPOINT#ssh:}"; target="${target%%/*}" ;; esac
-    _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
-        | sot_dial "$ENDPOINT" "$timeout_s" > "$tmp" 2>"$tmp.err" &
+    _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$dir/snd" 2>/dev/null \
+        | sot_dial "$ENDPOINT" "$timeout_s" > "$dir/out" 2>"$dir/err" &
     ncpid=$!
     # Out of the job table, so no shell reports its end: bash 3.2 prints a background job that a signal ended
     # ("Terminated") on this shell's stderr, and the kills below end this one after every reply. A job that has ended
@@ -600,37 +599,46 @@ sot_oneshot_request() {
     # (the hello builder above already required it).
     deadline=$(( $(date +%s) + timeout_s ))
     while [ "$(date +%s)" -le "$deadline" ]; do
-        line="$(grep -m1 "\"op\":\"$op\"" "$tmp" 2>/dev/null || true)"
+        line="$(grep -m1 "\"op\":\"$op\"" "$dir/out" 2>/dev/null || true)"
         if [ -n "$line" ] && printf '%s' "$line" | jq -e . >/dev/null 2>&1; then
             break
         fi
         line=""
         # A hello refused for anything but the protocol ends the connection: no reply is coming, so say why at once.
-        refused="$(_sot_hello_refusal "$tmp")"
+        refused="$(_sot_hello_refusal "$dir/out")"
         [ -n "$refused" ] && break
         kill -0 "$ncpid" 2>/dev/null || {
             # transport exited — one final scan for a reply that landed last
-            line="$(grep -m1 "\"op\":\"$op\"" "$tmp" 2>/dev/null || true)"
+            line="$(grep -m1 "\"op\":\"$op\"" "$dir/out" 2>/dev/null || true)"
             printf '%s' "$line" | jq -e . >/dev/null 2>&1 || line=""
             break; }
         sleep 0.1
     done
-    kill "$ncpid" 2>/dev/null || true
+    _sot_oneshot_stop
     # No reply by the end of the connection or the window: a hello refused for the protocol is named now.
-    [ -n "$line" ] || [ -n "$refused" ] || refused="$(_sot_hello_refusal "$tmp" any)"
-    [ -r "$tmp.snd" ] && kill "$(cat "$tmp.snd" 2>/dev/null)" 2>/dev/null
+    [ -n "$line" ] || [ -n "$refused" ] || refused="$(_sot_hello_refusal "$dir/out" any)"
     # A transport that exited or timed out with no reply: its own stderr
     # (captured above instead of discarded) names the reason -- printed
     # here, on THIS function's stderr, never folded into $line.
-    if [ -z "$line" ] && [ -s "$tmp.err" ]; then
-        printf 'sot_oneshot_request: %s: %s\n' "$target" "$(tr '\n' ' ' < "$tmp.err")" >&2
+    if [ -z "$line" ] && [ -s "$dir/err" ]; then
+        printf 'sot_oneshot_request: %s: %s\n' "$target" "$(tr '\n' ' ' < "$dir/err")" >&2
     fi
-    rm -f "${tmp:?}" "${tmp:?}.snd" "${tmp:?}.err"
     if [ -n "$refused" ]; then
         printf 'sot_oneshot_request: hello refused: %s\n' "$refused" >&2
         return 1
     fi
     [ -n "$line" ] && printf '%s\n' "$line"
+)
+
+# _sot_oneshot_stop — ends sot_oneshot_request's transport ($ncpid) and the writer's sleep (its pid in $dir/snd),
+# each at most once: the call's own teardown runs it, and so does its EXIT trap.
+_sot_oneshot_stop() {
+    [ -z "$ncpid" ] || kill "$ncpid" 2>/dev/null || true
+    ncpid=""
+    if [ -n "$dir" ] && [ -r "$dir/snd" ]; then
+        kill "$(cat "$dir/snd" 2>/dev/null)" 2>/dev/null || true
+        rm -f -- "$dir/snd"
+    fi
 }
 
 # sot_daemon_path PATH — PATH in the spelling of the daemon at ENDPOINT (the

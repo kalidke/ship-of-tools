@@ -49,6 +49,13 @@ GLIBC_FLOOR_FE="2.35"
 
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+# The comm library's two cleanup-trap helpers, copied: this script does not load the library
+# (comm/lib/comm-lib-base.sh, cleanup traps).
+sot_cleanup_signals() {
+    local s; _SOT_SIG=""
+    for s in HUP:129 INT:130 TERM:143; do trap "trap '' HUP INT TERM; _SOT_SIG=${s%:*}; set +e; exit ${s#*:}" "${s%:*}"; done
+}
+sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c 'kill -s "$1" "$$"' sh "$_SOT_SIG"; }; }
 
 # Every network call carries the bound its tool offers, so a stalled network ends in the tool's own error: curl gives
 # up on a connect past 15 s or a transfer under 1000 B/s for 60 s, git on an https transfer by the same rule (no
@@ -560,7 +567,9 @@ if [ -z "${SOT_INSTALL_TAG:-}" ]; then
         tag="${loc##*/}"
     fi
     case "$tag" in v[0-9]*) ;; *) die "could not resolve a release tag (got '$tag')" ;; esac
-    tmp="$(mktemp)"; trap 'rm -f "${tmp:?}"' EXIT
+    # A cleanup trap, armed first (comm/lib/comm-lib-base.sh, cleanup traps).
+    trap - HUP INT TERM; tmp="$(mktemp)"; trap 'trap "" HUP INT TERM; rm -f "${tmp:?}"; sot_end_by_signal' EXIT
+    sot_cleanup_signals
     url="https://raw.githubusercontent.com/$REPO/$tag/scripts/install.sh"
     curl "${CURL_BOUND[@]}" -fsSL -o "$tmp" "$url" || die "could not fetch $url"
     SOT_INSTALL_TAG="$tag" bash "$tmp" "$@"
@@ -675,7 +684,11 @@ for t in curl tar; do command -v "$t" >/dev/null || die "$t is required"; done
 
 # Downloader: the repo is public, so unauthenticated curl against the fixed
 # release-download URL works — no API call, no auth.
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-install.XXXXXX")"; trap 'rm -rf "${WORK:?}"' EXIT
+# A cleanup trap, armed first (comm/lib/comm-lib-base.sh, cleanup traps).
+trap - HUP INT TERM
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-install.XXXXXX")"
+trap 'trap "" HUP INT TERM; rm -rf "${WORK:?}"; sot_end_by_signal' EXIT
+sot_cleanup_signals
 
 # VERSION is always known here: the prelude resolves and re-execs first.
 VERSION="${VERSION:-${SOT_INSTALL_TAG:-}}"

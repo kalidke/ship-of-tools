@@ -233,17 +233,14 @@ fi
 # was proven to delete a genuinely live row the child had already written.
 PROV_TS="$(now_iso)"
 PROV_NONCE="$$-${RANDOM}-${RANDOM}"
-# MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): CANON_ROOT is
-# a filesystem path and can legitimately start with "/" — must never reach
-# jq via --arg. Concrete consequence if it did: the rollback check below
-# (registry_del_if_provisional, ~line 219) compares the LIVE $CANON_ROOT
-# against what got stored here — a mangled stored root would never match,
-# so a successful rollback would misreport "something else claimed it".
-PROV_ROOT_FILE="$(sot_jq_rawfile "$CANON_ROOT")" || exit 1
-PROV_OBJ="$(jq -n --arg host "$HOST" --arg repo "$REPO_BASE" --rawfile root "$PROV_ROOT_FILE" --arg ts "$PROV_TS" --arg nonce "$PROV_NONCE" \
-    '{host:$host, workspace_id:"", repo:$repo, root:$root, expertise:[],
+# CANON_ROOT is a filesystem path and can start with "/": it reaches jq on stdin
+# (comm-lib-base.sh, free text and jq). Were it mangled, the rollback check below
+# (registry_del_if_provisional) would compare the LIVE $CANON_ROOT against a
+# stored root that never matches, and a successful rollback would misreport
+# "something else claimed it".
+PROV_OBJ="$(printf '%s' "$CANON_ROOT" | jq -Rs --arg host "$HOST" --arg repo "$REPO_BASE" --arg ts "$PROV_TS" --arg nonce "$PROV_NONCE" \
+    '{host:$host, workspace_id:"", repo:$repo, root:., expertise:[],
       status:"spawning", joined:$ts, last_seen:$ts, nonce:$nonce}')"
-rm -f "${PROV_ROOT_FILE:?}"
 
 # Rollback (Codex review PR #148 round 2, finding 2): armed HERE, BEFORE
 # either write path below (a derived claim writes immediately at the next
@@ -279,16 +276,16 @@ _spawn_rollback_report() {
     # (Workspaces::insert preserves ITS id), so no signal available here
     # can prove this spawn is the row's sole owner.
     [ -n "${NAME:-}" ] || return 0
-    local rc
-    with_lock registry_del_if_provisional "$NAME" "$CANON_ROOT" "$PROV_NONCE"
-    rc=$?
+    local rc=0
+    with_lock registry_del_if_provisional "$NAME" "$CANON_ROOT" "$PROV_NONCE" || rc=$?
     case "$rc" in
         0) echo "comm-spawn: rolled back provisional registry row for @$NAME after a failed spawn" >&2 ;;
         2) echo "comm-spawn: did NOT roll back @$NAME — its row no longer matches what this spawn wrote (something else has since claimed/updated it); left untouched" >&2 ;;
         *) echo "comm-spawn: FAILED to roll back the provisional row for @$NAME (rc=$rc) — check by hand: jq '.agents[\"$NAME\"]' $REGISTRY" >&2 ;;
     esac
 }
-trap _spawn_rollback_report EXIT
+trap 'trap "" HUP INT TERM; _spawn_rollback_report; sot_end_by_signal' EXIT
+sot_cleanup_signals
 
 # --- resolve the daemon endpoint, and learn WHICH BOX it is on -----------
 # Both happen BEFORE either provisional write below (rc9.5), because every
@@ -595,10 +592,9 @@ fi
 # task:"" — no brief on the wire. Any --task is sent below as an ordinary
 # durable comm message instead. boot:true is only logged by today's daemon:
 # workspace.create starts every capsule row's supervisor itself.
-# MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): the project
-# root is a filesystem path, and LABEL (a free-text --label override, not
-# just the REPO_PATH-derived default) can also legitimately start with
-# "/" — neither may reach jq via --arg.
+# The project root is a filesystem path, and LABEL (a free-text --label
+# override, not just the REPO_PATH-derived default) can also start with "/":
+# both reach jq on stdin, as two JSON strings (comm-lib-base.sh, free text and jq).
 #
 # CANON_ROOT, not REPO_PATH: the registry row already records the canonical
 # root (above), so sending the raw argv here left the two stores holding two
@@ -611,17 +607,14 @@ fi
 # exited loudly if it could not.
 # SPAWN_WIRE_ROOT is that value in the daemon's own spelling, set where
 # the endpoint is resolved.
-SPAWN_LABEL_FILE="$(sot_jq_rawfile "$LABEL")" || exit 1
-SPAWN_PATH_FILE="$(sot_jq_rawfile "$SPAWN_WIRE_ROOT")" || exit 1
 # agent: explicit kind (ADR 0031) — the daemon picks the row's argv by it
 # (none: the login shell). autostart_claude says the same for a daemon that
 # reads no `agent` (rows/ops/create.rs resolve_create_agent): false for none.
 # account: accounts brief (v0.6.0) — "" (omitted --account) means the
 # agent's own default; jq only sends the key when non-empty, matching
 # `WorkspaceCreateReq.account`'s own "absent or empty = default" contract.
-REQ="$(jq -nc --rawfile l "$SPAWN_LABEL_FILE" --rawfile p "$SPAWN_PATH_FILE" --arg an "$NAME" --arg ag "$AGENT" --arg acc "$ACCOUNT" \
-    '{v:1,id:1,kind:"req",op:"workspace.create",payload:({label:$l,project_root:$p,autostart_claude:($ag != "none"),agent:$ag,agent_name:$an,task:"",boot:true} + (if $acc == "" then {} else {account:$acc} end))}')"
-rm -f "${SPAWN_LABEL_FILE:?}" "${SPAWN_PATH_FILE:?}"
+REQ="$({ sot_json_escape "$LABEL"; sot_json_escape "$SPAWN_WIRE_ROOT"; } | jq -cn --arg an "$NAME" --arg ag "$AGENT" --arg acc "$ACCOUNT" \
+    'input as $l | input as $p | {v:1,id:1,kind:"req",op:"workspace.create",payload:({label:$l,project_root:$p,autostart_claude:($ag != "none"),agent:$ag,agent_name:$an,task:"",boot:true} + (if $acc == "" then {} else {account:$acc} end))}')"
 RESP="$(sot_send "$REQ" workspace.create || true)"
 CREATE_ERR="$(printf '%s' "$RESP" | jq -r '.payload.error // empty' 2>/dev/null || true)"
 SLUG="$(printf '%s' "$RESP" | sot_jq -r '.payload.slug // empty' 2>/dev/null || true)"

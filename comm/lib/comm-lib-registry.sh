@@ -98,14 +98,19 @@ registry_touch() {  # name — bump last_seen if present
     registry_replace 'if .agents[$n] then .agents[$n].last_seen = $t else . end' --arg n "$1" --arg t "$ts"
 }
 
-# registry_replace FILTER [JQ_OPTIONS...] — THE one registry write; call inside with_lock.
+# registry_replace [--text VALUE] FILTER [JQ_OPTIONS...] — THE one registry write; call inside with_lock.
+# --text puts VALUE after the registry on jq's input, one JSON string the filter reads with `input`: free text
+# reaches jq on stdin, never as an argument (comm-lib-base.sh, free text and jq).
 # The tmp is renamed only if it is ONE document with an .agents object and has been fsynced.
 # jq emits nothing for an empty file and fails on an unparseable one, so an unreadable
 # read can never produce a tmp that passes: it aborts, and the registry's inode and bytes stay as they were.
 # The check slurps: jq 1.6's -e exits 0 on a file with no document, and judges two by the last.
 registry_replace() {
-    local filter="$1" why; shift
-    if sot_registry_bytes | jq "$@" "$filter" > "$REGISTRY.tmp" 2>/dev/null \
+    local text="" has_text="" filter why
+    if [ "${1:-}" = --text ]; then has_text=1 text="${2-}"; shift 2; fi
+    filter="$1"; shift
+    if { sot_registry_bytes && { [ -z "$has_text" ] || printf '%s' "$text" | jq -Rs .; }; } \
+         | jq "$@" "$filter" > "$REGISTRY.tmp" 2>/dev/null \
        && jq -e -s 'length == 1 and (.[0].agents | type == "object")' "$REGISTRY.tmp" >/dev/null 2>&1; then
         if ! why="$(_sot_fsync "$REGISTRY.tmp" 2>&1)"; then why="could not be flushed ($why)"
         elif why="$(mv "$REGISTRY.tmp" "$REGISTRY" 2>&1)"; then return 0

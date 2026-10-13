@@ -490,6 +490,15 @@ jobs:
         working-directory: .
         run: bash comm/tests/test-heartbeat-ctx-wait.sh
 
+      # No comm or agents script leaves a file in its temporary folders (the two temp-file suites; Linux runs them in
+      # checks-linux, Windows on the native box).
+      - name: Test comm temp files (hermetic)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        timeout-minutes: 10
+        working-directory: .
+        run: bash comm/tests/test-temp-files.sh && bash agents/tests/test-temp-files.sh
+
       # comm/CLAUDE.md and scripts/CLAUDE.md promise the scripts run under bash 3.2, and macOS's /bin/bash is 3.2.57.
       # under-bash.sh parses each shipped script with it, then runs every hermetic suite, as bash32-linux does, with
       # /bin/bash first on PATH as `bash`, so every script they start gets 3.2. The
@@ -888,6 +897,8 @@ jobs:
           bash test-registry-lock.sh
           # A second agent started inside a session (codex exec, claude -p) never acts as the row's handle.
           bash test-agent-layers.sh
+          # No messaging script or library call leaves a file in its temporary folders, on success, failure, a kill or a signal.
+          bash test-temp-files.sh
 
       - name: Test agents CLIs (hermetic)
         working-directory: agents/tests
@@ -909,6 +920,8 @@ jobs:
           # on a gh call that hangs. Hermetic; about 31 s, all but one second the
           # hung-gh case.
           bash test-crlf-gh-auth.sh
+          # No agents script leaves a file in its temporary folders; a signal or the code's expiry ends the sign-in poll.
+          bash test-temp-files.sh
 
   # comm/CLAUDE.md and scripts/CLAUDE.md promise the scripts run under bash 3.2. GNU bash 3.2.57, built from its
   # tarball (sha256 pinned), parses each shipped script and is the bash every hermetic suite's scripts run under

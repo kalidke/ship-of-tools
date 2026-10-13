@@ -34,7 +34,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `CLAUDE.md` (repo root): the design and conventions page every session loads.
 - `docs/adr/`: the decision records.
 - `docs/fixtures/`: `DemoProject`, the fixture project for docs media.
-- `docs/tools/`: the docs media scripts: docs-media.sh, run by hand from SCREENSHOTS.md.
+- `docs/tools/`: the docs media scripts: docs-media.sh, run by hand from SCREENSHOTS.md. Its cleanup trap follows
+  comm/CLAUDE.md's rule; its rows are in agents/tests/test-temp-files.sh.
 - `docs/src/`: the manual's pages and assets (covered by this page: the Julia environment in `Project.toml` makes
   `docs/` a package root).
 
