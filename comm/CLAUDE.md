@@ -39,8 +39,9 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
   (comm/lib/comm-lib-base.sh, free text and jq), never as a `jq --arg` value and never through a temporary file.
 - A cleanup trap (an EXIT trap that removes or undoes what its shell holds) starts `trap "" HUP INT TERM` and ends
   with `sot_end_by_signal`. Right after setting it, its shell, a subshell too, runs `sot_cleanup_signals`, so HUP,
-  INT and TERM each end the shell through the trap and then by that signal; the names the trap reads are not
-  `local`; and the shell is armed with `trap - HUP INT TERM` before it holds anything (the comm library arms every
+  INT and TERM each end the shell through the trap and then by that signal, even when a command in the trap's body
+  fails under `set -e` (the handler turns errexit off); the names the trap reads are not `local`; and the shell is
+  armed with `trap - HUP INT TERM` before it holds anything (the comm library arms every
   shell that loads it). A second signal often follows the first within a millisecond, and a trap left to bash is
   then lost: bash 5.2.14 and later end the shell before the trap's first command, and bash 3.2 never runs a
   subshell's EXIT trap on HUP or TERM once its parent has set one (comm/lib/comm-lib-base.sh, cleanup traps). The

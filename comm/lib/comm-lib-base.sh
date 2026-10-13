@@ -222,13 +222,14 @@ sot_jq_rawfile() {
 # its trap removes anything. Arming resets the shell's own traps on the three, so a shell traps them after it arms,
 # and nothing a cleanup trap's body runs in its own shell arms again. Left as they are: a second signal in the
 # microseconds before a handler's first command (bash drops it, and may warn `run_pending_traps: bad value`), SIGKILL.
-# sot_cleanup_signals: HUP, INT and TERM each ignore the three, note the signal and exit with 128 plus its number; the
-# note starts empty (a subshell's copy of one is not its own). sot_end_by_signal: a shell one of them ended then ends
+# sot_cleanup_signals: HUP, INT and TERM each ignore the three, note the signal, turn errexit off (a failing command
+# in the trap's body would end the trap before sot_end_by_signal) and exit with 128 plus its number; the note starts
+# empty (a subshell's copy of one is not its own). sot_end_by_signal: a shell one of them ended then ends
 # by it, as an `sh` that signals itself (in a subshell `$$` names the script; bash 3.2 has no `$BASHPID`), so its
 # caller sees the signal, and a bash that waits on it stops on a Ctrl-C (it goes on when that exits normally).
 sot_cleanup_signals() {
     local s; _SOT_SIG=""
-    for s in HUP:129 INT:130 TERM:143; do trap "trap '' HUP INT TERM; _SOT_SIG=${s%:*}; exit ${s#*:}" "${s%:*}"; done
+    for s in HUP:129 INT:130 TERM:143; do trap "trap '' HUP INT TERM; _SOT_SIG=${s%:*}; set +e; exit ${s#*:}" "${s%:*}"; done
 }
 sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c 'kill -s "$1" "$$"' sh "$_SOT_SIG"; }; }
 

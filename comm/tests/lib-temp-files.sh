@@ -11,11 +11,12 @@
 #   tf_table JSON            the table: an op's payload, or "silent" (no answer; the request touches TF_DIR/silent);
 #                            an op the table does not name is answered {"ok":true}
 #   tf_row ROW PATH CMD...   one row: CMD with the jq stand-in in PATH's mode, then nothing may be left; on path ok,
-#                            the function TF_CHECK names (when set) checks the value arrived whole
+#                            the function TF_CHECK names (when set) checks the value arrived whole; with TF_BEFORE,
+#                            the function it names runs once the daemon sees a silent op
 #   tf_signal ROW SIG CMD... one row: CMD until the daemon sees a silent op, SIG to its group (or its leader), then
 #                            nothing may be left; with TF_HOLD, SIG reaches the group a second time while a cleanup
 #                            trap's rm of a TF_HOLD file runs; with TF_AT_ONCE, SIG goes to the group twice, back to
-#                            back
+#                            back; with TF_BEFORE, the function it names runs before SIG
 #   tf_report                the summary line; returns the count of failed rows
 #
 # The jq stand-in fails (path `fail`) or hangs (path `kill`) a call whose value carries TF_MARK, in a `--rawfile`
@@ -230,6 +231,10 @@ tf_row() {
             if await test -e "$TF_DIR/jq-hit"; then _tf_end KILL || bad=1
             else echo "    the call that carries the mark was never reached"; _tf_end KILL; bad=1; fi ;;
         *)
+            if [ -n "${TF_BEFORE:-}" ]; then
+                if await test -e "$TF_DIR/silent"; then "$TF_BEFORE"
+                else echo "    the daemon never received the silent request"; bad=1; fi
+            fi
             _tf_end || bad=1
             case "$path" in
                 ok) [ "$TF_RC" = "${TF_WANT_RC:-0}" ] || { echo "    exited $TF_RC, want ${TF_WANT_RC:-0}"; bad=1; }
@@ -253,6 +258,7 @@ tf_signal() {
     case "$sig" in HUP) want=129 ;; INT) want=130 ;; TERM) want=143 ;; *) want="" ;; esac
     _tf_start "${TF_SIGNAL_PATH:-ok}" "$@"
     if await test -e "$TF_DIR/silent"; then
+        [ -z "${TF_BEFORE:-}" ] || "$TF_BEFORE"
         if [ -n "${TF_HOLD:-}" ]; then
             {   # stderr: the shell's own notice that the row's leader died of the signal
                 : > "$TF_DIR/armed"

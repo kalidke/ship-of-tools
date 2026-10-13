@@ -276,9 +276,8 @@ _spawn_rollback_report() {
     # (Workspaces::insert preserves ITS id), so no signal available here
     # can prove this spawn is the row's sole owner.
     [ -n "${NAME:-}" ] || return 0
-    local rc
-    with_lock registry_del_if_provisional "$NAME" "$CANON_ROOT" "$PROV_NONCE"
-    rc=$?
+    local rc=0
+    with_lock registry_del_if_provisional "$NAME" "$CANON_ROOT" "$PROV_NONCE" || rc=$?
     case "$rc" in
         0) echo "comm-spawn: rolled back provisional registry row for @$NAME after a failed spawn" >&2 ;;
         2) echo "comm-spawn: did NOT roll back @$NAME — its row no longer matches what this spawn wrote (something else has since claimed/updated it); left untouched" >&2 ;;

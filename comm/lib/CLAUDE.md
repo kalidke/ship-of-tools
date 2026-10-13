@@ -88,8 +88,9 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   previous release uses it.
 - `sot_oneshot_request` and `sot_comm_file` hold their scratch files across a wait, so each runs in a subshell whose
   cleanup trap removes them; HUP, INT and TERM, once or twice, end the subshell through that trap and then by the
-  signal, so the caller ends too (comm-lib-base.sh, cleanup traps). `with_lock` traps the three for its hold when
-  its caller has no trap on them. SIGKILL leaves the files, and so does a signal in the instant between a file's
+  signal, so the caller ends too (comm-lib-base.sh, cleanup traps). `with_lock` holds under `sot_cleanup_signals`
+  unless its caller is a cleanup shell or a cleanup trap's body; on bash 3.2 a subshell of a cleanup shell that has
+  not loaded the library again reads as its parent, so it runs `sot_cleanup_signals` itself first. SIGKILL leaves the files, and so does a signal in the instant between a file's
   creation and its name reaching the trap.
 - A request sent behind its hello is decided by its own reply. `sot_oneshot_request` stops at a refused hello at once only
   when the code is not `protocol_mismatch` (a daemon of this release closes after refusing, and only it sends the other

@@ -57,8 +57,8 @@
 # below it in this function — the lock still came off (its own release
 # trap fired on that abort), but the restore of the CALLER's prior trap
 # never ran, silently losing it for the rest of the script. Capturing the
-# callee's status via `if "$@"; then :; else rc=$?; fi` — the standard
-# idiom for "run this and don't let -e kill us on failure" — means release
+# callee's status via `"$@" || rc=$?` — the standard idiom for "run
+# this and don't let -e kill us on failure" — means release
 # and restore always execute before this function returns, on every path.
 SOT_LOCK_WAIT_SECS=10
 with_lock() {
@@ -106,17 +106,18 @@ with_lock() {
         _sot_lock_over "$deadline" && return 1
     done
     # Lock acquired — guarantee release via EXIT trap (see header comment),
-    # preserving whatever EXIT trap the caller already had. A cleanup trap
-    # (comm-lib-base.sh, cleanup traps): a caller with no trap on HUP, INT or TERM
-    # gets sot_cleanup_signals for the hold; one that has them keeps them.
-    local prev_trap prev_sig rc=0
-    prev_trap="$(trap -p EXIT)" prev_sig="$(trap -p HUP INT TERM)"
+    # preserving whatever EXIT trap the caller already had. A cleanup trap: the hold
+    # runs under sot_cleanup_signals unless the caller is a cleanup shell or a cleanup
+    # trap's body (comm-lib-base.sh, cleanup traps), read once the EXIT trap is set.
+    local prev_trap prev_sig held="" rc=0
+    prev_trap="$(trap -p EXIT)"
     trap 'trap "" HUP INT TERM; rm -f "${_SOT_REG_LOCK:?}" 2>/dev/null || true; sot_end_by_signal' EXIT
-    [ -n "$prev_sig" ] || sot_cleanup_signals
+    prev_sig="$(trap -p HUP INT TERM)"
+    case "$prev_sig" in *"'' SIGHUP"*"'' SIGTERM"*|*_SOT_SIG=*) ;; *) held=1; sot_cleanup_signals ;; esac
     "$@" || rc=$?
     rm -f "${_SOT_REG_LOCK:?}" 2>/dev/null || true
     if [ -n "$prev_trap" ]; then eval "$prev_trap"; else trap - EXIT; fi
-    [ -n "$prev_sig" ] || trap - HUP INT TERM
+    [ -z "$held" ] || trap - HUP INT TERM
     return $rc
 }
 

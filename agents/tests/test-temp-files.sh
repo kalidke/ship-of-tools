@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # test-temp-files.sh — no agents script leaves a file in its temporary folders ($TMPDIR and $XDG_RUNTIME_DIR), on
-# success, on failure, or killed, and a signal ends `sot-gh-auth.sh poll`. The method is comm/tests/lib-temp-files.sh;
+# success, on failure, killed, or ended by a signal, once or twice; a signal ends `sot-gh-auth.sh poll`, and a shell
+# that runs comm-spawn.sh stops on a Ctrl-C, its rollback's outcome said. The method is comm/tests/lib-temp-files.sh;
 # the messaging scripts' rows are comm/tests/test-temp-files.sh. It also holds the cleanup-trap rows of the two tools
 # outside agents that follow the rule: scripts/install.sh, run from this checkout, and a copy of
 # docs/tools/docs-media.sh in a folder of its own.
@@ -177,6 +178,27 @@ TF_AT_ONCE=1 TF_CHECK=a14_check tf_signal "A15 comm-spawn's rollback trap (the s
 # by INT.
 TF_CHECK=a14_check tf_signal "A16 comm-spawn ends by a Ctrl-C (its caller stops)" INT bash -c '"$@"; exit 7' _ \
     env SOT_SELF_HOST=testhost "$SCRIPTS_DIR/comm-spawn.sh" "$WORK/repo3" --name t-roll3 "${EP[@]}"
+# The provisional row changes while the create waits, as a join or another claim changes it, so the rollback's
+# with_lock returns 2: the rollback must say it left the row, under a Ctrl-C (A17: the caller still stops) and on a
+# failed create (A18: the request times out; exit 1, the spawn's own status). The check then clears the row.
+a17_before() {
+    jq '.agents |= with_entries(if .value.status == "spawning" then .value.nonce = "someone-else" else . end)' \
+        "$SOT_COMM_HOME/registry.json" > "$WORK/registry.json" && mv -- "$WORK/registry.json" "$SOT_COMM_HOME/registry.json"
+}
+a17_check() {
+    local bad=0
+    grep -q "did NOT roll back" "$TF_DIR/err" || { echo "    no \"did NOT roll back\" report"; bad=1; }
+    if [ -e "$SOT_COMM_HOME/.registry.lock" ]; then
+        echo "    left: .registry.lock in the comm home"; rm -f -- "${SOT_COMM_HOME:?}/.registry.lock"; bad=1
+    fi
+    jq '.agents |= with_entries(select(.value.status != "spawning"))' "$SOT_COMM_HOME/registry.json" \
+        > "$WORK/registry.json" && mv -- "$WORK/registry.json" "$SOT_COMM_HOME/registry.json"
+    return "$bad"
+}
+TF_BEFORE=a17_before TF_CHECK=a17_check tf_signal "A17 comm-spawn's rollback finds its row changed, then a Ctrl-C" INT \
+    bash -c '"$@"; exit 7' _ env SOT_SELF_HOST=testhost "$SCRIPTS_DIR/comm-spawn.sh" "$WORK/repo3" --name t-roll4 "${EP[@]}"
+TF_BEFORE=a17_before TF_WANT_RC=1 TF_CHECK=a17_check tf_row "A18 comm-spawn's rollback finds its row changed" ok \
+    env SOT_SELF_HOST=testhost SOT_SEND_TIMEOUT=2 "$SCRIPTS_DIR/comm-spawn.sh" "$WORK/repo3" --name t-roll5 "${EP[@]}"
 
 # scripts/install.sh, from this checkout: the prelude's copy of the tag's installer, then the body's download folder,
 # each while its first curl call waits (a stand-in that touches the silent mark). The prelude runs on every host. The
@@ -199,8 +221,9 @@ esac
 # docs/tools/docs-media.sh (Linux only, as the tool is), a copy in a repository layout of the row's own (the script
 # finds its repository from its own path): `agent-cut` with one recorded take waits in its first ffprobe call.
 # Stand-ins: ffprobe (touches the silent mark and waits) and pkill (does nothing: the cleanup kills by its work
-# folder's path, and a test kills nothing by pattern).
-if [ "$(uname -s)" = Linux ]; then
+# folder's path, and a test kills nothing by pattern). The tool needs bash 4 (`declare -A`): it runs on the suite's
+# own bash ("$BASH"), not the bash on PATH, which a 3.2 run of the scripts puts first, and only when that is 4 or later.
+if [ "$(uname -s)" = Linux ] && [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
     DM="$WORK/dm"; mkdir -p "$DM/docs/tools" "$DM/dev/output/docs-media-agent" "$DM/stub"
     cp "${INSTALLER%/scripts/install.sh}/docs/tools/docs-media.sh" "${INSTALLER%/scripts/install.sh}/docs/tools/docs-media-stage.sh" \
         "$DM/docs/tools/"
@@ -210,9 +233,9 @@ if [ "$(uname -s)" = Linux ]; then
     chmod +x "$DM/stub/ffprobe" "$DM/stub/pkill"
     for s in HUP TERM; do
         TF_HOLD='sot-docs-media.*' tf_signal "D1 docs-media.sh's cleanup trap (the signal twice)" "$s" \
-            "${FIRST[@]}" "$DM/stub" bash "$DM/docs/tools/docs-media.sh" agent-cut
+            "${FIRST[@]}" "$DM/stub" "$BASH" "$DM/docs/tools/docs-media.sh" agent-cut
         TF_AT_ONCE=1 tf_signal "D3 docs-media.sh's cleanup trap (the signal twice at once)" "$s" \
-            "${FIRST[@]}" "$DM/stub" bash "$DM/docs/tools/docs-media.sh" agent-cut
+            "${FIRST[@]}" "$DM/stub" "$BASH" "$DM/docs/tools/docs-media.sh" agent-cut
     done
     # A Ctrl-C while a foreground child catches INT and exits 0: the tool must still end, with 130 (bash waits for such
     # a child and would go on). The stand-ins here let agent-cut reach its first foreground ffmpeg: ffprobe answers a
@@ -233,7 +256,7 @@ EOF
     cp "$DM/stub/pkill" "$DM/stub-int/pkill"
     chmod +x "$DM/stub-int/ffprobe" "$DM/stub-int/ffmpeg"
     tf_signal "D2 docs-media.sh under a Ctrl-C its child catches" INT \
-        "${FIRST[@]}" "$DM/stub-int" bash "$DM/docs/tools/docs-media.sh" agent-cut
+        "${FIRST[@]}" "$DM/stub-int" "$BASH" "$DM/docs/tools/docs-media.sh" agent-cut
 fi
 
 tf_report
