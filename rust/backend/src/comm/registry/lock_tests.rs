@@ -336,29 +336,35 @@ fn a_comm_home_the_vouch_refuses_gives_a_record_with_no_proof() {
 }
 
 /// A holder that cannot be proved dead here, on another machine or in another
-/// pid namespace, is named with its host, and by hand if nothing will run
-/// there again (review F2).
+/// pid namespace, is named with its host, and, if it is dead, by hand where
+/// nothing runs there again or a comm command there cannot prove a death
+/// (reviews F2, R3-B1); a holder the step did not judge never by hand (SF2).
 #[test]
 fn an_unprovable_holder_names_its_host_and_by_hand_if_it_will_not_run_again() {
     let text = |why: &str| {
-        Blocked { holder: Some("far:m:b:1:4242:7".into()), who: None, why: why.into(), by_hand: false, gone: false }
+        let far = Some("far:m:b:1:4242:7".to_string());
+        Blocked { holder: far.clone(), who: far, why: why.into(), by_hand: false, gone: false }
             .fail_text(Path::new("/nonexistent/.registry.lock"))
     };
     let p = "/nonexistent/.registry.lock";
     assert!(text("it is on another machine").ends_with(&format!(
-        "If it is dead, run any comm command on far; if far will not run again or cannot prove it, remove {p} by hand."
+        "If it is dead: run any comm command on far, or, if far will not run again or a comm command there says it cannot prove a death, remove {p} by hand."
     )));
     assert!(text("it is in another pid namespace").ends_with(&format!(
-        "If it is dead, run any comm command on far in its pid namespace; if none there will run again or can prove it, remove {p} by hand."
+        "If it is dead: run any comm command on far in its pid namespace, or, if nothing will run there again or a comm command there says it cannot prove a death, remove {p} by hand."
     )));
     assert!(text("it is running").ends_with("): it is running. If it is dead, run any comm command on far."));
+    let unjudged = Blocked { holder: Some("mac:-:-:-:4343:-".into()), who: None, why: "it was taken again during the reclaim".into(), by_hand: false, gone: false };
+    let err = unjudged.fail_text(Path::new(p));
+    assert!(err.ends_with("it was taken again during the reclaim. If it is dead, run any comm command on mac."), "{err}");
 }
 
 /// A record with no proof fields no box can prove dead, so its FAILED line
 /// says to remove the lock by hand, never to run a comm command on its host.
 #[test]
 fn a_holder_with_no_proof_fields_is_removed_by_hand() {
-    let b = Blocked { holder: Some("mac:-:-:-:4343:-".into()), who: None, why: "it is on another machine".into(), by_hand: false, gone: false };
+    let mac = Some("mac:-:-:-:4343:-".to_string());
+    let b = Blocked { holder: mac.clone(), who: mac, why: "it is on another machine".into(), by_hand: false, gone: false };
     let err = b.fail_text(Path::new("/nonexistent/.registry.lock"));
     assert!(err.ends_with(
         "(unknown old): it is on another machine. No box can prove mac pid 4343 dead (its record has no proof fields): if it is, remove /nonexistent/.registry.lock by hand."

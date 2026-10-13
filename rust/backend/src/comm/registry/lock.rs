@@ -382,16 +382,21 @@ impl Blocked {
             );
         }
         let who = self.who.as_deref().unwrap_or(holder);
-        // The shell's `_sot_lock_fix`: by hand where no box can prove it dead (no proof fields, or a host that will not
-        // run again or cannot prove it), as no reclaimer can be pending there (reviews B1, F2); else a comm command.
+        // The shell's `_sot_lock_fix`: if it is dead, by hand where no box can prove it (no proof fields, or a host that
+        // will not run again or whose comm command says it cannot prove a death), as no reclaimer can be pending there
+        // (reviews B1, F2); every by-hand clause stands under "If it is dead", as a live holder is never proved dead
+        // (review R3-B1). Else a comm command on its host.
         let w = parse(who).unwrap_or_default();
         let host = who.split(':').next().unwrap_or("-");
-        let fix = if w.len() == 6 && [1, 2, 3, 5].iter().all(|&i| w[i] == "-") {
+        let fix = if self.who.is_none() {
+            // A holder the step did not judge (it took the lock during the reclaim) is never named by hand (review SF2).
+            format!("If it is dead, run any comm command on {host}.")
+        } else if w.len() == 6 && [1, 2, 3, 5].iter().all(|&i| w[i] == "-") {
             format!("No box can prove {} pid {} dead (its record has no proof fields): if it is, remove {p} by hand.", w[0], w[4])
         } else if self.why.ends_with("in another pid namespace") {
-            format!("If it is dead, run any comm command on {host} in its pid namespace; if none there will run again or can prove it, remove {p} by hand.")
+            format!("If it is dead: run any comm command on {host} in its pid namespace, or, if nothing will run there again or a comm command there says it cannot prove a death, remove {p} by hand.")
         } else if self.why.ends_with("on another machine") || self.why.ends_with("cannot prove a death") {
-            format!("If it is dead, run any comm command on {host}; if {host} will not run again or cannot prove it, remove {p} by hand.")
+            format!("If it is dead: run any comm command on {host}, or, if {host} will not run again or a comm command there says it cannot prove a death, remove {p} by hand.")
         } else {
             format!("If it is dead, run any comm command on {host}.")
         };

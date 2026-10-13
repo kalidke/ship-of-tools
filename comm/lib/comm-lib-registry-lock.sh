@@ -38,43 +38,17 @@
 # is FAILED naming it. Where the deadline is checked is comm/PROTOCOL.md's
 # Bounds.
 #
-# Release is TRAP-based, not a plain post-command `rm` (Codex review F2
-# second half / F7): a caller's `set -e` aborts the WHOLE SCRIPT the moment
-# `"$@"` fails, at that exact statement — skipping every line after it in
-# this function, including a plain `rm` written below the call. That
-# leaked the lock forever on any callee failure (a corrupt registry.json
-# making `registry_put`'s jq fail, for example). An EXIT trap still fires
-# on that abort, so the lock comes off either way.
-#
-# The PRIOR EXIT trap (if any) is saved and restored, not just cleared:
-# bash has one EXIT trap per shell, not a stack, and a caller may already
-# have its own (e.g. comm-spawn.sh's provisional-row rollback) active
-# around a with_lock call — blindly clearing it here would silently
-# disarm the caller's cleanup for the rest of the script. This restore now
-# runs on EVERY path, including a directly-failing "$@" (Codex review PR
-# #148 round 2, finding 4): a bare `"$@"` statement under the caller's
-# `set -e` used to abort the WHOLE SCRIPT right there, skipping every line
-# below it in this function — the lock still came off (its own release
-# trap fired on that abort), but the restore of the CALLER's prior trap
-# never ran, silently losing it for the rest of the script. Capturing the
-# callee's status via `if "$@"; then :; else rc=$?; fi` — the standard
-# idiom for "run this and don't let -e kill us on failure" — means release
-# and restore always execute before this function returns, on every path.
+# Release is by an EXIT trap, which still fires when a caller's `set -e`
+# aborts the script inside "$@", so the lock comes off however "$@" ends. The
+# caller's own EXIT trap (bash has one per shell) is saved and put back, and
+# "$@"'s status is captured, never left to `set -e`, so release and restore
+# run on every path.
 SOT_LOCK_WAIT_SECS=10
 with_lock() {
     local deadline="" took retook=""
-    # Test seam (F10): let a test PROVE a background waiter has reached its
-    # first lock attempt, instead of racing it with a sleep. Touched once,
-    # right before that attempt; unset (the default) this is a no-op.
-    #
-    # `touch --`, NOT `: > FILE` (Codex review round 2, finding 6): a bare
-    # `>` redirect TRUNCATES whatever already sits at that path — if this
-    # var ever leaked into a production environment pointed at a real
-    # file, every with_lock call would zero it. `touch` only updates/
-    # creates, and unlike `>` it doesn't attempt to OPEN-FOR-WRITE (which
-    # would block forever against a FIFO with no reader, right here in the
-    # lock's own hot path) — and `|| true` keeps a bad path from tripping
-    # this function's own `set -e`-sensitive callers.
+    # Test seam: touched once, right before the first take, so a test can prove
+    # a background waiter reached it; unset, a no-op. `touch --`, never `: >`,
+    # which would truncate a real file or block on a FIFO the variable named.
     [ -n "${SOT_COMM_TEST_LOCK_BARRIER:-}" ] && { touch -- "$SOT_COMM_TEST_LOCK_BARRIER" 2>/dev/null || true; }
     _sot_lock_self_id
     while :; do
@@ -409,21 +383,34 @@ _sot_lock_field() {  # ID N — the ID's Nth colon field
     printf '%s' "${f[$2 - 1]:--}"
 }
 
-# _sot_lock_fix ID — the recovery for the record ID that blocks, by the judge's
-# reason in _SOT_LOCK_WHY: a comm command where ID can be proved dead, or by
-# hand where no box can: no proof fields, or a host that will not run again
-# or cannot prove it. A record with proof is told "by hand" only on that
-# condition: a bare rm races a reclaimer pending where it ran (review B1), and
-# none can be pending where nothing proves its death (review F2). lock.rs's
+# _sot_lock_fix — the recovery the FAILED line and the clear's refusal name for
+# the lock as the last step saw it: nothing when no record blocks; by hand when
+# no reclaim can clear it (_SOT_LOCK_BYHAND); for a record the step judged
+# (_SOT_LOCK_WHO), by its reason in _SOT_LOCK_WHY, a comm command where it can
+# be proved dead, or, if it is dead, by hand where no box can prove it: no
+# proof fields, or a host that will not run again or whose comm command says
+# it cannot prove a death. Every by-hand clause stands under "if it is dead": a
+# live holder is never proved dead, so "cannot prove it" alone would name a
+# live lock (review R3-B1). A bare rm races a reclaimer pending where the
+# holder ran (review B1), and none can be pending where nothing proves its
+# death (review F2). A holder the step did not judge (one that took the lock
+# during the reclaim) is never named by hand (review SF2). lock.rs's
 # `fail_text` says the same.
 _sot_lock_fix() {
-    local h="${1%%:*}" p="$_SOT_REG_LOCK"
-    if [[ "$1" =~ ^[^:]*:-:-:-:[0-9]+:-$ ]]; then
-        echo "No box can prove $h pid $(_sot_lock_field "$1" 5) dead (its record has no proof fields): if it is, remove $p by hand."
+    local x="${_SOT_LOCK_WHO:-${_SOT_LOCK_HOLDER:-}}" p="$_SOT_REG_LOCK" h
+    h="${x%%:*}"
+    if [ -n "${_SOT_LOCK_BYHAND:-}" ]; then
+        echo "If its holder is dead, remove $p by hand and retry."
+    elif [ -z "$x" ]; then
+        return 0
+    elif [ -z "${_SOT_LOCK_WHO:-}" ]; then
+        echo "If it is dead, run any comm command on $h."
+    elif [[ "$x" =~ ^[^:]*:-:-:-:[0-9]+:-$ ]]; then
+        echo "No box can prove $h pid $(_sot_lock_field "$x" 5) dead (its record has no proof fields): if it is, remove $p by hand."
     elif [[ "$_SOT_LOCK_WHY" == *"in another pid namespace" ]]; then
-        echo "If it is dead, run any comm command on $h in its pid namespace; if none there will run again or can prove it, remove $p by hand."
+        echo "If it is dead: run any comm command on $h in its pid namespace, or, if nothing will run there again or a comm command there says it cannot prove a death, remove $p by hand."
     elif [[ "$_SOT_LOCK_WHY" == *"on another machine" || "$_SOT_LOCK_WHY" == *"cannot prove a death" ]]; then
-        echo "If it is dead, run any comm command on $h; if $h will not run again or cannot prove it, remove $p by hand."
+        echo "If it is dead: run any comm command on $h, or, if $h will not run again or a comm command there says it cannot prove a death, remove $p by hand."
     else
         echo "If it is dead, run any comm command on $h."
     fi
@@ -432,11 +419,11 @@ _sot_lock_fix() {
 # _sot_lock_fail_text — the one FAILED line for the lock as _sot_lock_step
 # last saw it: the holder's host, pid and start tick, and the recovery.
 _sot_lock_fail_text() {
-    local age="unknown" mtime="" who="${_SOT_LOCK_WHO:-${_SOT_LOCK_HOLDER:-}}"
+    local age="unknown" mtime=""
     mtime="$(sot_mtime "$_SOT_REG_LOCK")" || mtime=""
     [ -n "$mtime" ] && age="$(( $(date +%s) - mtime ))s"
     if [ -n "${_SOT_LOCK_BYHAND:-}" ]; then
-        echo "ERROR: registry lock $_SOT_REG_LOCK still held ($age old): $_SOT_LOCK_WHY. If its holder is dead, remove $_SOT_REG_LOCK by hand and retry."
+        echo "ERROR: registry lock $_SOT_REG_LOCK still held ($age old): $_SOT_LOCK_WHY. $(_sot_lock_fix)"
         return 0
     fi
     if [ -z "${_SOT_LOCK_HOLDER:-}" ]; then
@@ -447,5 +434,5 @@ _sot_lock_fail_text() {
         echo "ERROR: registry lock $_SOT_REG_LOCK was held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) when last read ($_SOT_LOCK_WHY); it may have been released since. Retry."
         return 0
     fi
-    echo "ERROR: registry lock $_SOT_REG_LOCK is held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) ($age old): $_SOT_LOCK_WHY. $(_sot_lock_fix "$who")"
+    echo "ERROR: registry lock $_SOT_REG_LOCK is held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) ($age old): $_SOT_LOCK_WHY. $(_sot_lock_fix)"
 }

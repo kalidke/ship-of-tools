@@ -61,8 +61,9 @@
 #  25 a box whose comm home's mount proves no fresh read writes no proof
 #     fields, so its dead holder is named by hand, and the clear refuses it so
 #     (review F1);
-#  26 a holder this box cannot prove dead names its host, and by hand if
-#     nothing there runs again or can prove it (review F2).
+#  26 a holder this box cannot prove dead names its host, and, if it is
+#     dead, by hand where nothing there runs again or a comm command there
+#     says it cannot prove a death (reviews F2, R3-B1).
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 . "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh"
@@ -331,7 +332,7 @@ t9() {
     out="$(SOT_COMM_TEST_LOCK_SETTLE=0.05 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" \
         && { echo "cleared a holder on another machine: $out"; return 1; }
     [ "$(cat "$P")" = "$far" ] && [ "$(markers)" = 0 ] && contains "$out" "it is on another machine" \
-        && contains "$out" "If it is dead, run any comm command on elsewhere; if elsewhere will not run again or cannot prove it, remove $P by hand." \
+        && contains "$out" "If it is dead: run any comm command on elsewhere, or, if elsewhere will not run again or a comm command there says it cannot prove a death, remove $P by hand." \
         || { echo "$out"; return 1; }
     # One this box proves dead is cleared through its marker.
     reset; d="$(dead_holder)"
@@ -347,7 +348,7 @@ t9() {
     [ "$(cat "$P")" = "$d" ] && [ "$(cat "$(marker "$d")")" = "$r" ] && [ ! -e "$(marker "$r")" ] \
         || { echo "the lock or its marker changed: $out"; return 1; }
     contains "$out" "its reclaim by elsewhere pid 4343 did not finish: it is on another machine" \
-        && contains "$out" "if elsewhere will not run again or cannot prove it, remove $P by hand." || { echo "$out"; return 1; }
+        && contains "$out" "If it is dead: run any comm command on elsewhere, or, if elsewhere will not run again or a comm command there says it cannot prove a death, remove $P by hand." || { echo "$out"; return 1; }
     # A reclaimer with no proof fields (an older clear's, killed on macOS or git-bash): no box can prove it dead, so
     # the refusal says to remove the lock by hand.
     reset; d="$(dead_holder)"
@@ -391,20 +392,21 @@ t25() {
 }
 check "25: a box whose comm home's mount proves no fresh read writes no proof fields, so its dead holder is named by hand" t25
 
-# A holder this box cannot prove dead is named with its host, and by hand if nothing there runs again or proves it (F2):
-# on another machine, and on this one in another pid namespace.
+# A holder this box cannot prove dead is named with its host, and by hand only if it is dead, where nothing there runs
+# again or a comm command there says it cannot prove a death (F2, R3-B1): a live holder is never proved dead, so a clause
+# outside "If it is dead" would name a live lock. On another machine, and on this one in another pid namespace.
 t26() {
     reset; local out
     printf '%s\n' 'gone:ffffffffffffffffffffffffffffffff:00000000-0000-0000-0000-000000000000:1:4242:1' > "$P"
     out="$(lib 'SOT_LOCK_WAIT_SECS=0 with_lock true' 2>&1)"
-    contains "$out" "it is on another machine. If it is dead, run any comm command on gone; if gone will not run again or cannot prove it, remove $P by hand." \
+    contains "$out" "it is on another machine. If it is dead: run any comm command on gone, or, if gone will not run again or a comm command there says it cannot prove a death, remove $P by hand." \
         || { echo "another machine: $out"; return 1; }
     printf '%s:4026531999:4242:1\n' "${SELF%:*}" > "$P"
     out="$(lib 'SOT_LOCK_WAIT_SECS=0 with_lock true' 2>&1)"
-    contains "$out" "it is in another pid namespace. If it is dead, run any comm command on ${SELF%%:*} in its pid namespace; if none there will run again or can prove it, remove $P by hand." \
+    contains "$out" "it is in another pid namespace. If it is dead: run any comm command on ${SELF%%:*} in its pid namespace, or, if nothing will run there again or a comm command there says it cannot prove a death, remove $P by hand." \
         || { echo "another pid namespace: $out"; return 1; }
 }
-check "26: a holder this box cannot prove dead is named with its host, and by hand if nothing there runs again or proves it" t26
+check "26: a holder this box cannot prove dead is named with its host, and by hand only if it is dead and nothing there can prove it" t26
 
 t10() {
     reset; local t0 ms tries
@@ -500,7 +502,7 @@ t14() {
     contains "$out" "its reclaim marker $(marker "$d") names $d, which its reclaim chain already holds" \
         && contains "$out" "remove $P by hand" || { echo "$out"; return 1; }
     out="$(bounded 20 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" && { echo "cleared: $out"; return 1; }
-    contains "$out" "its reclaim marker $(marker "$d") names $d" && contains "$out" "remove the lock by hand" \
+    contains "$out" "its reclaim marker $(marker "$d") names $d" && contains "$out" "If its holder is dead, remove $P by hand" \
         || { echo "$out"; return 1; }
     [ "$(cat "$P")" = "$d" ] && [ "$(cat "$(marker "$d")")" = "$d" ] || { echo "the lock or its marker changed"; return 1; }
 }

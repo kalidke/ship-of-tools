@@ -199,10 +199,14 @@ a stream; the record keeps its colons.
   daemon's log alike: `registry lock <path> is held by <host> pid <pid> start
   <tick> (<age> old): <why>. If it is dead, run any comm command on <host>.`
   Where this box cannot prove it dead, on another machine or in another pid
-  namespace, the last sentence adds `; if <host> will not run again or cannot
-  prove it, remove <path> by hand` (in a pid namespace: `on <host> in its pid
-  namespace; if none there will run again or can prove it, ...`): no
-  reclaimer can be pending where nothing proves its death. When the record that blocks has no proof fields, which no box
+  namespace, the last sentence is instead `If it is dead: run any comm command
+  on <host>, or, if <host> will not run again or a comm command there says it
+  cannot prove a death, remove <path> by hand.` (in a pid namespace: `on
+  <host> in its pid namespace, or, if nothing will run there again or ...`):
+  no reclaimer can be pending where nothing proves its death, and the clause
+  stands under "If it is dead", as a live holder is never proved dead. A
+  holder the step did not judge, one that took the lock during the reclaim,
+  gets the first sentence. When the record that blocks has no proof fields, which no box
   can prove dead, its last sentence is instead `No box can prove <host> pid
   <pid> dead (its record has no proof fields): if it is, remove <path> by
   hand.` A lock
@@ -246,7 +250,11 @@ a stream; the record keeps its colons.
   and one can remove the lock the other retook; this is very improbable. A lock
   whose record stays unreadable (a permission or I/O error) is never reclaimed,
   and its FAILED line says only that its record could not be read; it is
-  removed by hand.
+  removed by hand. Where a box's two arms disagree about its comm home's mount
+  (no findmnt, stacked mounts), the arm that proves a death can be mid-reclaim
+  while a person, told by the other arm's line, removes the lock by hand; two
+  writers need that removal and a new holder's link to land between the
+  reclaimer's re-read and its unlink.
 
 ## Message frame (inbox JSONL, one object per line)
 
