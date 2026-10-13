@@ -1,6 +1,7 @@
 //! Tests: the redial pace against a lane that accepts and then drops, against one whose re-dial fails, and for a lane
 //! that lasted `STABLE`. Each records the instant of every dial and checks the gaps against the doubling `Redial` wait,
-//! which only an attach or a lane that lasted `STABLE` restarts.
+//! which only an attach or a lane that lasted `STABLE` restarts. Last, the logins one host sees while the user steps
+//! through a window's parked rows: a client off screen does not redial.
 
 use crate::attach_client::rules::{OutstandingSlot, QuitDispatcher, ReconnectState, TakeTransaction};
 use crate::host::redial::{Redial, STABLE};
@@ -267,4 +268,152 @@ fn a_supervisor_lane_that_lasted_stable_redials_at_once_and_starts_its_wait_over
     lasted.redial_at = lasted.redial_at.map(back);
     assert!(probe_supervisor_lane::<DropEndpoint>(&endpoint, "h", &mut lasted).is_err(), "the dropped lane answered");
     assert_eq!(dials(), 2, "4 s after the re-dial failed the next was not due: the wait did not start over");
+}
+
+/// One host as a window's attach workers reach it, each supervisor dial one login. While the link is down a dial is
+/// answered `LinkDown` at once, as the host's link gate answers; otherwise its login stays open until the test refuses
+/// it, so the count of logins open at once does not depend on how fast the machine is.
+#[derive(Default)]
+struct Host {
+    state: Mutex<HostState>,
+    changed: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct HostState {
+    link_up: bool,
+    link_down_answers: usize,
+    /// One entry per open login, naming its row.
+    open: Vec<String>,
+    most_open: usize,
+    /// Refusals granted and not yet taken, by row.
+    refusals: Vec<String>,
+    /// Every login is refused at once: the test is ending.
+    closing: bool,
+}
+
+impl Host {
+    fn update(&self, change: impl FnOnce(&mut HostState)) {
+        change(&mut self.state.lock().unwrap());
+        self.changed.notify_all();
+    }
+
+    /// Whether `done` held within 10 s.
+    fn wait_for(&self, done: impl Fn(&HostState) -> bool) -> bool {
+        let (_state, waited) = self.changed.wait_timeout_while(self.state.lock().unwrap(), Duration::from_secs(10), |s| !done(s)).unwrap();
+        !waited.timed_out()
+    }
+
+    /// Refuses `row`'s open login and waits until it has closed.
+    fn refuse(&self, row: &str) {
+        let open = |s: &HostState| s.open.iter().filter(|r| *r == row).count();
+        let before = open(&self.state.lock().unwrap());
+        self.update(|s| s.refusals.push(row.to_string()));
+        assert!(self.wait_for(|s| open(s) < before), "{row}'s refused login did not close");
+    }
+}
+
+struct HostEndpoint(Arc<Host>);
+impl Endpoint for HostEndpoint {
+    type Client = TestClient;
+    type Process = TestProcess;
+
+    fn connect_supervisor_unchallenged(&self, lane: &str) -> Result<TestClient, TransportError> {
+        let mut s = self.0.state.lock().unwrap();
+        if !s.link_up {
+            s.link_down_answers += 1;
+            self.0.changed.notify_all();
+            return Err(TransportError::LinkDown);
+        }
+        s.open.push(lane.to_string());
+        s.most_open = s.most_open.max(s.open.len());
+        self.0.changed.notify_all();
+        while !s.closing {
+            if let Some(i) = s.refusals.iter().position(|r| r == lane) {
+                s.refusals.remove(i);
+                break;
+            }
+            s = self.0.changed.wait(s).unwrap();
+        }
+        let i = s.open.iter().position(|r| r == lane).expect("the login's own entry");
+        s.open.remove(i);
+        self.0.changed.notify_all();
+        Err(TransportError::Unreachable(std::io::Error::other("kex_exchange_identification: Connection reset by peer")))
+    }
+    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<TestClient, TransportError> {
+        unreachable!("no supervisor dial succeeds, so no voyage is dialed")
+    }
+    fn challenge(
+        &self,
+        _conn: &TestClient,
+        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
+        _deadline: Instant,
+    ) -> ChallengeOutcome<TestProcess> {
+        unreachable!("no supervisor dial succeeds")
+    }
+    fn authenticate_server(&self, _conn: &TestClient) -> PeerAuthOutcome {
+        unreachable!("no supervisor dial succeeds")
+    }
+    fn link_up(&self) -> bool {
+        self.0.state.lock().unwrap().link_up
+    }
+}
+
+/// The record of 2026-10-13 (SSH-BURST) on one host: the window wakes with its rows parked and the host's link down,
+/// the link comes back, the user steps through the rows, and every row's login fails after the user has left it. A
+/// client off screen finishes the attempt in flight and starts no other until it is viewed (ADR 0045 decision 11), so
+/// the host sees one login at a time, the viewed row's, however many rows the user passed. Twelve rows is more than
+/// sshd's default `MaxStartups` (10) admits.
+#[test]
+fn parked_rows_open_no_login_while_the_user_steps_through_them() {
+    const ROWS: usize = 12;
+    let host = Arc::new(Host::default());
+    let mut workers: Vec<AttachWorker<HostEndpoint>> = (0..ROWS)
+        .map(|i| {
+            AttachWorker::<HostEndpoint>::spawn(
+                HostEndpoint(Arc::clone(&host)),
+                format!("row-{i}"),
+                80,
+                24,
+                "controller-1".to_string(),
+                "handle".to_string(),
+                None,
+                false,
+                64 * 1024,
+                Arc::new(AtomicU64::new(0)),
+                Arc::new(Mutex::new(None)),
+                Arc::new(AtomicU64::new(0)),
+                |_e| {},
+            )
+            .expect("spawn the worker")
+        })
+        .collect();
+    // Each worker's first dial meets the down link and pauses; the window then parks every row.
+    assert!(host.wait_for(|s| s.link_down_answers == ROWS), "not every worker dialed into the down link");
+    for worker in &workers {
+        worker.set_viewed(false);
+    }
+    host.update(|s| s.link_up = true);
+    for (i, worker) in workers.iter().enumerate() {
+        let row = format!("row-{i}");
+        worker.set_viewed(true);
+        assert!(host.wait_for(|s| s.open.contains(&row)), "{row} was viewed and opened no login");
+        if i + 1 < ROWS {
+            worker.set_viewed(false);
+        }
+        host.refuse(&row);
+    }
+    // Every retry the doubling allows after one failed attempt (250 ms) has started by now.
+    thread::sleep(Duration::from_secs(3));
+    let (most_open, open_at_end) = {
+        let s = host.state.lock().unwrap();
+        (s.most_open, s.open.clone())
+    };
+    println!("login burst: rows={ROWS} most_open={most_open} open_at_end={open_at_end:?}");
+    host.update(|s| s.closing = true);
+    for worker in &mut workers {
+        assert!(worker.shutdown(Duration::from_secs(5)), "a worker did not end on Shutdown");
+    }
+    assert_eq!(most_open, 1, "the host saw {most_open} logins open at once: a parked row dialed while off screen");
+    assert_eq!(open_at_end, [format!("row-{}", ROWS - 1)], "only the viewed row may still be dialing");
 }

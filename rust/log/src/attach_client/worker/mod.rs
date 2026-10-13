@@ -257,8 +257,8 @@ pub struct AttachWorker<E: Endpoint> {
     /// The episode reader's own byte-accounted backpressure — see
     /// [`QueuedBytes`]'s own doc. Released by [`Self::ack_output_consumed`].
     queued_bytes: Arc<QueuedBytes>,
-    /// Whether the client is the one the user is looking at; a worker
-    /// paused for a down link resumes only while this is set.
+    /// Whether the client is the one the user is looking at; while it is
+    /// clear the worker starts no episode and no voyage re-dial.
     viewed: Arc<AtomicBool>,
     worker_handle: Option<thread::JoinHandle<()>>,
     _endpoint: PhantomData<E>,
@@ -340,7 +340,7 @@ impl<E: Endpoint> AttachWorker<E> {
         Ok(Self { msg_tx, ingress_bytes, ingress_bound, attach_gen, discarded, queued_bytes, viewed, worker_handle: Some(worker_handle), _endpoint: PhantomData })
     }
 
-    /// Whether this worker's pane is on screen. A worker pauses on a down link whether viewed or not, and resumes only when the link is up AND the client is viewed.
+    /// Whether this worker's pane is on screen. A worker off screen finishes the attempt in flight, then starts no episode and no voyage re-dial until it is viewed; a down link pauses it whether viewed or not, until the link is up AND the client is viewed.
     pub fn set_viewed(&self, viewed: bool) {
         self.viewed.store(viewed, Ordering::Release);
     }

@@ -220,6 +220,24 @@ migration mechanism, not two.
     resumes when it is next viewed. Other outages (the daemon answered
     `Unreachable`) are retried as before, on the doubling backoff.
 
+    **AMENDED 2026-10-13 (0.6.6), a client off screen does not redial.**
+    This reverses the 2026-10-01 sentence "Other outages (the daemon
+    answered `Unreachable`) are retried as before, on the doubling
+    backoff" for every client but the viewed one. On 2026-10-13 a window
+    woke with its rows parked; the user stepped through them, and each
+    row whose login failed after the user had left it went on retrying,
+    so one host took about 17 rows' logins at once. Now a worker whose
+    client is not viewed finishes the attempt in flight, then starts no
+    episode and no voyage re-dial until it is viewed
+    (`wait_until_viewed`, `wait_to_redial`); the viewed client retries
+    as before. A parked pane keeps its last screen, and input
+    outstanding when its lane died is resent at the re-attach its next
+    view starts, as after a down link. The steady state's paced
+    supervisor re-dial (2 s to 30 s), made while the attach lane is
+    live, is unchanged. Invariant: no off-screen row starts an attach of
+    its own, so the logins one host sees from a window are bounded by
+    the user's own switching, not by the number of parked rows.
+
 ## What this deletes
 
 `pair_verdict`, `check_pair`, `PAIR_PROBE_BOUND`; build-string equality

@@ -1,4 +1,4 @@
-//! The worker thread: `run_worker`, its held-input bookkeeping and the retry and link-pause waits.
+//! The worker thread: `run_worker`, its held-input bookkeeping and the retry, link-pause and view waits.
 
 use crate::lane::client::Endpoint;
 use crate::attach_client::rules::{
@@ -94,6 +94,10 @@ pub(super) fn run_worker<E: Endpoint>(
     let emit = |e: WorkerEvent| sink(e);
 
     'episodes: while !shutdown {
+        // Every episode starts with a dial, over ssh a login: a client off screen starts none (ADR 0045 decision 11).
+        if let WaitOutcome::Shutdown = wait_until_viewed(&cmd_rx, &mut held, &viewed) {
+            return;
+        }
         emit(WorkerEvent::Status("connecting\u{2026}".to_string()));
 
         let (supervisor_conn, sup_reader, voyage, voyage_conn) = match reach_supervisor::<E>(&endpoint, &lane, &cmd_rx, &mut reconnect, &mut held, &mut quit, &mut outstanding, first_attach_deadline, &viewed, &emit, &voyage_uuid) {
@@ -260,11 +264,8 @@ pub(super) fn wait_for_retry_or_shutdown(cmd_rx: &Receiver<WorkerMsg>, wait: Dur
     }
 }
 
-/// The pause for a down link: one status line, then a tick-by-tick
-/// wait that reads the channel through [`hold`] (a `Resize` is kept for the
-/// next attach, an `Input` is counted) until the endpoint's link is up AND
-/// the client is viewed. A tick always passes first, so an endpoint that
-/// reports `LinkDown` while `link_up()` is true cannot spin.
+/// The pause for a down link: one status line, then [`wait_until`] the
+/// endpoint's link is up AND the client is viewed.
 pub(super) fn pause_for_link<E: Endpoint>(
     endpoint: &E,
     cmd_rx: &Receiver<WorkerMsg>,
@@ -273,6 +274,35 @@ pub(super) fn pause_for_link<E: Endpoint>(
     emit: &dyn Fn(WorkerEvent),
 ) -> WaitOutcome {
     emit(WorkerEvent::Status("host offline, waiting for the link".to_string()));
+    wait_until(cmd_rx, held, || endpoint.link_up() && viewed.load(Ordering::Acquire))
+}
+
+/// The wait of a client off screen before it dials: none while it is
+/// viewed, otherwise [`wait_until`] it is. Over ssh every dial is a login,
+/// so a parked client's worker finishes the attempt in flight and then
+/// starts no episode and no voyage re-dial until the user looks at its row
+/// (ADR 0045 decision 11).
+pub(super) fn wait_until_viewed(cmd_rx: &Receiver<WorkerMsg>, held: &mut Held, viewed: &AtomicBool) -> WaitOutcome {
+    if viewed.load(Ordering::Acquire) {
+        return WaitOutcome::Continue;
+    }
+    wait_until(cmd_rx, held, || viewed.load(Ordering::Acquire))
+}
+
+/// The wait before a re-dial inside an episode: the backoff, then
+/// [`wait_until_viewed`].
+pub(super) fn wait_to_redial(cmd_rx: &Receiver<WorkerMsg>, wait: Duration, held: &mut Held, viewed: &AtomicBool) -> WaitOutcome {
+    match wait_for_retry_or_shutdown(cmd_rx, wait, held) {
+        WaitOutcome::Continue => wait_until_viewed(cmd_rx, held, viewed),
+        WaitOutcome::Shutdown => WaitOutcome::Shutdown,
+    }
+}
+
+/// A tick-by-tick wait that reads the channel through [`hold`] (a `Resize`
+/// is kept for the next attach, an `Input` is counted) until `ready`. A
+/// tick always passes first, so an endpoint that reports `LinkDown` while
+/// `link_up()` is true cannot spin.
+fn wait_until(cmd_rx: &Receiver<WorkerMsg>, held: &mut Held, ready: impl Fn() -> bool) -> WaitOutcome {
     loop {
         match cmd_rx.recv_timeout(WORKER_TICK) {
             Ok(msg) => {
@@ -283,7 +313,7 @@ pub(super) fn pause_for_link<E: Endpoint>(
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return WaitOutcome::Shutdown,
         }
-        if endpoint.link_up() && viewed.load(Ordering::Acquire) {
+        if ready() {
             return WaitOutcome::Continue;
         }
     }
