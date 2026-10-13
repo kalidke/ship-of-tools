@@ -1,0 +1,49 @@
+# TEMPORARY, SMALL-066 W3, W4 and W5 on a hosted Windows runner; never merged. Pushed alone on tmp/ci-small-w3 (the
+# lane head with W3), read, then the branch is deleted. Nothing here pushes, publishes or reads a secret. The steps are
+# the job tmp-w3-hosted.diff adds to rust.yml, in a file of their own so the push runs only this job: the comm suites'
+# home guard refuses a real junction and a real symlink to the live home on Git Bash and passes a copy, the fixed
+# hub-files case builds a real link and is refused through it, and a root passed to jq with --arg comes back converted
+# where --rawfile keeps it.
+name: tmp small-w3
+on:
+  push:
+    branches: [tmp/ci-small-w3]
+jobs:
+  tmp-w3-guard-windows:
+    name: tmp W3, the home guard and a real link (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: The guard refuses a junction and a native symlink to the live home
+        shell: bash
+        run: |
+          set +e -u  # the runner's bash runs with -e, which a refusal's rc 2 would end before its line prints
+          t="$(mktemp -d)"; mkdir -p "$t/.sot-comm"
+          fail=0
+          refused() {  # KIND LINK: the guard on LINK/x, with HOME holding the live comm home
+            out="$(HOME="$t" bash -c '. comm/tests/lib-home-guard.sh; guard_refuse_live_home "$1"; echo passed' _ "$2/x" 2>&1)"; rc=$?
+            echo "w3 $1 link=$([ -L "$2" ] && echo yes || echo no) rc=$rc last=$(printf '%s\n' "$out" | tail -n 1)"
+            [ "$rc" = 2 ] || fail=1
+          }
+          cmd //c mklink /J "$(cygpath -w "$t/junction")" "$(cygpath -w "$t/.sot-comm")" || fail=1
+          refused junction "$t/junction"
+          if MSYS=winsymlinks:nativestrict ln -s "$t/.sot-comm" "$t/symlink"; then refused symlink "$t/symlink"; else echo "w3 symlink not made"; fail=1; fi
+          ln -s "$t/.sot-comm" "$t/plain" 2> /dev/null; echo "w3 plain ln -s link=$([ -L "$t/plain" ] && echo yes || echo no)"
+          cp -r "$t/.sot-comm" "$t/copy"
+          out="$(HOME="$t" bash -c '. comm/tests/lib-home-guard.sh; guard_refuse_live_home "$1"; echo passed' _ "$t/copy/x" 2>&1)"; rc=$?
+          echo "w3 copy rc=$rc last=$(printf '%s\n' "$out" | tail -n 1)"
+          [ "$rc" = 0 ] || fail=1
+          exit "$fail"
+      - name: The fixed hub-files case builds a real link and is refused through it
+        shell: bash
+        run: |
+          bash comm/tests/test-hub-files.sh > "$RUNNER_TEMP/hub.log" 2>&1 || true
+          grep -E 'home guard|link could|was not refused' "$RUNNER_TEMP/hub.log"
+          grep -qx 'PASS: the home guard refuses a live comm home, and only that' "$RUNNER_TEMP/hub.log"
+      - name: W4 and W5, a root through jq --arg and through --rawfile (Git Bash converts a native program's arguments)
+        shell: bash
+        run: |
+          printf '%s' /c/Users/x > "$RUNNER_TEMP/root"
+          echo "w45 arg=$(jq -rn --arg r /c/Users/x '$r') rawfile=$(jq -rn --rawfile r "$RUNNER_TEMP/root" '$r')"
+          echo "w45 arg-fake=$(jq -rn --arg r /fake/root '$r')"
