@@ -68,7 +68,10 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
 - The host piece of a derived handle is `_sot_handle_host` (sanitized to 12, plus a digest of the raw host when that changed it): `sot_derive_handle` and ccx's default `<repo>-cx-<host>` both build it, so a Codex default is always a name `workspace.create` accepts. ccx sources this library in a subshell (it sets `umask 077`) and stops the launch when the derivation fails.
 - HOST, registry host facts and unpinned self-slot keys use sot_host, the declared-host twin. HANDLE_HOST is the raw host component (`sot_raw_host`: raw `hostname -s`, case kept, a non-empty `SOT_COMM_TEST_HOST` first) used only for derived handles and validated legacy-slot migration; an explicit self-file or name pin is kept verbatim. Context and despawn format slots through _sot_self_slot. Despawn cleans the admitted target daemon's slot only after confirmed destroy.
 - The one slot formatter validates native representability of the complete leaf before layout repair, publication or destroy. Failure leaves files unchanged and issues no destructive request; accepted declared-host text is never rewritten to make a filename.
-- bash 3.2 and git-bash.
+- bash 3.2 and git-bash. 3.2 has no `mapfile`, associative array, `$BASHPID`, `${v,,}` or `[[ -v ]]`; under `set -u`
+  it calls an empty array unbound (write `${a[@]+"${a[@]}"}`); inside `$( )` it reads a quote in a comment as a quote
+  and a bare `case` pattern's `)` as the end; and it reports on stderr a background job a signal ended, so a job the
+  library kills is disowned first.
 - The bounded comm calls run under `sot_bounded` (comm-lib-base.sh), never under `timeout`: `sot_ssh_bridge`'s `ssh`,
   `sot_dial`'s bridge, comm-list.sh's `sot-fe version`, comm-turn-auditor.sh's headless claude, the PostToolUse heartbeat's comm-context.sh, and agents/sot-gh-auth.sh's gh calls; scripts/install.sh carries a copy for its ssh check (the checkout holding this library does not exist yet), and rust/backend/tests/shell_dial.rs runs every bound case against both. One perl process owns
   the deadline and the command's process group until the command has exited and no member of the group is left, so a

@@ -586,6 +586,10 @@ sot_oneshot_request() {
     _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
         | sot_dial "$ENDPOINT" "$timeout_s" > "$tmp" 2>"$tmp.err" &
     ncpid=$!
+    # Out of the job table, so no shell reports its end: bash 3.2 prints a background job that a signal ended
+    # ("Terminated") on this shell's stderr, and the kills below end this one after every reply. A job that has ended
+    # already is out of the table, and disown fails harmlessly.
+    disown "$ncpid" 2>/dev/null || true
     # Accept only a COMPLETE res line: op precedes payload on the wire, so a
     # grep hit can be a line the transport is still appending. jq gates acceptance
     # (the hello builder above already required it).

@@ -37,6 +37,8 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
   --continue`, `ccx --continue`; a bare `ccb` or `ccx` starts fresh). A fresh session reads its handoff from the `HANDOFF:` line
   that `sot_handoff_line` (comm library) gives `comm-session-start.sh` and `ccx`.
 - ccx's default handle `<repo>-cx-<host>` is built from the comm library's safe pieces (`sot_sanitize_component`, `_sot_handle_host`), so it is always a name `workspace.create` accepts; a derivation that cannot run stops the launch before the join and before codex (`agents/tests/test-ccx-launch.sh`).
+- Scripts run under bash 3.2 and git-bash, as messaging's do (comm/CLAUDE.md, `scripts/tests/under-bash.sh`); `ccb`,
+  `ccx` and the `sot-fe` and `sot-gh-auth` wrappers start `#!/bin/bash`, which is 3.2 on every Mac.
 - Folder trust is recorded only when the OS-resolved root lies under the OS-resolved declared prefix. The key uses the child cwd's spelling; an already accepted entry is not rewritten. Outside, undeclared and failed preparation are observable and the agent still starts. The trust file follows the child's effective `CLAUDE_CONFIG_DIR`: account additions override inheritance; with no config override it is the home-level file. Automated evidence establishes preparation; actual child-config consumption remains a human done-test proof limit. Interactive trust recognition, parent coverage and no-dialog behavior remain outside the headless proof.
 - The daemon's own `PATH` need not hold `~/.local/bin` (as a Linux user service it carries the systemd user manager's
   environment plus what `~/.bashrc` exports above its non-interactive guard: `deploy/sotd.service`). So on Unix the
