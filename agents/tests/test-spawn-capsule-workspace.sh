@@ -305,7 +305,11 @@ case_capsule_ready_over_pipe_endpoint() {
 
 # The spelling is the daemon's, not the caller's: a Windows caller reaching a
 # non-pipe daemon sends the path as resolved here.
+# A Windows caller (OS=Windows_NT) is stood in for only where comm-spawn reads its ancestry from /proc, as on Windows
+# (Cygwin's): with no /proc it refuses, rightly, a caller it cannot read.
+needs_proc() { [ -r "/proc/$$/stat" ] && return 0; echo "SKIP: $1: a Windows caller is stood in for only where /proc holds the ancestry"; return 1; }
 case_windows_caller_nonpipe_daemon_keeps_root() {
+    needs_proc "Windows caller, non-pipe daemon" || return 0
     local wsid="ws-win" slug="win1"
     start_stub_daemon "$wsid" "$slug" \
         "$(entry "$wsid" "$slug" capsule starting)" \
@@ -323,6 +327,7 @@ case_windows_caller_nonpipe_daemon_keeps_root() {
 # A failed conversion refuses before the derived-name claim, the earliest
 # registry write: nothing claimed, nothing to roll back.
 case_pipe_conversion_failure_refuses_before_any_write() {
+    needs_proc "pipe: endpoint, cygpath fails" || return 0
     start_stub_daemon ws-cvt cvt1 "$(entry ws-cvt cvt1 capsule ready)"
     stub_windows_tools fail
     OS=Windows_NT SPAWN_EP='pipe:\\.\pipe\sot-stub' SPAWN_PATH="$WORK/bin:$PATH" \

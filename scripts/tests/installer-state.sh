@@ -263,7 +263,7 @@ check "no identifiable owner is unresolvable, force or not" \
 
 case_start "the whole gate (installer_ownership_gate) — scratch HOME + prefix, no real systemctl"
 GHOME="$WORK/gate-home"; GPREFIX="$WORK/gate-prefix-a"; OTHER_PREFIX="$WORK/gate-prefix-b"
-snapshot() { find "$1" -printf '%y %p\n' 2>/dev/null | sort; find "$1" -type f -exec sha256sum {} + 2>/dev/null | sort; }
+snapshot() { tree_of "$1"; }
 
 rm -rf "${GHOME:?}"; mkdir -p "$GHOME"
 check "empty sentinel HOME + no running daemon integrates" \
@@ -561,7 +561,7 @@ SD
 #!/bin/sh
 echo spawn >> "$STUB_LOG"
 d="$(dirname "$0")/../.."
-code="$(head -1 "$d/codes")"; sed -i 1d "$d/codes"
+code="$(head -1 "$d/codes")"; sed -i.bak 1d "$d/codes"
 exit "${code:-0}"
 SOT
     case "$apply" in

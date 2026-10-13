@@ -46,6 +46,27 @@ mk_tools() {  # <dir>
     [ -e "$1/sha256sum" ] || [ -e "$1/shasum" ] || { printf 'FAIL mk_tools: sha256sum or shasum is missing\n' >&2; exit 1; }
 }
 TOOLS="$WORK/tools"; mk_tools "$TOOLS"
+
+# host_target — the release target install.sh and sot-apply.sh name this box by.
+host_target() { case "$(uname -s)-$(uname -m)" in Darwin-arm64) echo macos-aarch64 ;; *) echo linux-x86_64 ;; esac; }
+TGT="$(host_target)"
+# sha256_of FILE... — `<hash>  <file>` lines, by sha256sum or macOS's shasum.
+sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+# tree_of DIR... — every entry with its type (f, d, l or o) and every file's hash, sorted: what a refused install must
+# leave as it was, without GNU find's -printf.
+tree_of() {
+    local p t
+    find "$@" 2>/dev/null | LC_ALL=C sort | while IFS= read -r p; do
+        if [ -L "$p" ]; then t=l; elif [ -d "$p" ]; then t=d; elif [ -f "$p" ]; then t=f; else t=o; fi
+        printf '%s %s\n' "$t" "$p"
+        [ "$t" != f ] || sha256_of "$p"
+    done
+}
+# linux_check DESC EXPECTED ACTUAL — check on Linux; elsewhere a SKIP line. A systemd unit is Linux's: install.sh and
+# sot-apply.sh run systemctl, bounded by GNU timeout, only for a unit they own, which a Mac never has.
+linux_check() {
+    if [ "$(uname -s)" = Linux ]; then check "$@"; else printf '    SKIP %s (a systemd unit: Linux only)\n' "$1"; fi
+}
 LIB="$(dirname "$0")/../lib/sot-daemon.sh"
 
 # Recording stubs. The sotd stub binds the --socket it is given after
