@@ -279,6 +279,7 @@ send() {  # MSG — the send's stdout; SEND_RC, SEND_MS
 filed() { jq -e --arg m "$1" 'select(.msg == $m)' "$SOT_COMM_HOME/inbox/t-peer.jsonl" >/dev/null 2>&1; }
 
 t8() {
+    linux_only "8: send reclaims a killed holder and files; beside a live one it makes only its 1 s touch, exit 0, filed; comm-status waits 10 s and FAILs" || return 0
     reset; rm -f "${SOT_COMM_HOME:?}/registry.json"; join_rows || { echo "join failed"; return 1; }
     local d err t0 ms tries
     d="$(dead_holder)"
@@ -453,10 +454,10 @@ t14() {
     reset; local d out
     d="$(dead_holder)"
     printf '%s\n' "$d" > "$(marker "$d")"
-    out="$(timeout 20 bash -c ". '$LIB'; SOT_LOCK_WAIT_SECS=1 with_lock true" 2>&1)" && { echo "took the lock: $out"; return 1; }
+    out="$(bounded 20 bash -c ". '$LIB'; SOT_LOCK_WAIT_SECS=1 with_lock true" 2>&1)" && { echo "took the lock: $out"; return 1; }
     contains "$out" "its reclaim marker $(marker "$d") names $d, which its reclaim chain already holds" \
         && contains "$out" "remove $P by hand" || { echo "$out"; return 1; }
-    out="$(timeout 20 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" && { echo "cleared: $out"; return 1; }
+    out="$(bounded 20 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" && { echo "cleared: $out"; return 1; }
     contains "$out" "its reclaim marker $(marker "$d") names $d" && contains "$out" "remove the lock by hand" \
         || { echo "$out"; return 1; }
     [ "$(cat "$P")" = "$d" ] && [ "$(cat "$(marker "$d")")" = "$d" ] || { echo "the lock or its marker changed"; return 1; }

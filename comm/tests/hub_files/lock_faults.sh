@@ -78,16 +78,17 @@ lock_fault_case() {  # KIND WHY — KIND a flock exit code or `dir`; WHY what th
     echo "  [$kind] poll stdout: $warn"
     return 0
 }
-case_a_lock_error_71_is_named_and_the_inbox_read_unlocked() { lock_fault_case 71 "71: No locks available"; }
-case_a_lock_error_65_is_named_and_the_inbox_read_unlocked() { lock_fault_case 65 "65: Bad file descriptor"; }
-case_a_lock_error_65_eio_is_named_as_flock_names_it() { lock_fault_case 65 "65: Input/output error"; }
-case_a_lock_file_that_will_not_open_is_named() { lock_fault_case dir "cannot open its lock file"; }
+case_a_lock_error_71_is_named_and_the_inbox_read_unlocked() { linux_only "S-A: a shared lock failing 71 is named on the poll's stdout, read unlocked, every line once; the hook blocks once" || return 0; lock_fault_case 71 "71: No locks available"; }
+case_a_lock_error_65_is_named_and_the_inbox_read_unlocked() { linux_only "S-A: a shared lock failing 65 is named on the poll's stdout, read unlocked, every line once; the hook blocks once" || return 0; lock_fault_case 65 "65: Bad file descriptor"; }
+case_a_lock_error_65_eio_is_named_as_flock_names_it() { linux_only "S-A: a shared lock failing 65 with EIO is named as flock names it, never as a bad descriptor" || return 0; lock_fault_case 65 "65: Input/output error"; }
+case_a_lock_file_that_will_not_open_is_named() { linux_only "S-A: a lock file that will not open is named, read unlocked, every line once; the hook blocks once" || return 0; lock_fault_case dir "cannot open its lock file"; }
 
 # flock runs inside $(…) to catch its error text, and the shared lock still
 # holds in the calling shell: the lock is on the open file description, which
 # the caller's fd 9 keeps. Another process's exclusive try fails while the
 # reader holds it and succeeds once it lets go.
 case_a_shared_lock_taken_inside_a_subshell_holds_in_the_caller() {
+    linux_only "flock inside a subshell leaves the shared lock held in the calling shell" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local out
     out="$(bash -c 'source "$1/comm-lib.sh"; sot_inbox_read_lock "$2" || exit 9
@@ -110,6 +111,7 @@ peer_status() {
     ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" "$BIN/comm-status.sh" "$@" ) >/dev/null 2>&1
 }
 case_a_lock_fault_blocks_a_marker_turn_once_and_prefixes_every_nudge() {
+    linux_only "a lock fault blocks a marker turn once, unstamped, never in a continuation, once per session, and prefixes every nudge" || return 0
     local warn blk h row0 tr
     warn="WARNING: the inbox lock for @$PEER failed (71: No locks available) — reading without it; a line may show twice, none is lost"
     blk="{\"decision\":\"block\",\"reason\":\"$warn\"}"
@@ -151,6 +153,7 @@ case_a_lock_fault_blocks_a_marker_turn_once_and_prefixes_every_nudge() {
 # and once the real library is back the mail block comes with no warning and
 # the fault's tick is gone.
 case_a_count_that_fails_is_a_fault_named_once_never_a_zero() {
+    linux_only "H3: a count that fails is a fault named once, never a zero" || return 0
     local warn h
     warn="WARNING: the unread count for @$PEER failed (sot-comm: cannot count unread mail for @$PEER: test fault) — run comm-poll.sh to read your mail"
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
@@ -172,6 +175,7 @@ case_a_count_that_fails_is_a_fault_named_once_never_a_zero() {
 
 # ...and a real held lock is still exit 75 and "being written", no warning.
 case_a_held_lock_is_still_try_again() {
+    linux_only "S-A: a real held lock is still exit 75 and being written, never a warning" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     run_send "@$PEER" "held-one"
     start_holder 'exec sleep 60' || { echo "  holder never took the lock"; return 1; }

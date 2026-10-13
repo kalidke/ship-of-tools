@@ -35,10 +35,15 @@ case_start() { printf '  %s\n' "$1"; }
 mk_tools() {  # <dir>
     mkdir -p "$1"
     local t p
-    for t in bash sh env cat sed grep head cut awk mkdir rm mv cp ln chmod touch readlink basename dirname date sleep nohup id uname hostname python3 git sha256sum install timeout stat cmp mktemp find wc; do
+    for t in bash sh env cat sed grep head cut awk mkdir rm mv cp ln chmod touch readlink basename dirname date sleep nohup id uname hostname python3 git install stat cmp mktemp find wc; do
         p="$(command -v "$t")" || { printf 'FAIL mk_tools: %s is missing\n' "$t" >&2; exit 1; }
         ln -sf "$p" "$1/$t"
     done
+    # install.sh takes sha256sum or shasum, and calls timeout only beside systemctl (macOS has shasum, not sha256sum, and no timeout).
+    for t in sha256sum shasum timeout; do
+        p="$(command -v "$t")" && ln -sf "$p" "$1/$t"
+    done
+    [ -e "$1/sha256sum" ] || [ -e "$1/shasum" ] || { printf 'FAIL mk_tools: sha256sum or shasum is missing\n' >&2; exit 1; }
 }
 TOOLS="$WORK/tools"; mk_tools "$TOOLS"
 LIB="$(dirname "$0")/../lib/sot-daemon.sh"

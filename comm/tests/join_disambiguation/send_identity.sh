@@ -91,6 +91,7 @@ case_comm_bootstrap_types_into_an_agent_row() {
 }
 
 case_send_files_and_types_nothing() {
+    linux_only "comm-send.sh files and types nothing, with a daemon or without one" || return 0
     # A send is its inbox append and nothing else: the daemon wakes the row,
     # so comm-send.sh sends no pty.input and its line carries no wake verdict,
     # with a daemon reachable or not.
@@ -163,6 +164,7 @@ case_relay_send_fails_loudly_with_no_reachable_daemon() {
 }
 
 case_send_succeeds_with_rooted_registry_row() {
+    linux_only "comm-send.sh succeeds with two genuinely rooted, registered identities (round-3 F8 positive path)" || return 0
     # Codex review round-3 finding 8: the suite proved only REFUSALS for
     # comm-send.sh's identity gate; this proves the actual happy path — a
     # real join followed by an ordinary send to another real, registered

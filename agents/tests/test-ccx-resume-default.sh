@@ -44,6 +44,7 @@ chmod +x "$STUB_DIR/codex"
 # A project dir with one rollout recorded for it, for the scan to find.
 PROJECT_DIR="$WORK/project"
 mkdir -p "$PROJECT_DIR"
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"   # ccx compares the normalized $PWD; macOS's TMPDIR ends in /
 CODEX_HOME_DIR="$WORK/codex-home"
 mkdir -p "$CODEX_HOME_DIR/sessions/2026/09/14"
 ROLLOUT_ID="11111111-1111-1111-1111-111111111111"

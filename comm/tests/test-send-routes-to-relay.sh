@@ -33,6 +33,7 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -126,6 +127,7 @@ case_a_registry_miss_execs_the_relay() {
 }
 
 case_a_registry_hit_files_locally_and_never_calls_the_relay() {
+    linux_only "a registry hit files locally and never calls the relay" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local inbox="$SOT_COMM_HOME/inbox/$LOCAL_PEER.jsonl"
     : > "$inbox"
@@ -141,6 +143,7 @@ case_a_registry_hit_files_locally_and_never_calls_the_relay() {
 }
 
 case_a_broadcast_never_execs_the_relay() {
+    linux_only "a broadcast never execs the relay" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     run_send --broadcast "to everyone with a row"
     [ "$SEND_RC" -eq 0 ] || { echo "  exited $SEND_RC (out: '$SEND_OUT' err: '$SEND_ERR')"; return 1; }
@@ -154,6 +157,7 @@ case_a_broadcast_never_execs_the_relay() {
 # S3 — a broadcast counts only the copies that were filed: one that cannot be
 # appended prints its FAILED line, the count says N of M, and the exit is 1.
 case_a_broadcast_with_a_failed_copy_is_not_success() {
+    linux_only "a broadcast with a failed copy counts only the filed ones and exits 1" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-broken.txt" SOT_COMM_TEST_HOST="otherbox" \
         "$JOIN" --name t-broken-peer ) >/dev/null 2>&1 || { echo "  setup: could not join a third row"; return 1; }
@@ -171,6 +175,7 @@ case_a_broadcast_with_a_failed_copy_is_not_success() {
 }
 
 case_a_hostless_row_terminates_instead_of_ping_ponging() {
+    linux_only "a row that exists with no host terminates in one refusal, never a ping-pong" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     # A row that EXISTS with no `host`: a hit for "does a row exist", a miss
     # for "can this box file and poke it". While those two questions were
@@ -187,7 +192,7 @@ case_a_hostless_row_terminates_instead_of_ping_ponging() {
     printf '#!/bin/sh\n[ "$1 $2" = "topology relay-endpoint" ] && { echo "unix:%s/no-such-daemon.sock"; exit 0; }\nexit 97\n' \
         "$WORK" > "$WORK/relay-answer/sotd"; chmod +x "$WORK/relay-answer/sotd"
     out="$(cd "$WORK" && SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$SENDER_HOST" \
-        SOTD_BIN="$WORK/relay-answer/sotd" timeout 5 "$SEND_REAL" "@$LOCAL_PEER" "round and round" 2>&1)"
+        SOTD_BIN="$WORK/relay-answer/sotd" bounded 5 "$SEND_REAL" "@$LOCAL_PEER" "round and round" 2>&1)"
     rc=$?
     [ "$rc" -ne 124 ] || { echo "  the two verbs ping-ponged until the timeout killed them"; return 1; }
     [ "$rc" -eq 1 ] || { echo "  exited $rc, want 1 (out: '$out')"; return 1; }
@@ -220,7 +225,7 @@ NCSTUB
 end_stub_daemon() { unset SOT_SOCKET SOTD_BIN; PATH="${PATH#"$HUB":}"; }
 # The peer's heartbeat one hour old: nothing says it is alive.
 make_stale() {  # HANDLE
-    jq --arg t "$1" --arg ls "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" '.agents[$t].last_seen = $ls' \
+    jq --arg t "$1" --arg ls "$(stamp_ago 3600)" '.agents[$t].last_seen = $ls' \
         "$SOT_COMM_HOME/registry.json" > "$SOT_COMM_HOME/registry.json.tmp" \
         && mv "$SOT_COMM_HOME/registry.json.tmp" "$SOT_COMM_HOME/registry.json"
 }
@@ -255,6 +260,7 @@ case_a_stale_peer_asks_no_daemon() {
 }
 
 case_a_broadcast_files_the_live_copy_and_fails_the_stale_one() {
+    linux_only "R4: a broadcast files the live copy and fails the stale one" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-gone.txt" SOT_COMM_TEST_HOST="otherbox" \
         "$JOIN" --name t-gone-peer ) >/dev/null 2>&1 || { echo "  setup: could not join a third row"; return 1; }
@@ -272,6 +278,7 @@ case_a_broadcast_files_the_live_copy_and_fails_the_stale_one() {
 }
 
 case_the_filed_line_is_the_verdict_alone() {
+    linux_only "R5: the filed line is the verdict alone" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     jq --arg t "$LOCAL_PEER" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '.agents[$t] += {state:"working", summary:"n", status_at:$now, last_seen:$now}' "$SOT_COMM_HOME/registry.json" \

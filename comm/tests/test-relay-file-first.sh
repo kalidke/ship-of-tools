@@ -35,6 +35,7 @@
 # Exit: 0 if every case PASSes or SKIPs cleanly, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -139,6 +140,7 @@ relay_send_with_path() {
 }
 
 case_registry_target_is_filed_with_the_daemon_down() {
+    linux_only "a registry target is filed with the daemon down" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local inbox="$SOT_COMM_HOME/inbox/$TARGET.jsonl"
     : > "$inbox"

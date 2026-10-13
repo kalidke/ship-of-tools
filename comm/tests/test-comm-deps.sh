@@ -61,6 +61,7 @@ START() { PATH="$1" "$BASH_BIN" "$SCRIPTS_DIR/comm-session-start.sh" 2>/dev/null
 STOP()  { printf '{}' | PATH="$1" CLAUDE_CODE_SESSION_ID=deps-sess "$BASH_BIN" "$HOOKS_DIR/comm-status-idle.sh" 2>/dev/null; }
 
 for tool in jq flock perl; do
+    [ "$tool" = jq ] || linux_only "$tool missing: the mail tools are Linux's flock and perl" || continue
     P="$(path_without "$tool")"
     MSG="$tool is missing (install it)"
     out="$(POLL "$P")"; rc=$?
@@ -177,10 +178,12 @@ check "an unknown argument leaves registry.json byte-identical" "$(cksum < "$REG
 # the next Stop knows it as the hook's own and not a new prompt: with jq
 # present and flock missing, the feedback file is written.
 rm -rf "${SOT_COMM_HOME:?}/state"; mkdir -p "$SOT_COMM_HOME/state"
-printf '{"transcript_path":"%s"}' "$WORK/tp.jsonl" \
-    | PATH="$(path_without flock)" CLAUDE_CODE_SESSION_ID=fb-sess "$BASH_BIN" "$HOOKS_DIR/comm-status-idle.sh" >/dev/null 2>&1
-fbn="$(ls "$SOT_COMM_HOME"/state/stop-feedback-fb-sess.jsonl 2>/dev/null | wc -l)"
-check "flock missing: the block's feedback is recorded" "$fbn" "1"
+if linux_only "flock missing: the block's feedback is recorded"; then
+    printf '{"transcript_path":"%s"}' "$WORK/tp.jsonl" \
+        | PATH="$(path_without flock)" CLAUDE_CODE_SESSION_ID=fb-sess "$BASH_BIN" "$HOOKS_DIR/comm-status-idle.sh" >/dev/null 2>&1
+    fbn="$(ls "$SOT_COMM_HOME"/state/stop-feedback-fb-sess.jsonl 2>/dev/null | wc -l)"
+    check "flock missing: the block's feedback is recorded" "$fbn" "1"
+fi
 rm -rf "${SOT_COMM_HOME:?}/state"; mkdir -p "$SOT_COMM_HOME/state"
 
 # With jq missing and stop_hook_active true, a Stop never blocks twice in a row.

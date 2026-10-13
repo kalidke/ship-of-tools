@@ -331,6 +331,7 @@ case_the_read_window_outlasts_the_hubs_lock_wait() {
 
 # T6 — the hub's line (file_frame's shape, repo "daemon") and a local one.
 case_a_hub_line_and_a_local_line_read_alike() {
+    linux_only "T6: a hub-filed and a locally-filed line read alike and both advance the cursor" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local out n
     append_one "$PEER" '{"from":"t-sender","to":"t-peer","repo":"r","msg":"local line","ts":"2026-09-30T00:00:01Z"}' \

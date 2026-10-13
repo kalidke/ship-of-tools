@@ -42,6 +42,7 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -121,6 +122,7 @@ run_broadcast_with_crlf_jq() {
 }
 
 case_broadcast_survives_a_crlf_jq() {
+    linux_only "a broadcast reaches a registered peer even when jq emits CRLF" || return 0
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     run_broadcast_with_crlf_jq
     if contains "$SEND_ERR" "no such handle"; then
@@ -234,6 +236,7 @@ seed_two_rows() {
 }
 
 case_the_last_registry_row_is_not_dropped() {
+    linux_only "the registry's LAST row is listed and can be sent to" || return 0
     seed_two_rows || { echo "  setup: could not seed two rows"; return 1; }
     local out
     out="$(cd "$WORK" && SOT_COMM_HOME="$LIST_HOME" SOT_COMM_SELF_FILE="$SELF_FIRST" \
