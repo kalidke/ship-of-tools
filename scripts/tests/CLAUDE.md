@@ -261,7 +261,8 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   replace the `sotd` and `sot-capsule` the other jobs run; `job_lifetime` runs every case with `--include-ignored
   --test-threads=1`, the Julia cases on the gate's `julia` (`SOT_JULIA_BIN`), after preparing Pluto's environment in the
   gate's depot as rust.yml's job does (`fixtures/warm_pluto.jl`, its log `<logdir>/lifetime-warm.log`; a failure there
-  is the job's result) and handing the cases its manifest (`SOT_L2_PLUTO_MANIFEST`). Two parts go unchecked there: no user
+  is the job's result) and handing the cases its manifest (`SOT_L2_PLUTO_MANIFEST`); the harness's end is 3600 s, not a
+  job's 1200, since it took 963-1035 s inside a whole gate on a shared test host. Two parts go unchecked there: no user
   manager answers in the gate's container, so `a_service_manager_counts_int_and_term_as_a_clean_stop` prints `SKIPPED`
   and passes (it runs by name under `--user-manager`, `rust/backend/tests/CLAUDE.md`), and where the jobs' PATH (cargo,
   node, /usr/bin, /bin) holds no `quarto`, the done test's Quarto half prints NOT CHECKED (the hosted job checks it). A

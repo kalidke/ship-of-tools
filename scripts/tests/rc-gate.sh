@@ -22,7 +22,8 @@
 # otherwise 0 (130 if interrupted) and the verdict is in <logdir>/summary.txt: it ends in ALLDONE, or ALLDONE FAILED
 # when any job's rc is nonzero, the job runner failed, a job never ran, the run was interrupted, or a test left a
 # process behind (any process left in the container). Every job's result file starts as `unrun`, so a job that never
-# ran cannot pass; each job's command has a 1200 s end (the builds do not). The container's end kills what is left.
+# ran cannot pass; each job's command has a 1200 s end (the lifetime harness 3600 s; the builds none). The container's
+# end kills what is left.
 # ALLDONE means every rc line is 0; the rc lines say which job failed. A container stopped from outside SIGKILLs
 # rc-gate, so summary.txt gets no ALLDONE line; a summary without one is a failed run.
 # A selected Rust job's result is zero only when its exact body completed successfully. A missing,
@@ -34,6 +35,9 @@
 SELF=$(readlink -f "$0")
 source "$(dirname "$SELF")/lib-test-body.sh" || exit 2
 TO=(timeout -k 10 1200)
+# The lifetime harness runs every case one at a time, 963-1035 s inside a whole gate on a shared test host: an end of its own, inside
+# the 75 min rust.yml gives its job.
+LTO=(timeout -k 10 3600)
 SPLIT=(capsule_workspaces comm_wake lane_bridge fe_client)
 JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/video-file julia/sotlog)
 
@@ -103,7 +107,7 @@ job_lifetime() {
       rust/backend/tests/daemon_lifetime/fixtures/warm_pluto.jl "$warm/notebook.jl") > "$L/lifetime-warm.log" 2>&1
   r=$?
   if [ "$r" -eq 0 ]; then
-    (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" SOT_JULIA_BIN="$RCG_JULIA_DIR/julia" \
+    (cd "$pkg" && "${LTO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" SOT_JULIA_BIN="$RCG_JULIA_DIR/julia" \
       SOT_L2_PLUTO_MANIFEST="$D/julia/pluto/Manifest.toml" "$RCG_LIFETIME" --include-ignored --test-threads=1) \
       >> "$log" 2>> "$L/rust/daemon_lifetime-faults.stderr"
     r=$?
