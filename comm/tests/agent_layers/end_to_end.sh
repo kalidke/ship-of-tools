@@ -475,6 +475,11 @@ for v in "$SELF_WW" "$WORK/self/self-x.txt"; do
     has "windows walk: 6b, $lbl: send rc=1" "$OUT" "send rc=1"
     has "windows walk: 6b, $lbl: neither the send nor comm-context.sh wrote to the empty comm home" "$OUT" "home entries: 0"
 done
+# With no SOTD_BIN (the guard drops it) the walk asks LOCALAPPDATA's sotd.exe, the guard's: it answers the native part
+# empty, so a suite's gated script on a Windows box reads its ancestry to the top and is not refused as unreadable.
+printf '. "%s/comm-lib.sh"\nunset SOTD_BIN\nwhy="$(sot_require_agent)"; echo "require rc=$? $why"\n' "$SCRIPTS_DIR" > "$SIMWIN/guard-walk.sh"
+run own "$WORK/self/self-x.txt" bash "$SIMWIN/guard-walk.sh"
+has "windows walk: with no SOTD_BIN the guard's sotd.exe answers the walk, and the gate passes" "$OUT" "require rc=0"
 unset SIMWIN
 
 # --- the matrix runner's private copy of the probe row's self file ---------------

@@ -12,7 +12,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `fixtures/`: the lock-identity cases (`inbox-lock-identity/`: mount tables, `cases.tsv`), read by `test-hub-files.sh` and the daemon's `inbox_tests.rs`
 - `hub_files/`: parts of `test-hub-files.sh`: `lock_shell.sh`, `routes.sh`, `wire.sh`, `reader.sh`, `lock_faults.sh`
 - `join_disambiguation/`: parts of `test-join-disambiguation.sh`: derived handles, self-files, `declared_host.sh` (the declared host, the slot formatter and legacy-slot migration), `jq_args.sh`, pipe endpoints, send identity, slot guard, spawn and lock
-- `lib-home-guard.sh`: the guard every suite sources first; drops the host's comm identity and daemon routes, and gives `guard_fresh_home`, `guard_refuse_live_home`, `guard_stage_bin`, `in_row`, and `guard_bridge_stub`, the suites' stand-in for `sotd stdio-bridge --endpoint`
+- `lib-home-guard.sh`: the guard every suite sources first; drops the host's comm identity and daemon routes, and gives `guard_fresh_home`, `guard_refuse_live_home`, `guard_stage_bin`, `in_row`, and `guard_bridge_stub`, the suites' stand-in for `sotd stdio-bridge --endpoint`; every sotd it writes answers the Windows ancestry walk (`ancestors --from`) empty
 - `lib-wait.sh`: the waits the suites share: `await` (a check every 50 ms, a 30 s hang guard), `stopped` (a holder that stopped itself), `sleep_log` (the logging sleep that counts a command's waits)
 - `stage-bin.sh`: validates the flat bin source and publishes each completed destination by exclusive sibling temporary and rename, without preserving source permissions
 - `status_floor/`: parts of `test-status-floor.sh`: `reduction.sh`, `markers.sh`, `audit_and_races.sh`

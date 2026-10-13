@@ -20,8 +20,14 @@
 # under the guard's own directory, and a directory of refusing `sotd`,
 # `sotd.exe`, `pgrep`, `powershell.exe`, `pwsh` and `pwsh.exe` stubs (exit 97)
 # leads PATH: on Windows the library takes SOTD_BIN or LOCALAPPDATA's sotd.exe and
-# probes its pipe through that binary, so those stubs and LOCALAPPDATA leave discovery
-# no executable to find. `ssh` is not stubbed: it only dials an endpoint
+# probes its pipe through that binary, so LOCALAPPDATA holds a copy of the refusing
+# sotd.exe and discovery finds nothing that answers. Every sotd the guard writes (those
+# stubs and guard_bridge_stub's) answers one question, `ancestors --from <pid>`, with an
+# empty walk and exit 0: on Windows a gated comm script reads its native ancestors
+# through that binary (comm-lib-agent-layers.sh), so a suite's walk ends at the top of
+# its own MSYS processes, as a Linux run's ends at init. The real walk is pinned by
+# rust/backend/tests/ancestors.rs, the shell's by test-agent-layers.sh (SIMWIN).
+# `ssh` is not stubbed: it only dials an endpoint
 # discovery produced, and suites run them against sockets and hosts of their own.
 # A self-test sources the tree's comm-lib.sh and calls sot_daemon_endpoint,
 # sot_relay_endpoint and _sot_windows_local_pipe (on every host); if any
@@ -75,6 +81,7 @@ guard_bridge_stub() {
     mkdir -p "$1" || return 1
     cat > "$1/sotd" <<'STUB' || return 1
 #!/usr/bin/env bash
+[ "${1:-} ${2:-}" != "ancestors --from" ] || exit 0
 [ "${1:-}" = stdio-bridge ] && [ "${2:-}" = --endpoint ] || exit 97
 case "${3:-}" in
     unix:*) sock="${3#unix:}" ;;
@@ -129,9 +136,13 @@ _guard_close_discovery() {
     local d="$1" s
     mkdir -p "$d/bin" "$d/run" "$d/tmp" "$d/comm" "$d/localappdata" && chmod 700 "$d/run" || _guard_fatal "no scratch directory $d"
     for s in sotd sotd.exe pgrep powershell.exe pwsh pwsh.exe; do
-        printf '#!/bin/sh\necho "lib-home-guard: refused daemon discovery ($0 $*)" >&2\nexit 97\n' > "$d/bin/$s" \
+        { printf '#!/bin/sh\n'
+          case "$s" in sotd|sotd.exe) printf '[ "${1:-} ${2:-}" != "ancestors --from" ] || exit 0\n' ;; esac
+          printf 'echo "lib-home-guard: refused daemon discovery ($0 $*)" >&2\nexit 97\n'; } > "$d/bin/$s" \
             && chmod +x "$d/bin/$s" || _guard_fatal "cannot install the $s stub"
     done
+    mkdir -p "$d/localappdata/sot/bin" && cp "$d/bin/sotd.exe" "$d/localappdata/sot/bin/sotd.exe" \
+        || _guard_fatal "cannot install LOCALAPPDATA's sotd.exe stub"
     unset SOTD_BIN SOT_SOCKET SOT_WORKSPACE_ID SOT_COMM_SELF_FILE SOT_COMM_NAME SOT_WORKSPACE
     [ -z "${_GUARD_STUBS:-}" ] || PATH="${PATH//$_GUARD_STUBS:/}"
     _GUARD_STUBS="$d/bin"
