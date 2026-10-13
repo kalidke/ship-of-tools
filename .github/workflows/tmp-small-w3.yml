@@ -42,13 +42,6 @@ jobs:
           echo "w3 copy rc=$rc last=$(printf '%s\n' "$out" | tail -n 1)"
           [ "$rc" = 0 ] || fail=1
           exit "$fail"
-      - name: The fixed hub-files case builds a real link and is refused through it
-        if: always()
-        shell: bash
-        run: |
-          bash comm/tests/test-hub-files.sh > "$RUNNER_TEMP/hub.log" 2>&1 || true
-          grep -E 'home guard|link could|was not refused' "$RUNNER_TEMP/hub.log"
-          grep -qx 'PASS: the home guard refuses a live comm home, and only that' "$RUNNER_TEMP/hub.log"
       - name: W4 and W5, a root through jq --arg and through --rawfile (Git Bash converts a native program's arguments)
         if: always()
         shell: bash
@@ -56,3 +49,15 @@ jobs:
           printf '%s' /c/Users/x > "$RUNNER_TEMP/root"
           echo "w45 arg=$(jq -rn --arg r /c/Users/x '$r') rawfile=$(jq -rn --rawfile r "$RUNNER_TEMP/root" '$r')"
           echo "w45 arg-fake=$(jq -rn --arg r /fake/root '$r')"
+      - name: The fixed hub-files case builds a real link and is refused through it
+        if: always()
+        timeout-minutes: 6
+        shell: bash
+        run: |
+          # Run 2 (38377016418) hung in this suite past the job's limit, and a job cancelled that way keeps no log; so the
+          # suite gets its own bound, and its last lines show where it stood.
+          set +e
+          /usr/bin/timeout -k 10 300 bash comm/tests/test-hub-files.sh > "$RUNNER_TEMP/hub.log" 2>&1; echo "hub-files rc=$?"
+          grep -E 'home guard|link could|was not refused' "$RUNNER_TEMP/hub.log"
+          tail -n 25 "$RUNNER_TEMP/hub.log"
+          grep -qx 'PASS: the home guard refuses a live comm home, and only that' "$RUNNER_TEMP/hub.log"
