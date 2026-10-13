@@ -293,12 +293,13 @@ case "$CMD" in
         # daemon rejects absolute node_ids, and the FE tree positions its cursor by
         # relative id — an absolute path would show a "floating" file the nav can't
         # follow). Agents naturally hold an ABSOLUTE path of a file they just made,
-        # so relativize it here against the caller's repo root. The strip is LEXICAL
-        # (string prefix) — NOT `git -C <dir>` / realpath on the file — so a file
-        # under a symlinked dir (e.g. data/results/myproject -> external storage) keeps its
-        # in-repo relative path instead of resolving out to the external storage root.
-        # On Windows git prints its root as C:/... and the shell spells a path /c/... or
-        # /tmp/...: sot_relative_to (comm-lib-client.sh) compares them in one spelling.
+        # so relativize it here against the caller's repo root, never through
+        # realpath on the file: a file under a symlinked dir (e.g. data/results/myproject
+        # -> external storage) keeps its in-repo relative path instead of resolving out
+        # to the external storage root. git prints its root physical (C:/... on Windows)
+        # and the shell spells a path as it reached it (/c/..., /tmp/..., or through a
+        # link such as macOS's /tmp and /var): sot_relative_to (comm-lib-client.sh)
+        # compares them in one spelling and resolves no link inside the repo.
         _repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
         if ! _rel="$(sot_relative_to "$_repo_root" "$PATH_ARG")"; then
             echo "ERROR: '$PATH_ARG' is absolute and not under the current repo (${_repo_root:-<not in a repo>}). Pass a path relative to the workspace root — the file nav can only show files inside the repo." >&2

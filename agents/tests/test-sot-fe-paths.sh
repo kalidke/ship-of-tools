@@ -5,7 +5,7 @@
 # comm-lib's sot_relative_to over sot_native_path, the library's one `cygpath -m -l`. Linux has no cygpath, and there the
 # paths compare as written. Here a stand-in cygpath (and a git that prints its root through it, as Git for Windows
 # does) shows the Windows arm; the real ones ran only in the tmp workflows' hosted steps (W7, W8, W9), and no CI job
-# runs this suite on Windows. Sections 4 and 5 read what sot-fe sends from a recording socket in this suite's own work
+# runs this suite on Windows. Sections 4 to 6 read what sot-fe sends from a recording socket in this suite's own work
 # directory, never a real ~/.sot-comm.
 #
 # Usage: agents/tests/test-sot-fe-paths.sh     Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -17,7 +17,7 @@ if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
     echo "FATAL: mktemp did not produce a usable work directory (got: '$WORK')" >&2
     exit 1
 fi
-WORK="$(cd "$WORK" && pwd -P)" || exit 1   # git prints the physical root; a Mac's TMPDIR lies behind /var -> /private/var
+WORK="$(cd "$WORK" && pwd -P)" || exit 1   # git's spelling: the Windows arm's stand-in C:/ paths follow no link
 trap 'rm -rf "${WORK:?}"' EXIT
 
 export SOT_COMM_HOME="$WORK/home"
@@ -186,10 +186,10 @@ trap 'kill "$REC_PID" 2>/dev/null; rm -rf "${WORK:?}"' EXIT
 for _ in $(seq 1 50); do [ -S "$REC" ] && break; sleep 0.1; done
 [ -S "$REC" ] || { echo "FATAL: the recording socket did not bind"; exit 2; }
 REFUSED="is absolute and not under the current repo"
-fe() {  # PATH ARG — the path sot-fe preview sends, or "refused" when it refuses ARG
+fe() {  # PATH ARG — the path sot-fe preview sends from $FE_CWD (the repo when unset), or "refused" when it refuses ARG
     local err
     : > "$RECLOG"
-    err="$(cd "$WORK/repo" && PATH="$1" bash "$SCRIPTS_DIR/sot-fe" preview ws "$2" \
+    err="$(cd "${FE_CWD:-$WORK/repo}" && PATH="$1" bash "$SCRIPTS_DIR/sot-fe" preview ws "$2" \
         --endpoint "unix:$REC" --timeout 1 2>&1 >/dev/null)"
     case "$err" in *"$REFUSED"*) printf 'refused'; return 0 ;; esac
     jq -r 'select(.op == "fe.command.send") | .payload.args.path' "$RECLOG" 2>/dev/null | head -n 1
@@ -232,6 +232,31 @@ probe_root_sent() {  # PATH ENDPOINT — the project_root comm-probe's workspace
 check "probe (windows): a pipe: daemon gets its spelling" \
     "$(probe_root_sent "$WIN_PATH" "$PIPE")" "$(PATH="$WIN_PATH" cygpath -m -l "$SOT_COMM_HOME/probe/probe-t")"
 check "probe: a unix: daemon gets the root as written" "$(probe_root_sent "$PATH" "unix:$REC")" "$SOT_COMM_HOME/probe/probe-t"
+
+# 6. A link above the repo gives its folder two spellings: git prints the physical root, while the shell's cwd and a
+# row's root keep the link (on macOS /tmp and /var lead into /private). A path in either spelling is sent relative, a
+# link inside the repo stays as written, and a link into the repo from outside lands where it leads. The links are
+# made here, so every box without a cygpath runs this, whatever its TMPDIR.
+if [ "$NATIVE_CYGPATH" = 0 ]; then
+    mkdir -p "$WORK/repo/sub" && : > "$WORK/repo/sub/b.txt" && ln -s . "$WORK/via" \
+        && ln -s ../elsewhere "$WORK/repo/out" && ln -s repo/sub "$WORK/into" || exit 2
+    G="$("$REAL_GIT" -C "$WORK/repo" rev-parse --show-toplevel)" V="$WORK/via/repo"
+    check "link: git's root, the shell's path" "$(lib "$PATH" sot_relative_to "$G" "$V/sub/b.txt")" "sub/b.txt"
+    check "link: the shell's root, git's path" "$(lib "$PATH" sot_relative_to "$V" "$G/sub/b.txt")" "sub/b.txt"
+    check "link: the shell's root, git's root" "$(lib "$PATH" sot_relative_to "$V" "$G")" "."
+    check "link: a link inside the repo stays as written" "$(lib "$PATH" sot_relative_to "$G" "$V/out/x")" "out/x"
+    check "link: a link into the repo from outside" "$(lib "$PATH" sot_relative_to "$G" "$WORK/into/b.txt")" "sub/b.txt"
+    check "link: a path outside the repo" "$(lib "$PATH" sot_relative_to "$G" "$WORK/via/elsewhere/x")" "rc 1"
+    check "nav: the root as the row keeps it, git's path" "$(nav "$PATH" "$V" "$G/sub/b.txt")" "sub/b.txt"
+    check "nav: git's root, the shell's path" "$(nav "$PATH" "$G" "$V/a.txt")" "a.txt"
+    FE_CWD="$V"
+    check "fe: from a cwd through the link, its path" "$(fe "$PATH" "$V/a.txt")" "a.txt"
+    check "fe: from a cwd through the link, a link inside the repo" "$(fe "$PATH" "$V/out/x")" "out/x"
+    check "fe: from a cwd through the link, a path outside" "$(fe "$PATH" "$WORK/via/elsewhere/x")" "refused"
+    FE_CWD=""
+else
+    echo "SKIP: link cases: this box has a cygpath, and Git Bash's ln -s copies a folder"
+fi
 
 echo ""
 echo "$PASS passed, $FAIL failed"

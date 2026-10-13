@@ -12,7 +12,8 @@ does (`working-directory: agents/tests`).
 - `test-despawn-resolve.sh`: `comm-despawn.sh` resolves first, fails and changes nothing on an unknown name, removes a registry row only after a confirmed destroy; `comm-worktree-clean.sh` despawns once
 - `test-sot-fe-goto.sh`: `sot-fe goto` has no `--boot`: the flag is refused as unknown and nothing is sent
 - `test-sot-fe-paths.sh`: an absolute path given to `sot-fe preview` or `sot-nav.sh preview` is sent relative to its
-  root in every spelling Windows gives one folder (`sot_relative_to`), a self-file root in the shell's spelling is the
+  root in every spelling Windows or a link above the root gives one folder, a link inside the root kept as written
+  (`sot_relative_to`), a self-file root in the shell's spelling is the
   project's whose root git spells (`sot_same_root`, through `comm-context.sh`), `sot_daemon_path` keeps its contract,
   and the path `sot-fe docs`, `sot-fe repl run` and comm-probe's `workspace.create` send a `pipe:` daemon is in its spelling
 - `test-sot-fe-reauth.sh`: `sot-fe reauth` moves only the row it runs in

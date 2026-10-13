@@ -664,18 +664,42 @@ sot_same_root() {
     a="$(sot_native_path "$1")" && b="$(sot_native_path "$2")" && [ "$a" = "$b" ]
 }
 
+# _sot_physical_dir DIR — DIR with every link in it resolved (`pwd -P`), in sot_native_path's spelling; prints nothing
+# and returns 1 when DIR is not a folder this shell can enter.
+_sot_physical_dir() {
+    local p
+    p="$(unset CDPATH; cd -P -- "$1" 2>/dev/null && pwd -P)" && [ -n "$p" ] && sot_native_path "$p"
+}
+
 # sot_relative_to ROOT PATH — PATH relative to ROOT, the two compared in one spelling (sot_native_path), so git's or a
 # native daemon's C:/... root and the shell's /c/... path agree on Windows: `.` for ROOT itself; rc 1 for an absolute
-# PATH outside ROOT, or with no ROOT. A relative PATH prints as written. Lexical: no link is resolved.
+# PATH outside ROOT, or with no ROOT. A relative PATH prints as written. PATH under ROOT as written is answered as
+# written. Otherwise a link above the folder can spell it two ways (macOS's /tmp and /var lead into /private, and git
+# prints the physical root), so each folder above PATH, from the top, is resolved (_sot_physical_dir) until one is
+# ROOT's folder or lies in it; the part of PATH below that folder stays as written, so a link inside ROOT is never
+# resolved.
 sot_relative_to() {
-    local root path
+    local root path phys head rest dir
     case "$2" in /*|[A-Za-z]:[\\/]*) ;; *) printf '%s\n' "$2"; return 0 ;; esac
     [ -n "$1" ] && root="$(sot_native_path "$1")" && path="$(sot_native_path "$2")" || return 1
     case "$path" in
-        "${root%/}") printf '.\n' ;;
-        "${root%/}"/*) printf '%s\n' "${path#"${root%/}"/}" ;;
-        *) return 1 ;;
+        "${root%/}") printf '.\n'; return 0 ;;
+        "${root%/}"/*) printf '%s\n' "${path#"${root%/}"/}"; return 0 ;;
     esac
+    phys="$(_sot_physical_dir "$root")" || return 1
+    head="" rest="$path"
+    while [ -n "$rest" ]; do
+        case "$rest" in
+            */*) head="$head${rest%%/*}/"; rest="${rest#*/}" ;;
+            *) head="$path"; rest="" ;;
+        esac
+        dir="$(_sot_physical_dir "$head")" || continue
+        case "$dir" in
+            "$phys") printf '%s\n' "${rest:-.}"; return 0 ;;
+            "${phys%/}"/*) dir="${dir#"${phys%/}"/}"; printf '%s\n' "$dir${rest:+/$rest}"; return 0 ;;
+        esac
+    done
+    return 1
 }
 
 # sot_daemon_path PATH — PATH in the spelling of the daemon at ENDPOINT (the
