@@ -32,6 +32,11 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// This process's record for a lock in the temp folder, where every scratch home here sits.
+fn now_me() -> Me {
+    Me::now(&std::env::temp_dir().join(".registry.lock"))
+}
+
 fn scratch(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "sot-registry-lock-{tag}-{}-{}",
@@ -123,7 +128,7 @@ fn the_shell_and_rust_records_are_byte_equal_and_judged_alike() {
     let (mut child, shell_id) = shell(&home, "_sot_lock_self_id; echo \"$_SOT_LOCK_ID\"; exec sleep 30");
     let pid = child.id();
     assert_eq!(record_for(pid), shell_id, "Rust's record for the shell's pid");
-    let me = Me::now();
+    let me = now_me();
     assert!(matches!(judge(&shell_id, &me).0, Verdict::Alive));
     let q = format!("_sot_lock_self_id; _sot_lock_judge '{shell_id}'; echo $_SOT_LOCK_VERDICT");
     let ran = run(&home, &q);
@@ -144,7 +149,7 @@ fn rust_reclaims_a_lock_whose_shell_holder_was_killed() {
     let lock = home.join(".registry.lock");
     let held = acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50)).expect("reclaimed");
     let marker = format!("{}.reclaim.{}", lock.display(), dead.trim().replace(':', "."));
-    assert_eq!(fs::read_to_string(&marker).unwrap(), format!("{}\n", Me::now().id), "the marker is mine");
+    assert_eq!(fs::read_to_string(&marker).unwrap(), format!("{}\n", now_me().id), "the marker is mine");
     drop(held);
     assert!(!lock.exists(), "released");
     assert!(Path::new(&marker).exists(), "markers are kept");
@@ -222,7 +227,7 @@ fn a_marker_this_process_abandoned_is_adopted_by_its_next_writer() {
         .unwrap();
     assert!(first.is_err(), "the writer whose re-read failed gave up");
     assert_eq!(fs::read_to_string(&lock).unwrap(), dead, "the dead holder's lock stayed");
-    assert_eq!(fs::read_to_string(&marker).unwrap(), format!("{}\n", Me::now().id), "the marker names this process");
+    assert_eq!(fs::read_to_string(&marker).unwrap(), format!("{}\n", now_me().id), "the marker names this process");
     let l = lock.clone();
     let second = std::thread::spawn(move || acquire_with(&l, Duration::from_secs(2), Duration::from_millis(50)).map(drop))
         .join()
@@ -244,7 +249,7 @@ fn a_lock_naming_this_daemon_is_reclaimed_by_its_next_writer() {
     let _env = env_lock();
     let home = scratch("self");
     let lock = home.join(".registry.lock");
-    let me = format!("{}\n", Me::now().id);
+    let me = format!("{}\n", now_me().id);
     fs::write(&lock, &me).unwrap();
     let held = acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50));
     assert!(held.is_ok(), "a lock a thread of this daemon left does not wedge it: {:?}", held.err());
@@ -268,7 +273,7 @@ fn its_own_marker_goes_when_its_lock_goes_during_the_settle() {
     let _env = env_lock();
     let home = scratch("gone");
     let lock = home.join(".registry.lock");
-    let me = format!("{}\n", Me::now().id);
+    let me = format!("{}\n", now_me().id);
     fs::write(&lock, &me).unwrap();
     GONE_IN_SETTLE.store(true, Ordering::SeqCst);
     let held = acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50));
@@ -318,6 +323,37 @@ fn a_lock_released_since_the_last_read_was_held_not_is_held() {
     assert!(!err.contains("is held") && !err.contains("comm-registry-lock-clear") && !err.contains("by hand"), "{err}");
 }
 
+/// A comm home whose mount proves no fresh read proves no death: this process's
+/// record there has no proof fields, so a dead holder there is named by hand
+/// (review F1). /proc here, and on macOS an automounted folder.
+#[test]
+fn a_comm_home_the_vouch_refuses_gives_a_record_with_no_proof() {
+    let lock = Path::new(if cfg!(target_os = "macos") { "/System/Volumes/Data/home/.registry.lock" } else { "/proc/self/.registry.lock" });
+    assert!(vouch(lock).is_err(), "the mount is refused");
+    let me = Me::now(lock);
+    assert!(me.mine.is_none(), "{}", me.id);
+    assert_eq!(me.id, format!("{}:-:-:-:{}:-", host_field(), std::process::id()));
+}
+
+/// A holder that cannot be proved dead here, on another machine or in another
+/// pid namespace, is named with its host, and by hand if nothing will run
+/// there again (review F2).
+#[test]
+fn an_unprovable_holder_names_its_host_and_by_hand_if_it_will_not_run_again() {
+    let text = |why: &str| {
+        Blocked { holder: Some("far:m:b:1:4242:7".into()), who: None, why: why.into(), by_hand: false, gone: false }
+            .fail_text(Path::new("/nonexistent/.registry.lock"))
+    };
+    let p = "/nonexistent/.registry.lock";
+    assert!(text("it is on another machine").ends_with(&format!(
+        "If it is dead, run any comm command on far; if far will not run again or cannot prove it, remove {p} by hand."
+    )));
+    assert!(text("it is in another pid namespace").ends_with(&format!(
+        "If it is dead, run any comm command on far in its pid namespace; if none there will run again or can prove it, remove {p} by hand."
+    )));
+    assert!(text("it is running").ends_with("): it is running. If it is dead, run any comm command on far."));
+}
+
 /// A record with no proof fields no box can prove dead, so its FAILED line
 /// says to remove the lock by hand, never to run a comm command on its host.
 #[test]
@@ -340,7 +376,7 @@ fn an_unreadable_live_record_is_released_not_by_hand() {
     let lock = home.join(".registry.lock");
     let before = fs::read(&lock).unwrap();
     fs::set_permissions(&lock, fs::Permissions::from_mode(0o000)).unwrap();
-    let r = step(&lock, &Me::now(), Duration::from_millis(50), Instant::now() + Duration::from_secs(2));
+    let r = step(&lock, &now_me(), Duration::from_millis(50), Instant::now() + Duration::from_secs(2));
     fs::set_permissions(&lock, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(matches!(r, Err(None)), "a record not read is released");
     assert_eq!(fs::read(&lock).unwrap(), before, "the live holder's lock is untouched");
@@ -362,7 +398,7 @@ fn a_failed_first_read_with_a_live_writer_in_the_lock_is_released() {
     let lock = home.join(".registry.lock");
     let before = fs::read(&lock).unwrap();
     FAIL_FIRST_READ.store(true, Ordering::SeqCst);
-    let r = step(&lock, &Me::now(), Duration::from_millis(50), Instant::now() + Duration::from_secs(2));
+    let r = step(&lock, &now_me(), Duration::from_millis(50), Instant::now() + Duration::from_secs(2));
     assert!(matches!(r, Err(None)), "a failed first read is released, never by hand");
     assert_eq!(fs::read(&lock).unwrap(), before, "the live writer's lock is untouched");
     child.end();
@@ -375,7 +411,7 @@ fn by_hand_why(tag: &str, make: impl FnOnce(&Path)) -> String {
     let home = scratch(tag);
     let lock = home.join(".registry.lock");
     make(&lock);
-    let r = step(&lock, &Me::now(), Duration::from_millis(50), Instant::now() + Duration::from_secs(2));
+    let r = step(&lock, &now_me(), Duration::from_millis(50), Instant::now() + Duration::from_secs(2));
     let _ = fs::remove_dir_all(&home);
     match r {
         Err(Some(b)) if b.by_hand => b.why,
@@ -396,7 +432,7 @@ fn an_older_versions_directory_is_by_hand() {
 #[test]
 fn an_id_without_proof_is_never_mine() {
     let _env = env_lock();
-    let me = Me::now();
+    let me = now_me();
     assert!(me.is_me(&me.id), "this process, with its proof");
     let bare = Me { id: format!("{}:-:-:-:{}:-", host_field(), std::process::id()), mine: None };
     assert!(!bare.is_me(&bare.id), "the same host name and pid, with no proof");

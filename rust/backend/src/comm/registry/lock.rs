@@ -75,7 +75,7 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
         }
         std::thread::sleep(POLL.min(deadline - now));
     };
-    let me = Me::now();
+    let me = Me::now(lock);
     let mut last = Blocked { holder: None, who: None, why: "it was released just now".into(), by_hand: false, gone: false };
     let (mut first, mut retook) = (true, false);
     loop {
@@ -116,16 +116,19 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
 const RETAKEN: &str = "another process took it as soon as a dead holder's lock was removed";
 
 /// This process's record, and what it proves with: `name:machine:boot:pidns`
-/// where it can prove a death (Linux, with a `/proc` that is its own).
+/// where it can prove a death (Linux, with a `/proc` that is its own), and
+/// only where `lock`'s mount proves a fresh read (`vouch`): elsewhere the
+/// record has no proof fields, so its dead holder is named by hand rather than
+/// refused at every reclaim (review F1).
 struct Me {
     id: String,
     mine: Option<[String; 4]>,
 }
 
 impl Me {
-    fn now() -> Me {
+    fn now(lock: &Path) -> Me {
         let pid = std::process::id();
-        if !proc_is_mine(pid) {
+        if !proc_is_mine(pid) || vouch(lock).is_err() {
             return Me { id: format!("{}:-:-:-:{pid}:-", host_field()), mine: None };
         }
         let id = record_for(pid);
@@ -379,12 +382,18 @@ impl Blocked {
             );
         }
         let who = self.who.as_deref().unwrap_or(holder);
-        // A record with no proof fields (`host:-:-:-:pid:-`) no box can prove dead: only a person can remove it.
+        // The shell's `_sot_lock_fix`: by hand where no box can prove it dead (no proof fields, or a host that will not
+        // run again or cannot prove it), as no reclaimer can be pending there (reviews B1, F2); else a comm command.
         let w = parse(who).unwrap_or_default();
+        let host = who.split(':').next().unwrap_or("-");
         let fix = if w.len() == 6 && [1, 2, 3, 5].iter().all(|&i| w[i] == "-") {
             format!("No box can prove {} pid {} dead (its record has no proof fields): if it is, remove {p} by hand.", w[0], w[4])
+        } else if self.why.ends_with("in another pid namespace") {
+            format!("If it is dead, run any comm command on {host} in its pid namespace; if none there will run again or can prove it, remove {p} by hand.")
+        } else if self.why.ends_with("on another machine") || self.why.ends_with("cannot prove a death") {
+            format!("If it is dead, run any comm command on {host}; if {host} will not run again or cannot prove it, remove {p} by hand.")
         } else {
-            format!("If it is dead, run any comm command on {}.", who.split(':').next().unwrap_or("-"))
+            format!("If it is dead, run any comm command on {host}.")
         };
         format!(
             "registry lock {p} is held by {} pid {} start {} ({age} old): {}. {fix}",
@@ -461,11 +470,6 @@ fn step(lock: &Path, me: &Me, settle: Duration, deadline: Instant) -> Result<(),
                 format!("it is dead, but its reclaim by {} pid {} did not finish: {why}", f[0], f[4])
             };
             return blocked(Some(&d), Some(&x), why);
-        }
-        if chain.len() == 1 {
-            if let Err(why) = vouch(lock) {
-                return blocked(Some(&d), Some(&x), why);
-            }
         }
         let marker = marker_for(lock, &x);
         match take(lock, &marker, &me.id) {

@@ -173,17 +173,19 @@ _sot_lock_over() {
 # affected while no script runs two with_lock subshells at once: sibling
 # subshells share `$$`, so they would share one ID and one temp file, and the
 # take's `-ef` test would read a sibling's link as its own. No caller does.
+# A box whose comm home's mount proves no fresh read (_sot_lock_vouch) proves
+# no death: its record has no proof fields, so its dead holder is named by
+# hand rather than refused at every reclaim (review F1).
 _sot_lock_self_id() {
     local name machine=- boot=- pidns=- pid="${BASHPID:-$$}" start=- self_pid="" ns=""
     name="$(sot_host 2>/dev/null)" || name=""
     name="${name//[!A-Za-z0-9._-]/_}"
     name="${name:--}"
     _SOT_LOCK_SELF="" _SOT_LOCK_HOLDER="" _SOT_LOCK_WHO="" _SOT_LOCK_BYHAND="" _SOT_LOCK_GONE=""
-    _SOT_LOCK_WHY="it was released just now"
     if [ "$(uname -s 2>/dev/null)" = Linux ]; then
         read -r self_pid _ 2>/dev/null </proc/self/stat || true
     fi
-    if [ "$self_pid" = "$pid" ]; then
+    if [ "$self_pid" = "$pid" ] && _sot_lock_vouch; then
         machine="$(_sot_machine_id)"
         IFS= read -r boot 2>/dev/null </proc/sys/kernel/random/boot_id || true
         ns="$(readlink "/proc/$pid/ns/pid" 2>/dev/null)" || ns=""
@@ -192,6 +194,7 @@ _sot_lock_self_id() {
         machine="${machine:--}"; boot="${boot:--}"; pidns="${pidns:--}"
         _SOT_LOCK_SELF="$name:$machine:$boot:$pidns"
     fi
+    _SOT_LOCK_WHY="it was released just now"
     _SOT_LOCK_ID="$name:$machine:$boot:$pidns:$pid:$start"
 }
 
@@ -300,8 +303,8 @@ _sot_lock_judge() {
 
 # _sot_lock_vouch — 0 when the comm home's mount makes the fresh read fresh:
 # ext2/3/4, xfs, btrfs, zfs, f2fs or tmpfs, or nfs/nfs4 without `nocto`; the
-# mount on top, the last line of `findmnt -T`, when one is stacked. Reached
-# only where a death is proved.
+# mount on top, the last line of `findmnt -T`, when one is stacked. Asked by
+# _sot_lock_self_id: where it says no, this box proves no death.
 _sot_lock_vouch() {
     local fs="" opts=""
     read -r fs opts < <(_sot_findmnt -n -o FSTYPE,OPTIONS -T "${_SOT_REG_LOCK%/*}" 2>/dev/null | tail -n 1) || true
@@ -369,7 +372,6 @@ _sot_lock_step() {
                 || _SOT_LOCK_WHY="it is dead, but its reclaim by ${x%%:*} pid $(_sot_lock_field "$x" 5) did not finish: $_SOT_LOCK_WHY"
             return 1
         fi
-        if [ "${#chain[@]}" = 1 ] && ! _sot_lock_vouch; then _SOT_LOCK_WHO="$x"; return 1; fi
         m="$_SOT_REG_LOCK.reclaim.${x//:/.}"
         if _sot_lock_take "$m"; then break; else c=$?; fi
         if [ "$c" = 2 ] || ! _sot_lock_fresh "$m"; then
@@ -407,6 +409,26 @@ _sot_lock_field() {  # ID N — the ID's Nth colon field
     printf '%s' "${f[$2 - 1]:--}"
 }
 
+# _sot_lock_fix ID — the recovery for the record ID that blocks, by the judge's
+# reason in _SOT_LOCK_WHY: a comm command where ID can be proved dead, or by
+# hand where no box can: no proof fields, or a host that will not run again
+# or cannot prove it. A record with proof is told "by hand" only on that
+# condition: a bare rm races a reclaimer pending where it ran (review B1), and
+# none can be pending where nothing proves its death (review F2). lock.rs's
+# `fail_text` says the same.
+_sot_lock_fix() {
+    local h="${1%%:*}" p="$_SOT_REG_LOCK"
+    if [[ "$1" =~ ^[^:]*:-:-:-:[0-9]+:-$ ]]; then
+        echo "No box can prove $h pid $(_sot_lock_field "$1" 5) dead (its record has no proof fields): if it is, remove $p by hand."
+    elif [[ "$_SOT_LOCK_WHY" == *"in another pid namespace" ]]; then
+        echo "If it is dead, run any comm command on $h in its pid namespace; if none there will run again or can prove it, remove $p by hand."
+    elif [[ "$_SOT_LOCK_WHY" == *"on another machine" || "$_SOT_LOCK_WHY" == *"cannot prove a death" ]]; then
+        echo "If it is dead, run any comm command on $h; if $h will not run again or cannot prove it, remove $p by hand."
+    else
+        echo "If it is dead, run any comm command on $h."
+    fi
+}
+
 # _sot_lock_fail_text — the one FAILED line for the lock as _sot_lock_step
 # last saw it: the holder's host, pid and start tick, and the recovery.
 _sot_lock_fail_text() {
@@ -425,8 +447,5 @@ _sot_lock_fail_text() {
         echo "ERROR: registry lock $_SOT_REG_LOCK was held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) when last read ($_SOT_LOCK_WHY); it may have been released since. Retry."
         return 0
     fi
-    local fix="If it is dead, run any comm command on ${who%%:*}."
-    [[ ! "$who" =~ ^[^:]*:-:-:-:[0-9]+:-$ ]] \
-        || fix="No box can prove ${who%%:*} pid $(_sot_lock_field "$who" 5) dead (its record has no proof fields): if it is, remove $_SOT_REG_LOCK by hand."
-    echo "ERROR: registry lock $_SOT_REG_LOCK is held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) ($age old): $_SOT_LOCK_WHY. $fix"
+    echo "ERROR: registry lock $_SOT_REG_LOCK is held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) ($age old): $_SOT_LOCK_WHY. $(_sot_lock_fix "$who")"
 }

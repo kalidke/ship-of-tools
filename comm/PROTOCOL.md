@@ -140,7 +140,8 @@ Every write to `registry.json` (the scripts' `with_lock`, the daemon's
 names its holder: `name:machine:boot:pidns:pid:start` — the host name, Linux
 `/etc/machine-id`, the kernel's `boot_id`, the pid namespace, the pid, and that
 pid's start tick (field 22 of `/proc/<pid>/stat`). A field that cannot be read
-is `-`, which never equals anything; off Linux the last four proof fields are
+is `-`, which never equals anything; off Linux, and where the comm home's
+mount proves no fresh read (Proof of death), the last four proof fields are
 `-`. In file names ':' is written '.', because Windows reads a ':' in a name as
 a stream; the record keeps its colons.
 
@@ -157,13 +158,15 @@ a stream; the record keeps its colons.
   same boot and pid namespace, with the pid gone or its start tick changed; or
   the same machine-id AND the same host name with a different boot. This
   assumes a machine-id is unique to one machine: a cloned image that shares one
-  would read a live clone as rebooted. No timeout proves anything, so a frozen
-  holder, one on another machine, or any unprovable one, is never forced.
+  would read a live clone as rebooted. A box proves a death only where its
+  comm home's mount, the one on top where mounts are stacked, makes a read
+  fresh: ext2, ext3, ext4, xfs, btrfs, zfs, f2fs or tmpfs, or nfs or nfs4
+  without `nocto`; on any other (overlayfs, say) its records have no proof
+  fields, so its dead holders are removed by hand. No timeout proves anything,
+  so a frozen holder, one on another machine, or any unprovable one, is never
+  forced.
 - **Reclaim.** It runs on the FIRST failed take, before any sleep. A waiter that
-  proves the holder D dead reads the mount, the one on top where mounts are
-  stacked: it must be ext2, ext3, ext4, xfs, btrfs, zfs, f2fs or tmpfs, or nfs
-  or nfs4 without `nocto`, and any other (overlayfs, say) proves nothing. It
-  takes the marker `.registry.lock.reclaim.<D>` by the same link step,
+  proves the holder D dead takes the marker `.registry.lock.reclaim.<D>` by the same link step,
   settles 1 s, reads the lock again fresh (open its folder, then open the
   record), and removes it only if it still names D. Only the marker's creator
   acts; if the creator died too, the next waiter proves that and takes
@@ -195,9 +198,14 @@ a stream; the record keeps its colons.
 - **FAILED** names the holder and the recovery, in the scripts and in the
   daemon's log alike: `registry lock <path> is held by <host> pid <pid> start
   <tick> (<age> old): <why>. If it is dead, run any comm command on <host>.`
-  When the record that blocks has no proof fields, which no box can prove
-  dead, its last sentence is instead `No box can prove <host> pid <pid> dead
-  (its record has no proof fields): if it is, remove <path> by hand.` A lock
+  Where this box cannot prove it dead, on another machine or in another pid
+  namespace, the last sentence adds `; if <host> will not run again or cannot
+  prove it, remove <path> by hand` (in a pid namespace: `on <host> in its pid
+  namespace; if none there will run again or can prove it, ...`): no
+  reclaimer can be pending where nothing proves its death. When the record that blocks has no proof fields, which no box
+  can prove dead, its last sentence is instead `No box can prove <host> pid
+  <pid> dead (its record has no proof fields): if it is, remove <path> by
+  hand.` A lock
   found released since the last read
   says instead `registry lock <path> was held by <host> pid <pid> start <tick>
   when last read (<why>); it may have been released since. Retry.` With no clock the scripts say `registry
@@ -212,12 +220,10 @@ a stream; the record keeps its colons.
   <why>. Retry.` `comm-registry-lock-clear.sh` takes the
   reclaim path above at once, with no deadline, and clears only a lock whose
   holder this box proves dead: a holder it cannot prove dead may be alive, and
-  clearing it would give the registry two writers. Refusing one that another
-  box could prove dead, it names that holder's host, where this or any comm
-  command can. It is never a bare `rm`, which would let a pending reclaimer
-  remove the next holder's lock. With no lock it says the lock is free and exits 0. When the
-  record that blocks it has no proof fields, or no reclaim can clear the lock,
-  its refusal says to remove the lock by hand.
+  clearing it would give the registry two writers. Its refusal names the
+  recovery the FAILED line names. It is never a bare `rm`, which would let a pending reclaimer
+  remove the next holder's lock. With no lock it says the lock is free and exits 0. When no
+  reclaim can clear the lock, its refusal says to remove the lock by hand.
 - **Older peers.** An older version's lock is a holderless directory: it is
   never reclaimed, and FAILED says "held by an older version that records no
   holder". An older waiter's `mkdir` fails on the file and waits as before. An

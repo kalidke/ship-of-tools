@@ -152,7 +152,7 @@ c="$(new_case k)"
 sh_at "$PEER" "$c" 'with_lock kill -9 $$' 2>/dev/null
 rec="$(cat "$c/.registry.lock")"
 err="$(sh_at "" "$c" 'SOT_LOCK_WAIT_SECS=0.2 with_lock true' 2>&1)"; rc=$?
-want="ERROR: registry lock $c/.registry.lock is held by $(field "$rec" 1) pid $(field "$rec" 5) start $(field "$rec" 6) (AGE old): it is on another machine. If it is dead, run any comm command on $(field "$rec" 1)."
+want="ERROR: registry lock $c/.registry.lock is held by $(field "$rec" 1) pid $(field "$rec" 5) start $(field "$rec" 6) (AGE old): it is on another machine. If it is dead, run any comm command on $(field "$rec" 1); if $(field "$rec" 1) will not run again or cannot prove it, remove $c/.registry.lock by hand."
 got="$(sed -E 's/\((-?[0-9]+s|unknown) old\)/(AGE old)/' <<<"$err")"
 verdict "(k) a holder killed on the peer: the writer here FAILs with the exact line" "$([ "$rc" != 0 ] && [ "$got" = "$want" ] || printf 'rc=%s\n  got:  %s\n  want: %s' "$rc" "$got" "$want")"
 echo "  $err"
