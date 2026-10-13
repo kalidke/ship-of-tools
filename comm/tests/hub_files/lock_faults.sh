@@ -224,11 +224,23 @@ guard_run() {  # T COMM_HOME — the guard's verdict on COMM_HOME under HOME=T
     GUARD_OUT="$(HOME="$1" SOT_COMM_HOME="$1/inherited" bash -c '. "$1"; guard_refuse_live_home "$2"; echo passed' \
         _ "$SCRIPT_DIR/lib-home-guard.sh" "$2" 2>&1)" || GUARD_RC=$?
 }
+# dir_link TARGET LINK — a real directory link at LINK, or a failure: Git Bash's `ln -s` copies the folder unless
+# native symlinks are allowed, and a copy is no link to refuse. So a native symlink, else, where `cygpath` says the
+# box is Windows, a junction (`mklink /J`, no privilege needed), each checked with `-L`.
+dir_link() {
+    rm -rf "${2:?}"
+    MSYS=winsymlinks:nativestrict ln -sfn "$1" "$2" 2>/dev/null && [ -L "$2" ] && return 0
+    rm -rf "${2:?}"
+    command -v cygpath > /dev/null 2>&1 && cmd //c mklink /J "$(cygpath -w "$2")" "$(cygpath -w "$1")" > /dev/null 2>&1 &&
+        [ -L "$2" ]
+}
+
 case_the_home_guard_refuses_a_live_comm_home() {
     local t="$WORK/guard-home" h
     mkdir -p "$t/other"
     for h in "$t/.sot-comm" "$t/.sot-comm/x" MKDIR "$t/.sot-comm" "$t/.sot-comm/x" "$t/link/x" "$t/inherited" ""; do
-        [ "$h" != MKDIR ] || { mkdir -p "$t/.sot-comm"; ln -sfn "$t/.sot-comm" "$t/link"; continue; }
+        [ "$h" != MKDIR ] || { mkdir -p "$t/.sot-comm"; dir_link "$t/.sot-comm" "$t/link" \
+            || { echo "  no directory link could be made at $t/link"; return 1; }; continue; }
         guard_run "$t" "$h"
         [ "$GUARD_RC" -eq 2 ] && contains "$GUARD_OUT" FATAL && ! contains "$GUARD_OUT" passed \
             || { echo "  '$h' was not refused: rc $GUARD_RC, $GUARD_OUT"; return 1; }
