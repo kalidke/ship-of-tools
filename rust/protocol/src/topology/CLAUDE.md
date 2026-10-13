@@ -17,8 +17,8 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
   (`$SOT_SOCKET` beats `$SOT_BACKEND_LABEL` beats the local label) and the plain host-name grammar
   (`is_plain_host_name`), in `endpoint.rs`.
 - The ssh recipe (`SshRecipe`), its options `SSH_OPTS`, which turn ssh sharing off as the relay unit's do and with
-  which the daemon's monitor also starts its ssh, and `LinkGate` (`spawn_sync`, `spawn_async`, `probe`, and `command`
-  for a caller that contains the child), in `ssh_bridge.rs`.
+  which the daemon's monitor also starts its ssh, the lane dial's login bound `SSH_LOGIN_BOUND`, and `LinkGate`
+  (`spawn_sync`, `spawn_async`, `probe`, and `command` for a caller that contains the child), in `ssh_bridge.rs`.
 - The lane dial `DaemonLaneEndpoint`, the attach worker's endpoint over op `lane.connect`, in `lane_client.rs`.
 - The systemd unit text sotd generates, in `relay_units.rs`: the hub's relay units for each relayed host, and the host
   pins (`host_pin`, `daemon_pin`, `hub_pins`) built from the hosts that run sotd (`sotd_hosts`, in `mod.rs`).
@@ -45,7 +45,7 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 
 - A failed supervisor handshake, unproven supervisor hello or failed Status abandons its parked spare. Spare state changes under its mutex and child teardown runs after that mutex is released; a teardown failure is reported, never counted as a confirmed reap.
 
-- Production lane handshakes use `CONNECT_BOUND`; fixture bounds belong to the endpoint's test configuration under `cfg(any(test, feature = "test-handshake-bound"))` and affect only that endpoint (`with_test_handshake_bound`).
+- Production lane handshakes use `CONNECT_BOUND` on a local route and `SSH_LOGIN_BOUND` (30 s, the window's own bound for the same login) on an ssh or relay route, whose handshake holds a whole ssh login; fixture bounds belong to the endpoint's test configuration under `cfg(any(test, feature = "test-handshake-bound"))` and affect only that endpoint (`with_test_handshake_bound`).
 
 - A generated relay socket is remote even when reached locally; page and lane clients reuse its exact resolved path and do not acquire a window lease for its remote daemon.
 

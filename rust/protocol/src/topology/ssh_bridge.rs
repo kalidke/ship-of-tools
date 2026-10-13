@@ -107,6 +107,13 @@ pub const PATH_PRELUDE: &str = r#"export PATH="$HOME/.local/share/sot/bin:$HOME/
 /// from the same list.
 pub const SSH_OPTS: &[&str] = &["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no"];
 
+/// How long a lane dial over ssh, or over a hub relay, waits for the far daemon's first reply. A whole login comes
+/// before that reply (the connect, key exchange, authentication, the remote shell and `sotd stdio-bridge`), so the
+/// local handshake bound (`CONNECT_BOUND`, 2 s) would kill a login that is merely slow, and its retry is one more login
+/// on a busy host. The window's control connection and page proxy wait the same 30 s for the same login
+/// (`CONNECT_REPLY_BOUND`).
+pub const SSH_LOGIN_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// `recipe` → `ssh`'s own program name and argv, built with no shell on
 /// this end: `target` is its own argv element (never folded into the
 /// remote command string), the remote command is ONE further argv
@@ -488,7 +495,8 @@ mod tests {
                 use sot_log::lane::client::Endpoint;
                 use super::super::lane_client::{DaemonLaneEndpoint, LaneDial};
                 let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None)
-                    .with_test_ssh_spawner(std::sync::Arc::new(|mut command| command.spawn()));
+                    .with_test_ssh_spawner(std::sync::Arc::new(|mut command| command.spawn()))
+                    .with_test_handshake_bound(sot_log::lane::transport::CONNECT_BOUND);
                 hook.phase("endpoint-handshake");
                 let result = if voyage { endpoint.connect_voyage_unchallenged("fixture-row", "fixture-voyage") }
                     else { endpoint.connect_supervisor_unchallenged("fixture-row") };

@@ -32,11 +32,13 @@
 //! [`DaemonLaneEndpoint::dial`] then runs in two ABSOLUTE-deadline phases sharing this one
 //! adapter: connect (2 s, each transport's own bounded connector — never
 //! a blocking call an external deadline merely gives up ON without
-//! actually stopping), then [`run_handshake`] (a SEPARATE 2 s bound
+//! actually stopping), then [`run_handshake`] (a SEPARATE bound
 //! covering the whole write+read round trip as ONE operation, not a
 //! per-read socket timeout a trickle of bytes could extend indefinitely
 //! — `shutdown`/`cancel` on expiry, the same mechanism every transport's
-//! own `Client::cancel` already provides).
+//! own `Client::cancel` already provides). That bound is 2 s on a local
+//! route and `SSH_LOGIN_BOUND` on an ssh or relay route, whose handshake
+//! holds a whole ssh login: this window's, or the hub relay's to the far host.
 //!
 //! # Refusals and uncertainty are typed
 //!
@@ -557,10 +559,15 @@ impl DaemonLaneEndpoint {
                 return Err(TransportError::LinkDown);
             }
         }
+        // An ssh or relay route's handshake holds a whole ssh login; a local route's only the two replies.
+        let production = match &self.dial {
+            LaneDial::Ssh(..) | LaneDial::Relay(..) => crate::topology::ssh_bridge::SSH_LOGIN_BOUND,
+            LaneDial::Local(_) => CONNECT_BOUND,
+        };
         #[cfg(any(test, feature = "test-handshake-bound"))]
-        let bound = self.test_handshake_bound.unwrap_or(CONNECT_BOUND);
+        let bound = self.test_handshake_bound.unwrap_or(production);
         #[cfg(not(any(test, feature = "test-handshake-bound")))]
-        let bound = CONNECT_BOUND;
+        let bound = production;
         let stream = match &self.dial {
             #[cfg(unix)]
             LaneDial::Local(path) | LaneDial::Relay(path, _) => {

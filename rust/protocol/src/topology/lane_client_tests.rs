@@ -520,6 +520,30 @@ fn a_daemons_answer_over_ssh_is_never_replaced_by_its_stderr() {
     }
 }
 
+/// A burst of lane dials over ssh logins that take 3 s each, longer than the local handshake bound: every dial waits
+/// for its login and gets the daemon's answer, none is killed and redone (a hub slowed by many logins at once).
+#[cfg(unix)]
+#[test]
+fn a_burst_of_ssh_logins_slower_than_the_local_bound_all_answer() {
+    let hello = serde_json::to_string(&Frame::res(1, op::HELLO, serde_json::json!({ "session_id": "s", "revision": 0, "snapshot_pending": false }))).unwrap();
+    let lane = serde_json::to_string(&Frame::res(2, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": 41, "created": 7 }))).unwrap();
+    // The slow login holds no pipe of the dial's, so a killed stand-in leaves nothing open behind it.
+    let login = format!("sleep 3 </dev/null >/dev/null 2>&1; read a; read b; printf '%s\\n' '{hello}' '{lane}'; exec cat >/dev/null");
+    let gate = crate::topology::ssh_bridge::LinkGate::default();
+    let started = Instant::now();
+    let dials: Vec<_> = (0..8)
+        .map(|i| {
+            let recipe = crate::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", login.as_str()]);
+            let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None);
+            std::thread::spawn(move || endpoint.dial(&format!("row-{i}"), "voyage", Some("v".to_string())).map(|c| (c.peer.pid, c.peer.created)))
+        })
+        .collect();
+    let results: Vec<_> = dials.into_iter().map(|dial| within(BOUND, "a slow ssh login", move || dial.join()).unwrap()).collect();
+    let answered = results.iter().filter(|r| matches!(r, Ok((41, 7)))).count();
+    println!("ssh burst: dials=8 answered={answered} elapsed_ms={}", started.elapsed().as_millis());
+    assert_eq!(answered, 8, "every slow login must be waited for, not killed: {:?}", results.iter().filter_map(|r| r.as_ref().err()).map(|e| e.to_string()).collect::<Vec<_>>());
+}
+
 /// A failed write over an ssh login names the error's own words and the login's last line, each once (review round 2,
 /// NOTE 3: the line used to replace the error's words and then be added a second time).
 #[cfg(unix)]
