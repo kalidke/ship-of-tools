@@ -138,10 +138,11 @@ deliver() {  # $1 = target name
 
 if [ "$BROADCAST" = true ]; then
     REG="$(sot_registry_read)" || { echo "FAILED -> --broadcast: the registry could not be read; nothing was sent" >&2; exit 1; }
-    mapfile -t TARGETS < <(printf '%s' "$REG" | sot_jq -r --arg me "$NAME" '.agents | keys[] | select(. != $me)')
+    TARGETS=()
+    while IFS= read -r t; do TARGETS+=("$t"); done < <(printf '%s' "$REG" | sot_jq -r --arg me "$NAME" '.agents | keys[] | select(. != $me)')
     # Only a filed copy counts; deliver prints each FAILED one.
     n=0; of=0
-    for t in "${TARGETS[@]}"; do
+    for t in ${TARGETS[@]+"${TARGETS[@]}"}; do
         [ -n "$t" ] || continue
         of=$((of + 1))
         if deliver "$t"; then n=$((n + 1)); fi

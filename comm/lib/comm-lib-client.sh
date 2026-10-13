@@ -539,7 +539,8 @@ sot_hello_frame() {
 # Console.In.ReadLine never wakes for data that arrives after it began --
 # every named-pipe one-shot timed out with no hello logged (2026-09-18).
 _sot_oneshot_sender() {
-    printf '%s\n' "$BASHPID" > "$4"
+    # This subshell's pid: BASHPID, or on bash 3.2 (which has none) a child's parent.
+    if [ -n "${BASHPID:-}" ]; then echo "$BASHPID"; else sh -c 'echo "$PPID"'; fi > "$4"
     printf '%s\n%s\n' "$1" "$2"
     exec sleep "$3"
 }

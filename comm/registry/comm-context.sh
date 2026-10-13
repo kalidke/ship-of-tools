@@ -103,10 +103,11 @@ esac
 
 NAME=""
 if [ -f "$SELF_FILE" ]; then
-    # Read ONCE via mapfile — never three separate `sed -n 'Np'` opens —
-    # so a concurrent atomic rename can't be observed as a spliced mixed
-    # version (ADR 0028).
-    mapfile -t SELF_LINES < "$SELF_FILE" 2>/dev/null
+    # Read ONCE, one loop over one open — never three separate `sed -n 'Np'`
+    # opens — so a concurrent atomic rename can't be observed as a spliced
+    # mixed version (ADR 0028). A loop, not mapfile: bash 3.2 has none.
+    SELF_LINES=()
+    while IFS= read -r _l || [ -n "$_l" ]; do SELF_LINES+=("$_l"); done < "$SELF_FILE" 2>/dev/null
     NAME="${SELF_LINES[0]:-}"
     SELF_REPO_LINE="${SELF_LINES[1]:-}"
     SELF_ROOT_LINE="${SELF_LINES[2]:-}"

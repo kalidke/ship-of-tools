@@ -41,7 +41,8 @@ command -v jq >/dev/null 2>&1 || { echo "comm-worktree-sync.sh: jq required" >&2
 
 # Family = exact base OR `<base>-...` (dash-guarded so pkg != pkg-analysis).
 REG="$(sot_registry_read)" || { echo "FAILED: the registry could not be read; nobody was reminded" >&2; exit 1; }
-mapfile -t FAMILY < <(printf '%s' "$REG" | sot_jq -r --arg b "$BASE" '
+FAMILY=()
+while IFS= read -r h; do FAMILY+=("$h"); done < <(printf '%s' "$REG" | sot_jq -r --arg b "$BASE" '
     .agents // {} | keys[] | select(. == $b or startswith($b + "-"))
 ' 2>/dev/null || true)
 

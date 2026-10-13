@@ -248,7 +248,8 @@ send_frame() {  # $1 to, $2 text
                 fi
                 if printf '%s' "$line" | jq -e '.payload.receivers | type == "array"' >/dev/null 2>&1; then
                     ack_array=true
-                    mapfile -t receivers < <(printf '%s' "$line" | sot_jq -r '.payload.receivers[]')
+                    local r; receivers=()
+                    while IFS= read -r r; do receivers+=("$r"); done < <(printf '%s' "$line" | sot_jq -r '.payload.receivers[]')
                 fi
                 # A directed send waits for its receipt, roster or no roster: a hub link files and receipts and is never on the roster (role cli). A broadcast has no single addressee, so it is decided on the ack.
                 if [ "$ack_ok" = false ] || [ "$ack_array" = false ] || [ -z "$1" ]; then

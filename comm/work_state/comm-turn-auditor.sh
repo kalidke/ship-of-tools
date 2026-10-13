@@ -237,14 +237,14 @@ $last_text
 EOF
 )"
 
+# The headless claude inherits the account's hooks and this session's comm identity: without SOT_COMM_HOOKS=off its
+# prompt hook and Stop hook restamp the parent's row (working, then done) over the marker just written. (No comment
+# inside the command substitution: bash 3.2 reads its apostrophes as quotes.)
 resp="$(printf '%s' "$prompt" \
     | ( . "$(dirname "${BASH_SOURCE[0]}")/comm-lib.sh" >/dev/null 2>&1 || exit 3   # sot_bounded; sets umask 077
         umask "$_caller_umask"
         unset CLAUDECODE AI_AGENT CLAUDE_CODE_ENTRYPOINT 2>/dev/null || true
         for v in $(env | grep -oE '^CLAUDE_CODE_[A-Z_]*' 2>/dev/null); do unset "$v" 2>/dev/null || true; done
-        # The headless claude inherits the account's hooks and this session's
-        # comm identity: without this its prompt hook and Stop hook restamp
-        # the parent's row (working, then done) over the marker just written.
         export SOT_COMM_HOOKS=off
         sot_bounded 45 "$CLAUDE_BIN" -p --model "$MODEL" --max-turns 1 ) 2>/dev/null)" || exit 3
 
