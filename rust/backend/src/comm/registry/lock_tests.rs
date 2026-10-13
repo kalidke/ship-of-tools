@@ -163,7 +163,7 @@ fn a_live_shell_holder_is_named_and_never_reclaimed() {
     let want = format!("is held by {} pid {} start {} (", f[0], f[4], f[5]);
     assert!(err.contains(&want), "{err}");
     assert!(err.ends_with(&format!(
-        "): it is running. If it is dead, run any comm command on {}, or run comm-registry-lock-clear.sh.",
+        "): it is running. If it is dead, run any comm command on {}.",
         f[0]
     )), "{err}");
     assert_eq!(fs::read(&lock).unwrap(), before, "the lock is untouched");
@@ -316,6 +316,17 @@ fn a_lock_released_since_the_last_read_was_held_not_is_held() {
         "{err}"
     );
     assert!(!err.contains("is held") && !err.contains("comm-registry-lock-clear") && !err.contains("by hand"), "{err}");
+}
+
+/// A record with no proof fields no box can prove dead, so its FAILED line
+/// says to remove the lock by hand, never to run a comm command on its host.
+#[test]
+fn a_holder_with_no_proof_fields_is_removed_by_hand() {
+    let b = Blocked { holder: Some("mac:-:-:-:4343:-".into()), who: None, why: "it is on another machine".into(), by_hand: false, gone: false };
+    let err = b.fail_text(Path::new("/nonexistent/.registry.lock"));
+    assert!(err.ends_with(
+        "(unknown old): it is on another machine. No box can prove mac pid 4343 dead (its record has no proof fields): if it is, remove /nonexistent/.registry.lock by hand."
+    ), "{err}");
 }
 
 /// A live holder's record the step cannot read (a permission or I/O

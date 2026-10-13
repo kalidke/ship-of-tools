@@ -113,6 +113,10 @@ SELF="$(lib '_sot_lock_self_id; echo "$_SOT_LOCK_SELF"')"   # name:machine:boot:
 NOHIRES="$WORK/nohires"; mkdir -p "$NOHIRES"
 printf '#!/bin/sh\ncase "$*" in *Time::HiRes*) exit 2 ;; esac\nexec %s "$@"\n' "$(command -v perl)" > "$NOHIRES/perl"
 chmod +x "$NOHIRES/perl"
+# A uname that says Darwin: a box where the lock proves no death (t9).
+NOPROOF="$WORK/noproof"; mkdir -p "$NOPROOF"
+printf '#!/bin/sh\n[ "$1" = -s ] && { echo Darwin; exit 0; }\nexec %s "$@"\n' "$(command -v uname)" > "$NOPROOF/uname"
+chmod +x "$NOPROOF/uname"
 
 # A holder SIGKILLed in its critical section; prints the record it left.
 dead_holder() { lib 'with_lock kill -9 $$' 2>/dev/null; cat "$P"; }
@@ -154,7 +158,7 @@ t2() {
     [ "$(cat "$P")" = "$before" ] || { echo "the lock changed"; end_holder; return 1; }
     [ "$(markers)" = 0 ] || { echo "a marker was made"; end_holder; return 1; }
     contains "$err" "is held by $(field "$before" 1) pid $HOLDER start $(field "$before" 6) (" || { echo "$err"; end_holder; return 1; }
-    contains "$err" "): it is running. If it is dead, run any comm command on $(field "$before" 1), or run comm-registry-lock-clear.sh." || { echo "$err"; end_holder; return 1; }
+    contains "$err" "): it is running. If it is dead, run any comm command on $(field "$before" 1)." || { echo "$err"; end_holder; return 1; }
     end_holder
     [ ! -e "$P" ] || { echo "not released"; return 1; }
 }
@@ -297,42 +301,67 @@ t8() {
 check "8: send reclaims a killed holder and files; beside a live one it makes only its 1 s touch, exit 0, filed; comm-status waits 10 s and FAILs" t8
 
 t9() {
-    reset; local out far r
-    printf 'elsewhere:ffffffffffffffffffffffffffffffff:00000000-0000-0000-0000-000000000000:1:4242:1\n' > "$P"
-    out="$(SOT_COMM_TEST_LOCK_SETTLE=0.05 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" || { echo "$out"; return 1; }
-    [ ! -e "$P" ] && [ -e "$(marker 'elsewhere:ffffffffffffffffffffffffffffffff:00000000-0000-0000-0000-000000000000:1:4242:1')" ] \
-        || { echo "not cleared through its marker: $out"; return 1; }
+    reset; local out far r d rc
+    # A live holder is refused, also by a box with no proof (the stand-in uname), which cannot prove it dead.
     live_holder || return 1
+    out="$(PATH="$NOPROOF:$PATH" bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" \
+        && { echo "a box with no proof cleared a live holder: $out"; end_holder; return 1; }
+    [ -e "$P" ] && { contains "$out" "this box cannot prove a death" || contains "$out" "it is running"; } \
+        || { echo "a box with no proof: $out"; end_holder; return 1; }
     out="$(bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" && { echo "cleared a live holder"; end_holder; return 1; }
     [ -e "$P" ] || { echo "a live holder's lock is gone"; end_holder; return 1; }
     end_holder
     contains "$out" "NOT cleared" && contains "$out" "it is running" || { echo "$out"; return 1; }
-    # The person vouches for the holder only, never for a reclaimer holding
-    # its marker: one this box cannot prove dead may be pending on its own
-    # machine (review B1).
+    # One on another machine, which this box cannot prove dead, is refused, and no marker is made.
     reset
     far='elsewhere:ffffffffffffffffffffffffffffffff:00000000-0000-0000-0000-000000000000:1:4242:1'
     printf '%s\n' "$far" > "$P"
+    out="$(SOT_COMM_TEST_LOCK_SETTLE=0.05 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" \
+        && { echo "cleared a holder on another machine: $out"; return 1; }
+    [ "$(cat "$P")" = "$far" ] && [ "$(markers)" = 0 ] && contains "$out" "it is on another machine" \
+        && contains "$out" "run this or any comm command on elsewhere" && hasnt_by_hand "$out" || { echo "$out"; return 1; }
+    # One this box proves dead is cleared through its marker.
+    reset; d="$(dead_holder)"
+    out="$(SOT_COMM_TEST_LOCK_SETTLE=0.05 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" || { echo "a dead holder: $out"; return 1; }
+    [ ! -e "$P" ] && [ -e "$(marker "$d")" ] || { echo "not cleared through its marker: $out"; return 1; }
+    # Past a dead holder, a reclaimer holding its marker that this box cannot prove dead is never passed: it may be
+    # pending on its own machine (review B1).
+    reset; d="$(dead_holder)"
     r='elsewhere:ffffffffffffffffffffffffffffffff:00000000-0000-0000-0000-000000000000:1:4343:1'
-    printf '%s\n' "$r" > "$(marker "$far")"
-    out="$(SOT_COMM_TEST_LOCK_SETTLE=0.05 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)"; local rc=$?
+    printf '%s\n' "$r" > "$(marker "$d")"
+    out="$(SOT_COMM_TEST_LOCK_SETTLE=0.05 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)"; rc=$?
     [ "$rc" != 0 ] || { echo "passed a reclaimer it cannot prove dead: $out"; return 1; }
-    [ "$(cat "$P")" = "$far" ] && [ "$(cat "$(marker "$far")")" = "$r" ] && [ ! -e "$(marker "$r")" ] \
+    [ "$(cat "$P")" = "$d" ] && [ "$(cat "$(marker "$d")")" = "$r" ] && [ ! -e "$(marker "$r")" ] \
         || { echo "the lock or its marker changed: $out"; return 1; }
     contains "$out" "its reclaim by elsewhere pid 4343 did not finish: it is on another machine" || { echo "$out"; return 1; }
     hasnt_by_hand "$out" || return 1
-    # A reclaimer with no proof fields (a clear killed on macOS or git-bash):
-    # no box can prove it dead, so the refusal says to remove the lock by hand.
-    reset
-    printf '%s\n' "$far" > "$P"
-    printf '%s\n' 'mac:-:-:-:4343:-' > "$(marker "$far")"
+    # A reclaimer with no proof fields (an older clear's, killed on macOS or git-bash): no box can prove it dead, so
+    # the refusal says to remove the lock by hand.
+    reset; d="$(dead_holder)"
+    printf '%s\n' 'mac:-:-:-:4343:-' > "$(marker "$d")"
     out="$(SOT_COMM_TEST_LOCK_SETTLE=0.05 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" && { echo "passed a proof-less reclaimer"; return 1; }
-    contains "$out" "remove the lock by hand" && [ "$(cat "$P")" = "$far" ] || { echo "$out"; return 1; }
+    contains "$out" "remove the lock by hand" && [ "$(cat "$P")" = "$d" ] || { echo "$out"; return 1; }
     reset
     out="$(bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" || { echo "no lock, rc=$?: $out"; return 1; }
     contains "$out" "is free" || { echo "$out"; return 1; }
 }
-check "9: the clear clears an unprovable holder, refuses a live one and an unprovable reclaimer, and says free" t9
+check "9: the clear clears only a holder it proves dead: a live one is refused, by a box with no proof too, as are one on another machine and an unprovable reclaimer; a free lock is said free" t9
+
+# A record with no proof fields (git-bash's) no box can prove dead, even when its pid runs here: the clear refuses it
+# and, like a waiter's FAILED line, says to remove the lock by hand.
+t24() {
+    reset; local out rc host p
+    host="$(lib '_sot_lock_self_id; echo "${_SOT_LOCK_ID%%:*}"')"
+    sleep 30 & p=$!; PIDS+=("$p")
+    printf '%s:-:-:-:%s:-\n' "$host" "$p" > "$P"
+    out="$(bash "$BIN/comm-registry-lock-clear.sh" 2>&1)"; rc=$?
+    [ "$rc" = 1 ] && [ "$(cat "$P")" = "$host:-:-:-:$p:-" ] && contains "$out" "remove the lock by hand" \
+        || { echo "the clear, rc=$rc: $out"; return 1; }
+    out="$(lib 'SOT_LOCK_WAIT_SECS=0 with_lock true' 2>&1)"
+    contains "$out" "No box can prove $host pid $p dead (its record has no proof fields): if it is, remove $P by hand." \
+        || { echo "the waiter: $out"; return 1; }
+}
+check "24: a record with no proof fields is refused by the clear and named by hand, its pid live here" t24
 
 t10() {
     reset; local t0 ms tries
@@ -457,8 +486,8 @@ t15() {
 }
 check "15: an ID with no proof fields is never judged mine, and nothing compares to it but the one test" t15
 
-# The clear forces a proof-less D; during its settle (a `sleep` of 0.07 on
-# PATH) a mac writer N takes the lock.
+# The clear reclaims a dead D; during its settle (a `sleep` of 0.07 on PATH)
+# a mac writer N takes the lock.
 t16() {
     reset; local out n='mac:-:-:-:4343:-'
     mkdir -p "$WORK/settle"
@@ -468,14 +497,14 @@ t16() {
 exec '$(command -v sleep)' "\$@"
 SLEEP
     chmod +x "$WORK/settle/sleep"
-    printf '%s\n' 'far:-:-:-:4242:-' > "$P"
+    dead_holder >/dev/null
     out="$(PATH="$WORK/settle:$PATH" SOT_COMM_TEST_LOCK_SETTLE=0.07 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" \
         && { echo "cleared: $out"; return 1; }
     [ "$(cat "$P")" = "$n" ] || { echo "N's lock changed: $out"; return 1; }
     contains "$out" ", held by mac pid 4343: it was taken again during the reclaim" && ! contains "$out" "no proof fields" \
         && hasnt_by_hand "$out" || { echo "$out"; return 1; }
 }
-check "16: a clear whose proof-less holder's lock is taken during the settle names the new holder, not by hand" t16
+check "16: a clear whose dead holder's lock is taken during the settle names the new holder, not by hand" t16
 
 # The retake after a reclaim fails, and the lock is gone by its fresh read.
 cat > "$WORK/free.sh" <<'FREE'

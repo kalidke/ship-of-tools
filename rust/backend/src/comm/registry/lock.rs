@@ -379,13 +379,19 @@ impl Blocked {
             );
         }
         let who = self.who.as_deref().unwrap_or(holder);
+        // A record with no proof fields (`host:-:-:-:pid:-`) no box can prove dead: only a person can remove it.
+        let w = parse(who).unwrap_or_default();
+        let fix = if w.len() == 6 && [1, 2, 3, 5].iter().all(|&i| w[i] == "-") {
+            format!("No box can prove {} pid {} dead (its record has no proof fields): if it is, remove {p} by hand.", w[0], w[4])
+        } else {
+            format!("If it is dead, run any comm command on {}.", who.split(':').next().unwrap_or("-"))
+        };
         format!(
-            "registry lock {p} is held by {} pid {} start {} ({age} old): {}. If it is dead, run any comm command on {}, or run comm-registry-lock-clear.sh.",
+            "registry lock {p} is held by {} pid {} start {} ({age} old): {}. {fix}",
             f.first().unwrap_or(&"-"),
             f.get(4).unwrap_or(&"-"),
             f.get(5).unwrap_or(&"-"),
             self.why,
-            who.split(':').next().unwrap_or("-"),
         )
     }
 }

@@ -74,7 +74,7 @@ idle row stays live while it runs, through a daemon restart, and until ten minut
 last stamp. A daemon that cannot take the registry lock, or read or write the registry,
 stamps nothing. Its warning says so each minute, and ten minutes after a row's last stamp a
 send to that row fails as `no live session holds @h`; the lock rules are below, and
-`comm-registry-lock-clear.sh` clears a lock by hand. An age is read against the reader's
+`comm-registry-lock-clear.sh` clears a lock whose holder this box proves dead. An age is read against the reader's
 clock, so skew between two boxes moves the ten minutes by the skew. `host` + `workspace_id`
 are the address a same-host daemon resolves.
 
@@ -194,8 +194,11 @@ a stream; the record keeps its colons.
   stretch or shorten one wait. The daemon's is monotonic.
 - **FAILED** names the holder and the recovery, in the scripts and in the
   daemon's log alike: `registry lock <path> is held by <host> pid <pid> start
-  <tick> (<age> old): <why>. If it is dead, run any comm command on <host>, or
-  run comm-registry-lock-clear.sh.` A lock found released since the last read
+  <tick> (<age> old): <why>. If it is dead, run any comm command on <host>.`
+  When the record that blocks has no proof fields, which no box can prove
+  dead, its last sentence is instead `No box can prove <host> pid <pid> dead
+  (its record has no proof fields): if it is, remove <path> by hand.` A lock
+  found released since the last read
   says instead `registry lock <path> was held by <host> pid <pid> start <tick>
   when last read (<why>); it may have been released since. Retry.` With no clock the scripts say `registry
   lock <path> is held, and there is no clock to wait by: <which>`; a daemon
@@ -207,36 +210,31 @@ a stream; the record keeps its colons.
   retry.` A wait that ends with no holder read, the lock released or taken
   again just then or its record not read, says `registry lock <path> was not taken by the deadline:
   <why>. Retry.` `comm-registry-lock-clear.sh` takes the
-  reclaim path above with a person's word in place of the holder's liveness
-  proof, and nothing else: it never clears a holder this box proves alive, it
-  never passes a marker whose creator this box cannot prove dead, and it is
-  never a bare `rm`; either would let a pending reclaimer remove the next
-  holder's lock. With no lock it says the lock is free and exits 0. When the
+  reclaim path above at once, with no deadline, and clears only a lock whose
+  holder this box proves dead: a holder it cannot prove dead may be alive, and
+  clearing it would give the registry two writers. Refusing one that another
+  box could prove dead, it names that holder's host, where this or any comm
+  command can. It is never a bare `rm`, which would let a pending reclaimer
+  remove the next holder's lock. With no lock it says the lock is free and exits 0. When the
   record that blocks it has no proof fields, or no reclaim can clear the lock,
   its refusal says to remove the lock by hand.
 - **Older peers.** An older version's lock is a holderless directory: it is
   never reclaimed, and FAILED says "held by an older version that records no
-  holder". An older waiter's `mkdir` fails on the file and waits as before.
+  holder". An older waiter's `mkdir` fails on the file and waits as before. An
+  older clear (before 0.6.6) takes a person's word for a holder it cannot
+  prove dead.
 - **Residual.** A dead holder on a server where nothing comm-related runs again
-  wedges registry writes fleet-wide until someone runs the clear command: every
+  wedges registry writes fleet-wide until someone removes the lock by hand: every
   other box FAILs each ruled lock after 10 s, and every send or poll waits out
   the ~1 s touch bound. The 1 s settle is the only guard against a dead holder's
   late operations, its orphaned release `rm` and its in-flight calls; one that
-  lands later than that is not covered. A clear killed during its settle, or
-  whose re-read fails, on a box that proves no deaths (macOS, git-bash) leaves
-  `reclaim.<D>` naming a record no box can prove dead: every later clear
-  refuses, and the lock is removed by hand. A daemon S killed after taking its
+  lands later than that is not covered. A daemon S killed after taking its
   own marker and before removing the lock (the settle and the re-read
   included), or whose re-read fails and that dies before another of its writes
   adopts the marker, leaves `reclaim.<S>` naming S while the lock names S; so
   does one whose removal of that marker fails and that later leaves its lock
   and dies. Every walk then stops at that marker, and the lock is removed by
-  hand. A clear on another box, run on a person's false word that a live S is
-  dead, can remove S's live lock, so two processes hold it; S's ID is the same
-  on every hold, so this was so before any daemon removed its own marker. That
-  clear also leaves `reclaim.<S>` naming itself, which no walk on S's box can
-  pass: a lock S later leaves is refused until a clear on that clear's box, or
-  a person by hand, removes it. A removal of `reclaim.<S>` that failed for a
+  hand. A removal of `reclaim.<S>` that failed for a
   live S but reaches the server later (NFS) can remove a later walker's
   `reclaim.<S>` after S has died, so two walkers each act for one dead holder,
   and one can remove the lock the other retook; this is very improbable. A lock

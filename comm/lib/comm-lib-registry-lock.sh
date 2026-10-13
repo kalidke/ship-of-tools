@@ -301,11 +301,9 @@ _sot_lock_judge() {
 # _sot_lock_vouch — 0 when the comm home's mount makes the fresh read fresh:
 # ext2/3/4, xfs, btrfs, zfs, f2fs or tmpfs, or nfs/nfs4 without `nocto`; the
 # mount on top, the last line of `findmnt -T`, when one is stacked. Reached
-# only on Linux, except by comm-registry-lock-clear.sh, whose person vouches
-# elsewhere.
+# only where a death is proved.
 _sot_lock_vouch() {
     local fs="" opts=""
-    [ -n "${_SOT_LOCK_SELF:-}" ] || return 0
     read -r fs opts < <(_sot_findmnt -n -o FSTYPE,OPTIONS -T "${_SOT_REG_LOCK%/*}" 2>/dev/null | tail -n 1) || true
     case "$fs" in
         ext2|ext3|ext4|xfs|btrfs|zfs|f2fs|tmpfs|nfs|nfs4) ;;
@@ -316,7 +314,7 @@ _sot_lock_vouch() {
     esac
 }
 
-# _sot_lock_step [--forced | DEADLINE] — one reclaim attempt against the lock
+# _sot_lock_step [DEADLINE] — one reclaim attempt against the lock
 # as it stands. 0 = this step saw the lock go, retake at once; 1 = not (a lock
 # released since the take, or one whose record could not be read, is a try,
 # keeps the last holder named, clears _SOT_LOCK_BYHAND and sets _SOT_LOCK_GONE
@@ -333,14 +331,9 @@ _sot_lock_vouch() {
 # ends the walk: no reclaim can pass it (a daemon's own marker, left naming
 # it when it died during its reclaim; review B1), so the lock is removed by
 # hand. Past its first marker the walk stops at DEADLINE, a _sot_lock_now
-# value. --forced (the clear command) takes a person's word for the
-# unprovable holder the lock names, never against a proof that it is alive,
-# and never for a marker's creator: a reclaimer that cannot be proved dead
-# here may be pending on its own machine, and would remove the next holder's
-# lock (review B1).
+# value; with none (the clear command) it walks to the end.
 _sot_lock_step() {
-    local x chain=() m c y r deadline=""
-    [ "${1:-}" = --forced ] || deadline="${1:-}"
+    local x chain=() m c y r deadline="${1:-}"
     _sot_lock_fresh "$_SOT_REG_LOCK"; r=$?
     if [ "$r" != 0 ]; then
         # First, as cat on a directory fails, so a directory arrives as 2.
@@ -370,7 +363,6 @@ _sot_lock_step() {
             return 1
         fi
         _sot_lock_judge "$x"
-        [ "${1:-}" = --forced ] && [ "${#chain[@]}" = 1 ] && [ "$_SOT_LOCK_VERDICT" = UNPROVABLE ] && _SOT_LOCK_VERDICT=DEAD
         if [ "$_SOT_LOCK_VERDICT" != DEAD ]; then
             _SOT_LOCK_WHO="$x"
             [ "$x" = "$_SOT_LOCK_HOLDER" ] \
@@ -433,5 +425,8 @@ _sot_lock_fail_text() {
         echo "ERROR: registry lock $_SOT_REG_LOCK was held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) when last read ($_SOT_LOCK_WHY); it may have been released since. Retry."
         return 0
     fi
-    echo "ERROR: registry lock $_SOT_REG_LOCK is held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) ($age old): $_SOT_LOCK_WHY. If it is dead, run any comm command on ${who%%:*}, or run comm-registry-lock-clear.sh."
+    local fix="If it is dead, run any comm command on ${who%%:*}."
+    [[ ! "$who" =~ ^[^:]*:-:-:-:[0-9]+:-$ ]] \
+        || fix="No box can prove ${who%%:*} pid $(_sot_lock_field "$who" 5) dead (its record has no proof fields): if it is, remove $_SOT_REG_LOCK by hand."
+    echo "ERROR: registry lock $_SOT_REG_LOCK is held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) ($age old): $_SOT_LOCK_WHY. $fix"
 }
