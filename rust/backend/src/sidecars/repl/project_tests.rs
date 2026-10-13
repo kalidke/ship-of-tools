@@ -451,7 +451,8 @@ async fn observer_rejects_a_deliberate_leak() {
         ]);
         probe
     };
-    probe.stdout(std::process::Stdio::piped());
+    // Its stderr is its own: Julia leaves an inherited stdio pipe non-blocking (sidecars/repl/CLAUDE.md).
+    probe.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
     let mut owned = sig.spawn(&mut probe).expect("start the owned leak probe");
     let mut first = tokio::io::BufReader::new(owned.stdout.take().expect("probe stdout"));
     let mut line = String::new();

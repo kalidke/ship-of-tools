@@ -96,18 +96,32 @@ pub fn resume_locked(
     project_root: &Path,
     workspaces: Workspaces,
 ) -> Result<&'static str, String> {
+    resume_locked_spawned(state_root, workspace_id, agent_kind, agent_name, slug, project_root, workspaces).map(|(phase, _)| phase)
+}
+
+/// [`resume_locked`], and whether it spawned a supervisor: only an unreachable lane with no watchdog does, so a
+/// latched `Terminal` row, an answering lane or a watchdog's own restart reports `false`.
+fn resume_locked_spawned(
+    state_root: &Path,
+    workspace_id: &str,
+    agent_kind: &str,
+    agent_name: &str,
+    slug: &str,
+    project_root: &Path,
+    workspaces: Workspaces,
+) -> Result<(&'static str, bool), String> {
     let Some(ws) = workspaces.resolve(Some(workspace_id)) else {
         return Err("unknown workspace".to_string());
     };
     if ws.phase() == crate::rows::workspace::Phase::Terminal {
-        return Ok(super::phase_str(sot_log::lane::wire::SupervisorPhase::Terminal));
+        return Ok((super::phase_str(sot_log::lane::wire::SupervisorPhase::Terminal), false));
     }
     let state_dir = super::state_dir_for(state_root, workspace_id);
     let (phase, observation) = probe(&state_dir);
     if phase != UNREACHABLE_PHASE {
         // Already answering -- no spawn, but still an adoption if this row had none yet.
         observe_with_adoption(&ws, observation);
-        return Ok(phase);
+        return Ok((phase, false));
     }
     // Ruling: the watchdog is the single writer of restarts for a
     // child this daemon spawned. A row whose watchdog is still alive
@@ -118,10 +132,10 @@ pub fn resume_locked(
     // authority merely ADOPTED at boot) reaches the spawn below
     // unchanged.
     if ws.watchdog_owner().is_some() {
-        return Ok(phase);
+        return Ok((phase, false));
     }
     let argv = agent_argv(agent_kind, Some(project_root))?;
-    start_supervisor(state_root, workspace_id, StartMode::Resume, &argv, project_root, agent_name, slug, workspaces)
+    start_supervisor(state_root, workspace_id, StartMode::Resume, &argv, project_root, agent_name, slug, workspaces).map(|phase| (phase, true))
 }
 
 /// R2's own resume path (ADR 0043 decision 33): a row whose lane has
@@ -161,8 +175,7 @@ pub fn resume_if_absent(
 /// Bounds how many re-probe PASSES [`ensure_started`] spends waiting
 /// for a transient phase to settle (a watchdog mid-restart; or
 /// simply a still-starting/still-recovering authority, watchdog or
-/// not) before falling back to reporting the row's phase unacted-on,
-/// exactly as it did before that wait existed. A pass count, not
+/// not) before the activation fails as unsettled. A pass count, not
 /// wall-clock time (round 9: a wall-clock deadline, even one started
 /// at the first `WaitForSettle`, still ticks down while this call
 /// merely waits to ACQUIRE the guard -- behind a watchdog's own
@@ -172,8 +185,8 @@ pub fn resume_if_absent(
 /// `SPAWN_SETTLE_DEADLINE` (2s) each time, so 50 passes can hold the
 /// row's guard for minutes on a row whose recovery keeps outlasting
 /// that deadline -- accepted rather than a second counter, since the
-/// fallback is always the honest "still unacted-on" report this
-/// function already gives, never a wrong decision.
+/// fallback is always a failed activation that names the unsettled
+/// row (`activation_error`), never a wrong decision.
 pub(super) const ACTIVATION_MAX_REPROBES: u32 = 50;
 
 /// How often [`ensure_started`] re-probes a transient phase while
@@ -189,6 +202,10 @@ pub(super) const ACTIVATION_REPROBE_INTERVAL: Duration = Duration::from_millis(2
 const ADMISSION_PENDING_PASSES: u32 = 25;
 
 /// The ONE shared activation boundary for every caller: guard, inert-anchor refusal, then start/resume/(Selection-only) retire+reset. BLOCKING.
+/// `Ok(Some(()))` when this call started a supervisor (a start, a resume that spawned, or a retire's respawn) in any
+/// pass; `Ok(None)` when it started none, a terminal row's included. `pty.open` logs a start only for the first.
+/// `Err` when it failed or a bounded wait ran out (the settle budget, the pending authority); the row's
+/// `activation_error` then holds the same text until the next attempt.
 pub fn ensure_started(
     state_root: &Path,
     workspace_id: &str,
@@ -208,6 +225,7 @@ pub fn ensure_started(
     // activation itself spawned to retire an ended row, carried
     // across passes -- see `ensure_started_locked`'s own doc for why.
     let mut own_spawn: Option<crate::rows::workspace::SupervisorIdentity> = None;
+    let mut started = false;
     loop {
         let held = guard.blocking_lock();
         // Rechecked under the guard -- a concurrent remover could have removed the row while this call waited.
@@ -223,12 +241,13 @@ pub fn ensure_started(
         match ensure_started_locked(
             state_root, workspace_id, agent_kind, agent_name, slug, project_root, intent, workspaces.clone(),
             &mut own_spawn,
+            &mut started,
         ) {
             LockedStep::Done(result) => {
                 if let Err(detail) = &result {
                     ws.set_activation_error(Some(detail.clone()));
                 }
-                return result;
+                return result.map(|()| started.then_some(()));
             }
             // Ruling: never drop the caller's intent, and never
             // decide from a transient phase (see `is_resting_phase`).
@@ -247,18 +266,11 @@ pub fn ensure_started(
                 crate::rows::ops::pty::record_test_activation_marker("waitforsettle");
                 reprobes += 1;
                 if reprobes > ACTIVATION_MAX_REPROBES {
-                    // The budget is spent: report the phase as the
-                    // pre-ruling code always did for this exact
-                    // situation -- attempted, still unsettled, spawn
-                    // deferred to whatever is already in flight.
-                    // Pre-existing, filed for later (round 10 record):
-                    // this `Ok(Some(()))` is indistinguishable on the
-                    // wire from a genuine success, so `pty.open`
-                    // answers `attach_direct` onto a row that may
-                    // still be `ended_no_respawn`, with no
-                    // `activation_error` set -- exhaustion itself is
-                    // not surfaced as a caller-visible failure.
-                    return Ok(Some(()));
+                    // The budget is spent and the row is still unsettled: a failed activation, as at the
+                    // pending bound below. Whatever owns the row is left to finish; the next attempt clears it.
+                    let detail = format!("the row did not settle within {ACTIVATION_MAX_REPROBES} re-probes; a start, a recovery or a watchdog's restart still owns it");
+                    ws.set_activation_error(Some(detail.clone()));
+                    return Err(detail);
                 }
                 drop(held);
                 // BLOCKING (this whole function is): plain sleep, no
@@ -284,8 +296,8 @@ pub fn ensure_started(
 
 /// What one guard-held attempt at [`ensure_started_locked`] concluded.
 enum LockedStep {
-    /// Genuinely resolved -- nothing further to do differently.
-    Done(Result<Option<()>, String>),
+    /// Genuinely resolved -- nothing further to do differently. What was started is in the caller's `started`.
+    Done(Result<(), String>),
     /// The row's phase is transient, not a resting point a decision
     /// may be made from -- see [`is_resting_phase`]'s own doc for
     /// the invariant, and [`ensure_started`]'s own loop for the wait.
@@ -320,6 +332,7 @@ fn ensure_started_locked(
     intent: ActivationIntent,
     workspaces: Workspaces,
     own_spawn: &mut Option<crate::rows::workspace::SupervisorIdentity>,
+    started: &mut bool,
 ) -> LockedStep {
     let Some(ws) = workspaces.resolve(Some(workspace_id)) else {
         return LockedStep::Done(Err("unknown workspace".to_string()));
@@ -340,7 +353,7 @@ fn ensure_started_locked(
     // R4c: Reconnect permits only StartMode::Resume -- never a row's first-ever start.
     let mode = start_mode_for_phase(initial_phase);
     let mode = if intent == ActivationIntent::Reconnect && mode != Some(StartMode::Resume) { None } else { mode };
-    let (spawned, settled_phase) = match mode {
+    let settled_phase = match mode {
         Some(StartMode::Start) => {
             let argv = match agent_argv(agent_kind, Some(project_root)) {
                 Ok(a) => a,
@@ -353,19 +366,21 @@ fn ensure_started_locked(
                 Err(e) if is_pending_text(&e) => return LockedStep::Pending,
                 Err(e) => return LockedStep::Done(Err(e)),
             };
-            (Some(()), phase)
+            *started = true;
+            phase
         }
         Some(StartMode::Resume) => {
-            let phase = match resume_locked(
+            let (phase, spawned) = match resume_locked_spawned(
                 state_root, workspace_id, agent_kind, agent_name, slug, project_root, workspaces.clone(),
             ) {
                 Ok(p) => p,
                 Err(e) if is_pending_text(&e) => return LockedStep::Pending,
                 Err(e) => return LockedStep::Done(Err(e)),
             };
-            (Some(()), phase)
+            *started |= spawned;
+            phase
         }
-        None => (None, initial_phase),
+        None => initial_phase,
     };
     // Ruling (round 7 BLOCKER): the phase a spawn THIS call itself
     // just made settles at is EXACTLY as liable to be transient as
@@ -394,7 +409,7 @@ fn ensure_started_locked(
     if settled_phase == ended_phase {
         // RB: a passive Reconnect never resets an ended run -- only a real Selection may retire+reset it below.
         if intent == ActivationIntent::Reconnect {
-            return LockedStep::Done(Ok(spawned));
+            return LockedStep::Done(Ok(()));
         }
         // Round-9 BLOCKER fast path: a PRIOR pass of this SAME
         // activation already retired this row (see `own_spawn`'s own
@@ -431,6 +446,7 @@ fn ensure_started_locked(
                 Err(e) if is_pending_text(&e) => return LockedStep::Pending,
                 Err(e) => return LockedStep::Done(Err(e)),
             };
+            *started = true;
             // Remember which authority THIS pass just spawned (a
             // fresh probe, not `retired_phase` alone, since that
             // carries no identity) so a LATER pass -- if this one's
@@ -467,11 +483,63 @@ fn ensure_started_locked(
         // [`reset_run`]. Its doc comment carries the long form.
         return LockedStep::Done(match reset_run(&workspaces, workspace_id, &state_dir) {
             // Mints a fresh voyage on the SAME epoch; the observer's next round supersedes the latch.
-            Ok(_new_voyage) => Ok(Some(())),
+            Ok(_new_voyage) => Ok(()),
             Err(e) => Err(format!("capsule workspace reset (after retiring an ended run) failed: {e}")),
         });
     }
-    LockedStep::Done(Ok(spawned))
+    LockedStep::Done(Ok(()))
+}
+
+#[cfg(test)]
+mod start_report_tests {
+    use super::*;
+    use crate::rows::workspace::{Observation, Phase, SupervisorIdentity};
+    use crate::rows::Workspace;
+
+    /// A row latched terminal (its supervisor exited 69) is not started by an attach: the resume returns the latch and
+    /// spawns nothing, so the attach reports nothing started and `pty.open` logs no "capsule supervisor started on
+    /// attach". Fails while every resume counts as a start.
+    #[test]
+    fn an_attach_to_a_terminal_row_reports_nothing_started() {
+        let state_root = tempfile::tempdir().unwrap();
+        let reg = Workspaces::new();
+        let mut ws = Workspace::from_label("t", std::path::PathBuf::from("/p/t"), false, "none".into(), String::new(), String::new());
+        ws.runtime = "capsule".to_string();
+        let (id, slug) = (ws.workspace_id.clone(), ws.slug.clone());
+        reg.insert(ws);
+        let row = reg.resolve(Some(id.as_str())).expect("the row");
+        let identity = SupervisorIdentity { pid: 1, created: 1 };
+        row.begin_supervisor_epoch(identity);
+        row.apply_phase_observation(Observation::Phase { phase: Phase::Terminal, supervisor: identity, voyage: None });
+        // A published pointer with nothing answering its lane: the lane reads unreachable, as after the exit 69.
+        let state_dir = super::super::state_dir_for(state_root.path(), &id);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        sot_log::supervisor::journal::pointer::publish(&state_dir, "a1b2c3d4-e5f6-4890-9abc-def012345678").unwrap();
+        let started = ensure_started(state_root.path(), &id, "none", "", &slug, Path::new("/p/t"), ActivationIntent::Selection, reg.clone());
+        assert_eq!(started, Ok(None), "a terminal row was reported started");
+        assert_eq!(row.phase(), Phase::Terminal);
+    }
+
+    /// A row that never rests within the settle budget (here its watchdog owns an unreachable lane, as in a restart
+    /// backoff longer than the budget) is a failed activation, as at the pending bound: the caller gets the reason as an
+    /// error and the row's `activation_error` holds it. Fails while an exhausted wait returns as if it had resolved.
+    #[test]
+    fn a_wait_that_outlasts_the_settle_budget_fails_the_activation() {
+        let state_root = tempfile::tempdir().unwrap();
+        let reg = Workspaces::new();
+        let mut ws = Workspace::from_label("u", std::path::PathBuf::from("/p/u"), false, "none".into(), String::new(), String::new());
+        ws.runtime = "capsule".to_string();
+        let (id, slug) = (ws.workspace_id.clone(), ws.slug.clone());
+        reg.insert(ws);
+        let row = reg.resolve(Some(id.as_str())).expect("the row");
+        row.set_watchdog_owner(1);
+        let state_dir = super::super::state_dir_for(state_root.path(), &id);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        sot_log::supervisor::journal::pointer::publish(&state_dir, "a1b2c3d4-e5f6-4890-9abc-def012345678").unwrap();
+        let result = ensure_started(state_root.path(), &id, "none", "", &slug, Path::new("/p/u"), ActivationIntent::Selection, reg.clone());
+        assert!(result.is_err(), "an exhausted settle wait was reported as resolved: {result:?}");
+        assert_eq!(row.activation_error(), result.err(), "the row must carry the reason");
+    }
 }
 
 #[cfg(test)]

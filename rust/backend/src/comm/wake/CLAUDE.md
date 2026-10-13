@@ -32,4 +32,5 @@ backend; charter: comm/CLAUDE.md.
   box (`type_then_enter`); Enter goes only then.
 - A typed line counts as the wake and, within one daemon run, is never typed again for its batch (`enter_owed` lives in
   the tick's memory, so a restart can type it once more); one left without Enter is sent, Enter alone,
-  by a later tick that finds it alone in main's input box (`decide`'s Complete, `Woken::enter_owed`).
+  by a later tick that finds it alone in main's input box (`decide`'s Complete, `Woken::enter_owed`). An Enter the leg
+  refused as stale wrote nothing and leaves the line owed the same way (`WakeOutcome::EnterRefused`).

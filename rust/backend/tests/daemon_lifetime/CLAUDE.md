@@ -14,10 +14,11 @@ of the backend's tests; the suites span subsystems, so this page names no charte
 - `ephemerals.rs`: a ready row whose REPL has started a tree detached (spinning or returned), the drain that outlasts a forking child and the guard that ends only its own subtree (these two need Julia) (feature `daemon-lifetime-faults`)
 - `fixture_owner.rs`: `Fixture`, the outside owner: it watches every process a case learns of, holds authority over the ones its own code spawned, saved results, bounded cleanup
 - `kill_probe.rs`: the kill probe: `/bin/kill` alone in its group sends itself SIGUSR1; its three controls (SIGUSR1 at its default, ignored, blocked) and how its end is read (killed, survived, refused)
-- `observations.rs`: `wait_for`, and `BarrierDir`, the folder a process held at a phase barrier reports to
+- `observations.rs`: `wait_for`, `BarrierDir`, the folder a process held at a phase barrier reports to, and the daemon's
+  held points a case engages and opens (`held_points`, `engage`, `open`)
 - `native/`: the per-OS process authority (an identity opened while alive, or after its exit and before its reap; death read from it)
 - `native_premises.rs`: the native launcher and the fence claim on real children (gate, owning return, errors, claim lifetime, source group)
-- `outcomes.rs`: the serving daemon's outcomes read at the launched process: the main future's Ok, error and panic (0, 1, 101), INT and TERM on a daemon whose runtime is stalled and whose inherited mask blocks them (it ends by the signal), a second TERM changing nothing, a service manager's stop and an outside TERM counted as a clean stop (a test-owned unit; `SOT_TEST_REQUIRE_USER_MANAGER=1` makes a missing user manager a failure), a close that outlasts its bound (1; the ephemeral trees go too) and the early commands' own statuses; the capsule stays alive through each (feature `daemon-lifetime-faults`)
+- `outcomes.rs`: the serving daemon's outcomes read at the launched process: the main future's Ok, error and panic (0, 1, 101), INT and TERM on a daemon whose runtime is stalled and whose inherited mask blocks them (it ends by the signal), a second TERM changing nothing, a service manager's stop and an outside TERM counted as a clean stop (a test-owned unit; `SOT_TEST_REQUIRE_USER_MANAGER=1` makes a missing user manager a failure), a close held past its bound (1; the ephemeral trees go too) and the early commands' own statuses; the capsule stays alive through each (feature `daemon-lifetime-faults`)
 - `update_fixture.rs`: what an automatic update works on, built from real programs: an upstream git repository with the release's tag, an install-shaped prefix (a copy of the built daemon beside its capsule, an install manifest, a base clone) and a release folder (the platform archive, `SHA256SUMS`, `COMMIT`) for the directory fetcher
 - `updates.rs`: the update outcomes on real daemons: `update.apply` against a pointer armed with the real updater (exit 75, the REPL's tree ends, the capsule stays), the automatic update through the real stage, prepare and arm (75 with no window attached, deferred with one), a close and an update in each order (held points), the updates a daemon may not take, and the updater's discovery and prepare commands ending with the daemon (feature `daemon-lifetime-faults`)
 - `routes.rs`: the daemon's real routes the cases drive and what they read back: a ready row, a spinning REPL cell, a tree's identities, the nonce round trip, a process's children and command line
@@ -48,6 +49,9 @@ of the backend's tests; the suites span subsystems, so this page names no charte
   not covered for such a case.
 - A role a case re-runs this binary for (`claim_parent_role`, `source_group_role`) enters through
   `sot_log::test_isolated::test_command` and `enter`, and does nothing in an ordinary run.
+- An ordering the product leaves to chance (a close against its backstop, a close against an update) is the case's: it
+  engages the daemon's held point and opens it when it chooses (`observations::held_points`, `engage`, `open`;
+  `lifecycle::test_gates`); no case relies on a bound being too short for the work.
 - On macOS an identity is a kqueue `NOTE_EXIT` knote (`native/macos.rs`); the cases that need the Linux guard or `/proc`
   (`guard`, `outcomes`, `updates`, `done`, `durable`, `routes`, `successor`) are compiled for Linux only, and the macOS leg
   runs `native_premises` and the in-crate lifecycle tests. `native_premises` has one `/proc` read (the target's ignored

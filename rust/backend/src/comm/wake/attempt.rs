@@ -14,19 +14,24 @@ pub enum WakeOutcome {
     /// The line was typed but the live screen then did not show it alone in main's input box, for `reason`
     /// (the gate's own); `border` is the line above the cursor's row at the gate. No Enter was sent.
     TypedNoEnter { reason: &'static str, border: String },
-    /// The Enter write (`step` `"enter"`) returned an error or its delivery is unknown (`detail`, the phase and its
-    /// text): the Enter may still have reached the agent. For `step` `"text"` it is only the stale refusal (phase
-    /// `input`), which wrote nothing.
+    /// The Enter write (`step` `"enter"`) failed in a phase other than `input` (`detail`, the phase and its text): its
+    /// delivery is unknown, and it may still have reached the agent. For `step` `"text"` it is only the stale refusal
+    /// (phase `input`), which wrote nothing.
     Unconfirmed { step: &'static str, detail: String },
+    /// The Enter write was refused as stale (phase `input`, `detail` the phase and its text): nothing was written, so the
+    /// typed line still owes its Enter.
+    EnterRefused { detail: String },
     /// The text write failed in a phase other than `"input"`, or its delivery is unknown: the line may have reached
     /// the agent (and may draw later), so it counts as typed.
     TextUnknown { detail: String },
 }
 
-/// The outcome once the line is typed and the gate passed: the Enter write's result.
+/// The outcome once the line is typed and the gate passed: the Enter write's result. Only the stale refusal (phase
+/// `"input"`) wrote nothing, as for the text ([`text_failed`]).
 pub(crate) fn wake_outcome(enter: Result<(), HeadlessError>) -> WakeOutcome {
     match enter {
         Ok(()) => WakeOutcome::Woke,
+        Err(e) if e.phase == "input" => WakeOutcome::EnterRefused { detail: format!("{}: {}", e.phase, e.detail) },
         Err(e) => unconfirmed("enter", e),
     }
 }

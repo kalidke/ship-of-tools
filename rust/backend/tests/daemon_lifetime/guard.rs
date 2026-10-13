@@ -6,7 +6,7 @@
 //! (`Run::daemon_does`). Nothing found by walking parent links or reading `ps` is ever signalled.
 
 use crate::fixture_owner::Fixture;
-use crate::routes::{ready_row, supervisor_in};
+use crate::observations::{engage, held_points};
 use crate::support::{
     connect_and_hello, handoff, poll_until, sotd_command, sotd_command_at, Env, BOUND,
     TEST_STATE_HOST,
@@ -427,7 +427,7 @@ pub async fn lease_on(socket: &Path) -> crate::support::Conn {
 enum Stimulus {
     /// The window closes: the daemon exits 0.
     Close,
-    /// The window closes with a one-millisecond shutdown bound and a ready row to end: the backstop exits 1.
+    /// The window closes while its close is held at its first step (`close-go`): the backstop exits 1 at the bound.
     Backstop,
     /// A signal the daemon sends itself, as an outside sender's would arrive.
     ToDaemon(i32),
@@ -450,10 +450,14 @@ async fn the_guard_mirrors_the_daemon_and_forwards_signals() {
         Stimulus::ToGuard(libc::SIGHUP),
         Stimulus::ToGroup(libc::SIGTERM),
     ] {
-        let extra: &[(&str, &str)] = match stimulus {
-            Stimulus::Backstop => &[("SOT_TEST_SHUTDOWN_BOUND_MS", "1")],
-            _ => &[],
-        };
+        let case = tempfile::tempdir().unwrap();
+        let (gates, folder) = held_points(case.path());
+        let held = [
+            ("SOT_TEST_SHUTDOWN_BOUND_MS", "2000"),
+            (gates, folder.as_str()),
+        ];
+        let backstop = matches!(stimulus, Stimulus::Backstop);
+        let extra: &[(&str, &str)] = if backstop { &held } else { &[] };
         let mut run = Run::start("gmir", extra, matches!(stimulus, Stimulus::ToGroup(_))).await;
         run.assert_guarded();
         let mut fx = Fixture::new(&format!("guard_mirrors::{stimulus:?}"));
@@ -463,16 +467,8 @@ async fn the_guard_mirrors_the_daemon_and_forwards_signals() {
         match stimulus {
             Stimulus::Close => close_by_lease(&run.env).await,
             Stimulus::Backstop => {
-                // A ready row gives the close real work, so the bound passes before it finishes. The capsule is outside the
-                // daemon's lifetime and outlives the exit, so the fixture holds the supervisor the product reports.
-                let (mut conn, mut next_id) = connect_and_hello(&run.env.socket_path).await;
-                let (_, state_dir) = ready_row(&run.env, &mut conn, &mut next_id, "backstop").await;
-                drop(conn);
-                let (pid, created) = supervisor_in(&run.env, &state_dir)
-                    .await
-                    .expect("the capsule's supervisor answers");
-                fx.watch(pid, Some(created), "the capsule's supervisor")
-                    .expect("an identity for the reported supervisor");
+                // Only the backstop can end the daemon: its close waits at its first step.
+                engage(case.path(), "close-go");
                 close_by_lease(&run.env).await;
             }
             Stimulus::ToDaemon(sig) => run.daemon_does(&format!("raise:{sig}")),

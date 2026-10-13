@@ -761,6 +761,10 @@ jobs:
         working-directory: .
         run: bash scripts/tests/test-check-layout.sh && bash scripts/tests/test-moved-check.sh
 
+      - name: Test the rc gate's target claim
+        working-directory: .
+        run: bash scripts/tests/test-rc-gate-target.sh
+
       # The bash sibling of the PowerShell topology plan test above: scripts/lib/sot-hosts.sh's sot_topology_plan
       # against the same fake sotd, pure text processing, hermetic and fast.
       - name: Test topology plan (bash)
@@ -882,6 +886,8 @@ jobs:
           bash test-sot-fe-version.sh
           # reauth moves only the row it runs in; a second argument or a missing row id sends nothing.
           bash test-sot-fe-reauth.sh
+          # goto switches the window and starts nothing: --boot is refused as an unknown flag.
+          bash test-sot-fe-goto.sh
           # ccx's default handle is built from the comm library's safe pieces; a failed derivation stops the launch.
           bash test-ccx-launch.sh
           # The carriage-return rule for the token (a \r kept on it is a token

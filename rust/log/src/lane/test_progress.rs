@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Condvar, Mutex, MutexGuard, TryLockError,
     },
     time::{Duration, Instant},
@@ -14,10 +14,6 @@ use std::{
 
 #[cfg(any(test, feature = "test-support"))]
 const CAPACITY: usize = 256;
-
-/// How many times a checkpoint tries a momentarily busy ring before it is skipped: bounded, never a wait.
-#[cfg(any(test, feature = "test-support"))]
-const ADMIT_ATTEMPTS: u32 = 64;
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug)]
@@ -60,6 +56,8 @@ pub struct Progress {
     started: Instant,
     ring: Mutex<Ring>,
     skipped: AtomicUsize,
+    /// A deliberate fixture hold (`hold`) owns the ring: a checkpoint then skips instead of waiting.
+    held: AtomicBool,
 }
 
 #[cfg(not(any(test, feature = "test-support")))]
@@ -81,6 +79,7 @@ impl Progress {
             transport,
             started: Instant::now(),
             skipped: AtomicUsize::new(0),
+            held: AtomicBool::new(false),
             ring: Mutex::new(Ring {
                 records: VecDeque::with_capacity(CAPACITY),
                 overwritten: 0,
@@ -175,30 +174,32 @@ impl Progress {
     ) {
     }
 
-    /// The ring if it is free within a bounded few attempts. Another thread's checkpoint or a polling snapshot holds
-    /// it for microseconds; a deliberate fixture hold or a poisoned ring outlasts the attempts, and the checkpoint is
-    /// skipped (and counted) rather than waited for.
+    /// The ring once it is free. Another thread's checkpoint or a polling snapshot holds it only to push or clone, so
+    /// a busy ring is tried again until it is free, however long its holder is descheduled: a checkpoint the code
+    /// reached is never lost to an ordinary holder. Only a deliberate fixture hold (`hold`) or a poisoned ring skips the
+    /// checkpoint (counted), and nothing ever waits behind a fixture hold.
     #[cfg(any(test, feature = "test-support"))]
     fn admit(&self) -> Option<MutexGuard<'_, Ring>> {
-        for attempt in 0..ADMIT_ATTEMPTS {
+        loop {
             match self.ring.try_lock() {
                 Ok(ring) => return Some(ring),
                 Err(TryLockError::Poisoned(_)) => return None,
-                Err(TryLockError::WouldBlock) if attempt < ADMIT_ATTEMPTS / 2 => {
-                    std::hint::spin_loop()
-                }
+                Err(TryLockError::WouldBlock) if self.held.load(Ordering::Acquire) => return None,
                 Err(TryLockError::WouldBlock) => std::thread::yield_now(),
             }
         }
-        None
     }
 
-    /// Deliberate fixture hold; passive operations never use this blocking acquisition.
+    /// Deliberate fixture hold; passive operations never use this blocking acquisition. While it lives, checkpoints
+    /// skip (and count) instead of waiting.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn hold(&self) -> Hold<'_> {
+        let held = self.ring.lock().expect("hold the recorder fixture");
+        self.held.store(true, Ordering::Release);
         Hold {
-            _held: self.ring.lock().expect("hold the recorder fixture"),
+            _held: held,
+            flag: &self.held,
         }
     }
 
@@ -578,6 +579,15 @@ pub(crate) fn flag_call() -> Option<std::io::Error> {
 #[cfg(any(test, feature = "test-support"))]
 pub struct Hold<'a> {
     _held: MutexGuard<'a, Ring>,
+    flag: &'a AtomicBool,
+}
+
+/// The flag goes down before the guard is released, so no checkpoint skips a ring that is about to be free.
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for Hold<'_> {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::Release);
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -653,12 +663,37 @@ pub fn assert_absent(
 mod tests {
     use super::*;
 
+    /// An ordinary holder (another thread's checkpoint, a polling snapshot) only delays a checkpoint, however long it is
+    /// descheduled: the record is kept and nothing is skipped. Fails while a busy ring is given up after a bounded few
+    /// attempts, which lost the checkpoints a test then waited for.
     #[test]
-    fn busy_checkpoint_admission_is_skipped_and_counted() {
+    fn an_ordinary_busy_ring_delays_a_checkpoint_and_never_drops_it() {
+        let progress = std::sync::Arc::new(Progress::default());
+        let held = progress.ring.lock().unwrap();
+        let producer = std::thread::spawn({
+            let progress = std::sync::Arc::clone(&progress);
+            move || progress.note(Some(18), "sent.enqueue", "ok marker=18")
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(held);
+        producer.join().unwrap();
+        let snapshot = progress.snapshot();
+        assert_eq!(
+            snapshot.skipped, 0,
+            "an ordinary holder made the checkpoint skip\n{snapshot}"
+        );
+        assert!(
+            snapshot.records.iter().any(|r| r.result == "ok marker=18"),
+            "{snapshot}"
+        );
+    }
+
+    #[test]
+    fn a_fixture_hold_skips_and_counts_checkpoints() {
         let progress = std::sync::Arc::new(Progress::default());
         progress.note(Some(1), "registered", "ok");
         let before = progress.snapshot().to_string();
-        let held = progress.ring.lock().unwrap();
+        let held = progress.hold();
         let (entered, entry) = std::sync::mpsc::channel();
         let (finished, completion) = std::sync::mpsc::channel();
         let producer = std::thread::spawn({

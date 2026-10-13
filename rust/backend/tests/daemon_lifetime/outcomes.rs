@@ -1,13 +1,14 @@
 //! The serving daemon's outcomes on real processes: the main future's result becomes a status while the runtime still exists
 //! (0, 1, 101), INT and TERM end a daemon whose runtime is stalled and whose inherited mask blocks them (by the signal itself,
-//! after the fire) and a second TERM changes nothing, a service manager counts that end as a clean stop, a close that
-//! outlasts its bound ends the daemon with 1 and takes its ephemeral trees with it, and an early command keeps its own
+//! after the fire) and a second TERM changes nothing, a service manager counts that end as a clean stop, a close held
+//! past its bound ends the daemon with 1 and takes its ephemeral trees with it, and an early command keeps its own
 //! status. The status is read at the launched process: the guard exits as the daemon did. The capsule a case starts is
 //! outside the daemon's lifetime and stays alive through every outcome.
 
 use crate::ephemerals::start_spinning_with;
 use crate::fixture_owner::Fixture;
 use crate::guard::Run;
+use crate::observations::{engage, held_points};
 use crate::routes::{all_ended, ready_row, supervisor_in};
 use crate::support::{connect_and_hello, Env};
 use crate::SERIAL;
@@ -246,11 +247,16 @@ async fn a_service_manager_counts_int_and_term_as_a_clean_stop() {
 async fn a_close_that_outlasts_its_bound_ends_with_1_and_takes_the_ephemeral_trees() {
     let _serial = SERIAL.lock().await;
     let mut fx = Fixture::new("close_backstop_with_live_birth");
+    // The close waits at its first step, so only the backstop can end the daemon: which of the two exits first is the
+    // case's choice, not the clock's (a close that fits inside the bound exits 0, as on a fast host with a 1 ms bound).
+    let case = tempfile::tempdir().unwrap();
+    let (gates, folder) = held_points(case.path());
+    engage(case.path(), "close-go");
     let spinning = start_spinning_with(
         "obk",
         &mut fx,
         false,
-        &[("SOT_TEST_SHUTDOWN_BOUND_MS", "1")],
+        &[("SOT_TEST_SHUTDOWN_BOUND_MS", "2000"), (gates, &folder)],
     )
     .await;
     let mut run = spinning.run;

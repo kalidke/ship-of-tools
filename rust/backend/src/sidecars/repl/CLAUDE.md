@@ -39,3 +39,7 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
 - The shim project is resolved at every spawn (`Repl::repl_project`), never cached. `spawn_supervisor` is the only REPL spawn recipe: user code's active project and cwd are the selected user directory, even before it has a `Project.toml`; the shim is a fallback on `JULIA_LOAD_PATH`, never the bare-workspace active project.
 - Once `repl.execute` announces `Started`, every returned report closes that run: a submit failure or collected result without `Done` gets a synthetic `Done`; an already completed result gets no duplicate from the handler. Validation before `Started` creates no drawer run.
 - `repl.execute` output is collected loss-free per eval, text capped at `EXEC_TEXT_CAP` (`ExecAccum`).
+- A test's Julia child never inherits the test binary's stdout or stderr (the leak probe in `project_tests.rs` nulls
+  its stderr): Julia's runtime sets `O_NONBLOCK` on an inherited stdio pipe and never restores it, and the flag lives on
+  the pipe's open file description, so every later writer to the job's shared stderr (the test binaries after it and
+  their children) gets EAGAIN once the pipe is full.

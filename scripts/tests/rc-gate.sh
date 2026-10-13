@@ -12,7 +12,10 @@
 # Julia suites and the Rust tests, whose WGL page test adds WGLMakie from it), SSH_AUTH_SOCK and
 # CARGO_PROFILE_DEV_DEBUG when set. CARGO_TARGET_DIR is the gate's alone while it runs: its jobs run the binaries in it (the
 # tests.tsv paths, `sotd`, `sot-capsule`), and summary.txt's first line names one head and tree; a build of another
-# checkout into it would replace them mid-run. Every job gets the container's private XDG_RUNTIME_DIR and no
+# checkout into it would replace them mid-run. It belongs to one checkout for good: the first run names that checkout in
+# <target>/rc-gate-checkout, and a run for any other checkout is refused (exit 2) before anything is built, since cargo
+# keys a workspace crate by its path inside the workspace and trusts file times, so a second tree built into one target
+# can run the first tree's binaries. Every job gets the container's private XDG_RUNTIME_DIR and no
 # DBUS_SESSION_BUS_ADDRESS, so no test scope reaches the user's systemd manager. Needs jq. Exit 2 on bad args;
 # otherwise 0 (130 if interrupted) and the verdict is in <logdir>/summary.txt: it ends in ALLDONE, or ALLDONE FAILED
 # when any job's rc is nonzero, the job runner failed, a job never ran, the run was interrupted, or a test left a
@@ -22,8 +25,9 @@
 # rc-gate, so summary.txt gets no ALLDONE line; a summary without one is a failed run.
 # A selected Rust job's result is zero only when its exact body completed successfully. A missing,
 # ignored-only or mismatched body produces a failed result even if the executable exited zero.
-# Ignored names from split binaries are reported as skipped and are not ordinary jobs. Aggregate
-# raw test counts are informational; the checked job results decide ALLDONE or ALLDONE FAILED.
+# Ignored names from split binaries are reported as skipped and are not ordinary jobs. The checked job
+# results alone decide ALLDONE or ALLDONE FAILED, and the summary sums no test counts: a test that re-runs its binary
+# prints the child's own libtest summary into the job's log, so a sum of summary lines miscounts.
 
 SELF=$(readlink -f "$0")
 source "$(dirname "$SELF")/lib-test-body.sh" || exit 2
@@ -288,6 +292,14 @@ if [ $# -lt 2 ] || [ -z "${CARGO_TARGET_DIR:-}" ] || ! [[ $CAP =~ ^[1-9][0-9]*$ 
   echo "usage: CARGO_TARGET_DIR=... rc-gate.sh <checkout> <logdir> [cap >= 1]" >&2
   exit 2
 fi
+# One target per checkout, for good: the first run names its checkout in the target; a run for another is refused.
+D=$(cd "$1" && pwd) || exit 2
+CLAIM=$CARGO_TARGET_DIR/rc-gate-checkout
+if [ -e "$CLAIM" ] && [ "$(cat "$CLAIM")" != "$D" ]; then
+  echo "rc-gate: $CARGO_TARGET_DIR holds the build of $(cat "$CLAIM"); give $D a target of its own" >&2
+  exit 2
+fi
+mkdir -p "$CARGO_TARGET_DIR" && printf '%s\n' "$D" > "$CLAIM" || exit 2
 R=/sys/fs/cgroup; [ -e "$R/cgroup.controllers" ] || R=/sys/fs/cgroup/unified
 CG=$R$(sed -n 's/^0:://p' /proc/self/cgroup)
 [ -r "$CG/cgroup.procs" ] || { echo "rc-gate: needs a cgroup v2 control group" >&2; exit 2; }
@@ -300,7 +312,6 @@ if [ -d "$2" ] && [ -n "$(ls -A "$2")" ]; then
   echo "rc-gate: logdir $2 exists and is not empty" >&2
   exit 2
 fi
-D=$(cd "$1" && pwd) || exit 2
 mkdir -p "$2" || exit 2
 L=$(cd "$2" && pwd)
 mkdir -p "$L/rust" "$L/steps"
@@ -364,21 +375,6 @@ LEFT=$(cat "$L/leftovers.txt" 2> /dev/null)
 # the verdict is being written: from here no signal changes it
 trap '' INT TERM HUP
 
-PASSED=0 FAILED=0 IGNORED=0 FL=0 BIN=0 SEEN=" "
-for f in "$L"/rust/*.log; do
-  [ -e "$f" ] || continue
-  k=$(basename "$f" .log)
-  case $k in
-    *__*)
-      p=${k%%__*}
-      case $SEEN in *" $p "*) ;; *) SEEN+="$p "; BIN=$((BIN + 1)) ;; esac ;;
-    *) BIN=$((BIN + $(grep -c '^test result' "$f"))) ;;
-  esac
-  read -r p1 f1 i1 < <(awk '/^test result/ {p+=$4; f+=$6; i+=$8} END {print p+0, f+0, i+0}' "$f")
-  PASSED=$((PASSED + p1)) FAILED=$((FAILED + f1)) IGNORED=$((IGNORED + i1))
-  FL=$((FL + $(grep -c '^test .* FAILED$' "$f")))
-done
-
 # one sweep over every result file: a failure or a job that never ran is a failure
 RC=0
 NOTES=
@@ -394,7 +390,7 @@ for f in "$L"/rust/*.rc "$L"/steps/*.rc; do
   esac
 done
 [ "$BUILD_RC" -eq 0 ] || RC=$BUILD_RC
-rc rust-workspace "$RC" "binaries=$BIN passed=$PASSED failed=$FAILED ignored=$IGNORED $FL FAILED-lines"
+rc rust-workspace "$RC"
 [ -n "$NOTES" ] && printf '%s' "$NOTES" >> "$L/summary.txt"
 [ "$XS" -eq 0 ] || rc pipeline "$XS"
 [ -z "$LEFT" ] || sed 's/^/leftover /' <<< "$LEFT" >> "$L/summary.txt"

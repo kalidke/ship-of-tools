@@ -1,5 +1,6 @@
 //! What the harness reads of the real processes it runs: a bounded poll, and the report a process held at a named
-//! phase barrier (`sot_log::test_barrier`) leaves in the barrier folder.
+//! phase barrier (`sot_log::test_barrier`) leaves in the barrier folder; and the daemon's held points
+//! (`lifecycle::test_gates`), which a case engages and opens.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -71,6 +72,27 @@ impl BarrierDir {
         std::fs::write(self.dir.join(format!("{phase}.{ticket}.go")), b"")
             .expect("write the go file");
     }
+}
+
+/// The folder of the daemon's held points under `case`, made, and the variable that gives it to a daemon
+/// (`SOT_TEST_GATES`, feature `daemon-lifetime-faults`). An ordering the product leaves to chance (a close against its
+/// backstop, a close against an update) is the case's to choose: it engages a point before the daemon reaches it and opens
+/// it once it has seen what it wants; a point engaged and never opened holds the daemon there for at most a minute.
+pub fn held_points(case: &Path) -> (&'static str, String) {
+    let folder = case.join("gates");
+    std::fs::create_dir_all(&folder).expect("the folder of held points");
+    ("SOT_TEST_GATES", folder.display().to_string())
+}
+
+/// Engage the held point `name` of the case: the daemon waits there until the case opens it.
+pub fn engage(case: &Path, name: &str) {
+    std::fs::write(case.join("gates").join(format!("{name}.hold")), b"hold")
+        .expect("engage a held point");
+}
+
+/// Open the held point `name` of the case.
+pub fn open(case: &Path, name: &str) {
+    std::fs::write(case.join("gates").join(name), b"go").expect("open a held point");
 }
 
 fn parse_report(text: &str) -> Option<Report> {

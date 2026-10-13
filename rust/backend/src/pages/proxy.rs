@@ -421,23 +421,23 @@ mod tests {
         dres.unwrap();
     }
 
-    /// A Pluto grant ends with its supervisor: after its release, a listener that took over the former port is
-    /// refused and sees no connection.
+    /// A Pluto grant ends with its supervisor: after its release, a request for the former port is refused and the
+    /// listener on it sees no connection. The case keeps its listener for the whole case: a port it let go may be held
+    /// by any other socket meanwhile (a sibling test's forked child holds a copy of every descriptor until it execs),
+    /// and the allowlist judges the port, never the listener on it.
     #[tokio::test]
-    async fn expired_pluto_grant_refuses_rebound_port() {
+    async fn expired_pluto_grant_refuses_its_port() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
-        let owner = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = owner.local_addr().unwrap().port();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
         let grant = crate::sidecars::pluto::Grant::publish(port);
         assert!(allowed_proxy_ports().contains(&port), "setup: the live grant allows the port");
-        drop(owner);
         drop(grant);
-        let replacement = TcpListener::bind(("127.0.0.1", port)).await.expect("take over the former port");
         let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = accepted.clone();
         tokio::spawn(async move {
-            while let Ok((_stream, _)) = replacement.accept().await {
+            while let Ok((_stream, _)) = listener.accept().await {
                 counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
         });
@@ -455,7 +455,7 @@ mod tests {
             .expect("the rebound port's refusal within BOUND");
         dres.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 0, "the replacement saw a connection");
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 0, "the listener saw a connection");
     }
 
     #[tokio::test]
