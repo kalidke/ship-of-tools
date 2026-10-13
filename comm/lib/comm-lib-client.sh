@@ -420,16 +420,16 @@ sot_json_escape() {
 }
 
 # _sot_windows_sid — the process token's user SID under git-bash, the value `own_account_id()` gives Rust on
-# Windows. Three probes in turn, the first that prints a SID wins: `whoami /user` called directly (MSYS must not
-# rewrite its `/user` style arguments as paths, hence MSYS2_ARG_CONV_EXCL), the same through `cmd`, and PowerShell's
-# WindowsIdentity. When none does, what each printed goes to stderr, so a runner or box where the account really
-# cannot be read says why.
+# Windows. Two probes in turn, the first that prints a SID wins: Windows' own whoami, by full path under SYSTEMROOT
+# (in Git Bash a bare `whoami`, and cmd's, is Git's coreutils one: `whoami: extra operand '/user'`), with
+# MSYS2_ARG_CONV_EXCL so its `/user` style arguments are not rewritten as paths; then PowerShell's WindowsIdentity, a
+# slower start of its own. When neither does, what each printed goes to stderr, so a runner or box where the account
+# really cannot be read says why.
 _sot_windows_sid() {
     local probe out sid diag=""
-    for probe in whoami cmd powershell; do
+    for probe in whoami powershell; do
         case "$probe" in
-            whoami) out="$(MSYS2_ARG_CONV_EXCL='*' whoami /user /fo csv /nh 2>&1)" ;;
-            cmd) out="$(cmd //c "whoami /user /fo csv /nh" 2>&1)" ;;
+            whoami) out="$(MSYS2_ARG_CONV_EXCL='*' "${SYSTEMROOT:-C:\\Windows}/System32/whoami.exe" /user /fo csv /nh 2>&1)" ;;
             powershell) out="$(powershell.exe -NoProfile -NonInteractive -Command '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value' 2>&1 </dev/null)" ;;
         esac
         out="$(printf '%s' "$out" | tr -d '\r')"

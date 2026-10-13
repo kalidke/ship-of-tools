@@ -203,7 +203,6 @@ check "fe (windows): a path outside the repo is refused" "$(fe "$WIN_PATH" "$WOR
 # process; this suite's pipe goes to the recording socket) gets cygpath -m -l's spelling, a unix: daemon the path as
 # written. `sot-fe docs`, `sot-fe repl run` (with and without --fresh) and comm-probe's workspace.create.
 export GUARD_PIPE_SOCKET="$REC"
-printf '#!/bin/sh\nprintf '"'"'"fakehost\\\\fakeuser","S-1-5-21-1-2-3-1001"\\r\\n'"'"'\n' > "$WIN/cmd"; chmod +x "$WIN/cmd"
 PIPE='pipe:\\.\pipe\sot-paths-test'
 sent() {  # OP JQ-PATH PATH CMD... — the value at JQ-PATH of the OP request CMD sends, run from the repo with PATH
     local op="$1" q="$2" p="$3"; shift 3

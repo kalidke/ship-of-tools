@@ -73,6 +73,8 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   daemon inside a payload, where Git Bash converts nothing, uses it for a `pipe:` daemon): on Windows git
   prints `C:/...` with long names (and `realpath` keeps it), a native daemon `C:\...`, and the shell `/c/...` or
   `/tmp/...`, whose folder can carry a short 8.3 name.
+- A Windows program Git Bash also ships (`whoami`) is called by full path under `SYSTEMROOT`: by its bare name, Git Bash
+  (and a `cmd` started from it) runs Git's coreutils one (`_sot_windows_sid`).
 - A rule written in both shell and Rust changes in both in one commit (the lock record, the cursor, the lock identity, the unread count, the heartbeat).
 - The host piece of a derived handle is `_sot_handle_host` (sanitized to 12, plus a digest of the raw host when that changed it): `sot_derive_handle` and ccx's default `<repo>-cx-<host>` both build it, so a Codex default is always a name `workspace.create` accepts. ccx sources this library in a subshell (it sets `umask 077`) and stops the launch when the derivation fails.
 - HOST, registry host facts and unpinned self-slot keys use sot_host, the declared-host twin. HANDLE_HOST is the raw host component (`sot_raw_host`: raw `hostname -s`, case kept, a non-empty `SOT_COMM_TEST_HOST` first) used only for derived handles and validated legacy-slot migration; an explicit self-file or name pin is kept verbatim. Context and despawn format slots through _sot_self_slot. Despawn cleans the admitted target daemon's slot only after confirmed destroy.
