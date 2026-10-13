@@ -2,10 +2,11 @@
 # test-sot-fe-paths.sh — an absolute path a session gives `sot-fe preview` or `sot-nav.sh preview` is made relative to
 # its root whatever its spelling. On Windows git prints its root as C:/..., a native daemon spells a row's root C:\...,
 # and the shell spells a path /c/... or /tmp/..., so the two are compared in the one spelling a folder has on the box:
-# comm-lib's sot_relative_to over sot_native_path, the library's one `cygpath -m`. Linux has no cygpath, and there the
+# comm-lib's sot_relative_to over sot_native_path, the library's one `cygpath -m -l`. Linux has no cygpath, and there the
 # paths compare as written. Here a stand-in cygpath (and a git that prints its root through it, as Git for Windows
-# does) shows the Windows arm; the hosted Windows step runs the real ones. No daemon: a send goes to a socket nobody
-# serves, in this suite's own work directory, and never to a real ~/.sot-comm.
+# does) shows the Windows arm; the real ones ran only in the tmp workflows' hosted steps (W7, W8, W9), and no CI job
+# runs this suite on Windows. Sections 4 and 5 read what sot-fe sends from a recording socket in this suite's own work
+# directory, never a real ~/.sot-comm.
 #
 # Usage: agents/tests/test-sot-fe-paths.sh     Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
