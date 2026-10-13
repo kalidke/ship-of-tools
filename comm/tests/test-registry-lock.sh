@@ -116,7 +116,7 @@ sleep_log "$SHIM" "$SLEEPS" || { echo "FATAL: no logging sleep" >&2; exit 2; }
 lib_logged() { : > "$SLEEPS"; PATH="$SHIM:$PATH" lib "$1"; }
 field() { cut -d: -f"$2" <<<"$1"; }
 marker() { printf '%s.reclaim.%s' "$P" "${1//:/.}"; }
-markers() { find "$SOT_COMM_HOME" -maxdepth 1 -name '.registry.lock.reclaim.*' | wc -l; }
+markers() { find "$SOT_COMM_HOME" -maxdepth 1 -name '.registry.lock.reclaim.*' | wc -l | tr -d ' '; }  # BSD's wc pads
 reset() {
     rm -f "${SOT_COMM_HOME:?}"/.registry.lock*
     rmdir "${P:?}" 2>/dev/null
@@ -133,6 +133,11 @@ chmod +x "$NOHIRES/perl"
 NOPROOF="$WORK/noproof"; mkdir -p "$NOPROOF"
 printf '#!/bin/sh\n[ "$1" = -s ] && { echo Darwin; exit 0; }\nexec %s "$@"\n' "$(command -v uname)" > "$NOPROOF/uname"
 chmod +x "$NOPROOF/uname"
+# A mount whose line for the comm home's mount says nothing of `local`: macOS's vouch reads it (t25), as Linux's reads
+# a findmnt stand-in.
+NOLOCAL="$WORK/nolocal"; mkdir -p "$NOLOCAL"
+printf '#!/bin/sh\necho "server:/export on $(df -P "$SOT_COMM_HOME" | awk '"'"'NR == 2 { print $NF }'"'"') (nfs, nodev, nosuid)"\n' > "$NOLOCAL/mount"
+chmod +x "$NOLOCAL/mount"
 # macOS's readers on Linux (t27): a Darwin uname, a ps whose lstart line ends in spaces as macOS pads it, and a date that
 # keeps the line it was given in $WORK/date.arg and reads `-j -f` through GNU's -d.
 MACSHIM="$WORK/macshim"; mkdir -p "$MACSHIM"; cp "$NOPROOF/uname" "$MACSHIM/uname"
@@ -396,9 +401,9 @@ check "24: a record with no proof fields is refused by the clear and named by ha
 # record has no proof fields, so when it dies the next waiter there says by hand (review F1).
 t25() {
     reset; local out rec
-    rec="$(lib '_sot_findmnt() { echo "overlay rw,relatime"; }; with_lock kill -9 $$' 2>/dev/null; cat "$P")"
+    rec="$(PATH="$NOLOCAL:$PATH" lib '_sot_findmnt() { echo "overlay rw,relatime"; }; with_lock kill -9 $$' 2>/dev/null; cat "$P")"
     [[ "$rec" =~ ^[^:]*:-:-:-:[0-9]+:-$ ]] || { echo "the record kept its proof: $rec"; return 1; }
-    out="$(lib '_sot_findmnt() { echo "overlay rw,relatime"; }; SOT_LOCK_WAIT_SECS=0 with_lock true' 2>&1)"
+    out="$(PATH="$NOLOCAL:$PATH" lib '_sot_findmnt() { echo "overlay rw,relatime"; }; SOT_LOCK_WAIT_SECS=0 with_lock true' 2>&1)"
     contains "$out" "(its record has no proof fields): if it is, remove $P by hand." || { echo "the waiter: $out"; return 1; }
     out="$(bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" && { echo "the clear cleared it: $out"; return 1; }
     [ "$(cat "$P")" = "$rec" ] && [ "$(markers)" = 0 ] && contains "$out" "(its record has no proof fields): if it is, remove $P by hand." \
