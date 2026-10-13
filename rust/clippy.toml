@@ -143,7 +143,8 @@ disallowed-methods = [
   # bidi paragraphs of different directions, so text enters a cosmic-text buffer only through set_buffer_text and
   # set_buffer_rich_text (rust/frontend/src/ui/render/text.rs), which make every other bidi paragraph separator a
   # space. The rule holds every function of cosmic-text 0.12 (default features) that makes or sets a line's text, and
-  # Editor::new, since an editor, its only Edit, takes text through its actions.
+  # Editor::new, since an editor, its only Edit, takes text through its actions. An SVG's text reaches usvg only through
+  # svg_tree (rust/frontend/src/ui/preview/image/svg.rs), which applies the same rule: usvg's three ways to a tree.
   { path = "cosmic_text::Buffer::set_text", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
   { path = "cosmic_text::Buffer::set_rich_text", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
   { path = "cosmic_text::BorrowedWithFontSystem::set_text", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
@@ -153,6 +154,9 @@ disallowed-methods = [
   { path = "cosmic_text::ShapeLine::new", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
   { path = "cosmic_text::ShapeLine::new_in_buffer", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
   { path = "cosmic_text::Editor::new", reason = "text enters a cosmic-text buffer only through rust/frontend/src/ui/render/text.rs's set_buffer_text and set_buffer_rich_text, so no line it shapes holds two bidi paragraphs" },
+  { path = "usvg::Tree::from_data", reason = "an SVG reaches usvg only through rust/frontend/src/ui/preview/image/svg.rs's svg_tree, so its text holds no bidi paragraph separator (one_paragraph_svg)" },
+  { path = "usvg::Tree::from_str", reason = "an SVG reaches usvg only through rust/frontend/src/ui/preview/image/svg.rs's svg_tree, so its text holds no bidi paragraph separator (one_paragraph_svg)" },
+  { path = "usvg::Tree::from_xmltree", reason = "an SVG reaches usvg only through rust/frontend/src/ui/preview/image/svg.rs's svg_tree, so its text holds no bidi paragraph separator (one_paragraph_svg)" },
   # A child's output by lines (wire): a child may write any byte, and a strict UTF-8 line reader fails at the first
   # (ending a kernel's generation, a REPL, Pluto, or a stderr drain whose closed pipe then fails the child's next
   # write), so a child's output is read by lines only through sot_protocol::child_lines (ChildLines,

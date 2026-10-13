@@ -129,7 +129,9 @@ fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     } else {
         bytes
     };
-    Tree::from_data(&one_paragraph_svg(bytes), &opts).context("svg parse failed")
+    #[allow(clippy::disallowed_methods, reason = "text into the shaper: an SVG's one way into usvg, through one_paragraph_svg")]
+    let tree = Tree::from_data(&one_paragraph_svg(bytes), &opts);
+    tree.context("svg parse failed")
 }
 
 /// SVG source whose text holds no bidi paragraph separator: usvg shapes only a text chunk's first bidi paragraph
