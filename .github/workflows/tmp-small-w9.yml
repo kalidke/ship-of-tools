@@ -1,0 +1,40 @@
+# TEMPORARY, SMALL-066 W9 on a hosted Windows runner; never merged. Pushed alone on tmp/ci-small-w9 (lane/small-066b at
+# W9's commit), read, then the branch is deleted. Nothing here pushes, publishes or reads a secret. The step is the
+# plan's w9-hosted-step.sh; the question is in the lead's item file.
+name: tmp small-w9
+on:
+  push:
+    branches: [tmp/ci-small-w9]
+jobs:
+  tmp-w9-sid-windows:
+    name: tmp W9, the account's SID from Windows' whoami (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: W9's premises (P) and probe (B)
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set +e -u
+          # W9's hosted check (SMALL-066): in Git Bash a bare `whoami` (and cmd's) is Git's coreutils one, so the SID probe must
+          # call Windows' whoami by full path under SYSTEMROOT. The P lines check the premises and need no W9 code; the B lines
+          # run W9's _sot_windows_sid at this checkout, B2 with PowerShell unavailable, so only the whoami.exe probe can answer.
+          fail=0
+          want() { if [ "$2" = "$3" ]; then echo "w9 $1 ok: $2"; else echo "w9 $1 FAILED: got '$2', want '$3'"; fail=$((fail + 1)); fi; }
+          echo "w9 SYSTEMROOT=${SYSTEMROOT:-unset} bare-whoami=$(command -v whoami)"
+          echo "w9 P1 (bare whoami, expected Git's error): $(MSYS2_ARG_CONV_EXCL='*' whoami /user /fo csv /nh 2>&1 | tr -d '\r' | head -n 1)"
+          full="$(MSYS2_ARG_CONV_EXCL='*' "${SYSTEMROOT:-C:\\Windows}/System32/whoami.exe" /user /fo csv /nh 2>&1 | tr -d '\r')"
+          sid="$(printf '%s\n' "$full" | grep -oE 'S-1-[0-9]+(-[0-9]+)+' | tail -n 1)"
+          ps="$(powershell.exe -NoProfile -NonInteractive -Command '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value' 2>&1 </dev/null | tr -d '\r')"
+          want P2 "$sid" "$ps"
+          bin="$RUNNER_TEMP/w9-bin"
+          bash comm/tests/stage-bin.sh "$bin" > /dev/null || exit 2
+          want B1 "$(bash -c '. "$1/comm-lib.sh"; _sot_windows_sid' _ "$bin" 2>&1)" "$ps"
+          nops="$RUNNER_TEMP/w9-nops"; mkdir -p "$nops"
+          printf '#!/bin/sh\nexit 1\n' > "$nops/powershell.exe"; chmod +x "$nops/powershell.exe"
+          t0="$(date +%s%N)"
+          want B2 "$(PATH="$nops:$PATH" bash -c '. "$1/comm-lib.sh"; _sot_windows_sid' _ "$bin" 2>&1)" "$ps"
+          echo "w9 B2 took $(( ($(date +%s%N) - t0) / 1000000 )) ms"
+          echo "w9 failed=$fail"
+          exit "$fail"
