@@ -10,7 +10,8 @@ rust/frontend/src/ui/CLAUDE.md.
 - `overlay.rs`: the figure caption store and the scalebar and caption draw geometry.
 - `png.rs`: decodes PNG bytes to RGBA8, fits them to the GPU's texture limit and uploads a quad.
 - `roi.rs`: the raster-node test, the ROI capture to `image.crop` and its applied report.
-- `svg.rs`: rasterizes SVG bytes with resvg at a caller-given pixel size and uploads a quad.
+- `svg.rs`: rasterizes SVG bytes with resvg at a caller-given pixel size and uploads a quad; an SVG's text reaches usvg
+  with no bidi paragraph separator (`one_paragraph_svg`).
 - `view.rs`: the view geometry: letterbox, zoom bound, pan scaling and the source-pixel ROI mapping both ways.
 - `replies.rs`: figure, ROI crop and pixel-size replies
 

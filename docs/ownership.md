@@ -313,7 +313,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | result target resolution and row attachment names | rule | fe-ui | `rust/frontend/src/ui/session/workspace_key.rs` `resolve_listed_workspace`; row facts from `workspace.list` |
 | pending-result lifetime and acknowledgement | state, rule | fe-ui | `rust/frontend/src/ui/session/badge.rs` `PendingNav`, result/attempt serials and admission; authoritative list/destroy invalidation, cursor, preview and presentation hooks; fe-net carries the saved attempt through its existing pending entry and event |
 | text from outside the window drawn in a cell run, a strip name or the Monitor's chart: a CSI sequence is removed, `\r\n`, `\n`, a lone `\r`, U+0085, U+2028 and U+2029 end a line, any other control character is a space, and where only one row exists the lines are joined by ` ⏎ ` | rule | fe-ui | `rust/frontend/src/ui/chrome/status.rs` `cell_lines`, `cell_row` |
-| text into cosmic-text: nothing else sets a buffer's text, and every bidi paragraph separator but `\n` and `\r` becomes a space, so no line shaped holds two paragraphs | rule | fe-ui | `rust/frontend/src/ui/render/text.rs` `set_buffer_text`, `set_buffer_rich_text`; `rust/clippy.toml` (text-into-the-shaper group) |
+| text into cosmic-text or usvg: nothing else sets a buffer's text, and every bidi paragraph separator but `\n` and `\r` becomes a space, an SVG's character references included, so no line shaped holds two paragraphs | rule | fe-ui | `rust/frontend/src/ui/render/text.rs` `set_buffer_text`, `set_buffer_rich_text`; `rust/clippy.toml` (text-into-the-shaper group); `rust/frontend/src/ui/preview/image/svg.rs` `one_paragraph_svg` |
 
 ## Two owners today
 
