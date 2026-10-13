@@ -16,6 +16,7 @@ if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
     echo "FATAL: mktemp did not produce a usable work directory (got: '$WORK')" >&2
     exit 1
 fi
+WORK="$(cd "$WORK" && pwd -P)" || exit 1   # git prints the physical root; a Mac's TMPDIR lies behind /var -> /private/var
 trap 'rm -rf "${WORK:?}"' EXIT
 
 export SOT_COMM_HOME="$WORK/home"
@@ -159,8 +160,9 @@ check "nav (windows): the root itself" "$(nav "$WIN_PATH" 'C:\r\proj' /c/r/proj)
 # outside the repo.
 mkdir -p "$WORK/repo" "$WORK/elsewhere" && (cd "$WORK/repo" && "$REAL_GIT" init -q && : > a.txt) || exit 2
 REC="$WORK/rec.sock" RECLOG="$WORK/rec.log"
-timeout 300 python3 -c '
-import os, socket, sys, threading
+python3 -c '
+import os, signal, socket, sys, threading
+signal.alarm(300)
 s = socket.socket(socket.AF_UNIX)
 s.bind(sys.argv[1])
 s.listen(8)
