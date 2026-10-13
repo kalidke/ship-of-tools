@@ -7,6 +7,7 @@
 // supervisor (see rust/backend/src/mathjax.rs).
 //
 // Wire format:
+//   ready:    {"ready":true}   (once, first, when the modules are loaded)
 //   request:  {"id":<u64>, "tex":"<latex>", "display":<bool>}
 //   ok:       {"id":<u64>, "svg":"<svg>", "ex":<exFactor>}
 //   err:      {"id":<u64>, "error":"<message>"}
@@ -29,7 +30,7 @@ const svgOut = new SVG({ fontCache: "none" }); // fontCache "none" so each
 // SVG is self-contained — resvg won't see cross-document <defs> refs.
 const doc = mathjax.document("", { InputJax: tex, OutputJax: svgOut });
 
-process.stderr.write("mathjax sidecar ready\n");
+process.stdout.write(JSON.stringify({ ready: true }) + "\n");
 
 let buf = "";
 process.stdin.setEncoding("utf8");

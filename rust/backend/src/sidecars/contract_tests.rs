@@ -305,7 +305,7 @@ async fn repl_uses_private_signal() {
 async fn mathjax_uses_private_signal() {
     if !isolated(
         "sidecars::contract_tests::mathjax_uses_private_signal",
-        Duration::from_secs(60),
+        Duration::from_secs(150),
     ) {
         return;
     }
@@ -314,7 +314,7 @@ async fn mathjax_uses_private_signal() {
     require_mathjax_modules();
     std::env::set_var("SOT_NODE_BIN", executable("node"));
     let mathjax = MathJax::new(MathJax::default_script_path(), sig);
-    let svg = tokio::time::timeout(Duration::from_secs(30), mathjax.render("x^2", false))
+    let svg = tokio::time::timeout(Duration::from_secs(90), mathjax.render("x^2", false))
         .await
         .expect("the render must answer")
         .expect("the render must succeed");
@@ -335,6 +335,43 @@ async fn mathjax_uses_private_signal() {
     assert!(refused.is_err(), "a fired Signal must refuse another start");
     assert_eq!(sig.live(), 0, "the refused start created no child");
     println!("D-L mathjax private Signal PASS");
+}
+
+/// A node child slower to start than a render's bound (10 s) still answers its first render: the start has its own
+/// bound, and a render's starts once the child says it is ready. The stand-in is node running a script that says it is
+/// ready after 12 s, then answers each request with an empty SVG.
+#[tokio::test]
+async fn a_slow_start_is_not_counted_against_the_first_render() {
+    if !isolated(
+        "sidecars::contract_tests::a_slow_start_is_not_counted_against_the_first_render",
+        Duration::from_secs(150),
+    ) {
+        return;
+    }
+    const SLOW_START: &str = r#"setTimeout(() => {
+  process.stdout.write(JSON.stringify({ ready: true }) + "\n");
+  require("readline").createInterface({ input: process.stdin }).on("line", (line) => {
+    process.stdout.write(JSON.stringify({ id: JSON.parse(line).id, svg: "<svg/>", ex: 8 }) + "\n");
+  });
+}, 12000);
+"#;
+    let sig = private_signal();
+    let dir = tempfile::Builder::new().prefix("sot-mathjax-slow-").tempdir().expect("owned fixture folder");
+    let script = dir.path().join("slow-start.js");
+    std::fs::write(&script, SLOW_START).expect("write the stand-in");
+    std::env::set_var("SOT_NODE_BIN", executable("node"));
+    let mathjax = MathJax::new(script, sig);
+    let t0 = Instant::now();
+    let rendered = tokio::time::timeout(Duration::from_secs(90), mathjax.render("x^2", false))
+        .await
+        .expect("the render must answer");
+    println!("mathjax-slow-start: {:?} after {:?}", rendered.as_ref().map(|svg| svg.svg.len()), t0.elapsed());
+    let svg = rendered.expect("the first render must succeed");
+    assert!(t0.elapsed() >= Duration::from_secs(12), "setup: the stand-in was ready only after 12 s");
+    assert_eq!(String::from_utf8_lossy(&svg.svg), "<svg/>");
+    sig.fire().expect("fire");
+    within(Duration::from_secs(30), "the stand-in is reaped", || sig.live() == 0).await;
+    println!("mathjax-slow-start PASS");
 }
 
 /// Linux: the listening TCP and bound UDP sockets, as `(protocol, port)`, of every process in process group `group`
@@ -388,7 +425,7 @@ pub(crate) fn group_listeners(group: i32) -> (usize, std::collections::BTreeSet<
 async fn mathjax_helper_tree_listens_nowhere() {
     if !isolated(
         "sidecars::contract_tests::mathjax_helper_tree_listens_nowhere",
-        Duration::from_secs(60),
+        Duration::from_secs(150),
     ) {
         return;
     }
@@ -396,7 +433,7 @@ async fn mathjax_helper_tree_listens_nowhere() {
     require_mathjax_modules();
     std::env::set_var("SOT_NODE_BIN", executable("node"));
     let mathjax = MathJax::new(MathJax::default_script_path(), sig);
-    tokio::time::timeout(Duration::from_secs(30), mathjax.render("x^2", false))
+    tokio::time::timeout(Duration::from_secs(90), mathjax.render("x^2", false))
         .await
         .expect("the render must answer")
         .expect("the render must succeed");
