@@ -135,7 +135,8 @@ fn svg_tree(bytes: &[u8]) -> Result<Tree> {
 
 /// An `.svgz`'s SVG, unpacked on the window's thread to at most `cap` bytes: the product passes `PREVIEW_BINARY_CAP`,
 /// the largest SVG the daemon sends at all, so an `.svgz` asks no more of that thread than the same `.svg` would.
-/// Bytes that are not gzip go on as they are.
+/// One layer: a second is refused, since usvg would unpack it itself, past `one_paragraph_svg`, and no SVG format
+/// nests gzip. Bytes that are not gzip go on as they are.
 fn unpack_svgz(bytes: &[u8], cap: usize) -> Result<Cow<'_, [u8]>> {
     if !bytes.starts_with(&GZIP_MAGIC) {
         return Ok(Cow::Borrowed(bytes));
@@ -146,6 +147,7 @@ fn unpack_svgz(bytes: &[u8], cap: usize) -> Result<Cow<'_, [u8]>> {
         .read_to_end(&mut svg)
         .context("svgz unpack failed")?;
     anyhow::ensure!(svg.len() <= cap, "svgz unpacks past its cap of {cap} bytes");
+    anyhow::ensure!(!svg.starts_with(&GZIP_MAGIC), "svgz holds a second gzip layer");
     Ok(Cow::Owned(svg))
 }
 
@@ -247,6 +249,24 @@ mod tests {
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         gz.write_all(svg).expect("gzip in memory");
         gz.finish().expect("gzip in memory")
+    }
+
+    /// An SVG gzipped twice is refused: unpacking one layer would leave usvg to unpack the second past the door, and
+    /// its text after a paragraph separator would be lost.
+    #[test]
+    fn a_twice_gzipped_svgz_is_refused() {
+        let family = system_fontdb()
+            .faces()
+            .find_map(|face| face.families.first().map(|(name, _)| name.clone()))
+            .expect("a system font");
+        let text = "AA\u{2029}BB";
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="50"><text x="0" y="30" font-family="{family}" font-size="20">{text}</text></svg>"#
+        );
+        match svg_tree(&gzip(&gzip(svg.as_bytes()))) {
+            Ok(tree) => panic!("a twice-gzipped svgz parsed, {} glyphs", glyphs(tree.root())),
+            Err(why) => assert!(format!("{why:#}").contains("svgz holds a second gzip layer"), "{why:#}"),
+        }
     }
 
     /// An `.svgz` is unpacked to its cap and no further: a small gzip of 4 KiB of spaces is refused under a 1 KiB cap,
