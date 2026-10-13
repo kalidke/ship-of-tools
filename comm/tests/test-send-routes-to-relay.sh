@@ -184,8 +184,8 @@ case_a_hostless_row_terminates_instead_of_ping_ponging() {
         && mv "$SOT_COMM_HOME/registry.json.tmp" "$SOT_COMM_HOME/registry.json"
     local out rc
     mkdir -p "$WORK/relay-answer"
-    printf '#!/bin/sh\n[ "$1 $2" = "topology relay-endpoint" ] && { echo "unix:%s/no-such-daemon.sock"; exit 0; }\nexit 97\n' \
-        "$WORK" > "$WORK/relay-answer/sotd"; chmod +x "$WORK/relay-answer/sotd"
+    printf '#!/bin/sh\n%s\n[ "$1 $2" = "topology relay-endpoint" ] && { echo "unix:%s/no-such-daemon.sock"; exit 0; }\nexit 97\n' \
+        "$GUARD_EMPTY_WALK" "$WORK" > "$WORK/relay-answer/sotd"; chmod +x "$WORK/relay-answer/sotd"
     out="$(cd "$WORK" && SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$SENDER_HOST" \
         SOTD_BIN="$WORK/relay-answer/sotd" timeout 5 "$SEND_REAL" "@$LOCAL_PEER" "round and round" 2>&1)"
     rc=$?
@@ -202,7 +202,7 @@ case_a_hostless_row_terminates_instead_of_ping_ponging() {
 HUB="$WORK/hub"
 stub_daemon() {  # PAYLOAD
     rm -rf "${HUB:?}"; mkdir -p "$HUB"; printf '%s' "$1" > "$HUB/answer"
-    { printf '#!/bin/sh\nd=%s\n' "$HUB"; cat <<'NCSTUB'
+    { printf '#!/bin/sh\n%s\nd=%s\n' "$GUARD_EMPTY_WALK" "$HUB"; cat <<'NCSTUB'
 [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
 case "$3" in unix:*) ;; *) exit 97 ;; esac
 while IFS= read -r line; do

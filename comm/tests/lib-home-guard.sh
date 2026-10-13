@@ -21,12 +21,14 @@
 # `sotd.exe`, `pgrep`, `powershell.exe`, `pwsh` and `pwsh.exe` stubs (exit 97)
 # leads PATH: on Windows the library takes SOTD_BIN or LOCALAPPDATA's sotd.exe and
 # probes its pipe through that binary, so LOCALAPPDATA holds a copy of the refusing
-# sotd.exe and discovery finds nothing that answers. Every sotd the guard writes (those
-# stubs and guard_bridge_stub's) answers one question, `ancestors --from <pid>`, with an
-# empty walk and exit 0: on Windows a gated comm script reads its native ancestors
-# through that binary (comm-lib-agent-layers.sh), so a suite's walk ends at the top of
-# its own MSYS processes, as a Linux run's ends at init. The real walk is pinned by
-# rust/backend/tests/ancestors.rs, the shell's by test-agent-layers.sh (SIMWIN).
+# sotd.exe and discovery finds nothing that answers. Every stub sotd, the guard's (those
+# stubs and guard_bridge_stub's) and each one a suite hands a comm script through SOTD_BIN
+# or PATH, carries GUARD_EMPTY_WALK right after its #!: it answers one question,
+# `ancestors --from <pid>`, with an empty walk and exit 0. On Windows a gated comm script
+# reads its native ancestors through that binary (comm-lib-agent-layers.sh), so a suite's
+# walk ends at the top of its own MSYS processes, as a Linux run's ends at init. The real
+# walk is pinned by rust/backend/tests/ancestors.rs, the shell's by test-agent-layers.sh
+# (SIMWIN).
 # `ssh` is not stubbed: it only dials an endpoint
 # discovery produced, and suites run them against sockets and hosts of their own.
 # A self-test sources the tree's comm-lib.sh and calls sot_daemon_endpoint,
@@ -70,6 +72,9 @@ for _guard_v in $(compgen -e); do
 done
 unset _guard_v
 
+# GUARD_EMPTY_WALK — the line every stub sotd carries right after its #! (see above).
+GUARD_EMPTY_WALK='[ "${1:-} ${2:-}" != "ancestors --from" ] || exit 0'
+
 # guard_bridge_stub DIR — writes DIR/sotd and DIR/sotd.exe, a suite's stand-in for `sotd stdio-bridge --endpoint` (the
 # library opens every local endpoint through that bridge, ADR 0049 User isolation), and prints DIR/sotd. With
 # `stdio-bridge --endpoint unix:<path>` it carries stdin to the socket the suite serves at <path> and its replies back,
@@ -79,9 +84,7 @@ unset _guard_v
 # refusing stubs do.
 guard_bridge_stub() {
     mkdir -p "$1" || return 1
-    cat > "$1/sotd" <<'STUB' || return 1
-#!/usr/bin/env bash
-[ "${1:-} ${2:-}" != "ancestors --from" ] || exit 0
+    { printf '#!/usr/bin/env bash\n%s\n' "$GUARD_EMPTY_WALK"; cat <<'STUB'
 [ "${1:-}" = stdio-bridge ] && [ "${2:-}" = --endpoint ] || exit 97
 case "${3:-}" in
     unix:*) sock="${3#unix:}" ;;
@@ -111,6 +114,7 @@ while True:
     s.sendall(b)
 ' "$sock"
 STUB
+    } > "$1/sotd" || return 1
     chmod +x "$1/sotd" && cp "$1/sotd" "$1/sotd.exe" || return 1
     printf '%s\n' "$1/sotd"
 }
@@ -137,7 +141,7 @@ _guard_close_discovery() {
     mkdir -p "$d/bin" "$d/run" "$d/tmp" "$d/comm" "$d/localappdata" && chmod 700 "$d/run" || _guard_fatal "no scratch directory $d"
     for s in sotd sotd.exe pgrep powershell.exe pwsh pwsh.exe; do
         { printf '#!/bin/sh\n'
-          case "$s" in sotd|sotd.exe) printf '[ "${1:-} ${2:-}" != "ancestors --from" ] || exit 0\n' ;; esac
+          case "$s" in sotd|sotd.exe) printf '%s\n' "$GUARD_EMPTY_WALK" ;; esac
           printf 'echo "lib-home-guard: refused daemon discovery ($0 $*)" >&2\nexit 97\n'; } > "$d/bin/$s" \
             && chmod +x "$d/bin/$s" || _guard_fatal "cannot install the $s stub"
     done
