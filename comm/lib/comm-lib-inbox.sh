@@ -242,7 +242,6 @@ sot_comm_file() {  # HANDLE LINE
     # one-second hop, so the window is the lock wait plus 3 s: 5 s at the default 2 s
     # wait, and never shorter than the appender's own bound.
     window=$(( SOT_INBOX_LOCK_WAIT_SECS + 3 ))
-    [ "${SOT_SEND_TIMEOUT:-0}" -gt "$window" ] 2>/dev/null && window="$SOT_SEND_TIMEOUT"
     # The text reaches jq on stdin, never argv (the MSYS2 guard, sot_jq_rawfile).
     # A broadcast copy (the line's own `to` empty) must stay one after filing.
     frame="$(printf '%s' "$2" | jq -c --arg t "$h" \

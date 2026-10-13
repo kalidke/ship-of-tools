@@ -46,6 +46,11 @@ impl Links {
         LinkEnd { links: self.clone(), key, offers, owed: HashMap::new(), next_id: 1 }
     }
 
+    /// The hosts of the attached links.
+    pub fn hosts(&self) -> Vec<String> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).by_key.values().map(|(host, _)| host.clone()).collect()
+    }
+
     /// Offers `req` to every attached link, marked forwarded so each files only into its own folder, and gives each
     /// `within` to answer. `None` when no link is attached. Otherwise the first `ok` is the verdict; with none, a
     /// refusal other than `not_here` (the box that lists the handle refused it), by host; else a link that did not
@@ -94,21 +99,12 @@ fn refusal(to: &str, mut answers: Vec<(String, Option<serde_json::Value>)>, with
     }
     if let Some((host, _)) = answers.iter().find(|(_, a)| a.is_none()) {
         let secs = within.as_secs();
-        return ("file_failed".into(), format!("no box filed @{to}; the daemon on {host} did not answer within {secs}s"));
+        return ("file_failed".into(), format!("the daemon on {host} did not answer within {secs}s; @{to} may still be filed"));
     }
-    ("not_here".into(), format!("no box knows that handle: {to}"))
+    crate::comm::mail::filer::not_here(to)
 }
 
 impl LinkEnd {
-    /// The next offer for this connection to write. Pending forever if every sender is gone, which `Links` never
-    /// allows while this end is attached.
-    pub async fn next(&mut self) -> Offer {
-        match self.offers.recv().await {
-            Some(offer) => offer,
-            None => std::future::pending().await,
-        }
-    }
-
     /// The `comm.file` request that carries `offer`; its answer is owed under the request's id from now on.
     pub fn request(&mut self, offer: Offer) -> anyhow::Result<Frame> {
         let id = self.next_id;
@@ -132,12 +128,13 @@ impl Drop for LinkEnd {
     }
 }
 
-/// The next offer for a connection that may be a link: pending forever for any other connection.
+/// The next offer for a connection that may be a link: pending forever for any other connection. A link's channel
+/// never closes while its end lives: `Links` holds the sender until the end drops.
 pub async fn next_offer(link: &mut Option<LinkEnd>) -> Offer {
-    match link {
-        Some(end) => end.next().await,
-        None => std::future::pending().await,
-    }
+    let Some(end) = link else {
+        return std::future::pending().await;
+    };
+    end.offers.recv().await.expect("Links holds this end's sender until the end drops")
 }
 
 #[cfg(test)]
@@ -151,12 +148,13 @@ mod tests {
 
     /// A link that answers each offer with `answer(to)`, or never when it gives `None`.
     fn serve(links: &Links, host: &str, answer: fn(&str) -> Option<serde_json::Value>) -> tokio::task::JoinHandle<()> {
-        let mut end = links.attach(host.to_string());
+        let mut link = Some(links.attach(host.to_string()));
         tokio::spawn(async move {
             let mut silent = Vec::new();
             loop {
-                let offer = end.next().await;
+                let offer = next_offer(&mut link).await;
                 assert!(offer.req.forwarded, "an offer is marked forwarded");
+                let end = link.as_mut().unwrap();
                 let frame = end.request(offer).unwrap();
                 assert_eq!(frame.op, op::COMM_FILE);
                 let to = frame.payload["to"].as_str().unwrap().to_string();
@@ -211,24 +209,25 @@ mod tests {
         assert_eq!(links.offer(&req("live"), WITHIN).await, Some(Ok(())));
         assert_eq!(
             links.offer(&req("nobody"), WITHIN).await,
-            Some(Err(("file_failed".into(), "no box filed @nobody; the daemon on a did not answer within 4s".into())))
+            Some(Err(("file_failed".into(), "the daemon on a did not answer within 4s; @nobody may still be filed".into())))
         );
     }
 
     #[tokio::test]
     async fn a_dropped_link_leaves_and_its_owed_answers_end() {
         let links = Links::default();
-        let mut end = links.attach("a".into());
+        let mut link = Some(links.attach("a".into()));
         let asking = tokio::spawn({
             let links = links.clone();
             async move { links.offer(&req("live"), WITHIN).await }
         });
-        let offer = end.next().await;
-        let _frame = end.request(offer).unwrap();
-        drop(end);
+        let offer = next_offer(&mut link).await;
+        let _frame = link.as_mut().unwrap().request(offer).unwrap();
+        assert_eq!(links.hosts(), ["a"], "an attached link is named");
+        drop(link);
         assert_eq!(
             asking.await.unwrap(),
-            Some(Err(("file_failed".into(), "no box filed @live; the daemon on a did not answer within 4s".into())))
+            Some(Err(("file_failed".into(), "the daemon on a did not answer within 4s; @live may still be filed".into())))
         );
         assert_eq!(links.offer(&req("live"), WITHIN).await, None, "the dropped link is no longer attached");
     }

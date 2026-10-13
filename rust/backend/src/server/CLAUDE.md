@@ -18,8 +18,9 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   notifications), frontend commands and the monitor tick. Their payloads belong to their owners. `run` also creates the
   hub's `Links`, which a `link`-role connection attaches to (messaging's `comm::mail::links`): such a connection writes
   the `comm.file` requests offered to it and hands back their responses.
-- Each control session's task and state, in `serve_control`: roster guard (control sessions only), declared host and
-  name, active workspace, monitor flag, read deadline, and the off-loop `JoinSet` and semaphore.
+- Each control session's task and state, in `serve_control`: roster guard (control sessions only), declared host, its
+  link end for a `link` connection, active workspace, monitor flag, read deadline, and the off-loop `JoinSet` and
+  semaphore.
 - The op table: the `match` in `dispatch`, which hands each op to its owner's handler (four through the off-loop
   pool) and keeps inline only the arms that touch connection state or must keep request order (`preview.set_scale`),
   and the unknown-op reply.
@@ -65,7 +66,7 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   session pipe's inbound buffer holds both (`bind_session`, `PIPE_INBOUND_BYTES`), so a refusal, which the pipe holds
   open until the client has read it, never waits on a client still blocked in its own write. The cost: a client of this
   account may leave up to 2 MiB of nonpaged pool waiting per connection until the daemon reads it or closes the pipe.
-- Every control connection's `ping` is answered, whatever its role (`handle_ping`); a pinged `fe` or `bridge`
+- Every control connection's `ping` is answered, whatever its role (`handle_ping`); a pinged `fe`, `bridge` or `link`
   connection silent for 90 s is reaped (the reaper arm in `select_once`, `ping_read_deadline`).
 - At most 4 off-loop jobs run per connection, and one queued 10 s is answered with a timeout and never runs
   (`spawn_job`); `pty.*` and `monitor.*` run inline and never wait on that pool.

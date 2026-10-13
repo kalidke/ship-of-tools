@@ -207,11 +207,6 @@ where
 {
     match msg {
         Ok(m) => {
-            // `id` is what makes a receipt possible at all (ADR 0048):
-            // without it in THIS payload the filer has nothing to attribute
-            // its claim to, and the sender waits out its 5 s for a verdict
-            // that can never arrive. Omitted when absent — an older sender
-            // minted none.
             let payload = serde_json::json!({
                 "from": m.from,
                 "to": m.to,

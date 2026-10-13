@@ -40,7 +40,7 @@ The owner asked for the fix as "agree on the one page comm system and then clean
   offers it to every linked daemon, and the one holding that inbox files it and says so.
   A daemon on a box with its own disk keeps its own link to the hub, opened when it
   starts and reopened if it drops, so the box is reachable whenever its rows run,
-  window open or not; its sessions send through that same link. A liveness check runs
+  window open or not. A liveness check runs
   first, on one fact in the comm folder's registry: the receiver's `last_seen` is under ten
   minutes old. The session stamps it as it works, and the daemon that runs its row stamps it
   every minute while the row runs, so an idle row stays live, through a daemon restart too,

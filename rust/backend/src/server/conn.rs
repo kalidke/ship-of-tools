@@ -284,11 +284,11 @@ where
 
 
     // Half-open long-lived-role reaper (topology plan §F step 2). A
-    // tunnelled `fe`/`bridge` connection reaches this daemon as sshd's
+    // tunnelled `fe`/`bridge`/`link` connection reaches this daemon as sshd's
     // Unix-socket side, so `WRITE_TIMEOUT` above never fires for it — a
     // half-open peer's death is otherwise noticed only when the OS-level
     // TCP side gives up (15 min to 2 h). `is_long_lived_role` is true
-    // exactly when this connection's declared role is `fe`/`bridge`
+    // exactly when this connection's declared role is `fe`/`bridge`/`link`
     // (`cli`/`agent`, one-shot roles, are never deadline-gated) — it is
     // only ELIGIBILITY, not the gate itself.
     //
@@ -417,7 +417,7 @@ where
     // control sessions only. The connection's declared host (`HelloReq.host`, ADR 0046 decision 1) is what
     // `topology.set`'s "can't remove yourself" refusal reads (`server/dispatch.rs`, `op::TOPOLOGY_SET`).
     let client_guard = Some(register_hello(&hello, &clients));
-    let is_long_lived_role = matches!(hello.hello().role.as_str(), "fe" | "bridge");
+    let is_long_lived_role = matches!(hello.hello().role.as_str(), "fe" | "bridge" | sot_protocol::LINK_ROLE);
     let hello_reply = handle_hello(hello_id, hello.into_hello(), &session, &files_mode, label.as_deref(), &clients).await;
     for (frame, blob) in finish_dispatch(op::HELLO, hello_id, std::time::Instant::now(), hello_reply) {
         write_reply(tx, frame, blob).await?;

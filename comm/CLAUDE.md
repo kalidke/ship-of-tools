@@ -74,7 +74,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `rust/backend/src/comm/wake/`: the wake tick (`check_row`), the screen reading and the one attach.
 
 ## Files
-- `PROTOCOL.md`: the contract every client implements: layout, registry, inbox, cursor, locks, the receipt rule.
+- `PROTOCOL.md`: the contract every client implements: layout, registry, inbox, cursor, locks, the one result.
 - `adapters/`: Claude and Codex adapters (see Folders).
 - `bin-folders.txt`: the folders whose files install flat into `~/.sot-comm/bin`, one repo path per line, in publish order: `lib` first, so no new script starts before the new library.
 - `lib/`: the shell library (see Folders).

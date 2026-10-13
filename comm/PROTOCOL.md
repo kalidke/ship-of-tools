@@ -367,11 +367,16 @@ lists the receiver:
    (`not_here`) it offers, as the same `comm.file` request marked
    `forwarded`, to every daemon linked to it (a hello of role `link`), all at
    once, and answers with theirs: the first `ok`; else the first refusal that
-   is not `not_here`, that box's own words; else `no box filed @<h>; the daemon
-   on <host> did not answer within <n>s` for a link that gave no answer in time; else
-   `no box knows that handle: <h>`. A linked daemon files the offer into its own
-   folder by the rules of route 1 and never offers or forwards it again. A
-   request that arrived `forwarded` is not offered.
+   is not `not_here`, that box's own words; else `the daemon on <host> did not
+   answer within <n>s; @<h> may still be filed` for a link that gave no answer
+   in time; else `no box knows that handle: <h>`, or, when a box that should
+   hold a link to the hub (a frontend box other than the hub, by `hosts.toml`)
+   holds none, `no linked box knows that handle: <h>; not linked: <boxes>`. A
+   linked daemon answers `not_here` unless its own folder lists the handle under
+   its own box; only then does it file the offer by the rules of route 1, and it
+   never offers or forwards it again. It files each offer as it comes, so one
+   held lock delays no other answer. A request that arrived `forwarded` is not
+   offered.
 
 **The wait is chosen by lock kind, and bounded at 2 s (`SOT_INBOX_LOCK_WAIT_SECS`)
 on both paths.** The Linux NFSv4 client retries a blocked lock with a backoff
@@ -447,7 +452,7 @@ lengthens the reason. No answer within 5 seconds is `FAILED` (decision 0031): th
 read window is the lock wait plus 3 seconds, 5 at the default 2 s wait, and a
 daemon gives a guest's forward or an offer to a linked daemon the lock wait plus
 1 second, so an appender that waited out the lock and then filed is not reported
-`FAILED`. A larger `SOT_SEND_TIMEOUT` lengthens the window.
+`FAILED`.
 
 With no daemon found at all a wire send prints
 `FAILED -> @h: no sotd daemon found; …` and exits 1. `agent.send` is not

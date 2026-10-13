@@ -19,5 +19,5 @@ comm/CLAUDE.md.
   A daemon's refusal is final, `not_here` included: no second request or route follows it.
 - Only `comm-poll.sh` moves `read/<h>.cursor`.
 - Readers count newline-terminated lines only.
-- A message body reaches jq through `sot_jq_rawfile`, never `--arg`.
+- A message body never reaches jq as `--arg`: through `sot_jq_rawfile`, or on stdin (`comm-relay.sh`, `sot-nav.sh`).
 - Senders type into no row (comm-send.sh's header); the daemon wakes the receiver.

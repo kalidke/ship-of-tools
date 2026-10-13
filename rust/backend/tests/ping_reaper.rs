@@ -21,8 +21,9 @@
 //! - an ordinary clean exit still reaps immediately, unaffected by any of
 //!   the above.
 //!
-//! A fifth case pins the hub link's premise: a `cli` connection's `ping` is
-//! answered and never arms the reaper.
+//! A fifth case: a `cli` connection's `ping` is answered and never arms the
+//! reaper. A sixth: a `link` connection (a daemon's link to the hub) that pinged and fell
+//! silent is reaped, so a half-open link leaves the hub's links.
 
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
@@ -172,7 +173,7 @@ async fn poll_until_connected(socket_path: &std::path::Path) -> Conn {
 }
 
 /// Connect + hello declaring `role` (`"fe"` or `"bridge"`, topology plan §F
-/// step 2's two long-lived roles, or `"cli"`, the hub link's role) with a `name` (`<role>@<client_id>`).
+/// step 2's two long-lived roles, `"link"`, the hub link's, or `"cli"`, a one-shot role) with a `name` (`<role>@<client_id>`).
 /// Returns the connection and the next free request id (2 -- id 1 is hello).
 async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, role: &str) -> (Conn, u64) {
     let mut conn = poll_until_connected(socket_path).await;
@@ -349,9 +350,8 @@ async fn pinging_fe_connection_stays_in_the_roster() {
         .expect("pinging connection exchange did not finish within BOUND");
 }
 
-/// The hub link says hello as `cli`, pings every 30 s, and ends a hub silent
-/// for 90 s, so a real hub must answer a `cli` connection's `ping`, and the
-/// ping must arm nothing. A daemon that answered `ping` only for `fe` and
+/// A `cli` connection is a one-shot role: a real hub answers its `ping`, and
+/// the ping arms nothing. A daemon that answered `ping` only for `fe` and
 /// `bridge` fails the first assertion; one that armed the reaper for every
 /// role fails the second `call`.
 #[tokio::test]
@@ -370,6 +370,30 @@ async fn a_cli_connection_is_answered_its_ping_and_never_reaped() {
     tokio::time::timeout(BOUND, body)
         .await
         .expect("the cli connection's pings were not answered within BOUND");
+}
+
+/// A daemon's link to the hub (role `link`) pings every 30 s; once it has pinged, the hub reaps it when it falls
+/// silent, so a half-open link (a box asleep, a dropped network) leaves the hub's links within the read deadline. A
+/// hub that reaped only `fe` and `bridge` kept it until the operating system gave up on the connection.
+#[tokio::test]
+async fn a_link_connection_that_pings_once_then_goes_silent_is_reaped() {
+    let env = Env::spawn("linkreap", Some(TEST_DEADLINE_MS));
+    let (mut conn, id) = connect_and_hello(&env.socket_path, "linkreap-link", sot_protocol::LINK_ROLE).await;
+    let body = async {
+        let res = call(&mut conn, id, op::PING, serde_json::json!({})).await;
+        assert_eq!(res.get("ok").and_then(|v| v.as_bool()), Some(true), "the link's ping was not answered: {res}");
+        loop {
+            match codec::read_frame(&mut conn).await {
+                Err(_) => break,
+                Ok((f, _)) if f.kind == Kind::Evt => continue,
+                Ok(other) => panic!("expected the daemon to close the silent link, got: {other:?}"),
+            }
+        }
+        wait_until_absent(&env.socket_path, "linkreap-link", Duration::from_secs(5)).await;
+    };
+    tokio::time::timeout(Duration::from_millis(TEST_DEADLINE_MS * 8), body)
+        .await
+        .expect("the silent link was not reaped within eight read deadlines");
 }
 
 /// Regression guard: a clean exit (the client closes its own socket) must

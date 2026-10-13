@@ -3,14 +3,14 @@
 //
 // A box whose topology entry is `frontend = true` reaches the hub over one `ssh:` stdio child, as a `link`-role
 // connection. The daemon holds it for as long as it runs. The hub sends it a `comm.file` request for each handle the
-// hub's own folder does not list (`comm::mail::links`); this daemon files it into its own folder through the function
-// `comm.file` uses (`comm::mail::filer::file_comm`) and answers it, `ok` or the refusal. It sends the hub nothing but
-// its hello and a `ping` every 30 s. A hub that sends no frame for three of those intervals ends the link, which then
-// redials: ssh's ServerAlive covers a dead network or sshd, never a hub daemon or bridge stopped behind a live sshd
-// (`SILENT_PINGS`).
+// hub's own folder does not list (`comm::mail::links`); this daemon answers it through `filer::file_offer`: `not_here`
+// unless its own folder lists the handle under this box's host, else the filing's verdict, `ok` or the refusal. It
+// sends the hub nothing but its hello and a `ping` every 30 s. A hub that sends no frame for three of those intervals
+// ends the link, which then redials: ssh's ServerAlive covers a dead network or sshd, never a hub daemon or bridge
+// stopped behind a live sshd (`SILENT_PINGS`).
 //
-// The topology is read once at start, like the frontend's tunnel set: a box that is the hub, or has no `ssh:` endpoint
-// to it, runs no link.
+// The topology is read once at start, like the frontend's tunnel set; which box holds a link is `link_target`'s one
+// rule: not the hub, and its relay endpoint is `ssh:`.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -77,19 +77,41 @@ async fn hold_link(
 }
 
 /// The ssh child's recipe, or `None` when this box has no link to hold: no
-/// topology, it is the hub, or its relay endpoint is not an `ssh:` one.
+/// topology, or `link_target` names none.
 fn recipe_for(self_host: &str) -> Result<Option<sot_protocol::topology::ssh_bridge::SshRecipe>, String> {
     let Some((_, topo)) = sot_protocol::topology::load()? else {
         return Ok(None);
     };
-    if self_host.is_empty() || topo.hub == self_host {
+    match link_target(&topo, self_host)? {
+        Some(target) => sot_protocol::topology::ssh_bridge::SshRecipe::new(&target, None).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// The one rule for which box holds a link: the ssh target of the link `host` holds, or `None` when it holds none (it
+/// is the hub, or its relay endpoint is not an `ssh:` one).
+fn link_target(topo: &sot_protocol::topology::Topology, host: &str) -> Result<Option<String>, String> {
+    if host.is_empty() || topo.hub == host {
         return Ok(None);
     }
-    let endpoint = sot_protocol::topology::relay_endpoint(&topo, self_host)?;
-    let Some(target) = endpoint.strip_prefix("ssh:") else {
-        return Ok(None);
+    Ok(sot_protocol::topology::relay_endpoint(topo, host)?.strip_prefix("ssh:").map(str::to_string))
+}
+
+/// On the topology's hub, the boxes that hold a link by `link_target` but have none among `attached`; empty on any
+/// other daemon, or with no topology.
+pub(crate) fn unlinked(attached: &[String]) -> Vec<String> {
+    let self_host = crate::comm::mail::filer::comm_self_host();
+    let Ok(Some((_, topo))) = sot_protocol::topology::load() else {
+        return Vec::new();
     };
-    sot_protocol::topology::ssh_bridge::SshRecipe::new(target, None).map(Some)
+    if self_host.is_empty() || topo.hub != self_host {
+        return Vec::new();
+    }
+    topo.hosts
+        .iter()
+        .map(|h| h.name.clone())
+        .filter(|name| matches!(link_target(&topo, name), Ok(Some(_))) && !attached.contains(name))
+        .collect()
 }
 
 /// The ssh command, for the signal to start. Tests swap the program for a stub, nothing else.
@@ -167,8 +189,9 @@ where
     W: tokio::io::AsyncWrite + Unpin,
     R: tokio::io::AsyncBufRead + Unpin,
 {
-    // The hub reaps only `fe` and `bridge` connections, so the link holds its own deadline (`SILENT_PINGS`). It answers
-    // the hub's `comm.file` requests and ignores every other frame.
+    // The hub reaps the link 90 s after its last frame once it has pinged, and the link holds its own deadline for the
+    // hub (`SILENT_PINGS`). It answers the hub's `comm.file` requests, each filed in a task of its own so one held lock
+    // delays no other answer, and ignores every other frame.
     let hello = HelloReq {
         name: Some(name.to_string()),
         ..HelloReq::this_process(format!("sotd-hub-link-{}", std::process::id()), sot_protocol::LINK_ROLE, Some(self_host.to_string()))
@@ -184,6 +207,7 @@ where
     let mut read = Box::pin(read_owned(rx));
     let mut answered = false;
     let mut next_id = 2u64;
+    let mut filings = tokio::task::JoinSet::new();
     loop {
         let frame = tokio::select! {
             biased;
@@ -196,6 +220,11 @@ where
                 let req = Frame::req(next_id, op::PING, serde_json::json!({}));
                 codec::write_frame(tx, &req, None).await.map_err(e("ping"))?;
                 next_id += 1;
+                continue;
+            }
+            Some(filed) = filings.join_next(), if !filings.is_empty() => {
+                let (id, answer) = filed.map_err(|err| format!("comm.file: {err}"))?;
+                codec::write_frame(tx, &Frame::res(id, op::COMM_FILE, answer), None).await.map_err(e("comm.file"))?;
                 continue;
             }
             () = tokio::time::sleep_until(heard + silence) => return Err(silent()),
@@ -212,23 +241,25 @@ where
         if frame.kind != Kind::Req || frame.op != op::COMM_FILE {
             continue;
         }
-        // The hub's offer: file it into this box's own folder, marked forwarded so a refusal here is final, and
-        // answer with the verdict.
-        let answer = match serde_json::from_value::<CommFileReq>(frame.payload) {
-            Ok(req) => {
-                let to = req.to.clone();
-                match crate::comm::mail::filer::file_comm(CommFileReq { forwarded: true, ..req }).await {
-                    Ok(Ok(())) => {
-                        tracing::info!(%to, "hub link filed");
-                        serde_json::json!({ "ok": true })
-                    }
-                    Ok(Err((code, error))) => serde_json::json!({ "error": error, "code": code }),
-                    Err(err) => serde_json::json!({ "error": format!("the filing failed: {err}"), "code": "file_failed" }),
-                }
-            }
-            Err(err) => serde_json::json!({ "error": format!("comm.file payload: {err}"), "code": "bad_request" }),
-        };
-        codec::write_frame(tx, &Frame::res(frame.id, op::COMM_FILE, answer), None).await.map_err(e("comm.file"))?;
+        let (id, self_host) = (frame.id, self_host.to_string());
+        filings.spawn(async move { (id, offer_answer(frame.payload, &self_host).await) });
+    }
+}
+
+/// This box's answer to one offer from the hub (`filer::file_offer`): `ok`, or the refusal `{error, code}`.
+async fn offer_answer(payload: serde_json::Value, self_host: &str) -> serde_json::Value {
+    let req = match serde_json::from_value::<CommFileReq>(payload) {
+        Ok(req) => req,
+        Err(err) => return serde_json::json!({ "error": format!("comm.file payload: {err}"), "code": "bad_request" }),
+    };
+    let to = req.to.clone();
+    match crate::comm::mail::filer::file_offer(req, self_host).await {
+        Ok(Ok(())) => {
+            tracing::info!(%to, "hub link filed");
+            serde_json::json!({ "ok": true })
+        }
+        Ok(Err((code, error))) => serde_json::json!({ "error": error, "code": code }),
+        Err(err) => serde_json::json!({ "error": format!("the filing failed: {err}"), "code": "file_failed" }),
     }
 }
 
@@ -502,6 +533,103 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The answers a link gives, in the order they arrive, to one offer for each of `handles` (request ids from 100),
+    /// from a hub that answers its hello. Each answer comes within 20 s.
+    async fn answers_to_offers(self_host: &str, handles: &[&str]) -> Vec<(u64, serde_json::Value)> {
+        let (link_tx, hub_rx) = tokio::io::duplex(64 * 1024);
+        let (mut hub_tx, link_rx) = tokio::io::duplex(64 * 1024);
+        let host = self_host.to_string();
+        let link = tokio::spawn(async move {
+            let (mut tx, mut rx) = (link_tx, codec::buffered(link_rx));
+            converse(&mut tx, &mut rx, &host, "sotd-test").await
+        });
+        let mut hub_rx = codec::buffered(hub_rx);
+        let (hello, _) = codec::read_frame(&mut hub_rx).await.expect("the link's hello");
+        codec::write_frame(&mut hub_tx, &Frame::res(hello.id, op::HELLO, serde_json::json!({ "ok": true })), None).await.unwrap();
+        for (id, to) in (100u64..).zip(handles) {
+            let req = serde_json::json!({ "from": "s", "to": to, "text": "x", "forwarded": true });
+            codec::write_frame(&mut hub_tx, &Frame::req(id, op::COMM_FILE, req), None).await.unwrap();
+        }
+        let mut answers = Vec::new();
+        while answers.len() < handles.len() {
+            let read = tokio::time::timeout(Duration::from_secs(20), codec::read_frame(&mut hub_rx)).await;
+            let (frame, _) = read.expect("an answer within 20 s").expect("the link's answer");
+            if frame.kind == Kind::Res && frame.op == op::COMM_FILE {
+                answers.push((frame.id, frame.payload));
+            }
+        }
+        link.abort();
+        answers
+    }
+
+    /// A comm folder for a link under test, which `SOT_COMM_HOME` names while the guards live: `agents` its registry;
+    /// with `record`, the inbox lock record that lets this daemon append.
+    fn link_home(agents: serde_json::Value, record: bool) -> (tempfile::TempDir, [crate::paths::EnvGuard; 3]) {
+        let home = tempfile::tempdir().unwrap();
+        let inbox = home.path().join("inbox");
+        std::fs::create_dir(&inbox).unwrap();
+        std::fs::write(home.path().join("registry.json"), serde_json::json!({ "agents": agents }).to_string()).unwrap();
+        if record {
+            std::fs::write(home.path().join("inbox-lock-manager"), format!("{}\n", crate::comm::mail::inbox::lock_identity(&inbox))).unwrap();
+        }
+        let guards = [
+            crate::paths::EnvGuard::capture("SOT_COMM_HOME"),
+            crate::paths::EnvGuard::capture("SOT_HOSTS"),
+            crate::paths::EnvGuard::capture(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV),
+        ];
+        std::env::set_var("SOT_COMM_HOME", home.path());
+        std::env::set_var("SOT_HOSTS", home.path().join("no-hosts.toml"));
+        std::env::set_var(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV, "2");
+        (home, guards)
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+    }
+
+    /// A box answers the hub's offer for a handle its own folder does not list under its own host `not_here`, whatever
+    /// else it would refuse: here it has no inbox lock record, so every filing it attempted would fail. The handle it
+    /// does list under its host gets its own refusal. (The review's probe: a guest box's refusal had outranked the
+    /// holder's and `not_here`.)
+    #[test]
+    fn a_link_answers_not_here_for_a_handle_its_box_does_not_hold() {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let agents = serde_json::json!({
+            "stale": { "host": "b", "last_seen": "2026-01-01T00:00:00Z" },
+            "here": { "host": "a-guest", "last_seen": "2026-01-01T00:00:00Z" },
+        });
+        let (_home, _env) = link_home(agents, false);
+        let mut answers = runtime().block_on(answers_to_offers("a-guest", &["stale", "nobody", "here"]));
+        answers.sort_by_key(|(id, _)| *id);
+        let not_here = |h: &str| serde_json::json!({ "error": format!("no box knows that handle: {h}"), "code": "not_here" });
+        assert_eq!(answers[0].1, not_here("stale"), "a handle another box holds");
+        assert_eq!(answers[1].1, not_here("nobody"), "a handle no box holds");
+        let own = &answers[2].1;
+        assert!(
+            own["code"] == "file_failed" && own["error"].as_str().is_some_and(|e| e.starts_with("no inbox lock record at ")),
+            "the handle this box holds gets this box's own refusal: {own}"
+        );
+    }
+
+    /// Two offers in a row, the first for a handle whose inbox lock is held: the second is filed and answered while the
+    /// first still waits, so its answer arrives first. A link that filed its offers one at a time answered the second
+    /// only after the first's lock wait.
+    #[test]
+    fn an_offer_is_answered_without_waiting_behind_another() {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let now = crate::comm::registry::registry::iso8601_utc_from_secs(crate::comm::registry::registry::unix_now_secs());
+        let agents = serde_json::json!({ "held": { "host": "a", "last_seen": now }, "free": { "host": "a", "last_seen": now } });
+        let (home, _env) = link_home(agents, true);
+        let held = std::fs::OpenOptions::new().read(true).create(true).append(true).open(home.path().join("inbox/held.lock")).unwrap();
+        held.lock().unwrap();
+        let answers = runtime().block_on(answers_to_offers("a", &["held", "free"]));
+        assert_eq!(answers[0], (101, serde_json::json!({ "ok": true })), "the free offer was answered first: {answers:?}");
+        assert_eq!(
+            answers[1],
+            (100, serde_json::json!({ "error": "the inbox lock for @held was held for 2s — nothing was appended", "code": "file_failed" }))
+        );
     }
 
     /// A hub that sends no frame for three ping intervals ends the link, before the hello's reply or after it; a hub

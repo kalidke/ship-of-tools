@@ -97,25 +97,34 @@ async fn connect_and_hello(socket_path: &Path, name: &str) -> Conn {
         ..HelloReq::this_process(name, "cli", Some("hub-a".to_string())).expect("this process's account")
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None).await.expect("write hello");
-    loop {
-        let (frame, _) = codec::read_frame(&mut conn).await.expect("read hello reply");
-        if frame.kind == Kind::Res && frame.id == 1 {
-            assert!(frame.payload.get("error").is_none(), "hello refused: {:?}", frame.payload);
-            return conn;
+    tokio::time::timeout(BOUND, async {
+        loop {
+            let (frame, _) = codec::read_frame(&mut conn).await.expect("read hello reply");
+            if frame.kind == Kind::Res && frame.id == 1 {
+                assert!(frame.payload.get("error").is_none(), "hello refused: {:?}", frame.payload);
+                return;
+            }
         }
-    }
+    })
+    .await
+    .expect("the hello reply within BOUND");
+    conn
 }
 
-/// Sends one `comm.file` for `to` to the hub and returns the payload of its answer.
+/// Sends one `comm.file` for `to` to the hub and returns the payload of its answer, which comes within `BOUND`.
 async fn comm_file(conn: &mut Conn, id: u64, to: &str) -> serde_json::Value {
     let req = serde_json::json!({"from": "sender-a", "to": to, "text": format!("hi {id}")});
     codec::write_frame(conn, &Frame::req(id, op::COMM_FILE, req), None).await.expect("write comm.file");
-    loop {
-        let (frame, _) = codec::read_frame(conn).await.expect("read");
-        if frame.kind == Kind::Res && frame.id == id && frame.op == op::COMM_FILE {
-            return frame.payload;
+    tokio::time::timeout(BOUND, async {
+        loop {
+            let (frame, _) = codec::read_frame(conn).await.expect("read");
+            if frame.kind == Kind::Res && frame.id == id && frame.op == op::COMM_FILE {
+                return frame.payload;
+            }
         }
-    }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no answer to comm.file for @{to} within {BOUND:?}"))
 }
 
 /// Asks the hub's roster (`version.query`) until it lists a connection named `name`, and fails when `BOUND` passes
@@ -125,12 +134,17 @@ async fn wait_for_client(conn: &mut Conn, n: &mut u64, name: &str) {
     loop {
         *n += 1;
         codec::write_frame(conn, &Frame::req(*n, op::VERSION_QUERY, serde_json::json!({})), None).await.expect("write version.query");
-        let listed = loop {
-            let (frame, _) = codec::read_frame(conn).await.expect("read");
-            if frame.kind == Kind::Res && frame.id == *n {
-                break frame.payload["clients"].as_array().is_some_and(|cs| cs.iter().any(|c| c["name"] == name));
+        let id = *n;
+        let listed = tokio::time::timeout(BOUND, async {
+            loop {
+                let (frame, _) = codec::read_frame(conn).await.expect("read");
+                if frame.kind == Kind::Res && frame.id == id {
+                    break frame.payload["clients"].as_array().is_some_and(|cs| cs.iter().any(|c| c["name"] == name));
+                }
             }
-        };
+        })
+        .await
+        .unwrap_or_else(|_| panic!("no answer to version.query within {BOUND:?}"));
         if listed {
             return;
         }
@@ -221,4 +235,16 @@ async fn the_hub_files_into_a_linked_box_and_answers_with_its_verdict() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     assert_eq!(inbox_lines(&guest, "live").len(), before + 1, "one ok, one line");
+}
+
+// A box the topology says holds a link, with none attached, may hold the handle: the hub's `not_here` names it, and
+// once every such box is linked the refusal is the plain one (the step after the link is up, in the test above).
+#[tokio::test]
+async fn not_here_names_the_boxes_that_hold_no_link() {
+    let hub = Env::start("lonehub", "hub-a", None);
+    let mut sender = connect_and_hello(&hub.socket_path, "sender-a").await;
+    assert_eq!(
+        comm_file(&mut sender, 2, "nobody").await,
+        serde_json::json!({"error": "no linked box knows that handle: nobody; not linked: win-b", "code": "not_here"})
+    );
 }

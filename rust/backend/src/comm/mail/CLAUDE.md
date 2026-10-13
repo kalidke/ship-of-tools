@@ -20,7 +20,7 @@ messaging; charter: comm/CLAUDE.md.
 `filer.rs` `comm_file_verdict` for what `comm.file` accepts or refuses; `inbox.rs` `file_frame` (one append) and `route`
 (where a filing goes); `handle_comm_file` offers what this folder does not list to `links::Links`. `hub_link.rs`
 `run`, spawned once by `server::run`, holds one ssh stdio child to the hub as a `link` connection and answers each
-`comm.file` request the hub sends on it with `file_comm`'s verdict.
+`comm.file` request the hub sends on it with `file_offer`'s verdict.
 
 ## Rules
 - `file_frame` appends one line to `inbox/<h>.jsonl` under flock on `inbox/<h>.lock`, the lock comm-lib-inbox.sh's
@@ -40,9 +40,12 @@ messaging; charter: comm/CLAUDE.md.
   fires; either way it kills the ssh child and what it started before returning.
 - `handle_comm_file` offers a request this folder answers `not_here` to every linked daemon at once (`Links::offer`),
   unless it arrived `forwarded`, giving each `inbox_lock_wait` plus `COMM_FORWARD_SLACK`. The answer is the first `ok`;
-  else the first refusal that is not `not_here`, by host; else a link that did not answer in time; else `not_here`. An
-  offer is marked `forwarded`, so the linked daemon files or refuses it and never offers or forwards it again. A link
-  is attached before its connection is on the roster and leaves with the connection, failing what it still owes.
+  else the first refusal that is not `not_here`, by host; else a link that did not answer in time; else `not_here`,
+  naming the boxes `hub_link::unlinked` finds (a box that holds a link by `link_target`'s rule and has none attached).
+  An offer is marked `forwarded`. A linked daemon answers it with `filer::file_offer`: `not_here` unless its own
+  registry lists the handle under its own host, and only then the route, liveness and append; it never offers or
+  forwards it again. A link is attached before its connection is on the roster and leaves with the connection, failing
+  what it still owes.
 - `handle_agent_send` publishes one `AgentMessage` when `to` is empty and answers `ok`; a non-empty `to` is mail and is
   refused `mail_requires_comm_file`, publishing nothing.
 - inbox.rs stays std and serde only outside its macOS arm: tests/comm_file.rs includes it by path.
@@ -54,9 +57,10 @@ messaging; charter: comm/CLAUDE.md.
   the hub for three intervals (`SILENT_PINGS`, 90 s, the hello's reply included), logging `hub link dropped: nothing
   from the hub in 90s` with no ssh line after it: ssh is up, so its last line is stale. ssh's ServerAlive covers only
   a dead network or sshd, not a hub daemon or `sotd stdio-bridge` stopped behind a live sshd. Frames count, not bytes:
-  nothing the hub sends a `link` connection carries a blob. The hub never reaps the link (it reaps only `fe` and
-  `bridge`).
+  nothing the hub sends a `link` connection carries a blob. The hub reaps the link 90 s after its last frame once it
+  has pinged (`link` is a long-lived role, beside `fe` and `bridge`).
 - The silence rule holds only while every request the link sends is one the hub answers at once in its connection loop
   (`hello`, `ping`). A request the hub awaits inline (`topology.set`, or any handler that waits on real work) must not
-  ride this link: it would hold the hub's loop, and a busy hub would be cut as a silent one. The link answers each
-  `comm.file` request inline, after its filing, which waits at most `inbox_lock_wait`.
+  ride this link: it would hold the hub's loop, and a busy hub would be cut as a silent one. The link files each
+  `comm.file` request in a task of its own (`offer_answer`) and answers it when that filing ends, so one held lock
+  delays no other answer.

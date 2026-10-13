@@ -29,7 +29,7 @@ new mail only at its own next turn.
 
 | Intent | Command |
 |--------|---------|
-| Join (once per session; `/sot-session-start` does it) | `comm-join.sh --expertise "a, b"` (the handle is derived: folder name plus box name) |
+| Join (once per session; `/sot-session-start` does it) | `comm-join.sh --expertise "a, b"` (the handle is derived: folder name plus box name, unless the launcher pinned one) |
 | Who's online | `comm-list.sh` |
 | Direct message | `comm-send.sh @<name> "message"` |
 | Broadcast | `comm-send.sh --broadcast "message"` |
@@ -92,11 +92,14 @@ the box that holds that inbox, appended your frame. A failure is loud, non-zero 
 one form:
 
 - `FAILED -> @h: <reason>` — the reason is the daemon's own sentence
-  (`no box knows that handle: h` — check the spelling first; `no live session
-  holds @h`; `no box filed @h; the daemon on <host> did not answer within <n>s` — the box that
-  may hold it did not answer the hub in time; `unknown op: comm.file` — the hub
-  is older than this route), or `the daemon did not answer at <endpoint>` with
-  the transport's own complaint after it when it had one.
+  (`no box knows that handle: h` — check the spelling first; `no linked box
+  knows that handle: h; not linked: <boxes>` — it may be on one of those boxes,
+  whose daemon is stopped or not linked to the hub; `no live session holds @h`;
+  `the daemon on <host> did not answer within <n>s; @h may still be filed` — the
+  box that may hold it did not answer the hub in time, so ask the recipient
+  before resending; `unknown op: comm.file` — the hub is older than this route),
+  or `the daemon did not answer at <endpoint>` with the transport's own complaint
+  after it when it had one.
 
 A refusal means nothing was appended; with no answer the frame may have landed
 and only the word that it did is missing, so ask the recipient before resending.
@@ -146,9 +149,10 @@ comm-spawn.sh mysim ~/projects/MySim --expertise "simulation workflows" \
 Creates a **sot workspace** (a session-strip row; the user cycles
 to it with Shift+ArrowRight / Shift+ArrowLeft) whose agent the daemon starts at once; its own
 `/sot-session-start` joins it under the name you chose, and any `--task`
-waits in its inbox as an ordinary message. **Addressable immediately** — the
-handle is pre-registered, so `comm-send.sh @<name>` is filed into its inbox
-even before it finishes joining, and its session reads it at start. Label = repo name, never the task (`comm-spawn.sh` rejects
+waits in its inbox as an ordinary message. **Addressable at once on this box**
+— a spawn here pre-registers the handle, so `comm-send.sh @<name>` is filed into
+its inbox even before it finishes joining, and its session reads it at start; a
+spawn on another box is addressable once its session has joined there. Label = repo name, never the task (`comm-spawn.sh` rejects
 task-named labels). One repo root holds one session: `comm-spawn.sh` refuses
 a root that already has a workspace, naming it; a second session on a repo is
 a worktree (`/worktree`). The new row appears in every window's strip on its

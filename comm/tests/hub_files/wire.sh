@@ -308,17 +308,17 @@ case_the_read_window_outlasts_the_hubs_lock_wait() {
 }
 
 # Decision 0031: no answer within 5 seconds is FAILED. With the default lock wait and no send timeout of the caller's,
-# a hub that answers only at 8 s is not waited for.
+# a hub that answers only at 5.5 s is not waited for, and the send ends by 6 s.
 case_no_answer_in_five_seconds_is_failed() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    write_hub_stub '{"ok":true}' 8
+    write_hub_stub '{"ok":true}' 5.5
     local t0=$SECONDS
     wire_send SOT_INBOX_LOCK_WAIT_SECS= SOT_SEND_TIMEOUT=
     local took=$((SECONDS - t0))
     [ "$SEND_RC" -eq 1 ] || { echo "  rc $SEND_RC, want 1 ($SEND_OUT$SEND_ERR)"; return 1; }
     contains "$SEND_ERR" "FAILED -> @t-far: the daemon did not answer at unix:$WORK/hub.sock" \
         || { echo "  err: $SEND_ERR"; return 1; }
-    [ "$took" -lt 8 ] || { echo "  the send waited ${took}s for the 8 s answer"; return 1; }
+    [ "$took" -le 6 ] || { echo "  the send took ${took}s"; return 1; }
     return 0
 }
 

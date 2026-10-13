@@ -19,7 +19,7 @@
 #      the fake daemon gets exactly one `comm.file` and the inbox is unchanged.
 #      The wire is this box's own daemon, else the relay endpoint, and one that
 #      does not answer is FAILED with no second route tried.
-#   4. The wait is ONE number, 2, in both languages, and no stale/patience/
+#   4. The wait is ONE knob, 2 s by default, in both languages, and no stale/patience/
 #      reclaim constant is spelled at all — the lease is deleted and this
 #      keeps it deleted.
 #   5. The lock identity: the same fixture set comm/mail/inbox_tests.rs's unit test reads
@@ -173,7 +173,7 @@ check "no perl on the PATH goes to the wire, never a local append" case_no_perl_
 check "the wire is this box's daemon, else the relay; one that does not answer is FAILED with no second route" case_the_wire_is_the_own_daemon_else_the_relay_and_only_one
 check "the wire frame says whether the line was a broadcast copy" case_the_wire_frame_carries_the_broadcast_flag
 check "the lock identity matches the fixture set the Rust test reads" case_the_lock_identity_matches_the_shared_fixtures
-check "the wait is one number, 2, in both languages, and no lease constant is spelled" case_the_wait_is_one_number_and_no_lease_survives
+check "the wait is one knob in both languages, and no lease constant is spelled" case_the_wait_is_one_number_and_no_lease_survives
 check "T5: a wire send is one comm.file frame and prints the hub's answer, not_here included" case_a_wire_send_prints_the_hubs_answer
 check "an inherited SOT_RELAY_ENDPOINT or SOT_SPAWN_ENDPOINT does not decide a relay send: topology's answer does, and the inherited endpoint is never dialled" case_an_inherited_endpoint_does_not_decide_the_relay_route
 check "the comm.file read window outlasts the hub's lock wait: a line filed after it is filed" case_the_read_window_outlasts_the_hubs_lock_wait

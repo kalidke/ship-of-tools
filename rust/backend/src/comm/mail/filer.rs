@@ -15,7 +15,8 @@ use crate::server::reply::HandlerOutput;
 /// hub files for its own home, and a guest on the hub's folder files only on
 /// a proven shared lock, forwarding everything else to the hub. A handle this
 /// folder does not list is offered to the daemons linked to this one
-/// (`Links::offer`), and the answer is theirs. The response is `{ok:true}` only
+/// (`Links::offer`), and the answer is theirs; a `not_here` names the boxes that
+/// should hold a link and hold none (`hub_link::unlinked`). The response is `{ok:true}` only
 /// when the line is in a file; every refusal is `{error, code}` and nothing was
 /// appended. The file work runs off the reactor, like the registry helpers.
 pub async fn handle_comm_file(
@@ -32,6 +33,17 @@ pub async fn handle_comm_file(
         if let Some(offered) = links.offer(&req, within).await {
             verdict = offered;
         }
+        // A box that should hold a link and holds none may hold the handle: the refusal names it.
+        if matches!(&verdict, Err((code, _)) if code == "not_here") {
+            let attached = links.hosts();
+            let unlinked = tokio::task::spawn_blocking(move || crate::comm::mail::hub_link::unlinked(&attached))
+                .await
+                .context("comm.file topology join")?;
+            if !unlinked.is_empty() {
+                let text = format!("no linked box knows that handle: {}; not linked: {}", req.to, unlinked.join(", "));
+                verdict = Err(("not_here".into(), text));
+            }
+        }
     }
     let payload = match verdict {
         Ok(()) => {
@@ -46,9 +58,37 @@ pub async fn handle_comm_file(
     Ok(vec![(Frame::res(req_id, op::COMM_FILE, payload), None)])
 }
 
+/// A linked daemon's answer to the hub's offer (`hub_link.rs`): `not_here` unless this box's own folder lists `to`
+/// under this box's host, `self_host`; only then do the route, the liveness and the append decide (`file_comm`, the
+/// request marked `forwarded`). A box that does not hold the handle never answers with a refusal of its own, so the
+/// first refusal the hub reads is the holder's.
+pub(crate) async fn file_offer(req: CommFileReq, self_host: &str) -> Result<std::result::Result<(), (String, String)>> {
+    let (home, to, host) = (crate::comm::sot_comm_home(), req.to.clone(), self_host.to_string());
+    let holds = tokio::task::spawn_blocking(move || home.is_some_and(|h| lists_under(&h.join("registry.json"), &to, &host)))
+        .await
+        .context("comm.file offer join")?;
+    if !holds {
+        return Ok(Err(not_here(&req.to)));
+    }
+    file_comm(CommFileReq { forwarded: true, ..req }).await
+}
+
+/// Whether the registry at `path` lists `to` under `host`. A registry that cannot be read lists nobody.
+fn lists_under(path: &std::path::Path, to: &str, host: &str) -> bool {
+    read_registry_fresh(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|root| root["agents"][to]["host"].as_str() == Some(host))
+}
+
+/// The refusal for a handle no folder that was asked lists: `(code, sentence)`.
+pub(crate) fn not_here(to: &str) -> (String, String) {
+    ("not_here".to_string(), format!("no box knows that handle: {to}"))
+}
+
 /// The filing behind `comm.file`, callable in-process: the hub link
-/// (`hub_link.rs`) files what arrives on its connection through this same
-/// function. `Err` inside the `Ok` is the refusal `(code, sentence)`.
+/// (`hub_link.rs`) files an offer through this same function (`file_offer`).
+/// `Err` inside the `Ok` is the refusal `(code, sentence)`.
 pub(crate) async fn file_comm(req: CommFileReq) -> Result<std::result::Result<(), (String, String)>> {
     tokio::task::spawn_blocking(move || {
         let home = crate::comm::sot_comm_home();
@@ -151,9 +191,8 @@ fn comm_file_verdict(
     if !valid_name(to) {
         return Err(("bad_handle".into(), format!("not a handle: {to:?}")));
     }
-    let not_here = || ("not_here".to_string(), format!("no box knows that handle: {to}"));
     let Some(home) = comm_home else {
-        return Err(not_here());
+        return Err(not_here(to));
     };
     let record_path = home.join(crate::comm::mail::inbox::LOCK_RECORD);
     let record = std::fs::read_to_string(&record_path).ok();
@@ -180,7 +219,7 @@ fn comm_file_verdict(
     // A missing registry lists nobody; bytes that are not a registry are no
     // answer at all, never "not here".
     let agents = match read_registry_fresh(&home.join("registry.json")) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_here()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_here(to)),
         Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
             .ok()
             .and_then(|root| root.get("agents").filter(|a| a.is_object()).cloned()),
@@ -192,7 +231,7 @@ fn comm_file_verdict(
     let entry = agents.get(to);
     let field = |k: &str| entry.and_then(|e| e.get(k)).and_then(|v| v.as_str());
     if field("host").map_or(true, str::is_empty) {
-        return Err(not_here());
+        return Err(not_here(to));
     }
     if !heartbeat_fresh(field("last_seen"), now_secs) {
         return Err(("no_live_session".into(), format!("no live session holds @{to}")));
