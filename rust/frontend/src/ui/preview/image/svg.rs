@@ -97,11 +97,18 @@ pub fn quad_from_svg_bytes(
 }
 
 /// The SVG's tree as the window draws it: system fonts, `currentColor` as white, and its text with no bidi paragraph
-/// separator (`one_paragraph_svg`).
+/// separator (`one_paragraph_svg`). An `.svgz` (gzip) is unpacked first: usvg would unpack it itself, past both rules.
 fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     let opts = Options {
         fontdb: system_fontdb(),
         ..Options::default()
+    };
+    let unpacked;
+    let bytes: &[u8] = if bytes.starts_with(&[0x1f, 0x8b]) {
+        unpacked = resvg::usvg::decompress_svgz(bytes).context("svgz unpack failed")?;
+        &unpacked
+    } else {
+        bytes
     };
     // MathJax SVG emits `fill="currentColor" stroke="currentColor"` on
     // its root glyph group, expecting a CSS cascade to resolve the
@@ -206,6 +213,47 @@ mod tests {
         });
         assert!(unchanged, "a run of `&#` with no separator in it changed");
         assert_eq!(separator_references_as_spaces("AA&#x+2029;BB&#x2029;CC&#8233;DD&#x2029"), "AA&#x+2029;BB CC DD&#x2029");
+    }
+
+    /// `svg` as gzip, what an `.svgz` holds: one stored deflate block, so no compressor is needed.
+    fn gzip(svg: &[u8]) -> Vec<u8> {
+        let mut crc = !0u32;
+        for &b in svg {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg());
+            }
+        }
+        let len = u16::try_from(svg.len()).expect("one stored block");
+        let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 1];
+        out.extend(len.to_le_bytes());
+        out.extend((!len).to_le_bytes());
+        out.extend(svg);
+        out.extend((!crc).to_le_bytes());
+        out.extend((svg.len() as u32).to_le_bytes());
+        out
+    }
+
+    /// An `.svgz` is unpacked before the door, not by usvg after it, so its text after a paragraph separator is drawn
+    /// too.
+    #[test]
+    fn svgz_text_after_a_paragraph_separator_is_drawn() {
+        let family = system_fontdb()
+            .faces()
+            .find_map(|face| face.families.first().map(|(name, _)| name.clone()))
+            .expect("a system font");
+        let drawn = |text: &str, packed: bool| {
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="50"><text x="0" y="30" font-family="{family}" font-size="20">{text}</text></svg>"#
+            );
+            let bytes = if packed { gzip(svg.as_bytes()) } else { svg.into_bytes() };
+            glyphs(svg_tree(&bytes).expect("the SVG parses").root())
+        };
+        let whole = drawn("AA BB", false);
+        assert!(whole > 0 && drawn("AA BB", true) == whole, "no text drawn in {family}, or the svgz differs");
+        let cases = ["AA\u{2029}BB", "AA&#x2029;BB"];
+        let got: Vec<(&str, usize)> = cases.iter().map(|&text| (text, drawn(text, true))).collect();
+        assert_eq!(got, cases.map(|text| (text, whole)));
     }
 
     /// An SVG's text in each generic family is drawn, on every platform: each names a family this machine holds.
