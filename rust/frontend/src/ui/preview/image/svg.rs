@@ -10,11 +10,14 @@
 // pixel dimensions, we rasterise to those.
 
 use std::borrow::Cow;
+use std::io::Read;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg::{fontdb, Options, Tree};
+
+use sot_protocol::ir::PREVIEW_BINARY_CAP;
 
 use crate::ui::render::quad::{Quad, QuadPipeline};
 use crate::ui::render::text::{one_paragraph_per_line, PARAGRAPH_SEPARATORS};
@@ -103,19 +106,15 @@ pub fn quad_from_svg_bytes(
 }
 
 /// The SVG's tree as the window draws it: system fonts, `currentColor` as white, and its text with no bidi paragraph
-/// separator (`one_paragraph_svg`). An `.svgz` (gzip) is unpacked first: usvg would unpack it itself, past both rules.
+/// separator (`one_paragraph_svg`). An `.svgz` (gzip) is unpacked first (`unpack_svgz`): usvg would unpack it itself,
+/// past both rules.
 fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     let opts = Options {
         fontdb: system_fontdb(),
         ..Options::default()
     };
-    let unpacked;
-    let bytes: &[u8] = if bytes.starts_with(&[0x1f, 0x8b]) {
-        unpacked = resvg::usvg::decompress_svgz(bytes).context("svgz unpack failed")?;
-        &unpacked
-    } else {
-        bytes
-    };
+    let bytes = unpack_svgz(bytes, PREVIEW_BINARY_CAP)?;
+    let bytes: &[u8] = &bytes;
     // MathJax SVG emits `fill="currentColor" stroke="currentColor"` on
     // its root glyph group, expecting a CSS cascade to resolve the
     // colour. resvg has no cascade, so `currentColor` falls back to
@@ -133,6 +132,25 @@ fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     let tree = Tree::from_data(&one_paragraph_svg(bytes), &opts);
     tree.context("svg parse failed")
 }
+
+/// An `.svgz`'s SVG, unpacked on the window's thread to at most `cap` bytes: the product passes `PREVIEW_BINARY_CAP`,
+/// the largest SVG the daemon sends at all, so an `.svgz` asks no more of that thread than the same `.svg` would.
+/// Bytes that are not gzip go on as they are.
+fn unpack_svgz(bytes: &[u8], cap: usize) -> Result<Cow<'_, [u8]>> {
+    if !bytes.starts_with(&GZIP_MAGIC) {
+        return Ok(Cow::Borrowed(bytes));
+    }
+    let mut svg = Vec::new();
+    flate2::read::GzDecoder::new(bytes)
+        .take(cap as u64 + 1)
+        .read_to_end(&mut svg)
+        .context("svgz unpack failed")?;
+    anyhow::ensure!(svg.len() <= cap, "svgz unpacks past its cap of {cap} bytes");
+    Ok(Cow::Owned(svg))
+}
+
+/// The first two bytes of a gzip stream, an `.svgz`.
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
 /// SVG source whose text holds no bidi paragraph separator: usvg shapes only a text chunk's first bidi paragraph
 /// (usvg-0.44.0 src/text/layout.rs:1367-1368) and drops the rest of it, so each separator, written as itself or as a
@@ -223,23 +241,23 @@ mod tests {
         assert_eq!(separator_references_as_spaces("AA&#x+2029;BB&#x2029;CC&#8233;DD&#x2029"), "AA&#x+2029;BB CC DD&#x2029");
     }
 
-    /// `svg` as gzip, what an `.svgz` holds: one stored deflate block, so no compressor is needed.
+    /// `svg` as gzip, what an `.svgz` holds.
     fn gzip(svg: &[u8]) -> Vec<u8> {
-        let mut crc = !0u32;
-        for &b in svg {
-            crc ^= u32::from(b);
-            for _ in 0..8 {
-                crc = (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg());
-            }
-        }
-        let len = u16::try_from(svg.len()).expect("one stored block");
-        let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 1];
-        out.extend(len.to_le_bytes());
-        out.extend((!len).to_le_bytes());
-        out.extend(svg);
-        out.extend((!crc).to_le_bytes());
-        out.extend((svg.len() as u32).to_le_bytes());
-        out
+        use std::io::Write;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(svg).expect("gzip in memory");
+        gz.finish().expect("gzip in memory")
+    }
+
+    /// An `.svgz` is unpacked to its cap and no further: a small gzip of 4 KiB of spaces is refused under a 1 KiB cap,
+    /// with the reason, and unpacks whole under a 4 KiB one.
+    #[test]
+    fn an_svgz_past_its_cap_is_refused() {
+        let packed = gzip(&[b' '; 4096]);
+        assert!(packed.len() < 1024, "the test's gzip is not small: {} bytes", packed.len());
+        let refused = unpack_svgz(&packed, 1024).expect_err("an svgz past its cap");
+        assert!(format!("{refused:#}").contains("svgz unpacks past its cap of 1024 bytes"), "{refused:#}");
+        assert_eq!(unpack_svgz(&packed, 4096).expect("an svgz at its cap").len(), 4096);
     }
 
     /// An `.svgz` is unpacked before the door, not by usvg after it, so its text after a paragraph separator is drawn

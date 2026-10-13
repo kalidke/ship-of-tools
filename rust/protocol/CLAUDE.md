@@ -13,7 +13,8 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 - The frame: `Frame`, `Kind` and `PROTOCOL_VERSION` (lib.rs); the codec and its 1 MiB envelope cap (codec.rs).
 - A child's output read as lines, each decoded lossily (`ChildLines`, `blocking_child_lines`, child_lines.rs).
 - The op names and every op's payload type (`ops/`).
-- The wire's tree and preview payload types, `TreeNode`, `PreviewPayload` and `BlobDescriptor` (ir.rs). The kernel
+- The wire's tree and preview payload types, `TreeNode`, `PreviewPayload` and `BlobDescriptor`, and the binary preview cap
+  `PREVIEW_BINARY_CAP` that the daemon sends under and the window unpacks an `.svgz` to (ir.rs). The kernel
   builds the JSON these deserialize; nothing in the Julia core serializes its own types to them.
 - The product version string and the release predicate (version.rs); build.rs stamps their inputs.
 - The loopback page-URL grammar, owned by pages: `loopback_port_from_url` and `with_loopback_port` (page_url.rs).
