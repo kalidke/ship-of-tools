@@ -1,0 +1,57 @@
+# TEMPORARY, SMALL-066 W3b on a hosted Windows runner; never merged. Pushed alone on tmp/ci-small-w3b (W6's commit, W3's
+# 07196a833 and W3b's planned diff), read, then the branch is deleted. Nothing here pushes, publishes or reads a secret.
+# The job is the planner's block tmp-w3b-w7-job.yml without its W7 step, whose plan is being revised.
+name: tmp small-w3b
+on:
+  push:
+    branches: [tmp/ci-small-w3b]
+jobs:
+  tmp-small-w3b-w7:
+    name: tmp W3's case on its own, the account's home, and W7's path spellings (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: W3's revised case on its own
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set +e -u
+          # W3's case on its own: test-hub-files.sh's setup, then only its first check, the home guard's (the whole suite does
+          # not end on Windows, a 0.6.7 item). Its lines: PASS or FAIL with the reason, and any SKIP it states.
+          one=comm/tests/w3-one-case.sh
+          sed -n '1,/^check "the home guard refuses a live comm home, and only that"/p' comm/tests/test-hub-files.sh > "$one"
+          printf '%s\n' 'echo "---"' 'echo "PASS=$PASS FAIL=$FAIL"' '[ "$FAIL" -eq 0 ]' >> "$one"
+          echo "w3 checks in the runner: $(grep -c '^check ' "$one")"
+          /usr/bin/timeout -k 10 180 bash "$one"; rc=$?
+          echo "w3 case rc=$rc"
+          rm -f "$one"
+          exit "$rc"
+      - name: The account's home with HOME and USERPROFILE swapped (W3 (3))
+        if: always()
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set +e -u
+          # W3 (3): is the home the guard records for this account (`~$(id -un)`, getpwnam) the one the system records, whatever
+          # HOME and USERPROFILE say? The box harness sets both to a private folder. Git for Windows' /etc/nsswitch.conf decides
+          # where getpwnam takes a home from (db_home); each line below is one source, with and without the swap.
+          t="$(mktemp -d)"; u="$(id -un)"; tw="$(cygpath -w "$t")"
+          tilde() { bash -c 'eval "printf %s ~$1"' _ "$1"; }
+          pwhome() { getent passwd "$1" 2>/dev/null | cut -d: -f6; }
+          echo "w3h user=$u uid=$(id -u) getent=$(command -v getent || echo none)"
+          echo "w3h nsswitch: $(grep -E '^[[:space:]]*db_home' /etc/nsswitch.conf 2>/dev/null || echo 'no db_home line')"
+          echo "w3h as-run HOME=$HOME USERPROFILE=${USERPROFILE:-} tilde=$(tilde "$u") getent=$(pwhome "$u")"
+          echo "w3h HOME-swapped tilde=$(HOME="$t" tilde "$u") getent=$(HOME="$t" pwhome "$u")"
+          echo "w3h both-swapped tilde=$(HOME="$t" USERPROFILE="$tw" tilde "$u") getent=$(HOME="$t" USERPROFILE="$tw" pwhome "$u")"
+          echo "w3h no-HOME tilde=$(env -u HOME bash -c 'eval "printf %s ~$1"' _ "$u") getent=$(env -u HOME getent passwd "$u" 2>/dev/null | cut -d: -f6)"
+          echo "w3h no-HOME-no-USERPROFILE getent=$(env -u HOME -u USERPROFILE getent passwd "$u" 2>/dev/null | cut -d: -f6)"
+          echo "w3h passwd-line: $(getent passwd "$u" 2>&1)"
+          sid="$(getent passwd "$u" 2>/dev/null | cut -d: -f5 | sed -n 's/.*\(S-1-[0-9][0-9-]*\).*/\1/p')"
+          pip="/proc/registry/HKEY_LOCAL_MACHINE/SOFTWARE/Microsoft/Windows NT/CurrentVersion/ProfileList/$sid/ProfileImagePath"
+          if [ -n "$sid" ] && [ -r "$pip" ]; then reg="$(tr -d '\0' < "$pip")"; else reg="unreadable"; fi
+          echo "w3h sid=${sid:-none} registry-profile=$reg"
+          echo "w3h guard as-run=$(bash -c '. comm/tests/lib-home-guard.sh; printf %s "$_GUARD_ACCT"') HOME-swapped=$(HOME="$t" bash -c '. comm/tests/lib-home-guard.sh; printf %s "$_GUARD_ACCT"') both-swapped=$(HOME="$t" USERPROFILE="$tw" bash -c '. comm/tests/lib-home-guard.sh; printf %s "$_GUARD_ACCT"')"
+          echo "w3h root tilde=$(tilde root) getent=$(getent passwd root 2>&1 | head -n 1)"
+          rm -rf "$t"
+          exit 0
