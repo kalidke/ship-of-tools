@@ -93,6 +93,9 @@ probe_row_id() {
 probe_create() {
     local handle="$1" req resp wsid root
     root="$(probe_root "$handle")" || return 1
+    # The root goes to the daemon inside a JSON payload, where Git Bash converts nothing: a pipe: daemon gets its own
+    # spelling (sot_daemon_path).
+    root="$(sot_daemon_path "$root")" || { echo "comm-probe.sh: cannot give $root in the spelling of the daemon at $ENDPOINT" >&2; return 1; }
     # The root can start with "/": it reaches jq on stdin (comm-lib-base.sh, free text and jq).
     req="$(printf '%s' "$root" | jq -Rsc --arg l "$handle" --arg an "$handle" \
         '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:.,autostart_claude:false,agent:"none",agent_name:$an,task:"",boot:true}}')"

@@ -154,9 +154,9 @@ check "nav (windows): the daemon's C:\\ root and the shell's /c/ path" "$(nav "$
 check "nav (windows): a C:\\ path under a C:\\ root" "$(nav "$WIN_PATH" 'C:\r\proj' 'C:\r\proj\src\a.jl')" "src/a.jl"
 check "nav (windows): the root itself" "$(nav "$WIN_PATH" 'C:\r\proj' /c/r/proj)" "."
 
-# 4. sot-fe preview: the path it sends, read by a socket that records what each connection sends until the
-# fe.command.send request and then hangs up without an answer (for at most 300 s); or its refusal of a path outside
-# the repo.
+# 4. sot-fe preview: the path it sends, read by a socket that records what each connection sends until its request
+# (the second line, after the hello) and then hangs up without an answer (for at most 300 s); or its refusal of a path
+# outside the repo.
 mkdir -p "$WORK/repo" "$WORK/elsewhere" && (cd "$WORK/repo" && "$REAL_GIT" init -q && : > a.txt) || exit 2
 REC="$WORK/rec.sock" RECLOG="$WORK/rec.log"
 timeout 300 python3 -c '
@@ -166,7 +166,7 @@ s.bind(sys.argv[1])
 s.listen(8)
 def record(c):
     seen = b""
-    while b"fe.command.send" not in seen:
+    while b"fe.command.send" not in seen and seen.count(b"\n") < 2:
         b = c.recv(65536)
         if not b:
             break
@@ -198,6 +198,38 @@ check "fe (windows): git's C:/ root and the shell's path" "$(fe "$WIN_PATH" "$WO
 win_file="$(PATH="$WIN_PATH" cygpath -m "$WORK/repo/a.txt" | tr / '\\')"
 check "fe (windows): a C:\\ path under git's C:/ root" "$(fe "$WIN_PATH" "$win_file")" "a.txt"
 check "fe (windows): a path outside the repo is refused" "$(fe "$WIN_PATH" "$WORK/elsewhere/x")" "refused"
+
+# 5. A path sent to a daemon inside a JSON payload, where Git Bash converts nothing: a pipe: daemon (a native Windows
+# process; this suite's pipe goes to the recording socket) gets cygpath -m -l's spelling, a unix: daemon the path as
+# written. `sot-fe docs`, `sot-fe repl run` (with and without --fresh) and comm-probe's workspace.create.
+export GUARD_PIPE_SOCKET="$REC"
+printf '#!/bin/sh\nprintf '"'"'"fakehost\\\\fakeuser","S-1-5-21-1-2-3-1001"\\r\\n'"'"'\n' > "$WIN/cmd"; chmod +x "$WIN/cmd"
+PIPE='pipe:\\.\pipe\sot-paths-test'
+sent() {  # OP JQ-PATH PATH CMD... — the value at JQ-PATH of the OP request CMD sends, run from the repo with PATH
+    local op="$1" q="$2" p="$3"; shift 3
+    : > "$RECLOG"
+    (cd "$WORK/repo" && PATH="$p" "$@" > /dev/null 2>&1)
+    jq -r --arg op "$op" "select(.op == \$op) | $q" "$RECLOG" 2>/dev/null | head -n 1
+}
+F="$WORK/repo/a.txt"
+FW="$(PATH="$WIN_PATH" cygpath -m -l "$F")"
+check "docs (windows): a pipe: daemon gets its spelling" \
+    "$(sent fe.command.send .payload.args.path "$WIN_PATH" bash "$SCRIPTS_DIR/sot-fe" docs ws "$F" --endpoint "$PIPE" --timeout 1)" "$FW"
+check "docs: a unix: daemon gets the path as written" \
+    "$(sent fe.command.send .payload.args.path "$PATH" bash "$SCRIPTS_DIR/sot-fe" docs ws "$F" --endpoint "unix:$REC" --timeout 1)" "$F"
+check "repl run --fresh (windows): a pipe: daemon gets its spelling" \
+    "$(sent repl.run_file .payload.path "$WIN_PATH" bash "$SCRIPTS_DIR/sot-fe" repl run ws-x "$F" --fresh --endpoint "$PIPE" --timeout 1)" "$FW"
+check "repl run (windows): a pipe: daemon gets its spelling" \
+    "$(sent repl.execute .payload.input.path "$WIN_PATH" bash "$SCRIPTS_DIR/sot-fe" repl run ws-x "$F" --endpoint "$PIPE" --timeout 1)" "$FW"
+check "repl run: a unix: daemon gets the path as written" \
+    "$(sent repl.execute .payload.input.path "$PATH" bash "$SCRIPTS_DIR/sot-fe" repl run ws-x "$F" --endpoint "unix:$REC" --timeout 1)" "$F"
+probe_root_sent() {  # PATH ENDPOINT — the project_root comm-probe's workspace.create carries
+    PATH="$1" ENDPOINT="$2" bash -c 'log="$2"; . "$1"; probe_request() { printf "%s\n" "$1" > "$log"; return 1; }
+        probe_create probe-t > /dev/null 2>&1; jq -r .payload.project_root "$log"' _ "$SCRIPTS_DIR/comm-probe.sh" "$WORK/probe-req"
+}
+check "probe (windows): a pipe: daemon gets its spelling" \
+    "$(probe_root_sent "$WIN_PATH" "$PIPE")" "$(PATH="$WIN_PATH" cygpath -m -l "$SOT_COMM_HOME/probe/probe-t")"
+check "probe: a unix: daemon gets the root as written" "$(probe_root_sent "$PATH" "unix:$REC")" "$SOT_COMM_HOME/probe/probe-t"
 
 echo ""
 echo "$PASS passed, $FAIL failed"

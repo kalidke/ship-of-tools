@@ -69,7 +69,8 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
 - jq is a requirement of the shell client. A frame builder (`sot_json_escape`, `sot_hello_frame`, `sot_pty_input`, `sot_pty_screen`) either prints its one result and returns 0, or prints nothing, says `jq is missing` on stderr (`sot_require_tools`) and returns nonzero, before any connection; the client has no no-jq fallback. The registry's read and write name a missing jq the same way (`sot_registry_read`, and `registry_replace` in its FAILED line), never as an unreadable registry.
 - A path is made relative to git's or a daemon's root only by `sot_relative_to`, a registry or self-file root is
   compared with another only by `sot_same_root`, and a path is put in Windows' spelling only by `sot_native_path`, the
-  library's one cygpath conversion (`cygpath -m -l`; `sot_daemon_path` uses it for a `pipe:` daemon): on Windows git
+  library's one cygpath conversion (`cygpath -m -l`; `sot_daemon_path`, the spelling of every path a script sends a
+  daemon inside a payload, where Git Bash converts nothing, uses it for a `pipe:` daemon): on Windows git
   prints `C:/...` with long names (and `realpath` keeps it), a native daemon `C:\...`, and the shell `/c/...` or
   `/tmp/...`, whose folder can carry a short 8.3 name.
 - A rule written in both shell and Rust changes in both in one commit (the lock record, the cursor, the lock identity, the unread count, the heartbeat).
