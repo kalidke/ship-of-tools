@@ -39,12 +39,18 @@ fn system_fontdb() -> Arc<fontdb::Database> {
 /// labels ask for) at a family `db` holds, so text in one is drawn. `load_system_fonts` has named them: fontconfig's
 /// choice on Linux, else fontdb's Times New Roman, Arial and Courier New, which Windows and macOS ship. A name `db` does
 /// not hold (fontconfig's first preference missing from a lean Linux) becomes the family of the first face it does
-/// hold, a monospaced one for `monospace`.
+/// hold, a monospaced one for `monospace`. A machine that holds Consolas keeps it for `monospace`: Windows drew
+/// monospace SVG text in it (the Monitor's labels among it) before these defaults, and fontdb's is Courier New there.
 fn held_generic_families(db: &mut fontdb::Database) {
     use fontdb::Family::{Monospace, SansSerif, Serif};
+    fn holds(db: &fontdb::Database, name: &str) -> bool {
+        db.faces().any(|face| face.families.iter().any(|(family, _)| family == name))
+    }
+    if holds(db, "Consolas") {
+        db.set_monospace_family("Consolas");
+    }
     for generic in [Serif, SansSerif, Monospace] {
-        let name = db.family_name(&generic);
-        if db.faces().any(|face| face.families.iter().any(|(family, _)| family == name)) {
+        if holds(db, db.family_name(&generic)) {
             continue;
         }
         let monospaced = matches!(generic, Monospace);
@@ -254,6 +260,33 @@ mod tests {
         let cases = ["AA\u{2029}BB", "AA&#x2029;BB"];
         let got: Vec<(&str, usize)> = cases.iter().map(|&text| (text, drawn(text, true))).collect();
         assert_eq!(got, cases.map(|text| (text, whole)));
+    }
+
+    /// Monospace SVG text stays in Consolas where the machine holds it, and otherwise takes a monospaced family the
+    /// machine holds.
+    #[test]
+    fn monospace_stays_consolas_where_it_is_held() {
+        let face = |family: &str| fontdb::FaceInfo {
+            id: fontdb::ID::dummy(),
+            source: fontdb::Source::Binary(Arc::new(Vec::<u8>::new())),
+            index: 0,
+            families: vec![(family.to_string(), fontdb::Language::English_UnitedStates)],
+            post_script_name: family.to_string(),
+            style: fontdb::Style::Normal,
+            weight: fontdb::Weight::NORMAL,
+            stretch: fontdb::Stretch::Normal,
+            monospaced: true,
+        };
+        let monospace = |families: &[&str]| {
+            let mut db = fontdb::Database::new();
+            for family in families {
+                db.push_face_info(face(family));
+            }
+            held_generic_families(&mut db);
+            db.family_name(&fontdb::Family::Monospace).to_string()
+        };
+        assert_eq!(monospace(&["DejaVu Sans Mono", "Consolas"]), "Consolas");
+        assert_eq!(monospace(&["DejaVu Sans Mono"]), "DejaVu Sans Mono");
     }
 
     /// An SVG's text in each generic family is drawn, on every platform: each names a family this machine holds.
