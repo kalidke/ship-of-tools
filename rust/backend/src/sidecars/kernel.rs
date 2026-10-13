@@ -34,9 +34,11 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, watch, OnceCell};
+
+use sot_protocol::child_lines::ChildLines;
 
 use super::WireRequest;
 
@@ -418,7 +420,7 @@ fn take_pipes(contained: &mut crate::lifecycle::child_signal::Contained) -> Resu
     let stdout = contained.stdout.take().ok_or("kernel child stdout missing")?;
     let stderr = contained.stderr.take().ok_or("kernel child stderr missing")?;
     tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr).lines();
+        let mut reader = ChildLines::new(stderr);
         while let Ok(Some(line)) = reader.next_line().await {
             tracing::debug!(target: "kernel.stderr", "{line}");
         }
@@ -517,7 +519,7 @@ async fn serve_child(
     let (submit_tx, mut submit_rx) = mpsc::channel::<Submission>(64);
     let mut pending: Pending = HashMap::new();
     let mut next_id: u64 = 1;
-    let mut stdout_lines = BufReader::new(stdout).lines();
+    let mut stdout_lines = ChildLines::new(stdout);
     let mut served_since: Option<tokio::time::Instant> = None;
     // When the kernel last answered a request, its hello included: `None` until the hello's answer.
     let mut heard: Option<tokio::time::Instant> = None;
@@ -1076,12 +1078,12 @@ mod deadline_tests {
     use super::*;
 
     /// The lines of a stand-in kernel that read the hello and answer it.
-    fn hello_answer() -> String {
+    pub(super) fn hello_answer() -> String {
         format!("read l\necho '{{\"id\":1,\"payload\":{{\"protocol\":{KERNEL_PROTOCOL_VERSION}}}}}'\n")
     }
 
     /// A kernel project whose stand-in appends a line to the returned counter at each spawn and then runs `script`.
-    fn stub_kernel(dir: &Path, name: &str, script: &str) -> (PathBuf, PathBuf) {
+    pub(super) fn stub_kernel(dir: &Path, name: &str, script: &str) -> (PathBuf, PathBuf) {
         let counter = dir.join(format!("{name}-spawns"));
         let stub = dir.join(format!("{name}-julia"));
         sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho x >> {}\n{script}", counter.display()));
@@ -1098,7 +1100,7 @@ mod deadline_tests {
     }
 
     /// The running kernel's submission channel, once its stand-in has answered the hello (each wait within 5 s).
-    async fn running(status_rx: &mut watch::Receiver<Status>) -> mpsc::Sender<Submission> {
+    pub(super) async fn running(status_rx: &mut watch::Receiver<Status>) -> mpsc::Sender<Submission> {
         loop {
             if let Status::Running(tx) = status_rx.borrow_and_update().clone() {
                 return tx;
@@ -1110,7 +1112,7 @@ mod deadline_tests {
         }
     }
 
-    fn spawns(counter: &Path) -> usize {
+    pub(super) fn spawns(counter: &Path) -> usize {
         std::fs::read_to_string(counter).map_or(0, |s| s.lines().count())
     }
 
@@ -1240,5 +1242,54 @@ mod deadline_tests {
         println!("kernel-full: 70 requests answered; the slowest after {slowest:?}");
         assert!(slowest < Duration::from_secs(11), "the slowest request took {slowest:?}");
         drop(kernel);
+    }
+}
+
+/// A kernel's line may hold any byte: its replies and its stderr are read lossily (`ChildLines`), so one byte neither
+/// ends the generation nor stops the stderr drain.
+#[cfg(all(test, unix))]
+mod stream_tests {
+    use super::deadline_tests::{hello_answer, running, spawns, stub_kernel};
+    use super::*;
+
+    /// Runs a stand-in kernel that answers its hello and then runs `body`, sends it two `file.parse` requests (ids 2
+    /// and 3), and returns their answers and how many times it was spawned.
+    async fn two_answers(body: &str) -> (Vec<std::result::Result<Value, String>>, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, counter) = stub_kernel(dir.path(), "bytes", &format!("{}{body}exec sleep 600\n", hello_answer()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (status, mut status_rx) = watch::channel(Status::Starting);
+        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, KernelBounds::PRODUCT));
+        let tx = running(&mut status_rx).await;
+        let mut answers = Vec::new();
+        for _ in 0..2 {
+            let answer = submit_and_await(&tx, "file.parse", json!({}), KERNEL_REQUEST_TIMEOUT).await;
+            answers.push(answer.map_err(|e| format!("{e:#}")));
+        }
+        sig.fire().expect("fire");
+        tokio::time::timeout(Duration::from_secs(3), task).await.expect("the supervisor loop outlived the shutdown").expect("task");
+        (answers, spawns(&counter))
+    }
+
+    /// A reply may hold any byte (JSON3 writes a string's bytes as they are, and a parse error quotes its source): it
+    /// arrives with U+FFFD for the byte, and the same generation answers the next request.
+    #[tokio::test]
+    async fn a_kernel_reply_holding_an_invalid_byte_keeps_its_generation() {
+        let (answers, spawns) = two_answers(
+            "read l\nprintf '{\"id\":2,\"payload\":{\"error\":\"a\\377b\"}}\\n'\nread l\necho '{\"id\":3,\"payload\":{\"ok\":true}}'\n",
+        )
+        .await;
+        assert_eq!((answers, spawns), (vec![Ok(json!({"error": "a\u{fffd}b"})), Ok(json!({"ok": true}))], 1));
+    }
+
+    /// A stderr line may hold any byte too: the drain reads on past it, so the kernel's later stderr (more than a pipe
+    /// holds) neither waits for a reader nor fails its write.
+    #[tokio::test]
+    async fn a_kernel_stderr_line_holding_an_invalid_byte_keeps_its_generation() {
+        let (answers, spawns) = two_answers(
+            "read l\nprintf 'warn a\\377b\\n' >&2\ni=0\nwhile [ $i -lt 2048 ]; do echo 'more of the stderr, about sixty-four bytes on every line of it.' >&2 || exit 3; i=$((i + 1)); done\necho '{\"id\":2,\"payload\":{\"ok\":true}}'\nread l\necho '{\"id\":3,\"payload\":{\"ok\":true}}'\n",
+        )
+        .await;
+        assert_eq!((answers, spawns), (vec![Ok(json!({"ok": true})), Ok(json!({"ok": true}))], 1));
     }
 }

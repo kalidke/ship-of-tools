@@ -38,6 +38,7 @@ unicode-width = "0.1"
 cosmic-text = { workspace = true }
 glyphon = { workspace = true }
 image = { workspace = true }
+flate2 = "1"
 resvg = { workspace = true }
 usvg = { workspace = true }
 tiny-skia = { workspace = true }

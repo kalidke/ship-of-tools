@@ -240,15 +240,7 @@ jobs:
           quarto_julia="$RUNNER_TEMP/l2-quarto-julia"
           mkdir -p "$warm" "$quarto_julia"
           cp rust/backend/tests/daemon_lifetime/fixtures/notebook.jl "$warm/notebook.jl"
-          julia --startup-file=no --project=julia/pluto -e '
-            using Pkg; Pkg.instantiate()
-            using Pluto
-            include("julia/pluto/session_options.jl")
-            session = configure_session!(Pluto.ServerSession(), "127.0.0.1", 1234)
-            notebook = Pluto.SessionActions.open(session, ARGS[1]; run_async = false)
-            ran = notebook.cells[1].output.body == "2"
-            Pluto.SessionActions.shutdown(session, notebook; keep_in_session = false, async = false)
-            ran || error("the warm-up notebook did not run")' "$warm/notebook.jl"
+          julia --startup-file=no --project=julia/pluto rust/backend/tests/daemon_lifetime/fixtures/warm_pluto.jl "$warm/notebook.jl"
           echo "SOT_L2_PLUTO_MANIFEST=$GITHUB_WORKSPACE/julia/pluto/Manifest.toml" >> "$GITHUB_ENV"
           cp "$(quarto --paths | sed -n 2p)/extension-subtrees/julia-engine/_extensions/julia-engine/Project.toml" "$quarto_julia/"
           julia --startup-file=no --project="$quarto_julia" -e 'using Pkg; Pkg.instantiate()'

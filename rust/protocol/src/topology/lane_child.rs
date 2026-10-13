@@ -63,9 +63,7 @@ impl BridgedClient {
         {
             let last_stderr = std::sync::Arc::clone(&last_stderr);
             std::thread::spawn(move || {
-                use std::io::BufRead;
-                let reader = std::io::BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
+                for line in crate::child_lines::blocking_child_lines(stderr).map_while(Result::ok) {
                     if !line.trim().is_empty() {
                         if let Ok(mut guard) = last_stderr.lock() {
                             *guard = Some(line);

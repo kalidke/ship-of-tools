@@ -178,8 +178,7 @@ impl Conn {
                 if let Some(stderr) = child.stderr.take() {
                     let sink = std::sync::Arc::clone(&last_stderr);
                     std::thread::spawn(move || {
-                        use std::io::BufRead;
-                        for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+                        for line in sot_protocol::child_lines::blocking_child_lines(stderr).map_while(Result::ok) {
                             let line = line.trim();
                             if !line.is_empty() {
                                 if let Ok(mut slot) = sink.lock() {
@@ -630,6 +629,27 @@ pub(crate) mod tests {
         );
         assert!(track.child.lock().unwrap().is_none(), "the guard left its child published after reaping it");
         track.cancel(); // after the guard is gone a cancel reaches nothing and must not panic
+    }
+
+    /// An ssh child's stderr may hold a byte that is not UTF-8 (a far host's banner): the drain thread reads on past
+    /// it, so the hint is still the child's last complaint.
+    #[cfg(unix)]
+    #[test]
+    fn the_ssh_hint_reads_past_a_byte_that_is_not_utf8() {
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "printf 'Banner \\351t\\351\\nPermission denied (publickey).\\n' >&2"]);
+        let child = sig
+            .spawn_std(cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()))
+            .expect("a stand-in ssh");
+        let (_write, _read, guard) = Conn::Bridged(child).split().expect("split");
+        let guard = guard.expect("a bridged child has a guard");
+        let began = std::time::Instant::now();
+        while std::sync::Arc::strong_count(&guard.last_stderr) > 1 {
+            assert!(began.elapsed() < std::time::Duration::from_secs(5), "the drain thread never ended");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(guard.stderr_hint().as_deref(), Some("Permission denied (publickey)."));
     }
 
     /// A daemon that refuses the hello closes the connection; the error is the refusal, not the next op's end of

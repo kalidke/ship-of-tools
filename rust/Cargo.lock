@@ -3882,6 +3882,7 @@ dependencies = [
  "comrak",
  "cosmic-text",
  "dirs",
+ "flate2",
  "glyphon",
  "image",
  "interprocess",

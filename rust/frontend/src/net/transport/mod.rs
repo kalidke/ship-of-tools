@@ -630,8 +630,7 @@ where
     {
         let last_stderr = Arc::clone(&last_stderr);
         tokio::spawn(async move {
-            use tokio::io::AsyncBufReadExt;
-            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            let mut lines = sot_protocol::child_lines::ChildLines::new(stderr);
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.trim().is_empty() {
                     if let Ok(mut guard) = last_stderr.lock() {

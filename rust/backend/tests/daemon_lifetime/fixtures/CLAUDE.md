@@ -6,6 +6,7 @@ process trees they watch for an end. Part of the daemon-lifetime harness; page: 
 ## Files
 - `tree.rs`: `Tree`, a leader, a child and a grandchild that report their pids (the last two ignore TERM and HUP; the leader is started detached), and the forking tree; each ends itself once its folder is gone; `session_members`
 - `notebook.jl`: a Pluto notebook of one trivial cell; the case's worker is started by the startup expression the case's own copy of `session_options.jl` carries
+- `warm_pluto.jl`: Pluto's environment instantiated in the depot and one notebook run, before the harness (rust.yml's Linux job, rc-gate's `job_lifetime`), so the Pluto cases get its manifest and compile nothing
 - `render.qmd`: a Quarto document on the Julia engine whose one chunk reports the worker's pid and its parent's (the engine server), ignores TERM and HUP and starts a tree detached
 
 ## Rules

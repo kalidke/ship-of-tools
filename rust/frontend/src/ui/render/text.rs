@@ -17,11 +17,11 @@ use std::borrow::Cow;
 /// `\r`, U+001C, U+001D, U+001E, U+0085 and U+2029 (bidi class B); cosmic-text 0.12's `Buffer::set_text` ends a line
 /// only at `\r` and `\n`, and shaping a line that holds two paragraphs of different directions panics
 /// (`ShapeLine::new_in_buffer`).
-const PARAGRAPH_SEPARATORS: [char; 5] = ['\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2029}'];
+pub(crate) const PARAGRAPH_SEPARATORS: [char; 5] = ['\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2029}'];
 
 /// `text` with each of `PARAGRAPH_SEPARATORS` a space, so every line cosmic-text shapes is one bidi paragraph. A
 /// caller that wants one to end a line makes it `\n` first (`normalize_newlines`, preview/markdown/buffer.rs).
-fn one_paragraph_per_line(text: &str) -> Cow<'_, str> {
+pub(crate) fn one_paragraph_per_line(text: &str) -> Cow<'_, str> {
     if text.contains(PARAGRAPH_SEPARATORS) {
         Cow::Owned(text.replace(PARAGRAPH_SEPARATORS, " "))
     } else {

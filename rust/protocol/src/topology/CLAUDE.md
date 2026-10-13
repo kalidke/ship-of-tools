@@ -58,7 +58,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `sotd topology relay-endpoint`, `relay_endpoint_cmd`, `sotd topology pin`. Uses:
 `dispatch`, `sotd stdio-bridge`, `Signal::spawn_std`, `Signal::output`, `ContainedStd`, `Signal`,
 `child_signal::process`, `lane.connect`, `Endpoint`, `DaemonLaneEndpoint`, `sot_state_dir`, `sot_config_dir`,
-`host_name`, `state_dir_hash`, `boot_identity`, `process_created`, `IdentityExchange`.
+`host_name`, `state_dir_hash`, `boot_identity`, `process_created`, `IdentityExchange`, `blocking_child_lines`.
 
 ## Folders
 - `rust/protocol/src/topology/`: this folder.

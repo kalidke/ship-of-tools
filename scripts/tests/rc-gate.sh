@@ -4,7 +4,9 @@
 # The rc gate as concurrent jobs under one cap (default 10). Linux only. It
 # covers what the old full gate covered: the Rust workspace tests (the four
 # slow binaries split per test), the doc tests, the windows-gnu and darwin
-# cross checks, every Julia suite, and the shell suites.
+# cross checks, every Julia suite, and the shell suites; and, as rust.yml's Linux job runs it, the daemon lifetime
+# harness, built in CARGO_TARGET_DIR/daemon-lifetime, since its features (the capsule's phase barriers, the daemon's
+# faults) would replace the `sotd` and `sot-capsule` the other jobs run.
 #
 # Runs as the main process of its own test container: scripts/tests/in-container.sh UNIT -- bash rc-gate.sh ...
 # (exit 2 otherwise). Reads HOME, PATH (only for `command -v cargo`, `julia` and `node`),
@@ -20,7 +22,8 @@
 # otherwise 0 (130 if interrupted) and the verdict is in <logdir>/summary.txt: it ends in ALLDONE, or ALLDONE FAILED
 # when any job's rc is nonzero, the job runner failed, a job never ran, the run was interrupted, or a test left a
 # process behind (any process left in the container). Every job's result file starts as `unrun`, so a job that never
-# ran cannot pass; each job's command has a 1200 s end (the builds do not). The container's end kills what is left.
+# ran cannot pass; each job's command has a 1200 s end (the lifetime harness 3600 s; the builds none). The container's
+# end kills what is left.
 # ALLDONE means every rc line is 0; the rc lines say which job failed. A container stopped from outside SIGKILLs
 # rc-gate, so summary.txt gets no ALLDONE line; a summary without one is a failed run.
 # A selected Rust job's result is zero only when its exact body completed successfully. A missing,
@@ -32,6 +35,9 @@
 SELF=$(readlink -f "$0")
 source "$(dirname "$SELF")/lib-test-body.sh" || exit 2
 TO=(timeout -k 10 1200)
+# The lifetime harness runs every case one at a time: 963 s inside a whole gate and 1035 s alone, on a shared test
+# host. So it has an end of its own, inside the 75 min rust.yml gives its job.
+LTO=(timeout -k 10 3600)
 SPLIT=(capsule_workspaces comm_wake lane_bridge fe_client)
 JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/video-file julia/sotlog)
 
@@ -88,6 +94,25 @@ job_shell() {
   b=$(basename "$1" .sh)
   "${TO[@]}" "${SE[@]}" bash "$@" > "$L/$b.log" 2>&1
   fin "$b" $?
+}
+
+# job_lifetime: the daemon lifetime harness as rust.yml's Linux job runs it: Pluto's environment prepared in the gate's
+# depot with one notebook run (fixtures/warm_pluto.jl) and handed to the cases, then every case one at a time, the Julia
+# ones on the gate's julia
+job_lifetime() {
+  local log=$L/rust/daemon_lifetime-faults.log pkg=$D/rust/backend warm=$L/lifetime-warm r
+  echo "     Running ($RCG_LIFETIME) load $(cut -d' ' -f1 /proc/loadavg)" > "$log"
+  mkdir -p "$warm" && cp "$pkg/tests/daemon_lifetime/fixtures/notebook.jl" "$warm/" &&
+    (cd "$D" && "${TO[@]}" "${JE[@]}" julia --startup-file=no --project=julia/pluto \
+      rust/backend/tests/daemon_lifetime/fixtures/warm_pluto.jl "$warm/notebook.jl") > "$L/lifetime-warm.log" 2>&1
+  r=$?
+  if [ "$r" -eq 0 ]; then
+    (cd "$pkg" && "${LTO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" SOT_JULIA_BIN="$RCG_JULIA_DIR/julia" \
+      SOT_L2_PLUTO_MANIFEST="$D/julia/pluto/Manifest.toml" "$RCG_LIFETIME" --include-ignored --test-threads=1) \
+      >> "$log" 2>> "$L/rust/daemon_lifetime-faults.stderr"
+    r=$?
+  fi
+  echo "$r" > "$L/rust/daemon_lifetime-faults.rc"
 }
 
 # job_test <key> <exe> <pkgdir> [test]
@@ -159,6 +184,7 @@ producer() {
   done
   SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/installer-apply.sh" "$D/scripts/tests/installer-shared-home.sh" "$D/scripts/tests/test-topology-plan.sh" "$D/scripts/tests/test-test-body.sh")
 
+  [ -n "${RCG_LIFETIME:-}" ] && emit lifetime lifetime
   for s in julia-root "${JULIA_PKGS[@]/#/julia-}"; do echo unrun > "$L/steps/${s//\//-}.rc"; done
   emit julia julia
   echo unrun > "$L/rust/doc.rc"
@@ -270,6 +296,7 @@ if [ "${1:-}" = --job ]; then
   IFS=$'\t' read -r kind a b c d <<< "$2"
   case $kind in
     julia) job_julia ;;
+    lifetime) job_lifetime ;;
     cargo-chain) job_cargo_chain ;;
     shell) job_shell "$b" ${c:+"$c" "$d"} ;;
     bin) job_test "$a" "$b" "$c" ;;
@@ -361,6 +388,21 @@ if [ "$BUILD_RC" -eq 0 ] && [ "$INTR" -eq 0 ]; then
   fi
 fi
 export RCG_BUILD_RC=$BUILD_RC
+# The daemon lifetime harness's own build; its result stays unrun, a failure, unless its job runs.
+echo unrun > "$L/rust/daemon_lifetime-faults.rc"
+RCG_LIFETIME=
+if [ "$INTR" -eq 0 ]; then
+  st build-lifetime
+  "${CE[@]}" CARGO_TARGET_DIR="$CARGO_TARGET_DIR/daemon-lifetime" cargo build --manifest-path "$M" -p sot-log \
+    --features native-barrier --bin sot-capsule --locked > "$L/build-lifetime.log" 2>&1 &&
+    "${CE[@]}" CARGO_TARGET_DIR="$CARGO_TARGET_DIR/daemon-lifetime" cargo test --manifest-path "$M" -p sot-backend \
+      --features daemon-lifetime-faults --test daemon_lifetime --locked --no-run --message-format=json \
+      > "$L/build-lifetime.json" 2>> "$L/build-lifetime.log"
+  r=$?; rc build-lifetime $r
+  [ $r -eq 0 ] && RCG_LIFETIME=$(jq -r 'select(.reason=="compiler-artifact" and .profile.test==true and .executable!=null)
+    | .executable' "$L/build-lifetime.json")
+fi
+export RCG_LIFETIME
 
 XS=130
 if [ "$INTR" -eq 0 ]; then

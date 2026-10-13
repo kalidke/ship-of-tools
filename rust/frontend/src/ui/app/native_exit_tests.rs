@@ -15,7 +15,7 @@ const BACKSTOP_EVENT: &str = "final teardown exceeded its bound";
 const ORDINARY_BOUND_MS: u128 = 2500;
 /// The held acknowledgement outlasts the three-second backstop; the second-close case never gets one.
 const HELD_ACK: Duration = Duration::from_millis(3600);
-/// How long a close child waits for the window's third frame before it fails, saying how many it drew.
+/// How long a close child waits, from its window's existence, for the window's third frame before it fails, saying how many it drew.
 const FRAME_WAIT: Duration = Duration::from_secs(20);
 /// A child's whole bound; an overrun is ended and its streams printed.
 const CHILD_BOUND: Duration = Duration::from_secs(60);
@@ -227,11 +227,15 @@ impl CloseDriver<'_> {
 
 impl ApplicationHandler for CloseDriver<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let building = self.app.state.is_none();
         self.app.resumed(event_loop);
         if self.app.state.is_none() {
             println!("native: not runnable here: native App/State startup did not complete");
             self.stop.store(true, Ordering::SeqCst);
             event_loop.exit();
+        } else if building {
+            // The frame wait counts from the window's existence: building it is startup, which only CHILD_BOUND bounds.
+            self.begun = Instant::now();
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {

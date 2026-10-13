@@ -10,7 +10,9 @@ rust/frontend/src/ui/CLAUDE.md.
 - `overlay.rs`: the figure caption store and the scalebar and caption draw geometry.
 - `png.rs`: decodes PNG bytes to RGBA8, fits them to the GPU's texture limit and uploads a quad.
 - `roi.rs`: the raster-node test, the ROI capture to `image.crop` and its applied report.
-- `svg.rs`: rasterizes SVG bytes with resvg at a caller-given pixel size and uploads a quad.
+- `svg.rs`: rasterizes SVG bytes with resvg at a caller-given pixel size and uploads a quad; an `.svgz` is unpacked
+  first, to at most `PREVIEW_BINARY_CAP` (`unpack_svgz`), and an SVG's text reaches usvg with no bidi paragraph
+  separator (`one_paragraph_svg`).
 - `view.rs`: the view geometry: letterbox, zoom bound, pan scaling and the source-pixel ROI mapping both ways.
 - `replies.rs`: figure, ROI crop and pixel-size replies
 
@@ -20,6 +22,10 @@ rust/frontend/src/ui/CLAUDE.md.
 ## Rules
 - png.rs decodes by sniffing the bytes, not the file name (`with_guessed_format` in its decode path).
 - svg.rs rasterizes at exactly the pixel size the caller asks and never fits to the rect (`quad_from_svg_bytes`).
+- An SVG's text in a generic family (`serif`, `sans-serif`, `monospace`) draws in a family this machine holds:
+  fontconfig's choice on Linux, fontdb's defaults elsewhere, else the first face held, and `monospace` stays Consolas
+  where it is held, as Windows drew it before (`held_generic_families`; tests `svg_text_in_each_generic_family_is_drawn`,
+  `monospace_stays_consolas_where_it_is_held`).
 - Every image-geometry consumer takes `image_rect_for_caption`'s rect, never the pane rect.
 - An ROI is in source-image pixels, the same on any display (`visible_roi_px`, `solve_roi_view`; ADR 0022).
 - One source pixel never grows past 16x16 screen pixels (`png_zoom_max`, `MAX_PX_PER_SRC_PX`).

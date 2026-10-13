@@ -15,7 +15,7 @@ use crate::support::{
 };
 use crate::SERIAL;
 use sot_protocol::ops::{op, FeLeaseReq};
-use sot_protocol::{codec, Frame};
+use sot_protocol::{codec, Frame, Kind};
 use std::time::{Duration, Instant};
 
 /// The phase the birth is held at: accepted and forked, its target gated, the parent about to open the gate.
@@ -43,8 +43,9 @@ async fn reached(barriers: &BarrierDir, phase: &str, ticket: usize) -> Report {
     barriers.reached(phase, ticket, BOUND)
 }
 
-/// One request on a connection of its own, its answer's payload, or `None` when the daemon ended first. A connection
-/// the daemon neither answers nor ends within `BOUND` fails the caller.
+/// One request on a connection of its own, its answer's payload, or `None` when the daemon ended first. The answer is
+/// the frame that carries the request's id: an event the daemon writes meanwhile (the held create's
+/// `workspace.changed`) is skipped. A connection the daemon neither answers nor ends within `BOUND` fails the caller.
 async fn request(
     socket: std::path::PathBuf,
     op_name: &'static str,
@@ -54,11 +55,17 @@ async fn request(
     codec::write_frame(&mut conn, &Frame::req(id, op_name, payload), None)
         .await
         .ok()?;
-    let (answer, _) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
+    let answer = async {
+        loop {
+            let (frame, _) = codec::read_frame(&mut conn).await.ok()?;
+            if frame.id == id && frame.kind != Kind::Evt {
+                return Some(frame.payload);
+            }
+        }
+    };
+    tokio::time::timeout(BOUND, answer)
         .await
         .expect("the daemon's answer within BOUND")
-        .ok()?;
-    Some(answer.payload)
 }
 
 async fn hold_a_birth(tag: &str, case: &str, bound_ms: &str) -> Held {

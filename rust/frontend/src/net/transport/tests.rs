@@ -508,3 +508,19 @@ async fn stderr_drain_keeps_the_last_non_empty_line() {
     assert_eq!(drained(b"first\n\n  \nsecond\n \t \n").await.as_deref(), Some("second"));
     assert_eq!(drained(b"\n  \n").await, None);
 }
+
+/// An ssh child's stderr may hold a byte that is not UTF-8 (a far host's banner): the drain reads on past it, so the
+/// last line is still the child's last complaint.
+#[tokio::test]
+async fn stderr_drain_reads_past_a_byte_that_is_not_utf8() {
+    let cell = spawn_stderr_drain(&b"Banner \xe9t\xe9\nPermission denied (publickey).\n"[..]);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while Arc::strong_count(&cell) != 1 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the drain task ends at end of input");
+    let last = cell.lock().unwrap().clone();
+    assert_eq!(last.as_deref(), Some("Permission denied (publickey)."));
+}

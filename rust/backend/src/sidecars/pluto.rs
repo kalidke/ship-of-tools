@@ -22,7 +22,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -162,13 +162,13 @@ async fn spawn_supervisor(
 
     // Stderr drain — pure logging.
     tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr).lines();
+        let mut reader = sot_protocol::child_lines::ChildLines::new(stderr);
         while let Ok(Some(line)) = reader.next_line().await {
             tracing::debug!(target: "pluto.stderr", "{line}");
         }
     });
 
-    let mut stdout_lines = BufReader::new(stdout).lines();
+    let mut stdout_lines = sot_protocol::child_lines::ChildLines::new(stdout);
 
     // Wait for the READY line before accepting any requests. Julia
     // startup + Pluto load takes ~30s on a cold depot; the supervisor
@@ -352,7 +352,7 @@ pub(crate) mod seams {
 async fn supervisor_task(
     mut contained: crate::lifecycle::child_signal::Contained,
     mut stdin: ChildStdin,
-    mut stdout_lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    mut stdout_lines: sot_protocol::child_lines::ChildLines<tokio::process::ChildStdout>,
     mut submit_rx: mpsc::Receiver<Submission>,
     ended: oneshot::Receiver<()>,
     sig: &'static crate::lifecycle::child_signal::Signal,
@@ -520,6 +520,39 @@ mod port_parse_tests {
         let gone = gc.gone();
         drop(tx);
         assert!(gone, "the Pluto grandchild survived the shutdown");
+    }
+
+    /// A Pluto line may hold any byte (an `ERR` line quotes what failed): the open it answers gets U+FFFD for the byte,
+    /// and the same server answers the next open. The READY address is no loopback page, so no proxy grant is published.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pluto_line_holding_an_invalid_byte_keeps_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("stub-julia");
+        sot_log::test_exec::write_executable(
+            &stub,
+            "#!/bin/sh\necho 'READY http://pluto.invalid/'\nread l\nprintf 'ERR a\\377b\\n'\nread l\necho 'URL http://pluto.invalid/edit'\nexec sleep 600\n".to_string(),
+        );
+        let script = dir.path().join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
+        let running = spawn_supervisor(&bin, &project, &script, sig).await.expect("spawn_supervisor");
+        let mut answers = Vec::new();
+        for path in ["/a.jl", "/b.jl"] {
+            let (reply, rx) = oneshot::channel();
+            let answer = match running.submit.send(Submission { abs_path: path.to_string(), reply }).await {
+                Ok(()) => match tokio::time::timeout(Duration::from_secs(10), rx).await.expect("an answer within 10 s") {
+                    Ok(answer) => answer.map_err(|e| format!("{e:#}")),
+                    Err(_) => Err("the reply was dropped".to_string()),
+                },
+                Err(_) => Err("the server ended".to_string()),
+            };
+            answers.push(answer);
+        }
+        sig.fire().expect("fire");
+        drop(running);
+        assert_eq!(answers, [Err("pluto: a\u{fffd}b".to_string()), Ok("http://pluto.invalid/edit".to_string())]);
     }
 
     /// The longest an isolated body here may take.

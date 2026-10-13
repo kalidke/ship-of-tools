@@ -4,6 +4,28 @@ use std::time::{Duration, Instant};
 
 const BOUND: Duration = Duration::from_secs(30);
 
+/// An ssh child's stderr may hold a byte that is not UTF-8 (a far host's banner): the drain thread reads on past it,
+/// so the last line is still the child's last complaint. The client's drop reaps the stand-in within its teardown's
+/// bound.
+#[cfg(unix)]
+#[test]
+fn an_ssh_line_that_is_not_utf8_is_kept() {
+    let child = std::process::Command::new("/bin/sh")
+        .args(["-c", "printf 'Banner \\351t\\351\\nPermission denied (publickey).\\n' >&2"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("a stand-in ssh");
+    let client = BridgedClient::wrap(child).expect("wrap");
+    let began = Instant::now();
+    while std::sync::Arc::strong_count(&client.last_stderr) > 1 {
+        assert!(began.elapsed() < Duration::from_secs(5), "the drain thread never ended");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(client.poll_last_stderr().as_deref(), Some("Permission denied (publickey)."));
+}
+
 #[cfg(unix)]
 pub(crate) fn spawn_stub_child() -> std::process::Child {
     std::process::Command::new("cat")

@@ -52,7 +52,11 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
   ends a buffer line only at `\r` and `\n` and panics on a line holding two paragraphs of different directions.
   `rust/clippy.toml`'s text-into-the-shaper group refuses every other way in. Tests
   `the_shaper_gets_one_bidi_paragraph_per_line` (render/text.rs), `a_plain_preview_is_one_bidi_paragraph_per_line` and
-  `a_table_cell_is_one_bidi_paragraph_per_line` (preview/markdown/tests.rs).
+  `a_table_cell_is_one_bidi_paragraph_per_line` (preview/markdown/tests.rs). An SVG's text reaches usvg under the same
+  rule, each separator written as itself or as a character reference (`one_paragraph_svg`, preview/image/svg.rs), since
+  usvg draws only a text chunk's first paragraph: `svg_tree` is usvg's one way in (an `.svgz` unpacked first), and the
+  same clippy group refuses usvg's `Tree::from_data`, `from_str` and `from_xmltree` elsewhere; tests
+  `svg_text_after_a_paragraph_separator_is_drawn`, `svgz_text_after_a_paragraph_separator_is_drawn`.
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),
   `resumed` (app/handler.rs); a relaunch command is refused for them (control/dispatch.rs).

@@ -3,7 +3,8 @@
 # retires sotd.service pins it to the hosts that run sotd (`sotd topology pin`) before any reload and never disables the
 # shared unit under a declared topology.
 # The functions and install.sh run for real; `sotd`, `systemctl`, `loginctl`, `curl` and `git` are stubs, HOME is
-# scratch. Run: scripts/tests/installer-shared-home.sh
+# scratch, and install.sh's PATH is the stubs and `INSTALL_TOOLS`, never the host's /usr/bin: a Julia or juliaup there
+# would skip the Julia install the network case reads. Run: scripts/tests/installer-shared-home.sh
 
 set -euo pipefail
 
@@ -26,6 +27,8 @@ STUBEOF
     printf '#!/bin/sh\nprintf "loginctl %%s\\n" "$*" >> "%s/log"\n' "$d" > "$d/stubs/loginctl"
     chmod +x "$d/prefix/bin/sotd" "$d/stubs/systemctl" "$d/stubs/loginctl"
 }
+# install.sh's tools: the library's, and the archive tools it unpacks a release with.
+INSTALL_TOOLS="$WORK/install-tools"; mk_tools "$INSTALL_TOOLS" tar gzip tr
 # The line number of the first log line equal to <line>, or 0.
 at() { grep -n -x -F -- "$2" "$1/log" | head -1 | cut -d: -f1 || true; }
 PIN_LINE() { printf 'sotd topology pin --dir %s/home/.config/systemd/user' "$1"; }
@@ -169,7 +172,7 @@ case "\$*" in *"status --porcelain"*) ;; *rev-parse*) echo 0123abc ;; esac
 STUBEOF
     printf '#!/bin/sh\nexit 3\n' > "$d/stubs/systemctl"
     chmod +x "$d/stubs/curl" "$d/stubs/git" "$d/stubs/systemctl"
-    env -i HOME="$d/home" PATH="$d/stubs:/usr/bin:/bin" SOT_INSTALL_TAG=v9.9.9 \
+    env -i HOME="$d/home" PATH="$d/stubs:$INSTALL_TOOLS" SOT_INSTALL_TAG=v9.9.9 \
         bash "$(dirname "$0")/../install.sh" --prefix "$d/prefix" "$@" 2>&1
 }
 says() { printf '%s\n' "$1" | grep -c "$2" || true; }
@@ -195,7 +198,7 @@ d="$WORK/net-bounds"; mkdir -p "$d/prefix/repo/versions/v9.9.9/scripts/lib"
 cp "$(dirname "$0")/../lib/sot-daemon.sh" "$d/prefix/repo/versions/v9.9.9/scripts/lib/sot-daemon.sh"
 rc=0; out="$(shared_install_run "$d" "$me daemon" 755 --be-only --no-service --force-role-change)" || rc=$?
 check "a pinned run goes on to ask for Julia" "1" "$(says "$out" 'Julia install failed')"
-env -i HOME="$d/home" PATH="$d/stubs:/usr/bin:/bin" bash "$(dirname "$0")/../install.sh" --be-only --prefix "$d/prefix" >/dev/null 2>&1 || true
+env -i HOME="$d/home" PATH="$d/stubs:$INSTALL_TOOLS" bash "$(dirname "$0")/../install.sh" --be-only --prefix "$d/prefix" >/dev/null 2>&1 || true
 check "the log holds the prelude, the downloads and the Julia installer's curl calls" "yes" \
     "$([ "$(grep -c '^curl ' "$d/net.log")" -ge 6 ] && echo yes || echo no)"
 check "every curl call carries the connect and stall bound" "0" \

@@ -34,8 +34,15 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   (`should_log`).
 - A process name reaches the daemon as `/proc` gives it: the sampler's awk joins a stat line a `\n` in the name split
   (`SAMPLER_SH`), and the daemon decodes each line lossily and makes its control characters spaces before parsing it
-  (`next_or_pending`, `supervise`; tests `a_process_name_with_any_bytes_keeps_its_host_sampled`,
+  (`ChildLines`, `supervise`; tests `a_process_name_with_any_bytes_keeps_its_host_sampled`,
   `a_process_name_with_a_newline_is_read_whole`, Linux only).
+- A child's output is bytes: every sidecar child's stdout and stderr are read through the wire's `ChildLines`, which
+  decodes each line lossily (an invalid sequence becomes U+FFFD), so no byte a child writes ends its generation or stops
+  its stderr drain. The children may write any byte (the kernel's JSON3 writes a string's bytes as they are) and none
+  re-encodes. Tests `a_kernel_reply_holding_an_invalid_byte_keeps_its_generation` and
+  `a_kernel_stderr_line_holding_an_invalid_byte_keeps_its_generation` (kernel.rs),
+  `a_repl_line_holding_an_invalid_byte_keeps_the_child` (repl/ops.rs) and
+  `a_pluto_line_holding_an_invalid_byte_keeps_the_server` (pluto.rs).
 - Only the hub runs the declared `[monitor]` roster, read once at start (`load_hosts`, `sampling_roster`); only a Linux
   daemon samples itself (`without_local_sampler`).
 - The Julia children's page servers listen on 127.0.0.1 and answer nothing without a secret drawn from the OS's
@@ -52,7 +59,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `allowed_proxy_ports`, `Kernel`, `Repl`, `julia::resolve_bin`. Uses: `dispatch`, `SSH_OPTS`, `Redial`, `STABLE`, `Signal::spawn`, `Contained`, `Contained::wait_until_exited`, `Signal`,
 `child_signal::process`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `sot_state_dir`, `sot_config_dir`,
 `host_name`, `state_dir_hash`, `resource_dir`, `rust/backend/src/paths.rs`, `record_browser_port`,
-`revoke_browser_ports`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`, `ensure_proxy_for_url`.
+`revoke_browser_ports`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`, `ensure_proxy_for_url`, `ChildLines`.
 
 ## Folders
 - `core/`: the plugin ABI the kernel hosts.

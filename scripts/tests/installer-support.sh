@@ -31,19 +31,20 @@ starts_with() {  # <description> <prefix> <actual>
 case_start() { printf '  %s\n' "$1"; }
 
 # New tests never see the host's /usr/bin: PATH is a recording-stub dir plus a
-# dir of symlinks to exactly the tools the library needs.
-mk_tools() {  # <dir>
-    mkdir -p "$1"
-    local t p
-    for t in bash sh env cat sed grep head cut awk mkdir rm mv cp ln chmod touch readlink basename dirname date sleep nohup id uname hostname python3 git install stat cmp mktemp find wc; do
+# dir of symlinks to exactly the tools the library needs, and any more a test's script needs.
+mk_tools() {  # <dir> [tool...]
+    local d="$1" t p
+    shift
+    mkdir -p "$d"
+    for t in bash sh env cat sed grep head cut awk mkdir rm mv cp ln chmod touch readlink basename dirname date sleep nohup id uname hostname python3 git install stat cmp mktemp find wc "$@"; do
         p="$(command -v "$t")" || { printf 'FAIL mk_tools: %s is missing\n' "$t" >&2; exit 1; }
-        ln -sf "$p" "$1/$t"
+        ln -sf "$p" "$d/$t"
     done
     # install.sh takes sha256sum or shasum, and calls timeout only beside systemctl (macOS has shasum, not sha256sum, and no timeout).
     for t in sha256sum shasum timeout; do
-        p="$(command -v "$t")" && ln -sf "$p" "$1/$t"
+        p="$(command -v "$t")" && ln -sf "$p" "$d/$t"
     done
-    [ -e "$1/sha256sum" ] || [ -e "$1/shasum" ] || { printf 'FAIL mk_tools: sha256sum or shasum is missing\n' >&2; exit 1; }
+    [ -e "$d/sha256sum" ] || [ -e "$d/shasum" ] || { printf 'FAIL mk_tools: sha256sum or shasum is missing\n' >&2; exit 1; }
 }
 TOOLS="$WORK/tools"; mk_tools "$TOOLS"
 

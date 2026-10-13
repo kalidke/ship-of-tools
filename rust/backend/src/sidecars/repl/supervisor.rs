@@ -5,12 +5,13 @@ use std::process::Stdio;
 
 use anyhow::Context;
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, Command};
 
 use super::*;
 use super::lifecycle::{browser_ports_key, lifecycle_begin_starting, lifecycle_transition};
 use crate::sidecars::WireRequest;
+use sot_protocol::child_lines::ChildLines;
 
 /// One line off the REPL child's stdout. Both the streamed `repl.frame` evts
 /// and the terminal res ack share this envelope shape; `kind`/`op` disambiguate
@@ -169,7 +170,7 @@ fn spawn_stderr_tail(
         std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
     let writer = tail.clone();
     tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr).lines();
+        let mut reader = ChildLines::new(stderr);
         while let Ok(Some(line)) = reader.next_line().await {
             tracing::debug!(target: "repl.stderr", "{line}");
             let mut t = writer.lock().unwrap_or_else(|e| e.into_inner());
@@ -210,7 +211,7 @@ async fn supervisor_task(
     // even when the shim emits no `done` frame (the missing-file res path).
     let mut collector_ids: HashMap<u64, u64> = HashMap::new();
     let mut next_id: u64 = 1;
-    let mut stdout_lines = BufReader::new(stdout).lines();
+    let mut stdout_lines = ChildLines::new(stdout);
 
     loop {
         tokio::select! {

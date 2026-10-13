@@ -44,7 +44,7 @@ const PREVIEW_BYTE_CAP: usize = 2 * 1024 * 1024;
 /// frontend downsamples decoded textures that exceed the GPU's max
 /// dimension so a huge image renders at reduced resolution rather than
 /// failing validation.
-const PREVIEW_BINARY_CAP: usize = 512 * 1024 * 1024;
+const PREVIEW_BINARY_CAP: usize = sot_protocol::ir::PREVIEW_BINARY_CAP;
 
 /// Preview-time downsample: an oversize raster is decoded and scaled so its
 /// longest side is <= this, then re-encoded as PNG before shipping. The FE

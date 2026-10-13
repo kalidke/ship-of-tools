@@ -10,7 +10,7 @@ HUB="$WORK/hub"
 write_hub_stub() {  # PAYLOAD [WAIT]
     rm -rf "${HUB:?}"; mkdir -p "$HUB"
     printf '%s' "$1" > "$HUB/answer"; printf '%s' "${2:-0}" > "$HUB/wait"
-    { printf '#!/bin/sh\nd=%s\nep=%s\n' "$HUB" "unix:$WORK/hub.sock"; cat <<'STUB'
+    { printf '#!/bin/sh\n%s\nd=%s\nep=%s\n' "$GUARD_EMPTY_WALK" "$HUB" "unix:$WORK/hub.sock"; cat <<'STUB'
 if [ "$1" = topology ] && [ "$2" = relay-endpoint ]; then printf '%s\n' "$ep"; exit 0; fi
 [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
 printf '%s\n' "$3" >> "$d/dialled.log"
@@ -94,7 +94,7 @@ oneshot_version_query() {
 # `## User isolation`).
 case_a_refused_hello_is_named_by_the_oneshot_request() {
     rm -rf "${HUB:?}"; mkdir -p "$HUB"
-    { printf '#!/bin/sh\n'; cat <<'STUB'
+    { printf '#!/bin/sh\n%s\n' "$GUARD_EMPTY_WALK"; cat <<'STUB'
 [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
 case "$3" in unix:*) ;; *) exit 97 ;; esac
 IFS= read -r line
@@ -118,7 +118,7 @@ STUB
 write_refusing_stub() {
     rm -rf "${HUB:?}"; mkdir -p "$HUB"
     sleep_log "$HUB/shim" "$HUB/sleeps.log" || return 1
-    { printf "#!/usr/bin/env bash\nd='%s'\ncode='%s'\n. '%s/lib-wait.sh'\n" "$HUB" "$1" "$SCRIPT_DIR"; cat <<'STUB'
+    { printf "#!/usr/bin/env bash\n%s\nd='%s'\ncode='%s'\n. '%s/lib-wait.sh'\n" "$GUARD_EMPTY_WALK" "$HUB" "$1" "$SCRIPT_DIR"; cat <<'STUB'
 [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
 case "$3" in unix:*) ;; *) exit 97 ;; esac
 PATH="${PATH#"$d/shim:"}"   # the stub's own waits are not the one-shot's
@@ -160,7 +160,7 @@ case_a_protocol_refusal_does_not_decide_the_oneshot_request() {
 # and that end prints nothing on the caller's stderr (bash 3.2 reports a background job a signal ended, "Terminated").
 case_a_reply_on_an_open_connection_leaves_stderr_empty() {
     rm -rf "${HUB:?}"; mkdir -p "$HUB"
-    { printf '#!/bin/sh\n'; cat <<'STUB'
+    { printf '#!/bin/sh\n%s\n' "$GUARD_EMPTY_WALK"; cat <<'STUB'
 [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
 IFS= read -r line
 printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"ok":true}}\n'

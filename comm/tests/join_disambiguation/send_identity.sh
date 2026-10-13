@@ -147,8 +147,8 @@ case_relay_send_fails_loudly_with_no_reachable_daemon() {
 
     errfile="$WORK/relay-noack.err"
     # This box's relay endpoint, a stub `sotd`'s answer to `topology relay-endpoint`, is a socket nothing listens on.
-    printf '#!/bin/sh\n[ "$1 $2" = "topology relay-endpoint" ] && { echo "unix:%s/no-such-daemon-anywhere.sock"; exit 0; }\nexit 97\n' \
-        "$WORK" > "$WORK/relay-noack/sotd"; chmod +x "$WORK/relay-noack/sotd"
+    printf '#!/bin/sh\n%s\n[ "$1 $2" = "topology relay-endpoint" ] && { echo "unix:%s/no-such-daemon-anywhere.sock"; exit 0; }\nexit 97\n' \
+        "$GUARD_EMPTY_WALK" "$WORK" > "$WORK/relay-noack/sotd"; chmod +x "$WORK/relay-noack/sotd"
     out="$(cd "$root" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" SOTD_BIN="$WORK/relay-noack/sotd" \
         "$SCRIPTS_DIR/comm-relay.sh" send @somebody "hello" 2>"$errfile")"
     rc=$?

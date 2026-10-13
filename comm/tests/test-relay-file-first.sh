@@ -88,7 +88,7 @@ setup_rows() {
 relay_answer() {
     local d="$WORK/relay-answer"
     rm -rf "${d:?}"; mkdir -p "$d"
-    printf '#!/bin/sh\nep=%s next=%s\n' "'$1'" "'${2:-}'" > "$d/sotd"
+    printf '#!/bin/sh\n%s\nep=%s next=%s\n' "$GUARD_EMPTY_WALK" "'$1'" "'${2:-}'" > "$d/sotd"
     cat >> "$d/sotd" <<'STUB'
 if [ "$1" = topology ] && [ "$2" = relay-endpoint ]; then printf '%s\n' "$ep"; exit 0; fi
 [ -n "$next" ] && [ -x "$next" ] && exec "$next" "$@"
@@ -292,7 +292,7 @@ exit "$status"
 STUB
     } > "$dir/ssh"
     chmod +x "$dir/ssh"
-    { printf '#!/bin/sh\n'; cat <<'BRIDGE'
+    { printf '#!/bin/sh\n%s\n' "$GUARD_EMPTY_WALK"; cat <<'BRIDGE'
 [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
 case "$3" in unix:*) ;; *) exit 97 ;; esac
 exec "$(dirname "$0")/ssh"
@@ -434,12 +434,12 @@ case_a_directed_send_names_the_local_bridges_refusal() {
     local dir why
     dir="$(mktemp -d "$WORK/refusing-bridge-XXXXXX")"
     why='sotd stdio-bridge: /x/s.sock: not connecting: another OS account listens on this socket'
-    cat > "$dir/sotd" <<'FAKEBRIDGE'
-#!/bin/sh
+    { printf '#!/bin/sh\n%s\n' "$GUARD_EMPTY_WALK"; cat <<'FAKEBRIDGE'
 [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
 printf 'sotd stdio-bridge: /x/s.sock: not connecting: another OS account listens on this socket\n' >&2
 exit 1
 FAKEBRIDGE
+    } > "$dir/sotd"
     chmod +x "$dir/sotd"
     SOTD_BIN="$dir/sotd" relay_send 'unix:/x/s.sock' send "@peer-$PEER_HOST" 'refused'
     [ "$RELAY_RC" -eq 1 ] && [ -z "$RELAY_OUT" ] || { echo "  rc $RELAY_RC, out: $RELAY_OUT"; return 1; }

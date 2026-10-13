@@ -11,8 +11,10 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 
 ## Owns
 - The frame: `Frame`, `Kind` and `PROTOCOL_VERSION` (lib.rs); the codec and its 1 MiB envelope cap (codec.rs).
+- A child's output read as lines, each decoded lossily (`ChildLines`, `blocking_child_lines`, child_lines.rs).
 - The op names and every op's payload type (`ops/`).
-- The wire's tree and preview payload types, `TreeNode`, `PreviewPayload` and `BlobDescriptor` (ir.rs). The kernel
+- The wire's tree and preview payload types, `TreeNode`, `PreviewPayload` and `BlobDescriptor`, and the binary preview cap
+  `PREVIEW_BINARY_CAP` that the daemon sends under and the window unpacks an `.svgz` to (ir.rs). The kernel
   builds the JSON these deserialize; nothing in the Julia core serializes its own types to them.
 - The product version string and the release predicate (version.rs); build.rs stamps their inputs.
 - The loopback page-URL grammar, owned by pages: `loopback_port_from_url` and `with_loopback_port` (page_url.rs).
@@ -29,6 +31,15 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 - `read_frame` refuses an envelope one byte past the cap, never reading a line with no newline to its end, and grows
   a blob's buffer only with bytes that arrived, never by the length the envelope declares; `read_envelope` reads the
   envelope alone, for a reader that must not read a blob it has not admitted. `read_frame_blocking` caps while it reads.
+- A child's output is read by lines only through `ChildLines` or `blocking_child_lines` (src/child_lines.rs): a line
+  is the bytes up to `\n`, less a `\r` before it, decoded lossily, so no byte a child writes ends its reader.
+  `rust/clippy.toml`'s child-output group refuses tokio's and std's strict line readers (`lines`, `read_line`). Tests
+  `every_byte_a_child_writes_reads_as_a_line` (src/child_lines.rs), and each user's own: the sidecars' children
+  (sidecars charter), `stderr_drain_reads_past_a_byte_that_is_not_utf8` (the window's ssh,
+  rust/frontend/src/net/transport/tests.rs), `a_failed_link_names_an_ssh_line_that_is_not_utf8` (the hub link,
+  rust/backend/src/comm/mail/hub_link.rs), `the_ssh_hint_reads_past_a_byte_that_is_not_utf8` (the dial,
+  rust/backend/src/topology/dial.rs) and `an_ssh_line_that_is_not_utf8_is_kept` (the lane client,
+  src/topology/lane_child_tests.rs).
 - A payload grows only by `#[serde(default)]` fields; any other change raises `PROTOCOL_VERSION`, and hello requires
   both sides to agree.
 - The version string is bare `X.Y.Z` only for a CI build on its clean release tag. `is_release_build` is the only
@@ -38,6 +49,7 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `Frame`, `codec::read_frame`,
+`child_lines::ChildLines`, `child_lines::blocking_child_lines`,
 `codec::read_envelope`, `codec::write_frame`, `hello`, `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`,
 `sot_hello_frame`, `comm/lib/comm-lib-client.sh`, `fe.lease`, `fe.leaving`, `scripts/sot-lease.ps1`,
 `launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`, `is_release_build`, `rust/backend/src/update.rs`,
@@ -52,6 +64,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `Cargo.toml`: the crate manifest; `test-handshake-bound` is enabled only by test-fixture features (the backend's dev-dependencies and the frontend's `test-pane-timing`), for the lane client's handshake bound and the ssh recipe's fixture command
 - `build.rs`: stamps the git-derived build inputs of the product version
 - `src/annotation.rs`: split_frontmatter and synced_against, the shared annotation header grammar and its fixtures.
+- `src/child_lines.rs`: `ChildLines` and `blocking_child_lines`, a child's output line by line, decoded lossily.
 - `src/codec.rs`: the async and blocking frame readers and writers, and the envelope cap
 - `src/ir.rs`: the wire's tree and preview payload types
 - `src/lib.rs`: `Frame`, `Kind`, `PROTOCOL_VERSION` and the crate's re-exports

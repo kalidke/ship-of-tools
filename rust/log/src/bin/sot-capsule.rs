@@ -602,6 +602,7 @@ fn run_claude(args: &[String], usage: &str) {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         use std::io::BufRead;
+        #[allow(clippy::disallowed_methods, reason = "this program's own stdin: the operator's JSON lines (ADR 0040), not a child's output")]
         for line in std::io::stdin().lock().lines() {
             let Ok(line) = line else { break };
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };

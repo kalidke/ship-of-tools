@@ -207,6 +207,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | REPL stdio frames, `repl.ready` | wire (stdio) | sidecars | `julia/repl/src/ShipToolsRepl.jl`; `julia/repl/src/frames.jl` |
 | Pluto `READY`/`OPEN`/`URL`/`ERR` lines | wire (stdio) | sidecars | `julia/pluto/start.jl` |
 | MathJax `{id, tex, display}` | wire (stdio) | sidecars | `rust/backend/sidecars/mathjax/render.mjs` |
+| a child's output read as lines: the bytes up to each `\n`, decoded lossily, so no byte a child writes ends its reader; the strict line readers are refused | rule | wire | `rust/protocol/src/child_lines.rs` `ChildLines`, `blocking_child_lines`; `rust/clippy.toml` (child-output group) |
 | plugin ABI (`FileType`, `matches`, `preview`, `file_type_for`) | ABI | sidecars | `core/src/ConceptExplorerCore.jl` `FileType`, `file_type_for` |
 | core's Julia `TreeNode` (never constructed outside core's tests; not the wire's `TreeNode`) | ABI | sidecars | `core/src/ConceptExplorerCore.jl` `TreeNode` |
 | core's Julia `PreviewPayload` (`mime`, `data`, `extras`: what a plugin's `preview` returns; the kernel sends it as `blob_base64`) | ABI | sidecars | `core/src/ConceptExplorerCore.jl` `PreviewPayload`; `julia/kernel/src/preview.jl` |
@@ -313,7 +314,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | result target resolution and row attachment names | rule | fe-ui | `rust/frontend/src/ui/session/workspace_key.rs` `resolve_listed_workspace`; row facts from `workspace.list` |
 | pending-result lifetime and acknowledgement | state, rule | fe-ui | `rust/frontend/src/ui/session/badge.rs` `PendingNav`, result/attempt serials and admission; authoritative list/destroy invalidation, cursor, preview and presentation hooks; fe-net carries the saved attempt through its existing pending entry and event |
 | text from outside the window drawn in a cell run, a strip name or the Monitor's chart: a CSI sequence is removed, `\r\n`, `\n`, a lone `\r`, U+0085, U+2028 and U+2029 end a line, any other control character is a space, and where only one row exists the lines are joined by ` ⏎ ` | rule | fe-ui | `rust/frontend/src/ui/chrome/status.rs` `cell_lines`, `cell_row` |
-| text into cosmic-text: nothing else sets a buffer's text, and every bidi paragraph separator but `\n` and `\r` becomes a space, so no line shaped holds two paragraphs | rule | fe-ui | `rust/frontend/src/ui/render/text.rs` `set_buffer_text`, `set_buffer_rich_text`; `rust/clippy.toml` (text-into-the-shaper group) |
+| text into cosmic-text or usvg: nothing else sets a buffer's text, and every bidi paragraph separator but `\n` and `\r` becomes a space, an SVG's character references included, so no line shaped holds two paragraphs | rule | fe-ui | `rust/frontend/src/ui/render/text.rs` `set_buffer_text`, `set_buffer_rich_text`; `rust/clippy.toml` (text-into-the-shaper group); `rust/frontend/src/ui/preview/image/svg.rs` `one_paragraph_svg` |
 
 ## Two owners today
 

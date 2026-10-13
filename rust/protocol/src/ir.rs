@@ -14,6 +14,10 @@ pub struct TreeNode {
     pub payload: serde_json::Map<String, serde_json::Value>,
 }
 
+/// The most bytes a binary preview carries (an image, an SVG): the daemon refuses a larger file
+/// (rust/backend/src/files/preview), and the window unpacks an `.svgz` to no more than this.
+pub const PREVIEW_BINARY_CAP: usize = 512 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreviewPayload {
     pub mime: String,
