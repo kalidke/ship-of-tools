@@ -31,13 +31,14 @@ starts_with() {  # <description> <prefix> <actual>
 case_start() { printf '  %s\n' "$1"; }
 
 # New tests never see the host's /usr/bin: PATH is a recording-stub dir plus a
-# dir of symlinks to exactly the tools the library needs.
-mk_tools() {  # <dir>
-    mkdir -p "$1"
-    local t p
-    for t in bash sh env cat sed grep head cut awk mkdir rm mv cp ln chmod touch readlink basename dirname date sleep nohup id uname hostname python3 git sha256sum install timeout stat cmp mktemp find wc; do
+# dir of symlinks to exactly the tools the library needs, and any more a test's script needs.
+mk_tools() {  # <dir> [tool...]
+    local d="$1" t p
+    shift
+    mkdir -p "$d"
+    for t in bash sh env cat sed grep head cut awk mkdir rm mv cp ln chmod touch readlink basename dirname date sleep nohup id uname hostname python3 git sha256sum install timeout stat cmp mktemp find wc "$@"; do
         p="$(command -v "$t")" || { printf 'FAIL mk_tools: %s is missing\n' "$t" >&2; exit 1; }
-        ln -sf "$p" "$1/$t"
+        ln -sf "$p" "$d/$t"
     done
 }
 TOOLS="$WORK/tools"; mk_tools "$TOOLS"
