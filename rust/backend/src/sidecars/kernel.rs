@@ -387,7 +387,7 @@ async fn run_one_generation(
 
     tracing::info!(julia_bin = %julia_bin, source, "spawning kernel");
 
-    let tmp = match crate::sidecars::child_tmp::ChildTmp::new() {
+    let tmp = match crate::sidecars::child::ChildTmp::new() {
         Ok(tmp) => tmp,
         Err(e) => return (None, format!("kernel child temporary folder: {e}")),
     };

@@ -79,8 +79,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 - `mod.rs`: declares the nine modules and `WireRequest`.
-- `child_tmp.rs`: a Julia child's own temporary folder (`ChildTmp`), made before its spawn, and for the REPL and Pluto
-  its display (`for_user_code`); `retire` ends the child, then the display, and removes the folder after its reap.
+- `child/`: what each child the daemon starts carries with it: its own temporary folder (see its page).
 - `contract_tests.rs`: native REPL/MathJax private-Signal spawn, shutdown closeout and owned-child observations, a
   node child slower to start than a render's bound, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions. The X11 connection probe the display tests share (`x11_answer`, `x11_cookie`).
 - `display/`: a user-code child's own X display (Linux; see its page).

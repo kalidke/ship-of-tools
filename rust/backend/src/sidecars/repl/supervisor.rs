@@ -72,7 +72,7 @@ pub(super) async fn spawn_supervisor(
     let sep = ":";
     let load_path = format!("@{sep}{}{sep}", repl_project.display());
 
-    let tmp = crate::sidecars::child_tmp::ChildTmp::for_user_code(sig).await.context("repl child temporary folder")?;
+    let tmp = crate::sidecars::child::ChildTmp::for_user_code(sig).await.context("repl child temporary folder")?;
     let mut cmd = Command::new(&julia_bin);
     tmp.apply(&mut cmd);
     cmd.env("JULIA_LOAD_PATH", &load_path)
@@ -197,7 +197,7 @@ async fn supervisor_task(
     lifecycle: SharedLifecycle,
     my_gen: u64,
     sig: &'static crate::lifecycle::child_signal::Signal,
-    tmp: crate::sidecars::child_tmp::ChildTmp,
+    tmp: crate::sidecars::child::ChildTmp,
 ) -> std::result::Result<(), String> {
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight: eval_id recorded at submit,

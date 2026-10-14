@@ -143,7 +143,7 @@ async fn spawn_supervisor(
             start_script.display()
         ));
     }
-    let tmp = crate::sidecars::child_tmp::ChildTmp::for_user_code(sig).await.context("pluto child temporary folder")?;
+    let tmp = crate::sidecars::child::ChildTmp::for_user_code(sig).await.context("pluto child temporary folder")?;
     let mut cmd = Command::new(julia_bin);
     tmp.apply(&mut cmd);
     cmd.arg(format!("--project={}", project_dir.display()))
@@ -357,7 +357,7 @@ async fn supervisor_task(
     ended: oneshot::Receiver<()>,
     sig: &'static crate::lifecycle::child_signal::Signal,
     grant: Option<Grant>,
-    tmp: crate::sidecars::child_tmp::ChildTmp,
+    tmp: crate::sidecars::child::ChildTmp,
 ) {
     // FIFO of in-flight oneshots. Pluto's serial line protocol replies
     // to each OPEN in order; we pop the matching reply on each URL/ERR. A
