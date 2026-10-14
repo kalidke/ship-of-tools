@@ -16,17 +16,6 @@ use crate::session::Session;
 use crate::rows::Workspaces;
 use crate::server::reply::HandlerOutput;
 
-/// Backend-issued eval_id space for `repl.execute` runs (ADR 0033). Starts at
-/// 2^40 so it never collides with a frontend's small per-workspace
-/// `repl.eval` counter, while staying a positive integer well under 2^53 (safe
-/// for JSON/`jq` consumers) — unlike a high-bit-set id. The `run_id` string
-/// returned to the caller is derived from it.
-static EXEC_EVAL_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 40);
-
-pub(super) fn next_exec_eval_id() -> u64 {
-    EXEC_EVAL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
 const EXEC_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const EXEC_MIN_TIMEOUT_MS: u64 = 1_000;
 const EXEC_MAX_TIMEOUT_MS: u64 = 1_800_000;
@@ -156,15 +145,19 @@ fn build_exec_request(req_id: u64, req: &ReplExecuteReq, ws: &crate::rows::Works
                     obj.insert("mode".to_string(), json!(m));
                 }
             }
-            let first = code.lines().next().unwrap_or("").trim();
-            let disp = if first.chars().count() > 60 {
-                format!("{}…", first.chars().take(60).collect::<String>())
-            } else {
-                first.to_string()
-            };
-            (op::REPL_EVAL, p, disp)
+            (op::REPL_EVAL, p, code_display(code))
         }
     })
+}
+
+/// What a drawer shows for a run of `code`: its first line, at most 60 characters.
+pub(super) fn code_display(code: &str) -> String {
+    let first = code.lines().next().unwrap_or("").trim();
+    if first.chars().count() > 60 {
+        format!("{}…", first.chars().take(60).collect::<String>())
+    } else {
+        first.to_string()
+    }
 }
 
 /// Broadcasts the `started` control frame that pre-registers the run in every window's drawer, labelled `origin`
@@ -377,7 +370,8 @@ pub async fn handle_repl_execute(
         }
     };
 
-    let eval_id = next_exec_eval_id();
+    // The daemon's number for the run (`numbers`); the `run_id` returned to the caller derives from it.
+    let eval_id = super::numbers::next();
     let run_id = format!("exec-{eval_id}");
     let ws_id = req.workspace_id.clone();
     tracing::info!(workspace_id = %ws_id, run_id = %run_id, "repl.execute");

@@ -108,12 +108,9 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
 /// Per-workspace REPL pane state. Captured at swap-out and restored at
 /// swap-in alongside [`WorkspaceUiSnapshot`]. Lives in its own type so
 /// reply routing (`ReplEvalDone` for non-active workspaces) can mutate
-/// just this slice without touching general UI state.
-///
-/// Each workspace's REPL runs on its own kernel child (ADR 0014), so
-/// the eval counter is naturally per-workspace too — when we route
-/// replies back to the right log we keep the counter and the log in
-/// sync.
+/// just this slice without touching general UI state. The eval counter is
+/// not in it: one count serves every row (`State::repl_eval_counter`), so
+/// two rows' evals in flight on one host never share a number.
 #[derive(Clone)]
 pub(in crate::ui) struct WorkspaceReplSnapshot {
     /// Submitted evals + the kernel's reply frames. Bounded the same
@@ -122,10 +119,6 @@ pub(in crate::ui) struct WorkspaceReplSnapshot {
     /// Mid-typed input at swap time. Restored verbatim on swap-in so
     /// the user can keep editing whatever they were composing.
     repl_input: String,
-    /// Per-workspace eval id counter. Backend doesn't require these
-    /// to be globally unique; matching `eval_id → entry` works the
-    /// same on every workspace.
-    repl_eval_counter: u64,
     /// `]`/Backspace prompt-mode toggle (julia> vs pkg>) is per-
     /// workspace too — switching to a workspace mid-pkg-shell returns
     /// you to pkg>.
@@ -271,7 +264,6 @@ impl State {
             WorkspaceReplSnapshot {
                 repl_log: self.repl_log.clone(),
                 repl_input: self.repl_input.clone(),
-                repl_eval_counter: self.repl_eval_counter,
                 repl_pkg_mode: self.repl_pkg_mode,
                 repl_scroll: self.repl_scroll,
                 history_pos: self.history_pos,
@@ -286,7 +278,6 @@ impl State {
         if let Some(snap) = self.workspace_repl_snapshots.get(key).cloned() {
             self.repl_log = snap.repl_log;
             self.repl_input = snap.repl_input;
-            self.repl_eval_counter = snap.repl_eval_counter;
             self.repl_pkg_mode = snap.repl_pkg_mode;
             self.repl_scroll = snap.repl_scroll;
             // The incoming log is a different length: nothing to pin against.
@@ -298,7 +289,6 @@ impl State {
             // First visit — empty REPL.
             self.repl_log.clear();
             self.repl_input.clear();
-            self.repl_eval_counter = 0;
             self.repl_pkg_mode = false;
             self.repl_scroll = 0;
             self.repl_build_anchor = None;

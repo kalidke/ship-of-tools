@@ -277,9 +277,11 @@ where
 }
 
 /// Translates one streamed REPL frame into a `repl.frame` evt frame on the
-/// wire. Returns `Ok(true)` if a frame was written, `Ok(false)` if the
-/// receiver was lagged or closed (skip and keep the connection alive). The
-/// `frame` value is passed through verbatim — its `{kind, ...}` shape is
+/// wire, as this connection is written it (`CallerNumbers::outgoing`: its own
+/// runs under its own numbers). Returns `Ok(true)` if a frame was written,
+/// `Ok(false)` if the frame is not for this connection or the receiver was
+/// lagged or closed (skip and keep the connection alive). The `frame` value is
+/// otherwise passed through verbatim — its `{kind, ...}` shape is
 /// kernel-defined, so the backend stays oblivious to new frame kinds — except
 /// the one rewrite `repl_frame_for` makes to a page every frontend would open.
 pub(super) async fn write_repl_frame<W>(
@@ -287,12 +289,16 @@ pub(super) async fn write_repl_frame<W>(
     msg: Result<ReplFrameMsg, broadcast::error::RecvError>,
     my_serial: Option<u64>,
     clients: &Clients,
+    numbers: &crate::sidecars::repl::numbers::CallerNumbers,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
     match msg {
         Ok(m) => {
+            let Some(m) = numbers.outgoing(m) else {
+                return Ok(false);
+            };
             let payload = serde_json::json!({
                 "eval_id": m.eval_id,
                 "workspace_id": m.workspace_id,

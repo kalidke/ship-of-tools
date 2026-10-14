@@ -8,12 +8,40 @@ use crate::session::Session;
 use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
 use crate::server::reply::HandlerOutput;
+use super::numbers::CallerNumbers;
+
+/// Numbers a run and announces it to every window (ADR 0033, the one-numberer amendment): the daemon's number goes in
+/// `payload`, a `started` frame labelled `origin` (a window's own run: "window"; else "session") goes on the bus, and
+/// the caller's own number, if it gave one, stays the run's number on the caller's connection (`CallerNumbers`).
+/// Returns the run's number and what `close_exec_run` needs to close it.
+fn announce_run(
+    numbers: &CallerNumbers,
+    payload: &mut serde_json::Value,
+    ws: &crate::rows::Workspace,
+    workspaces: &Workspaces,
+    display: String,
+) -> (u64, String, tokio::sync::broadcast::Sender<super::ReplFrameMsg>) {
+    let own = payload.get("eval_id").and_then(|v| v.as_u64());
+    let number = numbers.number(own);
+    let origin = match payload.get("origin").and_then(|v| v.as_str()) {
+        Some(origin) => origin.to_string(),
+        None if own.is_some() => "window".to_string(),
+        None => "session".to_string(),
+    };
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("eval_id".to_string(), json!(number));
+    }
+    let (frame_ws, frame_tx) =
+        super::execute::announce_exec_started(Some(&origin), ws, workspaces, number, &format!("exec-{number}"), display);
+    (number, frame_ws, frame_tx)
+}
 
 pub async fn handle_repl_eval(
     req_id: u64,
     payload_json: serde_json::Value,
     session: &Session,
     workspaces: &Workspaces,
+    numbers: &CallerNumbers,
 ) -> Result<HandlerOutput> {
     let workspace_id = payload_json
         .get("workspace_id")
@@ -30,19 +58,25 @@ pub async fn handle_repl_eval(
         Err(reply) => return Ok(reply),
     };
     let repl = ws.repl(workspaces.repl_frame_tx());
+    let mut forwarded = payload_json.clone();
+    let display = super::execute::code_display(payload_json.get("code").and_then(|v| v.as_str()).unwrap_or(""));
+    let (number, frame_ws, frame_tx) = announce_run(numbers, &mut forwarded, &ws, workspaces, display);
     // Fire-and-forget: queue the eval at the supervisor and return an ack
     // immediately. The eval's frames (stdout/value/error/done) stream as
     // separate `repl.frame` evts over the broadcast bus; the frontend keys
     // completion off the terminal `done` frame, not this ack. Returning here
     // (instead of awaiting the eval) keeps the connection loop free to read a
     // mid-eval `repl.interrupt`.
-    if let Err(e) = repl.submit(op::REPL_EVAL, payload_json.clone()).await {
+    if let Err(e) = repl.submit(op::REPL_EVAL, forwarded).await {
+        let error = format!("{e:#}");
+        numbers.refused(number);
+        super::execute::close_exec_run(&frame_tx, &frame_ws, number, 0, Some(&error));
         return Ok(vec![(
             Frame::res(
                 req_id,
                 op::REPL_EVAL,
                 json!({
-                    "error": format!("{e:#}"),
+                    "error": error,
                     "code": submit_code(&e, "repl_eval_failed"),
                 }),
             ),
@@ -58,7 +92,7 @@ pub async fn handle_repl_eval(
             // deserializes cleanly and its empty-frames guard fires (content
             // already streamed via repl.frame evts). Real elapsed_ms rides the
             // done frame.
-            json!({ "eval_id": eval_id, "elapsed_ms": 0, "frames": [], "accepted": true }),
+            json!({ "eval_id": eval_id.unwrap_or(number), "elapsed_ms": 0, "frames": [], "accepted": true }),
         )
         .with_rev(rev),
         None,
@@ -71,6 +105,7 @@ pub async fn handle_repl_run_file(
     payload_json: serde_json::Value,
     session: &Session,
     workspaces: &Workspaces,
+    numbers: &CallerNumbers,
 ) -> Result<HandlerOutput> {
     let workspace_id = payload_json
         .get("workspace_id")
@@ -202,31 +237,18 @@ pub async fn handle_repl_run_file(
         }
     }
 
-    // A caller that numbers no run (`sot-fe repl run --fresh` sends no `eval_id`) has no drawer entry for it, and a
-    // window makes one only for its own evals and for a `started` frame. So the daemon numbers the run from
-    // `repl.execute`'s space and announces it to every window, after the restart and before the run (ADR 0033 phase
-    // 2); the shim's `done`, or the close-out of a child that ends first, closes it.
-    let announced = match eval_id {
-        Some(_) => None,
-        None => {
-            let id = super::execute::next_exec_eval_id();
-            if let Some(obj) = forwarded_payload.as_object_mut() {
-                obj.insert("eval_id".to_string(), json!(id));
-            }
-            let name = std::path::Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or("?.jl");
-            let display = if fresh { format!("run {name} (fresh)") } else { format!("run {name}") };
-            let origin = payload_json.get("origin").and_then(|v| v.as_str());
-            Some((id, super::execute::announce_exec_started(origin, &ws, workspaces, id, &format!("exec-{id}"), display)))
-        }
-    };
+    // The run is announced after the restart and before the run, so every window's entry for it follows the
+    // restart's lifecycle frames; the shim's `done`, or the close-out of a child that ends first, closes it.
+    let name = std::path::Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or("?.jl");
+    let display = if fresh { format!("run {name} (fresh)") } else { format!("run {name}") };
+    let (number, frame_ws, frame_tx) = announce_run(numbers, &mut forwarded_payload, &ws, workspaces, display);
 
     // Fire-and-forget: queue the run and ack immediately. Frames stream as
     // `repl.frame` evts; the frontend keys completion off the `done` frame.
     if let Err(e) = repl.submit(op::REPL_RUN_FILE, forwarded_payload).await {
         let error = format!("{e:#}");
-        if let Some((id, (frame_ws, frame_tx))) = &announced {
-            super::execute::close_exec_run(frame_tx, frame_ws, *id, 0, Some(&error));
-        }
+        numbers.refused(number);
+        super::execute::close_exec_run(&frame_tx, &frame_ws, number, 0, Some(&error));
         return Ok(vec![(
             Frame::res(
                 req_id,
@@ -250,7 +272,7 @@ pub async fn handle_repl_run_file(
             // rides the done frame; project_dir/source drive the fresh-`r`
             // status line.
             json!({
-                "eval_id": eval_id.or(announced.as_ref().map(|(id, _)| *id)),
+                "eval_id": eval_id.unwrap_or(number),
                 "path": path_str.clone().unwrap_or_default(),
                 "fresh": fresh,
                 "elapsed_ms": 0,
@@ -291,9 +313,10 @@ fn closest_project_dir(path: &std::path::Path) -> Option<(std::path::PathBuf, &'
 
 pub async fn handle_repl_interrupt(
     req_id: u64,
-    payload_json: serde_json::Value,
+    mut payload_json: serde_json::Value,
     session: &Session,
     workspaces: &Workspaces,
+    numbers: &CallerNumbers,
 ) -> Result<HandlerOutput> {
     let workspace_id = payload_json
         .get("workspace_id")
@@ -308,6 +331,11 @@ pub async fn handle_repl_interrupt(
         Err(reply) => return Ok(reply),
     };
     let repl = ws.repl(workspaces.repl_frame_tx());
+    // The evals the caller names in its own numbers reach the REPL as the daemon's (`CallerNumbers`).
+    if let Some(named) = payload_json.get("eval_ids").and_then(|v| v.as_array()) {
+        let named: Vec<u64> = named.iter().filter_map(|v| v.as_u64()).collect();
+        payload_json["eval_ids"] = json!(numbers.daemon_numbers(&named));
+    }
     // Daemon-side interrupt guard (P0.5 pre-work; twin of the #96 CLI
     // pre-flight, now enforced for EVERY caller — FE Ctrl-C and raw-socket
     // included): an interrupt must never be the thing that spawns a kernel.
@@ -347,8 +375,8 @@ pub async fn handle_repl_interrupt(
     )])
 }
 
-/// The daemon forwards an interrupt's payload to the REPL child unchanged, so the
-/// evals it names (`eval_ids`) reach the shim, which decides which eval it means.
+/// The daemon forwards an interrupt's payload to the REPL child with the evals it names (`eval_ids`) in the daemon's
+/// numbers, so they reach the shim, which decides which eval it means.
 #[cfg(all(test, unix))]
 mod interrupt_tests {
     use super::*;
@@ -389,14 +417,14 @@ done
         let id = ws.workspace_id.clone();
         workspaces.insert(ws);
         let row = row_or_reply(&workspaces, Some(&id), 0, op::REPL_EVAL).unwrap_or_else(|_| panic!("setup: the row"));
-        handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 7, "code": "1" }), &session, &workspaces)
+        handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 7, "code": "1" }), &session, &workspaces, &Default::default())
             .await
             .expect("setup: the eval starts the child");
         within(Duration::from_secs(30), "the child is ready", || row.repl_state() == "ready").await;
 
         let mut answers = Vec::new();
         for req in 2..4 {
-            let out = handle_repl_interrupt(req, json!({ "workspace_id": id, "eval_ids": [7] }), &session, &workspaces)
+            let out = handle_repl_interrupt(req, json!({ "workspace_id": id, "eval_ids": [7] }), &session, &workspaces, &Default::default())
                 .await
                 .expect("handler");
             answers.push(out[0].0.payload.clone());
@@ -436,22 +464,28 @@ done
         let id = ws.workspace_id.clone();
         workspaces.insert(ws);
         let row = row_or_reply(&workspaces, Some(&id), 0, op::REPL_EVAL).unwrap_or_else(|_| panic!("setup: the row"));
-        handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 205, "code": "1" }), &session, &workspaces)
+        let conn = CallerNumbers::default();
+        handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 205, "code": "1" }), &session, &workspaces, &conn)
             .await
             .expect("setup: the eval starts the child");
         within(Duration::from_secs(30), "the child is ready", || row.repl_state() == "ready").await;
 
+        // The eval is named by the caller's own number (205) and an announced run by the daemon's.
         let named = json!({ "workspace_id": id, "eval_ids": [205, 1u64 << 40] });
-        let out = handle_repl_interrupt(2, named.clone(), &session, &workspaces).await.expect("handler");
+        let out = handle_repl_interrupt(2, named, &session, &workspaces, &conn).await.expect("handler");
         assert_eq!(out[0].0.payload, json!({ "interrupted": true }), "the child's answer is the reply");
         let logged: Vec<serde_json::Value> = std::fs::read_to_string(dir.join("julia.log"))
             .unwrap()
             .lines()
             .filter_map(|l| serde_json::from_str(l).ok())
-            .filter(|v: &serde_json::Value| v["op"] == op::REPL_INTERRUPT)
             .collect();
-        assert_eq!(logged.len(), 1, "one interrupt reached the child: {logged:?}");
-        assert_eq!(logged[0]["payload"], named, "the child received the payload as sent");
+        let eval = logged.iter().find(|v| v["op"] == op::REPL_EVAL).expect("the eval reached the child");
+        let number = eval["payload"]["eval_id"].as_u64().expect("the eval's number");
+        assert!(number >= 1 << 40, "the child runs the eval under the daemon's number: {eval}");
+        let interrupts: Vec<&serde_json::Value> = logged.iter().filter(|v| v["op"] == op::REPL_INTERRUPT).collect();
+        assert_eq!(interrupts.len(), 1, "one interrupt reached the child: {logged:?}");
+        let reached = json!({ "workspace_id": id, "eval_ids": [number, 1u64 << 40] });
+        assert_eq!(interrupts[0]["payload"], reached, "the child is named the eval by the daemon's number");
     }
 }
 
@@ -508,7 +542,7 @@ mod busy_tests {
         workspaces.insert(ws);
         let row = row_or_reply(&workspaces, Some(&id), 0, op::REPL_EVAL).unwrap_or_else(|_| panic!("setup: the row"));
         let first = json!({ "workspace_id": id, "eval_id": 0, "code": "1" });
-        let started = bounded("eval 0", handle_repl_eval(0, first, &session, &workspaces)).await;
+        let started = bounded("eval 0", handle_repl_eval(0, first, &session, &workspaces, &Default::default())).await;
         assert_eq!(code_of(&started.expect("handler")), "accepted");
         within(Duration::from_secs(30), "the child is ready", || row.repl_state() == "ready").await;
         Deaf { session, workspaces, id, _pin: pin, _tmp: tmp }
@@ -518,7 +552,8 @@ mod busy_tests {
     async fn an_unanswered_interrupt_ends_at_its_bound() {
         let row = deaf_row().await;
         let t0 = std::time::Instant::now();
-        let interrupt = handle_repl_interrupt(1, json!({ "workspace_id": row.id }), &row.session, &row.workspaces);
+        let conn = CallerNumbers::default();
+        let interrupt = handle_repl_interrupt(1, json!({ "workspace_id": row.id }), &row.session, &row.workspaces, &conn);
         let unanswered = bounded("an interrupt", interrupt).await.expect("handler");
         let waited = t0.elapsed();
         assert_eq!(code_of(&unanswered), "repl_interrupt_failed");
@@ -537,12 +572,13 @@ mod busy_tests {
         let mut codes = Vec::new();
         for n in 1..=20u64 {
             let eval = json!({ "workspace_id": id, "eval_id": n, "code": code });
-            let out = bounded(&format!("eval {n}"), handle_repl_eval(n, eval, session, workspaces)).await;
+            let out = bounded(&format!("eval {n}"), handle_repl_eval(n, eval, session, workspaces, &Default::default())).await;
             codes.push(code_of(&out.expect("handler")));
         }
         let busy = codes.iter().filter(|c| *c == "repl_busy").count();
         assert!(busy >= 1 && codes.iter().all(|c| c == "accepted" || c == "repl_busy"), "{codes:?}");
-        let interrupt = handle_repl_interrupt(21, json!({ "workspace_id": id }), session, workspaces);
+        let conn = CallerNumbers::default();
+        let interrupt = handle_repl_interrupt(21, json!({ "workspace_id": id }), session, workspaces, &conn);
         let refused = bounded("an interrupt", interrupt).await;
         assert_eq!(code_of(&refused.expect("handler")), "repl_busy");
         let execute = json!({ "workspace_id": id, "input": { "kind": "eval", "code": "1" } });
@@ -672,7 +708,7 @@ done
     #[tokio::test]
     async fn a_fresh_run_is_announced_to_every_window_under_the_daemons_number() {
         let mut r = row(ANSWERS);
-        let out = handle_repl_run_file(1, fresh(&r), &r.session, &r.workspaces).await.expect("handler");
+        let out = handle_repl_run_file(1, fresh(&r), &r.session, &r.workspaces, &Default::default()).await.expect("handler");
         let ack = out[0].0.payload.clone();
         assert_eq!(ack["accepted"], true, "{ack}");
         let mut seen = Vec::new();
@@ -696,7 +732,7 @@ done
     async fn a_run_waiting_when_fresh_restarts_the_repl_is_answered_and_closed() {
         let mut r = row(BUSY);
         let first = json!({ "workspace_id": r.id, "eval_id": 1, "code": "1" });
-        handle_repl_eval(1, first, &r.session, &r.workspaces).await.expect("setup: the eval starts the child");
+        handle_repl_eval(1, first, &r.session, &r.workspaces, &Default::default()).await.expect("setup: the eval starts the child");
         let state = || r.workspaces.resolve(Some(&r.id)).map(|w| w.repl_state()).unwrap_or("none");
         within(Duration::from_secs(30), "the child is ready", || state() == "ready").await;
         let waiting = json!({ "workspace_id": r.id, "input": { "kind": "eval", "code": "while true end" }, "timeout_ms": 60_000 });
@@ -704,7 +740,7 @@ done
         let execute = crate::sidecars::repl::execute::handle_repl_execute(2, waiting, &r.session, &r.workspaces);
         let restart = async {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            handle_repl_run_file(3, fresh(&r), &r.session, &r.workspaces).await.expect("handler")
+            handle_repl_run_file(3, fresh(&r), &r.session, &r.workspaces, &Default::default()).await.expect("handler")
         };
         let (answered, restarted) = tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(execute, restart) })
             .await
@@ -726,7 +762,7 @@ done
     async fn a_run_waiting_when_the_repl_dies_is_answered_died() {
         let mut r = row(DIES);
         let first = json!({ "workspace_id": r.id, "eval_id": 1, "code": "1" });
-        handle_repl_eval(1, first, &r.session, &r.workspaces).await.expect("setup: the eval starts the child");
+        handle_repl_eval(1, first, &r.session, &r.workspaces, &Default::default()).await.expect("setup: the eval starts the child");
         let state = || r.workspaces.resolve(Some(&r.id)).map(|w| w.repl_state()).unwrap_or("none");
         within(Duration::from_secs(30), "the child is ready", || state() == "ready").await;
         let waiting = json!({ "workspace_id": r.id, "input": { "kind": "eval", "code": "1" }, "timeout_ms": 60_000 });

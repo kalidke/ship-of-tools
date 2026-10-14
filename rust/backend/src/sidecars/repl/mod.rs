@@ -22,6 +22,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
 pub(crate) mod execute;
 pub(crate) mod lifecycle;
+pub(crate) mod numbers;
 pub(crate) mod ops;
 mod supervisor;
 

@@ -98,6 +98,8 @@ pub(super) struct Shared {
     pub(super) client_id: String,
     /// The hello's declared host.
     pub(super) hello_host: Option<String>,
+    /// The REPL runs this connection numbered itself, written to it under its own numbers (`CallerNumbers`).
+    pub(super) repl_numbers: crate::sidecars::repl::numbers::CallerNumbers,
 }
 
 /// Runs one request frame where [`place`] puts it: an inline op here, before the loop reads again, and any other as a
@@ -254,12 +256,16 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::FILE_WRITE => crate::files::io_ops::handle_file_write(req_id, payload, session, workspaces).await,
         op::FILE_DELETE => crate::files::io_ops::handle_file_delete(req_id, payload, session, workspaces).await,
         op::DIR_CREATE => crate::files::io_ops::handle_dir_create(req_id, payload, session, workspaces).await,
-        op::REPL_EVAL => crate::sidecars::repl::ops::handle_repl_eval(req_id, payload, session, workspaces).await,
+        op::REPL_EVAL => {
+            crate::sidecars::repl::ops::handle_repl_eval(req_id, payload, session, workspaces, &shared.repl_numbers).await
+        }
         op::REPL_RUN_FILE => {
-            crate::sidecars::repl::ops::handle_repl_run_file(req_id, payload, session, workspaces).await
+            crate::sidecars::repl::ops::handle_repl_run_file(req_id, payload, session, workspaces, &shared.repl_numbers)
+                .await
         }
         op::REPL_INTERRUPT => {
-            crate::sidecars::repl::ops::handle_repl_interrupt(req_id, payload, session, workspaces).await
+            crate::sidecars::repl::ops::handle_repl_interrupt(req_id, payload, session, workspaces, &shared.repl_numbers)
+                .await
         }
         op::REPL_EXECUTE => {
             crate::sidecars::repl::execute::handle_repl_execute(req_id, payload, session, workspaces).await

@@ -929,12 +929,11 @@ struct State {
     /// `active_workspace_id`; consumed by `ReplEvalDone`/`ReplFrameStreamed`/
     /// `ReplRunFileDone` so a reply routes to the right workspace's log even
     /// if the user has swapped away. Keyed by `(HostKey, eval_id)` (ADR 0042
-    /// L2a, Codex review PR #163): each host's daemon independently assigns
-    /// eval ids from its own counter (confirmed on the backend side --
-    /// `EXEC_EVAL_ID` is a per-process static in rust/backend/src/sidecars/repl/execute.rs
-    /// -- and the FE's own `repl_eval_counter` resets per workspace-key too),
-    /// so a bare `eval_id` collides the moment two hosts both have an eval
-    /// id 1 in flight. The VALUE stays a `WsKey`, not a bare slug, for the
+    /// L2a, Codex review PR #163): each host's daemon numbers the runs it
+    /// announces from its own counter, every daemon from the same start
+    /// (`next` in rust/backend/src/sidecars/repl/numbers.rs), so a bare
+    /// `eval_id` collides the moment two hosts both have a run with one
+    /// number in flight. The VALUE stays a `WsKey`, not a bare slug, for the
     /// same reason every other cache in this file moved off bare slugs.
     eval_id_workspace: HashMap<(HostKey, u64), WsKey>,
     /// Per-eval display info for an in-flight streaming `repl.run_file`,
@@ -955,9 +954,11 @@ struct State {
     /// Enter in REPL focus; cleared after send. Multi-line input is a
     /// follow-up.
     repl_input: String,
-    /// Per-session eval id counter. The wire's `eval_id` is what lets us
-    /// find the in-flight entry when the response lands; the counter
-    /// is local to the chrome.
+    /// This window's own eval numbers: one count across every row and
+    /// host it shows, never reset, so no two of its evals in flight share a
+    /// number (`eval_id_workspace` finds an eval's row by its number). The
+    /// daemon numbers each run itself and writes this window its own runs
+    /// under these numbers (`CallerNumbers`, ADR 0033).
     repl_eval_counter: u64,
     /// Scroll offset (rows from the tail) of the REPL pane. 0 = live,
     /// positive = looking at older lines. Reset to 0 whenever the user

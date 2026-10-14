@@ -13,6 +13,9 @@ use super::*;
 /// envelope stays compatible with older backends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplEvalReq {
+    /// The caller's number for the eval, which its own drawer entry carries. The daemon numbers the run itself and
+    /// writes this connection the run's frames under this number; every other connection sees the daemon's number
+    /// (ADR 0033, the one-numberer amendment).
     pub eval_id: u64,
     pub code: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -47,9 +50,10 @@ pub struct ReplEvalRes {
 /// persistent REPL's active project is the fallback.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplRunFileReq {
-    /// The caller's number for the run, which its own drawer entry already carries (a window's `r`/`R`). A caller
-    /// with no entry of its own (`sot-fe repl run --fresh`) sends none: the daemon numbers the run as it numbers a
-    /// `repl.execute` run, announces it to every window with a `started` frame, and the ack carries that number.
+    /// The caller's number for the run, which its own drawer entry already carries (a window's `r`/`R`); the daemon
+    /// writes this connection the run's frames under it. A caller with no entry of its own (`sot-fe repl run --fresh`)
+    /// sends none, and the ack carries the daemon's number. Either way the daemon numbers the run itself and announces
+    /// it with a `started` frame to every other connection (ADR 0033, the one-numberer amendment).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eval_id: Option<u64>,
     pub path: String,
@@ -96,11 +100,13 @@ fn default_open() -> bool {
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ReplFrame {
     /// Control frame (ADR 0033 phase 2): a run STARTED. Emitted by the BACKEND
-    /// (not the shim) before a `repl.execute` submission so a front-end can
-    /// pre-register a drawer entry in submission order — even for a silent or
-    /// long eval, and even when the run belongs to another client. The output
-    /// frames + terminal `done` for this `eval_id` follow. Front-ends that
-    /// don't recognise it ignore it (it carries no output).
+    /// (not the shim) before every run's submission (`repl.execute`,
+    /// `repl.eval`, `repl.run_file`) to every connection but the one that
+    /// numbered the run itself, so a front-end can pre-register a drawer entry
+    /// in submission order — even for a silent or long eval, and even when the
+    /// run belongs to another client. The output frames + terminal `done` for
+    /// this `eval_id` follow. Front-ends that don't recognise it ignore it (it
+    /// carries no output).
     Started {
         run_id: String,
         /// Who initiated the run (e.g. "session", a sot-comm handle).
@@ -181,8 +187,9 @@ pub enum ReplFrame {
 }
 
 /// Payload of a `repl.frame` evt (ADR 0009 phase-2 streaming). One frame,
-/// pushed as it is produced. `eval_id` correlates the frame to the originating
-/// `repl.eval` / `repl.run_file` request; `workspace_id` lets a frontend that
+/// pushed as it is produced. `eval_id` is the run's number: on the connection
+/// that numbered the run itself, that connection's number; on every other, the
+/// daemon's (ADR 0033, the one-numberer amendment). `workspace_id` lets a frontend that
 /// has swapped workspaces (ADR 0014) route the frame to the right pane even
 /// after the active workspace changed. The inner `frame` is the same tagged
 /// `ReplFrame` that previously rode the response, unchanged.

@@ -16,6 +16,10 @@ rust/frontend/src/ui/CLAUDE.md.
 
 ## Rules
 - An eval is tagged with the host and workspace that issued it (`State::submit_repl_input` fills `eval_id_workspace`).
+- A window numbers its evals and `r`/`R` runs with one count across every row and host (`State::repl_eval_counter`,
+  never kept per row), so no two of its runs in flight share a number. The daemon writes it its own runs under these
+  numbers and every other run under the daemon's number, after a `started` frame (ADR 0033, the one-numberer
+  amendment).
 - The log keeps at most 256 entries, trimmed from the front (`State::submit_repl_input`).
 - A history walk skips in-flight entries (`history_step_back`).
 - A Ctrl+C names every eval in flight, an entry whose done frame was lost included, so it reaches the running eval if it is any of them (`in_flight_eval_ids`).
