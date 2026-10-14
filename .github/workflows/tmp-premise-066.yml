@@ -1,35 +1,12 @@
 # TEMPORARY, the batch-6 review's premise checks on hosted runners; never merged. Pushed alone on tmp/ci-premise-066
 # (lane/path-compare's head 9c7489c12 plus one workflow), read, then the branch is deleted. Nothing here pushes, publishes
-# or reads a secret. O2: PREVIEW-ROOT's canonical_root_tests on Windows and macOS. O3: WIN-PATH-CASE's J lines on Windows,
+# or reads a secret. O3: WIN-PATH-CASE's J lines on Windows,
 # once with the branch's comm-lib and once with comm-lib-client.sh as it was before 9c7489c12 (the case-fold hunk reverted).
 name: tmp premise 066
 on:
   push:
     branches: [tmp/ci-premise-066]
 jobs:
-  o2:
-    name: tmp O2 canonical_root_tests (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: canonical_root_tests
-        shell: bash --noprofile --norc -eo pipefail {0}
-        working-directory: rust
-        env:
-          SOT_BUILD_ID: premise066
-        run: |
-          set +e -u
-          cargo test -p sot-backend --bin sotd --locked canonical_root_tests -- --nocapture 2>&1 | tail -40
-          echo "o2 cargo rc: ${PIPESTATUS[0]}"
   o3:
     name: tmp O3 WIN-PATH-CASE's J lines (Windows)
     runs-on: windows-latest
@@ -111,6 +88,16 @@ jobs:
                   echo "case J C3 ($leg) sot_relative_to(git, the junction's path in lower case): '$(bash -c '. "$1/comm-lib.sh"; sot_relative_to "$2" "$3" || echo refused' _ "$bin" "$g" "$jl/a.txt" 2>&1)'"
               fi
               cmd //c rmdir "$(cygpath -w "$jn")" > /dev/null 2>&1 || [ ! -e "$jn" ] || echo "case J ($leg): rmdir of the junction failed"
+              # The variant (captain 10-14 13:4x): the junction's target typed in lower case, so reading the link prints that spelling.
+              jn2="$base/SotJl$$"
+              cmd //c mklink //J "$(cygpath -w "$jn2")" "$(cygpath -w "$base/SotCase$$" | tr 'A-Z' 'a-z')" > "$RUNNER_TEMP/mklink2-$leg.txt" 2>&1 || echo "case JL ($leg): mklink //J failed: $(tr -d "\r" < "$RUNNER_TEMP/mklink2-$leg.txt")"
+              echo "case JL ($leg): readlink '$(readlink "$jn2" 2>&1)'"
+              jl2="$(printf '%s' "$jn2/MixedCaseProj" | tr 'A-Z' 'a-z')"
+              echo "case JL ($leg): cd -P '$jl2' then pwd -P: '$(cd -P "$jl2" 2>&1 && pwd -P)'"
+              if [ -n "${bin:-}" ] && [ -d "$bin" ]; then
+                  echo "case JL C4 ($leg) sot_relative_to(git, the lower-case junction's path): '$(bash -c '. "$1/comm-lib.sh"; sot_relative_to "$2" "$3" || echo refused' _ "$bin" "$g" "$jl2/a.txt" 2>&1)'"
+              fi
+              cmd //c rmdir "$(cygpath -w "$jn2")" > /dev/null 2>&1 || [ ! -e "$jn2" ] || echo "case JL ($leg): rmdir of the junction failed"
               cd "$base" && rm -rf "$base/SotCase$$" "${RUNNER_TEMP:-$base}/case-comm"
               v="AGREE: every compared spelling is one string"
               i=0
