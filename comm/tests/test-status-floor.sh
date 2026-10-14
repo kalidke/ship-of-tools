@@ -216,8 +216,9 @@ check "a resumed session's joining turn reads working and does not stay working 
 check "with SOT_COMM_HOOKS=off a session's join leaves the row idle, never working" case_a_join_with_hooks_off_starts_no_floor
 check "a hooks-off resume drops the floor a dead turn left and starts none" case_a_hooks_off_resume_drops_a_dead_turns_floor
 check "a join with no prompt event (no hooks installed, ccx, a probe row) leaves the row idle, never working" case_a_join_with_no_prompt_event_starts_no_floor
-check "a join after its turn's stop starts no floor" case_a_join_after_its_turns_stop_starts_no_floor
-check "a turn mark older than five minutes starts no floor and is removed" case_a_stale_turn_mark_starts_no_floor
+check "a turn that ended through its stop before any join is never floored by a later one, its own session's included" case_a_join_after_its_turns_stop_starts_no_floor
+check "a turn that ended with no stop is never floored by ccx's, a probe's or another session's join" case_a_dead_turns_mark_is_never_applied_by_another_join
+check "a turn mark older than five minutes starts no floor, even for its own session, and is removed" case_a_stale_turn_mark_starts_no_floor
 check "a nudged session's hand-run join reads working until its stop, under the handle it takes" case_a_nudged_join_is_green_until_its_stop
 check "an AskUserQuestion answer inside the heartbeat throttle window still floors green" case_ask_user_question_within_throttle_window
 check "a parked question survives a foreign AskUserQuestion answer with no marker" case_parked_question_survives_a_foreign_askuserquestion_answer

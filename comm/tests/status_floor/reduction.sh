@@ -311,22 +311,41 @@ case_a_join_with_no_prompt_event_starts_no_floor() {
     "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
     expect /-/-/-/- joined
 }
+# A turn that ended before any join is never floored by a later one. Through
+# its Stop: the Stop took the mark, so not even its own session's join (a
+# resume with its hooks off) finds one.
 case_a_join_after_its_turns_stop_starts_no_floor() {
     jq -n '{agents:{}}' > "$REGISTRY"; "$ST" stop >/dev/null
-    W '{"prompt":"/sot-session-start"}'; I
-    "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
+    CLAUDE_CODE_SESSION_ID=sess-a W '{"prompt":"/sot-session-start"}'; CLAUDE_CODE_SESSION_ID=sess-a I
+    CLAUDE_CODE_SESSION_ID=sess-a SOT_COMM_HOOKS=off "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
     expect /-/-/-/- joined
 }
-# A turn that died before its Stop leaves its mark; five minutes on, a join
-# takes it for no turn of its own, starts nothing and removes it.
-case_a_stale_turn_mark_starts_no_floor() {
-    local rc=0 m
+# With no Stop (an interrupt, a failed request, a killed process) the mark
+# stays, but it names its session: a join from no session (ccx before codex
+# starts, a probe row) or from another session takes nothing from it; only its
+# own session's join does.
+case_a_dead_turns_mark_is_never_applied_by_another_join() {
+    local rc=0
     jq -n '{agents:{}}' > "$REGISTRY"; "$ST" stop >/dev/null
-    W '{"prompt":"/sot-session-start"}'
+    CLAUDE_CODE_SESSION_ID=sess-dead W '{"prompt":"/sot-session-start"}'
+    "$SCRIPTS_DIR/comm-join.sh" --name "$NAME" >/dev/null 2>&1
+    expect /-/-/-/- ccx-or-probe-join || rc=1
+    CLAUDE_CODE_SESSION_ID=sess-next SOT_COMM_HOOKS=off "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
+    expect /-/-/-/- another-sessions-join || rc=1
+    CLAUDE_CODE_SESSION_ID=sess-dead "$SCRIPTS_DIR/comm-join.sh" >/dev/null 2>&1
+    expect working/machine/-/-/- its-own-sessions-join || rc=1
+    I; return "$rc"
+}
+# And five minutes on (the next day a fortiori), not even its own session's
+# join takes it: the join removes it and starts nothing.
+case_a_stale_turn_mark_starts_no_floor() {
+    local rc=0 m t sid
+    jq -n '{agents:{}}' > "$REGISTRY"; "$ST" stop >/dev/null
+    CLAUDE_CODE_SESSION_ID=sess-a W '{"prompt":"/sot-session-start"}'
     set -- "$SOT_COMM_HOME"/state/turn-*
     [ -e "$1" ] || { echo "    the prompt event left no turn mark"; return 1; }
-    for m in "$@"; do echo "$(( $(date +%s) - 301 ))" > "$m"; done
-    "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
+    for m in "$@"; do read -r t sid < "$m"; printf '%s %s\n' "$(( t - 301 ))" "$sid" > "$m"; done
+    CLAUDE_CODE_SESSION_ID=sess-a "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
     expect /-/-/-/- joined || rc=1
     set -- "$SOT_COMM_HOME"/state/turn-*
     [ ! -e "$1" ] || { echo "    the stale mark was kept"; rc=1; }

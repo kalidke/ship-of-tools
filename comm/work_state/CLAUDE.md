@@ -19,10 +19,11 @@ priority) sits above the `with_lock` call that applies it. For what the Stop hoo
   another's read and write is never overwritten.
 - A declaration (`working`, `idle`, `blocked`, `done`, `waiting`) with nowhere to land fails loudly; an event
   (`prompt`, `stop`, `join`) from a session with no registry row writes nothing to the registry (`sot_require_agent`).
-- `prompt` writes the session's turn mark (`state/turn-<self slot>`) and `stop` removes it, row or no row; `join`,
-  sent by `comm-join.sh`, sets `floor` to machine only from a mark under five minutes old. So the turn that joins
-  reads working until its Stop, and a session whose hooks are off or missing, having no mark, never gets a floor that
-  no Stop would end.
+- `prompt` writes the session's turn mark (`state/turn-<self slot>`: the time and `$CLAUDE_CODE_SESSION_ID`) and
+  `stop` removes it, row or no row; `join`, sent by `comm-join.sh`, sets `floor` to machine only from a mark of its
+  own session under five minutes old. So the turn that joins reads working until its Stop; a session whose hooks are
+  off or missing, having no mark, never gets a floor that no Stop would end; and a turn that ended, through its Stop
+  or with none, is never floored by a later join.
 - The daemon stamps no fact; it clears only `done`, when a person views the row (`clear_comm_unread` in
   `rust/backend/src/comm/registry/registry.rs`).
 - The auditor fails open: any internal failure, a missing `claude`, `SOT_TURN_AUDITOR=0` or `auditor.off` in the comm

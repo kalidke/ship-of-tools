@@ -18,24 +18,28 @@
 #            nor `waiting` is set, then clears `floor` and the Stop hook's
 #            `stop_at` mark. Row or no row, it removes the turn mark.
 #   join     the session has just written its row (comm-join.sh sends it):
-#            with a turn mark under five minutes old, sets `floor` to machine
-#            as a machine `prompt` does; with none, writes nothing.
+#            with a turn mark of its own session under five minutes old, sets
+#            `floor` to machine as a machine `prompt` does; else writes nothing.
 #
 # The turn mark, $COMM_HOME/state/turn-<the self slot's path>, holds the time
-# of the session's last `prompt` (epoch seconds) until its `stop`. The turn
-# that joins starts before its row: its `prompt` found no row (a first start)
-# or set a floor that the join's new row replaced (a resume, a provisional
-# row). So the join starts that turn's floor from the mark, and the turn's
-# Stop ends it. A session whose hooks are off or missing sends no `prompt`,
-# so it has no mark and its join starts nothing: no floor without a Stop to
-# end it. The self slot keys the mark: it is the one name a session has
-# before its handle, and the place its join writes that handle (the daemon
-# pins one per row). The no-pane slot, shared by every shell outside a row on
-# the box, gets no mark. Five minutes bounds a mark left by a turn that died
-# before its Stop; the joins it serves (the launcher's /sot-session-start, a
-# resume, the bootstrap nudge) come in a turn's first minute. The floor is
-# machine whatever the turn's origin: a turn that joins ends gray, as it did
-# with no floor, never blue.
+# of the session's last `prompt` (epoch seconds) and its session
+# ($CLAUDE_CODE_SESSION_ID, empty under Codex) until its `stop`. The turn that
+# joins starts before its row: its `prompt` found no row (a first start) or
+# set a floor that the join's new row replaced (a resume, a provisional row).
+# So the join starts that turn's floor from the mark, and the turn's Stop ends
+# it. A session whose hooks are off or missing sends no `prompt`, so it has no
+# mark and its join starts nothing: no floor without a Stop to end it. The
+# self slot keys the mark: it is the one name a session has before its handle,
+# and the place its join writes that handle (the daemon pins one per row). The
+# no-pane slot, shared by every shell outside a row on the box, gets no mark.
+# A turn that ends through its Stop takes its mark with it. One that ends with
+# no Stop (an interrupt, a failed request, a killed process) leaves it: the
+# session in it keeps a join from no session (ccx before codex starts, a probe
+# row) or from another session from taking it, and five minutes bounds it for
+# its own; the joins it serves (the launcher's /sot-session-start, a resume,
+# the bootstrap nudge) come in a turn's first minute. The floor is machine
+# whatever the turn's origin: a turn that joins ends gray, as it did with no
+# floor, never blue.
 #
 # Five verbs are DECLARATIONS — the model's own word (the Stop hook's marker
 # stamp and the two yield hooks send these too, on the model's behalf):
@@ -114,12 +118,14 @@ case "${SELF_FILE:-}" in
     *) TURN_MARK="$COMM_HOME/state/turn-$(printf '%s' "$SELF_FILE" | tr -c 'A-Za-z0-9._-' '_')" ;;
 esac
 case "$VERB" in
-    prompt) [ -z "$TURN_MARK" ] || { mkdir -p "$COMM_HOME/state" && date +%s > "$TURN_MARK"; } 2>/dev/null || true ;;
+    prompt) [ -z "$TURN_MARK" ] || { mkdir -p "$COMM_HOME/state" \
+                && printf '%s %s\n' "$(date +%s)" "${CLAUDE_CODE_SESSION_ID:-}" > "$TURN_MARK"; } 2>/dev/null || true ;;
     stop)   [ -z "$TURN_MARK" ] || rm -f "$TURN_MARK" 2>/dev/null || true ;;
     join)
-        MARK_AT="$(cat "$TURN_MARK" 2>/dev/null)" || exit 0
+        { read -r MARK_AT MARK_SESSION < "$TURN_MARK"; } 2>/dev/null || exit 0
         case "$MARK_AT" in ''|*[!0-9]*) exit 0 ;; esac
         [ "$(( $(date +%s) - MARK_AT ))" -le 300 ] || { rm -f "$TURN_MARK" 2>/dev/null; exit 0; }
+        [ "$MARK_SESSION" = "${CLAUDE_CODE_SESSION_ID:-}" ] || exit 0
         VERB=prompt COMM_STATUS_ORIGIN=machine ;;
 esac
 
