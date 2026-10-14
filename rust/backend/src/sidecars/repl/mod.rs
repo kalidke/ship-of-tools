@@ -346,13 +346,13 @@ impl Repl {
         // What is there is dead or still retiring: it is retired and joined
         // before the replacement opens, on every route to a spawn.
         slot.settle().await?;
-        let sup = self.spawn(&slot.project)?;
+        let sup = self.spawn(&slot.project).await?;
         let tx = sup.tx.clone();
         slot.current = Some(sup);
         Ok(tx)
     }
 
-    fn spawn(&self, project: &Path) -> Result<Supervisor> {
+    async fn spawn(&self, project: &Path) -> Result<Supervisor> {
         spawn_supervisor(
             project,
             self.inner.frame_tx.clone(),
@@ -360,6 +360,7 @@ impl Repl {
             self.inner.lifecycle.clone(),
             self.inner.sig,
         )
+        .await
     }
 
     /// Retire the persistent REPL child and start another with `user_project`
@@ -380,7 +381,7 @@ impl Repl {
         let mut slot = self.inner.slot.lock().await;
         slot.settle().await?;
         slot.project = user_project.to_path_buf();
-        let sup = self.spawn(user_project)?;
+        let sup = self.spawn(user_project).await?;
         slot.current = Some(sup);
         Ok(())
     }

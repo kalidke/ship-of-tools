@@ -41,7 +41,7 @@ struct WireEnvelope {
 /// `ShipToolsRepl` lives) as a fallback for the shim's own deps, then the
 /// default load path (stdlib, etc.) via the trailing colon so `using` of
 /// standard packages still works inside the user code.
-pub(super) fn spawn_supervisor(
+pub(super) async fn spawn_supervisor(
     user_project: &Path,
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
@@ -72,7 +72,7 @@ pub(super) fn spawn_supervisor(
     let sep = ":";
     let load_path = format!("@{sep}{}{sep}", repl_project.display());
 
-    let tmp = crate::sidecars::child_tmp::ChildTmp::new().context("repl child temporary folder")?;
+    let tmp = crate::sidecars::child_tmp::ChildTmp::for_user_code(sig).await.context("repl child temporary folder")?;
     let mut cmd = Command::new(&julia_bin);
     tmp.apply(&mut cmd);
     cmd.env("JULIA_LOAD_PATH", &load_path)

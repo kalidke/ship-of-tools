@@ -1,6 +1,7 @@
-//! A Julia child's own temporary folder: made before its spawn, named in its environment, removed after its reap.
+//! A Julia child's own temporary folder, and for a child that runs user code its own display: made before its spawn,
+//! named in its environment, ended after its reap.
 
-use crate::lifecycle::child_signal::Contained;
+use crate::lifecycle::child_signal::{Contained, Signal};
 use tokio::process::Command;
 
 /// The variables Julia's `tempdir()` reads on this platform.
@@ -15,38 +16,72 @@ const TMP_VARS: &[&str] = &["TMP", "TEMP"];
 /// Dropping a `ChildTmp` removes the folder at once, so it is for an owner whose child never started (and the pipe-take
 /// returns after a spawn, unreachable while every pipe is `Stdio::piped()`): a folder dropped after a spawn may still
 /// hold a live child's files.
-pub(crate) struct ChildTmp(tempfile::TempDir);
+pub(crate) struct ChildTmp {
+    /// The display of a child that runs user code (Linux; `for_user_code`), whose cookie is a file in `dir`. Ended
+    /// after the child and before the folder; dropped, its server's group is ended with it.
+    #[cfg(target_os = "linux")]
+    display: Option<crate::sidecars::display::Display>,
+    dir: tempfile::TempDir,
+}
 
 impl ChildTmp {
     pub(crate) fn new() -> std::io::Result<Self> {
-        tempfile::Builder::new()
-            .prefix("sot-julia-")
-            .tempdir()
-            .map(Self)
+        let dir = tempfile::Builder::new().prefix("sot-julia-").tempdir()?;
+        Ok(Self {
+            #[cfg(target_os = "linux")]
+            display: None,
+            dir,
+        })
     }
 
-    /// Names the folder as `cmd`'s temporary folder.
+    /// As [`new`](Self::new), for a child that runs user code (the REPL, Pluto): on Linux it also starts the child's
+    /// own display under `sig` ([`Display`](crate::sidecars::display::Display)). On macOS and Windows GLMakie draws
+    /// through the system's own windowing, and nothing is started.
+    pub(crate) async fn for_user_code(sig: &'static Signal) -> std::io::Result<Self> {
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut tmp = Self::new()?;
+        #[cfg(target_os = "linux")]
+        {
+            tmp.display = Some(crate::sidecars::display::Display::start(tmp.dir.path(), sig).await);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = sig;
+        Ok(tmp)
+    }
+
+    /// Names the folder as `cmd`'s temporary folder, and the display, if the child has one, as its display.
     pub(crate) fn apply(&self, cmd: &mut Command) {
         for key in TMP_VARS {
-            cmd.env(key, self.0.path());
+            cmd.env(key, self.dir.path());
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(display) = &self.display {
+            display.apply(cmd);
         }
     }
 
-    /// Ends `child` (its tree, then its direct child's reap) and removes the folder. The removal walks the folder on a
-    /// blocking thread that nothing waits for, so a large folder holds neither the caller nor the restart it serves.
-    /// A failed kill may leave the child running, so then the folder stays, and its path is logged.
+    /// Ends `child` (its tree, then its direct child's reap), then its display, and removes the folder. The removal
+    /// walks the folder on a blocking thread that nothing waits for, so a large folder holds neither the caller nor the
+    /// restart it serves. A failed kill may leave the child running, so then the folder stays, and its path is logged;
+    /// its display ends all the same.
     pub(crate) async fn retire(self, child: &mut Contained) -> std::io::Result<std::process::ExitStatus> {
-        let status = match child.kill().await {
+        let killed = child.kill().await;
+        #[cfg(target_os = "linux")]
+        if let Some(display) = self.display {
+            display.end().await;
+        }
+        let status = match killed {
             Ok(status) => status,
             Err(e) => {
-                let kept = self.0.keep();
+                let kept = self.dir.keep();
                 tracing::warn!(path = %kept.display(), error = %e, "sot-julia temporary folder kept: its child is not confirmed ended");
                 return Err(e);
             }
         };
-        let path = self.0.path().to_path_buf();
+        let dir = self.dir;
+        let path = dir.path().to_path_buf();
         drop(tokio::task::spawn_blocking(move || {
-            if let Err(e) = self.0.close() {
+            if let Err(e) = dir.close() {
                 tracing::warn!(path = %path.display(), error = %e, "sot-julia temporary folder not removed");
             }
         }));
@@ -84,7 +119,7 @@ mod tests {
     async fn retire_removes_the_folder_after_the_reap() {
         let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
         let tmp = ChildTmp::new().expect("temporary folder");
-        let folder = tmp.0.path().to_path_buf();
+        let folder = tmp.dir.path().to_path_buf();
         std::fs::write(folder.join("made"), b"x").expect("setup: a file in the folder");
         let mut cmd = long_child();
         let mut child = sig.spawn(&mut cmd).expect("spawn the child");

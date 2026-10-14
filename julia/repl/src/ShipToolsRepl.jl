@@ -58,6 +58,11 @@ end
 # process-global, so overlapping evals would clobber each other's capture).
 const CURRENT_EVAL = Ref{Union{Eval,Nothing}}(nothing)
 
+# Why this child has no display of its own (the daemon's `SOT_NO_DISPLAY`: on Linux no Xvfb could start), read at
+# `serve` and said once, as a stderr frame at the start of the first eval (`spawn_eval`), so whoever runs code next
+# sees it in the drawer or in their run's output.
+const DISPLAY_NOTICE = Ref{Union{String,Nothing}}(nothing)
+
 """
     serve(io_in::IO, io_out::IO)
 
@@ -101,6 +106,10 @@ function serve(io_in::IO, io_out::IO)
     # (every test in this file does) doesn't pile up duplicate displays.
     any(d isa WGLDisplay for d in Base.Multimedia.displays) ||
         pushdisplay(WGLDisplay())
+
+    why = get(ENV, "SOT_NO_DISPLAY", "")
+    DISPLAY_NOTICE[] = isempty(why) ? nothing :
+        "sot: this REPL has no display of its own ($why), and GLMakie needs one. CairoMakie and WGLMakie (wglshow) work.\n"
 
     write_envelope(io_out, "evt", 0, "repl.ready",
         Dict(:julia => string(VERSION), :protocol => PROTOCOL_VERSION))
@@ -197,6 +206,11 @@ function spawn_eval(work, io::IO, id, eval_id, op, ack)
     task = Task() do
         emit = make_emit(io, id, eval_id)
         start = time()
+        notice = DISPLAY_NOTICE[]
+        if notice !== nothing
+            DISPLAY_NOTICE[] = nothing
+            emit(Dict(:kind => "stderr", :text => notice))
+        end
         try
             work(emit)
         catch e
