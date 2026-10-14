@@ -284,9 +284,10 @@ Two ways to drive it, without retyping:
 Per-line and per-block dispatch (the line at the cursor, or the surrounding
 top-level form) are **planned**, not yet built.
 
-A long-running evaluation runs on its own task, so it does not block the dispatch
-loop and you can interrupt it mid-eval — a real `InterruptException`, the same as
-`Ctrl-C` in the stock REPL.
+A long-running evaluation runs on its own task, so you can interrupt it mid-eval
+whenever it yields (`sleep`, I/O that waits, `yield()`) — a real `InterruptException`,
+the same as `Ctrl-C` in the stock REPL. One that never yields (a tight numeric loop)
+holds the REPL until it ends; `r` on a `.jl` file restarts the REPL and ends it.
 
 ### Structured output
 

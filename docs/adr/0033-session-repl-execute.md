@@ -141,7 +141,7 @@ Phase 1 (this ADR) is implemented and verified end-to-end: ok / error+stacktrace
 `Main` state across executes / exit codes. Figure-spill code is in place but not
 yet exercised (the test REPL project had no plotting package).
 
-Phase 2 uses a backend `Started` frame before submit to register a session-originated run in the drawer. The frontend keys it by the dial host and eval_id, deriving its workspace from the frame's hint, and renders origin and display as its prompt. The backend closes every run it announced before returning a repl.execute report: submit failure and a collected result lacking Done receive a synthetic Done, including timeout, repl_died and terminal res-only errors. A collected Done suppresses handler synthesis. Validation before Started creates no run. A timeout closes the report's drawer entry while the underlying eval may still run; this does not deduplicate later child frames. `sot-fe repl … --origin <who>` labels the entry.
+Phase 2 uses a backend `Started` frame before submit to register a session-originated run in the drawer. The frontend keys it by the dial host and eval_id, deriving its workspace from the frame's hint, and renders origin and display as its prompt. The backend closes every run it announced before returning a repl.execute report: submit failure and a collected result lacking Done receive a synthetic Done, including timeout, repl_died and terminal res-only errors. A collected Done suppresses handler synthesis. Validation before Started creates no run. A timeout closes the report's drawer entry while the underlying eval may still run; this does not deduplicate later child frames. `sot-fe repl … --origin <who>` labels the entry. A `repl.run_file` that carries no `eval_id` is announced the same way: `sot-fe repl run --fresh` sends none, so the daemon numbers the run from this space and sends `Started` after the restart and before the run; the shim's `done`, the close-out of a child that ends first, or a synthetic `Done` on submit failure closes it.
 
 Deferred:
 
@@ -159,8 +159,8 @@ Deferred:
 `repl.interrupt` takes an optional `eval_ids`. The shim interrupts the eval that holds its guard only if that eval's id
 is among them, so the window's Ctrl+C, which names every eval its drawer shows in flight, does not stop an eval
 accepted after the one the user meant. Each window numbers its own evals, so two windows on one REPL can share a
-number; the scope is by number. `sot-fe repl run --fresh` always sends `eval_id` 1, a number every window's first
-eval shares, so its interrupt scope has the same limit. An interrupt without `eval_ids` still stops whichever eval runs, and `sot-fe repl
+number; the scope is by number. A `sot-fe repl run --fresh` run carries the daemon's number (phase 2), which no
+window's own numbering reaches. An interrupt without `eval_ids` still stops whichever eval runs, and `sot-fe repl
 interrupt` sends none: item 4's "not run-scoped" and item 9's "workspace-wide" describe that form. An interrupt reaches
 an eval only in its user code, which is its code and the display of its value. One that arrives before it starts stops
 it before it runs, and the eval is still answered with an error frame, done and res, so item 2's "every path" holds; one

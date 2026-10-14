@@ -23,7 +23,7 @@ use crate::server::reply::HandlerOutput;
 /// returned to the caller is derived from it.
 static EXEC_EVAL_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 40);
 
-fn next_exec_eval_id() -> u64 {
+pub(super) fn next_exec_eval_id() -> u64 {
     EXEC_EVAL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
@@ -167,10 +167,11 @@ fn build_exec_request(req_id: u64, req: &ReplExecuteReq, ws: &crate::rows::Works
     })
 }
 
-/// Broadcasts the `started` control frame that pre-registers the run in the drawer.
-fn announce_exec_started(req: &ReplExecuteReq, ws: &crate::rows::Workspace, workspaces: &Workspaces,
-    eval_id: u64, run_id: &String, display: String) -> (String, broadcast::Sender<ReplFrameMsg>) {
-    let origin = req.origin.clone().unwrap_or_else(|| "session".to_string());
+/// Broadcasts the `started` control frame that pre-registers the run in every window's drawer, labelled `origin`
+/// ("session" when the caller names none).
+pub(super) fn announce_exec_started(origin: Option<&str>, ws: &crate::rows::Workspace, workspaces: &Workspaces,
+    eval_id: u64, run_id: &str, display: String) -> (String, broadcast::Sender<ReplFrameMsg>) {
+    let origin = origin.unwrap_or("session");
     let frame_ws = ws.slug.clone();
     let frame_tx = workspaces.repl_frame_tx();
     let _ = frame_tx.send(ReplFrameMsg {
@@ -178,7 +179,7 @@ fn announce_exec_started(req: &ReplExecuteReq, ws: &crate::rows::Workspace, work
         workspace_id: Some(frame_ws.clone()),
         frame: json!({
             "kind": "started",
-            "run_id": run_id.clone(),
+            "run_id": run_id,
             "origin": origin,
             "display": display,
         }),
@@ -324,7 +325,7 @@ async fn spill_exec_figures(ws: &crate::rows::Workspace, run_id: &String, image_
 }
 
 /// Closes the drawer run `announce_exec_started` opened, with a `done` frame the shim did not send.
-fn close_exec_run(frame_tx: &tokio::sync::broadcast::Sender<ReplFrameMsg>, frame_ws: &str, eval_id: u64, elapsed_ms: u64) {
+pub(super) fn close_exec_run(frame_tx: &tokio::sync::broadcast::Sender<ReplFrameMsg>, frame_ws: &str, eval_id: u64, elapsed_ms: u64) {
     let _ = frame_tx.send(ReplFrameMsg {
         eval_id,
         workspace_id: Some(frame_ws.to_string()),
@@ -392,7 +393,7 @@ pub async fn handle_repl_execute(
     // same entry. Stamping the canonical id here made that compare never match →
     // the entry was dropped down the "no snapshot" path and every session run
     // orphaned as "repl.frame dropped: no in-flight entry".
-    let (frame_ws, frame_tx) = announce_exec_started(&req, &ws, workspaces, eval_id, &run_id, display);
+    let (frame_ws, frame_tx) = announce_exec_started(req.origin.as_deref(), &ws, workspaces, eval_id, &run_id, display);
 
     let repl = ws.repl(workspaces.repl_frame_tx());
     let submitted_at = std::time::Instant::now();

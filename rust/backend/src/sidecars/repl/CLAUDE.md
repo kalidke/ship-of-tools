@@ -8,7 +8,7 @@ rust/backend/src/sidecars/CLAUDE.md.
 ## Files
 - `execute.rs`: repl.execute, the whole-report run
 - `execute_tests.rs`: native `repl.execute` submit-failure and res-only drawer completion, plus the existing Unix shell reply/frame table.
-- `ops.rs`: repl.eval, repl.run_file, repl.interrupt
+- `ops.rs`: repl.eval, repl.run_file, repl.interrupt, and their stub-child tests (interrupt reach, a full queue, a fresh run's announcement and a waiting run's answer on a restart)
 - `mod.rs`: the handle (`Repl`): submit, execute, interrupt and restart, the frame bus message and `ExecAccum`.
 - `lifecycle.rs`: the child's state (`ReplLifecycle`), spawn generations and the `lifecycle` frames.
 - `project_tests.rs`: real Julia bare/project workspace, package-write destination and all-entry spawn controls in isolated resource/depot fixtures, whose first start compiles only the shim. Real owned-child parsed-argument/environment controls, and WGL page-secret exclusion controls that read every process of the REPL's tree (on Windows the Julia root's own command line cannot be read, so there the descendants alone), with a deliberate-leak sensitivity probe that finds a needle in the root and in a descendant, a killed child's temporary files removed with it, and (Linux) the child's own display, which only its cookie opens and which ends with the child on a restart, a death, a row's end and the daemon's stop; no source-text assertions.
@@ -38,6 +38,7 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
 - `Repl` keeps its constructor's `Signal` and passes it to each supervisor's spawn and shutdown wait.
 - The shim project is resolved at every spawn (`Repl::repl_project`), never cached. `spawn_supervisor` is the only REPL spawn recipe: user code's active project and cwd are the selected user directory, even before it has a `Project.toml`; the shim is a fallback on `JULIA_LOAD_PATH`, never the bare-workspace active project.
 - Once `repl.execute` announces `Started`, every returned report closes that run: a submit failure or collected result without `Done` gets a synthetic `Done`; an already completed result gets no duplicate from the handler. Validation before `Started` creates no drawer run.
+- A `repl.run_file` with no `eval_id` (`sot-fe repl run --fresh`) is numbered from `repl.execute`'s space and announced with `Started` after any restart and before its submit (`handle_repl_run_file`), since a window makes a drawer entry only for its own evals and a `Started` frame; a submit failure gets a synthetic `Done`. A run_file with no path is refused (`bad_request`): the shim would answer it with a res alone, which this op drops.
 - `repl.execute` output is collected loss-free per eval, text capped at `EXEC_TEXT_CAP` (`ExecAccum`).
 - A test's Julia child never inherits the test binary's stdout or stderr (the leak probe in `project_tests.rs` nulls
   its stderr): Julia's runtime sets `O_NONBLOCK` on an inherited stdio pipe and never restores it, and the flag lives on

@@ -88,10 +88,11 @@ pub(crate) async fn send_repl_run_file<W: AsyncWrite + Unpin>(
             id,
             op::REPL_RUN_FILE,
             serde_json::to_value(ReplRunFileReq {
-                eval_id,
+                eval_id: Some(eval_id),
                 path: path.clone(),
                 fresh,
                 workspace_id,
+                origin: None,
             })?,
         ),
         None,

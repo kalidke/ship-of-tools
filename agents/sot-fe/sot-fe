@@ -197,7 +197,8 @@
 #                  fresh:true) — the way to clear a STALE kernel from a backend
 #                  session (e.g. after a struct/field change Revise can't
 #                  hot-reload). Fire-and-forget: acks the bounce; the include's
-#                  output streams to the FE drawer, not collected here. Without
+#                  output streams to every window's REPL drawer (labelled
+#                  --origin), not collected here. Without
 #                  --fresh, `repl run` uses repl.execute (no reset, collects
 #                  output) in the REPL's CURRENT project.
 #   --endpoint     daemon address — unix:/path, ssh:target[/host], or (Windows

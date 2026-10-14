@@ -140,20 +140,22 @@ pub async fn handle_repl_run_file(
     // fresh=false include leaves them None → FE degrades to "(no project)".
     let mut project_dir_str: Option<String> = None;
     let mut project_source_str: Option<String> = None;
+    // A run with no path has nothing to run, and the shim answers it with a res alone, which this fire-and-forget op
+    // drops: no window would ever see it end.
+    let Some(ref p) = path_str else {
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::REPL_RUN_FILE,
+                json!({
+                    "error": "repl.run_file requires a path",
+                    "code": "bad_request",
+                }),
+            ),
+            None,
+        )]);
+    };
     if fresh {
-        let Some(ref p) = path_str else {
-            return Ok(vec![(
-                Frame::res(
-                    req_id,
-                    op::REPL_RUN_FILE,
-                    json!({
-                        "error": "fresh=true requires a path",
-                        "code": "bad_request",
-                    }),
-                ),
-                None,
-            )]);
-        };
         let abs_path = {
             let pb = std::path::PathBuf::from(p);
             if pb.is_absolute() {
@@ -200,9 +202,30 @@ pub async fn handle_repl_run_file(
         }
     }
 
+    // A caller that numbers no run (`sot-fe repl run --fresh` sends no `eval_id`) has no drawer entry for it, and a
+    // window makes one only for its own evals and for a `started` frame. So the daemon numbers the run from
+    // `repl.execute`'s space and announces it to every window, after the restart and before the run (ADR 0033 phase
+    // 2); the shim's `done`, or the close-out of a child that ends first, closes it.
+    let announced = match eval_id {
+        Some(_) => None,
+        None => {
+            let id = super::execute::next_exec_eval_id();
+            if let Some(obj) = forwarded_payload.as_object_mut() {
+                obj.insert("eval_id".to_string(), json!(id));
+            }
+            let name = std::path::Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or("?.jl");
+            let display = if fresh { format!("run {name} (fresh)") } else { format!("run {name}") };
+            let origin = payload_json.get("origin").and_then(|v| v.as_str());
+            Some((id, super::execute::announce_exec_started(origin, &ws, workspaces, id, &format!("exec-{id}"), display)))
+        }
+    };
+
     // Fire-and-forget: queue the run and ack immediately. Frames stream as
     // `repl.frame` evts; the frontend keys completion off the `done` frame.
     if let Err(e) = repl.submit(op::REPL_RUN_FILE, forwarded_payload).await {
+        if let Some((id, (frame_ws, frame_tx))) = &announced {
+            super::execute::close_exec_run(frame_tx, frame_ws, *id, 0);
+        }
         return Ok(vec![(
             Frame::res(
                 req_id,
@@ -226,7 +249,7 @@ pub async fn handle_repl_run_file(
             // rides the done frame; project_dir/source drive the fresh-`r`
             // status line.
             json!({
-                "eval_id": eval_id,
+                "eval_id": eval_id.or(announced.as_ref().map(|(id, _)| *id)),
                 "path": path_str.clone().unwrap_or_default(),
                 "fresh": fresh,
                 "elapsed_ms": 0,

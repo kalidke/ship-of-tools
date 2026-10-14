@@ -69,9 +69,10 @@ const DISPLAY_NOTICE = Ref{Union{String,Nothing}}(nothing)
 NDJSON dispatch loop for the persistent REPL child. One JSON request per
 line on `io_in`; envelopes out on `io_out`.
 
-ADR 0009 phase-2 (streaming): an eval no longer blocks the dispatch loop.
-`repl.eval` / `repl.run_file` spawn the evaluation on a task and return
-immediately, so the loop stays free to receive a `repl.interrupt` mid-eval.
+ADR 0009 phase-2 (streaming): `repl.eval` / `repl.run_file` spawn the
+evaluation on a task and return immediately, so the loop reads the next request
+(a `repl.interrupt`) whenever the eval yields. The task shares the loop's one
+thread: an eval that never yields holds the loop until it ends.
 Each output frame is emitted as its own `repl.frame` **evt** envelope as it is
 produced; the request's `res` envelope is a terminal **ack** (no frames) sent
 once the eval finishes.
@@ -193,8 +194,8 @@ end
 """
     spawn_eval(work, io, id, eval_id, op, ack)
 
-Run one eval on its own task, so the dispatch loop stays free to receive
-`repl.interrupt`, and answer it once. `work(emit)` runs the user code and streams
+Run one eval on its own task, so the dispatch loop can receive `repl.interrupt`
+when the eval yields, and answer it once. `work(emit)` runs the user code and streams
 its frames; user errors are frames inside it, and a failure of the streaming
 machinery itself becomes an `internal repl error` frame here. Then the eval
 releases the single-eval guard and sends its done frame and its terminal res,

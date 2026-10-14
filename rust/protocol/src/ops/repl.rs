@@ -47,13 +47,20 @@ pub struct ReplEvalRes {
 /// persistent REPL's active project is the fallback.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplRunFileReq {
-    pub eval_id: u64,
+    /// The caller's number for the run, which its own drawer entry already carries (a window's `r`/`R`). A caller
+    /// with no entry of its own (`sot-fe repl run --fresh`) sends none: the daemon numbers the run as it numbers a
+    /// `repl.execute` run, announces it to every window with a `started` frame, and the ack carries that number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_id: Option<u64>,
     pub path: String,
     #[serde(default)]
     pub fresh: bool,
     /// ADR 0014 workspace routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// The label of a run the daemon announces (`ReplExecuteReq::origin`); "session" when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

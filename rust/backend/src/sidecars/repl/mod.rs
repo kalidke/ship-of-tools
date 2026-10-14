@@ -274,7 +274,13 @@ impl Repl {
         )?;
         tokio::time::timeout(REPL_INTERRUPT_WAIT, reply_rx)
             .await
-            .map_err(|_| anyhow!("the REPL did not answer {op} within {REPL_INTERRUPT_WAIT:?}"))?
+            .map_err(|_| {
+                anyhow!(
+                    "the REPL did not answer {op} within {REPL_INTERRUPT_WAIT:?}: an eval that never yields keeps it \
+                     from reading anything until the eval ends, and a restart ends it now (`sot-fe repl run <ws> \
+                     <file> --fresh`, or `r` on a .jl file in the window)"
+                )
+            })?
             .map_err(|_| anyhow!("repl supervisor dropped reply channel"))?
             .map(Some)
     }
