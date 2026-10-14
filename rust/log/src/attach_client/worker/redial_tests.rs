@@ -270,6 +270,33 @@ fn a_supervisor_lane_that_lasted_stable_redials_at_once_and_starts_its_wait_over
     assert_eq!(dials(), 2, "4 s after the re-dial failed the next was not due: the wait did not start over");
 }
 
+/// `n` workers, row-0 to row-(n-1), each on its own endpoint from `endpoint`.
+fn spawn_rows<E: Endpoint + Send + Sync + 'static>(n: usize, endpoint: impl Fn(usize) -> E) -> Vec<AttachWorker<E>>
+where
+    E::Client: 'static,
+{
+    (0..n)
+        .map(|i| {
+            AttachWorker::<E>::spawn(
+                endpoint(i),
+                format!("row-{i}"),
+                80,
+                24,
+                "controller-1".to_string(),
+                "handle".to_string(),
+                None,
+                false,
+                64 * 1024,
+                Arc::new(AtomicU64::new(0)),
+                Arc::new(Mutex::new(None)),
+                Arc::new(AtomicU64::new(0)),
+                |_e| {},
+            )
+            .expect("spawn the worker")
+        })
+        .collect()
+}
+
 /// One host as a window's attach workers reach it, each supervisor dial one login. While the link is down a dial is
 /// answered `LinkDown` at once, as the host's link gate answers; otherwise its login stays open until the test refuses
 /// it, so the count of logins open at once does not depend on how fast the machine is.
@@ -304,6 +331,34 @@ impl Host {
         !waited.timed_out()
     }
 
+    /// Whether the link is up; a dial that finds it down is counted and answered at once.
+    fn answer_link(&self) -> bool {
+        let mut s = self.state.lock().unwrap();
+        if !s.link_up {
+            s.link_down_answers += 1;
+            self.changed.notify_all();
+        }
+        s.link_up
+    }
+
+    /// Opens a login for `lane` and holds it until the test refuses it (or ends).
+    fn hold_login(&self, lane: &str) {
+        let mut s = self.state.lock().unwrap();
+        s.open.push(lane.to_string());
+        s.most_open = s.most_open.max(s.open.len());
+        self.changed.notify_all();
+        while !s.closing {
+            if let Some(i) = s.refusals.iter().position(|r| r == lane) {
+                s.refusals.remove(i);
+                break;
+            }
+            s = self.changed.wait(s).unwrap();
+        }
+        let i = s.open.iter().position(|r| r == lane).expect("the login's own entry");
+        s.open.remove(i);
+        self.changed.notify_all();
+    }
+
     /// Refuses `row`'s open login and waits until it has closed.
     fn refuse(&self, row: &str) {
         let open = |s: &HostState| s.open.iter().filter(|r| *r == row).count();
@@ -319,25 +374,10 @@ impl Endpoint for HostEndpoint {
     type Process = TestProcess;
 
     fn connect_supervisor_unchallenged(&self, lane: &str) -> Result<TestClient, TransportError> {
-        let mut s = self.0.state.lock().unwrap();
-        if !s.link_up {
-            s.link_down_answers += 1;
-            self.0.changed.notify_all();
+        if !self.0.answer_link() {
             return Err(TransportError::LinkDown);
         }
-        s.open.push(lane.to_string());
-        s.most_open = s.most_open.max(s.open.len());
-        self.0.changed.notify_all();
-        while !s.closing {
-            if let Some(i) = s.refusals.iter().position(|r| r == lane) {
-                s.refusals.remove(i);
-                break;
-            }
-            s = self.0.changed.wait(s).unwrap();
-        }
-        let i = s.open.iter().position(|r| r == lane).expect("the login's own entry");
-        s.open.remove(i);
-        self.0.changed.notify_all();
+        self.0.hold_login(lane);
         Err(TransportError::Unreachable(std::io::Error::other("kex_exchange_identification: Connection reset by peer")))
     }
     fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<TestClient, TransportError> {
@@ -368,26 +408,7 @@ impl Endpoint for HostEndpoint {
 fn parked_rows_open_no_login_while_the_user_steps_through_them() {
     const ROWS: usize = 12;
     let host = Arc::new(Host::default());
-    let mut workers: Vec<AttachWorker<HostEndpoint>> = (0..ROWS)
-        .map(|i| {
-            AttachWorker::<HostEndpoint>::spawn(
-                HostEndpoint(Arc::clone(&host)),
-                format!("row-{i}"),
-                80,
-                24,
-                "controller-1".to_string(),
-                "handle".to_string(),
-                None,
-                false,
-                64 * 1024,
-                Arc::new(AtomicU64::new(0)),
-                Arc::new(Mutex::new(None)),
-                Arc::new(AtomicU64::new(0)),
-                |_e| {},
-            )
-            .expect("spawn the worker")
-        })
-        .collect();
+    let mut workers = spawn_rows(ROWS, |_| HostEndpoint(Arc::clone(&host)));
     // Each worker's first dial meets the down link and pauses; the window then parks every row.
     assert!(host.wait_for(|s| s.link_down_answers == ROWS), "not every worker dialed into the down link");
     for worker in &workers {
@@ -416,4 +437,86 @@ fn parked_rows_open_no_login_while_the_user_steps_through_them() {
     }
     assert_eq!(most_open, 1, "the host saw {most_open} logins open at once: a parked row dialed while off screen");
     assert_eq!(open_at_end, [format!("row-{}", ROWS - 1)], "only the viewed row may still be dialing");
+}
+
+/// The same host with its supervisor answering `Ready` and each voyage dial one login, held open until the test refuses
+/// it with `failure`. While the link is down a supervisor dial is answered `LinkDown` at once.
+struct VoyageHostEndpoint {
+    host: Arc<Host>,
+    failure: fn() -> TransportError,
+}
+impl Endpoint for VoyageHostEndpoint {
+    type Client = DropClient;
+    type Process = TestProcess;
+
+    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<DropClient, TransportError> {
+        if self.host.answer_link() { Ok(DropClient::Ready) } else { Err(TransportError::LinkDown) }
+    }
+    fn connect_voyage_unchallenged(&self, lane: &str, _voyage_id: &str) -> Result<DropClient, TransportError> {
+        self.host.hold_login(lane);
+        Err((self.failure)())
+    }
+    fn challenge(
+        &self,
+        _conn: &DropClient,
+        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
+        _deadline: Instant,
+    ) -> ChallengeOutcome<TestProcess> {
+        ChallengeOutcome::Proven(TestProcess)
+    }
+    fn authenticate_server(&self, _conn: &DropClient) -> PeerAuthOutcome {
+        PeerAuthOutcome::Authenticated(crate::identity::challenge::PeerAuthenticated { pid: 7, created: 7 })
+    }
+    fn link_up(&self) -> bool {
+        self.host.state.lock().unwrap().link_up
+    }
+}
+
+/// The user steps through twelve parked rows whose supervisor answers and whose voyage login fails after the user has
+/// left the row, as `failure` fails it. A client off screen waits out the failure unviewed and dials no voyage login
+/// until it is viewed (ADR 0045 decision 11), so the host sees one voyage login at a time, the viewed row's.
+fn parked_rows_open_no_voyage_login_after_it_fails(failure: fn() -> TransportError) {
+    const ROWS: usize = 12;
+    let host = Arc::new(Host::default());
+    let mut workers = spawn_rows(ROWS, |_| VoyageHostEndpoint { host: Arc::clone(&host), failure });
+    assert!(host.wait_for(|s| s.link_down_answers == ROWS), "not every worker dialed into the down link");
+    for worker in &workers {
+        worker.set_viewed(false);
+    }
+    host.update(|s| s.link_up = true);
+    for (i, worker) in workers.iter().enumerate() {
+        let row = format!("row-{i}");
+        worker.set_viewed(true);
+        assert!(host.wait_for(|s| s.open.contains(&row)), "{row} was viewed and opened no voyage login");
+        if i + 1 < ROWS {
+            worker.set_viewed(false);
+        }
+        host.refuse(&row);
+    }
+    // Every retry the doubling allows after one failed attempt (250 ms) has started by now.
+    thread::sleep(Duration::from_secs(3));
+    let (most_open, open_at_end) = {
+        let s = host.state.lock().unwrap();
+        (s.most_open, s.open.clone())
+    };
+    println!("voyage login burst: rows={ROWS} most_open={most_open} open_at_end={open_at_end:?}");
+    host.update(|s| s.closing = true);
+    for worker in &mut workers {
+        assert!(worker.shutdown(Duration::from_secs(5)), "a worker did not end on Shutdown");
+    }
+    assert_eq!(most_open, 1, "the host saw {most_open} voyage logins open at once: a parked row re-dialed its voyage while off screen");
+    assert_eq!(open_at_end, [format!("row-{}", ROWS - 1)], "only the viewed row may still be dialing");
+}
+
+/// Each arm of `converge_on_ready` that waits to redial a voyage: the login fails `Unreachable`, and it fails with an
+/// I/O error. Reverting either arm to a wait that ignores the view makes the parked rows dial again.
+#[test]
+fn parked_rows_re_dial_no_voyage_after_it_fails() {
+    parked_rows_open_no_voyage_login_after_it_fails(|| {
+        TransportError::Unreachable(std::io::Error::other("kex_exchange_identification: Connection reset by peer"))
+    });
+    parked_rows_open_no_voyage_login_after_it_fails(|| TransportError::Io {
+        op: "connect voyage pipe",
+        source: std::io::Error::from(std::io::ErrorKind::NotFound),
+    });
 }
