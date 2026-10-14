@@ -29,6 +29,9 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
   connection and a `link` connection (the hub link), each answered and reaped when silent
 - `preview_order.rs`: server; a `preview.get` written behind a `preview.set_scale` on one connection carries the new scale
 - `relay_refresh.rs`: topology; `sotd topology refresh` on a scratch hub with a stand-in `systemctl`
+- `repl_windows.rs`: sidecars; two windows on one row (Linux, a shell stand-in for Julia): each is written its own REPL
+  runs under its own numbers and every other run under the daemon's number after its `started` frame, a
+  `repl.execute` run shows in both, and so does a timed-out run's later output
 - `unit_pin.rs`: topology; `sotd topology pin` and `refresh` write host pins into a scratch systemd folder, real systemd
   loads it in test mode (`systemd --test --user`) and `systemd-analyze --user condition` evaluates the attached
   conditions on this box; `apply` enables nothing when a pin cannot be written, and a dry `apply` writes no pin;
