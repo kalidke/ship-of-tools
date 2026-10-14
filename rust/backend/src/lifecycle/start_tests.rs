@@ -332,6 +332,36 @@ pub(crate) mod unix {
         wait_error(true);
     }
 
+    /// A child keeps none of the daemon's descriptors past its exec but its stdio, whatever flag one had when the child
+    /// started. On macOS a socket is made close-on-exec by a second call after it is created; this listener is caught
+    /// between the two, and a child that kept it would hold the daemon's socket listening after the daemon is gone.
+    #[test]
+    fn a_child_keeps_no_descriptor_its_start_caught_before_close_on_exec() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::Builder::new()
+            .prefix("sotfd-")
+            .tempdir_in("/tmp")
+            .expect("a folder under /tmp");
+        let listener =
+            std::os::unix::net::UnixListener::bind(dir.path().join("l.sock")).expect("bind");
+        let fd = listener.as_raw_fd();
+        // SAFETY: clears the flag on this test's own descriptor: the state between macOS's socket() and its fcntl.
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(format!(
+            "if test -e /dev/fd/{fd}; then echo held; else echo none; fi"
+        ));
+        let out = signal
+            .output(&mut cmd, Duration::from_secs(10))
+            .expect("sh runs");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "none",
+            "the child kept the listener's descriptor {fd} past its exec"
+        );
+    }
+
     #[test]
     fn probe_and_cleanup_failures_preserve_both_reasons() {
         let signal: &'static Signal = Box::leak(Box::new(Signal::new()));

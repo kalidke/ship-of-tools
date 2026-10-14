@@ -30,15 +30,48 @@ impl Tree {
 }
 
 /// Make `cmd`'s child start inside its own containment. On Windows this replaces the command's creation flags with
-/// `CREATE_SUSPENDED`: std has no getter to add to them, so a caller that needs a flag of its own adds it here.
+/// `CREATE_SUSPENDED`: std has no getter to add to them, so a caller that needs a flag of its own adds it here. On Unix
+/// the child also keeps none of this process's descriptors past its exec but its stdio ([`inherit_none`]).
 pub(crate) fn prepare(cmd: &mut std::process::Command) {
     #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(cmd, 0);
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+        // SAFETY: the hook runs in the child between fork and exec and makes only async-signal-safe calls.
+        unsafe { cmd.pre_exec(inherit_none) };
+    }
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(
         cmd,
         windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
     );
+}
+
+/// In a child between fork and exec: marks every descriptor above stdio close-on-exec, so the child keeps none of this
+/// process's past its exec. A descriptor is not always close-on-exec from its birth: on macOS interprocess, mio and std
+/// set the flag with a second call after creating a socket or a pipe, and a child started by another thread between the
+/// two kept it, the daemon's listener and its accepted connections included. Marked, not closed: std reports a failed
+/// exec through a close-on-exec pipe it holds open until then.
+#[cfg(unix)]
+fn inherit_none() -> std::io::Result<()> {
+    // SAFETY: close_range, getdtablesize and fcntl act on this process's own descriptor table; a number not open is
+    // EBADF and changes nothing.
+    unsafe {
+        #[cfg(target_os = "linux")]
+        if libc::syscall(
+            libc::SYS_close_range,
+            3u32,
+            u32::MAX,
+            libc::CLOSE_RANGE_CLOEXEC,
+        ) == 0
+        {
+            return Ok(());
+        }
+        for fd in 3..libc::getdtablesize() {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+    }
+    Ok(())
 }
 
 /// Take hold of a child [`prepare`] started, given its pid (and, on

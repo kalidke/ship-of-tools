@@ -66,6 +66,10 @@ on a computer decides, through its lease, whether that computer's sessions end (
   guard, so it never descends from it.
 - `fire()` is permanent: the signal is never reset for the life of the process (`Signal::fire`).
 - `Contained::wait_until_exited` observes its owned direct child's exit without releasing containment or reaping it. Cancelling that wait retains the child's identity and owner; checked wait/kill still request tree termination before direct-child reap.
+- A Unix child started through `Signal::spawn`, `Signal::spawn_std` or `Signal::output` keeps none of the daemon's
+  descriptors past its exec but its stdio, whatever flag one had when it started: `contain::prepare`'s `pre_exec` marks
+  every descriptor above 2 close-on-exec. On macOS a socket or a pipe gets the flag by a second call after its creation,
+  and a child started between the two kept it, the daemon's listener included.
 - A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything still in its process group
   (Unix) or job (Windows) when its owner kills, waits for or drops its `Contained` or `ContainedStd`, or the signal
   fires; a process that left its Unix group is not killed then (on Linux the guard ends it at the daemon's end; ADR
@@ -165,19 +169,20 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   owner of a created child, and the contained children (`Contained`, `ContainedStd`), with the observation-only
   `Contained::wait_until_exited`.
 - `daemon_children/`: what ends with a daemon: the Linux lifetime guard (see its page).
-- `contain.rs`: the platform half of containment: the process group or job, adopting a child, the checked kill, macOS
-  finished-group recognition and rejected-observation evidence. Its Windows tests end a tree by fire, std Drop or
-  async Drop and require its leader and descendant to exit; the fixtures write stdout and stderr to files, and a
-  failure reports a bounded excerpt of both.
+- `contain.rs`: the platform half of containment: the process group or job, the descriptors a Unix child keeps, adopting
+  a child, the checked kill, macOS finished-group recognition and rejected-observation evidence. Its Windows tests end a
+  tree by fire, std Drop or async Drop and require its leader and descendant to exit; the fixtures write stdout and
+  stderr to files, and a failure reports a bounded excerpt of both.
 - `lease.rs`: the window lease: `Leases`, the grant rule, the lease connection (`hold`), `held.json` and the start plan.
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.
 - `mod.rs`: declares the seven modules, the held points (feature `daemon-lifetime-faults`) and the test module.
 - `shutdown.rs`: the close, its backstop, the row ends and the daemon's one terminal exit.
 - `signal_exit.rs`: the thread that catches INT and TERM and ends the daemon through the terminal's fire and then by the
   caught signal.
-- `start_tests.rs`: tests of child creation against the fire, checked termination requests and partial births (an error
-  or an unwind between creation and registration), on real processes. They are in-crate because they reach `Signal` and
-  `contain`; the daemon-lifetime harness is a separate test binary and cannot.
+- `start_tests.rs`: tests of child creation against the fire, checked termination requests, the descriptors a child
+  keeps past its exec, and partial births (an error or an unwind between creation and registration), on real processes.
+  They are in-crate because they reach `Signal` and `contain`; the daemon-lifetime harness is a separate test binary and
+  cannot.
 - `start_tests_windows.rs`: the Windows half: a suspended start cannot be outwaited, job requests are checked, a killed daemon's contained tree ends with it, and the suspended interval between creation and the job assignment is observed as ADR 0050's limit (a re-run of the test binary plays the daemon, inside a job of the case's own; `SOT_L2_NO_JOB_ASSIGNMENT` and `SOT_L2_PAUSE_ADOPT` are its two faults in `contain::assign`). That a capsule outlives a killed daemon is the capsule suite's adoption case (`capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning_a_second_one`), through the product's own capsule spawn.
 - `start_tests_macos.rs`: the macOS half: refused group requests judged by member state (a setuid zombie leader, a
   leader in its exit window, a live member of other credentials, and each ended state alone), rejected-observation error
