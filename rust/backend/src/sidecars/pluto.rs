@@ -26,6 +26,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+use crate::sidecars::child::StderrTail;
+
 #[derive(Clone)]
 pub struct Pluto {
     inner: Arc<PlutoInner>,
@@ -47,6 +49,11 @@ struct Running {
 /// answers). An open past it is an error, and its server is ended: replies are routed oldest-first, so a late `URL`
 /// would answer the next request.
 const PLUTO_OPEN_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a start waits for the server's `READY` line before it ends the child. A first start after a Julia, package
+/// or depot change precompiles Pluto and its dependencies, the same cold precompile the kernel's start bound allows
+/// for (`KernelBounds::PRODUCT`), so it has the same bound.
+const PLUTO_READY_BOUND: std::time::Duration = std::time::Duration::from_secs(1800);
 
 struct Submission {
     abs_path: String,
@@ -160,26 +167,18 @@ async fn spawn_supervisor(
     let stdout = contained.stdout.take().context("pluto child stdout missing")?;
     let stderr = contained.stderr.take().context("pluto child stderr missing")?;
 
-    // Stderr drain — pure logging.
-    tokio::spawn(async move {
-        let mut reader = sot_protocol::child_lines::ChildLines::new(stderr);
-        while let Ok(Some(line)) = reader.next_line().await {
-            tracing::debug!(target: "pluto.stderr", "{line}");
-        }
-    });
-
+    let stderr = StderrTail::drain(stderr, |line| tracing::debug!(target: "pluto.stderr", "{line}"));
     let mut stdout_lines = sot_protocol::child_lines::ChildLines::new(stdout);
 
-    // Wait for the READY line before accepting any requests. Julia
-    // startup + Pluto load takes ~30s on a cold depot; the supervisor
+    // Wait for the READY line before accepting any requests: the supervisor
     // task can't usefully service OPEN requests until the server is
     // actually listening, so block here once on first spawn.
-    let ready_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
-    let base_url: String = loop {
+    let ready_deadline = tokio::time::Instant::now() + PLUTO_READY_BOUND;
+    let late = || anyhow!("pluto sidecar did not emit READY within {}s", PLUTO_READY_BOUND.as_secs());
+    let ready = loop {
         let now = tokio::time::Instant::now();
         if now >= ready_deadline {
-            let _ = contained.kill().await;
-            return Err(anyhow!("pluto sidecar did not emit READY within 180s"));
+            break Err(late());
         }
         let remaining = ready_deadline - now;
         let line = tokio::select! {
@@ -194,23 +193,22 @@ async fn spawn_supervisor(
         match line {
             Ok(Ok(Some(line))) => {
                 if let Some(rest) = line.strip_prefix("READY ") {
-                    break rest.trim().to_string();
+                    break Ok(rest.trim().to_string());
                 } else {
                     tracing::warn!(line = %line, "pluto sidecar pre-READY chatter");
                 }
             }
-            Ok(Ok(None)) => {
-                let _ = tmp.retire(&mut contained).await;
-                return Err(anyhow!("pluto sidecar stdout closed before READY"));
-            }
-            Ok(Err(e)) => {
-                let _ = tmp.retire(&mut contained).await;
-                return Err(anyhow!("pluto sidecar stdout error: {e}"));
-            }
-            Err(_) => {
-                let _ = tmp.retire(&mut contained).await;
-                return Err(anyhow!("pluto sidecar did not emit READY within 180s"));
-            }
+            Ok(Ok(None)) => break Err(anyhow!("pluto sidecar stdout closed before READY")),
+            Ok(Err(e)) => break Err(anyhow!("pluto sidecar stdout error: {e}")),
+            Err(_) => break Err(late()),
+        }
+    };
+    let base_url = match ready {
+        Ok(base_url) => base_url,
+        Err(e) => {
+            let _ = tmp.retire(&mut contained).await;
+            stderr.warn(&format!("{e:#}")).await;
+            return Err(e);
         }
     };
     tracing::info!(base_url = %base_url, "pluto sidecar ready");
@@ -230,7 +228,7 @@ async fn spawn_supervisor(
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(64);
     let (ends, ended) = oneshot::channel();
-    tokio::spawn(supervisor_task(contained, stdin, stdout_lines, submit_rx, ended, sig, grant, tmp));
+    tokio::spawn(supervisor_task(contained, stdin, stdout_lines, submit_rx, ended, sig, grant, tmp, stderr));
     Ok(Running { submit: submit_tx, _ends: ends })
 }
 
@@ -358,6 +356,7 @@ async fn supervisor_task(
     sig: &'static crate::lifecycle::child_signal::Signal,
     grant: Option<Grant>,
     tmp: crate::sidecars::child::ChildTmp,
+    stderr: StderrTail,
 ) {
     // FIFO of in-flight oneshots. Pluto's serial line protocol replies
     // to each OPEN in order; we pop the matching reply on each URL/ERR. A
@@ -451,6 +450,9 @@ async fn supervisor_task(
     if let Err(e) = tmp.retire(&mut contained).await {
         tracing::warn!(error = %e, "pluto child cleanup failed");
     }
+    if !matches!(cause, Cause::Signal) {
+        stderr.warn(&format!("pluto server ended: {why}")).await;
+    }
 }
 
 #[cfg(test)]
@@ -520,6 +522,69 @@ mod port_parse_tests {
         let gone = gc.gone();
         drop(tx);
         assert!(gone, "the Pluto grandchild survived the shutdown");
+    }
+
+    /// A Pluto whose first boot outlasts the old 180 s bound (a cold precompile) is served, not ended. The paused clock
+    /// passes 181 s while the stand-in waits, then the stand-in says READY; a running blocking task keeps tokio from
+    /// moving the clock on its own (`tokio::time::pause`), so every wait here is the test's real-time poll.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_pluto_ready_after_the_old_180s_bound_is_served() {
+        let dir = tempfile::tempdir().unwrap();
+        let (started, go) = (dir.path().join("started"), dir.path().join("go"));
+        let stub = dir.path().join("stub-julia");
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!(
+                "#!/bin/sh\necho x > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\necho 'READY http://pluto.invalid/'\nexec sleep 30\n",
+                started.display(),
+                go.display()
+            ),
+        );
+        let script = dir.path().join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let (hold, held) = std::sync::mpsc::channel::<()>();
+        let still = tokio::task::spawn_blocking(move || held.recv());
+        let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
+        let task = tokio::spawn(async move { spawn_supervisor(&bin, &project, &script, sig).await });
+        async fn real_wait(what: &str, mut done: impl FnMut() -> bool) {
+            let began = std::time::Instant::now();
+            while !done() {
+                assert!(began.elapsed() < Duration::from_secs(20), "not within 20 s: {what}");
+                tokio::task::yield_now().await;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        // The stand-in runs only after the spawn's poll has set the READY deadline.
+        real_wait("the stand-in starts", || started.exists()).await;
+        tokio::time::advance(Duration::from_secs(181)).await;
+        std::fs::write(&go, "").unwrap();
+        real_wait("the start ends", || task.is_finished()).await;
+        drop(hold);
+        let _ = still.await;
+        let running = task.await.expect("the start task").unwrap_or_else(|e| panic!("a Pluto that says READY after 181 s was refused: {e:#}"));
+        sig.fire().expect("fire");
+        drop(running);
+        real_wait("the stand-in is reaped", || sig.live() == 0).await;
+    }
+
+    /// A Pluto that fails its boot leaves its own words in the log at warn: the stand-in writes Julia's error to stderr
+    /// and exits before READY.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pluto_that_fails_its_boot_logs_its_stderr_at_warn() {
+        let log = sot_log::test_log::capture();
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("stub-julia");
+        sot_log::test_exec::write_executable(&stub, "#!/bin/sh\necho 'ERROR: LoadError: (pluto-boot-red)' >&2\nexit 1\n");
+        let script = dir.path().join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
+        let err = spawn_supervisor(&bin, &project, &script, sig).await.err().expect("a child that exits before READY");
+        assert!(format!("{err:#}").contains("before READY"), "{err:#}");
+        within(Duration::from_secs(5), "the child's stderr is in the log at warn", || crate::sidecars::warned(&log.text(), "pluto-boot-red")).await;
     }
 
     /// A Pluto line may hold any byte (an `ERR` line quotes what failed): the open it answers gets U+FFFD for the byte,

@@ -40,6 +40,7 @@ use tokio::sync::{mpsc, oneshot, watch, OnceCell};
 
 use sot_protocol::child_lines::ChildLines;
 
+use super::child::StderrTail;
 use super::WireRequest;
 
 /// Bound on ONE caller's wait for a reply — covering both "the kernel is
@@ -406,25 +407,23 @@ async fn run_one_generation(
         Ok(c) => c,
         Err(e) => return (None, format!("spawn {julia_bin} failed: {e}")),
     };
+    let stderr = contained.stderr.take().map(|pipe| StderrTail::drain(pipe, |line| tracing::debug!(target: "kernel.stderr", "{line}")));
     let outcome = serve_child(&mut contained, &julia_bin, status, sig, bounds).await;
     // The child is ended and reaped before its folder goes, however the generation ended.
     if let Err(e) = tmp.retire(&mut contained).await {
         tracing::warn!(error = %e, "kernel child cleanup failed");
     }
+    // A generation its owner or the shutdown ended did not fail; any other end leaves the child's own words.
+    if let Some(stderr) = stderr.filter(|_| !status.is_closed() && !sig.is_fired()) {
+        stderr.warn(&format!("kernel generation ended: {}", outcome.1)).await;
+    }
     outcome
 }
 
-/// Takes the child's pipes and sends its stderr to the log. Returns its stdin and stdout.
+/// Takes the child's stdin and stdout; its stderr is drained by `run_one_generation`.
 fn take_pipes(contained: &mut crate::lifecycle::child_signal::Contained) -> Result<(ChildStdin, ChildStdout), String> {
     let stdin = contained.stdin.take().ok_or("kernel child stdin missing")?;
     let stdout = contained.stdout.take().ok_or("kernel child stdout missing")?;
-    let stderr = contained.stderr.take().ok_or("kernel child stderr missing")?;
-    tokio::spawn(async move {
-        let mut reader = ChildLines::new(stderr);
-        while let Ok(Some(line)) = reader.next_line().await {
-            tracing::debug!(target: "kernel.stderr", "{line}");
-        }
-    });
     Ok((stdin, stdout))
 }
 
@@ -1280,6 +1279,25 @@ mod stream_tests {
         )
         .await;
         assert_eq!((answers, spawns), (vec![Ok(json!({"error": "a\u{fffd}b"})), Ok(json!({"ok": true}))], 1));
+    }
+
+    /// A kernel that fails its start leaves its own words in the log at warn: the stand-in writes Julia's error to
+    /// stderr and exits before its hello.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_kernel_that_fails_its_start_logs_its_stderr_at_warn() {
+        let log = sot_log::test_log::capture();
+        let dir = tempfile::tempdir().unwrap();
+        let (project, _) = stub_kernel(dir.path(), "kp", "echo 'ERROR: LoadError: (kernel-boot-red)' >&2\nexit 1\n");
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (status, _keep) = watch::channel(Status::Starting);
+        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, KernelBounds::PRODUCT));
+        crate::sidecars::contract_tests::within(Duration::from_secs(10), "the kernel's stderr is in the log at warn", || {
+            crate::sidecars::warned(&log.text(), "kernel-boot-red")
+        })
+        .await;
+        sig.fire().expect("fire");
+        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
     }
 
     /// A stderr line may hold any byte too: the drain reads on past it, so the kernel's later stderr (more than a pipe

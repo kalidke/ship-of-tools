@@ -10,6 +10,7 @@ use tokio::process::{ChildStdin, Command};
 
 use super::*;
 use super::lifecycle::{browser_ports_key, lifecycle_begin_starting, lifecycle_transition};
+use crate::sidecars::child::StderrTail;
 use crate::sidecars::WireRequest;
 use sot_protocol::child_lines::ChildLines;
 
@@ -104,7 +105,7 @@ pub(super) async fn spawn_supervisor(
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(16);
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
 
-    let stderr_tail = spawn_stderr_tail(stderr);
+    let stderr_tail = StderrTail::drain(stderr, |line| tracing::debug!(target: "repl.stderr", "{line}"));
 
     // Child exists: open a new spawn generation (state -> Starting, announce).
     let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
@@ -159,30 +160,6 @@ pub(super) mod seams {
     pub(crate) static FAIL_RETIREMENT: AtomicBool = AtomicBool::new(false);
 }
 
-/// Spawn the stderr reader: per-line DEBUG (healthy julia is chatty), plus a
-/// bounded tail the supervisor dumps at WARN when the child DIES — the
-/// 2026-07-03 stale-Manifest incident died with its only evidence at debug
-/// level, and the REPL just silently "didn't work".
-fn spawn_stderr_tail(
-    stderr: tokio::process::ChildStderr,
-) -> std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> {
-    let tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-    let writer = tail.clone();
-    tokio::spawn(async move {
-        let mut reader = ChildLines::new(stderr);
-        while let Ok(Some(line)) = reader.next_line().await {
-            tracing::debug!(target: "repl.stderr", "{line}");
-            let mut t = writer.lock().unwrap_or_else(|e| e.into_inner());
-            if t.len() >= 30 {
-                t.pop_front();
-            }
-            t.push_back(line);
-        }
-    });
-    tail
-}
-
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines, reason = "the REPL supervisor task: one loop over the child's output and the submissions; predates the 100-line limit")]
 async fn supervisor_task(
@@ -193,7 +170,7 @@ async fn supervisor_task(
     mut stop_rx: oneshot::Receiver<()>,
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
-    stderr_tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    stderr_tail: StderrTail,
     lifecycle: SharedLifecycle,
     my_gen: u64,
     sig: &'static crate::lifecycle::child_signal::Signal,
@@ -381,19 +358,10 @@ async fn supervisor_task(
             streaming.insert(eid);
         }
     }
-    // The child is gone: make the failure VISIBLE (stderr tail at WARN — its
-    // death cry was previously debug-only) and CLOSED-OUT (synthetic
-    // error+done frames per in-flight streamed eval, so the FE's entries
-    // resolve instead of hanging forever — the 2026-07-03 "REPL not working").
-    let tail: Vec<String> = stderr_tail
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .cloned()
-        .collect();
-    if !tail.is_empty() {
-        tracing::warn!(workspace = ?workspace_id, "repl child died; last stderr:\n{}", tail.join("\n"));
-    }
+    // The child is gone: make the failure CLOSED-OUT (synthetic error+done
+    // frames per in-flight streamed eval, so the FE's entries resolve instead
+    // of hanging forever — the 2026-07-03 "REPL not working"), and, after the
+    // retirement below, VISIBLE (its stderr tail at WARN).
     for eid in streaming.drain() {
         let _ = frame_tx.send(ReplFrameMsg {
             eval_id: eid,
@@ -421,6 +389,7 @@ async fn supervisor_task(
         }
     }
     let reaped = tmp.retire(&mut contained).await.map(|_| ()).map_err(|e| e.to_string());
+    stderr_tail.warn(&format!("repl child died (workspace {workspace_id:?})")).await;
     #[cfg(test)]
     if seams::FAIL_RETIREMENT.swap(false, std::sync::atomic::Ordering::SeqCst) {
         return Err("injected termination error".to_string());

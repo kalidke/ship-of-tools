@@ -23,6 +23,11 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   renders that arrive during a start share it. Past either bound the render is a `mathjax_render_failed` error naming
   it, and its node child is ended, even mid-write, so the next render starts a fresh one (`MathJax::render`,
   `supervisor_task`).
+- A Pluto start waits up to `PLUTO_READY_BOUND` (1800 s, the kernel's start bound: both cover a cold precompile)
+  for the server's `READY` line, then ends the child and fails naming the bound.
+- A kernel, REPL, Pluto or MathJax child that ends, other than by the daemon's shutdown (or, for a kernel, its owner's
+  drop), leaves its last 30 stderr lines in the log at warn, one event (`StderrTail`); every stderr line is also
+  logged at debug under `<child>.stderr`.
 - A Pluto open answers within `PLUTO_OPEN_BOUND` (30 s) or fails naming it, and the server that did not answer is ended, since its replies are matched oldest-first.
 - Pluto's proxy port is a supervisor-owned generation grant, published only after a loopback READY URL and released on every supervisor exit or cancellation before cleanup awaits. An old generation's release cannot erase its replacement's grant (`bound_pluto_port`).
 - Pluto polls child exit and its supplied Signal during each stdin write and flush. Cancelling a submission retires the supervisor, releases its grant and closes current, pending and queued replies before checked cleanup; it never resends a partial OPEN line.
@@ -79,7 +84,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 - `mod.rs`: declares the nine modules and `WireRequest`.
-- `child/`: what each child the daemon starts carries with it: its own temporary folder (see its page).
+- `child/`: what each child the daemon starts carries with it: its own temporary folder and its stderr tail (see its page).
 - `contract_tests.rs`: native REPL/MathJax private-Signal spawn, shutdown closeout and owned-child observations, a
   node child slower to start than a render's bound, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions. The X11 connection probe the display tests share (`x11_answer`, `x11_cookie`).
 - `display/`: a user-code child's own X display (Linux; see its page).

@@ -34,3 +34,10 @@ pub(super) fn logged_by(f: impl FnOnce()) -> String {
     f();
     log.text()
 }
+
+/// Whether a line of `logged` (one event a line, as `logged_by` and `sot_log::test_log::capture` write it) is at warn
+/// and holds `needle`.
+#[cfg(test)]
+pub(super) fn warned(logged: &str, needle: &str) -> bool {
+    logged.lines().any(|line| line.contains(" WARN ") && line.contains(needle))
+}

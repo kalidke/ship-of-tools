@@ -346,6 +346,29 @@ async fn repl_uses_private_signal() {
     std::fs::remove_dir_all(&root).expect("remove fixture only after the child is reaped");
 }
 
+/// A REPL child that ends leaves its last stderr lines in the log at warn. The stand-in for julia writes an error to
+/// stderr and exits before it serves.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_repl_child_that_fails_its_start_logs_its_stderr_at_warn() {
+    let log = sot_log::test_log::capture();
+    let dir = tempfile::tempdir().expect("owned fixture root");
+    let resources = dir.path().join("resources");
+    std::fs::create_dir_all(resources.join("julia").join("repl")).expect("the REPL project folder");
+    let julia = dir.path().join("julia");
+    sot_log::test_exec::write_executable(&julia, "#!/bin/sh\necho 'ERROR: LoadError: (repl-boot-red)' >&2\nexit 1\n");
+    let _pin = pin_env(&julia, &resources);
+    let sig = private_signal();
+    let (frames, _keep) = broadcast::channel(64);
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("create the workspace");
+    let repl = Repl::new(frames, Some("ws".into()), workspace, sig);
+    let _ = repl.execute("repl.eval", serde_json::json!({ "code": "1", "eval_id": 1 })).await;
+    within(Duration::from_secs(10), "the REPL child's stderr is in the log at warn", || super::warned(&log.text(), "repl-boot-red")).await;
+    sig.fire().expect("fire");
+    within(Duration::from_secs(10), "the child is reaped", || sig.live() == 0).await;
+}
+
 /// The same for MathJax.
 #[tokio::test]
 async fn mathjax_uses_private_signal() {
