@@ -107,6 +107,22 @@ windows|c:/r/proj|C:/R/Proj/Src/A.jl|Src/A.jl
 windows|C:/R/Proj|/c/r/projx/a|rc 1
 TABLE
 
+# 1b. The walk's case fold (sot_relative_to, a link above PATH): on Windows `pwd -P` keeps the case a folder was typed in
+# where it resolves no link, so ROOT in lower case resolves to itself in lower case, and gives the stored case through a
+# junction, so PATH's folder resolves to ROOT's folder in the stored case; only the fold makes the two one. Hosted run
+# 38625786065 on a real Windows runner is the proof (green with the fold, `refused` without); this is its model on a
+# case-sensitive filesystem: `root` stands for the folder as typed, `Root` for it as stored, `lnk` for the junction, and an
+# identity cygpath (the path as written, so the walk can enter it) puts _sot_case_key in force.
+mkdir -p "$WORK/cs/Root" "$WORK/cs/root" "$WORK/winid" && : > "$WORK/cs/Root/a.txt" && ln -s Root "$WORK/cs/lnk" || exit 2
+cat > "$WORK/winid/cygpath" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do p="$a"; done
+printf '%s\n' "$p"
+EOF
+chmod +x "$WORK/winid/cygpath"
+check "relative_to (windows): a root typed in lower case, the path through a link to the stored case" \
+    "$(lib "$WORK/winid:$PATH" sot_relative_to "$WORK/cs/root" "$WORK/cs/lnk/a.txt")" "a.txt"
+
 # 2. sot_daemon_path keeps its contract on sot_native_path: a pipe: daemon gets cygpath -m -l's spelling, a failed or
 # missing cygpath refuses, and any other daemon gets the path as written.
 check "daemon_path: a pipe: daemon gets cygpath -m -l's spelling" \

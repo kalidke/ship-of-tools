@@ -12,7 +12,7 @@ does (`working-directory: agents/tests`).
 - `test-despawn-resolve.sh`: `comm-despawn.sh` resolves first, fails and changes nothing on an unknown name, removes a registry row only after a confirmed destroy; `comm-worktree-clean.sh` despawns once
 - `test-sot-fe-goto.sh`: `sot-fe goto` has no `--boot`: the flag is refused as unknown and nothing is sent
 - `test-sot-fe-paths.sh`: an absolute path given to `sot-fe preview` or `sot-nav.sh preview` is sent relative to its
-  root in every spelling Windows or a link above the root gives one folder (on Windows in any case), a link inside the
+  root in every spelling Windows or a link above the root gives one folder (on Windows in any case, also a root typed in another case with the path through a link), a link inside the
   root kept as written (`sot_relative_to`), a self-file root in the shell's spelling and case is the project's whose
   root git spells (`sot_same_root`, through `comm-context.sh`), Linux compares case as written, `sot_daemon_path` keeps
   its contract,
