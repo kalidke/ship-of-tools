@@ -36,6 +36,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # the red leg reads 9c7489c12^ (a shallow clone has no parent)
       - name: The J lines, green and red
         shell: bash
         timeout-minutes: 10
