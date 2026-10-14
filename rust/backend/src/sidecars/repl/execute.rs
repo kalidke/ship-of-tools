@@ -183,6 +183,7 @@ pub(super) fn announce_exec_started(origin: Option<&str>, ws: &crate::rows::Work
             "origin": origin,
             "display": display,
         }),
+        opener: Default::default(),
     });
     (frame_ws, frame_tx)
 }
@@ -330,6 +331,7 @@ pub(super) fn close_exec_run(frame_tx: &tokio::sync::broadcast::Sender<ReplFrame
         eval_id,
         workspace_id: Some(frame_ws.to_string()),
         frame: json!({ "kind": "done", "eval_id": eval_id, "elapsed_ms": elapsed_ms }),
+        opener: Default::default(),
     });
 }
 

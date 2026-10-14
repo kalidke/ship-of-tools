@@ -20,13 +20,12 @@ that produces `url` lives in the *user's* project env (whichever WGLMakie they
 struct BrowserView
     url::String
     """
-    Whether front-ends should auto-open the URL. `false` = serve-only: the
-    browser frame still flows (so the daemon's ADR-0035 proxy allowlist
-    learns the port) but NO frontend opens a tab, unless `fe` names one.
-    `open = "<name>"` to `wglshow`/`browserview` opens it on exactly the
-    frontend `sot-fe --fe <name>` names. The escape from the multi-FE
-    broadcast-open, where two live clients race one shared Figure layout
-    (`resize_to = :parent`).
+    Whether a frontend auto-opens the URL. `true` opens it in one window,
+    the one the daemon sends a show from this REPL's row to (ADR 0032).
+    `false` = serve-only: the browser frame still flows (so the daemon's
+    ADR-0035 proxy allowlist learns the port) but NO frontend opens a tab,
+    unless `fe` names one. `open = "<name>"` to `wglshow`/`browserview`
+    opens it on exactly the frontend `sot-fe --fe <name>` names.
     """
     open::Bool
     """
@@ -234,6 +233,25 @@ function wgl_server(Bonito, port::Union{Integer,Nothing})
     return page
 end
 
+# The live viewer (Bonito session) of each figure a page shows, by the figure object's identity. A figure has one
+# scene, which WGLMakie resizes to the window of whichever viewer reported its size last, so one figure has one viewer.
+const WGL_VIEWERS = IdDict{Any,Any}()
+const WGL_VIEWERS_LOCK = ReentrantLock()
+
+# Make `session` the one live viewer of `figure` and close the viewer before it; viewers of other figures keep
+# running. Forgets every viewer that has closed, so a figure no tab shows is not kept.
+function replace_viewer!(Bonito, figure, session)
+    isclosed(s) = Base.invokelatest(Bonito.HTTP.WebSockets.isclosed, s)
+    previous = lock(WGL_VIEWERS_LOCK) do
+        filter!(viewer -> !isclosed(last(viewer)), WGL_VIEWERS)
+        before = get(WGL_VIEWERS, figure, nothing)
+        WGL_VIEWERS[figure] = session
+        before
+    end
+    previous === nothing || Base.invokelatest(close, previous)
+    return nothing
+end
+
 # `wglshow` renders pages Bonito's way only on the Bonito 5.1 line and later 5.x: the page handler below rebuilds the
 # body of Bonito's own `apply_handler(::App, context)` with another asset server.
 wgl_bonito_supported(v::VersionNumber) = v"5.1" <= v < v"6"
@@ -242,13 +260,17 @@ wgl_bonito_supported(v::VersionNumber) = v"5.1" <= v < v"6"
 # it and this port has no `/assets/` route, answered with `Referrer-Policy: no-referrer` so no request the page makes
 # names its secret path. (Bonito's own app route builds its session with `HTTPAssetServer`, which registers that route
 # and serves every file a session registers to any account that can compute the key from the file's path.)
-function no_referrer_page(Bonito, app)
+#
+# A page load is the one live viewer of `figure` (`replace_viewer!`): every viewer of one figure resizes its one scene
+# to its own browser window, so two would draw it at each other's size.
+function no_referrer_page(Bonito, app, figure = app)
     return function (context)
         server = context.application
         connection = Base.invokelatest(Bonito.WebSocketConnection, server)
         session = Base.invokelatest(Bonito.Session, connection; asset_server = Base.invokelatest(Bonito.NoServer), title = app.title)
         body = sprint(io -> Base.invokelatest(Bonito.page_html, io, session, app))
         Base.invokelatest(Bonito.mark_displayed!, session)
+        replace_viewer!(Bonito, figure, session)
         response = Base.invokelatest(Bonito.HTTPServer.html, body)
         Base.invokelatest(Bonito.HTTP.setheader, response, "Referrer-Policy" => "no-referrer")
         return response
@@ -261,10 +283,10 @@ end
 Serve an interactive WGLMakie figure over Bonito on a loopback port and return a
 [`BrowserView`](@ref), so the frontend auto-opens it in the browser (ADR 0032).
 
-`open = true` opens the figure on every attached frontend. `open = false` opens it nowhere; the frame still
-flows, so the daemon's proxy allowlist learns the port. `open = "<name>"` (the name `sot-fe --fe` takes) opens
-it only on that frontend. Use that when several frontends are attached: two live browser clients on one figure
-race its shared layout (`resize_to = :parent`). A frontend that predates `open = "<name>"` opens nothing.
+`open = true` opens the figure in one window, the one the daemon sends a show from this REPL's row to: the window
+showing the row that you used within five minutes, else the window you used last (ADR 0032). `open = false` opens it
+nowhere; the frame still flows, so the daemon's proxy allowlist learns the port. `open = "<name>"` (the name
+`sot-fe --fe` takes) opens it only on that frontend. A frontend that predates `open = "<name>"` opens nothing.
 Call it as the last expression of an eval:
 
     using WGLMakie
@@ -281,7 +303,8 @@ kept for the REPL's life, at a secret path minted with that server (decision 003
 scripts and files inside it and its websocket sits under an unguessable session id, so another account on the box that
 finds the port gets nothing: `/` and every other path answer 404. The page is sent with `Referrer-Policy: no-referrer`.
 A repeat `wglshow` shows the new figure at the same address without closing the listener. Tabs still showing
-an earlier figure keep it until they close. The frontend opens the page through a one-use local redirect, so the
+an earlier figure keep it until they close. A figure has one live viewer: a new tab of a figure stops the tab that
+showed it before, which would otherwise resize it to its own window. The frontend opens the page through a one-use local redirect, so the
 address is never on a command line. A remote frontend reaches it through the per-URL ADR-0035 proxy. Pass
 `port` (1-65535) on the first call to pin the listener. Repeated calls reuse that listener. A different port while it is live throws `ArgumentError` and leaves its page and secret unchanged; restart the REPL to choose another port. A taken first pin throws without publishing a server.
 
@@ -344,7 +367,7 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Union{Bool,A
             Bonito.DOM.div(fig; style = "position:fixed; inset:0; margin:0")))
     # Decision 0031: the figure lives at the server's secret path; `/` answers 404. `route!` replaces the previous
     # figure in place, so the listener and the URL outlive every re-serve.
-    Base.invokelatest(Bonito.route!, page.server, page.path => no_referrer_page(Bonito, app))
+    Base.invokelatest(Bonito.route!, page.server, page.path => no_referrer_page(Bonito, app, fig))
     # Announce at serve time, not only via the last value: a wrapper that swallows the return value would
     # otherwise leave the port unallowlisted and the page unopened.
     return announce_browserview(BrowserView(external * page.path, open))

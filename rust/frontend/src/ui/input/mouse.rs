@@ -20,10 +20,11 @@ pub(in crate::ui) fn cursor_moved(state: &mut State, position: PhysicalPosition<
 }
 
 pub(in crate::ui) fn mouse_input(state: &mut State, btn_state: ElementState, button: MouseButton) {
-    // A real click, regardless of which button or what it does
-    // below — presence reporting (design point A) precedes and
-    // is independent of the click's own handling.
-    state.report_presence();
+    // A real press, whichever button and whatever it does below: presence
+    // (design point A) precedes and is independent of the click's own
+    // handling. A release is not a press: a window can be sent one for a
+    // click that began elsewhere.
+    state.report_presence(btn_state == ElementState::Pressed);
     if button == MouseButton::Left {
         match btn_state {
             ElementState::Pressed => {

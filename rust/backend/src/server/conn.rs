@@ -414,7 +414,7 @@ where
             tx, &mut read_fut, &mut out_rx, &mut watcher_rx, &mut ws_events_rx, &mut topo_changed_rx,
             &mut agent_events_rx, &mut link, &mut fe_command_rx, &mut repl_frame_rx, &mut monitor_rx,
             &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &workspaces,
-            &client_guard,
+            &client_guard, &clients,
         )
         .await?
         {
@@ -488,6 +488,7 @@ async fn select_once<R, W, F>(
     monitor_rx: &mut Option<broadcast::Receiver<HostLatest>>, jobs: &mut JoinSet<()>,
     read_deadline: tokio::time::Instant, deadline_armed: bool, monitor_subscribed: bool,
     active_workspace: &Option<String>, workspaces: &Workspaces, client_guard: &Option<crate::clients::ClientGuard>,
+    clients: &Clients,
 ) -> Result<Woke<R>>
 where
     W: AsyncWrite + Unpin,
@@ -532,7 +533,7 @@ where
             Ok(Woke::Again)
         }
         rf = repl_frame_rx.recv() => {
-            write_repl_frame(tx, rf).await?;
+            write_repl_frame(tx, rf, client_guard.as_ref().map(|g| g.serial()), clients).await?;
             Ok(Woke::Again)
         }
         tick = recv_or_pending(monitor_rx) => {
@@ -658,7 +659,7 @@ mod select_once_wire_tests {
                 &mut self.ws_events_rx, &mut self.topo_changed_rx, &mut self.agent_events_rx,
                 &mut self.link, &mut self.fe_command_rx, &mut self.repl_frame_rx,
                 &mut self.monitor_rx, &mut self.jobs, tokio::time::Instant::now(), false, true, &None,
-                &self.workspaces, &None,
+                &self.workspaces, &None, &Clients::new(),
             )
             .await
             .expect("select_once")
@@ -750,7 +751,9 @@ mod select_once_wire_tests {
     );
     bus_wire_tests!(
         repl_frame, repl_frame, op::REPL_FRAME,
-        ReplFrameMsg { eval_id: 7, workspace_id: Some("alpha".into()), frame: json!({"kind": "stdout"}) },
+        ReplFrameMsg {
+            eval_id: 7, workspace_id: Some("alpha".into()), frame: json!({"kind": "stdout"}), opener: Default::default(),
+        },
         json!({"eval_id": 7, "workspace_id": "alpha", "frame": {"kind": "stdout"}})
     );
     bus_wire_tests!(

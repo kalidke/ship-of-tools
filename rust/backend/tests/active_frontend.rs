@@ -53,6 +53,11 @@ struct Env {
 
 impl Env {
     fn spawn(tag: &str) -> Self {
+        Self::spawn_with(tag, &[])
+    }
+
+    /// `spawn`, with `vars` set in the daemon's environment as well.
+    fn spawn_with(tag: &str, vars: &[(&str, &std::path::Path)]) -> Self {
         let tmp = tempfile::Builder::new()
             .prefix("sot-activefe-")
             .tempdir()
@@ -90,7 +95,9 @@ impl Env {
                 runtime_tmp.path().join(format!("wire-{tag}.sock"))
             }
         };
-        let daemon = support::sotd_command()
+        let mut command = support::sotd_command();
+        command.envs(vars.iter().copied());
+        let daemon = command
             .arg("--socket")
             .arg(&socket_path)
             .arg("--project-root")
@@ -140,11 +147,16 @@ async fn poll_until_connected(socket_path: &std::path::Path) -> Conn {
 /// decision 1; `name` is the frontend's `fe@<host>` address), returning
 /// the connection and the next free request id (2, since id 1 is hello).
 async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, name: &str) -> (Conn, u64) {
+    connect_as(socket_path, client_id, "fe", name).await
+}
+
+/// `connect_and_hello` declaring `role`: a `"cli"` connection is never a window a command goes to.
+async fn connect_as(socket_path: &std::path::Path, client_id: &str, role: &str, name: &str) -> (Conn, u64) {
     let mut conn = poll_until_connected(socket_path).await;
     let hello = HelloReq {
         instance: Some("test-instance".to_string()),
         name: Some(name.to_string()),
-        ..HelloReq::this_process(client_id, "fe", Some("test-host".to_string())).expect("this process's account")
+        ..HelloReq::this_process(client_id, role, Some("test-host".to_string())).expect("this process's account")
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await
@@ -337,6 +349,121 @@ async fn duplicate_handle_connections_get_exactly_one_delivery() {
         );
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// A `julia` stand-in speaking the REPL shim's line protocol: every eval announces one page for every frontend, as
+/// `wglshow(fig)` does, and ends.
+#[cfg(unix)]
+const PAGE_JULIA: &str = r#"#!/bin/sh
+while read -r line; do
+  id=$(printf '%s' "$line" | sed -e 's/.*"id":\([0-9]*\).*/\1/')
+  e=$(printf '%s' "$line" | sed -e 's/.*"eval_id":\([0-9]*\).*/\1/')
+  printf '{"v":1,"id":0,"kind":"evt","op":"repl.frame","payload":{"eval_id":%s,"frame":{"kind":"browser","url":"http://127.0.0.1:9/page","open":true}}}\n' "$e"
+  printf '{"v":1,"id":0,"kind":"evt","op":"repl.frame","payload":{"eval_id":%s,"frame":{"kind":"done"}}}\n' "$e"
+  printf '{"v":1,"id":%s,"kind":"res","op":"repl.eval","payload":{}}\n' "$id"
+done
+"#;
+
+/// The next `browser` frame `conn` is sent, as its `repl.frame` evt carries it.
+#[cfg(unix)]
+async fn next_browser_frame(conn: &mut Conn) -> serde_json::Value {
+    let body = async {
+        loop {
+            let (frame, _blob) = codec::read_frame(conn).await.expect("read a repl.frame");
+            if frame.kind == Kind::Evt && frame.op == op::REPL_FRAME && frame.payload["frame"]["kind"] == "browser" {
+                return frame.payload["frame"].clone();
+            }
+        }
+    };
+    tokio::time::timeout(BOUND, body).await.expect("no browser frame within BOUND")
+}
+
+/// Two windows on one daemon: `fe@host-a` shows the daemon's default row (whose REPL the evals below run in) and
+/// `fe@host-b` another; each sends `fe.presence`, `fe@host-b` last, as one stray click on an unused window did at the
+/// base (SHOW-ROUTE). Returns both, their next request ids and the default row's id.
+async fn two_windows(env: &Env) -> ((Conn, u64), (Conn, u64), String) {
+    let (mut conn_a, mut id_a) = connect_and_hello(&env.socket_path, "show-a", "fe@host-a").await;
+    let (mut conn_b, mut id_b) = connect_and_hello(&env.socket_path, "show-b", "fe@host-b").await;
+    let shown = call(&mut conn_a, id_a, op::WORKSPACE_ACTIVATE, serde_json::json!({"workspace_id": null})).await;
+    let row = shown["workspace_id"].as_str().unwrap_or_else(|| panic!("the default row's id: {shown}")).to_string();
+    let elsewhere = call(&mut conn_b, id_b, op::WORKSPACE_ACTIVATE, serde_json::json!({"workspace_id": "elsewhere"})).await;
+    assert!(elsewhere.get("error").is_none(), "{elsewhere}");
+    for (conn, id) in [(&mut conn_a, &mut id_a), (&mut conn_b, &mut id_b)] {
+        *id += 1;
+        assert_eq!(call(conn, *id, op::FE_PRESENCE, serde_json::json!({})).await["ok"], true);
+        *id += 1;
+    }
+    ((conn_a, id_a), (conn_b, id_b), row)
+}
+
+/// A page an eval announces for every frontend (`wglshow(fig)`, `open: true`) opens in one window, never all: the one
+/// that connected last while no window has been used, then the window showing the REPL's row over a window used later
+/// on another row. Every other window is sent it with `open: false`.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_announced_page_opens_in_one_window_the_one_showing_its_row() {
+    let stub = tempfile::tempdir().expect("tempdir");
+    let julia = stub.path().join("julia");
+    sot_log::test_exec::write_executable(&julia, PAGE_JULIA);
+    let resources = stub.path().join("resources");
+    std::fs::create_dir_all(resources.join("julia").join("repl")).expect("mkdir resources");
+    let env = Env::spawn_with("page", &[("SOT_JULIA_BIN", &julia), ("SOT_RESOURCE_ROOT", &resources)]);
+    let (mut sender, mut id_s) = connect_as(&env.socket_path, "page-sender", "cli", "page-sender").await;
+
+    let body = async {
+        let (mut conn_a, _) = connect_and_hello(&env.socket_path, "fresh-a", "fe@host-a").await;
+        let (mut conn_b, _) = connect_and_hello(&env.socket_path, "fresh-b", "fe@host-b").await;
+        let ack = call(&mut sender, id_s, op::REPL_EVAL, serde_json::json!({"code": "wglshow(fig)", "eval_id": 1})).await;
+        assert_eq!(ack["accepted"], true, "{ack}");
+        id_s += 1;
+        assert_eq!(next_browser_frame(&mut conn_a).await["open"], false, "never every window");
+        assert_eq!(next_browser_frame(&mut conn_b).await["open"], true, "no window used: the one connected last");
+        drop((conn_a, conn_b));
+
+        let ((mut conn_a, _), (mut conn_b, _), _row) = two_windows(&env).await;
+        let ack = call(&mut sender, id_s, op::REPL_EVAL, serde_json::json!({"code": "wglshow(fig)", "eval_id": 2})).await;
+        assert_eq!(ack["accepted"], true, "{ack}");
+        assert_eq!(next_browser_frame(&mut conn_a).await["open"], true, "the window showing the REPL's row opens it");
+        assert_eq!(next_browser_frame(&mut conn_b).await["open"], false, "a window used later on another row opens nothing");
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// An untargeted show (`sot-fe preview`, show-result) goes to the window showing its row over a window used later on
+/// another row (one stray click, SHOW-ROUTE), and to that window alone; a command that names no row goes to the window
+/// used last.
+#[tokio::test]
+async fn an_untargeted_show_goes_to_the_window_showing_its_row() {
+    let env = Env::spawn("show");
+    let (mut sender, mut id_s) = connect_as(&env.socket_path, "show-sender", "cli", "show-sender").await;
+    let body = async {
+        let ((mut conn_a, _), (mut conn_b, _), row) = two_windows(&env).await;
+        let show = serde_json::json!({"cmd": "preview", "args": {"workspace": row, "path": "README.md"}});
+        let ack = call(&mut sender, id_s, op::FE_COMMAND_SEND, show).await;
+        id_s += 1;
+        assert_eq!(ack["resolved_target"], "fe@host-a", "the window showing the row: {ack}");
+        assert_eq!(ack["delivered_to"], 1, "{ack}");
+        assert_eq!(next_fe_command(&mut conn_a, BOUND).await.expect("fe@host-a gets the show")["cmd"], "preview");
+        assert!(next_fe_command(&mut conn_b, ABSENCE_WAIT).await.is_none(), "fe@host-b gets nothing");
+
+        let notice = serde_json::json!({"cmd": "notify", "args": {"text": "hi"}});
+        let ack = call(&mut sender, id_s, op::FE_COMMAND_SEND, notice).await;
+        assert_eq!(ack["resolved_target"], "fe@host-b", "no row: the window used last: {ack}");
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// The next `fe.command` evt `conn` is sent within `wait`, or `None`.
+async fn next_fe_command(conn: &mut Conn, wait: Duration) -> Option<serde_json::Value> {
+    let body = async {
+        loop {
+            let (frame, _blob) = codec::read_frame(conn).await.expect("read a frame");
+            if frame.kind == Kind::Evt && frame.op == op::FE_COMMAND {
+                return frame.payload;
+            }
+        }
+    };
+    tokio::time::timeout(wait, body).await.ok()
 }
 
 /// The hello gate is integer equality on `protocol`, and its refusal

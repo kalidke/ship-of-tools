@@ -179,6 +179,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `ping` | op | server | `rust/backend/src/server/conn.rs` `handle_ping` |
 | `version.query` | op | server | `rust/backend/src/clients.rs` `handle_version_query` |
 | `fe.presence`; the active frontend | op, state | server | `rust/backend/src/clients.rs` `handle_fe_presence`, `ActiveFrontend`, `resolve_active` |
+| which window a show goes to | state | server | `rust/backend/src/clients_show.rs` `ClientsSnapshot::show_target`, `Clients::show_row` |
 | `fe.command.send` and the `fe.command` bus | op, bus | server | `rust/backend/src/clients.rs` `handle_fe_command_send`; `rust/backend/src/server/events.rs` `write_fe_command` |
 | `FeCommand` meaning and its handling in the window | wire payload | fe-ui | `rust/frontend/src/ui/control/command.rs`; `rust/frontend/src/ui/control/dispatch.rs` |
 | `fe.sessions` | op | server | `rust/backend/src/clients.rs` `handle_fe_sessions`, `declare_sessions` (see two owners) |
@@ -201,7 +202,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `kernel.request` | op | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_kernel_request` |
 | `math.render` | op | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_math_render` |
 | `repl.eval`, `repl.run_file`, `repl.interrupt`, `repl.execute` | op | sidecars | `rust/backend/src/sidecars/repl/ops.rs` `handle_repl_eval`, `handle_repl_run_file`, `handle_repl_interrupt`; `rust/backend/src/sidecars/repl/execute.rs` `handle_repl_execute` |
-| `repl.frame` | event, bus | sidecars | `rust/backend/src/sidecars/repl/mod.rs` `Repl`; `rust/backend/src/server/events.rs` `write_repl_frame` |
+| `repl.frame` | event, bus | sidecars | `rust/backend/src/sidecars/repl/mod.rs` `Repl`, `ReplFrameMsg`; `rust/backend/src/server/events.rs` `write_repl_frame`, `repl_frame_for` |
 | `pluto.open` | op | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_pluto_open` |
 | `monitor.subscribe`, `.unsubscribe`, `.history`, `monitor.tick` | op, event, bus | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_monitor_subscribe`, `handle_monitor_unsubscribe`, `handle_monitor_history`; `rust/backend/src/sidecars/monitor.rs` `MonitorHub`; `rust/backend/src/server/events.rs` `write_monitor_tick` |
 | kernel stdio ops (`kernel.hello`, `file.preview`, `file.parse`, `project.scan`, `markdown.tokenize`) | wire (stdio) | sidecars | `julia/kernel/src/ShipToolsKernel.jl`; `julia/kernel/src/preview.jl`; `julia/kernel/src/project_scan.jl`; `julia/kernel/src/tokenize.jl` |

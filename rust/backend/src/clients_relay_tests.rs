@@ -21,12 +21,13 @@ async fn relay_log_names_the_forwarded_result() {
         Some("fe@host-a".into()),
     );
     let (tx, _rx) = broadcast::channel::<FeCommandEvt>(8);
+    let workspaces = crate::rows::Workspaces::new();
     let secret = "0123456789abcdef0123456789abcdef";
     let send = |cmd: &str, args: serde_json::Value, target: Option<&str>| {
         let req = serde_json::json!({ "cmd": cmd, "args": args, "target": target });
-        handle_fe_command_send(1, req, &tx, &clients)
+        handle_fe_command_send(1, req, &tx, &clients, &workspaces)
     };
-    let args = serde_json::json!({ "ws": format!("w\"1 {secret}"), "path": "/data/run 1/a.png", "text": "kept out" });
+    let args = serde_json::json!({ "workspace": format!("w\"1 {secret}"), "path": "/data/run 1/a.png", "text": "kept out" });
     send("preview", args, Some("fe@host-a")).await.unwrap();
     send(
         "notify",

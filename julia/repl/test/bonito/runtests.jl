@@ -175,3 +175,26 @@ end
         reset_wgl!()
     end
 end
+
+# WGLMakie resizes a figure's one scene to the window of whichever viewer reported its size last, so a figure has one
+# live viewer: a new page load of a figure closes the viewer before it, and a viewer of another figure keeps running.
+@testset "a new viewer of a figure closes the one before it (WGLSHOW-ONE-FE)" begin
+    server = ShipToolsRepl.page_server(Bonito, "127.0.0.1", 0)
+    try
+        fig, other = Ref(1), Ref(2)   # a viewer is kept by its figure's identity; any object stands in for one here
+        Bonito.route!(server, "/a" => ShipToolsRepl.no_referrer_page(Bonito, Bonito.App(() -> Bonito.DOM.div("a")), fig))
+        Bonito.route!(server, "/b" => ShipToolsRepl.no_referrer_page(Bonito, Bonito.App(() -> Bonito.DOM.div("b")), other))
+        get(p) = Bonito.HTTP.get("http://127.0.0.1:$(server.port)$p"; status_exception = false, retry = false, readtimeout = 30)
+        closed(s) = Bonito.HTTP.WebSockets.isclosed(s)
+        @test get("/a").status == 200
+        first = ShipToolsRepl.WGL_VIEWERS[fig]
+        @test get("/b").status == 200
+        @test get("/a").status == 200
+        @test closed(first)
+        @test !closed(ShipToolsRepl.WGL_VIEWERS[fig])
+        @test !closed(ShipToolsRepl.WGL_VIEWERS[other])
+    finally
+        close(server)
+        empty!(ShipToolsRepl.WGL_VIEWERS)
+    end
+end

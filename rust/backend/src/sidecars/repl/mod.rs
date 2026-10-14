@@ -79,6 +79,9 @@ pub struct ReplFrameMsg {
     pub eval_id: u64,
     pub workspace_id: Option<String>,
     pub frame: serde_json::Value,
+    /// The connection that opens a `browser` frame's page, set once by the first connection that writes the frame
+    /// (`server/events.rs`, `repl_frame_for`), so every connection writes it from one answer.
+    pub opener: Arc<std::sync::OnceLock<Option<u64>>>,
 }
 
 /// Inline stdout+stderr byte budget for a collected `repl.execute` run. Past

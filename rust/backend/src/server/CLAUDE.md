@@ -51,6 +51,10 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   `proxy.connect`, `lane.connect` or `fe.lease`, else `bad_request` and a close (`hand_off`).
 - A connection whose first frame has not arrived within 10 s, or a `handoff` connection whose next frame has not, is closed
   with nothing sent (`ADMISSION_READ_BOUND`, `handle_connection`, `hand_off`).
+- A show with no window named goes to exactly one window (`ClientsSnapshot::show_target`): an untargeted
+  `fe.command` by serial, and a `browser` REPL frame with `open` true as it came to that window and with `open: false`
+  and no `fe` to every other connection, chosen once per frame by the first connection that writes it
+  (`repl_frame_for`, `ReplFrameMsg::opener`). `workspace.activate` records the connection's shown row in the roster.
 - A connection has one writer. Off-loop jobs hand their reply back over `OutTx` and the loop writes it with
   `write_reply`.
 - A handler `Err` is one `handler_error` frame and the connection stays (`finish_dispatch`); an over-cap envelope

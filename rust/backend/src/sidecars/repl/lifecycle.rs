@@ -111,6 +111,7 @@ fn emit_lifecycle(
         eval_id: 0,
         workspace_id: workspace_id.clone(),
         frame: serde_json::json!({ "kind": "lifecycle", "state": state.as_str() }),
+        opener: Default::default(),
     });
 }
 

@@ -10,7 +10,8 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
   `installer_declare_trust` against the real owner: kept answers, invalid settings, a missing and an older `sotd`.
   Real-Claude consumption and child-observed spelling are proof limits closed by the human release done test; no
   credentials or Claude process run in CI.
-- `active_frontend.rs`: server; which frontend is active, over the wire against a real `sotd`
+- `active_frontend.rs`: server; which frontend is active and which one window a show goes to, over the wire against a
+  real `sotd` (a stub `julia` announces the `wglshow` page, Unix)
 - `admission.rs`: server; every connection starts with an accepted hello (every op of `sot_protocol::op` as a first frame is refused), and two OS accounts on one host are refused (ADR 0049 `## User isolation`)
 - `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
 - `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with

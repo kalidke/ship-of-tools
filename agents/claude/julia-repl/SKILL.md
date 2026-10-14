@@ -147,9 +147,9 @@ figure you return comes back as a figure path, as a CairoMakie one does.
 Nothing appears on any screen: return the figure, or `save` it. On a host
 without Xvfb the kernel's first run says so in its stderr (`sot: this REPL has
 no display of its own (...)`); use CairoMakie there. For an interactive figure use WGLMakie and `wglshow(fig)`: it serves the figure on a port the OS assigns, at an
-address with a secret in it, so no other account on the box can open it, and every attached frontend opens it.
-With more than one frontend attached use `wglshow(fig; open = "<fe>")` (the name `sot-fe --fe` takes): only that
-frontend opens it. Never copy a figure's address into a command, `sot-fe open-url` included: every account on the
+address with a secret in it, so no other account on the box can open it, and one window opens it: the window
+showing this row that the user used within five minutes, else the window they used last. `wglshow(fig; open = "<fe>")`
+(the name `sot-fe --fe` takes) opens it on that frontend instead. Never copy a figure's address into a command, `sot-fe open-url` included: every account on the
 box can read a command line. Serve every page you want to look at through `wglshow`. A page your own code serves
 on a port it opens itself can be opened by any account on that box.
 

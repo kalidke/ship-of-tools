@@ -870,16 +870,9 @@ struct State {
     /// create's `since_request_ms` start at the create request rather
     /// than at the later switch. `None` whenever no create is in flight.
     pending_capsule_create_requested_at: Option<std::time::Instant>,
-    /// Last time this FE sent `fe.presence` (2026-09-08 review rework,
-    /// design point A) — `None` until the first real keyboard/mouse event.
-    /// `window_event`'s `KeyboardInput`/`MouseInput` arms fan a send out to
-    /// EVERY connected host's daemon (`report_presence`) whenever this is
-    /// stale by more than `PRESENCE_THROTTLE` — ONE throttle gates the
-    /// whole fan-out, not one per host, so a burst of input still costs at
-    /// most one round of requests per window; idle input sends nothing at
-    /// all (no timer, no heartbeat — presence is purely a side-effect of
-    /// real events already being handled).
-    presence_last_sent: Option<std::time::Instant>,
+    /// This window's last real press and last `fe.presence` send (`report_presence`, `presence_due`): ONE clock gates
+    /// the fan-out to every connected daemon, and idle input sends nothing at all (no timer, no heartbeat).
+    presence: PresenceClock,
     // ui/drawer: the monitor drawer.
     /// Ctrl+M server-monitor drawer (ADR 0020): per-host metric ring + SVG
     /// chart renderer. `monitor_quad` is the rasterised chart painted into

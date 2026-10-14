@@ -146,14 +146,17 @@ where
             // into the new one. `preview_changed_visible` re-resolves at
             // write time and drops everything for an id that still
             // doesn't resolve then.
+            //
+            // The roster keeps the same row for this connection's window: a show goes to a window on its row
+            // (`Clients::show_row`, `ClientsSnapshot::show_target`).
             let hinted = frame.payload.get("workspace_id").and_then(|v| v.as_str());
-            *active_workspace = Some(
-                shared
-                    .workspaces
-                    .resolve(hinted)
-                    .map(|ws| ws.workspace_id.clone())
-                    .unwrap_or_else(|| hinted.unwrap_or_default().to_string()),
-            );
+            let shown = shared
+                .workspaces
+                .resolve(hinted)
+                .map(|ws| ws.workspace_id.clone())
+                .unwrap_or_else(|| hinted.unwrap_or_default().to_string());
+            shared.clients.show_row(shared.serial, shown.clone());
+            *active_workspace = Some(shown);
             crate::rows::ops::list::handle_workspace_activate(req_id, frame.payload, &shared.workspaces).await
         }
         op::MONITOR_SUBSCRIBE => {
@@ -273,7 +276,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
             crate::comm::registry::join::handle_agent_join(req_id, payload, workspaces, ws_events_tx).await
         }
         op::FE_COMMAND_SEND => {
-            crate::clients::handle_fe_command_send(req_id, payload, &shared.fe_command_tx, clients).await
+            crate::clients::handle_fe_command_send(req_id, payload, &shared.fe_command_tx, clients, workspaces).await
         }
         op::FE_PRESENCE => {
             // The ONLY place `last_person_input_at` is stamped from (2026-09-08 review rework, design point A): this op

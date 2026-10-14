@@ -10,6 +10,7 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
 - `tests/`: the integration suites, each a real `sotd` over the real wire (own page)
 - `src/main.rs`: subcommand routing, offline trust declaration, then daemon boot: umask, directory checks, the tee log and `server::run`.
 - `src/clients.rs`: the connected-frontend roster and fe.* and version.query handlers; fe.command.send logs optional forwarded workspace/path plus target and delivery count.
+- `src/clients_show.rs`: which window a show goes to: each connection's shown row and `ClientsSnapshot::show_target`
 - `src/clients_relay_tests.rs`: the relay log of fe.command.send: forwarded workspace and path, target and delivery count
 - `src/clients_tests.rs`: unit tests of the roster
 - `src/session.rs`: the revision counter and the bounded event ring a reconnecting client replays from (`Session::bump`)

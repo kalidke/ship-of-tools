@@ -279,7 +279,7 @@ impl State {
             term_size: None,
             repo_dir,
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
-            presence_last_sent: None,
+            presence: Default::default(),
             fe_commands: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             fe_state_sig: None,
             focus_on_first_frame: true,

@@ -371,11 +371,13 @@ async fn supervisor_task(
                 "message": "REPL process died mid-eval — it respawns on your next eval; the backend log has its stderr tail",
                 "stacktrace": [],
             }),
+            opener: Default::default(),
         });
         let _ = frame_tx.send(ReplFrameMsg {
             eval_id: eid,
             workspace_id: workspace_id.clone(),
             frame: serde_json::json!({ "kind": "done", "eval_id": eid, "elapsed_ms": 0 }),
+            opener: Default::default(),
         });
     }
     // Retirement: request the tree's termination and check the direct
@@ -483,6 +485,7 @@ fn route_line(
             eval_id,
             workspace_id: workspace_id.clone(),
             frame,
+            opener: Default::default(),
         };
         // Ignore send errors: a closed channel just means no connection is
         // currently subscribed, which is fine.
