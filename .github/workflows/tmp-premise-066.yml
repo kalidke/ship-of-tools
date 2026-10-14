@@ -96,6 +96,11 @@ jobs:
               echo "case JL ($leg): cd -P '$jl2' then pwd -P: '$(cd -P "$jl2" 2>&1 && pwd -P)'"
               if [ -n "${bin:-}" ] && [ -d "$bin" ]; then
                   echo "case JL C4 ($leg) sot_relative_to(git, the lower-case junction's path): '$(bash -c '. "$1/comm-lib.sh"; sot_relative_to "$2" "$3" || echo refused' _ "$bin" "$g" "$jl2/a.txt" 2>&1)'"
+                  # C5: the ROOT spelled in another case (a row's root keeps the case it was typed in; pwd -P keeps it where
+                  # no link is resolved) and PATH through the junction (pwd -P gives the stored case): only the walk's fold
+                  # can match the two.
+                  rl="$(printf '%s' "$g" | tr 'A-Z' 'a-z')"
+                  echo "case JL C5 ($leg) sot_relative_to(the root in lower case, the junction's path): '$(bash -c '. "$1/comm-lib.sh"; sot_relative_to "$2" "$3" || echo refused' _ "$bin" "$rl" "$jl2/a.txt" 2>&1)'"
               fi
               cmd //c rmdir "$(cygpath -w "$jn2")" > /dev/null 2>&1 || [ ! -e "$jn2" ] || echo "case JL ($leg): rmdir of the junction failed"
               cd "$base" && rm -rf "$base/SotCase$$" "${RUNNER_TEMP:-$base}/case-comm"
