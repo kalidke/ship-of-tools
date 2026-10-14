@@ -3,6 +3,8 @@
 //! `sot_log::host::wide_null`, `sot_log::host::daemon_lock_path` and so on.
 
 mod durable;
+#[cfg(unix)]
+mod inherit;
 mod lock;
 mod pinned_dir;
 pub mod process_tree;
@@ -152,6 +154,8 @@ mod tests {
 }
 
 pub use durable::*;
+#[cfg(unix)]
+pub use inherit::inherit_none;
 pub use lock::*;
 pub use pinned_dir::*;
 pub use storage::storage_exhaustion;

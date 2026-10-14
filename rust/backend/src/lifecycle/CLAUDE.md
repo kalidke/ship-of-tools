@@ -68,7 +68,8 @@ on a computer decides, through its lease, whether that computer's sessions end (
 - `Contained::wait_until_exited` observes its owned direct child's exit without releasing containment or reaping it. Cancelling that wait retains the child's identity and owner; checked wait/kill still request tree termination before direct-child reap.
 - A Unix child started through `Signal::spawn`, `Signal::spawn_std` or `Signal::output` keeps none of the daemon's
   descriptors past its exec but its stdio, whatever flag one had when it started: `contain::prepare`'s `pre_exec` marks
-  every descriptor above 2 close-on-exec. On macOS a socket or a pipe gets the flag by a second call after its creation,
+  every descriptor above 2 close-on-exec through `sot_log::host::inherit_none`, which owns the sweep and is shared with the
+  capsule's leg start. On macOS a socket or a pipe gets the flag by a second call after its creation,
   and a child started between the two kept it, the daemon's listener included.
 - A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything still in its process group
   (Unix) or job (Windows) when its owner kills, waits for or drops its `Contained` or `ContainedStd`, or the signal
@@ -169,7 +170,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   owner of a created child, and the contained children (`Contained`, `ContainedStd`), with the observation-only
   `Contained::wait_until_exited`.
 - `daemon_children/`: what ends with a daemon: the Linux lifetime guard (see its page).
-- `contain.rs`: the platform half of containment: the process group or job, the descriptors a Unix child keeps, adopting
+- `contain.rs`: the platform half of containment: the process group or job, the hook that applies the sweep to a Unix child, adopting
   a child, the checked kill, macOS finished-group recognition and rejected-observation evidence. Its Windows tests end a
   tree by fire, std Drop or async Drop and require its leader and descendant to exit; the fixtures write stdout and
   stderr to files, and a failure reports a bounded excerpt of both.

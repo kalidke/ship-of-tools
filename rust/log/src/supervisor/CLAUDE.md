@@ -40,4 +40,4 @@ Part of the capsule; charter: rust/log/CLAUDE.md.
 - `take_authority`'s test holds a close-only claim through an inheritable copy, so it runs its body in a process of
   its own (`test_isolated::run_isolated`): a fork by another test of this binary would copy the claim and keep the
   fence held after the test lets go.
-- `LegLease::create` is atomic on Linux through `pipe2(O_CLOEXEC)`; its checked macOS fallback retains a creation-to-flagging window. Lane binding starts threads before lease creation.
+- `LegLease::create` is atomic on Linux through `pipe2(O_CLOEXEC)`; its checked macOS fallback retains a creation-to-flagging window, and lane binding starts threads before lease creation. The window cannot leak into a leg: the leg's `pre_exec` (`install_lease`) first marks every descriptor above stdio close-on-exec (`sot_log::host::inherit_none`, the sweep the daemon's children use), so the leg keeps exactly stdio and the lease at `PARENT_LEASE_FD`.

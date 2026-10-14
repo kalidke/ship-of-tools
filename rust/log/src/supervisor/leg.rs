@@ -226,6 +226,29 @@ impl LegLease {
     }
 }
 
+/// In the leg's child between `fork` and `exec`: sweeps every inherited descriptor close-on-exec, then installs the lease's
+/// read end at `PARENT_LEASE_FD` with its flag clear. Async-signal-safe only.
+#[cfg(unix)]
+fn install_lease(read_fd: std::os::fd::RawFd) -> std::io::Result<()> {
+    crate::host::inherit_none()?;
+    if read_fd == PARENT_LEASE_FD {
+        // `dup2(fd, fd)` is specified as a no-op that leaves
+        // `FD_CLOEXEC` untouched -- exactly the one case
+        // `dup2` below does NOT clear the flag for us, so it
+        // is cleared directly here instead.
+        let flags = unsafe { libc::fcntl(read_fd, libc::F_GETFD) };
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if unsafe { libc::fcntl(read_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    } else if unsafe { libc::dup2(read_fd, PARENT_LEASE_FD) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 // ADR 0042 slice L1a added `survival` as an 8th parameter — matching this file's own existing precedent
 // (`run_quit`-equivalent lane loops) for a constructor whose every
 // parameter is load-bearing and independently documented at its call
@@ -279,35 +302,19 @@ pub(super) fn build_run_command(
     #[cfg(unix)]
     {
         // ADR 0043 decision 21: the read end reaches the leg as the
-        // FIXED fd `PARENT_LEASE_FD`, installed by this `pre_exec` --
-        // `Command` opens everything else `CLOEXEC` by default, so
-        // nothing but this one fd leaks into the child. Async-signal-
-        // safe only (this closure runs between `fork` and `exec`): every
-        // call below is.
+        // FIXED fd `PARENT_LEASE_FD`, installed by this `pre_exec`. The
+        // sweep (`inherit_none`) runs first and marks every descriptor
+        // above stdio close-on-exec, so the leg keeps exactly stdio and
+        // the lease: `Command` opens its own descriptors CLOEXEC, but on
+        // macOS a socket or pipe made by another thread gets the flag by
+        // a second call, and an exec between the two would keep it.
         use std::os::fd::AsRawFd;
         let read_fd = lease.0.as_raw_fd();
         command
             .arg("--parent-lease-fd")
             .arg(PARENT_LEASE_FD.to_string());
         unsafe {
-            command.pre_exec(move || {
-                if read_fd == PARENT_LEASE_FD {
-                    // `dup2(fd, fd)` is specified as a no-op that leaves
-                    // `FD_CLOEXEC` untouched -- exactly the one case
-                    // `dup2` below does NOT clear the flag for us, so it
-                    // is cleared directly here instead.
-                    let flags = libc::fcntl(read_fd, libc::F_GETFD);
-                    if flags < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if libc::fcntl(read_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                } else if libc::dup2(read_fd, PARENT_LEASE_FD) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
+            command.pre_exec(move || install_lease(read_fd));
         }
     }
     command
@@ -460,5 +467,37 @@ mod tests {
             "the checked pass makes four flag calls, made {calls}"
         );
         eprintln!("lease-flag-proof calls=4 failures=4 bodies=1");
+    }
+
+    /// A leg's child holds the lease at `PARENT_LEASE_FD` and nothing else past its exec, whatever flag a descriptor
+    /// had when the leg started. On macOS a socket is made close-on-exec by a second call after it is created; this
+    /// pipe is caught between the two.
+    #[cfg(unix)]
+    #[test]
+    fn a_leg_keeps_only_its_stdio_and_the_lease_past_its_exec() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let lease = LegLease::create("h").expect("the lease");
+        let spawn = lease.for_spawn().expect("a spawn lease");
+        let mut fds = [0i32; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (held, other) = (fds[0], fds[1]);
+        // SAFETY: clears the flag on this test's own descriptors: the state between macOS's pipe() and its fcntl.
+        for fd in [held, other] {
+            assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
+        }
+        let read_fd = spawn.0.as_raw_fd();
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(format!(
+            "for fd in {held} {other}; do if test -e /dev/fd/$fd; then echo held $fd; fi; done; \
+             if test -e /dev/fd/{PARENT_LEASE_FD}; then echo lease; fi"
+        ));
+        unsafe { cmd.pre_exec(move || install_lease(read_fd)) };
+        let ran = crate::test_wait::run_within(&mut cmd, std::time::Duration::from_secs(10)).ok();
+        unsafe {
+            libc::close(held);
+            libc::close(other);
+        }
+        assert_eq!(ran.stdout.trim(), "lease", "the leg kept more than the lease: {}", ran.stdout);
     }
 }
