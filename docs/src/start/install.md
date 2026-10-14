@@ -59,13 +59,18 @@ A home directory shared by several Linux hosts shows them all the same
 `sotd.service` and its enable link. The installer pins the unit with
 `sotd topology pin`: a drop-in, `sotd.service.d/topology.conf`, under which
 systemd starts it only on the hosts `hosts.toml` declares `daemon` or
-`frontend`, so on a shared home that file must list every host. The pin
+`frontend`, so on a shared home that file must list every host. With no
+`hosts.toml` the pin names the host that ran the install, and only that host
+starts the daemon. The pin
 compares the kernel hostname, so a host that `SOT_SELF_HOST` renames is not
-matched. An install or update rewrites the pin, and so do the hub's daemon at
+matched. An install or update rewrites the pin from `hosts.toml` (an update
+with no `hosts.toml` leaves it as the install wrote it), and so do the hub's daemon at
 each start and `sotd topology apply` there; a host whose entry changed reads
 it at its next boot or `systemctl --user daemon-reload`. Stop the daemon on a host that should no
 longer run one with `systemctl --user stop sotd.service`; never `disable` it
-there, since the enable link is shared too.
+there, since the enable link is shared too. The installer itself never
+disables it there: an install that runs no daemon on this host only stops
+this host's, unless the pin names this host alone.
 
 The install itself is shared the same way: one `~/.local/share/sot` and one
 `install.json` serve every host that runs `sotd`. Run the installer on one of

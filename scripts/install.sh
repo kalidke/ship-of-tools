@@ -327,6 +327,12 @@ installer_self_host() {
         printf '%s' "$SOT_SELF_HOST"
         return
     fi
+    installer_kernel_host
+}
+
+# Mirrors sot_log::host::state_dir::kernel_host_name(): the kernel's name for
+# this box, without the SOT_SELF_HOST override, which systemd never sees.
+installer_kernel_host() {
     hostname 2>/dev/null | cut -d. -f1 | tr '[:upper:]' '[:lower:]'
 }
 
@@ -459,11 +465,13 @@ installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
 # installed LOCAL backend running (a wrong-topology remnant). Only
 # `--backend <host>` and a topology entry with neither flag resolve that way;
 # a box that runs a window resolves a daemon of its own
-# (installer_topology_role). Under a declared topology the unit file and its
-# enable link may serve another host that shares this home, so they stay: the
-# unit's host pin (`sotd topology pin`) keeps it from starting here, and this
-# host's own run is stopped. With no hosts.toml the unit is this box's alone,
-# and it is disabled.
+# (installer_topology_role). The unit file and its enable link may serve
+# another host that shares this home, and `disable` removes the link for every
+# host, so this host's own run is stopped and the link stays. Under a declared
+# topology the unit's host pin (`sotd topology pin`) keeps it from starting
+# here. With no hosts.toml the pin names the host whose install claimed it
+# (`--claim`): on that host alone the link serves no other host, and it is
+# disabled.
 # Whether this box has a hosts.toml that `sotd topology status` cannot read: such a file is still a declared
 # topology, and a retire under it must never disable a unit that may serve another host. Only a missing file (status
 # says "no hosts.toml at") means this box is alone. Prints status's error when it is unreadable.
@@ -474,18 +482,32 @@ installer_topology_unreadable() {  # <sotd>
     printf '%s\n' "$err"
 }
 
+# True when sotd.service's host pin under DIR names HOST and no other host: the
+# pin `sotd topology pin --claim` writes with no hosts.toml. Reads the
+# ConditionHost= lines sot_protocol's host pin writes, in its order; a pin
+# naming other hosts too, or no pin, is false.
+installer_pin_names_only() {  # <systemd-user-dir> <kernel-host>
+    local pin="$1/sotd.service.d/topology.conf"
+    [ -n "$2" ] && [ -f "$pin" ] || return 1
+    [ "$(grep '^ConditionHost=' "$pin")" = "ConditionHost=|$2
+ConditionHost=|$2.*" ]
+}
+
 installer_retire_local_service() {  # <want-daemon 0|1> <prefix> <topology-declared 0|1>
     [ "$1" = 0 ] && command -v systemctl >/dev/null 2>&1 || return 0
+    [ -f "$HOME/.config/systemd/user/sotd.service" ] || return 0
     if [ "$3" = 1 ]; then
-        [ -f "$HOME/.config/systemd/user/sotd.service" ] || return 0
         "$2/bin/sotd" topology pin --dir "$HOME/.config/systemd/user" \
             || say "WARNING: sotd topology pin failed: sotd.service is not pinned to the hosts that run sotd"
         systemctl --user stop sotd.service 2>/dev/null || true
         systemctl --user daemon-reload 2>/dev/null || true
         say "stopped this host's sotd.service; the declared topology runs no daemon here"
-    elif systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
+    elif installer_pin_names_only "$HOME/.config/systemd/user" "$(installer_kernel_host)"; then
         systemctl --user disable --now sotd.service || true
-        say "disabled the local sotd.service from a previous all-in-one install"
+        say "disabled sotd.service, whose host pin names this host alone"
+    else
+        systemctl --user stop sotd.service 2>/dev/null || true
+        say "stopped this host's sotd.service and left its enable link: with no hosts.toml its host pin does not name this host alone, so the link may serve another host that shares this home"
     fi
 }
 
@@ -501,8 +523,9 @@ installer_enable_local_service() {  # <prefix> <template> <socket>
     installer_retire_tmux_unit "$HOME/.config/systemd/user"
     render_sotd_unit "$1" "$2" "$HOME/.config/systemd/user/sotd.service"
     # The unit and its enable link live in the home, which other hosts may
-    # share: pin it to the hosts that run sotd before any manager reloads it.
-    "$1/bin/sotd" topology pin --dir "$HOME/.config/systemd/user" \
+    # share: pin it to the hosts that run sotd before any manager reloads it,
+    # and with no hosts.toml to this host, which installs it.
+    "$1/bin/sotd" topology pin --dir "$HOME/.config/systemd/user" --claim \
         || say "WARNING: sotd topology pin failed: sotd.service is not pinned to the hosts that run sotd"
     systemctl --user daemon-reload
     systemctl --user enable --now sotd.service
@@ -600,7 +623,8 @@ while [ $# -gt 0 ]; do
         --prefix) PREFIX="${2:?}"; shift ;;
         # Skip the systemd unit install/enable: the caller supervises sotd
         # itself (e.g. a systemd-run --user transient unit). A shared home
-        # needs no such flag: the unit is pinned to the hosts that run sotd
+        # needs no such flag: the unit is pinned to the hosts that run sotd,
+        # or with no hosts.toml to the host that installed it
         # (`sotd topology pin`).
         --no-service) NO_SERVICE=1 ;;
         # Consent to reconfiguring an installation that is already here. See

@@ -368,7 +368,7 @@ fn remove_relay_units(host: &str) -> Result<(), String> {
         let _ = std::fs::remove_file(dir.join(name));
     }
     let _ = std::fs::remove_dir(dir.join(format!("{}.d", topology::relay_units::relay_service_unit_file(host))));
-    remove_pin(&dir, &format!("{}.d/{}", topology::relay_units::relay_unit(host), topology::relay_units::PIN_FILE), false, &mut |_| {})?;
+    remove_pin(&dir, &format!("{}.d/{}", topology::relay_units::relay_unit(host), topology::relay_units::PIN_FILE))?;
     Ok(())
 }
 
@@ -423,22 +423,17 @@ fn converge_pins(dir: &Path, pins: &[(String, String)], dry_run: bool, say: &mut
 }
 
 /// Removes the pin at `name` under `dir`, then its folder when that left it empty (a hand-made drop-in beside it
-/// keeps the folder). True when a pin was removed.
-fn remove_pin(dir: &Path, name: &str, dry_run: bool, say: &mut dyn FnMut(String)) -> Result<bool, String> {
+/// keeps the folder).
+fn remove_pin(dir: &Path, name: &str) -> Result<(), String> {
     let path = dir.join(name);
     if std::fs::symlink_metadata(&path).is_err() {
-        return Ok(false);
-    }
-    if dry_run {
-        say(format!("would remove {}", path.display()));
-        return Ok(false);
+        return Ok(());
     }
     std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     if let Some(folder) = path.parent() {
         let _ = std::fs::remove_dir(folder);
     }
-    say(format!("removed {}", path.display()));
-    Ok(true)
+    Ok(())
 }
 
 /// The hub's pins under `dir`: sotd.service's, the reverse tunnels' template pin (always: a tunnel instance still
@@ -450,14 +445,18 @@ fn converge_hub_pins(topo: &Topology, dir: &Path, relays: &[&str], dry_run: bool
     converge_pins(dir, &pins, dry_run, say)
 }
 
-/// `sotd topology pin --dir <dir>`: sotd.service's pin under `dir`, from this box's hosts.toml, written when its text
-/// differs; removed when there is no hosts.toml, since a lone box runs its own daemon. An invalid hosts.toml is an
-/// error and changes nothing. Runs no systemctl: the installer and the update apply reload after it.
-pub(super) fn pin_daemon(dir: &Path, say: &mut dyn FnMut(String)) -> Result<(), String> {
-    match topology::load()? {
-        Some((_, topo)) => converge_pins(dir, &[topology::relay_units::daemon_pin(&topo)], false, say).map(|_| ()),
-        None => remove_pin(dir, &format!("sotd.service.d/{}", topology::relay_units::PIN_FILE), false, say).map(|_| ()),
-    }
+/// `sotd topology pin --dir <dir> [--claim]`: sotd.service's pin under `dir`, written when its text differs. From this
+/// box's hosts.toml when there is one. With none, `claim` (the installer, on a box that runs a daemon) pins the unit to
+/// this host by its kernel name, the name systemd compares, so a home several hosts share starts it only on the host
+/// that installed it; without `claim` (the update's re-render) the pin stays as the install wrote it. An invalid
+/// hosts.toml is an error and changes nothing. Runs no systemctl: the installer and the update apply reload after it.
+pub(super) fn pin_daemon(dir: &Path, claim: bool, say: &mut dyn FnMut(String)) -> Result<(), String> {
+    let pin = match topology::load()? {
+        Some((_, topo)) => topology::relay_units::daemon_pin(&topo),
+        None if claim => topology::relay_units::install_pin(&sot_log::host::state_dir::kernel_host_name()?),
+        None => return Ok(()),
+    };
+    converge_pins(dir, &[pin], false, say).map(|_| ())
 }
 
 #[cfg(test)]

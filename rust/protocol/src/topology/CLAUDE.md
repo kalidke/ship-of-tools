@@ -21,7 +21,8 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
   for a caller that contains the child), in `ssh_bridge.rs`.
 - The lane dial `DaemonLaneEndpoint`, the attach worker's endpoint over op `lane.connect`, in `lane_client.rs`.
 - The systemd unit text sotd generates, in `relay_units.rs`: the hub's relay units for each relayed host, and the host
-  pins (`host_pin`, `daemon_pin`, `hub_pins`) built from the hosts that run sotd (`sotd_hosts`, in `mod.rs`).
+  pins (`host_pin`, `daemon_pin`, `hub_pins`) built from the hosts that run sotd (`sotd_hosts`, in `mod.rs`), and the
+  installing host's pin where there is no hosts.toml (`install_pin`).
 - Generated hub-relay path classification (relay_host_for_path in mod.rs), distinct from this computer's daemon endpoint.
 
 ## Promises
@@ -38,7 +39,8 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
 - A unit sotd writes into the user's systemd folder starts only where hosts.toml gives it: `sotd.service` on the hosts
   declared `daemon` or `frontend` (`sotd_hosts`), the reverse tunnels and relay sockets on the hub, each by a host pin
-  that matches a host's name or its name and a domain (`host_pin`); with no hosts.toml `sotd.service` carries no pin.
+  that matches a host's name or its name and a domain (`host_pin`); with no hosts.toml `sotd.service` starts only on
+  the host whose install wrote its pin (`install_pin`).
 - On an SSH route an initial supervisor attempt may park at most one voyage login as an optional optimization; spare spawn failure leaves ordinary voyage fallback available. A local route parks none. The first voyage tries a live spare once; with none, or when its handshake fails however it failed, it uses an ordinary gated dial, whose result is the dial's; a spent endpoint starts no further spare, with pre-voyage abandonment governed by ADR 0045 (`start_spare`, `take_spare`).
 
 - `DaemonLaneEndpoint::new` fixes the endpoint's route and initializes its private spare state. Callers cannot replace the route or construct an endpoint literal; a shared `LinkGate` changes liveness only. Tests exercise dial sequences and owned-child lifetimes.

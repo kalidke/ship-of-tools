@@ -7,7 +7,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 
 ## Owns
 - The per-machine dirs and the host name (`state_dir.rs`: `sot_state_dir`, `sot_config_dir`, `runtime_sot_dir`, `runtime_dir`,
-  `state_dir_hash`, `host_name`).
+  `state_dir_hash`, `host_name`, and `kernel_host_name`, the kernel's name without the `SOT_SELF_HOST` override).
 - Publication and fsync (`durable.rs`: `publish_noreplace`, `finish_publication`, `rename_noreplace_raw`, `fsync_dir`,
   `fsync_file`, `ensure_container`, `create_dir_protected`).
 - Kernel locks (`lock.rs`: `lock_writer`, `lock_supervisor`, and for a fence handed to a child `lock_supervisor_for_handover`,
@@ -58,7 +58,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot_state_dir`, `sot_config_dir`,
-`host_name`, `state_dir_hash`, `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`,
+`host_name`, `kernel_host_name`, `state_dir_hash`, `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`,
 `owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `dir_identity`,
 `rust/log/src/host/pinned_dir.rs`, `resource_dir`, `rust/backend/src/paths.rs`,

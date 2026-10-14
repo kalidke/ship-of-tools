@@ -30,7 +30,9 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `relay_refresh.rs`: topology; `sotd topology refresh` on a scratch hub with a stand-in `systemctl`
 - `unit_pin.rs`: topology; `sotd topology pin` and `refresh` write host pins into a scratch systemd folder, real systemd
   loads it in test mode (`systemd --test --user`) and `systemd-analyze --user condition` evaluates the attached
-  conditions on this box; `apply` enables nothing when a pin cannot be written, and a dry `apply` writes no pin;
+  conditions on this box; with no hosts.toml the claim pins the unit to this box and a pin without it changes
+  nothing, and the installer's `installer_pin_names_only` reads the claimed pin as this box's alone; `apply` enables
+  nothing when a pin cannot be written, and a dry `apply` writes no pin;
   `status` without a hosts.toml prints the words the installer matches; and the installer's role rule agrees with
   `sotd_hosts`
 - `shell_dial.rs`: topology; comm-lib's `sot_dial` (with and without its bound) and `sot_oneshot_request`, and the
