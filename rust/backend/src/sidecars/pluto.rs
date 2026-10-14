@@ -755,6 +755,31 @@ exit(0)
         h.finish().await;
     }
 
+    /// Pluto's server has a display of its own (Linux), which its notebook workers inherit with the rest of its
+    /// environment, and which ends with the server: the child's own exit here.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn pluto_has_its_own_display_which_ends_with_it() {
+        use crate::sidecars::contract_tests::{x11_answer, x11_cookie};
+        if !isolated("sidecars::pluto::port_parse_tests::pluto_has_its_own_display_which_ends_with_it", BODY) {
+            return;
+        }
+        executable("Xvfb");
+        let record = r#"write(joinpath(dir, "display.tmp"), get(ENV, "DISPLAY", "-"), "\n", get(ENV, "XAUTHORITY", "-")); mv(joinpath(dir, "display.tmp"), joinpath(dir, "display"))"#;
+        let h = Harness::start(READY_LOCAL, record).await;
+        within(REACT, "the server records its display", || h.dir.join("display").exists()).await;
+        let named = std::fs::read_to_string(h.dir.join("display")).unwrap();
+        let (display, cookie) = named.split_once('\n').expect("two lines");
+        let number: u32 = display.strip_prefix(':').and_then(|n| n.parse().ok()).unwrap_or_else(|| {
+            panic!("the server names a display of its own: {named:?}")
+        });
+        let cookie = x11_cookie(Path::new(cookie));
+        assert_eq!(x11_answer(number, Some(&cookie)), Some(1), "the server's cookie opens its display");
+        h.open_gate();
+        within(REACT, "the server's display ends with it", || x11_answer(number, Some(&cookie)) != Some(1)).await;
+        h.finish().await;
+    }
+
     /// A stdin write that cannot complete: three requests are in flight (one answered by nobody, one mid-write, one
     /// queued) when the child exits with a descendant holding both pipes.
     async fn blocked_write_scenario(h: &Harness) -> (u16, u32, Vec<oneshot::Receiver<anyhow::Result<String>>>) {

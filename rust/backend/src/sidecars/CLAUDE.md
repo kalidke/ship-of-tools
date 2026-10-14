@@ -73,7 +73,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mod.rs`: declares the eight modules and `WireRequest`.
 - `child_tmp.rs`: a Julia child's own temporary folder (`ChildTmp`), made before its spawn; `retire` ends the child and removes the folder after its reap.
 - `contract_tests.rs`: native REPL/MathJax private-Signal spawn, shutdown closeout and owned-child observations, a
-  node child slower to start than a render's bound, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions.
+  node child slower to start than a render's bound, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions. The X11 connection probe the display tests share (`x11_answer`, `x11_cookie`).
 - `julia.rs`: which julia binary runs (`resolve_bin`).
 - `kernel.rs`: the per-row kernel and its supervisor.
 - `repl/`: the per-row Julia REPL child.

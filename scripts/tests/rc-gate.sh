@@ -347,6 +347,7 @@ JULIA_BIN=$(command -v julia) || { echo "rc-gate: julia not found" >&2; exit 2; 
 NODE_BIN=$(command -v node) || { echo "rc-gate: node not found" >&2; exit 2; }
 [ -d "$D/rust/backend/sidecars/mathjax/node_modules" ] || { echo "rc-gate: run npm ci in rust/backend/sidecars/mathjax" >&2; exit 2; }
 command -v jq > /dev/null || { echo "rc-gate: jq not found" >&2; exit 2; }
+PATH=/usr/bin:/bin command -v Xvfb > /dev/null || { echo "rc-gate: Xvfb not found in /usr/bin or /bin (the sotd sidecar tests start it)" >&2; exit 2; }
 # The jobs get node and nothing else from its folder (on the servers it also holds real agent CLIs).
 mkdir -p "$L/bin" && ln -s "$NODE_BIN" "$L/bin/node" || exit 2
 export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$(dirname "$JULIA_BIN") RCG_NODE_DIR=$L/bin

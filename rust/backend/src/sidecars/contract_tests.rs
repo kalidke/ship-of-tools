@@ -186,6 +186,48 @@ fn a_fixture_depot_path_keeps_a_read_list_whole() {
     assert_eq!(entries(depot_path(&owned, Some(&list))), [owned, "a".into(), "b".into(), none]);
 }
 
+/// The cookie in an Xauthority file of one entry: the entry's last field, its 16 bytes.
+#[cfg(target_os = "linux")]
+pub(crate) fn x11_cookie(path: &Path) -> Vec<u8> {
+    let entry = std::fs::read(path).expect("read the cookie file");
+    assert!(entry.len() > 16, "an Xauthority entry: {} bytes", entry.len());
+    entry[entry.len() - 16..].to_vec()
+}
+
+/// The first byte of an X server's answer to a connection setup over the abstract socket of display `:number` (0
+/// failed, 1 success, 2 authenticate) from a client holding `cookie` (`MIT-MAGIC-COOKIE-1`) or none; `None` when
+/// nothing listens there.
+#[cfg(target_os = "linux")]
+pub(crate) fn x11_answer(number: u32, cookie: Option<&[u8]>) -> Option<u8> {
+    use std::io::{Read, Write};
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixStream};
+    let addr = SocketAddr::from_abstract_name(format!("/tmp/.X11-unix/X{number}")).expect("an abstract address");
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test's probe of an X display: the server is not a Ship of Tools endpoint, and who may connect is what it tests"
+    )]
+    let mut stream = UnixStream::connect_addr(&addr).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(10))).expect("a read bound");
+    let (name, data): (&[u8], &[u8]) = match cookie {
+        Some(c) => (b"MIT-MAGIC-COOKIE-1", c),
+        None => (b"", b""),
+    };
+    // Little-endian: byte order, unused, protocol 11.0, the name's and the data's lengths, unused, then each padded to 4.
+    let mut setup = vec![b'l', 0, 11, 0, 0, 0];
+    setup.extend_from_slice(&u16::try_from(name.len()).expect("a short name").to_le_bytes());
+    setup.extend_from_slice(&u16::try_from(data.len()).expect("a short cookie").to_le_bytes());
+    setup.extend_from_slice(&[0, 0]);
+    for field in [name, data] {
+        setup.extend_from_slice(field);
+        setup.resize(setup.len() + (4 - field.len() % 4) % 4, 0);
+    }
+    stream.write_all(&setup).ok()?;
+    let mut first = [0u8; 1];
+    stream.read_exact(&mut first).ok()?;
+    Some(first[0])
+}
+
 /// Polls `condition` until it holds; the failure names `what`.
 pub(crate) async fn within(bound: Duration, what: &str, mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + bound;
@@ -244,6 +286,8 @@ async fn repl_uses_private_signal() {
     ) {
         return;
     }
+    #[cfg(target_os = "linux")]
+    executable("Xvfb");
     let dir = tempfile::tempdir().expect("owned fixture root");
     let root = dir.path().to_path_buf();
     owned_julia_env(&root);
@@ -273,7 +317,9 @@ async fn repl_uses_private_signal() {
         .iter()
         .any(|f| f["kind"] == "value" && f["text"] == "42");
     assert!(value, "the real eval must return its value");
-    assert_eq!(sig.live(), 1, "the supplied Signal owns the child");
+    // The child, and on Linux its display (`ChildTmp::for_user_code`).
+    let owned = if cfg!(target_os = "linux") { 2 } else { 1 };
+    assert_eq!(sig.live(), owned, "the supplied Signal owns the child and its display");
 
     sig.fire().expect("fire");
     within(
