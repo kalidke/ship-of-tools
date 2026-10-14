@@ -1,0 +1,133 @@
+# TEMPORARY, the batch-6 review's premise checks on hosted runners; never merged. Pushed alone on tmp/ci-premise-066
+# (lane/path-compare's head 9c7489c12 plus one workflow), read, then the branch is deleted. Nothing here pushes, publishes
+# or reads a secret. O2: PREVIEW-ROOT's canonical_root_tests on Windows and macOS. O3: WIN-PATH-CASE's J lines on Windows,
+# once with the branch's comm-lib and once with comm-lib-client.sh as it was before 9c7489c12 (the case-fold hunk reverted).
+name: tmp premise 066
+on:
+  push:
+    branches: [tmp/ci-premise-066]
+jobs:
+  o2:
+    name: tmp O2 canonical_root_tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: canonical_root_tests
+        shell: bash --noprofile --norc -eo pipefail {0}
+        working-directory: rust
+        env:
+          SOT_BUILD_ID: premise066
+        run: |
+          set +e -u
+          cargo test -p sot-backend --bin sotd --locked canonical_root_tests -- --nocapture 2>&1 | tail -40
+          echo "o2 cargo rc: ${PIPESTATUS[0]}"
+  o3:
+    name: tmp O3 WIN-PATH-CASE's J lines (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: The J lines, green and red
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set +e -u
+          # green: this checkout's comm scripts. red: the same folder with comm-lib-client.sh from 9c7489c12^ (the only
+          # comm/lib file that commit changed besides CLAUDE.md).
+          G="${RUNNER_TEMP}/o3-green"; R="${RUNNER_TEMP}/o3-red"
+          bash comm/tests/stage-bin.sh "$G" > /dev/null 2>&1 || { echo "FATAL: stage-bin.sh failed"; exit 2; }
+          cp -r "$G" "$R" && git show 9c7489c12^:comm/lib/comm-lib-client.sh > "$R/comm-lib-client.sh" || { echo "FATAL: red copy failed"; exit 2; }
+          cmp -s "$G/comm-lib-client.sh" "$R/comm-lib-client.sh" && { echo "FATAL: red copy equals green"; exit 2; }
+          echo "o3: red copy differs from green in comm-lib-client.sh only: $(diff -rq "$G" "$R" | tr '\n' ' ')"
+          probe() (
+              leg="$1" bin="$2"
+              echo "=== o3 leg: $leg ($bin) ==="
+              # WIN-PATH-CASE (SMALL-066B O5). After a cd into a mixed-case folder in its stored case (U), in lower case (L), and in
+              # Windows' spelling with a lower-case drive letter (D), each program's spelling of the folder, raw and as W7 compares
+              # it (cygpath -m -l: comm/lib/comm-lib-client.sh sot_native_path). The last line says whether any two compared
+              # spellings differ only in case. The C lines run W7's functions at this checkout; they are information, not the verdict.
+              base="$(cygpath -u "${RUNNER_TEMP:-${TEMP:-}}")" && [ -d "$base" ] || { echo "case: no temp folder"; exit 2; }
+              top="$base/SotCase$$/MixedCaseProj"
+              mkdir -p "$top" && (cd "$top" && git init -q && : > a.txt) || { echo "case: could not make $top"; exit 2; }
+              lc="$(printf '%s' "$top" | tr 'A-Z' 'a-z')"
+              w="$(cygpath -m "$top")"; dl="$(printf '%s' "${w:0:1}" | tr 'A-Z' 'a-z')${w:1}"
+              stored() {  # PATH (/x/... form, any case): each name as its parent folder lists it, the picker's names (directory.list)
+                  local out="" rest="${1#/}" c m
+                  case "$1" in /?/*) out="${1:0:2}" rest="${1#/?/}" ;; esac
+                  shopt -s nocaseglob
+                  IFS=/ read -r -a parts <<< "$rest"
+                  for c in "${parts[@]}"; do
+                      m=( "$out/${c%?}"["${c: -1}"] )
+                      [ -e "${m[0]}" ] || { shopt -u nocaseglob; printf 'NOT FOUND at %s/%s' "$out" "$c"; return; }
+                      out="${m[0]}"
+                  done
+                  shopt -u nocaseglob
+                  printf '%s' "$out"
+              }
+              names=() vals=()
+              row() {  # TAG NAME RAW — print RAW and its compared spelling, keep the compared one
+                  local n
+                  n="$(cygpath -m -l "$3" 2>&1)"
+                  echo "case $1 $2: raw '$3' -> '$n'"
+                  names+=("$1:$2") vals+=("$n")
+              }
+              for tag in U L D; do
+                  case "$tag" in U) to="$top" ;; L) to="$lc" ;; D) to="$dl" ;; esac
+                  cd "$to" || { echo "case $tag: cd '$to' failed"; continue; }
+                  echo "case $tag: cd '$to'"
+                  g="$(git rev-parse --show-toplevel 2>&1)"
+                  row "$tag" "pwd" "$(pwd)"
+                  row "$tag" "pwd-P" "$(pwd -P)"
+                  row "$tag" "git" "$g"
+                  row "$tag" "realpath-git" "$(realpath "$g" 2>&1)"
+                  row "$tag" "realpath-dot" "$(realpath . 2>&1)"
+                  row "$tag" "cmd-child" "$(cmd //c cd 2>&1 | tr -d '\r')"
+                  row "$tag" "stored" "$(stored "$(cygpath -u "$PWD")")"
+                  echo "case $tag: pwd -W '$(pwd -W 2>&1)', cygpath -m (no -l) '$(cygpath -m "$PWD" 2>&1)'"
+                  if [ -d "$bin" ]; then
+                      export SOT_COMM_HOME="${RUNNER_TEMP:-$base}/case-comm"
+                      echo "case $tag C1 sot_same_root(realpath git, realpath .): $(bash -c '. "$1/comm-lib.sh"; sot_same_root "$2" "$3" && echo same || echo different' _ "$bin" "$(realpath "$g")" "$(realpath .)" 2>&1)"
+                      echo "case $tag C2 sot_relative_to(git, \$PWD/a.txt): '$(bash -c '. "$1/comm-lib.sh"; sot_relative_to "$2" "$3" || echo refused' _ "$bin" "$g" "$PWD/a.txt" 2>&1)'"
+                  fi
+              done
+              # R1: a junction above the repo, reached in lower case: sot_relative_to needs MAC-PHYS-ROOT's walk and the case fold.
+              jn="$base/SotJn$$"
+              cmd //c mklink /J "$(cygpath -w "$jn")" "$(cygpath -w "$base/SotCase$$")" > /dev/null 2>&1 || echo "case J ($leg): mklink /J failed"
+              jl="$(printf '%s' "$jn/MixedCaseProj" | tr 'A-Z' 'a-z')"
+              echo "case J ($leg): cd -P '$jl' then pwd -P: '$(cd -P "$jl" 2>&1 && pwd -P)'"
+              if [ -n "${bin:-}" ] && [ -d "$bin" ]; then
+                  g="$(cd "$top" && git rev-parse --show-toplevel 2>&1)"
+                  echo "case J C3 ($leg) sot_relative_to(git, the junction's path in lower case): '$(bash -c '. "$1/comm-lib.sh"; sot_relative_to "$2" "$3" || echo refused' _ "$bin" "$g" "$jl/a.txt" 2>&1)'"
+              fi
+              cmd //c rmdir "$(cygpath -w "$jn")" > /dev/null 2>&1 || [ ! -e "$jn" ] || echo "case J ($leg): rmdir of the junction failed"
+              cd "$base" && rm -rf "$base/SotCase$$" "${RUNNER_TEMP:-$base}/case-comm"
+              v="AGREE: every compared spelling is one string"
+              i=0
+              while [ "$i" -lt "${#vals[@]}" ]; do
+                  j=$((i + 1))
+                  while [ "$j" -lt "${#vals[@]}" ]; do
+                      a="${vals[$i]}" b="${vals[$j]}"
+                      if [ "$a" != "$b" ]; then
+                          if [ "$(printf '%s' "$a" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$b" | tr 'A-Z' 'a-z')" ]; then
+                              v="DISAGREE in case: ${names[$i]} '$a' vs ${names[$j]} '$b'"; break 2
+                          fi
+                          v="DIFFER beyond case: ${names[$i]} '$a' vs ${names[$j]} '$b'"
+                      fi
+                      j=$((j + 1))
+                  done
+                  i=$((i + 1))
+              done
+              [ "${#vals[@]}" -ge 2 ] || v="NO RESULT: fewer than two spellings were read"
+              echo "case-probe: $v"
+          )
+          probe green "$G"
+          probe red "$R"
