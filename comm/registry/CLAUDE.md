@@ -7,12 +7,12 @@ may act as it. These scripts resolve the handle, claim it, list the rows and rec
 
 ## Files
 - `comm-context.sh`: resolve identity from pin, declared-host self slot or derivation, migrating only a validated raw-host legacy slot
-- `comm-join.sh`: claim and declare a handle
+- `comm-join.sh`: claim and declare a handle, and send `join`, which starts the floor of the turn it runs in
 - `comm-leave.sh`: leave the registry
 - `comm-list.sh`: the registry plus the frontend boxes' declared sessions
 - `comm-self-audit.sh`: find slots naming another project
 - `comm-registry-lock-clear.sh`: clear, at once, a lock whose holder this box proves dead
-- `comm-session-start.sh`: the session bootstrap, which joins, starts the joining turn's floor and prints the work-state rule
+- `comm-session-start.sh`: the session bootstrap, which joins and prints the work-state rule
 
 ## Start here
 `comm-join.sh`'s precedence (`--name` > `$SOT_COMM_NAME` > self-file > derive), then `claim_derived_handle` in

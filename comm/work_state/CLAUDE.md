@@ -5,7 +5,7 @@ the `note` line), and `comm-status.sh` reduces them to the row's `state` and `su
 messaging; charter: comm/CLAUDE.md. The design of record is docs/adr/0044 and its amendment.
 
 ## Files
-- `comm-status.sh`: writes one fact (`prompt`, `stop`, `working`, `idle`, `blocked`, `done`, `waiting`) and reduces the facts to state and summary in one jq program
+- `comm-status.sh`: writes one fact (`prompt`, `stop`, `join`, `working`, `idle`, `blocked`, `done`, `waiting`) and reduces the facts to state and summary in one jq program
 - `comm-turn-auditor.sh`: the Stop hook's auditor: cheap pre-filters on the turn's last reply, then one headless Haiku `claude -p` call that returns findings
 - `hooks/`: the Claude and Codex hooks that send the events and the closing-marker stamps (see its page)
 
@@ -18,8 +18,11 @@ priority) sits above the `with_lock` call that applies it. For what the Stop hoo
 - The verb, the reduction and the stamp are one jq program run inside `with_lock`, so a writer that commits between
   another's read and write is never overwritten.
 - A declaration (`working`, `idle`, `blocked`, `done`, `waiting`) with nowhere to land fails loudly; an event
-  (`prompt`, `stop`) from a session with no registry row is a silent no-op (`sot_require_agent`). So the turn that
-  joins gets its floor from `comm-session-start.sh`, which sends `prompt` (origin machine) after the join.
+  (`prompt`, `stop`, `join`) from a session with no registry row writes nothing to the registry (`sot_require_agent`).
+- `prompt` writes the session's turn mark (`state/turn-<self slot>`) and `stop` removes it, row or no row; `join`,
+  sent by `comm-join.sh`, sets `floor` to machine only from a mark under five minutes old. So the turn that joins
+  reads working until its Stop, and a session whose hooks are off or missing, having no mark, never gets a floor that
+  no Stop would end.
 - The daemon stamps no fact; it clears only `done`, when a person views the row (`clear_comm_unread` in
   `rust/backend/src/comm/registry/registry.rs`).
 - The auditor fails open: any internal failure, a missing `claude`, `SOT_TURN_AUDITOR=0` or `auditor.off` in the comm

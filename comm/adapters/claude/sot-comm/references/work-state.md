@@ -18,7 +18,7 @@ A row is a small SET OF FACTS, not one state you set directly:
 
 | field | value | set by | cleared by |
 |---|---|---|---|
-| `floor` | `user` \| `machine` | the `prompt` event, to the origin (the session-start join sends one, origin `machine`) | the `stop` event |
+| `floor` | `user` \| `machine` | the `prompt` event, to the origin; the `join` event, `machine`, when the join runs inside a turn whose `prompt` came before the row | the `stop` event |
 | `question` | the question text | `blocked "<q>"` | a `prompt` event with origin `user`; `waiting`; explicit `working`/`idle`/`done` |
 | `waiting` | the wait summary | `waiting "<s>"` | explicit `working`/`idle`/`done` |
 | `done` | `true` | explicit `done`; `stop` (when `floor` was `user` and nothing else is pending) | a `prompt` event with origin `user`; explicit `working`/`idle`/`blocked`/`waiting`; viewing the row |

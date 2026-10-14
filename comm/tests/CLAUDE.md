@@ -40,7 +40,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-rm-guard.sh`: the retained suite-bootstrap guard check and executed shared-await controls; removal and timing source catalogs are retired, with changed-entry cleanup observed by their owning suites
 - `test-send-routes-to-relay.sh`: a registry miss goes to the wire; a listed handle that is not live is FAILED with nothing appended and no daemon asked, a live one files locally, never both; every script append, inbox redirection and `last_seen` file in the tracked tree is on a pinned list
 - `test-stage-bin.sh`: complete old/new staged bytes, chosen modes, visible failures and owned-temp cleanup through absolute fixture programs
-- `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks and the session-start join, closing markers and the turn auditor
+- `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks and the join's turn mark, closing markers and the turn auditor
 - `test-temp-files.sh`: no messaging script or library call leaves a file in its temporary folders, on success, on failure, killed, or ended by TERM, HUP or INT, and when the signal comes twice, during the trap's rm or back to back; a Ctrl-C during `comm-relay.sh send` stops the shell that ran it; the heartbeat leaves no context capture file in the comm home's state when a signal ends it, and the registry lock and the Stop hook's feedback record go too
 
 ## Start here

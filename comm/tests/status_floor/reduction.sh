@@ -254,10 +254,11 @@ case_explicit_idle_then_stop_stays_idle() {
     expect idle/-/-/-/- stays
 }
 # The turn that joins. The launcher's /sot-session-start turn starts before
-# the session has a row, so its prompt event is a no-op; on a resume (ccb
+# the session has a row, so its prompt event finds none; on a resume (ccb
 # --continue, a reauth leg) it sets a floor that the join's fresh row replaces.
-# Either way the join starts the turn's floor (machine), and that turn's Stop
-# ends it gray: a row opened with a task reads working until then.
+# Either way that prompt left the turn mark, the join starts the turn's floor
+# from it (machine), and that turn's Stop ends it gray: a row opened with a
+# task reads working until then.
 case_the_joining_turn_is_green_until_its_stop() {
     local rc=0
     jq -n '{agents:{}}' > "$REGISTRY"
@@ -277,6 +278,74 @@ case_a_resumed_joining_turn_is_green_and_ends() {
     "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
     expect working/machine/-/-/- joined || rc=1
     I; expect idle/-/-/-/- end || rc=1
+    return "$rc"
+}
+# A floor needs the Stop that ends it, so a join starts one only from a turn
+# mark its own session's prompt left. Each case below first ends any turn an
+# earlier case left running (a stop with no row removes the mark).
+case_a_join_with_hooks_off_starts_no_floor() {
+    local rc=0
+    jq -n '{agents:{}}' > "$REGISTRY"; "$ST" stop >/dev/null
+    SOT_COMM_HOOKS=off W '{"prompt":"/sot-session-start"}'
+    SOT_COMM_HOOKS=off "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
+    expect /-/-/-/- joined || rc=1
+    "$ST" working "the task" >/dev/null
+    expect idle/-/-/-/- declared || rc=1
+    return "$rc"
+}
+# A resume finds the floor its predecessor left if it died mid-turn (the
+# reauth and watchdog restarts follow such deaths). A row's floor names no
+# turn, so the join keeps none of it: a session with its hooks off drops that
+# floor and, with no mark of its own, starts none.
+case_a_hooks_off_resume_drops_a_dead_turns_floor() {
+    jq -n '{agents:{}}' > "$REGISTRY"; "$ST" stop >/dev/null
+    seed_facts '{"floor":"user","state":"working"}'
+    SOT_COMM_HOOKS=off W '{"prompt":"/sot-session-start"}'
+    SOT_COMM_HOOKS=off "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
+    expect /-/-/-/- joined
+}
+# No hooks installed, or a join no turn runs (ccx before codex starts, a probe
+# row): no prompt event, so no mark.
+case_a_join_with_no_prompt_event_starts_no_floor() {
+    jq -n '{agents:{}}' > "$REGISTRY"; "$ST" stop >/dev/null
+    "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
+    expect /-/-/-/- joined
+}
+case_a_join_after_its_turns_stop_starts_no_floor() {
+    jq -n '{agents:{}}' > "$REGISTRY"; "$ST" stop >/dev/null
+    W '{"prompt":"/sot-session-start"}'; I
+    "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
+    expect /-/-/-/- joined
+}
+# A turn that died before its Stop leaves its mark; five minutes on, a join
+# takes it for no turn of its own, starts nothing and removes it.
+case_a_stale_turn_mark_starts_no_floor() {
+    local rc=0 m
+    jq -n '{agents:{}}' > "$REGISTRY"; "$ST" stop >/dev/null
+    W '{"prompt":"/sot-session-start"}'
+    set -- "$SOT_COMM_HOME"/state/turn-*
+    [ -e "$1" ] || { echo "    the prompt event left no turn mark"; return 1; }
+    for m in "$@"; do echo "$(( $(date +%s) - 301 ))" > "$m"; done
+    "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
+    expect /-/-/-/- joined || rc=1
+    set -- "$SOT_COMM_HOME"/state/turn-*
+    [ ! -e "$1" ] || { echo "    the stale mark was kept"; rc=1; }
+    return "$rc"
+}
+# The bootstrap nudge (agents/spawn/comm-bootstrap.sh) asks an unjoined session
+# to run comm-join.sh by hand, under the handle it suggests: the nudge's prompt
+# left the mark in the session's slot, so that join starts the floor of the
+# row it writes, whatever handle the prompt event found, and the Stop ends it.
+case_a_nudged_join_is_green_until_its_stop() {
+    local rc=0 suite="$NAME"
+    local NAME=nudged-handle
+    jq -n '{agents:{}}' > "$REGISTRY"; "$ST" stop >/dev/null
+    W "$(jq -nc '{prompt:"[sot-comm bootstrap from @peer] You have the sot-comm skill but are not joined. Please join and reply."}')"
+    "$SCRIPTS_DIR/comm-join.sh" --name "$NAME" >/dev/null 2>&1
+    expect working/machine/-/-/- joined || rc=1
+    I; expect idle/-/-/-/- end || rc=1
+    sot_write_self_file "$SOT_COMM_SELF_FILE" "$suite" "$REPO" "$PROJECT_ROOT" >/dev/null 2>&1 \
+        || { echo "    could not restore the suite's self-file"; rc=1; }
     return "$rc"
 }
 # A teammate's or subagent's tool call sharing this session id can land
