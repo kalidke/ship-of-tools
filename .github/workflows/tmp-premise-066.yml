@@ -103,7 +103,7 @@ jobs:
               done
               # R1: a junction above the repo, reached in lower case: sot_relative_to needs MAC-PHYS-ROOT's walk and the case fold.
               jn="$base/SotJn$$"
-              cmd //c mklink /J "$(cygpath -w "$jn")" "$(cygpath -w "$base/SotCase$$")" > /dev/null 2>&1 || echo "case J ($leg): mklink /J failed"
+              cmd //c mklink //J "$(cygpath -w "$jn")" "$(cygpath -w "$base/SotCase$$")" > "$RUNNER_TEMP/mklink-$leg.txt" 2>&1 || echo "case J ($leg): mklink //J failed: $(tr -d "\r" < "$RUNNER_TEMP/mklink-$leg.txt")"
               jl="$(printf '%s' "$jn/MixedCaseProj" | tr 'A-Z' 'a-z')"
               echo "case J ($leg): cd -P '$jl' then pwd -P: '$(cd -P "$jl" 2>&1 && pwd -P)'"
               if [ -n "${bin:-}" ] && [ -d "$bin" ]; then
