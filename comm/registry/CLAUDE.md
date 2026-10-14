@@ -12,7 +12,7 @@ may act as it. These scripts resolve the handle, claim it, list the rows and rec
 - `comm-list.sh`: the registry plus the frontend boxes' declared sessions
 - `comm-self-audit.sh`: find slots naming another project
 - `comm-registry-lock-clear.sh`: clear, at once, a lock whose holder this box proves dead
-- `comm-session-start.sh`: the session bootstrap, which joins and prints the work-state rule
+- `comm-session-start.sh`: the session bootstrap, which joins, starts the joining turn's floor and prints the work-state rule
 
 ## Start here
 `comm-join.sh`'s precedence (`--name` > `$SOT_COMM_NAME` > self-file > derive), then `claim_derived_handle` in

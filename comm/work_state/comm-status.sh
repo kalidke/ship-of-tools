@@ -6,7 +6,9 @@
 # Usage:
 #   comm-status.sh <verb> ["text"]
 #
-# Two verbs are EVENTS — sent by hooks, never by the model:
+# Two verbs are EVENTS — sent by hooks, never by the model (comm-session-start.sh
+# also sends `prompt`, origin machine, after its join: the joining turn's own
+# prompt event found no row, or set a floor the join's fresh row replaced):
 #   prompt   a turn is starting. COMM_STATUS_ORIGIN=user|machine (default
 #            machine) names who started it: sets `floor` to the origin; a
 #            USER prompt also clears `question` and `done` (typing into the

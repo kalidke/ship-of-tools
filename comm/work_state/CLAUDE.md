@@ -18,7 +18,8 @@ priority) sits above the `with_lock` call that applies it. For what the Stop hoo
 - The verb, the reduction and the stamp are one jq program run inside `with_lock`, so a writer that commits between
   another's read and write is never overwritten.
 - A declaration (`working`, `idle`, `blocked`, `done`, `waiting`) with nowhere to land fails loudly; an event
-  (`prompt`, `stop`) from a session with no registry row is a silent no-op (`sot_require_agent`).
+  (`prompt`, `stop`) from a session with no registry row is a silent no-op (`sot_require_agent`). So the turn that
+  joins gets its floor from `comm-session-start.sh`, which sends `prompt` (origin machine) after the join.
 - The daemon stamps no fact; it clears only `done`, when a person views the row (`clear_comm_unread` in
   `rust/backend/src/comm/registry/registry.rs`).
 - The auditor fails open: any internal failure, a missing `claude`, `SOT_TURN_AUDITOR=0` or `auditor.off` in the comm

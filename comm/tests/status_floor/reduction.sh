@@ -253,6 +253,32 @@ case_explicit_idle_then_stop_stays_idle() {
     seed idle; "$ST" idle >/dev/null; "$ST" stop >/dev/null
     expect idle/-/-/-/- stays
 }
+# The turn that joins. The launcher's /sot-session-start turn starts before
+# the session has a row, so its prompt event is a no-op; on a resume (ccb
+# --continue, a reauth leg) it sets a floor that the join's fresh row replaces.
+# Either way the join starts the turn's floor (machine), and that turn's Stop
+# ends it gray: a row opened with a task reads working until then.
+case_the_joining_turn_is_green_until_its_stop() {
+    local rc=0
+    jq -n '{agents:{}}' > "$REGISTRY"
+    W '{"prompt":"/sot-session-start"}'
+    [ "$(jq -r --arg n "$NAME" '.agents[$n] // "none"' "$REGISTRY")" = none ] || { echo "    the prompt event made a row"; return 1; }
+    "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
+    expect working/machine/-/-/- joined || rc=1
+    "$ST" working "the task" >/dev/null
+    expect working/machine/-/-/- declared || rc=1
+    I; expect idle/-/-/-/- end || rc=1
+    return "$rc"
+}
+case_a_resumed_joining_turn_is_green_and_ends() {
+    local rc=0
+    seed_facts '{"question":"old?","note":"old"}'
+    W '{"prompt":"/sot-session-start"}'; expect working/user/-/-/- prompt || rc=1
+    "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
+    expect working/machine/-/-/- joined || rc=1
+    I; expect idle/-/-/-/- end || rc=1
+    return "$rc"
+}
 # A teammate's or subagent's tool call sharing this session id can land
 # moments before the owner answers, leaving the heartbeat's 10s throttle
 # tick fresh right when the answer's PostToolUse fires (review finding

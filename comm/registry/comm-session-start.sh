@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # comm-session-start.sh — the deterministic sot-comm receive-bootstrap.
 #
-#   comm-session-start.sh             resolve identity, join,
-#                                      print ONE BOOTSTRAP-ARM line and STOP.
+#   comm-session-start.sh             resolve identity, join, start the
+#                                      joining turn's floor (comm-status.sh
+#                                      prompt, origin machine), print ONE
+#                                      BOOTSTRAP-ARM line and STOP.
 #                                      The daemon wakes the row; there is
 #                                      nothing to arm.
 #
@@ -121,6 +123,13 @@ if [ -z "$HANDLE" ]; then
     echo "BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a"
     exit 0
 fi
+
+# The joining turn's floor. This script runs inside a turn (the skill), and that
+# turn's `prompt` event either found no row (a first start: an event with no row
+# is a no-op) or set a floor that the join's fresh row has just replaced (a
+# resume). So the join starts the floor itself, origin machine: the launcher
+# typed the prompt, and a machine turn ends gray. The turn's Stop ends it.
+COMM_STATUS_ORIGIN=machine "$SCRIPT_DIR/comm-status.sh" prompt >/dev/null 2>&1 || true
 
 IDENTITY="ok"
 [ "$IDENTITY_MISMATCH" = 1 ] && IDENTITY="MISMATCH"
