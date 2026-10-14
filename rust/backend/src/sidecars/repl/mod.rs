@@ -58,6 +58,32 @@ impl std::fmt::Display for ReplBusy {
 
 impl std::error::Error for ReplBusy {}
 
+/// Why a REPL supervisor ended with work unfinished: the error each waiting reply gets, the close-out frame each
+/// streamed eval gets, and `repl.execute`'s outcome (`restarted` for a restart, else `repl_died`). Only a death is one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplEnded {
+    /// Its owner retired it to start another (`Repl::restart_with_project`).
+    Restarted,
+    /// The daemon is shutting down, or the REPL's owner is gone (its row ended).
+    Stopped,
+    /// The child exited, or its pipes failed.
+    Died,
+}
+
+impl std::fmt::Display for ReplEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Restarted => "the REPL was restarted before this eval ended, so it did not finish",
+            Self::Stopped => "the REPL was stopped (its row ended or the daemon is shutting down) before this eval ended",
+            Self::Died => {
+                "REPL process died mid-eval — it respawns on your next eval; the backend log has its stderr tail"
+            }
+        })
+    }
+}
+
+impl std::error::Error for ReplEnded {}
+
 /// Queue one submission without waiting: a full queue is [`ReplBusy`].
 fn enqueue(tx: &mpsc::Sender<Submission>, sub: Submission) -> Result<()> {
     tx.try_send(sub).map_err(|e| match e {
@@ -600,7 +626,7 @@ mod respawn_after_death_tests {
     /// The guard on the new child-exit branch: a child that ANSWERS and then
     /// exits in the same breath must still deliver its answer. The exit branch
     /// is polled last, so the res line it already wrote is routed first — the
-    /// caller gets the reply, not "repl terminated".
+    /// caller gets the reply, not the death's error (`ReplEnded::Died`).
     #[tokio::test]
     async fn a_child_that_answers_then_exits_still_delivers_its_answer() {
         let dir = scratch_dir("answer-then-exit");

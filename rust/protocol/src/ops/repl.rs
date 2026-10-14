@@ -247,7 +247,8 @@ pub struct ReplErrorOut {
 
 /// Response for `repl.execute`. `outcome` is the authoritative terminal state,
 /// derived from the shim's terminal `res` plus the collected frames — one of
-/// `ok | error | busy | interrupted | timeout | repl_died`. Text is bounded
+/// `ok | error | busy | interrupted | timeout | restarted | repl_died` (`restarted`: a restart retired the run before it
+/// ended; `repl_died`: the REPL ended first any other way; `error` says which). Text is bounded
 /// (`truncated` set if a flood was clipped); figures are written to files and
 /// returned as paths (base64 is NOT inlined — it would blow the 1 MiB cap).
 #[derive(Debug, Clone, Serialize, Deserialize)]

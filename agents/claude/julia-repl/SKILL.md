@@ -116,9 +116,11 @@ Use `withenv(...) do … end` so a test tier cannot leak.
 
 **Detecting busy.** Read the `outcome:` token on the first line of the
 output — the exit code does not tell you: 0 only for `ok`, 2 for `busy`,
-`error`, `timeout` and `repl_died` alike. `outcome: busy` means **nothing
+`error`, `timeout`, `restarted` and `repl_died` alike. `outcome: busy` means **nothing
 ran**; your code is fine and someone else's run is in flight. `repl status`
-has no busy bit, so a rejected run is the only way to learn it.
+has no busy bit, so a rejected run is the only way to learn it. `outcome:
+restarted` means a restart (`--fresh`, or `r` in a window) retired your run
+before it ended: it did not finish, and the kernel's `Main` is a new one.
 
 **Timeouts.** `--timeout <s>`, default 120 s, clamped to [1 s, 30 min]. A
 timeout does **not** cancel: you get `outcome: timeout` with partial output

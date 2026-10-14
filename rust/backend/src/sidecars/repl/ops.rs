@@ -223,15 +223,16 @@ pub async fn handle_repl_run_file(
     // Fire-and-forget: queue the run and ack immediately. Frames stream as
     // `repl.frame` evts; the frontend keys completion off the `done` frame.
     if let Err(e) = repl.submit(op::REPL_RUN_FILE, forwarded_payload).await {
+        let error = format!("{e:#}");
         if let Some((id, (frame_ws, frame_tx))) = &announced {
-            super::execute::close_exec_run(frame_tx, frame_ws, *id, 0);
+            super::execute::close_exec_run(frame_tx, frame_ws, *id, 0, Some(&error));
         }
         return Ok(vec![(
             Frame::res(
                 req_id,
                 op::REPL_RUN_FILE,
                 json!({
-                    "error": format!("{e:#}"),
+                    "error": error,
                     "code": submit_code(&e, "repl_run_file_failed"),
                 }),
             ),

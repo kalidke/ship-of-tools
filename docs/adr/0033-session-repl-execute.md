@@ -45,7 +45,7 @@ Request (`ReplExecuteReq`): `workspace_id` (required), `input`
 (default 120 s, clamped [1 s, 30 min]).
 
 Response (`ReplExecuteRes`): an explicit `outcome`
-(`ok | error | busy | interrupted | timeout | repl_died`), `run_id`,
+(`ok | error | busy | interrupted | timeout | restarted | repl_died`), `run_id`,
 `workspace_id`, `elapsed_ms`, **bounded** `stdout`/`stderr`, `values[]`,
 `error{message,stacktrace}`, `figures[]` (file paths), `truncated`,
 `project_dir`/`project_source`.
@@ -61,7 +61,8 @@ Mechanics:
    submission carries both a reply oneshot (captures the `res`, which the shim
    emits on *every* path incl. missing-file) and the collector. Frame ordering
    guarantees all frames precede the `res`, so the collector is complete when the
-   `res` arrives. Child death drains `pending` → `repl_died`. Nothing hangs.
+   `res` arrives. The child's end drains `pending`: `restarted` when a restart
+   retired it, else `repl_died`, and `error` says which. Nothing hangs.
 3. **Bounded response.** stdout/stderr capped in the collector; value/error text
    capped per-field; **images spill to `<ws>/.sot/runs/<run_id>/fig-N.<ext>`**
    (base64 is never inlined) and only paths are returned. The response stays well
@@ -141,7 +142,7 @@ Phase 1 (this ADR) is implemented and verified end-to-end: ok / error+stacktrace
 `Main` state across executes / exit codes. Figure-spill code is in place but not
 yet exercised (the test REPL project had no plotting package).
 
-Phase 2 uses a backend `Started` frame before submit to register a session-originated run in the drawer. The frontend keys it by the dial host and eval_id, deriving its workspace from the frame's hint, and renders origin and display as its prompt. The backend closes every run it announced before returning a repl.execute report: submit failure and a collected result lacking Done receive a synthetic Done, including timeout, repl_died and terminal res-only errors. A collected Done suppresses handler synthesis. Validation before Started creates no run. A timeout closes the report's drawer entry while the underlying eval may still run; this does not deduplicate later child frames. `sot-fe repl … --origin <who>` labels the entry. A `repl.run_file` that carries no `eval_id` is announced the same way: `sot-fe repl run --fresh` sends none, so the daemon numbers the run from this space and sends `Started` after the restart and before the run; the shim's `done`, the close-out of a child that ends first, or a synthetic `Done` on submit failure closes it.
+Phase 2 uses a backend `Started` frame before submit to register a session-originated run in the drawer. The frontend keys it by the dial host and eval_id, deriving its workspace from the frame's hint, and renders origin and display as its prompt. The backend closes every run it announced before returning a repl.execute report: submit failure and a collected result lacking Done receive a synthetic Done, including timeout, restarted, repl_died and terminal res-only errors, and every one but a timeout gets an error frame with the report's error before it, so the entry says why it ended. A collected Done suppresses handler synthesis. Validation before Started creates no run. A timeout closes the report's drawer entry while the underlying eval may still run; this does not deduplicate later child frames. `sot-fe repl … --origin <who>` labels the entry. A `repl.run_file` that carries no `eval_id` is announced the same way: `sot-fe repl run --fresh` sends none, so the daemon numbers the run from this space and sends `Started` after the restart and before the run; the shim's `done`, the close-out of a child that ends first, or a synthetic `Done` on submit failure closes it.
 
 Deferred:
 
