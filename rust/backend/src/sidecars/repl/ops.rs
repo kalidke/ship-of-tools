@@ -559,7 +559,7 @@ mod busy_tests {
 /// daemon sends once the REPL has restarted, under a number from the daemon's own space, and the run's output and its
 /// `done` come under that number: a window's drawer makes an entry only for its own evals and for a `started` frame
 /// (`on_repl_frame_streamed`). A run that was waiting when the restart came still gets its answer, and every window's
-/// entry for it is closed.
+/// entry for it is closed with the reason: a restart says it restarted, a death that it died.
 #[cfg(all(test, unix))]
 mod fresh_tests {
     use super::*;
@@ -582,6 +582,9 @@ done
 
     /// A `julia` stand-in that says it is ready and then reads nothing, as a REPL busy in a loop that never yields.
     const BUSY: &str = "#!/bin/sh\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nexec sleep 60\n";
+
+    /// A `julia` stand-in that says it is ready, reads two requests and exits: it dies with both in flight.
+    const DIES: &str = "#!/bin/sh\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nread -r a\nread -r b\nexit 3\n";
 
     /// A row whose REPL child is `stub`, a script `fresh.jl` in it, and the frame bus every window reads. Fields drop
     /// in order: the row and its child first, then the environment pin, then the folder.
@@ -617,18 +620,47 @@ done
         Row { session: Session::new(), workspaces, id, script, bus, _pin: pin, _tmp: tmp }
     }
 
-    /// The next frame every window gets, as (eval id, kind), failing the test after 30 s.
-    async fn next(bus: &mut tokio::sync::broadcast::Receiver<crate::sidecars::repl::ReplFrameMsg>) -> (u64, String) {
+    /// The next frame every window gets, as (eval id, frame), failing the test after 30 s.
+    async fn next_frame(
+        bus: &mut tokio::sync::broadcast::Receiver<crate::sidecars::repl::ReplFrameMsg>,
+    ) -> (u64, serde_json::Value) {
         let msg = tokio::time::timeout(Duration::from_secs(30), bus.recv())
             .await
             .expect("a frame within 30 s")
             .expect("the frame bus");
-        let kind = msg.frame["kind"].as_str().unwrap_or("").to_string();
-        let kind = match msg.frame["state"].as_str() {
+        (msg.eval_id, msg.frame)
+    }
+
+    /// The next frame every window gets, as (eval id, kind), failing the test after 30 s.
+    async fn next(bus: &mut tokio::sync::broadcast::Receiver<crate::sidecars::repl::ReplFrameMsg>) -> (u64, String) {
+        let (eval_id, frame) = next_frame(bus).await;
+        let kind = frame["kind"].as_str().unwrap_or("").to_string();
+        let kind = match frame["state"].as_str() {
             Some(state) => format!("{kind} {state}"),
             None => kind,
         };
-        (msg.eval_id, kind)
+        (eval_id, kind)
+    }
+
+    /// Every frame every window gets until `dones` runs are closed, and the message of each `error` frame among them,
+    /// each checked to come before its run's `done`.
+    async fn until_closed(
+        bus: &mut tokio::sync::broadcast::Receiver<crate::sidecars::repl::ReplFrameMsg>,
+        dones: usize,
+    ) -> (Vec<(u64, serde_json::Value)>, Vec<String>) {
+        let mut seen: Vec<(u64, serde_json::Value)> = Vec::new();
+        while seen.iter().filter(|(_, f)| f["kind"] == "done").count() < dones {
+            seen.push(next_frame(bus).await);
+        }
+        let mut said = Vec::new();
+        for (at, (id, frame)) in seen.iter().enumerate() {
+            if frame["kind"] == "error" {
+                let closed = seen[at..].iter().any(|(i, f)| i == id && f["kind"] == "done");
+                assert!(closed, "the reason comes before its run's done: {seen:?}");
+                said.push(frame["message"].as_str().unwrap_or("").to_string());
+            }
+        }
+        (seen, said)
     }
 
     /// The payload `sot-fe repl run <ws> <path> --fresh` sends (agents/sot-fe/sot-fe-repl.sh `send_repl_run_file`).
@@ -679,12 +711,33 @@ done
         let waited = t0.elapsed();
         let answer = answered.expect("handler")[0].0.payload.clone();
         assert_eq!(restarted[0].0.payload["accepted"], true, "{}", restarted[0].0.payload);
+        // Two runs were cut short: the window's eval and the waiting execute. Each entry closes with the reason.
+        let (seen, said) = until_closed(&mut r.bus, 2).await;
+        println!("repl-retire: the waiting run answered {answer} after {waited:?}; every window got {seen:?}");
+        assert_eq!(answer["outcome"], "restarted", "the answer names the restart: {answer}");
+        let error = answer["error"]["message"].as_str().unwrap_or("");
+        assert!(error.contains("restarted"), "the answer says why: {answer}");
+        assert_eq!(said.len(), 2, "each run's entry says why it closed: {said:?}");
+        assert!(said.iter().all(|m| m.contains("restarted") && !m.contains("died")), "a restart is no death: {said:?}");
+    }
+
+    #[tokio::test]
+    async fn a_run_waiting_when_the_repl_dies_is_answered_died() {
+        let mut r = row(DIES);
+        let first = json!({ "workspace_id": r.id, "eval_id": 1, "code": "1" });
+        handle_repl_eval(1, first, &r.session, &r.workspaces).await.expect("setup: the eval starts the child");
+        let state = || r.workspaces.resolve(Some(&r.id)).map(|w| w.repl_state()).unwrap_or("none");
+        within(Duration::from_secs(30), "the child is ready", || state() == "ready").await;
+        let waiting = json!({ "workspace_id": r.id, "input": { "kind": "eval", "code": "1" }, "timeout_ms": 60_000 });
+        let execute = crate::sidecars::repl::execute::handle_repl_execute(2, waiting, &r.session, &r.workspaces);
+        let answered = tokio::time::timeout(Duration::from_secs(20), execute).await.expect("answered within 20 s");
+        let answer = answered.expect("handler")[0].0.payload.clone();
+        let (seen, said) = until_closed(&mut r.bus, 2).await;
+        println!("repl-retire: a death answered {answer}; every window got {seen:?}");
         assert_eq!(answer["outcome"], "repl_died", "{answer}");
-        let run: u64 = answer["run_id"].as_str().and_then(|s| s.strip_prefix("exec-")).and_then(|n| n.parse().ok()).expect("run_id");
-        let mut seen = Vec::new();
-        while !seen.contains(&(run, "done".to_string())) {
-            seen.push(next(&mut r.bus).await);
-        }
-        println!("repl-fresh: the waiting run answered outcome {} after {waited:?}; every window got {seen:?}", answer["outcome"]);
+        let error = answer["error"]["message"].as_str().unwrap_or("");
+        assert!(error.contains("died"), "the answer says why: {answer}");
+        assert_eq!(said.len(), 2, "each run's entry says why it closed: {said:?}");
+        assert!(said.iter().all(|m| m.contains("died")), "a death still says died: {said:?}");
     }
 }

@@ -110,12 +110,14 @@ async fn run_case(
     Ran { reply, elapsed, run_id, eval_id, frames: msgs.into_iter().map(|m| m.frame).collect() }
 }
 
-/// A report whose run was announced ends with the run closed: the handler's `done` carries this run's id.
+/// A report whose run was announced and ended unfinished ends with the run closed, once: the handler's `error` frame
+/// carries the report's error, so the drawer says why, and its `done` this run's id.
 fn assert_closed_once(r: &Ran) {
-    assert_eq!(r.frames.len(), 2, "started, then exactly one done: {:?}", r.frames);
+    assert_eq!(r.frames.len(), 3, "started, the reason, then exactly one done: {:?}", r.frames);
     assert_eq!(r.frames[0]["kind"], "started");
-    assert_eq!(r.frames[1]["kind"], "done");
-    assert_eq!(r.frames[1]["eval_id"], r.eval_id);
+    assert_eq!(r.frames[1], json!({ "kind": "error", "message": r.reply["error"]["message"], "stacktrace": [] }));
+    assert_eq!(r.frames[2]["kind"], "done");
+    assert_eq!(r.frames[2]["eval_id"], r.eval_id);
 }
 
 /// A submit that fails (no julia to start): `repl_died` with the error, and the announced drawer entry closed.
@@ -136,11 +138,11 @@ async fn submit_failure_closes_started_run() {
 
     let (id, _) = add_row(&workspaces, &dir, "nojulia");
     let mut r = run_case(&workspaces, &session, &mut bus, "nojulia", eval_payload(&id, "1", None)).await;
+    assert_closed_once(&r);
     let message = r.reply["error"]["message"].as_str().unwrap().to_string();
     assert!(message.starts_with("repl submit failed: "), "{message}");
     r.reply["error"]["message"] = json!("repl submit failed: ...");
     assert_eq!(r.reply, refusal(&id, "repl_died", "repl submit failed: ..."));
-    assert_closed_once(&r);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -288,7 +290,14 @@ mod shell_table {
         let (id, _) = add_row(&workspaces, &dir, "coderow");
         let r = run_case(&workspaces, &session, &mut bus, "coderow", eval_payload(&id, "case-rescode", None)).await;
         assert_eq!(r.reply, refusal(&id, "error", "nope"));
-        assert_eq!(r.frames, [started(&r.run_id, "case-rescode"), json!({ "kind": "done", "eval_id": r.eval_id, "elapsed_ms": r.elapsed })]);
+        assert_eq!(
+            r.frames,
+            [
+                started(&r.run_id, "case-rescode"),
+                json!({ "kind": "error", "message": "nope", "stacktrace": [] }),
+                json!({ "kind": "done", "eval_id": r.eval_id, "elapsed_ms": r.elapsed }),
+            ]
+        );
 
         // timeout: the run is left going, the drawer entry is closed by a done frame.
         let (id, _) = add_row(&workspaces, &dir, "hangrow");
@@ -298,12 +307,14 @@ mod shell_table {
         let closed = json!({ "kind": "done", "eval_id": r.eval_id, "elapsed_ms": r.elapsed });
         assert_eq!(r.frames, [started(&r.run_id, "case-hang"), closed]);
 
-        // repl_died: the child exits without answering.
+        // repl_died: the child exits without answering, and the report and the drawer say it died.
         let (id, _) = add_row(&workspaces, &dir, "diedrow");
         let r = run_case(&workspaces, &session, &mut bus, "diedrow", eval_payload(&id, "case-die", None)).await;
-        assert_eq!(r.reply, empty_report(&id, "repl_died"));
+        let died = "REPL process died mid-eval — it respawns on your next eval; the backend log has its stderr tail";
+        assert_eq!(r.reply, refusal(&id, "repl_died", died));
         let closed = json!({ "kind": "done", "eval_id": r.eval_id, "elapsed_ms": r.elapsed });
-        assert_eq!(r.frames, [started(&r.run_id, "case-die"), closed]);
+        let reason = json!({ "kind": "error", "message": died, "stacktrace": [] });
+        assert_eq!(r.frames, [started(&r.run_id, "case-die"), reason, closed]);
 
         // run_file: the canonical path is what the REPL is asked to run.
         let (id, root) = add_row(&workspaces, &dir, "filerow");
@@ -361,11 +372,11 @@ mod shell_table {
         std::env::set_var("SOT_JULIA_BIN", dir.join("no-such-julia"));
         let mut r = run_case(&workspaces, &session, &mut bus, "nojulia", eval_payload(&id, "case-ok", None)).await;
         std::env::set_var("SOT_JULIA_BIN", &julia);
+        assert_closed_once(&r);
         let message = r.reply["error"]["message"].as_str().unwrap().to_string();
         assert!(message.starts_with("repl submit failed: "), "{message}");
         r.reply["error"]["message"] = json!("repl submit failed: ...");
         assert_eq!(r.reply, refusal(&id, "repl_died", "repl submit failed: ..."));
-        assert_closed_once(&r);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
