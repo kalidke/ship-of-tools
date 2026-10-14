@@ -91,7 +91,7 @@ pub(super) async fn take_daemon_lock(
 }
 
 /// Whether nothing listens on the socket at `path`, from what a probe's `connect_own` returned: the socket is missing
-/// (`NotFound`) or its file is stale (`ConnectionRefused`, the kernel's answer when nobody calls `accept`). Anything
+/// (`NotFound`) or its file is stale (`ConnectionRefused`, the kernel's answer when no socket listens on it). Anything
 /// else, an answer from this account, another account's listener, a listener whose backlog is full (the connector
 /// gave up at `CONNECT_BOUND`) or an error that cannot tell, is a listener or is not known to be none.
 #[cfg(unix)]
@@ -416,18 +416,47 @@ mod tests {
         (dir, path)
     }
 
-    /// The daemon's start probes read a missing socket and a stale socket file (nobody calls `accept`) as nothing
+    /// A socket bound at `path` that never listens. A connect to its file is refused while the socket is open, and
+    /// after: no copy of it, in this process or in a child that inherited one, makes the file a listener's.
+    #[cfg(unix)]
+    fn unlistened_socket(path: &std::path::Path) -> std::os::fd::OwnedFd {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::ffi::OsStrExt;
+        #[cfg(target_os = "linux")]
+        let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+        #[cfg(not(target_os = "linux"))]
+        let kind = libc::SOCK_STREAM;
+        // SAFETY: plain syscalls on a socket this function creates and returns.
+        unsafe {
+            let fd = libc::socket(libc::AF_UNIX, kind, 0);
+            assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+            let socket = std::os::fd::OwnedFd::from_raw_fd(fd);
+            let mut addr: libc::sockaddr_un = std::mem::zeroed();
+            addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+            for (dst, &b) in addr.sun_path.iter_mut().zip(path.as_os_str().as_bytes()) {
+                *dst = b as libc::c_char;
+            }
+            let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+            let bound = libc::bind(fd, std::ptr::addr_of!(addr).cast(), len);
+            assert_eq!(bound, 0, "bind: {}", std::io::Error::last_os_error());
+            socket
+        }
+    }
+
+    /// The daemon's start probes read a missing socket and a stale socket file (no socket listens on it) as nothing
     /// listening, so a crashed daemon's leftover does not block a restart, and a listener this account serves as one.
+    /// The stale file is a socket that never listened, not the listener after its drop: this test binary's other tests
+    /// start children, and a child forked while the listener is open holds it, listening, until its exec.
     #[cfg(unix)]
     #[test]
     fn the_start_probes_tell_missing_and_stale_from_live() {
-        let (_dir, path) = probe_socket_path();
+        let (dir, path) = probe_socket_path();
         assert!(
             refuse_live_socket(&path).is_ok(),
             "a missing socket is not a listener"
         );
         assert!(!socket_answers(&path));
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
         let refusal = refuse_live_socket(&path)
             .expect_err("a live listener refuses the start")
             .to_string();
@@ -436,13 +465,20 @@ mod tests {
             "{refusal}"
         );
         assert!(socket_answers(&path));
-        drop(listener);
-        assert!(path.exists(), "the stale socket file is still there");
+        let stale = dir.path().join("t.sock");
+        let socket = unlistened_socket(&stale);
         assert!(
-            refuse_live_socket(&path).is_ok(),
+            refuse_live_socket(&stale).is_ok(),
+            "a socket file nobody listens on is not a listener while its socket is open"
+        );
+        assert!(!socket_answers(&stale));
+        drop(socket);
+        assert!(stale.exists(), "the stale socket file is still there");
+        assert!(
+            refuse_live_socket(&stale).is_ok(),
             "a stale socket file is not a listener"
         );
-        assert!(!socket_answers(&path));
+        assert!(!socket_answers(&stale));
     }
 
     /// One nonblocking `connect(2)` to `path`: a queued connection is returned; `None` is the full-backlog `EAGAIN`.
