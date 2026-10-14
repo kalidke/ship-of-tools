@@ -132,6 +132,19 @@ migration mechanism, not two.
    their existing pacing; no ssh starts. Only the host's control transport writes
    the gate, and `LinkGate::probe` is the one ungated ssh spawn.
 
+   **AMENDED 2026-10-14 (0.6.6), a login in flight ends with its link.** This extends the 2026-10-01 sentence
+   "`TransportError::LinkDown` ... is returned by a lane dial over ssh while that host's `LinkGate` is down, before
+   any child is spawned". A login already in flight when the link went down ran on until its own bound, which decision
+   3's 2026-10-13 amendment raised to `SSH_LOGIN_BOUND` (30 s); so after a blip the viewed pane waited up to 30 s,
+   where decision 11's 2026-10-01 amendment promises a tick after the transport's hello reply. Now the gate watches
+   every login through it from before the login starts until its reply (`LinkGate::watch`, `LinkWatch`): a lane
+   dial's handshake over ssh or a hub relay, the parked voyage spare, and a page proxy's handshake. A close of the
+   gate cancels each handshake in flight that it watches. The lane dial then returns `LinkDown`, so the worker pauses
+   for the link and dials within a tick of its return. A spare parked before a close is never used after it: it
+   drops, its child ended, at the first voyage or when its attempt is abandoned. A page proxy's browser connection
+   closes as on a down link. A stream past its reply is not a login and ends on its own. Invariant: no login is used
+   or waited for after the link it started on has closed, as the window's control connection sees that link.
+
 5. **An `Endpoint` is a value; the row is named once.** The four trait
    methods take `&self`; `PipeEndpoint`/`SocketEndpoint` become unit
    values. `attach`/`attach_headless` take `(endpoint, lane, …)` in

@@ -14,8 +14,8 @@ fn spare_endpoint() -> DaemonLaneEndpoint {
 fn a_first_voyage_dial_takes_the_spare_the_supervisor_dial_started() {
     let ep = spare_endpoint();
     ep.start_spare(|| BridgedClient::wrap(spawn_stub_child()).map_err(TransportError::Unreachable));
-    assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Parked(_)), "the supervisor must park its voyage login");
-    let spare = ep.take_spare().expect("the first voyage consumes the live spare");
+    assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Parked(..)), "the supervisor must park its voyage login");
+    let (spare, _) = ep.take_spare().expect("the first voyage consumes the live spare");
     assert!(!spare.exited());
     assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Spent));
     ep.start_spare(|| panic!("a spent endpoint must start no spare"));
@@ -39,7 +39,7 @@ fn a_second_supervisor_dial_starts_no_second_spare() {
 fn a_dead_spare_is_dropped_not_used() {
     let ep = spare_endpoint();
     ep.start_spare(|| BridgedClient::wrap(spawn_stub_child()).map_err(TransportError::Unreachable));
-    if let VoyageSpare::Parked(c) = &*ep.spare.lock().unwrap() {
+    if let VoyageSpare::Parked(c, _) = &*ep.spare.lock().unwrap() {
         c.cancel();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !c.exited() {
@@ -99,7 +99,7 @@ fn ssh_step(ep: &DaemonLaneEndpoint, kind: &str) -> Result<DaemonLaneClient, Tra
 
 fn parked_pid(ep: &DaemonLaneEndpoint) -> u32 {
     match &*ep.spare.lock().unwrap() {
-        VoyageSpare::Parked(child) => child.child.lock().unwrap().id(),
+        VoyageSpare::Parked(child, _) => child.child.lock().unwrap().id(),
         _ => panic!("the supervisor must park a spare"),
     }
 }
@@ -123,7 +123,7 @@ fn ssh_spare_spawn_and_consume_counts() {
         let (ep, calls) = counted_endpoint(failed_spawn, None);
         for (kind, expected) in ["supervisor", "supervisor", "voyage", "supervisor", "voyage"].into_iter().zip(counts) {
             let parked_pid = match &*ep.spare.lock().unwrap() {
-                VoyageSpare::Parked(child) => Some(child.child.lock().unwrap().id()),
+                VoyageSpare::Parked(child, _) => Some(child.child.lock().unwrap().id()),
                 _ => None,
             };
             let client = ssh_step(&ep, kind).expect("ordinary login succeeds");
@@ -149,7 +149,7 @@ fn ssh_spare_spawn_and_consume_counts() {
 fn a_dead_spare_uses_one_fresh_voyage_login() {
     let (ep, calls) = counted_endpoint(None, None);
     drop(ssh_step(&ep, "supervisor").unwrap());
-    if let VoyageSpare::Parked(client) = &*ep.spare.lock().unwrap() {
+    if let VoyageSpare::Parked(client, _) = &*ep.spare.lock().unwrap() {
         client.cancel();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !client.exited() {
@@ -221,14 +221,14 @@ fn endpoint_destruction_reaps_the_parked_spare() {
     drop(ssh_step(&ep, "supervisor").unwrap());
     #[cfg(windows)]
     let process = match &*ep.spare.lock().unwrap() {
-        VoyageSpare::Parked(c) => {
+        VoyageSpare::Parked(c, _) => {
             use std::os::windows::io::AsHandle;
             c.child.lock().unwrap().as_handle().try_clone_to_owned().unwrap()
         }
         _ => panic!("no parked spare"),
     };
     let (mut output, pid) = match &*ep.spare.lock().unwrap() {
-        VoyageSpare::Parked(c) => {
+        VoyageSpare::Parked(c, _) => {
             assert!(c.child.lock().unwrap().try_wait().unwrap().is_none(), "the owned spare is alive before destruction");
             (c.out.try_clone().unwrap(), c.child.lock().unwrap().id())
         }
@@ -258,7 +258,7 @@ fn abandonment_rearms_only_before_the_first_voyage() {
     let (ep, calls) = counted_endpoint(None, None);
     drop(ssh_step(&ep, "supervisor").unwrap());
     let (mut output, pid) = match &*ep.spare.lock().unwrap() {
-        VoyageSpare::Parked(child) => (child.out.try_clone().unwrap(), child.child.lock().unwrap().id()),
+        VoyageSpare::Parked(child, _) => (child.out.try_clone().unwrap(), child.child.lock().unwrap().id()),
         _ => panic!("the initial supervisor parks its spare"),
     };
     assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -280,4 +280,23 @@ fn abandonment_rearms_only_before_the_first_voyage() {
     ep.drop_spare();
     for kind in ["supervisor", "voyage"] { drop(ssh_step(&ep, kind).unwrap()); }
     assert_eq!(calls.load(Ordering::SeqCst), 6, "cleanup after Spent never rearms a spare");
+}
+
+/// A spare parked before its host's link closed is never used after the link returns: on the dead connection its
+/// handshake would hold the first voyage until `SSH_LOGIN_BOUND`. That voyage makes one fresh login instead, and the
+/// spare is reaped by the time it returns.
+#[test]
+fn a_spare_parked_before_a_link_close_is_not_used_after_it() {
+    let (ep, calls) = counted_endpoint(None, None);
+    let LaneDial::Ssh(_, gate) = &ep.dial else { unreachable!() };
+    drop(ssh_step(&ep, "supervisor").unwrap());
+    let spare = parked_pid(&ep);
+    gate.set_up(false);
+    gate.set_up(true);
+    let voyage = ssh_step(&ep, "voyage").expect("one fresh voyage login answers");
+    assert_ne!(voyage.peer.pid, spare, "the first voyage used the spare parked before the link closed");
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "the first voyage makes one fresh login");
+    #[cfg(unix)]
+    assert_reaped(spare, "the spare parked before the link closed is reaped before the voyage returns");
+    assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Spent));
 }
