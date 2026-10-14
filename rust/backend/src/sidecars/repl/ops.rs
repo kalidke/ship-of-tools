@@ -495,9 +495,11 @@ mod busy_tests {
         let row = deaf_row().await;
         let t0 = std::time::Instant::now();
         let interrupt = handle_repl_interrupt(1, json!({ "workspace_id": row.id }), &row.session, &row.workspaces);
-        let unanswered = bounded("an interrupt", interrupt).await;
+        let unanswered = bounded("an interrupt", interrupt).await.expect("handler");
         let waited = t0.elapsed();
-        assert_eq!(code_of(&unanswered.expect("handler")), "repl_interrupt_failed");
+        assert_eq!(code_of(&unanswered), "repl_interrupt_failed");
+        let error = unanswered[0].0.payload["error"].as_str().unwrap_or("").to_string();
+        assert!(error.contains("--fresh"), "the error names the restart that ends a non-yielding eval: {error}");
         let bound = Duration::from_secs(10);
         assert!(waited >= bound && waited < bound + Duration::from_secs(5), "{waited:?}");
         println!("repl-busy: an unanswered interrupt -> repl_interrupt_failed after {waited:?}");
@@ -527,5 +529,139 @@ mod busy_tests {
             "repl-busy: 20 evals to a full queue -> {} accepted, {busy} repl_busy; then interrupt -> repl_busy, execute -> busy",
             20 - busy
         );
+    }
+}
+
+/// `sot-fe repl run --fresh` numbers no run of its own. Every window learns of the run from the `started` frame the
+/// daemon sends once the REPL has restarted, under a number from the daemon's own space, and the run's output and its
+/// `done` come under that number: a window's drawer makes an entry only for its own evals and for a `started` frame
+/// (`on_repl_frame_streamed`). A run that was waiting when the restart came still gets its answer, and every window's
+/// entry for it is closed.
+#[cfg(all(test, unix))]
+mod fresh_tests {
+    use super::*;
+    use crate::sidecars::contract_tests::{pin_env, within, EnvPin};
+    use std::time::Duration;
+
+    /// A `julia` stand-in: it says it is ready, then answers each request with one line of output, its `done` and its
+    /// `res`, under the request's `eval_id` (0 when it has none).
+    const ANSWERS: &str = r#"#!/bin/sh
+printf '{"v":1,"id":0,"kind":"evt","op":"repl.ready","payload":{}}\n'
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -e 's/.*"id":\([0-9]*\).*/\1/')
+  eid=$(printf '%s' "$line" | sed -n -e 's/.*"eval_id":\([0-9]*\).*/\1/p')
+  eid=${eid:-0}
+  printf '{"v":1,"id":%s,"kind":"evt","op":"repl.frame","payload":{"eval_id":%s,"frame":{"kind":"stdout","text":"ran\\n"}}}\n' "$id" "$eid"
+  printf '{"v":1,"id":%s,"kind":"evt","op":"repl.frame","payload":{"eval_id":%s,"frame":{"kind":"done","eval_id":%s,"elapsed_ms":1}}}\n' "$id" "$eid" "$eid"
+  printf '{"v":1,"id":%s,"kind":"res","op":"repl.run_file","payload":{}}\n' "$id"
+done
+"#;
+
+    /// A `julia` stand-in that says it is ready and then reads nothing, as a REPL busy in a loop that never yields.
+    const BUSY: &str = "#!/bin/sh\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nexec sleep 60\n";
+
+    /// A row whose REPL child is `stub`, a script `fresh.jl` in it, and the frame bus every window reads. Fields drop
+    /// in order: the row and its child first, then the environment pin, then the folder.
+    struct Row {
+        session: Session,
+        workspaces: Workspaces,
+        id: String,
+        script: String,
+        bus: tokio::sync::broadcast::Receiver<crate::sidecars::repl::ReplFrameMsg>,
+        _pin: EnvPin,
+        _tmp: tempfile::TempDir,
+    }
+
+    fn row(stub: &str) -> Row {
+        let tmp = tempfile::Builder::new().prefix("sot-repl-fresh-").tempdir().unwrap();
+        let dir = tmp.path();
+        let resources = dir.join("resources");
+        std::fs::create_dir_all(resources.join("julia").join("repl")).unwrap();
+        let root = dir.join("row");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Project.toml"), "").unwrap();
+        std::fs::write(root.join("fresh.jl"), "1\n").unwrap();
+        let julia = dir.join("julia");
+        sot_log::test_exec::write_executable(&julia, stub);
+        let pin = pin_env(&julia, &resources);
+        let (frame_tx, bus) = tokio::sync::broadcast::channel(256);
+        let workspaces = Workspaces::new();
+        workspaces.set_repl_frame_tx(frame_tx);
+        let ws = crate::rows::Workspace::from_label("freshrow", root.clone(), false, "none".into(), String::new(), String::new());
+        let id = ws.workspace_id.clone();
+        workspaces.insert(ws);
+        let script = root.join("fresh.jl").to_string_lossy().into_owned();
+        Row { session: Session::new(), workspaces, id, script, bus, _pin: pin, _tmp: tmp }
+    }
+
+    /// The next frame every window gets, as (eval id, kind), failing the test after 30 s.
+    async fn next(bus: &mut tokio::sync::broadcast::Receiver<crate::sidecars::repl::ReplFrameMsg>) -> (u64, String) {
+        let msg = tokio::time::timeout(Duration::from_secs(30), bus.recv())
+            .await
+            .expect("a frame within 30 s")
+            .expect("the frame bus");
+        let kind = msg.frame["kind"].as_str().unwrap_or("").to_string();
+        let kind = match msg.frame["state"].as_str() {
+            Some(state) => format!("{kind} {state}"),
+            None => kind,
+        };
+        (msg.eval_id, kind)
+    }
+
+    /// The payload `sot-fe repl run <ws> <path> --fresh` sends (agents/sot-fe/sot-fe-repl.sh `send_repl_run_file`).
+    fn fresh(r: &Row) -> serde_json::Value {
+        json!({ "workspace_id": r.id, "path": r.script, "fresh": true })
+    }
+
+    #[tokio::test]
+    async fn a_fresh_run_is_announced_to_every_window_under_the_daemons_number() {
+        let mut r = row(ANSWERS);
+        let out = handle_repl_run_file(1, fresh(&r), &r.session, &r.workspaces).await.expect("handler");
+        let ack = out[0].0.payload.clone();
+        assert_eq!(ack["accepted"], true, "{ack}");
+        let mut seen = Vec::new();
+        while !seen.iter().any(|(_, kind): &(u64, String)| kind == "done") {
+            seen.push(next(&mut r.bus).await);
+        }
+        println!("repl-fresh: every window got {seen:?}; the ack's eval_id is {}", ack["eval_id"]);
+        let Some(started) = seen.iter().position(|(_, kind)| kind == "started") else {
+            panic!("no started frame: no window makes a drawer entry for the run, so its output reaches none: {seen:?}");
+        };
+        let number = seen[started].0;
+        assert!(number >= 1 << 40, "the run's number is the daemon's, never a window's own: {seen:?}");
+        let output: Vec<&(u64, String)> = seen.iter().filter(|(_, kind)| kind == "stdout" || kind == "done").collect();
+        assert!(output.iter().all(|(id, _)| *id == number), "the output and done come under the announced number: {seen:?}");
+        let first = seen.iter().position(|(_, kind)| kind == "stdout").expect("the run's output");
+        assert!(started < first, "the announcement comes before the output: {seen:?}");
+        assert_eq!(ack["eval_id"], number, "the ack names the announced run");
+    }
+
+    #[tokio::test]
+    async fn a_run_waiting_when_fresh_restarts_the_repl_is_answered_and_closed() {
+        let mut r = row(BUSY);
+        let first = json!({ "workspace_id": r.id, "eval_id": 1, "code": "1" });
+        handle_repl_eval(1, first, &r.session, &r.workspaces).await.expect("setup: the eval starts the child");
+        let state = || r.workspaces.resolve(Some(&r.id)).map(|w| w.repl_state()).unwrap_or("none");
+        within(Duration::from_secs(30), "the child is ready", || state() == "ready").await;
+        let waiting = json!({ "workspace_id": r.id, "input": { "kind": "eval", "code": "while true end" }, "timeout_ms": 60_000 });
+        let t0 = std::time::Instant::now();
+        let execute = crate::sidecars::repl::execute::handle_repl_execute(2, waiting, &r.session, &r.workspaces);
+        let restart = async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            handle_repl_run_file(3, fresh(&r), &r.session, &r.workspaces).await.expect("handler")
+        };
+        let (answered, restarted) = tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(execute, restart) })
+            .await
+            .expect("the waiting run is answered within 20 s of a --fresh");
+        let waited = t0.elapsed();
+        let answer = answered.expect("handler")[0].0.payload.clone();
+        assert_eq!(restarted[0].0.payload["accepted"], true, "{}", restarted[0].0.payload);
+        assert_eq!(answer["outcome"], "repl_died", "{answer}");
+        let run: u64 = answer["run_id"].as_str().and_then(|s| s.strip_prefix("exec-")).and_then(|n| n.parse().ok()).expect("run_id");
+        let mut seen = Vec::new();
+        while !seen.contains(&(run, "done".to_string())) {
+            seen.push(next(&mut r.bus).await);
+        }
+        println!("repl-fresh: the waiting run answered outcome {} after {waited:?}; every window got {seen:?}", answer["outcome"]);
     }
 }
