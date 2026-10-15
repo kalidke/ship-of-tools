@@ -90,6 +90,15 @@ section is the design built to it; where the two differ, the guarantee wins.
   account owns an accepted connection and drops it, before reading a byte, unless the
   account is its own. The URL's secret stays as a second lock, because the owner check
   admits every page the user's own browser loads.
+- **A user-code child's X display is the one listener another account can reach.** On
+  Linux each REPL and Pluto child has an Xvfb of its own, which listens only on an
+  abstract socket. Such a socket has no permissions, and Xvfb offers no stricter
+  listener, so any account on the computer can connect to it, and the X server reads
+  that connection's setup before it refuses it. A 128-bit cookie, read once when the
+  server starts and kept in the child's own folder, is its only lock. When that server
+  ends, any account can bind its name, so the child ends with it, together with what it
+  started in its process group, and gets a new display at its next start. Every process
+  whose environment names that display's cookie ends with it too.
 - **Two OS users on one hub account get a loud refusal.** When a second OS user's hello
   reaches a hub for a host that a first OS user already holds through the same hub
   account, the hub refuses it with an error reply and closes the connection; nothing is
