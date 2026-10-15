@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # comm-send.sh — send a message to one agent or broadcast to all.
-# Usage: comm-send.sh @name "message"
-#        comm-send.sh --broadcast "message"
+# Usage: comm-send.sh @name 'message'
+#        comm-send.sh --broadcast 'message'
+#
+# Quote the message in single quotes: the shell still reads a double-quoted
+# message, so a backquote or `$( )` in it runs as a command and its text drops
+# out, and a message that holds a single quote closes and reopens the quote, as
+# `'it'\''s'`.
 #
 # `filed -> @name` means the line is in the inbox of a handle a live session
 # holds, and is the whole verdict: a filed frame is read by the recipient's
@@ -35,7 +40,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-[ -z "$MSG" ] && { echo "usage: comm-send.sh @name \"msg\" | --broadcast \"msg\"" >&2; exit 1; }
+[ -z "$MSG" ] && { echo "usage: comm-send.sh @name 'msg' | --broadcast 'msg'" >&2; exit 1; }
 
 # refuse WHY — the send's one result when it stops before any recipient: FAILED with WHY, then exit 1.
 refuse() {

@@ -9,7 +9,7 @@ Send messages between Ship of Tools/Claude sessions. Discovery + durable
 inboxes live under `~/.sot-comm/`. Full contract: `comm/PROTOCOL.md`.
 
 **What a session is told at start.** `comm-context.sh` prints your handle. Send
-with `comm-send.sh @handle "text"` and read its one result. When
+with `comm-send.sh @handle 'text'` and read its one result. When
 `[sot-comm] you have mail` appears, or your end-of-turn check says so, run
 `comm-poll.sh`; if it says the inbox is being written (exit 75), run it again.
 To wait for a reply, end your turn. Run the session-start step
@@ -31,8 +31,8 @@ new mail only at its own next turn.
 |--------|---------|
 | Join (once per session; `/sot-session-start` does it) | `comm-join.sh --expertise "a, b"` (the handle is derived: folder name plus box name, unless the launcher pinned one) |
 | Who's online | `comm-list.sh` |
-| Direct message | `comm-send.sh @<name> "message"` |
-| Broadcast | `comm-send.sh --broadcast "message"` |
+| Direct message | `comm-send.sh @<name> 'message'` |
+| Broadcast | `comm-send.sh --broadcast 'message'` |
 | Check inbox | `comm-poll.sh` |
 | Leave (removes the row) | `comm-leave.sh` |
 | Spawn a new agent for a task | `comm-spawn.sh <name> <repo-path> --expertise "..." --task "..."` |
@@ -40,6 +40,11 @@ new mail only at its own next turn.
 | Show a result in the FE | `sot-fe preview <ws> <path>` (badge-floor — never force-switches the user's view) |
 
 (All paths are `~/.sot-comm/bin/<script>`.)
+
+Quote the message in single quotes: the shell still reads a double-quoted
+message, so a backquote or `$( )` in it runs as a command and its text drops
+out, and a message that holds a single quote closes and reopens the quote, as
+`'it'\''s'`.
 
 ## Work-state (mostly automatic)
 
@@ -82,7 +87,7 @@ don't re-send or block-wait — set `comm-status.sh waiting "..."` and end the
 turn; you'll see the reply at your next turn boundary, or be typed into if
 you're sitting at a free prompt when it lands. Re-send only with positive
 evidence the message was lost (peer was deaf or restarted).
-`comm-send.sh @handle "msg"` reaches anyone, same box or across machines —
+`comm-send.sh @handle 'msg'` reaches anyone, same box or across machines —
 it picks the route itself (`comm-relay.sh` is the plumbing underneath, not a
 verb you call). A handle this box's registry names is filed through this box's comm folder
 (`filed -> @handle` — the file IS the ack, read at that session's next turn
@@ -171,7 +176,7 @@ spawning: `references/spawning.md`.
 ## Conventions
 
 - **On receiving `[name:repo] ...`** (an inbound sot-comm message): join if
-  you haven't (`comm-join.sh`), reply with `comm-send.sh @name "..."` —
+  you haven't (`comm-join.sh`), reply with `comm-send.sh @name '...'` —
   **local text output is not seen by other sessions.**
 - **State goals, not orders** — the other session knows its repo better than
   you; describe the problem, let them own the implementation.

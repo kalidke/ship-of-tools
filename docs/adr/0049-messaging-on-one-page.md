@@ -196,7 +196,7 @@ inherits the profile's access list (the user, SYSTEM and Administrators).
 ## Consequences
 
 A session is told all of this at start: `comm-context.sh` prints its handle; send with
-`comm-send.sh @handle "text"` and read the one result; when `[sot-comm] you have mail`
+`comm-send.sh @handle 'text'` and read the one result; when `[sot-comm] you have mail`
 appears, or the end-of-turn check says so, run `comm-poll.sh`; to wait for a reply, end
 the turn. A frontend plays no part in messaging, and a session on a box with no daemon
 is not woken while idle.

@@ -13,8 +13,8 @@ do not retry or join.
 ## Core Commands
 
 ```bash
-~/.sot-comm/bin/comm-send.sh @<handle> "message"       # durable, registry-based
-~/.sot-comm/bin/comm-send.sh --broadcast "message"
+~/.sot-comm/bin/comm-send.sh @<handle> 'message'       # durable, registry-based
+~/.sot-comm/bin/comm-send.sh --broadcast 'message'
 ~/.sot-comm/bin/comm-poll.sh                           # read your unread mail (a busy inbox exits 75: run it again)
 ~/.sot-comm/bin/comm-list.sh                           # registered sessions
 ~/.sot-comm/bin/comm-status.sh waiting "watching X"    # purple until you report
@@ -22,6 +22,11 @@ do not retry or join.
 ~/.sot-comm/bin/sot-fe notify "message"                # toast on the attached FE(s)
 ~/.sot-comm/bin/sot-fe preview <workspace> <path>      # badge/show result in FE
 ```
+
+Quote the message in single quotes: the shell still reads a double-quoted
+message, so a backquote or `$( )` in it runs as a command and its text drops
+out, and a message that holds a single quote closes and reopens the quote, as
+`'it'\''s'`.
 
 Local text is not visible to peers. When a peer's message asks you something,
 answer with `comm-send.sh`, not only in assistant text.

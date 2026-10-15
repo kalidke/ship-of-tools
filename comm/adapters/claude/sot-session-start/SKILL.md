@@ -19,7 +19,7 @@ a fresh conversation every time its leg starts; it resumes an earlier one only
 when asked (a reauth names the transcript by id, or a person resumes it).
 
 **What a session is told at start.** `comm-context.sh` prints your handle. Send
-with `comm-send.sh @handle "text"` and read its one result. When
+with `comm-send.sh @handle 'text'` and read its one result. When
 `[sot-comm] you have mail` appears, or your end-of-turn check says so, run
 `comm-poll.sh`. To wait for a reply, end your turn. Run the session-start step
 once, when a session first starts — not again on every resume.
