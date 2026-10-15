@@ -190,22 +190,6 @@ fn daemon_running(env: &Env, script: &str) -> std::path::PathBuf {
     folder.join("stub-julia.log")
 }
 
-/// A connection of the window `instance` whose hello names exactly `want` as its runs still running, by the window's
-/// numbers. The marking is made by another task than the one that answers the hello, so the hello is read again, 200 ms
-/// apart, until it names `want`; this is a poll for an observable fact, not a sleep that hopes. It fails at `BOUND`,
-/// which a passing run never reaches: the stand-in's runs last 3 s and the first try names them.
-async fn open_naming(env: &Env, instance: &str, want: Value) -> Window {
-    let deadline = std::time::Instant::now() + BOUND;
-    loop {
-        let (window, running) = Window::open_as(env, instance).await;
-        if running == want {
-            return window;
-        }
-        assert!(std::time::Instant::now() < deadline, "no hello named {want}; the last named {running}");
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-}
-
 /// A window that redials while its eval 2 runs is written the rest of it, and its hello's reply names eval 2 as still
 /// running, so the window reopens that entry; not eval 1, which ended before the link dropped, and nothing to another
 /// window. Once eval 2's `done` is out, a hello names it no more.
@@ -220,7 +204,8 @@ async fn a_window_that_redials_mid_eval_still_gets_its_run() {
     let ack = a.request(op::REPL_EVAL, json!({ "eval_id": 2, "code": "late-a" })).await;
     assert_eq!(ack["eval_id"], 2, "{ack}");
     drop(a); // the link drops while eval 2 runs; the same window redials
-    let mut again = open_naming(&env, "window-a", json!([2])).await;
+    let (mut again, running) = Window::open_as(&env, "window-a").await;
+    assert_eq!(running, json!([2]), "the hello names the run still going");
     let (_, other) = Window::open_as(&env, "window-b").await;
     assert_eq!(other, Value::Null, "another window's hello names none of this window's runs");
     again.until_done(2).await;
@@ -241,7 +226,8 @@ async fn a_run_that_ends_while_its_window_is_away_is_named_no_more() {
     let ack = a.request(op::REPL_EVAL, json!({ "eval_id": 1, "code": "late-a" })).await;
     assert_eq!(ack["eval_id"], 1, "{ack}");
     drop(a);
-    let again = open_naming(&env, "window-a", json!([1])).await;
+    let (again, running) = Window::open_as(&env, "window-a").await;
+    assert_eq!(running, json!([1]), "the hello names the run still going");
     drop(again); // the window is away while the run ends
     let (mut watcher, _) = Window::open_as(&env, "window-b").await;
     while !watcher.frames.iter().any(|(_, f)| f["kind"] == "done") {
