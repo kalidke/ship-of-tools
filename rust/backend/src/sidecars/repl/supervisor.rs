@@ -369,8 +369,10 @@ async fn supervisor_task(
     }
     // Accepted but unwritten submissions close out with the rest: no new one
     // is admitted, each reply fails, each streamed eval gets its close.
+    // `recv` after `close` also yields a submission whose sender took its permit before the close and pushes after it;
+    // `try_recv` would miss it, and the run, already named, would be dropped with the receiver.
     submit_rx.close();
-    while let Ok(sub) = submit_rx.try_recv() {
+    while let Some(sub) = submit_rx.recv().await {
         if let Some(reply) = sub.reply {
             let _ = reply.send(Err(anyhow::Error::new(end)));
         } else if let (Some(eid), Some(owner)) = (sub.payload.get("eval_id").and_then(Value::as_u64), sub.owner) {

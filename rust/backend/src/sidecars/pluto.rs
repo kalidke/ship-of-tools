@@ -442,7 +442,8 @@ async fn supervisor_task(
     drop(grant);
     submit_rx.close();
     let why = cause.describe();
-    while let Ok(sub) = submit_rx.try_recv() {
+    // `recv` after `close` also yields a request pushed after the drain began (the permit taken before the close).
+    while let Some(sub) = submit_rx.recv().await {
         let _ = sub.reply.send(Err(anyhow!("pluto sidecar terminated: {why}")));
     }
     for reply in pending.drain(..) {
