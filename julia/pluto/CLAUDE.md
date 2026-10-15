@@ -11,7 +11,7 @@ charter: rust/backend/src/sidecars/CLAUDE.md.
 - `test/runtests.jl`: a stranger's call to a notebook worker runs nothing and the notebook still evaluates for its
   owner; the session secret and the cluster cookie are drawn per session from the OS's generator and on no command
   line; start.jl answers nothing outside its secret path (on Windows, not a drive path either); and (Linux) start.jl with one open notebook listens on exactly
-  its own port and the worker's (run directly: `julia --project=julia/pluto julia/pluto/test/runtests.jl`).
+  its own port and the worker's; and (Linux, Xvfb) a notebook's worker names the server's `DISPLAY` and `XAUTHORITY` and connects to the display with the cookie only (run directly: `julia --project=julia/pluto julia/pluto/test/runtests.jl`).
 
 ## Start here
 `start.jl` for the protocol; `session_options.jl` for the security options.

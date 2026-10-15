@@ -228,6 +228,53 @@ end
     end
 end
 
+# Linux: the display the daemon gives the server (rust/backend/src/sidecars/display) reaches a notebook's worker, which
+# inherits the server's environment: it names the server's DISPLAY and XAUTHORITY, and an X client in it connects with
+# the cookie and not without. The server here is started as display/mod.rs starts it (an Xvfb that only its cookie
+# opens); an X connection stands in for a GLMakie figure, which needs the same connection and a GPU-less render of it
+# (GLMakie in a notebook worker would add its precompile to this test and prove nothing more about the environment).
+if Sys.islinux()
+    @testset "a notebook's worker sees the server's X display" begin
+        dir = mktempdir()
+        cookie = joinpath(dir, "Xauthority")
+        # One FamilyWild entry: any address, any display number; MIT-MAGIC-COOKIE-1 with 16 random bytes.
+        entry = UInt8[0xFF, 0xFF]
+        for field in (UInt8[], UInt8[], Vector{UInt8}("MIT-MAGIC-COOKIE-1"), rand(Random.RandomDevice(), UInt8, 16))
+            append!(entry, UInt8[length(field) >> 8, length(field) & 0xFF], field)
+        end
+        write(cookie, entry)
+        chmod(cookie, 0o600)
+        xvfb = open(`Xvfb -displayfd 1 -auth $cookie -noreset -nolisten tcp -nolisten unix -screen 0 1280x1024x24`; read = true)
+        try
+            number = parse(Int, readline(xvfb))
+            withenv("DISPLAY" => ":$number", "XAUTHORITY" => cookie) do
+                session = Pluto.ServerSession()
+                configure_session!(session, "127.0.0.1", 1234)
+                notebook_path = joinpath(dir, "display.jl")
+                Pluto.save_notebook(Pluto.Notebook([Pluto.Cell("x = 1")], notebook_path))
+                notebook = Pluto.SessionActions.open(session, notebook_path; run_async = false)
+                try
+                    work = (session, notebook)
+                    @test Pluto.WorkspaceManager.eval_fetch_in_workspace(work, :(ENV["DISPLAY"])) == ":$number"
+                    @test Pluto.WorkspaceManager.eval_fetch_in_workspace(work, :(ENV["XAUTHORITY"])) == cookie
+                    connects = Pluto.WorkspaceManager.eval_fetch_in_workspace(work, quote
+                        open_display() = ccall((:XOpenDisplay, "libX11.so.6"), Ptr{Cvoid}, (Cstring,), C_NULL) != C_NULL
+                        with_cookie = open_display()
+                        without = withenv(() -> open_display(), "XAUTHORITY" => joinpath(dirname(ENV["XAUTHORITY"]), "none"))
+                        (with_cookie, without)
+                    end)
+                    @test connects == (true, false)
+                finally
+                    Pluto.SessionActions.shutdown(session, notebook; keep_in_session = false, async = false)
+                end
+            end
+        finally
+            kill(xvfb)
+            wait(xvfb)
+        end
+    end
+end
+
 # start.jl is the process the daemon runs: its stdio protocol, its page and its listeners, over its own process tree.
 @testset "start.jl end to end" begin
     dir = mktempdir()
