@@ -59,7 +59,8 @@ scripts/CLAUDE.md.
   (linux, windows and macos targets; the Linux `sotd` and `sot-capsule` are built musl static, with Ubuntu's
   `musl-tools` installed first as the C compiler for sot-log's native launcher), `julia-check`, the three smokes
   `smoke`, `smoke-windows` and `smoke-macos`, then `publish` (`SHA256SUMS`, `COMMIT`, git-cliff notes, the GitHub
-  Release).
+  Release). The notes are cut at a whole line below 120000 bytes, with a link to every change since the previous
+  tag, because GitHub rejects a release body over 125000 characters.
 - `workflows/gitleaks.yml`: a full-history secret scan on push to `main` and on pull requests.
 
 ## Start here
