@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # installer-shared-home.sh -- a home several hosts share holds one install: every path that writes, re-renders or
-# retires sotd.service pins it to the hosts that run sotd (`sotd topology pin`) before any reload and never disables the
-# shared unit under a declared topology.
+# retires sotd.service pins it to the hosts that run sotd (`sotd topology pin`) before any reload, and no retire
+# disables the shared unit, under a declared topology or, with no hosts.toml, on a host its pin does not name alone.
 # The functions and install.sh run for real; `sotd`, `systemctl`, `loginctl`, `curl` and `git` are stubs, HOME is
 # scratch, and install.sh's PATH is the stubs and `INSTALL_TOOLS`, never the host's /usr/bin: a Julia or juliaup there
 # would skip the Julia install the network case reads. Run: scripts/tests/installer-shared-home.sh
@@ -37,9 +37,9 @@ PIN_LINE() { printf 'sotd topology pin --dir %s/home/.config/systemd/user' "$1";
 case_start "install_pins_the_unit_before_it_is_loaded"
 d="$WORK/enable"; pin_fixture "$d" 0
 ( HOME="$d/home"; PATH="$d/stubs:$PATH"; installer_enable_local_service "$d/prefix" "$TEMPLATE" "$d/sot.sock" ) >/dev/null 2>&1 || true
-pin="$(at "$d" "$(PIN_LINE "$d")")"; reload="$(at "$d" 'systemctl --user daemon-reload')"; enable="$(at "$d" 'systemctl --user enable --now sotd.service')"
+pin="$(at "$d" "$(PIN_LINE "$d") --claim")"; reload="$(at "$d" 'systemctl --user daemon-reload')"; enable="$(at "$d" 'systemctl --user enable --now sotd.service')"
 check "the unit is written" "yes" "$([ -f "$d/home/.config/systemd/user/sotd.service" ] && echo yes || echo no)"
-check "the pin is written into the unit's folder" "yes" "$([ "${pin:-0}" -gt 0 ] && echo yes || echo no)"
+check "the pin is written into the unit's folder, claimed for this host when there is no hosts.toml" "yes" "$([ "${pin:-0}" -gt 0 ] && echo yes || echo no)"
 check "pin, then reload, then enable" "yes" "$([ "${pin:-0}" -gt 0 ] && [ "$pin" -lt "${reload:-0}" ] && [ "$reload" -lt "${enable:-0}" ] && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
@@ -57,11 +57,62 @@ d="$WORK/retire-topo-nounit"; pin_fixture "$d" 0
 check "with no unit file nothing runs" "0" "$(wc -l < "$d/log" | tr -d ' ')"
 
 # ---------------------------------------------------------------------------
-case_start "retire_without_a_topology_disables_as_before"
-d="$WORK/retire-flags"; pin_fixture "$d" 1
-( HOME="$d/home"; PATH="$d/stubs:$PATH"; installer_retire_local_service 0 "$d/prefix" 0 ) >/dev/null 2>&1 || true
-check "the lone box's unit is disabled" "1" "$(grep -c -x -F 'systemctl --user disable --now sotd.service' "$d/log" || true)"
-check "no pin is written" "0" "$(grep -c '^sotd ' "$d/log" || true)"
+case_start "a_home_two_hosts_share_with_no_hosts_toml"
+# Host A installs a daemon, then host B, which shares the home, retires one. The systemctl stand-in keeps the enable link
+# in the shared folder as systemd's own install logic does, and the hostname stand-in names the host each run is on.
+# unit_pin.rs proves that the real `sotd topology pin --claim` writes the pin installer_pin_names_only reads.
+d="$WORK/two-hosts"; pin_fixture "$d" 0
+u="$d/home/.config/systemd/user"; link="$u/default.target.wants/sotd.service"
+cat > "$d/stubs/systemctl" <<STUBEOF
+#!/bin/sh
+printf '%s systemctl %s\n' "\$STUB_HOST" "\$*" >> "$d/log"
+case "\$*" in
+    *" enable "*) mkdir -p "$u/default.target.wants" && ln -sf ../sotd.service "$link" ;;
+    *" disable "*) rm -f "$link" ;;
+    *is-enabled*) [ -L "$link" ] ;;
+esac
+STUBEOF
+printf '#!/bin/sh\nprintf "%%s\\n" "$STUB_HOST"\n' > "$d/stubs/hostname"
+chmod +x "$d/stubs/systemctl" "$d/stubs/hostname"
+on_host() {  # <hostname> <function> [args...]: one installer function as that host runs it
+    ( HOME="$d/home"; PATH="$d/stubs:$PATH"; STUB_HOST="$1"; export STUB_HOST; shift; "$@" ) >/dev/null 2>&1 || true
+}
+linked() { [ -L "$link" ] && echo yes || echo no; }
+on_host unithost-a.example.org installer_enable_local_service "$d/prefix" "$TEMPLATE" "$d/sot.sock"
+check "host A's install claims the pin for itself" "1" "$(grep -c -x -F "$(PIN_LINE "$d") --claim" "$d/log" || true)"
+check "host A's install enables the unit" "yes" "$(linked)"
+mkdir -p "$u/sotd.service.d"; printf '[Unit]\nConditionHost=|unithost-a\nConditionHost=|unithost-a.*\n' > "$u/sotd.service.d/topology.conf"
+on_host unithost-b installer_retire_local_service 0 "$d/prefix" 0
+check "host B's retire never disables the shared unit" "0" "$(grep -c '^unithost-b systemctl .*disable' "$d/log" || true)"
+check "host B's retire stops its own run" "1" "$(grep -c -x -F 'unithost-b systemctl --user stop sotd.service' "$d/log" || true)"
+check "host A's enable link stays" "yes" "$(linked)"
+on_host unithost-a.example.org installer_retire_local_service 0 "$d/prefix" 0
+check "host A's own retire removes the link its pin serves on host A alone" "no" "$(linked)"
+on_host unithost-a.example.org systemctl --user enable sotd.service
+printf '[Unit]\nConditionHost=|unithost-a\nConditionHost=|unithost-a.*\nConditionHost=|unithost-b\nConditionHost=|unithost-b.*\n' \
+    > "$u/sotd.service.d/topology.conf"
+on_host unithost-a.example.org installer_retire_local_service 0 "$d/prefix" 0
+check "a pin that names another host too keeps the link" "yes" "$(linked)"
+rm -f "$u/sotd.service.d/topology.conf"
+on_host unithost-a.example.org installer_retire_local_service 0 "$d/prefix" 0
+check "with no pin (an install from before pins) the link stays" "yes" "$(linked)"
+
+# The installer says what a pin move and a pre-pin retire did. The sotd stand-in writes the claim's pin for the host it runs on.
+printf '#!/bin/sh\nh="$(hostname)"; printf "[Unit]\\nConditionHost=|%%s\\nConditionHost=|%%s.*\\n" "$h" "$h" > "%s/sotd.service.d/topology.conf"\n' "$u" > "$d/prefix/bin/sotd"
+chmod +x "$d/prefix/bin/sotd"
+rm -f "$u/sotd.service.d/topology.conf"
+said() { ( HOME="$d/home"; PATH="$d/stubs:$PATH"; STUB_HOST="$1"; export STUB_HOST; shift; "$@" ) 2>&1 || true; }
+said unithost-a installer_enable_local_service "$d/prefix" "$TEMPLATE" "$d/sot.sock" > "$WORK/say-a"
+check "a first claim names no earlier host" "0" "$(grep -c 'moved here' "$WORK/say-a" || true)"
+said unithost-b installer_enable_local_service "$d/prefix" "$TEMPLATE" "$d/sot.sock" > "$WORK/say-b"
+check "host B's install names host A and that its sotd will not start" "1" "$(grep -c -F "The daemon moved here from unithost-a: unithost-a's sotd will not start at its next login." "$WORK/say-b" || true)"
+said unithost-b installer_enable_local_service "$d/prefix" "$TEMPLATE" "$d/sot.sock" > "$WORK/say-b2"
+check "a reinstall on the host that holds the pin says nothing of a move" "0" "$(grep -c 'moved here' "$WORK/say-b2" || true)"
+rm -f "$u/sotd.service.d/topology.conf"
+said unithost-a installer_retire_local_service 0 "$d/prefix" 0 > "$WORK/say-pre"
+check "a pre-pin retire says it left the shared link and names the disable command" "1" \
+    "$(grep -c -F "Stopped this computer's sotd and left the shared startup link. If no other computer shares this home folder, run: systemctl --user disable sotd.service" "$WORK/say-pre" || true)"
+check "a pre-pin retire leaves the link" "yes" "$(linked)"
 
 d="$WORK/retire-daemon"; pin_fixture "$d" 1
 ( HOME="$d/home"; PATH="$d/stubs:$PATH"; installer_retire_local_service 1 "$d/prefix" 1 ) >/dev/null 2>&1 || true

@@ -37,7 +37,8 @@ for `sotd status`; `stdio_bridge.rs` `run` for the bridge.
   never waits on it (main spawns it on its own thread).
 - In `refresh`, only `daemon-reload` is fatal.
 - `apply` and `refresh` converge the host pins (`converge_hub_pins`) before they enable, reload or restart a unit, on
-  every run; `pin` writes only sotd.service's pin, runs no systemctl, and an invalid hosts.toml changes nothing.
+  every run; `pin` writes only sotd.service's pin, runs no systemctl, and an invalid hosts.toml changes nothing. With
+  no hosts.toml only `pin --claim` (the installer's) writes it, naming this host by `kernel_host_name`.
 - The relay refresh's `systemctl` calls and `topology sync`'s ssh run through `Signal::output` with a bound (30 s each), so what one leaves running dies with it and none can hold the CLI.
 - `dial_and_call` waits for its reply only as long as its caller says; at the bound it kills a bridged ssh child and names the bound.
 - The dial's ssh runs through `Signal::spawn_std`: dropping its `ChildGuard` in dial.rs, or a `Track::cancel`, kills

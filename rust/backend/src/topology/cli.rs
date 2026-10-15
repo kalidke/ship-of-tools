@@ -47,12 +47,15 @@ Usage: sotd topology <subcommand>
                         --yes runs systemctl for real. --dry-run is
                         accepted too, as the explicit spelling of the
                         default. Refuses on a non-hub box, naming the hub.
-  pin --dir <dir>       write sotd.service's host pin, <dir>/sotd.service.d/
+  pin --dir <dir> [--claim]
+                        write sotd.service's host pin, <dir>/sotd.service.d/
                         topology.conf: systemd starts the unit only on the
                         hosts hosts.toml runs sotd on (daemon or frontend),
                         so a home several hosts share starts it only there.
-                        With no hosts.toml the pin is removed (a lone box
-                        runs its own daemon); an invalid hosts.toml changes
+                        With no hosts.toml, --claim pins it to this host's
+                        kernel name (the installer's run, on a box that runs
+                        a daemon) and without it the pin is left as it is
+                        (the update's); an invalid hosts.toml changes
                         nothing. Runs no systemctl: reload after it. The
                         installer and the update apply run it; on the hub,
                         apply and refresh keep it and the hub's own pins.
@@ -107,7 +110,7 @@ pub fn run(args: &[String]) -> i32 {
         "apply" => with_topology(|t| apply(t, !args.iter().any(|a| a == "--yes"))),
         "refresh" => with_topology(|t| refresh_cmd(t)),
         "pin" => report(match flag("--dir") {
-            Some(dir) => pin_daemon(std::path::Path::new(&dir), &mut |l| println!("{l}")),
+            Some(dir) => pin_daemon(std::path::Path::new(&dir), args.iter().any(|a| a == "--claim"), &mut |l| println!("{l}")),
             None => Err("pin needs --dir <the user's systemd folder>".to_string()),
         }),
         "set" => report(set(&args[1..])),

@@ -103,7 +103,9 @@ does not name this host: the installer pins the unit to the hosts
 `~/.config/sot/hosts.toml` declares `daemon` or `frontend`, matched by kernel
 hostname. Declare the host there (on the hub), then run
 `sotd topology pin --dir ~/.config/systemd/user` and
-`systemctl --user daemon-reload && systemctl --user start sotd` on it.
+`systemctl --user daemon-reload && systemctl --user start sotd` on it. With no
+`hosts.toml` the pin names the one host whose install wrote it; run the
+installer on the host that should run the daemon, or declare the hosts.
 
 ## A session will not start on a shared home
 

@@ -102,10 +102,17 @@ pub fn host_name() -> Result<String, String> {
             return Ok(v);
         }
     }
+    kernel_host_name().map_err(|e| format!("host_name: no SOT_SELF_HOST override and {e}"))
+}
+
+/// This box's name as the kernel gives it, which is all a program outside Ship of Tools sees: `gethostname`'s first
+/// `.`-delimited label, lowercased. [`host_name`] without its `SOT_SELF_HOST` override; the host pin that systemd's
+/// `ConditionHost=` compares names a box this way. `Err` when the kernel gives no usable label.
+pub fn kernel_host_name() -> Result<String, String> {
     let raw = gethostname::gethostname().to_string_lossy().into_owned();
     let label = raw.split('.').next().unwrap_or("").trim().to_lowercase();
     if label.is_empty() {
-        return Err("host_name: no SOT_SELF_HOST override and gethostname returned no usable label".to_string());
+        return Err("gethostname returned no usable label".to_string());
     }
     Ok(label)
 }

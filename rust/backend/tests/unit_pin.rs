@@ -135,17 +135,84 @@ fn sotd_unit_is_skipped_on_a_host_the_topology_does_not_run_it_on() {
     }
 }
 
-/// With no hosts.toml nothing is declared, so a lone box runs its own daemon: a pin left from before goes.
+/// `sotd topology pin --claim`, the installer's run on a box that runs a daemon.
+fn claim(t: &TempDir, hosts: Option<&str>, self_host: &str) -> sot_log::test_wait::Ran {
+    let dir = units(t).display().to_string();
+    topology(t, hosts, self_host, &["pin", "--dir", &dir, "--claim"])
+}
+
+/// With no hosts.toml the install's claim pins the daemon unit to this box alone, by the kernel hostname systemd
+/// compares, not `SOT_SELF_HOST`: a second host sharing the home is skipped as any host a pin does not name is (the
+/// first test's "not listed"). An update's pin, which never claims, leaves the pin as the install wrote it, and
+/// writes none where there was none.
 #[test]
-fn with_no_hosts_toml_the_daemon_unit_is_unpinned() {
+fn with_no_hosts_toml_the_install_pins_the_daemon_unit_to_the_installing_host() {
     let t = home();
-    let ran = pin(&t, Some("hub = \"unithost-hub\"\n[host.unithost-hub]\ndaemon = true\n"));
+    let ran = claim(&t, None, "unithost-renamed");
     assert_eq!(ran.status.code(), Some(0), "{ran}");
+    let (mut conditions, dropins) = loaded(&t, "sotd.service");
+    assert_eq!(dropins, [units(&t).join("sotd.service.d/topology.conf").display().to_string()], "{ran}");
+    let me = me();
+    conditions.sort(); // systemd lists a unit's conditions last first
+    assert_eq!(conditions, [format!("ConditionHost=|{me}"), format!("ConditionHost=|{me}.*")], "{ran}");
+    assert!(starts_here(&t, &conditions), "{conditions:?}");
+    let claimed = std::fs::read(units(&t).join("sotd.service.d/topology.conf")).unwrap();
     let ran = pin(&t, None);
     assert_eq!(ran.status.code(), Some(0), "{ran}");
-    assert!(!units(&t).join("sotd.service.d").exists(), "{ran}");
-    let (conditions, dropins) = loaded(&t, "sotd.service");
-    assert!(conditions.is_empty() && dropins.is_empty(), "{conditions:?} {dropins:?}");
+    assert_eq!(std::fs::read(units(&t).join("sotd.service.d/topology.conf")).unwrap(), claimed, "an update moved the pin: {ran}");
+
+    let t = home();
+    let ran = pin(&t, None);
+    assert_eq!(ran.status.code(), Some(0), "{ran}");
+    assert!(!units(&t).join("sotd.service.d").exists(), "an update claimed the unit: {ran}");
+}
+
+/// Under a hosts.toml the claim changes nothing: the declared hosts decide.
+#[test]
+fn a_claim_under_a_hosts_toml_writes_the_declared_pin() {
+    let t = home();
+    let ran = claim(&t, Some("hub = \"unithost-hub\"\n[host.unithost-hub]\ndaemon = true\n"), &me());
+    assert_eq!(ran.status.code(), Some(0), "{ran}");
+    let (mut conditions, _) = loaded(&t, "sotd.service");
+    conditions.sort();
+    assert_eq!(conditions, ["ConditionHost=|unithost-hub", "ConditionHost=|unithost-hub.*"], "{ran}");
+}
+
+/// The installer's retire (`installer_pin_names_only`, shell) and the claimed pin are twins: the retire may remove the
+/// shared enable link only where the pin names this host alone, and it reads the pin the claim writes that way.
+#[test]
+fn the_installer_reads_a_claimed_pin_as_this_hosts_alone() {
+    let t = home();
+    let dir = units(&t).display().to_string();
+    let install = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install.sh");
+    let names_only = |host: &str| {
+        let ran = sot_log::test_wait::run_within(
+            Command::new("bash")
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", t.path())
+                .env("SOT_INSTALL_SOURCE_ONLY", "1")
+                .args(["-c", ". \"$1\"; installer_pin_names_only \"$2\" \"$3\"", "bash"])
+                .arg(&install)
+                .arg(&dir)
+                .arg(host),
+            BOUND,
+        );
+        match ran.status.code() {
+            Some(0) => true,
+            Some(1) => false,
+            other => panic!("installer_pin_names_only {host}: {other:?}\n{ran}"),
+        }
+    };
+    let me = me();
+    assert!(!names_only(&me), "no pin names no host");
+    let ran = claim(&t, None, &me);
+    assert_eq!(ran.status.code(), Some(0), "{ran}");
+    assert!(names_only(&me));
+    assert!(!names_only("unithost-other"));
+    let ran = pin(&t, Some(&format!("hub = \"{me}\"\n[host.{me}]\ndaemon = true\n[host.unithost-other]\ndaemon = true\n")));
+    assert_eq!(ran.status.code(), Some(0), "{ran}");
+    assert!(!names_only(&me), "a pin that names another host too serves it");
 }
 
 /// An invalid hosts.toml declares nothing new: the pin stays as it was and the verb fails.
