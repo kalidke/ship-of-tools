@@ -971,6 +971,24 @@ exit(0)
         h.finish().await;
     }
 
+    /// A request whose permit was taken before the close-out's close and pushed after it is answered by the
+    /// close-out, not dropped with the receiver.
+    #[tokio::test]
+    async fn a_request_pushed_after_the_close_is_answered() {
+        if !isolated("sidecars::pluto::port_parse_tests::a_request_pushed_after_the_close_is_answered", BODY) {
+            return;
+        }
+        let h = Harness::start(READY_LOCAL, "").await;
+        let permit = h.tx.submit.reserve().await.expect("a permit before the close");
+        h.open_gate();
+        within(REACT, "the close-out closes the queue", || h.tx.submit.is_closed()).await;
+        let (reply, rx) = oneshot::channel();
+        permit.send(Submission { abs_path: "x".into(), reply });
+        let answered = tokio::time::timeout(REACT, rx).await.expect("an answer in time");
+        assert!(matches!(answered, Ok(Err(_))), "the close-out answers it with the sidecar's end: {answered:?}");
+        h.finish().await;
+    }
+
     #[tokio::test]
     async fn signal_cancels_blocked_pluto_write() {
         if !isolated("sidecars::pluto::port_parse_tests::signal_cancels_blocked_pluto_write", BODY) {
