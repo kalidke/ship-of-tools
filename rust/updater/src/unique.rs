@@ -8,8 +8,8 @@
 //     this one: `sot-log` is the LOWER crate and must not depend on
 //     `sot-updater`. Two, deliberately.
 //   - Everything whose name was the clock ALONE, or the clock plus a constant
-//     label, now draws from here: `fetch::tempdir`, `lock`'s owner nonce and its
-//     graveyard path, the frontend download fallback and its test helper,
+//     label, now draws from here: `lock`'s owner nonce and its graveyard path,
+//     the frontend download fallback and its test helper,
 //     `backend::topology_store`'s argument-less test `tempdir` (six callers on
 //     parallel threads — `fetch::tempdir`'s defect verbatim) and
 //     `backend::site_serve`'s test base (the clock with no pid at all).
@@ -30,13 +30,12 @@
 // macOS-only red because Linux's nanosecond clock almost never collides — which
 // is exactly what makes this class dangerous: it hides on the platform the code
 // is written on, and `latest` runs concurrently in production too (the daemon's
-// periodic check and an `update.check` op can overlap).
+// periodic check and an `update.check` op can overlap). That scratch folder no
+// longer draws a name from here: it is a held folder (`sot_log::host::HeldDir`),
+// whose random name is taken by an exclusive create.
 //
-// This lives in `sot-updater` rather than further down because this crate
-// depends on NO other crate in the workspace, and an auto-updater that has to
-// work when other things are broken is worth keeping that way. Every other
-// consumer already depends on it, so the helper needed no new edge in either
-// direction.
+// This lives in `sot-updater` because every consumer of it already depends on
+// this crate, so the helper needed no new edge in either direction.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

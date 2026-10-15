@@ -12,6 +12,9 @@ gethostname = "0.5"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+# `host::HeldDir` and `host::remove_ended`: the release check's scratch folder (`fetch::latest`). Every binary that
+# embeds this crate already links sot-log.
+sot-log = { path = "../log" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 

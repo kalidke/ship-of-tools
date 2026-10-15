@@ -58,7 +58,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
 `scripts/lib/sot-daemon.sh`, `sotd stdio-bridge`, `Leases::commit_update`, `julia::resolve_bin`, `check_remote_fs`,
 `scripts/install.sh`, `REMOTE_FS_TYPES`, `docs/make.jl`, `.github/workflows/CI.yml`,
-`sotd trust declare <absolute-prefix>`, `sotd topology pin`.
+`sotd trust declare <absolute-prefix>`, `sotd topology pin`, `HeldDir`, `remove_ended`.
 
 ## Folders
 - `scripts/lib/`: the shared Unix launch library.
