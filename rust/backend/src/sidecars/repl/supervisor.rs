@@ -76,6 +76,10 @@ pub(super) async fn spawn_supervisor(
     let tmp = crate::sidecars::child::ChildTmp::for_user_code(sig).await.context("repl child temporary folder")?;
     let mut cmd = Command::new(&julia_bin);
     tmp.apply(&mut cmd);
+    // Why the last child was ended when nobody asked for it, which the shim says at this child's first eval.
+    if let Some(notice) = lifecycle.lock().unwrap_or_else(|e| e.into_inner()).notice {
+        cmd.env("SOT_PREVIOUS_END", notice);
+    }
     cmd.env("JULIA_LOAD_PATH", &load_path)
         // The workspace root, for the shim's relative-path fallback and for
         // user scripts (pty sessions already get it; REPL children didn't).
@@ -174,7 +178,7 @@ async fn supervisor_task(
     lifecycle: SharedLifecycle,
     my_gen: u64,
     sig: &'static crate::lifecycle::child_signal::Signal,
-    tmp: crate::sidecars::child::ChildTmp,
+    mut tmp: crate::sidecars::child::ChildTmp,
 ) -> std::result::Result<(), String> {
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight: eval_id recorded at submit,
@@ -204,6 +208,11 @@ async fn supervisor_task(
             // stdin.
             stop = &mut stop_rx => {
                 break retired(stop);
+            }
+            // The child's own display ended under it (Linux): the child ends too, before it can open that display's
+            // name, which any account may bind once the server is gone.
+            _ = tmp.display_ended() => {
+                break ReplEnded::DisplayEnded;
             }
             sub = submit_rx.recv() => {
                 // Every sender is gone: the same closeout as a stop.
@@ -237,6 +246,7 @@ async fn supervisor_task(
                     biased;
                     _ = sig.fired() => Err(ReplEnded::Stopped),
                     stop = &mut stop_rx => Err(retired(stop)),
+                    _ = tmp.display_ended() => Err(ReplEnded::DisplayEnded),
                     r = async {
                         stdin.write_all(line.as_bytes()).await?;
                         stdin.flush().await
@@ -349,6 +359,7 @@ async fn supervisor_task(
         &workspace_id,
     ) {
         crate::pages::proxy::revoke_browser_ports(browser_ports_key(&workspace_id));
+        lifecycle.lock().unwrap_or_else(|e| e.into_inner()).notice = end.successor_notice();
     }
     for (_id, reply) in pending.drain() {
         let _ = reply.send(Err(anyhow::Error::new(end)));

@@ -69,6 +69,23 @@ pub(crate) enum ReplEnded {
     Stopped,
     /// The child exited, or its pipes failed.
     Died,
+    /// Its own display ended under it (Linux), so the supervisor ended the child: a child left on an ended display
+    /// could open the display's name once another account binds it.
+    DisplayEnded,
+}
+
+impl ReplEnded {
+    /// What the next child says at its first eval about this end (`SOT_PREVIOUS_END`), for an end nobody asked for
+    /// that takes the REPL's state with it: its display's end.
+    fn successor_notice(self) -> Option<&'static str> {
+        match self {
+            Self::DisplayEnded => Some(
+                "the REPL before this one was ended because its own display (Xvfb) ended; this is a new REPL with a \
+                 new display, and nothing the old one defined or loaded is here",
+            ),
+            Self::Restarted | Self::Stopped | Self::Died => None,
+        }
+    }
 }
 
 impl std::fmt::Display for ReplEnded {
@@ -78,6 +95,10 @@ impl std::fmt::Display for ReplEnded {
             Self::Stopped => "the REPL was stopped (its row ended or the daemon is shutting down) before this eval ended",
             Self::Died => {
                 "REPL process died mid-eval — it respawns on your next eval; the backend log has its stderr tail"
+            }
+            Self::DisplayEnded => {
+                "the REPL's own display (Xvfb) ended, so the REPL was ended with it before this eval ended; your next \
+                 eval starts a new REPL with a new display"
             }
         })
     }
@@ -242,6 +263,7 @@ impl Repl {
                 lifecycle: Arc::new(std::sync::Mutex::new(LifecycleCell {
                     gen: 0,
                     state: ReplLifecycle::NotStarted,
+                    notice: None,
                 })),
             }),
         }

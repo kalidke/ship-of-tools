@@ -37,9 +37,16 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   `Display::start`), which Pluto's notebook workers inherit: an Xvfb on the lowest free display number that only the
   child's cookie opens, so no other account can. It ends after the child's reap (`ChildTmp::retire`: a restart, a
   `--fresh`, the child's death, its row's end), at the Signal's fire and with its owner's drop, and leaves no process,
-  socket file or lock behind. A start that fails says why (the daemon's log, `SOT_NO_DISPLAY`, the REPL's first eval)
-  and the child starts without one. The kernel gets none. Tests `a_repl_child_has_its_own_display_which_ends_with_it`
-  (repl/project_tests.rs), `pluto_has_its_own_display_which_ends_with_it` (pluto.rs) and display/'s own.
+  socket file or lock behind. A display that ends under a live child ends the child and its process group
+  (`ChildTmp::display_ended`), because any account can bind the ended display's name: the REPL's evals in flight get
+  the reason, and its next eval starts a new REPL with a new display and says first why the old one ended
+  (`SOT_PREVIOUS_END`); Pluto's opens in flight get the reason, the log a WARN, and its next open starts a new server.
+  A descendant that left the child's group (Pluto's notebook worker, a detached process) keeps the ended name (ADR 0050
+  residual 7). A start that fails says why (the daemon's log, `SOT_NO_DISPLAY`, the REPL's first eval) and the child
+  starts without one. The kernel gets none. Tests `a_repl_child_has_its_own_display_which_ends_with_it` and
+  `a_repl_whose_display_ends_ends_with_it` (repl/project_tests.rs), `pluto_has_its_own_display_which_ends_with_it`,
+  `a_pluto_whose_display_ends_ends_with_it` and `a_pluto_whose_display_ends_before_ready_is_not_served` (pluto.rs) and
+  display/'s own.
 - Every sidecar child starts through `Signal::spawn`. Kernel, REPL, Pluto, MathJax and monitor supervisors receive a caller-supplied `&'static Signal` for both spawn and shutdown observation; the monitor's respawn backoff ends at its fire. REPL and MathJax select the daemon's process `Signal` only where their production handles are constructed.
 - A remote host's sampler ssh is built from `SSH_OPTS`, so it turns ssh sharing off as the bridges do
   (`sampler_command`).

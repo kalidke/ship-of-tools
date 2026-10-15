@@ -150,7 +150,7 @@ async fn spawn_supervisor(
             start_script.display()
         ));
     }
-    let tmp = crate::sidecars::child::ChildTmp::for_user_code(sig).await.context("pluto child temporary folder")?;
+    let mut tmp = crate::sidecars::child::ChildTmp::for_user_code(sig).await.context("pluto child temporary folder")?;
     let mut cmd = Command::new(julia_bin);
     tmp.apply(&mut cmd);
     cmd.arg(format!("--project={}", project_dir.display()))
@@ -188,6 +188,9 @@ async fn spawn_supervisor(
             _ = sig.fired() => {
                 let _ = tmp.retire(&mut contained).await;
                 return Err(anyhow!("the daemon is shutting down"));
+            }
+            _ = tmp.display_ended() => {
+                break Err(anyhow!("pluto's display ended before READY, so the server was ended with it"));
             }
         };
         match line {
@@ -274,6 +277,9 @@ enum Cause {
     Released,
     Stdout(String),
     Stdin(std::io::Error),
+    /// Its own display ended under it (Linux): a server left on an ended display could open the display's name once
+    /// another account binds it.
+    Display,
 }
 
 impl Cause {
@@ -286,6 +292,7 @@ impl Cause {
             Cause::Released => "its handle ended it".to_string(),
             Cause::Stdout(why) => format!("stdout: {why}"),
             Cause::Stdin(e) => format!("stdin: {e}"),
+            Cause::Display => "its display ended, so the server was ended with it; the next open starts a new one".to_string(),
         }
     }
 }
@@ -355,7 +362,7 @@ async fn supervisor_task(
     ended: oneshot::Receiver<()>,
     sig: &'static crate::lifecycle::child_signal::Signal,
     grant: Option<Grant>,
-    tmp: crate::sidecars::child::ChildTmp,
+    mut tmp: crate::sidecars::child::ChildTmp,
     stderr: StderrTail,
 ) {
     // FIFO of in-flight oneshots. Pluto's serial line protocol replies
@@ -380,6 +387,7 @@ async fn supervisor_task(
                 // The child's exit, not its pipes' EOF: a descendant that
                 // inherited stdout keeps it open past the leader's death.
                 r = &mut exited => break Cause::Exited(r),
+                _ = tmp.display_ended() => break Cause::Display,
                 _ = &mut ended => break Cause::Released,
                 sub = submit_rx.recv() => {
                     let Some(sub) = sub else { break Cause::Closed };
@@ -397,6 +405,7 @@ async fn supervisor_task(
                         biased;
                         _ = sig.fired() => Err(Cause::Signal),
                         r = &mut exited => Err(Cause::Exited(r)),
+                        _ = tmp.display_ended() => Err(Cause::Display),
                         _ = &mut ended => Err(Cause::Released),
                         r = write => r.map_err(Cause::Stdin),
                     };

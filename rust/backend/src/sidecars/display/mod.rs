@@ -1,5 +1,5 @@
 //! A user-code child's own X display (Linux): an Xvfb that only the child's cookie opens, started before the child,
-//! named in its environment and ended after it.
+//! named in its environment, watched while the child lives, and ended after it.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -50,6 +50,22 @@ impl Display {
             Display::Missing(why) => {
                 cmd.env("SOT_NO_DISPLAY", why);
             }
+        }
+    }
+
+    /// Returns once the server has exited, observed and left unreaped (`end` reaps it); never, when there is no
+    /// server. Its owner then ends the child: once the server is gone, any account can bind the display's abstract
+    /// name, and a child that opened its display only then would send its cookie and its pixels to that account's
+    /// server. An exit that cannot be observed counts as an end.
+    pub(crate) async fn ended(&mut self) {
+        match self {
+            Display::Up { server, number, .. } => {
+                if let Err(e) = server.wait_until_exited().await {
+                    tracing::warn!(display = *number, error = %e, "a child's display server's exit could not be observed");
+                }
+                tracing::warn!(display = *number, "a child's display ended under it; the child is ended with it");
+            }
+            Display::Missing(_) => std::future::pending().await,
         }
     }
 
@@ -140,7 +156,7 @@ fn write_cookie(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::{start_with, Display};
     use crate::lifecycle::child_signal::Signal;
-    use crate::sidecars::contract_tests::{executable, within, x11_answer, x11_cookie};
+    use crate::sidecars::contract_tests::{executable, within, x11_answer, x11_cookie, x11_server};
     use std::ffi::OsStr;
     use std::time::Duration;
 
@@ -186,6 +202,37 @@ mod tests {
         })
         .await;
         drop(display);
+    }
+
+    /// A server that exits under its owner is seen to end (`ended`), and its end still reaps it; a missing display
+    /// never ends.
+    #[tokio::test]
+    async fn a_display_whose_server_exits_is_seen_to_end() {
+        executable("Xvfb");
+        let sig = private_signal();
+        let folder = tempfile::tempdir().expect("an owned folder");
+        let mut display = Display::start(folder.path(), sig).await;
+        let Display::Up { ref cookie, .. } = display else {
+            panic!("the display must start where Xvfb is installed")
+        };
+        let server = x11_server(cookie);
+        let mut missing = Display::Missing("Xvfb is not installed: none on the daemon's PATH".into());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), display.ended()).await.is_err(),
+            "a live server has not ended"
+        );
+        // SAFETY: a signal to the X server this test started.
+        assert_eq!(unsafe { libc::kill(server as libc::pid_t, libc::SIGKILL) }, 0, "kill the server");
+        tokio::time::timeout(Duration::from_secs(10), display.ended())
+            .await
+            .expect("a killed server is seen to end");
+        assert_eq!(sig.live(), 1, "seen, not reaped: the owner's end reaps it");
+        display.end().await;
+        assert_eq!(sig.live(), 0, "the end reaps the server");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), missing.ended()).await.is_err(),
+            "a missing display never ends"
+        );
     }
 
     /// A child with no display is told why (the REPL shim says it at its first eval), and nothing it inherited is

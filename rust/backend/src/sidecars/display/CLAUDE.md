@@ -6,8 +6,8 @@ cookie opens, started before the child and ended after it. Part of the sidecars;
 rust/backend/src/sidecars/CLAUDE.md.
 
 ## Files
-- `mod.rs`: `Display` (`start`, `apply`, `end`), the server's arguments and the cookie file, with the tests of a start,
-  its failures, its cookie and its end.
+- `mod.rs`: `Display` (`start`, `apply`, `ended`, `end`), the server's arguments and the cookie file, with the tests of
+  a start, its failures, its cookie, its end under its owner and its end.
 
 ## Start here
 `Display::start`.
@@ -29,8 +29,15 @@ rust/backend/src/sidecars/CLAUDE.md.
 - A start that fails (no Xvfb, an early exit, no number within `START_BOUND`, 10 s) never fails the child: the daemon
   logs the reason at WARN, the child gets `SOT_NO_DISPLAY=<reason>` and keeps what it inherited, and the REPL shim says
   the reason at its first eval (julia/repl).
-- A display that dies under a live child is not started again; the child's next start gets a new one.
+- A display that ends under a live child ends the child: the child's owner waits on `ended` (the server's exit, seen
+  and left unreaped) for the child's whole life, then ends the child's tree and says why (`ChildTmp::display_ended`;
+  the REPL's `ReplEnded::DisplayEnded`, Pluto's `Cause::Display`). Once the server is gone any account can bind the
+  display's abstract name, and a child that opened its display only then would send its cookie and its pixels to that
+  account's server. A display is never started again under a live child; the child's next start gets a new one.
 - Limits: at its start Xvfb's xkbcomp writes `/tmp/server-<n>.xkm`, which the server removes before it accepts
   connections, so a server killed in its first moments can leave that file. `-displayfd` makes no lock file, so a
   program that picks a display number by lock files alone (`xvfb-run -a`, which starts at 99) can choose a number one
-  of these servers holds, and its own server then fails to start.
+  of these servers holds, and its own server then fails to start. The child is ended a moment after its server's
+  exit, not at the same instant. A descendant that left the child's process group keeps the ended display's name in
+  its environment: Pluto's notebook workers (Distributed starts each in a session of its own and, measured, a worker
+  whose server was killed lives on), and a process user code starts detached (ADR 0050 residual 7).

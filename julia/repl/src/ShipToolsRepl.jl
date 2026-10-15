@@ -58,9 +58,10 @@ end
 # process-global, so overlapping evals would clobber each other's capture).
 const CURRENT_EVAL = Ref{Union{Eval,Nothing}}(nothing)
 
-# Why this child has no display of its own (the daemon's `SOT_NO_DISPLAY`: on Linux no Xvfb could start), read at
-# `serve` and said once, as a stderr frame at the start of the first eval (`spawn_eval`), so whoever runs code next
-# sees it in the drawer or in their run's output.
+# Why the REPL before this child was ended (the daemon's `SOT_PREVIOUS_END`: its display ended under it) and why this
+# child has no display of its own (`SOT_NO_DISPLAY`: on Linux no Xvfb could start), read at `serve` and said once, as a
+# stderr frame at the start of the first eval (`spawn_eval`), so whoever runs code next sees it in the drawer or in
+# their run's output.
 const DISPLAY_NOTICE = Ref{Union{String,Nothing}}(nothing)
 
 """
@@ -108,9 +109,11 @@ function serve(io_in::IO, io_out::IO)
     any(d isa WGLDisplay for d in Base.Multimedia.displays) ||
         pushdisplay(WGLDisplay())
 
+    ended = get(ENV, "SOT_PREVIOUS_END", "")
     why = get(ENV, "SOT_NO_DISPLAY", "")
-    DISPLAY_NOTICE[] = isempty(why) ? nothing :
-        "sot: this REPL has no display of its own ($why), and GLMakie needs one. CairoMakie and WGLMakie (wglshow) work.\n"
+    notice = (isempty(ended) ? "" : "sot: $ended.\n") * (isempty(why) ? "" :
+        "sot: this REPL has no display of its own ($why), and GLMakie needs one. CairoMakie and WGLMakie (wglshow) work.\n")
+    DISPLAY_NOTICE[] = isempty(notice) ? nothing : notice
 
     write_envelope(io_out, "evt", 0, "repl.ready",
         Dict(:julia => string(VERSION), :protocol => PROTOCOL_VERSION))

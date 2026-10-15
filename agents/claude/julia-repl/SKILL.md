@@ -146,7 +146,11 @@ the eval and read the file.
 **Display.** On a Linux backend the kernel has an X display of its own, a
 private Xvfb that only it can open, so `using GLMakie` works and a GLMakie
 figure you return comes back as a figure path, as a CairoMakie one does.
-Nothing appears on any screen: return the figure, or `save` it. On a host
+Nothing appears on any screen: return the figure, or `save` it. If that
+display ends, the REPL ends with it: your next run starts a new REPL with a new
+display, and its stderr says so first (`sot: the REPL before this one was
+ended because its own display (Xvfb) ended ...`); what the old one defined or
+loaded is gone. On a host
 without Xvfb the kernel's first run says so in its stderr (`sot: this REPL has
 no display of its own (...)`); use CairoMakie there. For an interactive figure use WGLMakie and `wglshow(fig)`: it serves the figure on a port the OS assigns, at an
 address with a secret in it, so no other account on the box can open it, and one window opens it: the window

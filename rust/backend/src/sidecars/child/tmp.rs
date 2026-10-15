@@ -1,5 +1,5 @@
 //! A Julia child's own temporary folder, and for a child that runs user code its own display: made before its spawn,
-//! named in its environment, ended after its reap.
+//! named in its environment, ended after its reap; a display that ends first ends the child.
 
 use crate::lifecycle::child_signal::{Contained, Signal};
 use tokio::process::Command;
@@ -58,6 +58,16 @@ impl ChildTmp {
         if let Some(display) = &self.display {
             display.apply(cmd);
         }
+    }
+
+    /// Returns once the child's display has ended under it ([`Display::ended`](crate::sidecars::display::Display::ended));
+    /// never for a child with no display. Its owner then ends the child with [`retire`](Self::retire), naming that end.
+    pub(crate) async fn display_ended(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(display) = self.display.as_mut() {
+            return display.ended().await;
+        }
+        std::future::pending().await
     }
 
     /// Ends `child` (its tree, then its direct child's reap), then its display, and removes the folder. The removal
