@@ -12,35 +12,28 @@ use std::path::Path;
 /// only a later walk sees, and a killed holder forks no more, so the walks stop at the first that finds no new holder.
 const WALKS: usize = 16;
 
-/// Ends every process of this account whose environment holds `XAUTHORITY=<cookie>`. Each match is opened as a pidfd,
-/// its environment is read again while that pidfd shows it alive (so the read was of the process the pidfd names), and
-/// it is sent SIGKILL through the pidfd, so a pid the OS has given to another process is never signalled. A process
-/// with SIGKILL pending runs no more code, so nothing waits for its exit. Returns how many it signalled.
+/// Ends every process of this account whose environment holds `XAUTHORITY=<cookie>`; see `end_with`. Returns how many it
+/// signalled.
 pub(super) fn end(cookie: &Path) -> usize {
+    end_with(cookie, processes)
+}
+
+/// `end` over the process table `list` returns, called once per walk.
+fn end_with(cookie: &Path, mut list: impl FnMut() -> Vec<u32>) -> usize {
     let wanted = [b"XAUTHORITY=".as_slice(), cookie.as_os_str().as_bytes()].concat();
     // SAFETY: geteuid has no preconditions.
     let account = unsafe { libc::geteuid() };
     let mut signalled: Vec<(u32, OwnedFd)> = Vec::new();
     for _ in 0..WALKS {
         let mut new = 0;
-        for pid in processes() {
+        for pid in list() {
             // A holder signalled by an earlier walk that has not exited: the pid still names it.
             if signalled.iter().any(|(p, fd)| *p == pid && !exited(fd)) || !holds(pid, account, &wanted) {
                 continue;
             }
-            let Some(fd) = open(pid) else { continue };
-            if !holds(pid, account, &wanted) || exited(&fd) {
-                continue;
-            }
-            match kill(&fd) {
-                Ok(()) => {
-                    signalled.push((pid, fd));
-                    new += 1;
-                }
-                Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {}
-                Err(e) => {
-                    tracing::warn!(pid, error = %e, "a process that holds an ended display's cookie was not signalled")
-                }
+            if let Some(fd) = end_one(pid, account, &wanted) {
+                signalled.push((pid, fd));
+                new += 1;
             }
         }
         if new == 0 {
@@ -52,6 +45,24 @@ pub(super) fn end(cookie: &Path) -> usize {
     }
     tracing::warn!(walks = WALKS, "processes that hold an ended display's cookie were still starting at the last walk");
     signalled.len()
+}
+
+/// Ends `pid`: it is opened as a pidfd, its environment is read again while that pidfd shows it alive (so the read was
+/// of the process the pidfd names, not of a pid the OS has since given to another), and it is sent SIGKILL through the
+/// pidfd. A process with SIGKILL pending runs no more code, so nothing waits for its exit. Gives the pidfd once signalled.
+fn end_one(pid: u32, account: u32, wanted: &[u8]) -> Option<OwnedFd> {
+    let fd = open(pid)?;
+    if !holds(pid, account, wanted) || exited(&fd) {
+        return None;
+    }
+    match kill(&fd) {
+        Ok(()) => Some(fd),
+        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => None,
+        Err(e) => {
+            tracing::warn!(pid, error = %e, "a process that holds an ended display's cookie was not signalled");
+            None
+        }
+    }
 }
 
 /// Every process id the process table lists now.
@@ -111,5 +122,95 @@ fn kill(fd: &OwnedFd) -> std::io::Result<()> {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    /// A child that sleeps; it holds `cookie` as its `XAUTHORITY` when one is given. Killed when dropped.
+    struct Sleeper(Child);
+
+    impl Sleeper {
+        fn start(cookie: Option<&Path>) -> Self {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("60").stdin(Stdio::null()).env_remove("XAUTHORITY");
+            if let Some(cookie) = cookie {
+                cmd.env("XAUTHORITY", cookie);
+            }
+            let child = cmd.spawn().expect("start sleep");
+            // Until its exec, /proc shows the environment of the forking test, not the one it was given.
+            let cmdline = format!("/proc/{}/cmdline", child.id());
+            while !std::fs::read(&cmdline).is_ok_and(|c| c.starts_with(b"sleep")) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Sleeper(child)
+        }
+
+        fn pid(&self) -> u32 {
+            self.0.id()
+        }
+
+        /// Whether it ended within a bound.
+        fn ends(&mut self) -> bool {
+            let until = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < until {
+                if self.0.try_wait().expect("wait").is_some() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        }
+    }
+
+    impl Drop for Sleeper {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn cookie(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("sot-holders-test-{}-{name}", std::process::id()))
+    }
+
+    #[test]
+    fn a_holder_started_after_the_first_listing_still_ends() {
+        let cookie = cookie("repeat");
+        let (mut first, mut late) = (None, None);
+        let mut calls = 0;
+        let signalled = end_with(&cookie, || {
+            calls += 1;
+            if calls > 1 {
+                return processes();
+            }
+            // The first listing names only `first`; `late` starts after it, as a fork between a walk and the kill does.
+            first = Some(Sleeper::start(Some(&cookie)));
+            let listed = vec![first.as_ref().unwrap().pid()];
+            late = Some(Sleeper::start(Some(&cookie)));
+            listed
+        });
+        assert!(first.as_mut().unwrap().ends(), "the listed holder kept running");
+        assert!(late.as_mut().unwrap().ends(), "the holder started after the first listing kept running");
+        assert_eq!(signalled, 2);
+    }
+
+    #[test]
+    fn a_live_process_that_holds_no_cookie_is_not_signalled() {
+        let cookie = cookie("reread");
+        let wanted = [b"XAUTHORITY=".as_slice(), cookie.as_os_str().as_bytes()].concat();
+        // SAFETY: geteuid has no preconditions.
+        let account = unsafe { libc::geteuid() };
+        let mut other = Sleeper::start(None);
+        assert!(end_one(other.pid(), account, &wanted).is_none(), "a process without the cookie was signalled");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(other.0.try_wait().expect("wait").is_none(), "a process without the cookie ended");
+        let mut holder = Sleeper::start(Some(&cookie));
+        assert!(end_one(holder.pid(), account, &wanted).is_some());
+        assert!(holder.ends(), "a holder was not ended");
     }
 }

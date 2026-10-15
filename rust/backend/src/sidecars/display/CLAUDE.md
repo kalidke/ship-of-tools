@@ -44,6 +44,8 @@ rust/backend/src/sidecars/CLAUDE.md.
   too. Each is found by a walk of `/proc`, opened as a pidfd, its environment read again while that pidfd shows it
   alive, and sent SIGKILL through the pidfd, so a pid the OS has reused is never signalled; the walks repeat until one
   finds no new holder, because a holder that forked between a walk and its kill leaves a child only the next walk sees.
+  Tests pin the repeat walk (`end_with`) and the re-read (`end_one`); the pidfd is pinned only by `kill`'s signature,
+  because no test can make the OS reuse a pid without root.
 - Limits: at its start Xvfb's xkbcomp writes `/tmp/server-<n>.xkm`, which the server removes before it accepts
   connections, so a server killed in its first moments can leave that file. `-displayfd` makes no lock file, so a
   program that picks a display number by lock files alone (`xvfb-run -a`, which starts at 99) can choose a number one
