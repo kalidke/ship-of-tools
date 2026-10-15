@@ -493,6 +493,13 @@ installer_pin_names_only() {  # <systemd-user-dir> <kernel-host>
 ConditionHost=|$2.*" ]
 }
 
+# The hosts sotd.service's host pin under DIR names, one per line, from its ConditionHost= lines.
+installer_pin_hosts() {  # <systemd-user-dir>
+    local pin="$1/sotd.service.d/topology.conf"
+    [ -f "$pin" ] || return 0
+    sed -n 's/^ConditionHost=|\([^*]*[^.*]\)$/\1/p' "$pin"
+}
+
 installer_retire_local_service() {  # <want-daemon 0|1> <prefix> <topology-declared 0|1>
     [ "$1" = 0 ] && command -v systemctl >/dev/null 2>&1 || return 0
     [ -f "$HOME/.config/systemd/user/sotd.service" ] || return 0
@@ -507,7 +514,7 @@ installer_retire_local_service() {  # <want-daemon 0|1> <prefix> <topology-decla
         say "disabled sotd.service, whose host pin names this host alone"
     else
         systemctl --user stop sotd.service 2>/dev/null || true
-        say "stopped this host's sotd.service and left its enable link: with no hosts.toml its host pin does not name this host alone, so the link may serve another host that shares this home"
+        say "Stopped this computer's sotd and left the shared startup link. If no other computer shares this home folder, run: systemctl --user disable sotd.service"
     fi
 }
 
@@ -525,8 +532,15 @@ installer_enable_local_service() {  # <prefix> <template> <socket>
     # The unit and its enable link live in the home, which other hosts may
     # share: pin it to the hosts that run sotd before any manager reloads it,
     # and with no hosts.toml to this host, which installs it.
+    local before after h
+    before="$(installer_pin_hosts "$HOME/.config/systemd/user")"
     "$1/bin/sotd" topology pin --dir "$HOME/.config/systemd/user" --claim \
         || say "WARNING: sotd topology pin failed: sotd.service is not pinned to the hosts that run sotd"
+    after="$(installer_pin_hosts "$HOME/.config/systemd/user")"
+    for h in $before; do
+        printf '%s\n' "$after" | grep -qx -F -- "$h" \
+            || say "The daemon moved here from $h: $h's sotd will not start at its next login."
+    done
     systemctl --user daemon-reload
     systemctl --user enable --now sotd.service
     loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true

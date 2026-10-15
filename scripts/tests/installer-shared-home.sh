@@ -97,6 +97,23 @@ rm -f "$u/sotd.service.d/topology.conf"
 on_host unithost-a.example.org installer_retire_local_service 0 "$d/prefix" 0
 check "with no pin (an install from before pins) the link stays" "yes" "$(linked)"
 
+# The installer says what a pin move and a pre-pin retire did. The sotd stand-in writes the claim's pin for the host it runs on.
+printf '#!/bin/sh\nh="$(hostname)"; printf "[Unit]\\nConditionHost=|%%s\\nConditionHost=|%%s.*\\n" "$h" "$h" > "%s/sotd.service.d/topology.conf"\n' "$u" > "$d/prefix/bin/sotd"
+chmod +x "$d/prefix/bin/sotd"
+rm -f "$u/sotd.service.d/topology.conf"
+said() { ( HOME="$d/home"; PATH="$d/stubs:$PATH"; STUB_HOST="$1"; export STUB_HOST; shift; "$@" ) 2>&1 || true; }
+said unithost-a installer_enable_local_service "$d/prefix" "$TEMPLATE" "$d/sot.sock" > "$WORK/say-a"
+check "a first claim names no earlier host" "0" "$(grep -c 'moved here' "$WORK/say-a" || true)"
+said unithost-b installer_enable_local_service "$d/prefix" "$TEMPLATE" "$d/sot.sock" > "$WORK/say-b"
+check "host B's install names host A and that its sotd will not start" "1" "$(grep -c -F "The daemon moved here from unithost-a: unithost-a's sotd will not start at its next login." "$WORK/say-b" || true)"
+said unithost-b installer_enable_local_service "$d/prefix" "$TEMPLATE" "$d/sot.sock" > "$WORK/say-b2"
+check "a reinstall on the host that holds the pin says nothing of a move" "0" "$(grep -c 'moved here' "$WORK/say-b2" || true)"
+rm -f "$u/sotd.service.d/topology.conf"
+said unithost-a installer_retire_local_service 0 "$d/prefix" 0 > "$WORK/say-pre"
+check "a pre-pin retire says it left the shared link and names the disable command" "1" \
+    "$(grep -c -F "Stopped this computer's sotd and left the shared startup link. If no other computer shares this home folder, run: systemctl --user disable sotd.service" "$WORK/say-pre" || true)"
+check "a pre-pin retire leaves the link" "yes" "$(linked)"
+
 d="$WORK/retire-daemon"; pin_fixture "$d" 1
 ( HOME="$d/home"; PATH="$d/stubs:$PATH"; installer_retire_local_service 1 "$d/prefix" 1 ) >/dev/null 2>&1 || true
 check "a box that runs a daemon retires nothing" "0" "$(wc -l < "$d/log" | tr -d ' ')"
