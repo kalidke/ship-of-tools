@@ -25,6 +25,10 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
   the state is not `Dead`.
 - `Repl` retains the current selected project and one supervisor owner: submission, explicit stop and checked retirement join. No replacement starts before successful retirement; a cleanup error or `REPL_RESTART_WAIT` join timeout is visible and retains the retiring owner for reconciliation.
 - Stop, channel close, child exit, pipe failure and shutdown share pending/streamed closeout and browser-grant revocation. The closeout names why the supervisor ended (`ReplEnded`): a restart, a stop or the child's death, and only a death says the REPL died; `repl.execute` answers a restart `restarted`. Contained-tree termination requests are checked and the direct child is confirmed reaped before successful retirement; escaped descendants remain ADR 0050 residual 7.
+- `REPL_RESTART_WAIT` (5 s) covers the old child's kill and reap, its display's end and the stderr tail's wait, and holds with
+  margin for a large heap: measured on a 16 GB REPL (17.2 GB resident, three runs, Linux), the child and its Xvfb were gone
+  1.15 to 1.18 s after the retire began, `restart_with_project` returned at 1.21 to 1.24 s, and the new child answered an
+  eval 3.4 to 3.5 s after the retire began.
 - A supervisor is joined before a replacement generation opens, so its retired output cannot restore a revoked browser grant. The existing lifecycle generation guard still bounds state transitions. The child's exit ends supervision independently of inherited pipes.
 - `Repl::request_if_running` never spawns (`repl.interrupt` must not pay a spawn to answer "not running").
 - No submission waits on the child: one to a full queue is refused at once (`enqueue`, `ReplBusy`), and
