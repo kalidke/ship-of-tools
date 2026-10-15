@@ -125,8 +125,7 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
+        support::end_daemon(&mut self.daemon);
     }
 }
 

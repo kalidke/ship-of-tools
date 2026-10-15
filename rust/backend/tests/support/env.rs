@@ -189,17 +189,17 @@ impl Env {
     /// ends its own run with (Codex review finding 13's own "never an
     /// unbounded kill/wait" rule) — takes `Env`'s own tracked child (if
     /// any is still live; a no-op after an already-completed restart-and-
-    /// kill sequence) and reaps it via `kill_and_wait_bounded`. Leaves
+    /// kill sequence) and ends and reaps it via `end_daemon_bounded`. Leaves
     /// `Env`'s own `Drop` (F4) with nothing to do for its own daemon-kill
     /// step in the common, non-panicking case — exactly the relationship
     /// the old separate `KillGuard` had with its own `Drop`.
     pub async fn kill_daemon_bounded(&self) {
         let child = self.daemon.borrow_mut().take();
         if let Some(child) = child {
-            kill_and_wait_bounded(child).await;
-            // On Linux the launched process is the daemon's lifetime guard and the daemon is its child: the daemon
-            // ends a moment after the guard is reaped, and until it has, its socket still answers, so a restart that
-            // connected at once would reach the dying daemon.
+            end_daemon_bounded(child).await;
+            // On Linux the launched process is the daemon's lifetime guard and the daemon is its child: a guard
+            // killed past `end_daemon`'s bound ends its daemon a moment after it is reaped, and until then the
+            // daemon's socket still answers, so a restart that connected at once would reach the dying daemon.
             #[cfg(target_os = "linux")]
             poll_until(
                 || {
@@ -638,12 +638,11 @@ impl Drop for Env {
         // `RefCell::get_mut` — no runtime borrow check needed, and this
         // can never race the `&self`-taking async methods above (nothing
         // else can be calling into this `Env` while it is being dropped).
-        // Best-effort, unbounded-but-brief (mirrors the old `KillGuard`'s
-        // own `Drop`) — the common, non-panicking path already emptied
+        // Best-effort (`end_daemon`; mirrors the old `KillGuard`'s own
+        // `Drop`) — the common, non-panicking path already emptied
         // this slot via `kill_daemon_bounded`, so this is a no-op there.
         if let Some(mut child) = self.daemon.get_mut().take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            end_daemon(&mut child);
         }
 
         // (2, Windows) the counterpart of the Linux leg sweep below: a

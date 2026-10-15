@@ -40,4 +40,7 @@ rust/backend/src/sidecars/CLAUDE.md.
   of these servers holds, and its own server then fails to start. The child is ended a moment after its server's
   exit, not at the same instant. A descendant that left the child's process group keeps the ended display's name in
   its environment: Pluto's notebook workers (Distributed starts each in a session of its own and, measured, a worker
-  whose server was killed lives on), and a process user code starts detached (ADR 0050 residual 7).
+  whose server was killed lives on), and a process user code starts detached (ADR 0050 residual 7). A SIGKILL of the
+  daemon's lifetime guard (residual 7) ends the daemon but not the server: unlike the Julia children, which end when
+  their input closes, an Xvfb never ends on its own, so outside the systemd unit, whose cgroup ends it, it runs until
+  it is killed.
