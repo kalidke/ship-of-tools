@@ -774,12 +774,12 @@ done
         let window = CallerNumbers::default();
         let first = json!({ "workspace_id": r.id, "eval_id": 7, "code": "1" });
         handle_repl_eval(1, first, &r.session, &r.workspaces, &window).await.expect("setup: the eval starts the child");
-        within(Duration::from_secs(30), "the child has read the window's eval", || window.running() == [7]).await;
+        within(Duration::from_secs(30), "the child has read the window's eval", || window.running(&r.bus) == [7]).await;
         let second = json!({ "workspace_id": r.id, "eval_id": 8, "code": "2" });
         handle_repl_eval(2, second, &r.session, &r.workspaces, &window).await.expect("handler");
         let (seen, _) = until_closed(&mut r.bus, 2).await;
-        println!("repl-running: after the death every window got {seen:?}; a hello names {:?}", window.running());
-        assert!(window.running().is_empty(), "a run whose done is out is named no more: {:?}", window.running());
+        println!("repl-running: after the death every window got {seen:?}; a hello names {:?}", window.running(&r.bus));
+        assert!(window.running(&r.bus).is_empty(), "a run whose done is out is named no more: {:?}", window.running(&r.bus));
     }
 
     #[tokio::test]

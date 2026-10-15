@@ -197,7 +197,7 @@ what it saw before.
 A window's link can drop while one of its runs is in flight, and the window can redial the same daemon while the run
 goes on: the daemon keeps the window's numbers across its connections (amendment 2026-10-14). The REPL's supervisor
 marks each of a window's runs running when it writes the run to the child, and ended before it publishes the run's
-`done`, the close-out's synthetic `done` included (`CallerNumbers::ran`, `ended`). Every hello reply names the window's
+`done`, the close-out's synthetic `done` included (`CallerNumbers::ran`, `end_then`). Every hello reply names the window's
 runs still running, by the window's numbers (`HelloRes::repl_running`), read after the connection subscribed to the
 frame bus, so the `done` of each run it names is written to that connection. It names no run still queued or refused,
 no run whose request never reached the daemon, no other window's or session's run, and nothing after a daemon restart:

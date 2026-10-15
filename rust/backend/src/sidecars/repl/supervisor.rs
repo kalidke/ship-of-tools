@@ -380,22 +380,23 @@ async fn supervisor_task(
     // of hanging forever — the 2026-07-03 "REPL not working"), and, after the
     // retirement below, VISIBLE (its stderr tail at WARN).
     for (eid, owner) in streaming.drain() {
-        owner.ended(eid);
-        let _ = frame_tx.send(ReplFrameMsg {
-            eval_id: eid,
-            workspace_id: workspace_id.clone(),
-            frame: serde_json::json!({
-                "kind": "error",
-                "message": end.to_string(),
-                "stacktrace": [],
-            }),
-            opener: Default::default(),
-        });
-        let _ = frame_tx.send(ReplFrameMsg {
-            eval_id: eid,
-            workspace_id: workspace_id.clone(),
-            frame: serde_json::json!({ "kind": "done", "eval_id": eid, "elapsed_ms": 0 }),
-            opener: Default::default(),
+        owner.end_then(eid, || {
+            let _ = frame_tx.send(ReplFrameMsg {
+                eval_id: eid,
+                workspace_id: workspace_id.clone(),
+                frame: serde_json::json!({
+                    "kind": "error",
+                    "message": end.to_string(),
+                    "stacktrace": [],
+                }),
+                opener: Default::default(),
+            });
+            let _ = frame_tx.send(ReplFrameMsg {
+                eval_id: eid,
+                workspace_id: workspace_id.clone(),
+                frame: serde_json::json!({ "kind": "done", "eval_id": eid, "elapsed_ms": 0 }),
+                opener: Default::default(),
+            });
         });
     }
     // Retirement: request the tree's termination and check the direct
@@ -482,13 +483,8 @@ fn route_line(
             .cloned()
             .unwrap_or(Value::Null);
         let is_done = frame.get("kind").and_then(Value::as_str) == Some("done");
-        // A window's run is marked ended before its `done` goes on the bus: a hello read after the `done` was
-        // published never names it (`numbers::CallerNumbers::running`).
-        if is_done {
-            if let Some(owner) = streaming.remove(&eval_id) {
-                owner.ended(eval_id);
-            }
-        }
+        // A window's run ends with its `done`: it is marked ended, then the `done` goes on the bus (`end_then`).
+        let owner = if is_done { streaming.remove(&eval_id) } else { None };
         // A `browser` frame (ADR 0032 BrowserView — wglshow / user-served
         // dashboard) announces a live loopback server in this child. Record
         // its port for the ADR-0035 proxy allowlist HERE, as the frame passes
@@ -524,7 +520,13 @@ fn route_line(
         };
         // Ignore send errors: a closed channel just means no connection is
         // currently subscribed, which is fine.
-        let _ = frame_tx.send(msg);
+        let publish = || {
+            let _ = frame_tx.send(msg);
+        };
+        match owner {
+            Some(owner) => owner.end_then(eval_id, publish),
+            None => publish(),
+        }
         return;
     }
 

@@ -5,10 +5,12 @@
 //! never announced the run, and every other connection gets the daemon's number after the run's `started` frame. A run
 //! the daemon refused is written to its window not at all: the reply already said why. The REPL's supervisor marks each
 //! of a window's runs running when it writes the run to the child and ended before it publishes the run's `done`
-//! (`ran`, `ended`), so each hello reply names the window's runs still running (`running`, `HelloRes::repl_running`).
+//! (`ran`, `end_then`), so each hello reply names the window's runs still running (`running`, `HelloRes::repl_running`).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
+
+use tokio::sync::broadcast;
 
 use super::ReplFrameMsg;
 
@@ -43,7 +45,7 @@ enum Stage {
     Numbered,
     /// Written to the child (`ran`); its `done` is not yet published.
     Running,
-    /// Its `done` is published or about to be (`ended`, marked first), or the daemon refused it.
+    /// Its `done` is published or about to be (`end_then`, marked first), or the daemon refused it.
     Ended,
 }
 
@@ -85,13 +87,16 @@ impl CallerNumbers {
         self.mark(number, Stage::Running);
     }
 
-    /// This window's run `number` has ended: the supervisor marks it before it publishes the run's `done`.
-    pub(crate) fn ended(&self, number: u64) {
+    /// This window's run `number` has ended: it is marked ended, then `publish` puts the run's `done` on the frame bus,
+    /// so a hello read after the `done` was published never names the run.
+    pub(crate) fn end_then(&self, number: u64, publish: impl FnOnce()) {
         self.mark(number, Stage::Ended);
+        publish();
     }
 
-    /// The window's own numbers of its runs still running, oldest first: what a hello reply names.
-    pub(crate) fn running(&self) -> Vec<u64> {
+    /// The window's own numbers of its runs still running, oldest first: what a hello reply names. `subscribed` is the
+    /// reader's own subscription to the frame bus, taken first, so each run named has its `done` still to come on it.
+    pub(crate) fn running(&self, _subscribed: &broadcast::Receiver<ReplFrameMsg>) -> Vec<u64> {
         self.runs().values().filter(|run| run.stage == Stage::Running).filter_map(|run| run.number).collect()
     }
 
@@ -146,6 +151,11 @@ mod tests {
 
     fn kind_and_id(m: Option<ReplFrameMsg>) -> Option<(u64, String)> {
         m.map(|m| (m.eval_id, m.frame["kind"].as_str().unwrap_or("").to_string()))
+    }
+
+    /// A frame-bus subscription to read `running` against.
+    fn bus() -> broadcast::Receiver<ReplFrameMsg> {
+        broadcast::channel(1).1
     }
 
     fn done(n: u64) -> ReplFrameMsg {
@@ -219,18 +229,30 @@ mod tests {
     /// or wait in the queue), not once refused, not once ended, and never a run the window did not number.
     #[test]
     fn a_window_names_its_runs_only_while_they_run() {
-        let a = CallerNumbers::default();
+        let (a, bus) = (CallerNumbers::default(), bus());
         let (one, two, three) = (a.number(Some(1)), a.number(Some(2)), a.number(Some(3)));
         let theirs = a.number(None);
-        assert!(a.running().is_empty(), "numbered, not yet written to the child");
+        assert!(a.running(&bus).is_empty(), "numbered, not yet written to the child");
         for n in [one, two, theirs] {
             a.ran(n);
         }
         a.refused(three);
-        assert_eq!(a.running(), [1, 2], "written to the child, its done still to come");
-        a.ended(one);
-        assert_eq!(a.running(), [2], "ended");
+        assert_eq!(a.running(&bus), [1, 2], "written to the child, its done still to come");
+        a.end_then(one, || {});
+        assert_eq!(a.running(&bus), [2], "ended");
         assert_eq!(kind_and_id(a.outgoing(done(one))), Some((1, "done".into())), "an ended run is still the window's");
+    }
+
+    /// A run is marked ended before its `done` is published: from inside `publish` a hello already names it no more.
+    #[test]
+    fn a_run_is_marked_ended_before_its_done_is_published() {
+        let (a, bus) = (CallerNumbers::default(), bus());
+        let n = a.number(Some(1));
+        a.ran(n);
+        assert_eq!(a.running(&bus), [1]);
+        let mut named_at_publish = None;
+        a.end_then(n, || named_at_publish = Some(a.running(&bus)));
+        assert_eq!(named_at_publish, Some(vec![]), "the run was still named when its done was published");
     }
 
     /// An interrupt names a window's own runs by its numbers and announced runs by the daemon's; both reach the
@@ -249,7 +271,7 @@ mod tests {
         let a = CallerNumbers::default();
         let running = a.number(Some(1));
         let finished = a.number(Some(2));
-        a.ended(finished);
+        a.end_then(finished, || {});
         for own in 3..=(REMEMBERED as u64 + 1) {
             a.number(Some(own));
         }

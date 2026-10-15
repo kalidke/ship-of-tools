@@ -409,7 +409,7 @@ where
     };
     // The window's REPL runs still running, read now that this connection is subscribed to the frame bus above: the
     // `done` of each run named is published after this, so this connection is written it.
-    let running = shared.repl_numbers.running();
+    let running = shared.repl_numbers.running(&repl_frame_rx);
     let hello = hello.into_hello();
     let hello_reply = handle_hello(hello_id, hello, &session, &files_mode, label.as_deref(), &clients, running).await;
     for (frame, blob) in finish_dispatch(op::HELLO, hello_id, std::time::Instant::now(), hello_reply) {
