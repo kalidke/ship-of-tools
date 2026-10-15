@@ -124,6 +124,13 @@ pub struct WorkspaceListEntry {
     pub slug: String,
     pub label: String,
     pub project_root: String,
+    /// `project_root` as the daemon's file tree resolved it (`FilesMode::root_path`: every link resolved and, on
+    /// Windows, each name in its stored case and long form), the spelling of every `preview.changed` path. The row
+    /// keeps the spelling it was created with in `project_root`, which can differ (a link above the folder, as macOS's
+    /// /tmp and /var have; another case or an 8.3 name on Windows). `None` when the root never resolved, and from a
+    /// daemon that predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_root: Option<String>,
     /// The row's stored session name, the target used to attach its pane; it need not be derived from the slug.
     pub session_name: String,
     /// True if the workspace's `Kernel` handle has been constructed —

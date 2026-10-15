@@ -27,7 +27,7 @@ rust/frontend/src/ui/render/quad.rs.
   `looks_binary`).
 - Opening the previewed file acts on the installed preview, never on a fired request or a pin (`resolve_previewed_path`).
 - A `preview.changed` event counts only when its workspace is the active one or its path is under the known active root
-  (`resolve_preview_changed`).
+  (`resolve_preview_changed`), which is in the daemon's spelling of it (`workspace.list`'s `canonical_root`).
 - The concept read fires once per cursored node; a failed drift parse is re-armed after a 2 s then 4 s backoff and
   stops at `FILE_PARSE_MAX_RETRIES` attempts in all (`maybe_fire_concept_read`).
 - The scroll clamp measures only the buffer on screen (`preview_scroll_target`).

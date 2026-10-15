@@ -12,6 +12,9 @@ pub struct WorkspaceInfo {
     pub slug: String,
     pub label: String,
     pub project_root: String,
+    /// The wire's `canonical_root`: `project_root` as the daemon's file tree resolved it, the spelling of every
+    /// `preview.changed` path. `None` from a daemon that sends none.
+    pub canonical_root: Option<String>,
     pub session_name: String,
     pub kernel_running: bool,
     pub is_default: bool,
@@ -441,6 +444,7 @@ pub(crate) fn on_workspace_list(
                     slug: w.slug,
                     label: w.label,
                     project_root: w.project_root,
+                    canonical_root: w.canonical_root,
                     session_name: w.session_name,
                     kernel_running: w.kernel_running,
                     is_default: w.is_default,

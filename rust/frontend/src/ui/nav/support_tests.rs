@@ -22,6 +22,7 @@ pub(in crate::ui) fn ws_info(slug: &str, session_name: &str) -> crate::net::tran
         slug: slug.to_string(),
         label: String::new(),
         project_root: format!("/projects/{slug}"),
+        canonical_root: None,
         session_name: session_name.to_string(),
         kernel_running: false,
         is_default: false,

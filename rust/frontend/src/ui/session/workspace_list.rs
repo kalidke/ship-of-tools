@@ -87,8 +87,8 @@ fn fresh_workspace_caches(
                 };
                 out.workspace_labels.insert(ws_key.clone(), label);
             }
-            out.workspace_project_roots
-                .insert(ws_key.clone(), w.project_root.clone());
+            let root = w.canonical_root.as_ref().unwrap_or(&w.project_root); // the watcher's spelling, when sent
+            out.workspace_project_roots.insert(ws_key.clone(), root.clone());
             out.workspace_states.insert(
                 ws_key.clone(),
                 (w.agent_state.clone(), w.agent_status_at.clone()),
@@ -592,6 +592,29 @@ mod tests {
                 .get(&beta_key)
                 .map(String::as_str),
             Some("/projects/beta-sot")
+        );
+    }
+
+    #[test]
+    fn a_rows_root_is_the_daemons_spelling_so_a_watched_path_resolves_under_it() {
+        // A row created through a link above its folder (macOS's /tmp and
+        // /var), or in another case or 8.3 name on Windows: the daemon's
+        // watcher spells its paths as `canonical_root`, and an umbrella
+        // row's copy of a change is matched against this root as strings.
+        let host = "h".to_string();
+        let mut linked = ws_info("alpha", "sot-be-alpha");
+        linked.project_root = "/t/link/repo".to_string();
+        linked.canonical_root = Some("/t/real/repo".to_string());
+        let older = ws_info("beta", "sot-be-beta");
+        let lists = HashMap::from([(host.clone(), vec![linked, older])]);
+        let fresh = fresh_workspace_caches(std::slice::from_ref(&host), &lists, &host);
+        let root = |slug: &str| fresh.workspace_project_roots.get(&(host.clone(), slug.to_string())).cloned();
+        assert_eq!(root("alpha").as_deref(), Some("/t/real/repo"));
+        assert_eq!(root("beta").as_deref(), Some("/projects/beta"), "a daemon that sends no canonical_root");
+        let event = Some("/t/real/repo/src/a.jl");
+        assert_eq!(
+            resolve_preview_changed(Some("umbrella"), Some("files:repo/src/a.jl"), event, Some("alpha"), root("alpha").as_deref()),
+            Some("files:src/a.jl".to_string())
         );
     }
 

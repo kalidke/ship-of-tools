@@ -490,6 +490,7 @@ mod tests {
             slug: "proj".to_string(),
             label: "proj".to_string(),
             project_root: "/tmp/proj".to_string(),
+            canonical_root: None,
             session_name: "sot-be-proj".to_string(),
             kernel_running: false,
             is_default: true,

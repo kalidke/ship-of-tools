@@ -756,11 +756,15 @@ struct State {
     /// rather than the raw slug. ADR 0042 L2a: keyed by `WsKey`, not a bare
     /// slug — two hosts each having a "sot" workspace must not collide.
     workspace_labels: HashMap<WsKey, String>,
-    /// `(host, slug)` → project_root map populated from each host's own
-    /// `workspace.list` reply. Used to resolve `files:<rel>` node ids to
-    /// absolute paths in the *active* workspace (not the daemon's startup
-    /// workspace). Falls back to `daemon_project_root` if the active
-    /// workspace hasn't appeared in a `workspace.list` reply yet.
+    /// `(host, slug)` → root map populated from each host's own
+    /// `workspace.list` reply: the row's `canonical_root` (the daemon's
+    /// spelling, which every `preview.changed` path and the hello's
+    /// `project_root` are in), or its `project_root` from a daemon that
+    /// sends none. Used to resolve `files:<rel>` node ids to absolute
+    /// paths in the *active* workspace (not the daemon's startup
+    /// workspace) and to match a `preview.changed` path to it. Falls back
+    /// to `daemon_project_root` if the active workspace hasn't appeared in
+    /// a `workspace.list` reply yet.
     workspace_project_roots: HashMap<WsKey, String>,
     /// `(host, slug)` → (agent_state, agent_status_at) from each host's own
     /// `workspace.list` reply, so the bottom session strip can colour each

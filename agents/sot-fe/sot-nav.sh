@@ -52,7 +52,9 @@ SLUG="${SOT_WORKSPACE:-}"
 # The FE's files: node ids are workspace-relative, so send a relative path.
 # An absolute path is relativized against the workspace root, the two compared
 # in one spelling (sot_relative_to: on Windows the daemon spells the root C:\...
-# and the shell a path /c/...); a path that is already relative passes through.
+# and the shell a path /c/..., and on any box a link above the root, such as
+# macOS's /tmp and /var, gives it two spellings); a path that is already relative
+# passes through.
 source "$SCRIPT_DIR/comm-lib.sh"
 ROOT="${SOT_WORKSPACE_ROOT:-}"
 case "$REL" in

@@ -66,6 +66,12 @@ fn looks_binary(bytes: &[u8]) -> bool {
 /// a watcher's coverage), so the event copy tagged with the active slug may
 /// never exist — but every copy carries the absolute path, and any copy
 /// whose path is inside the active root is ours to act on.
+///
+/// Lexical, so `root` must be in the daemon's spelling (`workspace.list`'s
+/// `canonical_root`, or the hello's `project_root`): a watcher reports its
+/// paths under the root its file tree resolved, while a row keeps the
+/// spelling it was created with (a link above the folder, as macOS's /tmp
+/// and /var have; another case or an 8.3 name on Windows).
 fn files_node_id_under_root(path: &str, root: &str) -> Option<String> {
     let root = root.trim_end_matches(['/', '\\']);
     let rel = path.strip_prefix(root)?.strip_prefix(['/', '\\'])?;

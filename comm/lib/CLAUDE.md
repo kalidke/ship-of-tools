@@ -72,7 +72,12 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   library's one cygpath conversion (`cygpath -m -l`; `sot_daemon_path`, the spelling of every path a script sends a
   daemon inside a payload, where Git Bash converts nothing, uses it for a `pipe:` daemon): on Windows git
   prints `C:/...` with long names (and `realpath` keeps it), a native daemon `C:\...`, and the shell `/c/...` or
-  `/tmp/...`, whose folder can carry a short 8.3 name.
+  `/tmp/...`, whose folder can carry a short 8.3 name. `sot_relative_to` and `sot_same_root` compare that spelling
+  with A-Z read as a-z where cygpath exists (`_sot_case_key`): git prints a folder's stored case, while the shell's
+  `pwd` and a row's root keep the case they were typed in. The fold is never sent or stored. On every box git prints
+  its root physical while the shell and a row's root keep a link above it (macOS's `/tmp` and `/var` lead into
+  `/private`): `sot_relative_to` resolves the folders above the path (`pwd -P`), from the top, until one is the root's
+  folder or lies in it, and never a link inside the root.
 - A Windows program Git Bash also ships (`whoami`) is called by full path under `SYSTEMROOT`: by its bare name, Git Bash
   (and a `cmd` started from it) runs Git's coreutils one (`_sot_windows_sid`).
 - A rule written in both shell and Rust changes in both in one commit (the lock record, the cursor, the lock identity, the unread count, the heartbeat).

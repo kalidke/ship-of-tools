@@ -5,7 +5,8 @@
 file-size scripts/launch-sot.ps1 top-level flow and -Local-gated section stay in one file
 
 # comm/lib passed 3,000 lines with MAC-BASH32's macOS proof of death, then SMALL-066's jq naming and Windows path
-# spelling (3,082 at batch 5). Its parts sit beside their loader, comm-lib.sh, which the installer inlines into one file
+# spelling (3,082 at batch 5), then MAC-PHYS-ROOT's walk to a path's physical root and WIN-PATH-CASE's case fold
+# (3,116 at batch 6). Its parts sit beside their loader, comm-lib.sh, which the installer inlines into one file
 # (comm/lib/CLAUDE.md). Removed in 0.6.7, when COMM-SIMPLE brings the folder under the limit.
 folder-size comm/lib the parts sit beside the loader the installer inlines; until 0.6.7, when COMM-SIMPLE brings the folder under 3,000 lines
 

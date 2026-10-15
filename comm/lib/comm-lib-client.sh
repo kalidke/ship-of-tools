@@ -655,27 +655,61 @@ sot_native_path() {
     printf '%s\n' "$out"
 }
 
-# sot_same_root A B — rc 0 when A and B name one folder, compared in one spelling (sot_native_path): every registry
-# and self-file root is compared this way, since on Windows a root from git (C:/..., which realpath keeps) and one
-# from the shell (/c/... or /tmp/...) spell one folder two ways.
+# _sot_case_key NATIVE — a path in sot_native_path's spelling as sot_same_root and sot_relative_to compare it: where
+# cygpath exists (Windows) A-Z read as a-z, since a Windows folder answers to its name in any case and the spellings
+# keep different ones (git prints a folder's stored case; the shell's pwd and a row's root keep the case they were
+# typed in). Only for comparing: a path is sent and stored in its own spelling.
+_sot_case_key() {
+    if command -v cygpath > /dev/null 2>&1; then printf '%s\n' "$1" | tr 'A-Z' 'a-z'; else printf '%s\n' "$1"; fi
+}
+
+# sot_same_root A B — rc 0 when A and B name one folder, compared in one spelling (sot_native_path, then
+# _sot_case_key): every registry and self-file root is compared this way, since on Windows a root from git (C:/...,
+# which realpath keeps) and one from the shell (/c/... or /tmp/...) spell one folder two ways.
 sot_same_root() {
     local a b
     [ "$1" = "$2" ] && return 0
-    a="$(sot_native_path "$1")" && b="$(sot_native_path "$2")" && [ "$a" = "$b" ]
+    a="$(sot_native_path "$1")" && b="$(sot_native_path "$2")" \
+        && [ "$(_sot_case_key "$a")" = "$(_sot_case_key "$b")" ]
 }
 
-# sot_relative_to ROOT PATH — PATH relative to ROOT, the two compared in one spelling (sot_native_path), so git's or a
-# native daemon's C:/... root and the shell's /c/... path agree on Windows: `.` for ROOT itself; rc 1 for an absolute
-# PATH outside ROOT, or with no ROOT. A relative PATH prints as written. Lexical: no link is resolved.
+# _sot_physical_dir DIR — DIR with every link in it resolved (`pwd -P`), in sot_native_path's spelling; prints nothing
+# and returns 1 when DIR is not a folder this shell can enter.
+_sot_physical_dir() {
+    local p
+    p="$(unset CDPATH; cd -P -- "$1" 2>/dev/null && pwd -P)" && [ -n "$p" ] && sot_native_path "$p"
+}
+
+# sot_relative_to ROOT PATH — PATH relative to ROOT, the two compared in one spelling (sot_native_path, then
+# _sot_case_key), so git's or a native daemon's C:/... root and the shell's /c/... path agree on Windows, in any case:
+# `.` for ROOT itself, the rest of PATH in PATH's own spelling; rc 1 for an absolute PATH outside ROOT, or with no ROOT.
+# A relative PATH prints as written. PATH under ROOT as written is answered as written. Otherwise a link above the
+# folder can spell it two ways (macOS's /tmp and /var lead into /private, and git prints the physical root), so each
+# folder above PATH, from the top, is resolved (_sot_physical_dir) until one is ROOT's folder or lies in it, compared
+# the same way; the part of PATH below that folder stays as written, so a link inside ROOT is never resolved.
 sot_relative_to() {
-    local root path
+    local root path key phys head rest dir
     case "$2" in /*|[A-Za-z]:[\\/]*) ;; *) printf '%s\n' "$2"; return 0 ;; esac
     [ -n "$1" ] && root="$(sot_native_path "$1")" && path="$(sot_native_path "$2")" || return 1
-    case "$path" in
-        "${root%/}") printf '.\n' ;;
-        "${root%/}"/*) printf '%s\n' "${path#"${root%/}"/}" ;;
-        *) return 1 ;;
+    key="$(_sot_case_key "${root%/}")" || return 1
+    case "$(_sot_case_key "$path")" in
+        "$key") printf '.\n'; return 0 ;;
+        "$key"/*) printf '%s\n' "${path:${#key}+1}"; return 0 ;;
     esac
+    phys="$(_sot_physical_dir "$root")" && key="$(_sot_case_key "${phys%/}")" || return 1
+    head="" rest="$path"
+    while [ -n "$rest" ]; do
+        case "$rest" in
+            */*) head="$head${rest%%/*}/"; rest="${rest#*/}" ;;
+            *) head="$path"; rest="" ;;
+        esac
+        dir="$(_sot_physical_dir "$head")" || continue
+        case "$(_sot_case_key "${dir%/}")" in
+            "$key") printf '%s\n' "${rest:-.}"; return 0 ;;
+            "$key"/*) dir="${dir:${#key}+1}"; printf '%s\n' "$dir${rest:+/$rest}"; return 0 ;;
+        esac
+    done
+    return 1
 }
 
 # sot_daemon_path PATH — PATH in the spelling of the daemon at ENDPOINT (the

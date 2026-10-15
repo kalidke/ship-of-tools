@@ -5,7 +5,7 @@
 # comm-lib's sot_relative_to over sot_native_path, the library's one `cygpath -m -l`. Linux has no cygpath, and there the
 # paths compare as written. Here a stand-in cygpath (and a git that prints its root through it, as Git for Windows
 # does) shows the Windows arm; the real ones ran only in the tmp workflows' hosted steps (W7, W8, W9), and no CI job
-# runs this suite on Windows. Sections 4 and 5 read what sot-fe sends from a recording socket in this suite's own work
+# runs this suite on Windows. Sections 4 to 6 read what sot-fe sends from a recording socket in this suite's own work
 # directory, never a real ~/.sot-comm.
 #
 # Usage: agents/tests/test-sot-fe-paths.sh     Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -17,7 +17,7 @@ if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
     echo "FATAL: mktemp did not produce a usable work directory (got: '$WORK')" >&2
     exit 1
 fi
-WORK="$(cd "$WORK" && pwd -P)" || exit 1   # git prints the physical root; a Mac's TMPDIR lies behind /var -> /private/var
+WORK="$(cd "$WORK" && pwd -P)" || exit 1   # git's spelling: the Windows arm's stand-in C:/ paths follow no link
 trap 'rm -rf "${WORK:?}"' EXIT
 
 export SOT_COMM_HOME="$WORK/home"
@@ -93,6 +93,7 @@ linux|/r/proj|/o/a|rc 1
 linux||/r/proj/a|rc 1
 linux|/r/proj|a/b|a/b
 linux||a|a
+linux|/r/Proj|/r/proj/a|rc 1
 windows|C:/r/proj|/c/r/proj/a/b|a/b
 windows|C:/r/proj|C:\r\proj\a|a
 windows|C:\r\proj|/c/r/proj|.
@@ -100,7 +101,27 @@ windows|C:/TempLong/x|/tmp/x/src/a.jl|src/a.jl
 windows|C:/SHORT~1/x|C:/TempLong/x/a|a
 windows|C:/r/proj|/c/r/projx/a|rc 1
 windows|C:/r/proj|src/a|src/a
+windows|C:/R/Proj|/c/r/proj/a/b|a/b
+windows|c:/r/proj|/c/r/proj/a|a
+windows|c:/r/proj|C:/R/Proj/Src/A.jl|Src/A.jl
+windows|C:/R/Proj|/c/r/projx/a|rc 1
 TABLE
+
+# 1b. The walk's case fold (sot_relative_to, a link above PATH): on Windows `pwd -P` keeps the case a folder was typed in
+# where it resolves no link, so ROOT in lower case resolves to itself in lower case, and gives the stored case through a
+# junction, so PATH's folder resolves to ROOT's folder in the stored case; only the fold makes the two one. Hosted run
+# 38625786065 on a real Windows runner is the proof (green with the fold, `refused` without); this is its model on a
+# case-sensitive filesystem: `root` stands for the folder as typed, `Root` for it as stored, `lnk` for the junction, and an
+# identity cygpath (the path as written, so the walk can enter it) puts _sot_case_key in force.
+mkdir -p "$WORK/cs/Root" "$WORK/cs/root" "$WORK/winid" && : > "$WORK/cs/Root/a.txt" && ln -s Root "$WORK/cs/lnk" || exit 2
+cat > "$WORK/winid/cygpath" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do p="$a"; done
+printf '%s\n' "$p"
+EOF
+chmod +x "$WORK/winid/cygpath"
+check "relative_to (windows): a root typed in lower case, the path through a link to the stored case" \
+    "$(lib "$WORK/winid:$PATH" sot_relative_to "$WORK/cs/root" "$WORK/cs/lnk/a.txt")" "a.txt"
 
 # 2. sot_daemon_path keeps its contract on sot_native_path: a pipe: daemon gets cygpath -m -l's spelling, a failed or
 # missing cygpath refuses, and any other daemon gets the path as written.
@@ -129,6 +150,10 @@ windows|C:/r/proj|/c/r/proj|
 windows|C:\r\proj|/c/r/proj|
 windows|C:/TempLong/x|/tmp/x|
 windows|C:/r/proj|/c/r/other|rc 1
+windows|C:/R/Proj|/c/r/proj|
+windows|c:/r/proj|C:\R\PROJ|
+windows|C:/R/Proj|/c/r/projx|rc 1
+linux|/r/Proj|/r/proj|rc 1
 TABLE
 
 # 2c. comm-context.sh, the self-file root compare (A3's site): a self file whose root is the shell's spelling of this
@@ -139,6 +164,13 @@ printf 'ctx-handle\nrepo=ctx\nroot=%s\n' "$(cd "$WORK/ctx" && pwd -P)" > "$WORK/
 ctx="$(cd "$WORK/ctx" && PATH="$WIN_PATH" SOT_COMM_SELF_FILE="$WORK/self-ctx.txt" SOT_COMM_TEST_HOST=testhost \
     bash "$SCRIPTS_DIR/comm-context.sh" 2>"$WORK/ctx.err")"
 check "context (windows): the self file's /tmp root is this repo's C:/ root" \
+    "$(printf '%s\n' "$ctx" | sed -n 's/^NAME=//p') $(grep -c stale "$WORK/ctx.err")" "ctx-handle 0"
+# The same, the self file's root in another case than the folder's (a session that reached it by a lower-case cd).
+mkdir -p "$WORK/CtxCase" && (cd "$WORK/CtxCase" && "$REAL_GIT" init -q) || exit 2
+printf 'ctx-handle\nrepo=CtxCase\nroot=%s/ctxcase\n' "$WORK" > "$WORK/self-case.txt"
+ctx="$(cd "$WORK/CtxCase" && PATH="$WIN_PATH" SOT_COMM_SELF_FILE="$WORK/self-case.txt" SOT_COMM_TEST_HOST=testhost \
+    bash "$SCRIPTS_DIR/comm-context.sh" 2>"$WORK/ctx.err")"
+check "context (windows): a self file's root in another case is this repo's root" \
     "$(printf '%s\n' "$ctx" | sed -n 's/^NAME=//p') $(grep -c stale "$WORK/ctx.err")" "ctx-handle 0"
 
 # 3. sot-nav.sh preview: the envelope's path, against a root in the shell's or the daemon's spelling.
@@ -155,6 +187,8 @@ check "nav: a path outside the root is refused" "$(nav "$PATH" /r/proj /o/a.jl)"
 check "nav (windows): the daemon's C:\\ root and the shell's /c/ path" "$(nav "$WIN_PATH" 'C:\r\proj' /c/r/proj/src/a.jl)" "src/a.jl"
 check "nav (windows): a C:\\ path under a C:\\ root" "$(nav "$WIN_PATH" 'C:\r\proj' 'C:\r\proj\src\a.jl')" "src/a.jl"
 check "nav (windows): the root itself" "$(nav "$WIN_PATH" 'C:\r\proj' /c/r/proj)" "."
+check "nav (windows): a root typed in lower case and git's spelling of a path" \
+    "$(nav "$WIN_PATH" 'c:\r\proj' C:/R/Proj/src/a.jl)" "src/a.jl"
 
 # 4. sot-fe preview: the path it sends, read by a socket that records what each connection sends until its request
 # (the second line, after the hello) and then hangs up without an answer (for at most 300 s); or its refusal of a path
@@ -186,10 +220,10 @@ trap 'kill "$REC_PID" 2>/dev/null; rm -rf "${WORK:?}"' EXIT
 for _ in $(seq 1 50); do [ -S "$REC" ] && break; sleep 0.1; done
 [ -S "$REC" ] || { echo "FATAL: the recording socket did not bind"; exit 2; }
 REFUSED="is absolute and not under the current repo"
-fe() {  # PATH ARG — the path sot-fe preview sends, or "refused" when it refuses ARG
+fe() {  # PATH ARG — the path sot-fe preview sends from $FE_CWD (the repo when unset), or "refused" when it refuses ARG
     local err
     : > "$RECLOG"
-    err="$(cd "$WORK/repo" && PATH="$1" bash "$SCRIPTS_DIR/sot-fe" preview ws "$2" \
+    err="$(cd "${FE_CWD:-$WORK/repo}" && PATH="$1" bash "$SCRIPTS_DIR/sot-fe" preview ws "$2" \
         --endpoint "unix:$REC" --timeout 1 2>&1 >/dev/null)"
     case "$err" in *"$REFUSED"*) printf 'refused'; return 0 ;; esac
     jq -r 'select(.op == "fe.command.send") | .payload.args.path' "$RECLOG" 2>/dev/null | head -n 1
@@ -201,6 +235,7 @@ check "fe (windows): git's C:/ root and the shell's path" "$(fe "$WIN_PATH" "$WO
 win_file="$(PATH="$WIN_PATH" cygpath -m "$WORK/repo/a.txt" | tr / '\\')"
 check "fe (windows): a C:\\ path under git's C:/ root" "$(fe "$WIN_PATH" "$win_file")" "a.txt"
 check "fe (windows): a path outside the repo is refused" "$(fe "$WIN_PATH" "$WORK/elsewhere/x")" "refused"
+check "fe (windows): a path in another case than git's root" "$(fe "$WIN_PATH" "$WORK/REPO/a.txt")" "a.txt"
 
 # 5. A path sent to a daemon inside a JSON payload, where Git Bash converts nothing: a pipe: daemon (a native Windows
 # process; this suite's pipe goes to the recording socket) gets cygpath -m -l's spelling, a unix: daemon the path as
@@ -232,6 +267,31 @@ probe_root_sent() {  # PATH ENDPOINT — the project_root comm-probe's workspace
 check "probe (windows): a pipe: daemon gets its spelling" \
     "$(probe_root_sent "$WIN_PATH" "$PIPE")" "$(PATH="$WIN_PATH" cygpath -m -l "$SOT_COMM_HOME/probe/probe-t")"
 check "probe: a unix: daemon gets the root as written" "$(probe_root_sent "$PATH" "unix:$REC")" "$SOT_COMM_HOME/probe/probe-t"
+
+# 6. A link above the repo gives its folder two spellings: git prints the physical root, while the shell's cwd and a
+# row's root keep the link (on macOS /tmp and /var lead into /private). A path in either spelling is sent relative, a
+# link inside the repo stays as written, and a link into the repo from outside lands where it leads. The links are
+# made here, so every box without a cygpath runs this, whatever its TMPDIR.
+if [ "$NATIVE_CYGPATH" = 0 ]; then
+    mkdir -p "$WORK/repo/sub" && : > "$WORK/repo/sub/b.txt" && ln -s . "$WORK/via" \
+        && ln -s ../elsewhere "$WORK/repo/out" && ln -s repo/sub "$WORK/into" || exit 2
+    G="$("$REAL_GIT" -C "$WORK/repo" rev-parse --show-toplevel)" V="$WORK/via/repo"
+    check "link: git's root, the shell's path" "$(lib "$PATH" sot_relative_to "$G" "$V/sub/b.txt")" "sub/b.txt"
+    check "link: the shell's root, git's path" "$(lib "$PATH" sot_relative_to "$V" "$G/sub/b.txt")" "sub/b.txt"
+    check "link: the shell's root, git's root" "$(lib "$PATH" sot_relative_to "$V" "$G")" "."
+    check "link: a link inside the repo stays as written" "$(lib "$PATH" sot_relative_to "$G" "$V/out/x")" "out/x"
+    check "link: a link into the repo from outside" "$(lib "$PATH" sot_relative_to "$G" "$WORK/into/b.txt")" "sub/b.txt"
+    check "link: a path outside the repo" "$(lib "$PATH" sot_relative_to "$G" "$WORK/via/elsewhere/x")" "rc 1"
+    check "nav: the root as the row keeps it, git's path" "$(nav "$PATH" "$V" "$G/sub/b.txt")" "sub/b.txt"
+    check "nav: git's root, the shell's path" "$(nav "$PATH" "$G" "$V/a.txt")" "a.txt"
+    FE_CWD="$V"
+    check "fe: from a cwd through the link, its path" "$(fe "$PATH" "$V/a.txt")" "a.txt"
+    check "fe: from a cwd through the link, a link inside the repo" "$(fe "$PATH" "$V/out/x")" "out/x"
+    check "fe: from a cwd through the link, a path outside" "$(fe "$PATH" "$WORK/via/elsewhere/x")" "refused"
+    FE_CWD=""
+else
+    echo "SKIP: link cases: this box has a cygpath, and Git Bash's ln -s copies a folder"
+fi
 
 echo ""
 echo "$PASS passed, $FAIL failed"
