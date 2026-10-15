@@ -695,12 +695,12 @@ if [ -n "$TASKMSG" ]; then
         # The agent itself already spawned successfully (SPAWN_SUCCEEDED
         # is set) so the exit trap will NOT roll it back — only the task
         # promise failed.
-        echo "ERROR: --task was given but could not be queued to @${NAME}'s inbox — send it yourself: ${BIN}/comm-send.sh @${NAME} \"...\"" >&2
+        echo "ERROR: --task was given but could not be queued to @${NAME}'s inbox — send it yourself: ${BIN}/comm-send.sh @${NAME} '...'" >&2
         exit 1
     fi
 fi
 if [ "$SPAWN_IS_LOCAL" = true ]; then
-    echo "@${NAME} is addressable NOW: ${BIN}/comm-send.sh @${NAME} \"...\" queues durably in its inbox,"
+    echo "@${NAME} is addressable NOW: ${BIN}/comm-send.sh @${NAME} '...' queues durably in its inbox,"
     echo "and the agent reads it with comm-poll once the daemon tells it of mail, and replies (~1 min after it starts)."
 fi
 echo "Watch: ${BIN}/comm-list.sh  /  ${BIN}/comm-poll.sh"

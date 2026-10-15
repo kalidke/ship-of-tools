@@ -37,7 +37,7 @@ ROW_AGENT="$(printf '%s' "$LIST" | sot_jq -r --arg w "$WSID" \
 [ "$ROW_AGENT" != none ] || { echo "ERROR: row $WSID ($TGT) is a bash row (agent none); nothing was typed" >&2; exit 1; }
 
 BIN="$COMM_HOME/bin"
-NUDGE="[sot-comm bootstrap from @$NAME] You have the sot-comm skill but are not joined. Please join and reply: run  $BIN/comm-join.sh${SUGG:+ --name $SUGG}  then  $BIN/comm-send.sh @$NAME \"joined as <yourname>\" . (Or just use the /sot-comm skill.) After this, we talk over sot-comm."
+NUDGE="[sot-comm bootstrap from @$NAME] You have the sot-comm skill but are not joined. Please join and reply: run  $BIN/comm-join.sh${SUGG:+ --name $SUGG}  then  $BIN/comm-send.sh @$NAME 'joined as <yourname>' . (Or just use the /sot-comm skill.) After this, we talk over sot-comm."
 
 RESP="$(sot_pty_input "$WSID" "$(printf '%s' "$NUDGE" | base64 | tr -d '\n')" || true)"
 if printf '%s' "$RESP" | jq -e '.payload.ok == true' >/dev/null 2>&1; then

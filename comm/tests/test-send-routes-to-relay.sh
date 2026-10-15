@@ -2,7 +2,7 @@
 # test-send-routes-to-relay.sh — the two comm verbs route to each other, so a
 # session never has to know which one reaches a peer (ADR 0048).
 #
-#   1. Registry MISS on a directed `comm-send.sh @h "msg"`: this box cannot
+#   1. Registry MISS on a directed `comm-send.sh @h 'msg'`: this box cannot
 #      name @h, which is the ROUTINE case for a session on a machine that
 #      shares no $HOME (it can never have a row here). It execs
 #      `comm-relay.sh send @h "msg"` instead of refusing "no such handle" —

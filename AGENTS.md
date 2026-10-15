@@ -10,7 +10,7 @@ Code sessions follow `CLAUDE.md`; **you follow this**.
 
 - Your comm handle was announced in your first turn (`@<repo>-cx-<host>`
   unless overridden). The CLI toolbox lives in `~/.sot-comm/bin/`:
-  - `comm-send.sh @<handle> "<msg>"` — file a message in another session's
+  - `comm-send.sh @<handle> '<msg>'` — file a message in another session's
     inbox; its one result is `filed -> @<handle>` or `FAILED -> @<handle>: <why>`.
   - `comm-poll.sh` — read your unread messages.
   - `comm-status.sh <state> "<summary>"` — set your row's state (below).
