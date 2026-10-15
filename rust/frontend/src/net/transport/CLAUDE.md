@@ -13,9 +13,10 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
 - `steady_tests.rs`: the steady loop over small in-memory streams: upload and download progress, blocked pings, fairness, partial frames, early replies, failures, close and cancellation, and the silence bound on a paused clock (a silent daemon, one that answers pings, one whose reply trickles, a silent daemon after the outgoing side closed, and 64 runs of a frame that turns readable as the deadline passes); a request still goes out while the daemon floods the reader.
 - `tests.rs`: the connection task's tests: backoff, the redial pace against a daemon that answers the hello and drops
   (the real reconnect loop, a window-free `Redraw`), the link gate, a tree.root error reply, a daemon falling silent
-  before each connect reply (on a paused clock, at the real bound), a closed local connection,
-  the stderr drain, and the two `connect_pipe` cases with another account's listener (refusal, full backlog), which
-  need passwordless `sudo -n` and skip without it except on CI
+  before each connect reply (on a paused clock, at the real bound), a hello naming the window's runs still running and
+  one from a daemon that predates the field, frames the daemon writes before a preamble reply, a closed local
+  connection, the stderr drain, and the two `connect_pipe` cases with another account's listener (refusal, full
+  backlog), which need passwordless `sudo -n` and skip without it except on CI
 - `golden_tests.rs`: every request kind's wire line and the events its error reply yields, against the golden file
 - `testdata/`: golden files for golden_tests.rs
 - `ops/`: one file per op family: the request each op writes, and the event its reply becomes

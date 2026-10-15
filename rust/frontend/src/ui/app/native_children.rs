@@ -92,9 +92,9 @@ pub(super) fn native_child(ledger: Arc<Mutex<NativeProgressLedger>>) -> Result<N
     Ok(NativeChild { _home: home, event_loop, app, outgoing, inputs })
 }
 
-/// The State fixtures of the result-routing, badge, account, canonical-row and Monitor commits. They rewire State
-/// (its event receiver, its connections, its active host), so they run in a child and window of their own, never on
-/// the workload's State.
+/// The State fixtures of the result-routing, badge, account, canonical-row, Monitor and REPL drawer commits. They
+/// rewire State (its event receiver, its connections, its active host), so they run in a child and window of their
+/// own, never on the workload's State.
 struct FixturesDriver {
     app: App,
     outcome: Option<Result<()>>,
@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 6] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 7] = [
         ("result_target_uses_host_and_listed_identity", State::result_target_uses_host_and_listed_identity),
         ("passing_a_result_row_keeps_its_badge", State::passing_a_result_row_keeps_its_badge),
         ("first_named_account_is_sent", State::first_named_account_is_sent),
@@ -131,6 +131,10 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
         (
             "a_monitor_chart_is_redrawn_on_resize_and_on_return",
             State::a_monitor_chart_is_redrawn_on_resize_and_on_return,
+        ),
+        (
+            "a_run_its_connections_end_closes_keeps_its_output",
+            State::a_run_its_connections_end_closes_keeps_its_output,
         ),
     ];
     // Every fixture runs and reports; the child fails after the last if any failed.

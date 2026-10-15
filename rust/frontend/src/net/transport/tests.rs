@@ -121,10 +121,13 @@ impl Redraw for NoWindow {
 /// A fake daemon on one end of an in-memory stream: answers the first
 /// `answered` requests (the hello with `hello_reply`, then the tree.root
 /// and preview.get preamble with an `{error}` payload), then falls silent
-/// and holds the stream open until `hold` is dropped.
+/// and holds the stream open until `hold` is dropped. `early` is what it
+/// writes right after the hello's reply, before it reads the next request:
+/// an event replayed at the hello, or a live one.
 async fn run_against_fake_daemon(
     host: &str,
     hello_reply: serde_json::Value,
+    early: Vec<Frame>,
     answered: usize,
     gate: sot_protocol::topology::ssh_bridge::LinkGate,
 ) -> (
@@ -146,6 +149,9 @@ async fn run_against_fake_daemon(
                 serde_json::json!({ "error": "cannot read the default directory", "code": "io" })
             };
             codec::write_frame(&mut tx, &Frame::res(req.id, &req.op, reply).with_rev(0), None).await.unwrap();
+            for frame in early.iter().filter(|_| n == 0) {
+                codec::write_frame(&mut tx, frame, None).await.unwrap();
+            }
         }
         let _ = hold_rx.await;
     });
@@ -175,13 +181,64 @@ fn hello_ok() -> serde_json::Value {
     serde_json::json!({ "session_id": "sess-1", "revision": 0, "snapshot_pending": false })
 }
 
+/// Every event of a session against the fake daemon, as text, once the daemon has answered `answered` requests and
+/// then closed: the session's end included.
+async fn events_until_the_daemon_closes(host: &str, hello_reply: serde_json::Value, early: Vec<Frame>) -> Vec<String> {
+    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let (session, daemon, evt_rx, hold) = run_against_fake_daemon(host, hello_reply, early, 3, gate).await;
+    drop(hold);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), daemon).await.expect("the fake daemon ends");
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.expect("the session ends");
+    assert!(ended.expect("the session task").is_err(), "the daemon's close ends the session");
+    evt_rx.try_iter().map(|(_, e)| format!("{e:?}")).collect()
+}
+
+/// A hello reply that names the window's runs still running on the daemon (`repl_running`, by the window's numbers)
+/// reopens them: the `Connected` event carries them to the drawer, and the connection waits on each as on any run, so
+/// its own end closes them again. A daemon that predates the field names none, and a connection's end then closes
+/// nothing it did not send.
+#[tokio::test]
+async fn a_hello_naming_runs_still_running_reopens_them_and_an_old_daemon_names_none() {
+    let _env = crate::net::state::test_env::set_test_env();
+    let mut named = hello_ok();
+    named["repl_running"] = serde_json::json!([5]);
+    let mut seen = Vec::new();
+    for (host, reply) in [("named-runs", named), ("old-daemon", hello_ok())] {
+        let events = events_until_the_daemon_closes(host, reply, Vec::new()).await;
+        let reopened = events.iter().any(|e| e.starts_with("Connected") && e.contains("repl_running: [5]"));
+        let ended: Vec<&str> = events.iter().filter(|e| e.starts_with("ReplEvalDone")).map(String::as_str).collect();
+        println!("hello-runs: {host} -> reopened={reopened} ended={ended:?}");
+        seen.push((host, reopened, ended.iter().map(|e| e.contains("eval_id: 5,")).collect::<Vec<_>>()));
+    }
+    assert_eq!(seen, [("named-runs", true, vec![true]), ("old-daemon", false, vec![])]);
+}
+
+/// Every frame the daemon writes while the window waits on its connect preamble reaches its handler, as in the steady
+/// loop: an event replayed after the hello and a REPL run's output, both written before the tree.root reply, arrive,
+/// and each preamble reply is still read as its own (neither comes back later as an event).
+#[tokio::test]
+async fn frames_written_before_a_preamble_reply_reach_their_handlers() {
+    let _env = crate::net::state::test_env::set_test_env();
+    let early = vec![
+        Frame::evt("tree.invalidate", serde_json::json!({ "workspace_id": null })).with_rev(1),
+        Frame::evt(op::REPL_FRAME, serde_json::json!({ "eval_id": 5, "frame": { "kind": "stdout", "text": "early" } })),
+    ];
+    let events = events_until_the_daemon_closes("preamble-early", hello_ok(), early).await;
+    println!("preamble-early: events={events:?}");
+    let has = |prefix: &str| events.iter().any(|e| e.starts_with(prefix));
+    let delivered = (has("Event { op: \"tree.invalidate\""), has("ReplFrameStreamed { eval_id: 5"));
+    let stray = (has("Event { op: \"tree.root\""), has("Event { op: \"preview.get\""));
+    let want = ((true, true), (false, false));
+    assert_eq!((delivered, stray), want, "(replayed and live frames delivered), (a preamble reply read late)");
+}
+
 #[tokio::test]
 async fn the_gate_is_up_after_the_hello_reply_and_down_when_the_session_ends() {
     let _env = crate::net::state::test_env::set_test_env();
     let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
     gate.set_up(false);
     let (session, daemon, evt_rx, hold) =
-        run_against_fake_daemon("gate-test-up-down", hello_ok(), 3, gate.clone()).await;
+        run_against_fake_daemon("gate-test-up-down", hello_ok(), Vec::new(), 3, gate.clone()).await;
     let t0 = std::time::Instant::now();
     while evt_rx.try_recv().map_or(true, |(_, e)| !matches!(e, IncomingEvt::Connected { .. })) {
         assert!(t0.elapsed() < std::time::Duration::from_secs(5), "no Connected event");
@@ -205,7 +262,7 @@ async fn a_protocol_mismatch_reply_leaves_the_gate_up() {
     gate.set_up(false);
     let reply = serde_json::json!({ "error": "protocol skew", "code": "protocol_mismatch" });
     let (session, _daemon, _evt_rx, _hold) =
-        run_against_fake_daemon("gate-test-mismatch", reply, 1, gate.clone()).await;
+        run_against_fake_daemon("gate-test-mismatch", reply, Vec::new(), 1, gate.clone()).await;
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.unwrap().unwrap();
     assert!(result.unwrap_err().is::<HelloRefused>());
     assert!(gate.is_up(), "a refusal is a reply: the link is up");
@@ -224,7 +281,8 @@ async fn a_refused_hello_is_shown_whatever_its_code() {
     ] {
         let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
         let reply = serde_json::json!({ "error": error, "code": code });
-        let (session, _daemon, evt_rx, _hold) = run_against_fake_daemon("hello-refused", reply, 1, gate).await;
+        let (session, _daemon, evt_rx, _hold) =
+            run_against_fake_daemon("hello-refused", reply, Vec::new(), 1, gate).await;
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.unwrap().unwrap();
         assert!(result.unwrap_err().is::<HelloRefused>(), "{code}");
         let mut shown = None;
@@ -247,7 +305,7 @@ async fn a_tree_root_error_reply_does_not_end_the_session() {
     let _env = crate::net::state::test_env::set_test_env();
     let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
     let (session, _daemon, _evt_rx, _hold) =
-        run_against_fake_daemon("gate-test-tree-root", hello_ok(), 3, gate.clone()).await;
+        run_against_fake_daemon("gate-test-tree-root", hello_ok(), Vec::new(), 3, gate.clone()).await;
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     assert!(!session.is_finished(), "the session must still be connected after 1 s");
     assert!(gate.is_up());
@@ -269,7 +327,7 @@ async fn a_daemon_that_falls_silent_during_connect_ends_the_attempt_naming_the_s
         let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
         let started = tokio::time::Instant::now();
         let (session, _daemon, evt_rx, _hold) =
-            run_against_fake_daemon("connect-silent", hello_ok(), answered, gate.clone()).await;
+            run_against_fake_daemon("connect-silent", hello_ok(), Vec::new(), answered, gate.clone()).await;
         let waited = bound * 2;
         let result = tokio::time::timeout(waited, session)
             .await

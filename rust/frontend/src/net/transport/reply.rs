@@ -1105,4 +1105,27 @@ mod wait_end_tests {
             "the connection's end did not end evals 8 and 30 (and only those)"
         );
     }
+
+    /// An eval and an `r`/`R` run whose request was written but whose ack had not come when the connection ended are
+    /// ended too, each with the one error frame. The request may or may not have reached the daemon; if it did and the
+    /// run is still going, the next hello names it (`HelloRes::repl_running`) and the window reopens it.
+    #[test]
+    fn an_eval_or_run_whose_ack_had_not_come_ends_when_its_connection_ends() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        {
+            let mut guard = PendingGuard { map: HashMap::new(), evt_tx: &evt_tx, host: "h".into() };
+            guard.insert(4, PendingKind::ReplEval { eval_id: 9 });
+            guard.insert(5, PendingKind::ReplRunFile { eval_id: 10, path: "x.jl".into(), fresh: false });
+        }
+        let mut ended = shown(&evt_rx);
+        ended.sort();
+        println!("repl-unacked: events at the connection's end={ended:?}");
+        let lost = |eval_id: u64| {
+            format!(
+                "ReplEvalDone {{ eval_id: {eval_id}, elapsed_ms: 0, frames: [Error {{ message: \"the connection to the \
+                 daemon ended before this eval's end\", stacktrace: [] }}] }}"
+            )
+        };
+        assert_eq!(ended, [lost(10), lost(9)], "the evals whose ack had not come stayed running");
+    }
 }

@@ -432,3 +432,69 @@ impl State {
         }
     }
 }
+
+/// The REPL drawer's native State fixtures: a `State` exists only inside a native window, so they run in the
+/// window_minimized target's fixtures child (`ui/app/native_children.rs`).
+#[cfg(all(test, feature = "test-window-progress"))]
+mod native_fixture {
+    use super::*;
+    use crate::net::transport::IncomingEvt;
+
+    /// The drawer's entry `eval_id` in `log`: whether it is in flight, and its frames as text.
+    fn shown(log: &[ReplEntry], eval_id: u64) -> Option<(bool, Vec<String>)> {
+        let entry = log.iter().find(|e| e.eval_id == eval_id)?;
+        Some((entry.in_flight, entry.frames.iter().map(|f| format!("{f:?}")).collect()))
+    }
+
+    /// An entry of this window's own eval `eval_id`, in flight, having shown `text`.
+    fn running(eval_id: u64, text: &str) -> ReplEntry {
+        ReplEntry {
+            eval_id,
+            code: format!("eval {eval_id}"),
+            frames: vec![ReplFrame::Stdout { text: text.into() }],
+            elapsed_ms: 0,
+            in_flight: true,
+            pkg_mode: false,
+            origin: None,
+        }
+    }
+
+    /// The one error frame the transport closes a run with when its connection ends (`PendingGuard`).
+    fn link_lost() -> ReplFrame {
+        ReplFrame::Error {
+            message: "the connection to the daemon ended before this eval's end".into(),
+            stacktrace: Vec::new(),
+        }
+    }
+
+    impl State {
+        /// A run its connection's end closes keeps the output it had shown: the end's error frame is appended, never
+        /// put in place of the frames, for an entry in the row on screen and for one in a parked row.
+        #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+        pub(in crate::ui) fn a_run_its_connections_end_closes_keeps_its_output(&mut self) -> Result<()> {
+            let host: HostKey = "<repl-host>".to_string();
+            self.active_host = host.clone();
+            let (events, receiver) = std::sync::mpsc::channel();
+            self.evt_rx = receiver;
+            let (active, parked): (WsKey, WsKey) = (self.active_ws_key(), (host.clone(), "row-b".to_string()));
+            self.repl_log = vec![running(41, "shown")];
+            let mut pane = WorkspaceReplSnapshot::default();
+            pane.repl_log = vec![running(42, "parked")];
+            self.repl_rows.park(parked.clone(), pane);
+            self.eval_id_workspace.insert((host.clone(), 41), active);
+            self.eval_id_workspace.insert((host.clone(), 42), parked.clone());
+            for eval_id in [41, 42] {
+                let lost = IncomingEvt::ReplEvalDone { eval_id, elapsed_ms: 0, frames: vec![link_lost()] };
+                events.send((host.clone(), lost)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+            }
+            self.drain_events();
+            let parked_log = self.repl_rows.parked.get(&parked).map(|p| p.repl_log.clone()).unwrap_or_default();
+            let got = (shown(&self.repl_log, 41), shown(&parked_log, 42));
+            println!("repl-drop-keeps-output: {got:?}");
+            let stdout = |text: &str| format!("{:?}", ReplFrame::Stdout { text: text.into() });
+            let kept = |text: &str| Some((false, vec![stdout(text), format!("{:?}", link_lost())]));
+            anyhow::ensure!(got == (kept("shown"), kept("parked")), "(on screen, parked): {got:?}");
+            Ok(())
+        }
+    }
+}
