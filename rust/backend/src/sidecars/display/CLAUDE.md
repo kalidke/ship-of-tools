@@ -46,6 +46,9 @@ rust/backend/src/sidecars/CLAUDE.md.
   finds no new holder, because a holder that forked between a walk and its kill leaves a child only the next walk sees.
   Tests pin the repeat walk (`end_with`) and the re-read (`end_one`); the pidfd is pinned only by `kill`'s signature,
   because no test can make the OS reuse a pid without root.
+  `end` runs the walk on `spawn_blocking`, since it reads every process of the account; `ended` walks on its own task,
+  because the walk ends the child and its owner must see `ended` return before the child's exit to name the display as
+  the cause (`a_pluto_whose_display_ends_*`); a `Cookie`'s drop in sync code walks on the thread it runs on.
 - Limits: at its start Xvfb's xkbcomp writes `/tmp/server-<n>.xkm`, which the server removes before it accepts
   connections, so a server killed in its first moments can leave that file. `-displayfd` makes no lock file, so a
   program that picks a display number by lock files alone (`xvfb-run -a`, which starts at 99) can choose a number one

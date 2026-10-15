@@ -234,8 +234,8 @@ connection is the only handle.
    read by every end, a startup Cleanup included, so a daemon restart no longer loses them.
 7. A daemon child's tree is killed with it, and no process can leave it, except as stated here. Linux: every serving
    daemon is the child of a guard that is a subreaper (the 0.6.6 update below), so a process the daemon starts stays a
-   descendant of the guard through `setpgid`, `setsid`, Julia's `detach` (Pluto's notebook workers, which Malt starts
-   detached, and quarto's julia server, which quarto starts detached, measured with quarto 1.7.31) or a double fork,
+   descendant of the guard through `setpgid`, `setsid`, Julia's `detach` (Pluto's notebook workers, which Distributed's
+   `LocalManager` starts detached, and quarto's julia server, which quarto starts detached, measured with quarto 1.7.31) or a double fork,
    and ends within `DRAIN_BOUND` (10 s) of the daemon's end, however that end came, a SIGKILL included; while the
    daemon runs, such a process outlives the end of the child whose group it left unless it exits on its own or holds
    that child's X display. A REPL's and Pluto's server's display ends with its child, and every end of a display ends

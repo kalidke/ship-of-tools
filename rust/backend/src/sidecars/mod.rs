@@ -1,6 +1,6 @@
 //! The helper processes sotd supervises: the julia choice, kernel, REPL, Pluto, MathJax and the host monitor.
 
-mod child;
+pub(super) mod child;
 #[cfg(target_os = "linux")]
 mod display;
 pub(super) mod julia;

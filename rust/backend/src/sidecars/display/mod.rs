@@ -69,6 +69,8 @@ impl Display {
                     tracing::warn!(display = *number, error = %e, "a child's display server's exit could not be observed");
                 }
                 tracing::warn!(display = *number, "a child's display ended under it; the child is ended with it");
+                // On this task, not `spawn_blocking`: the walk ends the child, and its owner's select must see this return
+                // before the child's exit, or it names the death of the child and not the end of the display.
                 holders::end(cookie);
             }
             Display::Missing(_) => std::future::pending().await,
@@ -81,7 +83,8 @@ impl Display {
         if let Display::Up { cookie, mut server, number } = self {
             // What holds the cookie ends first, while the server still holds the display's name, which no account
             // can bind until the server ends.
-            drop(cookie);
+            // The cookie's drop is the walk, so it runs off the runtime's workers; a task that never runs still drops it.
+            tokio::task::spawn_blocking(move || drop(cookie)).await.ok();
             if let Err(e) = server.kill().await {
                 tracing::warn!(display = number, error = %e, "a child's display server is not confirmed ended");
             }

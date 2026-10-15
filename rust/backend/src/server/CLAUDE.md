@@ -51,7 +51,8 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
 - Only `admit_hello` makes an `Admitted`, and `serve_control`, `hand_off` and `register_hello` take one, so no path from accept serves a connection whose hello was not admitted.
 - A control session's hello reply names its window's REPL runs still running (`HelloRes::repl_running`, read from
   `CallerNumbers::running` after the connection's bus subscriptions), so the `done` of each run it names is written to
-  the connection; a `handoff` connection's names none.
+  the connection, unless bus lag drops it (the bus is lossy; the run then stays open until the window's next drop); a
+  `handoff` connection's names none.
 - A second hello on a control connection closes it unanswered; a `handoff` connection's next frame is
   `proxy.connect`, `lane.connect` or `fe.lease`, else `bad_request` and a close (`hand_off`).
 - A connection whose first frame has not arrived within 10 s, or a `handoff` connection whose next frame has not, is closed
@@ -100,7 +101,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `set_watch_bus`, `set_monitor_hub`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`, `owner_protected_pipe_descriptor`,
 `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`, `start_page_servers`, `remove_root`,
-`handle_agent_join`, `handle_comm_file`, `handle_agent_send`, `Links`.
+`handle_agent_join`, `handle_comm_file`, `handle_agent_send`, `Links`, `child::sweep_gone`.
 
 ## Folders
 The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clients.rs` (the roster) and `session.rs`

@@ -100,7 +100,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | physical-scale schema and validity | rule | wire | `rust/protocol/src/physical_scale.rs` `PhysicalScale`, `parse_physical_scale`; consumers in files and fe-ui |
 | `<ws>/.sot/captures/` | disk | files | `rust/backend/src/files/preview/crop.rs` `handle_image_crop` |
 | `<ws>/.sot/runs/<run_id>/` | disk | sidecars | `rust/backend/src/sidecars/repl/execute.rs` |
-| a Julia child's temporary folder `std::env::temp_dir()`/`sot-julia-*/` | disk | sidecars | `rust/backend/src/sidecars/child/tmp.rs` `ChildTmp`, `retire` |
+| a Julia child's temporary folder `std::env::temp_dir()`/`sot-julia-<daemon pid>-*/`, and its removal at the daemon's controlled end and, for a daemon that ended without one, at the next start | disk | sidecars | `rust/backend/src/sidecars/child/tmp.rs` `ChildTmp`, `retire`, `remove_own`, `sweep_gone` |
 | `<home>/.claude-auth/<name>/` and its allowlisted links | disk | agents | `rust/backend/src/agents/accounts.rs` `ensure_account_links`, `SHARED_ENTRIES`, `CLAUDE_ACCOUNTS_DIR` |
 | `.claude.json` folder-trust entries | disk | agents | `rust/backend/src/agents/folder_trust.rs` `ensure_folder_trusted`, `publish_trust_file`; file selection at `rust/backend/src/agents/env.rs` `account_spawn_env` |
 | folder-trust entries `[projects."<root>"]` in `$CODEX_HOME/config.toml` | disk | agents | `agents/codex/bin/ccx` |
@@ -266,7 +266,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | sotd exit 0 (requested shutdown) | exit code | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `REASON`; `rust/protocol/src/ops/lease.rs` `EXIT_REQUESTED_SHUTDOWN` |
 | the serving daemon's one raw exit, and the child fire that comes first (`FIRE_WAIT`) | process rule | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `exit`, `terminal` |
 | sotd exit 0, 1 and 101 (the main future's result) | exit code | server | `rust/backend/src/main.rs` `complete_main` |
-| sotd's end by INT and TERM (the fire, then death by the signal) | exit code | lifecycle | `rust/backend/src/lifecycle/signal_exit.rs` `install`; `rust/backend/src/lifecycle/shutdown.rs` `exit_by_signal` |
+| sotd's end by INT and TERM (the fire and the children's folders, then death by the signal) | exit code | lifecycle | `rust/backend/src/lifecycle/signal_exit.rs` `install`; `rust/backend/src/lifecycle/shutdown.rs` `exit_by_signal` |
 | sotd exit 75 (update restart) | exit code | distribution | `rust/backend/src/update.rs` `exit_for_update` (committed under the lease by lifecycle's `Leases::commit_update`); `rust/protocol/src/ops/lease.rs` `EXIT_UPDATE_RESTART` |
 | sot exit 75/76 (relaunch, converge) | exit code | distribution | `rust/frontend/src/lease_exit.rs` `exit_intent`, `close_now`; `rust/frontend/src/relaunch.rs` |
 | sot-capsule exit 0/69/70 (supervise) and 71 (run: storage exhaustion) | exit code | capsule | `rust/log/src/supervisor/mod.rs`; `rust/log/src/capsule/mod.rs` `EXIT_LEG_STORAGE_FULL`; `rust/log/src/bin/sot-capsule.rs` `leg_exit_code` |

@@ -17,6 +17,9 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
 - `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with
 - `contained_job.rs`: lifecycle; a test job killed from outside (a child that kills itself after starting a ready row, run as the main process of a test container) leaves no row: the row lived in the job's own control group, its fence and writer lock are free and the job's control group is empty
+- `child_folders.rs`: sidecars; a REPL child's temporary folder outlives no daemon (Linux, a shell stand-in for Julia,
+  each daemon's `TMPDIR` a folder of the test's own): a stop removes it, and after a SIGKILL of the guard, which leaves
+  it, the next start removes it while a running daemon's stays
 - `comm_file.rs`: messaging; the inbox lock held by the daemon's filer and by the scripts' `sot_inbox_append`. It also executes declared-host join/self-slot agreement, unread activation and destroyed-handle prune in disposable homes.
 - `comm_send.rs`: messaging; the staged `comm-send.sh` against a real `sotd`: `filed` only for a live handle, nothing appended for a gone one, and an idle row's daemon keeps it live, so a send is filed while that daemon is down
 - `comm_wake.rs`: messaging; the comm wake tick on a real capsule row whose agent is a stub `claude`
