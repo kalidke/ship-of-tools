@@ -4,8 +4,9 @@
 /// two kept it, the daemon's listener and its accepted connections included. Marked, not closed: std reports a failed
 /// exec through a close-on-exec pipe it holds open until then. Only `install_lease` can hand the child a descriptor, by
 /// clearing that one's flag after this call. A daemon child's sweep runs inside `Signal::spawn*`, after any `pre_exec`
-/// of the caller; the window's ssh children (topology's `ssh_bridge`) call this from their own `pre_exec`. Either way
-/// the child keeps none.
+/// of the caller; the window's ssh children (topology's `ssh_bridge`) call this from their own `pre_exec`, and the
+/// daemon's ssh children (`LinkGate::command`) run it twice, from that `pre_exec` and from the `Signal`'s: harmless, the
+/// second marks nothing new. Either way the child keeps none.
 pub fn inherit_none() -> std::io::Result<()> {
     // SAFETY: close_range, getdtablesize and fcntl act on this process's own descriptor table; a number not open is
     // EBADF and changes nothing.
