@@ -396,7 +396,10 @@ async fn supervisor_task(
         }
     }
     let reaped = tmp.retire(&mut contained).await.map(|_| ()).map_err(|e| e.to_string());
-    stderr_tail.warn(&format!("repl child ended: {end:?} (workspace {workspace_id:?})")).await;
+    // A restart and a stop are the owner's own acts; only a death leaves the child's last words at warn.
+    if matches!(end, ReplEnded::Died) {
+        stderr_tail.warn(&format!("repl child ended: {end:?} (workspace {workspace_id:?})")).await;
+    }
     #[cfg(test)]
     if seams::FAIL_RETIREMENT.swap(false, std::sync::atomic::Ordering::SeqCst) {
         return Err("injected termination error".to_string());

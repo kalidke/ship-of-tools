@@ -606,6 +606,9 @@ done
     /// A `julia` stand-in that says it is ready and then reads nothing, as a REPL busy in a loop that never yields.
     const BUSY: &str = "#!/bin/sh\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nexec sleep 60\n";
 
+    /// `BUSY`, after a line on stderr.
+    const BUSY_NOISY: &str = "#!/bin/sh\necho 'repl-restart-red' >&2\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nexec sleep 60\n";
+
     /// A `julia` stand-in that says it is ready, reads two requests and exits: it dies with both in flight.
     const DIES: &str = "#!/bin/sh\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nread -r a\nread -r b\nexit 3\n";
 
@@ -724,8 +727,11 @@ done
         let waiting = json!({ "workspace_id": r.id, "input": { "kind": "eval", "code": "while true end" }, "timeout_ms": 60_000 });
         let t0 = std::time::Instant::now();
         let execute = crate::sidecars::repl::execute::handle_repl_execute(2, waiting, &r.session, &r.workspaces);
+        // The execute announces its run (`started`) just before it submits, and the slot lock is first come, first served:
+        // a restart that begins after the announcement waits behind the submit.
+        let mut announced = r.bus.resubscribe();
         let restart = async {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            while next_frame(&mut announced).await.1["kind"] != "started" {}
             handle_repl_run_file(3, fresh(&r), &r.session, &r.workspaces, &Default::default()).await.expect("handler")
         };
         let (answered, restarted) = tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(execute, restart) })
@@ -742,6 +748,21 @@ done
         assert!(error.contains("restarted"), "the answer says why: {answer}");
         assert_eq!(said.len(), 2, "each run's entry says why it closed: {said:?}");
         assert!(said.iter().all(|m| m.contains("restarted") && !m.contains("died")), "a restart is no death: {said:?}");
+    }
+
+    /// A restart is the owner's own act, not a failure: the retired child's stderr tail is not logged at warn. (A death
+    /// still logs it: `contract_tests::a_repl_child_that_fails_its_start_logs_its_stderr_at_warn`.)
+    #[tokio::test]
+    async fn a_restart_logs_no_stderr_tail_at_warn() {
+        let log = sot_log::test_log::capture();
+        let r = row(BUSY_NOISY);
+        let first = json!({ "workspace_id": r.id, "eval_id": 1, "code": "1" });
+        handle_repl_eval(1, first, &r.session, &r.workspaces, &Default::default()).await.expect("setup: the eval starts the child");
+        let state = || r.workspaces.resolve(Some(&r.id)).map(|w| w.repl_state()).unwrap_or("none");
+        within(Duration::from_secs(30), "the child is ready", || state() == "ready").await;
+        let out = handle_repl_run_file(2, fresh(&r), &r.session, &r.workspaces, &Default::default()).await.expect("handler");
+        assert_eq!(out[0].0.payload["accepted"], true, "{}", out[0].0.payload);
+        assert!(!crate::sidecars::warned(&log.text(), "repl-restart-red"), "a restart logged the old child's tail at warn: {}", log.text());
     }
 
     #[tokio::test]
