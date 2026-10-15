@@ -18,7 +18,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - The volume preflight (`volume.rs`: `preflight_volume`).
 - The directory pin (`pinned_dir.rs`: `PinnedDir`, `DirIdentity`, `dir_identity`).
 - Windows owner-only descriptors and SIDs (`winsec.rs`: `owner_protected_pipe_descriptor`, `token_user_sid_string`).
-- Stdio inherit hardening (`winhandle.rs`: `harden_own_stdio`).
+- Stdio inherit hardening (`winhandle.rs`: `harden_own_stdio`; Unix `inherit.rs`: `inherit_none`, the pre-exec sweep that marks every descriptor above stdio close-on-exec, called by the daemon's children and the capsule's leg).
 - The retry deadline and error context every file here shares (`mod.rs`: `RETRY_DEADLINE_MS`, `io_ctx`,
   `duration_to_wait_ms`).
 - The peer challenge in `rust/log/src/identity/` (a sibling folder; see Folders).
@@ -59,7 +59,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot_state_dir`, `sot_config_dir`,
 `host_name`, `kernel_host_name`, `state_dir_hash`, `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`,
-`owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`,
+`owner_protected_pipe_descriptor`, `harden_own_stdio`, `inherit_none`, `boot_identity`, `process_created`, `IdentityExchange`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `dir_identity`,
 `rust/log/src/host/pinned_dir.rs`, `resource_dir`, `rust/backend/src/paths.rs`,
 `sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`, `storage_exhaustion`,
@@ -72,6 +72,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mod.rs`: the module list, the shared retry constants, `io_ctx`, `duration_to_wait_ms`
   and the glob re-exports of the files below.
 - `durable.rs`: durable publication, fsync, no-clobber rename, container creation.
+- `inherit.rs`: Unix-only `inherit_none`, the pre-exec sweep that leaves a child only its stdio and what its caller hands it.
 - `lock.rs`: the writer fence, the supervisor fence, the supervisor fence taken to be handed to a child, and the daemon's single-instance lock, held by the kernel.
 - `pinned_dir.rs`: a directory's kernel identity and a handle that pins it.
 - `process_tree/`: the native process-birth primitives (own page).
