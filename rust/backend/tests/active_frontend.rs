@@ -144,8 +144,10 @@ async fn poll_until_connected(socket_path: &std::path::Path) -> Conn {
 }
 
 /// Connect + hello (declaring `{host, role, instance, name}` per ADR 0046
-/// decision 1; `name` is the frontend's `fe@<host>` address), returning
-/// the connection and the next free request id (2, since id 1 is hello).
+/// decision 1; `name` is the frontend's `fe@<host>` address, and `instance` is
+/// `client_id`'s own, so each `client_id` is one window and a second connect
+/// with it is that window's redial), returning the connection and the next
+/// free request id (2, since id 1 is hello).
 async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, name: &str) -> (Conn, u64) {
     connect_as(socket_path, client_id, "fe", name).await
 }
@@ -154,7 +156,7 @@ async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, name:
 async fn connect_as(socket_path: &std::path::Path, client_id: &str, role: &str, name: &str) -> (Conn, u64) {
     let mut conn = poll_until_connected(socket_path).await;
     let hello = HelloReq {
-        instance: Some("test-instance".to_string()),
+        instance: Some(format!("instance-{client_id}")),
         name: Some(name.to_string()),
         ..HelloReq::this_process(client_id, role, Some("test-host".to_string())).expect("this process's account")
     };
@@ -275,7 +277,7 @@ async fn version_query_echoes_the_declared_host_and_role() {
         assert_eq!(row.get("role").and_then(|v| v.as_str()), Some("fe"), "{v}");
         assert_eq!(row.get("name").and_then(|v| v.as_str()), Some("fe-declare-test"), "{v}");
         assert!(row.get("fe_handle").is_none(), "fe_handle left the wire at protocol 2: {v}");
-        assert_eq!(row.get("instance").and_then(|v| v.as_str()), Some("test-instance"), "{v}");
+        assert_eq!(row.get("instance").and_then(|v| v.as_str()), Some("instance-declare-test"), "{v}");
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }
@@ -449,6 +451,44 @@ async fn an_untargeted_show_goes_to_the_window_showing_its_row() {
         let notice = serde_json::json!({"cmd": "notify", "args": {"text": "hi"}});
         let ack = call(&mut sender, id_s, op::FE_COMMAND_SEND, notice).await;
         assert_eq!(ack["resolved_target"], "fe@host-b", "no row: the window used last: {ack}");
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// A window that redials is the same window (its hello's `instance`): the window in use before its link dropped is
+/// still the one in use, with no new press, and still shows its row, before it says so again; what goes to it goes to
+/// its new connection.
+#[tokio::test]
+async fn a_redialed_window_that_was_in_use_stays_in_use() {
+    let env = Env::spawn("redial");
+    let (mut sender, id_s) = connect_as(&env.socket_path, "redial-sender", "cli", "redial-sender").await;
+    let body = async {
+        let (mut b, id_b) = connect_and_hello(&env.socket_path, "redial-b", "fe@host-b").await;
+        assert_eq!(call(&mut b, id_b, op::FE_PRESENCE, serde_json::json!({})).await["ok"], true);
+        let (mut a, id_a) = connect_and_hello(&env.socket_path, "redial-a", "fe@host-a").await;
+        let shown = call(&mut a, id_a, op::WORKSPACE_ACTIVATE, serde_json::json!({"workspace_id": null})).await;
+        let row = shown["workspace_id"].as_str().unwrap_or_else(|| panic!("the default row's id: {shown}")).to_string();
+        assert_eq!(call(&mut a, id_a + 1, op::FE_PRESENCE, serde_json::json!({})).await["ok"], true);
+        drop(a); // the link drops and the window redials, with the same hello
+        let (mut a, _) = connect_and_hello(&env.socket_path, "redial-a", "fe@host-a").await;
+        let (mut roster, id_r) = connect_as(&env.socket_path, "redial-roster", "cli", "redial-roster").await;
+        for id in id_r.. {
+            let v = call(&mut roster, id, op::VERSION_QUERY, serde_json::json!({})).await;
+            let rows = v["clients"].as_array().map_or(0, |c| c.iter().filter(|r| r["name"] == "fe@host-a").count());
+            if rows == 1 {
+                break; // the dropped connection has left the roster
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let notice = serde_json::json!({"cmd": "notify", "args": {"text": "hi"}});
+        let ack = call(&mut sender, id_s, op::FE_COMMAND_SEND, notice).await;
+        assert_eq!(ack["resolved_target"], "fe@host-a", "the window in use before its redial: {ack}");
+        assert_eq!(next_fe_command(&mut a, BOUND).await.expect("its new connection gets it")["cmd"], "notify");
+        assert!(next_fe_command(&mut b, ABSENCE_WAIT).await.is_none(), "fe@host-b gets nothing");
+        assert_eq!(call(&mut b, id_b + 1, op::FE_PRESENCE, serde_json::json!({})).await["ok"], true);
+        let show = serde_json::json!({"cmd": "preview", "args": {"workspace": row, "path": "README.md"}});
+        let ack = call(&mut sender, id_s + 1, op::FE_COMMAND_SEND, show).await;
+        assert_eq!(ack["resolved_target"], "fe@host-a", "a show from the row it still shows: {ack}");
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }

@@ -11,7 +11,8 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
   Real-Claude consumption and child-observed spelling are proof limits closed by the human release done test; no
   credentials or Claude process run in CI.
 - `active_frontend.rs`: server; which frontend is active and which one window a show goes to, over the wire against a
-  real `sotd` (a stub `julia` announces the `wglshow` page, Unix)
+  real `sotd` (a stub `julia` announces the `wglshow` page, Unix); each `client_id` is one window (its hello's
+  `instance`), so a second connect with it is that window's redial, which keeps its presence and its row
 - `admission.rs`: server; every connection starts with an accepted hello (every op of `sot_protocol::op` as a first frame is refused), and two OS accounts on one host are refused (ADR 0049 `## User isolation`)
 - `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
 - `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with
@@ -31,7 +32,8 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `relay_refresh.rs`: topology; `sotd topology refresh` on a scratch hub with a stand-in `systemctl`
 - `repl_windows.rs`: sidecars; two windows on one row (Linux, a shell stand-in for Julia): each is written its own REPL
   runs under its own numbers and every other run under the daemon's number after its `started` frame, a
-  `repl.execute` run shows in both, and so does a timed-out run's later output
+  `repl.execute` run shows in both, and so does a timed-out run's later output; a window that redials mid-eval (the
+  same hello `instance`) is written the rest of its run under its own number, and its interrupt reaches the run
 - `unit_pin.rs`: topology; `sotd topology pin` and `refresh` write host pins into a scratch systemd folder, real systemd
   loads it in test mode (`systemd --test --user`) and `systemd-analyze --user condition` evaluates the attached
   conditions on this box; `apply` enables nothing when a pin cannot be written, and a dry `apply` writes no pin;
