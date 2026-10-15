@@ -300,3 +300,39 @@ fn a_spare_parked_before_a_link_close_is_not_used_after_it() {
     assert_reaped(spare, "the spare parked before the link closed is reaped before the voyage returns");
     assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Spent));
 }
+
+/// The host's link closes while the first voyage's handshake with the parked spare is in flight (the spare is spent,
+/// answers nothing): the dial ends `LinkDown` at once, not after `SSH_LOGIN_BOUND` on a dead connection.
+#[test]
+fn a_spare_handshake_in_flight_ends_when_its_link_closes() {
+    let ep = std::sync::Arc::new(spare_endpoint());
+    let LaneDial::Ssh(_, gate) = &ep.dial else { unreachable!() };
+    let gate = gate.clone();
+    ep.start_spare(|| BridgedClient::wrap(super::tests::silent_login().expect("silent login")).map_err(TransportError::Unreachable));
+    assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Parked(..)), "the supervisor must park its voyage login");
+    let (sent, ended) = std::sync::mpsc::channel();
+    let dial = {
+        let ep = ep.clone();
+        std::thread::spawn(move || {
+            let result = ep.dial("row-1", "voyage", Some("v".to_string())).map(|_| ());
+            sent.send((result, std::time::Instant::now())).unwrap();
+        })
+    };
+    let spent = std::time::Instant::now();
+    while !matches!(*ep.spare.lock().unwrap(), VoyageSpare::Spent) {
+        assert!(spent.elapsed() < Duration::from_secs(30), "the first voyage never took the spare");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let closed = std::time::Instant::now();
+    gate.set_up(false);
+    std::thread::sleep(Duration::from_secs(1));
+    gate.set_up(true);
+    let (result, at) = ended.recv_timeout(crate::topology::ssh_bridge::SSH_LOGIN_BOUND + Duration::from_secs(30)).expect("the dial ended");
+    dial.join().unwrap();
+    let after = at.duration_since(closed);
+    println!("spare handshake in flight at a link close: result={result:?} after_close_ms={}", after.as_millis());
+    assert!(
+        matches!(result, Err(TransportError::LinkDown)) && after < Duration::from_secs(5),
+        "the spare's handshake outlived its link: {result:?}, {after:?} after the close"
+    );
+}

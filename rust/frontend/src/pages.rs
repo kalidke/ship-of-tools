@@ -781,6 +781,36 @@ mod tests {
         );
     }
 
+    /// The same close ends a page login over ssh: the stand-in login reads what the dial sends and answers nothing, and
+    /// the browser connection closes as on a down link, not at the 30 s reply bound.
+    #[cfg(all(unix, feature = "test-pane-timing"))]
+    #[tokio::test]
+    async fn an_ssh_page_login_in_flight_ends_when_the_link_closes() {
+        use std::time::Duration;
+        let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", "cat >/dev/null"]);
+        let (browser, _client) = browser_pair().await;
+        let dial = {
+            let gate = gate.clone();
+            tokio::spawn(async move {
+                let answer = super::pipe_one(browser, &super::PageDial::Ssh(recipe), &gate, 7000, None).await;
+                (answer, std::time::Instant::now())
+            })
+        };
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let closed = std::time::Instant::now();
+        gate.set_up(false);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        gate.set_up(true);
+        let (answer, ended) = tokio::time::timeout(Duration::from_secs(40), dial).await.expect("the page dial ended").unwrap();
+        let after = ended.duration_since(closed);
+        println!("ssh page login in flight at a link close: answer={answer:?} after_close_ms={}", after.as_millis());
+        assert!(
+            matches!(answer, Ok(super::Answer::LinkDown)) && after < Duration::from_secs(5),
+            "the ssh page login outlived its link: {answer:?}, {after:?} after the close"
+        );
+    }
+
     #[test]
     fn a_refusal_older_than_the_last_open_does_not_park() {
         let arm = super::Arm::default();

@@ -608,7 +608,7 @@ fn diagnose_appends_the_ssh_line_to_the_error() {
 
 /// A login on a dead connection: it reads what the dial sends and answers nothing, as an ssh child does whose
 /// connection died during its login. `python3`, as the ownership tests' peers, so it runs on every platform.
-fn silent_login() -> std::io::Result<std::process::Child> {
+pub(super) fn silent_login() -> std::io::Result<std::process::Child> {
     std::process::Command::new("python3")
         .args(["-c", "import sys; sys.stdin.buffer.read()"])
         .stdin(std::process::Stdio::piped())
