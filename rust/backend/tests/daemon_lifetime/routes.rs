@@ -1,6 +1,7 @@
 //! The daemon's real routes the cases drive, and what they read back: a ready capsule row, a REPL cell that spins, the
 //! identities of a tree a fixture started, the nonce round trip through a row's agent, and the observed relations of a
-//! process (its children, its command line). Nothing here ends a process; ending is the fixture owner's.
+//! process (its children, its command line); and the Julia binary every daemon of a case runs. Nothing here ends a
+//! process but a Julia it started itself that overruns its bound; ending is the fixture owner's.
 
 use crate::fixture_owner::Fixture;
 use crate::guard::parent_of;
@@ -9,6 +10,7 @@ use crate::tree::Tree;
 use sot_protocol::op;
 use sot_protocol::{codec, Frame};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// The row's supervisor as the product's lane reports it: its pid and creation time. The lane is found through `env`'s
@@ -25,18 +27,75 @@ pub async fn supervisor_in(env: &Env, state_dir: &Path) -> Option<(i32, u64)> {
     .unwrap()
 }
 
-/// A Julia the REPL can run: `SOT_JULIA_BIN` of this test's own environment, else `julia` found on its PATH.
+/// The Julia every daemon of a case runs (its REPL, Pluto, Quarto's engine): the binary that `SOT_JULIA_BIN` of this
+/// test's own environment, else `julia` found on its PATH, starts, asked once under this process's own HOME. What they
+/// name may be a juliaup launcher, which finds its installation through HOME: under a case's own HOME it finds none, so
+/// at every start it installs the release channel's newest Julia from the network (minutes on a slow link) and runs that.
 pub fn julia_bin() -> String {
-    if let Some(bin) = std::env::var_os("SOT_JULIA_BIN") {
-        return bin.to_string_lossy().into_owned();
-    }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("julia"))
-        .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| panic!("no julia: set SOT_JULIA_BIN or put julia on the PATH"))
-        .to_string_lossy()
-        .into_owned()
+    static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        let given = std::env::var_os("SOT_JULIA_BIN")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let path = std::env::var_os("PATH").unwrap_or_default();
+                std::env::split_paths(&path)
+                    .map(|dir| dir.join("julia"))
+                    .find(|candidate| candidate.is_file())
+                    .unwrap_or_else(|| {
+                        panic!("no julia: set SOT_JULIA_BIN or put julia on the PATH")
+                    })
+            });
+        let probe = Command::new(&given)
+            .args(["--startup-file=no", "-e", "print(Base.julia_cmd()[1])"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|e| panic!("setup: {} does not start: {e}", given.display()));
+        let (status, bin, stderr) =
+            sot_log::test_isolated::drain(probe).wait_within(Duration::from_secs(60));
+        assert!(
+            status.success() && Path::new(&bin).is_absolute() && Path::new(&bin).is_file(),
+            "setup: {} named no Julia binary ({status}): {bin:?}\n{stderr}",
+            given.display()
+        );
+        bin
+    })
+    .clone()
+}
+
+/// The Julia a daemon gets starts under a case's own HOME and writes nothing there (a juliaup launcher installs a Julia
+/// into it, `julia_bin`).
+#[test]
+#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --include-ignored"]
+fn the_julia_a_daemon_gets_needs_nothing_from_a_cases_own_home() {
+    let julia = julia_bin();
+    let home = tempfile::tempdir().expect("the case's home");
+    let depot = tempfile::tempdir().expect("the case's depot");
+    let child = Command::new(&julia)
+        .args(["--startup-file=no", "-e", "print(VERSION)"])
+        .env("HOME", home.path())
+        .env("JULIA_DEPOT_PATH", crate::julia_depot_path(depot.path()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start julia");
+    let (status, version, stderr) =
+        sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(60));
+    assert!(
+        status.success(),
+        "{julia} under a case's own HOME: {status}\n{stderr}"
+    );
+    let written: Vec<_> = std::fs::read_dir(home.path())
+        .expect("read the case's home")
+        .flatten()
+        .map(|entry| entry.file_name())
+        .collect();
+    assert!(
+        written.is_empty(),
+        "{julia} (Julia {version}) wrote {written:?} into a case's own HOME\n{stderr}"
+    );
 }
 
 /// A capsule row, created through the daemon and waited to `ready`; its id and its state folder.
