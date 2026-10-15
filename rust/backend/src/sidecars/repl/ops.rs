@@ -134,21 +134,8 @@ pub async fn handle_repl_run_file(
     };
     let repl = ws.repl(workspaces.repl_frame_tx());
 
-    // Priority J: `r` in NavTree maps to fresh=true. Resolve the file's
-    // closest-ancestor Project.toml *here* on Rust, bounce the REPL
-    // supervisor into that project, then forward a fresh=false submission
-    // so the Julia side just `include`s in the now-correct env. The
-    // dead-code subprocess branch in ShipToolsRepl.handle_run_file never
-    // runs anymore (commented in the Julia source).
-    //
-    // With streamed frames (Option B), the run no longer rides a single
-    // response: the Julia child emits the include's stdout/value/error/done
-    // as `repl.frame` evts over the broadcast bus, and this handler returns
-    // only an immediate ack. The reset banner that previously rode the
-    // response as a synthetic stderr frame is now the Julia shim's job to
-    // emit as a frame (or it shows up implicitly via the fresh env), so the
-    // Rust-side response post-processing (project_dir override, banner
-    // prepend) is gone — there's no response payload to fold it into.
+    // A `fresh` run restarts the REPL into the workspace's project here, then forwards a plain include (`fresh=false`),
+    // so the run's frames stream over the broadcast bus and this handler returns only the ack.
     let mut forwarded_payload = payload_json.clone();
     // Resolve a RELATIVE path against the WORKSPACE ROOT and forward it
     // ABSOLUTE. The Julia child resolves relative paths against its own cwd
@@ -192,14 +179,7 @@ pub async fn handle_repl_run_file(
         )]);
     };
     if fresh {
-        let abs_path = {
-            let pb = std::path::PathBuf::from(p);
-            if pb.is_absolute() {
-                pb
-            } else {
-                std::env::current_dir().unwrap_or_default().join(pb)
-            }
-        };
+        let abs_path = std::path::PathBuf::from(p);
         // The workspace REPL defaults to the WORKSPACE PACKAGE's env — the #44
         // per-package env-fix, and the owner directive (2026-07-22): "the repl
         // should have this repo as its default env … defaults to each package's
