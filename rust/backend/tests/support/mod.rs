@@ -70,7 +70,7 @@ mod sotd;
 pub use registry::write_registry;
 #[allow(unused_imports)] // only some suites start a daemon by label
 pub use sotd::{label_endpoint, own_label, sotd_client_of, sotd_daemon_at};
-pub use sotd::{sotd_command, sotd_command_at, sotd_program};
+pub use sotd::{end_daemon, sotd_command, sotd_command_at, sotd_program};
 /// Copy of `rust/log/tests/fe_client/`'s own `wake_flag` helper (a separate test
 /// binary; not worth a shared dependency for four lines).
 #[allow(dead_code)]
@@ -125,11 +125,11 @@ fn test_socket_path(_runtime_dir: &Path, tag: &str) -> PathBuf {
 fn test_socket_path(runtime_dir: &Path, tag: &str) -> PathBuf {
     runtime_dir.join(format!("wire-{tag}-{}.sock", std::process::id()))
 }
-/// Kill + wait a child with a real bound (Codex review finding 13: "the
-/// test reuses ... unbounded ... kill waits"). Runs the blocking
-/// kill+wait on a `spawn_blocking` thread so the bound is a real
+/// End and reap a daemon ([`end_daemon`]) with a real bound (Codex review
+/// finding 13: "the test reuses ... unbounded ... kill waits"). Runs the
+/// blocking end on a `spawn_blocking` thread so the bound is a real
 /// `tokio::time::timeout`, not merely a hope that `wait()` returns fast
-/// after `kill()`. This is the TEST's own deliberate, asserted teardown
+/// after a signal. This is the TEST's own deliberate, asserted teardown
 /// of the daemon it owns (`Env::kill_daemon_bounded`); `Env`'s own `Drop`
 /// (F4, LU4 review round 2) stays a best-effort, unbounded-but-brief
 /// safety net for the panic/early-return paths a bounded async call
@@ -138,17 +138,10 @@ fn test_socket_path(runtime_dir: &Path, tag: &str) -> PathBuf {
 /// separate guard into `Env` itself so its `Drop` can order the daemon
 /// kill before the leg sweep and the tmux teardown, F4's own ordering
 /// requirement).
-pub async fn kill_and_wait_bounded(child: Child) {
+pub async fn end_daemon_bounded(child: Child) {
     let mut child = child;
-    let res = tokio::time::timeout(
-        BOUND,
-        tokio::task::spawn_blocking(move || {
-            let _ = child.kill();
-            let _ = child.wait();
-        }),
-    )
-    .await;
-    assert!(res.is_ok(), "killing/waiting a spawned process exceeded {BOUND:?}");
+    let res = tokio::time::timeout(BOUND, tokio::task::spawn_blocking(move || end_daemon(&mut child))).await;
+    assert!(res.is_ok(), "ending a spawned daemon exceeded {BOUND:?}");
 }
 /// Bounded async poll for an external, observable fact.
 pub async fn poll_until<T, F, Fut>(mut attempt: F, timeout: Duration, what: &str) -> T

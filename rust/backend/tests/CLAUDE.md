@@ -63,9 +63,10 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `window_lease/`: lifecycle; the close lifecycle's daemon half, one daemon per state root
 - `support_checks.rs`: rows; the shared support's own answers: a host check whose tool cannot answer fails with the tool's account (Linux)
 - `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs`
-  (`sotd_command` and `sotd_command_at`; for a daemon a suite starts by label, `own_label`, `label_endpoint`,
-  `sotd_daemon_at` and `sotd_client_of`; also loaded alone by suites that need nothing else), `registry.rs`
-  (`write_registry`), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the process count)
+  (`sotd_command` and `sotd_command_at`; `end_daemon`, a serving daemon's end; for a daemon a suite starts by label,
+  `own_label`, `label_endpoint`, `sotd_daemon_at` and `sotd_client_of`; also loaded alone by suites that need nothing
+  else), `registry.rs` (`write_registry`), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the
+  process count)
 - `fixtures/`: data read by the backend's own unit tests (`comm/wake/screen_tests.rs`, `sidecars/monitor_tests.rs`) by path, not suites
 
 ## Start here
@@ -88,9 +89,13 @@ shows the shape.
   or link of the built binary. Both drop every inherited `SOT_` variable, which `daemon_boot.rs` shows on Linux (a
   started daemon holds only the `SOT_` variables its test set); `sotd_exe`, the built binary's path, is private there.
 - A suite writes a comm registry only through `support::write_registry`, which takes the registry lock as the daemon and the comm scripts do (`daemon_boot.rs` scans this folder for any other write).
-- On Linux the `sotd` a suite launches is the daemon's lifetime guard and the daemon is its child: killing the launched process
-  ends the daemon a moment later, so `Env::kill_daemon_bounded` waits until the daemon's socket stops answering before it
-  returns, and a restart never reaches the dying daemon.
+- On Linux the `sotd` a suite launches is the daemon's lifetime guard and the daemon is its child. A suite whose daemon may
+  start a REPL or Pluto ends it with `support::end_daemon`, as `Env` (`kill_daemon_bounded` and its `Drop`),
+  `active_frontend.rs` and the lifetime harness's `Run` do: TERM to the guard, so the daemon ends its children's groups
+  and the guard drains the rest, and a SIGKILL only past 20 s. A SIGKILL of the guard leaves what the daemon started to
+  end on its own (ADR 0050, residual 7), and a REPL's or Pluto's Xvfb never does. A guard killed past the bound ends its
+  daemon a moment after it is reaped, so `Env::kill_daemon_bounded` waits until the daemon's socket stops answering
+  before it returns, and a restart never reaches the dying daemon.
 - Every wait is bounded: `support::poll_until` and `BOUND`; a suite runs a child to its end with `sot_log::test_wait::run_within` (`try_run_within` returns its failure as a value instead, for a cleanup, which must not panic, or a probe whose failure a skip names); a child it holds while it runs (it writes the child's input, uses its pid, signals it or runs it beside other work) it waits on with `sot_log::test_isolated::drain(..).wait_within(..)` when it piped the child's streams (`stdio_bridge.rs`, `shell_dial.rs`, `daemon_lifetime/kill_probe.rs`), and otherwise with `sot_log::test_isolated::wait_within` (`comm_file.rs`); a read, accept, receive or join on another party has a bound (`within`, `recv_timeout`, `tokio::time::timeout`); `session_env.rs`'s `OwnedRow` instead polls its daemon's exit with `try_wait` within `BOUND`, since it also runs while a test unwinds, where a second panic would abort.
 - A test that judges a drained child by its status or output puts the status and every stream it did not take itself in
   that assertion's message, so a hosted failure names its cause.

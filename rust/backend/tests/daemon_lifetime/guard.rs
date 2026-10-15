@@ -8,7 +8,7 @@
 use crate::fixture_owner::Fixture;
 use crate::observations::{engage, held_points};
 use crate::support::{
-    connect_and_hello, handoff, poll_until, sotd_command, sotd_command_at, Env, BOUND,
+    connect_and_hello, end_daemon, handoff, poll_until, sotd_command, sotd_command_at, Env, BOUND,
     TEST_STATE_HOST,
 };
 use crate::SERIAL;
@@ -308,25 +308,6 @@ impl Run {
     }
 }
 
-/// Ask the guard this test spawned to end: TERM reaches the daemon, which exits through its terminal, and the guard drains
-/// whatever the daemon started before it exits itself. Only a guard that does not end within the bound is killed.
-fn stop_gracefully(child: &mut Child) {
-    if child.try_wait().ok().flatten().is_some() {
-        return;
-    }
-    // SAFETY: a signal to the child this test spawned and has not reaped.
-    unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline {
-        if child.try_wait().ok().flatten().is_some() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
 /// [`Run::end_capsules`] for a run that ends without it (a failed assertion): a successor on the case's roots and the
 /// window's close, on a thread of its own because the case's runtime is the caller's.
 fn end_capsules_blocking(env: &Env) {
@@ -369,7 +350,7 @@ fn end_capsules_blocking(env: &Env) {
 impl Drop for Run {
     fn drop(&mut self) {
         if let Some(mut child) = self.launched.take() {
-            stop_gracefully(&mut child);
+            end_daemon(&mut child);
         }
         if self.own_exe && !self.capsules_ended {
             end_capsules_blocking(&self.env);
