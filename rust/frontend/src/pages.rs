@@ -28,7 +28,7 @@
 
 use std::net::TcpListener as StdTcpListener;
 
-use sot_protocol::topology::ssh_bridge::{LinkGate, SpawnError, SshRecipe};
+use sot_protocol::topology::ssh_bridge::{LinkGate, LinkWatch, SpawnError, SshRecipe};
 use sot_protocol::{codec, op, Frame, HelloReq, ProxyConnectReq, HANDOFF_ROLE};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -180,7 +180,8 @@ where
 /// fresh ssh child spawned from the recipe, or through the generated relay socket's own protected connection, do
 /// the `proxy.connect` handshake behind a handoff hello as the first bytes (`server/conn.rs` `hand_off`), then
 /// splice bytes both ways until either side closes (carrying a WebSocket upgrade verbatim). While the host's link
-/// is down (`gate`) nothing is spawned or connected and the browser connection closes at once.
+/// is down (`gate`) nothing is spawned or connected and the browser connection closes at once; the gate watches the
+/// login from before it starts until its replies, so a close of the link ends it the same way.
 async fn pipe_one(
     browser: tokio::net::TcpStream,
     target: &PageDial,
@@ -188,6 +189,9 @@ async fn pipe_one(
     port: u16,
     token: Option<&str>,
 ) -> anyhow::Result<Answer> {
+    let Some(link) = gate.watch() else {
+        return Ok(Answer::LinkDown);
+    };
     match target {
         PageDial::Ssh(recipe) => {
             #[allow(
@@ -199,18 +203,15 @@ async fn pipe_one(
                 Err(SpawnError::LinkDown) => return Ok(Answer::LinkDown),
                 Err(e) => return Err(anyhow::Error::new(e).context(format!("spawn ssh {recipe}"))),
             };
-            pipe_child(child, browser, port, token).await
+            pipe_child(child, browser, port, token, Some(link)).await
         }
         PageDial::Relay(path) => {
-            if !gate.is_up() {
-                return Ok(Answer::LinkDown);
-            }
             use interprocess::local_socket::tokio::prelude::*;
             let stream = crate::net::transport::connect_pipe(path).await?;
             let (rx, mut tx) = stream.split();
             let mut rx = codec::buffered(rx);
             let _ = browser.set_nodelay(true);
-            pipe_one_over(&mut tx, &mut rx, browser, port, token).await
+            pipe_one_over(&mut tx, &mut rx, browser, port, token, Some(link)).await
         }
     }
 }
@@ -222,6 +223,7 @@ async fn pipe_child(
     browser: tokio::net::TcpStream,
     port: u16,
     token: Option<&str>,
+    link: Option<LinkWatch>,
 ) -> anyhow::Result<Answer> {
     let d_wr = child.stdin.take().expect("spawned with a piped stdin");
     let d_rd = child.stdout.take().expect("spawned with a piped stdout");
@@ -235,7 +237,7 @@ async fn pipe_child(
     // daemon may start streaming upstream data immediately after `{ok}`) are
     // not lost — the throwaway-reader trap.
     let mut d_buf = BufReader::new(d_rd);
-    let result = pipe_one_over(&mut d_wr, &mut d_buf, browser, port, token).await;
+    let result = pipe_one_over(&mut d_wr, &mut d_buf, browser, port, token, link).await;
     // `child` drops here (`kill_on_drop`), ending this connection's ssh
     // login. The child's last stderr line is added after the error's own words when it died
     // before or during the splice: the daemon's answer (a refused hello) stays first.
@@ -254,6 +256,7 @@ async fn pipe_one_over<W, R>(
     browser: tokio::net::TcpStream,
     port: u16,
     token: Option<&str>,
+    link: Option<LinkWatch>,
 ) -> anyhow::Result<Answer>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -266,19 +269,30 @@ where
     // The handoff hello (ADR 0049 `## User isolation`) and `proxy.connect` go out in one write, so the hello costs
     // no round trip; the two replies come back through the one reader.
     let hello = HelloReq::this_process("sot-fe-proxy", HANDOFF_ROLE, Some(crate::net::identity::frontend_identity().host.clone()))?;
-    let mut both = Vec::new();
-    codec::write_frame(&mut both, &Frame::req(1, op::HELLO, serde_json::to_value(&hello)?), None).await?;
-    codec::write_frame(&mut both, &Frame::req(2, op::PROXY_CONNECT, serde_json::to_value(&req)?), None).await?;
-    d_wr.write_all(&both).await?;
-    d_wr.flush().await?;
+    let login = async {
+        let mut both = Vec::new();
+        codec::write_frame(&mut both, &Frame::req(1, op::HELLO, serde_json::to_value(&hello)?), None).await?;
+        codec::write_frame(&mut both, &Frame::req(2, op::PROXY_CONNECT, serde_json::to_value(&req)?), None).await?;
+        d_wr.write_all(&both).await?;
+        d_wr.flush().await?;
 
-    // Each reply within the connect bound: a daemon that never answers names the step, not a page that loads forever.
-    let (hello_res, _blob) = crate::net::transport::read_connect_reply(d_buf, op::HELLO).await?;
-    if hello_res.payload.get("error").is_some() {
-        let code = hello_res.payload.get("code").and_then(|v| v.as_str()).unwrap_or("error");
-        anyhow::bail!("daemon refused the hello for port {port}: {code}");
-    }
-    let (res, _blob) = crate::net::transport::read_connect_reply(d_buf, op::PROXY_CONNECT).await?;
+        // Each reply within the connect bound: a daemon that never answers names the step, not a page that loads forever.
+        let (hello_res, _blob) = crate::net::transport::read_connect_reply(&mut *d_buf, op::HELLO).await?;
+        if hello_res.payload.get("error").is_some() {
+            let code = hello_res.payload.get("code").and_then(|v| v.as_str()).unwrap_or("error");
+            anyhow::bail!("daemon refused the hello for port {port}: {code}");
+        }
+        let (res, _blob) = crate::net::transport::read_connect_reply(&mut *d_buf, op::PROXY_CONNECT).await?;
+        anyhow::Ok(res)
+    };
+    // The login ends with the host's link (`LinkWatch`); a page already piped does not.
+    let res = match link {
+        Some(mut link) => tokio::select! {
+            res = login => res?,
+            () = link.closed() => return Ok(Answer::LinkDown),
+        },
+        None => login.await?,
+    };
     if res.payload.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         let code = res
             .payload
@@ -394,7 +408,7 @@ mod tests {
             let mut f_buf = BufReader::new(f_rd);
             tokio::time::pause();
             let started = tokio::time::Instant::now();
-            let handshake = super::pipe_one_over(&mut f_wr, &mut f_buf, browser, 1, None);
+            let handshake = super::pipe_one_over(&mut f_wr, &mut f_buf, browser, 1, None, None);
             let ended = tokio::time::timeout(Duration::from_secs(60), handshake)
                 .await
                 .unwrap_or_else(|_| {
@@ -556,7 +570,7 @@ mod tests {
                     });
                     let (f_rd, mut f_wr) = tokio::io::split(fe);
                     let mut f_buf = tokio::io::BufReader::new(f_rd);
-                    super::pipe_one_over(&mut f_wr, &mut f_buf, browser, port, None).await
+                    super::pipe_one_over(&mut f_wr, &mut f_buf, browser, port, None, None).await
                 }
             }
         };
@@ -734,6 +748,69 @@ mod tests {
         );
     }
 
+    /// A page login in flight when the host's link closes ends with the close, as a lane dial's does: the browser
+    /// connection closes as on a down link (`LinkDown`), not at the 30 s reply bound. The relay accepts and its far
+    /// login answers nothing; the link reopens a second after it closed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_page_login_in_flight_ends_when_the_link_closes() {
+        use std::time::Duration;
+        let path = relay_stand_in_path("close");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+        let (browser, _client) = browser_pair().await;
+        let dial = {
+            let (gate, path) = (gate.clone(), path.clone());
+            tokio::spawn(async move {
+                let answer = super::pipe_one(browser, &super::PageDial::Relay(path), &gate, 7000, None).await;
+                (answer, std::time::Instant::now())
+            })
+        };
+        let _held = tokio::time::timeout(Duration::from_secs(30), listener.accept()).await.expect("the relay connection").unwrap();
+        let closed = std::time::Instant::now();
+        gate.set_up(false);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        gate.set_up(true);
+        let (answer, ended) = tokio::time::timeout(Duration::from_secs(40), dial).await.expect("the page dial ended").unwrap();
+        let after = ended.duration_since(closed);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        println!("page login in flight at a link close: answer={answer:?} after_close_ms={}", after.as_millis());
+        assert!(
+            matches!(answer, Ok(super::Answer::LinkDown)) && after < Duration::from_secs(5),
+            "the page login outlived its link: {answer:?}, {after:?} after the close"
+        );
+    }
+
+    /// The same close ends a page login over ssh: the stand-in login reads what the dial sends and answers nothing, and
+    /// the browser connection closes as on a down link, not at the 30 s reply bound.
+    #[cfg(all(unix, feature = "test-pane-timing"))]
+    #[tokio::test]
+    async fn an_ssh_page_login_in_flight_ends_when_the_link_closes() {
+        use std::time::Duration;
+        let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", "cat >/dev/null"]);
+        let (browser, _client) = browser_pair().await;
+        let dial = {
+            let gate = gate.clone();
+            tokio::spawn(async move {
+                let answer = super::pipe_one(browser, &super::PageDial::Ssh(recipe), &gate, 7000, None).await;
+                (answer, std::time::Instant::now())
+            })
+        };
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let closed = std::time::Instant::now();
+        gate.set_up(false);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        gate.set_up(true);
+        let (answer, ended) = tokio::time::timeout(Duration::from_secs(40), dial).await.expect("the page dial ended").unwrap();
+        let after = ended.duration_since(closed);
+        println!("ssh page login in flight at a link close: answer={answer:?} after_close_ms={}", after.as_millis());
+        assert!(
+            matches!(answer, Ok(super::Answer::LinkDown)) && after < Duration::from_secs(5),
+            "the ssh page login outlived its link: {answer:?}, {after:?} after the close"
+        );
+    }
+
     #[test]
     fn a_refusal_older_than_the_last_open_does_not_park() {
         let arm = super::Arm::default();
@@ -789,7 +866,7 @@ mod tests {
             .kill_on_drop(true)
             .spawn()
             .unwrap();
-        let err = super::pipe_child(child, browser, port, None).await.map(|_| ()).unwrap_err();
+        let err = super::pipe_child(child, browser, port, None, None).await.map(|_| ()).unwrap_err();
         assert_eq!(err.to_string(), format!("daemon refused the hello for port {port}: os_user_conflict: a line ssh wrote to stderr"));
     }
 

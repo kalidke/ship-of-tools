@@ -102,7 +102,7 @@ migration mechanism, not two.
    on or terminate. Invariant: an endpoint value names one thing (a
    dial); a row is named in exactly one place.
 
-   **2026-10 amendment (0.6.6, T2):** An ssh endpoint's initial supervisor attempt may start one parked voyage login as an optional optimization. A spare spawn failure does not fail an otherwise successful supervisor dial. The first voyage consumes a usable spare once or performs the ordinary gated dial when no spare is usable, including admission expiry; a spare whose handshake fails, however it failed (it can die after it was checked), is followed by that ordinary dial, whose result is the voyage's; local endpoints park none. After first voyage consumption, subsequent dials start no spare. The wire hello still precedes `lane.connect`, in the same write, and the production handshake remains `CONNECT_BOUND`.
+   **2026-10 amendment (0.6.6, T2):** An ssh endpoint's initial supervisor attempt may start one parked voyage login as an optional optimization. A spare spawn failure does not fail an otherwise successful supervisor dial. The first voyage consumes a usable spare once or performs the ordinary gated dial when no spare is usable, including admission expiry; a spare whose handshake fails, however it failed (it can die after it was checked), is followed by that ordinary dial, whose result is the voyage's; local endpoints park none. After first voyage consumption, subsequent dials start no spare. The wire hello still precedes `lane.connect`, in the same write. The production handshake is `CONNECT_BOUND` (2 s) on a local route and `SSH_LOGIN_BOUND` (30 s) on an ssh or relay route (2026-10-13, 0.6.6): there the handshake holds a whole ssh login, which the window's control connection already waits 30 s for, and at 2 s a slow login was killed and redone as one more login on a host that was already slow.
 
    An abandoned supervisor attempt drops its parked login before retrying: a failed lane handshake, an unproven supervisor hello, or a failed Status calls `Endpoint::drop_spare`. **Pre-voyage retry exception:** an abandoned pre-voyage attempt may park another login until the first voyage consumes it. A spent endpoint stays spent; dropping the endpoint tears down any remaining parked child within the owner's bound and reports failure.
 
@@ -131,6 +131,19 @@ migration mechanism, not two.
    the steady-state supervisor re-dial, the quit-transaction re-dial) treat it as a failed dial under
    their existing pacing; no ssh starts. Only the host's control transport writes
    the gate, and `LinkGate::probe` is the one ungated ssh spawn.
+
+   **AMENDED 2026-10-14 (0.6.6), a login in flight ends with its link.** This extends the 2026-10-01 sentence
+   "`TransportError::LinkDown` ... is returned by a lane dial over ssh while that host's `LinkGate` is down, before
+   any child is spawned". A login already in flight when the link went down ran on until its own bound, which decision
+   3's 2026-10-13 amendment raised to `SSH_LOGIN_BOUND` (30 s); so after a blip the viewed pane waited up to 30 s,
+   where decision 11's 2026-10-01 amendment promises a tick after the transport's hello reply. Now the gate watches
+   every login through it from before the login starts until its reply (`LinkGate::watch`, `LinkWatch`): a lane
+   dial's handshake over ssh or a hub relay, the parked voyage spare, and a page proxy's handshake. A close of the
+   gate cancels each handshake in flight that it watches. The lane dial then returns `LinkDown`, so the worker pauses
+   for the link and dials within a tick of its return. A spare parked before a close is never used after it: it
+   drops, its child ended, at the first voyage or when its attempt is abandoned. A page proxy's browser connection
+   closes as on a down link. A stream past its reply is not a login and ends on its own. Invariant: no login is used
+   or waited for after the link it started on has closed, as the window's control connection sees that link.
 
 5. **An `Endpoint` is a value; the row is named once.** The four trait
    methods take `&self`; `PipeEndpoint`/`SocketEndpoint` become unit
@@ -219,6 +232,24 @@ migration mechanism, not two.
     tick of the transport's hello reply, and a parked (warm) client
     resumes when it is next viewed. Other outages (the daemon answered
     `Unreachable`) are retried as before, on the doubling backoff.
+
+    **AMENDED 2026-10-13 (0.6.6), a client off screen does not redial.**
+    This reverses the 2026-10-01 sentence "Other outages (the daemon
+    answered `Unreachable`) are retried as before, on the doubling
+    backoff" for every client but the viewed one. On 2026-10-13 a window
+    woke with its rows parked; the user stepped through them, and each
+    row whose login failed after the user had left it went on retrying,
+    so one host took about 17 rows' logins at once. Now a worker whose
+    client is not viewed finishes the attempt in flight, then starts no
+    episode and no voyage re-dial until it is viewed
+    (`wait_until_viewed`, `wait_to_redial`); the viewed client retries
+    as before. A parked pane keeps its last screen, and input
+    outstanding when its lane died is resent at the re-attach its next
+    view starts, as after a down link. The steady state's paced
+    supervisor re-dial (2 s to 30 s), made while the attach lane is
+    live, is unchanged. Invariant: no off-screen row starts an attach of
+    its own, so the logins one host sees from a window are bounded by
+    the user's own switching, not by the number of parked rows.
 
 ## What this deletes
 

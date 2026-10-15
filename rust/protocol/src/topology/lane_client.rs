@@ -32,11 +32,15 @@
 //! [`DaemonLaneEndpoint::dial`] then runs in two ABSOLUTE-deadline phases sharing this one
 //! adapter: connect (2 s, each transport's own bounded connector — never
 //! a blocking call an external deadline merely gives up ON without
-//! actually stopping), then [`run_handshake`] (a SEPARATE 2 s bound
+//! actually stopping), then [`run_handshake`] (a SEPARATE bound
 //! covering the whole write+read round trip as ONE operation, not a
 //! per-read socket timeout a trickle of bytes could extend indefinitely
 //! — `shutdown`/`cancel` on expiry, the same mechanism every transport's
-//! own `Client::cancel` already provides).
+//! own `Client::cancel` already provides). That bound is 2 s on a local
+//! route and `SSH_LOGIN_BOUND` on an ssh or relay route, whose handshake
+//! holds a whole ssh login: this window's, or the hub relay's to the far host.
+//! The host's link gate watches such a login from before it starts until its
+//! reply (`LinkWatch`): a close of the gate cancels it, and the dial is `LinkDown`.
 //!
 //! # Refusals and uncertainty are typed
 //!
@@ -130,7 +134,8 @@ pub struct DaemonLaneEndpoint {
 
 enum VoyageSpare {
     Unused,
-    Parked(BridgedClient),
+    /// The parked login, and its gate's watch since before it started.
+    Parked(BridgedClient, crate::topology::ssh_bridge::LinkWatch),
     Spent,
 }
 
@@ -270,7 +275,7 @@ impl Endpoint for DaemonLaneEndpoint {
     fn drop_spare(&self) {
         let abandoned = {
             let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
-            if matches!(*state, VoyageSpare::Parked(_)) {
+            if matches!(*state, VoyageSpare::Parked(..)) {
                 Some(std::mem::replace(&mut *state, VoyageSpare::Unused))
             } else { None }
         };
@@ -463,9 +468,17 @@ fn with_ssh_line(stream: &LaneStream, e: std::io::Error) -> std::io::Error {
 }
 
 /// The handshake over a connected stream: the hello and the `lane.connect` request, the replies classified, and the
-/// client that holds the stream and the peer the daemon reported.
-fn handshake(stream: LaneStream, hello: &Frame, req: &Frame, bound: std::time::Duration) -> Result<DaemonLaneClient, TransportError> {
-    let (pid, created) = run_handshake(&stream, hello, req, Instant::now() + bound)?;
+/// client that holds the stream and the peer the daemon reported. A login its host's link gate watches (`link`) ends
+/// when the gate closes before its reply: the stream's cancel ends the handshake, and the dial is `LinkDown`.
+fn handshake(stream: LaneStream, hello: &Frame, req: &Frame, bound: std::time::Duration, link: Option<crate::topology::ssh_bridge::LinkWatch>) -> Result<DaemonLaneClient, TransportError> {
+    let deadline = Instant::now() + bound;
+    let (pid, created) = match link {
+        None => run_handshake(&stream, hello, req, deadline)?,
+        Some(link) => match link.run(|| stream.cancel(), || run_handshake(&stream, hello, req, deadline)) {
+            (_, true) => return Err(TransportError::LinkDown),
+            (replied, false) => replied?,
+        },
+    };
     Ok(DaemonLaneClient { stream, peer: PeerAuthenticated { pid, created } })
 }
 
@@ -519,21 +532,26 @@ impl DaemonLaneEndpoint {
     }
 
     fn start_spare(&self, spawn: impl FnOnce() -> Result<BridgedClient, TransportError>) {
+        let LaneDial::Ssh(_, gate) = &self.dial else { return };
         let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
         if matches!(*state, VoyageSpare::Unused) {
-            if let Ok(client) = spawn() {
-                *state = VoyageSpare::Parked(client);
+            // Watched from before it starts, so a spare whose link closed before its use is never used (`take_spare`).
+            if let Some(link) = gate.watch() {
+                if let Ok(client) = spawn() {
+                    *state = VoyageSpare::Parked(client, link);
+                }
             }
         }
     }
 
-    fn take_spare(&self) -> Option<BridgedClient> {
+    fn take_spare(&self) -> Option<(BridgedClient, crate::topology::ssh_bridge::LinkWatch)> {
         let previous = {
             let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::replace(&mut *state, VoyageSpare::Spent)
         };
         match previous {
-            VoyageSpare::Parked(client) if !client.exited() => Some(client),
+            // A spare whose link closed since it started is on a connection that is gone: it drops here, unused.
+            VoyageSpare::Parked(client, mut link) if !client.exited() => (!link.ended()).then_some((client, link)),
             _ => None,
         }
     }
@@ -551,16 +569,21 @@ impl DaemonLaneEndpoint {
         let hello = Frame::req(1, op::HELLO, serde_json::to_value(&hello).expect("HelloReq always serializes"));
         let frame = Frame::req(2, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
 
-        // A down link starts no dial, ssh or relay: the connect itself waits for the gate.
-        if let LaneDial::Relay(_, gate) = &self.dial {
-            if !gate.is_up() {
-                return Err(TransportError::LinkDown);
-            }
-        }
+        // The host's link gate watches a relay or ssh login from before it starts until its reply: a down link starts
+        // none, and a close ends the one in flight. A parked spare carries its own watch.
+        let mut link = match &self.dial {
+            LaneDial::Relay(_, gate) => Some(gate.watch().ok_or(TransportError::LinkDown)?),
+            LaneDial::Ssh(..) | LaneDial::Local(_) => None,
+        };
+        // An ssh or relay route's handshake holds a whole ssh login; a local route's only the two replies.
+        let production = match &self.dial {
+            LaneDial::Ssh(..) | LaneDial::Relay(..) => crate::topology::ssh_bridge::SSH_LOGIN_BOUND,
+            LaneDial::Local(_) => CONNECT_BOUND,
+        };
         #[cfg(any(test, feature = "test-handshake-bound"))]
-        let bound = self.test_handshake_bound.unwrap_or(CONNECT_BOUND);
+        let bound = self.test_handshake_bound.unwrap_or(production);
         #[cfg(not(any(test, feature = "test-handshake-bound")))]
-        let bound = CONNECT_BOUND;
+        let bound = production;
         let stream = match &self.dial {
             #[cfg(unix)]
             LaneDial::Local(path) | LaneDial::Relay(path, _) => {
@@ -582,21 +605,23 @@ impl DaemonLaneEndpoint {
                 LaneStream::Pipe(client)
             }
             LaneDial::Ssh(recipe, gate) => {
-                // The first voyage spends the spare: a live one is tried once, and when its handshake fails for any
-                // reason (it can die after `take_spare`'s check) the ordinary gated login follows (ADR 0045 decision 3).
+                // The first voyage spends the spare: a live one whose link has not closed since it started is tried
+                // once, and when its handshake fails for any reason (it can die after `take_spare`'s check) the
+                // ordinary gated login follows (ADR 0045 decision 3).
                 if kind == "voyage" {
-                    if let Some(spare) = self.take_spare().filter(|_| gate.is_up()) {
-                        if let Ok(client) = handshake(LaneStream::Bridged(spare), &hello, &frame, bound) {
+                    if let Some((spare, spare_link)) = self.take_spare() {
+                        if let Ok(client) = handshake(LaneStream::Bridged(spare), &hello, &frame, bound, Some(spare_link)) {
                             return Ok(client);
                         }
                     }
                 }
+                link = Some(gate.watch().ok_or(TransportError::LinkDown)?);
                 let client = self.ssh_client(kind, recipe, gate)?;
                 LaneStream::Bridged(client)
             }
         };
 
-        let result = handshake(stream, &hello, &frame, bound);
+        let result = handshake(stream, &hello, &frame, bound, link);
         if kind == "supervisor" && result.is_err() {
             self.drop_spare();
         }

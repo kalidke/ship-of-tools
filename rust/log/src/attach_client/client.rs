@@ -500,9 +500,11 @@ impl<E: Endpoint> FeAttachClient<E> {
         !matches!(self.parser.screen().mouse_protocol_mode(), vt100_ctt::MouseProtocolMode::None)
     }
 
-    /// Marks whether this client is the one on screen. A worker paused for
-    /// a down link resumes only while it is viewed; the caller sets it on
-    /// the switch, park and reuse path, never from a key.
+    /// Marks whether this client is the one on screen. A client off screen
+    /// starts no episode and no voyage re-dial: its worker finishes the
+    /// attempt in flight, then waits until it is viewed (ADR 0045 decision
+    /// 11). The caller sets it on the switch, park and reuse path, never
+    /// from a key.
     pub fn set_viewed(&self, viewed: bool) {
         self.worker.set_viewed(viewed);
     }

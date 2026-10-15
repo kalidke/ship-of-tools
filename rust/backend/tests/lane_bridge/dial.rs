@@ -735,18 +735,18 @@ fn fixture_bounds_are_local_to_the_endpoint() {
     let guard = ParentSshEnvironment::new();
     use sot_log::lane::client::Endpoint;
     let configured = tempfile::tempdir().unwrap();
-    let slow = rendezvous_endpoint(configured.path(), 3, false, guard.clone()).with_test_handshake_bound(Duration::from_secs(60));
+    let short = rendezvous_endpoint(configured.path(), 3, false, guard.clone()).with_test_handshake_bound(sot_log::lane::transport::CONNECT_BOUND);
     let ordinary = tempfile::tempdir().unwrap();
     let default = rendezvous_endpoint(ordinary.path(), 3, false, guard.clone());
     let started = Instant::now();
-    let error = default.connect_supervisor_unchallenged("row-default").err().unwrap().to_string();
-    assert!(error.contains("handshake timed out"), "an unconfigured endpoint retains CONNECT_BOUND: {error}");
+    let error = short.connect_supervisor_unchallenged("row-configured").err().unwrap().to_string();
+    assert!(error.contains("handshake timed out"), "the configured endpoint keeps its own short bound: {error}");
     assert!(started.elapsed() >= sot_log::lane::transport::CONNECT_BOUND);
-    assert!(!ordinary.path().join("ordered").exists(), "the ordinary endpoint stopped before the three-second spare entry");
-    let error = slow.connect_supervisor_unchallenged("row-configured").err().unwrap().to_string();
-    assert!(error.contains("Permission denied"), "only the configured endpoint waits for its slow peer: {error}");
+    assert!(!configured.path().join("ordered").exists(), "the configured endpoint stopped before the three-second spare entry");
+    let error = default.connect_supervisor_unchallenged("row-default").err().unwrap().to_string();
+    assert!(error.contains("Permission denied"), "an unconfigured ssh endpoint waits for its slow login (SSH_LOGIN_BOUND): {error}");
     guard.observe("after result");
-    drop(default); drop(slow); guard.finish();
+    drop(default); drop(short); guard.finish();
 }
 
 #[test]

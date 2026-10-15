@@ -370,7 +370,8 @@ pub(super) fn converge_on_ready<E: Endpoint>(
             // refusal is terminal, its code named; the two uncertain
             // arms clear the health window's clock and wait the doubling
             // `ReconnectState::retry_after` (ADR 0043 decision 28:
-            // over an ssh lane every failed dial is a login).
+            // over an ssh lane every failed dial is a login), then, for a
+            // client off screen, until it is viewed (`wait_to_redial`).
             Err(e) => match classify_transport(e) {
                 LaneError::Refused { code, detail } => {
                     let msg = if code == "no_bridge" {
@@ -395,7 +396,7 @@ pub(super) fn converge_on_ready<E: Endpoint>(
                         _ => unreachable!("matched above"),
                     };
                     emit(WorkerEvent::Status(msg));
-                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_after(Duration::ZERO), held) {
+                    match wait_to_redial(cmd_rx, reconnect.retry_after(Duration::ZERO), held, viewed) {
                         WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                         WaitOutcome::Continue => continue,
                     }
@@ -405,7 +406,7 @@ pub(super) fn converge_on_ready<E: Endpoint>(
                         return ReadyOutcome::Terminal("voyage pipe: access denied".to_string());
                     }
                     emit(WorkerEvent::Status(format!("voyage pipe not yet available: {io}")));
-                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_after(Duration::ZERO), held) {
+                    match wait_to_redial(cmd_rx, reconnect.retry_after(Duration::ZERO), held, viewed) {
                         WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                         WaitOutcome::Continue => continue,
                     }

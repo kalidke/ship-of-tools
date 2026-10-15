@@ -107,6 +107,13 @@ pub const PATH_PRELUDE: &str = r#"export PATH="$HOME/.local/share/sot/bin:$HOME/
 /// from the same list.
 pub const SSH_OPTS: &[&str] = &["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no"];
 
+/// How long a lane dial over ssh, or over a hub relay, waits for the far daemon's first reply. A whole login comes
+/// before that reply (the connect, key exchange, authentication, the remote shell and `sotd stdio-bridge`), so the
+/// local handshake bound (`CONNECT_BOUND`, 2 s) would kill a login that is merely slow, and its retry is one more login
+/// on a busy host. The window's control connection and page proxy wait the same 30 s for the same login
+/// (`CONNECT_REPLY_BOUND`).
+pub const SSH_LOGIN_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// `recipe` → `ssh`'s own program name and argv, built with no shell on
 /// this end: `target` is its own argv element (never folded into the
 /// remote command string), the remote command is ONE further argv
@@ -197,11 +204,13 @@ impl std::error::Error for SpawnError {}
 /// spawn functions above are private, and [`LinkGate::probe`] is the one
 /// ungated spawn. Only the host's control transport writes the gate (up at
 /// any hello reply, down when its session ends), and it is the only caller
-/// of `probe`. A default gate is up.
+/// of `probe`. A default gate is up. A close also ends every login in flight
+/// that its start site watches through the gate ([`LinkGate::watch`]).
 #[derive(Debug, Clone, Default)]
 pub struct LinkGate {
     down: std::sync::Arc<std::sync::atomic::AtomicBool>,
     admission: std::sync::Arc<std::sync::Mutex<()>>,
+    logins: std::sync::Arc<std::sync::Mutex<Logins>>,
     #[cfg(test)]
     rendezvous: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<tests::GateRendezvous>>>>,
 }
@@ -225,6 +234,12 @@ impl LinkGate {
         #[cfg(not(test))]
         let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
         self.down.store(!up, std::sync::atomic::Ordering::Release);
+        // Under the admission lock: a watch began before this close and is ended by it, or it finds the link down.
+        if !up {
+            for (_, end) in self.logins.lock().unwrap_or_else(|error| error.into_inner()).open.drain(..) {
+                let _ = end.send(());
+            }
+        }
         #[cfg(test)]
         if let Some((hook, sender)) = observation {
             hook.events.lock().unwrap().push("closed".into());
@@ -293,6 +308,84 @@ impl LinkGate {
     /// is what discovers that a link is back.
     pub fn probe(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child> {
         spawn_async(command(recipe))
+    }
+
+    /// Watch a login through this gate from before it starts until its reply: a close in that time ends it
+    /// ([`LinkWatch`]). `None` while the link is down, when no login starts.
+    pub fn watch(&self) -> Option<LinkWatch> {
+        let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
+        if !self.is_up() {
+            return None;
+        }
+        let (end, closed) = tokio::sync::oneshot::channel();
+        let mut logins = self.logins.lock().unwrap_or_else(|error| error.into_inner());
+        let id = logins.next;
+        logins.next += 1;
+        logins.open.push((id, end));
+        Some(LinkWatch { listed: Listed { id, logins: std::sync::Arc::clone(&self.logins) }, closed })
+    }
+}
+
+/// The logins in flight that a close of their gate ends, each by the sender its watch waits on.
+#[derive(Debug, Default)]
+struct Logins {
+    next: u64,
+    open: Vec<(u64, tokio::sync::oneshot::Sender<()>)>,
+}
+
+/// A login its gate watches ([`LinkGate::watch`]). A close of the gate before the watch drops ends it: the waiter in
+/// [`LinkWatch::run`] or [`LinkWatch::closed`] wakes, and [`LinkWatch::ended`] is true from then on. Unwatched, a login
+/// started before the link went down would wait out its own bound (`SSH_LOGIN_BOUND`) after the link is back. Dropping
+/// the watch stops it.
+#[derive(Debug)]
+pub struct LinkWatch {
+    listed: Listed,
+    closed: tokio::sync::oneshot::Receiver<()>,
+}
+
+/// A watch's place among its gate's logins, given up when the watch stops.
+#[derive(Debug)]
+struct Listed {
+    id: u64,
+    logins: std::sync::Arc<std::sync::Mutex<Logins>>,
+}
+
+impl Drop for Listed {
+    fn drop(&mut self) {
+        self.logins.lock().unwrap_or_else(|error| error.into_inner()).open.retain(|(id, _)| *id != self.id);
+    }
+}
+
+impl LinkWatch {
+    /// Whether the gate has closed since the watch began.
+    pub(crate) fn ended(&mut self) -> bool {
+        !matches!(self.closed.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty))
+    }
+
+    /// Returns when the gate closes, for an async login; never, while the gate stays up.
+    pub async fn closed(&mut self) {
+        let _ = (&mut self.closed).await;
+    }
+
+    /// Run `login`, a blocking login on this thread, while a second thread waits for the gate's close and, if the close
+    /// comes before `login` returns, calls `end`, the login's own cancel. Returns `login`'s result and whether the close
+    /// ended it. With no thread to wait on the close, `login` runs unwatched, within its own bound.
+    pub(crate) fn run<T>(self, end: impl Fn() + Sync, login: impl FnOnce() -> T) -> (T, bool) {
+        let LinkWatch { listed, closed } = self;
+        std::thread::scope(|scope| {
+            let watcher = std::thread::Builder::new().name("sot-link-watch".to_string()).spawn_scoped(scope, || {
+                let ended = closed.blocking_recv().is_ok();
+                if ended {
+                    end();
+                }
+                ended
+            });
+            let result = login();
+            // The watch stops: its sender drops unless the close already took it, so the watcher returns either way.
+            drop(listed);
+            let ended = watcher.is_ok_and(|watcher| watcher.join().expect("the link watcher returns"));
+            (result, ended)
+        })
     }
 }
 
@@ -488,7 +581,8 @@ mod tests {
                 use sot_log::lane::client::Endpoint;
                 use super::super::lane_client::{DaemonLaneEndpoint, LaneDial};
                 let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None)
-                    .with_test_ssh_spawner(std::sync::Arc::new(|mut command| command.spawn()));
+                    .with_test_ssh_spawner(std::sync::Arc::new(|mut command| command.spawn()))
+                    .with_test_handshake_bound(sot_log::lane::transport::CONNECT_BOUND);
                 hook.phase("endpoint-handshake");
                 let result = if voyage { endpoint.connect_voyage_unchallenged("fixture-row", "fixture-voyage") }
                     else { endpoint.connect_supervisor_unchallenged("fixture-row") };
