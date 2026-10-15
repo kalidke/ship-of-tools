@@ -366,6 +366,20 @@ while read -r line; do
 done
 "#;
 
+/// The next `browser` frame `conn` is sent, with the evt's own payload (`eval_id`, `workspace_id`, `frame`).
+#[cfg(unix)]
+async fn next_browser_payload(conn: &mut Conn) -> serde_json::Value {
+    let body = async {
+        loop {
+            let (frame, _blob) = codec::read_frame(conn).await.expect("read a repl.frame");
+            if frame.kind == Kind::Evt && frame.op == op::REPL_FRAME && frame.payload["frame"]["kind"] == "browser" {
+                return frame.payload;
+            }
+        }
+    };
+    tokio::time::timeout(BOUND, body).await.expect("no browser frame within BOUND")
+}
+
 /// The next `browser` frame `conn` is sent, as its `repl.frame` evt carries it.
 #[cfg(unix)]
 async fn next_browser_frame(conn: &mut Conn) -> serde_json::Value {
@@ -427,6 +441,32 @@ async fn an_announced_page_opens_in_one_window_the_one_showing_its_row() {
         assert_eq!(ack["accepted"], true, "{ack}");
         assert_eq!(next_browser_frame(&mut conn_a).await["open"], true, "the window showing the REPL's row opens it");
         assert_eq!(next_browser_frame(&mut conn_b).await["open"], false, "a window used later on another row opens nothing");
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// A page the window's own eval announces opens in that window, under the number the window gave the eval: the window's
+/// own numbering (REPL-DRAWER) and the page's one opener (WGLSHOW-ONE-FE) compose. The run reaches the other window
+/// under the daemon's number, with `open: false`.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_page_a_windows_own_eval_announces_opens_there_under_its_own_number() {
+    let stub = tempfile::tempdir().expect("tempdir");
+    let julia = stub.path().join("julia");
+    sot_log::test_exec::write_executable(&julia, PAGE_JULIA);
+    let resources = stub.path().join("resources");
+    std::fs::create_dir_all(resources.join("julia").join("repl")).expect("mkdir resources");
+    let env = Env::spawn_with("ownpage", &[("SOT_JULIA_BIN", &julia), ("SOT_RESOURCE_ROOT", &resources)]);
+    let body = async {
+        let (mut conn_b, _) = connect_and_hello(&env.socket_path, "own-b", "fe@host-b").await;
+        let (mut conn_a, id_a) = connect_and_hello(&env.socket_path, "own-a", "fe@host-a").await;
+        fire(&mut conn_a, id_a, op::REPL_EVAL, serde_json::json!({"code": "wglshow(fig)", "eval_id": 7})).await;
+        let own = next_browser_payload(&mut conn_a).await;
+        assert_eq!(own["eval_id"], 7, "the window's own number: {own}");
+        assert_eq!(own["frame"]["open"], true, "no window used: the one connected last, the sender: {own}");
+        let other = next_browser_payload(&mut conn_b).await;
+        assert!(other["eval_id"].as_u64().unwrap_or(0) >= 1 << 40, "the other window gets the daemon's number: {other}");
+        assert_eq!(other["frame"]["open"], false, "never every window: {other}");
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }
