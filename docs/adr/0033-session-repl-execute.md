@@ -172,13 +172,22 @@ answered `interrupted:false`. Item 4 stands: a timeout sends no interrupt.
 ## Amendment (2026-10-14, 0.6.6): one numberer
 
 The daemon numbers every run on every REPL (`repl.eval`, `repl.run_file`, `repl.execute`) from item 7's counter
-(`rust/backend/src/sidecars/repl/numbers.rs`) and announces each with `Started` before its submission, so a number
-names one run in every window. A window still numbers its own evals and `r`/`R` runs, with one count per window, and
-its drawer entry for a run carries that number. The daemon keeps it as an alias on that window's connection
-(`CallerNumbers`): that connection is written the run's frames under the window's number and is never sent the run's
-`Started`, a run the daemon refuses it (a full queue, a REPL that cannot start) is written to it not at all, since the
-reply says why, and the `eval_ids` of an interrupt from it are mapped to the daemon's numbers. Every other connection is
-written the run under the daemon's number, after its `Started`, so a second window shows the run as an entry of its
-own. Before this, every window's first eval was 1, and a second window appended the first window's runs to its own
-entry with the same number. No payload changed: a window that predates this is written its own runs under its own
-numbers and the other windows' runs announced; a window against a daemon that predates this sees what it saw before.
+(`rust/backend/src/sidecars/repl/numbers.rs`) and announces each with `Started` before its submission, so a number names
+one run in every window. A window still numbers its own evals and `r`/`R` runs, with one count per window, and its
+drawer entry for a run carries that number. The daemon keeps it as an alias of that window (`CallerNumbers`). A window
+is its hello's declared host and `instance` (ADR 0046 decision 1), so each connection of it, a redial's included, shares
+the aliases; a connection whose hello names no instance is a window of its own. Each connection of the window is written
+the run's frames under the window's number and is never sent the run's `Started`, a run the daemon refuses it (a full
+queue, a REPL that cannot start) is written to it not at all, since the reply says why, and the `eval_ids` of an
+interrupt from it are mapped to the daemon's numbers. A window's number names one run: a later run it numbers the same
+takes the number (the Windows launcher keeps a window's `instance` across a relaunch, whose count starts at 1 again),
+and the earlier run's later frames reach it as any other run's. The client roster keeps a window's aliases while it has
+a connection and after its last one leaves, so a window that redials, even after the daemon reaped its silent link, is
+written the rest of its runs; it keeps at most 256 runs per window (a finished run goes first) and 64 windows with no
+connection (the one away longest goes first). Every other connection is written the run under the daemon's number, after
+its `Started`, so a second window shows the run as an entry of its own. Before this, every window's first eval was 1,
+and a second window appended the first window's runs to its own entry with the same number. No payload changed: a window
+that predates this is written its own runs under its own numbers and the other windows' runs announced, except that it
+counts each row from 1, so of its two rows' evals in flight on one host the later takes the number and the earlier's
+later output comes under the daemon's number, which that window drops; a window against a daemon that predates this sees
+what it saw before.

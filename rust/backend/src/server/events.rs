@@ -277,8 +277,8 @@ where
 }
 
 /// Translates one streamed REPL frame into a `repl.frame` evt frame on the
-/// wire, as this connection is written it (`CallerNumbers::outgoing`: its own
-/// runs under its own numbers). Returns `Ok(true)` if a frame was written,
+/// wire, as this connection is written it (`CallerNumbers::outgoing`: its
+/// window's own runs under the window's numbers). Returns `Ok(true)` if a frame was written,
 /// `Ok(false)` if the frame is not for this connection or the receiver was
 /// lagged or closed (skip and keep the connection alive). The `frame` value is
 /// otherwise passed through verbatim — its `{kind, ...}` shape is

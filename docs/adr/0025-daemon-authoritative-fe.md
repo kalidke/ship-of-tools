@@ -6,13 +6,15 @@
 > **Update — 0.6.6 (WGLSHOW-ONE-FE, SHOW-ROUTE): one window per show, never a broadcast.** An untargeted
 > `fe.command.send` no longer falls back to every frontend. A show (`preview`, `reveal`, `docs`, `open_url`, and a
 > `wglshow` page's `browser` frame) goes to the window showing the row it names (its `workspace` argument; a REPL
-> frame's own row) that a person used within five minutes; otherwise to the window a person used last, however long
-> ago; otherwise to the window that connected last (`ClientsSnapshot::show_target`). `goto_workspace`, `goto_mode` and
-> `notify` go to the window used last; `relaunch` keeps the rule below. Each connection's shown row is what its last
-> `workspace.activate` resolved to, and a window that switches to another host's row tells the host it left (an
-> activate with no id). `fe.presence` now comes only from a press (not a button release or a key repeat), from the
-> second press in a window within five minutes (one stray click reports nothing), at most once per 5 s. The relay
-> logs the chosen window and why (`row`, `last-used`, `last-connected`).
+> frame's own row) that a person used within five minutes; otherwise to the window a person used last, however long ago;
+> otherwise to the window that connected last (`ClientsSnapshot::show_target`). `goto_workspace`, `goto_mode` and
+> `notify` go to the window used last; `relaunch` keeps the rule below. A window's shown row is what its last
+> `workspace.activate` resolved to, and a window that switches to another host's row tells the host it left (an activate
+> with no id). The row and when a person last used the window belong to the window, its hello's host and `instance` (ADR
+> 0046 decision 1), not to one connection: a window that redials keeps both, and of its connections the newest gets what
+> goes to it (`rust/backend/src/clients_window.rs`). `fe.presence` now comes only from a press (not a button release or
+> a key repeat), from the second press in a window within five minutes (one stray click reports nothing), at most once
+> per 5 s. The relay logs the chosen window and why (`row`, `last-used`, `last-connected`).
 
 > **Update — 2026-09-08: v1.1 landed — "the active frontend," presence from the
 > frontend, not inferred by the daemon.** §5's `v1.1` promised daemon primary-tracking

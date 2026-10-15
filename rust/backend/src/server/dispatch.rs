@@ -98,7 +98,8 @@ pub(super) struct Shared {
     pub(super) client_id: String,
     /// The hello's declared host.
     pub(super) hello_host: Option<String>,
-    /// The REPL runs this connection numbered itself, written to it under its own numbers (`CallerNumbers`).
+    /// The REPL runs this connection's window numbered itself, written to it under the window's numbers
+    /// (`CallerNumbers`, kept by the roster across the window's connections).
     pub(super) repl_numbers: crate::sidecars::repl::numbers::CallerNumbers,
 }
 

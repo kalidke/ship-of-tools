@@ -5,12 +5,10 @@ use super::{ActiveFrontend, ClientInfo, Clients, ClientsSnapshot, ACTIVE_WINDOW}
 use std::time::Instant;
 
 impl Clients {
-    /// Record the row the window on connection `serial` now shows (`workspace.activate`, `server/dispatch.rs`). A
-    /// no-op for an unregistered serial.
+    /// Record the row the window on connection `serial` now shows (`workspace.activate`, `server/dispatch.rs`), on
+    /// the connection and on its window. A no-op for an unregistered serial.
     pub fn show_row(&self, serial: u64, row: String) {
-        if let Some(info) = self.inner.lock().unwrap().by_conn.get_mut(&serial) {
-            info.shown_row = Some(row);
-        }
+        self.inner.lock().unwrap().report(serial, |_, shown| *shown = Some(row.clone()));
     }
 }
 

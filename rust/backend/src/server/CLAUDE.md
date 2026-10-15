@@ -20,7 +20,8 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   the `comm.file` requests offered to it and hands back their responses.
 - Each control session's task and state, in `serve_control`: roster guard (control sessions only), declared host, its
   link end for a `link` connection, active workspace, monitor flag, read deadline, the off-loop `JoinSet` and
-  semaphore, and the REPL runs it numbered itself (sidecars' `CallerNumbers`, through which `write_repl_frame` writes
+  semaphore, and the REPL runs its window numbered itself (sidecars' `CallerNumbers`, which the roster keeps per window
+  and hands each connection at registration, `ClientGuard::numbers`; through it `write_repl_frame` writes
   it each `repl.frame`).
 - The op table: `place` (the `INLINE` and `POOLED` lists, each op with its reason; every other op is a job), `dispatch`
   (the arms that use the loop's state or writer, and the placement) and `serve` (every other op to its owner), and the

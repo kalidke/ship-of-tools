@@ -14,7 +14,9 @@
 // clean EOF, transport error, task panic — is covered without an explicit
 // teardown call. Registration is keyed by a per-connection serial, not by
 // `client_id`, so a machine that reconnects (same `client_id`, new socket)
-// is a distinct entry until its old connection task winds down.
+// is a distinct entry until its old connection task winds down. What a window
+// carries across its connections (the REPL runs it numbered, its presence and
+// its shown row) is kept by window, not by connection (`clients_window.rs`).
 //
 // The registry is intentionally minimal: a count + a roster for logging
 // and the `clients_connected` field in `HelloRes`. Write policy (single-
@@ -94,8 +96,9 @@ pub struct ClientInfo {
     /// SELECTED as the active frontend (`snapshot_with_active`), though a
     /// genuine broadcast still reaches it like every other connection.
     pub name: Option<String>,
-    /// Monotonic instant of the most recent `fe.presence` this connection
-    /// sent (2026-09-08 review rework) — `None` until the first one.
+    /// Monotonic instant of the most recent `fe.presence` this connection's
+    /// window sent (2026-09-08 review rework; a redial keeps it,
+    /// `clients_window.rs`) — `None` until the first one.
     /// `Instant`, not wall-clock time: sub-second precision so two
     /// touches close together still order correctly, and immune to clock
     /// adjustment. This is the ONLY thing that sets this field — no other
@@ -113,8 +116,8 @@ pub struct ClientInfo {
     /// from `Some(vec![])`, a box that HAS declared and has nothing to
     /// report right now. See `Clients::declare_sessions`.
     pub sessions: Option<Vec<sot_protocol::DeclaredSession>>,
-    /// The row this connection's window shows: what its latest `workspace.activate` resolved to (`server/dispatch.rs`).
-    /// `None` until the first. A show goes to a window on its row (`ClientsSnapshot::show_target`).
+    /// The row this connection's window shows: what its latest `workspace.activate` resolved to (`server/dispatch.rs`;
+    /// a redial keeps it). `None` until the first. A show goes to a window on its row (`ClientsSnapshot::show_target`).
     pub shown_row: Option<String>,
 }
 
@@ -153,6 +156,8 @@ struct Inner {
     /// Declared host -> the OS account(s) that said hello for it, live or long gone. In memory only, empty again
     /// on every daemon restart.
     hosts: HashMap<String, HostAccounts>,
+    /// Each window's state across its connections, live and away (`clients_window.rs`). In memory only.
+    windows: HashMap<window::WindowKey, window::Window>,
 }
 
 /// Shared, cheaply-cloneable handle to the connected-client roster.
@@ -219,7 +224,7 @@ impl Clients {
         name: Option<String>,
     ) -> ClientGuard {
         let serial = self.next_serial.fetch_add(1, Ordering::Relaxed);
-        let info = ClientInfo {
+        let mut info = ClientInfo {
             serial,
             client_id: client_id.into(),
             app_version: app_version.into(),
@@ -232,10 +237,11 @@ impl Clients {
             sessions: None,
             shown_row: None,
         };
-        let (count, roster) = {
+        let (count, roster, numbers) = {
             let mut g = self.inner.lock().unwrap();
+            let numbers = g.arrive(&mut info);
             g.by_conn.insert(serial, info.clone());
-            (g.by_conn.len(), distinct_client_ids(&g.by_conn))
+            (g.by_conn.len(), distinct_client_ids(&g.by_conn), numbers)
         };
         tracing::info!(
             client_id = %info.client_id,
@@ -251,6 +257,7 @@ impl Clients {
             inner: self.inner.clone(),
             serial,
             client_id: info.client_id,
+            numbers,
         }
     }
 
@@ -260,16 +267,14 @@ impl Clients {
         self.inner.lock().unwrap().by_conn.len()
     }
 
-    /// Stamp `last_person_input_at = now` for the connection at `serial` —
-    /// the ONLY thing that should call this is the `fe.presence` handler
-    /// (2026-09-08 review rework, design point A). A no-op if `serial`
+    /// Stamp `last_person_input_at = now` for the connection at `serial` and
+    /// its window — the ONLY thing that should call this is the `fe.presence`
+    /// handler (2026-09-08 review rework, design point A). A no-op if `serial`
     /// isn't registered (already disconnected, or `hello` hasn't landed
     /// yet).
     pub fn touch_person_input(&self, serial: u64) {
-        let mut g = self.inner.lock().unwrap();
-        if let Some(info) = g.by_conn.get_mut(&serial) {
-            info.last_person_input_at = Some(Instant::now());
-        }
+        let now = Instant::now();
+        self.inner.lock().unwrap().report(serial, |at, _| *at = Some(now));
     }
 
     /// Store the connection at `serial`'s latest `fe.sessions` declaration
@@ -409,6 +414,8 @@ pub struct ClientGuard {
     inner: Arc<Mutex<Inner>>,
     serial: u64,
     client_id: String,
+    /// The REPL runs this connection's window numbered itself (`clients_window.rs`).
+    numbers: crate::sidecars::repl::numbers::CallerNumbers,
 }
 
 impl ClientGuard {
@@ -425,6 +432,12 @@ impl ClientGuard {
     /// same trust level `client_id` has always carried.
     pub fn client_id(&self) -> &str {
         &self.client_id
+    }
+
+    /// The REPL runs this connection's window numbered itself: shared by each connection of the window, a redial's
+    /// included (`clients_window.rs`); a connection of no window has its own.
+    pub fn numbers(&self) -> crate::sidecars::repl::numbers::CallerNumbers {
+        self.numbers.clone()
     }
 }
 
@@ -443,6 +456,7 @@ impl Drop for ClientGuard {
             // `by_conn` borrow, so touching `disconnected` next is a
             // second, disjoint mutation of `g`, not a re-borrow.
             if let Some(info) = departed {
+                g.leave(&info);
                 if info.sessions.is_some() {
                     if let Some(name) = info.name {
                         if !name.is_empty() {
@@ -755,6 +769,9 @@ pub async fn handle_fe_sessions(
 
 #[path = "clients_show.rs"]
 mod show;
+
+#[path = "clients_window.rs"]
+mod window;
 
 #[cfg(test)]
 #[path = "clients_tests.rs"]

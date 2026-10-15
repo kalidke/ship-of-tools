@@ -12,7 +12,8 @@ use super::numbers::CallerNumbers;
 
 /// Numbers a run and announces it to every window (ADR 0033, the one-numberer amendment): the daemon's number goes in
 /// `payload`, a `started` frame labelled `origin` (a window's own run: "window"; else "session") goes on the bus, and
-/// the caller's own number, if it gave one, stays the run's number on the caller's connection (`CallerNumbers`).
+/// the caller's own number, if it gave one, stays the run's number on each connection of the caller's window
+/// (`CallerNumbers`).
 /// Returns the run's number and what `close_exec_run` needs to close it.
 fn announce_run(
     numbers: &CallerNumbers,
@@ -331,7 +332,7 @@ pub async fn handle_repl_interrupt(
         Err(reply) => return Ok(reply),
     };
     let repl = ws.repl(workspaces.repl_frame_tx());
-    // The evals the caller names in its own numbers reach the REPL as the daemon's (`CallerNumbers`).
+    // The evals the caller names in its window's numbers reach the REPL as the daemon's (`CallerNumbers`).
     if let Some(named) = payload_json.get("eval_ids").and_then(|v| v.as_array()) {
         let named: Vec<u64> = named.iter().filter_map(|v| v.as_u64()).collect();
         payload_json["eval_ids"] = json!(numbers.daemon_numbers(&named));
@@ -464,15 +465,20 @@ done
         let id = ws.workspace_id.clone();
         workspaces.insert(ws);
         let row = row_or_reply(&workspaces, Some(&id), 0, op::REPL_EVAL).unwrap_or_else(|_| panic!("setup: the row"));
-        let conn = CallerNumbers::default();
-        handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 205, "code": "1" }), &session, &workspaces, &conn)
+        // A window's connection, as the roster makes one; the window redials before its Ctrl+C.
+        let clients = crate::clients::Clients::new();
+        let window = || clients.register("c", "0.6.6", 1, "fe".into(), Some("h".into()), Some("w".into()), None);
+        let conn = window();
+        handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 205, "code": "1" }), &session, &workspaces, &conn.numbers())
             .await
             .expect("setup: the eval starts the child");
         within(Duration::from_secs(30), "the child is ready", || row.repl_state() == "ready").await;
+        drop(conn);
+        let again = window();
 
-        // The eval is named by the caller's own number (205) and an announced run by the daemon's.
+        // The eval is named by the window's own number (205) and an announced run by the daemon's.
         let named = json!({ "workspace_id": id, "eval_ids": [205, 1u64 << 40] });
-        let out = handle_repl_interrupt(2, named, &session, &workspaces, &conn).await.expect("handler");
+        let out = handle_repl_interrupt(2, named, &session, &workspaces, &again.numbers()).await.expect("handler");
         assert_eq!(out[0].0.payload, json!({ "interrupted": true }), "the child's answer is the reply");
         let logged: Vec<serde_json::Value> = std::fs::read_to_string(dir.join("julia.log"))
             .unwrap()

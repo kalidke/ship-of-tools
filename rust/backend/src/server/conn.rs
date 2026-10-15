@@ -403,7 +403,7 @@ where
         serial: client_guard.as_ref().map_or(0, |g| g.serial()),
         client_id: client_guard.as_ref().map(|g| g.client_id().to_string()).unwrap_or_default(),
         hello_host,
-        repl_numbers: Default::default(),
+        repl_numbers: client_guard.as_ref().map(crate::clients::ClientGuard::numbers).unwrap_or_default(),
     };
     let hello_reply = handle_hello(hello_id, hello.into_hello(), &session, &files_mode, label.as_deref(), &clients).await;
     for (frame, blob) in finish_dispatch(op::HELLO, hello_id, std::time::Instant::now(), hello_reply) {
