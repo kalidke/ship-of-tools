@@ -3,9 +3,10 @@
 //! number for the run (`CallerNumbers`, one per window, which the client roster keeps across the window's connections:
 //! `clients_window.rs`): each connection of the window is written the run's frames under the window's number and is
 //! never announced the run, and every other connection gets the daemon's number after the run's `started` frame. A run
-//! the daemon refused is written to its window not at all: the reply already said why. The REPL's supervisor marks each
-//! of a window's runs running once its queue accepts the run and ended before it publishes the run's `done`
-//! (`accepted`, `end_then`), so each hello reply names the window's runs still running (`running`, `HelloRes::repl_running`).
+//! the daemon refused is written to its window not at all: the reply already said why. `Repl::submit` marks each
+//! of a window's runs running once the REPL's queue accepts the run, and the supervisor marks it ended before it
+//! publishes the run's `done` (`accepted`, `end_then`), so each hello reply names the window's runs still running
+//! (`running`, `HelloRes::repl_running`).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -36,8 +37,8 @@ struct Own {
     stage: Stage,
 }
 
-/// How far a window's run has gone, as its REPL's supervisor marks it. A hello names only a `Running` run: its `done`
-/// is still to be published, after the hello's connection subscribed to the frame bus, so the window that reopens the
+/// How far a window's run has gone, as `Repl::submit` and the REPL's supervisor mark it. A hello names only a
+/// `Running` run: its `done` is still to be published, after the hello's connection subscribed to the frame bus, so the window that reopens the
 /// run's entry is written its end.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {

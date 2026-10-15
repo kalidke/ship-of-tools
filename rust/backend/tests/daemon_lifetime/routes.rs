@@ -1,14 +1,16 @@
 //! The daemon's real routes the cases drive, and what they read back: a ready capsule row, a REPL cell that spins, the
 //! identities of a tree a fixture started, the nonce round trip through a row's agent, and the observed relations of a
-//! process (its children, its command line). Nothing here ends a process; ending is the fixture owner's.
+//! process (its children, its command line); and the Julia binary every daemon of a case runs. Nothing here ends a
+//! process but a Julia it started itself that overruns its bound; ending is the fixture owner's.
 
 use crate::fixture_owner::Fixture;
 use crate::guard::parent_of;
-use crate::support::{call, connect_and_hello, find_row, poll_until, Conn, Env, BOUND};
+use crate::support::{call, connect_and_hello, find_row, julia_binary, poll_until, Conn, Env, BOUND};
 use crate::tree::Tree;
 use sot_protocol::op;
 use sot_protocol::{codec, Frame};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// The row's supervisor as the product's lane reports it: its pid and creation time. The lane is found through `env`'s
@@ -25,18 +27,46 @@ pub async fn supervisor_in(env: &Env, state_dir: &Path) -> Option<(i32, u64)> {
     .unwrap()
 }
 
-/// A Julia the REPL can run: `SOT_JULIA_BIN` of this test's own environment, else `julia` found on its PATH.
+/// The Julia every daemon of a case runs (its REPL, Pluto, Quarto's engine): the one `julia_binary` finds, which
+/// `sotd_command` hands each daemon. What they name may be a juliaup launcher, which finds its installation through HOME:
+/// under a case's own HOME it finds none, so at every start it installs the release channel's newest Julia from the
+/// network (minutes on a slow link) and runs that.
 pub fn julia_bin() -> String {
-    if let Some(bin) = std::env::var_os("SOT_JULIA_BIN") {
-        return bin.to_string_lossy().into_owned();
-    }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("julia"))
-        .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| panic!("no julia: set SOT_JULIA_BIN or put julia on the PATH"))
-        .to_string_lossy()
-        .into_owned()
+    julia_binary().unwrap_or_else(|| panic!("no julia: set SOT_JULIA_BIN or put julia on the PATH"))
+}
+
+/// The Julia a daemon gets starts under a case's own HOME and writes nothing there (a juliaup launcher installs a Julia
+/// into it, `julia_bin`).
+#[test]
+#[ignore = "needs a Julia 1.12 (SOT_JULIA_BIN, else julia); run by the harness job with --include-ignored"]
+fn the_julia_a_daemon_gets_needs_nothing_from_a_cases_own_home() {
+    let julia = julia_bin();
+    let home = tempfile::tempdir().expect("the case's home");
+    let depot = tempfile::tempdir().expect("the case's depot");
+    let child = Command::new(&julia)
+        .args(["--startup-file=no", "-e", "print(VERSION)"])
+        .env("HOME", home.path())
+        .env("JULIA_DEPOT_PATH", crate::julia_depot_path(depot.path()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start julia");
+    let (status, version, stderr) =
+        sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(60));
+    assert!(
+        status.success(),
+        "{julia} under a case's own HOME: {status}\n{stderr}"
+    );
+    let written: Vec<_> = std::fs::read_dir(home.path())
+        .expect("read the case's home")
+        .flatten()
+        .map(|entry| entry.file_name())
+        .collect();
+    assert!(
+        written.is_empty(),
+        "{julia} (Julia {version}) wrote {written:?} into a case's own HOME\n{stderr}"
+    );
 }
 
 /// A capsule row, created through the daemon and waited to `ready`; its id and its state folder.
@@ -79,7 +109,7 @@ pub async fn ready_row(
 }
 
 /// Run a cell in the row's REPL on a connection of its own. The call does not answer while the cell spins, so it runs in a
-/// task that the caller aborts; the reply, if one ever comes, is of no interest.
+/// task that the caller aborts; the reply, if one ever comes, is recorded for a failed case's record (`call_long`).
 pub async fn spin_in_repl(
     socket: &Path,
     workspace_id: &str,
@@ -186,6 +216,7 @@ pub async fn call_long(
     bound: Duration,
 ) -> Frame {
     let body = async {
+        crate::case_record::note(format!("{op} (id {id}) sent, no reply yet"));
         codec::write_frame(conn, &Frame::req(id, op, payload), None)
             .await
             .expect("write_frame");
@@ -196,9 +227,18 @@ pub async fn call_long(
             }
         }
     };
-    tokio::time::timeout(bound, body)
-        .await
-        .unwrap_or_else(|_| panic!("{op} (id {id}) did not reply within {bound:?}"))
+    match tokio::time::timeout(bound, body).await {
+        Ok(frame) => {
+            crate::case_record::note(format!("{op} (id {id}) answered {}", frame.payload));
+            frame
+        }
+        Err(_) => {
+            let what = format!("{op} (id {id}) did not reply within {bound:?}");
+            crate::case_record::note(what.clone());
+            crate::support::run_timeout_hook(&what);
+            panic!("{what}");
+        }
+    }
 }
 
 /// The pids whose parent is `pid`, from `/proc` (observed): the children list of a process the case holds.

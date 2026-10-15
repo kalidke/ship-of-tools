@@ -1,8 +1,9 @@
-//! The platform subsystem: state dirs, durable publication, kernel locks, the redial pace.
+//! The platform subsystem: state dirs, durable publication, kernel locks, held folders, the redial pace.
 //! The glob re-exports below are the module's interface: callers name
 //! `sot_log::host::wide_null`, `sot_log::host::daemon_lock_path` and so on.
 
 mod durable;
+mod held_dir;
 #[cfg(unix)]
 mod inherit;
 mod lock;
@@ -154,6 +155,7 @@ mod tests {
 }
 
 pub use durable::*;
+pub use held_dir::*;
 #[cfg(unix)]
 pub use inherit::inherit_none;
 pub use lock::*;

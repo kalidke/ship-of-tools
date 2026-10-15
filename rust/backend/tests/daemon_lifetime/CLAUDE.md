@@ -7,6 +7,7 @@ of the backend's tests; the suites span subsystems, so this page names no charte
 
 ## Files
 - `main.rs`: the module list, how to build the barrier variants the held-process cases need, and `julia_depot_path`
+- `case_record.rs`: what a failed case keeps: its daemon logs (the children's stderr included, `RUST_LOG` is `info,repl.stderr=debug,pluto.stderr=debug`), the answers its routes got (`call_long`, `spin_in_repl`) and, at a `poll_until` or `call_long` timeout, the daemon's descendants from `/proc` before and six seconds after a SIGUSR1 to the `julia` ones among them (Julia then prints every thread's stack to its stderr); in `$SOT_LIFETIME_KEEP_DIR/<case>-<pid>/`, else `<temp dir>/sot-lifetime-keep/<case>-<pid>/`, with the path and each log's last 60 lines printed to the case's output; a passing case keeps nothing (feature `daemon-lifetime-faults`)
 - `done.rs`: the done test's parts: its inputs (a case-private copy of Pluto's folder, the trees, the environment), the trees it starts through each product route and the oracle it reads after the daemon is killed (feature `daemon-lifetime-faults`)
 - `durable.rs`: the durable parent's place in a real daemon's process tree: it descends from nothing the daemon started (feature `daemon-lifetime-faults`)
 - `gated_end.rs`: a window's close and a row's destroy while the row's capsule birth is held at the durable parent's gate: the close waits for the birth and ends the row, and a destroy waits for it and either ends the row or refuses and keeps it with its live supervisor, so no row is lost and no supervisor is left without its row (feature `daemon-lifetime-faults`; needs the barrier build of `sot-capsule`)
@@ -21,7 +22,7 @@ of the backend's tests; the suites span subsystems, so this page names no charte
 - `outcomes.rs`: the serving daemon's outcomes read at the launched process: the main future's Ok, error and panic (0, 1, 101), INT and TERM on a daemon whose runtime is stalled and whose inherited mask blocks them (it ends by the signal), a second TERM changing nothing, a service manager's stop and an outside TERM counted as a clean stop (a test-owned unit; `SOT_TEST_REQUIRE_USER_MANAGER=1` makes a missing user manager a failure), a close held past its bound (1; the ephemeral trees go too) and the early commands' own statuses; the capsule stays alive through each (feature `daemon-lifetime-faults`)
 - `update_fixture.rs`: what an automatic update works on, built from real programs: an upstream git repository with the release's tag, an install-shaped prefix (a copy of the built daemon beside its capsule, an install manifest, a base clone) and a release folder (the platform archive, `SHA256SUMS`, `COMMIT`) for the directory fetcher
 - `updates.rs`: the update outcomes on real daemons: `update.apply` against a pointer armed with the real updater (exit 75, the REPL's tree ends, the capsule stays), the automatic update through the real stage, prepare and arm (75 with no window attached, deferred with one), a close and an update in each order (held points), the updates a daemon may not take, and the updater's discovery and prepare commands ending with the daemon (feature `daemon-lifetime-faults`)
-- `routes.rs`: the daemon's real routes the cases drive and what they read back: a ready row, a spinning REPL cell, a tree's identities, the nonce round trip, a process's children and command line
+- `routes.rs`: the daemon's real routes the cases drive and what they read back: a ready row, a spinning REPL cell, a tree's identities, the nonce round trip, a process's children and command line; and the Julia binary every daemon of a case runs (`julia_bin`, support's `julia_binary` or a panic)
 - `successor.rs`: a successor daemon and a capsule birth held at each of five phases of its way to its first act: the successor starts no second supervisor and reaches the original (feature `daemon-lifetime-faults`; needs the barrier build of `sot-capsule`)
 - `workers.rs`: the product worker factories read where they stand: a Julia `Distributed` worker against the process that started it, Pluto's notebook worker, outside Pluto's group and spinning so that only the drain can end it, ended by a closed daemon's guard (`a_closed_daemon_ends_plutos_notebook_worker`), and the done test of the guard, `every_descendant_of_a_killed_daemon_ends`: a killed daemon's REPL, Pluto and Quarto trees all end, the capsule stays and a successor adopts it (ignored in a plain run; needs Julia 1.12, Pluto's environment and, for its Quarto half, Quarto)
 - `fixtures/`: the real inputs and process trees of the cases (see its page)
@@ -58,7 +59,7 @@ of the backend's tests; the suites span subsystems, so this page names no charte
   signals), which runs on Linux only, inside a case macOS also runs.
 - A case ends only a pid its own code got back from its own spawn (`Fixture::own`; the launched guard, a gated birth, a
   child it started). A pid a product printed, a fixture process wrote, a peer credential reported, /proc showed or a parent
-  link reached is looked at through a pidfd (`Fixture::watch`) and is never signalled: `Identity::kill` refuses it. A case
+  link reached is looked at through a pidfd (`Fixture::watch`) and is never signalled: `Identity::kill` refuses it. One exception, not an ending: at a timeout `case_record` sends SIGUSR1 (a stack dump, no end) to the `julia` descendants of the daemon the case holds. A case
   that needs the daemon to die sends nothing to it: the daemon sends itself the signal when the case writes `raise:<n>` to
   its outcome file (`Run::daemon_does`, feature `daemon-lifetime-faults`). A `Run` ends its daemon by asking the guard it
   launched to end (TERM: the daemon exits through its terminal and the guard drains what it started; only a guard that
@@ -74,5 +75,9 @@ of the backend's tests; the suites span subsystems, so this page names no charte
   Pkg write only into the first depot (caches, packages, a registry and its updates, Pluto's environments, logs, the
   automatic gc), so a run adds nothing to the depot of the person running it; reading a cache there refreshes its mtime.
   The daemons `gated_end` and `successor` start through `Env` start no Julia.
+- Every daemon of a case runs the Julia binary `julia_bin` resolves, which is support's `julia_binary` (`SOT_JULIA_BIN`,
+  else `julia` on the PATH, probed once), never a juliaup launcher: a launcher finds its installation through HOME, and
+  under a case's own HOME it installs the release channel's newest Julia from the network at every start. The
+  `Distributed` case runs under the runner's own HOME and starts the given Julia.
 - The Quarto half runs where `quarto --version` answers and is printed as not checked, never passed, where it does not;
   its transport files are under a case-private `XDG_RUNTIME_DIR` that only the case's `quarto` wrapper sets.

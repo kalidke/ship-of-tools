@@ -31,6 +31,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | durable write (fsync, no-clobber rename, publish) | primitive | platform | `rust/log/src/host/durable.rs` `publish_noreplace`, `fsync_dir`, `ensure_container`; `rust/backend/src/durable.rs` `write` |
 | redial pace of a long-lived connection or child (`Redial`, `STABLE`) | rule | platform | `rust/log/src/host/redial.rs` `Redial`, `STABLE`; callers `rust/frontend/src/net/transport/mod.rs` `spawn`, `redial_for`; `rust/backend/src/comm/mail/hub_link.rs` `hold_link`; `rust/log/src/attach_client/rules/reconnect.rs` `ReconnectState`; `rust/log/src/attach_client/worker/converge.rs` `probe_supervisor_lane`; `rust/backend/src/sidecars/kernel.rs` `supervisor_loop` |
 | bounded file locks | primitive | platform | `rust/log/src/host/lock.rs` `lock_writer`, `lock_supervisor`, `try_lock_daemon` |
+| a held folder: one its maker holds by a lock (`holder.lock`) for its life, and the removal of one whose maker has ended | primitive | platform | `rust/log/src/host/held_dir.rs` `HeldDir`, `remove_ended`; `rust/log/src/host/lock.rs` `lock_new`, `lock_held` |
 | volume preflight | primitive | platform | `rust/log/src/host/volume.rs` `preflight_volume` |
 | storage-exhaustion recognition | primitive | platform | `rust/log/src/host/storage.rs` `storage_exhaustion` |
 | Windows SDDL/SID helpers | primitive | platform | `rust/log/src/host/winsec.rs` `owner_protected_descriptor`, `sid_string_from_process` |
@@ -78,6 +79,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `$PREFIX/install.json` | disk | distribution | `scripts/install.sh` (rewritten only as `installer_host_decision` and `installer_record_decision` allow); `scripts/sot-apply.sh` (version and tag); `scripts/install-manifest.ps1`; `rust/updater/src/manifest.rs` `InstallManifest` |
 | `$PREFIX/updates/` (stages, `pending-<t>.json`, `last-good-<t>.json`, `just-applied-<t>`, `bad-<tag>-<t>`) | disk | distribution | `rust/updater/src/lib.rs` `stage`; `rust/updater/src/pending.rs`; `scripts/sot-apply.sh`; `scripts/sot-apply.ps1` |
 | `updates/.lock` (mkdir mutex) | lock | distribution | `rust/updater/src/lock.rs`; `scripts/sot-apply.sh` |
+| a release check's scratch folder `std::env::temp_dir()`/`sot-updater-*/`, a held folder, and its removal by the check that made it or, for a check whose process ended first, by a later check | disk | distribution | `rust/updater/src/fetch/mod.rs` `Fetcher::latest`, `scratch_dir`, `remove_ended_scratch`; primitive `rust/log/src/host/held_dir.rs` `HeldDir`, `remove_ended` |
 | `$PREFIX/logs/`; Windows `logs\supervisor.log`, `launcher.pid`, `launch-status.txt` | disk, lock | distribution | `scripts/lib/sot-daemon.sh` `sot_prune_logs`; `scripts/launch-sot.ps1` |
 | `<home>/.sot-comm/bin/`, `.sot-comm-installed`, `VERSION` | disk | distribution | `src/comm_bin.jl` `_publish_comm_bin!`; `src/install.jl` `install_comm` |
 | skills, launchers and Codex plugin installed into `<home>/.claude`, `<home>/.local/bin`, `<home>/.agents/plugins`, `$CODEX_HOME/AGENTS.md` | disk | distribution | `src/skills.jl`; `src/launchers.jl`; `src/codex.jl`; `src/adapters.jl` `_install_adapter` |
@@ -100,7 +102,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | physical-scale schema and validity | rule | wire | `rust/protocol/src/physical_scale.rs` `PhysicalScale`, `parse_physical_scale`; consumers in files and fe-ui |
 | `<ws>/.sot/captures/` | disk | files | `rust/backend/src/files/preview/crop.rs` `handle_image_crop` |
 | `<ws>/.sot/runs/<run_id>/` | disk | sidecars | `rust/backend/src/sidecars/repl/execute.rs` |
-| a Julia child's temporary folder `std::env::temp_dir()`/`sot-julia-<daemon pid>-*/`, and its removal at the daemon's controlled end and, for a daemon that ended without one, at the next start | disk | sidecars | `rust/backend/src/sidecars/child/tmp.rs` `ChildTmp`, `retire`, `remove_own`, `sweep_gone` |
+| a Julia child's temporary folder `std::env::temp_dir()`/`sotd-julia-*/child-*/`, in its process's held folder, and that folder's removal at the daemon's controlled end and, for a process that ended without one, at the next start | disk | sidecars | `rust/backend/src/sidecars/child/tmp.rs` `ChildTmp`, `retire`, `InHeld`, `remove_own`, `sweep_gone`; primitive `rust/log/src/host/held_dir.rs` `HeldDir`, `remove_ended` |
 | `<home>/.claude-auth/<name>/` and its allowlisted links | disk | agents | `rust/backend/src/agents/accounts.rs` `ensure_account_links`, `SHARED_ENTRIES`, `CLAUDE_ACCOUNTS_DIR` |
 | `.claude.json` folder-trust entries | disk | agents | `rust/backend/src/agents/folder_trust.rs` `ensure_folder_trusted`, `publish_trust_file`; file selection at `rust/backend/src/agents/env.rs` `account_spawn_env` |
 | folder-trust entries `[projects."<root>"]` in `$CODEX_HOME/config.toml` | disk | agents | `agents/codex/bin/ccx` |

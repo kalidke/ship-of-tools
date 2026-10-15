@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::Spawner;
+use sot_log::host::HeldDir;
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -138,13 +139,14 @@ impl Fetcher {
         current_version: &str,
     ) -> Result<Option<LatestRelease>> {
         validate_repo(repo)?;
+        remove_ended_scratch().await;
         let releases = self.list_releases(spawner, repo).await?;
         let Some(tag) = select_target(current_version, &releases) else {
             return Ok(None);
         };
         validate_tag(&tag)?;
-        let dir = tempdir("sums").await?;
-        let sums_path = dir.join("SHA256SUMS");
+        let dir = scratch_dir().await?;
+        let sums_path = dir.path().join("SHA256SUMS");
         let res = self
             .download(spawner, repo, &tag, "SHA256SUMS", &sums_path)
             .await;
@@ -154,7 +156,7 @@ impl Fetcher {
                 .context("reading downloaded SHA256SUMS"),
             Err(e) => Err(e),
         };
-        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let _ = tokio::task::spawn_blocking(move || dir.remove()).await;
         Ok(Some(LatestRelease {
             tag: Some(tag),
             sums_text: text?,
@@ -333,20 +335,29 @@ async fn run_cmd(
     Ok(out.stdout)
 }
 
-/// Unique scratch dir under the system temp root (fetch-internal only — real
-/// staging temp dirs live under the updates root, see `stage`).
-///
-/// Uniqueness is [`crate::unique::suffix`]'s job, and that module records why
-/// it must not be the clock's: [`Fetcher::latest`] passes a CONSTANT label, so
-/// for two concurrent callers in one process the clock was the only separator,
-/// and one caller's `remove_dir_all` deleted the other's `SHA256SUMS` between
-/// its download and its read.
-async fn tempdir(label: &str) -> Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("sot-updater-{label}-{}", crate::unique::suffix()));
-    tokio::fs::create_dir_all(&dir)
+/// How a release check's scratch folder is named in the system's temporary folder: a random part follows.
+const SCRATCH: &str = "sot-updater-";
+
+/// A scratch folder of its own for one check's download, in the system's temporary folder (fetch-internal only: real
+/// staging folders live under the updates root, see `stage`). It is a held folder (`sot_log::host::HeldDir`): this
+/// process holds it until its check removes it, so two checks in one process (the daemon's periodic check and an
+/// `update.check` op can overlap) each have their own, and neither the other nor another process removes it. One left
+/// by a check whose process ended first (a crash, a kill mid-download) goes at a later check ([`remove_ended_scratch`]).
+async fn scratch_dir() -> Result<HeldDir> {
+    let made = tokio::task::spawn_blocking(|| HeldDir::create(&std::env::temp_dir(), SCRATCH)).await?;
+    made.context("making the release check's scratch folder")
+}
+
+/// Removes the scratch folders of checks whose process has ended, at the start of every check, in whichever process
+/// runs it (the daemon's or the window's); never one whose process still runs, whatever computer or pid namespace it
+/// runs in, since each folder's lock is held until its process ends.
+async fn remove_ended_scratch() {
+    let removed = tokio::task::spawn_blocking(|| sot_log::host::remove_ended(&std::env::temp_dir(), SCRATCH))
         .await
-        .with_context(|| format!("creating {}", dir.display()))?;
-    Ok(dir)
+        .unwrap_or(0);
+    if removed > 0 {
+        tracing::info!(removed, "scratch folders of ended release checks removed");
+    }
 }
 
 #[cfg(test)]
@@ -368,54 +379,156 @@ mod tests {
         }
     }
 
-    /// Pins that `tempdir` takes its uniqueness from [`crate::unique::suffix`]
-    /// and not from the clock.
-    ///
-    /// A bare "two names differ" assertion is worthless here — they differ on a
-    /// nanosecond clock whether or not the helper is used, so it would pass over
-    /// a re-hand-rolled `<label>-<pid>-<nanos>` name, the regression that
-    /// reddened a macOS leg. The expected field count is therefore DERIVED from
-    /// a live `suffix()` call rather than hardcoded: hardcoding it would
-    /// re-encode the helper's internal shape in a second file, so a legitimate
-    /// change to `suffix()` would break a test in `fetch.rs` that has no
-    /// business knowing that shape. Derived, this test follows such a change and
-    /// still fails a hand-rolled name, which is the only thing it exists to
-    /// catch. (Shape chosen by the reviewer over my hardcoded variant.)
-    ///
-    /// Two assumptions, both deliberate: the clock is `suffix()`'s
-    /// second-from-last field, which is unavoidable if clock-independence is to
-    /// be observed from outside the helper, and the `want` assertion above fails
-    /// loudly if the shape ever changes in a way that invalidates it; and the
-    /// label must stay dash-free, which `"uniq"` is.
+    /// Two checks in one process each have a scratch folder of their own, and a check's start removes neither one
+    /// this process still holds.
     #[tokio::test]
-    async fn tempdir_takes_its_uniqueness_from_the_helper_not_the_clock() {
-        let want =
-            "sot-updater-uniq".split('-').count() + crate::unique::suffix().split('-').count();
-        let mut made = Vec::new();
-        for _ in 0..16 {
-            made.push(tempdir("uniq").await.expect("scratch dir"));
+    async fn a_check_keeps_the_scratch_folder_of_another_check_in_this_process() {
+        let held = scratch_dir().await.expect("a scratch folder");
+        let other = scratch_dir().await.expect("a second scratch folder");
+        assert_ne!(held.path(), other.path(), "two checks share a scratch folder");
+        remove_ended_scratch().await;
+        for dir in [&held, &other] {
+            assert!(dir.path().is_dir(), "a check's start removed a held scratch folder: {}", dir.path().display());
         }
-        let mut without_clock: Vec<String> = made
-            .iter()
-            .map(|p| {
-                let name = p.file_name().unwrap().to_str().unwrap();
-                let mut parts: Vec<&str> = name.split('-').collect();
-                assert_eq!(parts.len(), want, "scratch dir name lost a field: {name}");
-                parts.remove(parts.len() - 2); // the clock
-                parts.join("-")
-            })
+        other.remove().expect("its check removes it");
+        held.remove().expect("its check removes it");
+    }
+
+    /// The scratch-folder test's name, which its re-runs of this binary run alone.
+    const SCRATCH_TEST: &str =
+        "fetch::tests::a_killed_checks_scratch_folder_goes_at_a_later_check_and_a_running_ones_stays";
+
+    /// Which check a re-run of this binary for [`SCRATCH_TEST`] runs: `hang` or `finish`. Unset in an ordinary run.
+    const PART: &str = "SOT_UPDATER_SCRATCH_PART";
+
+    /// The bound on each wait of the scratch-folder test.
+    const BOUND: Duration = Duration::from_secs(30);
+
+    /// A re-run of this binary that runs the check `part`, with `tmp` as its temporary folder.
+    fn check_command(tmp: &Path, part: &str) -> (std::process::Command, sot_log::test_isolated::Entry) {
+        let (mut command, entry) = sot_log::test_isolated::test_command(SCRATCH_TEST);
+        for key in ["TMPDIR", "TMP", "TEMP"] {
+            command.env(key, tmp);
+        }
+        command.env(PART, part).stdin(std::process::Stdio::null());
+        (command, entry)
+    }
+
+    /// A check that hangs in its download, killed and waited for when dropped, so a failing test leaves none running.
+    struct Hanging(std::process::Child, Option<sot_log::test_isolated::Entry>);
+
+    impl Hanging {
+        fn start(tmp: &Path) -> Self {
+            let (mut command, entry) = check_command(tmp, "hang");
+            Self(command.spawn().expect("a check in a process of its own"), Some(entry))
+        }
+
+        /// SIGKILLs the check (TerminateProcess on Windows), so it runs no code, and waits for its end.
+        fn kill(mut self) {
+            self.0.kill().expect("kill the check");
+            sot_log::test_isolated::wait_within(&mut self.0, BOUND);
+            self.1.take().expect("the check's entry record").assert_once(self.0.id());
+        }
+    }
+
+    impl Drop for Hanging {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = sot_log::test_isolated::wait_until(&mut self.0, std::time::Instant::now() + BOUND);
+        }
+    }
+
+    /// Runs the check `finish` to its end in a re-run of this binary whose temporary folder is `tmp`.
+    fn finish_check(tmp: &Path) {
+        let (mut command, entry) = check_command(tmp, "finish");
+        command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let child = command.spawn().expect("a check in a process of its own");
+        let pid = child.id();
+        let (status, out, err) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+        entry.assert_once(pid);
+        assert!(status.success(), "a check run to its end failed: {status}\n{out}{err}");
+    }
+
+    /// The names in `tmp`, sorted.
+    fn names(tmp: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(tmp)
+            .expect("the checks' temporary folder")
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
             .collect();
-        let total = without_clock.len();
-        without_clock.sort();
-        without_clock.dedup();
-        assert_eq!(
-            without_clock.len(),
-            total,
-            "scratch dir names collide once the clock is discounted: {made:?}"
-        );
-        for d in made {
-            let _ = tokio::fs::remove_dir_all(d).await;
+        names.sort();
+        names
+    }
+
+    /// The scratch folder in `tmp` that `before` does not name, once a check's download has begun writing in it.
+    fn downloading(tmp: &Path, before: &[String]) -> String {
+        let deadline = std::time::Instant::now() + BOUND;
+        loop {
+            let begun = |name: &String| !before.contains(name) && tmp.join(name).join("SHA256SUMS").exists();
+            if let Some(name) = names(tmp).into_iter().find(begun) {
+                return name;
+            }
+            assert!(std::time::Instant::now() < deadline, "no check began its download in {}", tmp.display());
+            std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// The re-run's body: a check whose release list names a newer release, and whose download of that release's
+    /// SHA256SUMS never answers (`hang`, a check killed mid-download) or writes it (`finish`).
+    fn check_in_this_process(hang: bool) {
+        use crate::spawn::tests::output;
+        let spawner = RecordingSpawner(move |cmd: &tokio::process::Command| {
+            let args: Vec<String> = cmd.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+            let Some(at) = args.iter().position(|arg| arg == "-o") else {
+                return Ok(output(0, br#"[{"tag_name":"v0.6.0","prerelease":false}]"#.to_vec()));
+            };
+            if hang {
+                // A download under way: part of the file is there, and the rest never comes.
+                std::fs::write(&args[at + 1], "su")?;
+                loop {
+                    std::thread::park();
+                }
+            }
+            std::fs::write(&args[at + 1], "sums\n")?;
+            Ok(output(0, Vec::new()))
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
+        let latest = runtime.block_on(Fetcher::Curl.latest(&spawner, "example/project", "0.1.0"));
+        assert_eq!(latest.expect("the check").expect("a newer release").sums_text, "sums\n");
+    }
+
+    /// A check killed mid-download (a crash, a SIGKILL: no code runs) leaves its scratch folder, and a later check, in
+    /// another process, removes it; a check that is still running keeps its own. Each check runs in a re-run of this
+    /// binary whose temporary folder is one of this test's own.
+    #[test]
+    fn a_killed_checks_scratch_folder_goes_at_a_later_check_and_a_running_ones_stays() {
+        if let Ok(part) = std::env::var(PART) {
+            sot_log::test_isolated::enter(SCRATCH_TEST);
+            return check_in_this_process(part == "hang");
+        }
+        let root = std::env::temp_dir().join(format!("sot-updater-scratch-test-{}", crate::unique::suffix()));
+        let tmp = root.join("tmp");
+        std::fs::create_dir_all(&tmp).expect("the checks' temporary folder");
+        let running = Hanging::start(&tmp);
+        let kept = downloading(&tmp, &[]);
+        let killed = Hanging::start(&tmp);
+        let left = downloading(&tmp, &[kept.clone()]);
+        killed.kill();
+        assert!(tmp.join(&left).is_dir(), "a killed check runs no code: its scratch folder {left} stays");
+        // A later check, not always the next: Windows frees a killed process's lock after a delay with no stated bound
+        // (`sot_log`'s fault_terminate test waits it out the same way), so a check may still find it held.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            finish_check(&tmp);
+            if !tmp.join(&left).exists() || std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let after = names(&tmp);
+        println!("scratch: the running check's {kept:?} and the killed check's {left:?}; after a later check, present: {after:?}");
+        running.kill();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(after, vec![kept], "a running check's scratch folder stays and a killed one's goes");
     }
 
     #[tokio::test]

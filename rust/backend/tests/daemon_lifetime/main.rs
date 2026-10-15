@@ -17,6 +17,8 @@
 //! tests run from, then `cargo test -p sot-backend --features daemon-lifetime-faults --test daemon_lifetime`.
 
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod case_record;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 mod done;
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 mod durable;

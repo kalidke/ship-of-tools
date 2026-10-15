@@ -1,10 +1,13 @@
 //! A Julia child's own temporary folder, and for a child that runs user code its own display: made before its spawn,
-//! named in its environment, ended after its reap; a display that ends first ends the child. The folder's name holds the
-//! daemon's pid, so the daemon's controlled end removes its own folders ([`remove_own`]) and a later start removes those
-//! of a daemon that ended without one ([`sweep_gone`]).
+//! named in its environment, ended after its reap; a display that ends first ends the child. Every child folder is made in
+//! this process's own folder of them, a held folder (`sot_log::host::HeldDir`), which goes with the last of them, at the
+//! daemon's controlled end ([`remove_own`]), or, for a process that ended without either, at a later start
+//! ([`sweep_gone`]).
 
 use crate::lifecycle::child_signal::{Contained, Signal};
-use std::path::Path;
+use sot_log::host::HeldDir;
+use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -14,8 +17,13 @@ const TMP_VARS: &[&str] = &["TMPDIR"];
 #[cfg(windows)]
 const TMP_VARS: &[&str] = &["TMP", "TEMP"];
 
-/// How every child folder's name starts: the daemon's pid, a dash and a random part follow (`sot-julia-<pid>-<random>`).
-const PREFIX: &str = "sot-julia-";
+/// How a process's folder of child folders is named in its temporary folder: a random part follows
+/// (`sotd-julia-<random>`).
+const PREFIX: &str = "sotd-julia-";
+
+/// This process's folder of child folders and how many it holds: made with the first and removed with the last, or at
+/// the daemon's controlled end ([`remove_own`]), and held by its lock until then.
+static OWN: Mutex<Option<(HeldDir, usize)>> = Mutex::new(None);
 
 /// A folder of its own, in this process's temporary folder, for one Julia child and everything it starts. Julia
 /// removes its temporary files only at a clean exit, never when the daemon kills it, so the folder holds what a killed
@@ -29,16 +37,19 @@ pub(crate) struct ChildTmp {
     #[cfg(target_os = "linux")]
     display: Option<crate::sidecars::display::Display>,
     dir: tempfile::TempDir,
+    /// The folder's count in this process's held folder; dropped after `dir`.
+    held: InHeld,
 }
 
 impl ChildTmp {
     pub(crate) fn new() -> std::io::Result<Self> {
-        let prefix = format!("{PREFIX}{}-", std::process::id());
-        let dir = tempfile::Builder::new().prefix(&prefix).tempdir()?;
+        let held = InHeld::enter()?;
+        let dir = tempfile::Builder::new().prefix("child-").tempdir_in(&held.0)?;
         Ok(Self {
             #[cfg(target_os = "linux")]
             display: None,
             dir,
+            held,
         })
     }
 
@@ -92,122 +103,97 @@ impl ChildTmp {
             Ok(status) => status,
             Err(e) => {
                 let kept = self.dir.keep();
+                // The held folder stays with it, to the daemon's end or a later start.
+                std::mem::forget(self.held);
                 tracing::warn!(path = %kept.display(), error = %e, "sot-julia temporary folder kept: its child is not confirmed ended");
                 return Err(e);
             }
         };
-        let dir = self.dir;
+        let (dir, held) = (self.dir, self.held);
         let path = dir.path().to_path_buf();
         drop(tokio::task::spawn_blocking(move || {
             if let Err(e) = dir.close() {
                 tracing::warn!(path = %path.display(), error = %e, "sot-julia temporary folder not removed");
             }
+            drop(held);
         }));
         Ok(status)
     }
 }
 
-/// Removes this process's own child folders, at the daemon's controlled end (`lifecycle::shutdown::exit`), after the
-/// fire has asked every child to end: the folders of the children it still held, and any an earlier process of the same
-/// pid left. The removal runs on a thread of its own, waited for at most `bound`, so a large folder does not hold the
-/// exit; a folder not removed by then, or that a child in its last moment wrote into, is the next start's
-/// ([`sweep_gone`]). With no thread to run it on, nothing is removed.
+/// One child folder's count in this process's held folder, the one at its path. Dropped once its child folder is gone,
+/// it removes the held folder when it was the last.
+struct InHeld(PathBuf);
+
+impl InHeld {
+    /// Counts one more child folder in this process's held folder, made if there is none.
+    fn enter() -> std::io::Result<Self> {
+        let mut own = OWN.lock().unwrap_or_else(PoisonError::into_inner);
+        let (held, count) = match own.take() {
+            Some(own) => own,
+            None => (HeldDir::create(&std::env::temp_dir(), PREFIX).map_err(std::io::Error::other)?, 0),
+        };
+        let path = held.path().to_path_buf();
+        *own = Some((held, count + 1));
+        Ok(Self(path))
+    }
+}
+
+impl Drop for InHeld {
+    fn drop(&mut self) {
+        let mut own = OWN.lock().unwrap_or_else(PoisonError::into_inner);
+        let last = match own.as_mut() {
+            Some((held, count)) if held.path() == self.0 => {
+                *count -= 1;
+                *count == 0
+            }
+            // `remove_own` took it, or this count is an earlier held folder's.
+            _ => false,
+        };
+        let last = if last { own.take() } else { None };
+        drop(own);
+        if let Some((held, _)) = last {
+            if let Err(e) = held.remove() {
+                tracing::warn!(path = %self.0.display(), error = %e, "sot-julia temporary folders not removed; the next start removes them");
+            }
+        }
+    }
+}
+
+/// Removes this process's folder of child folders, at the daemon's controlled end (`lifecycle::shutdown::exit`), after
+/// the fire has asked every child to end, though its children's owners hold their folders still. The removal runs on a
+/// thread of its own, waited for at most `bound`, so a large folder does not hold the exit; a folder not removed by then,
+/// or that a child in its last moment wrote into, is the next start's ([`sweep_gone`]), its lock freed by this process's
+/// end. A process that holds no child folder removes nothing. With no thread to run it on, nothing is removed.
 pub(crate) fn remove_own(bound: Duration) {
-    let own = std::process::id();
     let (sent, removed) = std::sync::mpsc::channel();
     let started = std::thread::Builder::new()
         .name("sotd-child-folders".into())
         .spawn(move || {
-            let _ = sent.send(remove_where(&std::env::temp_dir(), |pid| pid == own));
+            let own = OWN.lock().unwrap_or_else(PoisonError::into_inner).take();
+            let _ = sent.send(own.map(|(held, _)| held.remove()));
         });
-    if started.is_ok() && removed.recv_timeout(bound).is_err() {
-        tracing::warn!("sot-julia temporary folders not all removed within {bound:?}; the next start removes the rest");
+    if started.is_err() {
+        return;
+    }
+    match removed.recv_timeout(bound) {
+        Ok(Some(Err(e))) => tracing::warn!(error = %e, "sot-julia temporary folders not all removed; the next start removes the rest"),
+        Err(_) => tracing::warn!("sot-julia temporary folders not all removed within {bound:?}; the next start removes the rest"),
+        Ok(_) => {}
     }
 }
 
-/// Removes the child folders of every daemon of this account whose pid is not running, on a blocking thread nothing
-/// waits for: the daemon's start (`server::run`), for the ends that run no code in the daemon (a crash, a SIGKILL of the
-/// daemon or of its guard). A running daemon's folders stay, this one's included, and so does a folder whose name holds
-/// no pid (`sot-julia-<random>`, a daemon's from before the pid was in the name), whose owner nothing names.
+/// Removes the folders of child folders of every process of this account that has ended (each folder's lock is free), on
+/// a blocking thread nothing waits for: the daemon's start (`server::run`), for the ends that run no code in the daemon
+/// (a crash, a SIGKILL of the daemon or of its guard). A running process's folder stays, this one's included, whatever
+/// computer or pid namespace it runs in, and so does a folder named as before held folders (`sot-julia-*`).
 pub(crate) fn sweep_gone() {
     drop(tokio::task::spawn_blocking(|| {
-        let removed = remove_where(&std::env::temp_dir(), |pid| !running(pid));
+        let removed = sot_log::host::remove_ended(&std::env::temp_dir(), PREFIX);
         if removed > 0 {
             tracing::info!(removed, "sot-julia temporary folders of ended daemons removed");
         }
     }));
-}
-
-/// Removes each child folder in `dir` whose name holds a pid that `pick` picks, and returns how many went. Only a
-/// directory this account owns goes, never a link or a file; a folder that does not go is logged and stays, and one
-/// another removal took first is not counted.
-fn remove_where(dir: &Path, pick: impl Fn(u32) -> bool) -> usize {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    let mut removed = 0;
-    for entry in entries.flatten() {
-        if !owner(&entry.file_name()).is_some_and(&pick) || !own_folder(&entry) {
-            continue;
-        }
-        match std::fs::remove_dir_all(entry.path()) {
-            Ok(()) => removed += 1,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::warn!(path = %entry.path().display(), error = %e, "sot-julia temporary folder not removed"),
-        }
-    }
-    removed
-}
-
-/// The pid a child folder's name holds (`sot-julia-<pid>-<random>`), or `None` for any other name. Only a pid in
-/// `1..=i32::MAX` counts, so a signal sent to it is a process's, never a group's or every process's.
-fn owner(name: &std::ffi::OsStr) -> Option<u32> {
-    let (pid, random) = name.to_str()?.strip_prefix(PREFIX)?.split_once('-')?;
-    if random.is_empty() || pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    pid.parse().ok().filter(|pid| (1..=i32::MAX as u32).contains(pid))
-}
-
-/// Whether `entry` is a directory, not a link, that this account owns. On Windows the temporary folder is the
-/// account's own, so a directory is enough.
-fn own_folder(entry: &std::fs::DirEntry) -> bool {
-    // A `DirEntry`'s metadata is the entry's own: a link is not followed.
-    let Ok(meta) = entry.metadata() else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        meta.is_dir() && meta.uid() == crate::paths::current_uid()
-    }
-    #[cfg(not(unix))]
-    meta.is_dir()
-}
-
-/// Whether the process `pid` may be running. One this account may not signal or open counts as running, and so does a
-/// zombie, so a folder goes only when its owner is certainly gone.
-#[cfg(unix)]
-fn running(pid: u32) -> bool {
-    // SAFETY: signal 0 delivers nothing; `owner` passes only pids in 1..=i32::MAX, never 0 or -1 (a group, every process).
-    let probed = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    probed == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-}
-
-#[cfg(windows)]
-fn running(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_TIMEOUT};
-    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
-    // SAFETY: a handle opened, polled with no wait and closed here.
-    unsafe {
-        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
-        if handle.is_null() {
-            return GetLastError() != ERROR_INVALID_PARAMETER;
-        }
-        let running = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
-        CloseHandle(handle);
-        running
-    }
 }
 
 #[cfg(test)]
@@ -249,59 +235,32 @@ mod tests {
         within(Duration::from_secs(30), "the folder is removed after the reap", || !folder.exists()).await;
     }
 
-    /// A child folder's name holds the pid of the process that made it.
+    /// Every child folder is made in this process's held folder of them, `sotd-julia-<random>` in its temporary folder,
+    /// which is made with the first and goes with the last. Run in a process of its own with a temporary folder of its
+    /// own, so no other test's child folder counts.
     #[test]
-    fn a_child_folder_names_its_daemon() {
-        let tmp = ChildTmp::new().expect("temporary folder");
-        let name = tmp.dir.path().file_name().expect("a name").to_owned();
-        assert_eq!(super::owner(&name), Some(std::process::id()), "{name:?}");
-    }
-
-    /// The rule of both removals, as a table over a folder of the test's own: a child folder goes when its name holds a
-    /// pid the caller picks (the end: its own; the start: one not running), with everything in it, and nothing else
-    /// goes: not another pid's folder, not a name with no pid (an older daemon's), a malformed pid or pid 0, not a file
-    /// or a link.
-    #[test]
-    fn a_child_folder_goes_only_when_its_named_owner_is_picked() {
-        let root = tempfile::tempdir().expect("a folder of the test's own");
-        let own = std::process::id();
-        // Above every platform's largest pid, so never running.
-        let gone = i32::MAX as u32;
-        assert!(!super::running(gone), "premise: pid {gone} is not running");
-        assert!(super::running(own), "premise: this process is running");
-        let folder = |name: String| {
-            let inner = root.path().join(&name).join("inner");
-            std::fs::create_dir_all(&inner).expect("setup: a child folder");
-            std::fs::write(inner.join("made"), b"x").expect("setup: a file in it");
-            name
-        };
-        let own_child = folder(format!("sot-julia-{own}-Ab12Cd"));
-        let gone_child = folder(format!("sot-julia-{gone}-Ef34Gh"));
-        let mut kept = vec![
-            folder("sot-julia-Ij56Kl".to_string()),
-            folder(format!("sot-julia-{gone}-")),
-            folder(format!("sot-julia-+{gone}-Mn78Op")),
-            folder("sot-julia-0-Qr90St".to_string()),
-            folder(format!("sot-other-{gone}-Uv12Wx")),
-        ];
-        let file = format!("sot-julia-{gone}-file");
-        std::fs::write(root.path().join(&file), b"x").expect("setup: a file named as a child folder");
-        kept.push(file);
-        #[cfg(unix)]
-        {
-            let link = format!("sot-julia-{gone}-link");
-            std::os::unix::fs::symlink(root.path().join(&kept[0]), root.path().join(&link)).expect("setup: a link");
-            kept.push(link);
+    fn the_held_folder_comes_with_the_first_child_folder_and_goes_with_the_last() {
+        if !crate::sidecars::contract_tests::isolated(
+            "sidecars::child::tmp::tests::the_held_folder_comes_with_the_first_child_folder_and_goes_with_the_last",
+            Duration::from_secs(30),
+        ) {
+            return;
         }
-        let present = |name: &str| root.path().join(name).symlink_metadata().is_ok();
-
-        assert_eq!(super::remove_where(root.path(), |pid| pid == own), 1, "the end removes its own folder alone");
-        assert!(!present(&own_child), "{own_child} is removed");
-        assert_eq!(super::remove_where(root.path(), |pid| !super::running(pid)), 1, "the start removes the gone pid's alone");
-        assert!(!present(&gone_child), "{gone_child} is removed");
-        for name in &kept {
-            assert!(present(name), "{name} stays");
+        let owned = tempfile::tempdir().expect("owned temporary folder");
+        for key in super::TMP_VARS {
+            std::env::set_var(key, owned.path());
         }
-        assert!(root.path().join(&kept[0]).join("inner").join("made").exists(), "a kept folder keeps its files, a link's target included");
+        let first = ChildTmp::new().expect("a child folder");
+        let second = ChildTmp::new().expect("a second child folder");
+        let held = first.dir.path().parent().expect("its folder").to_path_buf();
+        assert_eq!(held.parent(), Some(owned.path()), "{held:?}");
+        let name = held.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        assert!(name.starts_with(super::PREFIX), "{held:?}");
+        assert_eq!(second.dir.path().parent(), Some(held.as_path()), "one held folder for all of this process's child folders");
+        drop(first);
+        assert!(held.is_dir(), "the held folder stays while a child folder is in it");
+        drop(second);
+        let left: Vec<_> = std::fs::read_dir(owned.path()).expect("owned folder").flatten().map(|e| e.file_name()).collect();
+        assert!(left.is_empty(), "the held folder goes with the last child folder: {left:?}");
     }
 }

@@ -12,6 +12,8 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   `fsync_file`, `ensure_container`, `create_dir_protected`).
 - Kernel locks (`lock.rs`: `lock_writer`, `lock_supervisor`, and for a fence handed to a child `lock_supervisor_for_handover`,
   `HandoverLock`).
+- Held folders (`held_dir.rs`: `HeldDir`, `remove_ended`): a folder that lives while the process that made it does,
+  held by its lock (`lock.rs`: `lock_new`, and `lock_held` for a removal's take).
 - The native process-birth primitives (`process_tree/`, its own page): the two-phase launcher.
 - The daemon's single-instance lock (`lock.rs`: `daemon_lock_path`, `try_lock_daemon`, `DaemonLock`), reached by the backend
   as `sot_log::host::daemon_lock_path`, `try_lock_daemon` and `DaemonLock`.
@@ -45,6 +47,18 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   (`publish_noreplace`, `finish_publication`).
 - A lock is kernel-held: a dropped guard unlocks it at once (`WriterLock`'s Drop), the kernel releases it on any death, and no exec'd child holds it; a contended one fails within `RETRY_DEADLINE_MS` as "lock held"
   (`lock_writer`).
+- A held folder stays while its maker lives, wherever the maker runs: `remove_ended` removes a folder only once it can
+  take the folder's lock, which `HeldDir::create` takes under a staging name before it renames the lock file to the
+  name a removal looks for, and which the maker holds until it ends, so another computer sharing the folder, another
+  pid namespace or a pid the OS has reused never makes a live maker's folder go. A folder whose lock is held, missing
+  or cannot be opened, a link, a file and another account's folder stay. Across computers this needs a file system
+  whose locks every client sees (NFS with its lock service, not one mounted `nolock` or with `local_lock`), and only
+  while the maker's client holds its lease: an NFS client cut off from the server past its lease (90 s by default) can
+  lose its lock, and another computer's start can then remove its live folder. A temporary folder on a file system that
+  refuses locks (NFSv3 without its lock service answers ENOLCK) stops `HeldDir::create`, so no Julia child starts and
+  every release check fails with "making the release check's scratch folder". A removal waiting on a live maker's lock
+  never stops the maker removing its folder: on Windows a held folder's lock file is opened sharing deletion, by its
+  maker (`lock_new`) and by a removal (`lock_held`), where a fence's lock file, never removed, is not (`lock_writer`).
 - Kernel file locks are taken only inside three guards: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`, whose `Drop` unlocks, and `HandoverLock` in `lock.rs`, whose drop only closes, so a copy of its descriptor in a child keeps the lock held (a birth's claim on a row's fence). rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
 - A connection or child restarted through `Redial` waits from its caller's floor, doubling to its cap, and starts over
@@ -63,7 +77,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `dir_identity`,
 `rust/log/src/host/pinned_dir.rs`, `resource_dir`, `rust/backend/src/paths.rs`,
 `sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`, `storage_exhaustion`,
-`Redial`, `STABLE`. Uses: none.
+`Redial`, `STABLE`, `HeldDir`, `remove_ended`. Uses: none.
 
 ## Folders
 - `rust/log/src/host/` (here) and `rust/log/src/identity/` (the peer challenge).
@@ -73,7 +87,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   and the glob re-exports of the files below.
 - `durable.rs`: durable publication, fsync, no-clobber rename, container creation.
 - `inherit.rs`: Unix-only `inherit_none`, the pre-exec sweep that leaves a child only its stdio and what its caller hands it; the daemon's and capsule's children and every ssh child (the window's, and the daemon's through `LinkGate::command`) call it.
-- `lock.rs`: the writer fence, the supervisor fence, the supervisor fence taken to be handed to a child, and the daemon's single-instance lock, held by the kernel.
+- `held_dir.rs`: held folders, each live while the process that made it is (`HeldDir`, `remove_ended`).
+- `lock.rs`: the writer fence, the supervisor fence, the supervisor fence taken to be handed to a child, the daemon's single-instance lock and a held folder's lock, held by the kernel.
 - `pinned_dir.rs`: a directory's kernel identity and a handle that pins it.
 - `process_tree/`: the native process-birth primitives (own page).
 - `redial.rs`: `Redial` and `STABLE`, the wait before a long-lived connection or child is started again.

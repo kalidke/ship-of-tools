@@ -249,6 +249,40 @@ async fn channel_close_finishes_streamed_runs() {
     std::fs::remove_dir_all(&root).expect("remove the owned fixture root");
 }
 
+/// A submission whose permit was taken before the close-out's close and pushed after it is answered by the close-out,
+/// not dropped with the receiver.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_submission_pushed_after_the_close_is_answered() {
+    if !isolated("sidecars::repl::restart_tests::a_submission_pushed_after_the_close_is_answered", BODY) {
+        return;
+    }
+    let fx = Fixture::new(false);
+    let stub = fx.root.join("julia");
+    sot_log::test_exec::write_executable(
+        &stub,
+        "#!/bin/sh\nprintf '%s\\n' '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}'\nsleep 1\nexit 0\n".to_owned(),
+    );
+    let resources = fx.root.join("resources");
+    std::fs::create_dir_all(resources.join("julia").join("repl")).expect("create resources");
+    std::env::set_var("SOT_RESOURCE_ROOT", &resources);
+    std::env::set_var("SOT_JULIA_BIN", &stub);
+    let tx = fx.repl.ensure_supervisor().await.expect("start");
+    let permit = tx.reserve().await.expect("a permit before the close");
+    within(Duration::from_secs(30), "the close-out closes the queue", || tx.is_closed()).await;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    permit.send(Submission {
+        op: "repl.interrupt".into(),
+        payload: json!({}),
+        reply: Some(reply_tx),
+        collector: None,
+        owner: None,
+    });
+    let answered = tokio::time::timeout(Duration::from_secs(30), reply_rx).await.expect("an answer in time");
+    assert!(matches!(answered, Ok(Err(_))), "the close-out answers it with the REPL's end: {answered:?}");
+    fx.finish().await;
+}
+
 /// A stand-in `julia` whose first request is answered, two seconds later, by a browser frame.
 #[cfg(unix)]
 const LATE_BROWSER_STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do\n  sleep 2\n  printf '%s\\n' '{\"id\":0,\"kind\":\"evt\",\"op\":\"repl.frame\",\"payload\":{\"eval_id\":7,\"frame\":{\"kind\":\"browser\",\"url\":\"http://127.0.0.1:45611/page\"}}}'\ndone\n";

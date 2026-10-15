@@ -201,7 +201,9 @@ marks it ended before it publishes the run's `done`, the close-out's synthetic `
 runs still running, by the window's numbers (`HelloRes::repl_running`), read after the connection subscribed to the
 frame bus, so the `done` of each run it names is written to that connection (unless bus lag drops it, as it drops any frame; the run then stays open
 until the window's next drop). It names no run the REPL refused,
-no run whose request never reached the daemon, no other window's or session's run, and nothing after a daemon restart:
+no run whose request never reached the daemon, no run the REPL accepts only after that hello (a request waits for a REPL
+start, up to about 15 s: a settle of at most 5 s and a display start of at most 10 s, before its queue takes it; a window
+that redials in that time is not told of the run, and its output comes to a closed entry), no other window's or session's run, and nothing after a daemon restart:
 the REPL children end with the daemon, and its records are in memory. The field is additive: a daemon that predates it
 names none, and a window that predates it ignores it.
 

@@ -18,8 +18,10 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with
 - `contained_job.rs`: lifecycle; a test job killed from outside (a child that kills itself after starting a ready row, run as the main process of a test container) leaves no row: the row lived in the job's own control group, its fence and writer lock are free and the job's control group is empty
 - `child_folders.rs`: sidecars; a REPL child's temporary folder outlives no daemon (Linux, a shell stand-in for Julia,
-  each daemon's `TMPDIR` a folder of the test's own): a stop removes it, and after a SIGKILL of the guard, which leaves
-  it, the next start removes it while a running daemon's stays
+  each daemon's `TMPDIR` a folder of the test's own): a stop and a close remove it, and after a SIGKILL of the guard,
+  which leaves it, the next start removes it while a running daemon's stays, and so does a start in a pid namespace of
+  its own in which the crashed daemon's pid is another process's (where this account can make the namespaces with
+  `unshare -Upf`; skipped, saying so, elsewhere)
 - `comm_file.rs`: messaging; the inbox lock held by the daemon's filer and by the scripts' `sot_inbox_append`. It also executes declared-host join/self-slot agreement, unread activation and destroyed-handle prune in disposable homes.
 - `comm_send.rs`: messaging; the staged `comm-send.sh` against a real `sotd`: `filed` only for a live handle, nothing appended for a gone one, and an idle row's daemon keeps it live, so a send is filed while that daemon is down
 - `comm_wake.rs`: messaging; the comm wake tick on a real capsule row whose agent is a stub `claude`
@@ -67,9 +69,9 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `lane_bridge/`: rows and topology; a frontend attach client reaching a capsule row through a daemon and a test-owned relay, plus explicitly spawned SSH stand-ins
 - `switch_latency/`: server; a slow request does not block a later cheap reply on one connection, and a ping is answered while a long op (`quarto.open`) is held; its `dead_kernel` module is sidecars
 - `window_lease/`: lifecycle; the close lifecycle's daemon half, one daemon per state root
-- `support_checks.rs`: rows; the shared support's own answers: a host check whose tool cannot answer fails with the tool's account (Linux)
+- `support_checks.rs`: rows; the shared support's own answers: a host check whose tool cannot answer fails with the tool's account, and the command a daemon is given names the runner's Julia binary (Linux)
 - `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs`
-  (`sotd_command` and `sotd_command_at`; `end_daemon`, a serving daemon's end; for a daemon a suite starts by label,
+  (`sotd_command` and `sotd_command_at`, which set `SOT_JULIA_BIN` to `julia_binary`; `end_daemon`, a serving daemon's end; for a daemon a suite starts by label,
   `own_label`, `label_endpoint`, `sotd_daemon_at` and `sotd_client_of`; also loaded alone by suites that need nothing
   else), `registry.rs` (`write_registry`), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the
   process count)
@@ -93,7 +95,9 @@ shows the shape.
   (capsule_workspaces, comm_send, comm_wake, daemon_boot, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
 - Every `sotd` a suite starts comes from `support/sotd.rs`: `sotd_command()`, or `sotd_command_at(program)` for a copy
   or link of the built binary. Both drop every inherited `SOT_` variable, which `daemon_boot.rs` shows on Linux (a
-  started daemon holds only the `SOT_` variables its test set); `sotd_exe`, the built binary's path, is private there.
+  started daemon holds only the `SOT_` variables its test set, and `SOT_JULIA_BIN` set to `julia_binary` when one is
+  found, so a juliaup launcher on the PATH never runs under a daemon's made HOME; a suite's own `SOT_JULIA_BIN`, set
+  later, wins); `sotd_exe`, the built binary's path, is private there.
 - A suite writes a comm registry only through `support::write_registry`, which takes the registry lock as the daemon and the comm scripts do (`daemon_boot.rs` scans this folder for any other write).
 - On Linux the `sotd` a suite launches is the daemon's lifetime guard and the daemon is its child. A suite whose daemon may
   start a REPL or Pluto ends it with `support::end_daemon`, as `Env` (`kill_daemon_bounded` and its `Drop`),

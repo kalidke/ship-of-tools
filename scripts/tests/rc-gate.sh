@@ -108,7 +108,8 @@ job_lifetime() {
   r=$?
   if [ "$r" -eq 0 ]; then
     (cd "$pkg" && "${LTO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" SOT_JULIA_BIN="$RCG_JULIA_DIR/julia" \
-      SOT_L2_PLUTO_MANIFEST="$D/julia/pluto/Manifest.toml" "$RCG_LIFETIME" --include-ignored --test-threads=1) \
+      SOT_L2_PLUTO_MANIFEST="$D/julia/pluto/Manifest.toml" SOT_LIFETIME_KEEP_DIR="$L/lifetime-keep" \
+      "$RCG_LIFETIME" --include-ignored --test-threads=1) \
       >> "$log" 2>> "$L/rust/daemon_lifetime-faults.stderr"
     r=$?
   fi
