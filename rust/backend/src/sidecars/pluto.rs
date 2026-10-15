@@ -830,32 +830,37 @@ exit(0)
     }
 
     /// Pluto's server has a display of its own (Linux), which its notebook workers inherit with the rest of its
-    /// environment, and which ends with the server: the child's own exit here.
+    /// environment, and which ends with the server: the child's own exit here, as a crash would end it. A worker the
+    /// server started in a session of its own (as Distributed starts each notebook's) ends with that display.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn pluto_has_its_own_display_which_ends_with_it() {
-        use crate::sidecars::contract_tests::{x11_answer, x11_cookie};
+        use crate::sidecars::contract_tests::{holding_display, x11_answer, x11_cookie};
         if !isolated("sidecars::pluto::port_parse_tests::pluto_has_its_own_display_which_ends_with_it", BODY) {
             return;
         }
         executable("Xvfb");
-        let record = r#"write(joinpath(dir, "display.tmp"), get(ENV, "DISPLAY", "-"), "\n", get(ENV, "XAUTHORITY", "-")); mv(joinpath(dir, "display.tmp"), joinpath(dir, "display"))"#;
+        let record = r#"run(pipeline(detach(`sleep 300`), stdin=devnull, stdout=devnull, stderr=devnull); wait=false); write(joinpath(dir, "display.tmp"), get(ENV, "DISPLAY", "-"), "\n", get(ENV, "XAUTHORITY", "-")); mv(joinpath(dir, "display.tmp"), joinpath(dir, "display"))"#;
         let h = Harness::start(READY_LOCAL, record).await;
         within(REACT, "the server records its display", || h.dir.join("display").exists()).await;
         let named = std::fs::read_to_string(h.dir.join("display")).unwrap();
-        let (display, cookie) = named.split_once('\n').expect("two lines");
+        let (display, path) = named.split_once('\n').expect("two lines");
         let number: u32 = display.strip_prefix(':').and_then(|n| n.parse().ok()).unwrap_or_else(|| {
             panic!("the server names a display of its own: {named:?}")
         });
-        let cookie = x11_cookie(Path::new(cookie));
+        let cookie = x11_cookie(Path::new(path));
         assert_eq!(x11_answer(number, Some(&cookie)), Some(1), "the server's cookie opens its display");
+        let held = || holding_display(Path::new(path));
+        within(REACT, "setup: the server and its worker hold the display", || held().len() == 2).await;
         h.open_gate();
         within(REACT, "the server's display ends with it", || x11_answer(number, Some(&cookie)) != Some(1)).await;
+        within(REACT, "the server's worker ends with its display", || held().is_empty()).await;
         h.finish().await;
     }
 
     /// A stand-in for Pluto's julia that names its display in the file `named` (before READY, when `ready`), starts a
-    /// descendant in its group when `descendant`, and reads no request; with the Signal it is started under.
+    /// descendant in its group and a worker in a session of its own (as Distributed starts a notebook's) when
+    /// `descendant`, and reads no request; with the Signal it is started under.
     #[cfg(target_os = "linux")]
     fn display_stand_in(dir: &Path, named: &Path, ready: bool, descendant: bool) -> (String, PathBuf, &'static Signal) {
         let stub = dir.join("stub-julia");
@@ -863,7 +868,7 @@ exit(0)
             &stub,
             format!(
                 "#!/bin/sh\n{child}printf '%s' \"$XAUTHORITY\" > '{named}.tmp'\nmv '{named}.tmp' '{named}'\n{ready}exec sleep 300\n",
-                child = if descendant { "sleep 300 &\n" } else { "" },
+                child = if descendant { "sleep 300 &\nsetsid sleep 300 &\n" } else { "" },
                 named = named.display(),
                 ready = if ready { "echo 'READY http://pluto.invalid/'\n" } else { "" },
             ),
@@ -873,19 +878,23 @@ exit(0)
         (stub.to_string_lossy().into_owned(), script, Box::leak(Box::new(Signal::new())))
     }
 
-    /// A Pluto server whose display ends under it ends with what it started in its group, so nothing of it can open
-    /// that display's name once another account binds it, and an open in flight says why.
+    /// A Pluto server whose display ends under it ends with what it started, in its group or in a session of its own,
+    /// so nothing of it can open that display's name once another account binds it, and an open in flight says why.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_pluto_whose_display_ends_ends_with_it() {
         use crate::sidecars::contract_tests::{holding_display, x11_server};
         executable("Xvfb");
+        executable("setsid");
         let dir = tempfile::tempdir().unwrap();
         let named = dir.path().join("named");
         let (bin, script, sig) = display_stand_in(dir.path(), &named, true, true);
         let running = spawn_supervisor(&bin, dir.path(), &script, sig).await.expect("the stand-in says READY");
         let cookie = PathBuf::from(std::fs::read_to_string(&named).expect("the stand-in names its display"));
-        within(REACT, "setup: the server and its sleep hold the display", || holding_display(&cookie).len() == 2).await;
+        within(REACT, "setup: the server, its sleep and its worker hold the display", || {
+            holding_display(&cookie).len() == 3
+        })
+        .await;
         let (reply, open) = oneshot::channel();
         running.submit.send(Submission { abs_path: "/nowhere.jl".into(), reply }).await.expect("the supervisor admits an open");
         // SAFETY: a signal to the X server started for this test's stand-in.

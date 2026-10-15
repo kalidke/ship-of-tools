@@ -1,6 +1,7 @@
 //! Real Julia, owned resource and depot roots: a bare workspace is the active project, a package operation writes the
 //! workspace and never the installed shim, the child's real arguments and environment follow the selected project
-//! on every spawn route, and (Linux) the child's own display ends with it on every route, and it with its display.
+//! on every spawn route, and (Linux) the child's own display ends with it on every route, and it with its display,
+//! together with every process that holds the display, a detached one included.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -428,7 +429,8 @@ async fn display_ended(number: u32, cookie: &[u8], what: &str) {
 }
 
 /// A REPL child has a display of its own (Linux), which only its cookie opens, and the display ends with the child
-/// however the child ends: a restart (`--fresh` is one), the child's own death, its row's end and the daemon's stop.
+/// however the child ends: a restart (`--fresh` is one), the child's own death, its row's end and the daemon's stop. A
+/// process the child started detached, which holds the display, ends with it.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_repl_child_has_its_own_display_which_ends_with_it() {
@@ -441,8 +443,18 @@ async fn a_repl_child_has_its_own_display_which_ends_with_it() {
     executable("Xvfb");
     let fixture = Fixture::new();
     let (first, first_cookie) = display_of(&fixture.repl, 1).await;
+    let detached = r#"run(pipeline(detach(`sleep 300`), stdin=devnull, stdout=devnull, stderr=devnull); wait=false); print(ENV["XAUTHORITY"])"#;
+    let held = PathBuf::from(stdout_of(&eval(&fixture.repl, 6, detached).await));
+    within(Duration::from_secs(30), "setup: the REPL and its detached sleep hold the display", || {
+        holding_display(&held).len() == 2
+    })
+    .await;
     fixture.repl.restart_with_project(&fixture.workspace).await.expect("restart");
     display_ended(first, &first_cookie, "a restart's display ends").await;
+    within(Duration::from_secs(30), "a restart ends what holds the old display", || {
+        holding_display(&held).is_empty()
+    })
+    .await;
 
     let (second, second_cookie) = display_of(&fixture.repl, 2).await;
     assert_ne!(first_cookie, second_cookie, "a restarted child has a display of its own");
@@ -477,9 +489,9 @@ async fn a_repl_child_has_its_own_display_which_ends_with_it() {
     display_ended(fourth, &fourth_cookie, "the daemon's stop ends the display").await;
 }
 
-/// A REPL whose display ends under it, one that never opened it, ends with everything it started, so nothing of it can
-/// open that display's name once another account binds it; its next eval starts a new REPL with a new display and
-/// first says why the old one ended, once.
+/// A REPL whose display ends under it, one that never opened it, ends with everything it started, in its process group
+/// or detached, so nothing of it can open that display's name once another account binds it; its next eval starts a
+/// new REPL with a new display and first says why the old one ended, once.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_repl_whose_display_ends_ends_with_it() {
@@ -488,20 +500,23 @@ async fn a_repl_whose_display_ends_ends_with_it() {
     }
     executable("Xvfb");
     let fixture = Fixture::new();
-    // A process the REPL started holds the display too.
-    let code = r#"run(pipeline(`sleep 300`, stdin=devnull, stdout=devnull, stderr=devnull); wait=false); print(ENV["DISPLAY"], " ", ENV["XAUTHORITY"])"#;
+    // Processes the REPL started hold the display too: one in its process group, one detached (a session of its own).
+    let code = r#"for c in (`sleep 300`, detach(`sleep 300`)) run(pipeline(c, stdin=devnull, stdout=devnull, stderr=devnull); wait=false) end; print(ENV["DISPLAY"], " ", ENV["XAUTHORITY"])"#;
     let named = stdout_of(&eval(&fixture.repl, 1, code).await);
     let (display, cookie) = named.split_once(' ').expect("the REPL names its display");
     let cookie = PathBuf::from(cookie);
-    within(Duration::from_secs(30), "setup: the REPL and its sleep hold the display", || {
-        holding_display(&cookie).len() == 2
+    within(Duration::from_secs(30), "setup: the REPL and its two sleeps hold the display", || {
+        holding_display(&cookie).len() == 3
     })
     .await;
     // SAFETY: a signal to the X server started for this test's REPL.
     assert_eq!(unsafe { libc::kill(x11_server(&cookie) as libc::pid_t, libc::SIGKILL) }, 0, "kill the display's server");
     let held = format!("nothing of the REPL keeps DISPLAY={display} once its server is gone");
     within(Duration::from_secs(30), &held, || holding_display(&cookie).is_empty()).await;
-    assert_eq!(fixture.repl.state(), lifecycle::ReplLifecycle::Dead, "the REPL is ended");
+    within(Duration::from_secs(30), "the REPL is ended", || {
+        fixture.repl.state() == lifecycle::ReplLifecycle::Dead
+    })
+    .await;
 
     let frames = eval(&fixture.repl, 2, r#"print(ENV["XAUTHORITY"])"#).await;
     assert_eq!(frames[0]["kind"], "stderr", "the new REPL first says why the old one ended: {frames:?}");

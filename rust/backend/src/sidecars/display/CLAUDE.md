@@ -7,7 +7,8 @@ rust/backend/src/sidecars/CLAUDE.md.
 
 ## Files
 - `mod.rs`: `Display` (`start`, `apply`, `ended`, `end`), the server's arguments and the cookie file, with the tests of
-  a start, its failures, its cookie, its end under its owner and its end.
+  a start, its failures, its cookie, its end under its owner, its end, and the end of every process that holds its
+  cookie.
 
 ## Start here
 `Display::start`.

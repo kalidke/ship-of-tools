@@ -156,12 +156,21 @@ fn write_cookie(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::{start_with, Display};
     use crate::lifecycle::child_signal::Signal;
-    use crate::sidecars::contract_tests::{executable, within, x11_answer, x11_cookie, x11_server};
+    use crate::sidecars::contract_tests::{executable, holding_display, within, x11_answer, x11_cookie, x11_server};
     use std::ffi::OsStr;
+    use std::path::PathBuf;
     use std::time::Duration;
 
     fn private_signal() -> &'static Signal {
         Box::leak(Box::new(Signal::new()))
+    }
+
+    /// A process that holds `cookie` as its `XAUTHORITY`, contained under `sig` in a process group of its own, outside
+    /// the display's, as Pluto's notebook worker and a detached process run outside their child's.
+    fn holder(sig: &'static Signal, cookie: &OsStr) -> crate::lifecycle::child_signal::Contained {
+        let mut cmd = tokio::process::Command::new(executable("sleep"));
+        cmd.arg("300").env("XAUTHORITY", cookie);
+        sig.spawn(&mut cmd).expect("start a process that holds a cookie")
     }
 
     /// A started display answers its own cookie, refuses a client with none or another, and once ended answers
@@ -204,8 +213,8 @@ mod tests {
         drop(display);
     }
 
-    /// A server that exits under its owner is seen to end (`ended`), and its end still reaps it; a missing display
-    /// never ends.
+    /// A server that exits under its owner is seen to end (`ended`), having ended at once what holds its cookie, and
+    /// its end still reaps it; a missing display never ends.
     #[tokio::test]
     async fn a_display_whose_server_exits_is_seen_to_end() {
         executable("Xvfb");
@@ -216,6 +225,12 @@ mod tests {
             panic!("the display must start where Xvfb is installed")
         };
         let server = x11_server(cookie);
+        let path = cookie.to_path_buf();
+        let _holds = holder(private_signal(), path.as_os_str());
+        within(Duration::from_secs(10), "setup: a process holds the display", || {
+            holding_display(&path).len() == 1
+        })
+        .await;
         let mut missing = Display::Missing("Xvfb is not installed: none on the daemon's PATH".into());
         assert!(
             tokio::time::timeout(Duration::from_millis(300), display.ended()).await.is_err(),
@@ -226,6 +241,10 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(10), display.ended())
             .await
             .expect("a killed server is seen to end");
+        within(Duration::from_secs(10), "its server's end ends what holds its cookie", || {
+            holding_display(&path).is_empty()
+        })
+        .await;
         assert_eq!(sig.live(), 1, "seen, not reaped: the owner's end reaps it");
         display.end().await;
         assert_eq!(sig.live(), 0, "the end reaps the server");
@@ -233,6 +252,40 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(300), missing.ended()).await.is_err(),
             "a missing display never ends"
         );
+    }
+
+    /// A display's end, and its drop, end every process that holds its cookie, in no process group of the display's,
+    /// and no other: not one whose cookie path only begins with this one's.
+    #[tokio::test]
+    async fn a_display_ends_every_process_that_holds_its_cookie() {
+        executable("Xvfb");
+        let sig = private_signal();
+        let theirs = private_signal();
+        let folder = tempfile::tempdir().expect("an owned folder");
+        for route in ["end", "drop"] {
+            // Each start writes a new cookie, so each gets a folder of its own.
+            let own = folder.path().join(route);
+            std::fs::create_dir(&own).expect("a start's own folder");
+            let display = Display::start(&own, sig).await;
+            let Display::Up { ref cookie, .. } = display else {
+                panic!("the display must start where Xvfb is installed")
+            };
+            let cookie = cookie.to_path_buf();
+            let other = PathBuf::from(format!("{}-other", cookie.display()));
+            let (_holds, _other) = (holder(theirs, cookie.as_os_str()), holder(theirs, other.as_os_str()));
+            within(Duration::from_secs(10), "setup: a process holds the display", || {
+                holding_display(&cookie).len() == 1
+            })
+            .await;
+            if route == "end" {
+                display.end().await;
+            } else {
+                drop(display);
+            }
+            let what = format!("the display's {route} ends what holds its cookie");
+            within(Duration::from_secs(10), &what, || holding_display(&cookie).is_empty()).await;
+            assert_eq!(holding_display(&other).len(), 1, "a process that holds another cookie is not ended");
+        }
     }
 
     /// A child with no display is told why (the REPL shim says it at its first eval), and nothing it inherited is
