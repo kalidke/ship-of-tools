@@ -230,6 +230,13 @@ fi
 # errors that derail diagnosis — 2026-06-11 fresh-join report). Append-touch
 # so an existing inbox is never truncated.
 : >> "$INBOX_DIR/$NAME.jsonl"
+# The floor of the turn this join runs in: its `prompt` came before this row
+# (it found none, or set a floor that the row written above replaced), and the
+# turn mark it left is what `join` starts the floor from (comm-status.sh's
+# header). A session whose hooks are off or missing, or a join no turn runs
+# (ccx before codex starts, a probe row), has no mark of its own, and nothing
+# starts.
+"$SCRIPT_DIR/comm-status.sh" join >/dev/null 2>&1 || true
 
 # ADR 0046 decision 1: declare this handle to the daemon that pinned this
 # session's env, through the EXISTING `sot_daemon_endpoint` resolution

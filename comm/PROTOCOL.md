@@ -28,7 +28,8 @@ all clients are mutually addressable through the same registry and inboxes.
   read/<name>.cursor       # per-recipient read cursor (`<count> <crc>-<len>`: lines shown, and a hash of the last)
   self/<host>__<pane>.txt  # unpinned declared-host slot; complete native leaf validated before mutation, explicit pins retained
   state/                   # per-session scratch; the end-of-turn check keeps mail-<key>.tick,
-                           # lock-fault-<handle>.<key>.tick and stop-feedback-<key>.jsonl here.
+                           # lock-fault-<handle>.<key>.tick and stop-feedback-<key>.jsonl here,
+                           # and comm-status.sh keeps turn-<self slot> while a turn runs.
                            # Nothing removes a mail tick, so every session ever held on mail
                            # leaves one. Bounded per-session litter, and nothing sweeps it.
   probe/<handle>/          # a probe row's project root (comm-probe.sh)

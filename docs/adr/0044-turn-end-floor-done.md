@@ -200,7 +200,16 @@ needs no knowledge of the priorities because `done` is the lowest tier.
 - Hook events: `prompt` (`COMM_STATUS_ORIGIN=user|machine`, default
   machine): sets `floor` to the origin; a *user* prompt also clears
   `question` and `done` (typing into the session answers and reads it); a
-  machine prompt clears nothing. `stop` (the Stop hook, sent at EVERY turn
+  machine prompt clears nothing. *Amended (2026-10-14):* the joining turn's
+  `prompt` found no row or set a floor that the join's new row replaced, so
+  that turn read idle until it ended. `prompt` and `stop` now also write and
+  remove the session's turn mark (`state/turn-<self slot>`), row or no row,
+  and `comm-join.sh` sends a third event, `join`, which sets `floor` to
+  machine only from a mark its own session wrote under five minutes before.
+  A session whose hooks are off or missing leaves no mark, so its join sets
+  no floor that no Stop would end, and a turn that ended before a join is
+  never floored by it.
+  `stop` (the Stop hook, sent at EVERY turn
   end, after any marker stamp): sets `done` when `floor` was `user` and
   neither `question` nor `waiting` is set, then clears `floor`. The
   PostToolUse heartbeat writes no fact: it refreshes `status_at` when

@@ -6,17 +6,40 @@
 # Usage:
 #   comm-status.sh <verb> ["text"]
 #
-# Two verbs are EVENTS — sent by hooks, never by the model:
+# Three verbs are EVENTS — sent by hooks and the join, never by the model:
 #   prompt   a turn is starting. COMM_STATUS_ORIGIN=user|machine (default
 #            machine) names who started it: sets `floor` to the origin; a
 #            USER prompt also clears `question` and `done` (typing into the
 #            session answers it and reads it); a machine prompt clears
-#            nothing.
+#            nothing. Row or no row, it writes the turn mark (below).
 #   stop     a turn just ended (sent by the Stop that lets the turn end, after
 #            any marker stamp below has already run; a Stop that blocks sends
 #            none): sets `done` when `floor` was `user` and neither `question`
 #            nor `waiting` is set, then clears `floor` and the Stop hook's
-#            `stop_at` mark.
+#            `stop_at` mark. Row or no row, it removes the turn mark.
+#   join     the session has just written its row (comm-join.sh sends it):
+#            with a turn mark of its own session under five minutes old, sets
+#            `floor` to machine as a machine `prompt` does; else writes nothing.
+#
+# The turn mark, $COMM_HOME/state/turn-<the self slot's path>, holds the time
+# of the session's last `prompt` (epoch seconds) and its session
+# ($CLAUDE_CODE_SESSION_ID, empty under Codex) until its `stop`. The turn that
+# joins starts before its row: its `prompt` found no row (a first start) or
+# set a floor that the join's new row replaced (a resume, a provisional row).
+# So the join starts that turn's floor from the mark, and the turn's Stop ends
+# it. A session whose hooks are off or missing sends no `prompt`, so it has no
+# mark and its join starts nothing: no floor without a Stop to end it. The
+# self slot keys the mark: it is the one name a session has before its handle,
+# and the place its join writes that handle (the daemon pins one per row). The
+# no-pane slot, shared by every shell outside a row on the box, gets no mark.
+# A turn that ends through its Stop takes its mark with it. One that ends with
+# no Stop (an interrupt, a failed request, a killed process) leaves it: the
+# session in it keeps a join from no session (ccx before codex starts, a probe
+# row) or from another session from taking it, and five minutes bounds it for
+# its own; the joins it serves (the launcher's /sot-session-start, a resume,
+# the bootstrap nudge) come in a turn's first minute. The floor is machine
+# whatever the turn's origin: a turn that joins ends gray, as it did with no
+# floor, never blue.
 #
 # Five verbs are DECLARATIONS — the model's own word (the Stop hook's marker
 # stamp and the two yield hooks send these too, on the model's behalf):
@@ -61,9 +84,9 @@
 #
 # Self-gating: a session with no registry row (not a joined comm agent — e.g.
 # a plain human session where a global hook also fires) is a silent no-op for
-# an EVENT (rc 0); a DECLARATION with nowhere to land fails loudly — the
-# model meant it, and a stamp run from the wrong cwd resolved no identity and
-# vanished with rc 0 once (field report, 2026-09-18).
+# an EVENT (rc 0), the turn mark aside; a DECLARATION with nowhere to land
+# fails loudly — the model meant it, and a stamp run from the wrong cwd
+# resolved no identity and vanished with rc 0 once (field report, 2026-09-18).
 # Merges into the existing row; never clobbers host/workspace_id/repo/expertise/
 # status/joined.
 set -euo pipefail
@@ -73,19 +96,38 @@ source "$SCRIPT_DIR/comm-lib.sh"
 
 VERB="${1:-}"
 case "$VERB" in
-    prompt|stop|working|idle|blocked|done|waiting) ;;
-    "") echo "usage: comm-status.sh <prompt|stop|working|idle|blocked|done|waiting> [\"text\"]" >&2; exit 2 ;;
-    *)  echo "comm-status.sh: invalid verb '$VERB' (want prompt|stop|working|idle|blocked|done|waiting)" >&2; exit 2 ;;
+    prompt|stop|join|working|idle|blocked|done|waiting) ;;
+    "") echo "usage: comm-status.sh <prompt|stop|join|working|idle|blocked|done|waiting> [\"text\"]" >&2; exit 2 ;;
+    *)  echo "comm-status.sh: invalid verb '$VERB' (want prompt|stop|join|working|idle|blocked|done|waiting)" >&2; exit 2 ;;
 esac
 
 # A second agent inside the session never stamps the row: an event is a silent
 # no-op, a declaration a loud failure. The gate comes before the context call, so
 # a refused child touches nothing.
 if ! _why="$(sot_require_agent)"; then
-    case "$VERB" in prompt|stop) exit 0 ;; esac
+    case "$VERB" in prompt|stop|join) exit 0 ;; esac
     echo "comm-status.sh: $_why" >&2; exit 1
 fi
 eval "$("$SCRIPT_DIR/comm-context.sh")"
+
+# The turn mark (header), kept before the row check: the turn that joins has no
+# row when it starts. `join` ends here or goes on as a machine `prompt`.
+TURN_MARK=""
+case "${SELF_FILE:-}" in
+    ""|*__nopane.txt) ;;
+    *) TURN_MARK="$COMM_HOME/state/turn-$(printf '%s' "$SELF_FILE" | tr -c 'A-Za-z0-9._-' '_')" ;;
+esac
+case "$VERB" in
+    prompt) [ -z "$TURN_MARK" ] || { mkdir -p "$COMM_HOME/state" \
+                && printf '%s %s\n' "$(date +%s)" "${CLAUDE_CODE_SESSION_ID:-}" > "$TURN_MARK"; } 2>/dev/null || true ;;
+    stop)   [ -z "$TURN_MARK" ] || rm -f "$TURN_MARK" 2>/dev/null || true ;;
+    join)
+        { read -r MARK_AT MARK_SESSION < "$TURN_MARK"; } 2>/dev/null || exit 0
+        case "$MARK_AT" in ''|*[!0-9]*) exit 0 ;; esac
+        [ "$(( $(date +%s) - MARK_AT ))" -le 300 ] || { rm -f "$TURN_MARK" 2>/dev/null; exit 0; }
+        [ "$MARK_SESSION" = "${CLAUDE_CODE_SESSION_ID:-}" ] || exit 0
+        VERB=prompt COMM_STATUS_ORIGIN=machine ;;
+esac
 
 # Self-gate: only a joined comm agent (a session with a self row) reports.
 # NAME comes from comm-context (the pane-keyed self file); empty / no row →
