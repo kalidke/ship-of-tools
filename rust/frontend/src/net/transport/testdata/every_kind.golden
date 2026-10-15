@@ -42,7 +42,7 @@
 > {"v":3,"id":43,"kind":"req","op":"monitor.history","payload":{"host":"mh.host","points":119,"until":3.5,"window_s":2.5}}
 > {"v":3,"id":44,"kind":"req","op":"tree.root","payload":{"mode":"files","workspace_id":"rt.ws"}}
 > {"v":3,"id":45,"kind":"req","op":"tree.children","payload":{"node_id":"rc.parent","workspace_id":"rc.ws"}}
-< golden Connected { session_id: "sess-1", revision: 0, host: None, project_root: None, proxy: false, resolved: Local, backend_version: "" }
+< golden Connected { session_id: "sess-1", revision: 0, host: None, project_root: None, proxy: false, resolved: Local, backend_version: "", repl_running: [] }
 < golden TreeChildrenFailed { workspace_id: Some("tc.ws"), parent_id: "tc.parent", error: "err-tree.children" }
 < golden Event { op: "nav.toggle_hidden", payload: Object {"code": String("code-nav.toggle_hidden"), "error": String("err-nav.toggle_hidden")} }
 < golden Event { op: "workspace.activate", payload: Object {"code": String("code-workspace.activate"), "error": String("err-workspace.activate")} }

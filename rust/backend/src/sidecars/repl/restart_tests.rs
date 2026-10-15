@@ -148,7 +148,7 @@ async fn restart_reaps_before_replacement() {
     let marker = fx.root.join("spinning");
     let spin = format!("write({}, \"x\"); while true end", raw(&marker.to_string_lossy()));
     fx.repl
-        .submit("repl.eval", json!({ "code": spin, "eval_id": 2 }))
+        .submit("repl.eval", json!({ "code": spin, "eval_id": 2 }), &Default::default())
         .await
         .expect("submit the spin");
     within(START, "the spin starts", || marker.exists()).await;
@@ -210,6 +210,7 @@ async fn channel_close_finishes_streamed_runs() {
         .submit(
             "repl.eval",
             json!({ "code": "println(\"waiting\"); flush(stdout); sleep(120)", "eval_id": 5 }),
+            &Default::default(),
         )
         .await
         .expect("submit");
@@ -269,7 +270,7 @@ async fn retired_generation_cannot_grant() {
 
     let held = fx.repl.ensure_supervisor().await.expect("start");
     fx.repl
-        .submit("repl.eval", json!({ "code": "x", "eval_id": 7 }))
+        .submit("repl.eval", json!({ "code": "x", "eval_id": 7 }), &Default::default())
         .await
         .expect("submit");
     fx.repl

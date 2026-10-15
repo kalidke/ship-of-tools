@@ -201,7 +201,9 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Abandon,
 {
-    let reply = handle_hello(hello_id, hello.into_hello(), session, files_mode, label.as_deref(), clients).await?;
+    // A handoff connection is no window's: it names no REPL run.
+    let hello = hello.into_hello();
+    let reply = handle_hello(hello_id, hello, session, files_mode, label.as_deref(), clients, Vec::new()).await?;
     if let Some((frame, blob)) = reply.into_iter().next() {
         write_reply(&mut tx, frame, blob).await?;
     }
@@ -405,7 +407,11 @@ where
         hello_host,
         repl_numbers: client_guard.as_ref().map(crate::clients::ClientGuard::numbers).unwrap_or_default(),
     };
-    let hello_reply = handle_hello(hello_id, hello.into_hello(), &session, &files_mode, label.as_deref(), &clients).await;
+    // The window's REPL runs still running, read now that this connection is subscribed to the frame bus above: the
+    // `done` of each run named is published after this, so this connection is written it.
+    let running = shared.repl_numbers.running(&repl_frame_rx);
+    let hello = hello.into_hello();
+    let hello_reply = handle_hello(hello_id, hello, &session, &files_mode, label.as_deref(), &clients, running).await;
     for (frame, blob) in finish_dispatch(op::HELLO, hello_id, std::time::Instant::now(), hello_reply) {
         write_reply(tx, frame, blob).await?;
     }

@@ -3946,6 +3946,7 @@ version = "0.6.6-rc9.12"
 dependencies = [
  "anyhow",
  "interprocess",
+ "libc",
  "serde",
  "serde_json",
  "sot-log",

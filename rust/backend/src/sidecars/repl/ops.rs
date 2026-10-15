@@ -68,7 +68,7 @@ pub async fn handle_repl_eval(
     // completion off the terminal `done` frame, not this ack. Returning here
     // (instead of awaiting the eval) keeps the connection loop free to read a
     // mid-eval `repl.interrupt`.
-    if let Err(e) = repl.submit(op::REPL_EVAL, forwarded).await {
+    if let Err(e) = repl.submit(op::REPL_EVAL, forwarded, numbers).await {
         let error = format!("{e:#}");
         numbers.refused(number);
         super::execute::close_exec_run(&frame_tx, &frame_ws, number, 0, Some(&error));
@@ -226,7 +226,7 @@ pub async fn handle_repl_run_file(
 
     // Fire-and-forget: queue the run and ack immediately. Frames stream as
     // `repl.frame` evts; the frontend keys completion off the `done` frame.
-    if let Err(e) = repl.submit(op::REPL_RUN_FILE, forwarded_payload).await {
+    if let Err(e) = repl.submit(op::REPL_RUN_FILE, forwarded_payload, numbers).await {
         let error = format!("{e:#}");
         numbers.refused(number);
         super::execute::close_exec_run(&frame_tx, &frame_ws, number, 0, Some(&error));
@@ -763,6 +763,23 @@ done
         let out = handle_repl_run_file(2, fresh(&r), &r.session, &r.workspaces, &Default::default()).await.expect("handler");
         assert_eq!(out[0].0.payload["accepted"], true, "{}", out[0].0.payload);
         assert!(!crate::sidecars::warned(&log.text(), "repl-restart-red"), "a restart logged the old child's tail at warn: {}", log.text());
+    }
+
+    /// A window's run is named running (`CallerNumbers::running`, what its hello reply names) from the supervisor's
+    /// write of it to the child until the run ends, here by the child's death: the close-out marks each run ended
+    /// before it publishes the run's `done`, so once every window has its `done`, no hello names it.
+    #[tokio::test]
+    async fn a_windows_run_is_named_running_from_its_write_until_its_end() {
+        let mut r = row(DIES);
+        let window = CallerNumbers::default();
+        let first = json!({ "workspace_id": r.id, "eval_id": 7, "code": "1" });
+        handle_repl_eval(1, first, &r.session, &r.workspaces, &window).await.expect("setup: the eval starts the child");
+        within(Duration::from_secs(30), "the child has read the window's eval", || window.running(&r.bus) == [7]).await;
+        let second = json!({ "workspace_id": r.id, "eval_id": 8, "code": "2" });
+        handle_repl_eval(2, second, &r.session, &r.workspaces, &window).await.expect("handler");
+        let (seen, _) = until_closed(&mut r.bus, 2).await;
+        println!("repl-running: after the death every window got {seen:?}; a hello names {:?}", window.running(&r.bus));
+        assert!(window.running(&r.bus).is_empty(), "a run whose done is out is named no more: {:?}", window.running(&r.bus));
     }
 
     #[tokio::test]

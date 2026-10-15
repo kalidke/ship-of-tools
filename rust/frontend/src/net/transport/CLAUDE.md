@@ -8,14 +8,15 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
 - `request.rs`: OutgoingReq, ResultAttemptId and ResultTreeRequest; send_request encodes one request for the steady writer using the existing op-family serializers, ordinary or locally tagged result-tree.
 - `mod.rs`: transport declarations and per-host connect, hello, reconnect and stderr drain (`spawn`, `connect_and_run`, `run_protocol`, `run_session`, `spawn_stderr_drain`). It re-exports the local result-tree vocabulary and provides a cfg(test) ResultTreeTestDriver that delegates injected writes and replies to the real sender, PendingGuard and response dispatcher.
   The test-window-progress target also enters the existing steady_loop through run_native_progress_transport, a cfg(test), crate-visible wrapper with injected I/O, event/request channels and any `Redraw` (the window's `MainWake`, or the mutation leg's off-main `Window` call); its bookkeeping remains private to transport.
-- `reply.rs`: PendingKind, PendingGuard and handle_response_frame; the opt-in native progress fixture observes the actual successful fan-in send through a test-only scoped observer, installed through the gated observe_native_fan_in registration re-export in mod.rs. Result-tree pending entries retain the issuing attempt and request step; matching replies and connection-loss failures emit that tag once. Inline tests execute the sender, pending dispatcher and decoder with reordered responses. `PendingGuard`'s `Drop` ends every wait its connection leaves: a figure, a result tree, a math render, a token overlay and a running eval.
+- `reply.rs`: PendingKind, PendingGuard and handle_response_frame; the opt-in native progress fixture observes the actual successful fan-in send through a test-only scoped observer, installed through the gated observe_native_fan_in registration re-export in mod.rs. Result-tree pending entries retain the issuing attempt and request step; matching replies and connection-loss failures emit that tag once. Inline tests execute the sender, pending dispatcher and decoder with reordered responses. `PendingGuard`'s `Drop` ends every wait its connection leaves: a figure, a result tree, a math render, a token overlay and a running eval, its ack come or not.
 - `steady.rs`: steady_loop and its held read/write futures, encoded-request correlation and orderly outgoing-close drain, and the silence bound: the reader stamps its last byte (`Heard`), and three ping intervals without one end the loop (`SILENT_PINGS`); the `biased` select polls the ping tick, the request intake and the write before the read, and the silence deadline last.
 - `steady_tests.rs`: the steady loop over small in-memory streams: upload and download progress, blocked pings, fairness, partial frames, early replies, failures, close and cancellation, and the silence bound on a paused clock (a silent daemon, one that answers pings, one whose reply trickles, a silent daemon after the outgoing side closed, and 64 runs of a frame that turns readable as the deadline passes); a request still goes out while the daemon floods the reader.
 - `tests.rs`: the connection task's tests: backoff, the redial pace against a daemon that answers the hello and drops
   (the real reconnect loop, a window-free `Redraw`), the link gate, a tree.root error reply, a daemon falling silent
-  before each connect reply (on a paused clock, at the real bound), a closed local connection,
-  the stderr drain, and the two `connect_pipe` cases with another account's listener (refusal, full backlog), which
-  need passwordless `sudo -n` and skip without it except on CI
+  before each connect reply (on a paused clock, at the real bound), a hello naming the window's runs still running and
+  one from a daemon that predates the field, frames the daemon writes before a preamble reply, a closed local
+  connection, the stderr drain, and the two `connect_pipe` cases with another account's listener (refusal, full
+  backlog), which need passwordless `sudo -n` and skip without it except on CI
 - `golden_tests.rs`: every request kind's wire line and the events its error reply yields, against the golden file
 - `testdata/`: golden files for golden_tests.rs
 - `ops/`: one file per op family: the request each op writes, and the event its reply becomes
@@ -24,7 +25,7 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
   the protocol-mismatch message, and the three steps of the hello (`send_hello`, `read_hello`, which puts any refused
   hello on the blocking screen as `IncomingEvt::HelloRefused`, and `accept_hello`)
 - `preamble.rs`: the connect preamble after the hello (tree.root, then preview.get of its root), each reply within
-  `CONNECT_REPLY_BOUND`
+  `CONNECT_REPLY_BOUND`, every other frame read before a reply handed to `handle_response_frame` (`read_step_reply`)
 
 ## Start here
 `spawn`, then `connect_and_run`, `run_protocol`, `run_session` (the hello and the preamble), `steady.rs` `steady_loop` (everything
@@ -34,10 +35,13 @@ after). A new request or reply goes through `ops/`.
 - Steady reads and writes each use one held future; a partial frame is never cancelled and restarted. Outgoing close finishes the current write and retains the current read before draining.
 - A request is encoded in memory and its pending entries enter PendingGuard before its first network byte; at most one encoded write is active and reads remain polled during it.
 - The hello and the preamble read plainly, each reply within `CONNECT_REPLY_BOUND`, before any request can race them.
+  A frame the daemon writes before a preamble reply (an event replayed after the hello, a live one such as a REPL
+  run's output) goes to `handle_response_frame`, as in the steady loop, and is never taken for the reply.
 - send_figure_get and send_result_tree register their pending entry before writing; PendingGuard reports their outstanding failures when the connection ends.
-- Every window wait on the daemon ends at its reply, its error reply or its connection's end: an eval the daemon
-  accepted or announced ends at its `done` frame or, when the connection ends first, with one error frame
-  (`EvalRunning`, `RUNNING_EVAL`).
+- Every window wait on the daemon ends at its reply, its error reply or its connection's end: an eval or `r`/`R` run
+  the window sent, one the daemon announced and one the hello named still running (`HelloRes::repl_running`) ends at
+  its `done` frame or, when the connection ends first, with one error frame, whether or not its ack had come
+  (`EvalRunning`, `eval_running`).
 - The link gate goes up at any hello reply (`read_hello`) and down when the session ends, except after a hello refusal
   (`run_protocol`).
 - The local socket or pipe is dialled only through `connect_pipe`, which runs `sot_log::identity::connect_own` on a

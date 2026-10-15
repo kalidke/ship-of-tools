@@ -122,7 +122,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | Julia kernel per workspace | process | sidecars | `rust/backend/src/sidecars/kernel.rs` `Kernel`, `run_one_generation` |
 | Julia REPL per workspace and restart retirement | process, state | sidecars | `rust/backend/src/sidecars/repl/mod.rs` `Repl`, `restart_with_project`, `REPL_RESTART_WAIT`; `rust/backend/src/sidecars/repl/supervisor.rs` `spawn_supervisor`, `supervisor_task` |
 | Pluto per daemon | process | sidecars | `rust/backend/src/sidecars/pluto.rs` `Pluto`, `spawn_supervisor` |
-| a REPL or Pluto child's own X display on Linux (Xvfb, its cookie file), and the child's end when it ends | process, disk | sidecars | `rust/backend/src/sidecars/display/mod.rs` `Display`, `start`, `ended`, `end`; `rust/backend/src/sidecars/child/tmp.rs` `ChildTmp::for_user_code`, `display_ended`, `retire` |
+| a REPL or Pluto child's own X display on Linux (Xvfb, its cookie file), the child's end when it ends, and the end of every process that holds its cookie | process, disk | sidecars | `rust/backend/src/sidecars/display/mod.rs` `Display`, `start`, `ended`, `end`, `Cookie`; `rust/backend/src/sidecars/display/holders.rs` `end`; `rust/backend/src/sidecars/child/tmp.rs` `ChildTmp::for_user_code`, `display_ended`, `retire` |
 | MathJax (node) per daemon | process | sidecars | `rust/backend/src/sidecars/mathjax.rs` `MathJax`, `spawn_supervisor`, `supervisor_task`; the constructor supplies `Signal` |
 | monitor sampler (`bash -s`, `ssh <alias> bash -s`) | process | sidecars | `rust/backend/src/sidecars/monitor.rs` `spawn_source`, `SAMPLER_SH` |
 | quarto render child | process | pages | `rust/backend/src/pages/ops.rs` `run_quarto` |
@@ -204,7 +204,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `math.render` | op | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_math_render` |
 | `repl.eval`, `repl.run_file`, `repl.interrupt`, `repl.execute` | op | sidecars | `rust/backend/src/sidecars/repl/ops.rs` `handle_repl_eval`, `handle_repl_run_file`, `handle_repl_interrupt`; `rust/backend/src/sidecars/repl/execute.rs` `handle_repl_execute` |
 | `repl.frame` | event, bus | sidecars | `rust/backend/src/sidecars/repl/mod.rs` `Repl`, `ReplFrameMsg`; `rust/backend/src/server/events.rs` `write_repl_frame`, `repl_frame_for` |
-| a REPL run's number: the daemon's one counter, and a window's own numbers for its own runs | state | sidecars | `rust/backend/src/sidecars/repl/numbers.rs` `next`, `CallerNumbers` |
+| a REPL run's number: the daemon's one counter, and a window's own numbers for its own runs and whether each still runs | state | sidecars | `rust/backend/src/sidecars/repl/numbers.rs` `next`, `CallerNumbers` (`ran`, `end_then`, `running`) |
 | `pluto.open` | op | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_pluto_open` |
 | `monitor.subscribe`, `.unsubscribe`, `.history`, `monitor.tick` | op, event, bus | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_monitor_subscribe`, `handle_monitor_unsubscribe`, `handle_monitor_history`; `rust/backend/src/sidecars/monitor.rs` `MonitorHub`; `rust/backend/src/server/events.rs` `write_monitor_tick` |
 | kernel stdio ops (`kernel.hello`, `file.preview`, `file.parse`, `project.scan`, `markdown.tokenize`) | wire (stdio) | sidecars | `julia/kernel/src/ShipToolsKernel.jl`; `julia/kernel/src/preview.jl`; `julia/kernel/src/project_scan.jl`; `julia/kernel/src/tokenize.jl` |

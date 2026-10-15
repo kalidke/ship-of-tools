@@ -89,9 +89,10 @@ pub(super) enum PendingKind {
     ReplEval {
         eval_id: u64,
     },
-    /// An eval the daemon accepted or announced (`repl.frame` `Started`) and has not yet ended with its `done` frame,
-    /// kept under the key `RUNNING_EVAL | eval_id` so `PendingGuard`'s `Drop` can end it when the connection does.
-    /// No reply carries this key; only the frames of the eval's own stream touch it.
+    /// An eval the daemon accepted or announced (`repl.frame` `Started`), or one of the window's that the hello named
+    /// still running (`HelloRes::repl_running`), and has not yet ended with its `done` frame, kept under the key
+    /// `RUNNING_EVAL | eval_id` (`eval_running`) so `PendingGuard`'s `Drop` can end it when the connection does. No
+    /// reply carries this key; only the frames of the eval's own stream touch it.
     EvalRunning {
         eval_id: u64,
     },
@@ -137,6 +138,12 @@ pub(super) enum PendingKind {
 /// The key bit of a running eval's pending entry. Request ids count up from 1 per connection (`take_id`) and never
 /// reach it.
 const RUNNING_EVAL: u64 = 1 << 63;
+
+/// Keeps `eval_id` as a run this connection waits on (`PendingKind::EvalRunning`): its `done` frame ends the wait, and
+/// so does the connection's end, with one error frame (`PendingGuard`).
+pub(super) fn eval_running(pending: &mut HashMap<u64, PendingKind>, eval_id: u64) {
+    pending.insert(RUNNING_EVAL | eval_id, PendingKind::EvalRunning { eval_id });
+}
 
 /// RAII wrapper around `run_protocol`'s per-connection reply-correlation
 /// map. `run_protocol` can exit through many paths — a bad read/write via
@@ -197,7 +204,11 @@ impl Drop for PendingGuard<'_> {
                 PendingKind::MarkdownTokenize { lang, source_hash } => {
                     IncomingEvt::MarkdownTokens { lang, source_hash, spans: Vec::new() }
                 }
-                PendingKind::EvalRunning { eval_id } => IncomingEvt::ReplEvalDone {
+                // An eval or `r`/`R` run whose ack had not come is ended too: its request may or may not have reached
+                // the daemon, and if it did and the run still goes on, the next hello names it.
+                PendingKind::ReplEval { eval_id }
+                | PendingKind::ReplRunFile { eval_id, .. }
+                | PendingKind::EvalRunning { eval_id } => IncomingEvt::ReplEvalDone {
                     eval_id,
                     elapsed_ms: 0,
                     frames: vec![ReplFrame::Error {
@@ -301,7 +312,7 @@ pub(super) fn handle_response_frame(
             PendingKind::FunctionMethods { module, name, workspace_id } => on_function_methods(frame, &emit, module, name, workspace_id),
             PendingKind::ReplEval { eval_id } => {
                 if frame.payload.get("accepted").and_then(|v| v.as_bool()) == Some(true) {
-                    pending.insert(RUNNING_EVAL | eval_id, PendingKind::EvalRunning { eval_id });
+                    eval_running(pending, eval_id);
                 }
                 on_repl_eval(frame, &emit, eval_id)
             }
@@ -319,7 +330,7 @@ pub(super) fn handle_response_frame(
             PendingKind::QuartoOpen => on_quarto_open(frame, blob, &emit),
             PendingKind::ReplRunFile { eval_id, path, fresh } => {
                 if frame.payload.get("frames").is_some() {
-                    pending.insert(RUNNING_EVAL | eval_id, PendingKind::EvalRunning { eval_id });
+                    eval_running(pending, eval_id);
                 }
                 on_repl_run_file(frame, &emit, eval_id, path, fresh)
             }
@@ -362,9 +373,7 @@ fn on_repl_frame(frame: Frame, pending: &mut HashMap<u64, PendingKind>, emit: &i
     match serde_json::from_value::<ReplFrameEvt>(frame.payload) {
         Ok(ev) => {
             match &ev.frame {
-                ReplFrame::Started { .. } => {
-                    pending.insert(RUNNING_EVAL | ev.eval_id, PendingKind::EvalRunning { eval_id: ev.eval_id });
-                }
+                ReplFrame::Started { .. } => eval_running(pending, ev.eval_id),
                 ReplFrame::Done { .. } => {
                     pending.remove(&(RUNNING_EVAL | ev.eval_id));
                 }
@@ -1104,5 +1113,28 @@ mod wait_end_tests {
             ended.len() == 2 && ended.iter().all(|e| e.starts_with("ReplEvalDone") && e.contains("Error")),
             "the connection's end did not end evals 8 and 30 (and only those)"
         );
+    }
+
+    /// An eval and an `r`/`R` run whose request was written but whose ack had not come when the connection ended are
+    /// ended too, each with the one error frame. The request may or may not have reached the daemon; if it did and the
+    /// run is still going, the next hello names it (`HelloRes::repl_running`) and the window reopens it.
+    #[test]
+    fn an_eval_or_run_whose_ack_had_not_come_ends_when_its_connection_ends() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        {
+            let mut guard = PendingGuard { map: HashMap::new(), evt_tx: &evt_tx, host: "h".into() };
+            guard.insert(4, PendingKind::ReplEval { eval_id: 9 });
+            guard.insert(5, PendingKind::ReplRunFile { eval_id: 10, path: "x.jl".into(), fresh: false });
+        }
+        let mut ended = shown(&evt_rx);
+        ended.sort();
+        println!("repl-unacked: events at the connection's end={ended:?}");
+        let lost = |eval_id: u64| {
+            format!(
+                "ReplEvalDone {{ eval_id: {eval_id}, elapsed_ms: 0, frames: [Error {{ message: \"the connection to the \
+                 daemon ended before this eval's end\", stacktrace: [] }}] }}"
+            )
+        };
+        assert_eq!(ended, [lost(10), lost(9)], "the evals whose ack had not come stayed running");
     }
 }

@@ -33,7 +33,8 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `repl_windows.rs`: sidecars; two windows on one row (Linux, a shell stand-in for Julia): each is written its own REPL
   runs under its own numbers and every other run under the daemon's number after its `started` frame, a
   `repl.execute` run shows in both, and so does a timed-out run's later output; a window that redials mid-eval (the
-  same hello `instance`) is written the rest of its run under its own number, and its interrupt reaches the run
+  same hello `instance`) is written the rest of its run under its own number, and its interrupt reaches the run; each
+  hello reply names the window's runs still running (`repl_running`), never one that ended, the window away or not
 - `unit_pin.rs`: topology; `sotd topology pin` and `refresh` write host pins into a scratch systemd folder, real systemd
   loads it in test mode (`systemd --test --user`) and `systemd-analyze --user condition` evaluates the attached
   conditions on this box; with no hosts.toml the claim pins the unit to this box and a pin without it changes

@@ -35,6 +35,20 @@ mod hello_version_tests {
         assert!(!res.proxy, "missing proxy → false (no proxy capability)");
     }
 
+    /// A hello reply names the window's REPL runs still running (`repl_running`), and the field is additive both
+    /// ways: a daemon that predates it is read as naming none, a reply naming none leaves it out, and a reply naming
+    /// runs parses where the field is unknown (an older window's `HelloRes`, as this test's second parse is at a
+    /// commit that predates the field) and carries the runs where it is known.
+    #[test]
+    fn a_hello_reply_names_the_windows_runs_still_running_and_stays_additive() {
+        let old = r#"{"session_id":"s1","revision":3,"snapshot_pending":false}"#;
+        let res: HelloRes = serde_json::from_str(old).expect("a reply without the field");
+        assert_eq!(serde_json::to_value(&res).unwrap().get("repl_running"), None, "naming none, it is not written");
+        let named = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"repl_running":[1,3]}"#;
+        let res: HelloRes = serde_json::from_str(named).expect("a reply naming runs parses");
+        assert_eq!(serde_json::to_value(&res).unwrap()["repl_running"], serde_json::json!([1, 3]), "the runs it names");
+    }
+
     #[test]
     fn proxy_connect_req_round_trips_and_token_is_optional() {
         // ADR 0035 handshake shapes. `token` absent on the wire must parse

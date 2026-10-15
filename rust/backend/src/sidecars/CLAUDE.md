@@ -32,7 +32,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - Pluto's proxy port is a supervisor-owned generation grant, published only after a loopback READY URL and released on every supervisor exit or cancellation before cleanup awaits. An old generation's release cannot erase its replacement's grant (`bound_pluto_port`).
 - Pluto polls child exit and its supplied Signal during each stdin write and flush. Cancelling a submission retires the supervisor, releases its grant and closes current, pending and queued replies before checked cleanup; it never resends a partial OPEN line.
 - A REPL restart explicitly retires and joins its owned supervisor before replacement; it never relies on Julia reaching stdin EOF. Errors retain retirement ownership and prevent replacement.
-- Each Julia child (kernel, REPL, Pluto) runs with a temporary folder of its own in the daemon's temporary folder (`ChildTmp`: `TMPDIR`; `TMP` and `TEMP` on Windows). Its owner ends the child and reaps it, then removes the folder (`ChildTmp::retire`), so a killed child and its descendants in its process group (its job on Windows) leave no temporary file. Limits: a daemon close or crash ends without reaping the living children, so their folders stay in the system temporary folder until the OS clears it (on some systems only at boot); a descendant that leaves the child's process group on Unix (Pluto's notebook worker after a server crash, a detached process) runs on without its folder (ADR 0050 residual 7).
+- Each Julia child (kernel, REPL, Pluto) runs with a temporary folder of its own in the daemon's temporary folder (`ChildTmp`: `TMPDIR`; `TMP` and `TEMP` on Windows). Its owner ends the child and reaps it, then removes the folder (`ChildTmp::retire`), so a killed child and its descendants in its process group (its job on Windows) leave no temporary file. Limits: a daemon close or crash ends without reaping the living children, so their folders stay in the system temporary folder until the OS clears it (on some systems only at boot); a descendant that leaves the child's process group on Unix (Pluto's notebook worker after a server crash, a detached process) runs on without its folder (ADR 0050 residual 7), unless on Linux it holds the child's display, whose end ends it (display/).
 - On Linux each REPL and Pluto child starts with an X display of its own (`ChildTmp::for_user_code`,
   `Display::start`), which Pluto's notebook workers inherit: an Xvfb on the lowest free display number that only the
   child's cookie opens, so no other account can. It ends after the child's reap (`ChildTmp::retire`: a restart, a
@@ -41,9 +41,11 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   (`ChildTmp::display_ended`), because any account can bind the ended display's name: the REPL's evals in flight get
   the reason, and its next eval starts a new REPL with a new display and says first why the old one ended
   (`SOT_PREVIOUS_END`); Pluto's opens in flight get the reason, the log a WARN, and its next open starts a new server.
-  A descendant that left the child's group (Pluto's notebook worker, a detached process) keeps the ended name (ADR 0050
-  residual 7). A start that fails says why (the daemon's log, `SOT_NO_DISPLAY`, the REPL's first eval) and the child
-  starts without one. The kernel gets none. Tests `a_repl_child_has_its_own_display_which_ends_with_it` and
+  Every end of a display ends every process of the daemon's account that holds its cookie (`XAUTHORITY`), in the
+  child's group or out of it, so Pluto's notebook workers end with their server, a crash included, and a process REPL
+  code starts detached ends at that REPL's restart, death or row's end (display/ `holders`). A start that fails says
+  why (the daemon's log, `SOT_NO_DISPLAY`, the REPL's first eval) and the child starts without one. The kernel gets
+  none. Tests `a_repl_child_has_its_own_display_which_ends_with_it` and
   `a_repl_whose_display_ends_ends_with_it` (repl/project_tests.rs), `pluto_has_its_own_display_which_ends_with_it`,
   `a_pluto_whose_display_ends_ends_with_it` and `a_pluto_whose_display_ends_before_ready_is_not_served` (pluto.rs) and
   display/'s own.

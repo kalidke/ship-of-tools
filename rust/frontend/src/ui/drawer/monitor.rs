@@ -775,6 +775,7 @@ mod native_fixture {
                     proxy: false,
                     resolved: ResolvedDial::Local,
                     backend_version: "test".into(),
+                    repl_running: Vec::new(),
                 };
                 events
                     .send((host.clone(), connected))

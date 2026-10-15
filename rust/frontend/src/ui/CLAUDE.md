@@ -112,7 +112,7 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 
 ## Files
 - `mod.rs`: `State` and the module declarations (over 800 lines under standing exemption E11).
-- `events.rs`: drain_events routes each IncomingEvt variant to its owner, forwarding result-tree attempt identities unchanged to the navigation reply handler; event-service scheduling remains owned by the app.
+- `events.rs`: drain_events routes each IncomingEvt variant to its owner (a `Connected`'s REPL runs still running to the REPL drawer's `on_repl_running`, the rest of it to the session's `on_connected`), forwarding result-tree attempt identities unchanged to the navigation reply handler; event-service scheduling remains owned by the app.
 - `connections.rs`: the window's view of its connection set: `send`, `send_to`, `default_host`, `ordered_hosts`.
 - `page_proxy.rs`: arming a local listener so a remote daemon's page opens, at a port of the window's own for a page a
   daemon op served, and the URL that opens it (`ensure_proxy_for_url`, `PageSource`, `bind_proxy_listener`).

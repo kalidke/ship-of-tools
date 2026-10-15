@@ -6,8 +6,10 @@ cookie opens, started before the child and ended after it. Part of the sidecars;
 rust/backend/src/sidecars/CLAUDE.md.
 
 ## Files
-- `mod.rs`: `Display` (`start`, `apply`, `ended`, `end`), the server's arguments and the cookie file, with the tests of
-  a start, its failures, its cookie, its end under its owner and its end.
+- `holders.rs`: the processes that hold a display's cookie, and their end (`end`).
+- `mod.rs`: `Display` (`start`, `apply`, `ended`, `end`) and its `Cookie`, the server's arguments and the cookie file,
+  with the tests of a start, its failures, its cookie, its end under its owner, its end, and the end of every process
+  that holds its cookie.
 
 ## Start here
 `Display::start`.
@@ -30,17 +32,28 @@ rust/backend/src/sidecars/CLAUDE.md.
   logs the reason at WARN, the child gets `SOT_NO_DISPLAY=<reason>` and keeps what it inherited, and the REPL shim says
   the reason at its first eval (julia/repl).
 - A display that ends under a live child ends the child: the child's owner waits on `ended` (the server's exit, seen
-  and left unreaped) for the child's whole life, then ends the child's tree and says why (`ChildTmp::display_ended`;
-  the REPL's `ReplEnded::DisplayEnded`, Pluto's `Cause::Display`). Once the server is gone any account can bind the
+  and left unreaped) for the child's whole life, then retires the child and says why (`ChildTmp::display_ended`; the
+  REPL's `ReplEnded::DisplayEnded`, Pluto's `Cause::Display`). Once the server is gone any account can bind the
   display's abstract name, and a child that opened its display only then would send its cookie and its pixels to that
   account's server. A display is never started again under a live child; the child's next start gets a new one.
+- Nothing that holds a display's cookie outlives the display. Every end of a display ends every process of the
+  daemon's account whose environment names its cookie as `XAUTHORITY`, in the child's process group or out of it
+  (Pluto's notebook workers, a process user code starts detached): its owner's `end` and its drop, through the
+  cookie's drop, before the server's group, and its server's exit, in `ended`, at once (`holders::end`). Every end of a
+  child ends its display (`ChildTmp::retire`), so a restart, a `--fresh`, a death and a row's end end those processes
+  too. Each is found by a walk of `/proc`, opened as a pidfd, its environment read again while that pidfd shows it
+  alive, and sent SIGKILL through the pidfd, so a pid the OS has reused is never signalled; the walks repeat until one
+  finds no new holder, because a holder that forked between a walk and its kill leaves a child only the next walk sees.
+  Tests pin the repeat walk (`end_with`) and the re-read (`end_one`); the pidfd is pinned only by `kill`'s signature,
+  because no test can make the OS reuse a pid without root.
 - Limits: at its start Xvfb's xkbcomp writes `/tmp/server-<n>.xkm`, which the server removes before it accepts
   connections, so a server killed in its first moments can leave that file. `-displayfd` makes no lock file, so a
   program that picks a display number by lock files alone (`xvfb-run -a`, which starts at 99) can choose a number one
-  of these servers holds, and its own server then fails to start. The child is ended a moment after its server's
-  exit, not at the same instant. A descendant that left the child's process group keeps the ended display's name in
-  its environment: Pluto's notebook workers (Distributed starts each in a session of its own and, measured, a worker
-  whose server was killed lives on), and a process user code starts detached (ADR 0050 residual 7). A SIGKILL of the
-  daemon's lifetime guard (residual 7) ends the daemon but not the server: unlike the Julia children, which end when
-  their input closes, an Xvfb never ends on its own, so outside the systemd unit, whose cgroup ends it, it runs until
-  it is killed.
+  of these servers holds, and its own server then fails to start. The child and what holds its cookie are ended a moment
+  after its server's exit, not at the same instant. A process is found by the environment it started with, so one
+  started with another `XAUTHORITY`, or none, and this `DISPLAY` is not found and keeps the ended display's name. At the
+  daemon's stop the Signal's fire ends the server at once, and what holds its cookie ends at its owner's close-out or,
+  at the latest, by the lifetime guard within `DRAIN_BOUND` of the daemon's end. A child with no display has no cookie
+  to find its detached processes by (ADR 0050 residual 7). A SIGKILL of the daemon's lifetime guard (residual 7) ends
+  the daemon but not the server: unlike the Julia children, which end when their input closes, an Xvfb never ends on its
+  own, so outside the systemd unit, whose cgroup ends it, it runs until it is killed.

@@ -18,7 +18,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - The volume preflight (`volume.rs`: `preflight_volume`).
 - The directory pin (`pinned_dir.rs`: `PinnedDir`, `DirIdentity`, `dir_identity`).
 - Windows owner-only descriptors and SIDs (`winsec.rs`: `owner_protected_pipe_descriptor`, `token_user_sid_string`).
-- Stdio inherit hardening (`winhandle.rs`: `harden_own_stdio`; Unix `inherit.rs`: `inherit_none`, the pre-exec sweep that marks every descriptor above stdio close-on-exec, called by the daemon's children and the capsule's leg).
+- Stdio inherit hardening (`winhandle.rs`: `harden_own_stdio`; Unix `inherit.rs`: `inherit_none`, the pre-exec sweep that marks every descriptor above stdio close-on-exec, called by the daemon's children, the capsule's leg and the window's ssh children (topology's `ssh_bridge`)).
 - The retry deadline and error context every file here shares (`mod.rs`: `RETRY_DEADLINE_MS`, `io_ctx`,
   `duration_to_wait_ms`).
 - The peer challenge in `rust/log/src/identity/` (a sibling folder; see Folders).
@@ -72,7 +72,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mod.rs`: the module list, the shared retry constants, `io_ctx`, `duration_to_wait_ms`
   and the glob re-exports of the files below.
 - `durable.rs`: durable publication, fsync, no-clobber rename, container creation.
-- `inherit.rs`: Unix-only `inherit_none`, the pre-exec sweep that leaves a child only its stdio and what its caller hands it.
+- `inherit.rs`: Unix-only `inherit_none`, the pre-exec sweep that leaves a child only its stdio and what its caller hands it; the daemon's and capsule's children and the window's ssh children call it.
 - `lock.rs`: the writer fence, the supervisor fence, the supervisor fence taken to be handed to a child, and the daemon's single-instance lock, held by the kernel.
 - `pinned_dir.rs`: a directory's kernel identity and a handle that pins it.
 - `process_tree/`: the native process-birth primitives (own page).

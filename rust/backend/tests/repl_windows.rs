@@ -6,7 +6,9 @@
 //! from a `started` frame: `rust/frontend/src/ui/drawer/repl/replies.rs`). A `repl.execute` run shows in every window,
 //! and so does the output of one that timed out, after the run's entry was closed (ADR 0033 phase 2). A window that
 //! redials while its eval runs is the same window (its hello's `instance`): it is written the rest of the run under its
-//! own number, and its Ctrl+C reaches the run.
+//! own number, and its Ctrl+C reaches the run. Each hello reply names the window's runs still running there
+//! (`repl_running`, by the window's numbers), never one that has ended, whether or not the window was connected when
+//! it ended.
 
 #[allow(dead_code, reason = "the shared fixture serves more suites than this one uses")]
 mod support;
@@ -56,8 +58,9 @@ impl Window {
     }
 
     /// A connection of the window `instance`, with the hello a window sends: role `fe`, its address and its
-    /// `instance`, which every connection and redial of one window shares (`rust/frontend/src/net/identity.rs`).
-    async fn open_as(env: &Env, instance: &str) -> Self {
+    /// `instance`, which every connection and redial of one window shares (`rust/frontend/src/net/identity.rs`). Also
+    /// returns what the hello's reply names as the window's runs still running (`repl_running`; `Null` for none).
+    async fn open_as(env: &Env, instance: &str) -> (Self, Value) {
         let stream = poll_until(|| try_connect(&env.socket_path), BOUND, "sotd's socket to accept a connection").await;
         let mut conn = tokio::io::BufReader::new(stream);
         let hello = HelloReq {
@@ -67,7 +70,15 @@ impl Window {
         };
         let reply = call(&mut conn, 1, op::HELLO, serde_json::to_value(&hello).expect("a hello")).await;
         assert!(reply.payload.get("error").is_none(), "hello refused: {:?}", reply.payload);
-        Self { conn, next_id: 2, frames: Vec::new() }
+        let running = reply.payload.get("repl_running").cloned().unwrap_or(Value::Null);
+        (Self { conn, next_id: 2, frames: Vec::new() }, running)
+    }
+
+    /// Reads until this window has been written the `done` of its run `eval_id`.
+    async fn until_done(&mut self, eval_id: u64) {
+        while !self.frames.iter().any(|(id, f)| *id == eval_id && f["kind"] == "done") {
+            self.read_one().await;
+        }
     }
 
     /// Reads one frame, keeping a `repl.frame`; returns any other frame.
@@ -174,19 +185,51 @@ fn stub_daemon(env: &Env) -> std::path::PathBuf {
     folder.join("stub-julia.log")
 }
 
+/// A window that redials while its eval 2 runs is written the rest of it, and its hello's reply names eval 2 as still
+/// running, so the window reopens that entry; not eval 1, which ended before the link dropped, and nothing to another
+/// window. Once eval 2's `done` is out, a hello names it no more.
 #[tokio::test]
 async fn a_window_that_redials_mid_eval_still_gets_its_run() {
     let env = Env::new("replredial");
     stub_daemon(&env);
-    let mut a = Window::open_as(&env, "window-a").await;
+    let (mut a, _) = Window::open_as(&env, "window-a").await;
+    let ack = a.request(op::REPL_EVAL, json!({ "eval_id": 1, "code": "quick-a" })).await;
+    assert_eq!(ack["eval_id"], 1, "{ack}");
+    a.until_done(1).await;
+    let ack = a.request(op::REPL_EVAL, json!({ "eval_id": 2, "code": "late-a" })).await;
+    assert_eq!(ack["eval_id"], 2, "{ack}");
+    drop(a); // the link drops while eval 2 runs; the same window redials
+    let (mut again, running) = Window::open_as(&env, "window-a").await;
+    assert_eq!(running, json!([2]), "the redial's hello names the run still running, by the window's number");
+    let (_, other) = Window::open_as(&env, "window-b").await;
+    assert_eq!(other, Value::Null, "another window's hello names none of this window's runs");
+    again.until_done(2).await;
+    assert_eq!(again.under(2), ["stdout late-a", "done"], "the window's entry 2 gets its run: {:?}", again.frames);
+    drop(again);
+    let (_, after) = Window::open_as(&env, "window-a").await;
+    assert_eq!(after, Value::Null, "a run whose done is out is named no more");
+    env.kill_daemon_bounded().await;
+}
+
+/// A run that ends while its window has no connection is named by no later hello of the window: the daemon marks the
+/// run ended where it ends, not when a connection of the window writes its `done`.
+#[tokio::test]
+async fn a_run_that_ends_while_its_window_is_away_is_named_no_more() {
+    let env = Env::new("replaway");
+    stub_daemon(&env);
+    let (mut a, _) = Window::open_as(&env, "window-a").await;
     let ack = a.request(op::REPL_EVAL, json!({ "eval_id": 1, "code": "late-a" })).await;
     assert_eq!(ack["eval_id"], 1, "{ack}");
-    drop(a); // the link drops while the eval runs; the same window redials
-    let mut again = Window::open_as(&env, "window-a").await;
-    while !again.frames.iter().any(|(_, f)| f["kind"] == "done") {
-        again.read_one().await;
+    drop(a);
+    let (again, running) = Window::open_as(&env, "window-a").await;
+    assert_eq!(running, json!([1]), "while it runs, the window's hello names it");
+    drop(again); // the window is away while the run ends
+    let (mut watcher, _) = Window::open_as(&env, "window-b").await;
+    while !watcher.frames.iter().any(|(_, f)| f["kind"] == "done") {
+        watcher.read_one().await;
     }
-    assert_eq!(again.under(1), ["stdout late-a", "done"], "the window's entry 1 gets its run: {:?}", again.frames);
+    let (_, back) = Window::open_as(&env, "window-a").await;
+    assert_eq!(back, Value::Null, "the run ended while the window was away: {:?}", watcher.frames);
     env.kill_daemon_bounded().await;
 }
 
@@ -196,7 +239,7 @@ async fn a_window_that_redials_mid_eval_still_gets_its_run() {
 async fn a_window_that_redials_mid_eval_can_still_interrupt_it() {
     let env = Env::new("replredint");
     let log = stub_daemon(&env);
-    let mut a = Window::open_as(&env, "window-a").await;
+    let (mut a, _) = Window::open_as(&env, "window-a").await;
     let ack = a.request(op::REPL_EVAL, json!({ "eval_id": 1, "code": "late-a" })).await;
     assert_eq!(ack["eval_id"], 1, "{ack}");
     // An interrupt reaches only a ready REPL; the stand-in reads the eval as it says it is ready.
@@ -204,7 +247,7 @@ async fn a_window_that_redials_mid_eval_can_still_interrupt_it() {
         a.read_one().await;
     }
     drop(a);
-    let mut again = Window::open_as(&env, "window-a").await;
+    let (mut again, _) = Window::open_as(&env, "window-a").await;
     let answer = again.request(op::REPL_INTERRUPT, json!({ "eval_ids": [1] })).await;
     assert_eq!(answer["interrupted"], true, "{answer}");
     let read: Vec<Value> = std::fs::read_to_string(&log)
