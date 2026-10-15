@@ -52,7 +52,11 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   name a removal looks for, and which the maker holds until it ends, so another computer sharing the folder, another
   pid namespace or a pid the OS has reused never makes a live maker's folder go. A folder whose lock is held, missing
   or cannot be opened, a link, a file and another account's folder stay. Across computers this needs a file system
-  whose locks every client sees (NFS with its lock service, not one mounted `nolock` or with `local_lock`).
+  whose locks every client sees (NFS with its lock service, not one mounted `nolock` or with `local_lock`), and only
+  while the maker's client holds its lease: an NFS client cut off from the server past its lease (90 s by default) can
+  lose its lock, and another computer's start can then remove its live folder. A temporary folder on a file system that
+  refuses locks (NFSv3 without its lock service answers ENOLCK) stops `HeldDir::create`, so no Julia child starts and
+  every release check fails with "making the release check's scratch folder".
 - Kernel file locks are taken only inside three guards: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`, whose `Drop` unlocks, and `HandoverLock` in `lock.rs`, whose drop only closes, so a copy of its descriptor in a child keeps the lock held (a birth's claim on a row's fence). rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
 - A connection or child restarted through `Redial` waits from its caller's floor, doubling to its cap, and starts over

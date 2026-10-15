@@ -1,8 +1,9 @@
 //! A held folder: one that lives as long as the process that made it. The maker holds a kernel lock on a file in the
 //! folder for the folder's whole life, and a later process removes the folder only once it can take that lock, so a
 //! live maker's folder stays wherever the maker runs: on another computer sharing the folder, in another pid namespace,
-//! or under a pid the OS has since given to another process. A pid names a process on one computer and in one pid
-//! namespace only, and after the process ends it names the next one.
+//! or under a pid the OS has since given to another process; on NFS, only while the maker's client holds its lease, for
+//! a client cut off past its lease (90 s by default) can lose its lock and its folder with it. A pid
+//! names a process on one computer and in one pid namespace only, and after the process ends it names the next one.
 
 use super::lock::{lock_new, lock_writer, WriterLock};
 use crate::Result;

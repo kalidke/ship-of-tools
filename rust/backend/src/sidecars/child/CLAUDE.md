@@ -35,7 +35,9 @@ owner of a child that failed to start logs the child's own words at warn. Part o
   namespace it runs in and whatever pid it has, and an ended one's goes though another process now has its pid.
 - Limits: a folder named `sot-julia-*`, a daemon's from before held folders, is never removed. A temporary folder that
   `sotd` processes on two computers share is inside the rule only on a file system whose locks every client sees (NFS
-  with its lock service; not one mounted `nolock` or with `local_lock`). A folder a child still writes into while the
-  terminal removes it (on Windows, one in which a child still ending holds a file open), or that is not removed within
-  `FOLDERS_WAIT`, waits for the next start, and so does the held folder of a process that ended without the terminal
+  with its lock service; not one mounted `nolock` or with `local_lock`), and then only while the maker's client holds
+  its lease: a computer cut off from the NFS server longer than its lease (90 s by default) loses its lock, and
+  another computer's start can then remove its live folder. A temporary folder on a file system that refuses locks
+  (NFSv3 without its lock service) stops every kernel, REPL and Pluto start, as `ChildTmp::new` fails. A folder a child still writes into while the terminal removes it (on Windows, one in which a
+  child still ending holds a file open), or that is not removed within `FOLDERS_WAIT`, waits for the next start, and so does the held folder of a process that ended without the terminal
   while it held child folders, or kept one whose child was not confirmed ended.

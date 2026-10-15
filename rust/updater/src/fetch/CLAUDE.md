@@ -19,5 +19,6 @@ archive extraction. Part of distribution; charter: scripts/CLAUDE.md.
   (`archive::extract_validated`).
 - A release check's scratch folder is a held folder (`sot_log::host::HeldDir`) in the system's temporary folder: the
   check removes its own, and every check first removes those of checks whose process has ended (`remove_ended`), never
-  one whose process still runs (`scratch_dir`, `remove_ended_scratch`).
+  one whose process still runs (`scratch_dir`, `remove_ended_scratch`). A temporary folder on a file system that refuses locks
+  (NFSv3 without its lock service) fails every check with "making the release check's scratch folder".
 - Discovery, downloads, archive listing and extraction run their commands through the required caller `Spawner`, preserving their existing timeouts and error contexts; this folder owns bytes and validation, not child lifetime policy.
