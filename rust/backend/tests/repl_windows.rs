@@ -176,9 +176,14 @@ async fn two_windows_on_one_row_each_see_their_own_runs_and_every_announced_one(
 
 /// The daemon running the stand-in, and the stand-in's log of the request lines it read.
 fn stub_daemon(env: &Env) -> std::path::PathBuf {
+    daemon_running(env, STUB)
+}
+
+/// The daemon running the `julia` stand-in `script`.
+fn daemon_running(env: &Env, script: &str) -> std::path::PathBuf {
     let folder = env.daemon_project_root.parent().expect("the env's folder").to_path_buf();
     let stub = folder.join("stub-julia");
-    sot_log::test_exec::write_executable(&stub, STUB);
+    sot_log::test_exec::write_executable(&stub, script);
     let bin = folder.join("bin");
     std::fs::create_dir_all(&bin).expect("an empty PATH entry");
     env.spawn_sotd_with_path_and_env(&bin, &[("SOT_JULIA_BIN", &stub.to_string_lossy())]);
@@ -230,6 +235,33 @@ async fn a_run_that_ends_while_its_window_is_away_is_named_no_more() {
     }
     let (_, back) = Window::open_as(&env, "window-a").await;
     assert_eq!(back, Value::Null, "the run ended while the window was away: {:?}", watcher.frames);
+    env.kill_daemon_bounded().await;
+}
+
+/// A run is named by a hello from the moment the REPL's queue accepts it, not once the child has read it: a child that
+/// has not started serving yet (a cold Julia start) leaves its first runs queued or half written, and a window that
+/// redials then must still reopen their entries. The stand-in reads nothing for 2 s, so eval 1's 100 KB line fills the
+/// pipe and blocks its write, and eval 2 waits behind it.
+#[tokio::test]
+async fn a_window_that_redials_while_the_repl_starts_is_named_its_runs() {
+    let env = Env::new("replcold");
+    let slow = STUB.replacen("while IFS=", "sleep 2\nwhile IFS=", 1);
+    daemon_running(&env, &slow);
+    let (mut a, _) = Window::open_as(&env, "window-a").await;
+    let big = "x".repeat(100 * 1024);
+    for (n, code) in [(1, big.as_str()), (2, "quick-a")] {
+        let ack = a.request(op::REPL_EVAL, json!({ "eval_id": n, "code": code })).await;
+        assert_eq!(ack["eval_id"], n, "{}", ack["error"]);
+    }
+    drop(a);
+    let (mut again, running) = Window::open_as(&env, "window-a").await;
+    assert_eq!(running, json!([1, 2]), "the hello names the runs the REPL accepted, though the child has read none");
+    again.until_done(1).await;
+    again.until_done(2).await;
+    assert_eq!(again.under(2), ["stdout quick-a", "done"], "the window's entry 2 gets its run: {:?}", again.frames.len());
+    drop(again);
+    let (_, after) = Window::open_as(&env, "window-a").await;
+    assert_eq!(after, Value::Null, "runs whose done is out are named no more");
     env.kill_daemon_bounded().await;
 }
 
