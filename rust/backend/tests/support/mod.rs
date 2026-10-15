@@ -70,6 +70,8 @@ mod sotd;
 pub use registry::write_registry;
 #[allow(unused_imports)] // only some suites start a daemon by label
 pub use sotd::{label_endpoint, own_label, sotd_client_of, sotd_daemon_at};
+#[allow(unused_imports)] // only some suites ask for the Julia binary
+pub use sotd::julia_binary;
 pub use sotd::{end_daemon, sotd_command, sotd_command_at, sotd_program};
 /// Copy of `rust/log/tests/fe_client/`'s own `wake_flag` helper (a separate test
 /// binary; not worth a shared dependency for four lines).

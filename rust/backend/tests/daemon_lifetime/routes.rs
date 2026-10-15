@@ -5,7 +5,7 @@
 
 use crate::fixture_owner::Fixture;
 use crate::guard::parent_of;
-use crate::support::{call, connect_and_hello, find_row, poll_until, Conn, Env, BOUND};
+use crate::support::{call, connect_and_hello, find_row, julia_binary, poll_until, Conn, Env, BOUND};
 use crate::tree::Tree;
 use sot_protocol::op;
 use sot_protocol::{codec, Frame};
@@ -27,41 +27,12 @@ pub async fn supervisor_in(env: &Env, state_dir: &Path) -> Option<(i32, u64)> {
     .unwrap()
 }
 
-/// The Julia every daemon of a case runs (its REPL, Pluto, Quarto's engine): the binary that `SOT_JULIA_BIN` of this
-/// test's own environment, else `julia` found on its PATH, starts, asked once under this process's own HOME. What they
-/// name may be a juliaup launcher, which finds its installation through HOME: under a case's own HOME it finds none, so
-/// at every start it installs the release channel's newest Julia from the network (minutes on a slow link) and runs that.
+/// The Julia every daemon of a case runs (its REPL, Pluto, Quarto's engine): the one `julia_binary` finds, which
+/// `sotd_command` hands each daemon. What they name may be a juliaup launcher, which finds its installation through HOME:
+/// under a case's own HOME it finds none, so at every start it installs the release channel's newest Julia from the
+/// network (minutes on a slow link) and runs that.
 pub fn julia_bin() -> String {
-    static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    BIN.get_or_init(|| {
-        let given = std::env::var_os("SOT_JULIA_BIN")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let path = std::env::var_os("PATH").unwrap_or_default();
-                std::env::split_paths(&path)
-                    .map(|dir| dir.join("julia"))
-                    .find(|candidate| candidate.is_file())
-                    .unwrap_or_else(|| {
-                        panic!("no julia: set SOT_JULIA_BIN or put julia on the PATH")
-                    })
-            });
-        let probe = Command::new(&given)
-            .args(["--startup-file=no", "-e", "print(Base.julia_cmd()[1])"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap_or_else(|e| panic!("setup: {} does not start: {e}", given.display()));
-        let (status, bin, stderr) =
-            sot_log::test_isolated::drain(probe).wait_within(Duration::from_secs(60));
-        assert!(
-            status.success() && Path::new(&bin).is_absolute() && Path::new(&bin).is_file(),
-            "setup: {} named no Julia binary ({status}): {bin:?}\n{stderr}",
-            given.display()
-        );
-        bin
-    })
-    .clone()
+    julia_binary().unwrap_or_else(|| panic!("no julia: set SOT_JULIA_BIN or put julia on the PATH"))
 }
 
 /// The Julia a daemon gets starts under a case's own HOME and writes nothing there (a juliaup launcher installs a Julia

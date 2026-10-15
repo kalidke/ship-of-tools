@@ -1,12 +1,15 @@
 //! The one place a suite builds a command for `sotd`: the built binary (`sotd_command`), or a copy or link of it for a
 //! suite that tests how the daemon was started (`sotd_command_at`). Either inherits no `SOT_` variable the runner
-//! holds, so a daemon reads only the variables its test sets. The built binary's path (`sotd_exe`) is private here.
+//! holds, so a daemon reads only the variables its test sets, and the Julia binary the runner found (`julia_binary`).
+//! The built binary's path (`sotd_exe`) is private here.
 //! `sotd_daemon_at` and `sotd_client_of` start a daemon, or a client that finds one through `local_endpoint()`, at a
 //! label given by the caller; both refuse this box's own daemon's endpoint before anything starts. `end_daemon` ends a
 //! serving daemon a suite started.
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 fn sotd_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
@@ -19,13 +22,14 @@ pub fn sotd_program() -> PathBuf {
     sotd_exe()
 }
 
-/// A command for `sotd` with every inherited `SOT_` variable removed.
+/// A command for `sotd` with every inherited `SOT_` variable removed, and `SOT_JULIA_BIN` set to [`julia_binary`] when
+/// one is found.
 pub fn sotd_command() -> Command {
     sotd_command_at(&sotd_exe())
 }
 
 /// [`sotd_command`] for the binary at `program`, a copy of the built `sotd` or a link to one, for a suite that tests
-/// how the daemon was started. The same `SOT_` scrub.
+/// how the daemon was started. The same `SOT_` scrub and `SOT_JULIA_BIN`.
 #[allow(dead_code)] // only some suites start `sotd` from another path
 pub fn sotd_command_at(program: &Path) -> Command {
     let mut cmd = Command::new(program);
@@ -34,7 +38,51 @@ pub fn sotd_command_at(program: &Path) -> Command {
             cmd.env_remove(name);
         }
     }
+    if let Some(julia) = julia_binary() {
+        cmd.env("SOT_JULIA_BIN", julia);
+    }
     cmd
+}
+
+/// The Julia binary a test daemon runs: `SOT_JULIA_BIN` of the runner, else `julia` on its PATH, asked once for the
+/// binary it starts (`Base.julia_cmd()[1]`) under the runner's own HOME, so a juliaup launcher names its installation.
+/// `None` when neither names a Julia or the one named starts no Julia binary; the probe's failure is printed to the test
+/// output, once per process.
+pub fn julia_binary() -> Option<String> {
+    static BIN: OnceLock<Option<String>> = OnceLock::new();
+    BIN.get_or_init(probe_julia).clone()
+}
+
+/// The probe [`julia_binary`] runs once.
+fn probe_julia() -> Option<String> {
+    let given = std::env::var_os("SOT_JULIA_BIN").map(PathBuf::from).or_else(|| {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("julia"))
+            .find(|candidate| candidate.is_file())
+    })?;
+    let probe = Command::new(&given)
+        .args(["--startup-file=no", "-e", "print(Base.julia_cmd()[1])"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let probe = match probe {
+        Ok(probe) => probe,
+        Err(error) => {
+            eprintln!("no Julia for the test daemons: {} does not start: {error}", given.display());
+            return None;
+        }
+    };
+    let (status, bin, stderr) = sot_log::test_isolated::drain(probe).wait_within(Duration::from_secs(60));
+    if status.success() && Path::new(&bin).is_absolute() && Path::new(&bin).is_file() {
+        return Some(bin);
+    }
+    eprintln!(
+        "no Julia for the test daemons: {} named no Julia binary ({status}): {bin:?}\n{stderr}",
+        given.display()
+    );
+    None
 }
 
 /// How long a stopped daemon's guard may take to end: the daemon's own end, after its fire's wait and its children's
