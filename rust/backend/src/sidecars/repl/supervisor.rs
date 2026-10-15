@@ -182,7 +182,7 @@ async fn supervisor_task(
 ) -> std::result::Result<(), String> {
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight, each with its window's runs: an eval enters once written to the
-    // child, marked running there, and leaves when its `done` frame routes, marked ended before that frame is
+    // child (it was marked running when the queue accepted it), and leaves when its `done` frame routes, marked ended before that frame is
     // published. On child death each survivor gets synthetic error+done frames so the FE'S in-flight entry CLOSES —
     // before this, a dying child left evals hanging forever with no visible cause.
     let mut streaming: HashMap<u64, numbers::CallerNumbers> = HashMap::new();
@@ -233,6 +233,9 @@ async fn supervisor_task(
                     Err(e) => {
                         if let Some(reply) = sub.reply {
                             let _ = reply.send(Err(anyhow!("repl serialize: {e}")));
+                        } else if let Some(eid) = sub.payload.get("eval_id").and_then(Value::as_u64) {
+                            // Accepted, never written: closed out with the child's end like a cancelled write.
+                            streaming.insert(eid, sub.owner);
                         }
                         continue;
                     }
@@ -280,7 +283,6 @@ async fn supervisor_task(
                 if let Some(reply) = sub.reply {
                     pending.insert(id, reply);
                 } else if let Some(eid) = eid {
-                    sub.owner.ran(eid);
                     streaming.insert(eid, sub.owner);
                 }
             }

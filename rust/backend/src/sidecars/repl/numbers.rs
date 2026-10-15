@@ -4,8 +4,8 @@
 //! `clients_window.rs`): each connection of the window is written the run's frames under the window's number and is
 //! never announced the run, and every other connection gets the daemon's number after the run's `started` frame. A run
 //! the daemon refused is written to its window not at all: the reply already said why. The REPL's supervisor marks each
-//! of a window's runs running when it writes the run to the child and ended before it publishes the run's `done`
-//! (`ran`, `end_then`), so each hello reply names the window's runs still running (`running`, `HelloRes::repl_running`).
+//! of a window's runs running once its queue accepts the run and ended before it publishes the run's `done`
+//! (`accepted`, `end_then`), so each hello reply names the window's runs still running (`running`, `HelloRes::repl_running`).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -41,9 +41,10 @@ struct Own {
 /// run's entry is written its end.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
-    /// Numbered, not yet written to the child: it may still be refused, or wait in the REPL's queue.
+    /// Numbered, not yet accepted: the REPL may still refuse it (a full queue, a child that will not start).
     Numbered,
-    /// Written to the child (`ran`); its `done` is not yet published.
+    /// Accepted into the REPL's queue (`accepted`), written to the child or waiting for it to start; its `done` is not
+    /// yet published.
     Running,
     /// Its `done` is published or about to be (`end_then`, marked first), or the daemon refused it.
     Ended,
@@ -82,9 +83,15 @@ impl CallerNumbers {
         }
     }
 
-    /// The REPL's supervisor wrote this window's run `number` to the child: its `done` is still to come.
-    pub(crate) fn ran(&self, number: u64) {
-        self.mark(number, Stage::Running);
+    /// The REPL's queue accepted this window's run `number`: the supervisor owns it from here and closes it out
+    /// (`end_then`) however its child ends, so its `done` is still to come. A run already ended stays ended: the
+    /// supervisor may finish it before the submitter marks it.
+    pub(crate) fn accepted(&self, number: u64) {
+        if let Some(run) = self.runs().get_mut(&number) {
+            if run.stage == Stage::Numbered {
+                run.stage = Stage::Running;
+            }
+        }
     }
 
     /// This window's run `number` has ended: it is marked ended, then `publish` puts the run's `done` on the frame bus,
@@ -225,21 +232,23 @@ mod tests {
         }
     }
 
-    /// A hello names a window's run only while the supervisor holds it: not while it is numbered (it may yet be refused
-    /// or wait in the queue), not once refused, not once ended, and never a run the window did not number.
+    /// A hello names a window's run only once the REPL's queue has accepted it: not while it is numbered (it may yet be
+    /// refused), not once refused, not once ended, and never a run the window did not number.
     #[test]
     fn a_window_names_its_runs_only_while_they_run() {
         let (a, bus) = (CallerNumbers::default(), bus());
         let (one, two, three) = (a.number(Some(1)), a.number(Some(2)), a.number(Some(3)));
         let theirs = a.number(None);
-        assert!(a.running(&bus).is_empty(), "numbered, not yet written to the child");
+        assert!(a.running(&bus).is_empty(), "numbered, not accepted");
         for n in [one, two, theirs] {
-            a.ran(n);
+            a.accepted(n);
         }
         a.refused(three);
-        assert_eq!(a.running(&bus), [1, 2], "written to the child, its done still to come");
+        a.accepted(three);
+        assert_eq!(a.running(&bus), [1, 2], "accepted, not yet written to the child: its done still to come");
         a.end_then(one, || {});
-        assert_eq!(a.running(&bus), [2], "ended");
+        a.accepted(one);
+        assert_eq!(a.running(&bus), [2], "ended, and accepting it late does not reopen it");
         assert_eq!(kind_and_id(a.outgoing(done(one))), Some((1, "done".into())), "an ended run is still the window's");
     }
 
@@ -248,7 +257,7 @@ mod tests {
     fn a_run_is_marked_ended_before_its_done_is_published() {
         let (a, bus) = (CallerNumbers::default(), bus());
         let n = a.number(Some(1));
-        a.ran(n);
+        a.accepted(n);
         assert_eq!(a.running(&bus), [1]);
         let mut named_at_publish = None;
         a.end_then(n, || named_at_publish = Some(a.running(&bus)));

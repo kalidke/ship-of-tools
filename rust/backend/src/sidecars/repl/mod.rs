@@ -241,9 +241,9 @@ struct Submission {
     /// submission's eval_id into the collector, loss-free, so the handler can
     /// return the full collected output. `None` for every other op.
     collector: Option<ExecCollector>,
-    /// The runs of the window that submitted a fire-and-forget run (`numbers::CallerNumbers`): the supervisor marks the
-    /// run there running when it writes it to the child, and ended before it publishes the run's `done`, so a hello
-    /// names the window's runs still running. A request/response op's is a record of no window.
+    /// The runs of the window that submitted a fire-and-forget run (`numbers::CallerNumbers`): `submit` marks the run
+    /// there running once the queue accepts it, and the supervisor marks it ended before it publishes the run's `done`,
+    /// so a hello names the window's runs still running. A request/response op's is a record of no window.
     owner: numbers::CallerNumbers,
 }
 
@@ -379,9 +379,11 @@ impl Repl {
     /// res ack line is dropped. Used by `repl.eval` / `repl.run_file` so the
     /// connection loop never blocks waiting for an eval to finish (a mid-eval
     /// `repl.interrupt` must still be readable). `owner` holds the submitting
-    /// window's runs, where the supervisor marks this one running and ended.
+    /// window's runs, where this marks the run running once the queue accepts it (a refusal comes before: a full queue or
+    /// a REPL that cannot start, each an `Err` here) and the supervisor marks it ended.
     pub async fn submit(&self, op: &str, payload: Value, owner: &numbers::CallerNumbers) -> Result<()> {
         let tx = self.ensure_supervisor().await?;
+        let eid = payload.get("eval_id").and_then(Value::as_u64);
         enqueue(
             &tx,
             Submission {
@@ -391,7 +393,11 @@ impl Repl {
                 collector: None,
                 owner: owner.clone(),
             },
-        )
+        )?;
+        if let Some(eid) = eid {
+            owner.accepted(eid);
+        }
+        Ok(())
     }
 
     async fn ensure_supervisor(&self) -> Result<mpsc::Sender<Submission>> {
