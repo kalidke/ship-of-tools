@@ -857,8 +857,9 @@ mod tests {
 
     /// A generation's temporary folder is removed once its child is ended and reaped. The stub stands in for the kernel
     /// on the generation's own spawn path: it writes a file into its temporary folder, answers hello and waits. The
-    /// generation ends when its last handle drops, and then the owned folder that held the kernel's folder must be
-    /// empty. `isolated` gives this process an owned temporary folder.
+    /// generation ends when its last handle drops, and then the owned folder that held the kernel's folder, in this
+    /// process's held folder of child folders, must be empty. `isolated` runs this in a process of its own, which gives
+    /// itself an owned temporary folder.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_generation_removes_its_temporary_folder_after_the_reap() {
@@ -890,15 +891,15 @@ mod tests {
             .await
             .expect("the stub answers hello")
             .expect("status open");
-        let folders = || -> Vec<PathBuf> {
-            std::fs::read_dir(owned.path())
+        let listed = |dir: &Path| -> Vec<PathBuf> {
+            std::fs::read_dir(dir)
                 .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect())
                 .unwrap_or_default()
         };
-        let running = folders();
+        let running: Vec<PathBuf> = listed(owned.path()).iter().flat_map(|held| listed(held)).filter(|p| p.is_dir()).collect();
         assert!(
             running.len() == 1 && running[0].join("made").exists(),
-            "setup: the kernel's folder is in the owned folder and holds the child's file: {running:?}"
+            "setup: the kernel's folder is in the held folder in the owned folder and holds the child's file: {running:?}"
         );
         drop(keep);
         let (_served, reason) = tokio::time::timeout(Duration::from_secs(30), generation)
@@ -907,7 +908,7 @@ mod tests {
             .expect("generation task");
         assert_eq!(reason, "owning kernel handle dropped");
         crate::sidecars::contract_tests::within(Duration::from_secs(30), "the kernel's folder is removed after its reap", || {
-            folders().is_empty()
+            listed(owned.path()).is_empty()
         })
         .await;
     }

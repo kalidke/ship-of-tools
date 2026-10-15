@@ -1,4 +1,5 @@
-//! Kernel-held file locks: the writer fence, the supervisor fence and the daemon's single-instance lock.
+//! Kernel-held file locks: the writer fence, the supervisor fence, the daemon's single-instance lock and a held folder's
+//! lock (`held_dir.rs`).
 
 use crate::{Error, Result};
 use std::fs::File;
@@ -72,6 +73,20 @@ pub fn lock_writer(lock_path: &Path) -> Result<WriterLock> {
             )));
         }
         std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
+    }
+}
+
+/// A lock file made at `path`, which must not exist, and taken: nothing else can hold a file this call made, so the take
+/// does not wait. It is opened as std opens a file, so on Windows it can be renamed while it is held, as
+/// [`HeldDir::create`](super::HeldDir::create) does to name it into place.
+pub(super) fn lock_new(path: &Path) -> Result<WriterLock> {
+    let file = std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(path)?;
+    #[allow(clippy::disallowed_methods, reason = "the WriterLock built from this lock unlocks it in its Drop")]
+    let locked = file.try_lock();
+    match locked {
+        Ok(()) => Ok(WriterLock { file }),
+        Err(std::fs::TryLockError::WouldBlock) => Err(Error::State(format!("a new lock file is held by another process: {path:?}"))),
+        Err(std::fs::TryLockError::Error(e)) => Err(Error::Io(e)),
     }
 }
 

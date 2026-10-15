@@ -8,8 +8,9 @@ owner of a child that failed to start logs the child's own words at warn. Part o
 ## Files
 - `mod.rs`: declares the modules and re-exports `ChildTmp`, `remove_own`, `sweep_gone` and `StderrTail`.
 - `stderr_tail.rs`: a child's stderr drained to its end, its last lines kept for the warn its owner logs (`StderrTail`).
-- `tmp.rs`: `ChildTmp` (`new`, `for_user_code`, `apply`, `display_ended`, `retire`), the end's and the start's removals
-  (`remove_own`, `sweep_gone`), with the tests of its folder, its name, its environment, its end and the removals' rule.
+- `tmp.rs`: `ChildTmp` (`new`, `for_user_code`, `apply`, `display_ended`, `retire`), the process's held folder of them
+  (`InHeld`, its count) and its removals at the end and the start (`remove_own`, `sweep_gone`), with the tests of its
+  folder, its held folder and its end.
 
 ## Start here
 `ChildTmp::retire`.
@@ -21,18 +22,20 @@ owner of a child that failed to start logs the child's own words at warn. Part o
   on it beside the child's own exit for the child's whole life and then retires the child.
 - A `ChildTmp` dropped after a spawn may still hold a live child's files; only an owner whose child never started drops
   one.
-- The folder is `sot-julia-<pid>-<random>` in the daemon's temporary folder, `<pid>` the daemon's own, so its name says
-  whose it is. A daemon's controlled end runs no owner's `retire`, so its terminal (`lifecycle::shutdown::exit` and
-  `exit_by_signal`), after the fire, removes every folder that names its pid (`remove_own`), waiting at most
-  `FOLDERS_WAIT` (2 s). An end that runs no code in the daemon (a crash, a SIGKILL of the daemon or of its Linux guard)
-  removes nothing, so each start (`server::run`) removes, on a blocking thread nothing waits for, the folders of every
-  pid that is not running (`sweep_gone`). Both remove only a directory this account owns, never a link or a file, and
-  log a folder that does not go.
-- A pid counts as running when this account may not signal or open it, and an unreaped one (a zombie) does too, so the
-  folders of a running daemon, this one included, always stay. A pid the OS has reused keeps a dead daemon's folder
-  until the process that now has it ends; the controlled end of any `sotd` with that pid removes it as its own.
-- Limits: a folder named `sot-julia-<random>`, a daemon's from before the pid was in the name, names no owner and is
-  never removed. A pid is read on this computer and in this process's pid namespace, so a temporary folder that `sotd`
-  processes on two computers or in two pid namespaces share is outside the rule. A folder a child still writes into
-  while the terminal removes it (on Windows, one in which a child still ending holds a file open), or that is not
-  removed within `FOLDERS_WAIT`, waits for the next start.
+- The folder is `sotd-julia-<random>/child-<random>` in the daemon's temporary folder: every child folder of a process
+  is in that process's own folder of them, a held folder (platform's `HeldDir`) made with its first child folder,
+  removed with its last (`InHeld`) and held by a lock until then. A daemon's controlled end runs no owner's `retire`,
+  so its terminal (`lifecycle::shutdown::exit` and `exit_by_signal`), after the fire, removes that folder
+  (`remove_own`), waiting at most `FOLDERS_WAIT` (2 s); a process that holds no child folder removes nothing. An end
+  that runs no code in the daemon (a crash, a SIGKILL of the daemon or of its Linux guard) removes nothing, so each
+  start (`server::run`) removes, on a blocking thread nothing waits for, the held folder of every process whose lock is
+  free (`sweep_gone`, platform's `remove_ended`): only a directory this account owns, never a link or a file, and a
+  folder that does not go is logged.
+- Liveness is the lock, never a pid: a running process's folder stays, this one's included, whatever computer or pid
+  namespace it runs in and whatever pid it has, and an ended one's goes though another process now has its pid.
+- Limits: a folder named `sot-julia-*`, a daemon's from before held folders, is never removed. A temporary folder that
+  `sotd` processes on two computers share is inside the rule only on a file system whose locks every client sees (NFS
+  with its lock service; not one mounted `nolock` or with `local_lock`). A folder a child still writes into while the
+  terminal removes it (on Windows, one in which a child still ending holds a file open), or that is not removed within
+  `FOLDERS_WAIT`, waits for the next start, and so does the held folder of a process that ended without the terminal
+  while it held child folders, or kept one whose child was not confirmed ended.
