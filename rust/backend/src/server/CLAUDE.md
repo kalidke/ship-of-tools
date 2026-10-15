@@ -101,7 +101,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `set_watch_bus`, `set_monitor_hub`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`, `owner_protected_pipe_descriptor`,
 `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`, `start_page_servers`, `remove_root`,
-`handle_agent_join`, `handle_comm_file`, `handle_agent_send`, `Links`.
+`handle_agent_join`, `handle_comm_file`, `handle_agent_send`, `Links`, `child::sweep_gone`.
 
 ## Folders
 The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clients.rs` (the roster) and `session.rs`

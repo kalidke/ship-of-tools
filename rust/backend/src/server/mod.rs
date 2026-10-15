@@ -57,6 +57,9 @@ pub async fn run(opts: Opts) -> Result<()> {
     // record to fence, the same posture as the resume skip below.
     let _daemon_lock = take_daemon_lock(&opts).await?;
 
+    // A daemon that ended without its terminal (a crash, a SIGKILL) left its Julia children's temporary folders.
+    crate::sidecars::child::sweep_gone();
+
     // ADR 0046 decision 1: resolve this daemon's declared host at boot,
     // fatal if it can't be named, so the failure is a boot error rather
     // than a per-hello one. Pin the (bare, S4) own-listener endpoint from

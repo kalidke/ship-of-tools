@@ -4,4 +4,4 @@ mod stderr_tail;
 mod tmp;
 
 pub(crate) use stderr_tail::StderrTail;
-pub(crate) use tmp::ChildTmp;
+pub(crate) use tmp::{remove_own, sweep_gone, ChildTmp};

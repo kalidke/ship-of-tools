@@ -14,7 +14,7 @@ on a computer decides, through its lease, whether that computer's sessions end (
 - The start plan Resume, Pending or Cleanup: `startup::begin`, `lease::startup_plan`.
 - The close and its backstop `exit(1)`: `shutdown::run`, `shutdown::end_rows`.
 - The serving daemon's controlled ends and what each does first: `shutdown::exit` (the one raw exit),
-  `shutdown::exit_by_signal` (INT and TERM: the same fire, then the signal), `shutdown::terminal`; INT and TERM:
+  `shutdown::exit_by_signal` (INT and TERM: the same fire and folders, then the signal), `shutdown::terminal`; INT and TERM:
   `signal_exit::install`.
 - The child signal and the containment: `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`,
   `Contained`, `Contained::wait_until_exited`, `ContainedStd`, `Signal::fire`, `reset_child_signal`; contain.rs `Tree`,
@@ -46,11 +46,12 @@ on a computer decides, through its lease, whether that computer's sessions end (
   lease lock, so no close begins afterwards, and exits outside the lock.
 - Every controlled end of the serving daemon takes one terminal, `shutdown::exit`: it fires the child signal on a thread of
   its own (each contained tree is asked to end), waits at most `FIRE_WAIT` (2 s) for the answer, logs a failed request or
-  a fire still running, and makes the process's one raw exit with the code it was given; when no thread can be started
-  for the fire it exits without it, logging that. The codes: 0 (a finished close, an Ok main
+  a fire still running, removes its Julia children's temporary folders, waiting at most `FOLDERS_WAIT` (2 s) for that
+  (`sidecars::child::remove_own`), and makes the process's one raw exit with the code it was given; when no thread can
+  be started for the fire it exits without it, logging that. The codes: 0 (a finished close, an Ok main
   result), 1 (an error, a boot refusal, the backstop), 2 (a bad `agent-exec` recipe), 75 (the update restart), 78 (no
-  config directory), 101 (a panic of the main future); INT and TERM take the same fire and then end the daemon by the
-  signal itself with its default action (`shutdown::exit_by_signal`), so a service manager counts the stop as clean and a
+  config directory), 101 (a panic of the main future); INT and TERM take the same fire and folders and then end the
+  daemon by the signal itself with its default action (`shutdown::exit_by_signal`), so a service manager counts the stop as clean and a
   shell reads 130 and 143; a death by an uncatchable signal, an abort or a raw exit elsewhere is the guard's and the OS's,
   not this terminal's. `main` turns the main future's result into
   its code while the runtime still exists (`complete_main`). INT and TERM are caught on a thread of their own with a
@@ -158,7 +159,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `Signal::output`, `daemon_children::guard`, `guard_pid`, `Contained`, `Contained::wait_until_exited`, `ContainedStd`, `ContainedStd::wait_within`, `Signal`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
 `reject`, `write_frame_within`, `write_frame_to`, `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`,
 `close_gate_and_settle`, `remove_row_files`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
-`inherit_none`, `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `deploy/sotd.service`, `sot-apply.sh`, Dial.
+`inherit_none`, `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `deploy/sotd.service`, `sot-apply.sh`, Dial,
+`child::remove_own`.
 
 ## Folders
 - `rust/backend/src/lifecycle/`: this folder.

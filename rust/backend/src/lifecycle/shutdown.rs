@@ -101,25 +101,31 @@ pub(crate) async fn run(
 /// How long the exit waits for the fire to answer before it exits anyway.
 const FIRE_WAIT: Duration = Duration::from_secs(2);
 
-/// Fire the child signal and then take the one raw daemon exit. A controlled exit of the serving daemon (the close, the
-/// backstop, an update restart, a handled signal, the main result) comes here, so each contained tree is asked to end
-/// first; the first caller's code is the one the process exits with ([`terminal`]). Request errors are logged and the
-/// chosen code stands; this is no wait for death, and the exit waits no longer than [`FIRE_WAIT`] for the requests either:
-/// a child creation stalled in the OS holds the mutex the fire needs, and the exit, the backstop's included, does not
-/// depend on it.
+/// How long the exit waits, after the fire, for its children's temporary folders to go before it exits anyway.
+const FOLDERS_WAIT: Duration = Duration::from_secs(2);
+
+/// Fire the child signal, remove the children's temporary folders, and then take the one raw daemon exit. A controlled
+/// exit of the serving daemon (the close, the backstop, an update restart, a handled signal, the main result) comes here,
+/// so each contained tree is asked to end first; the first caller's code is the one the process exits with
+/// ([`terminal`]). Request errors are logged and the chosen code stands; this is no wait for death, and the exit waits no
+/// longer than [`FIRE_WAIT`] for the requests either: a child creation stalled in the OS holds the mutex the fire needs,
+/// and the exit, the backstop's included, does not depend on it. It waits no longer than [`FOLDERS_WAIT`] for the
+/// folders (`sidecars::child::remove_own`), whose rest the next start removes.
 pub(crate) fn exit(code: i32) -> ! {
     terminal(super::child_signal::process(), code, |code| {
+        crate::sidecars::child::remove_own(FOLDERS_WAIT);
         std::process::exit(code)
     })
 }
 
-/// [`exit`] for a caught INT or TERM: the same terminal (its claim and its fire), then death by that signal with its
-/// default action, so whatever started the daemon sees the end it would see with no handler (a service manager counts
-/// INT and TERM as a clean stop, a shell reads 128 + n, and the guard mirrors the signal). If the raise returns, the exit
-/// is 128 + n.
+/// [`exit`] for a caught INT or TERM: the same terminal (its claim and its fire) and the same removal of the children's
+/// folders, then death by that signal with its default action, so whatever started the daemon sees the end it would see
+/// with no handler (a service manager counts INT and TERM as a clean stop, a shell reads 128 + n, and the guard mirrors
+/// the signal). If the raise returns, the exit is 128 + n.
 #[cfg(unix)]
 pub(crate) fn exit_by_signal(signum: i32) -> ! {
     terminal(super::child_signal::process(), 128 + signum, |code| {
+        crate::sidecars::child::remove_own(FOLDERS_WAIT);
         // SAFETY: the default action restored for one valid signal, the signal unblocked in this thread, then raised at
         // this thread; no handler runs.
         unsafe {
