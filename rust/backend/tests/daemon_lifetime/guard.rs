@@ -113,7 +113,7 @@ impl Run {
             .env("USERPROFILE", &env.home_root)
             .env("SOT_COMM_HOME", &env.comm_root)
             .env("SOT_TEST_MAIN_OUTCOME", env._tmp.path().join("outcome"))
-            .env("RUST_LOG", "info")
+            .env("RUST_LOG", "info,repl.stderr=debug,pluto.stderr=debug")
             .env("JULIA_DEPOT_PATH", depot)
             .stdin(Stdio::null())
             .stdout(Stdio::from(file.try_clone().expect("clone the log")))
@@ -201,6 +201,7 @@ impl Run {
             "the daemon to answer",
         )
         .await;
+        crate::case_record::note_daemon(daemon);
         (launched, daemon, log)
     }
 
@@ -349,6 +350,7 @@ fn end_capsules_blocking(env: &Env) {
 
 impl Drop for Run {
     fn drop(&mut self) {
+        crate::case_record::keep_if_failed(self.env._tmp.path());
         if let Some(mut child) = self.launched.take() {
             end_daemon(&mut child);
         }

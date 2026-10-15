@@ -143,6 +143,16 @@ pub async fn end_daemon_bounded(child: Child) {
     let res = tokio::time::timeout(BOUND, tokio::task::spawn_blocking(move || end_daemon(&mut child))).await;
     assert!(res.is_ok(), "ending a spawned daemon exceeded {BOUND:?}");
 }
+/// What a suite wants done just before a timeout panics (the lifetime harness lists the daemon's descendants); `what` is the
+/// thing that was waited for.
+pub static TIMEOUT_HOOK: std::sync::Mutex<Option<fn(&str)>> = std::sync::Mutex::new(None);
+/// Run the suite's timeout hook, if it set one.
+pub fn run_timeout_hook(what: &str) {
+    let hook = *TIMEOUT_HOOK.lock().unwrap();
+    if let Some(hook) = hook {
+        hook(what);
+    }
+}
 /// Bounded async poll for an external, observable fact.
 pub async fn poll_until<T, F, Fut>(mut attempt: F, timeout: Duration, what: &str) -> T
 where
@@ -154,7 +164,10 @@ where
         if let Some(v) = attempt().await {
             return v;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        if Instant::now() >= deadline {
+            run_timeout_hook(what);
+            panic!("timed out waiting for {what}");
+        }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }

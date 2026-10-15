@@ -79,7 +79,7 @@ pub async fn ready_row(
 }
 
 /// Run a cell in the row's REPL on a connection of its own. The call does not answer while the cell spins, so it runs in a
-/// task that the caller aborts; the reply, if one ever comes, is of no interest.
+/// task that the caller aborts; the reply, if one ever comes, is recorded for a failed case's record (`call_long`).
 pub async fn spin_in_repl(
     socket: &Path,
     workspace_id: &str,
@@ -186,6 +186,7 @@ pub async fn call_long(
     bound: Duration,
 ) -> Frame {
     let body = async {
+        crate::case_record::note(format!("{op} (id {id}) sent, no reply yet"));
         codec::write_frame(conn, &Frame::req(id, op, payload), None)
             .await
             .expect("write_frame");
@@ -196,9 +197,18 @@ pub async fn call_long(
             }
         }
     };
-    tokio::time::timeout(bound, body)
-        .await
-        .unwrap_or_else(|_| panic!("{op} (id {id}) did not reply within {bound:?}"))
+    match tokio::time::timeout(bound, body).await {
+        Ok(frame) => {
+            crate::case_record::note(format!("{op} (id {id}) answered {}", frame.payload));
+            frame
+        }
+        Err(_) => {
+            let what = format!("{op} (id {id}) did not reply within {bound:?}");
+            crate::case_record::note(what.clone());
+            crate::support::run_timeout_hook(&what);
+            panic!("{what}");
+        }
+    }
 }
 
 /// The pids whose parent is `pid`, from `/proc` (observed): the children list of a process the case holds.

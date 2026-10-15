@@ -66,7 +66,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   `$VAR` and `${VAR}`); the exit status is CMD's when CMD exits, and a CMD killed by a signal gives 255; a failed start
   leaves no `/tmp/sot-job-*`.
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
-- `rc-gate.sh`: the Linux candidate gate, run as the main process of its own test container (`in-container.sh`); a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy. It runs the daemon lifetime harness as rust.yml's Linux job does (`job_lifetime`).
+- `rc-gate.sh`: the Linux candidate gate, run as the main process of its own test container (`in-container.sh`); a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy. It runs the daemon lifetime harness as rust.yml's Linux job does (`job_lifetime`), with `SOT_LIFETIME_KEEP_DIR` at `lifetime-keep` in its result folder, where a failed case keeps its daemon logs, answers and process lists.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
   `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test
   install layout (pinned-checkout predicate)".
