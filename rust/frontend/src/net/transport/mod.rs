@@ -548,8 +548,11 @@ where
     for eval_id in accept_hello(frame, &host, &mut session, resolved, &emit, window)? {
         eval_running(&mut pending, eval_id);
     }
-    // A frame the daemon writes before a preamble reply goes where the steady loop sends it.
-    let mut other = |frame, blob| handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
+    // A frame the daemon writes before a preamble reply goes where the steady loop sends it, and wakes the window as there.
+    let mut other = |frame, blob| {
+        handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
+        window.request_redraw();
+    };
 
     // tree.root — initial fetch on connect uses the default workspace
     // (no workspace_id). Once the chrome resumes a saved Sessions-mode

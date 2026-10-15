@@ -80,8 +80,8 @@ where
             root: res.node,
             children: res.children,
         });
-        window.request_redraw();
     }
+    window.request_redraw();
     Ok(root_node_id)
 }
 
@@ -141,7 +141,7 @@ where
             // above already intends for a resumed non-default workspace.
             generation: 0,
         });
-        window.request_redraw();
     }
+    window.request_redraw();
     Ok(())
 }

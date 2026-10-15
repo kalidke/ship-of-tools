@@ -136,6 +136,32 @@ async fn run_against_fake_daemon(
     std::sync::mpsc::Receiver<(HostKey, IncomingEvt)>,
     tokio::sync::oneshot::Sender<()>,
 ) {
+    run_against_fake_daemon_counting(host, hello_reply, early, answered, gate, Default::default()).await
+}
+
+/// A window that counts its wakes.
+#[derive(Clone, Default)]
+struct CountingWindow(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl Redraw for CountingWindow {
+    fn request_redraw(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// `run_against_fake_daemon` with the window's wakes counted in `window`.
+async fn run_against_fake_daemon_counting(
+    host: &str,
+    hello_reply: serde_json::Value,
+    early: Vec<Frame>,
+    answered: usize,
+    gate: sot_protocol::topology::ssh_bridge::LinkGate,
+    window: CountingWindow,
+) -> (
+    tokio::task::JoinHandle<Result<()>>,
+    tokio::task::JoinHandle<()>,
+    std::sync::mpsc::Receiver<(HostKey, IncomingEvt)>,
+    tokio::sync::oneshot::Sender<()>,
+) {
     let (near, far) = tokio::io::duplex(1 << 16);
     let (hold_tx, hold_rx) = tokio::sync::oneshot::channel::<()>();
     let daemon = tokio::spawn(async move {
@@ -167,7 +193,7 @@ async fn run_against_fake_daemon(
             None,
             &evt_tx,
             &mut out_rx,
-            &NoWindow,
+            &window,
             ResolvedDial::Local,
             Some(&gate),
         )
@@ -230,6 +256,29 @@ async fn frames_written_before_a_preamble_reply_reach_their_handlers() {
     let stray = (has("Event { op: \"tree.root\""), has("Event { op: \"preview.get\""));
     let want = ((true, true), (false, false));
     assert_eq!((delivered, stray), want, "(replayed and live frames delivered), (a preamble reply read late)");
+}
+
+/// The window is woken for each frame handled during the preamble, and for each preamble step's reply, a refused one
+/// included, as the steady loop wakes it: a frame handled in silence waits on the screen until something else wakes it.
+/// Against a daemon that refuses both steps the wakes are the hello's, one per refused step, and one per early frame.
+#[tokio::test]
+async fn the_preamble_wakes_the_window_for_each_frame_and_each_reply() {
+    let _env = crate::net::state::test_env::set_test_env();
+    let mut wakes = Vec::new();
+    for early in [Vec::new(), vec![
+        Frame::evt("tree.invalidate", serde_json::json!({ "workspace_id": null })).with_rev(1),
+        Frame::evt(op::REPL_FRAME, serde_json::json!({ "eval_id": 5, "frame": { "kind": "stdout", "text": "early" } })),
+    ]] {
+        let window = CountingWindow::default();
+        let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+        let (session, daemon, _evt_rx, hold) =
+            run_against_fake_daemon_counting("preamble-wakes", hello_ok(), early, 3, gate, window.clone()).await;
+        drop(hold);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), daemon).await.expect("the fake daemon ends");
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.expect("the session ends");
+        wakes.push(window.0.load(std::sync::atomic::Ordering::SeqCst));
+    }
+    assert_eq!(wakes, [3, 5], "(no early frame), (two early frames): the hello, two refused steps, and each early frame");
 }
 
 #[tokio::test]
