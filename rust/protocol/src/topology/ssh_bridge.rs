@@ -133,14 +133,15 @@ fn argv(recipe: &SshRecipe) -> (&'static str, Vec<String>) {
 
 /// The ssh command for `recipe`: its argv and three piped stdio.
 fn command(recipe: &SshRecipe) -> std::process::Command {
+    type Argv = (std::ffi::OsString, Vec<std::ffi::OsString>);
     #[cfg(any(test, feature = "test-handshake-bound"))]
-    if let Some(fixture) = &recipe.test_command {
-        let mut cmd = std::process::Command::new(&fixture.program);
-        cmd.args(&fixture.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        keep_no_descriptor(&mut cmd);
-        return cmd;
-    }
-    let (program, args) = argv(recipe);
+    let fixture: Option<Argv> = recipe.test_command.as_ref().map(|f| (f.program.clone().into(), f.args.clone()));
+    #[cfg(not(any(test, feature = "test-handshake-bound")))]
+    let fixture: Option<Argv> = None;
+    let (program, args) = fixture.unwrap_or_else(|| {
+        let (program, args) = argv(recipe);
+        (program.into(), args.into_iter().map(Into::into).collect())
+    });
     let mut cmd = std::process::Command::new(program);
     cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     keep_no_descriptor(&mut cmd);
