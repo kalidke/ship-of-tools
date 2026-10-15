@@ -29,3 +29,5 @@ tempfile = { workspace = true }
 sot-log = { path = "../log", features = ["test-support"] }
 # The lane client's tests dial a fake daemon on a local socket or pipe, the one transport it has.
 interprocess = { workspace = true }
+# The descriptor test clears a pipe's close-on-exec flag, which std has no call for.
+libc = { workspace = true }

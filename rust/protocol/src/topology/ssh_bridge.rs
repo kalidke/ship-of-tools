@@ -137,12 +137,28 @@ fn command(recipe: &SshRecipe) -> std::process::Command {
     if let Some(fixture) = &recipe.test_command {
         let mut cmd = std::process::Command::new(&fixture.program);
         cmd.args(&fixture.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        keep_no_descriptor(&mut cmd);
         return cmd;
     }
     let (program, args) = argv(recipe);
     let mut cmd = std::process::Command::new(program);
     cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    keep_no_descriptor(&mut cmd);
     cmd
+}
+
+/// Marks this process's descriptors close-on-exec through the one sweep the daemon's and the capsule's children use, so
+/// the child keeps none past its exec. On macOS a descriptor is close-on-exec only after a second call, and the window
+/// starts its ssh children from several threads, so one started between the two calls would keep it.
+fn keep_no_descriptor(cmd: &mut std::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: the hook runs in the child between fork and exec and makes only async-signal-safe calls.
+        unsafe { cmd.pre_exec(sot_log::host::inherit_none) };
+    }
+    #[cfg(not(unix))]
+    let _ = cmd;
 }
 
 /// Spawn the child for a synchronous caller — the lane client, which
@@ -443,6 +459,20 @@ mod tests {
             Err(SpawnError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
             other => panic!("admission did not reach the fixture program: {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_keeps_no_descriptor_its_start_caught_before_close_on_exec() {
+        use std::os::fd::AsRawFd;
+        let (_reader, writer) = std::io::pipe().expect("pipe");
+        let fd = writer.as_raw_fd();
+        // SAFETY: fcntl changes only this process's flags on a descriptor the test holds open.
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0, "clearing close-on-exec failed");
+        let script = format!("if test -e /dev/fd/{fd}; then echo held; else echo none; fi");
+        let recipe = SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", script.as_str()]);
+        let ran = sot_log::test_wait::run_within(&mut command(&recipe), std::time::Duration::from_secs(10)).ok();
+        assert_eq!(ran.stdout.trim(), "none", "the child kept a descriptor its start caught before close-on-exec");
     }
 
     #[derive(Debug, PartialEq, Eq)]
