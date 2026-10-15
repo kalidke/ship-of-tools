@@ -418,6 +418,143 @@ mod tests {
         }
     }
 
+    /// The scratch-folder test's name, which its re-runs of this binary run alone.
+    const SCRATCH_TEST: &str =
+        "fetch::tests::a_killed_checks_scratch_folder_goes_at_a_later_check_and_a_running_ones_stays";
+
+    /// Which check a re-run of this binary for [`SCRATCH_TEST`] runs: `hang` or `finish`. Unset in an ordinary run.
+    const PART: &str = "SOT_UPDATER_SCRATCH_PART";
+
+    /// The bound on each wait of the scratch-folder test.
+    const BOUND: Duration = Duration::from_secs(30);
+
+    /// A re-run of this binary that runs the check `part`, with `tmp` as its temporary folder.
+    fn check_command(tmp: &Path, part: &str) -> (std::process::Command, sot_log::test_isolated::Entry) {
+        let (mut command, entry) = sot_log::test_isolated::test_command(SCRATCH_TEST);
+        for key in ["TMPDIR", "TMP", "TEMP"] {
+            command.env(key, tmp);
+        }
+        command.env(PART, part).stdin(std::process::Stdio::null());
+        (command, entry)
+    }
+
+    /// A check that hangs in its download, killed and waited for when dropped, so a failing test leaves none running.
+    struct Hanging(std::process::Child, Option<sot_log::test_isolated::Entry>);
+
+    impl Hanging {
+        fn start(tmp: &Path) -> Self {
+            let (mut command, entry) = check_command(tmp, "hang");
+            Self(command.spawn().expect("a check in a process of its own"), Some(entry))
+        }
+
+        /// SIGKILLs the check (TerminateProcess on Windows), so it runs no code, and waits for its end.
+        fn kill(mut self) {
+            self.0.kill().expect("kill the check");
+            sot_log::test_isolated::wait_within(&mut self.0, BOUND);
+            self.1.take().expect("the check's entry record").assert_once(self.0.id());
+        }
+    }
+
+    impl Drop for Hanging {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = sot_log::test_isolated::wait_until(&mut self.0, std::time::Instant::now() + BOUND);
+        }
+    }
+
+    /// Runs the check `finish` to its end in a re-run of this binary whose temporary folder is `tmp`.
+    fn finish_check(tmp: &Path) {
+        let (mut command, entry) = check_command(tmp, "finish");
+        command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let child = command.spawn().expect("a check in a process of its own");
+        let pid = child.id();
+        let (status, out, err) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+        entry.assert_once(pid);
+        assert!(status.success(), "a check run to its end failed: {status}\n{out}{err}");
+    }
+
+    /// The names in `tmp`, sorted.
+    fn names(tmp: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(tmp)
+            .expect("the checks' temporary folder")
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The scratch folder in `tmp` that `before` does not name, once a check's download has begun writing in it.
+    fn downloading(tmp: &Path, before: &[String]) -> String {
+        let deadline = std::time::Instant::now() + BOUND;
+        loop {
+            let begun = |name: &String| !before.contains(name) && tmp.join(name).join("SHA256SUMS").exists();
+            if let Some(name) = names(tmp).into_iter().find(begun) {
+                return name;
+            }
+            assert!(std::time::Instant::now() < deadline, "no check began its download in {}", tmp.display());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The re-run's body: a check whose release list names a newer release, and whose download of that release's
+    /// SHA256SUMS never answers (`hang`, a check killed mid-download) or writes it (`finish`).
+    fn check_in_this_process(hang: bool) {
+        use crate::spawn::tests::output;
+        let spawner = RecordingSpawner(move |cmd: &tokio::process::Command| {
+            let args: Vec<String> = cmd.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+            let Some(at) = args.iter().position(|arg| arg == "-o") else {
+                return Ok(output(0, br#"[{"tag_name":"v0.6.0","prerelease":false}]"#.to_vec()));
+            };
+            if hang {
+                // A download under way: part of the file is there, and the rest never comes.
+                std::fs::write(&args[at + 1], "su")?;
+                loop {
+                    std::thread::park();
+                }
+            }
+            std::fs::write(&args[at + 1], "sums\n")?;
+            Ok(output(0, Vec::new()))
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
+        let latest = runtime.block_on(Fetcher::Curl.latest(&spawner, "example/project", "0.1.0"));
+        assert_eq!(latest.expect("the check").expect("a newer release").sums_text, "sums\n");
+    }
+
+    /// A check killed mid-download (a crash, a SIGKILL: no code runs) leaves its scratch folder, and a later check, in
+    /// another process, removes it; a check that is still running keeps its own. Each check runs in a re-run of this
+    /// binary whose temporary folder is one of this test's own.
+    #[test]
+    fn a_killed_checks_scratch_folder_goes_at_a_later_check_and_a_running_ones_stays() {
+        if let Ok(part) = std::env::var(PART) {
+            sot_log::test_isolated::enter(SCRATCH_TEST);
+            return check_in_this_process(part == "hang");
+        }
+        let root = std::env::temp_dir().join(format!("sot-updater-scratch-test-{}", crate::unique::suffix()));
+        let tmp = root.join("tmp");
+        std::fs::create_dir_all(&tmp).expect("the checks' temporary folder");
+        let running = Hanging::start(&tmp);
+        let kept = downloading(&tmp, &[]);
+        let killed = Hanging::start(&tmp);
+        let left = downloading(&tmp, &[kept.clone()]);
+        killed.kill();
+        assert!(tmp.join(&left).is_dir(), "a killed check runs no code: its scratch folder {left} stays");
+        // A later check, not always the next: Windows frees a killed process's lock after a delay with no stated bound
+        // (`sot_log`'s fault_terminate test waits it out the same way), so a check may still find it held.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            finish_check(&tmp);
+            if !tmp.join(&left).exists() || std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let after = names(&tmp);
+        println!("scratch: the running check's {kept:?} and the killed check's {left:?}; after a later check, present: {after:?}");
+        running.kill();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(after, vec![kept], "a running check's scratch folder stays and a killed one's goes");
+    }
+
     #[tokio::test]
     async fn dir_fetcher_serves_local_files() {
         let dir = std::env::temp_dir().join(format!("sot-updater-fetch-{}", std::process::id()));
