@@ -31,7 +31,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | durable write (fsync, no-clobber rename, publish) | primitive | platform | `rust/log/src/host/durable.rs` `publish_noreplace`, `fsync_dir`, `ensure_container`; `rust/backend/src/durable.rs` `write` |
 | redial pace of a long-lived connection or child (`Redial`, `STABLE`) | rule | platform | `rust/log/src/host/redial.rs` `Redial`, `STABLE`; callers `rust/frontend/src/net/transport/mod.rs` `spawn`, `redial_for`; `rust/backend/src/comm/mail/hub_link.rs` `hold_link`; `rust/log/src/attach_client/rules/reconnect.rs` `ReconnectState`; `rust/log/src/attach_client/worker/converge.rs` `probe_supervisor_lane`; `rust/backend/src/sidecars/kernel.rs` `supervisor_loop` |
 | bounded file locks | primitive | platform | `rust/log/src/host/lock.rs` `lock_writer`, `lock_supervisor`, `try_lock_daemon` |
-| a held folder: one its maker holds by a lock (`holder.lock`) for its life, and the removal of one whose maker has ended | primitive | platform | `rust/log/src/host/held_dir.rs` `HeldDir`, `remove_ended`; `rust/log/src/host/lock.rs` `lock_new` |
+| a held folder: one its maker holds by a lock (`holder.lock`) for its life, and the removal of one whose maker has ended | primitive | platform | `rust/log/src/host/held_dir.rs` `HeldDir`, `remove_ended`; `rust/log/src/host/lock.rs` `lock_new`, `lock_held` |
 | volume preflight | primitive | platform | `rust/log/src/host/volume.rs` `preflight_volume` |
 | storage-exhaustion recognition | primitive | platform | `rust/log/src/host/storage.rs` `storage_exhaustion` |
 | Windows SDDL/SID helpers | primitive | platform | `rust/log/src/host/winsec.rs` `owner_protected_descriptor`, `sid_string_from_process` |

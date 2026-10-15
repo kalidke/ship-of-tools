@@ -5,7 +5,7 @@
 //! a client cut off past its lease (90 s by default) can lose its lock and its folder with it. A pid
 //! names a process on one computer and in one pid namespace only, and after the process ends it names the next one.
 
-use super::lock::{lock_new, lock_writer, WriterLock};
+use super::lock::{lock_held, lock_new, WriterLock};
 use crate::Result;
 use std::path::{Path, PathBuf};
 
@@ -76,7 +76,7 @@ pub fn remove_ended(parent: &Path, prefix: &str) -> usize {
         }
         let path = entry.path();
         // A held lock answers within the retry deadline; one that is not there or cannot be opened, at once.
-        let Ok(lock) = lock_writer(&path.join(HOLDER)) else {
+        let Ok(lock) = lock_held(&path.join(HOLDER)) else {
             continue;
         };
         match remove_held(&path, lock) {
@@ -120,7 +120,8 @@ fn remove_held(path: &Path, lock: WriterLock) -> std::io::Result<()> {
         };
         gone(removed)?;
     }
-    // On Windows a lock taken by `lock_writer` lets no one delete its file, this process included, until it is freed.
+    // Freed and closed before its file goes: where a file system deletes a file only at its last close (one without
+    // POSIX deletion), this handle would keep the file, and so the folder, in place.
     drop(lock);
     gone(std::fs::remove_file(path.join(HOLDER)))?;
     gone(std::fs::remove_dir(path))
@@ -210,5 +211,21 @@ mod tests {
         let live_path = live.path().to_path_buf();
         live.remove().unwrap();
         assert!(!live_path.exists(), "{} is removed by its maker", live_path.display());
+    }
+
+    /// A removal holds a folder's lock file open while it waits on a live maker's lock, and the maker removes its
+    /// folder all the same: on Windows the removal's open shares deletion, as the maker's does (a fence's does
+    /// not), and unix lets any open file go. Here a removal's take of an ended maker's lock holds the file open, as
+    /// its wait would.
+    #[test]
+    fn a_held_folder_goes_while_a_removal_holds_its_lock_file_open() {
+        let root = tempfile::tempdir().unwrap();
+        let ended = HeldDir::create(root.path(), "held-").unwrap();
+        let path = ended.path().to_path_buf();
+        drop(ended);
+        let open = lock_held(&path.join(HOLDER)).unwrap();
+        std::fs::remove_file(path.join(HOLDER)).expect("a lock file a removal holds open goes");
+        std::fs::remove_dir(&path).expect("and its folder with it");
+        drop(open);
     }
 }

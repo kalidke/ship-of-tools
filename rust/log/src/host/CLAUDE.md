@@ -13,7 +13,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - Kernel locks (`lock.rs`: `lock_writer`, `lock_supervisor`, and for a fence handed to a child `lock_supervisor_for_handover`,
   `HandoverLock`).
 - Held folders (`held_dir.rs`: `HeldDir`, `remove_ended`): a folder that lives while the process that made it does,
-  held by its lock (`lock.rs`: `lock_new`).
+  held by its lock (`lock.rs`: `lock_new`, and `lock_held` for a removal's take).
 - The native process-birth primitives (`process_tree/`, its own page): the two-phase launcher.
 - The daemon's single-instance lock (`lock.rs`: `daemon_lock_path`, `try_lock_daemon`, `DaemonLock`), reached by the backend
   as `sot_log::host::daemon_lock_path`, `try_lock_daemon` and `DaemonLock`.
@@ -56,7 +56,9 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   while the maker's client holds its lease: an NFS client cut off from the server past its lease (90 s by default) can
   lose its lock, and another computer's start can then remove its live folder. A temporary folder on a file system that
   refuses locks (NFSv3 without its lock service answers ENOLCK) stops `HeldDir::create`, so no Julia child starts and
-  every release check fails with "making the release check's scratch folder".
+  every release check fails with "making the release check's scratch folder". A removal waiting on a live maker's lock
+  never stops the maker removing its folder: on Windows a held folder's lock file is opened sharing deletion, by its
+  maker (`lock_new`) and by a removal (`lock_held`), where a fence's lock file, never removed, is not (`lock_writer`).
 - Kernel file locks are taken only inside three guards: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`, whose `Drop` unlocks, and `HandoverLock` in `lock.rs`, whose drop only closes, so a copy of its descriptor in a child keeps the lock held (a birth's claim on a row's fence). rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
 - A connection or child restarted through `Redial` waits from its caller's floor, doubling to its cap, and starts over

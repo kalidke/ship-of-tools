@@ -42,7 +42,23 @@ impl Drop for WriterLock {
 }
 
 pub fn lock_writer(lock_path: &Path) -> Result<WriterLock> {
+    take(open_lock_file(lock_path)?, lock_path)
+}
+
+/// A held folder's lock (`held_dir.rs`), taken as [`lock_writer`] takes a fence but on Windows opened sharing deletion,
+/// as its maker's [`lock_new`] is: a removal waits here on a live maker's lock with the file open, and an open that
+/// shares no deletion would fail the maker's own removal of the file (os error 32). The maker's open already lets the
+/// file go, so this lets no one replace a live maker's lock who could not before.
+pub(super) fn lock_held(lock_path: &Path) -> Result<WriterLock> {
+    #[cfg(unix)]
     let file = open_lock_file(lock_path)?;
+    #[cfg(windows)]
+    let file = open_lock_file_sharing(lock_path, windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE)?;
+    take(file, lock_path)
+}
+
+/// Takes the lock on `file`, the lock file at `lock_path`, within the retry deadline.
+fn take(file: File, lock_path: &Path) -> Result<WriterLock> {
     // Bounded retry on WouldBlock: a just-dead writer's lock can outlive it
     // — on unix through a forked-but-not-yet-exec'd producer child holding
     // the open file description (the window closes at the child's
@@ -242,6 +258,12 @@ fn open_lock_file(lock_path: &Path) -> Result<File> {
 /// re-pointed for a second fence. Std opens its files non-inheritable.
 #[cfg(windows)]
 fn open_lock_file(lock_path: &Path) -> Result<File> {
+    open_lock_file_sharing(lock_path, 0)
+}
+
+/// [`open_lock_file`] on Windows, sharing also `share` (a held folder's lock shares deletion, [`lock_held`]).
+#[cfg(windows)]
+fn open_lock_file_sharing(lock_path: &Path, share: u32) -> Result<File> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
@@ -250,7 +272,7 @@ fn open_lock_file(lock_path: &Path) -> Result<File> {
     let f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | share)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(lock_path)
         .map_err(|e| io_ctx(e, format_args!("open writer.lock (open-existing) {lock_path:?}")))?;
