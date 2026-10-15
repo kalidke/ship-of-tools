@@ -153,7 +153,8 @@ pub(super) async fn read_hello<R: tokio::io::AsyncBufRead + Unpin, Wn: Redraw>(
     Ok(frame)
 }
 
-/// Record the accepted hello: session id and the Connected event.
+/// Record the accepted hello: session id and the Connected event. Returns the window's REPL runs the daemon names still
+/// running (`HelloRes::repl_running`), which this connection then waits on as on any run.
 pub(super) fn accept_hello<Wn: Redraw>(
     frame: Frame,
     host: &HostKey,
@@ -161,7 +162,7 @@ pub(super) fn accept_hello<Wn: Redraw>(
     resolved: ResolvedDial,
     emit: &impl Fn(IncomingEvt),
     window: &Wn,
-) -> Result<()> {
+) -> Result<Vec<u64>> {
     let hello_res: HelloRes = serde_json::from_value(frame.payload).context("hello res")?;
     // ADR 0030 §2: a successful hello from a pre-versioning backend comes back
     // with protocol == 0. We still run (it spoke a compatible wire), but warn
@@ -190,6 +191,7 @@ pub(super) fn accept_hello<Wn: Redraw>(
         proxy: hello_res.proxy,
         resolved,
         backend_version: hello_res.app_version.clone(),
+        repl_running: hello_res.repl_running.clone(),
     });
     window.request_redraw();
     // Manager review (round 2, finding 14): the declaration, not only the
@@ -202,9 +204,10 @@ pub(super) fn accept_hello<Wn: Redraw>(
         session_id = %hello_res.session_id,
         revision = hello_res.revision,
         snapshot_pending = hello_res.snapshot_pending,
+        repl_running = ?hello_res.repl_running,
         "connected"
     );
-    Ok(())
+    Ok(hello_res.repl_running)
 }
 
 #[cfg(test)]

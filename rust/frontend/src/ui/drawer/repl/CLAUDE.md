@@ -23,6 +23,12 @@ rust/frontend/src/ui/CLAUDE.md.
   hello's `instance`), and every other run under the daemon's number, after a `started` frame (ADR 0033, the
   one-numberer amendment).
 - The log keeps at most 256 entries, trimmed from the front (`State::submit_repl_input`).
+- A run's end is appended to what its entry showed, never put in its place (`end_entry`): the one error frame of its
+  connection's end follows the run's output.
+- When a host's hello names the window's runs still running there (`HelloRes::repl_running`), each entry its link's
+  end closed is in flight again, with a line saying the link came back, and routed to its row, so the rest of the run
+  and a Ctrl+C reach it (`State::on_repl_running`); every other entry stays closed. Test
+  `a_returning_link_reopens_the_runs_still_running` (a native State fixture).
 - A history walk skips in-flight entries (`history_step_back`).
 - A Ctrl+C names every eval in flight, an entry whose done frame was lost included, so it reaches the running eval if it is any of them (`in_flight_eval_ids`).
 - A scrolled view stays on its rows while output grows (`pinned_repl_scroll`).

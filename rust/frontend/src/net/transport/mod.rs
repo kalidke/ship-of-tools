@@ -59,7 +59,7 @@ use crate::net::state::{note_revision, SessionState, StateSaveGate};
 use hello::{accept_hello, read_hello, send_hello, HelloRefused};
 use ops::*;
 use preamble::{preamble_preview, preamble_tree_root};
-use reply::{handle_response_frame, PendingGuard, PendingKind};
+use reply::{eval_running, handle_response_frame, PendingGuard, PendingKind};
 use request::send_request;
 
 // The transport's interface: what code outside this folder names.
@@ -543,19 +543,26 @@ where
     let hello_id = take_id(&mut next_id);
     send_hello(&mut tx, hello_id, &session, token).await?;
     let frame = read_hello(&mut rx, hello_id, gate, &mut session, &emit, window).await?;
-    accept_hello(frame, &host, &mut session, resolved, &emit, window)?;
+    // The window's REPL runs the daemon names still running: this connection waits on each as on any run, so its
+    // `done` or this connection's end closes the entry the window reopens for it.
+    for eval_id in accept_hello(frame, &host, &mut session, resolved, &emit, window)? {
+        eval_running(&mut pending, eval_id);
+    }
+    // A frame the daemon writes before a preamble reply goes where the steady loop sends it.
+    let mut other = |frame, blob| handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
 
     // tree.root — initial fetch on connect uses the default workspace
     // (no workspace_id). Once the chrome resumes a saved Sessions-mode
     // active_workspace_id it will re-fire this with the id set.
     let tree_id = take_id(&mut next_id);
-    let root_node_id = preamble_tree_root(&mut tx, &mut rx, tree_id, &host, &mut session, &emit, window).await?;
+    let root_node_id =
+        preamble_tree_root(&mut tx, &mut rx, tree_id, &host, &mut session, &emit, window, &mut other).await?;
 
     // preview.get against whatever the backend just reported as the root.
     // For the spike that's enough to prove blob round-trip; real previews
     // follow user navigation.
     let prev_id = take_id(&mut next_id);
-    preamble_preview(&mut tx, &mut rx, prev_id, root_node_id, &host, &mut session, &emit, window).await?;
+    preamble_preview(&mut tx, &mut rx, prev_id, root_node_id, &host, &mut session, &emit, window, &mut other).await?;
 
     steady::steady_loop(
         rx,

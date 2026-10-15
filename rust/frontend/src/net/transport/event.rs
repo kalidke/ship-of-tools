@@ -65,6 +65,10 @@ pub enum IncomingEvt {
         /// the ADR 0030 §2 protocol-mismatch overlay. Empty for a
         /// pre-versioning backend that doesn't send the field.
         backend_version: String,
+        /// The window's REPL runs still running on this daemon, by the window's own numbers (`HelloRes::repl_running`):
+        /// the drawer reopens each entry the link's end closed (`State::on_repl_running`). Empty from a daemon that
+        /// predates the field.
+        repl_running: Vec<u64>,
     },
     Disconnected {
         reason: String,

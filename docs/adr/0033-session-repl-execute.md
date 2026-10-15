@@ -203,3 +203,10 @@ frame bus, so the `done` of each run it names is written to that connection. It 
 no run whose request never reached the daemon, no other window's or session's run, and nothing after a daemon restart:
 the REPL children end with the daemon, and its records are in memory. The field is additive: a daemon that predates it
 names none, and a window that predates it ignores it.
+
+The window closes each of its runs in flight on a link at the link's end, with one error frame appended to the output
+the entry had shown; an eval or `r`/`R` run whose ack had not come is closed too, since its request may or may not have
+reached the daemon. At the next hello it reopens each entry the reply names, with a line saying the link came back, so
+the rest of the run and a Ctrl+C reach it; every other entry stays closed with its reason. Against a daemon that
+predates the field it reopens nothing. A frame the daemon writes before a connect preamble reply reaches its handler,
+so a named run that ends during the preamble still closes.

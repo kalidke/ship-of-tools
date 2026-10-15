@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 7] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 8] = [
         ("result_target_uses_host_and_listed_identity", State::result_target_uses_host_and_listed_identity),
         ("passing_a_result_row_keeps_its_badge", State::passing_a_result_row_keeps_its_badge),
         ("first_named_account_is_sent", State::first_named_account_is_sent),
@@ -135,6 +135,10 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
         (
             "a_run_its_connections_end_closes_keeps_its_output",
             State::a_run_its_connections_end_closes_keeps_its_output,
+        ),
+        (
+            "a_returning_link_reopens_the_runs_still_running",
+            State::a_returning_link_reopens_the_runs_still_running,
         ),
     ];
     // Every fixture runs and reports; the child fails after the last if any failed.

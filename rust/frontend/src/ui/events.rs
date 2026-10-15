@@ -1,6 +1,6 @@
 //! `drain_events`: applies each daemon event queued for the window (`IncomingEvt`), by variant.
-//! Routes only: each variant goes to `on_<variant>` in its owner's `replies.rs`;
-//! `note_host_connection` runs first.
+//! Routes only: each variant goes to `on_<variant>` in its owner's `replies.rs` (a `Connected`'s REPL runs still
+//! running to the REPL drawer's `on_repl_running`); `note_host_connection` runs first.
 
 use super::*;
 
@@ -40,15 +40,11 @@ impl State {
                     proxy,
                     resolved,
                     backend_version,
-                } => self.on_connected(
-                    event_host,
-                    session_id,
-                    revision,
-                    project_root,
-                    proxy,
-                    resolved,
-                    backend_version,
-                ),
+                    repl_running,
+                } => {
+                    self.on_repl_running(&event_host, repl_running);
+                    self.on_connected(event_host, session_id, revision, project_root, proxy, resolved, backend_version)
+                }
                 crate::net::transport::IncomingEvt::Disconnected { reason } => {
                     self.on_disconnected(event_host, reason)
                 }

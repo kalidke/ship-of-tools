@@ -4,6 +4,17 @@
 
 use crate::ui::*;
 
+/// The line a reopened entry gets when its host's hello names its run still running (`State::on_repl_running`).
+const LINK_BACK: &str = "the connection to the daemon is back, and this eval is still running";
+
+/// Ends `entry` with what its reply or its connection's end brought: those frames are appended to what the entry
+/// already shows (its streamed output), never put in its place.
+fn end_entry(entry: &mut ReplEntry, elapsed_ms: u64, frames: Vec<ReplFrame>) {
+    entry.frames.extend(frames);
+    entry.elapsed_ms = elapsed_ms;
+    entry.in_flight = false;
+}
+
 impl State {
     pub(crate) fn on_repl_eval_done(
         &mut self,
@@ -49,11 +60,7 @@ impl State {
                         snap.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                     {
                         if !acceptance {
-                            if !frames.is_empty() {
-                                entry.frames = frames;
-                            }
-                            entry.elapsed_ms = elapsed_ms;
-                            entry.in_flight = false;
+                            end_entry(entry, elapsed_ms, frames);
                         }
                     } else {
                         tracing::debug!(
@@ -75,11 +82,7 @@ impl State {
                     self.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                 {
                     if !acceptance {
-                        if !frames.is_empty() {
-                            entry.frames = frames;
-                        }
-                        entry.elapsed_ms = elapsed_ms;
-                        entry.in_flight = false;
+                        end_entry(entry, elapsed_ms, frames);
                     }
                 } else {
                     tracing::debug!(
@@ -89,6 +92,35 @@ impl State {
                 }
             }
         }
+    }
+
+    /// A host's hello named this window's runs still running there (`HelloRes::repl_running`, by the window's
+    /// numbers): each entry of that host's rows its link's end closed is in flight again, saying the link came back,
+    /// and routed to its row, so the rest of its run and a Ctrl+C reach it. A run with no closed entry here is skipped.
+    pub(crate) fn on_repl_running(&mut self, event_host: &HostKey, eval_ids: Vec<u64>) {
+        if eval_ids.is_empty() {
+            return;
+        }
+        let active = self.active_ws_key();
+        for eval_id in eval_ids {
+            let closed = |e: &ReplEntry| e.eval_id == eval_id && !e.in_flight;
+            let row = if &active.0 == event_host && self.repl_log.iter().any(closed) {
+                Some((active.clone(), &mut self.repl_log))
+            } else {
+                self.repl_rows
+                    .parked
+                    .iter_mut()
+                    .find(|(row, pane)| **row != active && &row.0 == event_host && pane.repl_log.iter().any(closed))
+                    .map(|(row, pane)| (row.clone(), &mut pane.repl_log))
+            };
+            let Some((row, log)) = row else { continue };
+            if let Some(entry) = log.iter_mut().find(|e| closed(e)) {
+                entry.in_flight = true;
+                entry.frames.push(ReplFrame::Stderr { text: LINK_BACK.to_string() });
+            }
+            self.eval_id_workspace.insert((event_host.clone(), eval_id), row);
+        }
+        self.window.request_redraw();
     }
 
     pub(crate) fn on_repl_frame_streamed(
@@ -362,11 +394,7 @@ impl State {
                                     .iter_mut()
                                     .find(|e| e.eval_id == eval_id)
                                 {
-                                    if !frames.is_empty() {
-                                        entry.frames = frames;
-                                    }
-                                    entry.elapsed_ms = elapsed;
-                                    entry.in_flight = false;
+                                    end_entry(entry, elapsed, frames);
                                 }
                             }
                         }
@@ -374,11 +402,7 @@ impl State {
                             if let Some(entry) =
                                 self.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                             {
-                                if !frames.is_empty() {
-                                    entry.frames = frames;
-                                }
-                                entry.elapsed_ms = elapsed;
-                                entry.in_flight = false;
+                                end_entry(entry, elapsed, frames);
                             }
                         }
                     }
@@ -494,6 +518,77 @@ mod native_fixture {
             let stdout = |text: &str| format!("{:?}", ReplFrame::Stdout { text: text.into() });
             let kept = |text: &str| Some((false, vec![stdout(text), format!("{:?}", link_lost())]));
             anyhow::ensure!(got == (kept("shown"), kept("parked")), "(on screen, parked): {got:?}");
+            Ok(())
+        }
+
+        /// A host's hello that names this window's runs still running reopens each entry of that host its link's end
+        /// closed, on screen and in a parked row, saying the link came back, so the rest of each run reaches it and a
+        /// Ctrl+C names it; an entry the hello does not name, and one of another host, stay closed.
+        #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+        pub(in crate::ui) fn a_returning_link_reopens_the_runs_still_running(&mut self) -> Result<()> {
+            let (host, other): (HostKey, HostKey) = ("<repl-host>".to_string(), "<repl-other>".to_string());
+            let (tx, _requests) = tokio::sync::mpsc::unbounded_channel();
+            self.conns = vec![(host.clone(), tx)];
+            self.active_host = host.clone();
+            let (events, receiver) = std::sync::mpsc::channel();
+            self.evt_rx = receiver;
+            let send = |evt| {
+                let closed = |_| anyhow::anyhow!("the fixture's event channel closed");
+                events.send((host.clone(), evt)).map_err(closed)
+            };
+            let closed = |eval_id: u64, text: &str| ReplEntry {
+                frames: vec![ReplFrame::Stdout { text: text.into() }, link_lost()],
+                in_flight: false,
+                ..running(eval_id, text)
+            };
+            let (parked, elsewhere): (WsKey, WsKey) = ((host.clone(), "row-b".into()), (other, "row-c".into()));
+            self.repl_log = vec![closed(51, "a"), closed(53, "c")];
+            for (row, eval_id) in [(&parked, 52), (&elsewhere, 54)] {
+                let mut pane = WorkspaceReplSnapshot::default();
+                pane.repl_log = vec![closed(eval_id, "b")];
+                self.repl_rows.park(row.clone(), pane);
+            }
+            send(IncomingEvt::Connected {
+                session_id: "session".into(),
+                revision: 0,
+                host: None,
+                project_root: None,
+                proxy: false,
+                resolved: crate::net::transport::ResolvedDial::Local,
+                backend_version: "test".into(),
+                repl_running: vec![51, 52, 54, 99],
+            })?;
+            self.drain_events();
+            let pane = |state: &State, row: &WsKey| {
+                state.repl_rows.parked.get(row).map(|p| p.repl_log.clone()).unwrap_or_default()
+            };
+            let flight = |log: &[ReplEntry], eval_id| log.iter().find(|e| e.eval_id == eval_id).map(|e| e.in_flight);
+            let (in_parked, in_elsewhere) = (pane(self, &parked), pane(self, &elsewhere));
+            let on_screen = &self.repl_log;
+            let reopened =
+                [flight(on_screen, 51), flight(&in_parked, 52), flight(on_screen, 53), flight(&in_elsewhere, 54)];
+            let interrupt = crate::ui::drawer::repl::log::in_flight_eval_ids(&self.repl_log);
+            for eval_id in [51, 52] {
+                let rest = ReplFrame::Stdout { text: "rest".into() };
+                send(IncomingEvt::ReplFrameStreamed { eval_id, workspace_id: None, frame: rest })?;
+                let done = ReplFrame::Done { eval_id, elapsed_ms: 5 };
+                send(IncomingEvt::ReplFrameStreamed { eval_id, workspace_id: None, frame: done })?;
+            }
+            self.drain_events();
+            let kinds = |log: &[ReplEntry], eval_id| {
+                let entry = log.iter().find(|e| e.eval_id == eval_id)?;
+                let kind = |f: &ReplFrame| format!("{f:?}").split(' ').next().unwrap_or_default().to_string();
+                Some((entry.in_flight, entry.frames.iter().map(kind).collect::<Vec<_>>()))
+            };
+            let ended = (kinds(&self.repl_log, 51), kinds(&pane(self, &parked), 52));
+            println!(
+                "repl-link-back: in flight (51 on screen, 52 parked, 53 not named, 54 another host's) {reopened:?}, \
+                 a Ctrl+C names {interrupt:?}, then {ended:?}"
+            );
+            anyhow::ensure!(reopened == [Some(true), Some(true), Some(false), Some(false)], "reopened: {reopened:?}");
+            anyhow::ensure!(interrupt == [51], "a Ctrl+C on screen names {interrupt:?}");
+            let rest = Some((false, ["Stdout", "Error", "Stderr", "Stdout"].map(String::from).to_vec()));
+            anyhow::ensure!(ended == (rest.clone(), rest), "the rest of each run: {ended:?}");
             Ok(())
         }
     }
