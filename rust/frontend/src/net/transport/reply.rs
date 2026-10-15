@@ -205,7 +205,8 @@ impl Drop for PendingGuard<'_> {
                     IncomingEvt::MarkdownTokens { lang, source_hash, spans: Vec::new() }
                 }
                 // An eval or `r`/`R` run whose ack had not come is ended too: its request may or may not have reached
-                // the daemon, and if it did and the run still goes on, the next hello names it.
+                // the daemon, and if its REPL accepted it before the next hello and the run still goes on, that hello
+                // names it (a REPL start that outlasts the redial accepts it later: the daemon's repl page).
                 PendingKind::ReplEval { eval_id }
                 | PendingKind::ReplRunFile { eval_id, .. }
                 | PendingKind::EvalRunning { eval_id } => IncomingEvt::ReplEvalDone {
@@ -1117,7 +1118,8 @@ mod wait_end_tests {
 
     /// An eval and an `r`/`R` run whose request was written but whose ack had not come when the connection ended are
     /// ended too, each with the one error frame. The request may or may not have reached the daemon; if it did and the
-    /// run is still going, the next hello names it (`HelloRes::repl_running`) and the window reopens it.
+    /// run is still going and the REPL accepted it before the next hello, that hello names it (`HelloRes::repl_running`)
+    /// and the window reopens it; a run accepted after it is not named.
     #[test]
     fn an_eval_or_run_whose_ack_had_not_come_ends_when_its_connection_ends() {
         let (evt_tx, evt_rx) = std::sync::mpsc::channel();
