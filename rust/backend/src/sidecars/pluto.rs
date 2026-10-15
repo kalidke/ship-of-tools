@@ -26,6 +26,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+use crate::sidecars::child::StderrTail;
+
 #[derive(Clone)]
 pub struct Pluto {
     inner: Arc<PlutoInner>,
@@ -47,6 +49,11 @@ struct Running {
 /// answers). An open past it is an error, and its server is ended: replies are routed oldest-first, so a late `URL`
 /// would answer the next request.
 const PLUTO_OPEN_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a start waits for the server's `READY` line before it ends the child. A first start after a Julia, package
+/// or depot change precompiles Pluto and its dependencies, the same cold precompile the kernel's start bound allows
+/// for, so it is that bound, `KernelBounds::PRODUCT.start`.
+const PLUTO_READY_BOUND: std::time::Duration = super::kernel::KernelBounds::PRODUCT.start;
 
 struct Submission {
     abs_path: String,
@@ -143,7 +150,7 @@ async fn spawn_supervisor(
             start_script.display()
         ));
     }
-    let tmp = crate::sidecars::child_tmp::ChildTmp::new().context("pluto child temporary folder")?;
+    let mut tmp = crate::sidecars::child::ChildTmp::for_user_code(sig).await.context("pluto child temporary folder")?;
     let mut cmd = Command::new(julia_bin);
     tmp.apply(&mut cmd);
     cmd.arg(format!("--project={}", project_dir.display()))
@@ -160,26 +167,18 @@ async fn spawn_supervisor(
     let stdout = contained.stdout.take().context("pluto child stdout missing")?;
     let stderr = contained.stderr.take().context("pluto child stderr missing")?;
 
-    // Stderr drain — pure logging.
-    tokio::spawn(async move {
-        let mut reader = sot_protocol::child_lines::ChildLines::new(stderr);
-        while let Ok(Some(line)) = reader.next_line().await {
-            tracing::debug!(target: "pluto.stderr", "{line}");
-        }
-    });
-
+    let stderr = StderrTail::drain(stderr, |line| tracing::debug!(target: "pluto.stderr", "{line}"));
     let mut stdout_lines = sot_protocol::child_lines::ChildLines::new(stdout);
 
-    // Wait for the READY line before accepting any requests. Julia
-    // startup + Pluto load takes ~30s on a cold depot; the supervisor
+    // Wait for the READY line before accepting any requests: the supervisor
     // task can't usefully service OPEN requests until the server is
     // actually listening, so block here once on first spawn.
-    let ready_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
-    let base_url: String = loop {
+    let ready_deadline = tokio::time::Instant::now() + PLUTO_READY_BOUND;
+    let late = || anyhow!("pluto sidecar did not emit READY within {}s", PLUTO_READY_BOUND.as_secs());
+    let ready = loop {
         let now = tokio::time::Instant::now();
         if now >= ready_deadline {
-            let _ = contained.kill().await;
-            return Err(anyhow!("pluto sidecar did not emit READY within 180s"));
+            break Err(late());
         }
         let remaining = ready_deadline - now;
         let line = tokio::select! {
@@ -190,27 +189,29 @@ async fn spawn_supervisor(
                 let _ = tmp.retire(&mut contained).await;
                 return Err(anyhow!("the daemon is shutting down"));
             }
+            _ = tmp.display_ended() => {
+                break Err(anyhow!("pluto's display ended before READY, so the server was ended with it"));
+            }
         };
         match line {
             Ok(Ok(Some(line))) => {
                 if let Some(rest) = line.strip_prefix("READY ") {
-                    break rest.trim().to_string();
+                    break Ok(rest.trim().to_string());
                 } else {
                     tracing::warn!(line = %line, "pluto sidecar pre-READY chatter");
                 }
             }
-            Ok(Ok(None)) => {
-                let _ = tmp.retire(&mut contained).await;
-                return Err(anyhow!("pluto sidecar stdout closed before READY"));
-            }
-            Ok(Err(e)) => {
-                let _ = tmp.retire(&mut contained).await;
-                return Err(anyhow!("pluto sidecar stdout error: {e}"));
-            }
-            Err(_) => {
-                let _ = tmp.retire(&mut contained).await;
-                return Err(anyhow!("pluto sidecar did not emit READY within 180s"));
-            }
+            Ok(Ok(None)) => break Err(anyhow!("pluto sidecar stdout closed before READY")),
+            Ok(Err(e)) => break Err(anyhow!("pluto sidecar stdout error: {e}")),
+            Err(_) => break Err(late()),
+        }
+    };
+    let base_url = match ready {
+        Ok(base_url) => base_url,
+        Err(e) => {
+            let _ = tmp.retire(&mut contained).await;
+            stderr.warn(&format!("{e:#}")).await;
+            return Err(e);
         }
     };
     tracing::info!(base_url = %base_url, "pluto sidecar ready");
@@ -230,7 +231,7 @@ async fn spawn_supervisor(
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(64);
     let (ends, ended) = oneshot::channel();
-    tokio::spawn(supervisor_task(contained, stdin, stdout_lines, submit_rx, ended, sig, grant, tmp));
+    tokio::spawn(supervisor_task(contained, stdin, stdout_lines, submit_rx, ended, sig, grant, tmp, stderr));
     Ok(Running { submit: submit_tx, _ends: ends })
 }
 
@@ -276,6 +277,9 @@ enum Cause {
     Released,
     Stdout(String),
     Stdin(std::io::Error),
+    /// Its own display ended under it (Linux): a server left on an ended display could open the display's name once
+    /// another account binds it.
+    Display,
 }
 
 impl Cause {
@@ -288,6 +292,7 @@ impl Cause {
             Cause::Released => "its handle ended it".to_string(),
             Cause::Stdout(why) => format!("stdout: {why}"),
             Cause::Stdin(e) => format!("stdin: {e}"),
+            Cause::Display => "its display ended, so the server was ended with it; the next open starts a new one".to_string(),
         }
     }
 }
@@ -357,7 +362,8 @@ async fn supervisor_task(
     ended: oneshot::Receiver<()>,
     sig: &'static crate::lifecycle::child_signal::Signal,
     grant: Option<Grant>,
-    tmp: crate::sidecars::child_tmp::ChildTmp,
+    mut tmp: crate::sidecars::child::ChildTmp,
+    stderr: StderrTail,
 ) {
     // FIFO of in-flight oneshots. Pluto's serial line protocol replies
     // to each OPEN in order; we pop the matching reply on each URL/ERR. A
@@ -381,6 +387,7 @@ async fn supervisor_task(
                 // The child's exit, not its pipes' EOF: a descendant that
                 // inherited stdout keeps it open past the leader's death.
                 r = &mut exited => break Cause::Exited(r),
+                _ = tmp.display_ended() => break Cause::Display,
                 _ = &mut ended => break Cause::Released,
                 sub = submit_rx.recv() => {
                     let Some(sub) = sub else { break Cause::Closed };
@@ -398,6 +405,7 @@ async fn supervisor_task(
                         biased;
                         _ = sig.fired() => Err(Cause::Signal),
                         r = &mut exited => Err(Cause::Exited(r)),
+                        _ = tmp.display_ended() => Err(Cause::Display),
                         _ = &mut ended => Err(Cause::Released),
                         r = write => r.map_err(Cause::Stdin),
                     };
@@ -450,6 +458,9 @@ async fn supervisor_task(
     drop(stdin);
     if let Err(e) = tmp.retire(&mut contained).await {
         tracing::warn!(error = %e, "pluto child cleanup failed");
+    }
+    if !matches!(cause, Cause::Signal) {
+        stderr.warn(&format!("pluto server ended: {why}")).await;
     }
 }
 
@@ -520,6 +531,69 @@ mod port_parse_tests {
         let gone = gc.gone();
         drop(tx);
         assert!(gone, "the Pluto grandchild survived the shutdown");
+    }
+
+    /// A Pluto whose first boot outlasts the old 180 s bound (a cold precompile) is served, not ended. The paused clock
+    /// passes 181 s while the stand-in waits, then the stand-in says READY; a running blocking task keeps tokio from
+    /// moving the clock on its own (`tokio::time::pause`), so every wait here is the test's real-time poll.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_pluto_ready_after_the_old_180s_bound_is_served() {
+        let dir = tempfile::tempdir().unwrap();
+        let (started, go) = (dir.path().join("started"), dir.path().join("go"));
+        let stub = dir.path().join("stub-julia");
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!(
+                "#!/bin/sh\necho x > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\necho 'READY http://pluto.invalid/'\nexec sleep 30\n",
+                started.display(),
+                go.display()
+            ),
+        );
+        let script = dir.path().join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let (hold, held) = std::sync::mpsc::channel::<()>();
+        let still = tokio::task::spawn_blocking(move || held.recv());
+        let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
+        let task = tokio::spawn(async move { spawn_supervisor(&bin, &project, &script, sig).await });
+        async fn real_wait(what: &str, mut done: impl FnMut() -> bool) {
+            let began = std::time::Instant::now();
+            while !done() {
+                assert!(began.elapsed() < Duration::from_secs(20), "not within 20 s: {what}");
+                tokio::task::yield_now().await;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        // The stand-in runs only after the spawn's poll has set the READY deadline.
+        real_wait("the stand-in starts", || started.exists()).await;
+        tokio::time::advance(Duration::from_secs(181)).await;
+        std::fs::write(&go, "").unwrap();
+        real_wait("the start ends", || task.is_finished()).await;
+        drop(hold);
+        let _ = still.await;
+        let running = task.await.expect("the start task").unwrap_or_else(|e| panic!("a Pluto that says READY after 181 s was refused: {e:#}"));
+        sig.fire().expect("fire");
+        drop(running);
+        real_wait("the stand-in is reaped", || sig.live() == 0).await;
+    }
+
+    /// A Pluto that fails its boot leaves its own words in the log at warn: the stand-in writes Julia's error to stderr
+    /// and exits before READY.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pluto_that_fails_its_boot_logs_its_stderr_at_warn() {
+        let log = sot_log::test_log::capture();
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("stub-julia");
+        sot_log::test_exec::write_executable(&stub, "#!/bin/sh\necho 'ERROR: LoadError: (pluto-boot-red)' >&2\nexit 1\n");
+        let script = dir.path().join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
+        let err = spawn_supervisor(&bin, &project, &script, sig).await.err().expect("a child that exits before READY");
+        assert!(format!("{err:#}").contains("before READY"), "{err:#}");
+        within(Duration::from_secs(5), "the child's stderr is in the log at warn", || crate::sidecars::warned(&log.text(), "pluto-boot-red")).await;
     }
 
     /// A Pluto line may hold any byte (an `ERR` line quotes what failed): the open it answers gets U+FFFD for the byte,
@@ -753,6 +827,97 @@ exit(0)
         h.sig.fire().expect("fire");
         within(REACT, "the killed child's temporary file is gone", || !made.exists()).await;
         h.finish().await;
+    }
+
+    /// Pluto's server has a display of its own (Linux), which its notebook workers inherit with the rest of its
+    /// environment, and which ends with the server: the child's own exit here.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn pluto_has_its_own_display_which_ends_with_it() {
+        use crate::sidecars::contract_tests::{x11_answer, x11_cookie};
+        if !isolated("sidecars::pluto::port_parse_tests::pluto_has_its_own_display_which_ends_with_it", BODY) {
+            return;
+        }
+        executable("Xvfb");
+        let record = r#"write(joinpath(dir, "display.tmp"), get(ENV, "DISPLAY", "-"), "\n", get(ENV, "XAUTHORITY", "-")); mv(joinpath(dir, "display.tmp"), joinpath(dir, "display"))"#;
+        let h = Harness::start(READY_LOCAL, record).await;
+        within(REACT, "the server records its display", || h.dir.join("display").exists()).await;
+        let named = std::fs::read_to_string(h.dir.join("display")).unwrap();
+        let (display, cookie) = named.split_once('\n').expect("two lines");
+        let number: u32 = display.strip_prefix(':').and_then(|n| n.parse().ok()).unwrap_or_else(|| {
+            panic!("the server names a display of its own: {named:?}")
+        });
+        let cookie = x11_cookie(Path::new(cookie));
+        assert_eq!(x11_answer(number, Some(&cookie)), Some(1), "the server's cookie opens its display");
+        h.open_gate();
+        within(REACT, "the server's display ends with it", || x11_answer(number, Some(&cookie)) != Some(1)).await;
+        h.finish().await;
+    }
+
+    /// A stand-in for Pluto's julia that names its display in the file `named` (before READY, when `ready`), starts a
+    /// descendant in its group when `descendant`, and reads no request; with the Signal it is started under.
+    #[cfg(target_os = "linux")]
+    fn display_stand_in(dir: &Path, named: &Path, ready: bool, descendant: bool) -> (String, PathBuf, &'static Signal) {
+        let stub = dir.join("stub-julia");
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!(
+                "#!/bin/sh\n{child}printf '%s' \"$XAUTHORITY\" > '{named}.tmp'\nmv '{named}.tmp' '{named}'\n{ready}exec sleep 300\n",
+                child = if descendant { "sleep 300 &\n" } else { "" },
+                named = named.display(),
+                ready = if ready { "echo 'READY http://pluto.invalid/'\n" } else { "" },
+            ),
+        );
+        let script = dir.join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        (stub.to_string_lossy().into_owned(), script, Box::leak(Box::new(Signal::new())))
+    }
+
+    /// A Pluto server whose display ends under it ends with what it started in its group, so nothing of it can open
+    /// that display's name once another account binds it, and an open in flight says why.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_pluto_whose_display_ends_ends_with_it() {
+        use crate::sidecars::contract_tests::{holding_display, x11_server};
+        executable("Xvfb");
+        let dir = tempfile::tempdir().unwrap();
+        let named = dir.path().join("named");
+        let (bin, script, sig) = display_stand_in(dir.path(), &named, true, true);
+        let running = spawn_supervisor(&bin, dir.path(), &script, sig).await.expect("the stand-in says READY");
+        let cookie = PathBuf::from(std::fs::read_to_string(&named).expect("the stand-in names its display"));
+        within(REACT, "setup: the server and its sleep hold the display", || holding_display(&cookie).len() == 2).await;
+        let (reply, open) = oneshot::channel();
+        running.submit.send(Submission { abs_path: "/nowhere.jl".into(), reply }).await.expect("the supervisor admits an open");
+        // SAFETY: a signal to the X server started for this test's stand-in.
+        assert_eq!(unsafe { libc::kill(x11_server(&cookie) as libc::pid_t, libc::SIGKILL) }, 0, "kill the display's server");
+        within(REACT, "nothing of the server keeps its ended display", || holding_display(&cookie).is_empty()).await;
+        let answer = tokio::time::timeout(REACT, open).await.expect("the open is answered").expect("the supervisor answers");
+        let why = format!("{:#}", answer.expect_err("an open the display's end cut short fails"));
+        assert!(why.contains("its display ended"), "{why}");
+        within(REACT, "the server and its display are reaped", || sig.live() == 0).await;
+        drop(running);
+    }
+
+    /// A display that ends while its server starts ends the start: the server is ended, and the start fails saying why.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_pluto_whose_display_ends_before_ready_is_not_served() {
+        use crate::sidecars::contract_tests::{holding_display, x11_server};
+        executable("Xvfb");
+        let dir = tempfile::tempdir().unwrap();
+        let named = dir.path().join("named");
+        let (bin, script, sig) = display_stand_in(dir.path(), &named, false, false);
+        let project = dir.path().to_path_buf();
+        let start = tokio::spawn(async move { spawn_supervisor(&bin, &project, &script, sig).await.map(|_| ()) });
+        within(REACT, "the stand-in names its display", || named.exists()).await;
+        let cookie = PathBuf::from(std::fs::read_to_string(&named).unwrap());
+        // SAFETY: a signal to the X server started for this test's stand-in.
+        assert_eq!(unsafe { libc::kill(x11_server(&cookie) as libc::pid_t, libc::SIGKILL) }, 0, "kill the display's server");
+        let started = tokio::time::timeout(REACT, start).await.expect("the start ends with its display").expect("the start task");
+        let why = format!("{:#}", started.expect_err("a server whose display ended is not served"));
+        assert!(why.contains("display ended before READY"), "{why}");
+        assert!(holding_display(&cookie).is_empty(), "nothing of the server keeps its ended display");
+        assert_eq!(sig.live(), 0, "the server and its display are reaped");
     }
 
     /// A stdin write that cannot complete: three requests are in flight (one answered by nobody, one mid-write, one

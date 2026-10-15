@@ -300,6 +300,7 @@
             name: Some(handle.to_string()),
             last_person_input_at,
             sessions: None,
+            shown_row: None,
         }
     }
 
@@ -514,7 +515,7 @@ mod fe_command_send_tests {
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients, &crate::rows::Workspaces::new())
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
@@ -545,7 +546,7 @@ mod fe_command_send_tests {
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients, &crate::rows::Workspaces::new())
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
@@ -569,33 +570,25 @@ mod fe_command_send_tests {
         assert!(rx.try_recv().is_err(), "only one evt published");
     }
 
-    /// With no active client (none registered a handle, or none touched
-    /// recently), an untargeted send falls through to today's behaviour
-    /// unchanged: `target`/`target_serial` stay `None`, which every
-    /// connection's `route_fe_command` self-filter reads as "broadcast, act".
-    /// `delivered_to` now says how big that broadcast's real audience is —
-    /// every attached, handle-bearing frontend (here, two), not just "some".
+    /// With no window used since it connected, an untargeted send still reaches exactly one frontend, the one that
+    /// connected last: nothing broadcasts to every window.
     #[tokio::test]
-    async fn untargeted_send_with_no_active_client_broadcasts_as_before() {
+    async fn untargeted_send_with_no_window_used_goes_to_the_one_that_connected_last() {
         let clients = Clients::new();
         // Registered but never touched by a person -> no active frontend.
         let _idle_a = clients.register("c-idle-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
-        let _idle_b = clients.register("c-idle-b", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
+        let idle_b = clients.register("c-idle-b", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients, &crate::rows::Workspaces::new())
             .await
             .expect("handler ok");
-        assert_eq!(resolved_target_of(&out), None);
-        assert_eq!(
-            delivered_to_of(&out),
-            Some(2),
-            "an undirected broadcast's delivered_to counts every attached frontend, not merely 0/1"
-        );
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-b"));
+        assert_eq!(delivered_to_of(&out), Some(1), "one window, never every window");
 
         let evt = rx.try_recv().expect("exactly one evt published");
-        assert!(evt.target.is_none(), "no active frontend -> today's broadcast behaviour");
-        assert!(evt.target_serial.is_none());
+        assert_eq!(evt.target.as_deref(), Some("fe@host-b"));
+        assert_eq!(evt.target_serial, Some(idle_b.serial()));
     }
 
     /// An explicit `--fe <handle>` target is never overridden by the
@@ -614,7 +607,7 @@ mod fe_command_send_tests {
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-explicit")), &tx, &clients)
+        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-explicit")), &tx, &clients, &crate::rows::Workspaces::new())
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-explicit"));
@@ -637,7 +630,7 @@ mod fe_command_send_tests {
         let _target = clients.register("c-target", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-target".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-target")), &tx, &clients)
+        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-target")), &tx, &clients, &crate::rows::Workspaces::new())
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-target"));
@@ -659,7 +652,7 @@ mod fe_command_send_tests {
         let _idle = clients.register("c-idle", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
+        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients, &crate::rows::Workspaces::new())
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out), None);
@@ -679,7 +672,7 @@ mod fe_command_send_tests {
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
+        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients, &crate::rows::Workspaces::new())
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));

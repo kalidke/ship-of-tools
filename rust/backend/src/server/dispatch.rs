@@ -98,6 +98,9 @@ pub(super) struct Shared {
     pub(super) client_id: String,
     /// The hello's declared host.
     pub(super) hello_host: Option<String>,
+    /// The REPL runs this connection's window numbered itself, written to it under the window's numbers
+    /// (`CallerNumbers`, kept by the roster across the window's connections).
+    pub(super) repl_numbers: crate::sidecars::repl::numbers::CallerNumbers,
 }
 
 /// Runs one request frame where [`place`] puts it: an inline op here, before the loop reads again, and any other as a
@@ -146,14 +149,17 @@ where
             // into the new one. `preview_changed_visible` re-resolves at
             // write time and drops everything for an id that still
             // doesn't resolve then.
+            //
+            // The roster keeps the same row for this connection's window: a show goes to a window on its row
+            // (`Clients::show_row`, `ClientsSnapshot::show_target`).
             let hinted = frame.payload.get("workspace_id").and_then(|v| v.as_str());
-            *active_workspace = Some(
-                shared
-                    .workspaces
-                    .resolve(hinted)
-                    .map(|ws| ws.workspace_id.clone())
-                    .unwrap_or_else(|| hinted.unwrap_or_default().to_string()),
-            );
+            let shown = shared
+                .workspaces
+                .resolve(hinted)
+                .map(|ws| ws.workspace_id.clone())
+                .unwrap_or_else(|| hinted.unwrap_or_default().to_string());
+            shared.clients.show_row(shared.serial, shown.clone());
+            *active_workspace = Some(shown);
             crate::rows::ops::list::handle_workspace_activate(req_id, frame.payload, &shared.workspaces).await
         }
         op::MONITOR_SUBSCRIBE => {
@@ -251,12 +257,16 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::FILE_WRITE => crate::files::io_ops::handle_file_write(req_id, payload, session, workspaces).await,
         op::FILE_DELETE => crate::files::io_ops::handle_file_delete(req_id, payload, session, workspaces).await,
         op::DIR_CREATE => crate::files::io_ops::handle_dir_create(req_id, payload, session, workspaces).await,
-        op::REPL_EVAL => crate::sidecars::repl::ops::handle_repl_eval(req_id, payload, session, workspaces).await,
+        op::REPL_EVAL => {
+            crate::sidecars::repl::ops::handle_repl_eval(req_id, payload, session, workspaces, &shared.repl_numbers).await
+        }
         op::REPL_RUN_FILE => {
-            crate::sidecars::repl::ops::handle_repl_run_file(req_id, payload, session, workspaces).await
+            crate::sidecars::repl::ops::handle_repl_run_file(req_id, payload, session, workspaces, &shared.repl_numbers)
+                .await
         }
         op::REPL_INTERRUPT => {
-            crate::sidecars::repl::ops::handle_repl_interrupt(req_id, payload, session, workspaces).await
+            crate::sidecars::repl::ops::handle_repl_interrupt(req_id, payload, session, workspaces, &shared.repl_numbers)
+                .await
         }
         op::REPL_EXECUTE => {
             crate::sidecars::repl::execute::handle_repl_execute(req_id, payload, session, workspaces).await
@@ -273,7 +283,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
             crate::comm::registry::join::handle_agent_join(req_id, payload, workspaces, ws_events_tx).await
         }
         op::FE_COMMAND_SEND => {
-            crate::clients::handle_fe_command_send(req_id, payload, &shared.fe_command_tx, clients).await
+            crate::clients::handle_fe_command_send(req_id, payload, &shared.fe_command_tx, clients, workspaces).await
         }
         op::FE_PRESENCE => {
             // The ONLY place `last_person_input_at` is stamped from (2026-09-08 review rework, design point A): this op

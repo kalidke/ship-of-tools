@@ -445,7 +445,7 @@ impl State {
                     self.reply_ws_key(Some(info.slug.as_str())),
                 );
                 self.workspace_ui_snapshots.remove(&ws_key);
-                self.workspace_repl_snapshots.remove(&ws_key);
+                self.repl_rows.parked.remove(&ws_key);
                 // The tree slots died with the snapshot on main;
                 // the store split orphaned them — drop the
                 // destroyed workspace's Files/Modules slots so a

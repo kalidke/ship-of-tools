@@ -16,7 +16,8 @@ does (`working-directory: agents/tests`).
   in another case with the path through a link), a link inside the root kept as written (`sot_relative_to`), a
   self-file root in the shell's spelling and case is the project's whose root git spells (`sot_same_root`, through
   `comm-context.sh`), Linux compares case as written, `sot_daemon_path` keeps its contract, and the path `sot-fe docs`,
-  `sot-fe repl run` and comm-probe's `workspace.create` send a `pipe:` daemon is in its spelling
+  `sot-fe repl run` and comm-probe's `workspace.create` send a `pipe:` daemon is in its spelling;
+  `sot-fe repl run --fresh` sends no `eval_id` (the daemon numbers and announces the run) and sends its `--origin`
 - `test-sot-fe-reauth.sh`: `sot-fe reauth` moves only the row it runs in
 - `test-sot-fe-version.sh`: `sot-fe version` asks the daemon what build it is
 - `test-spawn-capsule-workspace.sh`: `comm-spawn.sh` never destroys a row it did not create; a bash row (`--agent none`) claims no handle and writes no registry row or inbox

@@ -189,7 +189,7 @@ impl State {
         // describe what `self.tree` holds. The swap itself runs after the
         // snapshot-restore below has settled the entering mode.
         let old_tree_key = self.active_tree_key();
-        self.active_host = host;
+        let departed = std::mem::replace(&mut self.active_host, host);
         self.default_workspace_slug = self
             .workspace_lists
             .get(&self.active_host)
@@ -211,22 +211,13 @@ impl State {
         // happens to clear it.
         self.preview_fatal = None;
         self.active_workspace_id = slug.clone();
-        // Explicit "this connection's view is now `slug`" signal
-        // (`workspace.activate`) — fired UNCONDITIONALLY, before any of the
-        // cache-dependent work below (the snapshot-restore may find
-        // everything cached and fire no other request at all; a switch back
-        // to the default workspace, `slug: None`, fires no `pty.open`
-        // either). Both are exactly the cases where the daemon's
-        // `preview.changed` fan-out filter used to have nothing to learn the
-        // new active workspace from and could sit on the stale one
-        // indefinitely (Codex review) — this is the one signal it can
-        // always count on. `self.active_host` is already the NEW host (set
-        // just above), so this routes correctly even on a cross-host switch.
-        if let Err(e) = self.send(crate::net::transport::OutgoingReq::WorkspaceActivate {
-            workspace_id: slug.clone(),
-            read: false,
-        }) {
-            tracing::warn!(error = %e, "drop workspace.activate on switch — channel closed");
+        // `workspace.activate`, fired UNCONDITIONALLY before the cache-dependent work below (a fully cached restore,
+        // or a switch to the default row, sends nothing else): the one signal the daemon's `preview.changed` filter
+        // and its choice of window for a show can count on (Codex review). A host left behind is told too.
+        for (to, workspace_id) in view_announcements(&departed, &self.active_host, slug.clone()) {
+            if let Err(e) = self.send_to(&to, crate::net::transport::OutgoingReq::WorkspaceActivate { workspace_id, read: false }) {
+                tracing::warn!(error = %e, %to, "drop workspace.activate on switch — channel closed");
+            }
         }
         // ADR 0044 dwell: a PERSON's switch arms a 10 s read mark for this
         // exact view; any switch (person or not) replaces it, so only a row
@@ -403,5 +394,25 @@ impl State {
             .unwrap_or(&node_id)
             .to_string();
         self.drive_result_reveal(attempt, node_id, path, target.row_key().1.clone(), restored);
+    }
+}
+
+/// Each host's `workspace.activate` when the view moves from `departed` to `slug` on `host`: a host left behind is told
+/// no id (its default row), so it never takes this window for one on the row it left (`ClientsSnapshot::show_target`).
+fn view_announcements(departed: &HostKey, host: &HostKey, slug: Option<String>) -> Vec<(HostKey, Option<String>)> {
+    let left = (departed != host).then(|| (departed.clone(), None));
+    std::iter::once((host.clone(), slug)).chain(left).collect()
+}
+
+#[cfg(test)]
+mod view_announcement_tests {
+    use super::*;
+
+    #[test]
+    fn a_cross_host_switch_tells_the_host_it_left() {
+        let (a, b) = (HostKey::from("host-a"), HostKey::from("host-b"));
+        let row = Some("row".to_string());
+        assert_eq!(view_announcements(&a, &a, row.clone()), vec![(a.clone(), row.clone())], "same host: one");
+        assert_eq!(view_announcements(&a, &b, row.clone()), vec![(b, row), (a, None)], "the host left: no row");
     }
 }

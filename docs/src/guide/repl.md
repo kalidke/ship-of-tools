@@ -56,13 +56,17 @@ Per-line and per-block dispatch — running just the line at the cursor, or the
 surrounding top-level form computed by the kernel — are **planned**, not yet
 built.
 
-A long-running evaluation does not block the dispatch loop: it runs on its own
-task, so you can interrupt it mid-eval. An interrupt schedules a real
-`InterruptException` onto the running evaluation — the same semantics as `Ctrl-C`
-in the stock REPL — which surfaces as an `error` frame. It reaches only the
-evaluation's own code and the display of its value (a figure rendering, for example):
-an interrupt sent before that starts stops it before it runs, and one sent after it
-has finished does nothing. `Ctrl+C` in the drawer
+An evaluation runs on its own task, so whenever it yields (`sleep`, I/O that waits,
+`yield()`) the REPL reads the next request, and you can interrupt it mid-eval. An
+interrupt schedules a real `InterruptException` onto the running evaluation — the
+same semantics as `Ctrl-C` in the stock REPL — which surfaces as an `error` frame. It
+reaches only the evaluation's own code and the display of its value (a figure
+rendering, for example): an interrupt sent before that starts stops it before it runs,
+and one sent after it has finished does nothing. An evaluation that never yields (a
+tight numeric loop, a long `ccall`) holds the REPL's one thread until it ends: the
+REPL reads nothing meanwhile, so an interrupt goes unanswered (`sot-fe repl interrupt`
+says so after 10 s). A restart ends it at once: `r` on a `.jl` file in Files mode, or
+`sot-fe repl run <ws> <path> --fresh`, whose run every window's drawer shows. `Ctrl+C` in the drawer
 names, by number, the evaluations the drawer shows as running, and stops the running
 evaluation only if its number is one of them; each window numbers its own
 evaluations, so two windows on one REPL can share a number.

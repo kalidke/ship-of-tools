@@ -60,7 +60,7 @@ send_repl_execute() {
 # stale in-memory package a struct/field change can't hot-reload; Revise is not
 # wired in). Unlike repl.execute this is FIRE-AND-FORGET: the daemon acks once
 # the restart is spawned (with project_dir/source); the include's frames stream
-# as repl.frame evts to the FE drawer and are NOT collected here. $1=path
+# as repl.frame evts to every window's drawer and are NOT collected here. $1=path
 # $2=workspace. Exits 2 on a failed ack.
 send_repl_run_file() {
     local file="$1" ws="$2"
@@ -73,13 +73,18 @@ send_repl_run_file() {
     # than sot_send's 6s default (honour --timeout if the caller set it).
     export SEND_TIMEOUT="${TIMEOUT:-30}"
     local payload req resp
-    # ReplRunFileReq: eval_id(u64)+path required, fresh:true, workspace_id routes
-    # to the target REPL. eval_id only correlates streamed frames we don't
-    # collect, so a fixed value is fine.
+    # ReplRunFileReq: path required, fresh:true, workspace_id routes to the target
+    # REPL. No eval_id: a window shows a run only under a number it made itself or
+    # one a `started` frame announced, so the daemon numbers this run and announces
+    # it to every window's drawer, labelled --origin (else "session").
     # $file is an absolute backend path (agents naturally hold one): it reaches jq on stdin
     # (comm-lib-base.sh, free text and jq).
     payload="$(printf '%s' "$file" | jq -Rsc --arg w "$ws" \
-        '{eval_id:1, path:., fresh:true, workspace_id:$w}')"
+        '{path:., fresh:true, workspace_id:$w}')"
+    # ORIGIN is free text from --origin: it reaches jq on stdin, as in send_repl_execute.
+    if [ -n "$ORIGIN" ]; then
+        payload="$({ printf '%s\n' "$payload"; sot_json_escape "$ORIGIN"; } | jq -cn 'input as $p | $p + {origin: input}')"
+    fi
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.run_file", payload:$p}')"
     resp="$(sot_send "$req" repl.run_file || true)"
     if [ -z "$resp" ]; then
@@ -93,7 +98,7 @@ send_repl_run_file() {
             "ERROR: \($p.error) [\($p.code // "?")]"
         else
             "fresh-run accepted: REPL restarted into \($p.project_dir // "?") (\($p.project_source // "?"))"
-            + "\nnote: kernel bounced; \($p.path // "the file") is being included in the fresh process. Output streams to the FE drawer, not collected here."
+            + "\nnote: kernel bounced; \($p.path // "the file") is being included in the fresh process. Its output shows in the REPL drawer of every window, not here."
         end
     '
     local err

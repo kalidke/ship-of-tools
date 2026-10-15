@@ -22,6 +22,9 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 ## Rules
 - The Rust spawn recipe activates the user directory, including a bare workspace, and places this shim behind it on `JULIA_LOAD_PATH`; user package commands do not edit the installed shim project.
 - `repl.ready` is the first envelope, and every envelope is written under `OUT_LOCK` (`serve`, `write_envelope`).
+- A child says once, in one stderr frame at the start of its first eval, why the daemon ended the child before it
+  (`SOT_PREVIOUS_END`, the daemon's sentence: its display ended) and why it has no display of its own
+  (`SOT_NO_DISPLAY`, its reason), in that order (`DISPLAY_NOTICE`, `spawn_eval`).
 - One eval at a time, and a second gets error then done (`handle_eval`). An eval releases that guard once, just before its done frame and res go out (`spawn_eval`), so a request sent the moment an answer arrives is accepted.
 - Text frames precede value or error, and done is last (`stream_eval_frames`).
 - Program output is bytes, not UTF-8: only a character a read cut waits for its other bytes (`utf8_prefix`), and the
@@ -34,5 +37,5 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
   and one that arrives after it has finished is answered `interrupted:false`. A wire line is one write (`write_envelope`). An interrupt that names `eval_ids` reaches only an eval among them (`handle_interrupt`).
 - A `BrowserView` is announced once per (url, open) (`announce_browserview`).
 - WGLMakie code lives only in ext/.
-- `wglshow` serves from one Bonito server per child (`page_server`), on a port the OS assigns, at a secret path minted with that server (`WGL_SERVER` holds both). Its page is a Bonito session of its own with `NoServer` (`no_referrer_page`), so its scripts and files travel inside the page and the port answers only the page and its websocket; `/` and every other path answer 404. It needs Bonito 5.1 or a later 5.x (`wgl_bonito_supported`). `wgl_server` binds once per REPL lifetime: the first call may pin a port, later default/same-port calls reuse it, and a different live pin raises `ArgumentError` without changing the listener, secret, routes or announcement. Restart the REPL to choose another port. The listener stays owned until the REPL ends; generic BrowserView servers retain their own multi-port behavior.
+- `wglshow` serves from one Bonito server per child (`page_server`), on a port the OS assigns, at a secret path minted with that server (`WGL_SERVER` holds both). Its page is a Bonito session of its own with `NoServer` (`no_referrer_page`), so its scripts and files travel inside the page and the port answers only the page and its websocket; `/` and every other path answer 404. It needs Bonito 5.1 or a later 5.x (`wgl_bonito_supported`). `wgl_server` binds once per REPL lifetime: the first call may pin a port, later default/same-port calls reuse it, and a different live pin raises `ArgumentError` without changing the listener, secret, routes or announcement. Restart the REPL to choose another port. A figure has one live viewer (`WGL_VIEWERS`, `replace_viewer!`): a new page load of a figure closes the viewer before it. The listener stays owned until the REPL ends; generic BrowserView servers retain their own multi-port behavior.
 - `write_envelope` has a twin in julia/kernel.

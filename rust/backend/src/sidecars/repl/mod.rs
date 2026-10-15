@@ -22,6 +22,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
 pub(crate) mod execute;
 pub(crate) mod lifecycle;
+pub(crate) mod numbers;
 pub(crate) mod ops;
 mod supervisor;
 
@@ -58,6 +59,53 @@ impl std::fmt::Display for ReplBusy {
 
 impl std::error::Error for ReplBusy {}
 
+/// Why a REPL supervisor ended with work unfinished: the error each waiting reply gets, the close-out frame each
+/// streamed eval gets, and `repl.execute`'s outcome (`restarted` for a restart, else `repl_died`). Only a death is one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplEnded {
+    /// Its owner retired it to start another (`Repl::restart_with_project`).
+    Restarted,
+    /// The daemon is shutting down, or the REPL's owner is gone (its row ended).
+    Stopped,
+    /// The child exited, or its pipes failed.
+    Died,
+    /// Its own display ended under it (Linux), so the supervisor ended the child: a child left on an ended display
+    /// could open the display's name once another account binds it.
+    DisplayEnded,
+}
+
+impl ReplEnded {
+    /// What the next child says at its first eval about this end (`SOT_PREVIOUS_END`), for an end nobody asked for
+    /// that takes the REPL's state with it: its display's end.
+    fn successor_notice(self) -> Option<&'static str> {
+        match self {
+            Self::DisplayEnded => Some(
+                "the REPL before this one was ended because its own display (Xvfb) ended; this is a new REPL with a \
+                 new display, and nothing the old one defined or loaded is here",
+            ),
+            Self::Restarted | Self::Stopped | Self::Died => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ReplEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Restarted => "the REPL was restarted before this eval ended, so it did not finish",
+            Self::Stopped => "the REPL was stopped (its row ended or the daemon is shutting down) before this eval ended",
+            Self::Died => {
+                "REPL process died mid-eval — it respawns on your next eval; the backend log has its stderr tail"
+            }
+            Self::DisplayEnded => {
+                "the REPL's own display (Xvfb) ended, so the REPL was ended with it before this eval ended; your next \
+                 eval starts a new REPL with a new display"
+            }
+        })
+    }
+}
+
+impl std::error::Error for ReplEnded {}
+
 /// Queue one submission without waiting: a full queue is [`ReplBusy`].
 fn enqueue(tx: &mpsc::Sender<Submission>, sub: Submission) -> Result<()> {
     tx.try_send(sub).map_err(|e| match e {
@@ -79,6 +127,9 @@ pub struct ReplFrameMsg {
     pub eval_id: u64,
     pub workspace_id: Option<String>,
     pub frame: serde_json::Value,
+    /// The connection that opens a `browser` frame's page, set once by the first connection that writes the frame
+    /// (`server/events.rs`, `repl_frame_for`), so every connection writes it from one answer.
+    pub opener: Arc<std::sync::OnceLock<Option<u64>>>,
 }
 
 /// Inline stdout+stderr byte budget for a collected `repl.execute` run. Past
@@ -212,6 +263,7 @@ impl Repl {
                 lifecycle: Arc::new(std::sync::Mutex::new(LifecycleCell {
                     gen: 0,
                     state: ReplLifecycle::NotStarted,
+                    notice: None,
                 })),
             }),
         }
@@ -274,7 +326,13 @@ impl Repl {
         )?;
         tokio::time::timeout(REPL_INTERRUPT_WAIT, reply_rx)
             .await
-            .map_err(|_| anyhow!("the REPL did not answer {op} within {REPL_INTERRUPT_WAIT:?}"))?
+            .map_err(|_| {
+                anyhow!(
+                    "the REPL did not answer {op} within {REPL_INTERRUPT_WAIT:?}: an eval that never yields keeps it \
+                     from reading anything until the eval ends, and a restart ends it now (`sot-fe repl run <ws> \
+                     <file> --fresh`, or `r` on a .jl file in the window)"
+                )
+            })?
             .map_err(|_| anyhow!("repl supervisor dropped reply channel"))?
             .map(Some)
     }
@@ -346,13 +404,13 @@ impl Repl {
         // What is there is dead or still retiring: it is retired and joined
         // before the replacement opens, on every route to a spawn.
         slot.settle().await?;
-        let sup = self.spawn(&slot.project)?;
+        let sup = self.spawn(&slot.project).await?;
         let tx = sup.tx.clone();
         slot.current = Some(sup);
         Ok(tx)
     }
 
-    fn spawn(&self, project: &Path) -> Result<Supervisor> {
+    async fn spawn(&self, project: &Path) -> Result<Supervisor> {
         spawn_supervisor(
             project,
             self.inner.frame_tx.clone(),
@@ -360,6 +418,7 @@ impl Repl {
             self.inner.lifecycle.clone(),
             self.inner.sig,
         )
+        .await
     }
 
     /// Retire the persistent REPL child and start another with `user_project`
@@ -380,7 +439,7 @@ impl Repl {
         let mut slot = self.inner.slot.lock().await;
         slot.settle().await?;
         slot.project = user_project.to_path_buf();
-        let sup = self.spawn(user_project)?;
+        let sup = self.spawn(user_project).await?;
         slot.current = Some(sup);
         Ok(())
     }
@@ -590,7 +649,7 @@ mod respawn_after_death_tests {
     /// The guard on the new child-exit branch: a child that ANSWERS and then
     /// exits in the same breath must still deliver its answer. The exit branch
     /// is polled last, so the res line it already wrote is routed first — the
-    /// caller gets the reply, not "repl terminated".
+    /// caller gets the reply, not the death's error (`ReplEnded::Died`).
     #[tokio::test]
     async fn a_child_that_answers_then_exits_still_delivers_its_answer() {
         let dir = scratch_dir("answer-then-exit");

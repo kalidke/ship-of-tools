@@ -8,12 +8,41 @@ use crate::session::Session;
 use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
 use crate::server::reply::HandlerOutput;
+use super::numbers::CallerNumbers;
+
+/// Numbers a run and announces it to every window (ADR 0033, the one-numberer amendment): the daemon's number goes in
+/// `payload`, a `started` frame labelled `origin` (a window's own run: "window"; else "session") goes on the bus, and
+/// the caller's own number, if it gave one, stays the run's number on each connection of the caller's window
+/// (`CallerNumbers`).
+/// Returns the run's number and what `close_exec_run` needs to close it.
+fn announce_run(
+    numbers: &CallerNumbers,
+    payload: &mut serde_json::Value,
+    ws: &crate::rows::Workspace,
+    workspaces: &Workspaces,
+    display: String,
+) -> (u64, String, tokio::sync::broadcast::Sender<super::ReplFrameMsg>) {
+    let own = payload.get("eval_id").and_then(|v| v.as_u64());
+    let number = numbers.number(own);
+    let origin = match payload.get("origin").and_then(|v| v.as_str()) {
+        Some(origin) => origin.to_string(),
+        None if own.is_some() => "window".to_string(),
+        None => "session".to_string(),
+    };
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("eval_id".to_string(), json!(number));
+    }
+    let (frame_ws, frame_tx) =
+        super::execute::announce_exec_started(Some(&origin), ws, workspaces, number, &format!("exec-{number}"), display);
+    (number, frame_ws, frame_tx)
+}
 
 pub async fn handle_repl_eval(
     req_id: u64,
     payload_json: serde_json::Value,
     session: &Session,
     workspaces: &Workspaces,
+    numbers: &CallerNumbers,
 ) -> Result<HandlerOutput> {
     let workspace_id = payload_json
         .get("workspace_id")
@@ -30,19 +59,25 @@ pub async fn handle_repl_eval(
         Err(reply) => return Ok(reply),
     };
     let repl = ws.repl(workspaces.repl_frame_tx());
+    let mut forwarded = payload_json.clone();
+    let display = super::execute::code_display(payload_json.get("code").and_then(|v| v.as_str()).unwrap_or(""));
+    let (number, frame_ws, frame_tx) = announce_run(numbers, &mut forwarded, &ws, workspaces, display);
     // Fire-and-forget: queue the eval at the supervisor and return an ack
     // immediately. The eval's frames (stdout/value/error/done) stream as
     // separate `repl.frame` evts over the broadcast bus; the frontend keys
     // completion off the terminal `done` frame, not this ack. Returning here
     // (instead of awaiting the eval) keeps the connection loop free to read a
     // mid-eval `repl.interrupt`.
-    if let Err(e) = repl.submit(op::REPL_EVAL, payload_json.clone()).await {
+    if let Err(e) = repl.submit(op::REPL_EVAL, forwarded).await {
+        let error = format!("{e:#}");
+        numbers.refused(number);
+        super::execute::close_exec_run(&frame_tx, &frame_ws, number, 0, Some(&error));
         return Ok(vec![(
             Frame::res(
                 req_id,
                 op::REPL_EVAL,
                 json!({
-                    "error": format!("{e:#}"),
+                    "error": error,
                     "code": submit_code(&e, "repl_eval_failed"),
                 }),
             ),
@@ -58,7 +93,7 @@ pub async fn handle_repl_eval(
             // deserializes cleanly and its empty-frames guard fires (content
             // already streamed via repl.frame evts). Real elapsed_ms rides the
             // done frame.
-            json!({ "eval_id": eval_id, "elapsed_ms": 0, "frames": [], "accepted": true }),
+            json!({ "eval_id": eval_id.unwrap_or(number), "elapsed_ms": 0, "frames": [], "accepted": true }),
         )
         .with_rev(rev),
         None,
@@ -71,6 +106,7 @@ pub async fn handle_repl_run_file(
     payload_json: serde_json::Value,
     session: &Session,
     workspaces: &Workspaces,
+    numbers: &CallerNumbers,
 ) -> Result<HandlerOutput> {
     let workspace_id = payload_json
         .get("workspace_id")
@@ -98,21 +134,8 @@ pub async fn handle_repl_run_file(
     };
     let repl = ws.repl(workspaces.repl_frame_tx());
 
-    // Priority J: `r` in NavTree maps to fresh=true. Resolve the file's
-    // closest-ancestor Project.toml *here* on Rust, bounce the REPL
-    // supervisor into that project, then forward a fresh=false submission
-    // so the Julia side just `include`s in the now-correct env. The
-    // dead-code subprocess branch in ShipToolsRepl.handle_run_file never
-    // runs anymore (commented in the Julia source).
-    //
-    // With streamed frames (Option B), the run no longer rides a single
-    // response: the Julia child emits the include's stdout/value/error/done
-    // as `repl.frame` evts over the broadcast bus, and this handler returns
-    // only an immediate ack. The reset banner that previously rode the
-    // response as a synthetic stderr frame is now the Julia shim's job to
-    // emit as a frame (or it shows up implicitly via the fresh env), so the
-    // Rust-side response post-processing (project_dir override, banner
-    // prepend) is gone — there's no response payload to fold it into.
+    // A `fresh` run restarts the REPL into the workspace's project here, then forwards a plain include (`fresh=false`),
+    // so the run's frames stream over the broadcast bus and this handler returns only the ack.
     let mut forwarded_payload = payload_json.clone();
     // Resolve a RELATIVE path against the WORKSPACE ROOT and forward it
     // ABSOLUTE. The Julia child resolves relative paths against its own cwd
@@ -140,28 +163,23 @@ pub async fn handle_repl_run_file(
     // fresh=false include leaves them None → FE degrades to "(no project)".
     let mut project_dir_str: Option<String> = None;
     let mut project_source_str: Option<String> = None;
+    // A run with no path has nothing to run, and the shim answers it with a res alone, which this fire-and-forget op
+    // drops: no window would ever see it end.
+    let Some(ref p) = path_str else {
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::REPL_RUN_FILE,
+                json!({
+                    "error": "repl.run_file requires a path",
+                    "code": "bad_request",
+                }),
+            ),
+            None,
+        )]);
+    };
     if fresh {
-        let Some(ref p) = path_str else {
-            return Ok(vec![(
-                Frame::res(
-                    req_id,
-                    op::REPL_RUN_FILE,
-                    json!({
-                        "error": "fresh=true requires a path",
-                        "code": "bad_request",
-                    }),
-                ),
-                None,
-            )]);
-        };
-        let abs_path = {
-            let pb = std::path::PathBuf::from(p);
-            if pb.is_absolute() {
-                pb
-            } else {
-                std::env::current_dir().unwrap_or_default().join(pb)
-            }
-        };
+        let abs_path = std::path::PathBuf::from(p);
         // The workspace REPL defaults to the WORKSPACE PACKAGE's env — the #44
         // per-package env-fix, and the owner directive (2026-07-22): "the repl
         // should have this repo as its default env … defaults to each package's
@@ -200,15 +218,24 @@ pub async fn handle_repl_run_file(
         }
     }
 
+    // The run is announced after the restart and before the run, so every window's entry for it follows the
+    // restart's lifecycle frames; the shim's `done`, or the close-out of a child that ends first, closes it.
+    let name = std::path::Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or("?.jl");
+    let display = if fresh { format!("run {name} (fresh)") } else { format!("run {name}") };
+    let (number, frame_ws, frame_tx) = announce_run(numbers, &mut forwarded_payload, &ws, workspaces, display);
+
     // Fire-and-forget: queue the run and ack immediately. Frames stream as
     // `repl.frame` evts; the frontend keys completion off the `done` frame.
     if let Err(e) = repl.submit(op::REPL_RUN_FILE, forwarded_payload).await {
+        let error = format!("{e:#}");
+        numbers.refused(number);
+        super::execute::close_exec_run(&frame_tx, &frame_ws, number, 0, Some(&error));
         return Ok(vec![(
             Frame::res(
                 req_id,
                 op::REPL_RUN_FILE,
                 json!({
-                    "error": format!("{e:#}"),
+                    "error": error,
                     "code": submit_code(&e, "repl_run_file_failed"),
                 }),
             ),
@@ -226,7 +253,7 @@ pub async fn handle_repl_run_file(
             // rides the done frame; project_dir/source drive the fresh-`r`
             // status line.
             json!({
-                "eval_id": eval_id,
+                "eval_id": eval_id.unwrap_or(number),
                 "path": path_str.clone().unwrap_or_default(),
                 "fresh": fresh,
                 "elapsed_ms": 0,
@@ -267,9 +294,10 @@ fn closest_project_dir(path: &std::path::Path) -> Option<(std::path::PathBuf, &'
 
 pub async fn handle_repl_interrupt(
     req_id: u64,
-    payload_json: serde_json::Value,
+    mut payload_json: serde_json::Value,
     session: &Session,
     workspaces: &Workspaces,
+    numbers: &CallerNumbers,
 ) -> Result<HandlerOutput> {
     let workspace_id = payload_json
         .get("workspace_id")
@@ -284,6 +312,11 @@ pub async fn handle_repl_interrupt(
         Err(reply) => return Ok(reply),
     };
     let repl = ws.repl(workspaces.repl_frame_tx());
+    // The evals the caller names in its window's numbers reach the REPL as the daemon's (`CallerNumbers`).
+    if let Some(named) = payload_json.get("eval_ids").and_then(|v| v.as_array()) {
+        let named: Vec<u64> = named.iter().filter_map(|v| v.as_u64()).collect();
+        payload_json["eval_ids"] = json!(numbers.daemon_numbers(&named));
+    }
     // Daemon-side interrupt guard (P0.5 pre-work; twin of the #96 CLI
     // pre-flight, now enforced for EVERY caller — FE Ctrl-C and raw-socket
     // included): an interrupt must never be the thing that spawns a kernel.
@@ -323,8 +356,8 @@ pub async fn handle_repl_interrupt(
     )])
 }
 
-/// The daemon forwards an interrupt's payload to the REPL child unchanged, so the
-/// evals it names (`eval_ids`) reach the shim, which decides which eval it means.
+/// The daemon forwards an interrupt's payload to the REPL child with the evals it names (`eval_ids`) in the daemon's
+/// numbers, so they reach the shim, which decides which eval it means.
 #[cfg(all(test, unix))]
 mod interrupt_tests {
     use super::*;
@@ -365,14 +398,14 @@ done
         let id = ws.workspace_id.clone();
         workspaces.insert(ws);
         let row = row_or_reply(&workspaces, Some(&id), 0, op::REPL_EVAL).unwrap_or_else(|_| panic!("setup: the row"));
-        handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 7, "code": "1" }), &session, &workspaces)
+        handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 7, "code": "1" }), &session, &workspaces, &Default::default())
             .await
             .expect("setup: the eval starts the child");
         within(Duration::from_secs(30), "the child is ready", || row.repl_state() == "ready").await;
 
         let mut answers = Vec::new();
         for req in 2..4 {
-            let out = handle_repl_interrupt(req, json!({ "workspace_id": id, "eval_ids": [7] }), &session, &workspaces)
+            let out = handle_repl_interrupt(req, json!({ "workspace_id": id, "eval_ids": [7] }), &session, &workspaces, &Default::default())
                 .await
                 .expect("handler");
             answers.push(out[0].0.payload.clone());
@@ -412,22 +445,33 @@ done
         let id = ws.workspace_id.clone();
         workspaces.insert(ws);
         let row = row_or_reply(&workspaces, Some(&id), 0, op::REPL_EVAL).unwrap_or_else(|_| panic!("setup: the row"));
-        handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 205, "code": "1" }), &session, &workspaces)
+        // A window's connection, as the roster makes one; the window redials before its Ctrl+C.
+        let clients = crate::clients::Clients::new();
+        let window = || clients.register("c", "0.6.6", 1, "fe".into(), Some("h".into()), Some("w".into()), None);
+        let conn = window();
+        handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 205, "code": "1" }), &session, &workspaces, &conn.numbers())
             .await
             .expect("setup: the eval starts the child");
         within(Duration::from_secs(30), "the child is ready", || row.repl_state() == "ready").await;
+        drop(conn);
+        let again = window();
 
+        // The eval is named by the window's own number (205) and an announced run by the daemon's.
         let named = json!({ "workspace_id": id, "eval_ids": [205, 1u64 << 40] });
-        let out = handle_repl_interrupt(2, named.clone(), &session, &workspaces).await.expect("handler");
+        let out = handle_repl_interrupt(2, named, &session, &workspaces, &again.numbers()).await.expect("handler");
         assert_eq!(out[0].0.payload, json!({ "interrupted": true }), "the child's answer is the reply");
         let logged: Vec<serde_json::Value> = std::fs::read_to_string(dir.join("julia.log"))
             .unwrap()
             .lines()
             .filter_map(|l| serde_json::from_str(l).ok())
-            .filter(|v: &serde_json::Value| v["op"] == op::REPL_INTERRUPT)
             .collect();
-        assert_eq!(logged.len(), 1, "one interrupt reached the child: {logged:?}");
-        assert_eq!(logged[0]["payload"], named, "the child received the payload as sent");
+        let eval = logged.iter().find(|v| v["op"] == op::REPL_EVAL).expect("the eval reached the child");
+        let number = eval["payload"]["eval_id"].as_u64().expect("the eval's number");
+        assert!(number >= 1 << 40, "the child runs the eval under the daemon's number: {eval}");
+        let interrupts: Vec<&serde_json::Value> = logged.iter().filter(|v| v["op"] == op::REPL_INTERRUPT).collect();
+        assert_eq!(interrupts.len(), 1, "one interrupt reached the child: {logged:?}");
+        let reached = json!({ "workspace_id": id, "eval_ids": [number, 1u64 << 40] });
+        assert_eq!(interrupts[0]["payload"], reached, "the child is named the eval by the daemon's number");
     }
 }
 
@@ -484,7 +528,7 @@ mod busy_tests {
         workspaces.insert(ws);
         let row = row_or_reply(&workspaces, Some(&id), 0, op::REPL_EVAL).unwrap_or_else(|_| panic!("setup: the row"));
         let first = json!({ "workspace_id": id, "eval_id": 0, "code": "1" });
-        let started = bounded("eval 0", handle_repl_eval(0, first, &session, &workspaces)).await;
+        let started = bounded("eval 0", handle_repl_eval(0, first, &session, &workspaces, &Default::default())).await;
         assert_eq!(code_of(&started.expect("handler")), "accepted");
         within(Duration::from_secs(30), "the child is ready", || row.repl_state() == "ready").await;
         Deaf { session, workspaces, id, _pin: pin, _tmp: tmp }
@@ -494,10 +538,13 @@ mod busy_tests {
     async fn an_unanswered_interrupt_ends_at_its_bound() {
         let row = deaf_row().await;
         let t0 = std::time::Instant::now();
-        let interrupt = handle_repl_interrupt(1, json!({ "workspace_id": row.id }), &row.session, &row.workspaces);
-        let unanswered = bounded("an interrupt", interrupt).await;
+        let conn = CallerNumbers::default();
+        let interrupt = handle_repl_interrupt(1, json!({ "workspace_id": row.id }), &row.session, &row.workspaces, &conn);
+        let unanswered = bounded("an interrupt", interrupt).await.expect("handler");
         let waited = t0.elapsed();
-        assert_eq!(code_of(&unanswered.expect("handler")), "repl_interrupt_failed");
+        assert_eq!(code_of(&unanswered), "repl_interrupt_failed");
+        let error = unanswered[0].0.payload["error"].as_str().unwrap_or("").to_string();
+        assert!(error.contains("--fresh"), "the error names the restart that ends a non-yielding eval: {error}");
         let bound = Duration::from_secs(10);
         assert!(waited >= bound && waited < bound + Duration::from_secs(5), "{waited:?}");
         println!("repl-busy: an unanswered interrupt -> repl_interrupt_failed after {waited:?}");
@@ -511,12 +558,13 @@ mod busy_tests {
         let mut codes = Vec::new();
         for n in 1..=20u64 {
             let eval = json!({ "workspace_id": id, "eval_id": n, "code": code });
-            let out = bounded(&format!("eval {n}"), handle_repl_eval(n, eval, session, workspaces)).await;
+            let out = bounded(&format!("eval {n}"), handle_repl_eval(n, eval, session, workspaces, &Default::default())).await;
             codes.push(code_of(&out.expect("handler")));
         }
         let busy = codes.iter().filter(|c| *c == "repl_busy").count();
         assert!(busy >= 1 && codes.iter().all(|c| c == "accepted" || c == "repl_busy"), "{codes:?}");
-        let interrupt = handle_repl_interrupt(21, json!({ "workspace_id": id }), session, workspaces);
+        let conn = CallerNumbers::default();
+        let interrupt = handle_repl_interrupt(21, json!({ "workspace_id": id }), session, workspaces, &conn);
         let refused = bounded("an interrupt", interrupt).await;
         assert_eq!(code_of(&refused.expect("handler")), "repl_busy");
         let execute = json!({ "workspace_id": id, "input": { "kind": "eval", "code": "1" } });
@@ -527,5 +575,213 @@ mod busy_tests {
             "repl-busy: 20 evals to a full queue -> {} accepted, {busy} repl_busy; then interrupt -> repl_busy, execute -> busy",
             20 - busy
         );
+    }
+}
+
+/// `sot-fe repl run --fresh` numbers no run of its own. Every window learns of the run from the `started` frame the
+/// daemon sends once the REPL has restarted, under a number from the daemon's own space, and the run's output and its
+/// `done` come under that number: a window's drawer makes an entry only for its own evals and for a `started` frame
+/// (`on_repl_frame_streamed`). A run that was waiting when the restart came still gets its answer, and every window's
+/// entry for it is closed with the reason: a restart says it restarted, a death that it died.
+#[cfg(all(test, unix))]
+mod fresh_tests {
+    use super::*;
+    use crate::sidecars::contract_tests::{pin_env, within, EnvPin};
+    use std::time::Duration;
+
+    /// A `julia` stand-in: it says it is ready, then answers each request with one line of output, its `done` and its
+    /// `res`, under the request's `eval_id` (0 when it has none).
+    const ANSWERS: &str = r#"#!/bin/sh
+printf '{"v":1,"id":0,"kind":"evt","op":"repl.ready","payload":{}}\n'
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -e 's/.*"id":\([0-9]*\).*/\1/')
+  eid=$(printf '%s' "$line" | sed -n -e 's/.*"eval_id":\([0-9]*\).*/\1/p')
+  eid=${eid:-0}
+  printf '{"v":1,"id":%s,"kind":"evt","op":"repl.frame","payload":{"eval_id":%s,"frame":{"kind":"stdout","text":"ran\\n"}}}\n' "$id" "$eid"
+  printf '{"v":1,"id":%s,"kind":"evt","op":"repl.frame","payload":{"eval_id":%s,"frame":{"kind":"done","eval_id":%s,"elapsed_ms":1}}}\n' "$id" "$eid" "$eid"
+  printf '{"v":1,"id":%s,"kind":"res","op":"repl.run_file","payload":{}}\n' "$id"
+done
+"#;
+
+    /// A `julia` stand-in that says it is ready and then reads nothing, as a REPL busy in a loop that never yields.
+    const BUSY: &str = "#!/bin/sh\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nexec sleep 60\n";
+
+    /// `BUSY`, after a line on stderr.
+    const BUSY_NOISY: &str = "#!/bin/sh\necho 'repl-restart-red' >&2\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nexec sleep 60\n";
+
+    /// A `julia` stand-in that says it is ready, reads two requests and exits: it dies with both in flight.
+    const DIES: &str = "#!/bin/sh\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nread -r a\nread -r b\nexit 3\n";
+
+    /// A row whose REPL child is `stub`, a script `fresh.jl` in it, and the frame bus every window reads. Fields drop
+    /// in order: the row and its child first, then the environment pin, then the folder.
+    struct Row {
+        session: Session,
+        workspaces: Workspaces,
+        id: String,
+        script: String,
+        bus: tokio::sync::broadcast::Receiver<crate::sidecars::repl::ReplFrameMsg>,
+        _pin: EnvPin,
+        _tmp: tempfile::TempDir,
+    }
+
+    fn row(stub: &str) -> Row {
+        let tmp = tempfile::Builder::new().prefix("sot-repl-fresh-").tempdir().unwrap();
+        let dir = tmp.path();
+        let resources = dir.join("resources");
+        std::fs::create_dir_all(resources.join("julia").join("repl")).unwrap();
+        let root = dir.join("row");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Project.toml"), "").unwrap();
+        std::fs::write(root.join("fresh.jl"), "1\n").unwrap();
+        let julia = dir.join("julia");
+        sot_log::test_exec::write_executable(&julia, stub);
+        let pin = pin_env(&julia, &resources);
+        let (frame_tx, bus) = tokio::sync::broadcast::channel(256);
+        let workspaces = Workspaces::new();
+        workspaces.set_repl_frame_tx(frame_tx);
+        let ws = crate::rows::Workspace::from_label("freshrow", root.clone(), false, "none".into(), String::new(), String::new());
+        let id = ws.workspace_id.clone();
+        workspaces.insert(ws);
+        let script = root.join("fresh.jl").to_string_lossy().into_owned();
+        Row { session: Session::new(), workspaces, id, script, bus, _pin: pin, _tmp: tmp }
+    }
+
+    /// The next frame every window gets, as (eval id, frame), failing the test after 30 s.
+    async fn next_frame(
+        bus: &mut tokio::sync::broadcast::Receiver<crate::sidecars::repl::ReplFrameMsg>,
+    ) -> (u64, serde_json::Value) {
+        let msg = tokio::time::timeout(Duration::from_secs(30), bus.recv())
+            .await
+            .expect("a frame within 30 s")
+            .expect("the frame bus");
+        (msg.eval_id, msg.frame)
+    }
+
+    /// The next frame every window gets, as (eval id, kind), failing the test after 30 s.
+    async fn next(bus: &mut tokio::sync::broadcast::Receiver<crate::sidecars::repl::ReplFrameMsg>) -> (u64, String) {
+        let (eval_id, frame) = next_frame(bus).await;
+        let kind = frame["kind"].as_str().unwrap_or("").to_string();
+        let kind = match frame["state"].as_str() {
+            Some(state) => format!("{kind} {state}"),
+            None => kind,
+        };
+        (eval_id, kind)
+    }
+
+    /// Every frame every window gets until `dones` runs are closed, and the message of each `error` frame among them,
+    /// each checked to come before its run's `done`.
+    async fn until_closed(
+        bus: &mut tokio::sync::broadcast::Receiver<crate::sidecars::repl::ReplFrameMsg>,
+        dones: usize,
+    ) -> (Vec<(u64, serde_json::Value)>, Vec<String>) {
+        let mut seen: Vec<(u64, serde_json::Value)> = Vec::new();
+        while seen.iter().filter(|(_, f)| f["kind"] == "done").count() < dones {
+            seen.push(next_frame(bus).await);
+        }
+        let mut said = Vec::new();
+        for (at, (id, frame)) in seen.iter().enumerate() {
+            if frame["kind"] == "error" {
+                let closed = seen[at..].iter().any(|(i, f)| i == id && f["kind"] == "done");
+                assert!(closed, "the reason comes before its run's done: {seen:?}");
+                said.push(frame["message"].as_str().unwrap_or("").to_string());
+            }
+        }
+        (seen, said)
+    }
+
+    /// The payload `sot-fe repl run <ws> <path> --fresh` sends (agents/sot-fe/sot-fe-repl.sh `send_repl_run_file`).
+    fn fresh(r: &Row) -> serde_json::Value {
+        json!({ "workspace_id": r.id, "path": r.script, "fresh": true })
+    }
+
+    #[tokio::test]
+    async fn a_fresh_run_is_announced_to_every_window_under_the_daemons_number() {
+        let mut r = row(ANSWERS);
+        let out = handle_repl_run_file(1, fresh(&r), &r.session, &r.workspaces, &Default::default()).await.expect("handler");
+        let ack = out[0].0.payload.clone();
+        assert_eq!(ack["accepted"], true, "{ack}");
+        let mut seen = Vec::new();
+        while !seen.iter().any(|(_, kind): &(u64, String)| kind == "done") {
+            seen.push(next(&mut r.bus).await);
+        }
+        println!("repl-fresh: every window got {seen:?}; the ack's eval_id is {}", ack["eval_id"]);
+        let Some(started) = seen.iter().position(|(_, kind)| kind == "started") else {
+            panic!("no started frame: no window makes a drawer entry for the run, so its output reaches none: {seen:?}");
+        };
+        let number = seen[started].0;
+        assert!(number >= 1 << 40, "the run's number is the daemon's, never a window's own: {seen:?}");
+        let output: Vec<&(u64, String)> = seen.iter().filter(|(_, kind)| kind == "stdout" || kind == "done").collect();
+        assert!(output.iter().all(|(id, _)| *id == number), "the output and done come under the announced number: {seen:?}");
+        let first = seen.iter().position(|(_, kind)| kind == "stdout").expect("the run's output");
+        assert!(started < first, "the announcement comes before the output: {seen:?}");
+        assert_eq!(ack["eval_id"], number, "the ack names the announced run");
+    }
+
+    #[tokio::test]
+    async fn a_run_waiting_when_fresh_restarts_the_repl_is_answered_and_closed() {
+        let mut r = row(BUSY);
+        let first = json!({ "workspace_id": r.id, "eval_id": 1, "code": "1" });
+        handle_repl_eval(1, first, &r.session, &r.workspaces, &Default::default()).await.expect("setup: the eval starts the child");
+        let state = || r.workspaces.resolve(Some(&r.id)).map(|w| w.repl_state()).unwrap_or("none");
+        within(Duration::from_secs(30), "the child is ready", || state() == "ready").await;
+        let waiting = json!({ "workspace_id": r.id, "input": { "kind": "eval", "code": "while true end" }, "timeout_ms": 60_000 });
+        let t0 = std::time::Instant::now();
+        let execute = crate::sidecars::repl::execute::handle_repl_execute(2, waiting, &r.session, &r.workspaces);
+        // The execute announces its run (`started`) just before it submits, and the slot lock is first come, first served:
+        // a restart that begins after the announcement waits behind the submit.
+        let mut announced = r.bus.resubscribe();
+        let restart = async {
+            while next_frame(&mut announced).await.1["kind"] != "started" {}
+            handle_repl_run_file(3, fresh(&r), &r.session, &r.workspaces, &Default::default()).await.expect("handler")
+        };
+        let (answered, restarted) = tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(execute, restart) })
+            .await
+            .expect("the waiting run is answered within 20 s of a --fresh");
+        let waited = t0.elapsed();
+        let answer = answered.expect("handler")[0].0.payload.clone();
+        assert_eq!(restarted[0].0.payload["accepted"], true, "{}", restarted[0].0.payload);
+        // Two runs were cut short: the window's eval and the waiting execute. Each entry closes with the reason.
+        let (seen, said) = until_closed(&mut r.bus, 2).await;
+        println!("repl-retire: the waiting run answered {answer} after {waited:?}; every window got {seen:?}");
+        assert_eq!(answer["outcome"], "restarted", "the answer names the restart: {answer}");
+        let error = answer["error"]["message"].as_str().unwrap_or("");
+        assert!(error.contains("restarted"), "the answer says why: {answer}");
+        assert_eq!(said.len(), 2, "each run's entry says why it closed: {said:?}");
+        assert!(said.iter().all(|m| m.contains("restarted") && !m.contains("died")), "a restart is no death: {said:?}");
+    }
+
+    /// A restart is the owner's own act, not a failure: the retired child's stderr tail is not logged at warn. (A death
+    /// still logs it: `contract_tests::a_repl_child_that_fails_its_start_logs_its_stderr_at_warn`.)
+    #[tokio::test]
+    async fn a_restart_logs_no_stderr_tail_at_warn() {
+        let log = sot_log::test_log::capture();
+        let r = row(BUSY_NOISY);
+        let first = json!({ "workspace_id": r.id, "eval_id": 1, "code": "1" });
+        handle_repl_eval(1, first, &r.session, &r.workspaces, &Default::default()).await.expect("setup: the eval starts the child");
+        let state = || r.workspaces.resolve(Some(&r.id)).map(|w| w.repl_state()).unwrap_or("none");
+        within(Duration::from_secs(30), "the child is ready", || state() == "ready").await;
+        let out = handle_repl_run_file(2, fresh(&r), &r.session, &r.workspaces, &Default::default()).await.expect("handler");
+        assert_eq!(out[0].0.payload["accepted"], true, "{}", out[0].0.payload);
+        assert!(!crate::sidecars::warned(&log.text(), "repl-restart-red"), "a restart logged the old child's tail at warn: {}", log.text());
+    }
+
+    #[tokio::test]
+    async fn a_run_waiting_when_the_repl_dies_is_answered_died() {
+        let mut r = row(DIES);
+        let first = json!({ "workspace_id": r.id, "eval_id": 1, "code": "1" });
+        handle_repl_eval(1, first, &r.session, &r.workspaces, &Default::default()).await.expect("setup: the eval starts the child");
+        let state = || r.workspaces.resolve(Some(&r.id)).map(|w| w.repl_state()).unwrap_or("none");
+        within(Duration::from_secs(30), "the child is ready", || state() == "ready").await;
+        let waiting = json!({ "workspace_id": r.id, "input": { "kind": "eval", "code": "1" }, "timeout_ms": 60_000 });
+        let execute = crate::sidecars::repl::execute::handle_repl_execute(2, waiting, &r.session, &r.workspaces);
+        let answered = tokio::time::timeout(Duration::from_secs(20), execute).await.expect("answered within 20 s");
+        let answer = answered.expect("handler")[0].0.payload.clone();
+        let (seen, said) = until_closed(&mut r.bus, 2).await;
+        println!("repl-retire: a death answered {answer}; every window got {seen:?}");
+        assert_eq!(answer["outcome"], "repl_died", "{answer}");
+        let error = answer["error"]["message"].as_str().unwrap_or("");
+        assert!(error.contains("died"), "the answer says why: {answer}");
+        assert_eq!(said.len(), 2, "each run's entry says why it closed: {said:?}");
+        assert!(said.iter().all(|m| m.contains("died")), "a death still says died: {said:?}");
     }
 }

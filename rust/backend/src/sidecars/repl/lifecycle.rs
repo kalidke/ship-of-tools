@@ -38,6 +38,9 @@ impl ReplLifecycle {
 pub(super) struct LifecycleCell {
     pub(super) gen: u64,
     pub(super) state: ReplLifecycle,
+    /// What the next child says at its first eval (`ReplEnded::successor_notice`): set when the current generation
+    /// dies, cleared when the next one opens.
+    pub(super) notice: Option<&'static str>,
 }
 
 pub(super) type SharedLifecycle = Arc<std::sync::Mutex<LifecycleCell>>;
@@ -57,6 +60,7 @@ pub(super) fn lifecycle_begin_starting(
         let mut c = cell.lock().unwrap_or_else(|e| e.into_inner());
         c.gen += 1;
         c.state = ReplLifecycle::Starting;
+        c.notice = None;
         c.gen
     };
     // A respawn takes ownership of the workspace's proxy grants: the OLD
@@ -111,6 +115,7 @@ fn emit_lifecycle(
         eval_id: 0,
         workspace_id: workspace_id.clone(),
         frame: serde_json::json!({ "kind": "lifecycle", "state": state.as_str() }),
+        opener: Default::default(),
     });
 }
 
@@ -122,6 +127,7 @@ mod lifecycle_tests {
         Arc::new(std::sync::Mutex::new(LifecycleCell {
             gen: 0,
             state: ReplLifecycle::NotStarted,
+            notice: None,
         }))
     }
 

@@ -16,17 +16,6 @@ use crate::session::Session;
 use crate::rows::Workspaces;
 use crate::server::reply::HandlerOutput;
 
-/// Backend-issued eval_id space for `repl.execute` runs (ADR 0033). Starts at
-/// 2^40 so it never collides with a frontend's small per-workspace
-/// `repl.eval` counter, while staying a positive integer well under 2^53 (safe
-/// for JSON/`jq` consumers) — unlike a high-bit-set id. The `run_id` string
-/// returned to the caller is derived from it.
-static EXEC_EVAL_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 40);
-
-fn next_exec_eval_id() -> u64 {
-    EXEC_EVAL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
 const EXEC_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const EXEC_MIN_TIMEOUT_MS: u64 = 1_000;
 const EXEC_MAX_TIMEOUT_MS: u64 = 1_800_000;
@@ -156,21 +145,26 @@ fn build_exec_request(req_id: u64, req: &ReplExecuteReq, ws: &crate::rows::Works
                     obj.insert("mode".to_string(), json!(m));
                 }
             }
-            let first = code.lines().next().unwrap_or("").trim();
-            let disp = if first.chars().count() > 60 {
-                format!("{}…", first.chars().take(60).collect::<String>())
-            } else {
-                first.to_string()
-            };
-            (op::REPL_EVAL, p, disp)
+            (op::REPL_EVAL, p, code_display(code))
         }
     })
 }
 
-/// Broadcasts the `started` control frame that pre-registers the run in the drawer.
-fn announce_exec_started(req: &ReplExecuteReq, ws: &crate::rows::Workspace, workspaces: &Workspaces,
-    eval_id: u64, run_id: &String, display: String) -> (String, broadcast::Sender<ReplFrameMsg>) {
-    let origin = req.origin.clone().unwrap_or_else(|| "session".to_string());
+/// What a drawer shows for a run of `code`: its first line, at most 60 characters.
+pub(super) fn code_display(code: &str) -> String {
+    let first = code.lines().next().unwrap_or("").trim();
+    if first.chars().count() > 60 {
+        format!("{}…", first.chars().take(60).collect::<String>())
+    } else {
+        first.to_string()
+    }
+}
+
+/// Broadcasts the `started` control frame that pre-registers the run in every window's drawer, labelled `origin`
+/// ("session" when the caller names none).
+pub(super) fn announce_exec_started(origin: Option<&str>, ws: &crate::rows::Workspace, workspaces: &Workspaces,
+    eval_id: u64, run_id: &str, display: String) -> (String, broadcast::Sender<ReplFrameMsg>) {
+    let origin = origin.unwrap_or("session");
     let frame_ws = ws.slug.clone();
     let frame_tx = workspaces.repl_frame_tx();
     let _ = frame_tx.send(ReplFrameMsg {
@@ -178,18 +172,20 @@ fn announce_exec_started(req: &ReplExecuteReq, ws: &crate::rows::Workspace, work
         workspace_id: Some(frame_ws.clone()),
         frame: json!({
             "kind": "started",
-            "run_id": run_id.clone(),
+            "run_id": run_id,
             "origin": origin,
             "display": display,
         }),
+        opener: Default::default(),
     });
     (frame_ws, frame_tx)
 }
 
-/// Waits for the shim's res within the request's budget; returns the elapsed time, the base outcome and the res.
+/// Waits for the shim's res within the request's budget; returns the elapsed time, the base outcome, the res, and why
+/// the REPL ended first when it did (`ReplEnded`: `restarted` for a restart, else `repl_died`).
 async fn await_exec_reply(req: &ReplExecuteReq,
     reply_rx: tokio::sync::oneshot::Receiver<Result<serde_json::Value>>)
-    -> (u64, &'static str, Option<serde_json::Value>) {
+    -> (u64, &'static str, Option<serde_json::Value>, Option<String>) {
     let timeout_ms = req
         .timeout_ms
         .unwrap_or(EXEC_DEFAULT_TIMEOUT_MS)
@@ -201,13 +197,17 @@ async fn await_exec_reply(req: &ReplExecuteReq,
     // Base terminal state from the await. On timeout we deliberately do NOT
     // send an interrupt (that could race and kill a subsequent user eval — the
     // run keeps going and its frames still reach the drawer).
-    let (base_outcome, res_payload): (&str, Option<serde_json::Value>) = match awaited {
-        Ok(Ok(Ok(v))) => ("completed", Some(v)),
-        Ok(Ok(Err(_))) => ("repl_died", None),
-        Ok(Err(_)) => ("repl_died", None),
-        Err(_) => ("timeout", None),
+    let (base_outcome, res_payload, ended): (&str, Option<serde_json::Value>, Option<String>) = match awaited {
+        Ok(Ok(Ok(v))) => ("completed", Some(v), None),
+        Ok(Ok(Err(e))) => {
+            let restarted = e.downcast_ref::<crate::sidecars::repl::ReplEnded>()
+                == Some(&crate::sidecars::repl::ReplEnded::Restarted);
+            (if restarted { "restarted" } else { "repl_died" }, None, Some(format!("{e:#}")))
+        }
+        Ok(Err(_)) => ("repl_died", None, Some("the REPL's supervisor ended without answering".to_string())),
+        Err(_) => ("timeout", None, None),
     };
-    (elapsed_ms, base_outcome, res_payload)
+    (elapsed_ms, base_outcome, res_payload, ended)
 }
 
 /// Reads the terminal error code and the project the shim reported out of its res.
@@ -323,12 +323,23 @@ async fn spill_exec_figures(ws: &crate::rows::Workspace, run_id: &String, image_
     figures
 }
 
-/// Closes the drawer run `announce_exec_started` opened, with a `done` frame the shim did not send.
-fn close_exec_run(frame_tx: &tokio::sync::broadcast::Sender<ReplFrameMsg>, frame_ws: &str, eval_id: u64, elapsed_ms: u64) {
+/// Closes the drawer run `announce_exec_started` opened, with a `done` frame the shim did not send, after an `error`
+/// frame saying why when the run ended without finishing (`reason`).
+pub(super) fn close_exec_run(frame_tx: &tokio::sync::broadcast::Sender<ReplFrameMsg>, frame_ws: &str, eval_id: u64,
+    elapsed_ms: u64, reason: Option<&str>) {
+    if let Some(message) = reason {
+        let _ = frame_tx.send(ReplFrameMsg {
+            eval_id,
+            workspace_id: Some(frame_ws.to_string()),
+            frame: json!({ "kind": "error", "message": message, "stacktrace": [] }),
+            opener: Default::default(),
+        });
+    }
     let _ = frame_tx.send(ReplFrameMsg {
         eval_id,
         workspace_id: Some(frame_ws.to_string()),
         frame: json!({ "kind": "done", "eval_id": eval_id, "elapsed_ms": elapsed_ms }),
+        opener: Default::default(),
     });
 }
 
@@ -359,7 +370,8 @@ pub async fn handle_repl_execute(
         }
     };
 
-    let eval_id = next_exec_eval_id();
+    // The daemon's number for the run (`numbers`); the `run_id` returned to the caller derives from it.
+    let eval_id = super::numbers::next();
     let run_id = format!("exec-{eval_id}");
     let ws_id = req.workspace_id.clone();
     tracing::info!(workspace_id = %ws_id, run_id = %run_id, "repl.execute");
@@ -392,21 +404,22 @@ pub async fn handle_repl_execute(
     // same entry. Stamping the canonical id here made that compare never match →
     // the entry was dropped down the "no snapshot" path and every session run
     // orphaned as "repl.frame dropped: no in-flight entry".
-    let (frame_ws, frame_tx) = announce_exec_started(&req, &ws, workspaces, eval_id, &run_id, display);
+    let (frame_ws, frame_tx) = announce_exec_started(req.origin.as_deref(), &ws, workspaces, eval_id, &run_id, display);
 
     let repl = ws.repl(workspaces.repl_frame_tx());
     let submitted_at = std::time::Instant::now();
     let (reply_rx, collector) = match repl.execute(inner_op, inner_payload).await {
         Ok(x) => x,
         Err(e) => {
-            close_exec_run(&frame_tx, &frame_ws, eval_id, submitted_at.elapsed().as_millis() as u64);
+            let message = format!("repl submit failed: {e:#}");
+            close_exec_run(&frame_tx, &frame_ws, eval_id, submitted_at.elapsed().as_millis() as u64, Some(&message));
             // A full queue is ADR 0033's `busy`, never a wait.
             let outcome = if e.is::<crate::sidecars::repl::ReplBusy>() { "busy" } else { "repl_died" };
-            return Ok(exec_err_frame(req_id, &run_id, &ws_id, outcome, format!("repl submit failed: {e:#}")))
+            return Ok(exec_err_frame(req_id, &run_id, &ws_id, outcome, message))
         }
     };
 
-    let (elapsed_ms, base_outcome, res_payload) = await_exec_reply(&req, reply_rx).await;
+    let (elapsed_ms, base_outcome, res_payload, ended) = await_exec_reply(&req, reply_rx).await;
 
     // Snapshot the loss-free collector.
     let (frames, truncated) = {
@@ -418,25 +431,33 @@ pub async fn handle_repl_execute(
     // Terminal error carried by the shim's res (bad_request / io_error /
     // repl_exception) — authoritative over frame inspection.
     let (res_code_error, mut error_out, project_dir, project_source) = read_exec_res(res_payload);
+    // A REPL that ended first says why (`ReplEnded`), ahead of any frame the run streamed.
+    if let Some(message) = ended {
+        error_out = Some(ReplErrorOut { message, stacktrace: Vec::new() });
+    }
 
     // Split collected frames.
     let (stdout, stderr, values, image_frames, frame_error_kind) = split_exec_frames(frames, &mut error_out);
 
-    // Final outcome precedence: timeout / repl_died (from the await) win, then a
-    // shim res error code, then frame classification (busy > interrupted >
-    // error), else ok.
+    // Final outcome precedence: timeout / restarted / repl_died (from the await)
+    // win, then a shim res error code, then frame classification (busy >
+    // interrupted > error), else ok.
     let outcome: &str = match base_outcome {
         "timeout" => "timeout",
+        "restarted" => "restarted",
         "repl_died" => "repl_died",
         _ if res_code_error => "error",
         _ => frame_error_kind.unwrap_or("ok"),
     };
 
     // Phase 2: every report closes the run it announced. The shim's own `done`
-    // is the close when the collector holds one; otherwise (a timeout, a dead
-    // child, or a terminal res with no frames) the handler supplies it.
+    // is the close when the collector holds one; otherwise (a timeout, a
+    // restart, a dead child, or a terminal res with no frames) the handler
+    // supplies it, after the report's error unless the run timed out: a timed-out
+    // run goes on, and its later output still reaches the drawer.
     if !shim_closed_run {
-        close_exec_run(&frame_tx, &frame_ws, eval_id, elapsed_ms);
+        let reason = if outcome == "timeout" { None } else { error_out.as_ref().map(|e| e.message.as_str()) };
+        close_exec_run(&frame_tx, &frame_ws, eval_id, elapsed_ms, reason);
     }
 
     // Spill figures to files so the response never inlines base64 (1 MiB cap).

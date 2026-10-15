@@ -77,7 +77,7 @@ pub(crate) mod drawer;
 #[cfg(windows)]
 use drawer::terminal::backend::drawer_uses_attach;
 use drawer::repl::lines::{ReplImage, ReplImageSlot};
-use drawer::repl::log::ReplEntry;
+use drawer::repl::log::{ReplEntry, ReplRows};
 use drawer::terminal::backend::scroll_drawer_ring;
 use drawer::terminal::vt::{key_to_pty_bytes, paint_terminal, scroll_ring};
 
@@ -845,12 +845,13 @@ struct State {
     /// switching workspaces (or hosts) doesn't lose cursor position or
     /// the expanded-folder shape of the file tree.
     workspace_ui_snapshots: HashMap<WsKey, WorkspaceUiSnapshot>,
-    /// Per-workspace REPL snapshots. Captured separately from the UI
-    /// snapshot because `ReplEvalDone` replies can land for workspaces
-    /// the user has swapped away from, and those need to mutate the
-    /// owning workspace's log directly. Keyed the same way (`WsKey`,
-    /// `"<default>"` for the daemon-default workspace within a host).
-    workspace_repl_snapshots: HashMap<WsKey, WorkspaceReplSnapshot>,
+    /// Per-workspace REPL snapshots (`ReplRows::parked`) and this window's
+    /// one eval count (`ReplRows::next_eval_id`). Captured separately from
+    /// the UI snapshot because `ReplEvalDone` replies can land for workspaces
+    /// the user has swapped away from, and those need to mutate the owning
+    /// workspace's log directly. Keyed the same way (`WsKey`, `"<default>"`
+    /// for the daemon-default workspace within a host).
+    repl_rows: ReplRows,
     /// The last `fe.sessions` projection this frontend sent out
     /// (session-listing brief decision 2) — `None` until the local
     /// daemon's first `workspace.list` reply. Compared against the next
@@ -874,16 +875,9 @@ struct State {
     /// create's `since_request_ms` start at the create request rather
     /// than at the later switch. `None` whenever no create is in flight.
     pending_capsule_create_requested_at: Option<std::time::Instant>,
-    /// Last time this FE sent `fe.presence` (2026-09-08 review rework,
-    /// design point A) — `None` until the first real keyboard/mouse event.
-    /// `window_event`'s `KeyboardInput`/`MouseInput` arms fan a send out to
-    /// EVERY connected host's daemon (`report_presence`) whenever this is
-    /// stale by more than `PRESENCE_THROTTLE` — ONE throttle gates the
-    /// whole fan-out, not one per host, so a burst of input still costs at
-    /// most one round of requests per window; idle input sends nothing at
-    /// all (no timer, no heartbeat — presence is purely a side-effect of
-    /// real events already being handled).
-    presence_last_sent: Option<std::time::Instant>,
+    /// This window's last real press and last `fe.presence` send (`report_presence`, `presence_due`): ONE clock gates
+    /// the fan-out to every connected daemon, and idle input sends nothing at all (no timer, no heartbeat).
+    presence: PresenceClock,
     // ui/drawer: the monitor drawer.
     /// Ctrl+M server-monitor drawer (ADR 0020): per-host metric ring + SVG
     /// chart renderer. `monitor_quad` is the rasterised chart painted into
@@ -940,12 +934,11 @@ struct State {
     /// `active_workspace_id`; consumed by `ReplEvalDone`/`ReplFrameStreamed`/
     /// `ReplRunFileDone` so a reply routes to the right workspace's log even
     /// if the user has swapped away. Keyed by `(HostKey, eval_id)` (ADR 0042
-    /// L2a, Codex review PR #163): each host's daemon independently assigns
-    /// eval ids from its own counter (confirmed on the backend side --
-    /// `EXEC_EVAL_ID` is a per-process static in rust/backend/src/sidecars/repl/execute.rs
-    /// -- and the FE's own `repl_eval_counter` resets per workspace-key too),
-    /// so a bare `eval_id` collides the moment two hosts both have an eval
-    /// id 1 in flight. The VALUE stays a `WsKey`, not a bare slug, for the
+    /// L2a, Codex review PR #163): each host's daemon numbers the runs it
+    /// announces from its own counter, every daemon from the same start
+    /// (`next` in rust/backend/src/sidecars/repl/numbers.rs), so a bare
+    /// `eval_id` collides the moment two hosts both have a run with one
+    /// number in flight. The VALUE stays a `WsKey`, not a bare slug, for the
     /// same reason every other cache in this file moved off bare slugs.
     eval_id_workspace: HashMap<(HostKey, u64), WsKey>,
     /// Per-eval display info for an in-flight streaming `repl.run_file`,
@@ -966,10 +959,6 @@ struct State {
     /// Enter in REPL focus; cleared after send. Multi-line input is a
     /// follow-up.
     repl_input: String,
-    /// Per-session eval id counter. The wire's `eval_id` is what lets us
-    /// find the in-flight entry when the response lands; the counter
-    /// is local to the chrome.
-    repl_eval_counter: u64,
     /// Scroll offset (rows from the tail) of the REPL pane. 0 = live,
     /// positive = looking at older lines. Reset to 0 whenever the user
     /// types into the REPL so typing always snaps to live; otherwise

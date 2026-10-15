@@ -55,8 +55,9 @@ enum InputRoute<P> { Prompt(QuitPromptStep), Next(Option<Action>, P) }
 fn prepare_keyboard_input(state: &mut State, modifiers: ModifiersState, event: &KeyEvent) -> (Option<Action>, (String, help::Context, Option<WsKey>)) {
     // A real, non-synthetic keypress, past this point — presence
     // reporting (design point A) precedes and is independent of
-    // whatever action this key resolves to below.
-    state.report_presence();
+    // whatever action this key resolves to below. A held key's repeats
+    // are not new presses.
+    state.report_presence(!event.repeat);
     // Snapshot-and-clear the destroy arm. The D handler
     // re-arms on first press; any other key (cursor move,
     // mode switch, etc.) silently clears it. Same pattern

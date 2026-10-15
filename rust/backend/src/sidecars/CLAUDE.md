@@ -7,6 +7,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 ## Owns
 - Per row a Julia kernel (`Kernel`, kernel.rs) and a Julia REPL (`Repl`, repl/).
 - Per daemon one Pluto (`Pluto`, pluto.rs) and one MathJax node child (`MathJax`, mathjax.rs).
+- On Linux, per REPL and Pluto child its own X display (`Display`, display/), held by the child's `ChildTmp`.
 - One sampler per monitored host (`MonitorHub::start` and `supervise`, monitor.rs).
 - The julia choice: `julia::resolve_bin` takes an absolute `SOT_JULIA_BIN`, then juliaup's default channel, then a verified PATH candidate, never a bare `julia`. On Windows the selected existing file is inspected through ordinary filesystem links: `IO_REPARSE_TAG_APPEXECLINK` and inspection errors are refused; a directory called `WindowsApps` is not evidence of an alias. PATH skips refused candidates; an explicit/default-channel alias is an error. A missing explicit absolute path still fails at spawn. The kernel, the REPL, Pluto, quarto (`run_quarto`) and the update prepare (`prepare_julia`) all run its answer.
 
@@ -22,11 +23,30 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   renders that arrive during a start share it. Past either bound the render is a `mathjax_render_failed` error naming
   it, and its node child is ended, even mid-write, so the next render starts a fresh one (`MathJax::render`,
   `supervisor_task`).
+- A Pluto start waits up to `PLUTO_READY_BOUND` (1800 s, the kernel's start bound: both cover a cold precompile)
+  for the server's `READY` line, then ends the child and fails naming the bound.
+- A kernel, REPL, Pluto or MathJax child that ends, other than by the daemon's shutdown (or, for a kernel, its owner's
+  drop; for the REPL, its owner's restart or its row's end, so only its death counts), leaves its last 30 stderr lines
+  in the log at warn, one event (`StderrTail`); every stderr line is also logged at debug under `<child>.stderr`.
 - A Pluto open answers within `PLUTO_OPEN_BOUND` (30 s) or fails naming it, and the server that did not answer is ended, since its replies are matched oldest-first.
 - Pluto's proxy port is a supervisor-owned generation grant, published only after a loopback READY URL and released on every supervisor exit or cancellation before cleanup awaits. An old generation's release cannot erase its replacement's grant (`bound_pluto_port`).
 - Pluto polls child exit and its supplied Signal during each stdin write and flush. Cancelling a submission retires the supervisor, releases its grant and closes current, pending and queued replies before checked cleanup; it never resends a partial OPEN line.
 - A REPL restart explicitly retires and joins its owned supervisor before replacement; it never relies on Julia reaching stdin EOF. Errors retain retirement ownership and prevent replacement.
 - Each Julia child (kernel, REPL, Pluto) runs with a temporary folder of its own in the daemon's temporary folder (`ChildTmp`: `TMPDIR`; `TMP` and `TEMP` on Windows). Its owner ends the child and reaps it, then removes the folder (`ChildTmp::retire`), so a killed child and its descendants in its process group (its job on Windows) leave no temporary file. Limits: a daemon close or crash ends without reaping the living children, so their folders stay in the system temporary folder until the OS clears it (on some systems only at boot); a descendant that leaves the child's process group on Unix (Pluto's notebook worker after a server crash, a detached process) runs on without its folder (ADR 0050 residual 7).
+- On Linux each REPL and Pluto child starts with an X display of its own (`ChildTmp::for_user_code`,
+  `Display::start`), which Pluto's notebook workers inherit: an Xvfb on the lowest free display number that only the
+  child's cookie opens, so no other account can. It ends after the child's reap (`ChildTmp::retire`: a restart, a
+  `--fresh`, the child's death, its row's end), at the Signal's fire and with its owner's drop, and leaves no process,
+  socket file or lock behind. A display that ends under a live child ends the child and its process group
+  (`ChildTmp::display_ended`), because any account can bind the ended display's name: the REPL's evals in flight get
+  the reason, and its next eval starts a new REPL with a new display and says first why the old one ended
+  (`SOT_PREVIOUS_END`); Pluto's opens in flight get the reason, the log a WARN, and its next open starts a new server.
+  A descendant that left the child's group (Pluto's notebook worker, a detached process) keeps the ended name (ADR 0050
+  residual 7). A start that fails says why (the daemon's log, `SOT_NO_DISPLAY`, the REPL's first eval) and the child
+  starts without one. The kernel gets none. Tests `a_repl_child_has_its_own_display_which_ends_with_it` and
+  `a_repl_whose_display_ends_ends_with_it` (repl/project_tests.rs), `pluto_has_its_own_display_which_ends_with_it`,
+  `a_pluto_whose_display_ends_ends_with_it` and `a_pluto_whose_display_ends_before_ready_is_not_served` (pluto.rs) and
+  display/'s own.
 - Every sidecar child starts through `Signal::spawn`. Kernel, REPL, Pluto, MathJax and monitor supervisors receive a caller-supplied `&'static Signal` for both spawn and shutdown observation; the monitor's respawn backoff ends at its fire. REPL and MathJax select the daemon's process `Signal` only where their production handles are constructed.
 - A remote host's sampler ssh is built from `SSH_OPTS`, so it turns ssh sharing off as the bridges do
   (`sampler_command`).
@@ -70,10 +90,11 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `rust/backend/sidecars/mathjax/`: the MathJax script (`render.mjs`); never moved.
 
 ## Files
-- `mod.rs`: declares the eight modules and `WireRequest`.
-- `child_tmp.rs`: a Julia child's own temporary folder (`ChildTmp`), made before its spawn; `retire` ends the child and removes the folder after its reap.
+- `mod.rs`: declares the nine modules and `WireRequest`.
+- `child/`: what each child the daemon starts carries with it: its own temporary folder and its stderr tail (see its page).
 - `contract_tests.rs`: native REPL/MathJax private-Signal spawn, shutdown closeout and owned-child observations, a
-  node child slower to start than a render's bound, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions.
+  node child slower to start than a render's bound, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions. The X11 probes the display tests share: a connection setup (`x11_answer`, `x11_cookie`), a display's server (`x11_server`) and the processes that still hold a display (`holding_display`).
+- `display/`: a user-code child's own X display (Linux; see its page).
 - `julia.rs`: which julia binary runs (`resolve_bin`).
 - `kernel.rs`: the per-row kernel and its supervisor.
 - `repl/`: the per-row Julia REPL child.

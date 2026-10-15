@@ -33,8 +33,9 @@ julia --project=<repo>/julia/kernel \
 ```
 
 Spawning is `tokio::process::Command` through `lifecycle::child_signal::Signal::spawn`, which puts the
-child in its own process group (Unix) or job (Windows). stderr is
-captured into a backend log ring buffer — the *only* place kernel stderr
+child in its own process group (Unix) or job (Windows). Each stderr line
+goes to the daemon log at debug, and a generation that fails logs the
+child's last 30 stderr lines at warn — the *only* place kernel stderr
 surfaces, so user-facing errors must travel as protocol events, not prints.
 
 Restart policy differs by process:

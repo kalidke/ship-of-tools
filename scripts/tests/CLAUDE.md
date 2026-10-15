@@ -284,7 +284,8 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   job checks it). A failed build leaves the job's result `unrun`, a failure.
 - `rc-gate.sh` needs `node` on its PATH, as it needs `julia`, and gives its jobs node alone, through a link in `<logdir>/bin`, and `npm ci` done in `rust/backend/sidecars/mathjax` (the
   sotd contract tests and test-agent-layers use them); it refuses, exit 2, rather than install into the checkout it
-  judges. A Rust test binary's stderr goes to `<key>.stderr` beside its log, so the body check reads stdout only.
+  judges. It needs `Xvfb` in `/usr/bin` or `/bin`, its jobs' PATH, since the sotd sidecar tests start it, and refuses,
+  exit 2, without it. A Rust test binary's stderr goes to `<key>.stderr` beside its log, so the body check reads stdout only.
 
 - Trust tests execute the real declaration owner and installer entry; emitted-byte assertions and native exit-status
   observations establish behavior, never source membership or statement offsets.

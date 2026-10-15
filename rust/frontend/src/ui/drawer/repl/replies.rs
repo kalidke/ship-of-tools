@@ -44,7 +44,7 @@ impl State {
         let active_key = self.active_ws_key();
         match owner.as_ref() {
             Some(key) if key != &active_key => {
-                if let Some(snap) = self.workspace_repl_snapshots.get_mut(key) {
+                if let Some(snap) = self.repl_rows.parked.get_mut(key) {
                     if let Some(entry) =
                         snap.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                     {
@@ -167,7 +167,7 @@ impl State {
                     }
                     self.repl_log.push(new_entry);
                     self.eval_id_workspace.insert(owner_id, key);
-                } else if let Some(snap) = self.workspace_repl_snapshots.get_mut(&key) {
+                } else if let Some(snap) = self.repl_rows.parked.get_mut(&key) {
                     if snap.repl_log.len() >= 256 {
                         snap.repl_log.remove(0);
                     }
@@ -242,7 +242,7 @@ impl State {
         let active_key = self.active_ws_key();
         let entry: Option<&mut ReplEntry> = match owner.as_ref() {
             Some(key) if key != &active_key => {
-                self.workspace_repl_snapshots.get_mut(key).and_then(|snap| {
+                self.repl_rows.parked.get_mut(key).and_then(|snap| {
                     snap.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                 })
             }
@@ -355,7 +355,7 @@ impl State {
                     match owner.as_ref() {
                         Some(key) if key != &active_key => {
                             if let Some(snap) =
-                                self.workspace_repl_snapshots.get_mut(key)
+                                self.repl_rows.parked.get_mut(key)
                             {
                                 if let Some(entry) = snap
                                     .repl_log
@@ -408,7 +408,7 @@ impl State {
                 };
                 match owner.as_ref() {
                     Some(key) if key != &active_key => {
-                        if let Some(snap) = self.workspace_repl_snapshots.get_mut(key) {
+                        if let Some(snap) = self.repl_rows.parked.get_mut(key) {
                             if let Some(entry) =
                                 snap.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                             {

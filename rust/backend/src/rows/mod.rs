@@ -286,10 +286,10 @@ mod unknown_workspace_tests {
     const NOSUCH: &str = "Some(\"ws-nosuch\")";
 
     macro_rules! unknown_workspace_case {
-        ($name:ident, $op:expr, $handler:path, $payload:expr) => {
+        ($name:ident, $op:expr, $handler:path, $payload:expr $(, $conn:expr)?) => {
             #[tokio::test]
             async fn $name() {
-                let out = $handler(7, $payload, &Session::new(), &Workspaces::new())
+                let out = $handler(7, $payload, &Session::new(), &Workspaces::new() $(, $conn)?)
                     .await
                     .expect("handler answers");
                 assert_unknown_workspace(out, $op, NOSUCH);
@@ -379,19 +379,22 @@ mod unknown_workspace_tests {
         repl_eval,
         "repl.eval",
         crate::sidecars::repl::ops::handle_repl_eval,
-        json!({ "workspace_id": "ws-nosuch" })
+        json!({ "workspace_id": "ws-nosuch" }),
+        &Default::default()
     );
     unknown_workspace_case!(
         repl_run_file,
         "repl.run_file",
         crate::sidecars::repl::ops::handle_repl_run_file,
-        json!({ "workspace_id": "ws-nosuch" })
+        json!({ "workspace_id": "ws-nosuch" }),
+        &Default::default()
     );
     unknown_workspace_case!(
         repl_interrupt,
         "repl.interrupt",
         crate::sidecars::repl::ops::handle_repl_interrupt,
-        json!({ "workspace_id": "ws-nosuch" })
+        json!({ "workspace_id": "ws-nosuch" }),
+        &Default::default()
     );
     unknown_workspace_case!(
         kernel_request,

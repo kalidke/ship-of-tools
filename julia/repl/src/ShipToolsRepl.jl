@@ -58,15 +58,22 @@ end
 # process-global, so overlapping evals would clobber each other's capture).
 const CURRENT_EVAL = Ref{Union{Eval,Nothing}}(nothing)
 
+# Why the REPL before this child was ended (the daemon's `SOT_PREVIOUS_END`: its display ended under it) and why this
+# child has no display of its own (`SOT_NO_DISPLAY`: on Linux no Xvfb could start), read at `serve` and said once, as a
+# stderr frame at the start of the first eval (`spawn_eval`), so whoever runs code next sees it in the drawer or in
+# their run's output.
+const DISPLAY_NOTICE = Ref{Union{String,Nothing}}(nothing)
+
 """
     serve(io_in::IO, io_out::IO)
 
 NDJSON dispatch loop for the persistent REPL child. One JSON request per
 line on `io_in`; envelopes out on `io_out`.
 
-ADR 0009 phase-2 (streaming): an eval no longer blocks the dispatch loop.
-`repl.eval` / `repl.run_file` spawn the evaluation on a task and return
-immediately, so the loop stays free to receive a `repl.interrupt` mid-eval.
+ADR 0009 phase-2 (streaming): `repl.eval` / `repl.run_file` spawn the
+evaluation on a task and return immediately, so the loop reads the next request
+(a `repl.interrupt`) whenever the eval yields. The task shares the loop's one
+thread: an eval that never yields holds the loop until it ends.
 Each output frame is emitted as its own `repl.frame` **evt** envelope as it is
 produced; the request's `res` envelope is a terminal **ack** (no frames) sent
 once the eval finishes.
@@ -101,6 +108,12 @@ function serve(io_in::IO, io_out::IO)
     # (every test in this file does) doesn't pile up duplicate displays.
     any(d isa WGLDisplay for d in Base.Multimedia.displays) ||
         pushdisplay(WGLDisplay())
+
+    ended = get(ENV, "SOT_PREVIOUS_END", "")
+    why = get(ENV, "SOT_NO_DISPLAY", "")
+    notice = (isempty(ended) ? "" : "sot: $ended.\n") * (isempty(why) ? "" :
+        "sot: this REPL has no display of its own ($why), and GLMakie needs one. CairoMakie and WGLMakie (wglshow) work.\n")
+    DISPLAY_NOTICE[] = isempty(notice) ? nothing : notice
 
     write_envelope(io_out, "evt", 0, "repl.ready",
         Dict(:julia => string(VERSION), :protocol => PROTOCOL_VERSION))
@@ -184,8 +197,8 @@ end
 """
     spawn_eval(work, io, id, eval_id, op, ack)
 
-Run one eval on its own task, so the dispatch loop stays free to receive
-`repl.interrupt`, and answer it once. `work(emit)` runs the user code and streams
+Run one eval on its own task, so the dispatch loop can receive `repl.interrupt`
+when the eval yields, and answer it once. `work(emit)` runs the user code and streams
 its frames; user errors are frames inside it, and a failure of the streaming
 machinery itself becomes an `internal repl error` frame here. Then the eval
 releases the single-eval guard and sends its done frame and its terminal res,
@@ -197,6 +210,11 @@ function spawn_eval(work, io::IO, id, eval_id, op, ack)
     task = Task() do
         emit = make_emit(io, id, eval_id)
         start = time()
+        notice = DISPLAY_NOTICE[]
+        if notice !== nothing
+            DISPLAY_NOTICE[] = nothing
+            emit(Dict(:kind => "stderr", :text => notice))
+        end
         try
             work(emit)
         catch e

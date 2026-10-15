@@ -100,7 +100,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | physical-scale schema and validity | rule | wire | `rust/protocol/src/physical_scale.rs` `PhysicalScale`, `parse_physical_scale`; consumers in files and fe-ui |
 | `<ws>/.sot/captures/` | disk | files | `rust/backend/src/files/preview/crop.rs` `handle_image_crop` |
 | `<ws>/.sot/runs/<run_id>/` | disk | sidecars | `rust/backend/src/sidecars/repl/execute.rs` |
-| a Julia child's temporary folder `std::env::temp_dir()`/`sot-julia-*/` | disk | sidecars | `rust/backend/src/sidecars/child_tmp.rs` `ChildTmp`, `retire` |
+| a Julia child's temporary folder `std::env::temp_dir()`/`sot-julia-*/` | disk | sidecars | `rust/backend/src/sidecars/child/tmp.rs` `ChildTmp`, `retire` |
 | `<home>/.claude-auth/<name>/` and its allowlisted links | disk | agents | `rust/backend/src/agents/accounts.rs` `ensure_account_links`, `SHARED_ENTRIES`, `CLAUDE_ACCOUNTS_DIR` |
 | `.claude.json` folder-trust entries | disk | agents | `rust/backend/src/agents/folder_trust.rs` `ensure_folder_trusted`, `publish_trust_file`; file selection at `rust/backend/src/agents/env.rs` `account_spawn_env` |
 | folder-trust entries `[projects."<root>"]` in `$CODEX_HOME/config.toml` | disk | agents | `agents/codex/bin/ccx` |
@@ -122,6 +122,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | Julia kernel per workspace | process | sidecars | `rust/backend/src/sidecars/kernel.rs` `Kernel`, `run_one_generation` |
 | Julia REPL per workspace and restart retirement | process, state | sidecars | `rust/backend/src/sidecars/repl/mod.rs` `Repl`, `restart_with_project`, `REPL_RESTART_WAIT`; `rust/backend/src/sidecars/repl/supervisor.rs` `spawn_supervisor`, `supervisor_task` |
 | Pluto per daemon | process | sidecars | `rust/backend/src/sidecars/pluto.rs` `Pluto`, `spawn_supervisor` |
+| a REPL or Pluto child's own X display on Linux (Xvfb, its cookie file), and the child's end when it ends | process, disk | sidecars | `rust/backend/src/sidecars/display/mod.rs` `Display`, `start`, `ended`, `end`; `rust/backend/src/sidecars/child/tmp.rs` `ChildTmp::for_user_code`, `display_ended`, `retire` |
 | MathJax (node) per daemon | process | sidecars | `rust/backend/src/sidecars/mathjax.rs` `MathJax`, `spawn_supervisor`, `supervisor_task`; the constructor supplies `Signal` |
 | monitor sampler (`bash -s`, `ssh <alias> bash -s`) | process | sidecars | `rust/backend/src/sidecars/monitor.rs` `spawn_source`, `SAMPLER_SH` |
 | quarto render child | process | pages | `rust/backend/src/pages/ops.rs` `run_quarto` |
@@ -178,10 +179,12 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `ping` | op | server | `rust/backend/src/server/conn.rs` `handle_ping` |
 | `version.query` | op | server | `rust/backend/src/clients.rs` `handle_version_query` |
 | `fe.presence`; the active frontend | op, state | server | `rust/backend/src/clients.rs` `handle_fe_presence`, `ActiveFrontend`, `resolve_active` |
+| which window a show goes to | state | server | `rust/backend/src/clients_show.rs` `ClientsSnapshot::show_target`, `Clients::show_row` |
 | `fe.command.send` and the `fe.command` bus | op, bus | server | `rust/backend/src/clients.rs` `handle_fe_command_send`; `rust/backend/src/server/events.rs` `write_fe_command` |
 | `FeCommand` meaning and its handling in the window | wire payload | fe-ui | `rust/frontend/src/ui/control/command.rs`; `rust/frontend/src/ui/control/dispatch.rs` |
 | `fe.sessions` | op | server | `rust/backend/src/clients.rs` `handle_fe_sessions`, `declare_sessions` (see two owners) |
 | client roster `by_conn`, `disconnected` | state | server | `rust/backend/src/clients.rs` `Clients`, `ClientGuard`, `disconnected_since` |
+| a window's state across its connections (the REPL runs it numbered, its presence, its shown row) | state | server | `rust/backend/src/clients_window.rs` `Window`, `Inner::arrive`, `Inner::leave`, `Inner::report` |
 | revision ring, `session_id`, replay at hello | state | server | `rust/backend/src/session.rs` `Session`, `bump`, `replay_after`; `rust/backend/src/server/hello.rs` `handle_hello` |
 | revision-ring event names `tree.invalidate`, `preview.served`, `preview.scale_set`, `image.cropped`, `concept.written`, `file.written`, `file.deleted`, `dir.created`, `workspace.created`, `workspace.destroyed`, and their `Session::bump` calls | wire event (replay only) | server | `rust/backend/src/session.rs` `bump`; bumps `rust/backend/src/files/tree_ops.rs`, `rust/backend/src/files/io_ops.rs`, `rust/backend/src/files/concept_ops.rs`, `rust/backend/src/files/preview/mod.rs`, `rust/backend/src/files/preview/scale.rs`, `rust/backend/src/files/preview/crop.rs`, `rust/backend/src/rows/ops/create.rs`, `rust/backend/src/rows/ops/destroy.rs` |
 | `fe.lease`, `fe.leaving`, `fe.notice_seen` | op | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `hold`, `depart`, `notice_seen`; `rust/frontend/src/lease.rs` `Leases`, `Leaving` |
@@ -200,7 +203,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `kernel.request` | op | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_kernel_request` |
 | `math.render` | op | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_math_render` |
 | `repl.eval`, `repl.run_file`, `repl.interrupt`, `repl.execute` | op | sidecars | `rust/backend/src/sidecars/repl/ops.rs` `handle_repl_eval`, `handle_repl_run_file`, `handle_repl_interrupt`; `rust/backend/src/sidecars/repl/execute.rs` `handle_repl_execute` |
-| `repl.frame` | event, bus | sidecars | `rust/backend/src/sidecars/repl/mod.rs` `Repl`; `rust/backend/src/server/events.rs` `write_repl_frame` |
+| `repl.frame` | event, bus | sidecars | `rust/backend/src/sidecars/repl/mod.rs` `Repl`, `ReplFrameMsg`; `rust/backend/src/server/events.rs` `write_repl_frame`, `repl_frame_for` |
+| a REPL run's number: the daemon's one counter, and a window's own numbers for its own runs | state | sidecars | `rust/backend/src/sidecars/repl/numbers.rs` `next`, `CallerNumbers` |
 | `pluto.open` | op | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_pluto_open` |
 | `monitor.subscribe`, `.unsubscribe`, `.history`, `monitor.tick` | op, event, bus | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_monitor_subscribe`, `handle_monitor_unsubscribe`, `handle_monitor_history`; `rust/backend/src/sidecars/monitor.rs` `MonitorHub`; `rust/backend/src/server/events.rs` `write_monitor_tick` |
 | kernel stdio ops (`kernel.hello`, `file.preview`, `file.parse`, `project.scan`, `markdown.tokenize`) | wire (stdio) | sidecars | `julia/kernel/src/ShipToolsKernel.jl`; `julia/kernel/src/preview.jl`; `julia/kernel/src/project_scan.jl`; `julia/kernel/src/tokenize.jl` |

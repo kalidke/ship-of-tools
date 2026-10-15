@@ -252,10 +252,8 @@ impl State {
                 .entry(to_key.clone())
                 .or_insert(v);
         }
-        if let Some(v) = self.workspace_repl_snapshots.remove(&from_key) {
-            self.workspace_repl_snapshots
-                .entry(to_key.clone())
-                .or_insert(v);
+        if let Some(v) = self.repl_rows.parked.remove(&from_key) {
+            self.repl_rows.parked.entry(to_key.clone()).or_insert(v);
         }
         for (k, v) in self.eval_id_workspace.iter_mut() {
             if k.0 == host && *v == from_key {

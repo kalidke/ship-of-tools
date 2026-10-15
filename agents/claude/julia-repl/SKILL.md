@@ -116,9 +116,11 @@ Use `withenv(...) do … end` so a test tier cannot leak.
 
 **Detecting busy.** Read the `outcome:` token on the first line of the
 output — the exit code does not tell you: 0 only for `ok`, 2 for `busy`,
-`error`, `timeout` and `repl_died` alike. `outcome: busy` means **nothing
+`error`, `timeout`, `restarted` and `repl_died` alike. `outcome: busy` means **nothing
 ran**; your code is fine and someone else's run is in flight. `repl status`
-has no busy bit, so a rejected run is the only way to learn it.
+has no busy bit, so a rejected run is the only way to learn it. `outcome:
+restarted` means a restart (`--fresh`, or `r` in a window) retired your run
+before it ended: it did not finish, and the kernel's `Main` is a new one.
 
 **Timeouts.** `--timeout <s>`, default 120 s, clamped to [1 s, 30 min]. A
 timeout does **not** cancel: you get `outcome: timeout` with partial output
@@ -141,15 +143,21 @@ Figures spill to files under `<ws>/.sot/runs/<run_id>/` and you get the
 paths — pass them to `show-result`. For a big log, redirect to a file inside
 the eval and read the file.
 
-**Headless.** The kernel inherits the daemon's environment; nothing sets
-`DISPLAY` and nothing runs xvfb. CairoMakie works and its figures come back
-as figure paths. For an interactive figure use WGLMakie and `wglshow(fig)`: it serves the figure on a port the OS assigns, at an
-address with a secret in it, so no other account on the box can open it, and every attached frontend opens it.
-With more than one frontend attached use `wglshow(fig; open = "<fe>")` (the name `sot-fe --fe` takes): only that
-frontend opens it. Never copy a figure's address into a command, `sot-fe open-url` included: every account on the
+**Display.** On a Linux backend the kernel has an X display of its own, a
+private Xvfb that only it can open, so `using GLMakie` works and a GLMakie
+figure you return comes back as a figure path, as a CairoMakie one does.
+Nothing appears on any screen: return the figure, or `save` it. If that
+display ends, the REPL ends with it: your next run starts a new REPL with a new
+display, and its stderr says so first (`sot: the REPL before this one was
+ended because its own display (Xvfb) ended ...`); what the old one defined or
+loaded is gone. On a host
+without Xvfb the kernel's first run says so in its stderr (`sot: this REPL has
+no display of its own (...)`); use CairoMakie there. For an interactive figure use WGLMakie and `wglshow(fig)`: it serves the figure on a port the OS assigns, at an
+address with a secret in it, so no other account on the box can open it, and one window opens it: the window
+showing this row that the user used within five minutes, else the window they used last. `wglshow(fig; open = "<fe>")`
+(the name `sot-fe --fe` takes) opens it on that frontend instead. Never copy a figure's address into a command, `sot-fe open-url` included: every account on the
 box can read a command line. Serve every page you want to look at through `wglshow`. A page your own code serves
-on a port it opens itself can be opened by any account on that box. `using GLMakie` on a headless backend is a GLFW init
-error.
+on a port it opens itself can be opened by any account on that box.
 
 **Revise is not loaded.** Editing a source file does not change the next run:
 `include` it again, or `using Revise` yourself first (it must resolve from

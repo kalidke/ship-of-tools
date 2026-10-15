@@ -1,6 +1,6 @@
 //! Real Julia, owned resource and depot roots: a bare workspace is the active project, a package operation writes the
-//! workspace and never the installed shim, and the child's real arguments and environment follow the selected project
-//! on every spawn route.
+//! workspace and never the installed shim, the child's real arguments and environment follow the selected project
+//! on every spawn route, and (Linux) the child's own display ends with it on every route, and it with its display.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,6 +11,8 @@ use tokio::sync::broadcast;
 use super::*;
 use crate::rows::Workspace;
 use crate::sidecars::contract_tests::{depot_path, isolated, owned_julia_env, within};
+#[cfg(target_os = "linux")]
+use crate::sidecars::contract_tests::{executable, holding_display, x11_answer, x11_cookie, x11_server};
 use super::tree_argv_tests::tree_argv_leaks;
 
 /// The longest an isolated body here may take: an empty depot compiles the shim on first start.
@@ -397,6 +399,118 @@ async fn repl_child_arguments_and_environment_match_selected_project() {
         .expect("restart");
     let restarted = check_route(&fixture, "explicit restart", 40).await;
     assert_ne!(respawned, restarted, "a restart is a new child");
+    fixture.finish().await;
+}
+
+/// The display a REPL child names in its environment, checked against its server: the child's cookie opens it, no
+/// cookie does not, and the session type sends GLFW to it. Returns its number and cookie.
+#[cfg(target_os = "linux")]
+async fn display_of(repl: &Repl, id: u64) -> (u32, Vec<u8>) {
+    let code = r#"for k in ("DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE") println(get(ENV, k, "-")) end"#;
+    let out = stdout_of(&eval(repl, id, code).await);
+    let named: Vec<&str> = out.lines().collect();
+    assert!(
+        named.len() == 3 && named[0].starts_with(':'),
+        "the child names a display of its own: {out:?}"
+    );
+    assert_eq!(named[2], "x11", "the child's session type sends GLFW to that display");
+    let number: u32 = named[0][1..].parse().expect("a display number");
+    let cookie = x11_cookie(Path::new(named[1]));
+    assert_eq!(x11_answer(number, Some(&cookie)), Some(1), "the child's cookie opens its display");
+    assert_eq!(x11_answer(number, None), Some(0), "a client with no cookie is refused");
+    (number, cookie)
+}
+
+/// Waits until display `:number` answers `cookie` no more: nothing listens there, or another server refuses it.
+#[cfg(target_os = "linux")]
+async fn display_ended(number: u32, cookie: &[u8], what: &str) {
+    within(Duration::from_secs(30), what, || x11_answer(number, Some(cookie)) != Some(1)).await;
+}
+
+/// A REPL child has a display of its own (Linux), which only its cookie opens, and the display ends with the child
+/// however the child ends: a restart (`--fresh` is one), the child's own death, its row's end and the daemon's stop.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_repl_child_has_its_own_display_which_ends_with_it() {
+    if !isolated(
+        "sidecars::repl::project_tests::a_repl_child_has_its_own_display_which_ends_with_it",
+        BODY * 2,
+    ) {
+        return;
+    }
+    executable("Xvfb");
+    let fixture = Fixture::new();
+    let (first, first_cookie) = display_of(&fixture.repl, 1).await;
+    fixture.repl.restart_with_project(&fixture.workspace).await.expect("restart");
+    display_ended(first, &first_cookie, "a restart's display ends").await;
+
+    let (second, second_cookie) = display_of(&fixture.repl, 2).await;
+    assert_ne!(first_cookie, second_cookie, "a restarted child has a display of its own");
+    let (_reply, _collector) = fixture
+        .repl
+        .execute("repl.eval", json!({ "code": "exit(0)", "eval_id": 3 }))
+        .await
+        .expect("submit the exit");
+    display_ended(second, &second_cookie, "a dead child's display ends").await;
+
+    let (frame_tx, _frames) = broadcast::channel(64);
+    let row = Workspace::meta_only(
+        "ws-display-tests".into(),
+        "display-tests".into(),
+        "Displays".into(),
+        fixture.workspace.clone(),
+        "sot-be-display-tests".into(),
+        0,
+        false,
+        "none".into(),
+        String::new(),
+        String::new(),
+    );
+    let other = row.repl(frame_tx);
+    let (third, third_cookie) = display_of(&other, 4).await;
+    drop(other);
+    drop(row);
+    display_ended(third, &third_cookie, "an ended row's display ends").await;
+
+    let (fourth, fourth_cookie) = display_of(&fixture.repl, 5).await;
+    fixture.finish().await;
+    display_ended(fourth, &fourth_cookie, "the daemon's stop ends the display").await;
+}
+
+/// A REPL whose display ends under it, one that never opened it, ends with everything it started, so nothing of it can
+/// open that display's name once another account binds it; its next eval starts a new REPL with a new display and
+/// first says why the old one ended, once.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_repl_whose_display_ends_ends_with_it() {
+    if !isolated("sidecars::repl::project_tests::a_repl_whose_display_ends_ends_with_it", BODY) {
+        return;
+    }
+    executable("Xvfb");
+    let fixture = Fixture::new();
+    // A process the REPL started holds the display too.
+    let code = r#"run(pipeline(`sleep 300`, stdin=devnull, stdout=devnull, stderr=devnull); wait=false); print(ENV["DISPLAY"], " ", ENV["XAUTHORITY"])"#;
+    let named = stdout_of(&eval(&fixture.repl, 1, code).await);
+    let (display, cookie) = named.split_once(' ').expect("the REPL names its display");
+    let cookie = PathBuf::from(cookie);
+    within(Duration::from_secs(30), "setup: the REPL and its sleep hold the display", || {
+        holding_display(&cookie).len() == 2
+    })
+    .await;
+    // SAFETY: a signal to the X server started for this test's REPL.
+    assert_eq!(unsafe { libc::kill(x11_server(&cookie) as libc::pid_t, libc::SIGKILL) }, 0, "kill the display's server");
+    let held = format!("nothing of the REPL keeps DISPLAY={display} once its server is gone");
+    within(Duration::from_secs(30), &held, || holding_display(&cookie).is_empty()).await;
+    assert_eq!(fixture.repl.state(), lifecycle::ReplLifecycle::Dead, "the REPL is ended");
+
+    let frames = eval(&fixture.repl, 2, r#"print(ENV["XAUTHORITY"])"#).await;
+    assert_eq!(frames[0]["kind"], "stderr", "the new REPL first says why the old one ended: {frames:?}");
+    let said = frames[0]["text"].as_str().unwrap_or_default();
+    assert!(said.contains("was ended because its own display (Xvfb) ended"), "{said}");
+    assert_ne!(PathBuf::from(stdout_of(&frames)), cookie, "the new REPL has a display of its own");
+    display_of(&fixture.repl, 3).await;
+    let quiet = eval(&fixture.repl, 4, "1").await;
+    assert!(!quiet.iter().any(|f| f["kind"] == "stderr"), "it says so once: {quiet:?}");
     fixture.finish().await;
 }
 

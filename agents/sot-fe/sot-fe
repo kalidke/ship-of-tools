@@ -4,14 +4,13 @@
 # `fe.command.send` request, sends it to the running sotd daemon over its
 # socket (no comm relay, no FE LLM), and the daemon re-emits it as an
 # `fe.command` evt. The FE shows the target in place when it is already on
-# that workspace and otherwise badges it (see preview below). With no --fe, the daemon resolves delivery to the ACTIVE
-# frontend — whichever FE last reported real keyboard/mouse input
-# (`fe.presence`), within a 5-minute window — and delivers to that ONE
-# connection exclusively; it falls back to broadcasting to every attached FE
-# only when none qualifies. --fe <host> always scopes delivery to the
+# that workspace and otherwise badges it (see preview below). With no --fe, the daemon delivers to ONE window, never
+# all: for a show (preview, reveal, docs, open-url), the window showing the show's row that a person used within five
+# minutes, else the window a person used last, else the window that connected last; any other verb goes to the window
+# used last (relaunch: only one used within five minutes). A window counts as used from the second key or button
+# press in it (`fe.presence`). --fe <host> always scopes delivery to the
 # frontend on that host (wire `target` = `fe@<host>`, the address every
-# frontend declares as its hello `name`), overriding the active-frontend
-# resolution.
+# frontend declares as its hello `name`), overriding that choice.
 #
 # Usage:
 #   sot-fe preview <workspace> <path> [--urgent] [--fe <host>] [--roi x,y,w,h]
@@ -49,8 +48,8 @@
 #              manager, is a no-op and the URL must already resolve on its
 #              own. A tab that opens to a refused connection means THAT
 #              frontend has no proxy for the port — not that nothing was
-#              sent. Opens on the active FE by default (see --fe below); use
-#              --fe to target a specific one instead.
+#              sent. Opens on one window, chosen as for preview (the row is
+#              $SOT_WORKSPACE_ID, else $SOT_WORKSPACE, when set); --fe targets one.
 #   docs     — open a LOCAL .html/site (ABSOLUTE backend path) in the FE's OS
 #              BROWSER via docs.open (the `W` key, backend-triggered): the FE
 #              serves the file from backend disk over the forwarded site_serve
@@ -175,9 +174,8 @@
 #              failure after a successful version.query, exits 2.
 #
 #   --fe <host>    scope delivery to the frontend on that host (sets the
-#                  wire `target` to `fe@<host>`); absent = the daemon delivers to the ACTIVE
-#                  frontend (whichever FE a person last touched), falling
-#                  back to every FE (the badge floor) only when none is active.
+#                  wire `target` to `fe@<host>`); absent = the daemon delivers to the one
+#                  window the header above names, never to every FE.
 #   --urgent       hint the FE to force-show now (preview/reveal); sets args.urgent.
 #   --roi x,y,w,h   (preview) aim the viewport at a SOURCE-IMAGE-PIXEL rect (ADR-0022
 #                  image.crop vocabulary; round-trippable). FE clamps to image bounds.
@@ -197,7 +195,8 @@
 #                  fresh:true) — the way to clear a STALE kernel from a backend
 #                  session (e.g. after a struct/field change Revise can't
 #                  hot-reload). Fire-and-forget: acks the bounce; the include's
-#                  output streams to the FE drawer, not collected here. Without
+#                  output streams to every window's REPL drawer (labelled
+#                  --origin), not collected here. Without
 #                  --fresh, `repl run` uses repl.execute (no reset, collects
 #                  output) in the REPL's CURRENT project.
 #   --endpoint     daemon address — unix:/path, ssh:target[/host], or (Windows
@@ -432,7 +431,9 @@ case "$CMD" in
             http://*|https://*) : ;;
             *) echo "usage: sot-fe open-url <http(s)-url> [--fe <host>]  (http/https only)" >&2; exit 1 ;;
         esac
-        ARGS="$(jq -nc --arg u "$URL" '{url:$u}')"
+        # The row the page belongs to, when this runs in one: the daemon opens it in a window showing that row.
+        ROW="${SOT_WORKSPACE_ID:-${SOT_WORKSPACE:-}}"
+        ARGS="$(jq -nc --arg u "$URL" --arg w "$ROW" '{url:$u} + (if $w == "" then {} else {workspace:$w} end)')"
         send_fe_command open_url "$ARGS"
         ;;
     repl)

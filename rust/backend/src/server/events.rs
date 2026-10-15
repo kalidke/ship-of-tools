@@ -277,23 +277,32 @@ where
 }
 
 /// Translates one streamed REPL frame into a `repl.frame` evt frame on the
-/// wire. Returns `Ok(true)` if a frame was written, `Ok(false)` if the
-/// receiver was lagged or closed (skip and keep the connection alive). The
-/// `frame` value is passed through verbatim — its `{kind, ...}` shape is
-/// kernel-defined, so the backend stays oblivious to new frame kinds.
+/// wire, as this connection is written it (`CallerNumbers::outgoing`: its
+/// window's own runs under the window's numbers). Returns `Ok(true)` if a frame was written,
+/// `Ok(false)` if the frame is not for this connection or the receiver was
+/// lagged or closed (skip and keep the connection alive). The `frame` value is
+/// otherwise passed through verbatim — its `{kind, ...}` shape is
+/// kernel-defined, so the backend stays oblivious to new frame kinds — except
+/// the one rewrite `repl_frame_for` makes to a page every frontend would open.
 pub(super) async fn write_repl_frame<W>(
     tx: &mut W,
     msg: Result<ReplFrameMsg, broadcast::error::RecvError>,
+    my_serial: Option<u64>,
+    clients: &Clients,
+    numbers: &crate::sidecars::repl::numbers::CallerNumbers,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
     match msg {
         Ok(m) => {
+            let Some(m) = numbers.outgoing(m) else {
+                return Ok(false);
+            };
             let payload = serde_json::json!({
                 "eval_id": m.eval_id,
                 "workspace_id": m.workspace_id,
-                "frame": m.frame,
+                "frame": repl_frame_for(&m, my_serial, clients),
             });
             let frame = Frame::evt(op::REPL_FRAME, payload);
             write_frame_to(tx, &frame, None).await?;
@@ -311,6 +320,30 @@ where
             Ok(false)
         }
     }
+}
+
+/// The frame `m` is written as to the connection `my_serial`. A `browser` frame every frontend would open (`open`
+/// true or absent: `wglshow(fig)`) opens on one window, the one a show from the REPL's row goes to
+/// (`ClientsSnapshot::show_target`): two browsers on one `wglshow` figure resize its one scene against each other.
+/// The window is chosen once per frame, by the first connection that writes it (`ReplFrameMsg::opener`), and every
+/// other connection is sent the frame with `open: false` and no `fe`. Every other frame is written as it came.
+fn repl_frame_for(m: &ReplFrameMsg, my_serial: Option<u64>, clients: &Clients) -> serde_json::Value {
+    let mut frame = m.frame.clone();
+    if frame["kind"] != "browser" || frame.get("open").is_some_and(|open| open != true) {
+        return frame;
+    }
+    let opener = *m.opener.get_or_init(|| {
+        let (to, why) = clients.snapshot_with_active().show_target(m.workspace_id.as_deref())?;
+        tracing::info!(workspace_id = ?m.workspace_id, to = %to.handle, why, "repl browser frame opens on one window");
+        Some(to.serial)
+    });
+    if opener != my_serial {
+        if let Some(fields) = frame.as_object_mut() {
+            fields.insert("open".into(), false.into());
+            fields.remove("fe");
+        }
+    }
+    frame
 }
 
 /// Translates one monitor tick into a `monitor.tick` evt (one host per evt; the
@@ -449,6 +482,59 @@ mod tests {
                 Some("ws-no-longer-exists"),
                 &workspaces
             ));
+        }
+    }
+
+    // `repl_frame_for`: a page every frontend would open goes out as it came to the one window a show from its row
+    // goes to, and with `open: false` and no `fe` to every other connection, from one answer per frame. Every other
+    // frame goes out as it came.
+    mod browser_opener {
+        use super::super::repl_frame_for;
+        use crate::clients::Clients;
+        use crate::sidecars::repl::ReplFrameMsg;
+        use serde_json::{json, Value};
+
+        fn msg(frame: &Value) -> ReplFrameMsg {
+            ReplFrameMsg { eval_id: 1, workspace_id: Some("ws-x".into()), frame: frame.clone(), opener: Default::default() }
+        }
+
+        #[test]
+        fn a_page_for_every_frontend_opens_on_one_window() {
+            let clients = Clients::new();
+            let fe_a = clients.register("a", "0.6.6", 1, "fe".into(), None, None, Some("fe@a".into()));
+            let fe_b = clients.register("b", "0.6.6", 1, "fe".into(), None, None, Some("fe@b".into()));
+            let (a, b) = (Some(fe_a.serial()), Some(fe_b.serial()));
+            let page = json!({"kind": "browser", "url": "http://127.0.0.1:9/p", "open": true});
+            let served = json!({"kind": "browser", "url": "http://127.0.0.1:9/p", "open": false});
+
+            let m = msg(&page);
+            assert_eq!(repl_frame_for(&m, b, &clients), page, "no window used: the one that connected last");
+            assert_eq!(repl_frame_for(&m, a, &clients), served, "never every window");
+
+            clients.touch_person_input(b.unwrap());
+            clients.touch_person_input(a.unwrap());
+            clients.show_row(b.unwrap(), "ws-x".into());
+            let unset = json!({"kind": "browser", "url": "http://127.0.0.1:9/p"});
+            let aimed = json!({"kind": "browser", "url": "http://127.0.0.1:9/p", "open": true, "fe": "fe@a"});
+            for frame in [&page, &unset, &aimed] {
+                let m = msg(frame);
+                assert_eq!(repl_frame_for(&m, b, &clients), *frame, "the window showing the row: as it came");
+                assert_eq!(repl_frame_for(&m, a, &clients), served, "{frame}");
+                assert_eq!(repl_frame_for(&m, None, &clients), served, "{frame}");
+            }
+
+            let m = msg(&page);
+            assert_eq!(repl_frame_for(&m, a, &clients), served);
+            clients.show_row(b.unwrap(), "ws-y".into());
+            assert_eq!(repl_frame_for(&m, b, &clients), page, "one answer per frame");
+            assert_eq!(repl_frame_for(&m, a, &clients), served, "one answer per frame");
+
+            let one = json!({"kind": "browser", "url": "http://127.0.0.1:9/p", "open": false, "fe": "fe@a"});
+            let text = json!({"kind": "stdout", "text": "hi"});
+            for frame in [&served, &one, &text] {
+                assert_eq!(repl_frame_for(&msg(frame), a, &clients), *frame);
+                assert_eq!(repl_frame_for(&msg(frame), b, &clients), *frame);
+            }
         }
     }
 }

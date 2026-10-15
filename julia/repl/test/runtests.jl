@@ -187,6 +187,50 @@ Base.flush(::CountingIO) = nothing
         @test res[:payload][:eval_id] == 99
     end
 
+    @testset "serve: a child says once, at the start of its first eval, why the REPL before it ended and why it has no display" begin
+        evals(bs_in, bs_out, ids) = map(ids) do eval_id
+            write(bs_in, sprint(DR.json_write, Dict(:v => 1, :id => eval_id, :op => "repl.eval",
+                :payload => Dict(:eval_id => eval_id, :code => "1"))) * "\n")
+            flush(bs_in)
+            [e[:payload][:frame] for e in read_until_res(bs_out) if get(e, :op, "") == "repl.frame"]
+        end
+        first, second = withenv("SOT_NO_DISPLAY" => "Xvfb is not installed: none on the daemon's PATH") do
+            bs_in, bs_out, _ = drive(String[])
+            frames = evals(bs_in, bs_out, (1, 2))
+            close(bs_in)
+            frames
+        end
+        @test first[1][:kind] == "stderr"
+        @test occursin("no display of its own (Xvfb is not installed: none on the daemon's PATH)", first[1][:text])
+        @test occursin("CairoMakie and WGLMakie (wglshow) work", first[1][:text])
+        @test !any(f -> f[:kind] == "stderr", second)
+        # A child with a display says nothing.
+        bs_in, bs_out, _ = drive(String[])
+        (quiet,) = evals(bs_in, bs_out, (3,))
+        close(bs_in)
+        @test !any(f -> f[:kind] == "stderr", quiet)
+        # A child whose predecessor the daemon ended says why, once, before anything else; with no display as well, it
+        # says both in one frame.
+        ended = "the REPL before this one was ended because its own display (Xvfb) ended"
+        told, after = withenv("SOT_PREVIOUS_END" => ended) do
+            bs_in, bs_out, _ = drive(String[])
+            frames = evals(bs_in, bs_out, (4, 5))
+            close(bs_in)
+            frames
+        end
+        @test told[1][:kind] == "stderr"
+        @test told[1][:text] == "sot: $ended.\n"
+        @test !any(f -> f[:kind] == "stderr", after)
+        (both,) = withenv("SOT_PREVIOUS_END" => ended, "SOT_NO_DISPLAY" => "Xvfb did not start: denied") do
+            bs_in, bs_out, _ = drive(String[])
+            frames = evals(bs_in, bs_out, (6,))
+            close(bs_in)
+            frames
+        end
+        @test count(f -> f[:kind] == "stderr", both) == 1
+        @test startswith(both[1][:text], "sot: $ended.\nsot: this REPL has no display of its own (Xvfb did not start: denied)")
+    end
+
     @testset "serve: run_file missing-file failure is VISIBLE (error+done frames)" begin
         # The res-only error was silently dropped for fire-and-forget runs
         # (the supervisor drops untracked res acks by design), making a

@@ -1,4 +1,4 @@
-//! The REPL child's task: spawning it, its wire to the child, routing its lines and closing out on death.
+//! The REPL child's task: spawning it, its wire to the child, routing its lines and closing out its work when it ends.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -10,6 +10,7 @@ use tokio::process::{ChildStdin, Command};
 
 use super::*;
 use super::lifecycle::{browser_ports_key, lifecycle_begin_starting, lifecycle_transition};
+use crate::sidecars::child::StderrTail;
 use crate::sidecars::WireRequest;
 use sot_protocol::child_lines::ChildLines;
 
@@ -41,7 +42,7 @@ struct WireEnvelope {
 /// `ShipToolsRepl` lives) as a fallback for the shim's own deps, then the
 /// default load path (stdlib, etc.) via the trailing colon so `using` of
 /// standard packages still works inside the user code.
-pub(super) fn spawn_supervisor(
+pub(super) async fn spawn_supervisor(
     user_project: &Path,
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
@@ -72,9 +73,13 @@ pub(super) fn spawn_supervisor(
     let sep = ":";
     let load_path = format!("@{sep}{}{sep}", repl_project.display());
 
-    let tmp = crate::sidecars::child_tmp::ChildTmp::new().context("repl child temporary folder")?;
+    let tmp = crate::sidecars::child::ChildTmp::for_user_code(sig).await.context("repl child temporary folder")?;
     let mut cmd = Command::new(&julia_bin);
     tmp.apply(&mut cmd);
+    // Why the last child was ended when nobody asked for it, which the shim says at this child's first eval.
+    if let Some(notice) = lifecycle.lock().unwrap_or_else(|e| e.into_inner()).notice {
+        cmd.env("SOT_PREVIOUS_END", notice);
+    }
     cmd.env("JULIA_LOAD_PATH", &load_path)
         // The workspace root, for the shim's relative-path fallback and for
         // user scripts (pty sessions already get it; REPL children didn't).
@@ -104,7 +109,7 @@ pub(super) fn spawn_supervisor(
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(16);
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
 
-    let stderr_tail = spawn_stderr_tail(stderr);
+    let stderr_tail = StderrTail::drain(stderr, |line| tracing::debug!(target: "repl.stderr", "{line}"));
 
     // Child exists: open a new spawn generation (state -> Starting, announce).
     let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
@@ -159,30 +164,6 @@ pub(super) mod seams {
     pub(crate) static FAIL_RETIREMENT: AtomicBool = AtomicBool::new(false);
 }
 
-/// Spawn the stderr reader: per-line DEBUG (healthy julia is chatty), plus a
-/// bounded tail the supervisor dumps at WARN when the child DIES — the
-/// 2026-07-03 stale-Manifest incident died with its only evidence at debug
-/// level, and the REPL just silently "didn't work".
-fn spawn_stderr_tail(
-    stderr: tokio::process::ChildStderr,
-) -> std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> {
-    let tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-    let writer = tail.clone();
-    tokio::spawn(async move {
-        let mut reader = ChildLines::new(stderr);
-        while let Ok(Some(line)) = reader.next_line().await {
-            tracing::debug!(target: "repl.stderr", "{line}");
-            let mut t = writer.lock().unwrap_or_else(|e| e.into_inner());
-            if t.len() >= 30 {
-                t.pop_front();
-            }
-            t.push_back(line);
-        }
-    });
-    tail
-}
-
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines, reason = "the REPL supervisor task: one loop over the child's output and the submissions; predates the 100-line limit")]
 async fn supervisor_task(
@@ -193,11 +174,11 @@ async fn supervisor_task(
     mut stop_rx: oneshot::Receiver<()>,
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
-    stderr_tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    stderr_tail: StderrTail,
     lifecycle: SharedLifecycle,
     my_gen: u64,
     sig: &'static crate::lifecycle::child_signal::Signal,
-    tmp: crate::sidecars::child_tmp::ChildTmp,
+    mut tmp: crate::sidecars::child::ChildTmp,
 ) -> std::result::Result<(), String> {
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight: eval_id recorded at submit,
@@ -213,24 +194,30 @@ async fn supervisor_task(
     let mut next_id: u64 = 1;
     let mut stdout_lines = ChildLines::new(stdout);
 
-    loop {
+    // Why the loop ended, which the close-out below names to every unfinished eval.
+    let end = loop {
         tokio::select! {
             biased;
             // The daemon is shutting down: the signal has already killed the
             // child's tree.
             _ = sig.fired() => {
-                break;
+                break ReplEnded::Stopped;
             }
             // The owner retires this supervisor (restart, or its handle is
             // gone): independent of the submit senders and of Julia reading
             // stdin.
-            _ = &mut stop_rx => {
-                break;
+            stop = &mut stop_rx => {
+                break retired(stop);
+            }
+            // The child's own display ended under it (Linux): the child ends too, before it can open that display's
+            // name, which any account may bind once the server is gone.
+            _ = tmp.display_ended() => {
+                break ReplEnded::DisplayEnded;
             }
             sub = submit_rx.recv() => {
                 // Every sender is gone: the same closeout as a stop.
                 let Some(sub) = sub else {
-                    break;
+                    break ReplEnded::Stopped;
                 };
                 let id = next_id;
                 next_id += 1;
@@ -257,20 +244,24 @@ async fn supervisor_task(
                 // is closed out with the rest and never resent.
                 let written = tokio::select! {
                     biased;
-                    _ = sig.fired() => Err("repl shutting down".to_string()),
-                    _ = &mut stop_rx => Err("repl stopped".to_string()),
+                    _ = sig.fired() => Err(ReplEnded::Stopped),
+                    stop = &mut stop_rx => Err(retired(stop)),
+                    _ = tmp.display_ended() => Err(ReplEnded::DisplayEnded),
                     r = async {
                         stdin.write_all(line.as_bytes()).await?;
                         stdin.flush().await
-                    } => r.map_err(|e| format!("repl stdin: {e}")),
+                    } => r.map_err(|e| {
+                        tracing::warn!(error = %e, "repl stdin");
+                        ReplEnded::Died
+                    }),
                 };
-                if let Err(why) = written {
+                if let Err(end) = written {
                     if let Some(reply) = sub.reply {
-                        let _ = reply.send(Err(anyhow!(why)));
+                        let _ = reply.send(Err(anyhow::Error::new(end)));
                     } else if let Some(eid) = sub.payload.get("eval_id").and_then(Value::as_u64) {
                         streaming.insert(eid);
                     }
-                    break;
+                    break end;
                 }
                 let eid = sub.payload.get("eval_id").and_then(Value::as_u64);
                 // `repl.execute` submissions carry a collector: tee this
@@ -322,11 +313,11 @@ async fn supervisor_task(
                     }
                     Ok(None) => {
                         tracing::warn!("repl child stdout closed");
-                        break;
+                        break ReplEnded::Died;
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "repl stdout error");
-                        break;
+                        break ReplEnded::Died;
                     }
                 }
             }
@@ -347,14 +338,15 @@ async fn supervisor_task(
                     Ok(s) => tracing::warn!(status = ?s, "repl child exited"),
                     Err(e) => tracing::warn!(error = %e, "repl child wait failed"),
                 }
-                break;
+                break ReplEnded::Died;
             }
         }
-    }
+    };
 
-    // Child death: flip to Dead FIRST (gen-guarded) so the announce precedes
-    // the synthetic per-eval close-out frames below — a front-end reading in
-    // order sees "the REPL died" before each "died mid-eval" error. An
+    // The child is gone, for the reason `end` names: flip to Dead FIRST
+    // (gen-guarded) so the announce precedes the synthetic per-eval close-out
+    // frames below — a front-end reading in order sees the REPL gone before
+    // each eval's close-out, which says why (a restart is no death). An
     // applied transition also revokes this child's browser-served proxy
     // grants (a freed port must not stay dialable — it could be re-bound by
     // any other process); a stale (gen-rejected) death leaves the fresh
@@ -367,47 +359,41 @@ async fn supervisor_task(
         &workspace_id,
     ) {
         crate::pages::proxy::revoke_browser_ports(browser_ports_key(&workspace_id));
+        lifecycle.lock().unwrap_or_else(|e| e.into_inner()).notice = end.successor_notice();
     }
     for (_id, reply) in pending.drain() {
-        let _ = reply.send(Err(anyhow!("repl terminated")));
+        let _ = reply.send(Err(anyhow::Error::new(end)));
     }
     // Accepted but unwritten submissions close out with the rest: no new one
     // is admitted, each reply fails, each streamed eval gets its close.
     submit_rx.close();
     while let Ok(sub) = submit_rx.try_recv() {
         if let Some(reply) = sub.reply {
-            let _ = reply.send(Err(anyhow!("repl terminated")));
+            let _ = reply.send(Err(anyhow::Error::new(end)));
         } else if let Some(eid) = sub.payload.get("eval_id").and_then(Value::as_u64) {
             streaming.insert(eid);
         }
     }
-    // The child is gone: make the failure VISIBLE (stderr tail at WARN — its
-    // death cry was previously debug-only) and CLOSED-OUT (synthetic
-    // error+done frames per in-flight streamed eval, so the FE's entries
-    // resolve instead of hanging forever — the 2026-07-03 "REPL not working").
-    let tail: Vec<String> = stderr_tail
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .cloned()
-        .collect();
-    if !tail.is_empty() {
-        tracing::warn!(workspace = ?workspace_id, "repl child died; last stderr:\n{}", tail.join("\n"));
-    }
+    // The child is gone: make the failure CLOSED-OUT (synthetic error+done
+    // frames per in-flight streamed eval, so the FE's entries resolve instead
+    // of hanging forever — the 2026-07-03 "REPL not working"), and, after the
+    // retirement below, VISIBLE (its stderr tail at WARN).
     for eid in streaming.drain() {
         let _ = frame_tx.send(ReplFrameMsg {
             eval_id: eid,
             workspace_id: workspace_id.clone(),
             frame: serde_json::json!({
                 "kind": "error",
-                "message": "REPL process died mid-eval — it respawns on your next eval; the backend log has its stderr tail",
+                "message": end.to_string(),
                 "stacktrace": [],
             }),
+            opener: Default::default(),
         });
         let _ = frame_tx.send(ReplFrameMsg {
             eval_id: eid,
             workspace_id: workspace_id.clone(),
             frame: serde_json::json!({ "kind": "done", "eval_id": eid, "elapsed_ms": 0 }),
+            opener: Default::default(),
         });
     }
     // Retirement: request the tree's termination and check the direct
@@ -421,11 +407,25 @@ async fn supervisor_task(
         }
     }
     let reaped = tmp.retire(&mut contained).await.map(|_| ()).map_err(|e| e.to_string());
+    // A restart and a stop are the owner's own acts; only a death leaves the child's last words at warn.
+    if matches!(end, ReplEnded::Died) {
+        stderr_tail.warn(&format!("repl child ended: {end:?} (workspace {workspace_id:?})")).await;
+    }
     #[cfg(test)]
     if seams::FAIL_RETIREMENT.swap(false, std::sync::atomic::Ordering::SeqCst) {
         return Err("injected termination error".to_string());
     }
     reaped
+}
+
+/// The end a stop names: the owner's stop is a restart (`Supervisor::retire`); a stop sender dropped unsent is the
+/// owner gone.
+fn retired(stop: std::result::Result<(), oneshot::error::RecvError>) -> ReplEnded {
+    if stop.is_ok() {
+        ReplEnded::Restarted
+    } else {
+        ReplEnded::Stopped
+    }
 }
 
 /// Route one stdout line off the REPL child. A `repl.frame` evt is fanned out
@@ -514,6 +514,7 @@ fn route_line(
             eval_id,
             workspace_id: workspace_id.clone(),
             frame,
+            opener: Default::default(),
         };
         // Ignore send errors: a closed channel just means no connection is
         // currently subscribed, which is fine.

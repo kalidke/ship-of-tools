@@ -181,8 +181,7 @@ fn run_file_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
     // ReplRunFileDone reply can splice frames in by
     // eval_id and the drawer scrollback shows the
     // run's output alongside everything else.
-    state.repl_eval_counter = state.repl_eval_counter.saturating_add(1);
-    let eval_id = state.repl_eval_counter;
+    let eval_id = state.repl_rows.next_eval_id();
     let owner_host = state.active_host.clone();
     let workspace_key = state.active_ws_key();
     state

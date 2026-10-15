@@ -45,7 +45,7 @@ Request (`ReplExecuteReq`): `workspace_id` (required), `input`
 (default 120 s, clamped [1 s, 30 min]).
 
 Response (`ReplExecuteRes`): an explicit `outcome`
-(`ok | error | busy | interrupted | timeout | repl_died`), `run_id`,
+(`ok | error | busy | interrupted | timeout | restarted | repl_died`), `run_id`,
 `workspace_id`, `elapsed_ms`, **bounded** `stdout`/`stderr`, `values[]`,
 `error{message,stacktrace}`, `figures[]` (file paths), `truncated`,
 `project_dir`/`project_source`.
@@ -61,7 +61,8 @@ Mechanics:
    submission carries both a reply oneshot (captures the `res`, which the shim
    emits on *every* path incl. missing-file) and the collector. Frame ordering
    guarantees all frames precede the `res`, so the collector is complete when the
-   `res` arrives. Child death drains `pending` → `repl_died`. Nothing hangs.
+   `res` arrives. The child's end drains `pending`: `restarted` when a restart
+   retired it, else `repl_died`, and `error` says which. Nothing hangs.
 3. **Bounded response.** stdout/stderr capped in the collector; value/error text
    capped per-field; **images spill to `<ws>/.sot/runs/<run_id>/fig-N.<ext>`**
    (base64 is never inlined) and only paths are returned. The response stays well
@@ -78,8 +79,9 @@ Mechanics:
    0017's drawer-clear coupling, would make displayed history lie). A
    project-mismatch is surfaced faithfully in `stderr`/`error`.
 7. **Backend-issued `eval_id`** from an atomic counter based at 2^40 — distinct
-   from a frontend's small per-workspace counter, positive and < 2^53 (safe for
+   from a window's own small count, positive and < 2^53 (safe for
    `jq`/IEEE-754), NOT a mutated high bit. The `run_id` string derives from it.
+   Since 0.6.6 the same counter numbers every run (amendment 2026-10-14).
 8. **CLI:** `sot-fe repl run <ws> <path>` / `sot-fe repl eval <ws> (--code|--stdin)`
    — a real request/response call (the interleaved `repl.frame` evts on the
    connection are skipped by op-grep). Reuses `sot-fe`'s endpoint resolution +
@@ -141,7 +143,7 @@ Phase 1 (this ADR) is implemented and verified end-to-end: ok / error+stacktrace
 `Main` state across executes / exit codes. Figure-spill code is in place but not
 yet exercised (the test REPL project had no plotting package).
 
-Phase 2 uses a backend `Started` frame before submit to register a session-originated run in the drawer. The frontend keys it by the dial host and eval_id, deriving its workspace from the frame's hint, and renders origin and display as its prompt. The backend closes every run it announced before returning a repl.execute report: submit failure and a collected result lacking Done receive a synthetic Done, including timeout, repl_died and terminal res-only errors. A collected Done suppresses handler synthesis. Validation before Started creates no run. A timeout closes the report's drawer entry while the underlying eval may still run; this does not deduplicate later child frames. `sot-fe repl … --origin <who>` labels the entry.
+Phase 2 uses a backend `Started` frame before submit to register a session-originated run in the drawer. The frontend keys it by the dial host and eval_id, deriving its workspace from the frame's hint, and renders origin and display as its prompt. The backend closes every run it announced before returning a repl.execute report: submit failure and a collected result lacking Done receive a synthetic Done, including timeout, restarted, repl_died and terminal res-only errors, and every one but a timeout gets an error frame with the report's error before it, so the entry says why it ended. A collected Done suppresses handler synthesis. Validation before Started creates no run. A timeout closes the report's drawer entry while the underlying eval may still run; this does not deduplicate later child frames. `sot-fe repl … --origin <who>` labels the entry. Every `repl.eval` and `repl.run_file` run is numbered and announced the same way (amendment 2026-10-14); a `--fresh` run's `Started` comes after the restart and before the run, and the shim's `done`, the close-out of a child that ends first, or a synthetic `Done` on submit failure closes it.
 
 Deferred:
 
@@ -158,11 +160,34 @@ Deferred:
 
 `repl.interrupt` takes an optional `eval_ids`. The shim interrupts the eval that holds its guard only if that eval's id
 is among them, so the window's Ctrl+C, which names every eval its drawer shows in flight, does not stop an eval
-accepted after the one the user meant. Each window numbers its own evals, so two windows on one REPL can share a
-number; the scope is by number. `sot-fe repl run --fresh` always sends `eval_id` 1, a number every window's first
-eval shares, so its interrupt scope has the same limit. An interrupt without `eval_ids` still stops whichever eval runs, and `sot-fe repl
+accepted after the one the user meant. The scope is by number: a window names its own evals by its own numbers, which
+the daemon maps to its numbers for that window's runs, and other runs by the daemon's numbers (amendment 2026-10-14).
+An interrupt without `eval_ids` still stops whichever eval runs, and `sot-fe repl
 interrupt` sends none: item 4's "not run-scoped" and item 9's "workspace-wide" describe that form. An interrupt reaches
 an eval only in its user code, which is its code and the display of its value. One that arrives before it starts stops
 it before it runs, and the eval is still answered with an error frame, done and res, so item 2's "every path" holds; one
 that arrives after it has finished is
 answered `interrupted:false`. Item 4 stands: a timeout sends no interrupt.
+
+## Amendment (2026-10-14, 0.6.6): one numberer
+
+The daemon numbers every run on every REPL (`repl.eval`, `repl.run_file`, `repl.execute`) from item 7's counter
+(`rust/backend/src/sidecars/repl/numbers.rs`) and announces each with `Started` before its submission, so a number names
+one run in every window. A window still numbers its own evals and `r`/`R` runs, with one count per window, and its
+drawer entry for a run carries that number. The daemon keeps it as an alias of that window (`CallerNumbers`). A window
+is its hello's declared host and `instance` (ADR 0046 decision 1), so each connection of it, a redial's included, shares
+the aliases; a connection whose hello names no instance is a window of its own. Each connection of the window is written
+the run's frames under the window's number and is never sent the run's `Started`, a run the daemon refuses it (a full
+queue, a REPL that cannot start) is written to it not at all, since the reply says why, and the `eval_ids` of an
+interrupt from it are mapped to the daemon's numbers. A window's number names one run: a later run it numbers the same
+takes the number (the Windows launcher keeps a window's `instance` across a relaunch, whose count starts at 1 again),
+and the earlier run's later frames reach it as any other run's. The client roster keeps a window's aliases while it has
+a connection and after its last one leaves, so a window that redials, even after the daemon reaped its silent link, is
+written the rest of its runs; it keeps at most 256 runs per window (a finished run goes first) and 64 windows with no
+connection (the one away longest goes first). Every other connection is written the run under the daemon's number, after
+its `Started`, so a second window shows the run as an entry of its own. Before this, every window's first eval was 1,
+and a second window appended the first window's runs to its own entry with the same number. No payload changed: a window
+that predates this is written its own runs under its own numbers and the other windows' runs announced, except that it
+counts each row from 1, so of its two rows' evals in flight on one host the later takes the number and the earlier's
+later output comes under the daemon's number, which that window drops; a window against a daemon that predates this sees
+what it saw before.

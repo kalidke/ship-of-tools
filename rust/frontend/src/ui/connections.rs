@@ -103,8 +103,8 @@ mod tests {
     #[test]
     fn eval_id_workspace_owner_disambiguates_same_eval_id_across_hosts() {
         // ADR 0042 L2a codex review, item C: both daemons independently
-        // count evals from 1 (EXEC_EVAL_ID is a per-process backend
-        // static), so a bare `eval_id` key would let host beta's id-1
+        // number runs from the same start (`numbers::next` is a per-process
+        // backend static), so a bare `eval_id` key would let host beta's id-1
         // reply resolve against host alpha's routing entry (or land
         // alpha's frames in beta's workspace). Keying by (HostKey,
         // eval_id) — the same `owner_id = (event_host.clone(), eval_id)`

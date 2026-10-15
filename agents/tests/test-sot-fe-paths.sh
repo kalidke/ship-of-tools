@@ -239,7 +239,8 @@ check "fe (windows): a path in another case than git's root" "$(fe "$WIN_PATH" "
 
 # 5. A path sent to a daemon inside a JSON payload, where Git Bash converts nothing: a pipe: daemon (a native Windows
 # process; this suite's pipe goes to the recording socket) gets cygpath -m -l's spelling, a unix: daemon the path as
-# written. `sot-fe docs`, `sot-fe repl run` (with and without --fresh) and comm-probe's workspace.create.
+# written. `sot-fe docs`, `sot-fe repl run` (with and without --fresh) and comm-probe's workspace.create. A --fresh run
+# also carries no eval_id, so the daemon numbers it and announces it to every window, and it carries --origin.
 export GUARD_PIPE_SOCKET="$REC"
 PIPE='pipe:\\.\pipe\sot-paths-test'
 sent() {  # OP JQ-PATH PATH CMD... — the value at JQ-PATH of the OP request CMD sends, run from the repo with PATH
@@ -256,6 +257,10 @@ check "docs: a unix: daemon gets the path as written" \
     "$(sent fe.command.send .payload.args.path "$PATH" bash "$SCRIPTS_DIR/sot-fe" docs ws "$F" --endpoint "unix:$REC" --timeout 1)" "$F"
 check "repl run --fresh (windows): a pipe: daemon gets its spelling" \
     "$(sent repl.run_file .payload.path "$WIN_PATH" bash "$SCRIPTS_DIR/sot-fe" repl run ws-x "$F" --fresh --endpoint "$PIPE" --timeout 1)" "$FW"
+check "repl run --fresh numbers no run: the daemon numbers it and announces it to every window" \
+    "$(sent repl.run_file '.payload | has("eval_id")' "$PATH" bash "$SCRIPTS_DIR/sot-fe" repl run ws-x "$F" --fresh --endpoint "unix:$REC" --timeout 1)" "false"
+check "repl run --fresh: --origin labels the run" \
+    "$(sent repl.run_file .payload.origin "$PATH" bash "$SCRIPTS_DIR/sot-fe" repl run ws-x "$F" --fresh --origin tester --endpoint "unix:$REC" --timeout 1)" "tester"
 check "repl run (windows): a pipe: daemon gets its spelling" \
     "$(sent repl.execute .payload.input.path "$WIN_PATH" bash "$SCRIPTS_DIR/sot-fe" repl run ws-x "$F" --endpoint "$PIPE" --timeout 1)" "$FW"
 check "repl run: a unix: daemon gets the path as written" \
