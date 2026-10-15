@@ -24,6 +24,34 @@ pub(in crate::ui) struct ReplEntry {
     pub(in crate::ui) origin: Option<String>,
 }
 
+/// The REPL drawer across rows: the pane each row left (`parked`, shown again when the row is), and this window's one
+/// eval count, which is no row's: a row switch never changes it, so no two of the window's runs in flight share a
+/// number, and the daemon writes each run to the window under its own number (ADR 0033, the one-numberer amendment).
+#[derive(Default)]
+pub(in crate::ui) struct ReplRows {
+    /// Each row's pane as the window left it, keyed like every per-row map (`WsKey`).
+    pub(in crate::ui) parked: HashMap<WsKey, WorkspaceReplSnapshot>,
+    count: u64,
+}
+
+impl ReplRows {
+    /// The number of this window's next eval or `r`/`R` run.
+    pub(in crate::ui) fn next_eval_id(&mut self) -> u64 {
+        self.count = self.count.saturating_add(1);
+        self.count
+    }
+
+    /// Parks the pane of `row`, which the window is leaving.
+    pub(in crate::ui) fn park(&mut self, row: WsKey, pane: WorkspaceReplSnapshot) {
+        self.parked.insert(row, pane);
+    }
+
+    /// The pane `row` was left with, to show it again; `None` on the row's first visit.
+    pub(in crate::ui) fn unpark(&self, row: &WsKey) -> Option<WorkspaceReplSnapshot> {
+        self.parked.get(row).cloned()
+    }
+}
+
 impl State {
     /// Send the current REPL input buffer to the backend as a `repl.eval`
     /// request, push an in-flight entry into the scrollback, and clear the
@@ -48,8 +76,7 @@ impl State {
         // discarded because the user committed to this line.
         self.history_pos = None;
         self.history_saved = None;
-        self.repl_eval_counter = self.repl_eval_counter.saturating_add(1);
-        let eval_id = self.repl_eval_counter;
+        let eval_id = self.repl_rows.next_eval_id();
         // Tag the eval with the host+workspace it belongs to so a
         // `ReplEvalDone` reply arriving after a swap routes back to the
         // right log -- and, since this key also disambiguates which
@@ -191,6 +218,21 @@ pub(in crate::ui) fn in_flight_eval_ids(log: &[ReplEntry]) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A row switch never restarts the window's eval count, a first visit included: with a count per row, two rows'
+    /// first evals on one host would both be 1, and the daemon would write one run's output into the other's entry.
+    #[test]
+    fn a_row_switch_never_restarts_the_windows_eval_count() {
+        let mut rows = ReplRows::default();
+        let (x, y): (WsKey, WsKey) = (("host".into(), "x".into()), ("host".into(), "y".into()));
+        assert_eq!(rows.next_eval_id(), 1, "row x's first eval");
+        rows.park(x.clone(), WorkspaceReplSnapshot::default());
+        assert!(rows.unpark(&y).is_none(), "row y: a first visit");
+        assert_eq!(rows.next_eval_id(), 2, "row y's first eval");
+        rows.park(y, WorkspaceReplSnapshot::default());
+        assert!(rows.unpark(&x).is_some(), "row x again");
+        assert_eq!(rows.next_eval_id(), 3, "row x's second eval");
+    }
 
     #[test]
     fn a_ctrl_c_names_every_eval_in_flight_and_no_other() {

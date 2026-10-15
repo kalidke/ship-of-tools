@@ -77,7 +77,7 @@ pub(crate) mod drawer;
 #[cfg(windows)]
 use drawer::terminal::backend::drawer_uses_attach;
 use drawer::repl::lines::{ReplImage, ReplImageSlot};
-use drawer::repl::log::ReplEntry;
+use drawer::repl::log::{ReplEntry, ReplRows};
 use drawer::terminal::backend::scroll_drawer_ring;
 use drawer::terminal::vt::{key_to_pty_bytes, paint_terminal, scroll_ring};
 
@@ -841,12 +841,13 @@ struct State {
     /// switching workspaces (or hosts) doesn't lose cursor position or
     /// the expanded-folder shape of the file tree.
     workspace_ui_snapshots: HashMap<WsKey, WorkspaceUiSnapshot>,
-    /// Per-workspace REPL snapshots. Captured separately from the UI
-    /// snapshot because `ReplEvalDone` replies can land for workspaces
-    /// the user has swapped away from, and those need to mutate the
-    /// owning workspace's log directly. Keyed the same way (`WsKey`,
-    /// `"<default>"` for the daemon-default workspace within a host).
-    workspace_repl_snapshots: HashMap<WsKey, WorkspaceReplSnapshot>,
+    /// Per-workspace REPL snapshots (`ReplRows::parked`) and this window's
+    /// one eval count (`ReplRows::next_eval_id`). Captured separately from
+    /// the UI snapshot because `ReplEvalDone` replies can land for workspaces
+    /// the user has swapped away from, and those need to mutate the owning
+    /// workspace's log directly. Keyed the same way (`WsKey`, `"<default>"`
+    /// for the daemon-default workspace within a host).
+    repl_rows: ReplRows,
     /// The last `fe.sessions` projection this frontend sent out
     /// (session-listing brief decision 2) — `None` until the local
     /// daemon's first `workspace.list` reply. Compared against the next
@@ -954,12 +955,6 @@ struct State {
     /// Enter in REPL focus; cleared after send. Multi-line input is a
     /// follow-up.
     repl_input: String,
-    /// This window's own eval numbers: one count across every row and
-    /// host it shows, never reset, so no two of its evals in flight share a
-    /// number (`eval_id_workspace` finds an eval's row by its number). The
-    /// daemon numbers each run itself and writes this window its own runs
-    /// under these numbers (`CallerNumbers`, ADR 0033).
-    repl_eval_counter: u64,
     /// Scroll offset (rows from the tail) of the REPL pane. 0 = live,
     /// positive = looking at older lines. Reset to 0 whenever the user
     /// types into the REPL so typing always snaps to live; otherwise
