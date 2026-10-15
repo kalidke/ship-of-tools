@@ -845,6 +845,72 @@ exit(0)
         h.finish().await;
     }
 
+    /// A stand-in for Pluto's julia that names its display in the file `named` (before READY, when `ready`), starts a
+    /// descendant in its group when `descendant`, and reads no request; with the Signal it is started under.
+    #[cfg(target_os = "linux")]
+    fn display_stand_in(dir: &Path, named: &Path, ready: bool, descendant: bool) -> (String, PathBuf, &'static Signal) {
+        let stub = dir.join("stub-julia");
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!(
+                "#!/bin/sh\n{child}printf '%s' \"$XAUTHORITY\" > '{named}.tmp'\nmv '{named}.tmp' '{named}'\n{ready}exec sleep 300\n",
+                child = if descendant { "sleep 300 &\n" } else { "" },
+                named = named.display(),
+                ready = if ready { "echo 'READY http://pluto.invalid/'\n" } else { "" },
+            ),
+        );
+        let script = dir.join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        (stub.to_string_lossy().into_owned(), script, Box::leak(Box::new(Signal::new())))
+    }
+
+    /// A Pluto server whose display ends under it ends with what it started in its group, so nothing of it can open
+    /// that display's name once another account binds it, and an open in flight says why.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_pluto_whose_display_ends_ends_with_it() {
+        use crate::sidecars::contract_tests::{holding_display, x11_server};
+        executable("Xvfb");
+        let dir = tempfile::tempdir().unwrap();
+        let named = dir.path().join("named");
+        let (bin, script, sig) = display_stand_in(dir.path(), &named, true, true);
+        let running = spawn_supervisor(&bin, dir.path(), &script, sig).await.expect("the stand-in says READY");
+        let cookie = PathBuf::from(std::fs::read_to_string(&named).expect("the stand-in names its display"));
+        within(REACT, "setup: the server and its sleep hold the display", || holding_display(&cookie).len() == 2).await;
+        let (reply, open) = oneshot::channel();
+        running.submit.send(Submission { abs_path: "/nowhere.jl".into(), reply }).await.expect("the supervisor admits an open");
+        // SAFETY: a signal to the X server started for this test's stand-in.
+        assert_eq!(unsafe { libc::kill(x11_server(&cookie) as libc::pid_t, libc::SIGKILL) }, 0, "kill the display's server");
+        within(REACT, "nothing of the server keeps its ended display", || holding_display(&cookie).is_empty()).await;
+        let answer = tokio::time::timeout(REACT, open).await.expect("the open is answered").expect("the supervisor answers");
+        let why = format!("{:#}", answer.expect_err("an open the display's end cut short fails"));
+        assert!(why.contains("its display ended"), "{why}");
+        within(REACT, "the server and its display are reaped", || sig.live() == 0).await;
+        drop(running);
+    }
+
+    /// A display that ends while its server starts ends the start: the server is ended, and the start fails saying why.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_pluto_whose_display_ends_before_ready_is_not_served() {
+        use crate::sidecars::contract_tests::{holding_display, x11_server};
+        executable("Xvfb");
+        let dir = tempfile::tempdir().unwrap();
+        let named = dir.path().join("named");
+        let (bin, script, sig) = display_stand_in(dir.path(), &named, false, false);
+        let project = dir.path().to_path_buf();
+        let start = tokio::spawn(async move { spawn_supervisor(&bin, &project, &script, sig).await.map(|_| ()) });
+        within(REACT, "the stand-in names its display", || named.exists()).await;
+        let cookie = PathBuf::from(std::fs::read_to_string(&named).unwrap());
+        // SAFETY: a signal to the X server started for this test's stand-in.
+        assert_eq!(unsafe { libc::kill(x11_server(&cookie) as libc::pid_t, libc::SIGKILL) }, 0, "kill the display's server");
+        let started = tokio::time::timeout(REACT, start).await.expect("the start ends with its display").expect("the start task");
+        let why = format!("{:#}", started.expect_err("a server whose display ended is not served"));
+        assert!(why.contains("display ended before READY"), "{why}");
+        assert!(holding_display(&cookie).is_empty(), "nothing of the server keeps its ended display");
+        assert_eq!(sig.live(), 0, "the server and its display are reaped");
+    }
+
     /// A stdin write that cannot complete: three requests are in flight (one answered by nobody, one mid-write, one
     /// queued) when the child exits with a descendant holding both pipes.
     async fn blocked_write_scenario(h: &Harness) -> (u16, u32, Vec<oneshot::Receiver<anyhow::Result<String>>>) {

@@ -228,6 +228,42 @@ pub(crate) fn x11_answer(number: u32, cookie: Option<&[u8]>) -> Option<u8> {
     Some(first[0])
 }
 
+/// The process id of the X server that reads `cookie` (its command line holds `-auth <cookie>`): a child's own Xvfb.
+#[cfg(target_os = "linux")]
+pub(crate) fn x11_server(cookie: &Path) -> u32 {
+    let wanted = format!("\0-auth\0{}\0", cookie.display()).into_bytes();
+    processes()
+        .into_iter()
+        .find(|pid| {
+            std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|line| line.windows(wanted.len()).any(|w| w == wanted))
+        })
+        .unwrap_or_else(|| panic!("no X server reads {}", cookie.display()))
+}
+
+/// The processes still running whose environment names `cookie` as their `XAUTHORITY`: everything that holds a child's
+/// display, its descendants included, wherever their process group. A process's environment is the one it started
+/// with; a zombie shows none.
+#[cfg(target_os = "linux")]
+pub(crate) fn holding_display(cookie: &Path) -> Vec<u32> {
+    let wanted = format!("XAUTHORITY={}", cookie.display()).into_bytes();
+    processes()
+        .into_iter()
+        .filter(|pid| {
+            std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| env.split(|b| *b == 0).any(|v| v == wanted))
+        })
+        .collect()
+}
+
+/// Every process id the process table lists.
+#[cfg(target_os = "linux")]
+fn processes() -> Vec<u32> {
+    std::fs::read_dir("/proc")
+        .expect("read the process table")
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .collect()
+}
+
 /// Polls `condition` until it holds; the failure names `what`.
 pub(crate) async fn within(bound: Duration, what: &str, mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + bound;

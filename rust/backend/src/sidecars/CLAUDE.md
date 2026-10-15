@@ -86,7 +86,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mod.rs`: declares the nine modules and `WireRequest`.
 - `child/`: what each child the daemon starts carries with it: its own temporary folder and its stderr tail (see its page).
 - `contract_tests.rs`: native REPL/MathJax private-Signal spawn, shutdown closeout and owned-child observations, a
-  node child slower to start than a render's bound, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions. The X11 connection probe the display tests share (`x11_answer`, `x11_cookie`).
+  node child slower to start than a render's bound, and the Linux process-tree listener observer (the MathJax helper listens nowhere; the observer rejects a listening node tree); no source-text assertions. The X11 probes the display tests share: a connection setup (`x11_answer`, `x11_cookie`), a display's server (`x11_server`) and the processes that still hold a display (`holding_display`).
 - `display/`: a user-code child's own X display (Linux; see its page).
 - `julia.rs`: which julia binary runs (`resolve_bin`).
 - `kernel.rs`: the per-row kernel and its supervisor.
