@@ -52,8 +52,8 @@ const PLUTO_OPEN_BOUND: std::time::Duration = std::time::Duration::from_secs(30)
 
 /// How long a start waits for the server's `READY` line before it ends the child. A first start after a Julia, package
 /// or depot change precompiles Pluto and its dependencies, the same cold precompile the kernel's start bound allows
-/// for (`KernelBounds::PRODUCT`), so it has the same bound.
-const PLUTO_READY_BOUND: std::time::Duration = std::time::Duration::from_secs(1800);
+/// for, so it is that bound, `KernelBounds::PRODUCT.start`.
+const PLUTO_READY_BOUND: std::time::Duration = super::kernel::KernelBounds::PRODUCT.start;
 
 struct Submission {
     abs_path: String,
