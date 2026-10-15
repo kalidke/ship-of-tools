@@ -150,7 +150,9 @@ Nothing appears on any screen: return the figure, or `save` it. If that
 display ends, the REPL ends with it: your next run starts a new REPL with a new
 display, and its stderr says so first (`sot: the REPL before this one was
 ended because its own display (Xvfb) ended ...`); what the old one defined or
-loaded is gone. On a host
+loaded is gone. A process your code starts, `detach`ed or not, holds that
+display too and ends when it does: at a restart, a `--fresh`, the REPL's death
+and its row's end. On a host
 without Xvfb the kernel's first run says so in its stderr (`sot: this REPL has
 no display of its own (...)`); use CairoMakie there. For an interactive figure use WGLMakie and `wglshow(fig)`: it serves the figure on a port the OS assigns, at an
 address with a secret in it, so no other account on the box can open it, and one window opens it: the window

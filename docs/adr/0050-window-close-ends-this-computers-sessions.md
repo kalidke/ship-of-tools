@@ -237,9 +237,12 @@ connection is the only handle.
    descendant of the guard through `setpgid`, `setsid`, Julia's `detach` (Pluto's notebook workers, which Malt starts
    detached, and quarto's julia server, which quarto starts detached, measured with quarto 1.7.31) or a double fork,
    and ends within `DRAIN_BOUND` (10 s) of the daemon's end, however that end came, a SIGKILL included; while the
-   daemon runs, such a process outlives the end of the child whose group it left (Pluto's notebook worker when Pluto's
-   server ends) unless it exits on its own. A crashed Pluto server can leave one Julia worker per open notebook,
-   which ends when the daemon ends (a stated 0.6.6 limit; per-child containment is designed for 0.6.7). Outside it:
+   daemon runs, such a process outlives the end of the child whose group it left unless it exits on its own or holds
+   that child's X display. A REPL's and Pluto's server's display ends with its child, and every end of a display ends
+   every process of the daemon's account whose environment names the display's cookie as `XAUTHORITY`
+   (`rust/backend/src/sidecars/display/holders.rs`), so a crashed Pluto server's notebook workers, and a process REPL
+   code started detached, end with it. One started with another `XAUTHORITY`, or whose child had no display (no
+   Xvfb), ends when the daemon ends (a stated 0.6.6 limit; per-child containment is designed for 0.6.7). Outside it:
    a process a broker starts; a SIGKILL of the guard itself, after which the daemon ends at once but what it started
    does not (under the systemd unit the unit's cgroup ends the rest within the unit's stop timeout); and a process in an
    uninterruptible kernel call, which has SIGKILL pending and ends when the call returns (the guard logs it). Every ssh

@@ -1,5 +1,6 @@
 //! A user-code child's own X display (Linux): an Xvfb that only the child's cookie opens, started before the child,
-//! named in its environment, watched while the child lives, and ended after it.
+//! named in its environment, watched while the child lives, and ended after it, together with every process that holds
+//! its cookie.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -11,14 +12,17 @@ use tokio::process::Command;
 
 use crate::lifecycle::child_signal::{Contained, Signal};
 
+mod holders;
+
 /// How long a starting Xvfb may take to name its display, which it does once it accepts connections (`-displayfd`):
 /// 50 to 150 ms on the hosts measured.
 const START_BOUND: Duration = Duration::from_secs(10);
 
 /// A child's display: a running server, or why there is none.
 pub(crate) enum Display {
-    /// Xvfb on `:number`, which only the cookie in the file `cookie` opens.
-    Up { server: Contained, number: u32, cookie: PathBuf },
+    /// Xvfb on `:number`, which only the cookie in the file `cookie` opens. `cookie` comes first, so a display dropped
+    /// without its `end` ends what holds its cookie before its server's group.
+    Up { cookie: Cookie, server: Contained, number: u32 },
     /// No server, and why. The child is told (`SOT_NO_DISPLAY`), and the REPL shim says it at its first eval.
     Missing(String),
 }
@@ -29,7 +33,7 @@ impl Display {
     /// log; it never fails the child's start.
     pub(crate) async fn start(folder: &Path, sig: &'static Signal) -> Self {
         match start_with(OsStr::new("Xvfb"), folder, sig, START_BOUND).await {
-            Ok((server, number, cookie)) => Display::Up { server, number, cookie },
+            Ok((server, number, cookie)) => Display::Up { cookie: Cookie(cookie), server, number },
             Err(why) => {
                 tracing::warn!(reason = %why, "a Julia child starts without a display");
                 Display::Missing(why)
@@ -44,7 +48,7 @@ impl Display {
         match self {
             Display::Up { number, cookie, .. } => {
                 cmd.env("DISPLAY", format!(":{number}"))
-                    .env("XAUTHORITY", cookie)
+                    .env("XAUTHORITY", cookie.as_os_str())
                     .env("XDG_SESSION_TYPE", "x11");
             }
             Display::Missing(why) => {
@@ -53,30 +57,53 @@ impl Display {
         }
     }
 
-    /// Returns once the server has exited, observed and left unreaped (`end` reaps it); never, when there is no
-    /// server. Its owner then ends the child: once the server is gone, any account can bind the display's abstract
-    /// name, and a child that opened its display only then would send its cookie and its pixels to that account's
-    /// server. An exit that cannot be observed counts as an end.
+    /// Returns once the server has exited, observed and left unreaped (`end` reaps it), having ended every process
+    /// that holds its cookie, the child among them; never, when there is no server. Its owner then retires the child:
+    /// once the server is gone, any account can bind the display's abstract name, and a child that opened its display
+    /// only then would send its cookie and its pixels to that account's server. An exit that cannot be observed counts
+    /// as an end.
     pub(crate) async fn ended(&mut self) {
         match self {
-            Display::Up { server, number, .. } => {
+            Display::Up { cookie, server, number } => {
                 if let Err(e) = server.wait_until_exited().await {
                     tracing::warn!(display = *number, error = %e, "a child's display server's exit could not be observed");
                 }
                 tracing::warn!(display = *number, "a child's display ended under it; the child is ended with it");
+                holders::end(cookie);
             }
             Display::Missing(_) => std::future::pending().await,
         }
     }
 
-    /// Ends the server: its process group, then its reap. A failed request is logged; the server's `Contained` has
-    /// already asked for its group's end either way.
+    /// Ends every process that holds the cookie (the cookie's drop), then the server: its process group, then its
+    /// reap. A failed request is logged; the server's `Contained` has already asked for its group's end either way.
     pub(crate) async fn end(self) {
-        if let Display::Up { mut server, number, .. } = self {
+        if let Display::Up { cookie, mut server, number } = self {
+            // What holds the cookie ends first, while the server still holds the display's name, which no account
+            // can bind until the server ends.
+            drop(cookie);
             if let Err(e) = server.kill().await {
                 tracing::warn!(display = number, error = %e, "a child's display server is not confirmed ended");
             }
         }
+    }
+}
+
+/// A running display's cookie file. Its drop ends every process of this account that still names it as its
+/// `XAUTHORITY` ([`holders::end`]), so however the display ends, nothing that could open its name outlives it.
+pub(crate) struct Cookie(PathBuf);
+
+impl std::ops::Deref for Cookie {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Cookie {
+    fn drop(&mut self) {
+        holders::end(&self.0);
     }
 }
 
