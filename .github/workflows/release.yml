@@ -463,6 +463,24 @@ jobs:
           args: --latest --strip header
         env:
           OUTPUT: RELEASE_NOTES.md
+      # GitHub rejects a release body over 125000 characters (rc9.13's publish failed with HTTP 422; its notes ran to
+      # 1609 commits). The notes are cut at a whole line below 120000 bytes, and the cut names every change since the
+      # previous tag with a link.
+      - name: Cap the release notes
+        shell: bash
+        run: |
+          if [ "$(wc -c < RELEASE_NOTES.md)" -gt 120000 ]; then
+            prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+            truncate -s 120000 RELEASE_NOTES.md
+            # A newline byte never falls inside a UTF-8 character, so an unterminated last line is the cut one.
+            if [ -n "$(tail -c 1 RELEASE_NOTES.md)" ]; then sed -i '$d' RELEASE_NOTES.md; fi
+            if [ -n "$prev" ]; then
+              link="every change since $prev is at https://github.com/$GITHUB_REPOSITORY/compare/$prev...$GITHUB_REF_NAME"
+            else
+              link="every change up to $GITHUB_REF_NAME is at https://github.com/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME"
+            fi
+            printf '\nThe notes stop here, at 120000 bytes; %s\n' "$link" >> RELEASE_NOTES.md
+          fi
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
