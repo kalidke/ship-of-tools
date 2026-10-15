@@ -82,7 +82,8 @@ async fn boot_seeds_the_anchor_and_relays_registry_changes() {
     env.kill_daemon_bounded().await;
 }
 
-/// A daemon starts from the harness's own variables: whatever `SOT_` variable the runner holds never reaches it.
+/// A daemon starts from the harness's own variables: whatever `SOT_` variable the runner holds never reaches it, and
+/// the one the harness adds is the Julia binary it found (`SOT_JULIA_BIN`, `support::julia_binary`).
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_spawned_daemon_inherits_no_sot_variable_the_test_did_not_set() {
@@ -101,7 +102,12 @@ async fn a_spawned_daemon_inherits_no_sot_variable_the_test_did_not_set() {
         .filter(|k| k.starts_with("SOT_"))
         .collect();
     names.sort();
-    assert_eq!(names, ["SOT_COMM_HOME", "SOT_RUNTIME_DIR", "SOT_SELF_HOST"], "the daemon's SOT_ variables");
+    // The harness hands every test daemon the Julia binary it found, when it found one (`support::julia_binary`).
+    let mut expected = vec!["SOT_COMM_HOME", "SOT_RUNTIME_DIR", "SOT_SELF_HOST"];
+    if support::julia_binary().is_some() {
+        expected.insert(1, "SOT_JULIA_BIN");
+    }
+    assert_eq!(names, expected, "the daemon's SOT_ variables");
 }
 
 /// A registry write waits for the lock the daemon and the comm scripts take.
