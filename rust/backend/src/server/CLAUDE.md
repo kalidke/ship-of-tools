@@ -49,6 +49,9 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   read (`read_envelope`, `parse_first_frame`). A host that has said hello as two OS accounts is refused for either
   until the daemon restarts (`Clients::admit_account`); connections already open are left alone.
 - Only `admit_hello` makes an `Admitted`, and `serve_control`, `hand_off` and `register_hello` take one, so no path from accept serves a connection whose hello was not admitted.
+- A control session's hello reply names its window's REPL runs still running (`HelloRes::repl_running`, read from
+  `CallerNumbers::running` after the connection's bus subscriptions), so the `done` of each run it names is written to
+  the connection; a `handoff` connection's names none.
 - A second hello on a control connection closes it unanswered; a `handoff` connection's next frame is
   `proxy.connect`, `lane.connect` or `fe.lease`, else `bad_request` and a close (`hand_off`).
 - A connection whose first frame has not arrived within 10 s, or a `handoff` connection whose next frame has not, is closed

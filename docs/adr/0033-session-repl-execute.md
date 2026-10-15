@@ -191,3 +191,15 @@ that predates this is written its own runs under its own numbers and the other w
 counts each row from 1, so of its two rows' evals in flight on one host the later takes the number and the earlier's
 later output comes under the daemon's number, which that window drops; a window against a daemon that predates this sees
 what it saw before.
+
+## Amendment (2026-10-15, 0.6.6): a run cut by a link drop
+
+A window's link can drop while one of its runs is in flight, and the window can redial the same daemon while the run
+goes on: the daemon keeps the window's numbers across its connections (amendment 2026-10-14). The REPL's supervisor
+marks each of a window's runs running when it writes the run to the child, and ended before it publishes the run's
+`done`, the close-out's synthetic `done` included (`CallerNumbers::ran`, `ended`). Every hello reply names the window's
+runs still running, by the window's numbers (`HelloRes::repl_running`), read after the connection subscribed to the
+frame bus, so the `done` of each run it names is written to that connection. It names no run still queued or refused,
+no run whose request never reached the daemon, no other window's or session's run, and nothing after a daemon restart:
+the REPL children end with the daemon, and its records are in memory. The field is additive: a daemon that predates it
+names none, and a window that predates it ignores it.

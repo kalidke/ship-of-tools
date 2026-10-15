@@ -181,11 +181,11 @@ async fn supervisor_task(
     mut tmp: crate::sidecars::child::ChildTmp,
 ) -> std::result::Result<(), String> {
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
-    // Streamed (fire-and-forget) evals in flight: eval_id recorded at submit,
-    // cleared when its `done` frame routes. On child death each survivor gets
-    // synthetic error+done frames so the FE'S in-flight entry CLOSES — before
-    // this, a dying child left evals hanging forever with no visible cause.
-    let mut streaming: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // Streamed (fire-and-forget) evals in flight, each with its window's runs: an eval enters once written to the
+    // child, marked running there, and leaves when its `done` frame routes, marked ended before that frame is
+    // published. On child death each survivor gets synthetic error+done frames so the FE'S in-flight entry CLOSES —
+    // before this, a dying child left evals hanging forever with no visible cause.
+    let mut streaming: HashMap<u64, numbers::CallerNumbers> = HashMap::new();
     // Active `repl.execute` collectors, keyed by eval_id (frames carry eval_id).
     let mut collectors: HashMap<u64, ExecCollector> = HashMap::new();
     // Outgoing wire id -> eval_id, so the terminal res can drop the collector
@@ -259,7 +259,7 @@ async fn supervisor_task(
                     if let Some(reply) = sub.reply {
                         let _ = reply.send(Err(anyhow::Error::new(end)));
                     } else if let Some(eid) = sub.payload.get("eval_id").and_then(Value::as_u64) {
-                        streaming.insert(eid);
+                        streaming.insert(eid, sub.owner);
                     }
                     break end;
                 }
@@ -280,7 +280,8 @@ async fn supervisor_task(
                 if let Some(reply) = sub.reply {
                     pending.insert(id, reply);
                 } else if let Some(eid) = eid {
-                    streaming.insert(eid);
+                    sub.owner.ran(eid);
+                    streaming.insert(eid, sub.owner);
                 }
             }
             line = stdout_lines.next_line() => {
@@ -371,14 +372,15 @@ async fn supervisor_task(
         if let Some(reply) = sub.reply {
             let _ = reply.send(Err(anyhow::Error::new(end)));
         } else if let Some(eid) = sub.payload.get("eval_id").and_then(Value::as_u64) {
-            streaming.insert(eid);
+            streaming.insert(eid, sub.owner);
         }
     }
     // The child is gone: make the failure CLOSED-OUT (synthetic error+done
     // frames per in-flight streamed eval, so the FE's entries resolve instead
     // of hanging forever — the 2026-07-03 "REPL not working"), and, after the
     // retirement below, VISIBLE (its stderr tail at WARN).
-    for eid in streaming.drain() {
+    for (eid, owner) in streaming.drain() {
+        owner.ended(eid);
         let _ = frame_tx.send(ReplFrameMsg {
             eval_id: eid,
             workspace_id: workspace_id.clone(),
@@ -438,7 +440,7 @@ fn retired(stop: std::result::Result<(), oneshot::error::RecvError>) -> ReplEnde
 fn route_line(
     line: &str,
     pending: &mut HashMap<u64, oneshot::Sender<Result<Value>>>,
-    streaming: &mut std::collections::HashSet<u64>,
+    streaming: &mut HashMap<u64, numbers::CallerNumbers>,
     collectors: &mut HashMap<u64, ExecCollector>,
     collector_ids: &mut HashMap<u64, u64>,
     frame_tx: &broadcast::Sender<ReplFrameMsg>,
@@ -480,8 +482,12 @@ fn route_line(
             .cloned()
             .unwrap_or(Value::Null);
         let is_done = frame.get("kind").and_then(Value::as_str) == Some("done");
+        // A window's run is marked ended before its `done` goes on the bus: a hello read after the `done` was
+        // published never names it (`numbers::CallerNumbers::running`).
         if is_done {
-            streaming.remove(&eval_id);
+            if let Some(owner) = streaming.remove(&eval_id) {
+                owner.ended(eval_id);
+            }
         }
         // A `browser` frame (ADR 0032 BrowserView — wglshow / user-served
         // dashboard) announces a live loopback server in this child. Record
@@ -569,7 +575,7 @@ mod interrupt_guard_tests {
         let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
         let (reply_tx, mut reply_rx) = oneshot::channel();
         pending.insert(0u64, reply_tx); // adversarial: a pending entry at the sentinel's id
-        let mut streaming = std::collections::HashSet::new();
+        let mut streaming = HashMap::new();
         let mut collectors = HashMap::new();
         let mut collector_ids = HashMap::new();
         route_line(
@@ -600,7 +606,7 @@ mod interrupt_guard_tests {
         let logged = crate::sidecars::logged_by(|| {
             let (frame_tx, _frame_rx) = broadcast::channel(8);
             let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
-            let mut streaming = std::collections::HashSet::new();
+            let mut streaming = HashMap::new();
             let mut collectors = HashMap::new();
             let mut collector_ids = HashMap::new();
             for line in [

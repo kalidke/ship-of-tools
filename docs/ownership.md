@@ -204,7 +204,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `math.render` | op | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_math_render` |
 | `repl.eval`, `repl.run_file`, `repl.interrupt`, `repl.execute` | op | sidecars | `rust/backend/src/sidecars/repl/ops.rs` `handle_repl_eval`, `handle_repl_run_file`, `handle_repl_interrupt`; `rust/backend/src/sidecars/repl/execute.rs` `handle_repl_execute` |
 | `repl.frame` | event, bus | sidecars | `rust/backend/src/sidecars/repl/mod.rs` `Repl`, `ReplFrameMsg`; `rust/backend/src/server/events.rs` `write_repl_frame`, `repl_frame_for` |
-| a REPL run's number: the daemon's one counter, and a window's own numbers for its own runs | state | sidecars | `rust/backend/src/sidecars/repl/numbers.rs` `next`, `CallerNumbers` |
+| a REPL run's number: the daemon's one counter, and a window's own numbers for its own runs and whether each still runs | state | sidecars | `rust/backend/src/sidecars/repl/numbers.rs` `next`, `CallerNumbers` (`ran`, `ended`, `running`) |
 | `pluto.open` | op | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_pluto_open` |
 | `monitor.subscribe`, `.unsubscribe`, `.history`, `monitor.tick` | op, event, bus | sidecars | `rust/backend/src/sidecars/ops.rs` `handle_monitor_subscribe`, `handle_monitor_unsubscribe`, `handle_monitor_history`; `rust/backend/src/sidecars/monitor.rs` `MonitorHub`; `rust/backend/src/server/events.rs` `write_monitor_tick` |
 | kernel stdio ops (`kernel.hello`, `file.preview`, `file.parse`, `project.scan`, `markdown.tokenize`) | wire (stdio) | sidecars | `julia/kernel/src/ShipToolsKernel.jl`; `julia/kernel/src/preview.jl`; `julia/kernel/src/project_scan.jl`; `julia/kernel/src/tokenize.jl` |

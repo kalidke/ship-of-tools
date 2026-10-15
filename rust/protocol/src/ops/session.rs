@@ -152,6 +152,14 @@ pub struct HelloRes {
     /// before.
     #[serde(default)]
     pub proxy: bool,
+    /// The REPL runs of the window saying hello (its hello's host and `instance`) still running on this daemon, by the
+    /// window's own numbers (ADR 0033, the one-numberer amendment): the REPL's supervisor has written each to the child
+    /// and not yet published its `done`, which then reaches this connection, subscribed before this was read. The
+    /// window reopens each entry its link's end closed. Never named: a run still queued or whose request never
+    /// arrived, another window's or a session's run, and any run of a daemon that has restarted. Left out when empty,
+    /// and absent from a daemon that predates it, read as naming none; a window that predates it ignores it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repl_running: Vec<u64>,
 }
 
 /// `fe.command.send` request (ADR 0025) — ask the daemon to drive the

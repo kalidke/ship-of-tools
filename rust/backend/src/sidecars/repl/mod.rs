@@ -241,6 +241,10 @@ struct Submission {
     /// submission's eval_id into the collector, loss-free, so the handler can
     /// return the full collected output. `None` for every other op.
     collector: Option<ExecCollector>,
+    /// The runs of the window that submitted a fire-and-forget run (`numbers::CallerNumbers`): the supervisor marks the
+    /// run there running when it writes it to the child, and ended before it publishes the run's `done`, so a hello
+    /// names the window's runs still running. A request/response op's is a record of no window.
+    owner: numbers::CallerNumbers,
 }
 
 impl Repl {
@@ -322,6 +326,7 @@ impl Repl {
                 payload,
                 reply: Some(reply_tx),
                 collector: None,
+                owner: Default::default(),
             },
         )?;
         tokio::time::timeout(REPL_INTERRUPT_WAIT, reply_rx)
@@ -360,6 +365,7 @@ impl Repl {
                 payload,
                 reply: Some(reply_tx),
                 collector: Some(collector.clone()),
+                owner: Default::default(),
             },
         )?;
         Ok((reply_rx, collector))
@@ -372,8 +378,9 @@ impl Repl {
     /// `done` frame) are fanned out over the broadcast bus, and the terminal
     /// res ack line is dropped. Used by `repl.eval` / `repl.run_file` so the
     /// connection loop never blocks waiting for an eval to finish (a mid-eval
-    /// `repl.interrupt` must still be readable).
-    pub async fn submit(&self, op: &str, payload: Value) -> Result<()> {
+    /// `repl.interrupt` must still be readable). `owner` holds the submitting
+    /// window's runs, where the supervisor marks this one running and ended.
+    pub async fn submit(&self, op: &str, payload: Value, owner: &numbers::CallerNumbers) -> Result<()> {
         let tx = self.ensure_supervisor().await?;
         enqueue(
             &tx,
@@ -382,6 +389,7 @@ impl Repl {
                 payload,
                 reply: None,
                 collector: None,
+                owner: owner.clone(),
             },
         )
     }

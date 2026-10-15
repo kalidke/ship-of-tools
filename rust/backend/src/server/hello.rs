@@ -123,7 +123,8 @@ pub(super) fn admit_hello(req: HelloReq, clients: &Clients) -> Result<Admitted, 
     }
 }
 
-/// The reply to an admitted hello: the session, its revision and any replay the client missed.
+/// The reply to an admitted hello: the session, its revision, the window's REPL runs still running (`repl_running`,
+/// read by the caller after the connection subscribed to the REPL frame bus) and any replay the client missed.
 pub async fn handle_hello(
     req_id: u64,
     req: HelloReq,
@@ -131,6 +132,7 @@ pub async fn handle_hello(
     files_mode: &FilesMode,
     label: Option<&str>,
     clients: &crate::clients::Clients,
+    repl_running: Vec<u64>,
 ) -> Result<HandlerOutput> {
     let (session_id, revision) = session.snapshot().await;
 
@@ -186,6 +188,7 @@ pub async fn handle_hello(
         // lazy loopback proxy listeners so backend pages reach a remote FE
         // through the one control tunnel, no per-port ssh forward.
         proxy: true,
+        repl_running,
     };
 
     let mut out: HandlerOutput = Vec::with_capacity(1 + replay_entries.len());

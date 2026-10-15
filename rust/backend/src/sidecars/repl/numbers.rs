@@ -3,7 +3,9 @@
 //! number for the run (`CallerNumbers`, one per window, which the client roster keeps across the window's connections:
 //! `clients_window.rs`): each connection of the window is written the run's frames under the window's number and is
 //! never announced the run, and every other connection gets the daemon's number after the run's `started` frame. A run
-//! the daemon refused is written to its window not at all: the reply already said why.
+//! the daemon refused is written to its window not at all: the reply already said why. The REPL's supervisor marks each
+//! of a window's runs running when it writes the run to the child and ended before it publishes the run's `done`
+//! (`ran`, `ended`), so each hello reply names the window's runs still running (`running`, `HelloRes::repl_running`).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -23,13 +25,26 @@ pub(crate) fn next() -> u64 {
 /// the oldest: only a window with this many runs in flight at once loses one.
 const REMEMBERED: usize = 256;
 
-/// One of a window's own runs: the number the window gave it (`None` once the daemon refused it), and whether its
-/// `done` has been written. The run is kept past its `done` because each connection of the window writes that `done`,
-/// an older connection still winding down included, and each must find the run.
+/// One of a window's own runs: the number the window gave it (`None` once the daemon refused it), and how far it has
+/// gone. The run is kept past its end because each connection of the window writes its `done`, an older connection
+/// still winding down included, and each must find the run.
 #[derive(Clone, Copy)]
 struct Own {
     number: Option<u64>,
-    done: bool,
+    stage: Stage,
+}
+
+/// How far a window's run has gone, as its REPL's supervisor marks it. A hello names only a `Running` run: its `done`
+/// is still to be published, after the hello's connection subscribed to the frame bus, so the window that reopens the
+/// run's entry is written its end.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    /// Numbered, not yet written to the child: it may still be refused, or wait in the REPL's queue.
+    Numbered,
+    /// Written to the child (`ran`); its `done` is not yet published.
+    Running,
+    /// Its `done` is published or about to be (`ended`, marked first), or the daemon refused it.
+    Ended,
 }
 
 /// One window's own runs, by the daemon's number.
@@ -45,9 +60,10 @@ impl CallerNumbers {
         if let Some(own) = own {
             let mut runs = self.runs();
             runs.retain(|_, run| run.number != Some(own));
-            runs.insert(number, Own { number: Some(own), done: false });
+            runs.insert(number, Own { number: Some(own), stage: Stage::Numbered });
             if runs.len() > REMEMBERED {
-                let gone = runs.iter().find(|(_, run)| run.done).or(runs.iter().next()).map(|(n, _)| *n);
+                let ended = runs.iter().find(|(_, run)| run.stage == Stage::Ended);
+                let gone = ended.or(runs.iter().next()).map(|(n, _)| *n);
                 if let Some(n) = gone {
                     runs.remove(&n);
                 }
@@ -60,7 +76,28 @@ impl CallerNumbers {
     /// tells the window why, so none of the run's frames is written to it.
     pub(crate) fn refused(&self, number: u64) {
         if let Some(run) = self.runs().get_mut(&number) {
-            run.number = None;
+            *run = Own { number: None, stage: Stage::Ended };
+        }
+    }
+
+    /// The REPL's supervisor wrote this window's run `number` to the child: its `done` is still to come.
+    pub(crate) fn ran(&self, number: u64) {
+        self.mark(number, Stage::Running);
+    }
+
+    /// This window's run `number` has ended: the supervisor marks it before it publishes the run's `done`.
+    pub(crate) fn ended(&self, number: u64) {
+        self.mark(number, Stage::Ended);
+    }
+
+    /// The window's own numbers of its runs still running, oldest first: what a hello reply names.
+    pub(crate) fn running(&self) -> Vec<u64> {
+        self.runs().values().filter(|run| run.stage == Stage::Running).filter_map(|run| run.number).collect()
+    }
+
+    fn mark(&self, number: u64, stage: Stage) {
+        if let Some(run) = self.runs().get_mut(&number) {
+            run.stage = stage;
         }
     }
 
@@ -68,16 +105,11 @@ impl CallerNumbers {
     /// `started` (its own entry already stands for the run), nor any frame of a run the daemon refused it; every other
     /// run as the daemon numbered it.
     pub(crate) fn outgoing(&self, mut msg: ReplFrameMsg) -> Option<ReplFrameMsg> {
-        let mut runs = self.runs();
-        let Some(run) = runs.get_mut(&msg.eval_id) else {
+        let Some(run) = self.runs().get(&msg.eval_id).copied() else {
             return Some(msg);
         };
-        let kind = msg.frame.get("kind").and_then(|k| k.as_str());
-        if kind == Some("done") {
-            run.done = true;
-        }
         let own = run.number?;
-        match kind {
+        match msg.frame.get("kind").and_then(|k| k.as_str()) {
             Some("started") => return None,
             Some("done") => {
                 if let Some(id) = msg.frame.get_mut("eval_id") {
@@ -183,6 +215,24 @@ mod tests {
         }
     }
 
+    /// A hello names a window's run only while the supervisor holds it: not while it is numbered (it may yet be refused
+    /// or wait in the queue), not once refused, not once ended, and never a run the window did not number.
+    #[test]
+    fn a_window_names_its_runs_only_while_they_run() {
+        let a = CallerNumbers::default();
+        let (one, two, three) = (a.number(Some(1)), a.number(Some(2)), a.number(Some(3)));
+        let theirs = a.number(None);
+        assert!(a.running().is_empty(), "numbered, not yet written to the child");
+        for n in [one, two, theirs] {
+            a.ran(n);
+        }
+        a.refused(three);
+        assert_eq!(a.running(), [1, 2], "written to the child, its done still to come");
+        a.ended(one);
+        assert_eq!(a.running(), [2], "ended");
+        assert_eq!(kind_and_id(a.outgoing(done(one))), Some((1, "done".into())), "an ended run is still the window's");
+    }
+
     /// An interrupt names a window's own runs by its numbers and announced runs by the daemon's; both reach the
     /// REPL as the daemon's numbers, and a number of no run stays as it is.
     #[test]
@@ -199,7 +249,7 @@ mod tests {
         let a = CallerNumbers::default();
         let running = a.number(Some(1));
         let finished = a.number(Some(2));
-        a.outgoing(done(finished));
+        a.ended(finished);
         for own in 3..=(REMEMBERED as u64 + 1) {
             a.number(Some(own));
         }
