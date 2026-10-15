@@ -51,7 +51,8 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
 - Only `admit_hello` makes an `Admitted`, and `serve_control`, `hand_off` and `register_hello` take one, so no path from accept serves a connection whose hello was not admitted.
 - A control session's hello reply names its window's REPL runs still running (`HelloRes::repl_running`, read from
   `CallerNumbers::running` after the connection's bus subscriptions), so the `done` of each run it names is written to
-  the connection; a `handoff` connection's names none.
+  the connection, unless bus lag drops it (the bus is lossy; the run then stays open until the window's next drop); a
+  `handoff` connection's names none.
 - A second hello on a control connection closes it unanswered; a `handoff` connection's next frame is
   `proxy.connect`, `lane.connect` or `fe.lease`, else `bad_request` and a close (`hand_off`).
 - A connection whose first frame has not arrived within 10 s, or a `handoff` connection whose next frame has not, is closed
