@@ -233,9 +233,9 @@ async fn supervisor_task(
                     Err(e) => {
                         if let Some(reply) = sub.reply {
                             let _ = reply.send(Err(anyhow!("repl serialize: {e}")));
-                        } else if let Some(eid) = sub.payload.get("eval_id").and_then(Value::as_u64) {
+                        } else if let (Some(eid), Some(owner)) = (sub.payload.get("eval_id").and_then(Value::as_u64), sub.owner) {
                             // Accepted, never written: closed out with the child's end like a cancelled write.
-                            streaming.insert(eid, sub.owner);
+                            streaming.insert(eid, owner);
                         }
                         continue;
                     }
@@ -261,8 +261,8 @@ async fn supervisor_task(
                 if let Err(end) = written {
                     if let Some(reply) = sub.reply {
                         let _ = reply.send(Err(anyhow::Error::new(end)));
-                    } else if let Some(eid) = sub.payload.get("eval_id").and_then(Value::as_u64) {
-                        streaming.insert(eid, sub.owner);
+                    } else if let (Some(eid), Some(owner)) = (sub.payload.get("eval_id").and_then(Value::as_u64), sub.owner) {
+                        streaming.insert(eid, owner);
                     }
                     break end;
                 }
@@ -282,8 +282,8 @@ async fn supervisor_task(
                 // child death can close it out with synthetic frames.
                 if let Some(reply) = sub.reply {
                     pending.insert(id, reply);
-                } else if let Some(eid) = eid {
-                    streaming.insert(eid, sub.owner);
+                } else if let (Some(eid), Some(owner)) = (eid, sub.owner) {
+                    streaming.insert(eid, owner);
                 }
             }
             line = stdout_lines.next_line() => {
@@ -373,8 +373,8 @@ async fn supervisor_task(
     while let Ok(sub) = submit_rx.try_recv() {
         if let Some(reply) = sub.reply {
             let _ = reply.send(Err(anyhow::Error::new(end)));
-        } else if let Some(eid) = sub.payload.get("eval_id").and_then(Value::as_u64) {
-            streaming.insert(eid, sub.owner);
+        } else if let (Some(eid), Some(owner)) = (sub.payload.get("eval_id").and_then(Value::as_u64), sub.owner) {
+            streaming.insert(eid, owner);
         }
     }
     // The child is gone: make the failure CLOSED-OUT (synthetic error+done

@@ -243,8 +243,8 @@ struct Submission {
     collector: Option<ExecCollector>,
     /// The runs of the window that submitted a fire-and-forget run (`numbers::CallerNumbers`): `submit` marks the run
     /// there running once the queue accepts it, and the supervisor marks it ended before it publishes the run's `done`,
-    /// so a hello names the window's runs still running. A request/response op's is a record of no window.
-    owner: numbers::CallerNumbers,
+    /// so a hello names the window's runs still running. `None` for a request/response op, which is no window's run.
+    owner: Option<numbers::CallerNumbers>,
 }
 
 impl Repl {
@@ -326,7 +326,7 @@ impl Repl {
                 payload,
                 reply: Some(reply_tx),
                 collector: None,
-                owner: Default::default(),
+                owner: None,
             },
         )?;
         tokio::time::timeout(REPL_INTERRUPT_WAIT, reply_rx)
@@ -365,7 +365,7 @@ impl Repl {
                 payload,
                 reply: Some(reply_tx),
                 collector: Some(collector.clone()),
-                owner: Default::default(),
+                owner: None,
             },
         )?;
         Ok((reply_rx, collector))
@@ -391,7 +391,7 @@ impl Repl {
                 payload,
                 reply: None,
                 collector: None,
-                owner: owner.clone(),
+                owner: Some(owner.clone()),
             },
         )?;
         if let Some(eid) = eid {

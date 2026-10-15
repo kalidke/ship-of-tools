@@ -122,12 +122,13 @@ impl Redraw for NoWindow {
 /// `answered` requests (the hello with `hello_reply`, then the tree.root
 /// and preview.get preamble with an `{error}` payload), then falls silent
 /// and holds the stream open until `hold` is dropped. `early` is what it
-/// writes right after the hello's reply, before it reads the next request:
-/// an event replayed at the hello, or a live one.
+/// writes right after its reply to request `n` (0 the hello, 1 tree.root),
+/// before it reads the next request: an event replayed at the hello, or a
+/// live one.
 async fn run_against_fake_daemon(
     host: &str,
     hello_reply: serde_json::Value,
-    early: Vec<Frame>,
+    early: Vec<(usize, Frame)>,
     answered: usize,
     gate: sot_protocol::topology::ssh_bridge::LinkGate,
 ) -> (
@@ -152,7 +153,7 @@ impl Redraw for CountingWindow {
 async fn run_against_fake_daemon_counting(
     host: &str,
     hello_reply: serde_json::Value,
-    early: Vec<Frame>,
+    early: Vec<(usize, Frame)>,
     answered: usize,
     gate: sot_protocol::topology::ssh_bridge::LinkGate,
     window: CountingWindow,
@@ -175,7 +176,7 @@ async fn run_against_fake_daemon_counting(
                 serde_json::json!({ "error": "cannot read the default directory", "code": "io" })
             };
             codec::write_frame(&mut tx, &Frame::res(req.id, &req.op, reply).with_rev(0), None).await.unwrap();
-            for frame in early.iter().filter(|_| n == 0) {
+            for (_, frame) in early.iter().filter(|(at, _)| *at == n) {
                 codec::write_frame(&mut tx, frame, None).await.unwrap();
             }
         }
@@ -209,7 +210,7 @@ fn hello_ok() -> serde_json::Value {
 
 /// Every event of a session against the fake daemon, as text, once the daemon has answered `answered` requests and
 /// then closed: the session's end included.
-async fn events_until_the_daemon_closes(host: &str, hello_reply: serde_json::Value, early: Vec<Frame>) -> Vec<String> {
+async fn events_until_the_daemon_closes(host: &str, hello_reply: serde_json::Value, early: Vec<(usize, Frame)>) -> Vec<String> {
     let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
     let (session, daemon, evt_rx, hold) = run_against_fake_daemon(host, hello_reply, early, 3, gate).await;
     drop(hold);
@@ -239,23 +240,26 @@ async fn a_hello_naming_runs_still_running_reopens_them_and_an_old_daemon_names_
     assert_eq!(seen, [("named-runs", true, vec![true]), ("old-daemon", false, vec![])]);
 }
 
-/// Every frame the daemon writes while the window waits on its connect preamble reaches its handler, as in the steady
-/// loop: an event replayed after the hello and a REPL run's output, both written before the tree.root reply, arrive,
-/// and each preamble reply is still read as its own (neither comes back later as an event).
+/// Every frame the daemon writes while the window waits on either step of its connect preamble reaches its handler, as
+/// in the steady loop: an event replayed after the hello and a REPL run's output, written before the tree.root reply
+/// (step 0) or before the preview.get reply (step 1), arrive, and each preamble reply is still read as its own
+/// (neither comes back later as an event).
 #[tokio::test]
 async fn frames_written_before_a_preamble_reply_reach_their_handlers() {
     let _env = crate::net::state::test_env::set_test_env();
-    let early = vec![
-        Frame::evt("tree.invalidate", serde_json::json!({ "workspace_id": null })).with_rev(1),
-        Frame::evt(op::REPL_FRAME, serde_json::json!({ "eval_id": 5, "frame": { "kind": "stdout", "text": "early" } })),
-    ];
-    let events = events_until_the_daemon_closes("preamble-early", hello_ok(), early).await;
-    println!("preamble-early: events={events:?}");
-    let has = |prefix: &str| events.iter().any(|e| e.starts_with(prefix));
-    let delivered = (has("Event { op: \"tree.invalidate\""), has("ReplFrameStreamed { eval_id: 5"));
-    let stray = (has("Event { op: \"tree.root\""), has("Event { op: \"preview.get\""));
-    let want = ((true, true), (false, false));
-    assert_eq!((delivered, stray), want, "(replayed and live frames delivered), (a preamble reply read late)");
+    for step in [0, 1] {
+        let early = vec![
+            (step, Frame::evt("tree.invalidate", serde_json::json!({ "workspace_id": null })).with_rev(1)),
+            (step, Frame::evt(op::REPL_FRAME, serde_json::json!({ "eval_id": 5, "frame": { "kind": "stdout", "text": "early" } }))),
+        ];
+        let events = events_until_the_daemon_closes("preamble-early", hello_ok(), early).await;
+        println!("preamble-early: step {step} events={events:?}");
+        let has = |prefix: &str| events.iter().any(|e| e.starts_with(prefix));
+        let delivered = (has("Event { op: \"tree.invalidate\""), has("ReplFrameStreamed { eval_id: 5"));
+        let stray = (has("Event { op: \"tree.root\""), has("Event { op: \"preview.get\""));
+        let want = ((true, true), (false, false));
+        assert_eq!((delivered, stray), want, "step {step}: (replayed and live frames delivered), (a preamble reply read late)");
+    }
 }
 
 /// The window is woken for each frame handled during the preamble, and for each preamble step's reply, a refused one
@@ -266,8 +270,8 @@ async fn the_preamble_wakes_the_window_for_each_frame_and_each_reply() {
     let _env = crate::net::state::test_env::set_test_env();
     let mut wakes = Vec::new();
     for early in [Vec::new(), vec![
-        Frame::evt("tree.invalidate", serde_json::json!({ "workspace_id": null })).with_rev(1),
-        Frame::evt(op::REPL_FRAME, serde_json::json!({ "eval_id": 5, "frame": { "kind": "stdout", "text": "early" } })),
+        (0, Frame::evt("tree.invalidate", serde_json::json!({ "workspace_id": null })).with_rev(1)),
+        (0, Frame::evt(op::REPL_FRAME, serde_json::json!({ "eval_id": 5, "frame": { "kind": "stdout", "text": "early" } }))),
     ]] {
         let window = CountingWindow::default();
         let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
