@@ -9,6 +9,10 @@ does (`working-directory: agents/tests`).
 - `test-ccx-launch.sh`: `ccx`'s default handle is built from the comm library's safe pieces and a failed derivation stops the launch
 - `test-ccx-resume-default.sh`: every `ccx` starts fresh and resumes only on an explicit `--continue`, whatever its environment; `--capsule` changes nothing; the first prompt names the session's handoff when one exists
 - `test-crlf-gh-auth.sh`: `sot-gh-auth.sh` reads JSON values correctly under a jq that writes CRLF, every curl call carries the stall bound, and a gh call that hangs ends at the script's 30 s bound with a line naming it (about 31 s)
+- `test-comm-probe.sh`: `comm-probe.sh` finds a probe row by the name it was created with until its responder joins,
+  `up` exits 0 only once each row has joined, and the line `up` types runs in the row's shell: `bash` with the script
+  on Unix, Git for Windows' launcher with the script as its file argument in a `pipe:` daemon's cmd.exe row (a
+  stand-in cygpath on every box; on Git Bash, the real launcher)
 - `test-despawn-resolve.sh`: `comm-despawn.sh` resolves first, fails and changes nothing on an unknown name, removes a registry row only after a confirmed destroy; `comm-worktree-clean.sh` despawns once
 - `test-sot-fe-goto.sh`: `sot-fe goto` has no `--boot`: the flag is refused as unknown and nothing is sent
 - `test-sot-fe-paths.sh`: an absolute path given to `sot-fe preview` or `sot-nav.sh preview` is sent relative to its

@@ -17,7 +17,10 @@
 # It runs as `probe2-<self>` and reads that row's inbox FILE directly. It starts
 # no processes, holds no connection and advances no read cursor — a session's
 # own poll still sees everything this saw. The responders are comm-probe.sh,
-# already serving in each box's probe rows (`comm-probe.sh up` there).
+# already serving in each box's probe rows: `comm-probe.sh up` there exits 0
+# only once both rows have joined. A box whose `up` did not has no probe
+# handle, and every line to it fails "no linked box knows that handle", which
+# says nothing about the route.
 #
 # THREE STEPS:
 #   1. Preflight — every attached frontend's version plus this hub's own, from

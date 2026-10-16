@@ -26,3 +26,6 @@ they run beside the library at its installed name. Part of agents; charter: agen
 - Every `comm-despawn.sh` command `comm-spawn.sh` prints comes from `_despawn_cmd` and names the endpoint the spawn used, so it reaches the daemon that holds the row.
 - `comm-bootstrap.sh` and `comm-probe.sh` are the two scripts that still type into rows (`sot_pty_input`).
 - `comm-probe.sh` creates, types into and replies to nothing whose handle does not begin `probe`.
+- `comm-probe.sh up` exits 0 only once each probe row has joined; until then a row is found by its `agent_name`. A
+  `pipe:` daemon's probe row is cmd.exe, so `up` types Git for Windows' `bin\bash.exe` with the script as its file
+  argument, never `bash` or `bash -c` (comm/PROTOCOL.md's row rule).

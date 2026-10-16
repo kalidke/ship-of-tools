@@ -9,7 +9,10 @@
 //! shell, perhaps two, stands between them), a `bash.exe` line appears and this
 //! test's executable follows it somewhere. A missing Git Bash FAILS:
 //! the second proof is the one that decides whether the chain survives an MSYS
-//! exec stub, and CI's windows-latest has Git Bash.
+//! exec stub, and CI's windows-latest has Git Bash. The line comm-probe.sh types
+//! into a cmd.exe row starts a script whose walk passes cmd.exe; a script given
+//! alone to `bash -c` is exec'd twice and its walk ends at once (PROTOCOL.md's
+//! row rule states that limit).
 
 use std::process::Command;
 use std::time::Duration;
@@ -165,4 +168,62 @@ fn an_exec_under_a_native_parent_keeps_the_chain() {
     );
     let walk = lines_of(&ran);
     assert!(holds_this_test(&walk), "this test's {:?} is not above the exec'd shell: {walk:?}: {ran}", own_name());
+}
+
+/// A stand-in for comm-probe.sh: its Cygwin parent, then its native walk. Its `#!` line is what makes `bash -c` exec
+/// it through env, as it does the real script.
+const WALK_SCRIPT: &str = "#!/usr/bin/env bash\nread -r _ _ _ pp _ < /proc/$$/stat; read -r w < /proc/$$/winpid\necho \"ppid=$pp\"; \"$SOTD\" ancestors --from \"$w\"\n";
+
+/// LINE run as a cmd.exe row runs a typed line (`cmd /s /c` takes it as written): the stand-in's parent line and its
+/// walk.
+fn run_in_cmd(line: &str) -> (String, Vec<(u32, String, String)>) {
+    use std::os::windows::process::CommandExt;
+    let ran = run_within(
+        Command::new("cmd.exe")
+            .raw_arg(format!("/d /s /c \"{line}\""))
+            .env("SOTD", sotd::sotd_program().to_string_lossy().replace('\\', "/")),
+        BOUND,
+    )
+    .ok();
+    let (head, walk) = ran.stdout.split_once('\n').unwrap_or((ran.stdout.as_str(), ""));
+    (head.trim().to_string(), parse_lines(walk))
+}
+
+/// comm-probe.sh types its start line into a `pipe:` daemon's probe row, whose shell is cmd.exe. Run by cmd.exe here,
+/// the script it starts walks through cmd.exe to this test, so in a row it reaches the row's capsule. Given alone to
+/// `bash -c`, the same script is exec'd twice (bash execs it, and its `#!/usr/bin/env bash` execs bash), the Windows
+/// parent of its image has exited, and its walk ends at once: the limit PROTOCOL.md states.
+#[test]
+fn the_probe_start_line_keeps_the_chain_a_lone_dash_c_loses_it() {
+    assert!(std::path::Path::new(GIT_BASH).exists(), "Git Bash is missing at {GIT_BASH}");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fwd = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
+    let (bin, stand_in) = (dir.path().join("bin"), dir.path().join("probe"));
+    let stage = format!("{}/../../comm/tests/stage-bin.sh", env!("CARGO_MANIFEST_DIR")).replace('\\', "/");
+    run_within(Command::new(GIT_BASH).arg(stage).arg(fwd(&bin)), BOUND).ok();
+    std::fs::create_dir_all(&stand_in).expect("mkdir the stand-in's folder");
+    std::fs::write(stand_in.join("comm-probe.sh"), WALK_SCRIPT).expect("write the stand-in");
+    // The line `up` types, from the staged comm-probe.sh with its folder pointed at the stand-in's.
+    let ran = run_within(
+        Command::new(GIT_BASH)
+            .args(["-c", r#". "$1"; SCRIPT_DIR="$2"; ENDPOINT='pipe:\\.\pipe\probe-test'; probe_start_line"#, "_"])
+            .arg(fwd(&bin.join("comm-probe.sh")))
+            .arg(fwd(&stand_in))
+            .env("SOT_COMM_HOME", fwd(&dir.path().join("home"))),
+        BOUND,
+    );
+    let line = ran.stdout.trim().to_string();
+    let launcher = line.strip_prefix('"').and_then(|l| l.split_once('"')).map(|(l, _)| l.to_string());
+    let launcher = launcher.unwrap_or_else(|| panic!("no quoted launcher opens the start line: {ran}"));
+    assert!(!line.contains(" -c "), "the start line gives the script to `bash -c`: {line}");
+
+    let (parent, walk) = run_in_cmd(&line);
+    assert_eq!(parent, "ppid=1", "the started script's parent is not the native launcher: {walk:?}");
+    assert!(walk.iter().any(|l| l.1.eq_ignore_ascii_case("cmd.exe")), "the walk misses cmd.exe: {walk:?}");
+    assert!(holds_this_test(&walk), "the walk misses this test: {walk:?}");
+
+    let script = fwd(&stand_in.join("comm-probe.sh"));
+    let (parent, walk) = run_in_cmd(&format!("\"{launcher}\" -c \"{script}\""));
+    assert_eq!(parent, "ppid=1", "{walk:?}");
+    assert!(walk.is_empty(), "a script exec'd twice under a native parent walks on, so PROTOCOL.md's limit is gone: {walk:?}");
 }
