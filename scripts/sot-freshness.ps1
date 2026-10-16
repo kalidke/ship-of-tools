@@ -61,12 +61,12 @@ function Invoke-PendingApply {
         $applyOut = & $sotApply 6>&1 2>&1
         foreach ($l in @($applyOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
     }
-    # Read ONCE, right after the apply attempt above -- Invoke-FreshnessPass
-    # and the migration/handover block below both need "did an update just
-    # land", and the marker FILE itself stays present for the rest of this
-    # launch (the crash-loop read further down needs that), so a $script:
-    # flag is the one-shot signal that gets CONSUMED (see
-    # Invoke-FreshnessPass) instead.
+    # Read ONCE, right after the apply attempt above: the migration/handover
+    # block in launch-sot.ps1 needs "did THIS launch just apply", and the marker
+    # FILE itself stays present for the rest of this launch (the crash-loop read
+    # further down needs that). The comm refresh does not ask it: an apply made
+    # outside this launch (by hand, or by an older launcher) never sets it, so
+    # Invoke-FreshnessPass reads the comm stamp instead.
     $script:sotJustApplied = Test-Path -LiteralPath $applyMarker
 }
 
@@ -179,18 +179,38 @@ function Invoke-FreshnessPass {
     if ($script:sotPinned) {
         # Nothing here to pull or rebuild. Comm still needs to follow the
         # tag (ADR 0030's deferred "update_comm on auto-apply" item, closed
-        # by the 2026-09-17 amendment): triggered by an update this launch
-        # just applied or a comm install that is simply missing, never by
-        # "a pull succeeded". $script:sotJustApplied is CONSUMED (read then
-        # cleared) here, not re-read from the marker file: an exit-76
-        # converge calls this function again later in the SAME launch, and
-        # that is still the one apply, not a second update -- Julia must
-        # not run twice for it.
+        # by the 2026-09-17 amendment): triggered by a comm install that is
+        # missing, or whose stamp names another commit than this checkout's.
+        # The stamp is what update_comm writes last (src/install.jl
+        # `_repo_commit`: the short commit of the checkout it ran from,
+        # `-dirty` when that tree had changes), so the question is answered
+        # from disk, whoever applied the tag and whenever: a same-launch flag
+        # missed every apply this launch did not make (a Windows field box, 2026-10-16: an
+        # apply outside the launcher left comm at the previous tag's scripts,
+        # which the new daemon refused for their protocol). An exit-76
+        # converge calls this again in the same launch and finds the stamp
+        # current, so Julia does not run twice for one apply. A failed
+        # update_comm leaves no stamp, so the next launch tries again.
         $commHome = if ($env:SOT_COMM_HOME) { $env:SOT_COMM_HOME } else { Join-Path $env:USERPROFILE '.sot-comm' }
         $commMissing = -not (Test-Path -LiteralPath (Join-Path $commHome 'bin'))
-        $justApplied = $script:sotJustApplied
-        $script:sotJustApplied = $false
-        if ($justApplied -or $commMissing) {
+        $commStamp = ''
+        $checkoutCommit = ''
+        $savedEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $stampFile = Join-Path $commHome 'VERSION'
+            if (Test-Path -LiteralPath $stampFile) { $commStamp = "$(Get-Content -LiteralPath $stampFile -Raw)".Trim() -replace '-dirty$', '' }
+            $checkoutCommit = "$(git -C $repo.Path rev-parse --short=9 HEAD 2>$null)".Trim()
+        } catch {
+        } finally {
+            $ErrorActionPreference = $savedEAP
+        }
+        # No readable commit (no git on PATH) decides nothing: only a missing install triggers then.
+        $commStale = [bool]$checkoutCommit -and ($commStamp -ne $checkoutCommit)
+        if ($commMissing -or $commStale) {
+            if ($commStale -and -not $commMissing) {
+                Write-SupLog "freshness: comm stamp '$commStamp' is not this checkout's commit $checkoutCommit - updating comm"
+            }
             # A converge whose apply left the launcher code unchanged does
             # not re-invoke the launcher (the converge block in the do/while
             # loop re-invokes only on a code id change), so a tag that just
@@ -225,7 +245,7 @@ function Invoke-FreshnessPass {
                 $ErrorActionPreference = $savedEAP
             }
         } else {
-            Write-SupLog 'freshness: pinned checkout - comm already installed and nothing just applied, skipping'
+            Write-SupLog "freshness: pinned checkout - comm is at this checkout's commit ($checkoutCommit), skipping"
         }
         return
     }
