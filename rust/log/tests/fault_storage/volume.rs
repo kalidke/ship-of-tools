@@ -99,6 +99,9 @@ struct NativeVolume {
     #[cfg(windows)]
     transaction: uuid::Uuid,
     attached: bool,
+    /// The whole-disk device `hdiutil attach` printed, which the teardown detaches.
+    #[cfg(target_os = "macos")]
+    device: Option<String>,
     cleanup_attempted: bool,
     // Last in field drop order: exclusion outlives every owned resource and Drop's cleanup.
     _one: std::sync::MutexGuard<'static, ()>,
@@ -135,6 +138,8 @@ impl NativeVolume {
             mount,
             image,
             attached: false,
+            #[cfg(target_os = "macos")]
+            device: None,
             cleanup_attempted: false,
             _one: one,
         };
@@ -190,7 +195,10 @@ impl NativeVolume {
             .arg(&self.mount)
             .arg(&self.image);
         self.attached = true;
-        native_command(attach);
+        let attached = native_command(attach);
+        self.device = Some(detach::attached_device(&attached).unwrap_or_else(|| {
+            panic!("L3 HARNESS FAILURE: no /dev/diskN on the first line of hdiutil attach:\n{attached}")
+        }));
         // Spotlight would index the volume the test fills and then detaches; failing to turn it off is not fatal.
         let mut index = Command::new("mdutil");
         index.args(["-i", "off"]).arg(&self.mount);
@@ -226,22 +234,34 @@ impl NativeVolume {
         if self.attached {
             self.cleanup_attempted = true;
             let started = std::time::Instant::now();
+            let device = self.device.clone().expect("attach recorded the device");
             let tries = detach::detach_within(
-                || {
+                &device,
+                |target| {
                     let mut command = Command::new("hdiutil");
-                    command.arg("detach").arg(&self.mount);
+                    command.arg("detach").arg(target);
                     let observation = bounded(command, 120, &[]);
                     detach::Attempt {
                         ok: observation.status.success(),
-                        busy: observation.status.code() == Some(16)
-                            || observation.combined().contains("Resource busy"),
                         report: observation.diagnostic("command"),
                     }
                 },
                 || {
+                    let mut command = Command::new("hdiutil");
+                    command.arg("info");
+                    detach::lists_device(&bounded(command, 60, &[]).combined(), &device)
+                },
+                || {
+                    let rdevice = device.replacen("/dev/", "/dev/r", 1);
                     let mut command = Command::new("lsof");
-                    command.arg("+D").arg(&self.mount);
-                    bounded(command, 20, &[]).diagnostic("lsof")
+                    command.arg(&device).arg(rdevice);
+                    let mut listing = bounded(command, 20, &[]).diagnostic("lsof device");
+                    if mount_is_up(&self.mount, self.dir.as_ref().unwrap().path()) {
+                        let mut command = Command::new("lsof");
+                        command.arg("+D").arg(&self.mount);
+                        listing.push_str(&bounded(command, 20, &[]).diagnostic("lsof mount"));
+                    }
+                    listing
                 },
                 std::thread::sleep,
                 || started.elapsed(),
@@ -503,6 +523,16 @@ impl Drop for NativeVolume {
             }
             eprintln!("L3 HARNESS FAILURE: attached image retained for fixture owner");
         }
+    }
+}
+
+/// Whether `mount` still holds a volume of its own, not the folder it was made in under `parent`.
+#[cfg(target_os = "macos")]
+fn mount_is_up(mount: &Path, parent: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(mount), std::fs::metadata(parent)) {
+        (Ok(mount), Ok(parent)) => mount.dev() != parent.dev(),
+        _ => false,
     }
 }
 
