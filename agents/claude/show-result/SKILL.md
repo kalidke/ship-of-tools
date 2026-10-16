@@ -23,9 +23,9 @@ otherwise *name a path* or *paste a URL*), and on "open it in the browser",
 secret in it (a `wglshow` figure, a Pluto notebook, a docs or video page); `wglshow(fig)` opens a figure itself.
 `open-url` is http(s)-only, no workspace. `docs` needs an ABSOLUTE backend
 path (confined to a workspace root) — use it for anything that must actually
-run (JS/WebGL). A preview, `docs`, `open-url` and a `wglshow` figure each open in ONE window, never all: the window
-showing your row that the user used within five minutes, else the window they used last. You never need to check
-which frontend is active; `--fe <host>` targets the FE on that host.
+run (JS/WebGL). A preview reaches every attached window. `docs`, `open-url` and a `wglshow` figure open in ONE
+window, never all: the window in use, the one the user used last. You never need to check which frontend is active;
+`--fe <host>` targets the FE on that host.
 
 **Point `docs` straight at the SUBPAGE you mean** — a project-log entry, one
 page of a built manual, a report deep in a tree. The daemon finds the site

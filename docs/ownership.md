@@ -181,12 +181,12 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `ping` | op | server | `rust/backend/src/server/conn.rs` `handle_ping` |
 | `version.query` | op | server | `rust/backend/src/clients.rs` `handle_version_query` |
 | `fe.presence`; the active frontend | op, state | server | `rust/backend/src/clients.rs` `handle_fe_presence`, `ActiveFrontend`, `resolve_active` |
-| which window a show goes to | state | server | `rust/backend/src/clients_show.rs` `ClientsSnapshot::show_target`, `Clients::show_row` |
+| which window a command goes to | state | server | `rust/backend/src/clients_show.rs` `ClientsSnapshot::window_for`, `ClientsSnapshot::in_use` |
 | `fe.command.send` and the `fe.command` bus | op, bus | server | `rust/backend/src/clients.rs` `handle_fe_command_send`; `rust/backend/src/server/events.rs` `write_fe_command` |
 | `FeCommand` meaning and its handling in the window | wire payload | fe-ui | `rust/frontend/src/ui/control/command.rs`; `rust/frontend/src/ui/control/dispatch.rs` |
 | `fe.sessions` | op | server | `rust/backend/src/clients.rs` `handle_fe_sessions`, `declare_sessions` (see two owners) |
 | client roster `by_conn`, `disconnected` | state | server | `rust/backend/src/clients.rs` `Clients`, `ClientGuard`, `disconnected_since` |
-| a window's state across its connections (the REPL runs it numbered, its presence, its shown row, the owner of its pages) | state | server | `rust/backend/src/clients_window.rs` `Window`, `Inner::arrive`, `Inner::leave`, `Inner::report`, `Clients::away_sites` |
+| a window's state across its connections (the REPL runs it numbered, its presence, the owner of its pages) | state | server | `rust/backend/src/clients_window.rs` `Window`, `Inner::arrive`, `Inner::leave`, `Inner::report`, `Clients::away_sites` |
 | revision ring, `session_id`, replay at hello | state | server | `rust/backend/src/session.rs` `Session`, `bump`, `replay_after`; `rust/backend/src/server/hello.rs` `handle_hello` |
 | revision-ring event names `tree.invalidate`, `preview.served`, `preview.scale_set`, `image.cropped`, `concept.written`, `file.written`, `file.deleted`, `dir.created`, `workspace.created`, `workspace.destroyed`, and their `Session::bump` calls | wire event (replay only) | server | `rust/backend/src/session.rs` `bump`; bumps `rust/backend/src/files/tree_ops.rs`, `rust/backend/src/files/io_ops.rs`, `rust/backend/src/files/concept_ops.rs`, `rust/backend/src/files/preview/mod.rs`, `rust/backend/src/files/preview/scale.rs`, `rust/backend/src/files/preview/crop.rs`, `rust/backend/src/rows/ops/create.rs`, `rust/backend/src/rows/ops/destroy.rs` |
 | `fe.lease`, `fe.leaving`, `fe.notice_seen` | op | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `hold`, `depart`, `notice_seen`; `rust/frontend/src/lease.rs` `Leases`, `Leaving` |

@@ -29,7 +29,6 @@ rust/frontend/src/ui/CLAUDE.md. The record is ADR 0042, 0044 and 0025.
 - `fe.presence` reaches every connected daemon at most once per `PRESENCE_THROTTLE`, only for a press paired with the
   press before it within `PRESENCE_PAIR` (a lone press, a release or a key repeat reports nothing), and never from a
   harness instance (`report_presence`, `presence_due`).
-- A cross-host switch tells the host left behind that this window shows none of its rows (`view_announcements`).
 - A badged result never switches the view (`mark_pending_nav`).
 - Strip keys retain the listed (host, slug); view keys normalize that host's default. A command never inserts its unresolved spelling as a row key.
 - A listed row is attached by its session_name from workspace.list; neither a slug nor a session name is derived from the other.

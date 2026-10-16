@@ -21,7 +21,7 @@ struct BrowserView
     url::String
     """
     Whether a frontend auto-opens the URL. `true` opens it in one window,
-    the one the daemon sends a show from this REPL's row to (ADR 0032).
+    the window in use: the one you used last (ADR 0032).
     `false` = serve-only: the browser frame still flows (so the daemon's
     ADR-0035 proxy allowlist learns the port) but NO frontend opens a tab,
     unless `fe` names one. `open = "<name>"` to `wglshow`/`browserview`
@@ -291,8 +291,8 @@ end
 Serve an interactive WGLMakie figure over Bonito on a loopback port and return a
 [`BrowserView`](@ref), so the frontend auto-opens it in the browser (ADR 0032).
 
-`open = true` opens the figure in one window, the one the daemon sends a show from this REPL's row to: the window
-showing the row that you used within five minutes, else the window you used last (ADR 0032). `open = false` opens it
+`open = true` opens the figure in one window, the window in use: the one you used last, whichever row it shows (ADR
+0032). `open = false` opens it
 nowhere; the frame still flows, so the daemon's proxy allowlist learns the port. `open = "<name>"` (the name
 `sot-fe --fe` takes) opens it only on that frontend. A frontend that predates `open = "<name>"` opens nothing.
 Call it as the last expression of an eval:
