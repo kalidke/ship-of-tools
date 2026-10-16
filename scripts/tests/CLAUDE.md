@@ -291,7 +291,7 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   prints `SKIPPED` and passes (it runs by name under `--user-manager`, `rust/backend/tests/CLAUDE.md`), and where the
   jobs' PATH (cargo, julia, node, /usr/bin, /bin) holds no `quarto`, the done test's Quarto half prints NOT CHECKED (the hosted
   job checks it). A failed build leaves the job's result `unrun`, a failure.
-- `rc-gate.sh` needs `node` on its PATH, as it needs `julia`, and gives its jobs node alone, through a link in `<logdir>/bin`, and `npm ci` done in `rust/backend/sidecars/mathjax` (the
+- `rc-gate.sh` needs `node` on its PATH, as it needs `julia`, and gives its jobs node alone, through a link in `<logdir>/bin` (julia likewise, in `<logdir>/julia-bin`, so no other binary of its folder shadows one), and `npm ci` done in `rust/backend/sidecars/mathjax` (the
   sotd contract tests and test-agent-layers use them); it refuses, exit 2, rather than install into the checkout it
   judges. It needs `Xvfb` in `/usr/bin` or `/bin`, its jobs' PATH, since the sotd sidecar tests start it, and refuses,
   exit 2, without it. A Rust test binary's stderr goes to `<key>.stderr` beside its log, so the body check reads stdout only.

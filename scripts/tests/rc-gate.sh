@@ -356,9 +356,10 @@ NODE_BIN=$(command -v node) || { echo "rc-gate: node not found" >&2; exit 2; }
 [ -d "$D/rust/backend/sidecars/mathjax/node_modules" ] || { echo "rc-gate: run npm ci in rust/backend/sidecars/mathjax" >&2; exit 2; }
 command -v jq > /dev/null || { echo "rc-gate: jq not found" >&2; exit 2; }
 PATH=/usr/bin:/bin command -v Xvfb > /dev/null || { echo "rc-gate: Xvfb not found in /usr/bin or /bin (the sotd sidecar tests start it)" >&2; exit 2; }
-# The jobs get node and nothing else from its folder (on the servers it also holds real agent CLIs).
-mkdir -p "$L/bin" && ln -s "$NODE_BIN" "$L/bin/node" || exit 2
-export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$(dirname "$JULIA_BIN") RCG_NODE_DIR=$L/bin
+# The jobs get node and julia, each alone from a folder of its own (on the servers node's folder also holds real agent
+# CLIs, and a julia in /usr/bin would put /usr/bin's node ahead of the node chosen here).
+mkdir -p "$L/bin" "$L/julia-bin" && ln -s "$NODE_BIN" "$L/bin/node" && ln -s "$JULIA_BIN" "$L/julia-bin/julia" || exit 2
+export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$L/julia-bin RCG_NODE_DIR=$L/bin
 envs
 INTR=0
 trap 'INTR=1' INT TERM HUP
