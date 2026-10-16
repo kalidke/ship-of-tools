@@ -964,7 +964,7 @@ try {
         }
         # Stage the binary for this launch, priority order:
         #   1. dev source build (the classic path — takes precedence, and a
-        #      -dev build never self-updates so it cannot race an apply)
+        #      source build never self-updates so it cannot race an apply)
         #   2. keep the already-staged copy, which is where sot-apply.ps1
         #      installed any update it applied above (public install layout)
         #

@@ -10,7 +10,7 @@
 // - the FE notify broadcast over the ADR 0025 daemon→FE command channel,
 // - the `update.check` op handler,
 // - the update mode (`SOT_UPDATE_MODE`: notify default, off; auto reserved),
-// - the HARD GUARD: a build whose `app_version()` carries the `-dev` marker
+// - the HARD GUARD: a build whose `app_version()` carries a `+` (a source build)
 //   never checks and never stages — the updater must not clobber a locally
 //   built binary. Unconditional and independent of config.
 //

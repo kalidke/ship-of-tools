@@ -94,7 +94,7 @@ Write-Host "Created: $shortcutPath"
 # Write <prefix>\install.json. Without it the frontend's startup self-check
 # bails at its "not a release install" guard and Windows never checks for
 # updates at all (install.sh, the only other writer, refuses to run here).
-# No-ops with an explanation on a -dev source build.
+# No-ops with an explanation on a source build (a + in its version).
 & (Join-Path $PSScriptRoot 'install-manifest.ps1') -Prefix $prefixDir -Repo $repo.Path -Hub $Hub
 
 # --- Keep the taskbar pin in sync -------------------------------------------

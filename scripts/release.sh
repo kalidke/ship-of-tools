@@ -40,8 +40,8 @@ TAG="v$VERSION"
 # CANDIDATES from the release line's own branch (`fixes/<version>` or
 # `rc/<version>`), which is where work accumulates from one tag until the next;
 # and the FINAL release from main, which the candidate branch merges into once
-# the line is ready. So main only ever advances to states that shipped, and a
-# checkout following it is never mid-candidate. Nothing else is accepted,
+# the line is ready. So main advances only to a final's release commit and the next
+# line's dev stamp after it, and a checkout following it is never mid-candidate. Nothing else is accepted,
 # because a tag from an arbitrary branch is a release whose history nobody can
 # find. Whichever it is, `$branch` is then the one thing the CI gate reads and
 # the push pushes — below here the script never names a branch again.
@@ -137,8 +137,8 @@ fi
 # commit) refuses the cut; rerun a flaky leg (`gh run rerun <id> --failed`),
 # never skip it. gh is required — a release is never cut blind. Dispatch both
 # workflows there first (`gh workflow run <wf> --ref <branch>`), on main too:
-# the dev stamp after a final carries [skip ci], so the line's tip usually has
-# no push run of its own. An empty list REFUSES the cut rather than waving it
+# push runs are path-filtered, so HEAD may have none of its own, and the cut's
+# runs are dispatched ones (owner ruling). An empty list REFUSES the cut rather than waving it
 # through, which is the whole reason this reads the branch instead of main.
 command -v gh >/dev/null 2>&1 || { echo "preflight: gh not found — CI on $branch cannot be verified" >&2; exit 1; }
 for wf in rust.yml CI.yml; do

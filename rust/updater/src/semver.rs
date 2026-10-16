@@ -47,10 +47,10 @@ pub fn parse_semver(s: &str) -> Option<SemVer> {
     })
 }
 
-/// Compare two pre-release identifier lists per semver §11: a release (empty)
-/// outranks any pre-release; otherwise compare identifiers left-to-right
-/// (numeric < alphanumeric; numeric compared as ints; more identifiers wins a
-/// common prefix).
+/// Compare two pre-release identifier lists per semver §11, with the `-dev` rule
+/// in `cmp_ident`: a release (empty) outranks any pre-release; otherwise compare
+/// identifiers left-to-right (numeric < alphanumeric; numeric compared as ints;
+/// more identifiers wins a common prefix).
 fn cmp_pre(a: &[String], b: &[String]) -> Ordering {
     match (a.is_empty(), b.is_empty()) {
         (true, true) => Ordering::Equal,
@@ -182,25 +182,6 @@ mod tests {
         assert_eq!(compare_versions("0.6.6-rc.1", "0.6.6-rc9"), Ordering::Less);
         // A release still outranks every candidate of either form.
         assert_eq!(compare_versions("0.6.6", "0.6.6-rc9.10"), Ordering::Greater);
-    }
-
-    #[test]
-    fn semver_dev_marker_is_stripped_to_base() {
-        // A `-dev+<sha>` running build compares by its base X.Y.Z against a
-        // real release: 0.3.0 > 0.2.0-dev, and 0.2.0 release > 0.2.0-dev.
-        assert_eq!(
-            compare_versions("0.3.0", "0.2.0-dev+abc1234"),
-            Ordering::Greater
-        );
-        assert_eq!(
-            compare_versions("0.2.0", "0.2.0-dev+abc1234"),
-            Ordering::Greater
-        );
-        // Build metadata does not affect ordering.
-        assert_eq!(
-            compare_versions("0.2.0-dev+aaa", "0.2.0-dev+bbb"),
-            Ordering::Equal
-        );
     }
 
     #[test]

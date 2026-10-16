@@ -21,7 +21,7 @@ The **source path** is for contributors or when release assets don't match the
 target platform: clone the repo to a working directory of the human's choice
 and follow https://kalidke.github.io/ship-of-tools/dev/start/setup/ (rustup +
 juliaup, `cargo build --release --manifest-path rust/Cargo.toml`, Julia env
-instantiation; source builds stamp `-dev` and never self-update). Ask if their
+instantiation; a source build has a `+` in its version and never self-updates). Ask if their
 intent is ambiguous.
 
 ## 0. Ground rules
@@ -272,7 +272,7 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
    `install-manifest.ps1`). **Do not skip it and hand-make a shortcut**: that
    file is what tells the frontend it is a release install, and without it the
    startup update check returns at its first guard and the machine can never
-   update itself. It no-ops with an explanation on a `-dev` source build.
+   update itself. It no-ops with an explanation on a source build (a `+` in its version).
 
    `install-shortcut.ps1` creates `Desktop\Ship of Tools.lnk` →
    `%LOCALAPPDATA%\sot\repo\current\scripts\launch-sot.ps1` once that pinned
@@ -422,7 +422,7 @@ needs updating. Tell the human: **press `?` for help; the top line of the nav
 pane always shows the pane-switch keys.**
 
 If step 3 printed nothing, run `powershell -File scripts\install-manifest.ps1
--Hub <hub-ssh-alias>` and re-check. If it reports a `-dev` build, that is a source install: it
+-Hub <hub-ssh-alias>` and re-check. If its version has a `+` in it, that is a source install: it
 updates via the launcher's git pull + cargo rebuild instead, which is correct
 and needs no manifest.
 
@@ -523,7 +523,7 @@ top line of the nav pane always shows the pane-switch keys.**
     0030-versioning-release-and-auto-update.md's 2026-09-17 amendment), and
     `sot-apply.ps1`'s junction flip carries them in the same transaction as
     the binaries — never a separate `git pull` of the clone.
-  - Source builds are stamped `-dev` and never self-update on any platform;
+  - A source build (a `+` in its version) never self-updates on any platform;
     they update by pulling and rebuilding.
 - Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`;
   if a unit was installed, `systemctl --user disable --now sotd` and remove

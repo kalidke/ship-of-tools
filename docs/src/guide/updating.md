@@ -5,7 +5,7 @@ Windows, an update whose frontend crash-loops right after applying is rolled
 back automatically.
 
 Two mechanisms complement rather than compete (release installs only —
-**source builds are stamped `-dev` and never self-update**; they update by
+**source builds (a `+` in the version) never self-update**; they update by
 `git pull` + rebuild):
 
 | Mechanism | What it does | What you do |
