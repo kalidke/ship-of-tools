@@ -387,8 +387,8 @@ pass before you report success — the last two are the difference between a
 working install and one that can never update itself.
 
 ```powershell
-# 1. The frontend runs and reports a release version (NOT "-dev+<sha>",
-#    which means a source build that will never self-update).
+# 1. The frontend runs and reports a release version (no `+` in it: a `+<sha>`
+#    or `+src` version is a source build, which never self-updates).
 & "$env:LOCALAPPDATA\sot\bin\sot.exe" --version
 
 # 2. The shortcut exists and carries the Ship of Tools icon, not PowerShell's.

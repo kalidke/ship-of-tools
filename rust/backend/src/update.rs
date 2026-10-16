@@ -119,9 +119,9 @@ fn mode_from_env() -> Mode {
 #[derive(Debug, Clone)]
 pub struct Updater {
     /// Running product version (`app_version()`), e.g. `0.2.0` or
-    /// `0.2.0-dev+abc`.
+    /// `0.2.0+abc`.
     current: String,
-    /// True when `current` carries the `-dev` marker — the hard guard.
+    /// True when this is not the CI release build (`is_release_build`) — the hard guard.
     dev: bool,
     mode: Mode,
     repo: String,
