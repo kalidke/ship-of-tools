@@ -631,6 +631,9 @@ struct State {
     nav_prompt: Option<NavPrompt>,
     /// A relaunch stayed open (`stay_open`): the close dialog shows the lease notice until a key (`dismiss_stay`).
     relaunch_stayed: bool,
+    /// The hint that the quit chord went to the program (`quit_chord`), and when it goes: the close dialog's panel
+    /// shows it, takes no keys, and `about_to_wait` ends it.
+    quit_hint: Option<(String, std::time::Instant)>,
     /// Node id of a file or directory just created via the Ctrl+N prompt,
     /// awaiting its `file.write` (file) or `dir.create` (dir) reply. When
     /// that reply lands matching this id, we refresh the parent dir's

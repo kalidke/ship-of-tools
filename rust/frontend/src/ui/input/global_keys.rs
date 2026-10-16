@@ -98,7 +98,8 @@ pub(in crate::ui) fn quit_chord(state: &mut State, event_loop: &ActiveEventLoop,
         let quit = state.bindings.resolve(&event.logical_key, Some(&base), Modifiers { ctrl, alt, shift, super_ },
             context.consumes_text(), |a| a == Action::Quit);
         if quit.is_some() {
-            state.status = quit_hint(&state.bindings.first_label(Action::Quit));
+            let hint = quit_hint(&state.bindings.first_label(Action::Quit));
+            state.quit_hint = Some((hint, std::time::Instant::now() + crate::ui::app::QUIT_HINT_HOLD));
             state.window.request_redraw();
         }
     }

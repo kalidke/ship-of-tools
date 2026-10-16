@@ -11,7 +11,7 @@ hand-over it serves.
   NAV_FIRE_DEBOUNCE.
 - `exit_process_tests.rs`: bounded runtime and process-exit cases, run through the shared isolation helper.
 - `exit.rs`: the quit question's text (QUIT_QUESTION, QUIT_KEYS, quit_prompt_line), quit_prompt_step, request_quit, begin_leave, leave, confirm_stay, stay_open, finish_exit, redraw_exits and the per-App ExitDeadline shared with State.
-- `dialog.rs`: the close dialog: which one shows (close_dialog_text), its cells centred on the window (close_dialog, State::close_dialog) and what a press on it does (quit_prompt_click).
+- `dialog.rs`: the close dialog: which one shows (close_dialog_text; the lowest is the timed quit hint, QUIT_HINT_HOLD), its cells centred on the window (close_dialog, State::close_dialog) and what a press on it does (quit_prompt_click).
 - `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `user_event`,
   `new_events`.
 - `frame.rs`: `State::redraw`, one frame's sequence, its upkeep (`frame_upkeep`) and `ack_presented_lines`.

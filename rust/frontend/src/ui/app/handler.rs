@@ -219,6 +219,10 @@ impl ApplicationHandler for App {
                 }
             }
         }
+        if state.quit_hint.as_ref().is_some_and(|(_, until)| std::time::Instant::now() >= *until) {
+            state.quit_hint = None;
+            state.window.request_redraw();
+        }
         if state.help_peek_expired() {
             state.help.peek = None;
             state.window.request_redraw();
@@ -297,7 +301,8 @@ impl ApplicationHandler for App {
             } else {
                 std::time::Duration::from_millis(80)
             };
-            let fade_at = state.help.peek.as_ref().map(|peek| peek.started + help::PEEK_HOLD);
+            let fade_at = state.help.peek.as_ref().map(|peek| peek.started + help::PEEK_HOLD)
+                .into_iter().chain(state.quit_hint.as_ref().map(|(_, until)| *until)).min();
             let deadline = arm_idle(&mut self.idle_due, std::time::Instant::now(), interval, fade_at);
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             return;
