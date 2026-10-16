@@ -3,17 +3,22 @@
 
 use super::*;
 
+/// The pool is one table for the whole test process, whose tests run in parallel: a test takes a pool port only while
+/// it holds this, and holding it starts from an empty pool (`assign_reuse_exhaust_free` counts every port as its own).
+fn own_pool() -> std::sync::MutexGuard<'static, ()> {
+    static HELD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let held = HELD.lock().unwrap_or_else(|p| p.into_inner());
+    POOL.write().unwrap_or_else(|p| p.into_inner()).clear();
+    held
+}
+
 #[cfg(test)]
 mod pool_tests {
     use super::*;
 
-    fn reset() {
-        POOL.write().unwrap_or_else(|p| p.into_inner()).clear();
-    }
-
     #[test]
     fn assign_reuse_exhaust_free() {
-        reset();
+        let _pool = own_pool();
         let base = site_port();
         // Owners far outside anything other tests produce: clients.rs tests
         // drop ClientGuards whose owners are small serials, and a drop calls
@@ -59,7 +64,6 @@ mod pool_tests {
         assert_eq!(pool_in_use(), 3);
         let (p6, _s6) = assign_pool_port(S + 6, Site::plain(PathBuf::from("/f")), none).unwrap();
         assert_eq!(p6, p4);
-        reset();
     }
 
     /// PAGE-PORT: one browser can hold two daemons' pool sites at one pool port number (through a remote window's page
@@ -444,6 +448,7 @@ mod kept_connection_tests {
         assert_eq!((a, b, c), (200, 404, 200));
         remove_root(OWNER);
         // Pool: the old secret's cookie on the same kept connection is refused after a reopen.
+        let pool = own_pool();
         const POWNER: u64 = 8_000_000_013;
         let (pport, s1) = assign_pool_port(POWNER, Site::plain(root.clone()), Vec::new).unwrap();
         let lport = listen(ServeMode::Pool(pport)).await;
@@ -458,6 +463,7 @@ mod kept_connection_tests {
         // And a request with neither secret nor cookie, after ones that carried them.
         assert_eq!(one(&mut s, "GET /a.txt HTTP/1.1\r\n\r\n").await, 403);
         remove_root(POWNER);
+        drop(pool);
         // Video: the grant token is looked up on each request of a kept connection, so a wrong or missing one is
         // refused between two valid ones.
         let movie = root.join("clip.mp4");
@@ -481,7 +487,6 @@ mod kept_connection_tests {
         let c = one(&mut s, "GET / HTTP/1.1\r\n\r\n").await;
         let d = one(&mut s, &format!("GET /{token} HTTP/1.1\r\n\r\n")).await;
         assert_eq!((a, b, c, d), (200, 404, 404, 200));
-        remove_root(POWNER);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -32,3 +32,5 @@ daemon's page serving; charter: rust/backend/src/pages/CLAUDE.md.
   `GitState::links`), and opening a site canonicalizes no data root.
 - Resolution runs in `spawn_blocking` (`serve_request`); an owner's end (a connection of no window that disconnects, a
   window the roster forgets) drops its entries (`remove_root`).
+- The pool is one table per process, so a unit test takes a pool port only while it holds `own_pool` (`tests.rs`),
+  which empties the pool for it: the tests run in parallel and one counts all four ports.
