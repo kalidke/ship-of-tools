@@ -8,11 +8,10 @@
 // makes BOTH relative and root-relative (`/asset`) links resolve — `o`'s file://
 // open can't (search/JS and root-relative assets break off-origin).
 //
-// One active site at a time (last-opened wins): each open re-points the root.
-// Fine for a single user clicking around one site; opening a second site
-// re-points the root, so a stale first tab would 404 on reload. A path-prefixed
-// multi-site scheme is a later refinement (and root-relative links would still
-// force one-site-per-origin anyway).
+// One site per owner at a time (its last open wins): an owner is a window,
+// kept across its redials, or a connection of no window (ADR 0029). Opening a
+// second site re-points the owner's root, so a stale first tab 404s on reload;
+// another owner's sites are untouched.
 //
 // Why hand-rolled rather than axum/tower-http: same reasoning as pages::video —
 // the backend has no HTTP stack and the need is narrow (GET a file under a root).
@@ -67,35 +66,37 @@ use tokio::net::TcpStream;
 use super::random_token;
 use crate::pages::http::{content_type, read_request, serve_file, write_simple, Request};
 
-/// Per-connection site roots, keyed by an unguessable per-open NONCE — not
-/// the connection serial. (Security review: the old scheme put the raw,
+/// Per-owner site roots, keyed by an unguessable per-open NONCE — not
+/// the owner. (Security review: the old scheme put the raw,
 /// small, monotonically-increasing connection serial in the URL, so any local
 /// user could enumerate `/1/`, `/2/`, ... on this unauthenticated port and
 /// view whatever site another user had open.) `docs.open` mints a fresh
 /// nonce via `set_root` on every open; the returned URL carries it as the
 /// first path segment (`/<nonce>/…`), so two FEs serve different sites on the
-/// one `:1236` port without clobbering each other. `SERIAL_NONCE` tracks which
-/// nonce belongs to which live connection, so a re-open can repoint (dropping
-/// the stale nonce's entry) and `ClientGuard::drop` can reap the right one on
-/// disconnect. Empty until the first open. `RwLock::new` and `BTreeMap::new`
-/// are both const, so this initializes without lazy init.
+/// one `:1236` port without clobbering each other. An owner is a window, kept
+/// across its redials, or a connection of no window (`ClientGuard::site_owner`).
+/// `OWNER_NONCE` tracks which nonce belongs to which owner, so a re-open can
+/// repoint (dropping the stale nonce's entry) and `ClientGuard::drop` can reap
+/// the right one when its owner ends. Empty until the first open. `RwLock::new`
+/// and `BTreeMap::new` are both const, so this initializes without lazy init.
 static SITE_ROOTS: RwLock<BTreeMap<String, Arc<Site>>> = RwLock::new(BTreeMap::new());
-static SERIAL_NONCE: RwLock<BTreeMap<u64, String>> = RwLock::new(BTreeMap::new());
+static OWNER_NONCE: RwLock<BTreeMap<u64, String>> = RwLock::new(BTreeMap::new());
 
 /// ADR 0029 Option B — the per-port pool for ROOT-RELATIVE sites. A site whose
-/// entry HTML uses `/asset`-style links can't ride the shared `/{serial}/`
+/// entry HTML uses `/asset`-style links can't ride the shared `/{nonce}/`
 /// prefix server (the link escapes the prefix and 404s), so it gets a DEDICATED
 /// port from this small pool: its own origin, served from its true root, both
-/// link styles resolve. `port -> (owning connection serial, site root, secret)`.
+/// link styles resolve. `port -> (owner, site root, secret)`.
 /// The `secret` is this security review's fix for the pool ports otherwise
 /// having NO auth of their own (a path-prefix nonce can't work here — a
 /// root-relative site needs the whole path space): `assign_pool_port` mints a
 /// fresh one on every open, `docs.open` embeds it as `?secret=` in the
 /// returned URL, and `handle_conn`'s `ServeMode::Pool` arm requires it (or the
-/// HttpOnly cookie it causes to be set) on every request. A connection holds
+/// HttpOnly cookie it causes to be set) on every request. An owner holds
 /// at most one pool port (re-opens repoint it AND mint a new secret,
-/// invalidating the old one); the port is freed by `remove_root` on
-/// disconnect, same hook as the prefix map. The range is fixed and contiguous
+/// invalidating the old one); the port is freed by `remove_root` when its owner
+/// ends, same hook as the prefix map, or taken by a new open while its owner is
+/// a window away (`assign_pool_port`). The range is fixed and contiguous
 /// (`site_port()+1 ..= site_port()+POOL_SIZE`).
 pub const POOL_SIZE: u16 = 4;
 static POOL: RwLock<BTreeMap<u16, (u64, Arc<Site>, String)>> = RwLock::new(BTreeMap::new());
@@ -118,26 +119,31 @@ pub fn pool_ports() -> std::ops::RangeInclusive<u16> {
     (site_port() + 1)..=(site_port() + POOL_SIZE)
 }
 
-/// Assign (or repoint) a pool port for connection `serial`, serving `root`,
-/// and mint a fresh per-open secret for it. Reuses the connection's existing
-/// port when it has one — one pool site per connection, matching the prefix
+/// Assign (or repoint) a pool port for `owner`, serving `root`,
+/// and mint a fresh per-open secret for it. Reuses the owner's existing
+/// port when it has one — one pool site per owner, matching the prefix
 /// map's semantics — but ALWAYS mints a new secret, even on repoint, so a
 /// stale secret (and the cookie it set) stops working the moment the site is
-/// reopened. Returns `(port, secret)`; `None` if the CSPRNG couldn't be read
-/// (fails closed rather than mint a guessable secret — security review) or
-/// every port is owned by another live connection (the caller surfaces
-/// "slots busy"; the two cases share one message since the RNG failure should
-/// never actually happen).
-pub fn assign_pool_port(serial: u64, site: Site) -> Option<(u16, String)> {
+/// reopened. When every port is held, the port of the first owner in `away`
+/// (the windows with no live connection, the one away longest first:
+/// `Clients::away_sites`) is taken, with a new secret, so that window's old
+/// link and cookie are refused. `away` runs under the pool's
+/// lock, so no open can fall between its read and the take; the roster never
+/// takes the pool's lock under its own. Returns `(port, secret)`; `None` if the
+/// CSPRNG couldn't be read (fails closed rather than mint a guessable secret —
+/// security review) or every port is held by an owner not away (the caller
+/// surfaces "slots busy"; the two cases share one message since the RNG
+/// failure should never actually happen).
+pub fn assign_pool_port(owner: u64, site: Site, away: impl FnOnce() -> Vec<u64>) -> Option<(u16, String)> {
     let root = Arc::new(site);
     let secret = random_token()?;
     let mut g = POOL.write().unwrap_or_else(|p| p.into_inner());
     if let Some(port) = g
         .iter()
-        .find(|(_, (s, _, _))| *s == serial)
+        .find(|(_, (s, _, _))| *s == owner)
         .map(|(&port, _)| port)
     {
-        g.insert(port, (serial, root, secret.clone()));
+        g.insert(port, (owner, root, secret.clone()));
         return Some((port, secret));
     }
     // Assign only from ports we ACTUALLY bound at spawn_pool — never a port
@@ -157,13 +163,16 @@ pub fn assign_pool_port(serial: u64, site: Site) -> Option<(u16, String)> {
     } else {
         pool_ports().collect()
     };
-    for port in candidates {
+    for &port in &candidates {
         if let std::collections::btree_map::Entry::Vacant(e) = g.entry(port) {
-            e.insert((serial, root, secret.clone()));
+            e.insert((owner, root, secret.clone()));
             return Some((port, secret));
         }
     }
-    None
+    let held_by = |o: &u64| candidates.iter().copied().find(|p| g.get(p).is_some_and(|(s, _, _)| s == o));
+    let port = away().iter().find_map(held_by)?;
+    g.insert(port, (owner, root, secret.clone()));
+    Some((port, secret))
 }
 
 /// How many pool ports are currently owned (for the "slots busy" error).
@@ -215,18 +224,18 @@ pub fn bound_site_port() -> Option<u16> {
     }
 }
 
-/// Set the site root for connection `serial`, minting a fresh nonce and
+/// Set the site root for `owner`, minting a fresh nonce and
 /// returning it — the caller (`docs.open`) embeds it as the URL's first path
-/// segment (`/<nonce>/…`). A repoint (this connection already has a live
+/// segment (`/<nonce>/…`). A repoint (this owner already has a live
 /// nonce) drops the OLD nonce's `SITE_ROOTS` entry first, so a stale link a
 /// browser tab still holds 404s instead of silently serving the new site.
 /// `None` if the CSPRNG couldn't be read — fails closed rather than mint a
 /// guessable nonce (security review). Ignores lock poisoning (a panicked
 /// reader can't corrupt the map).
-pub fn set_root(serial: u64, site: Site) -> Option<String> {
+pub fn set_root(owner: u64, site: Site) -> Option<String> {
     let nonce = random_token()?;
-    let mut sn = SERIAL_NONCE.write().unwrap_or_else(|p| p.into_inner());
-    let old_nonce = sn.insert(serial, nonce.clone());
+    let mut sn = OWNER_NONCE.write().unwrap_or_else(|p| p.into_inner());
+    let old_nonce = sn.insert(owner, nonce.clone());
     drop(sn);
     let mut g = SITE_ROOTS.write().unwrap_or_else(|p| p.into_inner());
     if let Some(old) = old_nonce {
@@ -236,18 +245,19 @@ pub fn set_root(serial: u64, site: Site) -> Option<String> {
     Some(nonce)
 }
 
-/// Drop connection `serial`'s site root AND free any pool port it owns.
-/// Called from `ClientGuard::drop` so a disconnect reaps exactly the departing
-/// connection's entries (ADR 0029, both serving modes — one hook covers both).
-pub fn remove_root(serial: u64) {
-    let mut sn = SERIAL_NONCE.write().unwrap_or_else(|p| p.into_inner());
-    let nonce = sn.remove(&serial);
+/// Drop `owner`'s site root AND free any pool port it holds.
+/// Called from `ClientGuard::drop` when the owner ends: a connection of no
+/// window that disconnects, or a window the roster forgets (ADR 0029, both
+/// serving modes — one hook covers both).
+pub fn remove_root(owner: u64) {
+    let mut sn = OWNER_NONCE.write().unwrap_or_else(|p| p.into_inner());
+    let nonce = sn.remove(&owner);
     drop(sn);
     if let Some(nonce) = nonce {
         SITE_ROOTS.write().unwrap_or_else(|p| p.into_inner()).remove(&nonce);
     }
     let mut p = POOL.write().unwrap_or_else(|p| p.into_inner());
-    p.retain(|_, (s, _, _)| *s != serial);
+    p.retain(|_, (s, _, _)| *s != owner);
 }
 
 fn root_for(nonce: &str) -> Option<Arc<Site>> {
@@ -340,8 +350,8 @@ pub async fn spawn(preferred: u16) -> Result<()> {
 /// Which serving scheme a listener speaks (ADR 0029).
 #[derive(Clone, Copy)]
 enum ServeMode {
-    /// The shared `:1236` server: first path segment is the connection serial,
-    /// selecting that connection's root; page-relative links only.
+    /// The shared `:1236` server: first path segment is the nonce `set_root`
+    /// minted, selecting its owner's root; page-relative links only.
     Prefix,
     /// A pool port dedicated to one root-relative site: the whole request path
     /// resolves under the port's assigned root (its own origin).
@@ -471,7 +481,7 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
 
     // Strip any query string / fragment, then resolve per serving mode
     // (ADR 0029): Prefix splits off the leading `/<nonce>/` segment to pick
-    // the connection's root; a Pool port serves its assigned root whole, so
+    // its owner's root; a Pool port serves its assigned root whole, so
     // root-relative links resolve on that origin. `set_cookie`, if `Some`, is
     // a `Set-Cookie` header value the eventual 200 response must include.
     let raw_path = target.split(|c| c == '?' || c == '#').next().unwrap_or("");
@@ -481,7 +491,7 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
                 return write_simple(
                     stream,
                     "404 Not Found",
-                    "no site assigned to this port (its connection may have closed)",
+                    "no site assigned to this port (the daemon restarted or forgot the window that opened it)",
                     keep,
                 )
                 .await;
@@ -532,8 +542,8 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
                 return write_simple(
                     stream,
                     "404 Not Found",
-                    "no site open for this link (it may have disconnected, or this \
-                     site uses root-relative links and should open via a pool port)",
+                    "no site open for this link (it was reopened, the daemon restarted or forgot the window \
+                     that opened it, or this site uses root-relative links and should open via a pool port)",
                     keep,
                 )
                 .await;

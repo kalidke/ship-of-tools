@@ -22,7 +22,7 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   link end for a `link` connection, active workspace, monitor flag, read deadline, the off-loop `JoinSet` and
   semaphore, and the REPL runs its window numbered itself (sidecars' `CallerNumbers`, which the roster keeps per window
   and hands each connection at registration, `ClientGuard::numbers`; through it `write_repl_frame` writes
-  it each `repl.frame`).
+  it each `repl.frame`), and the owner of its window's pages (`ClientGuard::site_owner`, read by `docs.open`).
 - The op table: `place` (the `INLINE` and `POOLED` lists, each op with its reason; every other op is a job), `dispatch`
   (the arms that use the loop's state or writer, and the placement) and `serve` (every other op to its owner), and the
   unknown-op reply.
@@ -94,7 +94,7 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
 Each connection is one row of docs/integration.md, owned by its provider. Provides: handle_fe_command_send relay diagnostics, `proxy.connect`,
 `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`, `lane.connect`, `handle_lane_connect`,
 `fe.lease`, `lease::hold`, `admit_peer`, `dispatch`, `hello`, `admit_hello`, `ping`, `sotd stdio-bridge`, `write_frame_within`,
-`write_frame_to`, `version.query`. Uses: `Frame`, `codec::read_frame`, `codec::read_envelope`, `codec::write_frame`, `hello`,
+`write_frame_to`, `version.query`, `ClientGuard::site_owner`, `Clients::away_sites`. Uses: `Frame`, `codec::read_frame`, `codec::read_envelope`, `codec::write_frame`, `hello`,
 `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `version_line`, `--version`,
 `TopologyStore`, `topology.set`, `topology.changed`, `startup::begin`, `lease::ticker`, `Leases::gone`,
 `shutdown::run`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `seed_default_row`, `set_repl_frame_tx`,

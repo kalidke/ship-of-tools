@@ -199,8 +199,9 @@ pub async fn handle_docs_open(
     req_id: u64,
     payload_json: serde_json::Value,
     session: &Session,
-    serial: Option<u64>,
+    owner: Option<u64>,
     workspaces: &Workspaces,
+    clients: &crate::clients::Clients,
 ) -> Result<HandlerOutput> {
     let req: DocsOpenReq = serde_json::from_value(payload_json).context("docs.open payload")?;
     tracing::info!(path = %req.path, "docs.open");
@@ -212,12 +213,13 @@ pub async fn handle_docs_open(
         )]
     };
 
-    // The requesting connection's serial keys its per-connection site root
-    // internally (ADR 0029); `pages::site::set_root` mints the unguessable
-    // nonce that actually becomes the URL's first path segment (security
-    // review — see `pages/site/mod.rs`). `None` only if hello hasn't registered
-    // the connection yet — it always precedes docs.open in practice.
-    let serial = match serial {
+    // The owner of the requesting connection's pages keys its site internally
+    // (ADR 0029): its window's (`ClientGuard::site_owner`), so a redial keeps
+    // it; `pages::site::set_root` mints the unguessable nonce that actually
+    // becomes the URL's first path segment (security review — see
+    // `pages/site/mod.rs`). `None` only if hello hasn't registered the
+    // connection yet — it always precedes docs.open in practice.
+    let owner = match owner {
         Some(s) => s,
         None => {
             return Ok(err(
@@ -316,8 +318,8 @@ pub async fn handle_docs_open(
         }
     }
 
-    // Loud root-relative guard (ADR 0029). The per-connection scheme serves under
-    // `/<serial>/`, so page-relative links resolve but ROOT-relative ones
+    // Loud root-relative guard (ADR 0029). The prefix scheme serves under
+    // `/<nonce>/`, so page-relative links resolve but ROOT-relative ones
     // (`/assets/x.css`) escape the prefix and 404. Documenter output is clean; a
     // a project's `__site` / genhtml coverage tree is not. Scan the entry HTML and
     // refuse with a clear error rather than serve a silently-broken page (Option B's
@@ -329,7 +331,7 @@ pub async fn handle_docs_open(
         .unwrap_or(false);
     // Root-relative detection is now a ROUTER, not a refusal (ADR 0029 Option B,
     // implemented per maintainer decision, 2026-07-03 — "make proper fix now"): a site whose
-    // entry HTML uses `/asset`-style links can't ride the shared `/{serial}/`
+    // entry HTML uses `/asset`-style links can't ride the shared `/{nonce}/`
     // prefix server (the link escapes the prefix and 404s), so it gets a
     // DEDICATED pool port — its own origin, served from its true root, both
     // link styles resolve. A project's `__site` / genhtml trees open via W again.
@@ -354,15 +356,15 @@ pub async fn handle_docs_open(
     let mut pool_port: Option<(u16, String)> = None;
     let mut site = Some(site);
     if root_relative {
-        match crate::pages::site::assign_pool_port(serial, site.take().expect("site")) {
+        match crate::pages::site::assign_pool_port(owner, site.take().expect("site"), || clients.away_sites()) {
             Some(assigned) => pool_port = Some(assigned),
             None => {
                 return Ok(err(
                     format!(
                         "{} uses root-relative links and every dedicated \
-                         port is busy ({} of {} in use by other \
-                         connections), or a secure token couldn't be minted \
-                         — close another root-relative site, reconnect, or retry",
+                         port is busy ({} of {} held by other open \
+                         windows), or a secure token couldn't be minted \
+                         — close another root-relative site, or retry",
                         entry.display(),
                         crate::pages::site::pool_in_use(),
                         crate::pages::site::POOL_SIZE,
@@ -387,12 +389,12 @@ pub async fn handle_docs_open(
             secret,
         )
     } else {
-        // Shared prefix server: point this connection's slot at the site root
+        // Shared prefix server: point this owner's slot at the site root
         // and hand back a URL whose first path segment is the unguessable
         // nonce `set_root` minted (security review — not the raw serial).
         // `None` means the CSPRNG read failed — fail closed rather than mint
         // a guessable nonce.
-        let Some(nonce) = crate::pages::site::set_root(serial, site.take().expect("site")) else {
+        let Some(nonce) = crate::pages::site::set_root(owner, site.take().expect("site")) else {
             return Ok(err(
                 "could not mint a secure site token (system RNG unavailable) — try again".into(),
                 "rng_unavailable",

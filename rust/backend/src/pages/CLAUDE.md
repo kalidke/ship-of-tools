@@ -34,7 +34,11 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   browser connection closes as on a down link (`pipe_one`, `LinkWatch`). A page already piped ends on its own.
 - `proxy.connect` dials with tokio's `TcpSocket`, whose socket is not inheritable, so no child holds the connection
   (`dial_upstream`, `a_proxy_dial_is_not_inheritable`).
-- A connection's sites go when it disconnects (`remove_root`).
+- A window's sites outlive its connections: `docs.open` keys them to the window, its hello's host and `instance`
+  (`ClientGuard::site_owner`), so a redial keeps them, and they go when the roster forgets the window; a connection
+  whose hello names no window has its sites go when it disconnects (`remove_root`; ADR 0029, 0.6.6 amendment). When
+  every pool port is held, a new open takes the port of the window away longest, never a live window's
+  (`assign_pool_port`, `Clients::away_sites`). A daemon restart ends every grant: the tables are memory only.
 - A quarto render starts through `Signal::spawn` and is always given the daemon's julia as `QUARTO_JULIA`, an
   inherited one overridden, and a refusal by the resolver fails the render (`run_quarto`), `--no-execute` or not,
   since quarto runs `QUARTO_JULIA` for an `engine: julia` document even then; so a host without julia renders no
@@ -57,7 +61,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `is_servable_video`, `start_page_servers`, `remove_root`, `loopback_port_from_url`, `with_loopback_port`,
 `rust/protocol/src/page_url.rs`.
 Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`,
-`dispatch`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `ContainedStd`, `Signal`, `child_signal::process`, `resolve_bin`,
+`dispatch`, `ClientGuard::site_owner`, `Clients::away_sites`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `ContainedStd`, `Signal`, `child_signal::process`, `resolve_bin`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `bound_pluto_port`, `allowed_proxy_ports`, `lane_dial`, `ResolvedDial`, `sot_protocol::video_path::video_mime`.
 
 ## Folders

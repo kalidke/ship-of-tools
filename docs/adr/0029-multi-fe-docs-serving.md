@@ -139,3 +139,35 @@ clear `root_relative_pool_busy` error; per-port bind failures shrink the pool
 non-fatally. The open-time guard is now the ROUTER between the two schemes,
 not a refusal. All launchers forward the range statically. Found by, and
 verified against, an example lab's project `__site` ("Shift+W isn't working").
+
+## Amendment (2026-10-16, 0.6.6): a window's sites outlive its connections
+
+A window that redials (its link dropped, its computer slept, the daemon reaped its silent link) is the same window, so
+the sites it opened keep serving. `docs.open` keys a site to the owner of the requesting connection's pages
+(`ClientGuard::site_owner`): for a window, its record in the client roster, which is its hello's declared host and
+`instance` (ADR 0046 decision 1; `rust/backend/src/clients_window.rs`); for a connection whose hello names no instance,
+the connection itself. Before this, decision 1's key was the connection's serial and decision 3's cleanup ran at every
+disconnect, so every reconnect of a window ended every tab it had opened.
+
+- Decision 1's concern stands: an old connection's teardown never ends what its redial holds. A window's record counts
+  its live connections, and nothing of the window ends while one is live.
+- Decision 3 now reads: a window's sites end when the roster forgets the window, which is when more than 64 windows
+  have no live connection and it is the one away longest (`AWAY`), or when the daemon stops; a connection of no window
+  has its sites end at its disconnect. A far daemon cannot tell a window's close from a dropped link (each ends the
+  connection, and a remote window holds no lease there), so neither a close nor a time bound ends a window's sites: a
+  window whose computer slept overnight keeps its tabs.
+- The pool's ports are few (`POOL_SIZE`, 4), and a window away keeps its own. When every port is held, a new open takes
+  the port of the window that has been away longest (`assign_pool_port`, `Clients::away_sites`); a live window's port
+  is never taken, so `root_relative_pool_busy` means every port is held by a live window or connection.
+- The stale-tab rule stands as it was: a redial serves the same site under the same nonce and secret, never a new one.
+  A reopen from any connection of the window drops the window's old nonce (its link is answered 404) and mints a new
+  pool secret, and a pool port taken from a window away gets a new secret, so the old link and the old cookie are
+  answered 403. As before, a browser that has since loaded the port's new site holds that site's cookie, which is
+  named for the listener and not the open (`pool_cookie_name`), and a stale tab of that port in that browser is served
+  the new site: one pool port is one origin.
+- The security review's other guards stand: nonces and secrets are minted per open from the OS's secure generator, the
+  listeners serve only this OS account (`serve_own`), and `docs.open` confines a site to a known workspace. The
+  `instance` is the peer's own declaration: a peer of this account that declares another window's host and `instance`
+  can reopen, and so end, that window's sites, but cannot read them, and it already holds every power of the account.
+- A daemon restart ends every site, pool port and video grant: they live in memory only, so no bearer secret outlives
+  the daemon that minted it. A tab opened before a restart must be opened again.

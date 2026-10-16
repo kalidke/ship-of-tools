@@ -142,7 +142,12 @@ assigns, and opens the page's address with that port in place of the
 daemon's: the daemon's port number names a port on the daemon's computer,
 which on the frontend's computer may belong to anything, its own daemon
 included. Such a tab does not survive a restart of the frontend; open the
-page again. A page your own code serves (`wglshow`, `browserview`) or
+page again. It does survive the frontend's reconnects: a documentation page
+belongs to the window that opened it, not to one connection, so a dropped
+link or a computer that slept leaves it serving, until that window opens
+another page in its place or the daemon forgets the window (past 64 windows
+away, it forgets the one away longest). A restart of the daemon ends every
+page; open it again after one. A page your own code serves (`wglshow`, `browserview`) or
 `sot-fe open-url` names may name its own address, so it keeps the daemon's
 port number, and the frontend declines to open it when something on its
 computer already holds that number.

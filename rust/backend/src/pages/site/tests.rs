@@ -14,16 +14,18 @@ mod pool_tests {
     fn assign_reuse_exhaust_free() {
         reset();
         let base = site_port();
-        // Serials far outside anything other tests produce: clients.rs tests
-        // drop ClientGuards with small serials, and each drop calls
-        // remove_root(serial) — with colliding serials a parallel test run
+        // Owners far outside anything other tests produce: clients.rs tests
+        // drop ClientGuards whose owners are small serials, and a drop calls
+        // remove_root(owner) — with colliding owners a parallel test run
         // freed this test's pool entries mid-assert.
         const S: u64 = 9_000_000_001;
-        // Four distinct connections fill the pool in order.
-        let (p1, s1) = assign_pool_port(S + 1, Site::plain(PathBuf::from("/a"))).unwrap();
-        let (p2, s2) = assign_pool_port(S + 2, Site::plain(PathBuf::from("/b"))).unwrap();
-        let (p3, _s3) = assign_pool_port(S + 3, Site::plain(PathBuf::from("/c"))).unwrap();
-        let (p4, _s4) = assign_pool_port(S + 4, Site::plain(PathBuf::from("/d"))).unwrap();
+        // No owner is away unless a case says so.
+        let none = Vec::new;
+        // Four distinct owners fill the pool in order.
+        let (p1, s1) = assign_pool_port(S + 1, Site::plain(PathBuf::from("/a")), none).unwrap();
+        let (p2, s2) = assign_pool_port(S + 2, Site::plain(PathBuf::from("/b")), none).unwrap();
+        let (p3, s3) = assign_pool_port(S + 3, Site::plain(PathBuf::from("/c")), none).unwrap();
+        let (p4, _s4) = assign_pool_port(S + 4, Site::plain(PathBuf::from("/d")), none).unwrap();
         assert_eq!(
             vec![p1, p2, p3, p4],
             (base + 1..=base + POOL_SIZE).collect::<Vec<_>>()
@@ -34,7 +36,7 @@ mod pool_tests {
         // A re-open by an existing owner REPOINTS its port, not a new one,
         // and mints a FRESH secret — the old one (and any cookie it set)
         // stops working (security review).
-        let (p2_again, s2_again) = assign_pool_port(S + 2, Site::plain(PathBuf::from("/b2"))).unwrap();
+        let (p2_again, s2_again) = assign_pool_port(S + 2, Site::plain(PathBuf::from("/b2")), none).unwrap();
         assert_eq!(p2_again, p2);
         assert_ne!(s2_again, s2);
         assert!(s2_again.len() == 32 && s2_again.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
@@ -42,14 +44,20 @@ mod pool_tests {
             pool_entry_for(p2).map(|(r, _)| r.content_root.clone()),
             Some(PathBuf::from("/b2"))
         );
-        // Fifth connection: exhausted.
-        assert_eq!(assign_pool_port(S + 5, Site::plain(PathBuf::from("/e"))), None);
+        // Fifth owner: exhausted while no owner holding a port is away.
+        assert_eq!(assign_pool_port(S + 5, Site::plain(PathBuf::from("/e")), || vec![S + 9]), None);
         assert_eq!(pool_in_use(), 4);
-        // Disconnect frees exactly the owner's port; next claim gets it.
-        remove_root(S + 3);
-        assert_eq!(pool_in_use(), 3);
-        let (p5, _s5) = assign_pool_port(S + 5, Site::plain(PathBuf::from("/e"))).unwrap();
+        // A window away: the fifth takes the port of the first owner in the away list that holds one, with a new
+        // secret, so that window's old link is refused.
+        let (p5, s5) = assign_pool_port(S + 5, Site::plain(PathBuf::from("/e")), || vec![S + 9, S + 3, S + 1]).unwrap();
         assert_eq!(p5, p3);
+        assert_ne!(s5, s3);
+        assert_eq!(pool_entry_for(p3).map(|(r, s)| (r.content_root.clone(), s)), Some((PathBuf::from("/e"), s5)));
+        // An owner's end frees exactly its port; next claim gets it.
+        remove_root(S + 4);
+        assert_eq!(pool_in_use(), 3);
+        let (p6, _s6) = assign_pool_port(S + 6, Site::plain(PathBuf::from("/f")), none).unwrap();
+        assert_eq!(p6, p4);
         reset();
     }
 

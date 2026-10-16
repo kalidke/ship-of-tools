@@ -406,6 +406,7 @@ where
         client_id: client_guard.as_ref().map(|g| g.client_id().to_string()).unwrap_or_default(),
         hello_host,
         repl_numbers: client_guard.as_ref().map(crate::clients::ClientGuard::numbers).unwrap_or_default(),
+        site_owner: client_guard.as_ref().map_or(0, crate::clients::ClientGuard::site_owner),
     };
     // The window's REPL runs still running, read now that this connection is subscribed to the frame bus above: the
     // `done` of each run named is published after this, so this connection is written it.
