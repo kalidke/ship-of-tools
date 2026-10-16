@@ -1,4 +1,5 @@
-//! Tests of the prefix and pool listeners: pool assignment, bind fallback, serving a prefix site.
+//! Tests of the prefix and pool listeners: pool assignment, bind fallback, serving a prefix site, and requests carried one
+//! after another on a kept connection.
 
 use super::*;
 
@@ -384,5 +385,79 @@ mod persistent_tests {
         let logins = logins.load(SeqCst);
         println!("a page of {FILES} files through {SLOTS} browser connections: {loaded} loaded, {logins} logins (the gateway refuses past {LIMIT})");
         assert!(loaded == FILES && logins <= SLOTS, "the page loaded only partly: {loaded} of {FILES} files, {logins} logins");
+    }
+}
+
+#[cfg(test)]
+mod kept_connection_tests {
+    use super::*;
+
+    async fn listen(mode: ServeMode) -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _ = handle_conn(stream, mode).await;
+                });
+            }
+        });
+        port
+    }
+
+    fn root_with(tag: &str, body: &[u8]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("sot-site-kept-test-{tag}-{}", sot_updater::unique::suffix()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), body).unwrap();
+        root
+    }
+
+    /// One request on a kept connection, its reply read to its length: the status.
+    async fn one(s: &mut TcpStream, req: &str) -> u16 {
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut head = Vec::new();
+        let mut b = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            assert_eq!(s.read(&mut b).await.unwrap(), 1, "closed mid-head");
+            head.push(b[0]);
+        }
+        let head = String::from_utf8_lossy(&head).into_owned();
+        let len: usize = head.lines().find_map(|l| l.strip_prefix("Content-Length: ")).unwrap().trim().parse().unwrap();
+        let mut body = vec![0; len];
+        s.read_exact(&mut body).await.unwrap();
+        head.split_whitespace().nth(1).unwrap().parse().unwrap()
+    }
+
+    /// ADR 0029: nothing but the mode and the read buffer crosses requests, so a nonce, a secret or a cookie that
+    /// stopped being valid is refused on a connection that served it a moment before.
+    #[tokio::test]
+    async fn a_kept_connection_checks_every_request_on_its_own() {
+        let root = root_with("reauth", b"one");
+        const OWNER: u64 = 8_000_000_012;
+        let n1 = set_root(OWNER, Site::plain(root.clone())).unwrap();
+        let port = listen(ServeMode::Prefix).await;
+        let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let a = one(&mut s, &format!("GET /{n1}/a.txt HTTP/1.1\r\n\r\n")).await;
+        let n2 = set_root(OWNER, Site::plain(root.clone())).unwrap();
+        let b = one(&mut s, &format!("GET /{n1}/a.txt HTTP/1.1\r\n\r\n")).await;
+        let c = one(&mut s, &format!("GET /{n2}/a.txt HTTP/1.1\r\n\r\n")).await;
+        assert_eq!((a, b, c), (200, 404, 200));
+        remove_root(OWNER);
+        // Pool: the old secret's cookie on the same kept connection is refused after a reopen.
+        const POWNER: u64 = 8_000_000_013;
+        let (pport, s1) = assign_pool_port(POWNER, Site::plain(root.clone()), Vec::new).unwrap();
+        let lport = listen(ServeMode::Pool(pport)).await;
+        let mut s = TcpStream::connect(("127.0.0.1", lport)).await.unwrap();
+        let name = pool_cookie_name(pool_cookie_host(), pport);
+        let a = one(&mut s, &format!("GET /a.txt?secret={s1} HTTP/1.1\r\n\r\n")).await;
+        let b = one(&mut s, &format!("GET /a.txt HTTP/1.1\r\nCookie: {name}={s1}\r\n\r\n")).await;
+        let (_, s2) = assign_pool_port(POWNER, Site::plain(root.clone()), Vec::new).unwrap();
+        let c = one(&mut s, &format!("GET /a.txt HTTP/1.1\r\nCookie: {name}={s1}\r\n\r\n")).await;
+        let d = one(&mut s, &format!("GET /a.txt HTTP/1.1\r\nCookie: {name}={s2}\r\n\r\n")).await;
+        assert_eq!((a, b, c, d), (200, 200, 403, 200));
+        // And a request with neither secret nor cookie, after ones that carried them.
+        assert_eq!(one(&mut s, "GET /a.txt HTTP/1.1\r\n\r\n").await, 403);
+        remove_root(POWNER);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
