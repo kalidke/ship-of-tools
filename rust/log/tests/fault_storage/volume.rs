@@ -199,14 +199,6 @@ impl NativeVolume {
         self.device = Some(detach::attached_device(&attached).unwrap_or_else(|| {
             panic!("L3 HARNESS FAILURE: no /dev/diskN on the first line of hdiutil attach:\n{attached}")
         }));
-        // Spotlight would index the volume the test fills and then detaches; failing to turn it off is not fatal.
-        let mut index = Command::new("mdutil");
-        index.args(["-i", "off"]).arg(&self.mount);
-        let index = bounded(index, 60, &[]);
-        println!(
-            "L3 fixture macos mdutil-index-off {}",
-            index.diagnostic("mdutil")
-        );
         use std::os::unix::fs::MetadataExt;
         assert_ne!(
             std::fs::metadata(&self.mount).unwrap().dev(),
