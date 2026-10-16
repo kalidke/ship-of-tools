@@ -70,20 +70,22 @@ while read -r stop body want_rc want_left; do
         . "$1/lib-wait.sh" || exit 2
         stop="$2" body="$3" want_rc="$4" want_left="$5" ready="$6/ready-$2-$3"
         rm -f -- "$ready"
-        set -m
-        if [ "$body" = ignore ]; then
+        [ "$body" = noleader ] || set -m
+        if [ "$body" = noleader ]; then
+            ( sleep 2 | { : > "$ready"; while read -r _; do :; done; } ) &
+        elif [ "$body" = ignore ]; then
             ( trap "" TERM; sleep 30 | { : > "$ready"; while read -r _; do :; done; } ) &
         else
             ( sleep 30 | { : > "$ready"; while read -r _; do :; done; } ) &
         fi
         g=$!
         set +m
-        await test -e "$ready" || { echo "FAIL end_group $stop $body: the pipeline never started"; kill -KILL -- "-$g"; exit 1; }
-        [ "$body" = term ] || sleep() { :; }
+        await test -e "$ready" || { echo "FAIL end_group $stop $body: the pipeline never started"; kill -KILL -- "-$g" "$g"; exit 1; }
+        [ "$body" != ignore ] || sleep() { :; }
         if [ "$stop" = leader ]; then kill "$g"; wait "$g" 2>/dev/null; rc=-; else end_group "$g"; rc=$?; fi
         unset -f sleep
         left=gone; group_gone "$g" || left=left
-        kill -KILL -- "-$g" 2>/dev/null
+        kill -KILL -- "-$g" 2>/dev/null; kill -KILL "$g" 2>/dev/null
         got="$rc $left"
         [ "$got" = "$want_rc $want_left" ] || { echo "FAIL end_group $stop $body: $got expected $want_rc $want_left"; exit 1; }
         echo "PASS end_group $stop $body: $got"
@@ -91,6 +93,7 @@ while read -r stop body want_rc want_left; do
 done <<'ROWS'
 end_group term 0 gone
 end_group ignore 1 gone
+end_group noleader 2 gone
 leader term - left
 ROWS
 exit "$rc"
