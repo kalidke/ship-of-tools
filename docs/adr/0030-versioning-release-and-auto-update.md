@@ -729,3 +729,16 @@ layout check; the dev-pair-first binary rule is unrelated (picks which
 on a pinned checkout now triggers on an applied update or a missing comm
 install, not "a pull succeeded" — closing the auto-apply `update_comm` item
 above.
+
+## Amendment 2026-10-16 — the line carries the next version with -dev
+
+Between tags the line is stamped the next version with `-dev` (lab decision 0033's form, extended to candidates): after
+`X.Y.Z`, `X.Y.(Z+1)-dev`; after a candidate whose pre-release ends in a number n, the same with n+1 and `-dev`
+(`0.6.6-rc9.13` → `0.6.6-rc9.14-dev`); after any other pre-release, `.1-dev` appended. A release is the commit that
+drops `-dev`. §1's `X.Y.Z-dev+<sha>` is replaced: a build that is not the CI release artifact is the stamp plus build
+metadata (`+src`, `+<sha>`, `+<sha>-dirty`), so a version is the release artifact if and only if it has no `+`, and a
+build of the line reads `0.6.6-rc9.14-dev+<sha>`. `sot_updater::semver` orders an identifier `<stem>-dev` as its stem
+and below it (`rc9.13 < rc9.14-dev < rc9.14`); Julia's `VersionNumber`, cargo's semver and `sort -V` order it above
+`rc9.14`, and nothing in the product asks them to order its versions. §4's hard guard is unchanged: a dev build never
+self-updates; it moves when someone installs the next build, on Linux with `scripts/pack-build.sh` and
+`scripts/install.sh --archive <folder>`.
