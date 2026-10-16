@@ -1266,13 +1266,14 @@ fi
 # An installer update swaps binaries + flips repo/current, but a running sotd
 # keeps executing the old binary until restarted. Restart it here so the
 # update takes effect now, not at the next reboot. (Launcher-started daemons
-# — macOS / --no-service — are restarted by the next sot-launch; say so.)
+# — macOS / --no-service — are replaced by the next sot-launch, whose ensure
+# asks the running daemon its version: sot_daemon_current; say so.)
 if [ "$OS" = Linux ] && [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 0 ] \
    && systemctl --user is-active sotd.service >/dev/null 2>&1; then
     say "restarting sotd to pick up the new version"
     systemctl --user try-restart sotd.service || true
 elif [ "$WANT_DAEMON" = 1 ]; then
-    say "note: a running sotd keeps the old version until restarted (next sot-launch restarts it if its socket is gone; or stop it manually)"
+    say "note: a running sotd keeps the old version until the next sot-launch, which replaces a daemon of another version"
 fi
 
 # ---- 9. install manifest -------------------------------------------------------

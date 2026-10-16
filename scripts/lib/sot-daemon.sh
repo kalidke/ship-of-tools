@@ -184,9 +184,56 @@ sot_prune_logs() {  # <dir>
     return 0
 }
 
-# Make the backend's socket answer: return 0 once it does, 1 (with the reason
-# on stderr) if it cannot. Waits SOT_LAUNCH_WAIT_S for a successor while a
-# previous instance is still shutting down. Never removes the socket: the
+# The pid of this account's daemon on SOCKET, else (LABEL given) of the first one
+# started with exactly LABEL; nothing when there is none. Among this account's
+# processes named `sotd` (the kernel's `comm`, so a program that only mentions sotd
+# in its arguments is not one; macOS's ps prints the program's path, so its last
+# part is compared), the one started with `--socket` and exactly this socket. Both
+# are literal comparisons of whole arguments: the values reach awk through its
+# environment, never as a pattern or an escape, and a socket or label that only
+# begins with this one is another daemon's (ADR 0049, User isolation).
+sot_daemon_pid() {  # <socket> [label]
+    ps -u "$(id -u)" -o pid=,comm=,args= | FIND_SOCKET="$1" FIND_LABEL="${2:-}" awk '
+        BEGIN { sock = " --socket " ENVIRON["FIND_SOCKET"] " "; label = " --label " ENVIRON["FIND_LABEL"] " " }
+        { n = $2; sub(/.*\//, "", n) } n != "sotd" { next }
+        { args = $0; sub(/^ *[0-9]+ +[^ ]+ +/, "", args); args = " " args " " }
+        index(args, sock) { print $1; found = 1; exit }
+        ENVIRON["FIND_LABEL"] != "" && index(args, label) && first == "" { first = $1 }
+        END { if (!found && first != "") print first }
+    '
+}
+
+# Whether the daemon answering on SOCKET may stay: true unless `sotd same-version`,
+# asked of the binary this install runs (an owned unit's own, else SOTD-BIN), says it
+# runs another version, which an update leaves when it replaces the binary and not
+# the process. That daemon is then ended so the ensure starts this one: an owned
+# unit is restarted through systemd onto the new binary; a nohup daemon, found by
+# its socket (sot_daemon_pid), is sent TERM and waited for, at most 10 s. True when
+# it cannot be ended, with a warning: the window still starts and names the skew.
+sot_daemon_current() {  # <prefix> <sotd-bin> <socket>
+    local run="$2" theirs pid t0
+    ! sot_service_owned "$1" || run="$1/bin/sotd"
+    theirs="$("$run" same-version --endpoint "unix:$3" 2>/dev/null)"
+    [ $? -eq 3 ] || return 0
+    echo "the backend on $3 runs $theirs, not the version of $run: replacing it" >&2
+    if sot_service_owned "$1"; then
+        systemctl --user restart sotd.service >/dev/null 2>&1 && return 1
+    else
+        pid="$(sot_daemon_pid "$3")"
+        if [ -n "$pid" ] && kill "$pid" 2>/dev/null; then
+            t0="$(date +%s)"
+            while sot_socket_open "$2" "$3" && [ "$(date +%s)" -lt $((t0 + 10)) ]; do sleep 0.25; done
+            sot_socket_open "$2" "$3" || return 1
+        fi
+    fi
+    echo "WARNING: could not end the backend on $3; the window will show it out of date" >&2
+    return 0
+}
+
+# Make the backend's socket answer, with a daemon of this install's version
+# (sot_daemon_current): return 0 once it does, 1 (with the reason on stderr) if
+# it cannot. Waits SOT_LAUNCH_WAIT_S for a successor while a previous instance
+# is still shutting down. Never removes the socket: the
 # daemon unlinks a stale one itself, and an ensure-side rm can delete a
 # successor's fresh bind. Never kills a daemon it started: the daemon's own
 # lock wait is shorter than this one. A backend it starts itself logs under
@@ -198,7 +245,9 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     # A logs folder that exists is owner-only whichever way the daemon starts: an install that ran nohup before and is
     # systemd-owned now still holds its old logs (unmasked secrets) there.
     [ ! -d "$logdir" ] || chmod 700 "$logdir" 2>/dev/null || echo "WARNING: cannot secure $logdir" >&2
-    sot_socket_open "$sotd_bin" "$socket" && return 0
+    if sot_socket_open "$sotd_bin" "$socket"; then
+        sot_daemon_current "$prefix" "$sotd_bin" "$socket" && return 0
+    fi
     if sot_service_owned "$prefix"; then
         mode=systemd
     else
