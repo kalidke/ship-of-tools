@@ -6,6 +6,7 @@
 # creator that has exited. Exit status: CMD's; 129 when the ssh session ended first; 2 on a usage error. When CMD
 # exits with processes of the job still running, one stderr line counts them before the job ends them.
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 if ($args.Count -lt 1) { [Console]::Error.WriteLine("usage: in-job.ps1 CMD [ARG...]"); exit 2 }
 Add-Type -TypeDefinition @'
 using System;
@@ -65,14 +66,19 @@ function Get-SotSession {
     }
     return $null
 }
-# One Windows command-line word per argument, as CommandLineToArgvW and the MSYS runtime read it back.
+# One Windows command-line word per argument, every word quoted: CommandLineToArgvW and the MSYS runtime read it back
+# alike, and the MSYS runtime globs no quoted word.
 function ConvertTo-SotArg([string]$Word) {
-    if ($Word -ne '' -and $Word -notmatch '[\s"]') { return $Word }
     return '"' + (($Word -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"'
 }
 $job = [SotTestJob]::EnterOwn()
 $session = Get-SotSession
-$psi = New-Object System.Diagnostics.ProcessStartInfo($args[0], ((@($args | Select-Object -Skip 1) | ForEach-Object { ConvertTo-SotArg "$_" }) -join ' '))
+if (-not $session -and $env:SSH_CONNECTION) { [Console]::Error.WriteLine("in-job.ps1: SSH_CONNECTION is set and no sshd ancestor was found; the ssh session's end is not watched") }
+# A bare command is looked up on PATH, as the calling shell would: CreateProcess alone looks in System32 first, where
+# `bash` is WSL's.
+$exe = $args[0]
+if ($exe -notmatch '[\\/:]') { $exe = (Get-Command $exe -CommandType Application -ErrorAction Stop)[0].Source }
+$psi = New-Object System.Diagnostics.ProcessStartInfo($exe, ((@($args | Select-Object -Skip 1) | ForEach-Object { ConvertTo-SotArg "$_" }) -join ' '))
 $psi.UseShellExecute = $false
 $cmd = [System.Diagnostics.Process]::Start($psi)
 while (-not $cmd.WaitForExit(500)) {

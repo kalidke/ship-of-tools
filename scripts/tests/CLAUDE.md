@@ -69,7 +69,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `in-job.ps1`: `in-job.ps1 CMD [ARG...]` runs CMD in a Windows job object, the test job (Windows): every process CMD
   starts, at any depth, ends when the script does: when CMD exits (a stderr line counts the processes still running
   then), when the script is ended from outside, or when the ssh session it runs under ends (its nearest sshd ancestor
-  exits; exit 129). Exit status CMD's, 2 on a usage error. Run by hand and by the Windows box's runner.
+  exits; exit 129). A CMD with no path is looked up on PATH, as the calling shell would (CreateProcess alone finds System32's WSL `bash` first). Exit status CMD's, 2 on a usage error. Run by hand and by the Windows box's runner; the `rust.yml` step "Parse PowerShell scripts" parses it.
 - `rc-gate.sh`: the Linux candidate gate, run as the main process of its own test container (`in-container.sh`); a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy. It runs the daemon lifetime harness as rust.yml's Linux job does (`job_lifetime`), with `SOT_LIFETIME_KEEP_DIR` at `lifetime-keep` in its result folder, where a failed case keeps its daemon logs, answers and process lists.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
   `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test
