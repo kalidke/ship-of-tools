@@ -458,6 +458,30 @@ mod kept_connection_tests {
         // And a request with neither secret nor cookie, after ones that carried them.
         assert_eq!(one(&mut s, "GET /a.txt HTTP/1.1\r\n\r\n").await, 403);
         remove_root(POWNER);
+        // Video: the grant token is looked up on each request of a kept connection, so a wrong or missing one is
+        // refused between two valid ones.
+        let movie = root.join("clip.mp4");
+        std::fs::write(&movie, b"movie").unwrap();
+        let token = crate::pages::video::register_video(movie).unwrap();
+        let vport = {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let _ = crate::pages::video::handle_conn(stream).await;
+                    });
+                }
+            });
+            port
+        };
+        let mut s = TcpStream::connect(("127.0.0.1", vport)).await.unwrap();
+        let a = one(&mut s, &format!("GET /{token} HTTP/1.1\r\n\r\n")).await;
+        let b = one(&mut s, "GET /not-a-grant HTTP/1.1\r\n\r\n").await;
+        let c = one(&mut s, "GET / HTTP/1.1\r\n\r\n").await;
+        let d = one(&mut s, &format!("GET /{token} HTTP/1.1\r\n\r\n")).await;
+        assert_eq!((a, b, c, d), (200, 404, 404, 200));
+        remove_root(POWNER);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
