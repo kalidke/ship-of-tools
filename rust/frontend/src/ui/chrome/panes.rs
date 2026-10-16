@@ -144,13 +144,9 @@ pub(in crate::ui) struct PaneRects {
 }
 
 impl State {
-    /// The one write of `focus`: moving it off the navigation pane dismisses
-    /// the quit prompt (`quit_prompt_on_focus`), so the prompt is on screen
-    /// only while the tree has focus.
+    /// The one write of `focus`. The quit question is a centred dialog and stays
+    /// until answered, whichever pane code moves focus to.
     pub(in crate::ui) fn set_focus(&mut self, to: PaneFocus) {
-        if quit_prompt_on_focus(self.nav_prompt.as_ref(), to) == Some(QuitPromptStep::Cancel) {
-            self.cancel_nav_prompt();
-        }
         self.focus = to;
     }
 

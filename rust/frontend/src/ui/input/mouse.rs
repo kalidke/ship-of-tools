@@ -1,6 +1,7 @@
 //! Pointer events: cursor moves, clicks and the wheel, each sent to the pane it acts on.
 
 use super::*;
+use crate::ui::input::global_keys::confirm_quit_key;
 use winit::dpi::PhysicalPosition;
 use winit::keyboard::ModifiersState;
 
@@ -19,12 +20,26 @@ pub(in crate::ui) fn cursor_moved(state: &mut State, position: PhysicalPosition<
     }
 }
 
-pub(in crate::ui) fn mouse_input(state: &mut State, btn_state: ElementState, button: MouseButton) {
+pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop, btn_state: ElementState, button: MouseButton) {
     // A real press, whichever button and whatever it does below: presence
     // (design point A) precedes and is independent of the click's own
     // handling. A release is not a press: a window can be sent one for a
     // click that began elsewhere.
     state.report_presence(btn_state == ElementState::Pressed);
+    // While the quit question is open, a press answers it and goes no further (`quit_prompt_click`).
+    if btn_state == ElementState::Pressed && matches!(state.nav_prompt, Some(NavPrompt::ConfirmQuit { .. })) {
+        let (x, y) = ((state.cursor_px.0 - state.chrome_origin_x) / state.cell_w.max(1.0),
+            (state.cursor_px.1 - state.chrome_origin_y) / state.cell_h.max(1.0));
+        let left_at = (button == MouseButton::Left && x >= 0.0 && y >= 0.0).then_some((x as u16, y as u16));
+        let step = quit_prompt_click(state.close_dialog().and_then(|d| d.answers), left_at);
+        confirm_quit_key(state, event_loop, step);
+        return;
+    }
+    // A press ends a stayed relaunch's dialog, as a key does, and reaches no pane.
+    if btn_state == ElementState::Pressed && dismiss_stay_press(&mut state.relaunch_stayed) {
+        state.window.request_redraw();
+        return;
+    }
     if button == MouseButton::Left {
         match btn_state {
             ElementState::Pressed => {

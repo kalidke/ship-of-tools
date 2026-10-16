@@ -76,6 +76,7 @@ impl Context {
             HalfScroll => text || repl,
             Picker => self.pane == Pane::Nav && self.picker,
             Nav => nav,
+            Quit => !self.editing && !self.picker && !self.prompt && !matches!(self.pane, Pane::Agent | Pane::Terminal),
             FileNav => nav && file,
             Files => nav && self.mode == Mode::Files,
             FilesOrPicker => (nav && self.mode == Mode::Files) || (self.pane == Pane::Nav && self.picker),

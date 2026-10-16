@@ -107,13 +107,13 @@ fn focus_written_only_by_set_focus() {
 }
 
 #[test]
-fn roi_paste_dismisses_the_prompt_first() {
-    // An open quit prompt is dismissed (`set_focus`) before the agent
-    // pane takes the ROI paste's bytes.
+fn a_focus_move_leaves_the_quit_question_open() {
+    // The question opens from any pane and takes every key and press while it shows, so only code moves focus: a
+    // capture's crop reply moves it to the agent, and a move that cancelled the question would send the Enter meant
+    // for the dialog to the agent. `set_focus` therefore touches no prompt.
     let src = super::scan_tests::crate_source().replace("\r\n", "\n");
-    let at = src.find(&["\"ROI {w}", "×{h} of {name}"].concat()).unwrap();
-    let arm = &src[at.saturating_sub(4000)..at];
-    let focus = arm.rfind(&["self.set_focus(", "PaneFocus::Llm);"].concat()).unwrap();
-    let send = arm.rfind(&["self.send_pane_input(", "&bytes);"].concat()).unwrap();
-    assert!(focus < send, "the ROI paste reaches the agent before the focus move dismisses the prompt");
+    let at = src.find("fn set_focus(").unwrap();
+    let body = &src[at..src[at..].find("\n    }\n").map(|e| at + e).unwrap()];
+    assert!(!body.contains("prompt"), "set_focus reads or clears a prompt:\n{body}");
+    assert!(body.contains(&[".focus", " = to"].concat()));
 }

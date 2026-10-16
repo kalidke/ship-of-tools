@@ -44,7 +44,7 @@ pub(in crate::ui) fn help_key(state: &mut State, key: KeyPress<'_>, context: hel
     if state.drawer == DrawerContent::Help && state.focus == PaneFocus::Repl
         && !action.is_some_and(|a| matches!(a.spec().scope,
             crate::ui::input::keybindings::Scope::Global | crate::ui::input::keybindings::Scope::Workspace |
-            crate::ui::input::keybindings::Scope::Restore))
+            crate::ui::input::keybindings::Scope::Restore | crate::ui::input::keybindings::Scope::Quit))
     {
         tracing::debug!(?event.logical_key, ?action, "help drawer key");
         match &event.logical_key {
@@ -82,6 +82,34 @@ pub(in crate::ui) fn help_key(state: &mut State, key: KeyPress<'_>, context: hel
         return Break(());
     }
     Continue(())
+}
+
+/// Ctrl+Q: quit from any pane `Scope::Quit` allows. In the agent pane and the Terminal drawer a program keeps the
+/// chord where it reaches the pty (XON, readline's quoted-insert, vim's literal insert), so it goes on and the status
+/// says where to press it instead.
+pub(in crate::ui) fn quit_chord(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>, context: help::Context) -> ControlFlow<()> {
+    let KeyPress { event, action, ctrl, alt, shift, super_ } = key;
+    if action == Some(Action::Quit) {
+        if !event.repeat { state.request_quit(event_loop, ExitReason::QuitKey); }
+        return Break(());
+    }
+    if !event.repeat && matches!(context.pane, help::Pane::Agent | help::Pane::Terminal) {
+        let base = event.key_without_modifiers();
+        let quit = state.bindings.resolve(&event.logical_key, Some(&base), Modifiers { ctrl, alt, shift, super_ },
+            context.consumes_text(), |a| a == Action::Quit);
+        if quit.is_some() {
+            let hint = quit_hint(&state.bindings.first_label(Action::Quit));
+            state.quit_hint = Some((hint, std::time::Instant::now() + crate::ui::app::QUIT_HINT_HOLD));
+            state.window.request_redraw();
+        }
+    }
+    Continue(())
+}
+
+/// The status when the quit chord, as the platform and the user's bindings label it, did not close the window: it is
+/// not where a program keeps it on every platform (Cmd chords never reach a pty), so it says what the window did.
+pub(in crate::ui) fn quit_hint(chord: &str) -> String {
+    format!("{chord} does not close the window from this pane; press it in the file or preview pane")
 }
 
 pub(in crate::ui) fn window_chords(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {

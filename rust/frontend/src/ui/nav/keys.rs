@@ -6,26 +6,11 @@ use crate::ui::input::keypress::KeyPress;
 use crate::ui::session::keys::{picker_key, session_destroy_key, session_enter_key};
 use crate::ui::nav::files::keys::{nav_file_key, nav_prompt_key};
 
-pub(in crate::ui) fn nav_tree_key(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>, label: String, was_destroy_pending: Option<WsKey>) -> ControlFlow<()> {
+pub(in crate::ui) fn nav_tree_key(state: &mut State, key: KeyPress<'_>, label: String, was_destroy_pending: Option<WsKey>) -> ControlFlow<()> {
     let KeyPress { event, action, .. } = key;
     picker_key(state, key)?;
     nav_prompt_key(state, key)?;
-    // NavTree focus: Ctrl+Q is the *only* way to exit
-    // the interactive window. Plain q and Esc no longer
-    // quit — Esc is used constantly in the LLM pane
-    // (vim, readline interrupt, claude prompt cancel)
-    // and the user routinely double-taps it; making
-    // it lethal turned every reflex into a quit risk.
-    // Ctrl+Q is scoped to NavTree only so it doesn't
-    // collide with terminal flow-control (XOFF) in
-    // the BL pty. Capture mode sets `should_exit` on
-    // its own and never sees user input.
-    if !event.repeat
-        && action == Some(Action::Quit)
-    {
-        state.request_quit(event_loop, ExitReason::QuitKey);
-        return Break(());
-    }
+    // Ctrl+Q quits from every pane but the agent and the Terminal drawer (`quit_chord`), so it is not handled here.
     // Ctrl+C: copy the cursored row's file path to the
     // OS clipboard. Only fires for `files:`-prefixed
     // node ids (Files mode + Modules-mode rows that

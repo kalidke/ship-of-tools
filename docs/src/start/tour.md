@@ -158,7 +158,7 @@ A few global keys manage the window itself:
 | Restore layout | `Esc` | one layer per press: un-maximize first, then exit wide-preview (only while maximized or in wide-preview) |
 | Font scale | `Ctrl+=` / `Ctrl+-` | zoom the UI font up / down (`Ctrl+0` resets) |
 | Reconnect | `F5` | reconnect the transport after a drop |
-| Quit | `Ctrl+Q` | close the window, asking whether to keep the daemon and sessions running (nav focus only) |
+| Quit | `Ctrl+Q` | close the window, asking whether to keep the daemon and sessions running (every pane but the agent and the Terminal drawer) |
 
 Plain arrows move within a pane, `Ctrl+Arrow` moves *between* panes, and
 `Shift+Arrow` switches sessions. The same chords are scoped so they do not

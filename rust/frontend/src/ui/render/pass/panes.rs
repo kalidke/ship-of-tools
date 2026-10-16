@@ -228,9 +228,11 @@ impl State {
         &mut self,
         mut rpass: &mut wgpu::RenderPass<'_>,
         help_overlay_rect: Option<ScreenRect>,
+        dialog_rect: Option<ScreenRect>,
         overlay_lines: Vec<crate::ui::render::text::Line>,
     ) -> Result<()> {
-        // Nav-spill overlay — the ONLY draws above the main text pass.
+        // Nav-spill overlay, close dialog and help peek — the ONLY draws
+        // above the main text pass.
         // Backing strips first (near-opaque surface navy, one cell row
         // tall, from the nav left edge across the border cell to the
         // spilled text's end + 1 cell pad), then the overlay glyphs on
@@ -238,19 +240,21 @@ impl State {
         // is the z-order: these cover preview images AND main-pass
         // glyphs, which is exactly what "floating over the preview"
         // means. Full-surface scissor — the segments were reach-capped
-        // at collection time.
-        if !self.nav_spill_segments.is_empty() {
+        // at collection time. The close dialog's panel takes the same
+        // backing in the same batch: one quad, one `render_many`.
+        let strip_rects: Vec<ScreenRect> = self
+            .nav_spill_segments
+            .iter()
+            .map(|seg| ScreenRect {
+                x: self.chrome_origin_x + seg.x as f32 * self.cell_w,
+                y: self.chrome_origin_y + seg.row as f32 * self.cell_h,
+                w: (seg.width_cells + 1) as f32 * self.cell_w,
+                h: self.cell_h,
+            })
+            .chain(dialog_rect)
+            .collect();
+        if !strip_rects.is_empty() {
             rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
-            let strip_rects: Vec<ScreenRect> = self
-                .nav_spill_segments
-                .iter()
-                .map(|seg| ScreenRect {
-                    x: self.chrome_origin_x + seg.x as f32 * self.cell_w,
-                    y: self.chrome_origin_y + seg.row as f32 * self.cell_h,
-                    w: (seg.width_cells + 1) as f32 * self.cell_w,
-                    h: self.cell_h,
-                })
-                .collect();
             self.overlay_back_quad.render_many(
                 &self.device,
                 &self.queue,

@@ -900,6 +900,8 @@ jobs:
           bash test-spawn-remote-no-local-row.sh
           bash test-spawn-capsule-workspace.sh
           bash test-despawn-resolve.sh
+          # comm-probe.sh finds a row that never joined, `up` waits for each join, and its typed line runs in cmd.exe.
+          bash test-comm-probe.sh
           bash test-sot-fe-version.sh
           # reauth moves only the row it runs in; a second argument or a missing row id sends nothing.
           bash test-sot-fe-reauth.sh

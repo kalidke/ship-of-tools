@@ -106,6 +106,8 @@ impl State {
             evt_rx,
             status: "offline · no transport".to_string(),
             nav_prompt: None,
+            relaunch_stayed: false,
+            quit_hint: None,
             pending_created_node_id: None,
             pending_deleted_node_id: None,
             notify_sticky_until: None,

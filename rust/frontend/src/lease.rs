@@ -39,6 +39,8 @@ const LEAVE_UNCONFIRMED_CLOSE: &str =
     "closing: this computer's backend did not confirm the sessions ended";
 const LEAVE_UNCONFIRMED_KEEP: &str =
     "keep was not confirmed: this computer's backend may have ended the sessions";
+const LEAVE_WAIT_CLOSE: &str = "closing: waiting for this computer's backend; it ends the sessions only when no other window is open on this computer";
+const LEAVE_WAIT_KEEP: &str = "closing: waiting for this computer's backend to keep the sessions running; killing the window before it answers ends them when no other window is open";
 
 /// What the daemon sent back to the hello and the lease request: the lease's own reply, or the hello's refusal.
 enum Replies {
@@ -640,13 +642,15 @@ impl Leaving {
     }
 
     /// The status line while leaving: what the outcomes left to show (one
-    /// line or two), once they are in, otherwise `closing…` (a handover has
-    /// none).
+    /// line or two), once they are in, otherwise what the leave waits for (a
+    /// handover has none). Every lease is this computer's (ADR 0050), so the
+    /// wait names this computer's backend.
     pub fn line(&self) -> Option<String> {
         match (&self.shown, self.intent) {
             (Some((line, _)), _) => Some(line.clone()),
             (None, LeaveIntent::Handover) => None,
-            (None, _) => Some("closing…".to_string()),
+            (None, LeaveIntent::Close) => Some(LEAVE_WAIT_CLOSE.to_string()),
+            (None, LeaveIntent::Keep) => Some(LEAVE_WAIT_KEEP.to_string()),
         }
     }
 }

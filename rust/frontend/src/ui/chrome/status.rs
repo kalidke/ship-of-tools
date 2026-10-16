@@ -58,7 +58,7 @@ fn strip_csi(text: &str) -> std::borrow::Cow<'_, str> {
 /// so wide glyphs never straddle a break; a glyph wider than `rest_w` still
 /// takes a line to itself, so the loop always advances. `rest_w == 0` (no
 /// pane) returns the text whole.
-fn wrap_status(text: &str, first_w: usize, rest_w: usize) -> Vec<String> {
+pub(in crate::ui) fn wrap_status(text: &str, first_w: usize, rest_w: usize) -> Vec<String> {
     use unicode_width::UnicodeWidthChar;
     if rest_w == 0 {
         return vec![text.to_string()];
@@ -170,7 +170,7 @@ fn status_rows(wrapped: Vec<Vec<String>>, max_rows: usize) -> Vec<String> {
 
 /// The nav pane's pinned rows, drawn under the scrolled list so no scroll
 /// hides them: the lease notice, then `line` (the not-ended count or
-/// `closing…`), then the open prompt, each row of each (`cell_lines`)
+/// what a leave waits for), then the open prompt, each row of each (`cell_lines`)
 /// wrapped at `width` cells. A pane too short for them all gives whole lines
 /// in priority order (the prompt, then `line`, then the notice) and drops the
 /// rest whole; a prompt that does not fit keeps only its last row. A prompt

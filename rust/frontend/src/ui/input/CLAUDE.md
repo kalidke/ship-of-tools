@@ -10,7 +10,8 @@ and the clipboard paste helpers live beside it. Part of the window; charter: rus
 - `help.rs`: the contextual help model (`Context`, reading the nav `Mode`) and its rows, with its tests inline.
 - `help_drawer.rs`: `State`'s help drawer: `help_context`, `open_help_drawer`, `close_help_drawer`, `help_peek_expired`.
 - `paste.rs`: `read_clipboard_text`, `bracketed_paste_bytes` and the two forwarders to the agent pane and the Terminal drawer.
-- `mouse.rs`: Pointer events: cursor moves, clicks and the wheel, each sent to the pane it acts on.
+- `mouse.rs`: Pointer events: cursor moves, clicks and the wheel, each sent to the pane it acts on; while the quit
+  question is open, a press goes to it instead.
 - `keypress.rs`: raw key-event admission and its production input continuation; synthetic events and releases are rejected, then an open quit prompt precedes modifier suppression, configurable actions and later input layers.
 - `global_keys.rs`: The layers a key meets before the focused pane: the quit prompt, help, and the keys every pane shares.
 
@@ -24,6 +25,9 @@ the help view shows in each pane.
 - Help is `Primary+?` (`help.toggle`) and `F1` (`drawer.help`); there is no bare `?` chord.
 - A `keybindings.toml` entry replaces that action's default chords (`KeyBindings::merge_text`).
 - A bare-character override never fires where the pane types text (`KeyBindings::resolve`'s `literal_text`).
+- Ctrl+Q is `Scope::Quit`: every pane but the agent pane and the Terminal drawer, whose programs keep it, and not under a picker, prompt, editor or confirmation; `quit_chord` (after `window_chords`) requests the quit, or, in those two panes, lets the chord go to the pty and shows `quit_hint` as a timed hint in the close dialog's panel (`QUIT_HINT_HOLD`; it takes no keys), naming the bound chord (Primary is Cmd on macOS, which no pty gets). A stayed relaunch's dialog (`State::relaunch_stayed`) ends on the next key (`dismiss_stay`), which it eats unless the focused pane takes typed text (`consumes_text`): there it also reaches the pane.
 - `keyboard_input` admits the quit prompt first; `route_key` then orders help, the shared keys and the focused pane.
   A layer that takes a key returns `Break`, which skips every later layer and the keypress tail.
-- The quit prompt reads logical Key and repeat before modifier-only suppression or configurable actions; prompt logs contain only finite QuitPromptStep fields, never a typed key. A consumed prompt event never reaches later input layers.
+- The quit prompt reads logical Key, repeat and whether the chord is the bound quit (`quit_again`, resolved in `keyboard_input`) before modifier-only suppression or configurable actions; prompt logs contain only finite QuitPromptStep fields, never a typed key. A consumed prompt event never reaches later input layers.
+- While the quit prompt is open, `mouse_input` gives every press to it (`quit_prompt_click`, app/dialog.rs) before any
+  pane sees it: a left press on an answer gives that answer, any other press cancels.

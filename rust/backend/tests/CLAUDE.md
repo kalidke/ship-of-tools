@@ -15,7 +15,9 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
   `instance`), so a second connect with it is that window's redial, which keeps its presence and its row
 - `admission.rs`: server; every connection starts with an accepted hello (every op of `sot_protocol::op` as a first frame is refused), and two OS accounts on one host are refused (ADR 0049 `## User isolation`)
 - `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
-- `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with
+- `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with; the
+  script comm-probe.sh's start line starts under cmd.exe walks through cmd.exe, and one given alone to `bash -c` (exec'd
+  twice) walks nowhere, the limit comm/PROTOCOL.md states
 - `contained_job.rs`: lifecycle; a test job killed from outside (a child that kills itself after starting a ready row, run as the main process of a test container) leaves no row: the row lived in the job's own control group, its fence and writer lock are free and the job's control group is empty
 - `child_folders.rs`: sidecars; a REPL child's temporary folder outlives no daemon (Linux, a shell stand-in for Julia,
   each daemon's `TMPDIR` a folder of the test's own): a stop and a close remove it, and after a SIGKILL of the guard,

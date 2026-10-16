@@ -539,3 +539,44 @@ fn strip_quotes_table() {
         assert_eq!(listed, want_list, "parse_value([{input:?}])");
     }
 }
+
+/// Ctrl+Q closes the window from every pane but the two whose programs keep it (XON, readline's quoted-insert, vim's
+/// literal insert): the agent pane and the Terminal drawer. A picker, a prompt, an editor or a confirmation has the
+/// keys first, as before.
+#[test]
+fn ctrl_q_quits_from_every_pane_but_the_programs() {
+    use crate::ui::input::help::{Confirmation, Context, Pane};
+    let b = KeyBindings::defaults();
+    let q = Key::Character("q".into());
+    let resolves = |c: &Context| {
+        b.resolve(&q, None, primary(), c.consumes_text(), |a| c.allows(a)) == Some(Action::Quit)
+    };
+    for (pane, want) in [(Pane::Nav, true), (Pane::Preview, true), (Pane::Repl, true), (Pane::Monitor, true),
+        (Pane::Help, true), (Pane::Agent, false), (Pane::Terminal, false)] {
+        let c = Context { pane, ..Context::default() };
+        assert_eq!(resolves(&c), want, "Ctrl+Q in the {pane:?} pane");
+    }
+    for (what, c) in [
+        ("a picker", Context { pane: Pane::Nav, picker: true, ..Context::default() }),
+        ("a prompt", Context { pane: Pane::Nav, prompt: true, ..Context::default() }),
+        ("the editor", Context { pane: Pane::Preview, editing: true, ..Context::default() }),
+        ("a confirmation", Context { pane: Pane::Preview, confirmation: Confirmation::Delete, ..Context::default() }),
+    ] {
+        assert!(!resolves(&c), "Ctrl+Q with {what} open");
+    }
+}
+
+/// The hint names the chord the platform and the user's bindings give (Primary is Cmd on macOS, which no pty gets),
+/// and says what the window did, which is true whether or not a program received the key.
+#[test]
+fn the_quit_hint_names_the_bound_chord() {
+    use crate::ui::input::global_keys::quit_hint;
+    let mut b = KeyBindings::defaults();
+    let default = b.first_label(Action::Quit);
+    assert_eq!(default, if cfg!(target_os = "macos") { "Cmd+Q" } else { "Ctrl+Q" });
+    assert!(quit_hint(&default).starts_with(&default));
+    b.merge_text("quit = \"Alt+F4\"\n");
+    let rebound = b.first_label(Action::Quit);
+    assert!(quit_hint(&rebound).starts_with(&rebound) && !quit_hint(&rebound).contains("Ctrl+Q"));
+    assert!(!quit_hint(&rebound).contains("program"), "no claim about what a program received");
+}

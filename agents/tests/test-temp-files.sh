@@ -62,10 +62,13 @@ for p in fail kill; do
         --agent none --label "repo2-$TF_MARK" "${EP[@]}"
 done
 
-# comm-probe.sh up: the row root, then the typed line (sot_pty_input).
+# comm-probe.sh up: the row root, then the typed line (sot_pty_input), then a join the stand-in never shows (exit 1).
 tf_table '{"workspace.list":{"workspaces":[]},"workspace.create":{"workspace_id":"ws-9"},
            "pty.input":{"ok":true,"bytes":1,"runtime":"capsule","enter":"sent"}}'
-for p in ok fail kill; do tf_row "A11 comm-probe up (the row root)" "$p" env SOT_SOCKET="$TF_SOCK" "$SCRIPTS_DIR/comm-probe.sh" up; done
+for p in ok fail kill; do
+    TF_WANT_RC=1 tf_row "A11 comm-probe up (the row root)" "$p" env SOT_SOCKET="$TF_SOCK" SOT_PROBE_READY_WAIT=0 \
+        "$SCRIPTS_DIR/comm-probe.sh" up
+done
 
 # comm-bootstrap.sh: the nudge it types (sot_pty_input) carries the suggested name.
 env SOT_COMM_SELF_FILE="$WORK/self-boot" "$SCRIPTS_DIR/comm-join.sh" --name t-boot > /dev/null 2>&1 \
