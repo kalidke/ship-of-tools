@@ -122,9 +122,11 @@ pub(in crate::ui) fn quit_prompt_click(answers: Option<[Rect; 2]>, left_at: Opti
     step
 }
 
-/// A key while a stayed relaunch's dialog shows ends it; the key does nothing else. True when it was showing.
-pub(in crate::ui) fn dismiss_stay(relaunch_stayed: &mut bool) -> bool {
-    std::mem::take(relaunch_stayed)
+/// A key while a stayed relaunch's dialog shows ends it. `None` when it was not showing; else whether the key is
+/// eaten: it is, except where the focused pane consumes typed text, since a relaunch ends the dialog on its own and the
+/// user may be typing into the agent, and that character is theirs.
+pub(in crate::ui) fn dismiss_stay(relaunch_stayed: &mut bool, consumes_text: bool) -> Option<bool> {
+    std::mem::take(relaunch_stayed).then_some(!consumes_text)
 }
 
 impl State {
@@ -281,7 +283,12 @@ mod tests {
             }
         }
         let mut shown = true;
-        assert!(dismiss_stay(&mut shown) && !shown, "a key ends it");
-        assert!(!dismiss_stay(&mut shown), "and only once");
+        assert_eq!(dismiss_stay(&mut shown, false), Some(true), "a key ends it and is eaten");
+        assert!(!shown);
+        assert_eq!(dismiss_stay(&mut shown, false), None, "and only once");
+        // The agent, the terminal and the other text panes keep the key the user was typing.
+        shown = true;
+        assert_eq!(dismiss_stay(&mut shown, true), Some(false));
+        assert!(!shown, "it still ends the dialog");
     }
 }

@@ -84,9 +84,9 @@ pub(in crate::ui) fn help_key(state: &mut State, key: KeyPress<'_>, context: hel
     Continue(())
 }
 
-/// Ctrl+Q: quit from any pane `Scope::Quit` allows. In the agent pane and the Terminal drawer the program keeps the
-/// chord (XON, readline's quoted-insert, vim's literal insert), so it goes on to the pty and the status says where
-/// to press it instead.
+/// Ctrl+Q: quit from any pane `Scope::Quit` allows. In the agent pane and the Terminal drawer a program keeps the
+/// chord where it reaches the pty (XON, readline's quoted-insert, vim's literal insert), so it goes on and the status
+/// says where to press it instead.
 pub(in crate::ui) fn quit_chord(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>, context: help::Context) -> ControlFlow<()> {
     let KeyPress { event, action, ctrl, alt, shift, super_ } = key;
     if action == Some(Action::Quit) {
@@ -98,16 +98,18 @@ pub(in crate::ui) fn quit_chord(state: &mut State, event_loop: &ActiveEventLoop,
         let quit = state.bindings.resolve(&event.logical_key, Some(&base), Modifiers { ctrl, alt, shift, super_ },
             context.consumes_text(), |a| a == Action::Quit);
         if quit.is_some() {
-            state.status = QUIT_HINT.to_string();
+            state.status = quit_hint(&state.bindings.first_label(Action::Quit));
             state.window.request_redraw();
         }
     }
     Continue(())
 }
 
-/// The status when Ctrl+Q reached a program instead of the window's close.
-pub(in crate::ui) const QUIT_HINT: &str =
-    "Ctrl+Q went to the program here; press it in the file or preview pane to close the window";
+/// The status when the quit chord, as the platform and the user's bindings label it, did not close the window: it is
+/// not where a program keeps it on every platform (Cmd chords never reach a pty), so it says what the window did.
+pub(in crate::ui) fn quit_hint(chord: &str) -> String {
+    format!("{chord} does not close the window from this pane; press it in the file or preview pane")
+}
 
 pub(in crate::ui) fn window_chords(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
     let KeyPress { event, action, .. } = key;

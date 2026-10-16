@@ -25,7 +25,7 @@ the help view shows in each pane.
 - Help is `Primary+?` (`help.toggle`) and `F1` (`drawer.help`); there is no bare `?` chord.
 - A `keybindings.toml` entry replaces that action's default chords (`KeyBindings::merge_text`).
 - A bare-character override never fires where the pane types text (`KeyBindings::resolve`'s `literal_text`).
-- Ctrl+Q is `Scope::Quit`: every pane but the agent pane and the Terminal drawer, whose programs keep it, and not under a picker, prompt, editor or confirmation; `quit_chord` (after `window_chords`) requests the quit, or, in those two panes, lets the chord go to the pty and sets `QUIT_HINT` in the status. A stayed relaunch's dialog (`State::relaunch_stayed`) takes the next key first (`dismiss_stay`).
+- Ctrl+Q is `Scope::Quit`: every pane but the agent pane and the Terminal drawer, whose programs keep it, and not under a picker, prompt, editor or confirmation; `quit_chord` (after `window_chords`) requests the quit, or, in those two panes, lets the chord go to the pty and sets `quit_hint` in the status, naming the bound chord (Primary is Cmd on macOS, which no pty gets). A stayed relaunch's dialog (`State::relaunch_stayed`) ends on the next key (`dismiss_stay`), which it eats unless the focused pane takes typed text (`consumes_text`): there it also reaches the pane.
 - `keyboard_input` admits the quit prompt first; `route_key` then orders help, the shared keys and the focused pane.
   A layer that takes a key returns `Break`, which skips every later layer and the keypress tail.
 - The quit prompt reads logical Key and repeat before modifier-only suppression or configurable actions; prompt logs contain only finite QuitPromptStep fields, never a typed key. A consumed prompt event never reaches later input layers.

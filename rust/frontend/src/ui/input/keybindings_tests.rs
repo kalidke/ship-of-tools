@@ -565,3 +565,18 @@ fn ctrl_q_quits_from_every_pane_but_the_programs() {
         assert!(!resolves(&c), "Ctrl+Q with {what} open");
     }
 }
+
+/// The hint names the chord the platform and the user's bindings give (Primary is Cmd on macOS, which no pty gets),
+/// and says what the window did, which is true whether or not a program received the key.
+#[test]
+fn the_quit_hint_names_the_bound_chord() {
+    use crate::ui::input::global_keys::quit_hint;
+    let mut b = KeyBindings::defaults();
+    let default = b.first_label(Action::Quit);
+    assert_eq!(default, if cfg!(target_os = "macos") { "Cmd+Q" } else { "Ctrl+Q" });
+    assert!(quit_hint(&default).starts_with(&default));
+    b.merge_text("quit = \"Alt+F4\"\n");
+    let rebound = b.first_label(Action::Quit);
+    assert!(quit_hint(&rebound).starts_with(&rebound) && !quit_hint(&rebound).contains("Ctrl+Q"));
+    assert!(!quit_hint(&rebound).contains("program"), "no claim about what a program received");
+}

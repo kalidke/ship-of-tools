@@ -79,10 +79,11 @@ fn prepare_keyboard_input(state: &mut State, modifiers: ModifiersState, event: &
 /// Routes one keypress through the layers in their fixed order; `Break` ends the keypress, `Continue` hands it on.
 fn route_key(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>, label: String, context: help::Context, was_destroy_pending: Option<WsKey>) -> ControlFlow<()> {
     let KeyPress { event, ctrl, alt, shift, super_, .. } = key;
-    // Any key ends a stayed relaunch's dialog and does nothing else.
-    if dismiss_stay(&mut state.relaunch_stayed) {
+    // Any key ends a stayed relaunch's dialog, and does nothing else unless the focused pane takes typed text: the
+    // dialog appears on its own, so that key is the user's.
+    if let Some(eaten) = dismiss_stay(&mut state.relaunch_stayed, context.consumes_text()) {
         state.window.request_redraw();
-        return Break(());
+        if eaten { return Break(()); }
     }
     help_key(state, key, context.clone())?;
 
