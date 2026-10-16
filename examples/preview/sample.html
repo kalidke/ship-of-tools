@@ -54,13 +54,16 @@ browser is the place to see this rendered properly.
 <h2>Why the browser, not the chrome?</h2>
 
 <p>
-Three things on this page rely on the browser:
+Four things on this page rely on the browser:
 </p>
 
 <ul>
   <li>CSS layout (the centred 720px column, table borders, code styling).</li>
   <li>MathJax: $e^{i\pi} + 1 = 0$ and the display block below.</li>
   <li>Network: the MathJax script loads from a CDN.</li>
+  <li>Files beside the page: the figure and the movie below are <code>sample.png</code> and <code>sample.mp4</code>
+  in this folder, which the daemon's page server serves with the page (a remote window fetches each one through its
+  page proxy).</li>
 </ul>
 
 <p>
@@ -74,6 +77,23 @@ $$
 \sum_{k=1}^{n} k = \frac{n(n+1)}{2}
 $$
 </p>
+
+<h2>Figure and movie</h2>
+
+<p>
+Both load by relative path from this page's folder. If either is missing, the page server or the window's page proxy
+dropped it.
+</p>
+
+<figure>
+  <img src="sample.png" alt="The preview fixtures' sample figure" style="max-width: 100%;">
+  <figcaption><code>sample.png</code></figcaption>
+</figure>
+
+<figure>
+  <video src="sample.mp4" controls muted loop playsinline style="max-width: 100%;"></video>
+  <figcaption><code>sample.mp4</code> (H.264)</figcaption>
+</figure>
 
 <h2>Code sample</h2>
 

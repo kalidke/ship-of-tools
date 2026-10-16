@@ -65,7 +65,9 @@ static pane. Consistent with the video policy, these are popped out to the OS
 browser through the backend connection, local or remote, rather than rendered
 in-pane:
 
-- **HTML** (`sample.html`) — opened in the browser.
+- **HTML** (`sample.html`) — opened in the browser, with the figure and movie
+  beside it served by the daemon's page server, so a missing one shows the page
+  path dropped it.
 - **Pluto notebooks** (`pluto_demo.jl`, `pluto_demo2.jl`) — opened as live Pluto
   sessions in the browser. As `.jl` files they still get a syntax-highlighted
   source preview in the pane.
