@@ -293,6 +293,41 @@ check "the pull carries the stall bound" "0" \
     "$(grep ' pull ' "$d/git.log" | grep -vc -e '-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60' || true)"
 
 # ---------------------------------------------------------------------------
+# --archive installs a folder pack-build.sh packed. HOME, the prefix and the folder are temp; SOT_INSTALL_TAG=x keeps
+# the prelude from reaching the network.
+mk_archive() {  # <dir> <digest-of-the-tarball 0|1> <with-COMMIT 0|1>: <dir>/arch holds sot-1.2.3-dev-$TGT.tar.gz
+    local d="$1" a="$1/arch"
+    mkdir -p "$a" "$d/home"
+    printf 'not a real tarball\n' > "$a/sot-1.2.3-dev-$TGT.tar.gz"
+    if [ "$2" = 1 ]; then
+        ( cd "$a" && sha256_of "sot-1.2.3-dev-$TGT.tar.gz" > SHA256SUMS )
+    else
+        printf '%064d  sot-1.2.3-dev-%s.tar.gz\n' 0 "$TGT" > "$a/SHA256SUMS"
+    fi
+    [ "$3" = 0 ] || printf '%s\n' 0123456789abcdef0123456789abcdef01234567 > "$a/COMMIT"
+}
+run_archive() {  # <dir>: sets AR_RC and AR_OUT
+    local d="$1"
+    AR_RC=0
+    AR_OUT="$(env -i HOME="$d/home" PATH=/usr/bin:/bin SOT_INSTALL_TAG=x \
+        bash "$(dirname "$0")/../install.sh" --be-only --no-service --prefix "$d/prefix" --archive "$d/arch" 2>&1)" || AR_RC=$?
+}
+
+# ---------------------------------------------------------------------------
+case_start "archive_install_verifies_before_writing"
+d="$WORK/ar-sum"; mk_archive "$d" 0 1; run_archive "$d"
+check "the install exits non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
+check "it says the checksum failed" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'checksum verification FAILED' || true)"
+check "the prefix was never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
+
+# ---------------------------------------------------------------------------
+case_start "archive_install_needs_its_commit"
+d="$WORK/ar-commit"; mk_archive "$d" 1 0; run_archive "$d"
+check "the install exits non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
+check "it names COMMIT" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'COMMIT' || true)"
+check "the prefix was never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-apply: all checks passed\n'

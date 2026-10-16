@@ -74,7 +74,10 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ### Release
 - `release.sh`: stamps the version, runs the workspace tests, commits, tags and pushes.
 ### Install
-- `install.sh`: the Unix installer; the one-liner fetches its own tag's copy.
+- `install.sh`: the Unix installer; the one-liner fetches its own tag's copy; `--archive <folder>` installs a packed
+  folder in place of a release download.
+- `pack-build.sh`: builds this checkout's Linux release archive, COMMIT and SHA256SUMS into a folder, as release.yml's
+  Linux job does.
 - `sot.svg`: the desktop-entry icon the sot-setup skill names.
 - `install-shortcut.ps1`: Windows shortcut and taskbar pin; calls the manifest writer.
 - `install-manifest.ps1`: writes `install.json` for a Windows install and runs the first topology sync.
