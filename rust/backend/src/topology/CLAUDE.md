@@ -1,15 +1,17 @@
 # rust/backend/src/topology: what this daemon derives from hosts.toml (topology)
 
 The daemon's half of topology: it keeps the parsed declared topology for this box, applies edits to it on the hub, and
-answers the two argv commands that read it, `sotd status` and `sotd stdio-bridge`, plus the one-shot blocking client
-the CLI commands dial the daemon with. Part of topology.
+answers the two argv commands that read it, `sotd status` and `sotd stdio-bridge`, plus `sotd same-version` and the
+one-shot blocking client the CLI commands dial the daemon with. Part of topology.
 
 ## Files
 - `cli.rs`: `sotd topology`, the verbs a box runs for itself: argv, `sync`, `set`, status's cache line and the edit parser.
 - `dial.rs`: the one-shot blocking daemon client; its `connect` reaches a `unix:` or `pipe:` endpoint through
-  `connect_own`.
-- `mod.rs`: declares the seven modules below.
+  `connect_own`, and `hello_reply` returns a daemon's answer to the `cli` hello.
+- `mod.rs`: declares the eight modules below.
 - `relay_units.rs`: `sotd topology apply`, `refresh` and `pin`, the hub's systemd --user relay units and drop-ins, the host pins, and the hub's relay-refresh thread (`spawn_refresh_at_start`).
+- `same_version.rs`: `sotd same-version`, whether the daemon on a local endpoint runs this binary's version, read from
+  its hello reply; the launch scripts' ensure asks it before keeping a daemon it finds running.
 - `set.rs`: `handle_topology_set`, the daemon side of op `topology.set`.
 - `status.rs`: `sotd status`, declared plus live state fanned out to every reachable daemon.
 - `stdio_bridge.rs`: `sotd stdio-bridge`, the byte shuttle between stdin/stdout and this box's own daemon endpoint, a hub relay socket, or a local endpoint its caller names (`--endpoint`), reached through `connect_own`.
@@ -29,7 +31,10 @@ for `sotd status`; `stdio_bridge.rs` `run` for the bridge.
 - `sotd status` bounds each probe by `PROBE_TIMEOUT`.
 - `sotd stdio-bridge` and `dial::connect` reach a local socket or pipe only after `sot_log::identity::connect_own`'s rule passes.
 - `sotd stdio-bridge` writes nothing of its own to stdout and exits 0 only on a clean EOF (`stdio_bridge::run`).
-- `sotd status` and `sotd stdio-bridge` are answered in main's early argv match, before the umask, log or state dir.
+- `sotd status`, `sotd stdio-bridge` and `sotd same-version` are answered in main's early argv match, before the umask,
+  log or state dir.
+- `sotd same-version` exits 0 for a daemon of this binary's version and 3, printing its version, for another (a refusal
+  for another protocol is another); any other exit means it cannot tell, and a caller keeps the daemon then.
 - `apply`, `relay-sockets` and `refresh` act only on the hub (`topology::relay_units::require_hub`).
 - `apply` is a dry run unless given `--yes`, and one failing unit does not stop the others.
 - `refresh_at_start` acts only when this daemon's guard is sotd.service's MainPID (`supervised_by_systemd` compares it with
