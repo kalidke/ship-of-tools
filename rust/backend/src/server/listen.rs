@@ -738,7 +738,7 @@ mod tests {
     }
 
     /// The peer child of the test above: grants its own process object to SYSTEM alone, then opens `pipe` and holds it
-    /// until the parent writes a byte.
+    /// until the parent writes a byte or five seconds pass.
     #[cfg(windows)]
     fn closed_peer(pipe: &std::ffi::OsStr) {
         use std::io::Read;
@@ -786,7 +786,14 @@ mod tests {
                 opened => break opened.expect("open the parent's pipe"),
             }
         };
-        let _ = opened.read(&mut [0u8; 1]);
+        // A refused stream is dropped with no byte written, so the read gets a deadline of its own and the parent's
+        // assertion, not the isolation bound, reports a refusal.
+        let (done, waited) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = opened.read(&mut [0u8; 1]);
+            let _ = done.send(());
+        });
+        let _ = waited.recv_timeout(std::time::Duration::from_secs(5));
     }
 
     /// ADR 0049, User isolation: real peer lookup precedes the controlled account result and dispatch.
