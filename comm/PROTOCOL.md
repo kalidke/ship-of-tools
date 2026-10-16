@@ -576,9 +576,10 @@ Monitor exists.
   reused pid, or at one that has exited. So on Windows a comm script given
   alone to `bash -c` by a native program (cmd.exe, PowerShell) inside a row is
   refused: bash execs it, its `#!/usr/bin/env bash` execs bash again, and the
-  second image's Windows parent has exited while its MSYS parent is the native
-  program. Given to bash as its file argument (`bash <script>`), or typed at a
-  Git Bash prompt, it is not refused (rust/backend/tests/ancestors.rs shows
+  second image's Windows parent has exited and its Cygwin parent is pid 1,
+  so no walk reaches the row. Given to Git for Windows' bash.exe, by its path,
+  with the script as its file argument, or typed at a Git Bash prompt, it is
+  not refused (rust/backend/tests/ancestors.rs shows
   both). Only a process that names no row may end its walk at the top,
   which is how a session outside any row passes, including one under another
   account's sshd. A private identity file for a process outside any row must not

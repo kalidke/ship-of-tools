@@ -5,9 +5,9 @@
 # same-box send has a separate sender and receiver, which is where the Windows
 # two-inbox fault lives.
 #
-#   comm-probe.sh up     create the two rows if missing, start the responder
-#                        in each (idempotent — a row that already serves ignores
-#                        the typed line) and wait until each has joined
+#   comm-probe.sh up     create the two rows if missing, restart the responder
+#                        in each (stop line, then start line) and wait until
+#                        each has joined again
 #   comm-probe.sh down    stop the responders, leaving the rows
 #   comm-probe.sh serve   the responder itself: the FOREGROUND process of a
 #                         probe row. Not a daemon, not a watcher.
@@ -26,10 +26,12 @@
 # responder can never relay mail to a real session, and `down` can never stop
 # one.
 #
-# A row declares its handle only when its responder joins (`serve`); until then
-# no box can file mail for it, and a matrix line to it fails "no linked box knows
-# that handle", the words a broken route gives. So `up` succeeds only once both
-# rows have joined, and a box whose `up` failed is not measured.
+# A row declares its handle when its responder first joins (`serve`) and keeps
+# it for good: it survives a dead responder and a daemon restart. So the handle
+# alone proves nothing on a box whose rows have served before; `up` types the
+# stop line, then the start line, and succeeds only once each row's registry
+# `joined` differs from the one read before typing, which only a join that
+# follows the start line changes. A box whose `up` failed is not measured.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -86,17 +88,31 @@ probe_row_id() {
          | sort_by(.agent_handle != $h) | .[0].workspace_id // empty' 2>/dev/null
 }
 
-# probe_wait_join WSID HANDLE — waits, bounded, until row WSID declares HANDLE,
-# which its responder does first (`serve`'s comm-join.sh). A responder that never
-# started leaves its handle unknown to every box, so `up` fails here, naming the
-# row, rather than leaving a probe that cannot answer.
+# probe_joined_at HANDLE — the `joined` stamp of HANDLE's registry row, empty
+# when it has none. A rejoin writes a new stamp (comm-join.sh), so a stamp that
+# differs from an earlier read is a join in between.
+probe_joined_at() {
+    local row
+    row="$(sot_registry_read "$1" 2>/dev/null)" || return 0
+    printf '%s' "$row" | jq -r '.joined // empty' 2>/dev/null
+    return 0
+}
+
+# probe_wait_join WSID HANDLE BEFORE — waits, bounded, until row WSID declares
+# HANDLE and HANDLE's registry row was joined after BEFORE, the stamp read before
+# the start line was typed: a join this responder made, not one left from an
+# earlier run. A responder that never started leaves the stamp as it was, so `up`
+# fails here, naming the row, rather than leaving a probe that cannot answer.
 probe_wait_join() {
-    local wsid="$1" handle="$2" wait="${SOT_PROBE_READY_WAIT:-30}" list deadline
+    local wsid="$1" handle="$2" before="$3" wait="${SOT_PROBE_READY_WAIT:-30}" list deadline now
     deadline=$(( $(date +%s) + wait ))
     while :; do
         list="$(probe_request '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)" || list=""
-        printf '%s' "$list" | jq -e --arg w "$wsid" --arg h "$handle" \
-            'any((.payload.workspaces // [])[]?; .workspace_id == $w and .agent_handle == $h)' >/dev/null 2>&1 && return 0
+        if printf '%s' "$list" | jq -e --arg w "$wsid" --arg h "$handle" \
+            'any((.payload.workspaces // [])[]?; .workspace_id == $w and .agent_handle == $h)' >/dev/null 2>&1; then
+            now="$(probe_joined_at "$handle")"
+            [ -n "$now" ] && [ "$now" != "$before" ] && return 0
+        fi
         [ "$(date +%s)" -lt "$deadline" ] || break
         sleep 1
     done
@@ -189,7 +205,7 @@ probe_start_line() {
 # --- up / down / status ------------------------------------------------------
 
 probe_up() {
-    local handle wsid line rc=0
+    local handle wsid line before rc=0
     line="$(probe_start_line)" || probe_die "cannot start a responder in a cmd.exe row: no Git for Windows launcher" \
         "(bin/bash.exe under this Git Bash's root), or its path holds % or \""
     while IFS= read -r handle; do
@@ -203,11 +219,14 @@ probe_up() {
         fi
         # No `exec`: a responder that exits leaves the row's own shell alive, so
         # a later `up` restarts it in place instead of the row's pane ending and
-        # the row having to be re-created. A responder that IS running reads this
-        # line, finds no PROBE in it and ignores it, which is what makes `up`
-        # idempotent.
+        # the row having to be re-created. The stop line goes first: a live
+        # responder returns on it and the start line then restarts it, so the
+        # join waited for below is always this start line's; a bare shell only
+        # prints "not found".
+        before="$(probe_joined_at "$handle")"
+        probe_type "$wsid" "$PROBE_STOP_LINE" || { rc=1; continue; }
         probe_type "$wsid" "$line" || { rc=1; continue; }
-        probe_wait_join "$wsid" "$handle" && echo "@$handle has joined" || rc=1
+        probe_wait_join "$wsid" "$handle" "$before" && echo "@$handle has joined" || rc=1
     done < <(probe_handles)
     return $rc
 }

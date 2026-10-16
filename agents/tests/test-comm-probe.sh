@@ -32,7 +32,7 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1 (no '$3' in: $2)" ;; esac; }
 
 # The stubs, run by the bash on PATH (bash 3.2 under under-bash.sh). A create adds an unjoined row named for the
 # handle; a typed line is recorded as `<row id> TAB <text>`.
-export ROWS="$WORK/rows.json" TYPED="$WORK/typed"
+export ROWS="$WORK/rows.json" TYPED="$WORK/typed" REGS="$WORK/regs.json"
 cat > "$WORK/stubs.sh" <<'EOF'
 probe_request() {
     local name
@@ -46,11 +46,21 @@ probe_request() {
         *) return 1 ;;
     esac
 }
+sot_registry_read() {
+    jq -e --arg h "$1" '.[$h]' "$REGS" > "$REGS.out" 2>/dev/null || return 1
+    cat "$REGS.out"
+}
 sot_pty_input() {
-    printf '%s\t%s\n' "$1" "$(printf '%s' "$2" | base64 --decode)" >> "$TYPED"
-    if [ -z "${NOJOIN:-}" ]; then
+    local line h
+    line="$(printf '%s' "$2" | base64 --decode)"
+    printf '%s\t%s\n' "$1" "$line" >> "$TYPED"
+    # Only the start line starts a responder; it declares the handle and stamps a fresh `joined`.
+    if [ -z "${NOJOIN:-}" ] && [ "$line" != PROBE-STOP ]; then
         jq --arg w "$1" 'map(if .workspace_id == $w then .agent_handle = .agent_name else . end)' "$ROWS" \
             > "$ROWS.new" && mv "$ROWS.new" "$ROWS"
+        h="$(jq -r --arg w "$1" '.[] | select(.workspace_id == $w) | .agent_name' "$ROWS")"
+        jq --arg h "$h" --arg t "join-$(wc -l < "$TYPED" | tr -d ' ')" '.[$h] = {joined: $t}' "$REGS" \
+            > "$REGS.new" && mv "$REGS.new" "$REGS"
     fi
     printf '{"payload":{"ok":true}}\n'
 }
@@ -61,8 +71,9 @@ probe() {
     OUT="$(PATH="$1" ENDPOINT="$2" bash -c '. "$1"; . "$2"; eval "$3"' _ "$SCRIPTS_DIR/comm-probe.sh" "$WORK/stubs.sh" "$3" 2>&1)"
     RC=$?
 }
-rows() { printf '%s\n' "$1" > "$ROWS"; : > "$TYPED"; }
-typed() { cut -f"$1" "$TYPED" | tr '\n' ' ' | sed 's/ $//'; }
+rows() { printf '%s\n' "$1" > "$ROWS"; printf '{}\n' > "$REGS"; : > "$TYPED"; }
+# the lines typed, less the stop lines that go before each start line
+typed() { grep -v "PROBE-STOP" "$TYPED" | cut -f"$1" | tr '\n' ' ' | sed 's/ $//'; }
 UNJOINED='{"workspace_id":"ws-1","agent_name":"probe-testhost","agent_handle":""}'
 JOINED='{"workspace_id":"ws-2","agent_name":"probe-testhost","agent_handle":"probe-testhost"}'
 
@@ -92,6 +103,17 @@ check "up: rows that never joined, restarted, exit 0" "$RC" 0
 rows '[]'; NOJOIN=1 SOT_PROBE_READY_WAIT=0 probe "$PATH" unix:x 'probe_up'
 check "up: a responder that never joins fails up" "$RC" 1
 has "up: the failure names the row and the handle" "$OUT" "row ws-probe-testhost did not join as @probe-testhost"
+
+# A row that joined in an earlier run keeps its handle and registry row. A start line that starts nothing must not read
+# as a join: `up` fails, and the stop line went before the start line.
+rows "[$JOINED]"; printf '{"probe-testhost":{"joined":"old"},"probe2-testhost":{"joined":"old"}}\n' > "$REGS"
+NOJOIN=1 SOT_PROBE_READY_WAIT=0 probe "$PATH" unix:x 'probe_up'
+check "up: a row that joined in an earlier run, whose start line starts nothing, fails up" "$RC" 1
+has "up: ... and the failure names the row" "$OUT" "did not join as @probe-testhost"
+check "up: the stop line is typed before the start line" "$(cut -f2 "$TYPED" | head -2 | tr '\n' ' ' | cut -c1-15)" "PROBE-STOP bash"
+printf '%s\n' "[$JOINED]" > "$ROWS"; printf '{"probe-testhost":{"joined":"old"},"probe2-testhost":{"joined":"old"}}\n' > "$REGS"
+probe "$PATH" unix:x 'probe_up'
+check "up: a row that joined in an earlier run and joins again exits 0" "$RC" 0
 
 # 3. A pipe: daemon's row is cmd.exe: the line names Git for Windows' launcher by its Windows path and gives it the
 # script as its file argument. The stand-in cygpath: `/` is $GITROOT, -w turns / into \, any other path as written.
