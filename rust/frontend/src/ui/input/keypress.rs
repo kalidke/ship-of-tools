@@ -23,8 +23,11 @@ pub(in crate::ui) struct KeyPress<'a> {
 
 pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventLoop, modifiers: ModifiersState, event: KeyEvent, is_synthetic: bool) {
     let keep = match state.nav_prompt { Some(NavPrompt::ConfirmQuit { keep }) => Some(keep), _ => None };
+    let quit_again = keep.is_some() && state.bindings.resolve(&event.logical_key, Some(&event.key_without_modifiers()),
+        Modifiers { ctrl: modifiers.control_key(), alt: modifiers.alt_key(), shift: modifiers.shift_key(),
+            super_: modifiers.super_key() }, false, |a| a == Action::Quit) == Some(Action::Quit);
     input_continuation(state, &event.logical_key, event.repeat, is_synthetic, event.state == ElementState::Pressed,
-        keep, |state| prepare_keyboard_input(state, modifiers, &event), |state, route| match route {
+        keep, quit_again, |state| prepare_keyboard_input(state, modifiers, &event), |state, route| match route {
             InputRoute::Prompt(step) => confirm_quit_key(state, event_loop, step),
             InputRoute::Next(action, (label, context, was_destroy_pending)) => {
                 let key = KeyPress { event: &event, action, ctrl: modifiers.control_key(), alt: modifiers.alt_key(),
@@ -36,12 +39,12 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
 
 /// The raw-event boundary used by KeyboardInput and headless routing tests.
 fn input_continuation<S, P>(
-    state: &mut S, logical: &Key, repeat: bool, synthetic: bool, pressed: bool, keep: Option<bool>,
+    state: &mut S, logical: &Key, repeat: bool, synthetic: bool, pressed: bool, keep: Option<bool>, quit_again: bool,
     resolve: impl FnOnce(&mut S) -> (Option<Action>, P), next: impl FnOnce(&mut S, InputRoute<P>),
 ) {
     if synthetic || !pressed { return; }
     if let Some(keep) = keep {
-        next(state, InputRoute::Prompt(quit_prompt_step(keep, logical, repeat)));
+        next(state, InputRoute::Prompt(quit_prompt_step(keep, logical, repeat, quit_again)));
         return;
     }
     if matches!(logical, Key::Named(NamedKey::Control | NamedKey::Shift |
@@ -145,11 +148,16 @@ mod tests {
 
     fn route(keep: Option<bool>, logical: Key, m: Modifiers, repeat: bool, synthetic: bool,
         pressed: bool, rebound: bool) -> (Option<QuitPromptStep>, usize, Vec<u8>) {
+        route_q(keep, logical, m, repeat, synthetic, pressed, rebound, false)
+    }
+
+    fn route_q(keep: Option<bool>, logical: Key, m: Modifiers, repeat: bool, synthetic: bool,
+        pressed: bool, rebound: bool, quit_again: bool) -> (Option<QuitPromptStep>, usize, Vec<u8>) {
         let mut bindings = KeyBindings::defaults();
         if rebound { bindings.merge_text("input.confirm = \"F11\""); }
         let context = help::Context { prompt: keep.is_some(), ..Default::default() };
         let mut observed = (None, 0, Vec::new());
-        input_continuation(&mut observed, &logical, repeat, synthetic, pressed, keep,
+        input_continuation(&mut observed, &logical, repeat, synthetic, pressed, keep, quit_again,
             |_| (bindings.resolve(&logical, Some(&logical), m, context.consumes_text(), |a| context.allows(a)), ()),
             |seen, route| match route {
                 InputRoute::Prompt(step) => seen.0 = Some(step),
@@ -192,13 +200,20 @@ mod tests {
         }
     }
 
+    /// A second Ctrl+Q is a Ctrl press and then the chord: neither changes the open question, so it stays open
+    /// instead of cancelling at the Ctrl and reopening at the Q.
     #[test]
-    fn quit_modifier_presses_cancel_before_the_filter() {
+    fn a_second_quit_chord_leaves_the_question_open() {
         for keep in [false, true] {
             for key in [NamedKey::Control, NamedKey::Shift, NamedKey::Alt, NamedKey::Super, NamedKey::Meta, NamedKey::AltGraph] {
                 let seen = route(Some(keep), Key::Named(key), modifiers(), false, false, true, false);
-                assert_eq!(seen, (Some(QuitPromptStep::Cancel), 0, vec![]), "modifier must cancel before suppression");
+                assert_eq!(seen, (Some(QuitPromptStep::Ignore), 0, vec![]), "a modifier alone changes nothing");
             }
+            let ctrl = Modifiers { ctrl: true, ..modifiers() };
+            let seen = route_q(Some(keep), Key::Character("q".into()), ctrl, false, false, true, false, true);
+            assert_eq!(seen, (Some(QuitPromptStep::Ignore), 0, vec![]), "the chord is consumed and changes nothing");
+            let seen = route_q(Some(keep), Key::Character("q".into()), modifiers(), false, false, true, false, false);
+            assert_eq!(seen.0, Some(QuitPromptStep::Cancel), "a bare q is any other key");
         }
     }
 

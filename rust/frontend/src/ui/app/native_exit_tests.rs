@@ -208,7 +208,7 @@ impl CloseDriver<'_> {
                 if !matches!(state.nav_prompt, Some(NavPrompt::ConfirmQuit { .. })) && self.failure.is_none() {
                     self.failure = Some(anyhow::anyhow!("Ctrl+Q opened no prompt"));
                 }
-                confirm_quit_key(state, event_loop, quit_prompt_step(false, &Key::Named(NamedKey::Enter), false));
+                confirm_quit_key(state, event_loop, quit_prompt_step(false, &Key::Named(NamedKey::Enter), false, false));
             }
         }
     }

@@ -10,12 +10,16 @@ pub(in crate::ui) enum QuitPromptStep {
     Ignore,
 }
 
-/// The prompt consumes logical keys without consulting configurable actions.
-pub(in crate::ui) fn quit_prompt_step(keep: bool, key: &Key, repeat: bool) -> QuitPromptStep {
-    let step = if repeat {
+/// The prompt consumes logical keys without consulting configurable actions, except that the quit chord itself
+/// (`quit_again`, resolved by the caller from the bindings) and a modifier pressed alone change nothing: a second
+/// Ctrl+Q, which is a Ctrl press and then a Q, leaves the question open instead of cancelling and reopening it.
+pub(in crate::ui) fn quit_prompt_step(keep: bool, key: &Key, repeat: bool, quit_again: bool) -> QuitPromptStep {
+    let step = if repeat || quit_again {
         QuitPromptStep::Ignore
     } else {
         match key {
+            Key::Named(NamedKey::Control | NamedKey::Shift | NamedKey::Alt | NamedKey::Super | NamedKey::Meta
+                | NamedKey::AltGraph) => QuitPromptStep::Ignore,
             Key::Named(NamedKey::Tab) => QuitPromptStep::Stay { keep: !keep },
             Key::Named(NamedKey::Enter) => QuitPromptStep::Leave(if keep { LeaveIntent::Keep } else { LeaveIntent::Close }),
             _ => QuitPromptStep::Cancel,
@@ -259,7 +263,7 @@ mod tests {
         let log = sot_log::test_log::capture();
         let mut prompt = None;
         open_quit_prompt(&mut prompt, false);
-        let _ = quit_prompt_step(false, &Key::Character("typed-fixture-text".into()), false);
+        let _ = quit_prompt_step(false, &Key::Character("typed-fixture-text".into()), false, false);
         let leases = crate::lease::Leases::new(true, vec![]);
         let mut leaving = None;
         let mut should_exit = false;
