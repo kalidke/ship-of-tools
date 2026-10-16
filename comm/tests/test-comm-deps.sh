@@ -221,12 +221,10 @@ set +m
 logged_a() { grep -qF "$RETIRED" "$WORK/bridge/a.log"; }
 await logged_a
 check "retired bridge, tethered: the line is logged once" "$(grep -cF "$RETIRED" "$WORK/bridge/a.log")" "1"
-CHILDA="$(command -p pgrep -P "$LOOPA" | head -n1)"
 kill "$TETHER" 2>/dev/null; wait "$TETHER" 2>/dev/null
-loop_a_gone() { ! kill -0 "$LOOPA" 2>/dev/null && { [ -z "$CHILDA" ] || ! kill -0 "$CHILDA" 2>/dev/null; }; }
-gone=0; await loop_a_gone && gone=1
+gone=0; await group_gone "$LOOPA" && gone=1
 check "retired bridge, tethered: loop and child gone after the tether" "$gone" "1"
-[ "$gone" = 1 ] || end_group "$LOOPA"; LOOPA=""
+end_group "$LOOPA"; LOOPA=""
 
 # (b) untethered: no retry, the child is a sleep; the test then cleans up its own fixtures.
 set -m
