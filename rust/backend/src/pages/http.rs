@@ -14,6 +14,18 @@ const READ_CHUNK: usize = 64 * 1024;
 /// page's requests one after another, and one left idle ends here rather than when the browser drops it.
 const IDLE_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long one write of a reply (its head, or up to `READ_CHUNK` bytes of its body) may take. It bounds a client that
+/// stops reading, which would otherwise hold the task and a remote window's ssh login for as long as it keeps the
+/// socket open. A client taking a chunk in 30 s (about 2 KiB/s) is never cut, however long the whole reply takes.
+const WRITE_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `bytes` on `stream`, ending in `TimedOut` when the client takes none of it within `WRITE_BOUND`.
+async fn send<S: AsyncWrite + Unpin>(stream: &mut S, bytes: &[u8]) -> std::io::Result<()> {
+    tokio::time::timeout(WRITE_BOUND, stream.write_all(bytes))
+        .await
+        .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
+}
+
 /// One request's head, as both servers read it.
 pub(crate) struct Request {
     pub(crate) method: String,
@@ -129,7 +141,7 @@ pub(crate) async fn write_simple<S: AsyncWrite + Unpin>(
         body.len(),
         connection_line(keep)
     );
-    stream.write_all(resp.as_bytes()).await?;
+    send(stream, resp.as_bytes()).await?;
     stream.flush().await?;
     Ok(keep)
 }
@@ -208,7 +220,7 @@ pub(crate) async fn serve_file<S: AsyncWrite + Unpin>(
                 "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total}\r\nContent-Length: 0\r\n{}\r\n",
                 connection_line(keep)
             );
-            stream.write_all(resp.as_bytes()).await?;
+            send(stream, resp.as_bytes()).await?;
             stream.flush().await?;
             return Ok(keep);
         }
@@ -222,7 +234,7 @@ pub(crate) async fn serve_file<S: AsyncWrite + Unpin>(
         header.push_str(&format!("Content-Range: bytes {start}-{end}/{total}\r\n"));
     }
     header.push_str("\r\n");
-    stream.write_all(header.as_bytes()).await?;
+    send(stream, header.as_bytes()).await?;
 
     if request.method == "HEAD" {
         stream.flush().await?;
@@ -243,8 +255,8 @@ pub(crate) async fn serve_file<S: AsyncWrite + Unpin>(
             break;
         }
         // A broken pipe here just means the browser closed the connection
-        // (seeked away / paused) — not an error worth surfacing.
-        if stream.write_all(&chunk[..n]).await.is_err() {
+        // (seeked away / paused), and a timeout that it stopped reading — not errors worth surfacing.
+        if send(stream, &chunk[..n]).await.is_err() {
             return Ok(false);
         }
         remaining -= n as u64;
@@ -423,5 +435,32 @@ mod keep_tests {
         assert!(read_request(&mut server, &mut Vec::new()).await.unwrap().is_none());
         let waited = start.elapsed();
         assert!(waited >= IDLE_BOUND && waited < IDLE_BOUND + Duration::from_secs(5), "closed after {waited:?}");
+    }
+
+    /// A client that stops reading mid-reply is cut after `WRITE_BOUND`, and the connection is not kept; one that
+    /// keeps taking a chunk every 20 s gets the whole reply.
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_stops_reading_is_cut_at_the_write_bound() {
+        let (path, file) = big_file().await;
+        let (mut client, mut server) = duplex(1024);
+        let sent = tokio::spawn(async move { serve_file(&mut server, &get(true), file, "text/plain", "").await.unwrap() });
+        read_head(&mut client).await;
+        let start = tokio::time::Instant::now();
+        let kept = tokio::time::timeout(WRITE_BOUND + Duration::from_secs(5), sent).await.expect("cut at the bound").unwrap();
+        assert!(!kept);
+        assert!(start.elapsed() >= WRITE_BOUND, "cut after {:?}", start.elapsed());
+        drop(client);
+        let (_, file) = big_file().await;
+        let (mut client, mut server) = duplex(READ_CHUNK);
+        let sent = tokio::spawn(async move { serve_file(&mut server, &get(true), file, "text/plain", "").await.unwrap() });
+        read_head(&mut client).await;
+        let mut got = 0;
+        let mut buf = vec![0u8; 64 * 1024];
+        while got < 1 << 20 {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            got += client.read(&mut buf).await.unwrap();
+        }
+        assert!(sent.await.unwrap(), "a slow client that keeps reading gets the whole reply");
+        let _ = std::fs::remove_file(path);
     }
 }
