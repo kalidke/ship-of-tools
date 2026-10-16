@@ -10,7 +10,8 @@ and the clipboard paste helpers live beside it. Part of the window; charter: rus
 - `help.rs`: the contextual help model (`Context`, reading the nav `Mode`) and its rows, with its tests inline.
 - `help_drawer.rs`: `State`'s help drawer: `help_context`, `open_help_drawer`, `close_help_drawer`, `help_peek_expired`.
 - `paste.rs`: `read_clipboard_text`, `bracketed_paste_bytes` and the two forwarders to the agent pane and the Terminal drawer.
-- `mouse.rs`: Pointer events: cursor moves, clicks and the wheel, each sent to the pane it acts on.
+- `mouse.rs`: Pointer events: cursor moves, clicks and the wheel, each sent to the pane it acts on; while the quit
+  question is open, a press goes to it instead.
 - `keypress.rs`: raw key-event admission and its production input continuation; synthetic events and releases are rejected, then an open quit prompt precedes modifier suppression, configurable actions and later input layers.
 - `global_keys.rs`: The layers a key meets before the focused pane: the quit prompt, help, and the keys every pane shares.
 
@@ -27,3 +28,5 @@ the help view shows in each pane.
 - `keyboard_input` admits the quit prompt first; `route_key` then orders help, the shared keys and the focused pane.
   A layer that takes a key returns `Break`, which skips every later layer and the keypress tail.
 - The quit prompt reads logical Key and repeat before modifier-only suppression or configurable actions; prompt logs contain only finite QuitPromptStep fields, never a typed key. A consumed prompt event never reaches later input layers.
+- While the quit prompt is open, `mouse_input` gives every press to it (`quit_prompt_click`, app/dialog.rs) before any
+  pane sees it: a left press on an answer gives that answer, any other press cancels.

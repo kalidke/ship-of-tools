@@ -219,7 +219,7 @@ impl State {
     fn nav_pinned_text(
         &self,
     ) -> (String, Option<(String, String)>, Vec<(HostKey, u32)>, Option<String>, Option<String>) {
-        // A NavTree prompt, the not-ended count or `closing…`, and the lease
+        // A NavTree prompt, the not-ended count or a leave's wait, and the lease
         // notice are pinned under the nav list (`nav_pinned_rows`), so no
         // scroll hides what Enter would confirm. A text prompt is the
         // input field the user types into; a block cursor (▏) marks the

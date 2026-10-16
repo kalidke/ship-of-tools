@@ -32,14 +32,15 @@ pub(in crate::ui) fn quit_prompt_on_focus(prompt: Option<&NavPrompt>, to: PaneFo
         .then_some(QuitPromptStep::Cancel)
 }
 
+/// The quit question, and how its keys answer it (`quit_prompt_step`).
+pub(in crate::ui) const QUIT_QUESTION: &str = "Keep the daemon and sessions running?";
+pub(in crate::ui) const QUIT_KEYS: &str = "Tab switches \u{b7} Enter confirms \u{b7} any other key cancels";
+
 /// The quit prompt as its text and its choice; the choice ends the prompt
 /// (`nav_pinned_rows` keeps it whole on the last row).
 pub(in crate::ui) fn quit_prompt_line(keep: bool) -> (String, String) {
     let choice = if keep { "No  [Yes]" } else { "[No]  Yes" };
-    (
-        "Keep the daemon and sessions running?  Tab switches \u{b7} Enter confirms \u{b7} any other key cancels".to_string(),
-        choice.to_string(),
-    )
+    (format!("{QUIT_QUESTION}  {QUIT_KEYS}"), choice.to_string())
 }
 
 /// Whether the redraw that set `should_exit` ends the event loop. A window
@@ -50,9 +51,9 @@ pub(in crate::ui) fn redraw_exits(should_exit: bool, leaving: bool, harness: boo
     should_exit && (harness || !leaving)
 }
 
-fn open_quit_prompt(prompt: &mut Option<NavPrompt>) {
-    *prompt = Some(NavPrompt::ConfirmQuit { keep: false });
-    tracing::info!(keep = false, "quit prompt: open");
+fn open_quit_prompt(prompt: &mut Option<NavPrompt>, keep: bool) {
+    *prompt = Some(NavPrompt::ConfirmQuit { keep });
+    tracing::info!(keep, "quit prompt: open");
 }
 
 /// How long final teardown may take after the terminal decision before the process ends itself.
@@ -160,11 +161,15 @@ fn begin_leave(leases: &crate::lease::Leases, prompt: &mut Option<NavPrompt>, le
 /// A leave's stay (`LeaveStep::Stay`, or a Ctrl+Q during its wait), over `begin_leave`'s exit slots and the status
 /// line: when `Leases::stay` confirms it, the leave ends and the window stays open, its lease notice saying why, and
 /// the status is cleared, since a relaunch command's "relaunching…" would contradict that notice (true); otherwise a
-/// grant took the leave first, and the wait goes on (false).
-fn confirm_stay(leases: &crate::lease::Leases, leaving: &mut Option<crate::lease::Leaving>, should_exit: &mut bool,
-    status: &mut String, now: std::time::Instant) -> bool {
+/// grant took the leave first, and the wait goes on (false). A Keep that stays asks again, Yes selected, so the close
+/// dialog shows that notice: the window never seems to ignore the close.
+fn confirm_stay(leases: &crate::lease::Leases, prompt: &mut Option<NavPrompt>, leaving: &mut Option<crate::lease::Leaving>,
+    should_exit: &mut bool, status: &mut String, now: std::time::Instant) -> bool {
     if !leaving.as_mut().is_some_and(|l| leases.stay(l, now)) {
         return false;
+    }
+    if leaving.as_ref().is_some_and(|l| l.intent == LeaveIntent::Keep) {
+        open_quit_prompt(prompt, true);
     }
     *leaving = None;
     *should_exit = false;
@@ -189,7 +194,7 @@ impl State {
     pub(in crate::ui) fn request_quit(&mut self, event_loop: &ActiveEventLoop, reason: ExitReason) {
         match exit_intent(reason, self.leaving.as_ref().map(|l| l.intent)) {
             ExitStep::Ask => {
-                open_quit_prompt(&mut self.nav_prompt);
+                open_quit_prompt(&mut self.nav_prompt, false);
                 self.window.request_redraw();
             }
             ExitStep::Now { code } => {
@@ -227,8 +232,13 @@ impl State {
     /// request, and a later grant would end this computer's sessions, so the window stays open. False when a grant
     /// took the leave first.
     pub(in crate::ui) fn stay_open(&mut self, now: std::time::Instant) -> bool {
-        let stayed = confirm_stay(&self.leases, &mut self.leaving, &mut self.should_exit, &mut self.status, now);
+        let stayed = confirm_stay(&self.leases, &mut self.nav_prompt, &mut self.leaving, &mut self.should_exit,
+            &mut self.status, now);
         if stayed {
+            // The question asked again shows only while the tree has focus (`set_focus`).
+            if matches!(self.nav_prompt, Some(NavPrompt::ConfirmQuit { .. })) {
+                self.set_focus(PaneFocus::NavTree);
+            }
             self.window.request_redraw();
         }
         stayed
@@ -273,7 +283,7 @@ mod tests {
     fn quit_transitions_log_only_finite_fields() {
         let log = sot_log::test_log::capture();
         let mut prompt = None;
-        open_quit_prompt(&mut prompt);
+        open_quit_prompt(&mut prompt, false);
         let _ = quit_prompt_step(false, &Key::Character("typed-fixture-text".into()), false);
         let leases = crate::lease::Leases::new(true, vec![]);
         let mut leaving = None;
@@ -325,8 +335,8 @@ mod tests {
 
     /// A stay, mid-wait (a Ctrl+Q) or at the deadline, ends the leave and keeps the window open: neither the next
     /// redraw nor the next wake exits, the late grant installs with no leave behind it, a new lease is taken, the
-    /// lease notice names the stay until the next leave whenever the standings name no cause, and a relaunch
-    /// command's status does not outlast the stay. A leave with no request unanswered never stays.
+    /// lease notice names the stay until the next leave whenever the standings name no cause, a Keep asks again, and a
+    /// relaunch command's status does not outlast the stay. A leave with no request unanswered never stays.
     #[tokio::test]
     async fn a_stay_keeps_the_window_open_until_the_next_leave() {
         use crate::lease::{grant_tests::bind, leave_tests::{leave_fake, logged, is_leave, finish}, LeaveStep};
@@ -361,9 +371,13 @@ mod tests {
             if at_deadline {
                 assert_eq!(leaving.as_mut().unwrap().poll(at), LeaveStep::Stay);
             }
-            assert!(confirm_stay(&leases, &mut leaving, &mut should_exit, &mut status, at), "{intent:?} with its request unanswered");
+            assert!(confirm_stay(&leases, &mut prompt, &mut leaving, &mut should_exit, &mut status, at),
+                "{intent:?} with its request unanswered");
             assert!(leaving.is_none() && !should_exit && !redraw_exits(should_exit, leaving.is_some(), false),
                 "a stayed window would exit at its next redraw or wake");
+            let asked = (intent == LeaveIntent::Keep).then_some(true);
+            assert_eq!(prompt.as_ref().map(|p| matches!(p, NavPrompt::ConfirmQuit { keep: true })), asked,
+                "a Keep that stays asks again, Yes selected; a relaunch does not");
             assert_eq!(status, "", "the relaunch command's status outlasted the stay");
             assert!(leases.notice().is_some_and(|n| n.starts_with(said)), "the stay's notice: {:?}", leases.notice());
             open.send(answer).unwrap();
@@ -377,7 +391,8 @@ mod tests {
             assert_eq!(begin_leave(&leases, &mut prompt, &mut leaving, &mut should_exit, LeaveIntent::Keep, 0, t0),
                 LeaveEffect::Redraw);
             assert_eq!(leases.notice(), None, "the next leave ends the stay's notice");
-            assert!(!confirm_stay(&leases, &mut leaving, &mut should_exit, &mut status, t0), "a Keep with no request unanswered");
+            assert!(!confirm_stay(&leases, &mut prompt, &mut leaving, &mut should_exit, &mut status, t0),
+                "a Keep with no request unanswered");
             assert!(leaving.is_some() && should_exit);
             if granted {
                 assert!(logged(&log, 1).await.first().is_some_and(|e| is_leave(e, "keep")), "the next leave reached the late grant");

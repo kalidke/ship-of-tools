@@ -40,7 +40,7 @@ impl State {
         let media_paint_targets = self.prepare_media(show_md, md_rect, preview_scroll_px);
         let (scalebar_draw, media_paint_targets) = self.prepare_preview_text(lines, media_paint_targets,
             preview_rect, image_rect, png_rect, md_rect, preview_scroll_px, show_md, show_edit, show_fatal, &caption_draw)?;
-        let (help_overlay_rect, overlay_lines) = self.prepare_overlays()?;
+        let (help_overlay_rect, dialog_rect, overlay_lines) = self.prepare_overlays()?;
         let prepared = std::time::Instant::now();
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
@@ -87,7 +87,7 @@ impl State {
             self.paint_strike_lines(&mut rpass, show_md, preview_rect, md_rect, preview_scroll_px)?;
             self.paint_brand(&mut rpass, strip_logo_rects)?;
             self.paint_chrome_text(&mut rpass, border_rects_by_color)?;
-            self.paint_overlays(&mut rpass, help_overlay_rect, overlay_lines)?;
+            self.paint_overlays(&mut rpass, help_overlay_rect, dialog_rect, overlay_lines)?;
         }
         #[cfg(all(test, feature = "test-pane-timing"))]
         if presentation_candidate.is_some() && super::native_pane_tests::take_candidate_frame_failure() {

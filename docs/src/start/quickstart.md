@@ -136,7 +136,8 @@ See [How agents use the REPL](@ref agents-repl).
   session; any other command in between cancels.
 - Closing the window ends the backend on this computer and every session it
   runs; the next window starts with none. `Ctrl+Q`, with the navigation pane
-  focused, asks first: **Keep the daemon and sessions running?** No is the
+  focused, asks first, in a dialog in the middle of the window: **Keep the
+  daemon and sessions running?** No is the
   default; `Tab` selects Yes, `Enter` confirms, `Esc` cancels. See
   [What keeps running](running.md).
 

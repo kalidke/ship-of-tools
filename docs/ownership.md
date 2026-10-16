@@ -310,7 +310,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `Leases`, its mutex and phase | state, lock | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `Phase` |
 | window exit decision (`ExitReason`, `ExitStep`, `exit_intent`, `close_now`, the stay) | state | lifecycle | `rust/frontend/src/lease_exit.rs` `ExitReason`, `ExitStep`, `exit_intent`, `close_now`, `Leases::stay`, `stay_line` |
 | no-lease notice and precedence | rule | lifecycle | `rust/frontend/src/lease.rs` `lease_notice` |
-| quit prompt, `request_quit` | UI | fe-ui | `rust/frontend/src/ui/app/exit.rs` `quit_prompt_step`, `request_quit`; `rust/frontend/src/ui/input/keypress.rs` `keyboard_input`; `rust/frontend/src/ui/input/global_keys.rs` `confirm_quit_key` |
+| quit prompt, `request_quit`, the close dialog | UI | fe-ui | `rust/frontend/src/ui/app/exit.rs` `quit_prompt_step`, `request_quit`; `rust/frontend/src/ui/app/dialog.rs` `close_dialog`, `quit_prompt_click`; `rust/frontend/src/ui/input/keypress.rs` `keyboard_input`; `rust/frontend/src/ui/input/mouse.rs` `mouse_input`; `rust/frontend/src/ui/input/global_keys.rs` `confirm_quit_key` |
 | returned-loop runtime shutdown | process rule | fe-ui | `rust/frontend/src/ui/app/mod.rs` `App::run`, `shutdown_transport` |
 | final window process deadline | process rule | fe-ui | `rust/frontend/src/ui/app/exit.rs` `ExitDeadline`; `rust/frontend/src/ui/app/mod.rs` `App::run` |
 | new-row account selection | rule | fe-ui | `rust/frontend/src/ui/session/picker.rs` `selected_account`; daemon default resolution stays in agents |

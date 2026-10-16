@@ -10,7 +10,8 @@ hand-over it serves.
   so its `Arc<Window>` reaches only wgpu's surface, through `create_surface`), plus FRAME_BUDGET and
   NAV_FIRE_DEBOUNCE.
 - `exit_process_tests.rs`: bounded runtime and process-exit cases, run through the shared isolation helper.
-- `exit.rs`: quit_prompt_step, request_quit, begin_leave, leave, confirm_stay, stay_open, finish_exit, redraw_exits and the per-App ExitDeadline shared with State.
+- `exit.rs`: the quit question's text (QUIT_QUESTION, QUIT_KEYS, quit_prompt_line), quit_prompt_step, request_quit, begin_leave, leave, confirm_stay, stay_open, finish_exit, redraw_exits and the per-App ExitDeadline shared with State.
+- `dialog.rs`: the close dialog: which one shows (close_dialog_text), its cells centred on the window (close_dialog, State::close_dialog) and what a press on it does (quit_prompt_click).
 - `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `user_event`,
   `new_events`.
 - `frame.rs`: `State::redraw`, one frame's sequence, its upkeep (`frame_upkeep`) and `ack_presented_lines`.
@@ -31,8 +32,15 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 
 ## Rules
 - Every user quit goes through `request_quit`: `exit_intent` asks on Ctrl+Q and leaves at once on the close button.
+- The quit question, and a leave's line while the window waits and then its outcome, show in the close dialog: a panel
+  centred on the window, over every pane, whatever has focus or is maximized (`close_dialog`, drawn by
+  `prepare_overlays`); the nav pane's pinned rows hold them as well. Tests
+  `the_close_question_sits_in_the_middle_of_the_window_with_its_answers`,
+  `the_close_wait_and_its_outcome_sit_in_the_middle_of_the_window`, `the_dialog_shows_the_question_or_the_leave`.
+- While the question is open a press answers it and goes no further: a left press on an answer gives it, any other
+  press cancels (`quit_prompt_click`, from `mouse_input`; test `a_press_answers_the_question_or_cancels_it`).
 - begin_leave can access only lease and exit-state slots and returns Redraw or Finish; leave_close_keep_and_handover_only_leave_leases drives that production transition and observes pending exit and actual lease frames. No agent or drawer input capability is passed to it.
-- A leaving window exits from `about_to_wait`'s poll once the acks are in (`redraw_exits`), except that a Keep or a Handover still waiting on an unanswered lease request at its deadline, or at a Ctrl+Q during the wait, stays open: confirm_stay, over begin_leave's exit slots and the status line, ends the leave, clears `should_exit` and clears the status (a relaunch command's "relaunching…" would contradict the lease notice) once `Leases::stay` confirms it, and a_stay_keeps_the_window_open_until_the_next_leave drives it.
+- A leaving window exits from `about_to_wait`'s poll once the acks are in (`redraw_exits`), except that a Keep or a Handover still waiting on an unanswered lease request at its deadline, or at a Ctrl+Q during the wait, stays open: confirm_stay, over begin_leave's exit slots and the status line, ends the leave, clears `should_exit` and clears the status (a relaunch command's "relaunching…" would contradict the lease notice) once `Leases::stay` confirms it; a Keep that stays asks the question again, Yes selected, with focus on the tree, so the dialog shows the notice; and a_stay_keeps_the_window_open_until_the_next_leave drives it.
 - A harness instance (`ephemeral`) starts neither watcher thread: `resumed` skips `relaunch::spawn_watcher` and `spawn_command_watcher` for it.
 - Frames are capped at `FRAME_BUDGET` (`window_event`'s redraw arm and `about_to_wait`).
 - The idle repaint (the 1 s clock, the 80 ms flash and 16 ms help fades) keeps its armed deadline across wakes (`arm_idle`, which owns the slot): a wake brings it forward or leaves it, never later.

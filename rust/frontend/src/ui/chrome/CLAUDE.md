@@ -20,7 +20,7 @@ rust/frontend/src/ui/CLAUDE.md.
 - `draw.rs`: `State::draw_chrome`, which snapshots the chrome's inputs and runs the ratatui draw, and the snapshot
   pieces it calls.
 - `pixels.rs`: the chrome's pixel layer: `State::project_chrome` (text lines and border quads) and
-  `State::prepare_overlays`.
+  `State::prepare_overlays` (the nav spill, the close dialog and the help peek).
 - `nav_body.rs`: `ChromeView::nav_body`: the nav pane's body inside the draw, with its row colours and spill
   segments.
 - `view.rs`: `ChromeView`, the view the draw closure reads and writes, and its painting methods; `NavRow`.
@@ -34,6 +34,8 @@ rows say; `layout.rs` for where the panes sit; `draw_chrome` in draw.rs for what
 - `set_focus` is the only write of `focus` (test `focus_written_only_by_set_focus`, ui/scan_tests.rs).
 - Leaving the nav pane dismisses the quit prompt (`set_focus` via `quit_prompt_on_focus`).
 - While a leave line shows, nothing is maximized (`maximize_slot`).
+- While the close dialog shows (app/dialog.rs), neither the help peek nor the nav spill draws (`prepare_overlays`):
+  overlay text is drawn after every backing, so either would draw over the dialog.
 - The nav pane's pinned rows are kept whole or dropped whole (`nav_pinned_rows`).
 - The status takes at most half the nav list's rows, and at least three. Past that its lines show whole by priority:
   the first, the second, the last, then the rest in order, the first two cut to fit rather than lost, and one row

@@ -156,7 +156,7 @@ impl ApplicationHandler for App {
                 button,
                 ..
             } => {
-                mouse_input(state, btn_state, button);
+                mouse_input(state, event_loop, btn_state, button);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 mouse_wheel(state, self.modifiers, delta);

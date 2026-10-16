@@ -74,7 +74,16 @@ impl State {
         Ok(border_rects_by_color)
     }
 
-    pub(in crate::ui) fn prepare_overlays(&mut self) -> Result<(Option<ScreenRect>, Vec<crate::ui::render::text::Line>)> {
+    pub(in crate::ui) fn prepare_overlays(
+        &mut self,
+    ) -> Result<(Option<ScreenRect>, Option<ScreenRect>, Vec<crate::ui::render::text::Line>)> {
+        // The close dialog covers every pane; while it shows, the help peek and the nav spill, whose text would draw
+        // over its backing, do not.
+        let dialog = self.close_dialog();
+        if dialog.is_some() {
+            self.help.peek = None;
+            self.nav_spill_segments.clear();
+        }
         let mut help_overlay_rect = None;
         let mut help_overlay_lines = Vec::new();
         let mut help_opacity = 1.0;
@@ -136,6 +145,16 @@ impl State {
                 dim: seg.dim,
             })
             .collect();
+        let (ox, oy, cw, ch) = (self.chrome_origin_x, self.chrome_origin_y, self.cell_w, self.cell_h);
+        let dialog_rect = dialog.map(|d| {
+            overlay_lines.extend(d.rows.into_iter().map(|(x, y, text, style)| crate::ui::render::text::Line {
+                text, x: ox + x as f32 * cw, y: oy + y as f32 * ch,
+                color: crate::ui::render::cells::ratatui_color_to_rgb(style.fg),
+                bold: style.add_modifier.contains(Modifier::BOLD), italic: false, dim: false,
+            }));
+            let p = d.panel;
+            ScreenRect { x: ox + p.x as f32 * cw, y: oy + p.y as f32 * ch, w: p.width as f32 * cw, h: p.height as f32 * ch }
+        });
         let fade_start = overlay_lines.len();
         overlay_lines.extend(help_overlay_lines);
         self.text.prepare_overlay(
@@ -146,6 +165,6 @@ impl State {
             &overlay_lines,
             Some((fade_start, help_opacity)),
         )?;
-        Ok((help_overlay_rect, overlay_lines))
+        Ok((help_overlay_rect, dialog_rect, overlay_lines))
     }
 }

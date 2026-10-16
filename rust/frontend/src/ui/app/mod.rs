@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod dialog;
 mod exit;
 mod frame;
 mod handler;
@@ -24,6 +25,7 @@ mod native_pane_daemon_tests;
 #[cfg(all(test, feature = "test-pane-timing"))]
 mod native_pane_route_tests;
 
+pub(in crate::ui) use dialog::*;
 pub(in crate::ui) use exit::*;
 
 use std::sync::atomic::{AtomicBool, Ordering::AcqRel};

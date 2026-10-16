@@ -9,7 +9,7 @@ z-order. Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
 - `preview.rs`: the preview pane's draws: the PNG canvas and its ROI bookkeeping (`paint_preview_png`), the scalebar and
   caption bands, math and figure blocks, the code panels and borders, and the strike lines.
 - `panes.rs`: the pane and chrome draws: the monitor chart, the inline REPL figures, the agent pane's selection, the
-  brand logos, the chrome's border quads and text, and the nav-spill and help overlays.
+  brand logos, the chrome's border quads and text, and the nav-spill, close-dialog and help overlays.
 
 ## Start here
 `State::redraw` in ../../app/frame.rs for the order of the pass; `paint_preview_png` in preview.rs for a change to how an
@@ -22,5 +22,6 @@ image is placed, zoomed or clipped; `paint_chrome_text` and `paint_overlays` in 
   vertex buffer (`paint_code_panels`, `paint_code_borders`, `paint_strike_lines`).
 - The image view's ROI is recomputed every frame from the pane geometry, and cleared when no image shows
   (`paint_preview_png`).
-- The chrome text is drawn once, after every other draw but the overlays; the nav-spill backing strips, the help peek
-  and the overlay text are the only draws above it (`paint_chrome_text`, `paint_overlays`).
+- The chrome text is drawn once, after every other draw but the overlays; the nav-spill backing strips and the close
+  dialog's panel (one `render_many` of `overlay_back_quad`), the help peek and the overlay text are the only draws
+  above it (`paint_chrome_text`, `paint_overlays`).
