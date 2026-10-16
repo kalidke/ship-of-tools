@@ -3,8 +3,9 @@
 # script does: when CMD exits, when this script is ended from outside (Stop-Process, taskkill), or when the ssh session
 # it runs under ends (its nearest sshd ancestor exits: Windows OpenSSH ends no process of a session whose client is
 # gone). A parent-id walk (taskkill /T, Stop-SotTree) cannot do this on Git Bash, whose exec leaves the new process a
-# creator that has exited. Exit status: CMD's; 129 when the ssh session ended first; 2 on a usage error. When CMD
-# exits with processes of the job still running, one stderr line counts them before the job ends them.
+# creator that has exited. Exit status: CMD's; 129 when the ssh session ended first; 2 on a usage error; 8 when CMD
+# exits 0 with processes of the job still running (a CMD that exits non-zero keeps its own). Then one stderr line names
+# them (image and pid, at most 16) and the job ends them before the script exits.
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 if ($args.Count -lt 1) { [Console]::Error.WriteLine("usage: in-job.ps1 CMD [ARG...]"); exit 2 }
@@ -29,6 +30,7 @@ public static class SotTestJob {
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool QueryInformationJobObject(IntPtr job, int infoClass, byte[] info, int length, IntPtr returned);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint exitCode);
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
     // A new job holding this process: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000, through
     // JobObjectExtendedLimitInformation, 9) and no breakaway, so every process created under it stays in it, and all
@@ -42,11 +44,27 @@ public static class SotTestJob {
         if (!AssignProcessToJobObject(job, GetCurrentProcess())) throw new Win32Exception();
         return job;
     }
-    // The job's running processes (JobObjectBasicAccountingInformation, 1: ActiveProcesses at byte 40), this one included.
+    // The job's running processes, this one included (JobObjectBasicAccountingInformation, 1: ActiveProcesses at byte 40).
     public static uint Active(IntPtr job) {
         byte[] info = new byte[48];
         if (!QueryInformationJobObject(job, 1, info, info.Length, IntPtr.Zero)) throw new Win32Exception();
         return BitConverter.ToUInt32(info, 40);
+    }
+    // The ids in the job's process list, up to max of them (JobObjectBasicProcessIdList, 3: two DWORDs, then one ULONG_PTR
+    // per id from byte 8). The list can hold a process that has already exited, so a caller names only the ids it still
+    // finds. ERROR_MORE_DATA (234) only says the list is longer than the buffer.
+    public static uint[] Pids(IntPtr job, int max) {
+        byte[] info = new byte[8 + IntPtr.Size * max];
+        if (!QueryInformationJobObject(job, 3, info, info.Length, IntPtr.Zero)
+            && Marshal.GetLastWin32Error() != 234) throw new Win32Exception();
+        uint[] ids = new uint[Math.Min(BitConverter.ToInt32(info, 4), max)];
+        for (int i = 0; i < ids.Length; i++)
+            ids[i] = (uint)(IntPtr.Size == 8 ? BitConverter.ToInt64(info, 8 + 8 * i) : BitConverter.ToInt32(info, 8 + 4 * i));
+        return ids;
+    }
+    // Ends every process of the job, this one included, with exitCode (TerminateJobObject).
+    public static void End(IntPtr job, int exitCode) {
+        if (!TerminateJobObject(job, (uint)exitCode)) throw new Win32Exception();
     }
 }
 '@
@@ -84,6 +102,17 @@ $cmd = [System.Diagnostics.Process]::Start($psi)
 while (-not $cmd.WaitForExit(500)) {
     if ($session -and $session.HasExited) { exit 129 }
 }
+$code = $cmd.ExitCode
 $left = [SotTestJob]::Active($job) - 1
-if ($left -gt 0) { [Console]::Error.WriteLine("in-job.ps1: $left processes $($args[0]) started were still running when it exited; the job ends them") }
-exit $cmd.ExitCode
+if ($left -gt 0) {
+    $named = @()
+    foreach ($p in [SotTestJob]::Pids($job, 32)) {
+        $w = if ($p -ne $PID) { Get-CimInstance Win32_Process -Filter "ProcessId=$p" }
+        if ($w -and $named.Count -lt 16) { $named += "$($w.Name) $p" }
+    }
+    $more = if ($left -gt $named.Count) { " and $($left - $named.Count) more" } else { "" }
+    if ($code -eq 0) { $code = 8 }
+    [Console]::Error.WriteLine("in-job.ps1: $left processes $($args[0]) started were still running when it exited ($($named -join ', '))$more; the job ends them and in-job.ps1 exits $code")
+    [SotTestJob]::End($job, $code)
+}
+exit $code
