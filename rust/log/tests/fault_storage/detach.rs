@@ -46,9 +46,18 @@ pub fn run_diagnostic(
     sot_log::test_isolated::drain(child).try_wait_within(bound)
 }
 
+/// Whether an `lsof` listing names `pid` as a holder: a line whose second field, the PID column, is it.
+pub fn names_pid(listing: &str, pid: u32) -> bool {
+    let pid = pid.to_string();
+    listing
+        .lines()
+        .any(|line| line.split_whitespace().nth(1) == Some(pid.as_str()))
+}
+
 /// Detach `device` until `hdiutil info` no longer lists it. Each refusal logs its report and the holders, whatever the
-/// refusal says: success is the state, not hdiutil's words. Tries stop starting once `bound` has passed; the failure
-/// then names the last refusal and the holders. Never forces.
+/// refusal says: success is the state, not hdiutil's words. A listing that names `own_pid` fails at once, since the
+/// test itself holds the image and waiting would only hide the leak. Otherwise tries stop starting once `bound` has
+/// passed; the failure then names the last refusal and the holders. Never forces.
 pub fn detach_within(
     device: &str,
     mut detach: impl FnMut(&str) -> Attempt,
@@ -57,6 +66,7 @@ pub fn detach_within(
     mut sleep: impl FnMut(Duration),
     mut elapsed: impl FnMut() -> Duration,
     bound: Duration,
+    own_pid: u32,
 ) -> Result<u32, String> {
     let mut tries = 0;
     loop {
@@ -71,6 +81,12 @@ pub fn detach_within(
         );
         let holding = holders();
         println!("holders:\n{holding}");
+        if names_pid(&holding, own_pid) {
+            return Err(format!(
+                "the test's own process {own_pid} holds {device}; last refusal:\n{}\nholders:\n{holding}",
+                attempt.report
+            ));
+        }
         if elapsed() >= bound {
             return Err(format!(
                 "{device} still attached after {tries} tries within {bound:?}; last refusal:\n{}\nholders:\n{holding}",
@@ -88,6 +104,7 @@ mod tests {
 
     /// The attach lines of the hosted run that failed, and its refusal.
     const ATTACH: &str = "/dev/disk7          \tGUID_partition_scheme          \t\n/dev/disk7s1        \tApple_APFS                     \t\n/dev/disk8          \tEF57347C-0000-11AA-AA11-0030654\t\n/dev/disk8s1        \t41504653-0000-11AA-AA11-0030654\t/tmp/l3 premise x/volume\n";
+    const OWN: u32 = 4242;
     const REFUSAL: &str = "hdiutil: couldn't eject \"disk7\" - Resource busy";
 
     fn refused() -> Attempt {
@@ -152,6 +169,7 @@ mod tests {
             |_| {},
             || Duration::ZERO,
             BOUND,
+            OWN,
         );
         assert_eq!(tries, Ok(2));
         assert_eq!(*targets.borrow(), ["/dev/disk7", "/dev/disk7"]);
@@ -167,8 +185,31 @@ mod tests {
             |_| panic!("no wait once the image is gone"),
             || Duration::ZERO,
             BOUND,
+            OWN,
         );
         assert_eq!(tries, Ok(1));
+    }
+
+    #[test]
+    fn a_holder_that_is_the_test_itself_fails_at_once() {
+        let listing = "COMMAND  PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME\nmds      123 root    5r   BLK  1,20      0t0  900 /dev/disk7\nfault_st 4242 runner  9u   BLK  1,20      0t0  900 /dev/disk7\n";
+        assert!(names_pid(listing, 4242) && !names_pid(listing, 424) && !names_pid(listing, 900));
+        let calls = Cell::new(0);
+        let error = detach_within(
+            "/dev/disk7",
+            |_| {
+                calls.set(calls.get() + 1);
+                refused()
+            },
+            || true,
+            || listing.into(),
+            |_| panic!("no wait for a leak by the test"),
+            || Duration::ZERO,
+            BOUND,
+            OWN,
+        )
+        .unwrap_err();
+        assert!(calls.get() == 1 && error.contains("own process 4242"), "{error}");
     }
 
     #[test]
@@ -182,6 +223,7 @@ mod tests {
             |pause| clock.set(clock.get() + pause),
             || clock.get(),
             BOUND,
+            OWN,
         )
         .unwrap_err();
         assert!(

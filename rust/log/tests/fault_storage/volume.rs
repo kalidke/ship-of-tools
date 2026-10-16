@@ -268,6 +268,7 @@ impl NativeVolume {
                 std::thread::sleep,
                 || started.elapsed(),
                 detach::BOUND,
+                std::process::id(),
             )
             .unwrap_or_else(|error| {
                 panic!("L3 HARNESS FAILURE: native fixture cleanup failed:\n{error}")
