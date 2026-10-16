@@ -200,11 +200,17 @@ function wgl_warn_if_widgets(fig)
     flush(stderr)
 end
 
-# A Bonito server on `host`:`port` (0: the OS picks). Bonito moves a taken port to the next one with a warning; a
-# pinned port that is taken throws instead. `proxy_url` is this server's own loopback origin, so its asset and
-# websocket addresses use 127.0.0.1 (a remote frontend's page proxy binds 127.0.0.1 only).
+# A Bonito server on `host`:`port` (0: the OS picks). A taken pinned port is refused with this product's own error and
+# the dependency's message: Bonito 5.2 under HTTP 2.9 moves a taken port to the next one with a warning (the moved
+# server is closed here); under HTTP 2.11 it throws HTTP.AddressInUseError. `proxy_url` is this server's own loopback
+# origin, so its asset and websocket addresses use 127.0.0.1 (a remote frontend's page proxy binds 127.0.0.1 only).
 function page_server(Bonito, host::String, port::Int)
-    server = Base.invokelatest(Bonito.Server, host, port)
+    server = try
+        Base.invokelatest(Bonito.Server, host, port)
+    catch e
+        port == 0 && rethrow()
+        error("wglshow: port $port is taken (" * sprint(showerror, e) * ")")
+    end
     if port != 0 && server.port != port
         try Base.invokelatest(close, server) catch end
         error("wglshow: port $port is taken")
