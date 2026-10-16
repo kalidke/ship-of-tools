@@ -172,6 +172,13 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
     Continue(())
 }
 
+/// Whether a chord that resolved to no editor action types its character. A Command chord on macOS and a Ctrl chord
+/// do not: winit's `logical_key` can carry the bare letter under Ctrl, so Ctrl+Q (the window's quit, reaching here
+/// because the editor has the keys first) would type a "q". Ctrl with Alt is AltGr on Windows, which types.
+fn chord_types_text(ctrl: bool, alt: bool, super_: bool) -> bool {
+    !(cfg!(target_os = "macos") && super_) && !(ctrl && !alt)
+}
+
 fn edit_buffer_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) -> bool {
     let KeyPress { event, action, .. } = key;
     let mut buf_changed = false;
@@ -259,7 +266,7 @@ fn edit_buffer_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
 }
 
 fn edit_motion_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) -> bool {
-    let KeyPress { event, action, shift, super_, .. } = key;
+    let KeyPress { event, action, shift, ctrl, alt, super_ } = key;
     let mut buf_changed = false;
     match &event.logical_key {
         // Motion keys: `set_selecting(shift)` extends a
@@ -313,13 +320,12 @@ fn edit_motion_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
         }
         Key::Character(s) => {
             // Same invariant as the Julia input line
-            // and `key_to_pty_bytes`: a Command
-            // chord that resolved to no editor
-            // action must not insert text either.
-            let is_command =
-                cfg!(target_os = "macos") && super_;
+            // and `key_to_pty_bytes`: a chord that
+            // resolved to no editor action must not
+            // insert text either.
+            let types = chord_types_text(ctrl, alt, super_);
             for c in s.chars() {
-                if !is_command && !c.is_control() {
+                if types && !c.is_control() {
                     edit.buf.insert_char(c);
                     buf_changed = true;
                 }
@@ -380,5 +386,20 @@ pub(in crate::ui) fn enter_editor(state: &mut State) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chord_types_text;
+
+    /// Ctrl+Q reaches the editor (it has the keys first), and winit can name its key by the bare letter.
+    #[test]
+    fn a_ctrl_chord_that_is_no_editor_action_types_nothing() {
+        assert!(chord_types_text(false, false, false), "a plain letter types");
+        assert!(chord_types_text(false, false, false) && chord_types_text(false, true, false), "Alt+letter keeps its text");
+        assert!(!chord_types_text(true, false, false), "Ctrl+Q does not type a q");
+        assert!(chord_types_text(true, true, false), "AltGr (Ctrl+Alt on Windows) types");
+        assert_eq!(chord_types_text(false, false, true), !cfg!(target_os = "macos"), "Cmd chords on macOS do not");
     }
 }
