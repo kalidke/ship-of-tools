@@ -198,7 +198,7 @@ async fn spawn_supervisor(
             start_script.display()
         ));
     }
-    let mut tmp = crate::sidecars::child::ChildTmp::for_user_code(sig).await.context("pluto child temporary folder")?;
+    let tmp = crate::sidecars::child::ChildTmp::for_user_code(sig).await.context("pluto child temporary folder")?;
     let mut cmd = Command::new(julia_bin);
     tmp.apply(&mut cmd);
     cmd.arg(format!("--project={}", project_dir.display()))
