@@ -617,6 +617,154 @@ mod tests {
         assert_eq!(peer.created, created);
     }
 
+    /// Set only in a child of this test binary, to the session socket or pipe it connects to as a peer.
+    #[cfg(any(target_os = "linux", windows))]
+    const ADMISSION_PEER: &str = "SOT_TEST_ADMISSION_PEER";
+
+    /// The process `dispatch_admitted` handed `stream`'s handler under `admit_peer`, as text, or `None` when it
+    /// refused the stream.
+    #[cfg(any(target_os = "linux", windows))]
+    fn admitted_process(stream: LocalStream) -> Option<String> {
+        let mut process = None;
+        dispatch_admitted(stream, admit_peer, |_, given| process = Some(format!("{given:?}")));
+        process
+    }
+
+    /// ADR 0049 `## User isolation`: admission one decides the account, and the process a lease needs is read apart
+    /// from it. A connection whose recorded effective uid is this account's is admitted after its process has ended,
+    /// without a process, so it holds no lease.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_connection_of_this_account_whose_process_has_ended_is_admitted_without_it() {
+        const NAME: &str =
+            "server::listen::tests::a_connection_of_this_account_whose_process_has_ended_is_admitted_without_it";
+        if let Some(path) = std::env::var_os(ADMISSION_PEER) {
+            sot_log::test_isolated::enter(NAME);
+            std::os::unix::net::UnixStream::connect(path).expect("connect to the parent's socket");
+            return;
+        }
+        let (_dir, path) = probe_socket_path();
+        let listener = bind_session(path.to_str().unwrap()).unwrap();
+        let (mut command, entry) = sot_log::test_isolated::test_command(NAME);
+        let mut child = command
+            .env(ADMISSION_PEER, &path)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("start the connecting child");
+        let pid = child.id();
+        let status =
+            sot_log::test_isolated::wait_within(&mut child, sot_log::test_isolated::ISOLATION_TIMEOUT);
+        entry.assert_once(pid);
+        assert!(status.success(), "the connecting child: {status}");
+        assert!(
+            sot_log::identity::challenge::process_created(pid).is_err(),
+            "premise: the connecting child's process is gone"
+        );
+        let stream = tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+            .await
+            .expect("the child's connection is queued")
+            .expect("accept");
+        assert_eq!(
+            admitted_process(stream).as_deref(),
+            Some("None"),
+            "a connection of this account whose process has ended is admitted, without its process"
+        );
+    }
+
+    /// ADR 0049 `## User isolation`: on Windows the pipe's owner-only descriptor decides the account, so a process of
+    /// this account whose process object this account may not open is admitted, without its process, so it holds no
+    /// lease. The child grants its object to SYSTEM alone, as an administrator's ssh session grants it only to
+    /// Administrators, SYSTEM and its own logon, which the daemon's filtered token is none of.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_process_of_this_account_this_daemon_may_not_open_is_admitted_without_it() {
+        const NAME: &str =
+            "server::listen::tests::a_process_of_this_account_this_daemon_may_not_open_is_admitted_without_it";
+        if let Some(pipe) = std::env::var_os(ADMISSION_PEER) {
+            sot_log::test_isolated::enter(NAME);
+            return closed_peer(&pipe);
+        }
+        let name = format!(r"\\.\pipe\sot-closed-peer-test-{}", std::process::id());
+        let listener = bind_session(&name).unwrap();
+        let (mut command, entry) = sot_log::test_isolated::test_command(NAME);
+        let mut child = command
+            .env(ADMISSION_PEER, &name)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("start the peer child");
+        let pid = child.id();
+        let accepted = tokio::time::timeout(std::time::Duration::from_secs(20), listener.accept()).await;
+        let denied = sot_log::identity::challenge::process_created(pid);
+        let process = match accepted {
+            Ok(Ok(stream)) => Some(admitted_process(stream)),
+            _ => None,
+        };
+        drop(listener);
+        let status =
+            sot_log::test_isolated::wait_within(&mut child, sot_log::test_isolated::ISOLATION_TIMEOUT);
+        entry.assert_once(pid);
+        assert!(status.success(), "the peer child: {status}");
+        let denied = denied.expect_err("premise: this account may not open the peer child's process");
+        assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied, "premise: {denied}");
+        assert_eq!(
+            process,
+            Some(Some("None".to_string())),
+            "a process of this account this daemon may not open is admitted, without its process"
+        );
+    }
+
+    /// The peer child of the test above: grants its own process object to SYSTEM alone, then opens `pipe` and holds it
+    /// until the parent's end closes.
+    #[cfg(windows)]
+    fn closed_peer(pipe: &std::ffi::OsStr) {
+        use std::io::Read;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SetSecurityInfo, SDDL_REVISION_1,
+            SE_KERNEL_OBJECT,
+        };
+        use windows_sys::Win32::Security::{
+            GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+            PSECURITY_DESCRIPTOR,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let sddl = sot_log::host::wide_null("D:P(A;;GA;;;SY)");
+        // SAFETY: the descriptor is built, read and freed here; the process handle is this process's pseudo-handle.
+        unsafe {
+            let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            let built = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                std::ptr::null_mut(),
+            );
+            assert_ne!(built, 0, "build the descriptor: {}", std::io::Error::last_os_error());
+            let (mut present, mut dacl, mut defaulted) = (0, std::ptr::null_mut::<ACL>(), 0);
+            assert_ne!(GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted), 0, "its DACL");
+            let set = SetSecurityInfo(
+                GetCurrentProcess(),
+                SE_KERNEL_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null(),
+            );
+            LocalFree(sd as _);
+            assert_eq!(set, 0, "grant this process's object to SYSTEM alone");
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut opened = loop {
+            match std::fs::OpenOptions::new().read(true).write(true).open(pipe) {
+                Err(e) if e.raw_os_error() == Some(231) && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                opened => break opened.expect("open the parent's pipe"),
+            }
+        };
+        let _ = opened.read(&mut [0u8; 1]);
+    }
+
     /// ADR 0049, User isolation: real peer lookup precedes the controlled account result and dispatch.
     #[cfg(unix)]
     #[tokio::test]
