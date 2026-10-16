@@ -121,7 +121,13 @@ impl Pluto {
         let (tx, mut ready, start) = self.ensure_supervisor().await?;
         let state = tokio::time::timeout(PLUTO_START_WAIT, ready.wait_for(|state| *state != Ready::Starting)).await;
         match state.map(|state| state.map(|state| state.clone())) {
-            Ok(Ok(Ready::Failed(why))) => return Err(anyhow!(why)),
+            Ok(Ok(Ready::Failed(why))) => {
+                // The failed start has read its stderr to its end (`await_ready`), so these are the child's last words.
+                return Err(match start.last_lines() {
+                    said if said.is_empty() => anyhow!(why),
+                    said => anyhow!("{why}; its last stderr lines: {said}"),
+                });
+            }
             Ok(Err(_)) => return Err(anyhow!("pluto sidecar ended before READY")),
             Ok(Ok(_)) => {}
             Err(_) => {
@@ -1189,6 +1195,31 @@ mod open_bound_tests {
         within(Duration::from_secs(5), "the next open starts a second server", || started().len() == 2).await;
         println!("pluto-bound: {text} after {took:?}; a second open started server {}", started().len());
         next.abort();
+        drop(pluto);
+    }
+
+    /// An open whose server fails its boot answers with the child's own last stderr lines, not only that its stdout
+    /// closed: the stand-in for julia writes Julia's error and exits before READY.
+    #[tokio::test]
+    async fn an_open_whose_server_fails_its_boot_answers_with_its_stderr() {
+        let name = "sidecars::pluto::open_bound_tests::an_open_whose_server_fails_its_boot_answers_with_its_stderr";
+        if !isolated(name, Duration::from_secs(60)) {
+            return;
+        }
+        let dir = tempfile::Builder::new().prefix("sot-pluto-fail-").tempdir().unwrap();
+        let stub = dir.path().join("stub-julia");
+        sot_log::test_exec::write_executable(
+            &stub,
+            "#!/bin/sh\necho 'ERROR: ArgumentError: Package Pluto not found' >&2\nexit 1\n".to_string(),
+        );
+        let script = dir.path().join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        let _pin = pin_env(&stub, dir.path());
+        let pluto = Pluto::new(dir.path().to_path_buf(), script);
+        let err = pluto.open_notebook(&dir.path().join("a.jl")).await.expect_err("a server that fails its boot");
+        let text = format!("{err:#}");
+        let said = "stdout closed before READY; its last stderr lines: ERROR: ArgumentError: Package Pluto not found";
+        assert!(text.ends_with(said), "{text}");
         drop(pluto);
     }
 
