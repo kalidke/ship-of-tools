@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Suite bootstrap policy and behavior of the actual shared await.
+# Suite bootstrap policy and behavior of the actual shared await and end_group.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -58,4 +58,39 @@ for want in 1 3 0; do
         echo "PASS await: $got; corrupted expectation rejected"
     ' _ "$SCRIPT_DIR" "$want" || rc=1
 done
+
+# Execute end_group itself on the stub daemons' watcher: a background subshell running a pipeline, started between
+# `set -m` and `set +m`. A row is STOP BODY RC LEFT: the stop (end_group, or `leader`, the base's kill of the subshell
+# alone, which Git Bash's missing pkill left as the whole stop), the body (`term`, or `ignore`: the members ignore
+# TERM), end_group's status, and whether a process of the group is left after the stop. The `leader` row is the check's
+# sensitivity: it must see the pipeline that stop leaves (then ended here). `ignore` runs await on a sleep that does
+# not wait, so its 600 tries pass at once.
+while read -r stop body want_rc want_left; do
+    bash -c '
+        . "$1/lib-wait.sh" || exit 2
+        stop="$2" body="$3" want_rc="$4" want_left="$5" ready="$6/ready-$2-$3"
+        rm -f -- "$ready"
+        set -m
+        if [ "$body" = ignore ]; then
+            ( trap "" TERM; sleep 30 | { : > "$ready"; while read -r _; do :; done; } ) &
+        else
+            ( sleep 30 | { : > "$ready"; while read -r _; do :; done; } ) &
+        fi
+        g=$!
+        set +m
+        await test -e "$ready" || { echo "FAIL end_group $stop $body: the pipeline never started"; kill -KILL -- "-$g"; exit 1; }
+        [ "$body" = term ] || sleep() { :; }
+        if [ "$stop" = leader ]; then kill "$g"; wait "$g" 2>/dev/null; rc=-; else end_group "$g"; rc=$?; fi
+        unset -f sleep
+        left=gone; group_gone "$g" || left=left
+        kill -KILL -- "-$g" 2>/dev/null
+        got="$rc $left"
+        [ "$got" = "$want_rc $want_left" ] || { echo "FAIL end_group $stop $body: $got expected $want_rc $want_left"; exit 1; }
+        echo "PASS end_group $stop $body: $got"
+    ' _ "$SCRIPT_DIR" "$stop" "$body" "$want_rc" "$want_left" "$T" || rc=1
+done <<'ROWS'
+end_group term 0 gone
+end_group ignore 1 gone
+leader term - left
+ROWS
 exit "$rc"
