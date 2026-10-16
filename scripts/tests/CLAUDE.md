@@ -69,7 +69,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `in-job.ps1`: `in-job.ps1 CMD [ARG...]` runs CMD in a Windows job object, the test job (Windows): every process CMD
   starts, at any depth, ends when the script does: when CMD exits (a stderr line counts the processes still running
   then), when the script is ended from outside, or when the ssh session it runs under ends (its nearest sshd ancestor
-  exits; exit 129). A CMD with no path is looked up on PATH, as the calling shell would (CreateProcess alone finds System32's WSL `bash` first). Exit status CMD's, 2 on a usage error. Run by hand and by the Windows box's runner; the `rust.yml` step "Parse PowerShell scripts" parses it.
+  exits; exit 129). A CMD with no path is looked up on PATH, as the calling shell would (CreateProcess alone finds System32's WSL `bash` first). Exit status CMD's, 2 on a usage error. Run by hand and by the Windows box's runner; the `rust.yml` step "Parse PowerShell scripts" parses it. Limits: the job's `CREATE_BREAKAWAY_FROM_JOB` always fails (the capsule spawn takes its degraded path, as on hosted CI), so the box does not exercise the breakaway path; words such as `--` and `-x:y` pass through `powershell.exe -File` parsing first and are untested, so a runner passes one script; its leftover line counts the processes and names none, and the exit status stays CMD's.
 - `rc-gate.sh`: the Linux candidate gate, run as the main process of its own test container (`in-container.sh`); a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy. It runs the daemon lifetime harness as rust.yml's Linux job does (`job_lifetime`), with `SOT_LIFETIME_KEEP_DIR` at `lifetime-keep` in its result folder, where a failed case keeps its daemon logs, answers and process lists.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
   `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test
@@ -297,7 +297,7 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   exit 2, without it. A Rust test binary's stderr goes to `<key>.stderr` beside its log, so the body check reads stdout only.
 - `rc-gate.sh`'s julia is the binary the runner's `julia` starts, asked once under the runner's HOME, so a juliaup
   launcher names its installation (on a job's PATH a launcher would install a Julia under each HOME a test makes);
-  summary.txt's third line names it, and the gate refuses, exit 2, when `julia` starts none. The Julia suites and the
+  summary.txt's third line names it (the sotd unit tests resolve juliaup's default channel under the real HOME before the PATH, so on a host whose `julia` is not that default the gate runs two Julias), and the gate refuses, exit 2, when `julia` starts none. The Julia suites and the
   lifetime harness run it, and the Rust jobs get its folder on their PATH, as rust.yml's test jobs get setup-julia's:
   a test daemon is handed it (`support::julia_binary`), so `daemon_boot`'s environment test and `support_checks` check
   that Julia, and `preview_order`'s daemon starts its kernel on it.
