@@ -107,18 +107,20 @@ fn pages(env: &Env) -> (PathBuf, PathBuf, PathBuf) {
 
 /// The field red (SITE-SURVIVES-REDIAL): a deck opened from a window was answered 404 after that window's link dropped
 /// and it redialed. A redial is the same window, so its pages serve on; another window's open takes none of them; a
-/// reopen still ends the page it replaces, so the old link is refused, never served the new page.
+/// reopen still ends the page it replaces, so the old link is refused, never served the new page. The old connection's
+/// end never ends what its redial holds when the redial connects first.
 #[tokio::test]
 async fn a_window_that_redials_keeps_its_pages() {
     let env = daemon("sitewin");
     let (deck, notes, rooted) = pages(&env);
-    let mut a = window(&env, "client-w", "window-i").await;
+    let mut a = window(&env, "client-w-old", "window-i").await;
     let page = open(&mut a, 2, &deck).await;
     let pool = open(&mut a, 3, &rooted).await;
     assert_eq!((status(&page).await, status(&pool).await), (200, 200), "the window's pages serve: {page} {pool}");
-    drop(a); // the window's link drops; the same window redials
-    until_gone(&env, "client-w").await;
+    // The window redials while its old connection is not yet reaped, then the old one ends: what the redial holds stays.
     let mut b = window(&env, "client-w", "window-i").await;
+    drop(a);
+    until_gone(&env, "client-w-old").await;
     let after = (status(&page).await, status(&pool).await);
     assert_eq!(after, (200, 200), "the pages the window opened before its redial: {page} {pool}");
     let mut j = window(&env, "client-j", "window-j").await;
