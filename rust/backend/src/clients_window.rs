@@ -1,6 +1,6 @@
 //! A window's state on this daemon, which outlives each of its connections: a window that redials (its link dropped,
-//! its computer woke) is the same window, so the REPL runs it numbered, when a person last used it, the row it shows
-//! and the pages it opened carry over to its new connection. A window is its hello's declared host and `instance` (ADR
+//! its computer woke) is the same window, so the REPL runs it numbered, when a person last used it and the pages it
+//! opened carry over to its new connection. A window is its hello's declared host and `instance` (ADR
 //! 0046 decision 1: the frontend makes the instance once and sends it on every connection). A connection whose hello
 //! names no instance is a window of its own, whose state ends with it.
 
@@ -26,10 +26,9 @@ pub(super) struct Window {
     /// that made this record, which names no other connection, so each connection of the window opens and keeps the
     /// same pages, and they end when the record is forgotten.
     sites: u64,
-    /// When a person last used the window (`fe.presence`) and the row it shows (`workspace.activate`): a new
-    /// connection of the window starts with them, and the connection that reports a new one sets both copies.
+    /// When a person last used the window (`fe.presence`): a new connection of the window starts with it, and the
+    /// connection that reports a new one sets both copies.
     last_person_input_at: Option<Instant>,
-    shown_row: Option<String>,
     /// How many of its connections are live, and when the last of them left.
     live: usize,
     left_at: Option<Instant>,
@@ -53,7 +52,7 @@ impl super::Clients {
 }
 
 impl Inner {
-    /// A connection of `info`'s window arrives: `info` takes the window's presence and row, and the connection gets
+    /// A connection of `info`'s window arrives: `info` takes the window's presence, and the connection gets
     /// the window's numbers and the owner of its pages. A connection of no window gets numbers of its own and owns its
     /// pages by its own serial.
     pub(super) fn arrive(&mut self, info: &mut ClientInfo) -> (CallerNumbers, u64) {
@@ -65,7 +64,6 @@ impl Inner {
         window.live += 1;
         window.left_at = None;
         info.last_person_input_at = window.last_person_input_at;
-        info.shown_row.clone_from(&window.shown_row);
         (window.numbers.clone(), window.sites)
     }
 
@@ -90,15 +88,15 @@ impl Inner {
         self.windows.remove(&key).map(|w| w.sites)
     }
 
-    /// `serial`'s connection reports its window's presence or row (`set`): it lands on the connection and on its
-    /// window. A no-op for an unregistered serial.
-    pub(super) fn report(&mut self, serial: u64, set: impl Fn(&mut Option<Instant>, &mut Option<String>)) {
+    /// `serial`'s connection reports a person at its window at `at`: it lands on the connection and on its window. A
+    /// no-op for an unregistered serial.
+    pub(super) fn report(&mut self, serial: u64, at: Instant) {
         let Some(info) = self.by_conn.get_mut(&serial) else {
             return;
         };
-        set(&mut info.last_person_input_at, &mut info.shown_row);
+        info.last_person_input_at = Some(at);
         if let Some(window) = window_key(info).and_then(|key| self.windows.get_mut(&key)) {
-            set(&mut window.last_person_input_at, &mut window.shown_row);
+            window.last_person_input_at = Some(at);
         }
     }
 }
@@ -148,24 +146,23 @@ mod tests {
         }
     }
 
-    /// A redialed window starts as it was: used when a person last used it, showing the row it showed.
+    /// A redialed window starts as it was: used when a person last used it.
     #[test]
-    fn a_redialed_window_keeps_its_presence_and_row() {
+    fn a_redialed_window_keeps_its_presence() {
         let clients = Clients::new();
         let first = connect(&clients, Some("w"));
         clients.touch_person_input(first.serial());
-        clients.show_row(first.serial(), "ws-x".into());
         let used = clients.snapshot_with_active().clients[0].last_person_input_at;
         assert!(used.is_some());
         drop(first);
         let again = connect(&clients, Some("w"));
         let snap = clients.snapshot_with_active();
-        assert_eq!((snap.clients[0].last_person_input_at, snap.clients[0].shown_row.as_deref()), (used, Some("ws-x")));
+        assert_eq!(snap.clients[0].last_person_input_at, used);
         assert_eq!(snap.active().map(|a| a.serial), Some(again.serial()), "still the window in use");
         let alone = connect(&clients, None);
         let snap = clients.snapshot_with_active();
         let row = snap.clients.iter().find(|c| c.serial == alone.serial()).expect("its row");
-        assert_eq!((row.last_person_input_at, row.shown_row.as_deref()), (None, None), "a connection of no window");
+        assert_eq!(row.last_person_input_at, None, "a connection of no window");
     }
 
     /// Of a window's two live connections (an old one not yet reaped and its redial), the newer gets what goes to the
@@ -175,11 +172,10 @@ mod tests {
         let clients = Clients::new();
         let old = connect(&clients, Some("w"));
         clients.touch_person_input(old.serial());
-        clients.show_row(old.serial(), "ws-x".into());
         let new = connect(&clients, Some("w"));
         let snap = clients.snapshot_with_active();
         assert_eq!(snap.active().map(|a| a.serial), Some(new.serial()));
-        assert_eq!(snap.show_target(Some("ws-x")).map(|(to, why)| (to.serial, why)), Some((new.serial(), "row")));
+        assert_eq!(snap.in_use().map(|(to, why)| (to.serial, why)), Some((new.serial(), "last-used")));
     }
 
     /// The roster remembers at most `AWAY` windows with no live connection, forgetting the one away longest; a window

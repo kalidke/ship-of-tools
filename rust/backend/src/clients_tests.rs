@@ -300,7 +300,6 @@
             name: Some(handle.to_string()),
             last_person_input_at,
             sessions: None,
-            shown_row: None,
         }
     }
 
@@ -515,7 +514,7 @@ mod fe_command_send_tests {
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
@@ -546,7 +545,7 @@ mod fe_command_send_tests {
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
@@ -580,7 +579,7 @@ mod fe_command_send_tests {
         let idle_b = clients.register("c-idle-b", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-b"));
@@ -607,7 +606,7 @@ mod fe_command_send_tests {
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-explicit")), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-explicit")), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-explicit"));
@@ -630,7 +629,7 @@ mod fe_command_send_tests {
         let _target = clients.register("c-target", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-target".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-target")), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-target")), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-target"));
@@ -652,7 +651,7 @@ mod fe_command_send_tests {
         let _idle = clients.register("c-idle", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out), None);
@@ -672,7 +671,7 @@ mod fe_command_send_tests {
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
