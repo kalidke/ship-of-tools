@@ -5,7 +5,7 @@
     # this file runs under (CI step `shell: powershell`). C# 5 syntax only.
     Write-Host "`n=== 7-8 setup. compile the fake daemon ===" -ForegroundColor Cyan
     if ($null -eq $envSaved) { $envSaved = @{} }
-    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_ACCEPT_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR')) {
+    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_ACCEPT_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR', 'FAKE_SOTD_SAME')) {
         if (-not $envSaved.ContainsKey($k)) { $envSaved[$k] = [Environment]::GetEnvironmentVariable($k) }
     }
     $fakeLocalAppData = Join-Path $root 'fakelocal'
@@ -87,6 +87,13 @@ public static class FakeSotd
 
     public static int Main(string[] a)
     {
+        if (a.Length == 3 && a[0] == "same-version")
+        {
+            // FAKE_SOTD_SAME: the exit of `sotd same-version` (0 this version, 3 another, printed; section 7d).
+            int same = EnvInt("FAKE_SOTD_SAME", 0);
+            if (same == 3) { Console.WriteLine("0.0.0-older"); }
+            return same;
+        }
         string stdinLog = Environment.GetEnvironmentVariable("FAKE_SOTD_STDIN_LOG");
         if (a.Length == 3 && a[0] == "stdio-bridge" && a[1] == "--endpoint" && !string.IsNullOrEmpty(stdinLog))
         {
@@ -216,7 +223,7 @@ public static class FakeSotd
     Check 'the fake daemon compiles' $compiled "Add-Type failed: $compileErr"
 
     function Clear-FakeEnv {
-        foreach ($k in @('FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_ACCEPT_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR')) {
+        foreach ($k in @('FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_ACCEPT_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR', 'FAKE_SOTD_SAME')) {
             Remove-Item "Env:\$k" -ErrorAction SilentlyContinue
         }
     }

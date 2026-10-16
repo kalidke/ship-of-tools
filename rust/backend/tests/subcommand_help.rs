@@ -69,6 +69,7 @@ fn help_never_acts() {
         &["ancestors", "--help"],
         &["stdio-bridge", "--help"],
         &["status", "--help"],
+        &["same-version", "--help"],
         &["topology", "--help"],
         &["topology", "plan", "--help"],
         &["topology", "status", "--help"],

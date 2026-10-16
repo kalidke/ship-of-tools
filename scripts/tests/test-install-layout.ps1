@@ -7,13 +7,16 @@
 # check, so no git fixture is needed here -- CI's ParseFile gate
 # (.github/workflows/rust.yml) already syntax-covers launch-sot.ps1 and
 # install-shortcut.ps1, so this file's own Section 0 only re-parses ITSELF
-# and the file it dot-sources.
+# and the files it dot-sources.
 #
 # Run under WINDOWS POWERSHELL 5.1 (see the same note in test-sot-apply.ps1
 # and sot-install-layout.ps1's own header -- BOM-less .ps1, ASCII-only
 # string literals).
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\test-install-layout.ps1
+#
+# Section 5 runs sot-freshness.ps1's Invoke-FreshnessPass for its comm decision
+# (a git fixture there: the stamp is compared with the checkout's commit).
 
 param([string]$SotdPath)
 
@@ -40,6 +43,7 @@ try {
     Write-Host "`n=== 0. syntax parse ===" -ForegroundColor Cyan
     foreach ($f in @(
             (Join-Path $repoRoot 'scripts\sot-install-layout.ps1'),
+            (Join-Path $repoRoot 'scripts\sot-freshness.ps1'),
             (Join-Path $repoRoot 'scripts\tests\test-install-layout.ps1')
         )) {
         $errs = $null
@@ -190,6 +194,46 @@ try {
     finally {
         foreach ($key in $trustKeys) { [Environment]::SetEnvironmentVariable($key, $savedTrustEnv[$key], 'Process') }
         foreach ($key in $savedSot.Keys) { [Environment]::SetEnvironmentVariable($key, $savedSot[$key], 'Process') }
+    }
+
+    Write-Host "`n=== 5. Invoke-FreshnessPass: comm follows the checkout's commit by its stamp ===" -ForegroundColor Cyan
+    # A Windows field box, 2026-10-16: an apply made outside the launcher left ~/.sot-comm at the previous tag's
+    # scripts, because the pass ran update_comm only when THIS launch had applied. The stamp update_comm writes last
+    # (VERSION, the short commit with -dirty for a changed tree) decides now. update_comm, the instantiate and the log
+    # are stand-ins.
+    $savedComm5 = $env:SOT_COMM_HOME
+    $savedEAP5 = $ErrorActionPreference
+    try {
+        . (Join-Path $repoRoot 'scripts\sot-freshness.ps1')
+        function Initialize-InstallLayout { }
+        function Invoke-CommUpdate { $script:comm5 += @('update') }
+        function Write-SupLog([string]$Message) { $script:comm5 += @($Message) }
+        $co5 = Join-Path $root 'co5'
+        New-Item -ItemType Directory -Force -Path $co5 | Out-Null
+        $ErrorActionPreference = 'Continue'
+        git -C $co5 init -q 2>&1 | Out-Null
+        git -C $co5 -c user.name=t -c user.email=t@t commit -q --allow-empty -m c 2>&1 | Out-Null
+        $sha5 = "$(git -C $co5 rev-parse --short=9 HEAD 2>$null)".Trim()
+        $ErrorActionPreference = $savedEAP5
+        Check '5: the fixture checkout has a commit' ($sha5.Length -ge 9) "got '$sha5'"
+        $repo = Resolve-Path $co5
+        $env:SOT_COMM_HOME = Join-Path $root 'comm5'
+        New-Item -ItemType Directory -Force -Path (Join-Path $env:SOT_COMM_HOME 'bin') | Out-Null
+        $script:sotPinned = $true
+        $script:sotJustApplied = $false
+        $NoUpdate = $false
+        $Local = $false
+        foreach ($row in @(@('b9766d678-dirty', 1), @("$sha5-dirty", 0), @($sha5, 0))) {
+            Set-Content -LiteralPath (Join-Path $env:SOT_COMM_HOME 'VERSION') -Value $row[0] -NoNewline
+            $script:comm5 = @()
+            Invoke-FreshnessPass
+            $ran5 = @($script:comm5 | Where-Object { $_ -ceq 'update' }).Count
+            Check "5: a stamp of $($row[0]) at checkout $sha5 runs update_comm $($row[1]) time(s)" ($ran5 -eq $row[1]) "log: $($script:comm5 -join ' | ')"
+        }
+    } catch { Check '5: section ran' $false $_.Exception.Message }
+    finally {
+        $ErrorActionPreference = $savedEAP5
+        $env:SOT_COMM_HOME = $savedComm5
     }
 
 } finally {

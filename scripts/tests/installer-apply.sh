@@ -375,6 +375,75 @@ check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
 check "no .prev copy was written" "gone" "$([ -e "$d/prefix/bin/sotd.prev" ] && echo exists || echo gone)"
 
 # ---------------------------------------------------------------------------
+case_start "the ensure replaces a daemon an update left on the old binary (sot_daemon_current)"
+# An apply that ran while the daemon ran swaps the binary and leaves the process (a Windows field box, 2026-10-16: an
+# rc1 daemon kept serving after rc9.13 landed, and every launch kept it because its pipe answered). The stand-in sotd is
+# a daemon that listens on its --socket and logs its pid, a bridge that connects, and a same-version that answers
+# STUB_THEIRS (exit 3) or nothing (exit 0). The stand-in ps lists this account's processes as the old daemon's: the
+# ensure finds it there by its socket and ends it by its pid.
+d="$WORK/stale"; mkdir -p "$d/bin" "$d/home" "$d/prefix"
+cat > "$d/bin/sotd" <<'PY'
+#!/usr/bin/env python3
+import os, socket, sys
+a = sys.argv[1:]
+if a[:1] == ["stdio-bridge"]:
+    try:
+        socket.socket(socket.AF_UNIX).connect(a[2][len("unix:"):])
+    except OSError:
+        sys.exit(1)
+    sys.exit(0)
+if a[:1] == ["same-version"]:
+    if os.environ.get("STUB_THEIRS"):
+        print(os.environ["STUB_THEIRS"])
+        sys.exit(3)
+    sys.exit(0)
+path = a[a.index("--socket") + 1]
+if os.path.exists(path):
+    os.unlink(path)
+s = socket.socket(socket.AF_UNIX)
+s.bind(path)
+s.listen(8)
+with open(os.environ["STUB_LOG"], "a") as log:
+    log.write("daemon %d\n" % os.getpid())
+while True:
+    s.accept()[0].close()
+PY
+chmod +x "$d/bin/sotd"
+: > "$d/log"
+( STUB_LOG="$d/log" "$d/bin/sotd" --socket "$d/s.sock" --project-root "$d/home" --label sot >/dev/null 2>&1 & )
+for _ in $(seq 1 100); do grep -q '^daemon ' "$d/log" && break; sleep 0.05; done
+old="$(sed -n 's/^daemon //p' "$d/log" | head -1)"
+# Before it, a daemon (a pid no process has) on a socket that only begins with this one, which must be left alone.
+cat > "$d/bin/ps" <<PS
+#!/bin/sh
+echo "999999999 sotd $d/bin/sotd --socket $d/s.sock.old"
+echo "$old sotd $d/bin/sotd --socket $d/s.sock --project-root $d/home --label sot"
+PS
+chmod +x "$d/bin/ps"
+state() {  # <pid>: alive, or gone once it has exited (a zombie not yet reaped is gone)
+    case "$(ps -o stat= -p "$1" 2>/dev/null)" in ''|Z*) echo gone ;; *) echo alive ;; esac
+}
+stale_ensure() {  # [STUB_THEIRS]: run the ensure once; its rc and stderr in ST_RC and ST_ERR
+    ST_RC=0
+    ( HOME="$d/home" PATH="$d/bin:$TOOLS" STUB_LOG="$d/log" STUB_THEIRS="${1:-}" \
+        bash -c '. "$1"; sot_daemon_ensure "$2" "$3" "$4"' ensure "$LIB" "$d/prefix" "$d/bin/sotd" "$d/s.sock" \
+        2> "$d/err" ) || ST_RC=$?
+    ST_ERR="$(cat "$d/err")"
+}
+stale_ensure
+check "a daemon of this version is kept" "0 1 alive" \
+    "$ST_RC $(grep -c '^daemon ' "$d/log") $(state "$old")"
+stale_ensure 0.6.6-rc1
+new="$(sed -n 's/^daemon //p' "$d/log" | tail -1)"
+check "a daemon of another version is ended and this version's started in its place" "0 gone 2 up" \
+    "$ST_RC $(state "$old") $(grep -c '^daemon ' "$d/log") $(sot_socket_open "$d/bin/sotd" "$d/s.sock" && echo up || echo down)"
+case "$ST_ERR" in
+    *"the backend on $d/s.sock runs 0.6.6-rc1, not the version of $d/bin/sotd: replacing it"*) check "the ensure says which version it replaced" ok ok ;;
+    *) check "the ensure says which version it replaced" "a replacing line" "$ST_ERR" ;;
+esac
+for p in "$old" "$new"; do kill "$p" 2>/dev/null || true; done
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-apply: all checks passed\n'
