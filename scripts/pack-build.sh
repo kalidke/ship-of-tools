@@ -22,9 +22,14 @@ command -v x86_64-linux-musl-gcc >/dev/null || command -v musl-gcc >/dev/null \
 [ -n "$(git branch -r --contains HEAD)" ] \
     || { echo "pack-build: HEAD is on no remote-tracking branch; push the line first" >&2; exit 1; }
 
+# A version is the release artifact iff it has no `+`: an ambient SOT_BUILD_ORIGIN=ci must not make a local pack one.
+unset SOT_BUILD_ORIGIN
+
 mkdir -p "$1"
 out="$(cd "$1" && pwd)"
-target="${CARGO_TARGET_DIR:-$PWD/rust/target}"
+target="${CARGO_TARGET_DIR:-rust/target}"
+mkdir -p "$target"
+target="$(cd "$target" && pwd)"
 commit="$(git rev-parse HEAD)"
 
 # The same commands as release.yml's "Build release binaries" and "Build sotd + sot-capsule (musl static, linux)".
