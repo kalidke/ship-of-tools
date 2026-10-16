@@ -519,7 +519,7 @@ fn not_ended_status_line() {
 
     let (tx, rx) = oneshot::channel();
     let mut l = Leaving::new(LeaveIntent::Close, 0, vec![(h.clone(), rx)], t0);
-    assert_eq!(l.line().as_deref(), Some("closing: waiting for this computer's backend to end the sessions"));
+    assert_eq!(l.line().as_deref(), Some("closing: waiting for this computer's backend; it ends the sessions only when no other window is open on this computer"));
     tx.send(LeaveOutcome::Replied(2)).unwrap();
     assert_eq!(l.poll(t0), LeaveStep::Show);
     assert_eq!(l.line().unwrap(), "2 sessions could not be ended and are still running");
@@ -539,7 +539,7 @@ fn not_ended_status_line() {
 
     let (_tx, rx) = oneshot::channel::<LeaveOutcome>();
     let mut l = Leaving::new(LeaveIntent::Keep, 0, vec![(h.clone(), rx)], t0);
-    assert_eq!(l.line().as_deref(), Some("closing: waiting for this computer's backend to keep the sessions running"));
+    assert_eq!(l.line().as_deref(), Some("closing: waiting for this computer's backend to keep the sessions running; killing the window before it answers ends them when no other window is open"));
     assert_eq!(l.poll(t0 + s(10)), LeaveStep::Show);
     assert_eq!(l.line().as_deref(), Some(LEAVE_UNCONFIRMED_KEEP));
 

@@ -39,8 +39,10 @@ const LEAVE_UNCONFIRMED_CLOSE: &str =
     "closing: this computer's backend did not confirm the sessions ended";
 const LEAVE_UNCONFIRMED_KEEP: &str =
     "keep was not confirmed: this computer's backend may have ended the sessions";
-const LEAVE_WAIT_CLOSE: &str = "closing: waiting for this computer's backend to end the sessions";
-const LEAVE_WAIT_KEEP: &str = "closing: waiting for this computer's backend to keep the sessions running";
+const LEAVE_WAIT_CLOSE: &str =
+    "closing: waiting for this computer's backend; it ends the sessions only when no other window is open on this computer";
+const LEAVE_WAIT_KEEP: &str =
+    "closing: waiting for this computer's backend to keep the sessions running; killing the window before it answers ends them when no other window is open";
 
 /// What the daemon sent back to the hello and the lease request: the lease's own reply, or the hello's refusal.
 enum Replies {

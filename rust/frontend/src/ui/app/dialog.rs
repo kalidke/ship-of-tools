@@ -218,7 +218,8 @@ mod tests {
     /// middle of the window, saying what it waits for, then how it ended, whole; it has no answers.
     #[test]
     fn the_close_wait_and_its_outcome_sit_in_the_middle_of_the_window() {
-        let lines = ["closing: waiting for this computer's backend to end the sessions",
+        let lines = ["closing: waiting for this computer's backend; it ends the sessions only when no other window is open on this computer",
+            "closing: waiting for this computer's backend to keep the sessions running; killing the window before it answers ends them when no other window is open",
             "2 sessions could not be ended and are still running\nclosing: this computer's backend did not confirm the sessions ended"];
         for area in [Rect::new(0, 0, 200, 56), Rect::new(0, 0, 120, 36), Rect::new(0, 0, 80, 24)] {
             for line in lines {
