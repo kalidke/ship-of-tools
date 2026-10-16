@@ -68,7 +68,21 @@ fn cmp_pre(a: &[String], b: &[String]) -> Ordering {
     }
 }
 
+/// A pre-release identifier `<stem>-dev` is the line's stamp between two tags (`14-dev` in `0.6.6-rc9.14-dev`): it
+/// compares as its stem, and below it on a tie, so `rc9.13 < rc9.14-dev < rc9.14`.
 fn cmp_ident(x: &str, y: &str) -> Ordering {
+    let ((xs, xdev), (ys, ydev)) = (dev_stem(x), dev_stem(y));
+    cmp_plain(xs, ys).then(ydev.cmp(&xdev))
+}
+
+fn dev_stem(s: &str) -> (&str, bool) {
+    match s.strip_suffix("-dev") {
+        Some(stem) if !stem.is_empty() => (stem, true),
+        _ => (s, false),
+    }
+}
+
+fn cmp_plain(x: &str, y: &str) -> Ordering {
     match (x.parse::<u64>(), y.parse::<u64>()) {
         (Ok(a), Ok(b)) => a.cmp(&b),
         (Ok(_), Err(_)) => Ordering::Less, // numeric identifiers rank lower
@@ -218,5 +232,33 @@ mod tests {
         assert_eq!(compare_versions("0.2", "0.2.0"), Ordering::Less); // two components → unparsable
         assert_eq!(compare_versions("0.2.0.1", "0.2.0"), Ordering::Less); // four → unparsable
         assert_eq!(compare_versions("junk", "also-junk"), Ordering::Equal);
+    }
+
+    #[test]
+    fn semver_dev_line_sits_between_its_tags() {
+        // `<stem>-dev` is the line's stamp between two tags: it compares as its
+        // stem, and below it on a tie.
+        let table = [
+            ("0.6.6-rc9.13", "0.6.6-rc9.14-dev+abc"),
+            ("0.6.6-rc9.14-dev+abc", "0.6.6-rc9.14"),
+            ("0.6.6-rc9.14", "0.6.6-rc9.14.1"),
+            ("0.6.6-rc9.14-dev", "0.6.6-rc9.14.1"),
+            ("0.6.6-rc9", "0.6.6-rc9.1-dev"),
+            ("0.6.6-rc9.1-dev", "0.6.6-rc9.1"),
+            ("0.6.7-rc.1", "0.6.7-rc.2-dev"),
+            ("0.6.7-rc.2-dev", "0.6.7-rc.2"),
+            ("0.6.6", "0.6.7-dev"),
+            ("0.6.7-dev", "0.6.7-rc.1"),
+            ("0.6.7-rc.1", "0.6.7"),
+            ("0.6.6-rc9.15-dev", "0.6.6"),
+        ];
+        for (lo, hi) in table {
+            assert_eq!(compare_versions(lo, hi), Ordering::Less, "{lo} < {hi}");
+            assert_eq!(compare_versions(hi, lo), Ordering::Greater, "{hi} > {lo}");
+        }
+        assert_eq!(
+            compare_versions("0.6.6-rc9.14-dev+a", "0.6.6-rc9.14-dev+b"),
+            Ordering::Equal
+        );
     }
 }
