@@ -1,10 +1,10 @@
 //! One keypress, from the key event to the layer that takes it.
 
 use super::*;
-use std::ops::ControlFlow::{self, Continue};
+use std::ops::ControlFlow::{self, Break, Continue};
 use winit::event::KeyEvent;
 use winit::keyboard::ModifiersState;
-use crate::ui::input::global_keys::{confirm_quit_key, drawer_chords, help_key, layout_chords, navigation_chords, scroll_line_chords, table_scroll_key, window_chords};
+use crate::ui::input::global_keys::{confirm_quit_key, drawer_chords, help_key, layout_chords, navigation_chords, quit_chord, scroll_line_chords, table_scroll_key, window_chords};
 use crate::ui::nav::keys::nav_tree_key;
 use crate::ui::drawer::keys::drawer_pane_key;
 use crate::ui::preview::keys::preview_key;
@@ -79,7 +79,12 @@ fn prepare_keyboard_input(state: &mut State, modifiers: ModifiersState, event: &
 /// Routes one keypress through the layers in their fixed order; `Break` ends the keypress, `Continue` hands it on.
 fn route_key(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>, label: String, context: help::Context, was_destroy_pending: Option<WsKey>) -> ControlFlow<()> {
     let KeyPress { event, ctrl, alt, shift, super_, .. } = key;
-    help_key(state, key, context)?;
+    // Any key ends a stayed relaunch's dialog and does nothing else.
+    if dismiss_stay(&mut state.relaunch_stayed) {
+        state.window.request_redraw();
+        return Break(());
+    }
+    help_key(state, key, context.clone())?;
 
     tracing::info!(
         ?event.logical_key,
@@ -92,6 +97,7 @@ fn route_key(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>,
         "key pressed"
     );
     window_chords(state, key, label.clone())?;
+    quit_chord(state, event_loop, key, context)?;
     navigation_chords(state, key, label.clone())?;
     // Maximise / restore the focused pane via Alt+= (maximise)
     // and Esc (restore) — defaults, overridable in the
@@ -115,7 +121,7 @@ fn route_key(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>,
     // tree so the user is never stranded with no input target.
     match state.focus {
         PaneFocus::NavTree => {
-            nav_tree_key(state, event_loop, key, label.clone(), was_destroy_pending)?;
+            nav_tree_key(state, key, label.clone(), was_destroy_pending)?;
         }
         PaneFocus::Repl => {
             drawer_pane_key(state, key, label.clone())?;

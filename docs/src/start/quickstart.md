@@ -135,8 +135,8 @@ See [How agents use the REPL](@ref agents-repl).
 - In Sessions mode, `Shift+D` pressed twice on a session's row ends that
   session; any other command in between cancels.
 - Closing the window ends the backend on this computer and every session it
-  runs; the next window starts with none. `Ctrl+Q`, with the navigation pane
-  focused, asks first, in a dialog in the middle of the window: **Keep the
+  runs; the next window starts with none. `Ctrl+Q`, in any pane but the agent
+  and the Terminal drawer, asks first, in a dialog in the middle of the window: **Keep the
   daemon and sessions running?** No is the
   default; `Tab` selects Yes, `Enter` confirms, `Esc` cancels. See
   [What keeps running](running.md).

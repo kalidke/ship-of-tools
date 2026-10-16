@@ -629,6 +629,8 @@ struct State {
     /// handler routes keystrokes into the prompt before any nav shortcut and
     /// the chrome shows the prompt on the status line.
     nav_prompt: Option<NavPrompt>,
+    /// A relaunch stayed open (`stay_open`): the close dialog shows the lease notice until a key (`dismiss_stay`).
+    relaunch_stayed: bool,
     /// Node id of a file or directory just created via the Ctrl+N prompt,
     /// awaiting its `file.write` (file) or `dir.create` (dir) reply. When
     /// that reply lands matching this id, we refresh the parent dir's

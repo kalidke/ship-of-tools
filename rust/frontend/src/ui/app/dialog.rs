@@ -11,6 +11,8 @@ use ratatui::layout::{Position, Rect};
 pub(in crate::ui) enum CloseDialogText<'a> {
     Ask { keep: bool, notice: Option<&'a str> },
     Leave(&'a str),
+    /// A relaunch that stayed open: the lease notice saying why, until any key.
+    Stayed(&'a str),
 }
 
 /// The close dialog in cells: the panel its backing covers; each row's column, row, text and style; and, while it
@@ -22,16 +24,20 @@ pub(in crate::ui) struct CloseDialog {
     pub(in crate::ui) answers: Option<[Rect; 2]>,
 }
 
+/// What a key does to a stayed relaunch's dialog, said in the dialog.
+const STAYED_KEYS: &str = "any key closes this";
+
 /// The widest the dialog's text runs, in cells.
 const TEXT_MAX: u16 = 60;
 
-/// The dialog an open quit prompt or a leave with a line shows; the question comes first. Every other prompt is the
-/// nav pane's own.
+/// The dialog an open quit prompt, a leave with a line or a relaunch that stayed shows, in that order. Every other
+/// prompt is the nav pane's own.
 pub(in crate::ui) fn close_dialog_text<'a>(prompt: Option<&NavPrompt>, notice: Option<&'a str>,
-    leave_line: Option<&'a str>) -> Option<CloseDialogText<'a>> {
+    leave_line: Option<&'a str>, relaunch_stayed: bool) -> Option<CloseDialogText<'a>> {
     match (prompt, leave_line) {
         (Some(NavPrompt::ConfirmQuit { keep }), _) => Some(CloseDialogText::Ask { keep: *keep, notice }),
         (_, Some(line)) => Some(CloseDialogText::Leave(line)),
+        _ if relaunch_stayed => notice.map(CloseDialogText::Stayed),
         _ => None,
     }
 }
@@ -67,6 +73,12 @@ pub(in crate::ui) fn close_dialog(area: Rect, text: CloseDialogText<'_>) -> Clos
         CloseDialogText::Leave(line) => {
             body.extend(wrapped(line, attention));
             ("Closing the window", None)
+        }
+        CloseDialogText::Stayed(notice) => {
+            body.extend(wrapped(notice, attention));
+            body.push(blank.clone());
+            body.extend(wrapped(STAYED_KEYS, style(Color::DarkGray, false)));
+            ("The window stayed open", None)
         }
     };
     body.push(blank);
@@ -110,12 +122,18 @@ pub(in crate::ui) fn quit_prompt_click(answers: Option<[Rect; 2]>, left_at: Opti
     step
 }
 
+/// A key while a stayed relaunch's dialog shows ends it; the key does nothing else. True when it was showing.
+pub(in crate::ui) fn dismiss_stay(relaunch_stayed: &mut bool) -> bool {
+    std::mem::take(relaunch_stayed)
+}
+
 impl State {
     /// The close dialog this frame shows, on the chrome's grid (`close_dialog_text`).
     pub(in crate::ui) fn close_dialog(&self) -> Option<CloseDialog> {
         let size = self.terminal.size().ok()?;
         let line = self.leaving.as_ref().and_then(crate::lease::Leaving::line);
-        let text = close_dialog_text(self.nav_prompt.as_ref(), self.leases.notice(), line.as_deref())?;
+        let text = close_dialog_text(self.nav_prompt.as_ref(), self.leases.notice(), line.as_deref(),
+            self.relaunch_stayed)?;
         Some(close_dialog(Rect::new(0, 0, size.width, size.height), text))
     }
 }
@@ -208,12 +226,12 @@ mod tests {
     fn the_dialog_shows_the_question_or_the_leave() {
         let quit = NavPrompt::ConfirmQuit { keep: true };
         let other = NavPrompt::ConfirmDelete { node_id: "files:a".into(), label: "a".into() };
-        assert_eq!(close_dialog_text(Some(&quit), Some("n"), Some("l")),
+        assert_eq!(close_dialog_text(Some(&quit), Some("n"), Some("l"), false),
             Some(CloseDialogText::Ask { keep: true, notice: Some("n") }));
-        assert_eq!(close_dialog_text(Some(&other), None, Some("l")), Some(CloseDialogText::Leave("l")));
-        assert_eq!(close_dialog_text(None, Some("n"), Some("l")), Some(CloseDialogText::Leave("l")));
-        assert_eq!(close_dialog_text(Some(&other), Some("n"), None), None);
-        assert_eq!(close_dialog_text(None, Some("n"), None), None);
+        assert_eq!(close_dialog_text(Some(&other), None, Some("l"), false), Some(CloseDialogText::Leave("l")));
+        assert_eq!(close_dialog_text(None, Some("n"), Some("l"), false), Some(CloseDialogText::Leave("l")));
+        assert_eq!(close_dialog_text(Some(&other), Some("n"), None, false), None);
+        assert_eq!(close_dialog_text(None, Some("n"), None, false), None);
     }
 
     /// A left press on an answer gives that answer; a press anywhere else, or any other button, cancels.
@@ -236,5 +254,34 @@ mod tests {
             }
         }
         assert_eq!(quit_prompt_click(None, Some((1, 1))), QuitPromptStep::Cancel);
+    }
+
+    /// A relaunch that stayed open shows its reason in the same centred panel, whole, with no answers, only while
+    /// it is flagged and a notice stands; the question and a leave's line come before it; any key ends it, once.
+    #[test]
+    fn a_relaunch_that_stays_says_why_in_the_dialog_until_a_key() {
+        let notice = "relaunch not done: this computer's backend did not answer the window lease in time, so the \
+            window stayed open; ask for the relaunch again";
+        assert_eq!(close_dialog_text(None, Some(notice), None, true), Some(CloseDialogText::Stayed(notice)));
+        assert_eq!(close_dialog_text(None, Some(notice), None, false), None);
+        assert_eq!(close_dialog_text(None, None, None, true), None);
+        let quit = NavPrompt::ConfirmQuit { keep: false };
+        assert_eq!(close_dialog_text(Some(&quit), Some(notice), None, true),
+            Some(CloseDialogText::Ask { keep: false, notice: Some(notice) }));
+        assert_eq!(close_dialog_text(None, Some(notice), Some("l"), true), Some(CloseDialogText::Leave("l")));
+        for area in [Rect::new(0, 0, 200, 56), Rect::new(0, 0, 120, 36), Rect::new(0, 0, 80, 24)] {
+            let d = close_dialog(area, CloseDialogText::Stayed(notice));
+            assert_centred(area, &d);
+            assert!(d.answers.is_none());
+            let rows = painted(area, &d);
+            let all = rows.iter().map(|r| r.trim()).collect::<Vec<_>>().join(" ");
+            for want in ["The window stayed open", notice, STAYED_KEYS] {
+                let words: Vec<&str> = want.split_whitespace().collect();
+                assert!(all.contains(&words.join(" ")), "{area:?}: {want:?} is not in {rows:#?}");
+            }
+        }
+        let mut shown = true;
+        assert!(dismiss_stay(&mut shown) && !shown, "a key ends it");
+        assert!(!dismiss_stay(&mut shown), "and only once");
     }
 }

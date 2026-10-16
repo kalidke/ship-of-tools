@@ -217,6 +217,7 @@ impl State {
     /// in; with none, at once. The window never ends the drawer's session
     /// itself: the daemon's Close ends it, and a Keep keeps it.
     pub(in crate::ui) fn leave(&mut self, event_loop: &ActiveEventLoop, intent: LeaveIntent, code: i32) {
+        self.relaunch_stayed = false;
         match begin_leave(&self.leases, &mut self.nav_prompt, &mut self.leaving, &mut self.should_exit,
             intent, code, std::time::Instant::now()) {
             LeaveEffect::Redraw => self.window.request_redraw(),
@@ -232,9 +233,11 @@ impl State {
     /// request, and a later grant would end this computer's sessions, so the window stays open. False when a grant
     /// took the leave first.
     pub(in crate::ui) fn stay_open(&mut self, now: std::time::Instant) -> bool {
+        let handover = self.leaving.as_ref().is_some_and(|l| l.intent == LeaveIntent::Handover);
         let stayed = confirm_stay(&self.leases, &mut self.nav_prompt, &mut self.leaving, &mut self.should_exit,
             &mut self.status, now);
         if stayed {
+            self.relaunch_stayed = handover;
             // The question asked again shows only while the tree has focus (`set_focus`).
             if matches!(self.nav_prompt, Some(NavPrompt::ConfirmQuit { .. })) {
                 self.set_focus(PaneFocus::NavTree);
