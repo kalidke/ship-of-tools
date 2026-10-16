@@ -121,7 +121,7 @@ pub(super) async fn handle_connection<R, W>(
     clients: Clients,
     topology_store: Arc<crate::topology::store::TopologyStore>,
     topo_changed_tx: broadcast::Sender<crate::topology::store::TopologyChanged>,
-    peer: sot_log::identity::challenge::PeerAuthenticated,
+    peer: Option<sot_log::identity::challenge::PeerAuthenticated>,
     leases: Arc<crate::lifecycle::lease::Leases>,
 ) -> Result<()>
 where
@@ -195,7 +195,7 @@ where
 async fn hand_off<R, W>(
     mut rx: tokio::io::BufReader<R>, mut tx: W, hello_id: u64, hello: Admitted, session: &Session,
     files_mode: &FilesMode, label: &Option<String>, workspaces: &Workspaces, clients: &Clients,
-    peer: sot_log::identity::challenge::PeerAuthenticated, leases: &crate::lifecycle::lease::Leases,
+    peer: Option<sot_log::identity::challenge::PeerAuthenticated>, leases: &crate::lifecycle::lease::Leases,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,

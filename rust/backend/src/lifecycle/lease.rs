@@ -269,7 +269,8 @@ impl Leases {
     }
 
     /// The grant rule, in order: `Closing` once a shutdown has begun;
-    /// `Undetermined` if this daemon's boot is unknown;
+    /// `Undetermined` if this daemon's boot or the peer's process is
+    /// unknown;
     /// `Granted` iff the claim equals this boot and
     /// the peer's OS identity; otherwise `Foreign`. A grant carries its
     /// generation and clears an in-process handover and a pending start:
@@ -280,7 +281,7 @@ impl Leases {
     pub(crate) fn grant(
         &self,
         req: &FeLeaseReq,
-        peer: &PeerAuthenticated,
+        peer: Option<&PeerAuthenticated>,
     ) -> (LeaseOutcome, Option<u64>) {
         let mut st = self.lock();
         if st.phase != Phase::Open {
@@ -559,7 +560,7 @@ pub(crate) async fn hold<R, W>(
     mut rx: R,
     mut tx: W,
     first: Frame,
-    peer: PeerAuthenticated,
+    peer: Option<PeerAuthenticated>,
     leases: &Leases,
     state_root: Option<&Path>,
 ) -> anyhow::Result<()>
@@ -570,7 +571,7 @@ where
     let Ok(req) = serde_json::from_value::<FeLeaseReq>(first.payload.clone()) else {
         return crate::server::pipe::reject(&mut tx, first.id, op::FE_LEASE, "bad_request", "malformed fe.lease").await;
     };
-    let (outcome, gen) = leases.grant(&req, &peer);
+    let (outcome, gen) = leases.grant(&req, peer.as_ref());
     let granted = gen.is_some();
     let res = FeLeaseRes {
         outcome,
@@ -712,14 +713,18 @@ pub(crate) fn write_or_delete(path: &Path, rec: &HeldRecord) -> std::io::Result<
 }
 
 /// The grant rule's claim checks, in order: the claimant's identity, or
-/// the refusal and the check that failed.
+/// the refusal and the check that failed. A peer whose process the OS did
+/// not give at accept (`admit_peer`) has no identity to match.
 fn claim(
     own_boot: Option<&str>,
     req: &FeLeaseReq,
-    peer: &PeerAuthenticated,
+    peer: Option<&PeerAuthenticated>,
 ) -> Result<ProcessIdentity, (LeaseOutcome, &'static str)> {
     let Some(own_boot) = own_boot else {
         return Err((LeaseOutcome::Undetermined, "own boot unknown"));
+    };
+    let Some(peer) = peer else {
+        return Err((LeaseOutcome::Undetermined, "peer process unknown"));
     };
     if !boots_match(&req.boot, own_boot, cfg!(windows)) {
         return Err((LeaseOutcome::Foreign, "boot mismatch"));

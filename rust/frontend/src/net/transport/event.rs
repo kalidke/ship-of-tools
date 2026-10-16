@@ -482,6 +482,11 @@ pub enum IncomingEvt {
     PlutoOpened {
         result: Result<String, String>,
     },
+    /// `pluto.open` reply `pluto_starting`: the server has not said it is ready, and its start goes on. Carries the
+    /// backend's account (how long it has been starting, what it last wrote), which is no failure.
+    PlutoStarting {
+        message: String,
+    },
     /// `video.open` reply. Carries the loopback HTTP URL on success (the
     /// chrome hands it to the OS browser-open); the backend's error message
     /// otherwise.

@@ -41,6 +41,9 @@ pub(super) struct LifecycleCell {
     /// What the next child says at its first eval (`ReplEnded::successor_notice`): set when the current generation
     /// dies, cleared when the next one opens.
     pub(super) notice: Option<&'static str>,
+    /// The current generation's start (its age and stderr tail), set at its spawn and read while `state` is
+    /// `Starting` (`Repl::still_starting`).
+    pub(super) start: Option<crate::sidecars::child::Start>,
 }
 
 pub(super) type SharedLifecycle = Arc<std::sync::Mutex<LifecycleCell>>;
@@ -128,6 +131,7 @@ mod lifecycle_tests {
             gen: 0,
             state: ReplLifecycle::NotStarted,
             notice: None,
+            start: None,
         }))
     }
 

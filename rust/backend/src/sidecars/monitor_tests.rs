@@ -371,9 +371,10 @@
 
     /// A sampler that has gone silent for `SAMPLER_SILENT` (20 s) is ended and started again, with a stale tick between,
     /// and the silent one's process is gone: `nvidia-smi` or an ssh session can hang with the sampler alive. Each start
-    /// appends a line to `starts`; the first writes its pid, which `exec` keeps for the sleep.
+    /// appends a line to `starts`; the first writes its pid, which `exec` keeps for the sleep. Returns what was logged.
     #[cfg(unix)]
-    async fn a_silent_sampler_is_restarted_after(name: &str, script: &str) {
+    async fn a_silent_sampler_is_restarted_after(name: &str, script: &str) -> String {
+        let log = sot_log::test_log::capture();
         let dir = tempfile::tempdir().unwrap();
         let stub = dir.path().join("sampler");
         let starts = dir.path().join("starts");
@@ -409,6 +410,7 @@
         let stale = seen.iter().find(|(_, stale, _)| *stale).expect("a stale tick marks the gap");
         assert!((19..=25).contains(&stale.0), "the stale tick came after {} s, not at the 20 s bound: {seen:?}", stale.0);
         assert!(first_gone, "the silent sampler's process still runs after the sampler was started again");
+        log.text()
     }
 
     #[cfg(unix)]
@@ -418,11 +420,15 @@
     }
 
     /// A sampler that never prints at all (an ssh connect that never finishes) is held to the same bound from its
-    /// start.
+    /// start, and its death is logged at warn with what it last wrote to stderr.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_sampler_that_prints_nothing_is_restarted() {
-        a_silent_sampler_is_restarted_after("stub-mute", "").await;
+        let said = "echo 'ssh: still connecting (sampler-stall-red)' >&2\n";
+        let logged = a_silent_sampler_is_restarted_after("stub-mute", said).await;
+        let died = logged.lines().find(|line| line.contains(" WARN ") && line.contains("sampler died"));
+        let named = died.is_some_and(|line| line.contains("sampler-stall-red"));
+        assert!(named, "the death names what ssh last said:\n{logged}");
     }
 
 #[cfg(test)]

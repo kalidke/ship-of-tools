@@ -188,14 +188,62 @@ async fn res_without_done_closes_started_run() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A `julia` stand-in that writes what a juliaup launcher writes while it installs a Julia, and never says it is
+/// ready.
+#[cfg(unix)]
+const INSTALLING: &str = "#!/bin/sh
+echo '    Checking for new Julia versions' >&2
+echo '  Installing Julia 1.13.2+0.x64.linux.gnu' >&2
+exec sleep 600
+";
+
+/// A run that times out behind a REPL whose child never said it is ready says so: the report's error names the start,
+/// its age and the child's last stderr lines, the log has them at warn, and the drawer entry closes as on any timeout.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_behind_a_repl_still_starting_says_so() {
+    if !isolated("sidecars::repl::execute::tests::a_run_behind_a_repl_still_starting_says_so", Duration::from_secs(60)) {
+        return;
+    }
+    let log = sot_log::test_log::capture();
+    let dir = scratch_dir();
+    let resources = dir.join("resources");
+    std::fs::create_dir_all(resources.join("julia").join("repl")).unwrap();
+    let julia = dir.join("julia");
+    sot_log::test_exec::write_executable(&julia, INSTALLING);
+    std::env::set_var("SOT_RESOURCE_ROOT", &resources);
+    std::env::set_var("SOT_JULIA_BIN", &julia);
+    let (frame_tx, mut bus) = tokio::sync::broadcast::channel(256);
+    let workspaces = Workspaces::new();
+    workspaces.set_repl_frame_tx(frame_tx);
+    let session = Session::new();
+
+    let (id, _) = add_row(&workspaces, &dir, "installing");
+    let r = run_case(&workspaces, &session, &mut bus, "installing", eval_payload(&id, "1", Some(1000))).await;
+    let said = r.reply["error"]["message"].as_str().unwrap_or("").to_string();
+    let warned = crate::sidecars::warned(&log.text(), "Installing Julia 1.13.2+0.x64.linux.gnu");
+    println!("repl-starting: {} after {} ms, error {said:?}, in the log at warn: {warned}", r.reply["outcome"], r.elapsed);
+    assert_eq!(r.reply["outcome"], "timeout", "{}", r.reply);
+    let lines = " s; its last stderr lines: Checking for new Julia versions / Installing Julia 1.13.2+0.x64.linux.gnu";
+    let age = said.strip_prefix("the REPL is still starting after ").and_then(|rest| rest.strip_suffix(lines));
+    assert!(age.and_then(|n| n.parse::<u64>().ok()).is_some_and(|n| n >= 1), "the report names the start: {said:?}");
+    assert!(warned, "the start is not in the log at warn:\n{}", log.text());
+    assert_eq!(r.frames.iter().map(|f| f["kind"].clone()).collect::<Vec<_>>(), ["started", "done"]);
+    crate::lifecycle::child_signal::process().fire().expect("fire");
+    within(Duration::from_secs(30), "owned children reaped", || crate::lifecycle::child_signal::process().live() == 0).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The shell stand-in table: every reply and frame sequence of `repl.execute`, pinned.
 #[cfg(unix)]
 mod shell_table {
     use super::*;
     use crate::sidecars::contract_tests::pin_env;
 
-    /// A `julia` stand-in speaking the shim's line protocol: it logs each request line, then acts on the code or path text.
+    /// A `julia` stand-in speaking the shim's line protocol: it says it is ready, as the shim does first, logs each
+    /// request line, then acts on the code or path text.
     const STUB: &str = r#"#!/bin/sh
+    printf '%s\n' '{"v":1,"id":0,"kind":"evt","op":"repl.ready","payload":{}}'
     while read -r line; do
       printf '%s\n' "$line" >> "$0.log"
       id=$(printf '%s' "$line" | sed -e 's/.*"id":\([0-9]*\).*/\1/')

@@ -176,13 +176,18 @@ pub async fn handle_pluto_open(
     }
 
     match pluto.open_notebook(&path).await {
-        Ok(url) => {
+        Ok(super::pluto::Opened::Url(url)) => {
             let res = PlutoOpenRes { url };
             let (_, rev) = session.snapshot().await;
             Ok(vec![(
                 Frame::res(req_id, op::PLUTO_OPEN, serde_json::to_value(res)?).with_rev(rev),
                 None,
             )])
+        }
+        // A server still starting has not failed: open_notebook logged the start, and the window shows it as such.
+        Ok(super::pluto::Opened::Starting(said)) => {
+            let payload = json!({ "error": said, "code": "pluto_starting" });
+            Ok(vec![(Frame::res(req_id, op::PLUTO_OPEN, payload), None)])
         }
         Err(e) => {
             tracing::warn!(error = %e, path = %req.path, "pluto.open failed");

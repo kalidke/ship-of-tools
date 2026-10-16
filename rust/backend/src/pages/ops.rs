@@ -478,7 +478,7 @@ fn quarto_out_name() -> String {
 /// Run one `quarto render` to its end, within `within`, one render of a document at a time. `None` means `sig` fired
 /// first: the signal has already killed the render's whole tree (quarto, and the engines its executable chunks
 /// start), whether or not the launcher was reaped. A render past `within` has its tree killed and is a `TimedOut`
-/// error naming the bound.
+/// error naming the bound and the last lines it wrote to stderr.
 /// Quarto is always given the daemon's own julia, replacing any
 /// `QUARTO_JULIA` it inherited; a julia the resolver refuses fails the
 /// render, `--no-execute` or not. The launcher is reaped only after its tree
@@ -512,8 +512,9 @@ async fn run_quarto(
     let _document = DocumentLock::take(cwd.join(file_name)).await;
     let mut contained = sig.spawn(&mut cmd)?;
     let (mut out, mut errs) = (contained.stdout.take(), contained.stderr.take());
+    // Read into buffers that outlive the wait, so a render that runs past its bound still says what it wrote.
+    let (mut so, mut se) = (Vec::new(), Vec::new());
     let work = async {
-        let (mut so, mut se) = (Vec::new(), Vec::new());
         let read_out = async {
             if let Some(o) = out.as_mut() {
                 let _ = o.read_to_end(&mut so).await;
@@ -525,7 +526,7 @@ async fn run_quarto(
             }
         };
         let (_, _, status) = tokio::join!(read_out, read_err, contained.wait());
-        status.map(|status| std::process::Output { status, stdout: so, stderr: se })
+        status.map(|status| std::process::Output { status, stdout: std::mem::take(&mut so), stderr: std::mem::take(&mut se) })
     };
     tokio::select! {
         done = work => done.map(Some),
@@ -534,14 +535,20 @@ async fn run_quarto(
         _ = sig.fired() => Ok(None),
         _ = tokio::time::sleep(within) => {
             let _ = contained.kill().await;
-            Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("quarto render did not finish within {within:?}"),
-            ))
+            let said = crate::sidecars::child::last_lines(
+                String::from_utf8_lossy(&se).lines(),
+                QUARTO_TIMEOUT_LINES,
+                QUARTO_TIMEOUT_LINE_CHARS,
+            );
+            let bound = format!("quarto render did not finish within {within:?}");
+            let message = if said.is_empty() { bound } else { format!("{bound}; its last stderr lines: {said}") };
+            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, message))
         }
     }
 }
 
+const QUARTO_TIMEOUT_LINES: usize = 5;
+const QUARTO_TIMEOUT_LINE_CHARS: usize = 200;
 const QUARTO_ERROR_LIMIT: usize = 65_536;
 const QUARTO_TRANSPORT_HINT: &str = "Quarto read an incomplete Julia server transport line. Quarto 1.9.38 and later wait up to two seconds for the newline, so slow server startup can still cause this error. If using an older Quarto, upgrading to 1.9.38 or later may help.";
 
@@ -712,6 +719,7 @@ pub async fn handle_quarto_open(
             return err("the daemon is shutting down".to_string(), "shutting_down");
         }
         Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+            tracing::warn!(error = %e, path = %req.path, "quarto.open timed out");
             let _ = tokio::fs::remove_file(&html_path).await;
             return err(e.to_string(), "quarto_render_failed");
         }
@@ -1147,6 +1155,22 @@ mod quarto_bound_tests {
         println!("quarto-bound: {err} after {:?}", began.elapsed());
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         assert_eq!(err.to_string(), "quarto render did not finish within 2s");
+        assert!(sig.held_groups().is_empty(), "the killed render's tree is still held");
+    }
+
+    /// A render that never ends keeps what it wrote to stderr in its timeout answer.
+    #[tokio::test]
+    async fn a_render_past_its_bound_keeps_what_it_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let _pin = JuliaPin::new(&dir.path().join("julia"), None);
+        let sig = private_signal();
+        let hung = stub(dir.path(), "echo '  Installing Julia 1.13.2+0.x64.linux.gnu' >&2\necho >&2\necho 'Starting engine julia' >&2\nexec sleep 600");
+        let ran = run_quarto(&hung, dir.path(), std::ffi::OsStr::new("doc.qmd"), "a.html", false, Duration::from_secs(2), sig).await;
+        let err = ran.expect_err("a render past its bound");
+        println!("quarto-bound: {err}");
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        let want = "quarto render did not finish within 2s; its last stderr lines: Installing Julia 1.13.2+0.x64.linux.gnu / Starting engine julia";
+        assert_eq!(err.to_string(), want);
         assert!(sig.held_groups().is_empty(), "the killed render's tree is still held");
     }
 

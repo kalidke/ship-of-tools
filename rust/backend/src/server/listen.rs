@@ -322,22 +322,29 @@ pub(super) async fn run_local(
     crate::lifecycle::shutdown::run(leases, workspaces, ws_events_tx, decided).await
 }
 
-/// One accepted-stream boundary: rejection drops the unread stream before its handler is entered.
+/// One accepted-stream boundary: rejection drops the unread stream before its handler is entered; an admitted stream
+/// goes to its handler with the peer's process, if the OS gave it (`admit_peer`).
 fn dispatch_admitted(
     stream: LocalStream,
-    observe: impl FnOnce(&LocalStream) -> Option<PeerAuthenticated>,
-    handle: impl FnOnce(LocalStream, PeerAuthenticated),
+    observe: impl FnOnce(&LocalStream) -> Option<Admitted>,
+    handle: impl FnOnce(LocalStream, Option<PeerAuthenticated>),
 ) -> bool {
     // Admission one: a connection whose account, as the OS recorded it at the connect, is another's, or that the
     // OS cannot read, is dropped before a byte is read.
-    let Some(peer) = observe(&stream) else {
+    let Some(admitted) = observe(&stream) else {
         tracing::warn!(
             "refused a connection: the account the OS recorded for it is not this one, or could not be read"
         );
         return false;
     };
-    handle(stream, peer);
+    handle(stream, admitted.process);
     true
+}
+
+/// A connection admission one let in: the peer's process if the OS gave it, else `None`, and the connection holds no
+/// lease.
+pub(crate) struct Admitted {
+    pub(crate) process: Option<PeerAuthenticated>,
 }
 
 /// Whether the account behind a peer's effective uid is this process's own. A peer whose uid the OS did not give
@@ -348,21 +355,25 @@ fn same_account(peer_euid: Option<u32>, own: u32) -> bool {
 }
 
 /// The admission every connection passes first, at accept and before a byte is read (ADR 0049 `## User
-/// isolation`): cached connection provenance plus a pid/creation observation, or `None` when the account is foreign
-/// or the read fails. Linux and macOS admit a connection whose recorded effective uid is ours: `SO_PEERCRED` on Linux,
-/// and on macOS `challenge_macos::peer_euid_pid_created`, which reads it with `getpeereid` and the pid and pidversion
-/// with `LOCAL_PEERTOKEN`. On Windows the pipe's owner-only descriptor has already decided, and the pid is read here.
-/// The pid and creation time ride on for a lease; on macOS these are live token observations.
+/// isolation`): `None` when the connection's account is foreign or cannot be read, else `Admitted`, with the peer's
+/// process (its pid and creation time) if the OS gives it to this daemon. Linux and macOS admit a connection whose recorded effective
+/// uid is ours: `SO_PEERCRED` on Linux, and on macOS `challenge_macos::peer_euid_pid_created`, which reads it with
+/// `getpeereid` and the pid and pidversion with `LOCAL_PEERTOKEN`. On Windows the pipe's owner-only descriptor has
+/// already decided. Only a lease uses the process, and it is read apart from the account: on Windows its creation time
+/// needs a handle to the peer's process, which a process of this account need not grant this daemon (an
+/// administrator's ssh session grants only Administrators, SYSTEM and its own logon), and on Linux a peer that has
+/// ended has none to read. Such a peer is served and holds no lease. On macOS the pid and creation time are live token
+/// observations.
 pub(crate) fn admit_peer(
     stream: &interprocess::local_socket::tokio::Stream,
-) -> Option<PeerAuthenticated> {
+) -> Option<Admitted> {
     admit_peer_observing(stream, |euid| euid)
 }
 
 fn admit_peer_observing(
     stream: &LocalStream,
     observed_account: impl FnOnce(Option<u32>) -> Option<u32>,
-) -> Option<PeerAuthenticated> {
+) -> Option<Admitted> {
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;
@@ -372,25 +383,28 @@ fn admit_peer_observing(
                 .ok()?;
         // SAFETY: geteuid has no preconditions and cannot fail.
         same_account(observed_account(Some(euid)), unsafe { libc::geteuid() })
-            .then_some(PeerAuthenticated { pid, created })
+            .then_some(Admitted { process: Some(PeerAuthenticated { pid, created }) })
     }
     #[cfg(any(target_os = "linux", windows))]
     {
         use interprocess::local_socket::traits::StreamCommon as _;
-        let creds = stream.peer_creds().ok()?;
+        let creds = stream.peer_creds().ok();
         #[cfg(target_os = "linux")]
         {
             // SAFETY: geteuid has no preconditions and cannot fail.
             let own = unsafe { libc::geteuid() };
-            if !same_account(observed_account(creds.euid()), own) {
+            if !same_account(observed_account(creds.as_ref().and_then(|c| c.euid())), own) {
                 return None;
             }
         }
         #[cfg(windows)]
         let _ = observed_account;
-        let pid = u32::try_from(creds.pid()?).ok()?;
-        let created = sot_log::identity::challenge::process_created(pid).ok()?;
-        Some(PeerAuthenticated { pid, created })
+        let pid = creds.and_then(|c| c.pid()).and_then(|pid| u32::try_from(pid).ok());
+        let process = pid.and_then(|pid| {
+            let created = sot_log::identity::challenge::process_created(pid).ok()?;
+            Some(PeerAuthenticated { pid, created })
+        });
+        Some(Admitted { process })
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
@@ -605,7 +619,10 @@ mod tests {
             .expect("listen");
         let (accepted, dialled) = tokio::join!(listener.accept(), LocalStream::connect(name()));
         let (stream, _client) = (accepted.expect("accept"), dialled.expect("dial"));
-        let peer = admit_peer(&stream).expect("this process is admitted");
+        let peer = admit_peer(&stream)
+            .expect("this process is admitted")
+            .process
+            .expect("with its process");
         assert_eq!(peer.pid, std::process::id());
         #[cfg(target_os = "macos")]
         let created = u64::from(
@@ -615,6 +632,176 @@ mod tests {
         let created = sot_log::identity::challenge::process_created(std::process::id())
             .expect("own creation time");
         assert_eq!(peer.created, created);
+    }
+
+    /// Set only in a child of this test binary, to the session socket or pipe it connects to as a peer.
+    #[cfg(any(target_os = "linux", windows))]
+    const ADMISSION_PEER: &str = "SOT_TEST_ADMISSION_PEER";
+
+    /// The process `dispatch_admitted` handed `stream`'s handler under `admit_peer`, as text, or `None` when it
+    /// refused the stream.
+    #[cfg(target_os = "linux")]
+    fn admitted_process(stream: LocalStream) -> Option<String> {
+        let mut process = None;
+        dispatch_admitted(stream, admit_peer, |_, given| process = Some(format!("{given:?}")));
+        process
+    }
+
+    /// ADR 0049 `## User isolation`: admission one decides the account, and the process a lease needs is read apart
+    /// from it. A connection whose recorded effective uid is this account's is admitted after its process has ended,
+    /// without a process, so it holds no lease.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_connection_of_this_account_whose_process_has_ended_is_admitted_without_it() {
+        const NAME: &str =
+            "server::listen::tests::a_connection_of_this_account_whose_process_has_ended_is_admitted_without_it";
+        if let Some(path) = std::env::var_os(ADMISSION_PEER) {
+            sot_log::test_isolated::enter(NAME);
+            std::os::unix::net::UnixStream::connect(path).expect("connect to the parent's socket");
+            return;
+        }
+        let (_dir, path) = probe_socket_path();
+        let listener = bind_session(path.to_str().unwrap()).unwrap();
+        let (mut command, entry) = sot_log::test_isolated::test_command(NAME);
+        let mut child = command
+            .env(ADMISSION_PEER, &path)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("start the connecting child");
+        let pid = child.id();
+        let status =
+            sot_log::test_isolated::wait_within(&mut child, sot_log::test_isolated::ISOLATION_TIMEOUT);
+        entry.assert_once(pid);
+        assert!(status.success(), "the connecting child: {status}");
+        assert!(
+            sot_log::identity::challenge::process_created(pid).is_err(),
+            "premise: the connecting child's process is gone"
+        );
+        let stream = tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+            .await
+            .expect("the child's connection is queued")
+            .expect("accept");
+        assert_eq!(
+            admitted_process(stream).as_deref(),
+            Some("None"),
+            "a connection of this account whose process has ended is admitted, without its process"
+        );
+    }
+
+    /// ADR 0049 `## User isolation`: on Windows the pipe's owner-only descriptor decides the account, so a process of
+    /// this account whose process object this account may not open is admitted, without its process, so it holds no
+    /// lease. The child grants its object to SYSTEM alone, as an administrator's ssh session grants it only to
+    /// Administrators, SYSTEM and its own logon, which the daemon's filtered token is none of.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_process_of_this_account_this_daemon_may_not_open_is_admitted_without_it() {
+        const NAME: &str =
+            "server::listen::tests::a_process_of_this_account_this_daemon_may_not_open_is_admitted_without_it";
+        if let Some(pipe) = std::env::var_os(ADMISSION_PEER) {
+            sot_log::test_isolated::enter(NAME);
+            return closed_peer(&pipe);
+        }
+        let name = format!(r"\\.\pipe\sot-closed-peer-test-{}", std::process::id());
+        let listener = bind_session(&name).unwrap();
+        let (mut command, entry) = sot_log::test_isolated::test_command(NAME);
+        let mut child = command
+            .env(ADMISSION_PEER, &name)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("start the peer child");
+        let pid = child.id();
+        let accepted = tokio::time::timeout(std::time::Duration::from_secs(20), listener.accept()).await;
+        // Both reads run as the daemon's token would: no privilege, so none of the runner's reaches the child.
+        let denied = without_privileges(|| sot_log::identity::challenge::process_created(pid));
+        let mut held = None;
+        let process = match accepted {
+            Ok(Ok(stream)) => without_privileges(|| {
+                let mut process = None;
+                dispatch_admitted(stream, admit_peer, |stream, given| {
+                    process = Some(format!("{given:?}"));
+                    held = Some(stream);
+                });
+                Some(process)
+            }),
+            _ => None,
+        };
+        drop(listener);
+        // The child ends on this byte: the synchronous wait below blocks this runtime, so the peer's read is not
+        // left to see the stream close.
+        if let Some(mut stream) = held {
+            use tokio::io::AsyncWriteExt;
+            stream.write_all(&[0]).await.expect("release the peer child");
+        }
+        let status =
+            sot_log::test_isolated::wait_within(&mut child, sot_log::test_isolated::ISOLATION_TIMEOUT);
+        entry.assert_once(pid);
+        assert!(status.success(), "the peer child: {status}");
+        let denied = denied.expect_err("premise: this account may not open the peer child's process");
+        assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied, "premise: {denied}");
+        assert_eq!(
+            process,
+            Some(Some("None".to_string())),
+            "a process of this account this daemon may not open is admitted, without its process"
+        );
+    }
+
+    /// The peer child of the test above: grants its own process object to SYSTEM alone, then opens `pipe` and holds it
+    /// until the parent writes a byte or five seconds pass.
+    #[cfg(windows)]
+    fn closed_peer(pipe: &std::ffi::OsStr) {
+        use std::io::Read;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SetSecurityInfo, SDDL_REVISION_1,
+            SE_KERNEL_OBJECT,
+        };
+        use windows_sys::Win32::Security::{
+            GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+            PSECURITY_DESCRIPTOR,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let sddl = sot_log::host::wide_null("D:P(A;;GA;;;SY)");
+        // SAFETY: the descriptor is built, read and freed here; the process handle is this process's pseudo-handle.
+        unsafe {
+            let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            let built = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                std::ptr::null_mut(),
+            );
+            assert_ne!(built, 0, "build the descriptor: {}", std::io::Error::last_os_error());
+            let (mut present, mut dacl, mut defaulted) = (0, std::ptr::null_mut::<ACL>(), 0);
+            assert_ne!(GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted), 0, "its DACL");
+            let set = SetSecurityInfo(
+                GetCurrentProcess(),
+                SE_KERNEL_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null(),
+            );
+            LocalFree(sd as _);
+            assert_eq!(set, 0, "grant this process's object to SYSTEM alone");
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut opened = loop {
+            match std::fs::OpenOptions::new().read(true).write(true).open(pipe) {
+                Err(e) if e.raw_os_error() == Some(231) && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                opened => break opened.expect("open the parent's pipe"),
+            }
+        };
+        // A refused stream is dropped with no byte written, so the read gets a deadline of its own and the parent's
+        // assertion, not the isolation bound, reports a refusal.
+        let (done, waited) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = opened.read(&mut [0u8; 1]);
+            let _ = done.send(());
+        });
+        let _ = waited.recv_timeout(std::time::Duration::from_secs(5));
     }
 
     /// ADR 0049, User isolation: real peer lookup precedes the controlled account result and dispatch.
@@ -875,88 +1062,102 @@ mod tests {
 
         drop(listener);
     }
+    /// A token handle closed on drop.
+    #[cfg(windows)]
+    struct Token(windows_sys::Win32::Foundation::HANDLE);
+    #[cfg(windows)]
+    impl Drop for Token {
+        fn drop(&mut self) {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.0);
+            }
+        }
+    }
+
+    /// Ends the impersonation of the thread that made it, on drop.
+    #[cfg(windows)]
+    struct Restore;
+    #[cfg(windows)]
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            assert_ne!(
+                unsafe { windows_sys::Win32::Security::RevertToSelf() },
+                0,
+                "restore test-owned token"
+            );
+        }
+    }
+
+    /// This thread, impersonating a restricted copy of this process's token until the guard drops. `flags` go to
+    /// `CreateRestrictedToken`; `world_only` adds the Everyone SID as the one restricting SID.
+    #[cfg(windows)]
+    fn impersonate_restricted(flags: u32, world_only: bool) -> Restore {
+        use windows_sys::Win32::Security::{
+            CreateRestrictedToken, CreateWellKnownSid, ImpersonateLoggedOnUser, WinWorldSid, SID_AND_ATTRIBUTES,
+            TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        let mut original = Token(std::ptr::null_mut());
+        assert_ne!(
+            unsafe {
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY,
+                    &mut original.0,
+                )
+            },
+            0,
+            "open test-owned token"
+        );
+        let mut sid = [0u32; 17];
+        let mut bytes = std::mem::size_of_val(&sid) as u32;
+        assert_ne!(
+            unsafe { CreateWellKnownSid(WinWorldSid, std::ptr::null_mut(), sid.as_mut_ptr().cast(), &mut bytes) },
+            0,
+            "create restricted access SID"
+        );
+        let restriction = SID_AND_ATTRIBUTES { Sid: sid.as_mut_ptr().cast(), Attributes: 0 };
+        let mut restricted = Token(std::ptr::null_mut());
+        assert_ne!(
+            unsafe {
+                CreateRestrictedToken(
+                    original.0,
+                    flags,
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    u32::from(world_only),
+                    if world_only { &restriction } else { std::ptr::null() },
+                    &mut restricted.0,
+                )
+            },
+            0,
+            "create restricted test token"
+        );
+        assert_ne!(
+            unsafe { ImpersonateLoggedOnUser(restricted.0) },
+            0,
+            "impersonate restricted test token"
+        );
+        Restore
+    }
+
+    /// Runs `read` on this thread under a copy of its token with every privilege removed, as the daemon's filtered
+    /// token has none, whatever the runner holds (an administrator's ssh session holds SeDebugPrivilege, which
+    /// ignores a process object's DACL). `read` is synchronous: impersonation never crosses an await.
+    #[cfg(windows)]
+    fn without_privileges<R>(read: impl FnOnce() -> R) -> R {
+        use windows_sys::Win32::Security::DISABLE_MAX_PRIVILEGE;
+        let _restore = impersonate_restricted(DISABLE_MAX_PRIVILEGE, false);
+        read()
+    }
+
     #[cfg(windows)]
     /// Native access check on a synchronous test-owned client thread; impersonation never crosses an await.
     fn restricted_open_denied(path: String) -> std::io::Error {
         std::thread::spawn(move || {
-            use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-            use windows_sys::Win32::Security::{
-                CreateRestrictedToken, CreateWellKnownSid, ImpersonateLoggedOnUser, RevertToSelf,
-                WinWorldSid, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
-            };
-            use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-            struct Token(HANDLE);
-            impl Drop for Token {
-                fn drop(&mut self) {
-                    unsafe {
-                        CloseHandle(self.0);
-                    }
-                }
-            }
-            struct Restore;
-            impl Drop for Restore {
-                fn drop(&mut self) {
-                    assert_ne!(
-                        unsafe { RevertToSelf() },
-                        0,
-                        "restore test-owned client token"
-                    );
-                }
-            }
-            let mut original = Token(std::ptr::null_mut());
-            assert_ne!(
-                unsafe {
-                    OpenProcessToken(
-                        GetCurrentProcess(),
-                        TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY,
-                        &mut original.0,
-                    )
-                },
-                0,
-                "open test-owned token"
-            );
-            let mut sid = [0u32; 17];
-            let mut bytes = std::mem::size_of_val(&sid) as u32;
-            assert_ne!(
-                unsafe {
-                    CreateWellKnownSid(
-                        WinWorldSid,
-                        std::ptr::null_mut(),
-                        sid.as_mut_ptr().cast(),
-                        &mut bytes,
-                    )
-                },
-                0,
-                "create restricted access SID"
-            );
-            let restriction = SID_AND_ATTRIBUTES {
-                Sid: sid.as_mut_ptr().cast(),
-                Attributes: 0,
-            };
-            let mut restricted = Token(std::ptr::null_mut());
-            assert_ne!(
-                unsafe {
-                    CreateRestrictedToken(
-                        original.0,
-                        0,
-                        0,
-                        std::ptr::null(),
-                        0,
-                        std::ptr::null(),
-                        1,
-                        &restriction,
-                        &mut restricted.0,
-                    )
-                },
-                0,
-                "create restricted test token"
-            );
-            assert_ne!(
-                unsafe { ImpersonateLoggedOnUser(restricted.0) },
-                0,
-                "impersonate restricted test token"
-            );
-            let _restore = Restore;
+            let _restore = impersonate_restricted(0, true);
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 match std::fs::OpenOptions::new()
