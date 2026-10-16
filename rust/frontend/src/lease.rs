@@ -371,6 +371,12 @@ impl Leases {
         lease_notice(self.exempt, &standings).or_else(|| book.stayed.map(exit::stay_line))
     }
 
+    /// Why a leave stayed, until the next leave: the text a stayed relaunch's dialog shows. Never a standing's
+    /// cause (`notice`), which speaks of closing, not of a relaunch that did not happen.
+    pub fn stay_notice(&self) -> Option<&'static str> {
+        self.book.lock().unwrap().stayed.map(exit::stay_line)
+    }
+
     /// The state roots of every granted lease.
     pub fn granted_state_roots(&self) -> Vec<String> {
         self.book

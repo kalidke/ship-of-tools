@@ -627,9 +627,11 @@ struct State {
     /// Active NavTree modal prompt (Ctrl+N new-file, future delete-confirm),
     /// or `None` in the normal nav state. While `Some`, the NavTree key
     /// handler routes keystrokes into the prompt before any nav shortcut and
-    /// the chrome shows the prompt on the status line.
+    /// the nav pane shows the prompt in its pinned rows. The quit question is
+    /// the exception: the close dialog shows it, and it never replaces another
+    /// prompt (`open_quit_prompt`).
     nav_prompt: Option<NavPrompt>,
-    /// A relaunch stayed open (`stay_open`): the close dialog shows the lease notice until a key (`dismiss_stay`).
+    /// A relaunch stayed open (`stay_open`): the close dialog shows the stay's own text until a key or a press (`dismiss_stay`, `dismiss_stay_press`).
     relaunch_stayed: bool,
     /// The hint that the quit chord went to the program (`quit_chord`), and when it goes: the close dialog's panel
     /// shows it, takes no keys, and `about_to_wait` ends it.

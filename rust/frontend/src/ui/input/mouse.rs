@@ -35,6 +35,11 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
         confirm_quit_key(state, event_loop, step);
         return;
     }
+    // A press ends a stayed relaunch's dialog, as a key does, and reaches no pane.
+    if btn_state == ElementState::Pressed && dismiss_stay_press(&mut state.relaunch_stayed) {
+        state.window.request_redraw();
+        return;
+    }
     if button == MouseButton::Left {
         match btn_state {
             ElementState::Pressed => {

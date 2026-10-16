@@ -38,12 +38,11 @@ pub(in crate::ui) const QUIT_HINT_HOLD: std::time::Duration = std::time::Duratio
 /// The dialog an open quit prompt, a leave with a line, a relaunch that stayed or the quit hint shows, in that order.
 /// Every other prompt is the nav pane's own.
 pub(in crate::ui) fn close_dialog_text<'a>(prompt: Option<&NavPrompt>, notice: Option<&'a str>,
-    leave_line: Option<&'a str>, relaunch_stayed: bool, hint: Option<&'a str>) -> Option<CloseDialogText<'a>> {
+    leave_line: Option<&'a str>, stayed: Option<&'a str>, hint: Option<&'a str>) -> Option<CloseDialogText<'a>> {
     match (prompt, leave_line) {
         (Some(NavPrompt::ConfirmQuit { keep }), _) => Some(CloseDialogText::Ask { keep: *keep, notice }),
         (_, Some(line)) => Some(CloseDialogText::Leave(line)),
-        _ if relaunch_stayed && notice.is_some() => notice.map(CloseDialogText::Stayed),
-        _ => hint.map(CloseDialogText::Hint),
+        _ => stayed.map(CloseDialogText::Stayed).or_else(|| hint.map(CloseDialogText::Hint)),
     }
 }
 
@@ -132,10 +131,15 @@ pub(in crate::ui) fn quit_prompt_click(answers: Option<[Rect; 2]>, left_at: Opti
 }
 
 /// A key while a stayed relaunch's dialog shows ends it. `None` when it was not showing; else whether the key is
-/// eaten: it is, except where the focused pane consumes typed text, since a relaunch ends the dialog on its own and the
+/// eaten: it is, except where the focused pane consumes typed text, since the dialog appears on its own and the
 /// user may be typing into the agent, and that character is theirs.
 pub(in crate::ui) fn dismiss_stay(relaunch_stayed: &mut bool, consumes_text: bool) -> Option<bool> {
     std::mem::take(relaunch_stayed).then_some(!consumes_text)
+}
+
+/// A press while the dialog shows ends it and reaches no pane. True when it was showing.
+pub(in crate::ui) fn dismiss_stay_press(relaunch_stayed: &mut bool) -> bool {
+    std::mem::take(relaunch_stayed)
 }
 
 impl State {
@@ -144,7 +148,7 @@ impl State {
         let size = self.terminal.size().ok()?;
         let line = self.leaving.as_ref().and_then(crate::lease::Leaving::line);
         let text = close_dialog_text(self.nav_prompt.as_ref(), self.leases.notice(), line.as_deref(),
-            self.relaunch_stayed, self.quit_hint.as_ref().map(|(h, _)| h.as_str()))?;
+            self.relaunch_stayed.then(|| self.leases.stay_notice()).flatten(), self.quit_hint.as_ref().map(|(h, _)| h.as_str()))?;
         Some(close_dialog(Rect::new(0, 0, size.width, size.height), text))
     }
 }
@@ -237,12 +241,12 @@ mod tests {
     fn the_dialog_shows_the_question_or_the_leave() {
         let quit = NavPrompt::ConfirmQuit { keep: true };
         let other = NavPrompt::ConfirmDelete { node_id: "files:a".into(), label: "a".into() };
-        assert_eq!(close_dialog_text(Some(&quit), Some("n"), Some("l"), false, None),
+        assert_eq!(close_dialog_text(Some(&quit), Some("n"), Some("l"), None, None),
             Some(CloseDialogText::Ask { keep: true, notice: Some("n") }));
-        assert_eq!(close_dialog_text(Some(&other), None, Some("l"), false, None), Some(CloseDialogText::Leave("l")));
-        assert_eq!(close_dialog_text(None, Some("n"), Some("l"), false, None), Some(CloseDialogText::Leave("l")));
-        assert_eq!(close_dialog_text(Some(&other), Some("n"), None, false, None), None);
-        assert_eq!(close_dialog_text(None, Some("n"), None, false, None), None);
+        assert_eq!(close_dialog_text(Some(&other), None, Some("l"), None, None), Some(CloseDialogText::Leave("l")));
+        assert_eq!(close_dialog_text(None, Some("n"), Some("l"), None, None), Some(CloseDialogText::Leave("l")));
+        assert_eq!(close_dialog_text(Some(&other), Some("n"), None, None, None), None);
+        assert_eq!(close_dialog_text(None, Some("n"), None, None, None), None);
     }
 
     /// The quit hint is a panel in the middle of the window, as the question is, with no answers to press; any real
@@ -260,11 +264,11 @@ mod tests {
             assert!(all.contains(&words.join(" ")), "{area:?}: the hint is not whole in {rows:#?}");
         }
         let quit = NavPrompt::ConfirmQuit { keep: false };
-        assert_eq!(close_dialog_text(None, None, None, false, Some("h")), Some(CloseDialogText::Hint("h")));
-        assert_eq!(close_dialog_text(Some(&quit), None, None, false, Some("h")),
+        assert_eq!(close_dialog_text(None, None, None, None, Some("h")), Some(CloseDialogText::Hint("h")));
+        assert_eq!(close_dialog_text(Some(&quit), None, None, None, Some("h")),
             Some(CloseDialogText::Ask { keep: false, notice: None }));
-        assert_eq!(close_dialog_text(None, None, Some("l"), false, Some("h")), Some(CloseDialogText::Leave("l")));
-        assert_eq!(close_dialog_text(None, None, None, false, None), None);
+        assert_eq!(close_dialog_text(None, None, Some("l"), None, Some("h")), Some(CloseDialogText::Leave("l")));
+        assert_eq!(close_dialog_text(None, None, None, None, None), None);
     }
 
     /// A left press on an answer gives that answer; a press anywhere else, or any other button, cancels.
@@ -295,13 +299,14 @@ mod tests {
     fn a_relaunch_that_stays_says_why_in_the_dialog_until_a_key() {
         let notice = "relaunch not done: this computer's backend did not answer the window lease in time, so the \
             window stayed open; ask for the relaunch again";
-        assert_eq!(close_dialog_text(None, Some(notice), None, true, None), Some(CloseDialogText::Stayed(notice)));
-        assert_eq!(close_dialog_text(None, Some(notice), None, false, None), None);
-        assert_eq!(close_dialog_text(None, None, None, true, None), None);
+        // The panel shows the stay's own text, never a standing's cause under "The window stayed open".
+        let cause = "closing will not end sessions: this computer's backend could not verify this window";
+        assert_eq!(close_dialog_text(None, Some(cause), None, Some(notice), None), Some(CloseDialogText::Stayed(notice)));
+        assert_eq!(close_dialog_text(None, Some(cause), None, None, None), None);
         let quit = NavPrompt::ConfirmQuit { keep: false };
-        assert_eq!(close_dialog_text(Some(&quit), Some(notice), None, true, None),
+        assert_eq!(close_dialog_text(Some(&quit), Some(notice), None, Some("s"), None),
             Some(CloseDialogText::Ask { keep: false, notice: Some(notice) }));
-        assert_eq!(close_dialog_text(None, Some(notice), Some("l"), true, None), Some(CloseDialogText::Leave("l")));
+        assert_eq!(close_dialog_text(None, Some(notice), Some("l"), Some("s"), None), Some(CloseDialogText::Leave("l")));
         for area in [Rect::new(0, 0, 200, 56), Rect::new(0, 0, 120, 36), Rect::new(0, 0, 80, 24)] {
             let d = close_dialog(area, CloseDialogText::Stayed(notice));
             assert_centred(area, &d);
@@ -321,5 +326,9 @@ mod tests {
         shown = true;
         assert_eq!(dismiss_stay(&mut shown, true), Some(false));
         assert!(!shown, "it still ends the dialog");
+        // A press ends it too and reaches no pane.
+        shown = true;
+        assert!(dismiss_stay_press(&mut shown) && !shown);
+        assert!(!dismiss_stay_press(&mut shown), "and only once");
     }
 }
