@@ -198,3 +198,35 @@ end
         empty!(ShipToolsRepl.WGL_VIEWERS)
     end
 end
+
+# A stand-in for Bonito whose Server does what a failing bind does, so each failure is reproduced on every platform
+# and as any user.
+module FakeBonito
+mutable struct Moved; port::Int; proxy_url::String; closed::Bool; end
+Base.close(s::Moved) = (s.closed = true)
+Server(host, port) = SERVER_BEHAVIOUR[](host, port)
+const SERVER_BEHAVIOUR = Ref{Any}(nothing)
+end
+
+@testset "page_server words a bind failure for what is known" begin
+    fake(f) = (FakeBonito.SERVER_BEHAVIOUR[] = f; FakeBonito)
+    denied = fake((h, p) -> throw(SystemError("bind", 13)))   # a port below 1024 as a user: Permission denied
+    e = try ShipToolsRepl.page_server(denied, "127.0.0.1", 80); nothing catch err; err end
+    @test e isa ErrorException
+    @test occursin("wglshow: cannot serve on port 80 (", e.msg)
+    @test occursin("bind", e.msg)
+    @test !occursin("is taken", e.msg)
+
+    # An interrupt is the user's, not a port's: it passes through unchanged.
+    @test_throws InterruptException ShipToolsRepl.page_server(fake((h, p) -> throw(InterruptException())), "127.0.0.1", 8080)
+
+    # A dependency that moved a taken port: the port is known taken, and the moved server is closed.
+    moved = FakeBonito.Moved(8081, "", false)
+    e = try ShipToolsRepl.page_server(fake((h, p) -> moved), "127.0.0.1", 8080); nothing catch err; err end
+    @test e isa ErrorException
+    @test e.msg == "wglshow: port 8080 is taken"
+    @test moved.closed
+
+    # Port 0 is the OS's choice: a failure there is the dependency's own.
+    @test_throws SystemError ShipToolsRepl.page_server(fake((h, p) -> throw(SystemError("bind", 13))), "127.0.0.1", 0)
+end
