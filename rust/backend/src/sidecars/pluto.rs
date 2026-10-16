@@ -57,20 +57,16 @@ enum Ready {
     Failed(String),
 }
 
-/// An open's answer while the server it needs has not said `READY` within `PLUTO_START_WAIT`: not a failure, the start
-/// goes on (`Start::still_starting`), and the next open joins it.
-#[derive(Debug)]
-pub(crate) struct StillStarting(String);
-
-impl std::fmt::Display for StillStarting {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
+/// An open's answer: the notebook's URL, or, while the server it needs has not said `READY` within
+/// `PLUTO_START_WAIT`, an account of the start (`Start::still_starting`). The second is no failure: the start goes on,
+/// and the next open joins it.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Opened {
+    Url(String),
+    Starting(String),
 }
 
-impl std::error::Error for StillStarting {}
-
-/// How long one open waits for a server that is still starting before it answers `StillStarting`: a warm start is
+/// How long one open waits for a server that is still starting before it answers `Opened::Starting`: a warm start is
 /// seconds and a cold precompile tens of seconds, so a stall is named within the `repl.execute` default wait.
 const PLUTO_START_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -113,7 +109,7 @@ impl Pluto {
         p
     }
 
-    pub async fn open_notebook(&self, abs_path: &Path) -> Result<String> {
+    pub(crate) async fn open_notebook(&self, abs_path: &Path) -> Result<Opened> {
         let path_str = abs_path
             .to_str()
             .ok_or_else(|| anyhow!("pluto: path not utf-8: {}", abs_path.display()))?
@@ -133,7 +129,7 @@ impl Pluto {
             Err(_) => {
                 let said = start.still_starting("Pluto");
                 tracing::warn!("pluto.open of {path_str}: {said}");
-                return Err(StillStarting(said).into());
+                return Ok(Opened::Starting(said));
             }
         }
         let opened = tokio::time::timeout(PLUTO_OPEN_BOUND, async {
@@ -150,7 +146,7 @@ impl Pluto {
         })
         .await;
         if let Ok(result) = opened {
-            return result;
+            return result.map(Opened::Url);
         }
         // A server that does not answer within the bound is ended, unless a later open has already replaced it.
         let mut guard = self.inner.submit.lock().await;
@@ -1230,18 +1226,20 @@ mod open_bound_tests {
     #[tokio::test]
     async fn an_open_behind_a_server_still_starting_says_so_and_the_next_joins_it() {
         let name = "sidecars::pluto::open_bound_tests::an_open_behind_a_server_still_starting_says_so_and_the_next_joins_it";
-        if !isolated(name, Duration::from_secs(250)) {
+        if !isolated(name, Duration::from_secs(60)) {
             return;
         }
         let log = sot_log::test_log::capture();
         let dir = tempfile::Builder::new().prefix("sot-pluto-start-").tempdir().unwrap();
         let (stub, starts, go) = (dir.path().join("stub-julia"), dir.path().join("starts"), dir.path().join("go"));
+        let said = dir.path().join("said");
         sot_log::test_exec::write_executable(
             &stub,
             format!(
-                "#!/bin/sh\necho $$ >> '{}'\necho '    Checking for new Julia versions' >&2\necho '  Installing Julia 1.13.2+0.x64.linux.gnu' >&2\n\
+                "#!/bin/sh\necho $$ >> '{}'\necho '    Checking for new Julia versions' >&2\necho '  Installing Julia 1.13.2+0.x64.linux.gnu' >&2\ntouch '{}'\n\
                  while [ ! -e '{}' ]; do sleep 0.05; done\necho 'READY http://pluto.invalid/'\nwhile read l; do echo 'URL http://pluto.invalid/edit'; done\n",
                 starts.display(),
+                said.display(),
                 go.display()
             ),
         );
@@ -1250,19 +1248,28 @@ mod open_bound_tests {
         let _pin = pin_env(&stub, dir.path());
         let pluto = Pluto::new(dir.path().to_path_buf(), script);
 
-        let t0 = std::time::Instant::now();
-        let err = tokio::time::timeout(Duration::from_secs(135), pluto.open_notebook(&dir.path().join("a.jl")))
-            .await
-            .expect("the open is still waiting at 135 s")
-            .expect_err("an open behind a server that is not ready");
-        let took = t0.elapsed();
-        let bound = Duration::from_secs(120); // PLUTO_START_WAIT, written out so this test also runs on the unbounded code
-        assert!(took >= bound && took < bound + Duration::from_secs(5), "answered after {took:?}");
-        let text = format!("{err:#}");
-        println!("pluto-starting: {text} after {took:?}");
+        // The wait is the product's `PLUTO_START_WAIT`, crossed on the paused clock once the stand-in's lines are
+        // read: not before 119 s, and by 121 s.
+        let t0 = tokio::time::Instant::now();
+        let open = {
+            let (pluto, path) = (pluto.clone(), dir.path().join("a.jl"));
+            tokio::spawn(async move { pluto.open_notebook(&path).await })
+        };
+        within(Duration::from_secs(20), "the stand-in has written its lines", || said.exists()).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(119).saturating_sub(t0.elapsed())).await;
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!open.is_finished(), "the open answered before 119 s");
+        tokio::time::advance(Duration::from_secs(121).saturating_sub(t0.elapsed())).await;
+        let answer = open.await.expect("the open task").expect("a start still going is no failure");
+        tokio::time::resume();
+        let super::Opened::Starting(text) = answer else { panic!("the open answered a URL: {answer:?}") };
+        println!("pluto-starting: {text}");
         let lines = " s; its last stderr lines: Checking for new Julia versions / Installing Julia 1.13.2+0.x64.linux.gnu";
         assert!(text.starts_with("Pluto is still starting after ") && text.ends_with(lines), "{text}");
-        assert!(err.is::<super::StillStarting>(), "the answer is the still-starting error: {text}");
         assert!(crate::sidecars::warned(&log.text(), "Installing Julia 1.13.2+0.x64.linux.gnu"), "{}", log.text());
 
         std::fs::write(&go, "").unwrap();
@@ -1270,7 +1277,7 @@ mod open_bound_tests {
             .await
             .expect("the next open is served once the start finishes")
             .expect("the next open joins the start");
-        assert_eq!(url, "http://pluto.invalid/edit");
+        assert_eq!(url, super::Opened::Url("http://pluto.invalid/edit".to_string()));
         let started = std::fs::read_to_string(&starts).unwrap();
         assert_eq!(started.lines().count(), 1, "the next open started a second server: {started:?}");
         drop(pluto);

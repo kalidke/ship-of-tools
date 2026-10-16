@@ -176,7 +176,7 @@ pub async fn handle_pluto_open(
     }
 
     match pluto.open_notebook(&path).await {
-        Ok(url) => {
+        Ok(super::pluto::Opened::Url(url)) => {
             let res = PlutoOpenRes { url };
             let (_, rev) = session.snapshot().await;
             Ok(vec![(
@@ -184,17 +184,16 @@ pub async fn handle_pluto_open(
                 None,
             )])
         }
+        // A server still starting has not failed: open_notebook logged the start, and the window shows it as such.
+        Ok(super::pluto::Opened::Starting(said)) => {
+            let payload = json!({ "error": said, "code": "pluto_starting" });
+            Ok(vec![(Frame::res(req_id, op::PLUTO_OPEN, payload), None)])
+        }
         Err(e) => {
-            // A server still starting has not failed: open_notebook logged the start, and the window shows it as such.
-            let code = if e.is::<super::pluto::StillStarting>() {
-                "pluto_starting"
-            } else {
-                tracing::warn!(error = %e, path = %req.path, "pluto.open failed");
-                "pluto_open_failed"
-            };
+            tracing::warn!(error = %e, path = %req.path, "pluto.open failed");
             let payload = json!({
                 "error": format!("{e:#}"),
-                "code": code,
+                "code": "pluto_open_failed",
             });
             Ok(vec![(Frame::res(req_id, op::PLUTO_OPEN, payload), None)])
         }
