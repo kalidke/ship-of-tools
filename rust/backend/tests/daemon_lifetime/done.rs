@@ -180,20 +180,15 @@ impl Wire {
     }
 
     async fn long(&mut self, op: &str, payload: serde_json::Value) -> serde_json::Value {
-        let reply = call_long(
-            &mut self.conn,
-            self.next_id,
-            op,
-            payload,
-            Duration::from_secs(600),
-        )
-        .await;
+        let reply = self.answer(op, payload, Duration::from_secs(600)).await;
+        assert!(reply.get("error").is_none(), "{op} failed: {reply:?}");
+        reply
+    }
+
+    /// One request's reply payload, errors included, within `bound`.
+    async fn answer(&mut self, op: &str, payload: serde_json::Value, bound: Duration) -> serde_json::Value {
+        let reply = call_long(&mut self.conn, self.next_id, op, payload, bound).await;
         self.next_id += 1;
-        assert!(
-            reply.payload.get("error").is_none(),
-            "{op} failed: {:?}",
-            reply.payload
-        );
         reply.payload
     }
 }
@@ -243,11 +238,21 @@ pub async fn open_notebook(folder: &Path, wire: &mut Wire) {
         &notebook,
     )
     .expect("copy the notebook");
-    wire.long(
-        op::PLUTO_OPEN,
+    // A start past the daemon's wait answers `pluto_starting` and goes on: open again, within the 600 s a first start
+    // may take.
+    let (payload, end) = (
         serde_json::json!({ "path": notebook.to_string_lossy() }),
-    )
-    .await;
+        std::time::Instant::now() + Duration::from_secs(600),
+    );
+    loop {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        let reply = wire.answer(op::PLUTO_OPEN, payload.clone(), left).await;
+        if reply.get("code").and_then(|c| c.as_str()) == Some("pluto_starting") {
+            continue;
+        }
+        assert!(reply.get("error").is_none(), "pluto.open failed: {reply:?}");
+        return;
+    }
 }
 
 /// Pluto: a notebook opened through the daemon; its worker starts the case's tree from its startup expression. Pluto's
