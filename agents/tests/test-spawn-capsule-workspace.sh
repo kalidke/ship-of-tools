@@ -35,9 +35,8 @@ REPO_PATH="$WORK/repo"
 STUB_NC_PID=""
 STUB_WATCHER_PID=""
 cleanup() {
-    [ -n "$STUB_WATCHER_PID" ] && pkill -TERM -P "$STUB_WATCHER_PID" >/dev/null 2>&1
-    [ -n "$STUB_WATCHER_PID" ] && kill "$STUB_WATCHER_PID" >/dev/null 2>&1
-    [ -n "$STUB_NC_PID" ] && kill "$STUB_NC_PID" >/dev/null 2>&1
+    end_group "$STUB_WATCHER_PID"
+    end_group "$STUB_NC_PID"
     exec 3>&- 2>/dev/null || true
     rm -rf "${WORK:?}"
 }
@@ -82,6 +81,7 @@ start_stub_daemon() {
         '{v:1,id:1,kind:"res",op:"workspace.create",payload:{workspace_id:$id,slug:$slug,label:$slug,project_root:$root}}')"
 
     exec 3<>"$fifo"
+    set -m   # each step leads a process group of its own, which end_group (lib-wait.sh) ends whole
     nc -klU "$SOCK" < "$fifo" >> "$REQLOG" &
     STUB_NC_PID=$!
 
@@ -108,16 +108,14 @@ start_stub_daemon() {
         esac
       done ) &
     STUB_WATCHER_PID=$!
+    set +m
 
     await test -S "$SOCK" || echo "stub daemon socket never appeared: $SOCK" >&2
 }
 
 stop_stub_daemon() {
-    [ -n "$STUB_WATCHER_PID" ] && pkill -TERM -P "$STUB_WATCHER_PID" >/dev/null 2>&1
-    [ -n "$STUB_WATCHER_PID" ] && kill "$STUB_WATCHER_PID" >/dev/null 2>&1
-    [ -n "$STUB_NC_PID" ] && kill "$STUB_NC_PID" >/dev/null 2>&1
-    wait "$STUB_WATCHER_PID" 2>/dev/null
-    wait "$STUB_NC_PID" 2>/dev/null
+    end_group "$STUB_WATCHER_PID"
+    end_group "$STUB_NC_PID"
     exec 3>&- 2>/dev/null || true
     STUB_NC_PID=""
     STUB_WATCHER_PID=""

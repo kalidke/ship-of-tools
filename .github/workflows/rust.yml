@@ -403,7 +403,7 @@ jobs:
         working-directory: scripts
         run: |
           $failed = $false
-          Get-ChildItem -Filter '*.ps1' | ForEach-Object {
+          Get-ChildItem -Path '*.ps1', 'tests/in-job.ps1' | ForEach-Object {
             $errs = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs)
             if ($errs.Count -gt 0) {

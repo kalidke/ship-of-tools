@@ -12,7 +12,10 @@
 # (exit 2 otherwise). Reads HOME, PATH (only for `command -v cargo`, `julia` and `node`),
 # XDG_RUNTIME_DIR (the container's private folder) and CARGO_TARGET_DIR (required); forwards JULIA_DEPOT_PATH (to the
 # Julia suites and the Rust tests, whose WGL page test adds WGLMakie from it), SSH_AUTH_SOCK and
-# CARGO_PROFILE_DEV_DEBUG when set. CARGO_TARGET_DIR is the gate's alone while it runs: its jobs run the binaries in it (the
+# CARGO_PROFILE_DEV_DEBUG when set. The gate's julia is the Julia binary `julia` starts, asked once under the runner's
+# HOME and named on summary.txt's third line: the Julia suites and the lifetime harness run it, and the Rust jobs get its
+# folder on their PATH, as rust.yml's test jobs get setup-julia's, so a test daemon runs it (`support::julia_binary`).
+# CARGO_TARGET_DIR is the gate's alone while it runs: its jobs run the binaries in it (the
 # tests.tsv paths, `sotd`, `sot-capsule`), and summary.txt's first line names one head and tree; a build of another
 # checkout into it would replace them mid-run. It belongs to one checkout for good: the first run names that checkout in
 # <target>/rc-gate-checkout, and a run for any other checkout is refused (exit 2) before anything is built, since cargo
@@ -43,7 +46,7 @@ JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/vi
 
 envs() {
   D=$RCG_D L=$RCG_L
-  CE=(env -i HOME="$HOME" PATH="$RCG_CARGO_DIR:${RCG_NODE_DIR:+$RCG_NODE_DIR:}/usr/bin:/bin" TMPDIR=/tmp CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
+  CE=(env -i HOME="$HOME" PATH="$RCG_CARGO_DIR:$RCG_JULIA_DIR:${RCG_NODE_DIR:+$RCG_NODE_DIR:}/usr/bin:/bin" TMPDIR=/tmp CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
     XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"
     ${CARGO_PROFILE_DEV_DEBUG:+CARGO_PROFILE_DEV_DEBUG="$CARGO_PROFILE_DEV_DEBUG"}
     ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
@@ -345,19 +348,25 @@ L=$(cd "$2" && pwd)
 mkdir -p "$L/rust" "$L/steps"
 CARGO_BIN=$(command -v cargo) || { echo "rc-gate: cargo not found" >&2; exit 2; }
 JULIA_BIN=$(command -v julia) || { echo "rc-gate: julia not found" >&2; exit 2; }
+# The binary it starts, asked under the runner's HOME, where a juliaup launcher finds its installation: a launcher on the
+# jobs' PATH would install a Julia from the network under each HOME a test makes.
+JULIA_BIN=$(timeout 60 "$JULIA_BIN" --startup-file=no -e 'print(Base.julia_cmd()[1])') && [ -x "$JULIA_BIN" ] ||
+  { echo "rc-gate: $(command -v julia) starts no Julia binary" >&2; exit 2; }
 NODE_BIN=$(command -v node) || { echo "rc-gate: node not found" >&2; exit 2; }
 [ -d "$D/rust/backend/sidecars/mathjax/node_modules" ] || { echo "rc-gate: run npm ci in rust/backend/sidecars/mathjax" >&2; exit 2; }
 command -v jq > /dev/null || { echo "rc-gate: jq not found" >&2; exit 2; }
 PATH=/usr/bin:/bin command -v Xvfb > /dev/null || { echo "rc-gate: Xvfb not found in /usr/bin or /bin (the sotd sidecar tests start it)" >&2; exit 2; }
-# The jobs get node and nothing else from its folder (on the servers it also holds real agent CLIs).
-mkdir -p "$L/bin" && ln -s "$NODE_BIN" "$L/bin/node" || exit 2
-export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$(dirname "$JULIA_BIN") RCG_NODE_DIR=$L/bin
+# The jobs get node and julia, each alone from a folder of its own (on the servers node's folder also holds real agent
+# CLIs, and a julia in /usr/bin would put /usr/bin's node ahead of the node chosen here).
+mkdir -p "$L/bin" "$L/julia-bin" && ln -s "$NODE_BIN" "$L/bin/node" && ln -s "$JULIA_BIN" "$L/julia-bin/julia" || exit 2
+export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$L/julia-bin RCG_NODE_DIR=$L/bin
 envs
 INTR=0
 trap 'INTR=1' INT TERM HUP
 
 echo "head $(git -C "$D" rev-parse HEAD) tree $(git -C "$D" rev-parse 'HEAD^{tree}')" > "$L/summary.txt"
 echo "cap $CAP" >> "$L/summary.txt"
+echo "julia $JULIA_BIN" >> "$L/summary.txt"
 
 # every process in this container but rc-gate itself, read again after 5 s so one that is exiting is not counted
 census() {

@@ -183,8 +183,6 @@ _tf_start() {
     TF_PID=$!
 }
 
-_tf_group_gone() { ! kill -0 -- "-$TF_PID" 2>/dev/null; }
-
 # _tf_end [SIG [leader]] — SIG (if given) to the row's group, or to its leader alone; TF_PID's status in TF_RC; then a
 # wait until the group is empty.
 # The hang guard is a watch that SIGKILLs the group when it has not emptied within await's 30 s.
@@ -193,10 +191,10 @@ _tf_end() {
     rm -f -- "$TF_DIR/guard"
     if [ "${2:-}" = leader ]; then kill -"$1" "$TF_PID" 2>/dev/null
     elif [ -n "${1:-}" ]; then kill -"$1" -- "-$TF_PID" 2>/dev/null; fi
-    ( await _tf_group_gone || { : > "$TF_DIR/guard"; kill -KILL -- "-$TF_PID" 2>/dev/null; } ) &
+    ( await group_gone "$TF_PID" || { : > "$TF_DIR/guard"; kill -KILL -- "-$TF_PID" 2>/dev/null; } ) &
     watch=$!
     wait "$TF_PID" 2> /dev/null; TF_RC=$?
-    await _tf_group_gone
+    await group_gone "$TF_PID"
     wait "$watch"
     [ ! -e "$TF_DIR/guard" ] || { echo "    did not end within the 30 s guard"; return 1; }
 }
