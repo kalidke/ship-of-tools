@@ -6,8 +6,9 @@
 # Stamps the single-source product version everywhere, refreshes Cargo.lock,
 # optionally regenerates CHANGELOG.md (when git-cliff is installed — the
 # release workflow generates the release notes regardless), runs the test
-# suite, then commits `release: vX.Y.Z`, tags `vX.Y.Z`, and pushes. The
-# tag push triggers .github/workflows/release.yml, which builds the
+# suite, then commits `release: vX.Y.Z`, tags `vX.Y.Z`, stamps the line's next
+# -dev version in a commit of its own, and pushes both. The tag push triggers
+# .github/workflows/release.yml, which builds the
 # platform artifacts and publishes the GitHub Release (the julia bundle is
 # retired — installs clone the repo at the tag; ADR 0030 amendment).
 #
@@ -90,6 +91,25 @@ case $order_rc in
        exit 1 ;;
     *) echo "preflight: the version-order check did not run (cargo output above) — a release is never cut blind" >&2; exit 1 ;;
 esac
+# The line's stamp after a cut (decision 0033): X.Y.Z -> X.Y.(Z+1)-dev; a pre-release ending in a number n -> n+1,
+# then -dev; any other pre-release -> .1, then -dev (rc9 -> rc9.1-dev, which sorts above rc9).
+next_dev() {
+    local v=$1 core pre last
+    case "$v" in
+        *-*) core=${v%%-*} pre=${v#*-}; last=${pre##*.}
+             if [[ $last =~ ^[0-9]+$ ]]; then echo "$core-${pre%"$last"}$((last + 1))-dev"; else echo "$v.1-dev"; fi ;;
+        *)   echo "${v%.*}.$(( ${v##*.} + 1 ))-dev" ;;
+    esac
+}
+# The stamp after the tag must sort above the tag too, or the line would not move forward.
+NEXT=$(next_dev "$VERSION")
+next_rc=0
+(cd rust && cargo run -q -p sot-updater --example vercmp -- "v$NEXT" "$TAG") >/dev/null || next_rc=$?
+case $next_rc in
+    0) ;;
+    1) echo "preflight: the stamp after this cut, v$NEXT, does not sort above $TAG" >&2; exit 1 ;;
+    *) echo "preflight: the next-stamp order check did not run (cargo output above) — a release is never cut blind" >&2; exit 1 ;;
+esac
 # Explicit refspec: `git fetch origin <branch>` only updates the tracking ref
 # opportunistically, and the comparison below has to read a ref that is
 # certainly fresh. A branch that isn't on origin yet fails here by design —
@@ -100,16 +120,14 @@ if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$branch")" ]]; then
     echo "preflight: HEAD != origin/$branch — pull/push first" >&2; exit 1
 fi
 # CI is the TAG gate, not the per-PR gate (owner ruling 2026-09-08): the
-# Rust and CI workflows are path-filtered (so a docs-only HEAD may have no
-# Rust run of its own), so the LATEST run of each ON THE BRANCH BEING CUT must
-# be green and must sit at HEAD or an ancestor of it. Anything else
-# (failed, cancelled, still running, a run on a commit not in HEAD's history)
-# refuses the cut; rerun a flaky leg (`gh run rerun <id> --failed`), never
-# skip it. gh is required — a release is never cut blind. A candidate branch
-# only has runs if the workflows trigger on it, or if someone dispatched them
-# there (`gh workflow run <wf> --ref <branch>`); an empty list REFUSES the cut
-# rather than waving it through, which is the whole reason this reads the
-# branch instead of main.
+# LATEST run of each ON THE BRANCH BEING CUT must be green and must sit at
+# HEAD. Anything else (failed, cancelled, still running, a run on any other
+# commit) refuses the cut; rerun a flaky leg (`gh run rerun <id> --failed`),
+# never skip it. gh is required — a release is never cut blind. Dispatch both
+# workflows there first (`gh workflow run <wf> --ref <branch>`), on main too:
+# the dev stamp after a final carries [skip ci], so the line's tip usually has
+# no push run of its own. An empty list REFUSES the cut rather than waving it
+# through, which is the whole reason this reads the branch instead of main.
 command -v gh >/dev/null 2>&1 || { echo "preflight: gh not found — CI on $branch cannot be verified" >&2; exit 1; }
 for wf in rust.yml CI.yml; do
     # The version-stamp commit's run is skipped by the workflows' own `if`
@@ -121,31 +139,40 @@ for wf in rust.yml CI.yml; do
     if [[ "$run_concl" != "success" ]]; then
         echo "preflight: latest $wf run on $branch (id $run_id, ${run_sha:0:8}) is $run_status/$run_concl — rerun it (gh run rerun $run_id --failed) and cut when green" >&2; exit 1
     fi
-    git merge-base --is-ancestor "$run_sha" HEAD \
-        || { echo "preflight: latest green $wf run is at ${run_sha:0:8}, which is not in HEAD's history" >&2; exit 1; }
+    [[ "$run_sha" == "$(git rev-parse HEAD)" ]] \
+        || { echo "preflight: latest green $wf run is at ${run_sha:0:8}, not at HEAD — dispatch it there: gh workflow run $wf --ref $branch" >&2; exit 1; }
 done
 
 # ---- stamp -----------------------------------------------------------------
-STAMPED=(rust/Cargo.toml rust/Cargo.lock)
+# One version into every file that carries it: called with the release version,
+# and again after the tag with the line's next -dev version. It appends to
+# STAMPED and reads JULIA_TOMLS, which the caller sets.
+stamp_version() {
+    local ver=$1 t
+    STAMPED+=(rust/Cargo.toml rust/Cargo.lock)
 
-awk -v ver="$VERSION" '
-    /^\[workspace\.package\]/ { inblk = 1 }
-    /^\[/ && $0 !~ /^\[workspace\.package\]/ { inblk = 0 }
-    inblk && /^version[ \t]*=/ { sub(/"[^"]*"/, "\"" ver "\"") }
-    { print }
-' rust/Cargo.toml > rust/Cargo.toml.tmp && mv rust/Cargo.toml.tmp rust/Cargo.toml
+    awk -v ver="$ver" '
+        /^\[workspace\.package\]/ { inblk = 1 }
+        /^\[/ && $0 !~ /^\[workspace\.package\]/ { inblk = 0 }
+        inblk && /^version[ \t]*=/ { sub(/"[^"]*"/, "\"" ver "\"") }
+        { print }
+    ' rust/Cargo.toml > rust/Cargo.toml.tmp && mv rust/Cargo.toml.tmp rust/Cargo.toml
 
+    for t in "${JULIA_TOMLS[@]}"; do
+        grep -q '^version = ' "$t" || continue
+        sed -i -E "s/^version = \"[^\"]*\"/version = \"$ver\"/" "$t"
+        STAMPED+=("$t")
+    done
+
+    (cd rust && cargo update --workspace -q)   # re-sync member versions into the lock
+}
+
+STAMPED=()
 shopt -s nullglob
 JULIA_TOMLS=(Project.toml core/Project.toml julia/kernel/Project.toml
              julia/repl/Project.toml julia/pluto/Project.toml
              julia/plugins/*/Project.toml examples/plugins/*/Project.toml)
-for t in "${JULIA_TOMLS[@]}"; do
-    grep -q '^version = ' "$t" || continue
-    sed -i -E "s/^version = \"[^\"]*\"/version = \"$VERSION\"/" "$t"
-    STAMPED+=("$t")
-done
-
-(cd rust && cargo update --workspace -q)   # re-sync member versions into the lock
+stamp_version "$VERSION"
 
 NEW_FILES=()
 if command -v git-cliff >/dev/null 2>&1; then
@@ -162,6 +189,7 @@ git diff --stat -- "${STAMPED[@]}"
 if [[ $DRY_RUN -eq 1 ]]; then
     git restore -- "${STAMPED[@]}"
     [[ ${#NEW_FILES[@]} -gt 0 ]] && rm -f -- "${NEW_FILES[@]:?}"
+    echo "== after the tag the line is stamped $NEXT"
     echo "== dry run: restored, nothing committed"
     exit 0
 fi
@@ -193,7 +221,7 @@ fi
 
 # ---- commit, tag, push -----------------------------------------------------
 if [[ $YES -eq 0 ]]; then
-    read -r -p "Push release $TAG to origin (commit + tag -> CI builds + publishes)? [y/N] " ans
+    read -r -p "Push release $TAG and the $NEXT dev stamp to origin (commit + tag -> CI builds + publishes)? [y/N] " ans
     [[ "$ans" == [yY]* ]] || { git restore -- "${STAMPED[@]}"; echo "aborted, restored"; exit 1; }
 fi
 
@@ -202,6 +230,10 @@ fi
 git add -- "${STAMPED[@]}" ${NEW_FILES[@]+"${NEW_FILES[@]}"}
 git commit -m "release: $TAG"
 git tag -a "$TAG" -m "Ship of Tools $TAG"
+STAMPED=()
+stamp_version "$NEXT"
+git add -- "${STAMPED[@]}"
+git commit -m "version: $NEXT opens the line after $TAG [skip ci]"
 git push origin "$branch" "$TAG"
 
 echo "== $TAG pushed — release workflow: https://github.com/kalidke/ship-of-tools/actions/workflows/release.yml"

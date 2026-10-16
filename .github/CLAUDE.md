@@ -70,8 +70,8 @@ scripts/CLAUDE.md.
 - W1 trust preparation runs on hosted Windows and macOS against temporary files. P0/P1/P5 are proof limits closed by the human
   release done test; no Claude credential is provisioned in CI. Missing facilities or witnesses are not passes.
 - CI is the tag gate: `scripts/release.sh` refuses a cut unless the latest non-skipped `rust.yml` and `CI.yml` runs on
-  the branch being cut are green and in HEAD's history; a `fixes/*` or `rc/*` branch has runs only if they are
-  dispatched there (`gh workflow run <workflow> --ref <branch>`).
+  the branch being cut are green and at HEAD; dispatch them there first (`gh workflow run <workflow> --ref <branch>`),
+  on a `fixes/*` or `rc/*` branch and on main too, since the dev stamp after a final carries `[skip ci]`.
 - A new exception to the layout limits is a line in `scripts/tests/check-layout.allow` with its reason, in the commit that
   needs it.
 - A suite runs only if a step names it: add a new suite to `rust.yml` (or `CI.yml` for Julia) by name, in the commit

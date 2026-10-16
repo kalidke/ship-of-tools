@@ -21,7 +21,7 @@ and the launch path fails open: no update step can stop a window from starting.
 
 ## Promises
 - A tag is cut only from `main`, `fixes/*` or `rc/*`, sorts above every tag of its line, and has green `rust.yml` and
-  `CI.yml` runs in HEAD's history (`release.sh` preflight).
+  `CI.yml` runs at HEAD (`release.sh` preflight).
 - Install checksums verify before any write, and `install.json` is written last (`install.sh` steps 2 and 9).
 - A refused install writes nothing under its prefix or `~/.local/bin`: the role and the ownership, host and record
   gates run on the unpacked `sotd` before the layout, and an unpacked `sotd` that cannot run stops the install. Without
@@ -72,7 +72,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 ### Release
-- `release.sh`: stamps the version, runs the workspace tests, commits, tags and pushes.
+- `release.sh`: stamps the version, runs the workspace tests, commits and tags the cut, stamps the line's next -dev
+  version in its own commit, and pushes both.
 ### Install
 - `install.sh`: the Unix installer; the one-liner fetches its own tag's copy; `--archive <folder>` installs a packed
   folder in place of a release download.
