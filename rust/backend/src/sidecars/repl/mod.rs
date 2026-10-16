@@ -268,6 +268,7 @@ impl Repl {
                     gen: 0,
                     state: ReplLifecycle::NotStarted,
                     notice: None,
+                    start: None,
                 })),
             }),
         }
@@ -281,6 +282,16 @@ impl Repl {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .state
+    }
+
+    /// What a caller still waiting on this REPL is told while its child has not said it is ready: how long it has been
+    /// starting and what it last wrote to stderr (`Start::still_starting`); `None` once it has, or with no child.
+    pub(crate) fn still_starting(&self) -> Option<String> {
+        let cell = self.inner.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        match (cell.state, &cell.start) {
+            (ReplLifecycle::Starting, Some(start)) => Some(start.still_starting("the REPL")),
+            _ => None,
+        }
     }
 
     /// Where the `ShipToolsRepl` shim project lives, for both deployment

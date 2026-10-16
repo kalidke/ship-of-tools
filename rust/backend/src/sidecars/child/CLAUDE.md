@@ -3,11 +3,14 @@
 A Julia child gets a private temporary folder, made before its spawn and removed after its reap, so what a killed child
 leaves goes with it; the daemon's controlled end removes the folders of the children it still holds, and a start those of
 a daemon that ended without one. A Julia or MathJax child's stderr is drained to its end and its last lines kept, so the
-owner of a child that failed to start logs the child's own words at warn. Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
+owner of a child that failed to start logs the child's own words at warn, and a caller still waiting on a child that has
+not said it is ready is told how long it has been starting and what it last wrote (`Start`). Part of the sidecars;
+charter: rust/backend/src/sidecars/CLAUDE.md.
 
 ## Files
-- `mod.rs`: declares the modules and re-exports `ChildTmp`, `remove_own`, `sweep_gone` and `StderrTail`.
-- `stderr_tail.rs`: a child's stderr drained to its end, its last lines kept for the warn its owner logs (`StderrTail`).
+- `mod.rs`: declares the modules and re-exports `ChildTmp`, `remove_own`, `sweep_gone`, `StderrTail` and `Start`.
+- `stderr_tail.rs`: a child's stderr drained to its end, its last lines kept for the warn its owner logs (`StderrTail`)
+  and read while it starts, for the one phrase a caller waiting on its start is told (`Start::still_starting`).
 - `tmp.rs`: `ChildTmp` (`new`, `for_user_code`, `apply`, `display_ended`, `retire`), the process's held folder of them
   (`InHeld`, its count) and its removals at the end and the start (`remove_own`, `sweep_gone`), with the tests of its
   folder, its held folder and its end.

@@ -208,7 +208,8 @@ pub struct ReplFrameEvt {
 /// caller must name the target REPL explicitly). `timeout_ms` bounds the wait;
 /// on timeout the run is NOT interrupted (it keeps running, its frames still
 /// reach the drawer), the response just returns `outcome:"timeout"` with
-/// whatever was collected so far.
+/// whatever was collected so far, and, when the REPL had not said it was ready,
+/// an `error` saying how long it has been starting and its last stderr lines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplExecuteReq {
     pub workspace_id: String,

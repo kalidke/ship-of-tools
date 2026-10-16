@@ -110,6 +110,9 @@ pub(super) async fn spawn_supervisor(
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
 
     let stderr_tail = StderrTail::drain(stderr, |line| tracing::debug!(target: "repl.stderr", "{line}"));
+    // What a caller waiting on this child is told until it says it is ready (`Repl::still_starting`), in place before
+    // its generation opens.
+    lifecycle.lock().unwrap_or_else(|e| e.into_inner()).start = Some(stderr_tail.start());
 
     // Child exists: open a new spawn generation (state -> Starting, announce).
     let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);

@@ -30,7 +30,8 @@ rust/backend/src/sidecars/CLAUDE.md.
   inherited: GLFW 3.4 tries a Wayland session's default socket before X11 unless the session type says x11.
 - A start that fails (no Xvfb, an early exit, no number within `START_BOUND`, 10 s) never fails the child: the daemon
   logs the reason at WARN, the child gets `SOT_NO_DISPLAY=<reason>` and keeps what it inherited, and the REPL shim says
-  the reason at its first eval (julia/repl).
+  the reason at its first eval (julia/repl). The reason for an early exit, and for a start past its bound once Xvfb has
+  written anything, ends with the last lines of its log.
 - A display that ends under a live child ends the child: the child's owner waits on `ended` (the server's exit, seen
   and left unreaped) for the child's whole life, then retires the child and says why (`ChildTmp::display_ended`; the
   REPL's `ReplEnded::DisplayEnded`, Pluto's `Cause::Display`). Once the server is gone any account can bind the

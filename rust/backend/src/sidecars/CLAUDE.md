@@ -28,6 +28,11 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - A kernel, REPL, Pluto or MathJax child that ends, other than by the daemon's shutdown (or, for a kernel, its owner's
   drop; for the REPL, its owner's restart or its row's end, so only its death counts), leaves its last 30 stderr lines
   in the log at warn, one event (`StderrTail`); every stderr line is also logged at debug under `<child>.stderr`.
+- A `repl.execute` whose wait ends while the REPL's child has not said it is ready answers `timeout` with an `error`
+  saying how long the REPL has been starting and its last five stderr lines (`Start::still_starting`, child/), and
+  logs the same at warn; a stalled start (a juliaup launcher installing a Julia, a precompile) is named by the child's
+  own words, never a bare timeout. An Xvfb that names no display within its bound, and a sampler ended for silence,
+  name the last lines they wrote in the reason they log at warn.
 - A Pluto open answers within `PLUTO_OPEN_BOUND` (30 s) or fails naming it, and the server that did not answer is ended, since its replies are matched oldest-first.
 - Pluto's proxy port is a supervisor-owned generation grant, published only after a loopback READY URL and released on every supervisor exit or cancellation before cleanup awaits. An old generation's release cannot erase its replacement's grant (`bound_pluto_port`).
 - Pluto polls child exit and its supplied Signal during each stdin write and flush. Cancelling a submission retires the supervisor, releases its grant and closes current, pending and queued replies before checked cleanup; it never resends a partial OPEN line.
@@ -52,7 +57,8 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - Every sidecar child starts through `Signal::spawn`. Kernel, REPL, Pluto, MathJax and monitor supervisors receive a caller-supplied `&'static Signal` for both spawn and shutdown observation; the monitor's respawn backoff ends at its fire. REPL and MathJax select the daemon's process `Signal` only where their production handles are constructed.
 - A remote host's sampler ssh is built from `SSH_OPTS`, so it turns ssh sharing off as the bridges do
   (`sampler_command`).
-- A monitor sampler silent for `SAMPLER_SILENT` (20 s) is ended, shown stale, and started again after `RESPAWN_BACKOFF`.
+- A monitor sampler silent for `SAMPLER_SILENT` (20 s) is ended, shown stale, and started again after `RESPAWN_BACKOFF`;
+  the reason it logs carries the last line it wrote to stderr.
 - The kernel runs only its own `julia/kernel` project (`run_one_generation`).
 - A dead monitor source shows as a `stale` tick and respawns after 5 s; its reason is logged once per change
   (`should_log`).

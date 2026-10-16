@@ -115,8 +115,8 @@ impl Drop for Cookie {
 /// display number (a number another server holds is never taken) and makes no lock file; `-nolisten unix` leaves only
 /// the abstract socket, so a killed server leaves no file in `/tmp/.X11-unix`; `-auth` makes the cookie the only way in,
 /// and `-noreset` keeps the cookie it read at the start (a server resets when its last client leaves and reads the file
-/// again, so a removed file would lock the child out); no TCP. Its stderr goes to a file beside the cookie, the reason
-/// a failed start names.
+/// again, so a removed file would lock the child out); no TCP. Its stderr goes to a file beside the cookie, whose last
+/// lines a failed start names, a start past its bound included.
 async fn start_with(
     program: &OsStr,
     folder: &Path,
@@ -146,7 +146,10 @@ async fn start_with(
             Err(_) => format!("{name} named no display number: {:?}", line.trim()),
         },
         Ok(_) => format!("{name} ended before naming a display: {}", last_lines(&log)),
-        Err(_) => format!("{name} named no display within {bound:?}"),
+        Err(_) => match last_lines(&log) {
+            said if said.is_empty() => format!("{name} named no display within {bound:?}"),
+            said => format!("{name} named no display within {bound:?}: {said}"),
+        },
     };
     if let Err(e) = server.kill().await {
         tracing::warn!(error = %e, "a display server that failed to start is not confirmed ended");
@@ -360,6 +363,14 @@ mod tests {
         let silent = start_with(deaf.as_os_str(), &own("silent"), sig, Duration::from_millis(500)).await;
         let why = silent.err().expect("a server that never answers names no display");
         assert!(why.ends_with("named no display within 500ms"), "{why}");
+
+        // A server that is still starting at the bound: the reason carries what it last wrote.
+        let slow = folder.path().join("slow");
+        let script = "#!/bin/sh\necho 'xkbcomp: still compiling the keymap' >&2\nexec sleep 30\n";
+        sot_log::test_exec::write_executable(&slow, script);
+        let stalled = start_with(slow.as_os_str(), &own("stalled"), sig, Duration::from_millis(500)).await;
+        let why = stalled.err().expect("a server that never answers names no display");
+        assert!(why.ends_with("named no display within 500ms: xkbcomp: still compiling the keymap"), "{why}");
         assert_eq!(sig.live(), 0, "a failed start leaves no server");
     }
 }

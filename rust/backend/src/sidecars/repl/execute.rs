@@ -349,7 +349,8 @@ pub(super) fn close_exec_run(frame_tx: &tokio::sync::broadcast::Sender<ReplFrame
 /// per-run collector in the supervisor (loss-free, unlike the broadcast bus),
 /// completion keys off the shim's terminal `res` (reliable even when no `done`
 /// frame is emitted), figures spill to `<ws>/.sot/runs/<run_id>/`, and a
-/// timeout returns `outcome:"timeout"` WITHOUT interrupting the run.
+/// timeout returns `outcome:"timeout"` WITHOUT interrupting the run, with an
+/// `error` naming the start when the REPL has not said it is ready.
 pub async fn handle_repl_execute(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -420,6 +421,13 @@ pub async fn handle_repl_execute(
     };
 
     let (elapsed_ms, base_outcome, res_payload, ended) = await_exec_reply(&req, reply_rx).await;
+    // A run that timed out behind a REPL whose child has not said it is ready says so, in the report and in the log at
+    // warn: how long it has been starting and what it last wrote (a stalled start, a Julia install among them, would
+    // otherwise answer a bare timeout).
+    let starting = if base_outcome == "timeout" { repl.still_starting() } else { None };
+    if let Some(starting) = &starting {
+        tracing::warn!(workspace_id = %ws_id, run_id = %run_id, "repl.execute timed out: {starting}");
+    }
 
     // Snapshot the loss-free collector.
     let (frames, truncated) = {
@@ -431,8 +439,9 @@ pub async fn handle_repl_execute(
     // Terminal error carried by the shim's res (bad_request / io_error /
     // repl_exception) — authoritative over frame inspection.
     let (res_code_error, mut error_out, project_dir, project_source) = read_exec_res(res_payload);
-    // A REPL that ended first says why (`ReplEnded`), ahead of any frame the run streamed.
-    if let Some(message) = ended {
+    // A REPL that ended first says why (`ReplEnded`), and one still starting at the timeout says that, ahead of any
+    // frame the run streamed.
+    if let Some(message) = ended.or(starting) {
         error_out = Some(ReplErrorOut { message, stacktrace: Vec::new() });
     }
 

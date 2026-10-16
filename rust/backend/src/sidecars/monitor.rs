@@ -601,9 +601,14 @@ async fn supervise(
                                 }
                             }
                         }
-                        // Silent past the bound: the dropped tree is killed, and the stale tick and respawn follow.
+                        // Silent past the bound: the dropped tree is killed, and the stale tick and respawn follow,
+                        // with what ssh last said (a connect that never finishes says why there).
                         _ = tokio::time::sleep_until(heard + SAMPLER_SILENT) => {
-                            break format!("no sample in {}s", SAMPLER_SILENT.as_secs());
+                            let silent = format!("no sample in {}s", SAMPLER_SILENT.as_secs());
+                            break match stderr_line.take() {
+                                Some(said) => format!("{silent}; its last stderr line: {said}"),
+                                None => silent,
+                            };
                         }
                     }
                 }
