@@ -38,7 +38,8 @@ does (`working-directory: agents/tests`).
 - The job `bash32-linux` runs every suite here with every script under bash 3.2 (`scripts/tests/under-bash.sh`); code a
   suite hands to the bash on PATH holds under 3.2 (comm/tests/CLAUDE.md).
 - The stub daemon's socket is awaited with `await` (comm/tests/lib-wait.sh), signalled by the socket itself, never by a
-  fixed wall-clock wait.
+  fixed wall-clock wait. Its two steps, `nc` and the `tail -F | while` watcher, start between `set -m` and `set +m` and
+  end with `end_group`, in `stop_stub_daemon` and in the EXIT trap (comm/tests/CLAUDE.md).
 - Scripts run from the copy `guard_stage_bin` makes in the suite's work directory, never from `agents/spawn/` or
   `agents/sot-fe/`; the two launcher suites run `ccb` and `ccx` from `agents/claude/bin` and `agents/codex/bin` through
   `$SCRIPT_DIR`.

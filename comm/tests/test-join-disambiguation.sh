@@ -240,6 +240,7 @@ start_stub_daemon() {  # WSID SLUG ROOT [HANDLE]
         '{v:1,id:1,kind:"res",op:"workspace.list",payload:{workspaces:[{workspace_id:$id,slug:$slug,label:$slug,project_root:$root,kernel_running:false,is_default:false,autostart_claude:true,agent:"claude",agent_name:"",agent_handle:$h,task:"",agent_state:"",agent_summary:"",agent_status_at:"",repl_state:"idle",runtime:"capsule",phase:"ready"}]}}')"
     ptyin='{"v":1,"id":1,"kind":"res","op":"pty.input","payload":{"ok":true,"bytes":1,"runtime":"capsule","enter":"sent"}}'
     exec 3<>"$fifo"
+    set -m   # each step leads a process group of its own, which end_group (lib-wait.sh) ends whole
     nc -klU "$STUB_SOCK" < "$fifo" >> "$STUB_REQLOG" &
     STUB_NC_PID=$!
     ( created=0
@@ -257,14 +258,12 @@ start_stub_daemon() {  # WSID SLUG ROOT [HANDLE]
         esac
       done ) &
     STUB_WATCHER_PID=$!
+    set +m
     await test -S "$STUB_SOCK" || echo "stub daemon socket never appeared: $STUB_SOCK" >&2
 }
 stop_stub_daemon() {
-    [ -n "$STUB_WATCHER_PID" ] && pkill -TERM -P "$STUB_WATCHER_PID" >/dev/null 2>&1
-    [ -n "$STUB_WATCHER_PID" ] && kill "$STUB_WATCHER_PID" >/dev/null 2>&1
-    [ -n "$STUB_NC_PID" ] && kill "$STUB_NC_PID" >/dev/null 2>&1
-    [ -n "$STUB_WATCHER_PID" ] && wait "$STUB_WATCHER_PID" 2>/dev/null
-    [ -n "$STUB_NC_PID" ] && wait "$STUB_NC_PID" 2>/dev/null
+    end_group "$STUB_WATCHER_PID"
+    end_group "$STUB_NC_PID"
     exec 3>&- 2>/dev/null || true
     STUB_NC_PID=""; STUB_WATCHER_PID=""
 }

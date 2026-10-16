@@ -16,7 +16,8 @@ HOOKS_DIR="$(cd "$SCRIPT_DIR/../work_state/hooks" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-deps-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
-trap 'rm -rf "${WORK:?}"' EXIT
+LOOPA=""; LOOPB=""   # the retired-bridge loops below, each a process group of its own
+trap 'end_group "$LOOPA"; end_group "$LOOPB"; rm -rf "${WORK:?}"' EXIT
 
 export SOT_COMM_HOME="$WORK/home"
 guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
@@ -213,8 +214,10 @@ mkdir -p "$WORK/bridge"
 
 # (a) tethered: the line appears once; the loop and its child go when the tether dies.
 sleep 30 & TETHER=$!
+set -m   # the loop leads a process group of its own: end_group ends it with its child, which no pgrep need name
 bash -c "$OLD_LOOP" sot-bridge "$SCRIPTS_DIR/comm-relay.sh" h "$TETHER" "" </dev/null >"$WORK/bridge/a.log" 2>&1 &
 LOOPA=$!
+set +m
 logged_a() { grep -qF "$RETIRED" "$WORK/bridge/a.log"; }
 await logged_a
 check "retired bridge, tethered: the line is logged once" "$(grep -cF "$RETIRED" "$WORK/bridge/a.log")" "1"
@@ -223,17 +226,18 @@ kill "$TETHER" 2>/dev/null; wait "$TETHER" 2>/dev/null
 loop_a_gone() { ! kill -0 "$LOOPA" 2>/dev/null && { [ -z "$CHILDA" ] || ! kill -0 "$CHILDA" 2>/dev/null; }; }
 gone=0; await loop_a_gone && gone=1
 check "retired bridge, tethered: loop and child gone after the tether" "$gone" "1"
-if [ "$gone" != 1 ]; then kill "$LOOPA" $CHILDA 2>/dev/null; fi
+[ "$gone" = 1 ] || end_group "$LOOPA"; LOOPA=""
 
 # (b) untethered: no retry, the child is a sleep; the test then cleans up its own fixtures.
+set -m
 bash -c "$OLD_LOOP" sot-bridge "$SCRIPTS_DIR/comm-relay.sh" h "" "" </dev/null >"$WORK/bridge/b.log" 2>&1 &
 LOOPB=$!
+set +m
 sleep 6
 check "retired bridge, untethered: still exactly one line after 6 s" "$(grep -cF "$RETIRED" "$WORK/bridge/b.log")" "1"
 CHILDB="$(command -p pgrep -P "$LOOPB" | head -n1)"
 check "retired bridge, untethered: the child is a sleep" "$(ps -o comm= -p "${CHILDB:-0}" 2>/dev/null)" "sleep"
-kill "$LOOPB" 2>/dev/null; [ -z "$CHILDB" ] || kill "$CHILDB" 2>/dev/null
-wait "$LOOPB" 2>/dev/null
+end_group "$LOOPB"; LOOPB=""
 
 # Before bash 5 the registry lock's clock is perl's Time::HiRes, so the mail
 # tools list it there, and the check names the module when perl cannot load

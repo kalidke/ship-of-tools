@@ -39,8 +39,8 @@ mkdir -p "$SOT_COMM_HOME"
 STUB_NC_PID=""
 STUB_WATCHER_PID=""
 cleanup() {
-    [ -n "$STUB_WATCHER_PID" ] && kill "$STUB_WATCHER_PID" >/dev/null 2>&1
-    [ -n "$STUB_NC_PID" ] && kill "$STUB_NC_PID" >/dev/null 2>&1
+    end_group "$STUB_WATCHER_PID"
+    end_group "$STUB_NC_PID"
     exec 3>&- 2>/dev/null || true
     rm -rf "${WORK:?}"
 }
@@ -106,6 +106,7 @@ start_stub_daemon() {
     # this file's header doc) — opened BEFORE nc so nc's own open-for-read
     # never blocks waiting for a first writer.
     exec 3<>"$fifo"
+    set -m   # each step leads a process group of its own, which end_group (lib-wait.sh) ends whole
     nc -klU "$SOCK" < "$fifo" >> "$reqlog" &
     STUB_NC_PID=$!
 
@@ -115,6 +116,7 @@ start_stub_daemon() {
         [ -n "$op" ] && [ -f "$replyfile" ] && printf '%s\n' "$(cat "$replyfile")" >&3
     done ) &
     STUB_WATCHER_PID=$!
+    set +m
 
     # Bounded wait for the socket to actually exist (nc binds it near-
     # instantly; this just guards a slow-scheduling CI box).
@@ -122,15 +124,12 @@ start_stub_daemon() {
 }
 
 stop_stub_daemon() {
-    # The watcher is a subshell whose `tail -F | while` children outlive a
+    # The watcher is a subshell whose `tail -F | while` members outlive a
     # kill of the subshell alone and keep this script's stdout open — a
-    # caller piping the suite (`| tail`) then never sees EOF. Kill the
-    # children first.
-    [ -n "$STUB_WATCHER_PID" ] && pkill -TERM -P "$STUB_WATCHER_PID" >/dev/null 2>&1
-    [ -n "$STUB_WATCHER_PID" ] && kill "$STUB_WATCHER_PID" >/dev/null 2>&1
-    [ -n "$STUB_NC_PID" ] && kill "$STUB_NC_PID" >/dev/null 2>&1
-    wait "$STUB_WATCHER_PID" 2>/dev/null
-    wait "$STUB_NC_PID" 2>/dev/null
+    # caller piping the suite (`| tail`) then never sees EOF — so each step
+    # ends as the whole process group it leads.
+    end_group "$STUB_WATCHER_PID"
+    end_group "$STUB_NC_PID"
     exec 3>&- 2>/dev/null || true
     STUB_NC_PID=""
     STUB_WATCHER_PID=""
