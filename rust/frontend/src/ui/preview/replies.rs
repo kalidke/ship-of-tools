@@ -510,9 +510,10 @@ impl State {
 
     /// A `pluto.open` answered that the server is still starting: its start goes on, so this is no failure, and the
     /// next open of a notebook joins it.
-    pub(crate) fn on_pluto_starting(&mut self, message: String) {
-        tracing::info!(%message, "pluto.open: the server is still starting");
-        self.status = format!("pluto · {message}; open again once it is ready");
+    pub(crate) fn on_pluto_starting(&mut self, event_host: HostKey, message: String) {
+        tracing::info!(%message, %event_host, "pluto.open: the server is still starting");
+        let host = host_label(&self.hosts.declared_host, &event_host);
+        self.status = pluto_starting_status(host, &message);
         self.window.request_redraw();
     }
 
@@ -630,5 +631,20 @@ impl State {
             .to_string();
         self.status = format!("preview failed · {name}: {message}");
         self.window.request_redraw();
+    }
+}
+
+/// The status line for a Pluto still starting on `host`: what to do first, so a narrow bar keeps it, then the daemon's
+/// account.
+fn pluto_starting_status(host: &str, message: &str) -> String {
+    format!("pluto · still starting on {host}; open again once it is ready · {message}")
+}
+
+#[cfg(test)]
+mod pluto_starting_tests {
+    #[test]
+    fn the_status_names_the_host_and_leads_with_what_to_do() {
+        let said = super::pluto_starting_status("lab", "Pluto is still starting after 120 s");
+        assert_eq!(said, "pluto · still starting on lab; open again once it is ready · Pluto is still starting after 120 s");
     }
 }
