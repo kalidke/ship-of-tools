@@ -191,6 +191,14 @@ impl NativeVolume {
             .arg(&self.image);
         self.attached = true;
         native_command(attach);
+        // Spotlight would index the volume the test fills and then detaches; failing to turn it off is not fatal.
+        let mut index = Command::new("mdutil");
+        index.args(["-i", "off"]).arg(&self.mount);
+        let index = bounded(index, 60, &[]);
+        println!(
+            "L3 fixture macos mdutil-index-off {}",
+            index.diagnostic("mdutil")
+        );
         use std::os::unix::fs::MetadataExt;
         assert_ne!(
             std::fs::metadata(&self.mount).unwrap().dev(),
@@ -217,9 +225,32 @@ impl NativeVolume {
     fn detach(&mut self) {
         if self.attached {
             self.cleanup_attempted = true;
-            let mut command = Command::new("hdiutil");
-            command.arg("detach").arg(&self.mount);
-            native_command(command);
+            let started = std::time::Instant::now();
+            let tries = detach::detach_within(
+                || {
+                    let mut command = Command::new("hdiutil");
+                    command.arg("detach").arg(&self.mount);
+                    let observation = bounded(command, 120, &[]);
+                    detach::Attempt {
+                        ok: observation.status.success(),
+                        busy: observation.status.code() == Some(16)
+                            || observation.combined().contains("Resource busy"),
+                        report: observation.diagnostic("command"),
+                    }
+                },
+                || {
+                    let mut command = Command::new("lsof");
+                    command.arg("+D").arg(&self.mount);
+                    bounded(command, 20, &[]).diagnostic("lsof")
+                },
+                std::thread::sleep,
+                || started.elapsed(),
+                detach::BOUND,
+            )
+            .unwrap_or_else(|error| {
+                panic!("L3 HARNESS FAILURE: native fixture cleanup failed:\n{error}")
+            });
+            println!("L3 fixture macos detach tries={tries}");
             use std::os::unix::fs::MetadataExt;
             assert_eq!(
                 std::fs::metadata(&self.mount).unwrap().dev(),
