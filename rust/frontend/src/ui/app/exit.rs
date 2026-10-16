@@ -48,9 +48,19 @@ pub(in crate::ui) fn redraw_exits(should_exit: bool, leaving: bool, harness: boo
     should_exit && (harness || !leaving)
 }
 
-fn open_quit_prompt(prompt: &mut Option<NavPrompt>, keep: bool) {
+/// The status when Ctrl+Q finds another prompt open: a typed name or entry is never discarded for the question.
+pub(in crate::ui) const QUIT_REFUSED: &str = "quit · finish or cancel the open prompt first";
+
+/// Opens the question unless another prompt is open, which it never overwrites (a file name typed in the tree stays
+/// when focus has moved to another pane). False when it refused.
+fn open_quit_prompt(prompt: &mut Option<NavPrompt>, keep: bool) -> bool {
+    if matches!(prompt, Some(p) if !matches!(p, NavPrompt::ConfirmQuit { .. })) {
+        tracing::info!("quit prompt: refused, another prompt is open");
+        return false;
+    }
     *prompt = Some(NavPrompt::ConfirmQuit { keep });
     tracing::info!(keep, "quit prompt: open");
+    true
 }
 
 /// How long final teardown may take after the terminal decision before the process ends itself.
@@ -166,7 +176,7 @@ fn confirm_stay(leases: &crate::lease::Leases, prompt: &mut Option<NavPrompt>, l
         return false;
     }
     if leaving.as_ref().is_some_and(|l| l.intent == LeaveIntent::Keep) {
-        open_quit_prompt(prompt, true);
+        let _ = open_quit_prompt(prompt, true);
     }
     *leaving = None;
     *should_exit = false;
@@ -191,7 +201,9 @@ impl State {
     pub(in crate::ui) fn request_quit(&mut self, event_loop: &ActiveEventLoop, reason: ExitReason) {
         match exit_intent(reason, self.leaving.as_ref().map(|l| l.intent)) {
             ExitStep::Ask => {
-                open_quit_prompt(&mut self.nav_prompt, false);
+                if !open_quit_prompt(&mut self.nav_prompt, false) {
+                    self.status = QUIT_REFUSED.to_string();
+                }
                 self.window.request_redraw();
             }
             ExitStep::Now { code } => {
@@ -245,6 +257,28 @@ impl State {
 #[cfg_attr(feature = "test-window-progress", allow(unused_imports, reason = "the harness=false native targets run none of these tests"))]
 mod tests {
     use super::*;
+
+    /// Ctrl+Q reaches `request_quit` from any pane, so a prompt left open in the tree can be there: its typed text
+    /// stays, and the question does not open over it.
+    #[test]
+    fn the_question_never_overwrites_another_prompt() {
+        for other in [
+            NavPrompt::CreateFile { dir_node_id: "files:".into(), input: "typed-name".into() },
+            NavPrompt::ConfirmDelete { node_id: "files:a".into(), label: "a".into() },
+            NavPrompt::ScaleEntry { node_id: "files:a".into(), input: "1".into() },
+        ] {
+            let mut prompt = Some(other.clone());
+            assert!(!open_quit_prompt(&mut prompt, false));
+            assert!(std::mem::discriminant(prompt.as_ref().unwrap()) == std::mem::discriminant(&other),
+                "the open prompt is untouched");
+            if let Some(NavPrompt::CreateFile { input, .. }) = &prompt {
+                assert_eq!(input, "typed-name");
+            }
+        }
+        let mut prompt = None;
+        assert!(open_quit_prompt(&mut prompt, false) && matches!(prompt, Some(NavPrompt::ConfirmQuit { keep: false })));
+        assert!(open_quit_prompt(&mut prompt, true), "the question may reopen itself");
+    }
 
     #[test]
     fn redraw_exit_table() {
