@@ -108,8 +108,18 @@ pub async fn ready_row(
     }
 }
 
+/// How long a tree's pids are polled for before a case fails (`watch_tree`).
+const TREE_REPORT_BOUND: Duration = Duration::from_secs(120);
+
+/// How long the REPL's `repl.execute` waits: the bound the harness asks the daemon for. The daemon answers a run whose
+/// wait ends behind a REPL still starting with the start's age and the child's stderr lines, and `call_long` records
+/// that answer, so it has to come before `watch_tree` gives up and the case's record is written.
+const SPIN_WAIT: Duration = Duration::from_secs(100);
+const _: () = assert!(SPIN_WAIT.as_secs() < TREE_REPORT_BOUND.as_secs());
+
 /// Run a cell in the row's REPL on a connection of its own. The call does not answer while the cell spins, so it runs in a
-/// task that the caller aborts; the reply, if one ever comes, is recorded for a failed case's record (`call_long`).
+/// task that the caller aborts; the reply, which comes at `SPIN_WAIT` at the latest, is recorded for a failed case's
+/// record (`call_long`).
 pub async fn spin_in_repl(
     socket: &Path,
     workspace_id: &str,
@@ -122,7 +132,7 @@ pub async fn spin_in_repl(
             &mut conn,
             next_id,
             op::REPL_EXECUTE,
-            serde_json::json!({ "workspace_id": workspace_id, "input": { "kind": "eval", "code": cell }, "timeout_ms": 600_000 }),
+            serde_json::json!({ "workspace_id": workspace_id, "input": { "kind": "eval", "code": cell }, "timeout_ms": SPIN_WAIT.as_millis() as u64 }),
             Duration::from_secs(3600),
         )
         .await;
@@ -133,7 +143,7 @@ pub async fn spin_in_repl(
 pub async fn watch_tree(fx: &mut Fixture, tree: &Tree, forking: bool, what: &str) -> Vec<usize> {
     let pids = poll_until(
         || async { tree.pids(forking) },
-        Duration::from_secs(120),
+        TREE_REPORT_BOUND,
         &format!("the {what} tree to report"),
     )
     .await;
