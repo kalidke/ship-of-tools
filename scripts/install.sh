@@ -776,6 +776,7 @@ lib_rc=0
 
 # ---- 2. download + verify ----------------------------------------------------
 ASSETS=("SHA256SUMS" "sot-$VER-$TARGET.tar.gz")
+[ -z "$ARCHIVE" ] || ASSETS+=("COMMIT")
 
 dl() {
     curl "${CURL_BOUND[@]}" -fsSL -o "$WORK/$1" "https://github.com/$REPO/releases/download/$VERSION/$1" \
@@ -804,6 +805,17 @@ BINDIR="$WORK/sot-$VER-$TARGET"
 # (a TMPDIR mounted noexec) stops the install instead of reading as a topology.
 "$BINDIR/sotd" --version >/dev/null 2>&1 \
     || die "the unpacked sotd cannot run from $WORK (is ${TMPDIR:-/tmp} mounted noexec?); set TMPDIR to a folder that allows execution"
+# An archive's binaries name their own version and commit: they must be the ones its folder (SHA256SUMS, COMMIT) names,
+# so a half-written or mislabelled folder installs nothing.
+if [ -n "$ARCHIVE" ]; then
+    for b in sotd sot; do
+        got="$("$BINDIR/$b" --version 2>/dev/null)" || got=""
+        case "$got" in
+            "$b $VER (${ARCHIVE_COMMIT:0:9} "*) ;;
+            *) die "$ARCHIVE's $b says '$got', which does not match $VER at ${ARCHIVE_COMMIT:0:9} (its SHA256SUMS and COMMIT): repack it with scripts/pack-build.sh" ;;
+        esac
+    done
+fi
 
 # ---- heal a pre-0.6 hosts.toml (finding 3a, v0.6.5 macOS field report) -----------
 # The old grammar (`default_host` at top level) is a loud parse error under
@@ -959,6 +971,32 @@ case "$RECORD_DECISION" in
         exit 2 ;;
 esac
 
+# ---- 3a. the commit to install, resolved before anything is swapped ------------
+# A commit origin lacks (an unpushed line, a deleted tag) refuses here, with the binaries and .prev copies untouched.
+REPO_DIR="$PREFIX/repo"
+BASE="$REPO_DIR/base"
+CHECKOUT="$REPO_DIR/versions/$VERSION"
+CURRENT="$REPO_DIR/current"
+command -v git >/dev/null || die "git is required (the install includes a repo checkout)"
+if [ ! -d "$BASE" ]; then
+    say "creating base clone (blobless, no checkout)"
+    # Public repo: plain https clone, no auth needed.
+    git "${GIT_BOUND[@]}" clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
+        || die "base clone failed"
+fi
+# --force on the tag fetch: a release tag force-moved upstream (e.g. the
+# public-flip history rewrite) otherwise makes the whole fetch abort with
+# "would clobber existing tag", blocking every upgrade re-run (issue #4).
+# The checkouts are READ-ONLY BY CONVENTION, so force-updating tags is safe.
+git "${GIT_BOUND[@]}" -C "$BASE" fetch --tags --force origin || die "fetch failed"
+if [ -n "$ARCHIVE" ]; then
+    want="$(git -C "$BASE" rev-parse --verify "$ARCHIVE_COMMIT^{commit}" 2>/dev/null)" \
+        || die "commit $ARCHIVE_COMMIT is not in origin after fetch — push the line first"
+else
+    want="$(git -C "$BASE" rev-parse "refs/tags/$VERSION^{commit}" 2>/dev/null)" \
+        || die "tag $VERSION not present after fetch"
+fi
+
 # ---- 3b. layout, now that the gates allow it --------------------------------
 mkdir -p "$PREFIX/bin" "$PREFIX/updates" "$PREFIX/repo"
 # sot-capsule is sotd's capsule-runtime pair (ADR 0042 L1a): sotd resolves it
@@ -999,29 +1037,6 @@ DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 # an update is a pointer flip; this installer produces the same layout (and
 # migrates the pre-Phase-C in-place clone). READ-ONLY BY CONVENTION: a dirty
 # tree refuses to move (fail loud).
-REPO_DIR="$PREFIX/repo"
-BASE="$REPO_DIR/base"
-CHECKOUT="$REPO_DIR/versions/$VERSION"
-CURRENT="$REPO_DIR/current"
-command -v git >/dev/null || die "git is required (the install includes a repo checkout)"
-if [ ! -d "$BASE" ]; then
-    say "creating base clone (blobless, no checkout)"
-    # Public repo: plain https clone, no auth needed.
-    git "${GIT_BOUND[@]}" clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
-        || die "base clone failed"
-fi
-# --force on the tag fetch: a release tag force-moved upstream (e.g. the
-# public-flip history rewrite) otherwise makes the whole fetch abort with
-# "would clobber existing tag", blocking every upgrade re-run (issue #4).
-# The checkouts are READ-ONLY BY CONVENTION, so force-updating tags is safe.
-git "${GIT_BOUND[@]}" -C "$BASE" fetch --tags --force origin || die "fetch failed"
-if [ -n "$ARCHIVE" ]; then
-    want="$(git -C "$BASE" rev-parse --verify "$ARCHIVE_COMMIT^{commit}" 2>/dev/null)" \
-        || die "commit $ARCHIVE_COMMIT is not in origin after fetch — push the line first"
-else
-    want="$(git -C "$BASE" rev-parse "refs/tags/$VERSION^{commit}" 2>/dev/null)" \
-        || die "tag $VERSION not present after fetch"
-fi
 if [ -d "$CHECKOUT" ]; then
     if [ -n "$(git -C "$CHECKOUT" status --porcelain 2>/dev/null)" ]; then
         die "the checkout at $CHECKOUT has local changes — commit/stash/revert, then re-run (updates refuse to move a dirty tree)"
