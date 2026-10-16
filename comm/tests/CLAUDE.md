@@ -76,10 +76,7 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
   than every hang guard in the suite where the case can set it, unless its expiry is what the case tests (the registry
   lock's 10 s is fixed when the library is sourced, so status_floor's race() keeps it around one jq, mv and rmdir). A
   step a case starts in the background is awaited by a signal it gives (`await`; `stopped` for a holder that stops
-  itself), never a fixed sleep, and ends before the case returns. A step with children of its own (a subshell running a
-  pipeline, as each stub daemon's watcher is; a loop) starts between `set -m` and `set +m`, so it leads a process group,
-  and ends with `end_group`, in its stop and in the suite's EXIT trap: a stop by parent id misses a pipeline's members,
-  and Git Bash has no `pkill` or `pgrep`. A holder gives its ready signal itself (a builtin, such
+  itself), never a fixed sleep, and ends before the case returns. A step that runs until it is stopped and has children of its own (a stub daemon's nc and watcher, a retired-bridge loop) starts between `set -m` and `set +m`, so it leads a process group, and ends with `end_group`, in its stop and in the suite's EXIT trap: a stop by parent id misses a pipeline's members, and Git Bash has no `pkill` or `pgrep`. (Steps that end themselves, such as a lock holder or a reader a case waits for, are outside this; `lib-temp-files.sh`'s `_tf_start` and `_tf_end` give each row's step a group of its own by `setpgrp`.) The trade: `set -m` takes the step out of the suite's own process group, so a developer run under `timeout -s KILL` (or `timeout -k`, once its grace after TERM has run out) leaves the stub's `nc`, watcher and `tail -F`, because the EXIT trap that ends them runs on TERM and not on KILL; the gate's container ends such leftovers. `test-comm-deps.sh`'s untethered case still asks `pgrep` for its loop's child, so that one row fails on Git Bash. A holder gives its ready signal itself (a builtin, such
   as `: > FILE`), never from a child that inherits the lock. Lower bounds ("waited at least the deadline") stay:
   load only lengthens a wait. The suites that need peer hosts and comm-matrix.sh time real boxes and are outside this
   rule. The repaired wait paths use observed readiness, retry/read-completion or child-result barriers; the two

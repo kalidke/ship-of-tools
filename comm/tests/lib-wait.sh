@@ -1,5 +1,5 @@
-# lib-wait.sh — the waits the comm and agents suites share (comm/tests/CLAUDE.md's timing rule), and the one way a
-# suite ends a step it started in the background with children of its own (end_group). A suite sources it after
+# lib-wait.sh — the waits the comm and agents suites share (comm/tests/CLAUDE.md's timing rule), and the way a
+# suite ends a step that runs until it is stopped and has children of its own (end_group). A suite sources it after
 # lib-home-guard.sh. Functions only; sourcing runs nothing.
 
 # await CMD [ARG...] — run CMD every 50 ms until it succeeds; 1 if it has not after 600 tries. The 30 s is a hang
