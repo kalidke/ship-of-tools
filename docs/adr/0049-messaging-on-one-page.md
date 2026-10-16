@@ -116,8 +116,11 @@ whose directory must be private, or on Windows a named pipe with an owner-only
 descriptor, and a hub's per-host relay sockets are owner-only Unix sockets. Every
 connection to the daemon is admitted twice, each in one place: at accept, by the
 account of its process (Linux and macOS compare the effective uid the kernel recorded for
-the peer at its connect with the daemon's; on Windows the pipe's owner-only descriptor
-decides; a peer whose account the operating system cannot give is refused too), and at its first frame,
+the peer at its connect with the daemon's, and refuse a peer whose account the operating system cannot give;
+on Windows the pipe's owner-only descriptor decides, so what it admits is any thread holding a token of this user,
+which includes another account's process impersonating this user, as a service with SeImpersonatePrivilege can once
+a process of this user has connected to it: such holders, with SYSTEM, are outside isolation, and admitting one gives
+it nothing the token does not already give), and at its first frame,
 which must be a hello naming its host and the OS account it runs as (wire protocol 3);
 until the hello is accepted nothing is served and nothing is sent but its refusal. The
 peer's process (its pid and creation time), which only a lease uses, is read at the same
