@@ -508,6 +508,14 @@ impl State {
         }
     }
 
+    /// A `pluto.open` answered that the server is still starting: its start goes on, so this is no failure, and the
+    /// next open of a notebook joins it.
+    pub(crate) fn on_pluto_starting(&mut self, message: String) {
+        tracing::info!(%message, "pluto.open: the server is still starting");
+        self.status = format!("pluto · {message}; open again once it is ready");
+        self.window.request_redraw();
+    }
+
     pub(crate) fn on_docs_opened(&mut self, event_host: HostKey, result: Result<String, String>) {
         match result {
             Ok(url) => {

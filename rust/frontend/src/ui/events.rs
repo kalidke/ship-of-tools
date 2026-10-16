@@ -225,6 +225,7 @@ impl State {
                 crate::net::transport::IncomingEvt::PlutoOpened { result } => {
                     self.on_pluto_opened(event_host, result)
                 }
+                crate::net::transport::IncomingEvt::PlutoStarting { message } => self.on_pluto_starting(message),
                 crate::net::transport::IncomingEvt::DocsOpened { result } => {
                     self.on_docs_opened(event_host, result)
                 }

@@ -185,10 +185,16 @@ pub async fn handle_pluto_open(
             )])
         }
         Err(e) => {
-            tracing::warn!(error = %e, path = %req.path, "pluto.open failed");
+            // A server still starting has not failed: open_notebook logged the start, and the window shows it as such.
+            let code = if e.is::<super::pluto::StillStarting>() {
+                "pluto_starting"
+            } else {
+                tracing::warn!(error = %e, path = %req.path, "pluto.open failed");
+                "pluto_open_failed"
+            };
             let payload = json!({
                 "error": format!("{e:#}"),
-                "code": "pluto_open_failed",
+                "code": code,
             });
             Ok(vec![(Frame::res(req_id, op::PLUTO_OPEN, payload), None)])
         }

@@ -23,8 +23,13 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   renders that arrive during a start share it. Past either bound the render is a `mathjax_render_failed` error naming
   it, and its node child is ended, even mid-write, so the next render starts a fresh one (`MathJax::render`,
   `supervisor_task`).
-- A Pluto start waits up to `PLUTO_READY_BOUND` (1800 s, the kernel's start bound: both cover a cold precompile)
-  for the server's `READY` line, then ends the child and fails naming the bound.
+- A Pluto start belongs to the Pluto handle's supervisor (the MathJax shape), not to the open that began it: the
+  supervisor waits up to `PLUTO_READY_BOUND` (1800 s, the kernel's start bound: both cover a cold precompile) for the
+  server's `READY` line, then ends the child and the start fails naming the bound. An open waits on the start for at
+  most `PLUTO_START_WAIT` (120 s, `repl.execute`'s default); past it the open answers `pluto_starting` (not a failure:
+  the window shows it without a failure prefix) with the start's age and the child's last stderr lines
+  (`Start::still_starting`), logs that at warn, and the next open joins the same start (`Pluto::open_notebook`,
+  `run_supervisor`).
 - A kernel, REPL, Pluto or MathJax child that ends, other than by the daemon's shutdown (or, for a kernel, its owner's
   drop; for the REPL, its owner's restart or its row's end, so only its death counts), leaves its last 30 stderr lines
   in the log at warn, one event (`StderrTail`); every stderr line is also logged at debug under `<child>.stderr`.
@@ -33,7 +38,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   logs the same at warn; a stalled start (a juliaup launcher installing a Julia, a precompile) is named by the child's
   own words, never a bare timeout. An Xvfb that names no display within its bound, and a sampler ended for silence,
   name the last lines they wrote in the reason they log at warn.
-- A Pluto open answers within `PLUTO_OPEN_BOUND` (30 s) or fails naming it, and the server that did not answer is ended, since its replies are matched oldest-first.
+- Once the server is ready, a Pluto open answers within `PLUTO_OPEN_BOUND` (30 s, from its submission) or fails naming it, and the server that did not answer is ended, since its replies are matched oldest-first.
 - Pluto's proxy port is a supervisor-owned generation grant, published only after a loopback READY URL and released on every supervisor exit or cancellation before cleanup awaits. An old generation's release cannot erase its replacement's grant (`bound_pluto_port`).
 - Pluto polls child exit and its supplied Signal during each stdin write and flush. Cancelling a submission retires the supervisor, releases its grant and closes current, pending and queued replies before checked cleanup; it never resends a partial OPEN line.
 - A REPL restart explicitly retires and joins its owned supervisor before replacement; it never relies on Julia reaching stdin EOF. Errors retain retirement ownership and prevent replacement.

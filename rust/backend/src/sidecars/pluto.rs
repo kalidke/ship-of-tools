@@ -24,9 +24,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, Command};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
-use crate::sidecars::child::StderrTail;
+use crate::sidecars::child::{Start, StderrTail};
 
 #[derive(Clone)]
 pub struct Pluto {
@@ -39,18 +39,47 @@ struct PlutoInner {
     submit: Mutex<Option<Running>>,
 }
 
-/// The supervisor of one running server: submissions go in on `submit`, and dropping `_ends` ends the server.
+/// The supervisor of one running server: submissions go in on `submit`, `ready` says where its start stands, `start`
+/// reads its age and stderr while it is starting, and dropping `_ends` ends the server. The start belongs to the
+/// supervisor, not to the open that began it, so an open that stops waiting leaves it going and the next joins it.
 struct Running {
     submit: mpsc::Sender<Submission>,
+    ready: watch::Receiver<Ready>,
+    start: Start,
     _ends: oneshot::Sender<()>,
 }
+
+/// Where a server's start stands: waiting for `READY`, serving, or ended with the reason (the child is ended first).
+#[derive(Clone, PartialEq)]
+enum Ready {
+    Starting,
+    Up,
+    Failed(String),
+}
+
+/// An open's answer while the server it needs has not said `READY` within `PLUTO_START_WAIT`: not a failure, the start
+/// goes on (`Start::still_starting`), and the next open joins it.
+#[derive(Debug)]
+pub(crate) struct StillStarting(String);
+
+impl std::fmt::Display for StillStarting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StillStarting {}
+
+/// How long one open waits for a server that is still starting before it answers `StillStarting`: a warm start is
+/// seconds and a cold precompile tens of seconds, so a stall is named within the `repl.execute` default wait.
+const PLUTO_START_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// How long one open may take, from its submission to its `URL` or `ERR` line (Pluto loads the notebook before it
 /// answers). An open past it is an error, and its server is ended: replies are routed oldest-first, so a late `URL`
 /// would answer the next request.
 const PLUTO_OPEN_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How long a start waits for the server's `READY` line before it ends the child. A first start after a Julia, package
+/// How long a start waits for the server's `READY` line before its supervisor ends the child. A first start after a Julia, package
 /// or depot change precompiles Pluto and its dependencies, the same cold precompile the kernel's start bound allows
 /// for, so it is that bound, `KernelBounds::PRODUCT.start`.
 const PLUTO_READY_BOUND: std::time::Duration = super::kernel::KernelBounds::PRODUCT.start;
@@ -89,7 +118,18 @@ impl Pluto {
             .to_str()
             .ok_or_else(|| anyhow!("pluto: path not utf-8: {}", abs_path.display()))?
             .to_string();
-        let tx = self.ensure_supervisor().await?;
+        let (tx, mut ready, start) = self.ensure_supervisor().await?;
+        let state = tokio::time::timeout(PLUTO_START_WAIT, ready.wait_for(|state| *state != Ready::Starting)).await;
+        match state.map(|state| state.map(|state| state.clone())) {
+            Ok(Ok(Ready::Failed(why))) => return Err(anyhow!(why)),
+            Ok(Err(_)) => return Err(anyhow!("pluto sidecar ended before READY")),
+            Ok(Ok(_)) => {}
+            Err(_) => {
+                let said = start.still_starting("Pluto");
+                tracing::warn!("pluto.open of {path_str}: {said}");
+                return Err(StillStarting(said).into());
+            }
+        }
         let opened = tokio::time::timeout(PLUTO_OPEN_BOUND, async {
             let (reply_tx, reply_rx) = oneshot::channel();
             tx.send(Submission {
@@ -117,11 +157,13 @@ impl Pluto {
         ))
     }
 
-    async fn ensure_supervisor(&self) -> Result<mpsc::Sender<Submission>> {
+    async fn ensure_supervisor(&self) -> Result<(mpsc::Sender<Submission>, watch::Receiver<Ready>, Start)> {
         let mut guard = self.inner.submit.lock().await;
         if let Some(running) = guard.as_ref() {
-            if !running.submit.is_closed() {
-                return Ok(running.submit.clone());
+            // A start that has failed is replaced even before its supervisor has dropped the queue.
+            let failed = matches!(*running.ready.borrow(), Ready::Failed(_));
+            if !running.submit.is_closed() && !failed {
+                return Ok((running.submit.clone(), running.ready.clone(), running.start.clone()));
             }
         }
         let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
@@ -132,9 +174,9 @@ impl Pluto {
             crate::lifecycle::child_signal::process(),
         )
         .await?;
-        let tx = running.submit.clone();
+        let handles = (running.submit.clone(), running.ready.clone(), running.start.clone());
         *guard = Some(running);
-        Ok(tx)
+        Ok(handles)
     }
 }
 
@@ -158,7 +200,7 @@ async fn spawn_supervisor(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Counted and contained from spawn; the supervisor task takes it over once READY.
+    // Counted and contained from spawn; the supervisor task owns it from here, its start included.
     let mut contained = sig
         .spawn(&mut cmd)
         .with_context(|| format!("spawn {julia_bin} --project={}", project_dir.display()))?;
@@ -168,11 +210,64 @@ async fn spawn_supervisor(
     let stderr = contained.stderr.take().context("pluto child stderr missing")?;
 
     let stderr = StderrTail::drain(stderr, |line| tracing::debug!(target: "pluto.stderr", "{line}"));
-    let mut stdout_lines = sot_protocol::child_lines::ChildLines::new(stdout);
+    let start = stderr.start();
+    let stdout_lines = sot_protocol::child_lines::ChildLines::new(stdout);
 
-    // Wait for the READY line before accepting any requests: the supervisor
-    // task can't usefully service OPEN requests until the server is
-    // actually listening, so block here once on first spawn.
+    let (submit_tx, submit_rx) = mpsc::channel::<Submission>(64);
+    let (ends, ended) = oneshot::channel();
+    let (ready_tx, ready) = watch::channel(Ready::Starting);
+    tokio::spawn(run_supervisor(contained, stdin, stdout_lines, submit_rx, ended, sig, tmp, stderr, ready_tx));
+    Ok(Running { submit: submit_tx, ready, start, _ends: ends })
+}
+
+/// The server's whole life: its start, published on `ready`, then its service loop.
+async fn run_supervisor(
+    mut contained: crate::lifecycle::child_signal::Contained,
+    stdin: ChildStdin,
+    mut stdout_lines: sot_protocol::child_lines::ChildLines<tokio::process::ChildStdout>,
+    submit_rx: mpsc::Receiver<Submission>,
+    mut ended: oneshot::Receiver<()>,
+    sig: &'static crate::lifecycle::child_signal::Signal,
+    tmp: crate::sidecars::child::ChildTmp,
+    stderr: StderrTail,
+    ready: watch::Sender<Ready>,
+) {
+    let (base_url, tmp, stderr) = match await_ready(&mut contained, &mut stdout_lines, tmp, stderr, sig, &mut ended).await {
+        Ok(started) => started,
+        Err(e) => {
+            ready.send_replace(Ready::Failed(format!("{e:#}")));
+            return;
+        }
+    };
+    tracing::info!(base_url = %base_url, "pluto sidecar ready");
+    // Publish the port the sidecar ACTUALLY bound (start.jl falls back to an
+    // ephemeral port when 1234 is taken — another user's Pluto on a shared
+    // host), through the one loopback parser. The ADR-0035 proxy allowlist
+    // reads it so it authorizes the real server, never a stranger's process
+    // squatting the preferred port. The grant belongs to this supervisor: the
+    // guard moves into its task and is released on every way out.
+    let grant = match sot_protocol::page_url::loopback_port_from_url(&base_url) {
+        Some(port) => Some(Grant::publish(port)),
+        None => {
+            tracing::warn!(base_url = %base_url, "pluto READY url is not a loopback page address — proxy allowlist won't include pluto");
+            None
+        }
+    };
+    ready.send_replace(Ready::Up);
+    supervisor_task(contained, stdin, stdout_lines, submit_rx, ended, sig, grant, tmp, stderr).await;
+}
+
+/// Waits for the `READY <base_url>` line, up to `PLUTO_READY_BOUND`: the supervisor can't usefully service OPEN
+/// requests until the server is actually listening. A start that fails has its child ended first, and its stderr logged
+/// at warn unless the daemon's shutdown or the handle ended it.
+async fn await_ready(
+    contained: &mut crate::lifecycle::child_signal::Contained,
+    stdout_lines: &mut sot_protocol::child_lines::ChildLines<tokio::process::ChildStdout>,
+    mut tmp: crate::sidecars::child::ChildTmp,
+    stderr: StderrTail,
+    sig: &'static crate::lifecycle::child_signal::Signal,
+    ended: &mut oneshot::Receiver<()>,
+) -> Result<(String, crate::sidecars::child::ChildTmp, StderrTail)> {
     let ready_deadline = tokio::time::Instant::now() + PLUTO_READY_BOUND;
     let late = || anyhow!("pluto sidecar did not emit READY within {}s", PLUTO_READY_BOUND.as_secs());
     let ready = loop {
@@ -186,8 +281,13 @@ async fn spawn_supervisor(
             // The daemon is shutting down: the signal has already killed the
             // child's tree.
             _ = sig.fired() => {
-                let _ = tmp.retire(&mut contained).await;
+                let _ = tmp.retire(contained).await;
                 return Err(anyhow!("the daemon is shutting down"));
+            }
+            // Emptying the slot (the handle's drop) ends the child.
+            _ = &mut *ended => {
+                let _ = tmp.retire(contained).await;
+                return Err(anyhow!("its handle ended it"));
             }
             _ = tmp.display_ended() => {
                 break Err(anyhow!("pluto's display ended before READY, so the server was ended with it"));
@@ -206,33 +306,14 @@ async fn spawn_supervisor(
             Err(_) => break Err(late()),
         }
     };
-    let base_url = match ready {
-        Ok(base_url) => base_url,
+    match ready {
+        Ok(base_url) => Ok((base_url, tmp, stderr)),
         Err(e) => {
-            let _ = tmp.retire(&mut contained).await;
+            let _ = tmp.retire(contained).await;
             stderr.warn(&format!("{e:#}")).await;
-            return Err(e);
+            Err(e)
         }
-    };
-    tracing::info!(base_url = %base_url, "pluto sidecar ready");
-    // Publish the port the sidecar ACTUALLY bound (start.jl falls back to an
-    // ephemeral port when 1234 is taken — another user's Pluto on a shared
-    // host), through the one loopback parser. The ADR-0035 proxy allowlist
-    // reads it so it authorizes the real server, never a stranger's process
-    // squatting the preferred port. The grant belongs to this supervisor: the
-    // guard moves into its task and is released on every way out.
-    let grant = match sot_protocol::page_url::loopback_port_from_url(&base_url) {
-        Some(port) => Some(Grant::publish(port)),
-        None => {
-            tracing::warn!(base_url = %base_url, "pluto READY url is not a loopback page address — proxy allowlist won't include pluto");
-            None
-        }
-    };
-
-    let (submit_tx, submit_rx) = mpsc::channel::<Submission>(64);
-    let (ends, ended) = oneshot::channel();
-    tokio::spawn(supervisor_task(contained, stdin, stdout_lines, submit_rx, ended, sig, grant, tmp, stderr));
-    Ok(Running { submit: submit_tx, _ends: ends })
+    }
 }
 
 /// The proxy grant of the current Pluto supervisor: `(generation, port)`, set by [`Grant::publish`] and cleared by
@@ -470,12 +551,24 @@ mod port_parse_tests {
     use super::spawn_supervisor;
     use std::time::Duration;
     use {
-        super::{bound_pluto_port, seams, Running, Submission},
+        super::{bound_pluto_port, seams, Ready, Running, Submission},
         crate::lifecycle::child_signal::Signal,
         crate::sidecars::contract_tests::{executable, isolated, within},
         std::path::{Path, PathBuf},
         tokio::sync::oneshot,
     };
+
+    /// Starts a server and waits for its start to end: the `Running` once it serves, or the reason it failed.
+    async fn served(julia_bin: &str, project: &Path, script: &Path, sig: &'static Signal) -> anyhow::Result<Running> {
+        let running = spawn_supervisor(julia_bin, project, script, sig).await?;
+        let mut ready = running.ready.clone();
+        let state = ready.wait_for(|state| *state != Ready::Starting).await.map(|state| state.clone());
+        match state {
+            Ok(Ready::Failed(why)) => Err(anyhow::anyhow!(why)),
+            Ok(_) => Ok(running),
+            Err(_) => Err(anyhow::anyhow!("the start ended without an answer")),
+        }
+    }
 
     /// The shutdown signal kills a Pluto child that has not yet said READY,
     /// and the test waits for its containment registration.
@@ -490,7 +583,7 @@ mod port_parse_tests {
         std::fs::write(&script, "").unwrap();
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
-        let task = tokio::spawn(async move { spawn_supervisor(&bin, &project, &script, sig).await.map(|_| ()) });
+        let task = tokio::spawn(async move { served(&bin, &project, &script, sig).await.map(|_| ()) });
         let began = std::time::Instant::now();
         while std::fs::read_to_string(&ready).map_or(true, |text| text.trim() != "started") {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub child never started");
@@ -522,7 +615,7 @@ mod port_parse_tests {
         std::fs::write(&script, "").unwrap();
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
-        let tx = spawn_supervisor(&bin, &project, &script, sig).await.expect("spawn_supervisor");
+        let tx = served(&bin, &project, &script, sig).await.expect("spawn_supervisor");
         let began = std::time::Instant::now();
         while std::fs::read_to_string(&gc_file).map(|s| s.trim().is_empty()).unwrap_or(true) {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub never wrote its grandchild pid");
@@ -557,7 +650,7 @@ mod port_parse_tests {
         let (hold, held) = std::sync::mpsc::channel::<()>();
         let still = tokio::task::spawn_blocking(move || held.recv());
         let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
-        let task = tokio::spawn(async move { spawn_supervisor(&bin, &project, &script, sig).await });
+        let task = tokio::spawn(async move { served(&bin, &project, &script, sig).await });
         async fn real_wait(what: &str, mut done: impl FnMut() -> bool) {
             let began = std::time::Instant::now();
             while !done() {
@@ -566,7 +659,7 @@ mod port_parse_tests {
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
-        // The stand-in runs only after the spawn's poll has set the READY deadline.
+        // The stand-in runs only after the supervisor's first poll has set the READY deadline.
         real_wait("the stand-in starts", || started.exists()).await;
         tokio::time::advance(Duration::from_secs(181)).await;
         std::fs::write(&go, "").unwrap();
@@ -592,7 +685,7 @@ mod port_parse_tests {
         std::fs::write(&script, "").unwrap();
         let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
         let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
-        let err = spawn_supervisor(&bin, &project, &script, sig).await.err().expect("a child that exits before READY");
+        let err = served(&bin, &project, &script, sig).await.err().expect("a child that exits before READY");
         assert!(format!("{err:#}").contains("before READY"), "{err:#}");
         within(Duration::from_secs(5), "the child's stderr is in the log at warn", || crate::sidecars::warned(&log.text(), "pluto-boot-red")).await;
     }
@@ -612,7 +705,7 @@ mod port_parse_tests {
         std::fs::write(&script, "").unwrap();
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
-        let running = spawn_supervisor(&bin, &project, &script, sig).await.expect("spawn_supervisor");
+        let running = served(&bin, &project, &script, sig).await.expect("spawn_supervisor");
         let mut answers = Vec::new();
         for path in ["/a.jl", "/b.jl"] {
             let (reply, rx) = oneshot::channel();
@@ -680,7 +773,7 @@ exit(0)
             let script = start_script(&dir, ready_url, descendant);
             let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
             let julia = executable("julia").to_string_lossy().into_owned();
-            let tx = spawn_supervisor(&julia, &dir, &script, sig).await.expect("the fixture says READY");
+            let tx = served(&julia, &dir, &script, sig).await.expect("the fixture says READY");
             let dir = root.keep();
             Harness { dir, sig, tx }
         }
@@ -890,7 +983,7 @@ exit(0)
         let dir = tempfile::tempdir().unwrap();
         let named = dir.path().join("named");
         let (bin, script, sig) = display_stand_in(dir.path(), &named, true, true);
-        let running = spawn_supervisor(&bin, dir.path(), &script, sig).await.expect("the stand-in says READY");
+        let running = served(&bin, dir.path(), &script, sig).await.expect("the stand-in says READY");
         let cookie = PathBuf::from(std::fs::read_to_string(&named).expect("the stand-in names its display"));
         within(REACT, "setup: the server, its sleep and its worker hold the display", || {
             holding_display(&cookie).len() == 3
@@ -918,7 +1011,7 @@ exit(0)
         let named = dir.path().join("named");
         let (bin, script, sig) = display_stand_in(dir.path(), &named, false, false);
         let project = dir.path().to_path_buf();
-        let start = tokio::spawn(async move { spawn_supervisor(&bin, &project, &script, sig).await.map(|_| ()) });
+        let start = tokio::spawn(async move { served(&bin, &project, &script, sig).await.map(|_| ()) });
         within(REACT, "the stand-in names its display", || named.exists()).await;
         let cookie = PathBuf::from(std::fs::read_to_string(&named).unwrap());
         // SAFETY: a signal to the X server started for this test's stand-in.
@@ -1096,6 +1189,59 @@ mod open_bound_tests {
         within(Duration::from_secs(5), "the next open starts a second server", || started().len() == 2).await;
         println!("pluto-bound: {text} after {took:?}; a second open started server {}", started().len());
         next.abort();
+        drop(pluto);
+    }
+
+    /// An open behind a server that has not said READY answers within `PLUTO_START_WAIT` that the server is still
+    /// starting, with its age and the child's own stderr lines, and logs that at warn; the start goes on, and the next
+    /// open joins it (one server started) and is served once READY comes. The stand-in for julia writes what a juliaup
+    /// launcher writes while it installs a Julia, and says READY only when the test creates `go`.
+    #[tokio::test]
+    async fn an_open_behind_a_server_still_starting_says_so_and_the_next_joins_it() {
+        let name = "sidecars::pluto::open_bound_tests::an_open_behind_a_server_still_starting_says_so_and_the_next_joins_it";
+        if !isolated(name, Duration::from_secs(250)) {
+            return;
+        }
+        let log = sot_log::test_log::capture();
+        let dir = tempfile::Builder::new().prefix("sot-pluto-start-").tempdir().unwrap();
+        let (stub, starts, go) = (dir.path().join("stub-julia"), dir.path().join("starts"), dir.path().join("go"));
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!(
+                "#!/bin/sh\necho $$ >> '{}'\necho '    Checking for new Julia versions' >&2\necho '  Installing Julia 1.13.2+0.x64.linux.gnu' >&2\n\
+                 while [ ! -e '{}' ]; do sleep 0.05; done\necho 'READY http://pluto.invalid/'\nwhile read l; do echo 'URL http://pluto.invalid/edit'; done\n",
+                starts.display(),
+                go.display()
+            ),
+        );
+        let script = dir.path().join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        let _pin = pin_env(&stub, dir.path());
+        let pluto = Pluto::new(dir.path().to_path_buf(), script);
+
+        let t0 = std::time::Instant::now();
+        let err = tokio::time::timeout(Duration::from_secs(135), pluto.open_notebook(&dir.path().join("a.jl")))
+            .await
+            .expect("the open is still waiting at 135 s")
+            .expect_err("an open behind a server that is not ready");
+        let took = t0.elapsed();
+        let bound = Duration::from_secs(120); // PLUTO_START_WAIT, written out so this test also runs on the unbounded code
+        assert!(took >= bound && took < bound + Duration::from_secs(5), "answered after {took:?}");
+        let text = format!("{err:#}");
+        println!("pluto-starting: {text} after {took:?}");
+        let lines = " s; its last stderr lines: Checking for new Julia versions / Installing Julia 1.13.2+0.x64.linux.gnu";
+        assert!(text.starts_with("Pluto is still starting after ") && text.ends_with(lines), "{text}");
+        assert!(err.is::<super::StillStarting>(), "the answer is the still-starting error: {text}");
+        assert!(crate::sidecars::warned(&log.text(), "Installing Julia 1.13.2+0.x64.linux.gnu"), "{}", log.text());
+
+        std::fs::write(&go, "").unwrap();
+        let url = tokio::time::timeout(Duration::from_secs(20), pluto.open_notebook(&dir.path().join("b.jl")))
+            .await
+            .expect("the next open is served once the start finishes")
+            .expect("the next open joins the start");
+        assert_eq!(url, "http://pluto.invalid/edit");
+        let started = std::fs::read_to_string(&starts).unwrap();
+        assert_eq!(started.lines().count(), 1, "the next open started a second server: {started:?}");
         drop(pluto);
     }
 }
