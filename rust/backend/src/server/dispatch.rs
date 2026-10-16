@@ -238,7 +238,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::DOCS_OPEN => {
             // A window's pages (ADR 0029): owned by the window, so its redials keep them, and a full pool may take a
             // port only from a window the roster lists as away.
-            crate::pages::ops::handle_docs_open(req_id, payload, session, Some(shared.site_owner), workspaces, clients)
+            crate::pages::ops::handle_docs_open(req_id, payload, session, shared.site_owner, workspaces, clients)
                 .await
         }
         op::QUARTO_OPEN => crate::pages::ops::handle_quarto_open(req_id, payload, session).await,

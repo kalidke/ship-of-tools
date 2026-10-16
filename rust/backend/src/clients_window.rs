@@ -44,7 +44,11 @@ impl super::Clients {
     /// The owners of the pages of the windows with no live connection, the one away longest first: whose pool port a
     /// new open may take when every port is held (`pages::site::assign_pool_port`). Never a live window's.
     pub fn away_sites(&self) -> Vec<u64> {
-        self.inner.lock().unwrap().away_sites()
+        let inner = self.inner.lock().unwrap();
+        let away = inner.windows.values().filter(|w| w.live == 0);
+        let mut away: Vec<_> = away.filter_map(|w| Some((w.left_at?, w.sites))).collect();
+        away.sort_unstable();
+        away.into_iter().map(|(_, sites)| sites).collect()
     }
 }
 
@@ -86,14 +90,6 @@ impl Inner {
         self.windows.remove(&key).map(|w| w.sites)
     }
 
-    /// The owners of the pages of the windows with no live connection, the one away longest first.
-    fn away_sites(&self) -> Vec<u64> {
-        let away = self.windows.values().filter(|w| w.live == 0);
-        let mut away: Vec<_> = away.filter_map(|w| Some((w.left_at?, w.sites))).collect();
-        away.sort_unstable();
-        away.into_iter().map(|(_, sites)| sites).collect()
-    }
-
     /// `serial`'s connection reports its window's presence or row (`set`): it lands on the connection and on its
     /// window. A no-op for an unregistered serial.
     pub(super) fn report(&mut self, serial: u64, set: impl Fn(&mut Option<Instant>, &mut Option<String>)) {
@@ -133,8 +129,8 @@ mod tests {
     }
 
     /// A window's connections own its pages by one owner, the second arriving after the first has left (a redial)
-    /// included, and a window away is listed as away until it comes back; another window, or a connection of no
-    /// window, owns its pages by its own serial.
+    /// included, and a window away is listed as away until it comes back; another window (the same instance on another
+    /// host included), or a connection of no window, owns its pages by its own serial.
     #[test]
     fn a_windows_connections_share_the_owner_of_its_pages() {
         let clients = Clients::new();
@@ -145,7 +141,9 @@ mod tests {
         let again = connect(&clients, Some("w"));
         assert_eq!(again.site_owner(), owner, "the redial owns the window's pages");
         assert!(clients.away_sites().is_empty(), "a window with a live connection is not away");
-        for other in [connect(&clients, Some("v")), connect(&clients, None), connect(&clients, Some(""))] {
+        let name = Some("fe@host-b".to_string());
+        let elsewhere = clients.register("c", "0.6.6", 1, "fe".into(), Some("host-b".into()), Some("w".into()), name);
+        for other in [connect(&clients, Some("v")), connect(&clients, None), connect(&clients, Some("")), elsewhere] {
             assert_eq!(other.site_owner(), other.serial(), "not the window's");
         }
     }

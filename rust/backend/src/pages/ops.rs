@@ -199,7 +199,7 @@ pub async fn handle_docs_open(
     req_id: u64,
     payload_json: serde_json::Value,
     session: &Session,
-    owner: Option<u64>,
+    owner: u64,
     workspaces: &Workspaces,
     clients: &crate::clients::Clients,
 ) -> Result<HandlerOutput> {
@@ -213,22 +213,10 @@ pub async fn handle_docs_open(
         )]
     };
 
-    // The owner of the requesting connection's pages keys its site internally
-    // (ADR 0029): its window's (`ClientGuard::site_owner`), so a redial keeps
-    // it; `pages::site::set_root` mints the unguessable nonce that actually
-    // becomes the URL's first path segment (security review — see
-    // `pages/site/mod.rs`). `None` only if hello hasn't registered the
-    // connection yet — it always precedes docs.open in practice.
-    let owner = match owner {
-        Some(s) => s,
-        None => {
-            return Ok(err(
-                "no connection context for docs.open (hello not received yet)".into(),
-                "no_conn",
-            ))
-        }
-    };
-
+    // `owner` keys the site internally (ADR 0029): the requesting connection's window's
+    // (`ClientGuard::site_owner`), so a redial keeps it; `pages::site::set_root` mints the
+    // unguessable nonce that actually becomes the URL's first path segment (security review —
+    // see `pages/site/mod.rs`).
     if req.path.is_empty() {
         return Ok(err(
             "nothing selected to open — put the cursor on an .html file or a directory".into(),
