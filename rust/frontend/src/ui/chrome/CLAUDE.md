@@ -32,7 +32,7 @@ rows say; `layout.rs` for where the panes sit; `draw_chrome` in draw.rs for what
 
 ## Rules
 - `set_focus` is the only write of `focus` (test `focus_written_only_by_set_focus`, ui/scan_tests.rs).
-- Leaving the nav pane dismisses the quit prompt (`set_focus` via `quit_prompt_on_focus`).
+- A focus change never dismisses the quit question: it is a centred dialog and stays until a key or press answers it.
 - While a leave line shows, nothing is maximized (`maximize_slot`).
 - While the close dialog shows (app/dialog.rs), neither the help peek nor the nav spill draws (`prepare_overlays`):
   overlay text is drawn after every backing, so either would draw over the dialog.

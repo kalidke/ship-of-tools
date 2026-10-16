@@ -25,13 +25,6 @@ pub(in crate::ui) fn quit_prompt_step(keep: bool, key: &Key, repeat: bool) -> Qu
     step
 }
 
-/// A focus change away from the navigation pane dismisses the Ctrl+Q prompt
-/// without quitting; no other prompt reacts to focus.
-pub(in crate::ui) fn quit_prompt_on_focus(prompt: Option<&NavPrompt>, to: PaneFocus) -> Option<QuitPromptStep> {
-    (matches!(prompt, Some(NavPrompt::ConfirmQuit { .. })) && to != PaneFocus::NavTree)
-        .then_some(QuitPromptStep::Cancel)
-}
-
 /// The quit question, and how its keys answer it (`quit_prompt_step`).
 pub(in crate::ui) const QUIT_QUESTION: &str = "Keep the daemon and sessions running?";
 pub(in crate::ui) const QUIT_KEYS: &str = "Tab switches \u{b7} Enter confirms \u{b7} any other key cancels";
@@ -238,10 +231,6 @@ impl State {
             &mut self.status, now);
         if stayed {
             self.relaunch_stayed = handover;
-            // The question asked again shows only while the tree has focus (`set_focus`).
-            if matches!(self.nav_prompt, Some(NavPrompt::ConfirmQuit { .. })) {
-                self.set_focus(PaneFocus::NavTree);
-            }
             self.window.request_redraw();
         }
         stayed
@@ -252,23 +241,6 @@ impl State {
 #[cfg_attr(feature = "test-window-progress", allow(unused_imports, reason = "the harness=false native targets run none of these tests"))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn quit_prompt_on_focus_table() {
-        let others = [
-            Some(NavPrompt::ConfirmDelete { node_id: String::new(), label: String::new() }),
-            None,
-        ];
-        for to in [PaneFocus::NavTree, PaneFocus::Preview, PaneFocus::Llm, PaneFocus::Repl] {
-            for keep in [false, true] {
-                let want = (to != PaneFocus::NavTree).then_some(QuitPromptStep::Cancel);
-                assert_eq!(quit_prompt_on_focus(Some(&NavPrompt::ConfirmQuit { keep }), to), want);
-            }
-            for p in &others {
-                assert_eq!(quit_prompt_on_focus(p.as_ref(), to), None);
-            }
-        }
-    }
 
     #[test]
     fn redraw_exit_table() {
