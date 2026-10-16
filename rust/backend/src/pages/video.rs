@@ -27,12 +27,13 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use anyhow::{Context, Result};
+#[cfg(test)]
 use tokio::io::AsyncReadExt;
 #[cfg(test)]
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 
-use super::http::{content_type, serve_file, write_simple};
+use super::http::{content_type, read_request, serve_file, write_simple, Request};
 use super::random_token;
 
 /// Live video grants: `token -> absolute path`, plus insertion order so the
@@ -149,73 +150,43 @@ pub fn is_servable_video(path: &Path) -> bool {
         .is_some()
 }
 
+/// One accepted connection: its requests in turn (`read_request`), while each reply leaves it open.
 pub(super) async fn handle_conn(mut stream: TcpStream) -> Result<()> {
-    // Read headers (up to the blank line). Bounded so a malformed client can't
-    // grow this unbounded.
-    let mut buf = Vec::with_capacity(1024);
-    let mut tmp = [0u8; 1024];
-    loop {
-        let n = stream.read(&mut tmp).await?;
-        if n == 0 {
-            return Ok(()); // client closed before sending a full request
-        }
-        buf.extend_from_slice(&tmp[..n]);
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+    let mut buf = Vec::new();
+    while let Some(request) = read_request(&mut stream, &mut buf).await? {
+        if !serve_request(&mut stream, &request).await? {
             break;
         }
-        if buf.len() > 16 * 1024 {
-            return write_simple(&mut stream, "431 Request Header Fields Too Large", "headers too large").await;
-        }
     }
+    Ok(())
+}
 
-    let head = String::from_utf8_lossy(&buf);
-    let mut lines = head.split("\r\n");
-    let request_line = lines.next().unwrap_or("");
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let target = parts.next().unwrap_or("");
-
-    if method != "GET" && method != "HEAD" {
-        return write_simple(&mut stream, "405 Method Not Allowed", "only GET/HEAD").await;
+/// One request: the file its token grants, or a plain refusal. Returns whether the connection stays open.
+async fn serve_request(stream: &mut TcpStream, request: &Request) -> Result<bool> {
+    if request.method != "GET" && request.method != "HEAD" {
+        return write_simple(stream, "405 Method Not Allowed", "only GET/HEAD", false).await;
     }
-
-    // Range header (case-insensitive name).
-    let mut range_hdr: Option<String> = None;
-    for line in lines {
-        if let Some((name, val)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("range") {
-                range_hdr = Some(val.trim().to_string());
-            }
-        }
-    }
+    let keep = request.keep;
 
     // The request target's path is `/<token>` — an opaque grant id
     // `video.open` registered, NOT a filesystem path (that was the hole: any
     // local user could GET an arbitrary absolute path). Look up the one file
     // this token was granted for; anything else 404s.
-    let raw_path = target.split('?').next().unwrap_or("");
+    let raw_path = request.target.split('?').next().unwrap_or("");
     let token = raw_path.trim_start_matches('/');
     let fs_path = match path_for_token(token) {
         Some(p) => p,
-        None => return write_simple(&mut stream, "404 Not Found", "no such grant").await,
+        None => return write_simple(stream, "404 Not Found", "no such grant", keep).await,
     };
 
     if !is_servable_video(&fs_path) {
-        return write_simple(&mut stream, "403 Forbidden", "not a video file").await;
+        return write_simple(stream, "403 Forbidden", "not a video file", keep).await;
     }
     let file = match tokio::fs::File::open(&fs_path).await {
         Ok(f) => f,
-        Err(_) => return write_simple(&mut stream, "404 Not Found", "no such file").await,
+        Err(_) => return write_simple(stream, "404 Not Found", "no such file", keep).await,
     };
-    serve_file(
-        &mut stream,
-        method == "HEAD",
-        file,
-        content_type(&fs_path),
-        range_hdr.as_deref(),
-        "",
-    )
-    .await
+    serve_file(stream, request, file, content_type(&fs_path), "").await
 }
 
 #[cfg(test)]

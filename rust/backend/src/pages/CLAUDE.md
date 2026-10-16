@@ -27,6 +27,9 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 - Minting fails closed: `random_token` returns `None` rather than a weak token.
 - `proxy.connect` dials only 127.0.0.1 ports in `allowed_proxy_ports`, with a 5 s connect bound, and logs a refused
   port once per streak.
+- The video, site and pool servers keep a connection for the next request (HTTP/1.1), so a remote window's page costs
+  one ssh login per browser connection, not one per file; a connection closes when its request says so, when a reply
+  cannot be sent whole, or after 30 s with no request (`read_request`, `IDLE_BOUND`).
 - A window's page login, over ssh or a relay, ends when its host's link closes before the daemon's replies: the
   browser connection closes as on a down link (`pipe_one`, `LinkWatch`). A page already piped ends on its own.
 - `proxy.connect` dials with tokio's `TcpSocket`, whose socket is not inheritable, so no child holds the connection
@@ -65,7 +68,8 @@ Elsewhere: rust/frontend/src/pages.rs (the window's page proxy).
 
 ## Files
 
-- `http.rs`: the response code both loopback servers share: content types, single ranges, file bodies, plain replies.
+- `http.rs`: the request and response code both loopback servers share: request heads and persistent connections,
+  content types, single ranges, file bodies, plain replies.
 - `mod.rs`: declares the folder's modules, `start_page_servers`, which binds the listeners at boot, and `bind_page_listener`, the one bind of a page listener.
   It also holds `random_token`, the one minter of video tokens, site nonces and pool secrets.
 - `ops.rs`: video.open, docs.open (and its site-root walk), quarto.open and its render-failure text.

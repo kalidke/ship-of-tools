@@ -56,6 +56,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+#[cfg(test)]
 use tokio::io::AsyncReadExt;
 #[cfg(test)]
 use tokio::io::AsyncWriteExt;
@@ -64,7 +65,7 @@ use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 
 use super::random_token;
-use crate::pages::http::{content_type, serve_file, write_simple};
+use crate::pages::http::{content_type, read_request, serve_file, write_simple, Request};
 
 /// Per-connection site roots, keyed by an unguessable per-open NONCE — not
 /// the connection serial. (Security review: the old scheme put the raw,
@@ -450,49 +451,22 @@ pub(crate) mod links;
 use links::Site;
 use links::resolve_and_open;
 
-#[allow(clippy::too_many_lines, reason = "serves one page-server connection from request line to response; predates the 100-line limit")]
+/// One accepted connection: its requests in turn (`read_request`), while each reply leaves it open.
 async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
-    // Read headers (up to the blank line), bounded so a malformed client can't
-    // grow this unbounded.
-    let mut buf = Vec::with_capacity(1024);
-    let mut tmp = [0u8; 1024];
-    loop {
-        let n = stream.read(&mut tmp).await?;
-        if n == 0 {
-            return Ok(()); // client closed before a full request
-        }
-        buf.extend_from_slice(&tmp[..n]);
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+    let mut buf = Vec::new();
+    while let Some(request) = read_request(&mut stream, &mut buf).await? {
+        if !serve_request(&mut stream, &request, mode).await? {
             break;
         }
-        if buf.len() > 16 * 1024 {
-            return write_simple(&mut stream, "431 Request Header Fields Too Large", "headers too large").await;
-        }
     }
+    Ok(())
+}
 
-    let head = String::from_utf8_lossy(&buf);
-    let mut lines = head.split("\r\n");
-    let request_line = lines.next().unwrap_or("");
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let target = parts.next().unwrap_or("");
-
+/// One request, from its target to its reply. Returns whether the connection stays open.
+async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMode) -> Result<bool> {
+    let (method, target, keep) = (request.method.as_str(), request.target.as_str(), request.keep);
     if method != "GET" && method != "HEAD" {
-        return write_simple(&mut stream, "405 Method Not Allowed", "only GET/HEAD").await;
-    }
-
-    // Cookie header (case-insensitive name) — only pool-mode auth needs it,
-    // but it's cheap to always scan.
-    let mut cookie_hdr: Option<String> = None;
-    let mut range_hdr: Option<String> = None;
-    for line in lines {
-        if let Some((name, val)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("cookie") {
-                cookie_hdr = Some(val.trim().to_string());
-            } else if name.trim().eq_ignore_ascii_case("range") {
-                range_hdr = Some(val.trim().to_string());
-            }
-        }
+        return write_simple(stream, "405 Method Not Allowed", "only GET/HEAD", false).await;
     }
 
     // Strip any query string / fragment, then resolve per serving mode
@@ -505,9 +479,10 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
         ServeMode::Pool(port) => {
             let Some((site, secret)) = pool_entry_for(port) else {
                 return write_simple(
-                    &mut stream,
+                    stream,
                     "404 Not Found",
                     "no site assigned to this port (its connection may have closed)",
+                    keep,
                 )
                 .await;
             };
@@ -521,7 +496,8 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
             // asset fetch — which can't carry a query string — authenticates
             // via the cookie instead. Neither present or valid: 403.
             let cookie_name = pool_cookie_name(pool_cookie_host(), port);
-            let cookie_ok = cookie_hdr
+            let cookie_ok = request
+                .cookie
                 .as_deref()
                 .and_then(|c| cookie_value(c, &cookie_name))
                 .map(|v| ct_eq(v.as_bytes(), secret.as_bytes()))
@@ -536,7 +512,7 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
                 .map(|v| ct_eq(v.as_bytes(), secret.as_bytes()))
                 .unwrap_or(false);
             if !cookie_ok && !query_ok {
-                return write_simple(&mut stream, "403 Forbidden", "missing or invalid site secret").await;
+                return write_simple(stream, "403 Forbidden", "missing or invalid site secret", keep).await;
             }
             let set_cookie = (!cookie_ok)
                 .then(|| format!("{cookie_name}={secret}; HttpOnly; SameSite=Strict; Path=/"));
@@ -554,10 +530,11 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
                 // with root-relative links to the pool instead, so this is
                 // belt-and-suspenders for that case too.
                 return write_simple(
-                    &mut stream,
+                    stream,
                     "404 Not Found",
                     "no site open for this link (it may have disconnected, or this \
                      site uses root-relative links and should open via a pool port)",
+                    keep,
                 )
                 .await;
             };
@@ -574,7 +551,7 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
     };
     let (file, resolved) = match opened {
         Ok(f) => f,
-        Err(r) => return write_simple(&mut stream, r.status, &r.body).await,
+        Err(r) => return write_simple(stream, r.status, &r.body, keep).await,
     };
 
     // no-cache so a rebuilt site is picked up without a hard browser refresh.
@@ -583,11 +560,10 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
         extra.push_str(&format!("Set-Cookie: {cookie}\r\n"));
     }
     serve_file(
-        &mut stream,
-        method == "HEAD",
+        stream,
+        request,
         tokio::fs::File::from_std(file),
         content_type(&resolved),
-        range_hdr.as_deref(),
         &extra,
     )
     .await

@@ -1,4 +1,5 @@
-//! The response code both loopback servers share: content types, single ranges, file bodies, plain replies.
+//! The request and response code both loopback servers share: request heads and persistent connections, content
+//! types, single ranges, file bodies, plain replies.
 
 use std::path::Path;
 
@@ -7,6 +8,73 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 const READ_CHUNK: usize = 64 * 1024;
+
+/// How long a connection waits for a request's head: a new connection's first and a kept connection's next. A remote
+/// window reaches these servers through one ssh login per connection (ADR 0035, `pipe_one`), so a connection carries a
+/// page's requests one after another, and one left idle ends here rather than when the browser drops it.
+const IDLE_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// One request's head, as both servers read it.
+pub(crate) struct Request {
+    pub(crate) method: String,
+    pub(crate) target: String,
+    pub(crate) range: Option<String>,
+    pub(crate) cookie: Option<String>,
+    /// Whether the connection carries the next request after this one's reply: an HTTP/1.1 request that neither says
+    /// `Connection: close` nor has a body, which neither server reads.
+    pub(crate) keep: bool,
+}
+
+/// The next request head on `stream`. `buf` holds what was read past the previous head and keeps what is read past
+/// this one. `None` when the client closes, sends nothing for `IDLE_BOUND`, or sends a head past 16 KiB (answered 431).
+pub(crate) async fn read_request(stream: &mut TcpStream, buf: &mut Vec<u8>) -> Result<Option<Request>> {
+    let end = loop {
+        if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break at + 4;
+        }
+        if buf.len() > 16 * 1024 {
+            write_simple(stream, "431 Request Header Fields Too Large", "headers too large", false).await?;
+            return Ok(None);
+        }
+        let mut tmp = [0u8; 1024];
+        let Ok(read) = tokio::time::timeout(IDLE_BOUND, stream.read(&mut tmp)).await else {
+            return Ok(None);
+        };
+        let n = read?;
+        if n == 0 {
+            return Ok(None);
+        }
+        buf.extend_from_slice(&tmp[..n]);
+    };
+    let head = String::from_utf8_lossy(&buf[..end]).into_owned();
+    buf.drain(..end);
+    let mut lines = head.split("\r\n");
+    let mut parts = lines.next().unwrap_or("").split_whitespace();
+    let (method, target) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
+    let mut request = Request { method, target, range: None, cookie: None, keep: parts.next() == Some("HTTP/1.1") };
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else { continue };
+        let (name, value) = (name.trim().to_ascii_lowercase(), value.trim());
+        match name.as_str() {
+            "range" => request.range = Some(value.to_string()),
+            "cookie" => request.cookie = Some(value.to_string()),
+            "connection" if value.split(',').any(|t| t.trim().eq_ignore_ascii_case("close")) => request.keep = false,
+            "transfer-encoding" => request.keep = false,
+            "content-length" if value != "0" => request.keep = false,
+            _ => {}
+        }
+    }
+    Ok(Some(request))
+}
+
+/// The `Connection` line of a reply: none while the connection stays open (HTTP/1.1's default), else `close`.
+fn connection_line(keep: bool) -> &'static str {
+    if keep {
+        ""
+    } else {
+        "Connection: close\r\n"
+    }
+}
 
 /// Content-Type by extension: the static-site table, with a video named as `video_mime` decides.
 /// Shared with `pages::site`; falls back to a generic stream type so the
@@ -45,14 +113,16 @@ pub(crate) fn content_type(path: &Path) -> &'static str {
     }
 }
 
-pub(crate) async fn write_simple(stream: &mut TcpStream, status: &str, body: &str) -> Result<()> {
+/// A plain-text reply. Returns `keep`: whether the connection carries the next request.
+pub(crate) async fn write_simple(stream: &mut TcpStream, status: &str, body: &str, keep: bool) -> Result<bool> {
     let resp = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n{}\r\n{body}",
+        body.len(),
+        connection_line(keep)
     );
     stream.write_all(resp.as_bytes()).await?;
     stream.flush().await?;
-    Ok(())
+    Ok(keep)
 }
 
 /// A parsed single-range request against a body of known length.
@@ -103,37 +173,41 @@ pub(crate) fn parse_range(hdr: Option<&str>, total: u64) -> RangeReq {
     }
 }
 
-/// Send `file` on `stream`: length and regular-file check come from fstat on
+/// Send `file` on `stream` in answer to `request`: length and regular-file check come from fstat on
 /// the open fd (never a second path lookup), a single `Range` is honoured, and
 /// `Accept-Ranges: bytes` is always sent. `extra_headers` is zero or more
 /// complete `Name: value\r\n` lines. A 0-byte file sends `Content-Length: 0`.
+/// Returns whether the connection carries the next request: not when the request
+/// says so, nor when the body could not be sent whole (the file shrank, the write failed).
 pub(crate) async fn serve_file(
     stream: &mut TcpStream,
-    head_only: bool,
+    request: &Request,
     mut file: tokio::fs::File,
     ctype: &str,
-    range_hdr: Option<&str>,
     extra_headers: &str,
-) -> Result<()> {
+) -> Result<bool> {
+    let keep = request.keep;
     let total = match file.metadata().await {
         Ok(m) if m.is_file() => m.len(),
-        _ => return write_simple(stream, "404 Not Found", "no such file").await,
+        _ => return write_simple(stream, "404 Not Found", "no such file", keep).await,
     };
-    let (start, len, partial) = match parse_range(range_hdr, total) {
+    let (start, len, partial) = match parse_range(request.range.as_deref(), total) {
         RangeReq::Full => (0, total, None),
         RangeReq::Part { start, end } => (start, end - start + 1, Some(end)),
         RangeReq::Unsatisfiable => {
             let resp = format!(
-                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total}\r\nContent-Length: 0\r\n{}\r\n",
+                connection_line(keep)
             );
             stream.write_all(resp.as_bytes()).await?;
             stream.flush().await?;
-            return Ok(());
+            return Ok(keep);
         }
     };
     let status = if partial.is_some() { "206 Partial Content" } else { "200 OK" };
     let mut header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nAccept-Ranges: bytes\r\nContent-Length: {len}\r\n{extra_headers}Connection: close\r\n"
+        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nAccept-Ranges: bytes\r\nContent-Length: {len}\r\n{extra_headers}{}",
+        connection_line(keep)
     );
     if let Some(end) = partial {
         header.push_str(&format!("Content-Range: bytes {start}-{end}/{total}\r\n"));
@@ -141,9 +215,9 @@ pub(crate) async fn serve_file(
     header.push_str("\r\n");
     stream.write_all(header.as_bytes()).await?;
 
-    if head_only {
+    if request.method == "HEAD" {
         stream.flush().await?;
-        return Ok(());
+        return Ok(keep);
     }
 
     // Stream the requested slice.
@@ -162,12 +236,12 @@ pub(crate) async fn serve_file(
         // A broken pipe here just means the browser closed the connection
         // (seeked away / paused) — not an error worth surfacing.
         if stream.write_all(&chunk[..n]).await.is_err() {
-            return Ok(());
+            return Ok(false);
         }
         remaining -= n as u64;
     }
     stream.flush().await.ok();
-    Ok(())
+    Ok(keep && remaining == 0)
 }
 
 #[cfg(test)]
