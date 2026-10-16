@@ -6,10 +6,12 @@ use super::*;
 /// and 31c). Exactly one form means "this is an official release build":
 /// the bare `X.Y.Z`, emitted only when the build was produced by the release
 /// workflow, sits exactly on its release tag `vX.Y.Z`, and had a clean tree.
-/// Everything else is marked: `X.Y.Z+src` for a build off a tag that CI did
-/// not produce (or one built with no git at all), `X.Y.Z-dev+<sha>` for an
-/// ordinary clean dev build, `X.Y.Z-dev+<sha>-dirty` when the tree was
-/// dirty.
+/// Everything else is that stamp plus build metadata: `X.Y.Z+src` for a
+/// build off a tag that CI did not produce (or one built with no git at all),
+/// `X.Y.Z+<sha>` for an ordinary clean build, `X.Y.Z+<sha>-dirty` when the
+/// tree was dirty. The stamp itself is the line's: between tags it is the
+/// next version with `-dev` (`0.6.6-rc9.14-dev+<sha>`, ADR 0030's 2026-10-16
+/// amendment). A version is the release artifact if and only if it has no `+`.
 ///
 /// **Do not test this string to decide policy** — call [`is_release_build`],
 /// which answers the same question from the flags directly. The string is
@@ -82,18 +84,16 @@ fn format_app_version(pkg: &str, sha: &str, on_tag: bool, dirty: bool, ci: bool)
     }
     // No git (a source tarball): nothing can be proven about this tree, and
     // it is not the CI build above, so it is marked like any other
-    // unverifiable source build rather than borrowing the bare version.
-    if sha.is_empty() {
+    // unverifiable source build rather than borrowing the bare version. A
+    // clean build on the tag but not from CI is the same source as the
+    // release, a different artifact: `+src` says exactly that.
+    if sha.is_empty() || (on_tag && !dirty) {
         return format!("{pkg}+src");
     }
     if dirty {
-        format!("{pkg}-dev+{sha}-dirty")
-    } else if on_tag {
-        // Clean and on the tag, but not from CI: the same source as the
-        // release, a different artifact. `+src` says exactly that.
-        format!("{pkg}+src")
+        format!("{pkg}+{sha}-dirty")
     } else {
-        format!("{pkg}-dev+{sha}")
+        format!("{pkg}+{sha}")
     }
 }
 
@@ -134,8 +134,8 @@ mod app_version_tests {
     fn dirty_build_differs_from_clean_at_the_same_sha() {
         let clean = format_app_version("0.6.0", "abc1234", false, false, false);
         let dirty = format_app_version("0.6.0", "abc1234", false, true, false);
-        assert_eq!(clean, "0.6.0-dev+abc1234");
-        assert_eq!(dirty, "0.6.0-dev+abc1234-dirty");
+        assert_eq!(clean, "0.6.0+abc1234");
+        assert_eq!(dirty, "0.6.0+abc1234-dirty");
         assert_ne!(clean, dirty, "a dirty build must never alias a clean one's version string");
     }
 
@@ -147,11 +147,11 @@ mod app_version_tests {
         // release build is not a release.
         assert_eq!(
             format_app_version("0.6.0", "abc1234", true, true, false),
-            "0.6.0-dev+abc1234-dirty"
+            "0.6.0+abc1234-dirty"
         );
         assert_eq!(
             format_app_version("0.6.0", "abc1234", true, true, true),
-            "0.6.0-dev+abc1234-dirty"
+            "0.6.0+abc1234-dirty"
         );
     }
 
@@ -191,8 +191,9 @@ mod app_version_tests {
         for &on_tag in &[true, false] {
             for &dirty in &[true, false] {
                 for &ci in &[true, false] {
-                    let bare = format_app_version("0.6.0", "abc1234", on_tag, dirty, ci)
-                        == "0.6.0";
+                    let v = format_app_version("0.6.0", "abc1234", on_tag, dirty, ci);
+                    let bare = v == "0.6.0";
+                    assert_eq!(bare, !v.contains('+'), "a version is the release artifact iff it has no '+'");
                     assert_eq!(
                         bare,
                         is_release(on_tag, dirty, ci),
@@ -201,5 +202,18 @@ mod app_version_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_dev_stamp_builds_as_the_stamp_and_its_commit() {
+        // Between tags the line is stamped `X.Y.Z-pre-dev` in Cargo.toml; a build adds only build metadata.
+        assert_eq!(
+            format_app_version("0.6.6-rc9.14-dev", "abc1234", false, false, false),
+            "0.6.6-rc9.14-dev+abc1234"
+        );
+        assert_eq!(
+            format_app_version("0.6.6-rc9.14-dev", "abc1234", false, true, false),
+            "0.6.6-rc9.14-dev+abc1234-dirty"
+        );
     }
 }

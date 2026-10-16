@@ -96,8 +96,9 @@ jobs:
           else
             echo "version=0.0.0-ci.${GITHUB_SHA::9}" >> "$GITHUB_OUTPUT"
           fi
-      # No test step here (2026-09-18): the tag tree is the merge commit
-      # rust.yml already tested on main plus version lines, and release.sh
+      # No test step here (2026-09-18): the tag tree is the commit
+      # rust.yml and CI.yml passed at the cut (release.sh requires both green
+      # at HEAD) plus version lines, and release.sh
       # ran the workspace suite on the stamped tree before pushing. What
       # this workflow proves is the ARTIFACT: it builds, boots on the oldest
       # fleet host, and self-identifies -- the smokes below.
@@ -212,8 +213,8 @@ jobs:
   smoke:
     # Boot the ACTUAL linux artifact and prove it (a) runs on an old-glibc
     # host — the container pins 20.04/glibc 2.31, same as the oldest fleet
-    # box — (b) self-identifies with the exact tag version (catches -dev
-    # mis-stamping from missing tags at checkout), and (c) answers a hello
+    # box — (b) self-identifies with the exact tag version (catches a +<sha>
+    # or +src stamp from missing tags at checkout), and (c) answers a hello
     # handshake. v0.2.0 shipped a linux binary that failed (a) on the entire
     # fleet; this job exists so that never recurs.
     name: smoke test (linux artifact)

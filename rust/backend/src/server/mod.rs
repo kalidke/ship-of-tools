@@ -217,7 +217,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // release, pushes an `fe.command` `notify` over the bus above and runs
     // the stage → prepare → arm pipeline. In `auto` mode it may also exit
     // for the apply owner when no clients are attached (hence the roster
-    // handle). A `-dev` build (the whole fleet) disables it at the hard
+    // handle). A source build, a `+` in its version (the whole fleet), disables it at the hard
     // guard inside `spawn_periodic`, which logs the disabled state and
     // returns without spawning anything.
     crate::update::spawn_periodic(fe_command_tx.clone(), clients.clone(), leases.clone());

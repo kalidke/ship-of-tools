@@ -47,10 +47,10 @@ pub fn parse_semver(s: &str) -> Option<SemVer> {
     })
 }
 
-/// Compare two pre-release identifier lists per semver §11: a release (empty)
-/// outranks any pre-release; otherwise compare identifiers left-to-right
-/// (numeric < alphanumeric; numeric compared as ints; more identifiers wins a
-/// common prefix).
+/// Compare two pre-release identifier lists per semver §11, with the `-dev` rule
+/// in `cmp_ident`: a release (empty) outranks any pre-release; otherwise compare
+/// identifiers left-to-right (numeric < alphanumeric; numeric compared as ints;
+/// more identifiers wins a common prefix).
 fn cmp_pre(a: &[String], b: &[String]) -> Ordering {
     match (a.is_empty(), b.is_empty()) {
         (true, true) => Ordering::Equal,
@@ -68,7 +68,21 @@ fn cmp_pre(a: &[String], b: &[String]) -> Ordering {
     }
 }
 
+/// A pre-release identifier `<stem>-dev` is the line's stamp between two tags (`14-dev` in `0.6.6-rc9.14-dev`): it
+/// compares as its stem, and below it on a tie, so `rc9.13 < rc9.14-dev < rc9.14`.
 fn cmp_ident(x: &str, y: &str) -> Ordering {
+    let ((xs, xdev), (ys, ydev)) = (dev_stem(x), dev_stem(y));
+    cmp_plain(xs, ys).then(ydev.cmp(&xdev))
+}
+
+fn dev_stem(s: &str) -> (&str, bool) {
+    match s.strip_suffix("-dev") {
+        Some(stem) if !stem.is_empty() => (stem, true),
+        _ => (s, false),
+    }
+}
+
+fn cmp_plain(x: &str, y: &str) -> Ordering {
     match (x.parse::<u64>(), y.parse::<u64>()) {
         (Ok(a), Ok(b)) => a.cmp(&b),
         (Ok(_), Err(_)) => Ordering::Less, // numeric identifiers rank lower
@@ -171,25 +185,6 @@ mod tests {
     }
 
     #[test]
-    fn semver_dev_marker_is_stripped_to_base() {
-        // A `-dev+<sha>` running build compares by its base X.Y.Z against a
-        // real release: 0.3.0 > 0.2.0-dev, and 0.2.0 release > 0.2.0-dev.
-        assert_eq!(
-            compare_versions("0.3.0", "0.2.0-dev+abc1234"),
-            Ordering::Greater
-        );
-        assert_eq!(
-            compare_versions("0.2.0", "0.2.0-dev+abc1234"),
-            Ordering::Greater
-        );
-        // Build metadata does not affect ordering.
-        assert_eq!(
-            compare_versions("0.2.0-dev+aaa", "0.2.0-dev+bbb"),
-            Ordering::Equal
-        );
-    }
-
-    #[test]
     fn src_marked_build_is_ordering_identical_to_its_release() {
         // A clean local build of a release tag stamps `X.Y.Z+src` (ADR 0030
         // §8 decision 31c). That marker is BUILD metadata by choice: it must
@@ -218,5 +213,41 @@ mod tests {
         assert_eq!(compare_versions("0.2", "0.2.0"), Ordering::Less); // two components → unparsable
         assert_eq!(compare_versions("0.2.0.1", "0.2.0"), Ordering::Less); // four → unparsable
         assert_eq!(compare_versions("junk", "also-junk"), Ordering::Equal);
+    }
+
+    #[test]
+    fn semver_dev_line_sits_between_its_tags() {
+        // `<stem>-dev` is the line's stamp between two tags: it compares as its
+        // stem, and below it on a tie.
+        let table = [
+            ("0.6.6-rc9.13", "0.6.6-rc9.14-dev+abc"),
+            ("0.6.6-rc9.14-dev+abc", "0.6.6-rc9.14"),
+            ("0.6.6-rc9.14", "0.6.6-rc9.14.1"),
+            ("0.6.6-rc9.14-dev", "0.6.6-rc9.14.1"),
+            ("0.6.6-rc9", "0.6.6-rc9.1-dev"),
+            ("0.6.6-rc9.1-dev", "0.6.6-rc9.1"),
+            ("0.6.7-rc.1", "0.6.7-rc.2-dev"),
+            ("0.6.7-rc.2-dev", "0.6.7-rc.2"),
+            ("0.6.6", "0.6.7-dev"),
+            ("0.6.7-dev", "0.6.7-rc.1"),
+            ("0.6.7-rc.1", "0.6.7"),
+            ("0.6.6-rc9.15-dev", "0.6.6"),
+        ];
+        for (lo, hi) in table {
+            assert_eq!(compare_versions(lo, hi), Ordering::Less, "{lo} < {hi}");
+            assert_eq!(compare_versions(hi, lo), Ordering::Greater, "{hi} > {lo}");
+        }
+        // What release.sh's preflight refuses: a cut that sorts below the stamp it replaces.
+        for (cut, stamp) in [
+            ("0.6.7-alpha.1", "0.6.7-dev"),
+            ("0.6.7-beta.1", "0.6.7-dev"),
+            ("0.6.6-rc9.14.1", "0.6.6-rc9.15-dev"),
+        ] {
+            assert_eq!(compare_versions(cut, stamp), Ordering::Less, "{cut} < {stamp}");
+        }
+        assert_eq!(
+            compare_versions("0.6.6-rc9.14-dev+a", "0.6.6-rc9.14-dev+b"),
+            Ordering::Equal
+        );
     }
 }

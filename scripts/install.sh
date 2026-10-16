@@ -6,6 +6,8 @@
 #   ./scripts/install.sh --backend <ssh-alias>       # FE here → remote BE
 #   ./scripts/install.sh --be-only                   # headless backend/canary
 #   [--version vX.Y.Z] [--prefix <dir>] [--no-service]
+#   [--archive <folder>]    # install a folder scripts/pack-build.sh packed (a build of the line,
+#                           # with no release): run from the checkout that built it
 #   [--hub <ssh-alias>]     # this box does NOT share the hub's home: fetch
 #                           # its hosts.toml (`sotd topology sync`) once unpacked
 #   [--force-role-change]  # consent to installing over another prefix's live daemon, over an existing
@@ -44,7 +46,7 @@ PREFIX="${SOT_PREFIX:-$HOME/.local/share/sot}"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sot"
 
 
-ROLE="" VERSION="" BE_ALIAS="" HUB_ALIAS="" NO_SERVICE=0 FORCE_ROLE_CHANGE=0
+ROLE="" VERSION="" ARCHIVE="" BE_ALIAS="" HUB_ALIAS="" NO_SERVICE=0 FORCE_ROLE_CHANGE=0
 GLIBC_FLOOR_FE="2.35"
 
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
@@ -594,7 +596,10 @@ if [ "${SOT_INSTALL_SOURCE_ONLY:-}" = 1 ]; then return 0; fi
 # means: resolve the tag, then run THAT tag's own install.sh, args untouched
 # (set = skip: the pinned run, and how a checkout runs its own body). Old
 # tags have no prelude; they resolve "latest" themselves the same way.
-if [ -z "${SOT_INSTALL_TAG:-}" ]; then
+# --archive installs the body that was invoked, from its own commit: no prelude.
+archived=0
+for a in "$@"; do [ "$a" = --archive ] && archived=1; done
+if [ -z "${SOT_INSTALL_TAG:-}" ] && [ "$archived" = 0 ]; then
     command -v curl >/dev/null || die "curl is required"
     tag="" prev=""
     for a in "$@"; do [ "$prev" = --version ] && tag="$a"; prev="$a"; done
@@ -634,6 +639,8 @@ while [ $# -gt 0 ]; do
         # (`sotd topology sync`) with the unpacked sotd, below.
         --hub) HUB_ALIAS="${2:?--hub needs an ssh alias}"; shift ;;
         --version) VERSION="${2:?}"; shift ;;
+        # A folder scripts/pack-build.sh packed: SHA256SUMS, the tarball and COMMIT, installed in place of a download.
+        --archive) ARCHIVE="${2:?--archive needs a folder}"; shift ;;
         --prefix) PREFIX="${2:?}"; shift ;;
         # Skip the systemd unit install/enable: the caller supervises sotd
         # itself (e.g. a systemd-run --user transient unit). A shared home
@@ -649,6 +656,7 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+[ -z "$ARCHIVE" ] || [ -z "$VERSION" ] || die "--archive and --version are exclusive: the folder names its own version"
 # Canonicalize the prefix (a relative one produces a repo/current symlink
 # whose target resolves from repo/, i.e. a broken link), then reject unsafe
 # characters in both the prefix and the project root — deploy/sotd.service's
@@ -735,7 +743,21 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-install.XXXXXX")"
 trap 'trap "" HUP INT TERM; rm -rf "${WORK:?}"; sot_end_by_signal' EXIT
 sot_cleanup_signals
 
-# VERSION is always known here: the prelude resolves and re-execs first.
+# VERSION is always known here: the prelude resolves and re-execs first, and an archive names its own.
+ARCHIVE_COMMIT=""
+if [ -n "$ARCHIVE" ]; then
+    ARCHIVE="$(cd "$ARCHIVE" 2>/dev/null && pwd)" || die "--archive: no such folder"
+    [ -f "$ARCHIVE/SHA256SUMS" ] || die "$ARCHIVE has no SHA256SUMS"
+    # The version is the one tarball for this target that SHA256SUMS names.
+    names="$(sed -n -E "s/^[0-9a-fA-F]+ [ *]sot-(.+)-$TARGET\.tar\.gz\$/\1/p" "$ARCHIVE/SHA256SUMS")"
+    [ -n "$names" ] && [ "$(printf '%s\n' "$names" | wc -l | tr -d ' ')" = 1 ] \
+        || die "$ARCHIVE/SHA256SUMS must name exactly one sot-<version>-$TARGET.tar.gz"
+    [[ "$names" =~ ^[0-9A-Za-z.+-]+$ ]] || die "unsafe version '$names' in $ARCHIVE/SHA256SUMS"
+    VERSION="v$names"
+    [ -f "$ARCHIVE/COMMIT" ] || die "$ARCHIVE has no COMMIT (scripts/pack-build.sh writes one)"
+    ARCHIVE_COMMIT="$(tr -d ' \n' < "$ARCHIVE/COMMIT")"
+    [[ "$ARCHIVE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "$ARCHIVE/COMMIT is not a 40-digit commit id"
+fi
 VERSION="${VERSION:-${SOT_INSTALL_TAG:-}}"
 VER="${VERSION#v}"
 say "installing Ship of Tools $VERSION into $PREFIX"
@@ -746,7 +768,7 @@ say "installing Ship of Tools $VERSION into $PREFIX"
 # body with an old tree: it runs the tag's own installer. curl's exit 22 is an
 # HTTP error (the file is absent); any other failure is the network.
 lib_rc=0
-curl "${CURL_BOUND[@]}" -fsSI -o /dev/null "https://raw.githubusercontent.com/$REPO/$VERSION/scripts/lib/sot-daemon.sh" || lib_rc=$?
+[ -n "$ARCHIVE" ] || curl "${CURL_BOUND[@]}" -fsSI -o /dev/null "https://raw.githubusercontent.com/$REPO/$VERSION/scripts/lib/sot-daemon.sh" || lib_rc=$?
 [ "$lib_rc" -ne 22 ] \
     || die "release $VERSION predates this installer (no scripts/lib/sot-daemon.sh); install it with its own installer: run the one-liner without SOT_INSTALL_TAG, or that tag's scripts/install.sh"
 [ "$lib_rc" -eq 0 ] \
@@ -754,13 +776,19 @@ curl "${CURL_BOUND[@]}" -fsSI -o /dev/null "https://raw.githubusercontent.com/$R
 
 # ---- 2. download + verify ----------------------------------------------------
 ASSETS=("SHA256SUMS" "sot-$VER-$TARGET.tar.gz")
+[ -z "$ARCHIVE" ] || ASSETS+=("COMMIT")
 
 dl() {
     curl "${CURL_BOUND[@]}" -fsSL -o "$WORK/$1" "https://github.com/$REPO/releases/download/$VERSION/$1" \
         || die "asset $1 not found on release $VERSION"
 }
-say "downloading ${#ASSETS[@]} assets"
-for a in "${ASSETS[@]}"; do dl "$a"; done
+if [ -n "$ARCHIVE" ]; then
+    say "copying ${#ASSETS[@]} assets from $ARCHIVE"
+    for a in "${ASSETS[@]}"; do cp "$ARCHIVE/$a" "$WORK/$a" || die "cannot copy $a from $ARCHIVE"; done
+else
+    say "downloading ${#ASSETS[@]} assets"
+    for a in "${ASSETS[@]}"; do dl "$a"; done
+fi
 if command -v sha256sum >/dev/null; then
     ( cd "$WORK" && sha256sum -c --ignore-missing SHA256SUMS ) || die "checksum verification FAILED"
 else
@@ -777,6 +805,17 @@ BINDIR="$WORK/sot-$VER-$TARGET"
 # (a TMPDIR mounted noexec) stops the install instead of reading as a topology.
 "$BINDIR/sotd" --version >/dev/null 2>&1 \
     || die "the unpacked sotd cannot run from $WORK (is ${TMPDIR:-/tmp} mounted noexec?); set TMPDIR to a folder that allows execution"
+# An archive's binaries name their own version and commit: they must be the ones its folder (SHA256SUMS, COMMIT) names,
+# so a half-written or mislabelled folder installs nothing.
+if [ -n "$ARCHIVE" ]; then
+    for b in sotd sot; do
+        got="$("$BINDIR/$b" --version 2>/dev/null)" || got=""
+        case "$got" in
+            "$b $VER (${ARCHIVE_COMMIT:0:9} "*) ;;
+            *) die "$ARCHIVE's $b says '$got', which does not match $VER at ${ARCHIVE_COMMIT:0:9} (its SHA256SUMS and COMMIT): repack it with scripts/pack-build.sh" ;;
+        esac
+    done
+fi
 
 # ---- heal a pre-0.6 hosts.toml (finding 3a, v0.6.5 macOS field report) -----------
 # The old grammar (`default_host` at top level) is a loud parse error under
@@ -932,6 +971,32 @@ case "$RECORD_DECISION" in
         exit 2 ;;
 esac
 
+# ---- 3a. the commit to install, resolved before anything is swapped ------------
+# A commit origin lacks (an unpushed line, a deleted tag) refuses here, with the binaries and .prev copies untouched.
+REPO_DIR="$PREFIX/repo"
+BASE="$REPO_DIR/base"
+CHECKOUT="$REPO_DIR/versions/$VERSION"
+CURRENT="$REPO_DIR/current"
+command -v git >/dev/null || die "git is required (the install includes a repo checkout)"
+if [ ! -d "$BASE" ]; then
+    say "creating base clone (blobless, no checkout)"
+    # Public repo: plain https clone, no auth needed.
+    git "${GIT_BOUND[@]}" clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
+        || die "base clone failed"
+fi
+# --force on the tag fetch: a release tag force-moved upstream (e.g. the
+# public-flip history rewrite) otherwise makes the whole fetch abort with
+# "would clobber existing tag", blocking every upgrade re-run (issue #4).
+# The checkouts are READ-ONLY BY CONVENTION, so force-updating tags is safe.
+git "${GIT_BOUND[@]}" -C "$BASE" fetch --tags --force origin || die "fetch failed"
+if [ -n "$ARCHIVE" ]; then
+    want="$(git -C "$BASE" rev-parse --verify "$ARCHIVE_COMMIT^{commit}" 2>/dev/null)" \
+        || die "commit $ARCHIVE_COMMIT is not in origin after fetch — push the line first"
+else
+    want="$(git -C "$BASE" rev-parse "refs/tags/$VERSION^{commit}" 2>/dev/null)" \
+        || die "tag $VERSION not present after fetch"
+fi
+
 # ---- 3b. layout, now that the gates allow it --------------------------------
 mkdir -p "$PREFIX/bin" "$PREFIX/updates" "$PREFIX/repo"
 # sot-capsule is sotd's capsule-runtime pair (ADR 0042 L1a): sotd resolves it
@@ -972,24 +1037,6 @@ DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 # an update is a pointer flip; this installer produces the same layout (and
 # migrates the pre-Phase-C in-place clone). READ-ONLY BY CONVENTION: a dirty
 # tree refuses to move (fail loud).
-REPO_DIR="$PREFIX/repo"
-BASE="$REPO_DIR/base"
-CHECKOUT="$REPO_DIR/versions/$VERSION"
-CURRENT="$REPO_DIR/current"
-command -v git >/dev/null || die "git is required (the install includes a repo checkout)"
-if [ ! -d "$BASE" ]; then
-    say "creating base clone (blobless, no checkout)"
-    # Public repo: plain https clone, no auth needed.
-    git "${GIT_BOUND[@]}" clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
-        || die "base clone failed"
-fi
-# --force on the tag fetch: a release tag force-moved upstream (e.g. the
-# public-flip history rewrite) otherwise makes the whole fetch abort with
-# "would clobber existing tag", blocking every upgrade re-run (issue #4).
-# The checkouts are READ-ONLY BY CONVENTION, so force-updating tags is safe.
-git "${GIT_BOUND[@]}" -C "$BASE" fetch --tags --force origin || die "fetch failed"
-want="$(git -C "$BASE" rev-parse "refs/tags/$VERSION^{commit}" 2>/dev/null)" \
-    || die "tag $VERSION not present after fetch"
 if [ -d "$CHECKOUT" ]; then
     if [ -n "$(git -C "$CHECKOUT" status --porcelain 2>/dev/null)" ]; then
         die "the checkout at $CHECKOUT has local changes — commit/stash/revert, then re-run (updates refuse to move a dirty tree)"

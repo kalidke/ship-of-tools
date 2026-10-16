@@ -184,15 +184,16 @@ function Initialize-InstallLayout {
             # The version comes from the binary itself, never a hardcoded
             # string: the layout must describe what is actually installed. The
             # line is "sotd X.Y.Z (<sha> <date>)"; a marked build adds "+src"
-            # or "-dev+<sha>[-dirty]" (rust/protocol/src/version.rs app_version)
-            # and the release tag is the bare X.Y.Z[-pre] underneath both.
+            # or "+<sha>[-dirty]" (rust/protocol/src/version.rs app_version)
+            # and the release tag is the bare X.Y.Z[-pre] underneath both. A
+            # dev stamp ("-dev" ends it) names no tag and fails the shape below.
             $versionLine = & $stagedSotd --version 2>&1 | Select-Object -First 1
             if ("$versionLine" -notmatch '^\s*sotd\s+(\S+)') {
                 Write-SupLog "install layout: could not read a version from '$versionLine'"
                 return
             }
             $rawVersion = $Matches[1]
-            $version = ($rawVersion -replace '\+.*$', '') -replace '-dev$', ''
+            $version = $rawVersion -replace '\+.*$', ''
             # Strict shape, because this string becomes a directory name and a
             # git ref: X.Y.Z with an optional alnum-led prerelease, nothing else.
             if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$') {

@@ -17,7 +17,7 @@ never because a marker file exists. Part of distribution; charter: scripts/CLAUD
 - `src/platform.rs`: which target triples ship, and the asset filename for a version and triple.
 - `src/prepare.rs`: transactional preparation of a version (checkout and Julia instantiate) and the children it runs.
 - `src/select.rs`: channel selection, the tag a given installed version should track.
-- `src/semver.rs`: semver parsing and ordering for release tags.
+- `src/semver.rs`: semver parsing and ordering for release tags and the line's `-dev` stamps.
 - `src/spawn.rs`: the required caller-owned `Spawner` interface; no production native spawner is supplied by this crate.
 - `src/unique.rs`: unique names for temp dirs and lock nonces.
 

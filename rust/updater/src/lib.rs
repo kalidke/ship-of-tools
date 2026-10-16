@@ -72,7 +72,7 @@ const RENAME_BACKOFF: &[Duration] = &[
 pub struct UpdaterConfig {
     /// `owner/repo` release source.
     pub repo: String,
-    /// Running product version (bare or `-dev+sha` stamped).
+    /// Running product version (bare, or the stamp plus `+src` or `+<sha>`).
     pub current_version: String,
     pub fetcher: Fetcher,
     /// Root of the staging area (see [`resolve_updates_root`]).

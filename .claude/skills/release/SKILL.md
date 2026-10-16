@@ -16,12 +16,14 @@ release from a fresh context.
 
 1. **CI is green on the branch being cut**: the latest real (not skipped) `rust.yml`
    and `CI.yml` runs on that branch (`main` for a final, `fixes/*` or `rc/*` for a candidate) succeeded and sit at
-   HEAD or an ancestor of it; `scripts/release.sh` refuses the cut otherwise. On a candidate branch, dispatch them:
-   `gh workflow run <wf> --ref <branch>`.
+   HEAD; `scripts/release.sh` refuses the cut otherwise. Dispatch them on the branch first, main included, since push
+   runs are path-filtered and the cut's runs are dispatched ones: `gh workflow run <wf> --ref <branch>`.
 2. **Tree clean + synced**: `git status --porcelain` empty, HEAD ==
    `origin/<branch>` for the branch being cut. Coordinate over sot-comm if a
    session announced pending pushes (sync-before-push convention).
-3. **Pick the version**: semver, pre-1.0 (minor = anything may change).
+3. **Pick the version**: semver, pre-1.0 (minor = anything may change). Between tags the line carries the next
+   version with `-dev`; a release is the commit that drops it, so the version is normally HEAD's stamp minus `-dev`
+   (`release.sh` refuses a cut that sorts below the stamp).
    Check `git tag -l` for the last tag; if no public-track tags exist, use the
    current product version as the baseline. Prereleases use `-rc.N`
    (auto-marked prerelease on the GitHub Release by the workflow).
@@ -78,7 +80,12 @@ scripts/release.sh <X.Y.Z> --yes       # stamp + test + commit + tag + push
 The script stamps `rust/Cargo.toml [workspace.package]` + every Julia
 `Project.toml`, refreshes `Cargo.lock`, regenerates `CHANGELOG.md` iff
 git-cliff is installed (optional — CI generates the release notes), runs
-`cargo test --workspace --locked`, commits `release: vX.Y.Z`, tags, pushes.
+`cargo test --workspace --locked`, commits `release: vX.Y.Z`, tags, then stamps the line's next dev version in a commit
+of its own (`version: <next> opens the line after vX.Y.Z [skip ci]`) and pushes the branch and the tag in one `git push --atomic`: origin takes both or neither.
+
+A cut that fails before or at the push leaves only its local commits and tag, and nothing on origin: `git tag -d vX.Y.Z`
+and `git reset --hard origin/<branch>` undo them, then run it again. A push alone that failed (origin moved on) is
+re-run with `git push --atomic origin <branch> vX.Y.Z` once the branch is synced, with no test run again.
 
 ## Watch + verify (required — a tag that half-published is worse than none)
 
@@ -123,7 +130,7 @@ or before a first-of-its-kind release.
   carries what the last tested candidate carried — by content, not by ancestry.
 - `scripts/release.sh` enforces the branch (`main`, `fixes/*` or `rc/*`), a clean
   tree, HEAD == `origin/<branch>`, a tag that does not exist and sorts above every tag on its line, and green CI
-  on that branch.
+  at HEAD on that branch.
 - **Never** delete/re-cut a published tag that anyone may have fetched — cut a
   patch release instead. A broken `-rc.N` may be deleted (tag + release) since
   rc consumers are just us.

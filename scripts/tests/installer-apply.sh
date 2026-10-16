@@ -293,6 +293,88 @@ check "the pull carries the stall bound" "0" \
     "$(grep ' pull ' "$d/git.log" | grep -vc -e '-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60' || true)"
 
 # ---------------------------------------------------------------------------
+# --archive installs a folder pack-build.sh packed. HOME, the prefix and the folder are temp; SOT_INSTALL_TAG=x keeps
+# the prelude from reaching the network.
+mk_archive() {  # <dir> <digest-of-the-tarball 0|1> <with-COMMIT 0|1>: <dir>/arch holds sot-1.2.3-dev-$TGT.tar.gz
+    local d="$1" a="$1/arch"
+    mkdir -p "$a" "$d/home"
+    printf 'not a real tarball\n' > "$a/sot-1.2.3-dev-$TGT.tar.gz"
+    if [ "$2" = 1 ]; then
+        ( cd "$a" && sha256_of "sot-1.2.3-dev-$TGT.tar.gz" > SHA256SUMS )
+    else
+        printf '%064d  sot-1.2.3-dev-%s.tar.gz\n' 0 "$TGT" > "$a/SHA256SUMS"
+    fi
+    [ "$3" = 0 ] || printf '%s\n' 0123456789abcdef0123456789abcdef01234567 > "$a/COMMIT"
+}
+run_archive() {  # <dir>: sets AR_RC and AR_OUT
+    local d="$1"
+    AR_RC=0
+    AR_OUT="$(env -i HOME="$d/home" PATH=/usr/bin:/bin SOT_INSTALL_TAG=x \
+        bash "$(dirname "$0")/../install.sh" --be-only --no-service --prefix "$d/prefix" --archive "$d/arch" 2>&1)" || AR_RC=$?
+}
+
+# ---------------------------------------------------------------------------
+case_start "archive_install_verifies_before_writing"
+d="$WORK/ar-sum"; mk_archive "$d" 0 1; run_archive "$d"
+check "the install exits non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
+check "it says the checksum failed" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'checksum verification FAILED' || true)"
+check "the prefix was never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
+
+# ---------------------------------------------------------------------------
+case_start "archive_install_needs_its_commit"
+d="$WORK/ar-commit"; mk_archive "$d" 1 0; run_archive "$d"
+check "the install exits non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
+check "it names COMMIT" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'COMMIT' || true)"
+check "the prefix was never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
+
+# ---------------------------------------------------------------------------
+# A real tarball: sot and sotd are stubs that print <sotd-line> / <sot-line> for --version and answer nothing else.
+# <dir>/prefix holds an old sotd to prove it survives a refusal (--force-role-change lets the gates pass over it).
+# <dir>/origin is an empty bare repository the installer's base clone reaches through insteadOf (no network).
+mk_packed() {  # <dir> <sotd-version> <sotd-sha> <sot-version>: <dir>/arch is sot-1.2.3-dev, COMMIT 0123456789abcdef...
+    local d="$1" a="$1/arch" top="sot-1.2.3-dev-$TGT"
+    mkdir -p "$a" "$d/home" "$d/pack/$top" "$d/prefix/bin"
+    printf '#!/bin/sh\n[ "$1" = --version ] && echo "sotd %s (%s 2026-10-16, protocol 1)"\nexit 0\n' "$2" "$3" > "$d/pack/$top/sotd"
+    printf '#!/bin/sh\n[ "$1" = --version ] && echo "sot %s (%s 2026-10-16, protocol 1)"\nexit 0\n' "$4" "$3" > "$d/pack/$top/sot"
+    chmod 0755 "$d/pack/$top/sotd" "$d/pack/$top/sot"
+    printf 'old\n' > "$d/prefix/bin/sotd"
+    tar -czf "$a/$top.tar.gz" -C "$d/pack" "$top"
+    printf '%s\n' 0123456789abcdef0123456789abcdef01234567 > "$a/COMMIT"
+    ( cd "$a" && sha256_of "$top.tar.gz" COMMIT > SHA256SUMS )
+    git init -q --bare "$d/origin"
+    printf '[url "%s/"]\n\tinsteadOf = https://github.com/kalidke/ship-of-tools\n' "$d/origin" > "$d/gitconfig"
+}
+run_packed() {  # <dir>: like run_archive, with the git redirect and a PATH that reaches jq and git
+    local d="$1"
+    AR_RC=0
+    AR_OUT="$(env -i HOME="$d/home" PATH=/usr/bin:/bin SOT_INSTALL_TAG=x GIT_CONFIG_GLOBAL="$d/gitconfig" \
+        bash "$(dirname "$0")/../install.sh" --be-only --no-service --force-role-change --prefix "$d/prefix" --archive "$d/arch" 2>&1)" || AR_RC=$?
+}
+
+# ---------------------------------------------------------------------------
+case_start "archive_install_binds_its_binaries_to_the_folder"
+d="$WORK/ar-ver"; mk_packed "$d" 0.9.9 012345678 1.2.3-dev; run_packed "$d"
+check "a sotd of another version is refused" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
+check "it names the mismatch" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'does not match' || true)"
+check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
+d="$WORK/ar-sha"; mk_packed "$d" 1.2.3-dev fffffffff 1.2.3-dev; run_packed "$d"
+check "a sotd built at another commit is refused" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'does not match' || true)"
+check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
+d="$WORK/ar-sot"; mk_packed "$d" 1.2.3-dev 012345678 0.9.9; run_packed "$d"
+check "a sot of another version is refused" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'does not match' || true)"
+d="$WORK/ar-commit-sum"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev
+printf '%s\n' ffffffffffffffffffffffffffffffffffffffff > "$d/arch/COMMIT"; run_packed "$d"
+check "a COMMIT its SHA256SUMS does not cover is refused" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'checksum verification FAILED' || true)"
+
+# ---------------------------------------------------------------------------
+case_start "archive_install_refuses_an_absent_commit_before_swapping"
+d="$WORK/ar-absent"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev; run_packed "$d"
+check "the install exits non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
+check "it says the commit is not in origin" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'is not in origin' || true)"
+check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
+check "no .prev copy was written" "gone" "$([ -e "$d/prefix/bin/sotd.prev" ] && echo exists || echo gone)"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-apply: all checks passed\n'
