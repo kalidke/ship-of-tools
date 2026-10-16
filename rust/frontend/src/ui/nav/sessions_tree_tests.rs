@@ -284,7 +284,7 @@ fn every_configured_host_shows_up_even_without_a_list_yet() {
         .map(|host| {
             let connected = host_connected.get(host).copied().unwrap_or(false);
             let has_list = lists.contains_key(host);
-            host_tree_node(host, host, connected, has_list, host == "alpha")
+            host_tree_node(host, host, (!connected).then_some("unreachable"), has_list, host == "alpha")
         })
         .collect();
 
@@ -318,15 +318,15 @@ fn host_node_label_flips_live_with_connected_status_same_row_id() {
     // badges are gone, the label is the one source of truth), and
     // (crucially for `set_root`'s cursor/expansion preservation) the
     // id itself never changes across the flip.
-    let before = host_tree_node(&"alpha".to_string(), "alpha", false, false, true);
-    let after = host_tree_node(&"alpha".to_string(), "alpha", true, true, true);
+    let before = host_tree_node(&"alpha".to_string(), "alpha", Some("unreachable"), false, true);
+    let after = host_tree_node(&"alpha".to_string(), "alpha", None, true, true);
     assert_eq!(before.id, after.id, "same host → same row id, always");
     assert!(before.label.contains("[unreachable]"));
     assert!(after.label.contains("[current]"));
     assert!(!after.label.contains("[unreachable]"));
 
     // And the reverse direction (a live Disconnected).
-    let dropped = host_tree_node(&"alpha".to_string(), "alpha", false, true, true);
+    let dropped = host_tree_node(&"alpha".to_string(), "alpha", Some("unreachable"), true, true);
     assert_eq!(dropped.id, after.id);
     assert!(dropped.label.contains("[unreachable]"));
 }
@@ -338,22 +338,22 @@ fn host_tree_node_status_draws_in_the_label_not_just_the_unrendered_badges_vec()
     // non-active host must say nothing extra, while `unreachable` and
     // `current` must show up as bracketed tags IN THE LABEL — the same
     // way every other status in this tree actually draws.
-    let quiet = host_tree_node(&"alpha".to_string(), "alpha", true, true, false);
+    let quiet = host_tree_node(&"alpha".to_string(), "alpha", None, true, false);
     assert_eq!(quiet.label, format!("{HOST_DIVIDER_GLYPH} alpha"));
 
-    let unreachable = host_tree_node(&"alpha".to_string(), "alpha", false, true, false);
+    let unreachable = host_tree_node(&"alpha".to_string(), "alpha", Some("unreachable"), true, false);
     assert_eq!(
         unreachable.label,
         format!("{HOST_DIVIDER_GLYPH} alpha [unreachable]")
     );
 
-    let current = host_tree_node(&"alpha".to_string(), "alpha", true, true, true);
+    let current = host_tree_node(&"alpha".to_string(), "alpha", None, true, true);
     assert_eq!(
         current.label,
         format!("{HOST_DIVIDER_GLYPH} alpha [current]")
     );
 
-    let both = host_tree_node(&"alpha".to_string(), "alpha", false, true, true);
+    let both = host_tree_node(&"alpha".to_string(), "alpha", Some("unreachable"), true, true);
     assert_eq!(
         both.label,
         format!("{HOST_DIVIDER_GLYPH} alpha [unreachable] [current]")

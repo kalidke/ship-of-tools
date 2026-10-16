@@ -24,13 +24,13 @@ use super::*;
 /// is deleted (Codex round, PR #172): nothing ever read it, and computing
 /// it alongside the SAME status this label already carries was pure
 /// duplication — the label is the one source of truth now.
-fn host_tree_node(host: &HostKey, display: &str, connected: bool, has_list: bool, is_active: bool) -> TreeNode {
+fn host_tree_node(host: &HostKey, display: &str, link: Option<&str>, has_list: bool, is_active: bool) -> TreeNode {
     let mut tags = Vec::new();
-    if !connected {
-        tags.push("[unreachable]");
+    if let Some(link) = link {
+        tags.push(format!("[{link}]"));
     }
     if is_active {
-        tags.push("[current]");
+        tags.push("[current]".to_string());
     }
     let label = if tags.is_empty() {
         format!("{HOST_DIVIDER_GLYPH} {display}")
@@ -298,10 +298,11 @@ impl State {
             .into_iter()
             .map(|host| {
                 let connected = self.hosts.host_connected.get(&host).copied().unwrap_or(false);
+                let link = host_link_status(connected, self.hello_refused.get(&host).map(String::as_str));
                 let has_list = self.workspace_lists.contains_key(&host);
                 let is_active = host == self.active_host;
                 let display = host_label(&self.hosts.declared_host, &host);
-                host_tree_node(&host, display, connected, has_list, is_active)
+                host_tree_node(&host, display, link, has_list, is_active)
             })
             .collect();
         (root, children)

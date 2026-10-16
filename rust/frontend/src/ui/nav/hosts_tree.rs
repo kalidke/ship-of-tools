@@ -16,12 +16,8 @@ use super::*;
 /// whenever it differs — `name` (the `--dial` host name) is never
 /// replaced by it, only annotated, so the row still says what
 /// the user actually configured.
-fn hosts_mode_row(name: &str, display: &str, connected: bool, is_active: bool, is_default: bool) -> TreeNode {
-    let status_word = if connected {
-        "connected"
-    } else {
-        "unreachable"
-    };
+fn hosts_mode_row(name: &str, display: &str, link: Option<&str>, is_active: bool, is_default: bool) -> TreeNode {
+    let status_word = link.unwrap_or("connected");
     let mut tags = Vec::new();
     if is_default {
         tags.push("[default]");
@@ -47,6 +43,21 @@ fn hosts_mode_row(name: &str, display: &str, connected: bool, is_active: bool, i
         badges: Vec::new(),
         payload,
     }
+}
+
+/// What a host's row says of its link when it is not connected (`None` when it is): the headline of the hello it
+/// refused, the first line of its message up to the dash ("daemon out of date" for a daemon still running an older
+/// protocol), `refused` for a refusal with no headline, else `unreachable`. A daemon that answered and refused is not
+/// unreachable: that word hid the cause (a Windows field box, 2026-10-16: local read unreachable while an rc1 daemon
+/// an update had left running refused the rc9.13 window every 5 s). Both host trees ask it.
+pub(in crate::ui) fn host_link_status(connected: bool, refusal: Option<&str>) -> Option<&str> {
+    if connected {
+        return None;
+    }
+    Some(match refusal.and_then(|m| m.lines().next()) {
+        Some(first) => first.split_once(" — ").map_or("refused", |(head, _)| head),
+        None => "unreachable",
+    })
 }
 
 /// ONE display projection for every host-keyed UI surface (ADR 0046
@@ -176,10 +187,11 @@ impl State {
             .into_iter()
             .map(|name| {
                 let connected = self.hosts.host_connected.get(&name).copied().unwrap_or(false);
+                let link = host_link_status(connected, self.hello_refused.get(&name).map(String::as_str));
                 let is_active = name == self.active_host;
                 let is_default = default_name == Some(name.as_str());
                 let display = host_label(&self.hosts.declared_host, &name);
-                hosts_mode_row(&name, display, connected, is_active, is_default)
+                hosts_mode_row(&name, display, link, is_active, is_default)
             })
             .collect()
     }
@@ -354,18 +366,18 @@ mod tests {
         // this row-builder itself never touches the connection registry, matching
         // `hosts_tree_children`'s contract that `local` (no --dial
         // entry) gets a row exactly like any configured host.
-        let row = hosts_mode_row("local", "local", true, true, false);
+        let row = hosts_mode_row("local", "local", None, true, false);
         assert_eq!(row.id, "hosts:local");
         assert_eq!(row.kind, "host");
         assert!(!row.has_children);
         assert_eq!(row.label, "local · connected [current]");
         assert!(row.badges.is_empty());
 
-        let unreachable_default = hosts_mode_row("beta", "beta", false, false, true);
+        let unreachable_default = hosts_mode_row("beta", "beta", Some("unreachable"), false, true);
         assert_eq!(unreachable_default.label, "beta · unreachable [default]");
         assert!(unreachable_default.badges.is_empty());
 
-        let quiet = hosts_mode_row("gamma", "gamma", true, false, false);
+        let quiet = hosts_mode_row("gamma", "gamma", None, false, false);
         assert_eq!(quiet.label, "gamma · connected");
     }
 
@@ -374,8 +386,21 @@ mod tests {
         // ADR 0046 decision 1, manager review S9: hosts_mode_row itself
         // has no opinion on dial-vs-declared -- it displays exactly the
         // string the caller resolved via `host_label`.
-        let differs = hosts_mode_row("myserver", "realhost", true, false, false);
+        let differs = hosts_mode_row("myserver", "realhost", None, false, false);
         assert_eq!(differs.label, "realhost · connected");
+    }
+
+    #[test]
+    fn a_host_that_refused_the_hello_is_named_by_the_refusal_not_unreachable() {
+        // The head of the body `protocol_mismatch_message` builds for an older daemon (net/transport/hello.rs).
+        let skew = "daemon out of date — daemon 0.6.6-rc1 speaks protocol 2, this frontend 0.6.6-rc9.13 speaks 3\n\n\
+                    backend: ...";
+        assert_eq!(host_link_status(false, Some(skew)), Some("daemon out of date"));
+        assert_eq!(host_link_status(false, Some("host x has said hello as two OS accounts")), Some("refused"));
+        assert_eq!(host_link_status(false, None), Some("unreachable"));
+        assert_eq!(host_link_status(true, Some(skew)), None);
+        let row = hosts_mode_row("local", "local", host_link_status(false, Some(skew)), true, true);
+        assert_eq!(row.label, "local · daemon out of date [default] [current]");
     }
 
     #[test]
