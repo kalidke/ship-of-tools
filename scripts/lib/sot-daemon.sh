@@ -203,31 +203,47 @@ sot_daemon_pid() {  # <socket> [label]
     '
 }
 
-# Whether the daemon answering on SOCKET may stay: true unless `sotd same-version`,
-# asked of the binary this install runs (an owned unit's own, else SOTD-BIN), says it
-# runs another version, which an update leaves when it replaces the binary and not
-# the process. That daemon is then ended so the ensure starts this one: an owned
-# unit is restarted through systemd onto the new binary; a nohup daemon, found by
-# its socket (sot_daemon_pid), is sent TERM and waited for, at most 10 s. True when
-# it cannot be ended, with a warning: the window still starts and names the skew.
+# Whether the daemon answering on SOCKET may stay: 0 when it may, 1 once it was asked
+# to end (the ensure's start and wait loop then takes over, whatever came of it). It
+# may stay unless `sotd same-version`, asked of the binary this install runs (an owned
+# unit's own, else SOTD-BIN), says it runs another version, which an update leaves when
+# it replaces the binary and not the process. That daemon is named before it is asked,
+# so a launch ends only the daemon it asked and never the successor another launch just
+# started: an owned unit's MainPID, else the pid found by its socket (sot_daemon_pid).
+# An owned unit is restarted through systemd onto the new binary only while MainPID is
+# still that pid; a nohup daemon is sent TERM and waited for, at most 10 s. A daemon it
+# cannot name or end stays, with a warning: the window still starts and names the skew.
 sot_daemon_current() {  # <prefix> <sotd-bin> <socket>
-    local run="$2" theirs pid t0
-    ! sot_service_owned "$1" || run="$1/bin/sotd"
-    theirs="$("$run" same-version --endpoint "unix:$3" 2>/dev/null)"
-    [ $? -eq 3 ] || return 0
-    echo "the backend on $3 runs $theirs, not the version of $run: replacing it" >&2
+    local run="$2" owned=0 theirs pid now t0
     if sot_service_owned "$1"; then
-        systemctl --user restart sotd.service >/dev/null 2>&1 && return 1
+        owned=1; run="$1/bin/sotd"
+        pid="$(systemctl --user show -p MainPID --value sotd.service 2>/dev/null)"
     else
         pid="$(sot_daemon_pid "$3")"
-        if [ -n "$pid" ] && kill "$pid" 2>/dev/null; then
-            t0="$(date +%s)"
-            while sot_socket_open "$2" "$3" && [ "$(date +%s)" -lt $((t0 + 10)) ]; do sleep 0.25; done
-            sot_socket_open "$2" "$3" || return 1
+    fi
+    theirs="$("$run" same-version --endpoint "unix:$3" 2>/dev/null)"
+    [ $? -eq 3 ] || return 0
+    case "$pid" in ''|0|*[!0-9]*)
+        echo "WARNING: could not find the backend on $3 to end it; the window will show it out of date" >&2
+        return 0 ;;
+    esac
+    echo "the backend on $3 runs $theirs, not the version of $run: replacing it (its rows keep running; their REPLs restart)" >&2
+    if [ "$owned" = 1 ]; then
+        now="$(systemctl --user show -p MainPID --value sotd.service 2>/dev/null)"
+        [ "$now" != "$pid" ] || systemctl --user restart sotd.service >/dev/null 2>&1
+    else
+        kill "$pid" 2>/dev/null || ! kill -0 "$pid" 2>/dev/null || {
+            echo "WARNING: could not end the backend on $3; the window will show it out of date" >&2
+            return 0
+        }
+        t0="$(date +%s)"
+        while sot_socket_open "$2" "$3" && [ "$(date +%s)" -lt $((t0 + 10)) ]; do sleep 0.25; done
+        if sot_socket_open "$2" "$3"; then
+            echo "WARNING: the backend on $3 did not end; the window will show it out of date" >&2
+            return 0
         fi
     fi
-    echo "WARNING: could not end the backend on $3; the window will show it out of date" >&2
-    return 0
+    return 1
 }
 
 # Make the backend's socket answer, with a daemon of this install's version
