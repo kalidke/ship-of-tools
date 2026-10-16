@@ -131,7 +131,9 @@ always runs the default login.
 
 Hosts mode lists every daemon host the frontend is connected to. The frontend
 dials every daemon host declared in `hosts.toml` at once, so each row shows
-whether that host is connected or unreachable, tagged `[current]` for the host
+whether that host is connected or unreachable, or, when its daemon answered and
+refused this window, why (`daemon out of date` for a daemon still running an
+older version than the window speaks), tagged `[current]` for the host
 you are working on and `[default]` for the first connection. `Enter` on a host
 moves the Sessions view to that host's group; there is nothing to relaunch.
 

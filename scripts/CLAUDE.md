@@ -134,7 +134,12 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   connects only to an endpoint this OS account serves (ADR 0049 `## User isolation`; each path is shown by running it,
   in rust/backend/tests/shell_dial.rs and test-local-daemon-own.ps1's 4b); a script that finds this account's daemon in
   a process list lists only this account's processes and compares the daemon's `--socket` or `--label` value whole and
-  literally (`restart-backend.sh`, `Get-LocalDaemonProcess`).
+  literally (`sot_daemon_pid` in lib/sot-daemon.sh, `Get-LocalDaemonProcess`).
+- A launch keeps this computer's daemon only when it runs the version of the binary the launch would start: the ensure
+  (`sot_daemon_ensure`, `sot-local-daemon.ps1`) asks `sotd same-version` once the socket or pipe answers and replaces a
+  daemon of another version (an apply swaps the binary, not the running process), the way a stop ends one; a daemon
+  that cannot say is kept. The comm install follows the checkout the same way, by its stamp
+  (`~/.sot-comm/VERSION`) against the checkout's commit (`Invoke-FreshnessPass`), not by whether this launch applied.
 - This computer's local daemon has one binary on Windows: `sot-local-daemon.ps1`'s resolver chooses it (the complete
   dev pair, else the complete install pair), and the daemon's start, probes and pipe-name query and the launcher's
   own query and lease (`-Resolve`) all run that `sotd.exe`. `-Stop` makes the same choice when a complete pair exists;
