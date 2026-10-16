@@ -54,6 +54,12 @@ pub(crate) fn close_now(leaving: Option<&mut crate::lease::Leaving>, code: i32) 
 }
 
 impl Leases {
+    /// Why a leave stayed, until the next leave: the text a stayed relaunch's dialog shows. Never a standing's
+    /// cause (`notice`), which speaks of closing, not of a relaunch that did not happen.
+    pub fn stay_notice(&self) -> Option<&'static str> {
+        self.book.lock().unwrap().stayed.map(stay_line)
+    }
+
     /// Confirms a leave's stay (`LeaveStep::Stay`, or a Ctrl+Q during the wait) under the lock `install` takes, so no
     /// grant can take the leave between the decision and the stay. True when a handshake in flight is still
     /// unsettled: the leave ends, a late grant installs with no leave behind it, the next handshake is taken, and
