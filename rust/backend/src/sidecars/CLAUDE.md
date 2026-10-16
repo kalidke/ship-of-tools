@@ -28,8 +28,9 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   server's `READY` line, then ends the child and the start fails naming the bound. An open waits on the start for at
   most `PLUTO_START_WAIT` (120 s, `repl.execute`'s default); past it the open answers `pluto_starting` (not a failure:
   the window shows it without a failure prefix) with the start's age and the child's last stderr lines
-  (`Start::still_starting`), logs that at warn, and the next open joins the same start (`Pluto::open_notebook`,
-  `run_supervisor`).
+  (`Start::still_starting`; `Pluto::open_notebook` returns `Opened::Starting`), logs that at warn, and the next open
+  joins the same start (`run_supervisor`). A start that fails answers its reason with the same last stderr lines. One
+  helper words them (`child::last_lines`), for Pluto, Quarto and the display server.
 - A kernel, REPL, Pluto or MathJax child that ends, other than by the daemon's shutdown (or, for a kernel, its owner's
   drop; for the REPL, its owner's restart or its row's end, so only its death counts), leaves its last 30 stderr lines
   in the log at warn, one event (`StderrTail`); every stderr line is also logged at debug under `<child>.stderr`.

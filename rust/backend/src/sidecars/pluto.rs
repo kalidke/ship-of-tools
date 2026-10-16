@@ -674,6 +674,25 @@ mod port_parse_tests {
         real_wait("the stand-in is reaped", || sig.live() == 0).await;
     }
 
+    /// Dropping the Pluto handle during a start ends the child: the supervisor's `ended` arm retires it, so no start
+    /// outlives its handle until `PLUTO_READY_BOUND`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_the_handle_during_a_start_ends_the_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("stub-julia");
+        let started = dir.path().join("started");
+        sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho started > '{}'\nexec sleep 30\n", started.display()));
+        let script = dir.path().join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let running = spawn_supervisor(&stub.to_string_lossy(), dir.path(), &script, sig).await.expect("spawn_supervisor");
+        within(Duration::from_secs(5), "the stand-in starts", || started.exists()).await;
+        assert!(*running.ready.borrow() == Ready::Starting, "the start has not ended");
+        drop(running);
+        within(Duration::from_secs(5), "the start's child is ended with its handle", || sig.live() == 0).await;
+    }
+
     /// A Pluto that fails its boot leaves its own words in the log at warn: the stand-in writes Julia's error to stderr
     /// and exits before READY.
     #[cfg(unix)]
