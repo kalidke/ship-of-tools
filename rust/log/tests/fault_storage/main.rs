@@ -4,6 +4,7 @@
 mod boundaries;
 #[cfg(any(target_os = "macos", windows))]
 mod command_tests;
+mod detach;
 mod exits;
 #[cfg(any(windows, target_os = "linux"))]
 mod scenario;

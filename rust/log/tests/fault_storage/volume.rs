@@ -99,6 +99,9 @@ struct NativeVolume {
     #[cfg(windows)]
     transaction: uuid::Uuid,
     attached: bool,
+    /// The whole-disk device `hdiutil attach` printed, which the teardown detaches.
+    #[cfg(target_os = "macos")]
+    device: Option<String>,
     cleanup_attempted: bool,
     // Last in field drop order: exclusion outlives every owned resource and Drop's cleanup.
     _one: std::sync::MutexGuard<'static, ()>,
@@ -135,6 +138,8 @@ impl NativeVolume {
             mount,
             image,
             attached: false,
+            #[cfg(target_os = "macos")]
+            device: None,
             cleanup_attempted: false,
             _one: one,
         };
@@ -190,7 +195,10 @@ impl NativeVolume {
             .arg(&self.mount)
             .arg(&self.image);
         self.attached = true;
-        native_command(attach);
+        let attached = native_command(attach);
+        self.device = Some(detach::attached_device(&attached).unwrap_or_else(|| {
+            panic!("L3 HARNESS FAILURE: no /dev/diskN on the first line of hdiutil attach:\n{attached}")
+        }));
         use std::os::unix::fs::MetadataExt;
         assert_ne!(
             std::fs::metadata(&self.mount).unwrap().dev(),
@@ -217,9 +225,47 @@ impl NativeVolume {
     fn detach(&mut self) {
         if self.attached {
             self.cleanup_attempted = true;
-            let mut command = Command::new("hdiutil");
-            command.arg("detach").arg(&self.mount);
-            native_command(command);
+            let started = std::time::Instant::now();
+            let device = self.device.clone().expect("attach recorded the device");
+            let tries = detach::detach_within(
+                &device,
+                |target| {
+                    let mut command = Command::new("hdiutil");
+                    command.arg("detach").arg(target);
+                    let observation = bounded(command, 120, &[]);
+                    detach::Attempt {
+                        ok: observation.status.success(),
+                        report: observation.diagnostic("command"),
+                    }
+                },
+                || {
+                    let mut command = Command::new("hdiutil");
+                    command.arg("info");
+                    // An info that cannot be read leaves the image counted as attached.
+                    detach::run_diagnostic(command, Duration::from_secs(60))
+                        .map_or(true, |(_, out, _)| detach::lists_device(&out, &device))
+                },
+                || {
+                    let rdevice = device.replacen("/dev/", "/dev/r", 1);
+                    let mut command = Command::new("lsof");
+                    command.arg(&device).arg(rdevice);
+                    let mut listing = diagnostic_text(command, "lsof device");
+                    if mount_is_up(&self.mount, self.dir.as_ref().unwrap().path()) {
+                        let mut command = Command::new("lsof");
+                        command.arg("+D").arg(&self.mount);
+                        listing.push_str(&diagnostic_text(command, "lsof mount"));
+                    }
+                    listing
+                },
+                std::thread::sleep,
+                || started.elapsed(),
+                detach::BOUND,
+                std::process::id(),
+            )
+            .unwrap_or_else(|error| {
+                panic!("L3 HARNESS FAILURE: native fixture cleanup failed:\n{error}")
+            });
+            println!("L3 fixture macos detach tries={tries}");
             use std::os::unix::fs::MetadataExt;
             assert_eq!(
                 std::fs::metadata(&self.mount).unwrap().dev(),
@@ -472,6 +518,26 @@ impl Drop for NativeVolume {
             }
             eprintln!("L3 HARNESS FAILURE: attached image retained for fixture owner");
         }
+    }
+}
+
+/// A diagnostic command's report for the log: its output, or why it has none (an overrun is logged and skipped).
+#[cfg(target_os = "macos")]
+fn diagnostic_text(command: Command, label: &str) -> String {
+    let text = match detach::run_diagnostic(command, Duration::from_secs(20)) {
+        Ok((status, out, err)) => format!("{label} status={status}\n{out}{err}\n"),
+        Err(why) => format!("{label} skipped: {why}\n"),
+    };
+    scrub(&text)
+}
+
+/// Whether `mount` still holds a volume of its own, not the folder it was made in under `parent`.
+#[cfg(target_os = "macos")]
+fn mount_is_up(mount: &Path, parent: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(mount), std::fs::metadata(parent)) {
+        (Ok(mount), Ok(parent)) => mount.dev() != parent.dev(),
+        _ => false,
     }
 }
 
