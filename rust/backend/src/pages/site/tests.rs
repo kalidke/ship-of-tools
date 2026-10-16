@@ -252,3 +252,129 @@ mod prefix_serve_tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 }
+
+#[cfg(test)]
+mod persistent_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use tokio::io::{AsyncBufReadExt, BufReader, DuplexStream};
+
+    /// A page's files, as many as the deck that loaded only partly holds, each with bytes of its own.
+    const FILES: usize = 60;
+    /// The connections a browser opens to one origin at once (six in Chrome, Edge and Firefox).
+    const SLOTS: usize = 6;
+    /// The logins the stand-in gateway lets through before it refuses every later one. The field's gateway let eight
+    /// to thirteen through in a burst, then dropped new connections for half a minute.
+    const LIMIT: usize = 8;
+
+    fn file_bytes(i: usize) -> Vec<u8> {
+        vec![i as u8; 2048 + i]
+    }
+
+    /// One page login, as a remote window makes one for each browser connection (`pipe_one`): past `LIMIT` the
+    /// stand-in gateway refuses it; otherwise it carries the daemon's dial of the page port and its splice
+    /// (`pipe_bidirectional`, as `proxy.connect` runs it).
+    async fn login(logins: &AtomicUsize, port: u16) -> Option<BufReader<DuplexStream>> {
+        if logins.fetch_add(1, SeqCst) >= LIMIT {
+            return None;
+        }
+        let upstream = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
+        let (window, daemon) = tokio::io::duplex(64 * 1024);
+        let (rd, wr) = tokio::io::split(daemon);
+        tokio::spawn(crate::server::pipe::pipe_bidirectional(rd, wr, upstream, "page login"));
+        Some(BufReader::new(window))
+    }
+
+    /// GET `path` as a browser does: no `Connection: close`, the reply read to its length. The status, the body and
+    /// whether the connection stays open, or `None` when it ends before the whole reply.
+    async fn get(conn: &mut BufReader<DuplexStream>, path: &str) -> Option<(u16, Vec<u8>, bool)> {
+        let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        conn.get_mut().write_all(request.as_bytes()).await.ok()?;
+        let (mut status, mut length, mut keep) = (0, 0, true);
+        loop {
+            let mut line = Vec::new();
+            if conn.read_until(b'\n', &mut line).await.ok()? == 0 {
+                return None;
+            }
+            let line = String::from_utf8_lossy(&line).trim_end().to_string();
+            if line.is_empty() {
+                break;
+            }
+            if status == 0 {
+                status = line.split_whitespace().nth(1)?.parse().ok()?;
+                continue;
+            }
+            let (name, value) = line.split_once(':')?;
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().ok()?;
+            } else if name.eq_ignore_ascii_case("connection") && value.trim().eq_ignore_ascii_case("close") {
+                keep = false;
+            }
+        }
+        let mut body = vec![0; length];
+        conn.read_exact(&mut body).await.ok()?;
+        Some((status, body, keep))
+    }
+
+    /// One browser connection slot: it takes the page's next file until none is left, on the connection it holds while
+    /// the server keeps it open, else on a new login. A refused login is a missing figure; a browser does not retry it.
+    async fn slot(next: Arc<AtomicUsize>, logins: Arc<AtomicUsize>, port: u16, nonce: String) -> usize {
+        let (mut conn, mut loaded) = (None, 0);
+        loop {
+            let i = next.fetch_add(1, SeqCst);
+            if i >= FILES {
+                return loaded;
+            }
+            if conn.is_none() {
+                conn = login(&logins, port).await;
+            }
+            let Some(c) = conn.as_mut() else { continue };
+            match get(c, &format!("/{nonce}/figs/f{i:02}.png")).await {
+                Some((200, body, keep)) if body == file_bytes(i) => {
+                    loaded += 1;
+                    if !keep {
+                        conn = None;
+                    }
+                }
+                _ => conn = None,
+            }
+        }
+    }
+
+    /// PAGE-PROXY-PARTIAL: a remote window makes one ssh login per browser connection, so a page costs a login per
+    /// connection only while a connection carries one request after another. Sixty files through a browser's six
+    /// connections, past a gateway that refuses every login after the eighth, all load.
+    #[tokio::test]
+    async fn a_page_of_sixty_files_loads_through_six_logins() {
+        let root = std::env::temp_dir().join(format!("sot-site-persistent-test-{}", sot_updater::unique::suffix()));
+        std::fs::create_dir_all(root.join("figs")).unwrap();
+        for i in 0..FILES {
+            std::fs::write(root.join(format!("figs/f{i:02}.png")), file_bytes(i)).unwrap();
+        }
+        // Far outside the serials the other tests in this folder use.
+        const SERIAL: u64 = 8_000_000_002;
+        let nonce = set_root(SERIAL, Site::plain(root.clone())).expect("set_root");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _ = handle_conn(stream, ServeMode::Prefix).await;
+                });
+            }
+        });
+        let (next, logins) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let slots: Vec<_> = (0..SLOTS)
+            .map(|_| tokio::spawn(slot(next.clone(), logins.clone(), port, nonce.clone())))
+            .collect();
+        let mut loaded = 0;
+        for s in slots {
+            loaded += tokio::time::timeout(Duration::from_secs(30), s).await.expect("a browser slot within 30 s").unwrap();
+        }
+        remove_root(SERIAL);
+        let _ = std::fs::remove_dir_all(&root);
+        let logins = logins.load(SeqCst);
+        println!("a page of {FILES} files through {SLOTS} browser connections: {loaded} loaded, {logins} logins (the gateway refuses past {LIMIT})");
+        assert!(loaded == FILES && logins <= SLOTS, "the page loaded only partly: {loaded} of {FILES} files, {logins} logins");
+    }
+}
