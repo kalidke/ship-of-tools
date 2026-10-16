@@ -91,6 +91,18 @@ case $order_rc in
        exit 1 ;;
     *) echo "preflight: the version-order check did not run (cargo output above) — a release is never cut blind" >&2; exit 1 ;;
 esac
+# A cut replaces the line's current stamp (HEAD's workspace version, normally X.Y.Z-pre-dev) and must sort above it,
+# or the line goes backwards: 0.6.7-alpha.1 sorts below 0.6.7-dev. Same comparator as above.
+stamp=$(awk '/^\[workspace\.package\]/ { b = 1; next } /^\[/ { b = 0 }
+    b && /^version[ \t]*=/ { split($0, q, "\""); print q[2]; exit }' rust/Cargo.toml)
+[[ -n "$stamp" ]] || { echo "preflight: cannot read the line's stamp from rust/Cargo.toml" >&2; exit 1; }
+stamp_rc=0
+(cd rust && cargo run -q -p sot-updater --example vercmp -- "$TAG" "v$stamp") >/dev/null || stamp_rc=$?
+case $stamp_rc in
+    0) ;;
+    1) echo "preflight: $TAG does not sort above v$stamp, the line's current stamp — cut a version above it (normally the stamp without -dev)" >&2; exit 1 ;;
+    *) echo "preflight: the stamp order check did not run (cargo output above) — a release is never cut blind" >&2; exit 1 ;;
+esac
 # The line's stamp after a cut (decision 0033): X.Y.Z -> X.Y.(Z+1)-dev; a pre-release ending in a number n -> n+1,
 # then -dev; any other pre-release -> .1, then -dev (rc9 -> rc9.1-dev, which sorts above rc9).
 next_dev() {
@@ -234,6 +246,8 @@ STAMPED=()
 stamp_version "$NEXT"
 git add -- "${STAMPED[@]}"
 git commit -m "version: $NEXT opens the line after $TAG [skip ci]"
-git push origin "$branch" "$TAG"
+# --atomic: a branch push origin rejects (a lane merged meanwhile) must not publish the tag alone. A push that failed
+# is re-run with this same command, nothing else is undone.
+git push --atomic origin "$branch" "$TAG"
 
 echo "== $TAG pushed — release workflow: https://github.com/kalidke/ship-of-tools/actions/workflows/release.yml"

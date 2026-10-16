@@ -256,6 +256,14 @@ mod tests {
             assert_eq!(compare_versions(lo, hi), Ordering::Less, "{lo} < {hi}");
             assert_eq!(compare_versions(hi, lo), Ordering::Greater, "{hi} > {lo}");
         }
+        // What release.sh's preflight refuses: a cut that sorts below the stamp it replaces.
+        for (cut, stamp) in [
+            ("0.6.7-alpha.1", "0.6.7-dev"),
+            ("0.6.7-beta.1", "0.6.7-dev"),
+            ("0.6.6-rc9.14.1", "0.6.6-rc9.15-dev"),
+        ] {
+            assert_eq!(compare_versions(cut, stamp), Ordering::Less, "{cut} < {stamp}");
+        }
         assert_eq!(
             compare_versions("0.6.6-rc9.14-dev+a", "0.6.6-rc9.14-dev+b"),
             Ordering::Equal
