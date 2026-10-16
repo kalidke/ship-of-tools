@@ -29,7 +29,7 @@ on a computer decides, through its lease, whether that computer's sessions end (
 ## Promises
 - The window's forced deliver_queued wait covers writes already queued to all holders with one std::time::Instant deadline; it does not wait for daemon acknowledgements and its deadline does not depend on the transport worker.
 - A lease is granted only to a peer whose pid, creation time and boot equal what the OS reported at accept
-  (`lease::claim`, called by `Leases::grant`).
+  (`lease::claim`, called by `Leases::grant`); a peer whose process the OS did not report is refused `Undetermined`.
 - Deadlines are wall-clock unix milliseconds, so a persisted handover deadline survives a restart (`startup_plan`
   reads `handover_until_ms` as written).
 - `held.json` is deleted when every field is empty or false and otherwise written through `crate::durable`
