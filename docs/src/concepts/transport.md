@@ -145,8 +145,9 @@ included. Such a tab does not survive a restart of the frontend; open the
 page again. It does survive the frontend's reconnects: a documentation page
 belongs to the window that opened it, not to one connection, so a dropped
 link or a computer that slept leaves it serving, until that window opens
-another page in its place or the daemon forgets the window (past 64 windows
-away, it forgets the one away longest). A restart of the daemon ends every
+another page in its place, the daemon forgets the window (past 64 windows
+away, it forgets the one away longest), or, for a page on a port of its own (root-relative
+links), another window's open takes that port while this window is away. A restart of the daemon ends every
 page; open it again after one. A page your own code serves (`wglshow`, `browserview`) or
 `sot-fe open-url` names may name its own address, so it keeps the daemon's
 port number, and the frontend declines to open it when something on its

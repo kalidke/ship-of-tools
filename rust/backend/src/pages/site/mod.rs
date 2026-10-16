@@ -91,7 +91,7 @@ static OWNER_NONCE: RwLock<BTreeMap<u64, String>> = RwLock::new(BTreeMap::new())
 /// having NO auth of their own (a path-prefix nonce can't work here — a
 /// root-relative site needs the whole path space): `assign_pool_port` mints a
 /// fresh one on every open, `docs.open` embeds it as `?secret=` in the
-/// returned URL, and `handle_conn`'s `ServeMode::Pool` arm requires it (or the
+/// returned URL, and `serve_request`'s `ServeMode::Pool` arm requires it (or the
 /// HttpOnly cookie it causes to be set) on every request. An owner holds
 /// at most one pool port (re-opens repoint it AND mint a new secret,
 /// invalidating the old one); the port is freed by `remove_root` when its owner
@@ -193,7 +193,7 @@ pub fn pool_assigned_ports() -> Vec<u16> {
         .collect()
 }
 
-/// Root AND secret for a pool port — what `handle_conn`'s `ServeMode::Pool`
+/// Root AND secret for a pool port — what `serve_request`'s `ServeMode::Pool`
 /// arm needs to authenticate a request (security review; see `assign_pool_port`).
 fn pool_entry_for(port: u16) -> Option<(Arc<Site>, String)> {
     POOL.read()

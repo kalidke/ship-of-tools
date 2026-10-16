@@ -84,4 +84,4 @@ Elsewhere: rust/frontend/src/pages.rs (the window's page proxy).
 
 ## Start here
 
-`proxy.rs` `allowed_proxy_ports` for what a remote window may reach; `video.rs` `handle_conn` for a served request.
+`proxy.rs` `allowed_proxy_ports` for what a remote window may reach; `video.rs` `serve_request` for a served request.
