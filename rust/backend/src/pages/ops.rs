@@ -535,28 +535,16 @@ async fn run_quarto(
         _ = sig.fired() => Ok(None),
         _ = tokio::time::sleep(within) => {
             let _ = contained.kill().await;
-            let said = last_lines(&se);
+            let said = crate::sidecars::child::last_lines(
+                String::from_utf8_lossy(&se).lines(),
+                QUARTO_TIMEOUT_LINES,
+                QUARTO_TIMEOUT_LINE_CHARS,
+            );
             let bound = format!("quarto render did not finish within {within:?}");
             let message = if said.is_empty() { bound } else { format!("{bound}; its last stderr lines: {said}") };
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, message))
         }
     }
-}
-
-/// The last `QUARTO_TIMEOUT_LINES` lines of what a render wrote to stderr that hold text, oldest first, each trimmed
-/// and cut at `QUARTO_TIMEOUT_LINE_CHARS`, joined by ` / `: a render cut off at its bound says what it was doing.
-fn last_lines(stderr: &[u8]) -> String {
-    let text = String::from_utf8_lossy(stderr);
-    let mut lines: Vec<String> = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .rev()
-        .take(QUARTO_TIMEOUT_LINES)
-        .map(|line| line.chars().take(QUARTO_TIMEOUT_LINE_CHARS).collect())
-        .collect();
-    lines.reverse();
-    lines.join(" / ")
 }
 
 const QUARTO_TIMEOUT_LINES: usize = 5;

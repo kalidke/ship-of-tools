@@ -160,8 +160,7 @@ async fn start_with(
 /// The last three lines of the server's log, joined: the reason Xvfb gives for a failed start.
 fn last_lines(log: &Path) -> String {
     let text = std::fs::read_to_string(log).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty() && *l != "(EE)").collect();
-    lines[lines.len().saturating_sub(3)..].join(" / ")
+    super::child::last_lines(text.lines().filter(|l| l.trim() != "(EE)"), 3, usize::MAX)
 }
 
 /// One Xauthority entry that every address and display number match (family FamilyWild, 0xFFFF, with an empty address

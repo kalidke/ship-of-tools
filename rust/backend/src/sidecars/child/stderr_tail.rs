@@ -1,7 +1,7 @@
 //! A sidecar child's stderr: read to its end on a task of its own, each line logged at debug under its owner's target
 //! (a healthy Julia is chatty), the last lines kept, so the owner of a child that failed logs the child's own words at
 //! warn, and a caller still waiting on a child that has not said it is ready is told how long it has been starting and
-//! what it last wrote (`Start`). The daemon logs at info by default, where the debug lines are dropped.
+//! what it last wrote (`Start`; `last_lines` is the one way a caller words a child's last lines). The daemon logs at info by default, where the debug lines are dropped.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -35,26 +35,36 @@ pub(crate) struct Start {
 
 impl Start {
     /// The one phrase for a child that has not said it is ready, in an answer and in the log: `<who> is still starting
-    /// after <N> s; its last stderr lines: <oldest> / ... / <newest>` (the last `STARTING_LINES` that hold text, each
-    /// trimmed and cut at `STARTING_LINE_CHARS`), or `<who> is still starting after <N> s; it has written nothing to
-    /// stderr`.
+    /// after <N> s; its last stderr lines: <oldest> / ... / <newest>` (`Start::last_lines`), or `<who> is still
+    /// starting after <N> s; it has written nothing to stderr`.
     pub(crate) fn still_starting(&self, who: &str) -> String {
         let secs = self.since.elapsed().as_secs();
-        let mut said: Vec<String> = {
-            let kept = self.lines.lock().unwrap_or_else(|e| e.into_inner());
-            kept.iter()
-                .map(|line| line.trim())
-                .filter(|line| !line.is_empty())
-                .take(STARTING_LINES)
-                .map(|line| line.chars().take(STARTING_LINE_CHARS).collect())
-                .collect()
-        };
-        if said.is_empty() {
-            return format!("{who} is still starting after {secs} s; it has written nothing to stderr");
+        match self.last_lines() {
+            said if said.is_empty() => format!("{who} is still starting after {secs} s; it has written nothing to stderr"),
+            said => format!("{who} is still starting after {secs} s; its last stderr lines: {said}"),
         }
-        said.reverse();
-        format!("{who} is still starting after {secs} s; its last stderr lines: {}", said.join(" / "))
     }
+
+    /// The last `STARTING_LINES` lines its stderr has written that hold text (`last_lines`), or nothing when it has
+    /// written none.
+    pub(crate) fn last_lines(&self) -> String {
+        let kept = self.lines.lock().unwrap_or_else(|e| e.into_inner());
+        last_lines(kept.iter().rev().map(String::as_str), STARTING_LINES, STARTING_LINE_CHARS)
+    }
+}
+
+/// The last `count` of `lines`, oldest first, that hold text: each trimmed and cut at `chars` characters, joined by
+/// ` / `. A caller names what a child last said in one short line; none held gives the empty string.
+pub(crate) fn last_lines<'a>(lines: impl DoubleEndedIterator<Item = &'a str>, count: usize, chars: usize) -> String {
+    let mut said: Vec<String> = lines
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .rev()
+        .take(count)
+        .map(|line| line.chars().take(chars).collect())
+        .collect();
+    said.reverse();
+    said.join(" / ")
 }
 
 impl StderrTail {
