@@ -633,7 +633,7 @@ mod tests {
 
     /// The process `dispatch_admitted` handed `stream`'s handler under `admit_peer`, as text, or `None` when it
     /// refused the stream.
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(target_os = "linux")]
     fn admitted_process(stream: LocalStream) -> Option<String> {
         let mut process = None;
         dispatch_admitted(stream, admit_peer, |_, given| process = Some(format!("{given:?}")));
@@ -705,11 +705,25 @@ mod tests {
         let pid = child.id();
         let accepted = tokio::time::timeout(std::time::Duration::from_secs(20), listener.accept()).await;
         let denied = sot_log::identity::challenge::process_created(pid);
+        let mut held = None;
         let process = match accepted {
-            Ok(Ok(stream)) => Some(admitted_process(stream)),
+            Ok(Ok(stream)) => {
+                let mut process = None;
+                dispatch_admitted(stream, admit_peer, |stream, given| {
+                    process = Some(format!("{given:?}"));
+                    held = Some(stream);
+                });
+                Some(process)
+            }
             _ => None,
         };
         drop(listener);
+        // The child ends on this byte: the synchronous wait below blocks this runtime, so the peer's read is not
+        // left to see the stream close.
+        if let Some(mut stream) = held {
+            use tokio::io::AsyncWriteExt;
+            stream.write_all(&[0]).await.expect("release the peer child");
+        }
         let status =
             sot_log::test_isolated::wait_within(&mut child, sot_log::test_isolated::ISOLATION_TIMEOUT);
         entry.assert_once(pid);
@@ -724,7 +738,7 @@ mod tests {
     }
 
     /// The peer child of the test above: grants its own process object to SYSTEM alone, then opens `pipe` and holds it
-    /// until the parent's end closes.
+    /// until the parent writes a byte.
     #[cfg(windows)]
     fn closed_peer(pipe: &std::ffi::OsStr) {
         use std::io::Read;
