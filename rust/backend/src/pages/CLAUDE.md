@@ -29,7 +29,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   port once per streak.
 - The video, site and pool servers keep a connection for the next request (HTTP/1.1), so a remote window's page costs
   one ssh login per browser connection, not one per file; a connection closes when its request says so, when a reply
-  cannot be sent whole, or after 30 s with no request (`read_request`, `IDLE_BOUND`).
+  cannot be sent whole, or after 30 s with no whole request head (`read_request`, `IDLE_BOUND`).
 - A window's page login, over ssh or a relay, ends when its host's link closes before the daemon's replies: the
   browser connection closes as on a down link (`pipe_one`, `LinkWatch`). A page already piped ends on its own.
 - `proxy.connect` dials with tokio's `TcpSocket`, whose socket is not inheritable, so no child holds the connection

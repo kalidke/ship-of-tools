@@ -4,12 +4,12 @@
 use std::path::Path;
 
 use anyhow::Result;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const READ_CHUNK: usize = 64 * 1024;
 
-/// How long a connection waits for a request's head: a new connection's first and a kept connection's next. A remote
+/// How long a connection waits for a request's whole head, from the wait's start: a new connection's first and a kept
+/// connection's next. A head sent a byte at a time gets no longer than one sent whole. A remote
 /// window reaches these servers through one ssh login per connection (ADR 0035, `pipe_one`), so a connection carries a
 /// page's requests one after another, and one left idle ends here rather than when the browser drops it.
 const IDLE_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
@@ -26,8 +26,12 @@ pub(crate) struct Request {
 }
 
 /// The next request head on `stream`. `buf` holds what was read past the previous head and keeps what is read past
-/// this one. `None` when the client closes, sends nothing for `IDLE_BOUND`, or sends a head past 16 KiB (answered 431).
-pub(crate) async fn read_request(stream: &mut TcpStream, buf: &mut Vec<u8>) -> Result<Option<Request>> {
+/// this one. `None` when the client closes, sends no whole head within `IDLE_BOUND`, or sends a head past 16 KiB (answered 431).
+pub(crate) async fn read_request<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    buf: &mut Vec<u8>,
+) -> Result<Option<Request>> {
+    let deadline = tokio::time::Instant::now() + IDLE_BOUND;
     let end = loop {
         if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
             break at + 4;
@@ -37,7 +41,7 @@ pub(crate) async fn read_request(stream: &mut TcpStream, buf: &mut Vec<u8>) -> R
             return Ok(None);
         }
         let mut tmp = [0u8; 1024];
-        let Ok(read) = tokio::time::timeout(IDLE_BOUND, stream.read(&mut tmp)).await else {
+        let Ok(read) = tokio::time::timeout_at(deadline, stream.read(&mut tmp)).await else {
             return Ok(None);
         };
         let n = read?;
@@ -114,7 +118,12 @@ pub(crate) fn content_type(path: &Path) -> &'static str {
 }
 
 /// A plain-text reply. Returns `keep`: whether the connection carries the next request.
-pub(crate) async fn write_simple(stream: &mut TcpStream, status: &str, body: &str, keep: bool) -> Result<bool> {
+pub(crate) async fn write_simple<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    status: &str,
+    body: &str,
+    keep: bool,
+) -> Result<bool> {
     let resp = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n{}\r\n{body}",
         body.len(),
@@ -179,8 +188,8 @@ pub(crate) fn parse_range(hdr: Option<&str>, total: u64) -> RangeReq {
 /// complete `Name: value\r\n` lines. A 0-byte file sends `Content-Length: 0`.
 /// Returns whether the connection carries the next request: not when the request
 /// says so, nor when the body could not be sent whole (the file shrank, the write failed).
-pub(crate) async fn serve_file(
-    stream: &mut TcpStream,
+pub(crate) async fn serve_file<S: AsyncWrite + Unpin>(
+    stream: &mut S,
     request: &Request,
     mut file: tokio::fs::File,
     ctype: &str,
@@ -248,7 +257,7 @@ pub(crate) async fn serve_file(
 mod range_tests {
     use super::super::video::{handle_conn, register_video};
     use super::*;
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpStream};
 
     #[test]
     fn parse_range_forms() {
@@ -292,5 +301,127 @@ mod range_tests {
         assert!(text.starts_with("HTTP/1.1 200 OK"), "got: {text}");
         assert!(text.contains("Content-Length: 0\r\n"), "got: {text}");
         assert!(text.ends_with("\r\n\r\n"), "body must be empty, got: {text}");
+    }
+}
+
+#[cfg(test)]
+mod keep_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::io::duplex;
+
+    /// The request heads that decide whether a connection is kept, and what each decides.
+    #[tokio::test]
+    async fn a_request_keeps_its_connection_only_when_it_may() {
+        let cases = [
+            ("GET / HTTP/1.1\r\n\r\n", true),
+            ("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n", true),
+            ("GET / HTTP/1.0\r\n\r\n", false),
+            ("GET / HTTP/1.1\r\nConnection: close\r\n\r\n", false),
+            ("GET / HTTP/1.1\r\nconnection: Keep-Alive, Close\r\n\r\n", false),
+            ("GET / HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello", false),
+            ("GET / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n", false),
+        ];
+        for (head, keep) in cases {
+            let (mut client, mut server) = duplex(4096);
+            client.write_all(head.as_bytes()).await.unwrap();
+            let request = read_request(&mut server, &mut Vec::new()).await.unwrap().expect("a request");
+            assert_eq!(request.keep, keep, "{head:?}");
+        }
+    }
+
+    /// Two requests sent at once are read one after the other from the same buffer.
+    #[tokio::test]
+    async fn pipelined_requests_are_read_in_turn() {
+        let (mut client, mut server) = duplex(4096);
+        client.write_all(b"GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\nConnection: close\r\n\r\n").await.unwrap();
+        let mut buf = Vec::new();
+        let first = read_request(&mut server, &mut buf).await.unwrap().unwrap();
+        let second = read_request(&mut server, &mut buf).await.unwrap().unwrap();
+        assert_eq!((first.target.as_str(), first.keep), ("/a", true));
+        assert_eq!((second.target.as_str(), second.keep), ("/b", false));
+    }
+
+    fn get(keep: bool) -> Request {
+        Request { method: "GET".into(), target: "/".into(), range: None, cookie: None, keep }
+    }
+
+    /// A file of a megabyte served through a 1 KiB pipe: the file is read at most a chunk ahead of the client.
+    async fn big_file() -> (std::path::PathBuf, tokio::fs::File) {
+        let path = std::env::temp_dir().join(format!("sot-keep-test-{}", sot_updater::unique::suffix()));
+        std::fs::write(&path, vec![7u8; 1 << 20]).unwrap();
+        let file = tokio::fs::File::open(&path).await.unwrap();
+        (path, file)
+    }
+
+    /// Read from `client` up to the end of the reply's head.
+    async fn read_head(client: &mut tokio::io::DuplexStream) {
+        let mut head = Vec::new();
+        let mut b = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            assert_eq!(client.read(&mut b).await.unwrap(), 1);
+            head.push(b[0]);
+        }
+    }
+
+    /// A reply kept open is whole; one that could not be sent whole (the file shrank, the client left) ends the
+    /// connection, since the client would read the next reply as the rest of its body.
+    #[tokio::test]
+    async fn a_reply_keeps_its_connection_only_when_sent_whole() {
+        let timeout = Duration::from_secs(10);
+        // Whole.
+        let (path, file) = big_file().await;
+        let (mut client, mut server) = duplex(1024);
+        let sent = tokio::spawn(async move { serve_file(&mut server, &get(true), file, "text/plain", "").await.unwrap() });
+        let mut raw = Vec::new();
+        tokio::time::timeout(timeout, async {
+            read_head(&mut client).await;
+            let mut body = vec![0; 1 << 20];
+            client.read_exact(&mut body).await.unwrap();
+            raw = body;
+        })
+        .await
+        .unwrap();
+        assert!(raw.iter().all(|&b| b == 7));
+        assert!(tokio::time::timeout(timeout, sent).await.unwrap().unwrap(), "a whole reply keeps the connection");
+        // Short: the file shrinks after its head is sent.
+        let (shrinking, file) = big_file().await;
+        let (mut client, mut server) = duplex(1024);
+        let sent = tokio::spawn(async move { serve_file(&mut server, &get(true), file, "text/plain", "").await.unwrap() });
+        read_head(&mut client).await;
+        std::fs::write(&shrinking, b"").unwrap();
+        let mut rest = Vec::new();
+        tokio::time::timeout(timeout, client.read_to_end(&mut rest)).await.unwrap().unwrap();
+        assert!(!tokio::time::timeout(timeout, sent).await.unwrap().unwrap(), "a short reply closes the connection");
+        // Failed: the client leaves after the head.
+        let (failing, file) = big_file().await;
+        let (mut client, mut server) = duplex(1024);
+        let sent = tokio::spawn(async move { serve_file(&mut server, &get(true), file, "text/plain", "").await.unwrap() });
+        read_head(&mut client).await;
+        drop(client);
+        assert!(!tokio::time::timeout(timeout, sent).await.unwrap().unwrap(), "a failed reply closes the connection");
+        for path in [path, shrinking, failing] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// The bound is one deadline for a whole head: one sent a line every 10 s is closed 30 s after the wait began,
+    /// not 30 s after its last byte.
+    #[tokio::test(start_paused = true)]
+    async fn a_head_dripped_past_the_bound_is_closed_at_the_bound() {
+        let (mut client, mut server) = duplex(64 * 1024);
+        tokio::spawn(async move {
+            let _ = client.write_all(b"GET / HTTP/1.1\r\n").await;
+            for i in 0u32.. {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                if client.write_all(format!("X-Drip-{i}: y\r\n").as_bytes()).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let start = tokio::time::Instant::now();
+        assert!(read_request(&mut server, &mut Vec::new()).await.unwrap().is_none());
+        let waited = start.elapsed();
+        assert!(waited >= IDLE_BOUND && waited < IDLE_BOUND + Duration::from_secs(5), "closed after {waited:?}");
     }
 }
