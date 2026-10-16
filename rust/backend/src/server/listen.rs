@@ -704,17 +704,18 @@ mod tests {
             .expect("start the peer child");
         let pid = child.id();
         let accepted = tokio::time::timeout(std::time::Duration::from_secs(20), listener.accept()).await;
-        let denied = sot_log::identity::challenge::process_created(pid);
+        // Both reads run as the daemon's token would: no privilege, so none of the runner's reaches the child.
+        let denied = without_privileges(|| sot_log::identity::challenge::process_created(pid));
         let mut held = None;
         let process = match accepted {
-            Ok(Ok(stream)) => {
+            Ok(Ok(stream)) => without_privileges(|| {
                 let mut process = None;
                 dispatch_admitted(stream, admit_peer, |stream, given| {
                     process = Some(format!("{given:?}"));
                     held = Some(stream);
                 });
                 Some(process)
-            }
+            }),
             _ => None,
         };
         drop(listener);
@@ -1054,88 +1055,102 @@ mod tests {
 
         drop(listener);
     }
+    /// A token handle closed on drop.
+    #[cfg(windows)]
+    struct Token(windows_sys::Win32::Foundation::HANDLE);
+    #[cfg(windows)]
+    impl Drop for Token {
+        fn drop(&mut self) {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.0);
+            }
+        }
+    }
+
+    /// Ends the impersonation of the thread that made it, on drop.
+    #[cfg(windows)]
+    struct Restore;
+    #[cfg(windows)]
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            assert_ne!(
+                unsafe { windows_sys::Win32::Security::RevertToSelf() },
+                0,
+                "restore test-owned token"
+            );
+        }
+    }
+
+    /// This thread, impersonating a restricted copy of this process's token until the guard drops. `flags` go to
+    /// `CreateRestrictedToken`; `world_only` adds the Everyone SID as the one restricting SID.
+    #[cfg(windows)]
+    fn impersonate_restricted(flags: u32, world_only: bool) -> Restore {
+        use windows_sys::Win32::Security::{
+            CreateRestrictedToken, CreateWellKnownSid, ImpersonateLoggedOnUser, WinWorldSid, SID_AND_ATTRIBUTES,
+            TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        let mut original = Token(std::ptr::null_mut());
+        assert_ne!(
+            unsafe {
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY,
+                    &mut original.0,
+                )
+            },
+            0,
+            "open test-owned token"
+        );
+        let mut sid = [0u32; 17];
+        let mut bytes = std::mem::size_of_val(&sid) as u32;
+        assert_ne!(
+            unsafe { CreateWellKnownSid(WinWorldSid, std::ptr::null_mut(), sid.as_mut_ptr().cast(), &mut bytes) },
+            0,
+            "create restricted access SID"
+        );
+        let restriction = SID_AND_ATTRIBUTES { Sid: sid.as_mut_ptr().cast(), Attributes: 0 };
+        let mut restricted = Token(std::ptr::null_mut());
+        assert_ne!(
+            unsafe {
+                CreateRestrictedToken(
+                    original.0,
+                    flags,
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    u32::from(world_only),
+                    if world_only { &restriction } else { std::ptr::null() },
+                    &mut restricted.0,
+                )
+            },
+            0,
+            "create restricted test token"
+        );
+        assert_ne!(
+            unsafe { ImpersonateLoggedOnUser(restricted.0) },
+            0,
+            "impersonate restricted test token"
+        );
+        Restore
+    }
+
+    /// Runs `read` on this thread under a copy of its token with every privilege removed, as the daemon's filtered
+    /// token has none, whatever the runner holds (an administrator's ssh session holds SeDebugPrivilege, which
+    /// ignores a process object's DACL). `read` is synchronous: impersonation never crosses an await.
+    #[cfg(windows)]
+    fn without_privileges<R>(read: impl FnOnce() -> R) -> R {
+        use windows_sys::Win32::Security::DISABLE_MAX_PRIVILEGE;
+        let _restore = impersonate_restricted(DISABLE_MAX_PRIVILEGE, false);
+        read()
+    }
+
     #[cfg(windows)]
     /// Native access check on a synchronous test-owned client thread; impersonation never crosses an await.
     fn restricted_open_denied(path: String) -> std::io::Error {
         std::thread::spawn(move || {
-            use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-            use windows_sys::Win32::Security::{
-                CreateRestrictedToken, CreateWellKnownSid, ImpersonateLoggedOnUser, RevertToSelf,
-                WinWorldSid, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
-            };
-            use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-            struct Token(HANDLE);
-            impl Drop for Token {
-                fn drop(&mut self) {
-                    unsafe {
-                        CloseHandle(self.0);
-                    }
-                }
-            }
-            struct Restore;
-            impl Drop for Restore {
-                fn drop(&mut self) {
-                    assert_ne!(
-                        unsafe { RevertToSelf() },
-                        0,
-                        "restore test-owned client token"
-                    );
-                }
-            }
-            let mut original = Token(std::ptr::null_mut());
-            assert_ne!(
-                unsafe {
-                    OpenProcessToken(
-                        GetCurrentProcess(),
-                        TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY,
-                        &mut original.0,
-                    )
-                },
-                0,
-                "open test-owned token"
-            );
-            let mut sid = [0u32; 17];
-            let mut bytes = std::mem::size_of_val(&sid) as u32;
-            assert_ne!(
-                unsafe {
-                    CreateWellKnownSid(
-                        WinWorldSid,
-                        std::ptr::null_mut(),
-                        sid.as_mut_ptr().cast(),
-                        &mut bytes,
-                    )
-                },
-                0,
-                "create restricted access SID"
-            );
-            let restriction = SID_AND_ATTRIBUTES {
-                Sid: sid.as_mut_ptr().cast(),
-                Attributes: 0,
-            };
-            let mut restricted = Token(std::ptr::null_mut());
-            assert_ne!(
-                unsafe {
-                    CreateRestrictedToken(
-                        original.0,
-                        0,
-                        0,
-                        std::ptr::null(),
-                        0,
-                        std::ptr::null(),
-                        1,
-                        &restriction,
-                        &mut restricted.0,
-                    )
-                },
-                0,
-                "create restricted test token"
-            );
-            assert_ne!(
-                unsafe { ImpersonateLoggedOnUser(restricted.0) },
-                0,
-                "impersonate restricted test token"
-            );
-            let _restore = Restore;
+            let _restore = impersonate_restricted(0, true);
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 match std::fs::OpenOptions::new()
