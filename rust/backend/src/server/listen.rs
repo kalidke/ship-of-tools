@@ -326,19 +326,25 @@ pub(super) async fn run_local(
 /// goes to its handler with the peer's process, if the OS gave it (`admit_peer`).
 fn dispatch_admitted(
     stream: LocalStream,
-    observe: impl FnOnce(&LocalStream) -> Option<Option<PeerAuthenticated>>,
+    observe: impl FnOnce(&LocalStream) -> Option<Admitted>,
     handle: impl FnOnce(LocalStream, Option<PeerAuthenticated>),
 ) -> bool {
     // Admission one: a connection whose account, as the OS recorded it at the connect, is another's, or that the
     // OS cannot read, is dropped before a byte is read.
-    let Some(process) = observe(&stream) else {
+    let Some(admitted) = observe(&stream) else {
         tracing::warn!(
             "refused a connection: the account the OS recorded for it is not this one, or could not be read"
         );
         return false;
     };
-    handle(stream, process);
+    handle(stream, admitted.process);
     true
+}
+
+/// A connection admission one let in: the peer's process if the OS gave it, else `None`, and the connection holds no
+/// lease.
+pub(crate) struct Admitted {
+    pub(crate) process: Option<PeerAuthenticated>,
 }
 
 /// Whether the account behind a peer's effective uid is this process's own. A peer whose uid the OS did not give
@@ -349,8 +355,8 @@ fn same_account(peer_euid: Option<u32>, own: u32) -> bool {
 }
 
 /// The admission every connection passes first, at accept and before a byte is read (ADR 0049 `## User
-/// isolation`): `None` when the connection's account is foreign or cannot be read, else the peer's process (its pid
-/// and creation time) if the OS gives it to this daemon. Linux and macOS admit a connection whose recorded effective
+/// isolation`): `None` when the connection's account is foreign or cannot be read, else `Admitted`, with the peer's
+/// process (its pid and creation time) if the OS gives it to this daemon. Linux and macOS admit a connection whose recorded effective
 /// uid is ours: `SO_PEERCRED` on Linux, and on macOS `challenge_macos::peer_euid_pid_created`, which reads it with
 /// `getpeereid` and the pid and pidversion with `LOCAL_PEERTOKEN`. On Windows the pipe's owner-only descriptor has
 /// already decided. Only a lease uses the process, and it is read apart from the account: on Windows its creation time
@@ -360,14 +366,14 @@ fn same_account(peer_euid: Option<u32>, own: u32) -> bool {
 /// observations.
 pub(crate) fn admit_peer(
     stream: &interprocess::local_socket::tokio::Stream,
-) -> Option<Option<PeerAuthenticated>> {
+) -> Option<Admitted> {
     admit_peer_observing(stream, |euid| euid)
 }
 
 fn admit_peer_observing(
     stream: &LocalStream,
     observed_account: impl FnOnce(Option<u32>) -> Option<u32>,
-) -> Option<Option<PeerAuthenticated>> {
+) -> Option<Admitted> {
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;
@@ -377,7 +383,7 @@ fn admit_peer_observing(
                 .ok()?;
         // SAFETY: geteuid has no preconditions and cannot fail.
         same_account(observed_account(Some(euid)), unsafe { libc::geteuid() })
-            .then_some(Some(PeerAuthenticated { pid, created }))
+            .then_some(Admitted { process: Some(PeerAuthenticated { pid, created }) })
     }
     #[cfg(any(target_os = "linux", windows))]
     {
@@ -398,7 +404,7 @@ fn admit_peer_observing(
             let created = sot_log::identity::challenge::process_created(pid).ok()?;
             Some(PeerAuthenticated { pid, created })
         });
-        Some(process)
+        Some(Admitted { process })
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
@@ -615,6 +621,7 @@ mod tests {
         let (stream, _client) = (accepted.expect("accept"), dialled.expect("dial"));
         let peer = admit_peer(&stream)
             .expect("this process is admitted")
+            .process
             .expect("with its process");
         assert_eq!(peer.pid, std::process::id());
         #[cfg(target_os = "macos")]
