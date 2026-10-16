@@ -40,6 +40,10 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
   `repl.execute` run shows in both, and so does a timed-out run's later output; a window that redials mid-eval (the
   same hello `instance`) is written the rest of its run under its own number, and its interrupt reaches the run; each
   hello reply names the window's runs still running (`repl_running`), never one that ended, the window away or not
+- `site_windows.rs`: pages; a window's pages over the wire against a real `sotd` (Unix): a page `docs.open` granted a
+  window serves on after the window redials (the same hello `instance`), another window's open takes none of it, a
+  reopen ends the page it replaces, a forgotten window's pages and a connection of no window's end, and a full pool
+  takes a port only from a window with no live connection
 - `unit_pin.rs`: topology; `sotd topology pin` and `refresh` write host pins into a scratch systemd folder, real systemd
   loads it in test mode (`systemd --test --user`) and `systemd-analyze --user condition` evaluates the attached
   conditions on this box; with no hosts.toml the claim pins the unit to this box and a pin without it changes

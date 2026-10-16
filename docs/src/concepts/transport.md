@@ -76,7 +76,7 @@ second, independent guess at how to reach it. Each of these connections
 starts with a `hello` whose role is `handoff` and carries its
 `lane.connect` or `proxy.connect` in the same write, so the hello costs no
 extra round trip.
-An SSH pane needs a supervisor login and a voyage login for its initial cold attach; a proxied browser connection uses one login. Cold attach may start a voyage login alongside its supervisor login as an optional optimization. Local endpoints park no SSH login. If spare creation fails or the parked login expires, the first voyage uses its ordinary gated fresh dial, so overlap is not guaranteed. After first voyage consumption, every later dial uses one login. Pre-voyage retries follow ADR 0045's retry exception. A page with several subresources served by the same remote daemon pays once per resource, not once per page. A port the daemon answers as not served (`bad_port`) is parked: its listener stays bound but closes each browser
+An SSH pane needs a supervisor login and a voyage login for its initial cold attach; a proxied browser connection uses one login. Cold attach may start a voyage login alongside its supervisor login as an optional optimization. Local endpoints park no SSH login. If spare creation fails or the parked login expires, the first voyage uses its ordinary gated fresh dial, so overlap is not guaranteed. After first voyage consumption, every later dial uses one login. Pre-voyage retries follow ADR 0045's retry exception. A page served by a remote daemon pays once per browser connection, not once per file: the daemon's page servers keep a connection for the next request, so a browser's few connections to a page carry all of its files, and a connection with no whole request head within 30 s of its wait's start is closed, as is one whose client takes more than 30 s to accept 64 KiB of a reply. A port the daemon answers as not served (`bad_port`) is parked: its listener stays bound but closes each browser
 connection at once, with no login and no log line, until a page on that port is opened again from the frontend. A
 tab left open on a dead page therefore stops costing a login per retry after the daemon's first refusal. The daemon
 logs a refused port once, until that port is served again. While the host's link is down, a browser connection
@@ -142,7 +142,13 @@ assigns, and opens the page's address with that port in place of the
 daemon's: the daemon's port number names a port on the daemon's computer,
 which on the frontend's computer may belong to anything, its own daemon
 included. Such a tab does not survive a restart of the frontend; open the
-page again. A page your own code serves (`wglshow`, `browserview`) or
+page again. It does survive the frontend's reconnects: a documentation page
+belongs to the window that opened it, not to one connection, so a dropped
+link or a computer that slept leaves it serving, until that window opens
+another page in its place, the daemon forgets the window (past 64 windows
+away, it forgets the one away longest), or, for a page on a port of its own (root-relative
+links), another window's open takes that port while this window is away. A restart of the daemon ends every
+page; open it again after one. A page your own code serves (`wglshow`, `browserview`) or
 `sot-fe open-url` names may name its own address, so it keeps the daemon's
 port number, and the frontend declines to open it when something on its
 computer already holds that number.

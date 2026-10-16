@@ -101,6 +101,8 @@ pub(super) struct Shared {
     /// The REPL runs this connection's window numbered itself, written to it under the window's numbers
     /// (`CallerNumbers`, kept by the roster across the window's connections).
     pub(super) repl_numbers: crate::sidecars::repl::numbers::CallerNumbers,
+    /// The owner of the pages this connection opens (`ClientGuard::site_owner`): its window's, kept across its redials.
+    pub(super) site_owner: u64,
 }
 
 /// Runs one request frame where [`place`] puts it: an inline op here, before the loop reads again, and any other as a
@@ -234,10 +236,10 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::PLUTO_OPEN => crate::sidecars::ops::handle_pluto_open(req_id, payload, session, pluto, workspaces).await,
         op::VIDEO_OPEN => crate::pages::ops::handle_video_open(req_id, payload, session).await,
         op::DOCS_OPEN => {
-            // Per-connection site root (ADR 0029): this connection's serial
-            // selects/owns its docs-map entry and becomes the URL's first path
-            // segment.
-            crate::pages::ops::handle_docs_open(req_id, payload, session, Some(shared.serial), workspaces).await
+            // A window's pages (ADR 0029): owned by the window, so its redials keep them, and a full pool may take a
+            // port only from a window the roster lists as away.
+            crate::pages::ops::handle_docs_open(req_id, payload, session, shared.site_owner, workspaces, clients)
+                .await
         }
         op::QUARTO_OPEN => crate::pages::ops::handle_quarto_open(req_id, payload, session).await,
         op::FILE_UPLOAD => crate::files::transfer::handle_file_upload(req_id, payload).await,

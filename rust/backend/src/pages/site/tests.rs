@@ -1,4 +1,5 @@
-//! Tests of the prefix and pool listeners: pool assignment, bind fallback, serving a prefix site.
+//! Tests of the prefix and pool listeners: pool assignment, bind fallback, serving a prefix site, and requests carried one
+//! after another on a kept connection.
 
 use super::*;
 
@@ -14,16 +15,18 @@ mod pool_tests {
     fn assign_reuse_exhaust_free() {
         reset();
         let base = site_port();
-        // Serials far outside anything other tests produce: clients.rs tests
-        // drop ClientGuards with small serials, and each drop calls
-        // remove_root(serial) — with colliding serials a parallel test run
+        // Owners far outside anything other tests produce: clients.rs tests
+        // drop ClientGuards whose owners are small serials, and a drop calls
+        // remove_root(owner) — with colliding owners a parallel test run
         // freed this test's pool entries mid-assert.
         const S: u64 = 9_000_000_001;
-        // Four distinct connections fill the pool in order.
-        let (p1, s1) = assign_pool_port(S + 1, Site::plain(PathBuf::from("/a"))).unwrap();
-        let (p2, s2) = assign_pool_port(S + 2, Site::plain(PathBuf::from("/b"))).unwrap();
-        let (p3, _s3) = assign_pool_port(S + 3, Site::plain(PathBuf::from("/c"))).unwrap();
-        let (p4, _s4) = assign_pool_port(S + 4, Site::plain(PathBuf::from("/d"))).unwrap();
+        // No owner is away unless a case says so.
+        let none = Vec::new;
+        // Four distinct owners fill the pool in order.
+        let (p1, s1) = assign_pool_port(S + 1, Site::plain(PathBuf::from("/a")), none).unwrap();
+        let (p2, s2) = assign_pool_port(S + 2, Site::plain(PathBuf::from("/b")), none).unwrap();
+        let (p3, s3) = assign_pool_port(S + 3, Site::plain(PathBuf::from("/c")), none).unwrap();
+        let (p4, _s4) = assign_pool_port(S + 4, Site::plain(PathBuf::from("/d")), none).unwrap();
         assert_eq!(
             vec![p1, p2, p3, p4],
             (base + 1..=base + POOL_SIZE).collect::<Vec<_>>()
@@ -34,7 +37,7 @@ mod pool_tests {
         // A re-open by an existing owner REPOINTS its port, not a new one,
         // and mints a FRESH secret — the old one (and any cookie it set)
         // stops working (security review).
-        let (p2_again, s2_again) = assign_pool_port(S + 2, Site::plain(PathBuf::from("/b2"))).unwrap();
+        let (p2_again, s2_again) = assign_pool_port(S + 2, Site::plain(PathBuf::from("/b2")), none).unwrap();
         assert_eq!(p2_again, p2);
         assert_ne!(s2_again, s2);
         assert!(s2_again.len() == 32 && s2_again.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
@@ -42,14 +45,20 @@ mod pool_tests {
             pool_entry_for(p2).map(|(r, _)| r.content_root.clone()),
             Some(PathBuf::from("/b2"))
         );
-        // Fifth connection: exhausted.
-        assert_eq!(assign_pool_port(S + 5, Site::plain(PathBuf::from("/e"))), None);
+        // Fifth owner: exhausted while no owner holding a port is away.
+        assert_eq!(assign_pool_port(S + 5, Site::plain(PathBuf::from("/e")), || vec![S + 9]), None);
         assert_eq!(pool_in_use(), 4);
-        // Disconnect frees exactly the owner's port; next claim gets it.
-        remove_root(S + 3);
-        assert_eq!(pool_in_use(), 3);
-        let (p5, _s5) = assign_pool_port(S + 5, Site::plain(PathBuf::from("/e"))).unwrap();
+        // A window away: the fifth takes the port of the first owner in the away list that holds one, with a new
+        // secret, so that window's old link is refused.
+        let (p5, s5) = assign_pool_port(S + 5, Site::plain(PathBuf::from("/e")), || vec![S + 9, S + 3, S + 1]).unwrap();
         assert_eq!(p5, p3);
+        assert_ne!(s5, s3);
+        assert_eq!(pool_entry_for(p3).map(|(r, s)| (r.content_root.clone(), s)), Some((PathBuf::from("/e"), s5)));
+        // An owner's end frees exactly its port; next claim gets it.
+        remove_root(S + 4);
+        assert_eq!(pool_in_use(), 3);
+        let (p6, _s6) = assign_pool_port(S + 6, Site::plain(PathBuf::from("/f")), none).unwrap();
+        assert_eq!(p6, p4);
         reset();
     }
 
@@ -250,5 +259,229 @@ mod prefix_serve_tests {
 
         remove_root(SERIAL);
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod persistent_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use tokio::io::{AsyncBufReadExt, BufReader, DuplexStream};
+
+    /// A page's files, as many as the deck that loaded only partly holds, each with bytes of its own.
+    const FILES: usize = 60;
+    /// The connections a browser opens to one origin at once (six in Chrome, Edge and Firefox).
+    const SLOTS: usize = 6;
+    /// The logins the stand-in gateway lets through before it refuses every later one. The field's gateway let eight
+    /// to thirteen through in a burst, then dropped new connections for half a minute.
+    const LIMIT: usize = 8;
+
+    fn file_bytes(i: usize) -> Vec<u8> {
+        vec![i as u8; 2048 + i]
+    }
+
+    /// One page login, as a remote window makes one for each browser connection (`pipe_one`): past `LIMIT` the
+    /// stand-in gateway refuses it; otherwise it carries the daemon's dial of the page port and its splice
+    /// (`pipe_bidirectional`, as `proxy.connect` runs it).
+    async fn login(logins: &AtomicUsize, port: u16) -> Option<BufReader<DuplexStream>> {
+        if logins.fetch_add(1, SeqCst) >= LIMIT {
+            return None;
+        }
+        let upstream = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
+        let (window, daemon) = tokio::io::duplex(64 * 1024);
+        let (rd, wr) = tokio::io::split(daemon);
+        tokio::spawn(crate::server::pipe::pipe_bidirectional(rd, wr, upstream, "page login"));
+        Some(BufReader::new(window))
+    }
+
+    /// GET `path` as a browser does: no `Connection: close`, the reply read to its length. The status, the body and
+    /// whether the connection stays open, or `None` when it ends before the whole reply.
+    async fn get(conn: &mut BufReader<DuplexStream>, path: &str) -> Option<(u16, Vec<u8>, bool)> {
+        let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        conn.get_mut().write_all(request.as_bytes()).await.ok()?;
+        let (mut status, mut length, mut keep) = (0, 0, true);
+        loop {
+            let mut line = Vec::new();
+            if conn.read_until(b'\n', &mut line).await.ok()? == 0 {
+                return None;
+            }
+            let line = String::from_utf8_lossy(&line).trim_end().to_string();
+            if line.is_empty() {
+                break;
+            }
+            if status == 0 {
+                status = line.split_whitespace().nth(1)?.parse().ok()?;
+                continue;
+            }
+            let (name, value) = line.split_once(':')?;
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().ok()?;
+            } else if name.eq_ignore_ascii_case("connection") && value.trim().eq_ignore_ascii_case("close") {
+                keep = false;
+            }
+        }
+        let mut body = vec![0; length];
+        conn.read_exact(&mut body).await.ok()?;
+        Some((status, body, keep))
+    }
+
+    /// One browser connection slot: it takes the page's next file until none is left, on the connection it holds while
+    /// the server keeps it open, else on a new login. A refused login is a missing figure; a browser does not retry it.
+    async fn slot(next: Arc<AtomicUsize>, logins: Arc<AtomicUsize>, port: u16, nonce: String) -> usize {
+        let (mut conn, mut loaded) = (None, 0);
+        loop {
+            let i = next.fetch_add(1, SeqCst);
+            if i >= FILES {
+                return loaded;
+            }
+            if conn.is_none() {
+                conn = login(&logins, port).await;
+            }
+            let Some(c) = conn.as_mut() else { continue };
+            match get(c, &format!("/{nonce}/figs/f{i:02}.png")).await {
+                Some((200, body, keep)) if body == file_bytes(i) => {
+                    loaded += 1;
+                    if !keep {
+                        conn = None;
+                    }
+                }
+                _ => conn = None,
+            }
+        }
+    }
+
+    /// PAGE-PROXY-PARTIAL: a remote window makes one ssh login per browser connection, so a page costs a login per
+    /// connection only while a connection carries one request after another. Sixty files through a browser's six
+    /// connections, past a gateway that refuses every login after the eighth, all load.
+    #[tokio::test]
+    async fn a_page_of_sixty_files_loads_through_six_logins() {
+        let root = std::env::temp_dir().join(format!("sot-site-persistent-test-{}", sot_updater::unique::suffix()));
+        std::fs::create_dir_all(root.join("figs")).unwrap();
+        for i in 0..FILES {
+            std::fs::write(root.join(format!("figs/f{i:02}.png")), file_bytes(i)).unwrap();
+        }
+        // Far outside the serials the other tests in this folder use.
+        const SERIAL: u64 = 8_000_000_002;
+        let nonce = set_root(SERIAL, Site::plain(root.clone())).expect("set_root");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _ = handle_conn(stream, ServeMode::Prefix).await;
+                });
+            }
+        });
+        let (next, logins) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let slots: Vec<_> = (0..SLOTS)
+            .map(|_| tokio::spawn(slot(next.clone(), logins.clone(), port, nonce.clone())))
+            .collect();
+        let mut loaded = 0;
+        for s in slots {
+            loaded += tokio::time::timeout(Duration::from_secs(30), s).await.expect("a browser slot within 30 s").unwrap();
+        }
+        remove_root(SERIAL);
+        let _ = std::fs::remove_dir_all(&root);
+        let logins = logins.load(SeqCst);
+        println!("a page of {FILES} files through {SLOTS} browser connections: {loaded} loaded, {logins} logins (the gateway refuses past {LIMIT})");
+        assert!(loaded == FILES && logins <= SLOTS, "the page loaded only partly: {loaded} of {FILES} files, {logins} logins");
+    }
+}
+
+#[cfg(test)]
+mod kept_connection_tests {
+    use super::*;
+
+    async fn listen(mode: ServeMode) -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _ = handle_conn(stream, mode).await;
+                });
+            }
+        });
+        port
+    }
+
+    fn root_with(tag: &str, body: &[u8]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("sot-site-kept-test-{tag}-{}", sot_updater::unique::suffix()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), body).unwrap();
+        root
+    }
+
+    /// One request on a kept connection, its reply read to its length: the status.
+    async fn one(s: &mut TcpStream, req: &str) -> u16 {
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut head = Vec::new();
+        let mut b = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            assert_eq!(s.read(&mut b).await.unwrap(), 1, "closed mid-head");
+            head.push(b[0]);
+        }
+        let head = String::from_utf8_lossy(&head).into_owned();
+        let len: usize = head.lines().find_map(|l| l.strip_prefix("Content-Length: ")).unwrap().trim().parse().unwrap();
+        let mut body = vec![0; len];
+        s.read_exact(&mut body).await.unwrap();
+        head.split_whitespace().nth(1).unwrap().parse().unwrap()
+    }
+
+    /// ADR 0029: nothing but the mode and the read buffer crosses requests, so a nonce, a secret or a cookie that
+    /// stopped being valid is refused on a connection that served it a moment before.
+    #[tokio::test]
+    async fn a_kept_connection_checks_every_request_on_its_own() {
+        let root = root_with("reauth", b"one");
+        const OWNER: u64 = 8_000_000_012;
+        let n1 = set_root(OWNER, Site::plain(root.clone())).unwrap();
+        let port = listen(ServeMode::Prefix).await;
+        let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let a = one(&mut s, &format!("GET /{n1}/a.txt HTTP/1.1\r\n\r\n")).await;
+        let n2 = set_root(OWNER, Site::plain(root.clone())).unwrap();
+        let b = one(&mut s, &format!("GET /{n1}/a.txt HTTP/1.1\r\n\r\n")).await;
+        let c = one(&mut s, &format!("GET /{n2}/a.txt HTTP/1.1\r\n\r\n")).await;
+        assert_eq!((a, b, c), (200, 404, 200));
+        remove_root(OWNER);
+        // Pool: the old secret's cookie on the same kept connection is refused after a reopen.
+        const POWNER: u64 = 8_000_000_013;
+        let (pport, s1) = assign_pool_port(POWNER, Site::plain(root.clone()), Vec::new).unwrap();
+        let lport = listen(ServeMode::Pool(pport)).await;
+        let mut s = TcpStream::connect(("127.0.0.1", lport)).await.unwrap();
+        let name = pool_cookie_name(pool_cookie_host(), pport);
+        let a = one(&mut s, &format!("GET /a.txt?secret={s1} HTTP/1.1\r\n\r\n")).await;
+        let b = one(&mut s, &format!("GET /a.txt HTTP/1.1\r\nCookie: {name}={s1}\r\n\r\n")).await;
+        let (_, s2) = assign_pool_port(POWNER, Site::plain(root.clone()), Vec::new).unwrap();
+        let c = one(&mut s, &format!("GET /a.txt HTTP/1.1\r\nCookie: {name}={s1}\r\n\r\n")).await;
+        let d = one(&mut s, &format!("GET /a.txt HTTP/1.1\r\nCookie: {name}={s2}\r\n\r\n")).await;
+        assert_eq!((a, b, c, d), (200, 200, 403, 200));
+        // And a request with neither secret nor cookie, after ones that carried them.
+        assert_eq!(one(&mut s, "GET /a.txt HTTP/1.1\r\n\r\n").await, 403);
+        remove_root(POWNER);
+        // Video: the grant token is looked up on each request of a kept connection, so a wrong or missing one is
+        // refused between two valid ones.
+        let movie = root.join("clip.mp4");
+        std::fs::write(&movie, b"movie").unwrap();
+        let token = crate::pages::video::register_video(movie).unwrap();
+        let vport = {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let _ = crate::pages::video::handle_conn(stream).await;
+                    });
+                }
+            });
+            port
+        };
+        let mut s = TcpStream::connect(("127.0.0.1", vport)).await.unwrap();
+        let a = one(&mut s, &format!("GET /{token} HTTP/1.1\r\n\r\n")).await;
+        let b = one(&mut s, "GET /not-a-grant HTTP/1.1\r\n\r\n").await;
+        let c = one(&mut s, "GET / HTTP/1.1\r\n\r\n").await;
+        let d = one(&mut s, &format!("GET /{token} HTTP/1.1\r\n\r\n")).await;
+        assert_eq!((a, b, c, d), (200, 404, 404, 200));
+        remove_root(POWNER);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

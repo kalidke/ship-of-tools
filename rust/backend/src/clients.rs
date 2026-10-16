@@ -15,8 +15,9 @@
 // teardown call. Registration is keyed by a per-connection serial, not by
 // `client_id`, so a machine that reconnects (same `client_id`, new socket)
 // is a distinct entry until its old connection task winds down. What a window
-// carries across its connections (the REPL runs it numbered, its presence and
-// its shown row) is kept by window, not by connection (`clients_window.rs`).
+// carries across its connections (the REPL runs it numbered, its presence, its
+// shown row and the pages it opened) is kept by window, not by connection
+// (`clients_window.rs`).
 //
 // The registry is intentionally minimal: a count + a roster for logging
 // and the `clients_connected` field in `HelloRes`. Write policy (single-
@@ -237,11 +238,11 @@ impl Clients {
             sessions: None,
             shown_row: None,
         };
-        let (count, roster, numbers) = {
+        let (count, roster, (numbers, sites)) = {
             let mut g = self.inner.lock().unwrap();
-            let numbers = g.arrive(&mut info);
+            let arrived = g.arrive(&mut info);
             g.by_conn.insert(serial, info.clone());
-            (g.by_conn.len(), distinct_client_ids(&g.by_conn), numbers)
+            (g.by_conn.len(), distinct_client_ids(&g.by_conn), arrived)
         };
         tracing::info!(
             client_id = %info.client_id,
@@ -258,6 +259,7 @@ impl Clients {
             serial,
             client_id: info.client_id,
             numbers,
+            sites,
         }
     }
 
@@ -416,14 +418,20 @@ pub struct ClientGuard {
     client_id: String,
     /// The REPL runs this connection's window numbered itself (`clients_window.rs`).
     numbers: crate::sidecars::repl::numbers::CallerNumbers,
+    /// The owner of the pages this connection opens (`site_owner`).
+    sites: u64,
 }
 
 impl ClientGuard {
-    /// This connection's per-connection serial — the key the `docs.open` site
-    /// map uses (ADR 0029). Threaded into `handle_docs_open` so the returned URL
-    /// carries it, and used by `Drop` below to reap the entry on disconnect.
+    /// This connection's per-connection serial, its key in the roster.
     pub fn serial(&self) -> u64 {
         self.serial
+    }
+
+    /// The owner of the pages this connection opens (`docs.open`'s sites, ADR 0029): its window's, shared by each
+    /// connection of the window, a redial's included (`clients_window.rs`); a connection of no window owns its own.
+    pub fn site_owner(&self) -> u64 {
+        self.sites
     }
 
     /// This connection's own `hello` `client_id` — ADR 0042 amendment
@@ -443,9 +451,10 @@ impl ClientGuard {
 
 impl Drop for ClientGuard {
     fn drop(&mut self) {
-        let (count, roster) = {
+        let (count, roster, ended) = {
             let mut g = self.inner.lock().unwrap();
             let departed = g.by_conn.remove(&self.serial);
+            let mut ended = None;
             // Session-listing brief decision 2 (final, no-heartbeat
             // form): a box goes into `disconnected` ONLY if it had
             // declared at least once (`sessions: Some(_)`) — a
@@ -456,7 +465,7 @@ impl Drop for ClientGuard {
             // `by_conn` borrow, so touching `disconnected` next is a
             // second, disjoint mutation of `g`, not a re-borrow.
             if let Some(info) = departed {
-                g.leave(&info);
+                ended = g.leave(&info);
                 if info.sessions.is_some() {
                     if let Some(name) = info.name {
                         if !name.is_empty() {
@@ -465,13 +474,13 @@ impl Drop for ClientGuard {
                     }
                 }
             }
-            (g.by_conn.len(), distinct_client_ids(&g.by_conn))
+            (g.by_conn.len(), distinct_client_ids(&g.by_conn), ended)
         };
-        // Reap this connection's docs.open site root (ADR 0029). The map is keyed
-        // by serial, so this drops exactly the departing connection's entry — the
-        // only cleanup site needed (the ADR-0027 reaper guarantees we reach Drop
-        // even for half-open / hung peers, so this inherits its coverage).
-        crate::pages::site::remove_root(self.serial);
+        // The pages that end with this departure (ADR 0029): a connection of no window's own, or those of a window the
+        // roster forgot. Reaped after the roster's lock is released: `assign_pool_port` takes it under the pool's.
+        if let Some(owner) = ended {
+            crate::pages::site::remove_root(owner);
+        }
         tracing::info!(
             client_id = %self.client_id,
             connections = count,
