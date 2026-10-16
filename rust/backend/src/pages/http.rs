@@ -1,5 +1,6 @@
 //! The request and response code both loopback servers share: request heads and persistent connections, content
-//! types, single ranges, file bodies, plain replies.
+//! types, single ranges, file bodies, plain replies. A connection is bounded on both sides: no whole request head within
+//! `IDLE_BOUND`, or a reply write the client takes none of within `WRITE_BOUND`, closes it.
 
 use std::path::Path;
 
