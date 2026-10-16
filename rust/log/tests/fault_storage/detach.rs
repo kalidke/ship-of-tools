@@ -3,6 +3,7 @@
 //! refused eject can come after the unmount succeeded, when the mount path no longer names the image. The policy
 //! takes its commands and clock as arguments, so the Linux build runs its test.
 
+use std::process::{Command, ExitStatus, Stdio};
 use std::time::Duration;
 
 /// The longest after the first try that a new try may start, and the wait between tries. A try already running is
@@ -27,6 +28,22 @@ pub fn attached_device(attach_output: &str) -> Option<String> {
 pub fn lists_device(info: &str, device: &str) -> bool {
     info.lines()
         .any(|line| line.split_whitespace().next() == Some(device))
+}
+
+/// A diagnostic command's exit and output, or why it has none: a command that cannot start or overruns `bound` is
+/// text for the log, never a panic, because a diagnostic must not replace the refusal it explains.
+pub fn run_diagnostic(
+    mut command: Command,
+    bound: Duration,
+) -> Result<(ExitStatus, String, String), String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = command
+        .spawn()
+        .map_err(|error| format!("could not start: {error}"))?;
+    sot_log::test_isolated::drain(child).try_wait_within(bound)
 }
 
 /// Detach `device` until `hdiutil info` no longer lists it. Each refusal logs its report and the holders, whatever the
@@ -78,6 +95,19 @@ mod tests {
             ok: false,
             report: format!("command status=exit status: 16 code=Some(16)\ncommand stderr:\n{REFUSAL}"),
         }
+    }
+
+    #[test]
+    fn a_diagnostic_that_cannot_run_or_overruns_is_text_not_a_panic() {
+        let mut quick = Command::new("echo");
+        quick.arg("holder");
+        let (status, out, _) = run_diagnostic(quick, Duration::from_secs(20)).unwrap();
+        assert!(status.success() && out.contains("holder"));
+        let missing = Command::new("/nonexistent/lsof");
+        assert!(run_diagnostic(missing, Duration::from_secs(1)).unwrap_err().contains("could not start"));
+        let mut slow = Command::new("sleep");
+        slow.arg("30");
+        assert!(run_diagnostic(slow, Duration::from_millis(200)).is_err());
     }
 
     #[test]

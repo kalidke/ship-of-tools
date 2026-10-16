@@ -249,17 +249,19 @@ impl NativeVolume {
                 || {
                     let mut command = Command::new("hdiutil");
                     command.arg("info");
-                    detach::lists_device(&bounded(command, 60, &[]).combined(), &device)
+                    // An info that cannot be read leaves the image counted as attached.
+                    detach::run_diagnostic(command, Duration::from_secs(60))
+                        .map_or(true, |(_, out, _)| detach::lists_device(&out, &device))
                 },
                 || {
                     let rdevice = device.replacen("/dev/", "/dev/r", 1);
                     let mut command = Command::new("lsof");
                     command.arg(&device).arg(rdevice);
-                    let mut listing = bounded(command, 20, &[]).diagnostic("lsof device");
+                    let mut listing = diagnostic_text(command, "lsof device");
                     if mount_is_up(&self.mount, self.dir.as_ref().unwrap().path()) {
                         let mut command = Command::new("lsof");
                         command.arg("+D").arg(&self.mount);
-                        listing.push_str(&bounded(command, 20, &[]).diagnostic("lsof mount"));
+                        listing.push_str(&diagnostic_text(command, "lsof mount"));
                     }
                     listing
                 },
@@ -524,6 +526,16 @@ impl Drop for NativeVolume {
             eprintln!("L3 HARNESS FAILURE: attached image retained for fixture owner");
         }
     }
+}
+
+/// A diagnostic command's report for the log: its output, or why it has none (an overrun is logged and skipped).
+#[cfg(target_os = "macos")]
+fn diagnostic_text(command: Command, label: &str) -> String {
+    let text = match detach::run_diagnostic(command, Duration::from_secs(20)) {
+        Ok((status, out, err)) => format!("{label} status={status}\n{out}{err}\n"),
+        Err(why) => format!("{label} skipped: {why}\n"),
+    };
+    scrub(&text)
 }
 
 /// Whether `mount` still holds a volume of its own, not the folder it was made in under `parent`.
