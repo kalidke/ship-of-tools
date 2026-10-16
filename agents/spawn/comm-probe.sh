@@ -262,22 +262,6 @@ probe_status() {
 
 # --- serve -------------------------------------------------------------------
 
-# probe_self_handle — the handle of the row this process is running IN, asked of
-# the daemon rather than guessed. $SOT_COMM_NAME wins: the capsule pins it to the
-# row's `agent_name` (agents/env.rs `capsule_supervisor_env`), and the tests pin
-# their own. Otherwise the row's declared `agent_handle`, or, before its first
-# join (which this responder makes next), the `agent_name` it was created with;
-# there is no third guess: a responder that cannot name itself must not run.
-probe_self_handle() {
-    if [ -n "${SOT_COMM_NAME:-}" ]; then printf '%s\n' "$SOT_COMM_NAME"; return 0; fi
-    local wsid list
-    wsid="$(sot_capsule_workspace_id)" || return 1
-    list="$(probe_request '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)" || return 1
-    printf '%s' "$list" | sot_jq -r --arg w "$wsid" \
-        '[(.payload.workspaces // [])[]? | select(.workspace_id == $w)
-          | if (.agent_handle // "") != "" then .agent_handle else .agent_name end][0] // empty' 2>/dev/null
-}
-
 # probe_inbox_stamp — a cheap size of the per-handle inbox file. Only a CHANGE
 # here makes the loop spend a comm-poll.sh; equality is the common case and
 # costs one stat.
@@ -337,7 +321,11 @@ probe_handle_line() {
 
 probe_serve() {
     local me line rc stamp last_stamp polled
-    me="$(probe_self_handle)" || probe_die "cannot resolve this row's handle — run \`up\` from a session on this box first"
+    # The capsule pins SOT_COMM_NAME to the row's agent_name (agents/env.rs
+    # `capsule_supervisor_env`), and every probe row has one: a responder that
+    # cannot name itself must not run.
+    me="${SOT_COMM_NAME:-}"
+    [ -n "$me" ] || probe_die "cannot resolve this row's handle: SOT_COMM_NAME is unset (run \`serve\` only in a probe row)"
     probe_handle_ok "$me" || probe_die "refusing to serve as '@$me' — probe rows only"
     export SOT_COMM_NAME="$me"
     # The join happens HERE, inside the row, and never in `up`: comm-join.sh
