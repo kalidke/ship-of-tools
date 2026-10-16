@@ -97,6 +97,12 @@
 # `sotd.exe` as a mapped image while it runs, so if the daemon is up, ITS
 # binary is still resolvable at its original location.
 #
+# A daemon that already answers is kept only when it runs the resolved
+# binary's version (`sotd same-version`; exit 3 is another): an apply renames a
+# mapped sotd.exe aside, so the process goes on running the old build while
+# sotd.exe on disk is the new one. A daemon of another version is ended by
+# this script's own -Stop (wait, kill, confirm down) and then started anew.
+#
 # Spawn hygiene: every start redirects stdout/stderr to files of its own,
 # <prefix>\logs\sotd-local.{stdout,stderr}.<yyyyMMdd-HHmmss-fff>Z-<pid>.log
 # (UTC start time to the millisecond, then this launcher's pid), so among
@@ -449,8 +455,21 @@ if ($Stop) {
 # ---- ensure-started (default mode) ------------------------------------------
 
 if (Test-SotPipeOpen $PipeName) {
-    Write-LocalDaemonLog "already running on $PipePath"
-    exit 0
+    # The pipe answering says only that some daemon is there. One an update left running on the old binary (an apply
+    # renames a mapped sotd.exe aside and installs the new one beside it) is replaced, the way -Stop ends a daemon:
+    # `sotd same-version` exits 3 and prints its version when the daemon runs another than $daemonExe, and any other
+    # exit (a sotd.exe that predates the command, a daemon that does not say) keeps it.
+    $theirs = @(& $daemonExe same-version --endpoint "pipe:$PipePath" 2>$null)
+    if ($LASTEXITCODE -ne 3) {
+        Write-LocalDaemonLog "already running on $PipePath"
+        exit 0
+    }
+    Write-LocalDaemonLog "the daemon on $PipePath runs $($theirs -join ' '), another version than $daemonExe - replacing it"
+    & $PSCommandPath -Stop -Prefix $Prefix -DevBinDir $DevBinDir -PipeName $PipeName
+    if ($LASTEXITCODE -ne 0) {
+        Write-LocalDaemonLog "REFUSED: the daemon of another version on $PipePath did not stop"
+        exit 1
+    }
 }
 
 if (-not $daemonExe) {
