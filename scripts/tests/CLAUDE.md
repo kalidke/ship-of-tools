@@ -280,12 +280,18 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   job's 1200, since it took 963 s inside a whole gate and 1035 s alone, on a shared test host. Two parts go unchecked
   there: no user manager answers in the gate's container, so `a_service_manager_counts_int_and_term_as_a_clean_stop`
   prints `SKIPPED` and passes (it runs by name under `--user-manager`, `rust/backend/tests/CLAUDE.md`), and where the
-  jobs' PATH (cargo, node, /usr/bin, /bin) holds no `quarto`, the done test's Quarto half prints NOT CHECKED (the hosted
+  jobs' PATH (cargo, julia, node, /usr/bin, /bin) holds no `quarto`, the done test's Quarto half prints NOT CHECKED (the hosted
   job checks it). A failed build leaves the job's result `unrun`, a failure.
 - `rc-gate.sh` needs `node` on its PATH, as it needs `julia`, and gives its jobs node alone, through a link in `<logdir>/bin`, and `npm ci` done in `rust/backend/sidecars/mathjax` (the
   sotd contract tests and test-agent-layers use them); it refuses, exit 2, rather than install into the checkout it
   judges. It needs `Xvfb` in `/usr/bin` or `/bin`, its jobs' PATH, since the sotd sidecar tests start it, and refuses,
   exit 2, without it. A Rust test binary's stderr goes to `<key>.stderr` beside its log, so the body check reads stdout only.
+- `rc-gate.sh`'s julia is the binary the runner's `julia` starts, asked once under the runner's HOME, so a juliaup
+  launcher names its installation (on a job's PATH a launcher would install a Julia under each HOME a test makes);
+  summary.txt's third line names it, and the gate refuses, exit 2, when `julia` starts none. The Julia suites and the
+  lifetime harness run it, and the Rust jobs get its folder on their PATH, as rust.yml's test jobs get setup-julia's:
+  a test daemon is handed it (`support::julia_binary`), so `daemon_boot`'s environment test and `support_checks` check
+  that Julia, and `preview_order`'s daemon starts its kernel on it.
 
 - Trust tests execute the real declaration owner and installer entry; emitted-byte assertions and native exit-status
   observations establish behavior, never source membership or statement offsets.
