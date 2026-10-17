@@ -18,7 +18,7 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
 - `src/session.rs`: the revision counter and the bounded event ring a reconnecting client replays from (`Session::bump`)
 - `src/paths.rs`: the platform helpers: state and socket paths, `resource_dir`, the private-directory checks
 - `src/durable.rs`: the one fsynced write and delete for the records a later start acts on
-- `src/update.rs`: the daemon's half of the updater: when to check, whom to notify, `UpdaterSpawner` over the child signal, `update.check` and `update.apply`
+- `src/update.rs`: the daemon's half of the updater: when to check, whom to notify, `UpdaterSpawner` over the child signal, `update.check` and `update.apply`, and `sotd update stage <folder> --prefix <prefix>`, the operator's stage-prepare-arm of a packed folder
 - `src/agents/`: accounts, folder trust, the awareness env and the launch recipe (agents)
 - `src/comm/`: the daemon's half of messaging: delivery, the registry and the wake (messaging)
 - `src/files/`: workspace file reads, writes, previews, confinement and the watcher (files)

@@ -158,6 +158,9 @@ const SOTD_HELP: &str = r#"Usage: sotd [OPTIONS]
 Offline command (returns before daemon initialization):
   trust declare <absolute-prefix>
                           declare folder trust in user-level settings
+  update stage <folder> --prefix <prefix>
+                          stage, prepare and arm a packed build for the
+                          install at <prefix> (its converge applies it)
 
 Pure queries (no startup side effects, answered before any of the above):
   --version, -V           print the version line and exit
@@ -203,6 +206,7 @@ fn help_for(args: &[String]) -> Option<&'static str> {
         "stdio-bridge" => topology::stdio_bridge::USAGE,
         "same-version" => topology::same_version::USAGE,
         "ancestors" => comm::registry::ancestors::USAGE,
+        "update" => update::USAGE,
         _ => SOTD_HELP,
     })
 }
@@ -231,6 +235,9 @@ mod help_tests {
             ("stdio-bridge --endpoint unix:/x --help", topology::stdio_bridge::USAGE),
             ("status --help", topology::status::USAGE),
             ("same-version --endpoint unix:/x --help", topology::same_version::USAGE),
+            ("update --help", update::USAGE),
+            ("update stage --help", update::USAGE),
+            ("update stage d --prefix p --help", update::USAGE),
             ("topology --help", topology::cli::USAGE),
             ("topology plan --help", topology::cli::USAGE),
             ("topology status --help", topology::cli::USAGE),
@@ -362,6 +369,11 @@ fn main() -> Result<()> {
             "status" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
                 lifecycle::shutdown::exit(runtime()?.block_on(topology::status::run(&args)));
+            }
+            // `sotd update stage <folder> --prefix <prefix>`: arm a packed build for an install's converge.
+            "update" => {
+                apply_umask();
+                lifecycle::shutdown::exit(runtime()?.block_on(update::stage_cli(&args[1..])));
             }
             "--version" | "-V" => {
                 println!("{}", sot_protocol::version_line("sotd"));
