@@ -6,9 +6,8 @@ aside: false
 
 # What it does
 
-The main features, with a short recording where one exists. The design notes mark
-what is not built; Keys are given for Linux and Windows; the
-macOS equivalents are in [Keybindings](ref/keybindings.md).
+The main features, with a short recording where one exists. Keys are given for Linux and
+Windows; the macOS equivalents are in [Keybindings](ref/keybindings.md).
 
 ```@raw html
 <ul class="sot-index">

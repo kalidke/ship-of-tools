@@ -63,7 +63,7 @@ those characters stay literal text.
 |-----|------|---------------------------|
 | `f` | Files | the project filesystem |
 | `m` | Modules | modules and their definitions (types, functions, macros and submodules), read-only, from `JuliaSyntax.jl` |
-| `s` | Sessions | workspaces — the projects this backend is hosting |
+| `s` | Sessions | workspaces on every host the window is connected to, grouped by host |
 | `h` | Hosts | the remote hosts you can target |
 
 Files and Modules are the two conceptual modes wired up so far. Sessions and Hosts
@@ -72,7 +72,7 @@ which machine) rather than the concept hierarchy of a single project.
 
 ### Sessions mode (`s`)
 
-Sessions mode lists the workspaces the backend knows about and lets you commit a
+Sessions mode lists the workspaces on every host the window is connected to, grouped by host, and lets you commit a
 new one. The session picker uses three chords on the cursored directory:
 
 | Chord | Action |

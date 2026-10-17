@@ -10,7 +10,7 @@ is just another host.
 - A **session** is one project directory on one host. The backend calls it a
   *workspace*, and the words mean the same thing: one session is one row in
   Sessions mode and one entry in the session strip along the bottom edge.
-  `Shift+Arrow` moves between sessions.
+  `Shift+Right` / `Shift+Left` move between sessions.
 - Each session has its own **agent pane** (Claude Code, Codex or a plain
   shell), its own **Julia REPL**, and its own **kernel**, the Julia process
   that serves Modules mode and file previews. The REPL and kernel start the
@@ -42,7 +42,8 @@ Two sessions never share a Julia `Main`: each REPL is its own process. Inside
 one session, you (from the REPL drawer), the session's agent and any helper
 agents it starts all run code in that session's one REPL. It runs one
 evaluation at a time and does not queue: a request that arrives while another
-is running comes back as `busy` and nothing runs. The `julia-repl` skill tells
+is running comes back as `busy` and nothing runs, as long as the running evaluation yields; one that never yields
+leaves the request waiting until it ends (see [The REPL](../guide/repl.md)). The `julia-repl` skill tells
 agents to use separate `julia` processes for parallel runs.
 
 ## Capsules: what a session survives

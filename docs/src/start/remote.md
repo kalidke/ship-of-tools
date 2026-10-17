@@ -2,8 +2,8 @@
 
 The **backend daemon** runs where your GPUs and data are, the **frontend**
 window runs on the machine in front of you, and the two talk over SSH: the
-frontend dials each host with its own `ssh` child, and browser pages ride
-that same connection. If the frontend closes, the agents and the REPL keep
+frontend dials each host with its own `ssh` child, and relays browser pages
+over ssh logins of their own. If the frontend closes, the agents and the REPL keep
 running on the server (a backend on the same computer as the window ends with
 its last window; see [What keeps running](running.md)).
 
@@ -34,8 +34,9 @@ root at local disk first — see
 
 Then enrol the machine you will sit at. The server is the hub: its
 `~/.config/sot/hosts.toml` must name it as hub and daemon host and list the
-laptop (under the name `ssh` and the laptop's own `host_name()` give it) as a
-frontend. `--be-only` does not write this file.
+laptop as a frontend. Name each machine by its short hostname in lowercase (what `hostname` prints up to the first
+dot), and make that also the name `ssh` accepts for it (from the other machines, and for the laptop from the server);
+`myserver` and `mylaptop` below are such names. `--be-only` does not write this file.
 
 ```toml
 hub = "myserver"
@@ -89,7 +90,7 @@ under its own supervisor on the server (see
 `o` opens HTML, video and Pluto pages in your own browser, `Shift+W` opens a
 file's built documentation site, and `wglshow` opens an interactive WGLMakie
 figure. These work the same with a remote backend and need no extra SSH
-setup: the page and its WebSocket ride the existing control connection (see [Transport](../concepts/transport.md)).
+setup: the daemon serves the page and your window relays it to your browser (see [Transport](../concepts/transport.md)).
 
 ## Next steps
 

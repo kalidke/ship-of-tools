@@ -63,13 +63,13 @@ context while you read; switching away leaves Julia and terminal processes runni
 | Maximize the focused pane | `Alt+=` |
 | Wide-preview: hide the LLM column, hand its width to the preview | `Alt++` |
 | Restore the layout, one layer per press (un-maximize, then exit wide-preview) | `Esc` (only while maximized or in wide-preview) |
-| Switch to the next / previous session | `Shift+Arrow` |
+| Switch to the next / previous session | `Shift+Right` / `Shift+Left` |
 | Temporary pane actions / promote to Help drawer | `Ctrl+?` / press again |
 | Open Help directly | `F1` |
 
-Plain arrows, `Ctrl+Arrow`, and `Shift+Arrow` are scoped so they do not
-conflict: `Shift+Arrow` switches sessions, except in a text editor, where it
-extends the selection, and in an image preview, where `Shift+Up` and
+Plain arrows, `Ctrl+Arrow`, and `Shift+Left` / `Shift+Right` are scoped so they do not
+conflict: `Shift+Right` / `Shift+Left` switch sessions, except in a text editor, where they
+extend the selection, and in an image preview, where `Shift+Up` and
 `Shift+Down` zoom. The authoritative, build-current chord list is in
 [Keybindings](../ref/keybindings.md); when in doubt, `Ctrl+?` (or `F1`) is
 the source of truth.
@@ -196,7 +196,7 @@ keep them (see [Sessions and persistence](../concepts/sessions.md)).
 Several sessions run concurrently, coordinated over the
 [inter-agent communication system](messaging.md). You start and switch them
 from [Sessions mode](#The-Navigation-Pane) (`s`); cycle the active workspace with
-`Shift+Arrow`. A dedicated in-UI **Agents mode** is not built.
+`Shift+Right` / `Shift+Left`. A dedicated in-UI **Agents mode** is not built.
 
 ### How it acts
 
@@ -257,7 +257,8 @@ works; see [The REPL](repl.md#agents-repl).
 Two ways to drive it, without retyping:
 
 - **Run a `.jl` file** from Files mode — `Shift+R` `include`s it into the current
-  session; `r` first resets the REPL into the file's own project, then runs it.
+  session; `r` first restarts the REPL in the session's project (the session root when it has a `Project.toml`, else the nearest
+  one above the file), then runs it.
 - **Type at the prompt** — `Enter` submits, `Shift+Enter` inserts a newline.
 
 Per-line and per-block dispatch (the line at the cursor, or the surrounding

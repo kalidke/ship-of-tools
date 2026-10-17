@@ -34,9 +34,9 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
 The script fetched from `main` only resolves the latest release and runs that
 release's own `install.sh`, so what gets installed is always a tagged release.
 
-With no role flag and an interactive terminal, the installer asks which role
-this machine should play. In `curl | bash` or other non-interactive runs, pass
-the role explicitly:
+With no role flag the installer asks on the terminal which role this machine
+should play; with no terminal (cron, CI, an agent's shell) it stops, so pass the
+role explicitly:
 
 | Flag | Role |
 |------|------|
@@ -103,9 +103,10 @@ overrides either refusal, for a machine whose own role changed.
 Every machine that runs a window also runs its own private local daemon, so
 an entry with `frontend = true` alone installs one as `--local` does.
 `daemon = true` means other machines dial that daemon through the hub; the
-installer never adds this machine to anyone's dial list. The one exception is
-`--backend <ssh-alias>`, an explicit choice of a remote backend, which
-installs no local daemon.
+installer never adds this machine to anyone's dial list. A first install with
+`--backend <ssh-alias>`, made before the hub's `hosts.toml` lists this machine, installs no local daemon. Once the
+hub lists it, the topology decides its role on every later run of the installer, and its window still reaches every
+daemon host the topology lists.
 
 The checkout under the prefix is part of the installed product: a
 `git clone --filter=blob:none` of the selected tag, so history is available but
@@ -169,7 +170,7 @@ the parts its entry names (`daemon`, `frontend`) instead of its flags.
 | `~/.local/share/sot/updates/` | *all* · staging area for downloaded updates |
 | `~/.local/share/sot/install.json` | *all* · install manifest: prefix, version, and which parts (daemon, frontend) were installed |
 | `~/.config/sot/settings.toml` | *all* · a `[trust]` table with `root_prefix` set to your home directory, written when the file is missing and appended when the file has no `[trust]` table; an existing `[trust]` is kept. The daemon uses it to skip Claude Code's folder-trust dialog for projects under your home (see [Configuration files](../ref/config.md)) |
-| `~/.config/sot/hosts.toml` | *all* · written only with `--hub`, as a copy fetched from the hub; otherwise only read |
+| `~/.config/sot/hosts.toml` | *all* · written only with `--hub`, as a copy fetched from the hub; otherwise only read, except that a pre-0.6 file (top-level `default_host`) is moved aside to `hosts.toml.v1-<timestamp>` |
 | `~/.juliaup/` | *all* · Julia 1.12, installed with the juliaup installer, only if no Julia 1.12 or newer is on `PATH` (an existing juliaup gets the 1.12 channel added instead) |
 | the first depot in `DEPOT_PATH` (usually `~/.julia`) | *backend* · packages for the kernel, REPL and Pluto environments |
 | `~/.config/systemd/user/sotd.service` | *backend, Linux, unless `--no-service`* · the backend service, started (its boot start is the drop-in below); `loginctl enable-linger` is also run so it survives logout. The service sources `~/.bashrc` before it starts `sotd`, so the backend and its sessions inherit your shell profile's exports. |

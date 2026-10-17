@@ -94,7 +94,8 @@ The full set of modes and their column shapes is in [Modes](../guide/modes.md).
 ## The REPL drawer — `Ctrl+J`
 
 Press `Ctrl+J` to open the **REPL** in the bottom drawer: a persistent Julia
-session that persists across drawer switches and frontend restarts. From Files mode you can run a whole
+session that stays alive across drawer switches (and across window restarts when the backend outlives the window; see
+[What keeps running](running.md)). From Files mode you can run a whole
 `.jl` file in it without retyping — `r` runs it in a fresh REPL (this also
 clears what the agent built in `Main`), `Shift+R` includes it in the current one. At the prompt, type an expression and press Enter to run
 it (Shift+Enter inserts a newline); values, printed output, errors and images
@@ -152,7 +153,7 @@ A few global keys manage the window itself:
 | Action | Key | What it does |
 |--------|-----|--------------|
 | Move pane focus | `Ctrl+Arrow` | shift focus spatially between the panes |
-| Next / previous session | `Shift+Arrow` | make the next or previous session in the strip the active one (left / right) |
+| Next / previous session | `Shift+Right` / `Shift+Left` | make the next or previous session in the strip the active one |
 | Maximize pane | `Alt+=` | fill the window with the focused pane |
 | Wide-preview | `Alt++` | hide the agent pane and widen the preview pane |
 | Restore layout | `Esc` | one layer per press: un-maximize first, then exit wide-preview (only while maximized or in wide-preview) |
@@ -161,8 +162,8 @@ A few global keys manage the window itself:
 | Quit | `Ctrl+Q` | close the window, asking first; see [What keeps running](running.md) |
 
 Plain arrows move within a pane, `Ctrl+Arrow` moves *between* panes, and
-`Shift+Arrow` switches sessions. The same chords are scoped so they do not
-conflict: in a text editor `Shift+Arrow` extends the selection, and in an image
+`Shift+Right` / `Shift+Left` switch sessions. The same chords are scoped so they do not
+conflict: in a text editor `Shift` with an arrow extends the selection, and in an image
 preview `Shift+Up` and `Shift+Down` zoom.
 
 ## Where to go next

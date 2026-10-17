@@ -11,7 +11,8 @@ files; nothing about them needs a live broker.
 
 **One lock guards the registry.** Every registry write holds `~/.sot-comm/.registry.lock`, a file naming its holder.
 A holder that died on this machine clears itself at the next comm command here. Any other holder is never forced:
-the failure names it and what to run (`comm-registry-lock-clear.sh`) or says to delete the lock by hand. The rules are
+the failure names the holder and says to run any comm command on its host, or, where no box can prove the holder
+dead, to delete the lock by hand; `comm-registry-lock-clear.sh` clears at once a lock whose holder this box proves dead. The rules are
 in the [Comm protocol](../ref/comm.md).
 
 **Delivery is a file.** A send to a handle this host's registry names is
@@ -27,18 +28,17 @@ because the recipient's own end-of-turn hook reads its inbox and will not let
 the turn end while directed mail sits unread. That is also how a BUSY session
 is reached — no process, no keystrokes, nobody to ask. If a poll finds the inbox mid-write it says so and asks to be run again; it never skips a message.
 
-A session sitting idle at its prompt is additionally woken by the daemon, which
+A Claude Code session sitting idle at its prompt is additionally woken by the daemon, which
 types one fixed line, `[sot-comm] you have mail: run comm-poll.sh`, into its row
-when the row is free. The wake is a shortcut, never the delivery: a send types
+when the row is free. A Codex row is never typed into and sees mail at its next `comm-poll.sh`. The wake is a shortcut, never the delivery: a send types
 nothing and its line says only that the message was filed.
 
 **The wire: the daemon.** For a handle this host cannot name — one on another
-box — the frame rides the Ship of Tools daemon, the same connection the
-frontend already uses. The hub files it itself when its own comm folder holds
+box — the frame goes to the hub's daemon. The hub files it itself when its own comm folder holds
 that handle; otherwise it offers the frame to every daemon linked to it, and the
-daemon whose comm folder lists the handle files it. Because the relay reuses the backend connection, a
-message from a GPU server reaches a session on your laptop with no extra port
-or service. The daemon does not queue frames, so a send nothing can file is
+daemon whose comm folder lists the handle files it. Each daemon reaches the hub over its own link, the same ssh route
+the window uses, and no frontend is involved, so a message from a GPU server reaches a session on your laptop with no
+extra port or service. The daemon does not queue frames, so a send nothing can file is
 reported as a failure — `FAILED -> @h: …` — instead of an ack for the daemon's
 own success.
 
@@ -51,8 +51,6 @@ capsule: one reparented away from it, or started outside it under the row's iden
 cannot read in full is refused too. An agent that needs its own handle is
 started as its own row. The [Comm protocol](../ref/comm.md) states the rule and
 lists what the check does not see.
-
-A row runs its agent with Claude Code's agent view off, so its conversation stays in the row.
 
 ## The contract
 

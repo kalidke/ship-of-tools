@@ -25,7 +25,7 @@ hero:
 
 <div class="sot-section">
   <h2>Several agents, one list</h2>
-  <p class="sot-why">Every agent session is a row in Sessions mode, on this machine or on any connected host. The row color is the agent's <a href="./concepts/work-state">work state</a>, so you can see which session needs you without opening each one. <code>Shift+Arrow</code> switches sessions; each session keeps its own Julia REPL, and switching never restarts it.</p>
+  <p class="sot-why">Every agent session is a row in Sessions mode, on this machine or on any connected host. The row color is the agent's <a href="./concepts/work-state">work state</a>, so you can see which session needs you without opening each one. <code>Shift+Right</code> / <code>Shift+Left</code> switch sessions; each session keeps its own Julia REPL, and switching never restarts it.</p>
   <DemoLoop name="sessions" caption="Demo session rows changing color as a script sets their work states: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle. Each row's ready tag means its supervisor has a live agent process running." />
 </div>
 
