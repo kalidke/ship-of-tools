@@ -27,17 +27,5 @@ struct WireRequest<'a> {
     payload: &'a Value,
 }
 
-/// What `f` logs on this thread at every level, as text: the one capture the sidecars' log-content tests share.
-#[cfg(test)]
-pub(super) fn logged_by(f: impl FnOnce()) -> String {
-    let log = sot_log::test_log::capture();
-    f();
-    log.text()
-}
-
-/// Whether a line of `logged` (one event a line, as `logged_by` and `sot_log::test_log::capture` write it) is at warn
-/// and holds `needle`.
-#[cfg(all(test, unix))]
-pub(super) fn warned(logged: &str, needle: &str) -> bool {
-    logged.lines().any(|line| line.contains(" WARN ") && line.contains(needle))
-}
+#[cfg(test)] pub(super) use contract_tests::logged_by;
+#[cfg(all(test, unix))] pub(super) use contract_tests::warned;

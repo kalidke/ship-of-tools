@@ -571,6 +571,47 @@ dev_row "$WORK/dev" 0 "the dev launcher starts the plan's own local backend befo
 dev_row "$WORK/dev-stale" 1 "a stale socket file is not a live daemon: the dev launcher starts one"
 
 # ---------------------------------------------------------------------------
+case_start "launcher_variables_stay_home"
+# The installer's four launcher variables steer the launcher and nothing it starts. The stub daemon the launcher ensures
+# (SOT_OWN_DAEMON=1 asks for its session socket) and the stub frontend it execs each record their environment, and
+# neither may hold one of the four.
+d="$WORK/vars"
+mkdir -p "$d/repo/scripts/lib" "$d/prefix/bin" "$d/home" "$d/stubs"
+mk_stubs "$d/stubs"; rm -f "${d:?}/stubs/systemctl" "${d:?}/stubs/sotd"
+cp "$(dirname "$0")/../launch-sot.sh" "$d/repo/scripts/launch-sot.sh"
+cp "$(dirname "$0")/../lib/sot-hosts.sh" "$d/repo/scripts/lib/sot-hosts.sh"
+cp "$LIB" "$d/repo/scripts/lib/sot-daemon.sh"
+cat > "$d/prefix/bin/sotd" <<SD
+#!/bin/sh
+case "\$1" in
+    session-socket-path) echo "$d/sot.sock"; exit 0 ;;
+esac
+case "\$1 \$2 \$3" in
+    "stdio-bridge --endpoint unix:"*)
+        exec python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).connect(sys.argv[1])' "\${3#unix:}" ;;
+esac
+case "\$1 \$2" in
+    "topology sync") exit 0 ;;
+    "topology plan") printf 'self testbox\ndial testbox unix:$d/sot.sock\n'; exit 0 ;;
+esac
+env > "$d/daemon-env"
+echo \$\$ > "$d/pid"
+exec python3 -c 'import os,socket,sys,time
+p = sys.argv[1]
+if os.path.exists(p): os.unlink(p)
+s = socket.socket(socket.AF_UNIX); s.bind(p); s.listen(1); time.sleep(30)' "$d/sot.sock"
+SD
+cat > "$d/fe" <<FE
+#!/bin/sh
+env > "$d/fe-env"
+FE
+chmod +x "$d/prefix/bin/sotd" "$d/fe"
+( HOME="$d/home" PATH="$d/stubs:$TOOLS" SOT_OWN_DAEMON=1 SOT_PREFIX="$d/prefix" SOT_NO_UPDATE=1 SOT_FRONTEND_BIN="$d/fe" bash "$d/repo/scripts/launch-sot.sh" ) >/dev/null 2>&1 || true
+check "the window and the daemon both ran" "yes" "$([ -s "$d/fe-env" ] && [ -s "$d/daemon-env" ] && echo yes || echo no)"
+check "neither the window nor the daemon holds a launcher variable" "0" "$(cat "$d/fe-env" "$d/daemon-env" 2>/dev/null | grep -c '^SOT_\(OWN_DAEMON\|PREFIX\|FRONTEND_BIN\|NO_UPDATE\)=' || true)"
+reap_stub "$d"
+
+# ---------------------------------------------------------------------------
 case_start "launcher_bounds_match_ops"
 OPS_WAIT="$(sed -n 's/.*pub const LAUNCH_WAIT: Duration = Duration::from_secs(\([0-9]*\)).*/\1/p' "$(dirname "$0")/../../rust/protocol/src/ops/lease.rs")"
 LIB_WAIT="$(sed -n 's/^SOT_LAUNCH_WAIT_S=\([0-9]*\).*/\1/p' "$LIB")"
@@ -662,6 +703,9 @@ check "a binary newer than an hour-old daemon is STALE, both times printed, noth
 [ "$(uname -s)" != Linux ] || check "the same with BSD's stat and date" "running daemon pid 222 is STALE — started D, binary built D|" "$bsd_out"
 starts_with "a comm that is the program's path (macOS's ps) names the same daemon" "running daemon pid 222 " "$path_line"
 starts_with "restart judges this account's daemon by its exact label" "running daemon pid 333 " "$label_line"
+
+# shellcheck source=installer-entry.sh
+. "$(dirname "$0")/installer-entry.sh"
 
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'

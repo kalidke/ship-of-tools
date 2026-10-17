@@ -28,6 +28,10 @@ Code sessions follow `CLAUDE.md`; **you follow this**.
   `CODEX_HOME`): use `sot-comm` for messaging and `sot-session-start` for
   backend Codex bootstrap — one skill for every session, Ship of Tools repo or
   not.
+- "Update sot" (or "update sot from the repo") on a Linux or macOS box means
+  `bash ~/.local/share/sot/repo/current/scripts/install.sh` with no options,
+  then reporting its last line (`PASS`, `ONE STEP LEFT` or `FAIL`);
+  `docs/INSTALL-AGENT.md`'s "Update this computer" says what each asks of you.
 - Socket-only mode is the default: the daemon listens on the private socket
   from `sotd session-socket-path ${SOT_BACKEND_LABEL:-sot}`. Never hardcode a
   port; the daemon has had no control TCP listener since 0.4.0. A window

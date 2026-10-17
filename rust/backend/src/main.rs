@@ -164,6 +164,12 @@ Offline command (returns before daemon initialization):
   update pointer --prefix <prefix> --target <target>
                           whether the pointer armed for <target> may apply
                           onto the install at <prefix> (exit 3: it may not)
+  update direction <version> --prefix <prefix>
+                          newer, same or older: the way the install at
+                          <prefix> moves to <version>
+  update repls --endpoint <unix:PATH|pipe:PATH>
+                          the rows of the daemon there with a live REPL, one
+                          label per line (exit 3 when there are any)
 
 Pure queries (no startup side effects, answered before any of the above):
   --version, -V           print the version line and exit
@@ -243,6 +249,8 @@ mod help_tests {
             ("update stage d --prefix p --help", update::USAGE),
             ("update pointer --help", update::USAGE),
             ("update pointer --prefix p --target t --help", update::USAGE),
+            ("update direction v --prefix p --help", update::USAGE),
+            ("update repls --endpoint unix:/x --help", update::USAGE),
             ("topology --help", topology::cli::USAGE),
             ("topology plan --help", topology::cli::USAGE),
             ("topology status --help", topology::cli::USAGE),
@@ -377,6 +385,8 @@ fn main() -> Result<()> {
             }
             // `sotd update stage <folder> --prefix <prefix>`: arm a packed build for an install's converge.
             // `sotd update pointer --prefix <prefix> --target <target>`: may the armed pointer apply onto the install?
+            // `sotd update direction <version> --prefix <prefix>` and `sotd update repls --endpoint <endpoint>`: the
+            // installer's two questions before it moves an install.
             "update" => {
                 apply_umask();
                 lifecycle::shutdown::exit(runtime()?.block_on(update::run(&args[1..])));

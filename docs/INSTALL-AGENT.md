@@ -9,6 +9,48 @@ deterministic engine underneath is `scripts/install.sh`; your job is the
 judgment around it — choosing the right topology, verifying prerequisites, and
 proving the result works.
 
+## Update this computer (Linux and macOS)
+
+If Ship of Tools is already installed here (`~/.local/share/sot/install.json` exists) and the human says "update sot",
+"update sot from the repo" or "update Ship of Tools", run the installer from the installed checkout, with no options:
+
+```bash
+bash ~/.local/share/sot/repo/current/scripts/install.sh
+```
+
+(`--prefix <dir>` or `SOT_PREFIX` if the install is not under `~/.local/share/sot`.) With no `--version` it follows the
+channel this computer already runs: a stable release takes the latest stable release; a pre-release takes the newest
+published release of any kind; and it keeps the role the install recorded, so it needs no `--local`, `--backend` or
+`--be-only`. It never moves the install backwards unless told (`--version vX.Y.Z` names the target; an older one is then
+said to be older and installed). It ends with exactly one line; read that line, and act on it:
+
+- `PASS: Ship of Tools <v> at <short> on this computer`: done. Say so.
+- `ONE STEP LEFT: <step>`: the install is whole and one thing remains that only the human can do (usually: quit the
+  window and start it again, since it still runs the old version). Tell the human that step in those words.
+- `FAIL: <check>: <detail>`: stop and report the line. Three are decisions, not faults. `daemon:` names rows with a live
+  REPL and says when the Pluto server is running (a restart would end the REPLs and every notebook open in it; their
+  variables are lost, the rows and their agents keep running), or says why the daemon could not be asked in full: ask the human, and re-run with `--restart-daemon` only on a yes. `target:` and
+  `direction:` are the human's to answer, never a version the agent picks. `target:` says the install is a build of the
+  line (a `+` in its version): a pack of the line (`scripts/pack-build.sh` in the checkout that built it) goes in with
+  `--archive <folder>`, while a release named with `--version` is usually older and moves this computer back.
+  `direction:` says the newest release is older than what runs here: only a version the human names goes back. Ask the
+  human which they want.
+
+`--archive` runs the install.sh of the checkout that made the pack, not the installed one:
+`bash <that checkout>/scripts/install.sh --archive <folder>`.
+
+If a run stops half way (a lost connection, a Ctrl-C), run it again: `install.json` is written last, and a repeat is a
+repair run that ends in `PASS`. With no network, `--archive <folder>` installs from a folder carried here (the base
+clone still needs the repo's origin unless it already holds the commit).
+
+An install old enough to predate this entry has an `install.sh` that does not end in one of those lines
+(`grep -q 'ONE STEP LEFT' ~/.local/share/sot/repo/current/scripts/install.sh` says which). Read `version` in its
+`install.json` first: a `+` in it is the `target:` case above, so ask the human; otherwise follow the channel (a stable
+version takes the latest stable release, a pre-release the newest published one), tell the human the version, and run
+`curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash -s -- --version <tag>`.
+A source checkout (no `install.json`) updates by `git pull` and a rebuild. On **Windows** there is no installer script
+yet: see §6, "Updating later". With no install here at all, go on to the next sections.
+
 ## Which install is this?
 
 Published GitHub Releases with prebuilt artifacts exist (v0.3.1+, Linux
@@ -103,13 +145,13 @@ systemctl --user is-active --quiet sotd.service && systemctl --user cat sotd.ser
 cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launcher belong to another prefix?
 ```
 
-- **A schema-1 manifest** → this is an UPGRADE. Same command (bump `--version`
-  or omit it for latest); role is derived fresh each run (the declared list,
-  else the role flag/interactive answer) — the manifest's own `daemon`/
-  `frontend` bits record what got installed, for a listless box's own
-  self-update check to fall back on, same list-first order; the installer also
-  reads `daemon` and `service` back, so a run never records less than they say
-  under a declared topology (below).
+- **A schema-1 manifest** → this is an UPGRADE: "Update this computer" at the top
+  of this page. Role is derived fresh each run (the declared list, else the
+  role flag, else what the manifest records: its `daemon`/`frontend` bits, its
+  `service`, its `hub`, and a remote install's alias from its wrapper) — so an
+  update needs no role flag; the installer also reads `daemon` and `service`
+  back, so a run never records less than they say under a declared topology
+  (below).
 - **The backend service or any FE integration file belongs to a different
   prefix** → one ownership rule covers all of them: an ACTIVE `sotd.service`
   whose `ExecStart` is outside this prefix, the `~/.local/bin/sot-launch`
@@ -351,8 +393,8 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
 ```
 
 You are RIGHT to be wary of piping remote scripts to a shell — inspecting
-first is encouraged: download it to a file, read it (it is ~500 commented
-lines, everything under `$HOME`, no sudo, checksums verified before use),
+first is encouraged: download it to a file, read it (a long commented script,
+everything under `$HOME`, no sudo, checksums verified before use),
 then run the file with the same flags.
 
 Two flags beyond the role: `--version vX.Y.Z` pins a specific release (the
@@ -360,7 +402,8 @@ leading `v` is required — the flag is used verbatim as the tag), and
 `--prefix <dir>` relocates the install from `~/.local/share/sot` (substitute
 your prefix in every path below if you use it).
 
-Idempotent; re-running is also the upgrade path.
+Idempotent; re-running is also the upgrade path, and every run ends in one
+`PASS`, `ONE STEP LEFT` or `FAIL` line (see "Update this computer").
 (If you fetched this runbook at a pinned commit, still use `main`'s installer as
 above — it only resolves the release tag, then runs that release's own
 `scripts/install.sh` unmodified, so this runbook stays compatible with any
@@ -510,9 +553,10 @@ top line of the nav pane always shows the pane-switch keys.**
   terminal-drawer agent gets the right path via `$SOT_MANUAL` on every
   platform.
 - Updating later:
-  - **Linux / macOS** — re-run step 3. The app also notifies about new
-    releases and stages fresh binaries itself; `sot-launch` applies them at the
-    next start via `sot-apply`.
+  - **Linux / macOS** — "Update this computer" at the top of this page: one
+    command, one verdict line. The app also notifies about new releases and
+    stages fresh binaries itself; `sot-launch` applies them at the next start
+    via `sot-apply`.
   - **Windows** — step 3 does not run here. The frontend checks for releases
     at startup and stages them; `launch-sot.ps1` calls `scripts\sot-apply.ps1`
     on the next launch to verify and swap the binaries, keeping `.prev` and

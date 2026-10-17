@@ -32,6 +32,12 @@
 # survives that inheritance rather than depending on -e's absence.
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# The four launcher variables are read once here and unset below, before the
+# daemon starts or the window execs, so neither inherits them.
+install_daemon="${SOT_OWN_DAEMON:-0}"
+sot_prefix="${SOT_PREFIX:-$HOME/.local/share/sot}"
+frontend_bin="${SOT_FRONTEND_BIN:-$REPO/rust/target/release/sot}"
+no_update="${SOT_NO_UPDATE:-0}"
 
 # --- Self-update prelude (ADR 0032 - launcher self-update gap, 2026-07-13) ---
 # A running script is read through an fd pinned to the old inode, so a git pull
@@ -42,7 +48,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # SOT_LAUNCH_REEXEC guards it to one hop; SOT_LAUNCH_REBUILD hands the one cargo
 # build to the final exec. Fail-open: a failed/absent pull, or a pulled copy that
 # fails `bash -n`, runs the current version. SOT_NO_UPDATE=1 skips it.
-if [ "${SOT_NO_UPDATE:-0}" != 1 ] && [ -z "${SOT_LAUNCH_REEXEC:-}" ] && [ -d "$REPO/.git" ]; then
+if [ "$no_update" != 1 ] && [ -z "${SOT_LAUNCH_REEXEC:-}" ] && [ -d "$REPO/.git" ]; then
     self_rel="scripts/launch-sot.sh"
     before="$(git -C "$REPO" rev-parse "HEAD:$self_rel" 2>/dev/null || true)"
     if git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 -C "$REPO" pull --rebase --autostash >/dev/null 2>&1; then
@@ -64,6 +70,8 @@ fi
 # Guard has served its purpose; do not leak it to the FE or an exit-75 relaunch.
 unset SOT_LAUNCH_REEXEC || true
 # --- end self-update prelude ---
+# The launcher's own variables stop here: neither the window nor the daemon may inherit them.
+unset SOT_OWN_DAEMON SOT_PREFIX SOT_FRONTEND_BIN SOT_NO_UPDATE || true
 
 # shellcheck source=lib/sot-hosts.sh
 . "$(dirname "$0")/lib/sot-hosts.sh"
@@ -78,8 +86,8 @@ unset SOT_LAUNCH_REEXEC || true
 resolve_local_sotd_bin() {
     if [ -x "$REPO/rust/target/release/sotd" ]; then
         printf '%s\n' "$REPO/rust/target/release/sotd"
-    elif [ -x "$HOME/.local/share/sot/bin/sotd" ]; then
-        printf '%s\n' "$HOME/.local/share/sot/bin/sotd"
+    elif [ -x "$sot_prefix/bin/sotd" ]; then
+        printf '%s\n' "$sot_prefix/bin/sotd"
     fi
 }
 
@@ -139,16 +147,18 @@ read_topology_plan
 # `sotd` for read_topology_plan's re-read below, on a box with no release
 # install. FAIL-OPEN: a broken build warns and launches with whatever
 # plan/binary already existed.
-if [ "${SOT_LAUNCH_REBUILD:-0}" = 1 ] && [ "${SOT_NO_UPDATE:-0}" != 1 ]; then
+if [ "${SOT_LAUNCH_REBUILD:-0}" = 1 ] && [ "$no_update" != 1 ]; then
     unset SOT_LAUNCH_REBUILD || true
     cargo build --release -p sot-frontend -p sot-backend --manifest-path "$REPO/rust/Cargo.toml" \
         || echo "WARNING: frontend/backend rebuild failed - launching with the existing binaries" >&2
 fi
 read_topology_plan
 
-# 4. Frontend (blocks; GPU window). Always runs -- one --dial per plan.Dials
-# entry (this box's own local daemon, if it's ALSO a declared daemon host,
-# plus every other dialable host), passed UNCONDITIONALLY: an ssh child
+# 4. Frontend (blocks; GPU window). Always runs. Its daemon arguments are
+# `--socket` for this box's own daemon when the install runs one
+# (SOT_OWN_DAEMON=1, see below), and one --dial per plan.Dials entry: this
+# box's own entry only when no such daemon is ensured (a dev checkout), plus
+# every other dialable host. All are passed UNCONDITIONALLY: an ssh child
 # that fails to connect just means the frontend shows that host
 # unreachable and keeps retrying, never a reason to hold an arg back. No
 # plan at all (no sotd binary anywhere) means no --dial args -- the
@@ -163,8 +173,18 @@ read_topology_plan
 dial_args=()
 local_sock=""
 self_host="$(sot_topology_field "$PLAN" SELF)"
+# An install that runs a daemon of its own (its wrapper exports SOT_OWN_DAEMON=1; a --backend <alias> install runs none)
+# always ensures it and hands the frontend its session socket, as launch-sot.ps1 does for its local daemon, so the
+# window shows this computer's own rows whether or not the plan lists this computer as a daemon host. The plan's dial
+# line for this host is then dropped: one connection, never two. Without the variable (a dev checkout) the plan's own
+# dial line names the socket to ensure.
+own_daemon=0
+if [ "$install_daemon" = 1 ] && [ -n "$SOTD_BIN" ]; then
+    if local_sock="$("$SOTD_BIN" session-socket-path 2>/dev/null)" && [ -n "$local_sock" ]; then own_daemon=1; else local_sock=""; fi
+fi
 while IFS='|' read -r d_tag d_host d_endpoint; do
     [ "$d_tag" = "DIAL" ] || continue
+    [ "$own_daemon" = 0 ] || [ "$d_host" != "$self_host" ] || continue
     dial_args+=(--dial "$d_host=$d_endpoint")
     # This computer's own backend: the plan's self dial line is the socket the
     # frontend dials, so it is the one to ensure.
@@ -175,9 +195,10 @@ done <<EOF
 $PLAN
 EOF
 if [ -n "$local_sock" ]; then
-    sot_daemon_ensure "${SOT_PREFIX:-$HOME/.local/share/sot}" "$SOTD_BIN" "$local_sock" \
+    sot_daemon_ensure "$sot_prefix" "$SOTD_BIN" "$local_sock" \
         || echo "WARNING: this computer's backend did not start; the window will show it unreachable" >&2
 fi
+[ "$own_daemon" = 0 ] || dial_args=(--socket "$local_sock" ${dial_args[@]+"${dial_args[@]}"})
 # Finding 3b (v0.6.5 macOS field report): bash 3.2 (macOS's stock
 # /bin/bash, still there under set -u) treats an EMPTY array's
 # "${arr[@]}" expansion as an unset variable and aborts -- the
@@ -185,4 +206,4 @@ fi
 # when it has at least one element, and is a no-op otherwise (a
 # hosts.toml with no usable plan means zero --dial args, which is a
 # normal, supported "run offline" case, not an error).
-exec "${SOT_FRONTEND_BIN:-$REPO/rust/target/release/sot}" ${dial_args[@]+"${dial_args[@]}"}
+exec "$frontend_bin" ${dial_args[@]+"${dial_args[@]}"}

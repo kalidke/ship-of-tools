@@ -7,6 +7,13 @@
 //!   and installs is Rust's `compare_versions` and not a second semver in shell. It reads two small files and writes
 //!   nothing.
 //!
+//! - `direction <version> --prefix <prefix>`: does the install at <prefix> move `newer`, `same` or `older` to <version>?
+//!   The installer (scripts/install.sh) asks the target release's own `sotd` before it changes anything, so its
+//!   never-backwards default is Rust's `compare_versions` and not a second semver in shell.
+//! - `repls --endpoint <unix:PATH|pipe:PATH>`: what a restart of the daemon there would end, from the daemon's own
+//!   `workspace.list`: the rows with a live REPL and whether its Pluto server is running (a restart ends every notebook
+//!   open in it). The installer asks before an update would restart that daemon.
+//!
 //! The pointer verb's exit code is the contract. 0 means the script goes on to its own checks (no pointer, a pointer
 //! that fits, or no install here to compare with); `REFUSED` means drop the pointer, one that cannot be read included.
 //! An older `sotd` exits 1 on the unknown word
@@ -36,7 +43,22 @@ Usage: sotd update pointer --prefix <install prefix> --target <release target>
   Reads the pointer and install.json; starts no daemon and writes nothing. Prints `ok` and exits 0 (no pointer, a
   pointer that fits, or no install here to compare with), or prints `refuse: <why>` and exits 3: the pointer cannot be
   read, was armed over an install that is no longer the one on disk, or sits at or below the installed version (a
-  pointer with no record never applies onto a dev build).";
+  pointer with no record never applies onto a dev build).
+
+Usage: sotd update direction <version> --prefix <install prefix>
+
+  Which way does the install at <prefix> move to <version> (a tag or a bare version)? Prints `newer`, `same` or `older`
+  against the version install.json records and exits 0; exits 1 when install.json cannot be read or records no version.
+  Starts no daemon and writes nothing.
+
+Usage: sotd update repls --endpoint <unix:PATH|pipe:PATH>
+
+  What would a restart of the daemon answering there end? A live REPL (the row's `repl_state` is `ready`: a Julia
+  process holding the row's variables) or the Pluto server, when it is running (every notebook open in it ends with
+  it). Asks the daemon's `workspace.list`; starts nothing and writes nothing. Prints nothing and exits 0 when there is
+  none; prints one line each, `repl <row label>` or `pluto server`, and exits 3 when there are some; exits 1, naming
+  why on stderr, when the daemon cannot be asked or cannot say whether its Pluto server is running (the `repl` lines
+  it could read are printed first).";
 
 /// `sotd update stage <folder> --prefix <prefix>`: the folder and prefix, or the reason the arguments are not those.
 fn parse_stage_args(args: &[String]) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
@@ -62,12 +84,17 @@ fn parse_stage_args(args: &[String]) -> Result<(std::path::PathBuf, std::path::P
 fn armed_line(id: &ReleaseIdentity, installed: Option<&str>) -> String {
     let armed = format!("armed {} for {}", id.tag, id.target);
     let Some(installed) = installed else { return armed };
-    let direction = match sot_updater::semver::compare_versions(&id.version, installed) {
+    let direction = direction_word(&id.version, installed);
+    format!("{armed} (installed v{}: {direction})", sot_updater::semver::strip_v(installed))
+}
+
+/// Which way an install at `installed` moves to `target`: `newer`, `same` or `older`.
+fn direction_word(target: &str, installed: &str) -> &'static str {
+    match sot_updater::semver::compare_versions(target, installed) {
         std::cmp::Ordering::Greater => "newer",
         std::cmp::Ordering::Equal => "same",
         std::cmp::Ordering::Less => "older",
-    };
-    format!("{armed} (installed v{}: {direction})", sot_updater::semver::strip_v(installed))
+    }
 }
 
 /// The folder and prefix as absolute paths: the pointer records paths under the prefix, and the apply runs later from
@@ -101,12 +128,14 @@ async fn stage_folder(folder: &std::path::Path, prefix: &std::path::Path) -> Res
     }
 }
 
-/// `sotd update <args>`: the exit code of `pointer ...` or of `stage ...`.
+/// `sotd update <args>`: the exit code of `pointer ...`, `direction ...`, `repls ...` or `stage ...`.
 pub(crate) async fn run(args: &[String]) -> i32 {
-    if args.first().map(String::as_str) == Some("pointer") {
-        return pointer_cli(&args[1..]).await;
+    match args.first().map(String::as_str) {
+        Some("pointer") => pointer_cli(&args[1..]).await,
+        Some("direction") => direction_cli(&args[1..]),
+        Some("repls") => repls_cli(&args[1..]),
+        _ => stage_cli(args).await,
     }
-    stage_cli(args).await
 }
 
 /// `sotd update stage ...`: the exit code. 2 for arguments that are not `stage <folder> --prefix <prefix>`. Progress goes
@@ -190,6 +219,132 @@ async fn pointer_cli(args: &[String]) -> i32 {
             println!("ok");
             0
         }
+    }
+}
+
+/// `<version> --prefix <prefix>`, in either order, or the reason the arguments are not those.
+fn parse_direction_args(args: &[String]) -> Result<(String, PathBuf), String> {
+    let (mut version, mut prefix) = (None, None);
+    let mut rest = args.iter();
+    while let Some(a) = rest.next() {
+        if a == "--prefix" {
+            prefix = Some(rest.next().ok_or("--prefix needs a folder")?.clone());
+        } else if version.replace(a.clone()).is_some() {
+            return Err(format!("unexpected argument {a:?}"));
+        }
+    }
+    Ok((version.ok_or("no version given")?, prefix.ok_or("no --prefix given")?.into()))
+}
+
+/// `sotd update direction ...`: 0 with the word on stdout, 1 when the install's version cannot be read, 2 for arguments
+/// that are not `<version> --prefix <prefix>`.
+fn direction_cli(args: &[String]) -> i32 {
+    let (version, prefix) = match parse_direction_args(args) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            eprintln!("sotd update: {why}\n{USAGE}");
+            return 2;
+        }
+    };
+    let installed = InstallManifest::read(&prefix.join(sot_updater::manifest::INSTALL_MANIFEST))
+        .map_err(|e| format!("{e:#}"))
+        .and_then(|m| m.version.ok_or_else(|| "install.json records no version".to_string()));
+    match installed {
+        Ok(installed) => {
+            println!("{}", direction_word(&version, &installed));
+            0
+        }
+        Err(why) => {
+            eprintln!("sotd update direction: {why}");
+            1
+        }
+    }
+}
+
+/// The exit code for a daemon with live REPLs. Neither 1 (cannot tell) nor 2 (bad arguments).
+pub(crate) const REPLS_LIVE: i32 = 3;
+
+/// How long the daemon may take to list its rows: it answers from memory.
+const LIST_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What a restart of the daemon would end, from a `workspace.list` reply: one line each, `repl <label>` for every row whose
+/// REPL is live (its `repl_state` is `ready`, a Julia process holding the row's variables; `starting` holds none yet and
+/// `dead` or `not_started` none any more) and `pluto server` when the Pluto server is running (every notebook open in it
+/// ends with it, however it was opened). `unsure` is what the reply could not say: it has no `workspaces` list (an error
+/// payload is one), or no `pluto_server_up` (a daemon older than the field). The lines read before that are kept, and the
+/// caller must not read an unsure reply as "none live".
+struct LiveWork {
+    lines: Vec<String>,
+    unsure: Option<String>,
+}
+
+fn live_work(reply: &serde_json::Value) -> LiveWork {
+    let text = |row: &serde_json::Value, key: &str| row.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+    let Some(rows) = reply.get("workspaces").and_then(|v| v.as_array()) else {
+        let said = reply.get("error").and_then(|v| v.as_str()).unwrap_or("no `workspaces` key");
+        return LiveWork { lines: Vec::new(), unsure: Some(format!("the daemon answered without a workspace list: {said}")) };
+    };
+    let mut lines: Vec<String> = rows
+        .iter()
+        .filter(|row| row.get("repl_state").and_then(|v| v.as_str()) == Some("ready"))
+        .filter_map(|row| text(row, "label").or_else(|| text(row, "slug")))
+        .map(|label| format!("repl {label}"))
+        .collect();
+    let unsure = match reply.get("pluto_server_up").and_then(|v| v.as_bool()) {
+        Some(true) => {
+            lines.push("pluto server".to_string());
+            None
+        }
+        Some(false) => None,
+        None => Some("the daemon's reply says nothing of its Pluto server (a daemon older than this build cannot say whether it is running)".to_string()),
+    };
+    LiveWork { lines, unsure }
+}
+
+/// `--endpoint <unix:PATH|pipe:PATH>`, or the reason the arguments are not that.
+fn parse_repls_args(args: &[String]) -> Result<String, String> {
+    match args {
+        [flag, ep] if flag == "--endpoint" && (ep.starts_with("unix:") || ep.starts_with("pipe:")) => Ok(ep.clone()),
+        _ => Err("expected --endpoint <unix:PATH|pipe:PATH>".into()),
+    }
+}
+
+/// `sotd update repls ...`: 0 (none live), `REPLS_LIVE` (the `repl` and `pluto` lines on stdout), 1 (the daemon cannot be
+/// asked) or 2 (bad arguments).
+fn repls_cli(args: &[String]) -> i32 {
+    let endpoint = match parse_repls_args(args) {
+        Ok(ep) => ep,
+        Err(why) => {
+            eprintln!("sotd update: {why}\n{USAGE}");
+            return 2;
+        }
+    };
+    let asked = sot_log::host::state_dir::host_name().and_then(|me| {
+        crate::topology::dial::dial_and_call(&endpoint, &me, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({}), LIST_BOUND)
+    });
+    let reply = match asked {
+        Ok(reply) => reply,
+        Err(why) => {
+            eprintln!("sotd update repls: {why}");
+            return 1;
+        }
+    };
+    let work = live_work(&reply);
+    for line in &work.lines {
+        println!("{line}");
+    }
+    if let Some(why) = &work.unsure {
+        eprintln!("sotd update repls: {why}");
+    }
+    repls_exit(&work)
+}
+
+/// The exit code for what was read: 1 when the reply left something unsaid (whatever lines it did give), else 0 or `REPLS_LIVE`.
+fn repls_exit(work: &LiveWork) -> i32 {
+    match (&work.unsure, work.lines.is_empty()) {
+        (Some(_), _) => 1,
+        (None, true) => 0,
+        (None, false) => REPLS_LIVE,
     }
 }
 
@@ -356,5 +511,113 @@ mod tests {
         assert_eq!(code(&dir).await, REFUSED);
         let operator = prefix(("0.6.6-rc9.14-dev+d94ed0fac", "c1"), Some(("0.6.6-rc9.14", Some(("0.6.6-rc9.14-dev+d94ed0fac", "c1")))));
         assert_eq!(code(&operator).await, 0, "an operator's pointer carries its record");
+    }
+
+    #[test]
+    fn direction_arguments_are_the_version_and_the_prefix_in_either_order() {
+        let want = Ok(("v0.6.6".to_string(), "p".into()));
+        assert_eq!(parse_direction_args(&argv("v0.6.6 --prefix p")), want);
+        assert_eq!(parse_direction_args(&argv("--prefix p v0.6.6")), want);
+        for bad in ["", "v0.6.6", "--prefix p", "v0.6.6 --prefix", "a b --prefix p"] {
+            assert!(parse_direction_args(&argv(bad)).is_err(), "{bad:?}");
+            assert_eq!(direction_cli(&argv(bad)), 2, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn update_direction_names_the_way_the_install_moves() {
+        // installed, target, the word. Dev rows included: a main build sits above the candidate it follows.
+        let table = [
+            ("0.6.6-rc9.14-dev+a", "0.6.6-rc9.13", "older"),
+            ("0.6.6-rc9.14-dev+a", "0.6.6-rc9.14", "newer"),
+            ("0.6.6-rc9.14-dev+a", "v0.6.6-rc9.14-dev+a", "same"),
+            ("0.6.6-rc9.13", "v0.6.6-rc9.13", "same"),
+            ("0.6.6-rc9.13", "0.6.5", "older"),
+            ("0.6.5", "v0.6.6-rc9.13", "newer"),
+            ("0.6.6-rc9.13", "v0.6.6", "newer"),
+        ];
+        for (installed, target, want) in table {
+            assert_eq!(direction_word(target, installed), want, "{installed} -> {target}");
+            let dir = prefix((installed, "c0"), None);
+            let got = direction_cli(&["--prefix".into(), dir.path().display().to_string(), target.into()]);
+            assert_eq!(got, 0, "{installed} -> {target}");
+        }
+    }
+
+    #[test]
+    fn direction_without_a_readable_install_exits_1() {
+        let dir = tempfile::tempdir().unwrap();
+        let ask = |d: &std::path::Path| direction_cli(&["--prefix".into(), d.display().to_string(), "v0.6.6".into()]);
+        assert_eq!(ask(dir.path()), 1, "no install.json");
+        std::fs::write(dir.path().join("install.json"), "{not json").unwrap();
+        assert_eq!(ask(dir.path()), 1, "garbled install.json");
+        std::fs::write(dir.path().join("install.json"), r#"{"schema":1,"prefix":"/p"}"#).unwrap();
+        assert_eq!(ask(dir.path()), 1, "no version recorded");
+    }
+
+    #[test]
+    fn a_live_repl_is_one_the_daemon_says_is_ready() {
+        let reply = serde_json::json!({ "pluto_server_up": false, "workspaces": [
+            { "workspace_id": "ws-a", "slug": "rig", "label": "Rig PC", "repl_state": "ready" },
+            { "workspace_id": "ws-b", "slug": "idle", "label": "Idle", "repl_state": "not_started" },
+            { "workspace_id": "ws-c", "slug": "boot", "label": "Boot", "repl_state": "starting" },
+            { "workspace_id": "ws-d", "slug": "gone", "label": "Gone", "repl_state": "dead" },
+            { "workspace_id": "ws-e", "slug": "scan", "label": "", "repl_state": "ready" },
+            { "workspace_id": "ws-f", "slug": "old" },
+        ]});
+        let work = live_work(&reply);
+        assert_eq!(work.lines, ["repl Rig PC", "repl scan"]);
+        assert_eq!((work.unsure.is_none(), repls_exit(&work)), (true, REPLS_LIVE));
+        let none = live_work(&serde_json::json!({ "workspaces": [], "pluto_server_up": false }));
+        assert_eq!((none.lines.len(), none.unsure.is_none(), repls_exit(&none)), (0, true, 0), "a server not started adds no Pluto line");
+    }
+
+    #[test]
+    fn a_pluto_server_that_is_up_is_live_work_with_no_notebook_opened_through_the_daemon() {
+        // Pluto's own home page opens notebooks the daemon never sees, so the server being up is the fact.
+        let up = live_work(&serde_json::json!({ "workspaces": [], "pluto_server_up": true }));
+        assert_eq!((up.lines.clone(), up.unsure.is_none(), repls_exit(&up)), (vec!["pluto server".to_string()], true, REPLS_LIVE));
+        let with_repl = live_work(&serde_json::json!({
+            "workspaces": [{ "slug": "rig", "label": "Rig PC", "repl_state": "ready" }],
+            "pluto_server_up": true,
+        }));
+        assert_eq!(with_repl.lines, ["repl Rig PC", "pluto server"]);
+    }
+
+    #[test]
+    fn a_daemon_that_cannot_say_about_pluto_has_not_answered_but_its_repls_are_kept() {
+        // A daemon older than the field lists rows only: it may hold a Pluto server it cannot report.
+        let old = live_work(&serde_json::json!({ "workspaces": [{ "slug": "rig", "label": "Rig PC", "repl_state": "ready" }] }));
+        assert_eq!(old.lines, ["repl Rig PC"], "the rows it did list are named");
+        assert_eq!(
+            old.unsure.as_deref(),
+            Some("the daemon's reply says nothing of its Pluto server (a daemon older than this build cannot say whether it is running)")
+        );
+        assert_eq!(repls_exit(&old), 1, "and it exits 1: not an answer");
+        let silent = live_work(&serde_json::json!({ "workspaces": [] }));
+        assert_eq!((silent.lines.len(), repls_exit(&silent)), (0, 1));
+    }
+
+    #[test]
+    fn a_reply_with_no_rows_is_not_an_answer() {
+        // An error payload is a reply too; reading it as "no live REPL" would restart the daemon unasked.
+        let refused = live_work(&serde_json::json!({ "error": "unknown op" }));
+        assert_eq!(refused.unsure.as_deref(), Some("the daemon answered without a workspace list: unknown op"));
+        assert_eq!((refused.lines.len(), repls_exit(&refused)), (0, 1));
+        assert_eq!(repls_exit(&live_work(&serde_json::json!({}))), 1);
+        assert_eq!(repls_exit(&live_work(&serde_json::json!({ "workspaces": "none", "pluto_server_up": false }))), 1);
+        assert!(live_work(&serde_json::json!({ "workspaces": [], "pluto_server_up": "yes" })).unsure.is_some(), "a flag that is no bool is no answer");
+    }
+
+    #[test]
+    fn repls_takes_one_endpoint_and_a_daemon_that_does_not_answer_is_exit_1() {
+        assert_eq!(parse_repls_args(&argv("--endpoint unix:/x")), Ok("unix:/x".to_string()));
+        for bad in ["", "--endpoint", "--endpoint /x", "unix:/x", "--endpoint unix:/x y"] {
+            assert!(parse_repls_args(&argv(bad)).is_err(), "{bad:?}");
+            assert_eq!(repls_cli(&argv(bad)), 2, "{bad:?}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let none = format!("--endpoint unix:{}/absent.sock", dir.path().display());
+        assert_eq!(repls_cli(&argv(&none)), 1);
     }
 }

@@ -159,6 +159,11 @@ impl Pluto {
         ))
     }
 
+    /// Whether the Pluto server is running (started and not ended): ending the daemon ends it and every notebook open in it.
+    pub(crate) async fn server_up(&self) -> bool {
+        matches!(self.inner.submit.lock().await.as_ref(), Some(r) if !r.submit.is_closed() && !matches!(*r.ready.borrow(), Ready::Failed(_)))
+    }
+
     async fn ensure_supervisor(&self) -> Result<(mpsc::Sender<Submission>, watch::Receiver<Ready>, Start)> {
         let mut guard = self.inner.submit.lock().await;
         if let Some(running) = guard.as_ref() {
@@ -1237,6 +1242,74 @@ mod open_bound_tests {
         let text = format!("{err:#}");
         let said = "stdout closed before READY; its last stderr lines: ERROR: ArgumentError: Package Pluto not found";
         assert!(text.ends_with(said), "{text}");
+        drop(pluto);
+    }
+
+    /// The server is up from its start until it ends, whether or not the daemon opened a notebook through it: not before
+    /// a start, up once an open has started it, down again once the child has exited. The stand-in answers one open and
+    /// exits.
+    #[tokio::test]
+    async fn the_server_is_up_from_its_start_until_it_ends() {
+        let name = "sidecars::pluto::open_bound_tests::the_server_is_up_from_its_start_until_it_ends";
+        if !isolated(name, Duration::from_secs(60)) {
+            return;
+        }
+        let dir = tempfile::Builder::new().prefix("sot-pluto-live-").tempdir().unwrap();
+        let stub = dir.path().join("stub-julia");
+        sot_log::test_exec::write_executable(
+            &stub,
+            "#!/bin/sh\necho 'READY http://pluto.invalid/'\nread l\necho 'URL http://pluto.invalid/a'\nsleep 1\n".to_string(),
+        );
+        let script = dir.path().join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        let _pin = pin_env(&stub, dir.path());
+        let pluto = Pluto::new(dir.path().to_path_buf(), script);
+        assert!(!pluto.server_up().await, "no server started, none up");
+        pluto.open_notebook(&dir.path().join("a.jl")).await.expect("the open");
+        assert!(pluto.server_up().await, "the server answered an open");
+        let began = std::time::Instant::now();
+        while pluto.server_up().await {
+            assert!(began.elapsed() < Duration::from_secs(20), "the server outlived its child");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        drop(pluto);
+    }
+
+    /// The server is up while it is still starting, before its READY: an open waiting on the start has a running server
+    /// to wait for. The stand-in says READY only when the test creates `go`, so the start is held open for the check.
+    #[tokio::test]
+    async fn the_server_is_up_while_it_is_still_starting() {
+        let name = "sidecars::pluto::open_bound_tests::the_server_is_up_while_it_is_still_starting";
+        if !isolated(name, Duration::from_secs(60)) {
+            return;
+        }
+        let dir = tempfile::Builder::new().prefix("sot-pluto-up-").tempdir().unwrap();
+        let (stub, go, said) = (dir.path().join("stub-julia"), dir.path().join("go"), dir.path().join("said"));
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\necho 'READY http://pluto.invalid/'\n\
+                 while read l; do echo 'URL http://pluto.invalid/edit'; done\n",
+                said.display(),
+                go.display()
+            ),
+        );
+        let script = dir.path().join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        let _pin = pin_env(&stub, dir.path());
+        let pluto = Pluto::new(dir.path().to_path_buf(), script);
+        assert!(!pluto.server_up().await, "no server started, none up");
+        let open = {
+            let (pluto, path) = (pluto.clone(), dir.path().join("a.jl"));
+            tokio::spawn(async move { pluto.open_notebook(&path).await })
+        };
+        within(Duration::from_secs(20), "the stand-in has started", || said.exists()).await;
+        assert!(!open.is_finished(), "the open waits for READY");
+        assert!(pluto.server_up().await, "a server still starting, before READY, is up");
+        std::fs::write(&go, "").unwrap();
+        let answer = open.await.expect("the open task").expect("the open");
+        assert_eq!(answer, super::Opened::Url("http://pluto.invalid/edit".to_string()));
+        assert!(pluto.server_up().await, "the server is up once READY came");
         drop(pluto);
     }
 

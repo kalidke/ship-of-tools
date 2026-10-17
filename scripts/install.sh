@@ -5,6 +5,7 @@
 #   ./scripts/install.sh --local                     # all-in-one on this box
 #   ./scripts/install.sh --backend <ssh-alias>       # FE here → remote BE
 #   ./scripts/install.sh --be-only                   # headless backend/canary
+#   bash ~/.local/share/sot/repo/current/scripts/install.sh   # UPDATE this box: "update sot from the repo"
 #   [--version vX.Y.Z] [--prefix <dir>] [--no-service]
 #   [--archive <folder>]    # install a folder scripts/pack-build.sh packed (a build of the line,
 #                           # with no release): run from the checkout that built it
@@ -13,13 +14,24 @@
 #   [--force-role-change]  # consent to installing over another prefix's live daemon, over an existing
 #                          # install from a host hosts.toml runs no sotd on, or to recording less than
 #                          # install.json records
-#                                                    # default: latest release
+#   [--restart-daemon]     # consent to restarting a daemon whose rows have a live REPL (its variables end)
 #   SOT_INSTALL_TAG=<tag> ./scripts/install.sh ...   # run THIS checkout's body
+#
+# The target. --version names a release, --archive a packed folder. With neither, the run follows the channel this
+# prefix already runs, from install.json: no install, or a stable release, takes GitHub's latest stable release; a
+# pre-release takes the newest published release of any kind; a build with a `+` (a build of the line, a source build)
+# stops and asks for --version or --archive. A run with neither never moves an install backwards: the target's own
+# `sotd update direction` says `older` and the run ends FAIL, naming --version.
+#
+# The verdict. A run ends with exactly one line: `PASS: Ship of Tools <v> at <short> on this computer`, `ONE STEP LEFT:
+# <what a person does>` (exit 0: the install is whole) or `FAIL: <check>: <detail>` (exit 1, or 2 for a refusal).
+# Interrupted or failed, run it again: install.json is written last, and a repeat is a repair run.
 #
 # Role: a declared hosts.toml naming this host (host_name()) wins — its
 # daemon/frontend flags say what gets installed and enabled here (a frontend
 # runs its own local daemon too), no --local/--backend/--be-only needed. Those flags are the fallback for a box
-# with no entry yet (a brand-new user, or one not sharing the hub's home).
+# with no entry yet (a brand-new user, or one not sharing the hub's home); with no flag either, an install already
+# here says what it was (install.json's bits, its service, its hub; a remote install's alias from its wrapper).
 #
 # What it does (idempotent; re-run to upgrade):
 #   1. preflight — arch/glibc floor for the FE, tar/curl present
@@ -37,6 +49,7 @@
 #   6. agent comm resources: ~/.sot-comm plus Claude/Codex skills
 #   7. backend roles: install+enable the systemd --user sotd unit
 #   8. FE roles: ~/.local/bin/sot-launch wrapper + app/desktop entry
+#   9. install.json, the checks, and the verdict
 #
 # Development machines DON'T use this release installer — they run from a checkout.
 set -euo pipefail
@@ -46,11 +59,23 @@ PREFIX="${SOT_PREFIX:-$HOME/.local/share/sot}"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sot"
 
 
-ROLE="" VERSION="" ARCHIVE="" BE_ALIAS="" HUB_ALIAS="" NO_SERVICE=0 FORCE_ROLE_CHANGE=0
+ROLE="" VERSION="" ARCHIVE="" BE_ALIAS="" HUB_ALIAS="" NO_SERVICE=0 FORCE_ROLE_CHANGE=0 RESTART_DAEMON=0
 GLIBC_FLOOR_FE="2.35"
 
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
-die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+# A failed run's last line is its verdict: `FAIL: <check>: <detail>`, where the check is the stage in STEP.
+STEP=install
+VERDICT_PRINTED=0
+fail() {  # <exit code> <detail>
+    VERDICT_PRINTED=1
+    printf 'FAIL: %s: %s\n' "$STEP" "$2" >&2
+    exit "$1"
+}
+die()  { fail 1 "$*"; }
+# The checks after the install record what they find here, and the run ends with the one verdict (installer_verdict).
+FAIL_FIRST="" STEPS_LEFT=""
+verdict_fail() { [ -n "$FAIL_FIRST" ] || FAIL_FIRST="$1: $2"; }  # <check> <detail>; the first one stands
+verdict_step() { STEPS_LEFT="${STEPS_LEFT:+$STEPS_LEFT; }$1"; }
 # The comm library's two cleanup-trap helpers, copied: this script does not load the library
 # (comm/lib/comm-lib-base.sh, cleanup traps).
 sot_cleanup_signals() {
@@ -58,6 +83,18 @@ sot_cleanup_signals() {
     for s in HUP:129 INT:130 TERM:143; do trap "trap '' HUP INT TERM; _SOT_SIG=${s%:*}; set +e; exit ${s#*:}" "${s%:*}"; done
 }
 sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c 'kill -s "$1" "$$"' sh "$_SOT_SIG"; }; }
+# The run's one exit trap, armed before the options are read: it removes the scratch the run made (WORK, and the prelude's
+# TMP_INSTALLER) and, when the run ends with no verdict line (a command that failed under set -e, an interrupt), prints the
+# FAIL line itself, so every exit ends in exactly one verdict.
+WORK="" TMP_INSTALLER=""
+on_exit() {
+    local rc=$?
+    trap '' HUP INT TERM
+    [ -z "$TMP_INSTALLER" ] || rm -f "${TMP_INSTALLER:?}"
+    [ -z "$WORK" ] || rm -rf "${WORK:?}"
+    [ "$VERDICT_PRINTED" = 1 ] || printf 'FAIL: %s: stopped (exit %s)\n' "$STEP" "$rc" >&2
+    sot_end_by_signal
+}
 
 # Every network call carries the bound its tool offers, so a stalled network ends in the tool's own error: curl gives
 # up on a connect past 15 s or a transfer under 1000 B/s for 60 s, git on an https transfer by the same rule (no
@@ -377,6 +414,150 @@ installer_role_from_flags() {  # <role: local|remote|be-only>
     esac
 }
 
+# The string value of KEY in an install.json (one key per line, as installer_manifest_json writes it); empty when the
+# file or the key is absent. Read by line so the prelude, which runs before any tool but sed, can read the installed
+# version and the gates can read the record without a JSON parser.
+installer_json_string() {  # <install.json> <key>
+    [ -f "$1" ] || return 0
+    sed -n -E "s/^ *\"$2\": *\"([^\"]*)\".*/\1/p" "$1" | head -1
+}
+installer_json_bool() {  # <install.json> <key>: true, false or empty
+    [ -f "$1" ] || return 0
+    sed -n -E "s/^ *\"$2\": *(true|false).*/\1/p" "$1" | head -1
+}
+
+# Which releases a run with no --version and no --archive follows, from the version this prefix runs: "latest" (GitHub's
+# latest stable: no install, or a stable release), "newest" (the newest published release of any kind: a pre-release
+# runs the candidate line) or "stop" (a `+` marks a build that is not a release; it names no channel). No semver here:
+# which way the install then moves is `sotd update direction`'s answer.
+installer_channel() {  # <installed version, empty when none>
+    case "$1" in
+        '') printf latest ;;
+        *+*) printf stop ;;
+        *-*) printf newest ;;
+        *) printf latest ;;
+    esac
+}
+
+# The role an install already here recorded, for a run that names no role flag and finds no topology entry: one line,
+# "<local|be-only|remote> <backend alias, or - >", or nothing when the record names none. The daemon and frontend bits
+# are written since v0.6.0, a `role` key by 0.5.x; a remote install's alias is the SOT_HOST line of its own wrapper.
+installer_recorded_role() {  # <install.json> <wrapper>
+    local f="$1" d fe role alias=-
+    [ -f "$f" ] || return 0
+    d="$(installer_json_bool "$f" daemon)"; fe="$(installer_json_bool "$f" frontend)"
+    if [ -n "$d" ] && [ -n "$fe" ]; then
+        case "$d $fe" in
+            "true true") role=local ;;
+            "true false") role=be-only ;;
+            "false true") role=remote ;;
+            *) return 0 ;;
+        esac
+    else
+        role="$(installer_json_string "$f" role)"
+        case "$role" in local|be-only|remote) ;; *) return 0 ;; esac
+    fi
+    if [ "$role" = remote ]; then
+        alias="$(sed -n -E 's/^export SOT_HOST="([^"]+)"$/\1/p' "$2" 2>/dev/null | head -1)"
+        [ -n "$alias" ] || return 0
+    fi
+    printf '%s %s' "$role" "$alias"
+}
+
+# "yes" when a `sotd topology plan` (stdin) dials a daemon host other than the plan's own `self` line.
+installer_plan_dials_others() {
+    awk '$1 == "self" { me = $2 } $1 == "dial" && $2 != "" { d[$2] = 1 } END { for (h in d) if (h != me) { print "yes"; exit } }'
+}
+
+# Which launcher a frontend install gets: "remote" (the one that applies, then execs the checkout's launch-sot.sh, which
+# dials every host of the topology plan) when the run names a backend alias or the plan lists another daemon host, else
+# "all-in-one" (this computer's own daemon alone).
+installer_launcher_kind() {  # <backend alias, or empty> <plan lists another daemon host: yes or empty>
+    if [ -n "$1" ] || [ "$2" = yes ]; then printf remote; else printf all-in-one; fi
+}
+
+# The ids of this account's running windows of the install at PREFIX: its `sot` process's argv0 is PREFIX/bin/sot.
+installer_windows_running() {  # <prefix>
+    { ps -u "$(id -u)" -o pid=,comm=,args= 2>/dev/null || true; } | PFX="$1/bin/sot" awk '
+        { n = $2; sub(/.*\//, "", n) } n != "sot" { next }
+        { args = $0; sub(/^ *[0-9]+ +[^ ]+ +/, "", args); split(args, w, " ") }
+        w[1] == ENVIRON["PFX"] { print $1 }'
+}
+
+# The one verdict line a run ends with: FAIL (the first failed check, "<check>: <detail>"), else ONE STEP LEFT (the
+# steps that remain, joined), else PASS. Pure. FAIL is exit 1; the others are 0, since the install is whole.
+installer_verdict() {  # <version> <short commit> <fail> <steps>
+    if [ -n "$3" ]; then printf 'FAIL: %s\n' "$3"
+    elif [ -n "$4" ]; then printf 'ONE STEP LEFT: %s\n' "$4"
+    else printf 'PASS: Ship of Tools %s at %s on this computer\n' "$1" "$2"
+    fi
+}
+
+# What a run knows of the daemon on SOCKET, asked of the target's own `sotd same-version`: "none" (nothing answers), "current"
+# (it runs the target), "other" (it runs another version) or "held" (another version, and a window holds it).
+installer_daemon_state() {  # <sotd> <socket>
+    local rc=0
+    "$1" same-version --endpoint "unix:$2" >/dev/null 2>&1 || rc=$?
+    case "$rc" in 0) printf current ;; 3) printf other ;; 4) printf held ;; *) printf none ;; esac
+}
+
+# The daemon's state once it has had up to SECONDS (by the clock, so a slow ask counts) to answer as the target: "current" as soon as it does, else what the last
+# ask said. HELD-OK 1 also stops the wait at "held" (a unit this run did not restart, which a window keeps on its version).
+installer_daemon_wait() {  # <sotd> <socket> <seconds> <held-ok 0|1>
+    local t0 st
+    t0="$(date +%s)"
+    while :; do
+        st="$(installer_daemon_state "$1" "$2")"
+        [ "$st" != current ] || break
+        if [ "$st" = held ] && [ "$4" = 1 ]; then break; fi
+        [ $(( $(date +%s) - t0 )) -lt "$3" ] || break
+        sleep 1
+    done
+    printf '%s' "$st"
+}
+
+# The work a restart of the daemon would end, in words: the rows with a live REPL (comma-joined, empty when none) and the
+# Pluto server when it is running (PLUTO 1: every notebook open in it ends with the daemon). LEAD opens the REPL part.
+# Nothing when there is none.
+installer_live_work() {  # <rows> <pluto 0|1> <lead>
+    local out=""
+    [ -z "$1" ] || out="$3 the REPLs of: $1"
+    [ "$2" != 1 ] || out="${out:+$out; }the Pluto server is running: restarting the daemon ends every notebook open in it"
+    printf '%s' "$out"
+}
+
+# What starting the daemon again would cost, for the step: the live work (installer_live_work), and that the daemon could
+# not say all of it (UNKNOWN 1: what it did list is named). Nothing when there is none.
+installer_rows_note() {  # <rows> <pluto 0|1> <unknown 0|1>
+    local work; work="$(installer_live_work "$1" "$2" 'starting it again ends')"
+    if [ "$3" = 1 ] && [ -n "$work" ]; then printf '%s; it could not say the rest, so starting it again may end more' "$work"
+    elif [ "$3" = 1 ]; then printf 'its live REPLs and Pluto server could not be listed, so starting it again may end some'
+    else printf '%s' "$work"
+    fi
+}
+
+# The lines of `sotd update repls` (stdin) that start with PREFIX, comma-joined.
+installer_live_lines() {  # <prefix>
+    sed -n "s/^$1 //p" | tr '\n' ',' | sed -e 's/,$//' -e 's/,/, /g'
+}
+
+# The one step a daemon this run leaves on another version needs, the command that fits this computer: HOW is "launcher"
+# (the window's launcher replaces it), "unit" (this install's sotd.service) or "hand" (no launcher, no unit). STATE is
+# held (a window holds it) or other. It runs the old binary beside the new repo/current and bin/sot-capsule until then.
+installer_daemon_step() {  # <how> <state> <socket> <rows> <pluto 0|1> <unknown 0|1>
+    local skew="still runs another version, beside the new repo/current and bin/sot-capsule" out note
+    case "$1" in
+        launcher) out="start Ship of Tools again (the daemon on $3 $skew)" ;;
+        unit)
+            if [ "$2" = held ]; then out="run systemctl --user restart sotd.service once the window that holds the daemon on $3 is closed (it $skew)"
+            else out="run systemctl --user restart sotd.service (the daemon on $3 $skew)"
+            fi ;;
+        *) out="restart the sotd on $3 by hand (it $skew)" ;;
+    esac
+    note="$(installer_rows_note "$4" "$5" "$6")"
+    printf '%s%s' "$out" "${note:+; $note}"
+}
+
 # Minimal JSON string escape (backslash + double quote) so an exotic prefix
 # or hub alias can't produce a manifest that parses wrong.
 json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
@@ -416,11 +597,17 @@ installer_manifest_json() {  # <prefix> <config> <service> <version> <tag> <comm
 EOF
 }
 
-# Write the FE-only wrapper for PREFIX that dials BE-ALIAS over SSH into DEST:
+# Write the FE-only wrapper for PREFIX that dials the topology plan's hosts over SSH into DEST (BE-ALIAS, when given, is
+# the sync-hub hint of a box the plan does not name yet; empty for a box the plan names, whose plan lists the hosts):
 # beside DEST under a name of this shell's own ($$), then moved in, so a
 # failed write leaves the old wrapper whole and returns 1.
-installer_render_remote_launch() {  # <prefix> <be-alias> <dest>
-    local prefix="$1" be_alias="$2" tmp="$3.new.$$"
+installer_render_remote_launch() {  # <prefix> <be-alias, or empty> <dest>
+    local prefix="$1" be_alias="$2" tmp="$3.new.$$" host_line=""
+    # A --backend <alias> install runs no daemon of its own; any other remote launcher is the window of a computer that
+    # does, and launch-sot.sh ensures that daemon and hands the frontend its socket beside the plan's dials.
+    if [ -n "$be_alias" ]; then host_line="export SOT_HOST=\"$be_alias\""
+    else host_line="export SOT_OWN_DAEMON=1"
+    fi
     cat > "$tmp" <<EOF || { rm -f "${tmp:?}"; return 1; }
 #!/usr/bin/env bash
 # FE-only install -> remote BE over SSH (key auth required, ADR 0030 §5).
@@ -446,7 +633,8 @@ if [ -x "$prefix/bin/sot-apply" ]; then
     APPLY_OUT="\$("$prefix/bin/sot-apply" 2>&1)"
     [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
 fi
-export SOT_HOST="$be_alias"
+$host_line
+export SOT_PREFIX="$prefix"
 export SOT_FRONTEND_BIN="$prefix/bin/sot"
 export SOT_NO_UPDATE=1
 exec "$prefix/repo/current/scripts/launch-sot.sh" "\$@"
@@ -552,9 +740,10 @@ installer_enable_local_service() {  # <prefix> <template> <socket>
 # Step 8's wrapper: the all-in-one one, which ensures this box's own daemon
 # (sot_daemon_ensure) before every window, unless this install names an
 # explicit remote backend to dial over SSH (--backend <alias>, or its
-# interactive equivalent) — the one window that runs without a local daemon.
-installer_render_wrapper() {  # <prefix> <target> <be-alias-or-empty> <dest>
-    if [ -z "$3" ]; then
+# interactive equivalent) or the topology plan lists another daemon host
+# (installer_launcher_kind says "remote"): that window dials every host of the plan.
+installer_render_wrapper() {  # <prefix> <target> <be-alias-or-empty> <dest> [remote]
+    if [ -z "$3" ] && [ "${5:-}" != remote ]; then
         render_sot_launch "$1" "$2" "$4"
     else
         installer_render_remote_launch "$1" "$3" "$4"
@@ -588,6 +777,8 @@ installer_declare_trust() {  # <absolute-sotd-path> <prefix>
 # trust_premises.rs and unit_pin.rs. An install never sets it, `curl | bash`
 # included.
 if [ "${SOT_INSTALL_SOURCE_ONLY:-}" = 1 ]; then return 0; fi
+trap on_exit EXIT
+sot_cleanup_signals
 
 # ---- prelude: run the FETCHED tag's own installer, not main's body -------
 # The one-liner always fetches this file from main, whose body targets the
@@ -597,24 +788,42 @@ if [ "${SOT_INSTALL_SOURCE_ONLY:-}" = 1 ]; then return 0; fi
 # (set = skip: the pinned run, and how a checkout runs its own body). Old
 # tags have no prelude; they resolve "latest" themselves the same way.
 # --archive installs the body that was invoked, from its own commit: no prelude.
+# With no --version the tag is the channel this prefix already runs (installer_channel): the body is told it was an
+# implicit run (SOT_INSTALL_IMPLICIT=1), which never moves the install backwards.
 archived=0
 for a in "$@"; do [ "$a" = --archive ] && archived=1; done
 if [ -z "${SOT_INSTALL_TAG:-}" ] && [ "$archived" = 0 ]; then
+    STEP=target
     command -v curl >/dev/null || die "curl is required"
-    tag="" prev=""
-    for a in "$@"; do [ "$prev" = --version ] && tag="$a"; prev="$a"; done
+    tag="" prev="" pfx="$PREFIX"
+    for a in "$@"; do
+        [ "$prev" = --version ] && tag="$a"
+        [ "$prev" = --prefix ] && pfx="$a"
+        prev="$a"
+    done
+    implicit=0
     if [ -z "$tag" ]; then
-        loc="$(curl "${CURL_BOUND[@]}" -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")" \
-            || die "could not resolve the latest release of $REPO"
-        tag="${loc##*/}"
+        implicit=1
+        installed="$(installer_json_string "$pfx/install.json" version)"
+        case "$(installer_channel "$installed")" in
+            stop) fail 2 "this computer runs $installed, a build of the line, not a release: install a pack of the line with --archive <folder>; a release named with --version is usually older and moves this computer back; ask the person who runs it which they want" ;;
+            newest)
+                list="$(curl "${CURL_BOUND[@]}" -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases?per_page=1")" \
+                    || die "could not list the releases of $REPO"
+                tag="$(printf '%s\n' "$list" | grep -o '"tag_name": *"[^"]*"' | head -1 | sed -E 's/.*: *"([^"]*)"/\1/')" ;;
+            *)
+                loc="$(curl "${CURL_BOUND[@]}" -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")" \
+                    || die "could not resolve the latest release of $REPO"
+                tag="${loc##*/}" ;;
+        esac
     fi
     case "$tag" in v[0-9]*) ;; *) die "could not resolve a release tag (got '$tag')" ;; esac
-    # A cleanup trap, armed first (comm/lib/comm-lib-base.sh, cleanup traps).
-    trap - HUP INT TERM; tmp="$(mktemp)"; trap 'trap "" HUP INT TERM; rm -f "${tmp:?}"; sot_end_by_signal' EXIT
-    sot_cleanup_signals
+    TMP_INSTALLER="$(mktemp)"
     url="https://raw.githubusercontent.com/$REPO/$tag/scripts/install.sh"
-    curl "${CURL_BOUND[@]}" -fsSL -o "$tmp" "$url" || die "could not fetch $url"
-    SOT_INSTALL_TAG="$tag" bash "$tmp" "$@"
+    curl "${CURL_BOUND[@]}" -fsSL -o "$TMP_INSTALLER" "$url" || die "could not fetch $url"
+    # The tag's own installer prints the verdict of what it did, a refusal or an interrupt included.
+    VERDICT_PRINTED=1
+    SOT_INSTALL_TAG="$tag" SOT_INSTALL_IMPLICIT="$implicit" bash "$TMP_INSTALLER" "$@"
     exit
 fi
 
@@ -630,18 +839,23 @@ if [ -f "$HOME/.config/systemd/user/sotd.service.d/depot.conf" ]; then
     command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload 2>/dev/null
 fi
 
+# An option that takes a value and finds none ends the run with the verdict line, as an unknown one does.
+need_value() {  # <option> <value, if any> <what it is>
+    [ -n "${2:-}" ] || fail 2 "$1 needs $3"
+}
+STEP=options
 while [ $# -gt 0 ]; do
     case "$1" in
         --local) ROLE=local ;;
-        --backend) ROLE=remote; BE_ALIAS="${2:?--backend needs an ssh alias}"; shift ;;
+        --backend) need_value "$1" "${2:-}" "an ssh alias"; ROLE=remote; BE_ALIAS="$2"; shift ;;
         --be-only) ROLE=be-only ;;
         # This box does not share the hub's home: fetch its hosts.toml
         # (`sotd topology sync`) with the unpacked sotd, below.
-        --hub) HUB_ALIAS="${2:?--hub needs an ssh alias}"; shift ;;
-        --version) VERSION="${2:?}"; shift ;;
+        --hub) need_value "$1" "${2:-}" "an ssh alias"; HUB_ALIAS="$2"; shift ;;
+        --version) need_value "$1" "${2:-}" "a value"; VERSION="$2"; shift ;;
         # A folder scripts/pack-build.sh packed: SHA256SUMS, the tarball, COMMIT and LIBC when present, installed in place of a download.
-        --archive) ARCHIVE="${2:?--archive needs a folder}"; shift ;;
-        --prefix) PREFIX="${2:?}"; shift ;;
+        --archive) need_value "$1" "${2:-}" "a folder"; ARCHIVE="$2"; shift ;;
+        --prefix) need_value "$1" "${2:-}" "a folder"; PREFIX="$2"; shift ;;
         # Skip the systemd unit install/enable: the caller supervises sotd
         # itself (e.g. a systemd-run --user transient unit). A shared home
         # needs no such flag: the unit is pinned to the hosts that run sotd,
@@ -652,10 +866,13 @@ while [ $# -gt 0 ]; do
         # the role gate below for what it protects and why a role flag alone
         # is not consent.
         --force-role-change) FORCE_ROLE_CHANGE=1 ;;
-        *) echo "unknown flag: $1" >&2; exit 2 ;;
+        # Consent to restarting a daemon whose rows have a live REPL: the update asks first and changes nothing without it.
+        --restart-daemon) RESTART_DAEMON=1 ;;
+        *) fail 2 "unknown flag: $1" ;;
     esac
     shift
 done
+STEP=install
 [ -z "$ARCHIVE" ] || [ -z "$VERSION" ] || die "--archive and --version are exclusive: the folder names its own version"
 # Canonicalize the prefix (a relative one produces a repo/current symlink
 # whose target resolves from repo/, i.e. a broken link), then reject unsafe
@@ -670,6 +887,7 @@ reject_unsafe_path_chars "prefix" "$PREFIX"
 reject_unsafe_path_chars 'project root ($HOME)' "$HOME"
 
 # ---- 1. preflight ------------------------------------------------------------
+STEP=preflight
 OS="$(uname -s)"
 case "$OS" in
     Linux)
@@ -737,11 +955,8 @@ fi
 
 # Downloader: the repo is public, so unauthenticated curl against the fixed
 # release-download URL works — no API call, no auth.
-# A cleanup trap, armed first (comm/lib/comm-lib-base.sh, cleanup traps).
-trap - HUP INT TERM
+# The exit trap (on_exit, armed at the top) removes it.
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-install.XXXXXX")"
-trap 'trap "" HUP INT TERM; rm -rf "${WORK:?}"; sot_end_by_signal' EXIT
-sot_cleanup_signals
 
 # VERSION is always known here: the prelude resolves and re-execs first, and an archive names its own.
 ARCHIVE_COMMIT=""
@@ -775,6 +990,7 @@ lib_rc=0
     || die "cannot reach raw.githubusercontent.com to check release $VERSION (curl exit $lib_rc); nothing was changed, try again"
 
 # ---- 2. download + verify ----------------------------------------------------
+STEP=download
 ASSETS=("SHA256SUMS" "sot-$VER-$TARGET.tar.gz")
 [ -z "$ARCHIVE" ] || ASSETS+=("COMMIT")
 # A folder packed by pack-build.sh also names the libc its sotd targets; an older folder has no LIBC.
@@ -805,6 +1021,7 @@ fi
 [ ! -f "$WORK/LIBC" ] || say "archive sotd libc: $(cat "$WORK/LIBC")"
 
 # ---- 3. unpack ---------------------------------------------------------------
+STEP=unpack
 # Unpacked into $WORK only: the role resolution and the gates below run the
 # unpacked sotd, so a refused install has written nothing under $PREFIX.
 mkdir -p "$CONFIG"
@@ -826,6 +1043,35 @@ if [ -n "$ARCHIVE" ]; then
             *) die "$ARCHIVE's $b says '$got', which does not match $VER at ${ARCHIVE_COMMIT:0:9} (its SHA256SUMS and COMMIT): repack it with scripts/pack-build.sh" ;;
         esac
     done
+fi
+
+# ---- the direction: which way this run moves the install, before anything under the prefix changes ------------------
+# The target's own sotd compares against install.json (`sotd update direction`, Rust's compare_versions; no semver in
+# shell). A run that named no target (SOT_INSTALL_IMPLICIT, set by the prelude) never moves an install backwards;
+# naming --version or --archive says the direction and goes on. A prefix with no readable record is a first install.
+STEP=direction
+PRE_VERSION="$(installer_json_string "$PREFIX/install.json" version)"
+PRE_COMMIT="$(installer_json_string "$PREFIX/install.json" commit)"
+DIRECTION=none
+if [ -f "$PREFIX/install.json" ]; then
+    DIRECTION="$("$BINDIR/sotd" update direction "$VER" --prefix "$PREFIX" 2>/dev/null)" || DIRECTION=unknown
+    case "$DIRECTION" in newer|same|older) ;; *) DIRECTION=unknown ;; esac
+    case "$DIRECTION" in
+        unknown) say "note: could not tell which way $VERSION moves the install at $PREFIX (it records $PRE_VERSION)" ;;
+        same)
+            if [ -n "$ARCHIVE_COMMIT" ] && [ "$ARCHIVE_COMMIT" != "$PRE_COMMIT" ]; then
+                say "this computer already runs $PRE_VERSION: same version, another build (${PRE_COMMIT:0:9} to ${ARCHIVE_COMMIT:0:9})"
+            else
+                say "this computer already runs $PRE_VERSION: a repair run"
+            fi ;;
+        *) say "this run moves the install from $PRE_VERSION to $VER ($DIRECTION)" ;;
+    esac
+    if [ "$DIRECTION" = older ] && [ "${SOT_INSTALL_IMPLICIT:-}" = 1 ]; then
+        fail 2 "this computer runs $PRE_VERSION, which is newer than $VER, the release this run found; it never moves back unless told: name the version you want with --version $VERSION"
+    fi
+    if [ "$DIRECTION" = unknown ] && [ "${SOT_INSTALL_IMPLICIT:-}" = 1 ]; then
+        fail 2 "could not tell which way $VERSION moves the install at $PREFIX (it records $PRE_VERSION); a run that names no target never moves it unasked: name the version you want with --version $VERSION"
+    fi
 fi
 
 # ---- heal a pre-0.6 hosts.toml (finding 3a, v0.6.5 macOS field report) -----------
@@ -852,8 +1098,16 @@ fi
 # interactive choice below. --hub fetches a copy first, for a box that does
 # not share the hub's home; a box that does already has the file, no fetch
 # needed.
+STEP=role
+RECORD="$PREFIX/install.json"
 if [ -n "$HUB_ALIAS" ]; then
     "$BINDIR/sotd" topology sync --hub "$HUB_ALIAS" || die "topology sync --hub $HUB_ALIAS failed"
+elif [ -n "$(installer_json_string "$RECORD" hub)" ]; then
+    # The install here recorded its hub: the copy is refreshed from it, as the run that recorded it did. An update
+    # with no network (--archive) keeps the copy it has.
+    HUB_ALIAS="$(installer_json_string "$RECORD" hub)"
+    "$BINDIR/sotd" topology sync --hub "$HUB_ALIAS" >/dev/null 2>&1 \
+        || say "note: could not refresh hosts.toml from the recorded hub '$HUB_ALIAS'; the copy here stands"
 fi
 SELF_HOST="$(installer_self_host)"
 WANT_DAEMON=0
@@ -878,7 +1132,21 @@ if [ "$TOPO_ROLE" != none ]; then
     RESOLVED="$TOPO_ROLE"
     say "role: the declared topology names '$SELF_HOST' ($RESOLVED) — installing/enabling accordingly"
 else
-    # No role flag → interactive Q&A (matches the sot-setup experience; found
+    # No role flag and no topology entry: the install already here says what it was (installer_recorded_role), so
+    # "update sot" needs no flags. A service-less Linux daemon stays service-less.
+    if [ -z "$ROLE" ]; then
+        recorded="$(installer_recorded_role "$RECORD" "$HOME/.local/bin/sot-launch")"
+        if [ -n "$recorded" ]; then
+            ROLE="${recorded%% *}"
+            [ "${recorded#* }" = - ] || BE_ALIAS="${recorded#* }"
+            if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$(installer_json_string "$RECORD" service)" = none ]; then
+                NO_SERVICE=1
+            fi
+            rflag="$ROLE"; [ "$ROLE" != remote ] || rflag=backend
+            say "role: the install at $PREFIX recorded --$rflag${BE_ALIAS:+ $BE_ALIAS}$([ "$NO_SERVICE" = 0 ] || echo ' --no-service'); keeping it"
+        fi
+    fi
+    # No role flag, nothing recorded → interactive Q&A (matches the sot-setup experience; found
     # missing by the first real laptop install). Prompts read /dev/tty so
     # this also works under `curl | bash`. No TTY and no flags → hard error.
     if [ -z "$ROLE" ]; then
@@ -912,8 +1180,7 @@ else
                 *) die "no such choice: '$choice'" ;;
             esac
         else
-            echo "pick a role: --local | --backend <alias> | --be-only (no TTY for interactive setup)" >&2
-            exit 2
+            fail 2 "pick a role: --local | --backend <alias> | --be-only (no TTY for interactive setup, and no install here records one)"
         fi
     fi
     RESOLVED="$(installer_role_from_flags "$ROLE")"
@@ -921,7 +1188,9 @@ else
 fi
 case "$RESOLVED" in *"daemon:1"*) WANT_DAEMON=1 ;; esac
 case "$RESOLVED" in *"frontend:1"*) WANT_FRONTEND=1 ;; esac
+PIN_EXCLUDES=0
 if [ "$TOPO_READABLE" = 1 ] && [ "$TOPO_ROLE" = none ] && [ "$WANT_DAEMON" = 1 ]; then
+    PIN_EXCLUDES=1
     say "WARNING: hosts.toml declares no daemon on '$SELF_HOST', so sotd.service's host pin keeps it from starting here; declare the host (daemon or frontend) in hosts.toml"
 fi
 
@@ -956,33 +1225,87 @@ fi
 # installer_ownership_gate is read-only, so this cannot be the source of a
 # stray write; see it above for what --force-role-change does and does not
 # waive.
+STEP=gate
 GATE_DECISION="$(installer_ownership_gate "$(installer_running_daemon_bin)" "$HOME" "$PREFIX" "$OS" "$WANT_FRONTEND" "$FORCE_ROLE_CHANGE")"
 case "$GATE_DECISION" in
     refuse:*)
-        printf '\033[1;31mERROR:\033[0m %s\n' "${GATE_DECISION#refuse:}" >&2
         printf '       Installing here would replace or disable another install'"'"'s files. Re-run with --force-role-change if that is what you want.\n' >&2
-        exit 2 ;;
+        fail 2 "${GATE_DECISION#refuse:}" ;;
     unresolvable:*)
-        printf '\033[1;31mERROR:\033[0m %s\n' "${GATE_DECISION#unresolvable:}" >&2
-        exit 2 ;;
+        fail 2 "${GATE_DECISION#unresolvable:}" ;;
 esac
 HOST_DECISION="$(installer_host_decision "$TOPO_READABLE" "$TOPO_ROLE" "$PREFIX" "$FORCE_ROLE_CHANGE")"
 case "$HOST_DECISION" in
     refuse:*)
-        printf '\033[1;31mERROR:\033[0m %s\n' "${HOST_DECISION#refuse:}" >&2
         printf '       Declare this host in hosts.toml (frontend for a machine that runs a window, daemon for one other machines dial; a machine with a home of its own is declared in the hub'"'"'s hosts.toml and re-runs with --hub <hub alias> to fetch it) and re-run, or run the installer on a host hosts.toml already declares. --force-role-change overrides this check.\n' >&2
-        exit 2 ;;
+        fail 2 "${HOST_DECISION#refuse:}" ;;
 esac
 RECORD_DECISION="$(installer_record_decision "$PREFIX/install.json" "$TOPO_DECLARED" "$WANT_DAEMON" \
     "$(installer_service_record "$OS" "$WANT_DAEMON" "$NO_SERVICE")" "$FORCE_ROLE_CHANGE")"
 case "$RECORD_DECISION" in
     refuse:*)
-        printf '\033[1;31mERROR:\033[0m %s\n' "${RECORD_DECISION#refuse:}" >&2
         printf '       If this host runs the daemon, drop --no-service. If hosts.toml could not be read, fix it (sotd topology status names the line). If this machine'"'"'s own role changed, re-run with --force-role-change.\n' >&2
-        exit 2 ;;
+        fail 2 "${RECORD_DECISION#refuse:}" ;;
 esac
 
+# ---- the daemon: would this run restart it, and would a REPL's variables end with it? -----------------------------------
+# An update brings the daemon onto the new binary only when it runs another version (the target's own `sotd
+# same-version`), so a repair run costs no REPL its state. An active owned unit on another version is restarted below;
+# one a window holds, and a daemon the launcher started (macOS, --no-service), are left for a step a person takes. Each
+# daemon on another version is asked its rows with a live REPL and whether its Pluto server is running, from its own
+# `workspace.list`, before anything changes: the unit this run restarts stops here and asks (--restart-daemon is the
+# answer yes), and the step of the others names them. A daemon that cannot be asked is not read as "none live".
+STEP=daemon
+DEFAULT_SOCKET="$("$BINDIR/sotd" session-socket-path sot)"
+DAEMON_BEFORE=none
+UNIT_RUNS=0
+LIVE_ROWS="" LIVE_PLUTO=0 ROWS_UNKNOWN=0
+if [ "$WANT_DAEMON" = 1 ]; then
+    DAEMON_BEFORE="$(installer_daemon_state "$BINDIR/sotd" "$DEFAULT_SOCKET")"
+    if [ "$OS" = Linux ] && [ "$NO_SERVICE" = 0 ] && systemctl --user is-active sotd.service >/dev/null 2>&1; then UNIT_RUNS=1; fi
+fi
+WINDOWS_BEFORE="$(installer_windows_running "$PREFIX")"
+if [ "$DAEMON_BEFORE" = other ] || [ "$DAEMON_BEFORE" = held ]; then
+    WILL_RESTART=0
+    if [ "$UNIT_RUNS" = 1 ] && [ "$DAEMON_BEFORE" = other ]; then WILL_RESTART=1; fi
+    repl_rc=0
+    # stdout carries the lines it could read, stderr its one reason when it could not read all.
+    LIVE_OUT="$("$BINDIR/sotd" update repls --endpoint "unix:$DEFAULT_SOCKET" 2>&1)" || repl_rc=$?
+    LIVE_ROWS="$(printf '%s\n' "$LIVE_OUT" | installer_live_lines repl)"
+    case "
+$LIVE_OUT
+" in *"
+pluto server
+"*) LIVE_PLUTO=1 ;; esac
+    case "$repl_rc" in
+        0) ;;
+        3)
+            if [ "$WILL_RESTART" = 0 ]; then
+                :
+            elif [ "$RESTART_DAEMON" = 1 ]; then
+                say "$(installer_live_work "$LIVE_ROWS" "$LIVE_PLUTO" 'restarting the daemon ends') (--restart-daemon)"
+            else
+                printf '       Restarting the daemon ends those REPLs and notebooks (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.\n' >&2
+                fail 2 "the daemon on $DEFAULT_SOCKET runs another version, and $(installer_live_work "$LIVE_ROWS" "$LIVE_PLUTO" 'restarting it would end')"
+            fi ;;
+        *)
+            ROWS_UNKNOWN=1
+            # The one line sotd gives for what it could not read; a sotd that gave none is named by its exit status.
+            LIVE_WHY="$(printf '%s\n' "$LIVE_OUT" | grep -v -e '^repl ' -e '^pluto server$' | head -1 || true)"
+            [ -n "$LIVE_WHY" ] || LIVE_WHY="sotd update repls gave no reason (exit $repl_rc)"
+            if [ "$WILL_RESTART" = 0 ]; then
+                :
+            elif [ "$RESTART_DAEMON" = 1 ]; then
+                say "note: could not ask the daemon on $DEFAULT_SOCKET in full ($LIVE_WHY); restarting it ends any REPL or Pluto notebook that is live (--restart-daemon)"
+            else
+                printf '       Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.\n' >&2
+                fail 2 "could not ask the daemon on $DEFAULT_SOCKET in full: it runs another version${LIVE_ROWS:+, and restarting it would end the REPLs of: $LIVE_ROWS}; $LIVE_WHY"
+            fi ;;
+    esac
+fi
+
 # ---- 3a. the commit to install, resolved before anything is swapped ------------
+STEP=layout
 # A commit origin lacks (an unpushed line, a deleted tag) refuses here, with the binaries and .prev copies untouched.
 REPO_DIR="$PREFIX/repo"
 BASE="$REPO_DIR/base"
@@ -999,7 +1322,15 @@ fi
 # public-flip history rewrite) otherwise makes the whole fetch abort with
 # "would clobber existing tag", blocking every upgrade re-run (issue #4).
 # The checkouts are READ-ONLY BY CONVENTION, so force-updating tags is safe.
-git "${GIT_BOUND[@]}" -C "$BASE" fetch --tags --force origin || die "fetch failed"
+# An --archive install of a commit the base clone already holds needs no origin: carried to a machine with no network,
+# it installs without the fetch.
+if ! git "${GIT_BOUND[@]}" -C "$BASE" fetch --tags --force origin; then
+    if [ -n "$ARCHIVE" ] && git -C "$BASE" rev-parse --verify "$ARCHIVE_COMMIT^{commit}" >/dev/null 2>&1; then
+        say "note: could not fetch origin; $BASE already holds ${ARCHIVE_COMMIT:0:9}"
+    else
+        die "fetch failed"
+    fi
+fi
 if [ -n "$ARCHIVE" ]; then
     want="$(git -C "$BASE" rev-parse --verify "$ARCHIVE_COMMIT^{commit}" 2>/dev/null)" \
         || die "commit $ARCHIVE_COMMIT is not in origin after fetch — push the line first"
@@ -1015,7 +1346,8 @@ mkdir -p "$PREFIX/bin" "$PREFIX/updates" "$PREFIX/repo"
 # that predate the capsule runtime lack it, hence the skip for it alone.
 for b in sot sotd sot-capsule; do
     [ "$b" = sot-capsule ] && [ ! -f "$BINDIR/$b" ] && continue
-    if [ -f "$PREFIX/bin/$b" ]; then
+    # The .prev copy is the rollback: a binary already equal to the target's (a repeat or repair run) is not the previous one.
+    if [ -f "$PREFIX/bin/$b" ] && ! cmp -s "$PREFIX/bin/$b" "$BINDIR/$b"; then
         sot_install_copy "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev" || die "backing up $PREFIX/bin/$b failed"
     fi
     sot_install_copy "$BINDIR/$b" "$PREFIX/bin/$b" 0755 || die "installing $PREFIX/bin/$b failed"
@@ -1035,7 +1367,6 @@ rm -f "${PREFIX:?}"/updates/last-good-*.json "${PREFIX:?}"/updates/just-applied-
 # onto the new one (a downgrade, when the new one is already past it). Only this target's: a shared home serves others.
 rm -f "${PREFIX:?}/updates/pending-$TARGET.json" 2>/dev/null || true
 say "binaries: $("$PREFIX/bin/sotd" --version)"
-DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 
 # ---- 4. the repo checkout — manual, resources, julia code (ADR 0030 add.) -----
 # The checkout IS the product's resource tree and its help system:
@@ -1096,21 +1427,30 @@ ln -sfn "$CHECKOUT" "$PREFIX/julia/current"
 if [ ! -f "$PREFIX/bin/sot-apply" ] && [ -f "$CHECKOUT/scripts/sot-apply.sh" ]; then
     sot_install_copy "$CHECKOUT/scripts/sot-apply.sh" "$PREFIX/bin/sot-apply" 0755 || die "installing $PREFIX/bin/sot-apply failed"
 fi
-# Keep the previously-active version dir for rollback; prune everything else.
+# Keep the previously-active version dir for rollback; prune the rest, except a folder with local changes: it is named
+# and kept until it is clean (or removed by hand), never deleted under its owner. A run that finds repo/current already at
+# the target (a repeat or repair run) has no previous folder to name, so it prunes nothing: the folder the update kept stays.
 for v in "$REPO_DIR/versions"/*; do
     [ -d "$v" ] || continue
     case "$(basename "$v")" in
         "$VERSION") ;;
         "$PREV_VERSION") ;;
         *)
-            say "pruning old version dir $(basename "$v")"
-            git -C "$BASE" worktree remove --force "$v" 2>/dev/null || rm -rf "${v:?}"
+            [ "$PREV_VERSION" != "$VERSION" ] || continue
+            old_dirty="$(git -C "$v" status --porcelain 2>&1)" || old_dirty="git status failed: $old_dirty"
+            if [ -n "$old_dirty" ]; then
+                say "keeping old version dir $(basename "$v"): it has local changes ($(printf '%s\n' "$old_dirty" | head -1)); it stays until it is clean or you remove it"
+            else
+                say "pruning old version dir $(basename "$v")"
+                git -C "$BASE" worktree remove "$v" 2>/dev/null || rm -rf "${v:?}"
+            fi
             ;;
     esac
 done
 git -C "$BASE" worktree prune 2>/dev/null || true
 
 # ---- 5. Julia + agent comm -----------------------------------------------------
+STEP=julia
 chan="1.12"
 if [ -x "$HOME/.juliaup/bin/juliaup" ]; then
     export PATH="$HOME/.juliaup/bin:$PATH"
@@ -1131,6 +1471,7 @@ julia_run() {
     julia "+$chan" "$@" 2>/dev/null || julia "$@"
 }
 
+STEP=comm
 say "installing agent comm resources (sot-comm, Claude/Codex skills)"
 julia_run --project="$CHECKOUT" -e 'using ShipTools; ShipTools.update_comm()' \
     || die "ShipTools.update_comm() failed"
@@ -1152,9 +1493,12 @@ if [ "$WANT_DAEMON" = 1 ]; then
         fi
     done
     say "instantiating julia envs (first run takes a few minutes)"
-    julia_run --project="$CHECKOUT/julia/kernel" -e 'using Pkg; Pkg.instantiate()'
-    julia_run --project="$CHECKOUT/julia/repl" -e 'using Pkg; Pkg.instantiate()'
-    julia_run --project="$CHECKOUT/julia/pluto" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using Pluto'
+    julia_run --project="$CHECKOUT/julia/kernel" -e 'using Pkg; Pkg.instantiate()' \
+        || verdict_fail julia "instantiating julia/kernel failed; run it again"
+    julia_run --project="$CHECKOUT/julia/repl" -e 'using Pkg; Pkg.instantiate()' \
+        || verdict_fail julia "instantiating julia/repl failed; run it again"
+    julia_run --project="$CHECKOUT/julia/pluto" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using Pluto' \
+        || verdict_fail julia "instantiating julia/pluto failed; run it again"
 
     # MathJax sidecar (math rendering in markdown previews). Its node deps
     # are NOT in the repo — without them every math.render dies with
@@ -1172,6 +1516,7 @@ if [ "$WANT_DAEMON" = 1 ]; then
 fi
 
 # ---- 6. config -----------------------------------------------------------------
+STEP=config
 # hosts.toml is never written here — see "what this box knows about itself"
 # above.
 installer_retire_local_service "$WANT_DAEMON" "$PREFIX" "$TOPO_DECLARED"
@@ -1179,6 +1524,7 @@ installer_retire_local_service "$WANT_DAEMON" "$PREFIX" "$TOPO_DECLARED"
 installer_declare_trust "$PREFIX/bin/sotd" "$HOME"
 
 # ---- 7. backend service --------------------------------------------------------
+STEP=service
 if [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 1 ]; then
     say "skipping systemd unit (--no-service) — supervise sotd yourself, e.g.:"
     say "  systemd-run --user --unit=sotd-canary -p Restart=always $PREFIX/bin/sotd --project-root \$HOME --label sot"
@@ -1195,9 +1541,21 @@ if [ "$OS" = Linux ] && [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 0 ]; then
 fi
 
 # ---- 8. FE launcher -------------------------------------------------------------
+STEP=launcher
 if [ "$WANT_FRONTEND" = 1 ]; then
     mkdir -p "$HOME/.local/bin"
-    installer_render_wrapper "$PREFIX" "$TARGET" "$BE_ALIAS" "$HOME/.local/bin/sot-launch" \
+    # A box the topology plan names, with other daemon hosts in it, gets the launcher that dials the plan (launch-sot.sh)
+    # whether or not --backend is given again: an update must not drop the hosts the plan lists.
+    PLAN_OTHERS=""
+    if [ -z "$BE_ALIAS" ]; then
+        PLAN_TEXT="$("$PREFIX/bin/sotd" topology plan --self "$SELF_HOST" 2>/dev/null)" || PLAN_TEXT=""
+        PLAN_OTHERS="$(printf '%s\n' "$PLAN_TEXT" | installer_plan_dials_others)"
+    fi
+    LAUNCHER_KIND="$(installer_launcher_kind "$BE_ALIAS" "$PLAN_OTHERS")"
+    if [ -z "$BE_ALIAS" ] && [ "$LAUNCHER_KIND" = remote ]; then
+        say "the topology plan lists other daemon hosts: the launcher dials every host of the plan, and this computer's own daemon beside them"
+    fi
+    installer_render_wrapper "$PREFIX" "$TARGET" "$BE_ALIAS" "$HOME/.local/bin/sot-launch" "$LAUNCHER_KIND" \
         || die "writing $HOME/.local/bin/sot-launch failed"
     chmod +x "$HOME/.local/bin/sot-launch"
     if [ "$OS" = Darwin ]; then
@@ -1278,16 +1636,17 @@ fi
 
 # ---- 8b. pick up the new version in a RUNNING daemon ---------------------------
 # An installer update swaps binaries + flips repo/current, but a running sotd
-# keeps executing the old binary until restarted. Restart it here so the
-# update takes effect now, not at the next reboot. (Launcher-started daemons
-# — macOS / --no-service — are replaced by the next sot-launch, whose ensure
-# asks the running daemon its version: sot_daemon_current; say so.)
-if [ "$OS" = Linux ] && [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 0 ] \
-   && systemctl --user is-active sotd.service >/dev/null 2>&1; then
+# keeps executing the old binary until restarted. An active unit that runs another version than this
+# target (asked before the swap, with the REPL question above) is restarted here so the update takes effect now, and the
+# checks below wait for the new daemon to answer. A daemon of this version is left alone. A unit a window holds is not
+# restarted (the daemon's own auto mode keeps a daemon under an attached window too), nor is a launcher-started one
+# (macOS / --no-service): the step at the end names the command, the skew and the rows.
+STEP=restart
+RESTARTED=0
+if [ "$UNIT_RUNS" = 1 ] && [ "$DAEMON_BEFORE" = other ]; then
     say "restarting sotd to pick up the new version"
     systemctl --user try-restart sotd.service || true
-elif [ "$WANT_DAEMON" = 1 ]; then
-    say "note: a running sotd keeps the old version until the next sot-launch, which replaces a daemon of another version"
+    RESTARTED=1
 fi
 
 # ---- 9. install manifest -------------------------------------------------------
@@ -1306,6 +1665,105 @@ installer_manifest_json "$PREFIX" "$CONFIG" "$SERVICE" "${VERSION#v}" "$VERSION"
 mv "$PREFIX/install.json.new.$$" "$PREFIX/install.json"
 say "wrote $PREFIX/install.json (schema 1, daemon=$WANT_DAEMON frontend=$WANT_FRONTEND, service=$SERVICE)"
 
-say "DONE — Ship of Tools $VERSION installed (daemon=$WANT_DAEMON frontend=$WANT_FRONTEND)."
+say "Ship of Tools $VERSION installed (daemon=$WANT_DAEMON frontend=$WANT_FRONTEND)."
 [ -n "$BE_ALIAS" ] && say "reminder: key-based ssh to '$BE_ALIAS' is required (ssh $BE_ALIAS true)"
+
+# ---- 10. the checks and the verdict ----------------------------------------------------------------------------
+# What the install must be, asked of the files and processes it left. A failed check is FAIL; a step only a person can
+# take (a window that holds the old daemon) is ONE STEP LEFT; otherwise PASS. This is the run's last line.
+STEP=check
+SHORT="${COMMIT:0:9}"
+[ "$COMMIT" != unknown ] || verdict_fail checkout "cannot read the commit of $CHECKOUT"
+for b in sotd sot; do
+    [ "$b" = sot ] && [ "$WANT_FRONTEND" = 0 ] && continue
+    got="$("$PREFIX/bin/$b" --version 2>&1)" || got="does not run: $got"
+    case "$got" in
+        "$b $VER ($SHORT "*|"$b $VER (protocol "*) ;;
+        *) verdict_fail binaries "$PREFIX/bin/$b says '$got', not $VER at $SHORT" ;;
+    esac
+done
+[ "$(installer_json_string "$PREFIX/install.json" version)" = "$VER" ] && [ "$(installer_json_string "$PREFIX/install.json" commit)" = "$COMMIT" ] \
+    || verdict_fail record "$PREFIX/install.json does not name $VER at $SHORT"
+[ "$(readlink "$CURRENT")" = "$CHECKOUT" ] && [ "$(git -C "$CURRENT" rev-parse HEAD 2>/dev/null)" = "$COMMIT" ] \
+    || verdict_fail checkout "$CURRENT does not resolve to $CHECKOUT at $SHORT"
+[ ! -e "$PREFIX/updates/pending-$TARGET.json" ] \
+    || verdict_fail pointer "an update pointer is armed again ($PREFIX/updates/pending-$TARGET.json): another daemon armed it after this run dropped it; remove it and run this again"
+comm_stamp="$(sed -e 's/-dirty$//' -e 1q "${SOT_COMM_HOME:-$HOME/.sot-comm}/VERSION" 2>/dev/null || true)"
+case "$COMMIT" in
+    "$comm_stamp"*) [ -n "$comm_stamp" ] || verdict_fail comm "${SOT_COMM_HOME:-$HOME/.sot-comm} records no version, not $SHORT" ;;
+    *) verdict_fail comm "${SOT_COMM_HOME:-$HOME/.sot-comm} is at '$comm_stamp', not $SHORT" ;;
+esac
+if [ "$WANT_DAEMON" = 1 ]; then
+    for env in kernel repl pluto; do
+        [ -f "$CHECKOUT/julia/$env/Manifest.toml" ] || verdict_fail julia "julia/$env has no Manifest.toml: its environment is not instantiated"
+    done
+fi
+# The daemon after the run. A unit this run restarted or started must answer as the target within the bound; one it left
+# alone may be held by a window on its old version; any other state of an active unit is a failure, not a pass. A daemon
+# with no unit is read once: a person starts it again.
+DAEMON_AFTER=none
+UNIT_MANAGED=0
+if [ "$WANT_DAEMON" = 1 ]; then
+    if [ "$OS" = Linux ] && [ "$NO_SERVICE" = 0 ]; then
+        UNIT_MANAGED=1
+        held_ok=0
+        if [ "$UNIT_RUNS" = 1 ] && [ "$RESTARTED" = 0 ]; then held_ok=1; fi
+        if systemctl --user is-active sotd.service >/dev/null 2>&1; then
+            DAEMON_AFTER="$(installer_daemon_wait "$PREFIX/bin/sotd" "$DEFAULT_SOCKET" "${SOT_INSTALL_RESTART_WAIT_S:-30}" "$held_ok")"
+            case "$DAEMON_AFTER" in
+                current) ;;
+                held) [ "$held_ok" = 1 ] || verdict_fail daemon "sotd.service is active, but the daemon on $DEFAULT_SOCKET still runs another version, held by a window; see journalctl --user -u sotd.service" ;;
+                other) verdict_fail daemon "sotd.service is active, but the daemon on $DEFAULT_SOCKET still runs another version, not $VER; see journalctl --user -u sotd.service" ;;
+                *) verdict_fail daemon "sotd.service is active, but no daemon answers on $DEFAULT_SOCKET; see journalctl --user -u sotd.service" ;;
+            esac
+        elif [ "$PIN_EXCLUDES" = 1 ]; then
+            verdict_fail daemon "sotd.service is not running because its host pin excludes this computer ('$SELF_HOST'): hosts.toml declares no daemon here; declare the host (daemon or frontend) in hosts.toml, then run this installer again"
+        elif [ "$RESTARTED" = 1 ]; then
+            verdict_fail daemon "sotd.service is not running after the restart; see journalctl --user -u sotd.service"
+        else
+            verdict_fail daemon "sotd.service is not running after this run enabled it; see journalctl --user -u sotd.service"
+        fi
+    else
+        DAEMON_AFTER="$(installer_daemon_state "$PREFIX/bin/sotd" "$DEFAULT_SOCKET")"
+    fi
+fi
+CHANGED=1
+[ "$PRE_VERSION" != "$VER" ] || [ "$PRE_COMMIT" != "$COMMIT" ] || CHANGED=0
+# Starting the daemon again is the step of a daemon left on another version; its note carries the rows that would end.
+DAEMON_LEFT=0
+case "$DAEMON_AFTER" in held|other) DAEMON_LEFT=1 ;; esac
+WINDOW_STEP=0
+if [ -n "$WINDOWS_BEFORE" ] && [ "$CHANGED" = 1 ]; then
+    window_note=""
+    [ "$DAEMON_LEFT" = 0 ] || window_note="$(installer_rows_note "$LIVE_ROWS" "$LIVE_PLUTO" "$ROWS_UNKNOWN")"
+    verdict_step "quit Ship of Tools and start it again: its window still runs ${PRE_VERSION:-the old version}${window_note:+ ($window_note)}"
+    WINDOW_STEP=1
+fi
+if [ "$DAEMON_LEFT" = 1 ] && [ "$WINDOW_STEP" = 0 ]; then
+    # The launcher replaces a daemon only when this computer's own window released it; a window of another computer
+    # holds it past any start here.
+    step_how=hand
+    if [ "$WANT_FRONTEND" = 1 ] && { [ "$DAEMON_AFTER" != held ] || [ -n "$WINDOWS_BEFORE" ]; }; then step_how=launcher
+    elif [ "$UNIT_MANAGED" = 1 ]; then step_how=unit
+    fi
+    verdict_step "$(installer_daemon_step "$step_how" "$DAEMON_AFTER" "$DEFAULT_SOCKET" "$LIVE_ROWS" "$LIVE_PLUTO" "$ROWS_UNKNOWN")"
+fi
+# A box the topology does not name reaches its backend through the hub's hosts.toml: the window is empty without this box in it.
+if [ -n "$BE_ALIAS" ] && [ "$TOPO_ROLE" = none ]; then
+    enroll_hub="${HUB_ALIAS:-$BE_ALIAS}"
+    if sync_out="$("$PREFIX/bin/sotd" topology sync --hub "$enroll_hub" 2>&1)"; then
+        :
+    elif [ "${sync_out#*does not list this box}" != "$sync_out" ]; then
+        verdict_fail enroll "the hosts.toml on '$enroll_hub' does not list this computer ('$SELF_HOST'), so the window would open with no hosts: on '$enroll_hub' run  sotd topology set add $SELF_HOST --frontend  (the sotd of its install), then run this installer again"
+    elif ! "$PREFIX/bin/sotd" topology plan --self "$SELF_HOST" >/dev/null 2>&1; then
+        verdict_fail enroll "could not read the hosts.toml on '$enroll_hub': $(printf '%s' "$sync_out" | tail -1)"
+    fi
+fi
+
+VERDICT_PRINTED=1
+if [ -n "$FAIL_FIRST" ]; then
+    installer_verdict "$VER" "$SHORT" "$FAIL_FIRST" "" >&2
+    exit 1
+fi
+installer_verdict "$VER" "$SHORT" "" "$STEPS_LEFT"
 exit 0

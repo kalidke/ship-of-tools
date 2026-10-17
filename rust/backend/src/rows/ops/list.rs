@@ -12,10 +12,17 @@ use crate::rows::Workspaces;
 #[cfg(test)]
 use crate::rows::Workspace;
 
+/// A Pluto handle that never started a server, for the tests that list rows.
+#[cfg(test)]
+fn no_pluto() -> crate::sidecars::pluto::Pluto {
+    crate::sidecars::pluto::Pluto::new(std::path::PathBuf::new(), std::path::PathBuf::new())
+}
+
 pub async fn handle_workspace_list(
     req_id: u64,
     _payload_json: serde_json::Value,
     workspaces: &Workspaces,
+    pluto: &crate::sidecars::pluto::Pluto,
 ) -> Result<HandlerOutput> {
     use sot_protocol::{WorkspaceListEntry, WorkspaceListRes};
     let default_id = workspaces.default_id();
@@ -119,6 +126,7 @@ pub async fn handle_workspace_list(
     tracing::debug!(count = entries.len(), "workspace.list");
     let res = WorkspaceListRes {
         workspaces: entries,
+        pluto_server_up: pluto.server_up().await,
     };
     Ok(vec![(
         Frame::res(req_id, op::WORKSPACE_LIST, serde_json::to_value(res)?),
@@ -360,7 +368,7 @@ mod workspace_activate_read_tests {
         };
         write_registry();
 
-        let out = handle_workspace_list(1, serde_json::json!({}), &reg)
+        let out = handle_workspace_list(1, serde_json::json!({}), &reg, &no_pluto())
             .await
             .expect("handler must not error");
         let payload = out[0].0.payload.clone();
@@ -475,10 +483,11 @@ mod agent_str_host_filter_tests {
         );
         workspaces.insert(ws);
 
-        let out = handle_workspace_list(1, json!({}), &workspaces)
+        let out = handle_workspace_list(1, json!({}), &workspaces, &no_pluto())
             .await
             .expect("handler must not error");
         let payload = out[0].0.payload.clone();
+        assert_eq!(payload.get("pluto_server_up"), Some(&json!(false)), "the list says whether the Pluto server is up: not here");
         let entries = payload.get("workspaces").unwrap().as_array().unwrap();
         let entry = entries
             .iter()
@@ -567,7 +576,7 @@ mod canonical_root_tests {
                 _ => panic!("the row's watcher reported no change to a.txt in 20 s"),
             }
         };
-        let out = handle_workspace_list(1, json!({}), &workspaces).await.expect("handler must not error");
+        let out = handle_workspace_list(1, json!({}), &workspaces, &no_pluto()).await.expect("handler must not error");
         let entry = out[0].0.payload["workspaces"][0].clone();
         let listed = |f: &str| entry.get(f).and_then(|v| v.as_str()).map(str::to_string);
         let under = |root: &str, path: &str| path.strip_prefix(root).is_some_and(|rest| rest.starts_with(['/', '\\']));

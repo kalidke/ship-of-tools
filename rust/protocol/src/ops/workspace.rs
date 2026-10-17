@@ -241,6 +241,11 @@ pub struct WorkspaceListEntry {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceListRes {
     pub workspaces: Vec<WorkspaceListEntry>,
+    /// Whether the daemon's one Pluto server is running (started and not ended): a restart of the daemon ends it and
+    /// every notebook open in it, however each was opened. Absent from a daemon that predates the field, which `sotd
+    /// update repls` reads as "cannot say".
+    #[serde(default)]
+    pub pluto_server_up: bool,
 }
 
 /// `accounts.list` has no fields — the daemon always discovers and

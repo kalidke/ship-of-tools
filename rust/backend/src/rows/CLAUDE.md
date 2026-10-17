@@ -54,7 +54,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `workspace.destroy`, `workspace.list`, `workspace.reauth`, `pty.input`, `pty.screen`, `workspace.changed`,
 `lane.connect`, `Workspace::agent_handle`, `set_agent_handle`, `attach`, `send_text`, `send_enter`,
 `rust/backend/src/rows/run/headless.rs`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `seed_default_row`,
-`set_repl_frame_tx`, `set_watch_bus`, `set_monitor_hub`. Uses: `lane.connect`, `handle_connection`,
+`set_repl_frame_tx`, `set_watch_bus`, `set_monitor_hub`, `pluto_server_up`. Uses: `Pluto::server_up`, `lane.connect`, `handle_connection`,
 `handle_lane_connect`, `pipe_bidirectional`, `reject`, `dispatch`, `write_frame_within`, `write_frame_to`,
 `agent_argv`, `agent_exec_argv`, `claude_recipe`, `account_env`, `account_spawn_env`, `ensure_folder_trusted`,
 `comm_handle_for_workspace`, `clear_comm_unread`, `read_comm_agents`, `host_matches`, `last_joiner`,

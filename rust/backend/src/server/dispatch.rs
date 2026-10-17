@@ -274,7 +274,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::WORKSPACE_CREATE => {
             crate::rows::ops::create::handle_workspace_create(req_id, payload, session, workspaces, ws_events_tx).await
         }
-        op::WORKSPACE_LIST => crate::rows::ops::list::handle_workspace_list(req_id, payload, workspaces).await,
+        op::WORKSPACE_LIST => crate::rows::ops::list::handle_workspace_list(req_id, payload, workspaces, pluto).await,
         op::ACCOUNTS_LIST => crate::agents::ops::handle_accounts_list(req_id, payload).await,
         op::AGENT_SEND => crate::comm::mail::relay::handle_agent_send(req_id, payload, &shared.agent_events_tx).await,
         op::COMM_FILE => crate::comm::mail::filer::handle_comm_file(req_id, payload, &shared.links).await,
