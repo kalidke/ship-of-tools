@@ -26,7 +26,8 @@ l1="$(col 34 "$model") $(col 90 "[$sess]")"
 [ -n "$acct" ] && l1="$l1 $(col 36 "$acct")"
 l1="$l1 | $(col "$tc" "think:$think")"
 [ -n "$ver" ] && l1="$l1 | $(col 33 "v$ver")"
-l1="$l1 | $(col '38;5;208' "$repo") | $(col "$uc" "$unc uncommitted")"
-printf '%s\n%s | %s\n' "$l1" \
+l1="$l1 | $(col '38;5;208' "$repo")"
+# The count sits on its own line so a narrow window never cuts it off the end of line 1.
+printf '%s\n%s\n%s | %s\n' "$l1" "$(col "$uc" "$unc uncommitted")" \
   "$(col 36 "Session: $(fmt $(( ${inT:-0} + ${outT:-0} ))) (in:$(fmt ${inT:-0}) out:$(fmt ${outT:-0}))")" \
   "$(col "$cc" "$(printf '$%.2f' "$cost")")"

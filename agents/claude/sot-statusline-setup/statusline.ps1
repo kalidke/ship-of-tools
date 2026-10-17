@@ -1,4 +1,4 @@
-# Claude Code statusLine (Windows) - 2 lines, single PowerShell pass.
+# Claude Code statusLine (Windows) - 3 lines, single PowerShell pass.
 $ErrorActionPreference = 'SilentlyContinue'
 $esc = [char]27
 function Col([string]$c,[string]$t){ "$esc[${c}m$t$esc[0m" }
@@ -29,9 +29,11 @@ $uncCol = if ($unc -eq 0) { '32' } else { '31' }
 $acctSeg = if ($acct) { ' ' + (Col '36' $acct) } else { '' }
 $l1 = @((Col '34' $model) + ' ' + (Col '90' "[$sess]") + $acctSeg, $thinkSeg)
 if ($ver) { $l1 += $ver }
-$l1 += (Col '38;5;208' $repo); $l1 += (Col $uncCol "$unc uncommitted")
+$l1 += (Col '38;5;208' $repo)
+# The count sits on its own line so a narrow window never cuts it off the end of line 1.
+$lu = Col $uncCol "$unc uncommitted"
 $inT = [int64]$j.context_window.total_input_tokens; $outT = [int64]$j.context_window.total_output_tokens
 $cost = [double]$j.cost.total_cost_usd
 $costCol = if ($cost -gt 0.50) { '31' } elseif ($cost -gt 0.10) { '33' } else { '32' }
 $l2 = (Col '36' "Session: $(Fmt ($inT+$outT)) (in:$(Fmt $inT) out:$(Fmt $outT))") + ' | ' + (Col $costCol ('${0:N2}' -f $cost))
-[Console]::Out.Write([string]::Join(' | ', $l1) + "`n" + $l2)
+[Console]::Out.Write([string]::Join(' | ', $l1) + "`n" + $lu + "`n" + $l2)
