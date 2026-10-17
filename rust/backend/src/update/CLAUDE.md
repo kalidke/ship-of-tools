@@ -10,7 +10,7 @@ parent folder, owns the pipeline both reach. Part of distribution; charter: scri
 - `cli.rs`: the `sotd update` dispatch and usage text, `stage` (the one writer that may arm the same or an older build,
   `Writer::Operator`) and `pointer` (reads the pointer and `install.json`, prints `ok` or `refuse: <why>`, exits 0 or
   `REFUSED`), `direction` (prints `newer`, `same` or `older` against `install.json`) and `repls` (what a restart of a running
-  daemon would end, from its own `workspace.list`: the rows whose REPL is `ready` and the notebooks its Pluto server has open), with their tests
+  daemon would end, from its own `workspace.list`: the rows whose REPL is `ready` and whether its Pluto server is running, `pluto_server_up`), with their tests
 
 ## Start here
 `run` in `cli.rs`; `pointer_cli` for what apply asks.
@@ -18,11 +18,13 @@ parent folder, owns the pipeline both reach. Part of distribution; charter: scri
 ## Rules
 - `direction` and `repls` start no daemon and write nothing. `direction` exits 1 when `install.json` cannot be read or
   names no version, and 2 for bad arguments; `repls` exits 0 with nothing printed when no REPL is live and no notebook open,
-  3 with one line each (`repl <label>`, `pluto <path>`) when some are, and 1 when the daemon cannot be asked (a daemon of
-  another protocol refuses the hello, no answer comes in the bound, the reply carries no workspace list, an error payload
-  being one, or it lists no `pluto_notebooks`: a daemon older than the field may hold sessions it cannot name, so the
-  first update from it asks for `--restart-daemon`). Live means the daemon says `ready`: a `starting` REPL holds no
-  state yet.
+  3 with one line each (`repl <label>`, `pluto server`) when some are. It exits 1, with one reason on stderr, when the daemon
+  cannot be asked in full (a daemon of another protocol refuses the hello, no answer comes in the bound, the reply carries
+  no workspace list, an error payload being one, or it carries no `pluto_server_up`: a daemon older than the field may be
+  running a Pluto server it cannot report, so the first update from it asks for `--restart-daemon`); the `repl` lines it
+  could read are printed before it exits, so the installer's stop names them. Live means the daemon says `ready`: a
+  `starting` REPL holds no state yet. The Pluto line is the server running, not a list of notebooks: Pluto's own home page
+  opens notebooks the daemon never sees.
 - `pointer` starts no daemon and writes nothing. It refuses a pointer that cannot be read as well as one that no longer fits; with no readable `install.json` or no pointer it answers 0. Its refusal code is 3: an older `sotd` exits 1 on the word `update` and
   a `sotd update` without the verb exits 2, so the apply scripts read only 3 as a refusal and keep the exact-tag check
   for any other answer.

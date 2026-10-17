@@ -41,7 +41,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   own words, never a bare timeout. An Xvfb that names no display within its bound, and a sampler ended for silence,
   name the last lines they wrote in the reason they log at warn.
 - Once the server is ready, a Pluto open answers within `PLUTO_OPEN_BOUND` (30 s, from its submission) or fails naming it, and the server that did not answer is ended, since its replies are matched oldest-first.
-- A notebook Pluto answered an open for is a live session until its server ends: `Pluto::live_notebooks` lists them (none when no server is up), and `workspace.list` carries them as `pluto_notebooks`, so the update's question covers them with the rows' REPLs.
+- Whether the Pluto server is running (started and not ended; `Pluto::server_up`) is the one fact the daemon knows about its notebooks: Pluto's own home page opens and closes notebooks the daemon never sees. `workspace.list` carries it as `pluto_server_up`, so the update's question covers every notebook open in it with the rows' REPLs.
 - Pluto's proxy port is a supervisor-owned generation grant, published only after a loopback READY URL and released on every supervisor exit or cancellation before cleanup awaits. An old generation's release cannot erase its replacement's grant (`bound_pluto_port`).
 - Pluto polls child exit and its supplied Signal during each stdin write and flush. Cancelling a submission retires the supervisor, releases its grant and closes current, pending and queued replies before checked cleanup; it never resends a partial OPEN line.
 - A REPL restart explicitly retires and joins its owned supervisor before replacement; it never relies on Julia reaching stdin EOF. Errors retain retirement ownership and prevent replacement.
@@ -94,7 +94,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `Kernel::request`, `file.preview`,
 `repl.eval`, `repl.run_file`, `repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`,
 `monitor.subscribe`, `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `bound_pluto_port`,
-`allowed_proxy_ports`, `Kernel`, `Repl`, `julia::resolve_bin`, `child::remove_own`, `child::sweep_gone`. Uses: `dispatch`, `SSH_OPTS`, `Redial`, `STABLE`, `Signal::spawn`, `Contained`, `Contained::wait_until_exited`, `Signal`,
+`allowed_proxy_ports`, `Kernel`, `Repl`, `julia::resolve_bin`, `child::remove_own`, `child::sweep_gone`, `Pluto::server_up`. Uses: `dispatch`, `SSH_OPTS`, `Redial`, `STABLE`, `Signal::spawn`, `Contained`, `Contained::wait_until_exited`, `Signal`,
 `child_signal::process`, `HeldDir`, `remove_ended`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `sot_state_dir`, `sot_config_dir`,
 `host_name`, `state_dir_hash`, `resource_dir`, `rust/backend/src/paths.rs`, `record_browser_port`,
 `revoke_browser_ports`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`, `ensure_proxy_for_url`, `ChildLines`.

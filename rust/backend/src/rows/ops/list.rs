@@ -126,7 +126,7 @@ pub async fn handle_workspace_list(
     tracing::debug!(count = entries.len(), "workspace.list");
     let res = WorkspaceListRes {
         workspaces: entries,
-        pluto_notebooks: pluto.live_notebooks().await,
+        pluto_server_up: pluto.server_up().await,
     };
     Ok(vec![(
         Frame::res(req_id, op::WORKSPACE_LIST, serde_json::to_value(res)?),
@@ -487,7 +487,7 @@ mod agent_str_host_filter_tests {
             .await
             .expect("handler must not error");
         let payload = out[0].0.payload.clone();
-        assert_eq!(payload.get("pluto_notebooks"), Some(&json!([])), "the list names the Pluto notebooks, none here");
+        assert_eq!(payload.get("pluto_server_up"), Some(&json!(false)), "the list says whether the Pluto server is up: not here");
         let entries = payload.get("workspaces").unwrap().as_array().unwrap();
         let entry = entries
             .iter()

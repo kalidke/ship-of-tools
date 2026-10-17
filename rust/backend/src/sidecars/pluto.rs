@@ -46,12 +46,9 @@ struct Running {
     submit: mpsc::Sender<Submission>,
     ready: watch::Receiver<Ready>,
     start: Start,
-    opened: Notebooks,
     _ends: oneshot::Sender<()>,
 }
 
-/// The notebooks one server has opened (absolute paths), each a live session until the server ends.
-type Notebooks = Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>;
 /// Where a server's start stands: waiting for `READY`, serving, or ended with the reason (the child is ended first).
 #[derive(Clone, PartialEq)]
 enum Ready {
@@ -117,7 +114,7 @@ impl Pluto {
             .to_str()
             .ok_or_else(|| anyhow!("pluto: path not utf-8: {}", abs_path.display()))?
             .to_string();
-        let (tx, mut ready, start, notebooks) = self.ensure_supervisor().await?;
+        let (tx, mut ready, start) = self.ensure_supervisor().await?;
         let state = tokio::time::timeout(PLUTO_START_WAIT, ready.wait_for(|state| *state != Ready::Starting)).await;
         match state.map(|state| state.map(|state| state.clone())) {
             Ok(Ok(Ready::Failed(why))) => {
@@ -149,7 +146,6 @@ impl Pluto {
         })
         .await;
         if let Ok(result) = opened {
-            let _ = result.as_ref().map(|_| notebooks.lock().unwrap_or_else(|e| e.into_inner()).insert(path_str));
             return result.map(Opened::Url);
         }
         // A server that does not answer within the bound is ended, unless a later open has already replaced it.
@@ -163,21 +159,18 @@ impl Pluto {
         ))
     }
 
-    /// The notebooks open on the server that is running now (absolute paths): live sessions that ending it ends.
-    pub(crate) async fn live_notebooks(&self) -> Vec<String> {
-        match self.inner.submit.lock().await.as_ref() {
-            Some(r) if !r.submit.is_closed() && *r.ready.borrow() == Ready::Up => r.opened.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect(),
-            _ => Vec::new(),
-        }
+    /// Whether the Pluto server is running (started and not ended): ending the daemon ends it and every notebook open in it.
+    pub(crate) async fn server_up(&self) -> bool {
+        matches!(self.inner.submit.lock().await.as_ref(), Some(r) if !r.submit.is_closed() && !matches!(*r.ready.borrow(), Ready::Failed(_)))
     }
 
-    async fn ensure_supervisor(&self) -> Result<(mpsc::Sender<Submission>, watch::Receiver<Ready>, Start, Notebooks)> {
+    async fn ensure_supervisor(&self) -> Result<(mpsc::Sender<Submission>, watch::Receiver<Ready>, Start)> {
         let mut guard = self.inner.submit.lock().await;
         if let Some(running) = guard.as_ref() {
             // A start that has failed is replaced even before its supervisor has dropped the queue.
             let failed = matches!(*running.ready.borrow(), Ready::Failed(_));
             if !running.submit.is_closed() && !failed {
-                return Ok((running.submit.clone(), running.ready.clone(), running.start.clone(), running.opened.clone()));
+                return Ok((running.submit.clone(), running.ready.clone(), running.start.clone()));
             }
         }
         let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
@@ -188,7 +181,7 @@ impl Pluto {
             crate::lifecycle::child_signal::process(),
         )
         .await?;
-        let handles = (running.submit.clone(), running.ready.clone(), running.start.clone(), running.opened.clone());
+        let handles = (running.submit.clone(), running.ready.clone(), running.start.clone());
         *guard = Some(running);
         Ok(handles)
     }
@@ -231,7 +224,7 @@ async fn spawn_supervisor(
     let (ends, ended) = oneshot::channel();
     let (ready_tx, ready) = watch::channel(Ready::Starting);
     tokio::spawn(run_supervisor(contained, stdin, stdout_lines, submit_rx, ended, sig, tmp, stderr, ready_tx));
-    Ok(Running { submit: submit_tx, ready, start, opened: Notebooks::default(), _ends: ends })
+    Ok(Running { submit: submit_tx, ready, start, _ends: ends })
 }
 
 /// The server's whole life: its start, published on `ready`, then its service loop.
@@ -1252,11 +1245,12 @@ mod open_bound_tests {
         drop(pluto);
     }
 
-    /// A notebook the server opened is a live session, listed until its server ends: none before an open, each open
-    /// after it, none again once the child has exited. The stand-in answers two opens and exits.
+    /// The server is up from its start until it ends, whether or not the daemon opened a notebook through it: not before
+    /// a start, up once an open has started it, down again once the child has exited. The stand-in answers one open and
+    /// exits.
     #[tokio::test]
-    async fn a_notebook_it_opened_is_a_live_session_until_the_server_ends() {
-        let name = "sidecars::pluto::open_bound_tests::a_notebook_it_opened_is_a_live_session_until_the_server_ends";
+    async fn the_server_is_up_from_its_start_until_it_ends() {
+        let name = "sidecars::pluto::open_bound_tests::the_server_is_up_from_its_start_until_it_ends";
         if !isolated(name, Duration::from_secs(60)) {
             return;
         }
@@ -1264,25 +1258,18 @@ mod open_bound_tests {
         let stub = dir.path().join("stub-julia");
         sot_log::test_exec::write_executable(
             &stub,
-            "#!/bin/sh\necho 'READY http://pluto.invalid/'\nread l\necho 'URL http://pluto.invalid/a'\nread l\necho 'URL http://pluto.invalid/b'\nsleep 1\n".to_string(),
+            "#!/bin/sh\necho 'READY http://pluto.invalid/'\nread l\necho 'URL http://pluto.invalid/a'\nsleep 1\n".to_string(),
         );
         let script = dir.path().join("start.jl");
         std::fs::write(&script, "").unwrap();
         let _pin = pin_env(&stub, dir.path());
         let pluto = Pluto::new(dir.path().to_path_buf(), script);
-        assert!(pluto.live_notebooks().await.is_empty(), "no server, no session");
-        let (a, b) = (dir.path().join("a.jl"), dir.path().join("b.jl"));
-        pluto.open_notebook(&b).await.expect("the first open");
-        pluto.open_notebook(&a).await.expect("the second open");
-        let want = vec![a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()];
-        assert_eq!(pluto.live_notebooks().await, want);
-        let ended = || {
-            let pluto = pluto.clone();
-            async move { pluto.live_notebooks().await.is_empty() }
-        };
+        assert!(!pluto.server_up().await, "no server started, none up");
+        pluto.open_notebook(&dir.path().join("a.jl")).await.expect("the open");
+        assert!(pluto.server_up().await, "the server answered an open");
         let began = std::time::Instant::now();
-        while !ended().await {
-            assert!(began.elapsed() < Duration::from_secs(20), "the sessions outlived their server");
+        while pluto.server_up().await {
+            assert!(began.elapsed() < Duration::from_secs(20), "the server outlived its child");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         drop(pluto);
