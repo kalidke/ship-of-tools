@@ -265,13 +265,13 @@ depth, see [The REPL](repl.md).
 
 ### What fills it
 
-A Julia process **supervised by the backend daemon**, distinct from the kernel
-that does project introspection. They are separate on purpose: the kernel owns
-the file-type dispatch table, previews, project scans, and the file content hash;
-the REPL owns your
-interactive state. Because they are different processes, **killing the REPL does
-not kill the kernel** — you can restart your interactive session to clear state or
-recover from a wedged computation without losing the project view.
+A Julia process **supervised by the backend daemon**, separate from the kernel that does project introspection, so
+restarting your interactive session never costs you the project view. See
+[A supervised, separate process](repl.md#A-supervised,-separate-process).
+
+Every drawer on a row shows every run on it: what you type, a run another window started (labelled `⟨window ▸ …⟩`)
+and a session's run (labelled `⟨session ▸ …⟩`). On a Linux backend the REPL has a display of its own, so GLMakie
+works; see [The REPL](repl.md#agents-repl).
 
 ### Driving it
 
@@ -290,7 +290,7 @@ the same as `Ctrl-C` in the stock REPL. One that never yields but allocates or c
 is stopped by the one interrupt signal the daemon sends, as in the stock REPL; code with no
 safepoint (an integer loop) ignores it, and a second `Ctrl+C` forces it, which can crash or hang the REPL inside C
 code, compiling or garbage collection, and under heavy CPU load may not stop it (`r` on a `.jl` file restarts the REPL
-and ends it).
+and ends it). `Ctrl+C` stops the running evaluation if it is one the drawer shows as running; see [The REPL](repl.md).
 
 ### Structured output
 
@@ -380,7 +380,7 @@ frontend connection targets and are not monitored implicitly.
 running changes nothing until it restarts — there is no reload and no file watch.
 If the drawer is missing a host you just added, restart the hub.
 
-### On-philosophy rendering
+### How the traces are drawn
 
 Traces are drawn as **real SVG**, rasterized through the same `resvg` → wgpu-quad
 pipeline that renders typeset math — not braille/cell plotting, which is the same

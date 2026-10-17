@@ -1,7 +1,7 @@
 # Architecture at a Glance
 
-Ship of Tools is **three processes plus your REPL**, talking over a socket — even when
-everything runs on one machine. This page covers what each process owns, why the
+Ship of Tools is **a frontend, a backend daemon, and two kinds of Julia process (a kernel and your REPL)**. The
+frontend and the daemon talk over a socket, even when everything runs on one machine. This page covers what each process owns, why the
 split falls where it does, the one serialization seam between Rust and Julia, and
 how the same architecture runs a remote project with almost no extra plumbing.
 
@@ -14,8 +14,8 @@ how the same architecture runs a remote project with almost no extra plumbing.
 |---------|----------|------|
 | Frontend | Rust (winit + wgpu) | the native window, chrome, preview rendering, keystrokes. Stateless about the project — it renders what the backend sends and forwards input. |
 | Backend daemon | Rust (tokio) | project state, file watching, process supervision of the kernels, the REPL and the agent sessions, the comm relay. Exposes a JSON line protocol to the frontend. |
-| Julia kernel | Julia | the `FileType` dispatch table and Julia-aware previews, project scans (the Modules tree), the file content hash behind the drift check. Loads the project's `Project.toml` environment. |
-| REPL | Julia | your interactive session, supervised by the backend, with a display shim that emits structured frames (stdout, stderr, value, image, error) over stdio. |
+| Julia kernel | Julia | the `FileType` dispatch table and Julia-aware previews, project scans (the Modules tree), the file content hash behind the drift check. Reads your sources statically; it never runs your code and never loads your project's environment. |
+| REPL | Julia | your interactive session, supervised by the backend and run in your project's environment, with a display shim that emits structured frames (stdout, stderr, value, image, error) over stdio. |
 
 The frontend holds no project knowledge. The backend is the single owner of
 project state and the one protocol entry point. The Julia kernel is where every
@@ -25,7 +25,7 @@ daemon that supervises it.
 
 ## Why client/server, even on one machine
 
-The three processes communicate over a socket locally exactly as they would
+The frontend and the daemon communicate over a socket locally exactly as they would
 across a network. That looks like overhead on a single box, but it is the whole
 point: the same protocol serves local and remote; only the transport differs. The plumbing cost is paid once, up front, instead of being
 retrofitted later when local-only assumptions have already hardened.
@@ -100,8 +100,9 @@ or local frontend driving a Linux backend where the Julia kernel and GPU live.
   the remote and speaks the same JSON line protocol over its stdin/stdout — no
   forward, no local port. See [Transport](../concepts/transport.md).
 - On reconnect (after a laptop sleep, a wifi flap, or a fresh client), the
-  frontend re-attaches by **session id**; the kernel keeps its state — variables,
-  loaded modules, in-flight computations — across the gap.
+  frontend re-attaches by **session id**; the REPL, which holds your variables and loaded modules, lives in
+  the daemon and keeps them across the gap, and an evaluation still running keeps running and shows again in the
+  drawer.
 
 A single daemon can host **one Julia kernel per workspace**, routed by
 `workspace_id`, so switching the active project is fast and never tears the kernel
@@ -111,8 +112,9 @@ daemon restarts alike (closing the window ends this computer's sessions; see ADR
 
 On Linux the daemon runs as the child of a small guard process, which is the process the launcher or the unit starts.
 The kernel, the REPL, Pluto and every other process the daemon starts, at any depth and however they detach, end
-within a few seconds of the daemon's end, even when the daemon is killed; a capsule does not, by design. A crashed
-Pluto server can leave one Julia worker per open notebook, which ends when the daemon ends. The guard
+within a few seconds of the daemon's end, even when the daemon is killed; a capsule does not, by design. On Linux a Pluto
+server's notebook workers, and a process your code starts in the REPL detached, end with the server's or the REPL's own
+display, so a crashed Pluto server leaves none behind; on a host without Xvfb they end when the daemon ends. The guard
 exits with the daemon's own status. A process a broker starts, the loss of the guard itself and a process stuck in an
 uninterruptible kernel call are outside it, and macOS has no guard: only a controlled end of the daemon ends its
 children there, and not a process that left a child's process group, such as Pluto's notebook worker (ADR 0050).

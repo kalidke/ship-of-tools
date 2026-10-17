@@ -93,8 +93,10 @@ so after 10 s); a restart ends it at once: `r` on a `.jl` file in Files mode, or
 `sot-fe repl run <ws> <path> --fresh`, whose run every window's drawer shows. On Julia 1.12, 1 of 20 interrupts of a loop that ends on its own at that very moment was answered with an error (`InterruptException`, code `repl_exception`) while the REPL kept running and kept its state; a signal that arrives as the REPL idles between evaluations can end it on 1.12, which only a synthetic signal has produced. `Ctrl+C` in the drawer names, by number, the
 evaluations the drawer shows as running, and stops the running evaluation only if
 its number is one of them (an interrupt that names other evaluations sends no
-signal); each window numbers its own evaluations, so two windows on one REPL can
-share a number.
+signal). Every drawer on a row shows every run on it: its own, another window's
+(labelled `⟨window ▸ …⟩`) and a session's (labelled `⟨session ▸ …⟩`). If the link to a computer drops while an
+evaluation runs, its entry says so and keeps what it had printed; when the window reconnects and the evaluation is
+still running, the entry says the connection is back and shows the rest, and `Ctrl+C` stops it.
 
 ## [How agents use the REPL](@id agents-repl)
 
@@ -114,7 +116,7 @@ while another runs comes back `busy` (see
 | `sot-fe repl eval <ws> --code '<julia>'` | run a chunk of code and return its output |
 | `sot-fe repl status [<ws>]` | report whether the workspace has a live REPL |
 | `sot-fe repl interrupt <ws>` | stop a running evaluation, keeping loaded packages |
-| `sot-fe repl run <ws> <path> --fresh` | restart the REPL into the file's project, then run it |
+| `sot-fe repl run <ws> <path> --fresh` | restart the REPL into the file's project, then run it; the run's output goes to every window's drawer, not to the caller |
 
 `<ws>` is the workspace id, label or slug; a session finds its own id in
 `$SOT_WORKSPACE_ID`. The call returns the collected stdout, stderr, value and
@@ -122,6 +124,14 @@ errors to the agent. Figures are written to files under
 `<workspace>/.sot/runs/<run_id>/` and the agent gets their paths; it can then
 put one in your preview pane with `show-result <path>`. Nothing adds
 `.sot/` to your project's `.gitignore` — add it yourself.
+
+The call prints `outcome: <outcome>` on its first line and exits 0 only for `ok`, else 2, so read the outcome:
+
+- `ok`: the run finished. `error`: it threw (the error follows). `interrupted`: an interrupt (`sot-fe repl interrupt`, or `Ctrl+C` in a drawer) stopped it.
+- `busy`: another run was going, and nothing ran.
+- `timeout`: `--timeout` (default 120 s) passed first. The run is not cancelled and keeps going; do not re-run it.
+- `restarted`: a restart (`--fresh`, or `r` in a window) retired the run before it ended.
+- `repl_died`: the REPL ended first any other way (it died, or its display ended); the next run starts a new REPL.
 
 What this means for you:
 
@@ -133,8 +143,15 @@ What this means for you:
   when you type next.
 - **One evaluation at a time.** A run that arrives while another is going is
   refused as `busy`, not queued.
-- **Headless.** The REPL has no display; CairoMakie figures come back as files,
-  and interactive figures use WGLMakie with `wglshow`.
+- **A display of its own (Linux).** Each REPL gets a private display (an Xvfb), so GLMakie works and its
+  figures come back as files, as CairoMakie's do; interactive figures use WGLMakie with `wglshow`. A host without
+  Xvfb says so at the REPL's first run (`sot: this REPL has no display of its own (...)`), and GLMakie does not
+  work there. If the display ends, the REPL ends with it, and your next run starts a new REPL that says why
+  first. A process your code starts, detached or not, ends with that display: at a restart, a `--fresh` and the
+  REPL's end. On a shared computer the display is the one listener another account can connect to; a 128-bit
+  cookie, which only the REPL holds, is its lock (ADR 0049, "User isolation"). macOS and Windows start no
+  display, since GLMakie draws through the system there.
+- **`display(x)`.** Inside an evaluation, `display(x)` reaches the drawer as output of that evaluation.
 - **Revise.** Ship of Tools does not load Revise; a `using Revise` in your
   startup.jl (or in an evaluation) loads it, and the REPL then calls
   `Revise.revise()` before each later evaluation, so an edit to a tracked
@@ -158,7 +175,7 @@ backend wraps each frame as a `repl.frame` event on the main protocol stream.
 | `stderr` | `{text}` — streamed incrementally |
 | `value` | `{mime, text}` — the last expression's value rendered as text |
 | `image` | `{mime, data_base64, bytes}` — e.g. `image/png` |
-| `browser` | `{url, open, fe}` — a loopback URL for a live browser-served artifact (`wglshow(fig)`, a `BrowserView`); `open` says whether a frontend opens a tab (the window in use, the one used last); `fe`, when present, names the one frontend that opens it |
+| `browser` | `{url, open, fe}` — a loopback URL for a live browser-served artifact (`wglshow(fig)`, a `BrowserView`); `open` says whether a frontend opens a tab (the window in use: the one you used last, else the one that connected last); `fe`, when present, names the one frontend that opens it |
 | `error` | `{message, stacktrace: [{file, line, fn}, …]}` |
 | `done` | `{eval_id, elapsed_ms}` — always the last frame for an evaluation |
 
@@ -202,8 +219,8 @@ address that redirects to the figure, so the secret is never on a command line. 
 its WebSocket ride the daemon proxy over the control connection (ADR 0035), with no dedicated forward, so
 pan/zoom/rotate work whether the backend is local or remote. One server per REPL lives as long as the REPL;
 calling `wglshow` again shows the new figure at the same address. With several frontends attached, the figure opens
-in one window, the window in use (the one you used last); `wglshow(fig; open = "<fe>")` opens it only on the frontend
-`sot-fe --fe <fe>` names, and `open = false` opens it nowhere.
+in one window, the window in use (the one you used last, else the one that connected last); `wglshow(fig; open = "<fe>")` opens it only on the frontend
+`sot-fe --fe <fe>` names, and `open = false` opens it nowhere. A figure has one live viewer: a new tab of a figure stops the earlier tab of the same figure.
 
 WGLMakie and Bonito are resolved from *your own* project env at call time
 (`using WGLMakie` first) — Ship of Tools ships no plotting dependency of its own,

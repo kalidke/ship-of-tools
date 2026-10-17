@@ -14,9 +14,11 @@ is just another host.
 - Each session has its own **agent pane** (Claude Code, Codex or a plain
   shell), its own **Julia REPL**, and its own **kernel**, the Julia process
   that serves Modules mode and file previews. The REPL and kernel start the
-  first time something needs them, in the project's `Project.toml`
-  environment, running the `julia` that `SOT_JULIA_BIN` names, else juliaup's
-  default channel, else a `julia` on `PATH`.
+  first time something needs them, running the `julia` that `SOT_JULIA_BIN`
+  names, else juliaup's default channel, else a `julia` on `PATH`. The REPL
+  runs your code in the project's environment when the project has a
+  `Project.toml`; the kernel reads your sources without running them and does
+  not load that environment.
 
 ```@raw html
 <div class="sot-model" role="img" aria-label="One host running two sessions. Each session has its own agent pane, Julia REPL and kernel.">

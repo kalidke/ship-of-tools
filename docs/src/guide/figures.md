@@ -24,7 +24,8 @@ lines!(ax, 0:0.01:2π, sin)
 fig
 ```
 
-See [The REPL](repl.md) for how code gets there.
+On a Linux backend GLMakie works too: the REPL has a private display of its own, and a GLMakie figure comes back
+as a file and renders the same way. See [The REPL](repl.md) for how code gets there.
 
 ## Saved figures, in the preview pane
 
