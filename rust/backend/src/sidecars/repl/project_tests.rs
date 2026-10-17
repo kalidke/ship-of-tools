@@ -11,7 +11,7 @@ use tokio::sync::broadcast;
 
 use super::*;
 use crate::rows::Workspace;
-use crate::sidecars::contract_tests::{depot_path, isolated, owned_julia_env, within};
+use crate::sidecars::contract_tests::{depot_path, isolated, owned_julia_env, within, OwnedRoot};
 #[cfg(target_os = "linux")]
 use crate::sidecars::contract_tests::{executable, holding_display, x11_answer, x11_cookie, x11_server};
 use super::tree_argv_tests::tree_argv_leaks;
@@ -20,10 +20,11 @@ use super::tree_argv_tests::tree_argv_leaks;
 pub(super) const BODY: Duration = Duration::from_secs(240);
 const EVAL: Duration = Duration::from_secs(180);
 /// The WGLMakie setup's bound. The fixture reads the depot list whole (`depot_path`; unset, Julia's default list), so
-/// the offline add reuses the read depot's caches and compiles only the shim (5 s) when the depot is named on the list
-/// it was built on (CI's: .github/wgl-depot.sh). A read depot holding other versions recompiles those (25 packages on
-/// one host). Named on another list, a depot can recompile most of WGLMakie's environment (420 s on hosted Linux, past
-/// 600 s on hosted Windows); setup fails fast on that instead (`one_fresh_pkg_cache`).
+/// the offline add reuses the read depot's caches and compiles only the shim and WGLMakie, without its precompile
+/// workload (`add_wglmakie`; WGLMakie in 5 s on one host), when the depot is named on the list it was built on (CI's:
+/// .github/wgl-depot.sh). A read depot holding other versions recompiles those (25 packages on one host). Named on
+/// another list, a depot can recompile most of WGLMakie's environment (420 s on hosted Linux, past 600 s on hosted
+/// Windows); setup fails fast on that instead (`one_fresh_pkg_cache`).
 const SETUP: Duration = Duration::from_secs(600);
 
 /// A bare workspace (no `Project.toml`) whose path holds a space, and the real `Workspace::repl` factory over it.
@@ -33,6 +34,7 @@ struct Fixture {
     shim: PathBuf,
     repl: Repl,
     _frames: broadcast::Receiver<ReplFrameMsg>,
+    _owned: OwnedRoot,
 }
 
 impl Fixture {
@@ -71,6 +73,7 @@ impl Fixture {
         let repl = row.repl(frame_tx);
         let root = dir.keep();
         Fixture {
+            _owned: OwnedRoot::new(&root, crate::lifecycle::child_signal::process()),
             root,
             workspace,
             shim,
@@ -618,8 +621,17 @@ async fn observer_rejects_a_deliberate_leak() {
 }
 
 /// Adds WGLMakie to the fixture's workspace from the read depot, offline; its precompile is setup, bounded by `SETUP`.
+/// WGLMakie's precompile workload serves a page from Bonito's default server, on 127.0.0.1:9384, a port the whole
+/// host shares: while anything else holds it (another test job compiling WGLMakie, a Bonito session), the build fails
+/// (Bonito moves to the next port only on the errors it knows, and HTTP 2.11's `AddressInUseError` is not one), and so
+/// does the page's `using WGLMakie`. The page needs WGLMakie loaded, not its workload, so the workspace turns it off.
 async fn add_wglmakie(fixture: &Fixture) {
     offline_pkg(&fixture.root);
+    std::fs::write(
+        fixture.workspace.join("LocalPreferences.toml"),
+        "[WGLMakie]\nprecompile_workload = false\n",
+    )
+    .expect("turn WGLMakie's precompile workload off");
     let added = eval_within(
         &fixture.repl,
         1,
