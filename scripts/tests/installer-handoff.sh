@@ -64,7 +64,7 @@ if [ "$(uname -sm)" != "Linux x86_64" ]; then
 else
     d="$WORK/ho-pack"; mk_pack_fixture "$d" 2.31
     mkdir -p "$d/tree/deploy"; cp "$SRC/deploy/sotd.service" "$d/tree/deploy/"
-    cp -p "$SRC/scripts/sot-apply.sh" "$d/tree/scripts/"
+    install -m 0755 "$SRC/scripts/sot-apply.sh" "$d/tree/scripts/sot-apply.sh"  # git's 100755 checkout, no ACLs carried
     mkdir -p "$d/tree/rust"
     for t in cat mkdir cp tar gzip mktemp rm sha256sum chmod; do ln -sf "$(command -v "$t")" "$d/bin/$t"; done
     printf '#!/bin/sh\nif [ "$1" = rev-parse ]; then echo 0123456789abcdef0123456789abcdef01234567; elif [ "$1 $2" = "branch -r" ]; then echo origin/main; fi\n' > "$d/bin/git"
