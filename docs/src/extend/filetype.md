@@ -196,7 +196,12 @@ of Ship of Tools:
    a package with heavy dependencies, add a row to `LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/preview.jl` instead,
    mapping each lowercase extension (`".myext"`) to the package name; the kernel runs `using` on it the first time a
    file with that extension is previewed.
-3. If the preview's size does not grow with the file's (a metadata tree, a poster frame; the HDF5, PDF and video
+3. Resolve the kernel's environment:
+   `julia --project=julia/kernel -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()'`. Without it the kernel cannot load
+   the package, and every Julia-aware preview fails, not only yours. The kernel loads its plugins once, when it starts,
+   and has no narrower restart than the daemon's: restart `sotd` (a kernel that died on the missing package is
+   respawned by the daemon on a backoff of 250 ms up to 30 s).
+4. If the preview's size does not grow with the file's (a metadata tree, a poster frame; the HDF5, PDF and video
    plugins are in this group), add its extensions to
    `is_bounded_output_plugin` in `rust/backend/src/files/preview/mod.rs`. Without that, the daemon never calls the
    plugin for a file over its 2 MiB input cap and falls back to the raw bytes. This is a Rust change.

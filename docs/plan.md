@@ -169,4 +169,4 @@ If any of those fail in a way the architecture can't fix, switch to option B bef
 - `examples/plugins/HDF5Preview/src/HDF5Preview.jl` — `struct H5File <: FileType end`, dispatches `preview`.
 - `examples/plugins/README.md`.
 
-**Acceptance:** drop an `.h5`, add `HDF5Preview` to `[sot].extensions`, navigate, see structured preview. **Zero Rust changes were required.** That's the test of the ABI.
+**Acceptance:** drop an `.h5`, add `HDF5Preview` to `[sot].extensions`, navigate, see structured preview. **Zero Rust changes were required.** That's the test of the ABI. (As built: the kernel loads HDF5Preview through `LAZY_PLUGIN_FOR_EXT`, and the daemon's `is_bounded_output_plugin` names `.h5`, `.hdf5` and `.hdf`, which is a Rust change.)

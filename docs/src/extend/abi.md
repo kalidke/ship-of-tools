@@ -119,7 +119,7 @@ travel exactly the path core travels.
 ## Discovery
 
 Loaded `FileType` subtypes are found automatically with [`file_types`](@ref) (a
-`subtypes(FileType)` scan), and the best match for a path is chosen by
+`subtypes(FileType)` scan), and the first claimant of a path is chosen by
 [`file_type_for`](@ref). *Which* packages the kernel loads is fixed by the
 kernel's own project and sources, not by the user's project — see [Discovery & Configuration](discovery.md).
 

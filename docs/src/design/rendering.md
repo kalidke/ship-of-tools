@@ -88,7 +88,7 @@ The libraries that implement both layers:
 ## What is deliberately rejected
 
 - **Sixel, iTerm2 and the other terminal image protocols, halfblocks: none, anywhere.**
-- **No browser/webview** in the chosen path. ADR 0012 names a Tauri/wry web frontend
+- **No browser/webview** in the chosen path. ADR 0003 names a Tauri/wry web frontend
   only as the option-B fallback — taken only if preview requirements broaden into
   arbitrary HTML / iframes / WebGL. Across that swap the kernel, backend, line
   protocol, and core IR are unchanged; only the frontend surface differs.

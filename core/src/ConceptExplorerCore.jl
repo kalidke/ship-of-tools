@@ -4,8 +4,9 @@
 The plugin ABI for Ship of Tools.
 
 A small set of abstract types defines what is pluggable; methods on them are
-the contract. A package extends the system simply by being `using`-ed — the
-dispatch tables grow, with no registration step and no manifest.
+the contract. A package extends the system by being loaded in the kernel; today that
+means it is a dependency of `julia/kernel` plus a `using` line or a
+`LAZY_PLUGIN_FOR_EXT` row. Nothing loads a package from a user's project.
 
 The surface is six abstract types — [`FileType`](@ref), [`Mode`](@ref),
 [`ConceptEntity`](@ref), [`AnnotationKind`](@ref), [`Tool`](@ref) and
@@ -44,14 +45,15 @@ export file_types, file_type_for
     FileType
 
 Abstract supertype for the kinds of file the explorer can preview and parse —
-PNG, Julia source, Markdown, JSON, and so on.
+PDF, Julia source, Markdown, JSON, and so on.
 
 A plugin adds a kind with `struct MyKind <: FileType end`, declares which paths
 it claims with [`matches`](@ref), and implements [`preview`](@ref) (and, where
 the kind declares concept entities, [`parse_entities`](@ref)). Loaded subtypes
-are discovered automatically by [`file_types`](@ref); the best match for a path
-is resolved by [`file_type_for`](@ref). Adding a `FileType` requires zero
-changes on the Rust side.
+are discovered automatically by [`file_types`](@ref); the first claimant of a path
+is resolved by [`file_type_for`](@ref). Adding a `FileType` needs no frontend
+change; a kind whose preview is bounded regardless of file size also needs its
+extensions in the daemon's `is_bounded_output_plugin`.
 """
 abstract type FileType end
 
@@ -78,9 +80,9 @@ Abstract supertype for a conceptual unit a file declares — a function, type,
 module, or math derivation — as distinct from the file's raw bytes.
 
 [`parse_entities`](@ref) extracts them from a file; [`ast_hash`](@ref) gives
-each a stable provenance key (used to detect annotation staleness), and
+each a stable provenance key, and
 [`applicable_annotations`](@ref) reports which [`AnnotationKind`](@ref)s may
-decorate it.
+decorate it. Not built: no `ConceptEntity` subtype exists.
 """
 abstract type ConceptEntity end
 
@@ -90,7 +92,7 @@ abstract type ConceptEntity end
 Abstract supertype for a category of LLM/user-authored annotation that can be
 attached to a [`ConceptEntity`](@ref) — type-meaning, math-derivation, and so
 on. [`applicable_annotations`](@ref) reports which kinds are valid for a given
-entity.
+entity. Not built: no `AnnotationKind` subtype exists.
 """
 abstract type AnnotationKind end
 
@@ -108,7 +110,7 @@ abstract type Tool end
 
 Abstract supertype for a structured REPL output — a figure, a `DataFrame`, and
 the like — that should render at full fidelity rather than as text. A capture
-plugin defines `capture_payload` to convert the value into a display frame.
+plugin defines `capture_payload` to convert the value into a display frame. Not built: no `Capture` subtype exists.
 """
 abstract type Capture end
 
@@ -134,22 +136,23 @@ preview(T::Type{<:FileType}, path, params::AbstractDict) = preview(T, path)
 
 Extract the conceptual entities the file declares (modules, types,
 functions, etc.). There is no generic method: a type without one raises a
-`MethodError`, and each built-in plugin returns an empty vector.
+`MethodError`, and each built-in plugin returns an empty vector. Declared, not built: nothing calls it.
 """
 function parse_entities end
 
 """
     ast_hash(e::ConceptEntity) -> String
 
-Stable identifier for a concept entity's textual realisation. Used as the
-provenance key in `.concept/` annotation frontmatter (`synced_against`).
+Stable identifier for a concept entity's textual realisation. Declared, not
+built: no method, no caller. Staleness today compares the SHA-256 of the file's
+bytes with `synced_against`.
 """
 function ast_hash end
 
 """
     applicable_annotations(e::ConceptEntity) -> Vector{Type{<:AnnotationKind}}
 
-Which annotation kinds can decorate this entity. Plugins extend.
+Which annotation kinds can decorate this entity. Declared, not built: no method, no caller.
 """
 function applicable_annotations end
 
@@ -164,9 +167,8 @@ file_types() = subtypes(FileType)
 """
     file_type_for(path) -> Union{Type{<:FileType}, Nothing}
 
-Best-match `FileType` for `path`. Each plugin's `FileType` subtype is
-expected to define `matches(::Type{<:FileType}, path) -> Bool`; the first
-match wins. Falls back to `nothing` when no plugin claims the path.
+The first `FileType` whose `matches` is true for `path`. Each plugin's `FileType`
+subtype is expected to define `matches(::Type{<:FileType}, path) -> Bool`. Falls back to `nothing` when no plugin claims the path.
 """
 function file_type_for(path::AbstractString)
     for T in file_types()
@@ -182,7 +184,7 @@ end
 
 Plugin contract: return true if this `FileType` should claim `path`. The
 built-in plugins inspect the file extension. The first plugin to return
-true gets the preview / parse_entities calls.
+true gets the `preview` call (`parse_entities` has no caller).
 """
 function matches end
 

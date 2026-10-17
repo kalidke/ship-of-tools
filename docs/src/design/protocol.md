@@ -95,8 +95,8 @@ Two properties fall out of this design:
 
 The `mime` field keeps the frame schema open: adding HTML, LaTeX, or a custom
 representation is a frontend-side render change, not a protocol change. Errors
-are structured rather than dumped to stderr, so the frontend can render
-stacktraces with `file:line` links.
+are structured rather than dumped to stderr, so the window can print
+each stack frame as `at fn (file:line)`.
 
 ## Why NDJSON
 

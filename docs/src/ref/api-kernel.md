@@ -17,8 +17,8 @@ NDJSON line protocol.
 
 ## [Built-in preview plugins](@id builtin-preview-plugins)
 
-The standard file types ship under `julia/plugins/` and the kernel loads them at
-startup, except HDF5Preview, which loads on its first `.h5`, `.hdf5` or `.hdf` preview. The MIME type tells the frontend which renderer to use; what each one
+The seven standard file types ship under `julia/plugins/` and load at kernel start; HDF5Preview
+(`examples/plugins/`) loads on the first `.h5`, `.hdf5` or `.hdf` preview. The MIME type tells the frontend which renderer to use; what each one
 shows is in [Previews](../guide/previews.md).
 
 | Extension | Plugin | MIME |

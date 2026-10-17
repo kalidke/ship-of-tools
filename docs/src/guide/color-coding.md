@@ -27,7 +27,7 @@ and whether its annotation still matches the code.
 | Immutable / external | Dimmed | Base, dependencies, vendored code — not yours to edit, rendered dimmed. | No |
 | Stale annotation | Yellowed | The entity's [concept annotation](concept-layer.md) was written against an older version of its file (the file's content hash differs from `synced_against`). | Yes, per file, on the selected row in Files mode; per-entity staleness is not built |
 | Pinned file | Bright cyan, bold row | You pinned this file to keep its preview while browsing. | Yes, in the navigation tree; no other entity can be pinned or favorited |
-| Agent work state | Green, red, purple, blue, gray | A session's idle, working, waiting, blocked or done state; see [Work-state colors](../concepts/work-state.md). | Yes, on Sessions rows and the session strip |
+| Agent work state | Working green, blocked red, waiting purple, done blue, idle gray | A session's work state; see [Work-state colors](../concepts/work-state.md). | Yes, on Sessions rows and the session strip |
 
 ## Why it is mode-independent
 

@@ -3,8 +3,8 @@
 `settings.toml` holds the frontend's settings (layout, font, terminal and the rest); the frontend reads it when it
 starts. `hosts.toml` declares the hosts and is read by `sotd`; the window also reads it for the hub's name and for
 whether this box owns updates, but its connections come only from `--dial` flags. Chords live in a third file,
-`keybindings.toml`, described on its own page: [Keybindings](keybindings.md). A missing or out-of-range value falls back
-to its default rather than crashing the chrome.
+`keybindings.toml`, described on its own page: [Keybindings](keybindings.md). A missing or unparseable value keeps its
+default, an out-of-range `font.scale` is ignored, `drawer_height` is clamped, and no setting can crash the window.
 
 ## [Where the files are](@id config-file-locations)
 
@@ -34,7 +34,9 @@ Frontend settings.
 4. Built-in defaults.
 
 A value that is missing or does not parse keeps its default, and the reason is written to the window's log. A preset's
-`widths` has one entry per entry in its `columns`.
+`widths` has one entry per entry in its `columns`. When they do not match, a preset that sets its own `columns` keeps
+them and takes the built-in widths if their count fits, else splits the columns evenly; a `widths` with the wrong count
+and no `columns` of its own falls back to the built-in layout. Each fallback is named in a warning.
 
 ### [`[layout]`](@id layout)
 
@@ -138,9 +140,9 @@ fullscreen_vsync_pin = false    # default false | true on a VRR/OLED panel
 The declared topology: which host is the relay hub, which hosts run a
 daemon, which run a frontend, and which hosts the Monitor drawer
 (`drawer.monitor`) samples. `sot_protocol::topology` (Rust) is the **one parser** for this
-file — the daemon's `sotd topology plan|status|sync|relay-endpoint` CLI is
-the one way anything reads it. Neither the frontend nor the PowerShell
-launcher parses `hosts.toml` itself: the launcher runs
+file — `sotd` and the window call it, and the launchers get their facts only from
+`sotd topology plan|status|sync|relay-endpoint`. The PowerShell
+launcher does not parse `hosts.toml` itself: it runs
 `sotd topology plan --self <host>` and renders its plain-line output into
 `--dial <host>=<endpoint>` flags for the frontend (each an ssh child the
 frontend spawns itself, or a local socket/pipe). `sot --dial` takes one

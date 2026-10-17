@@ -21,7 +21,7 @@ separate in your head:
 
 | Layer | Source | Currency | LLM involved? |
 |-------|--------|----------|---------------|
-| **Structural** | parsed mechanically from code via `JuliaSyntax.jl` (plus live introspection where the project is loaded) | always current | no |
+| **Structural** | parsed mechanically from code via `JuliaSyntax.jl` | always current | no |
 | **Annotation** | LLM- or user-authored prose attached to nodes in the structural layer | can drift | yes |
 
 The structural layer is derived, never stored as a fact you can get wrong — it
@@ -117,7 +117,8 @@ Drift detection is reactive — Ship of Tools surfaces it, you fix it when you c
 1. **You save a file.** (Either you edited it, or an agent did.)
 2. **The window asks the kernel for the file's hash** (`file.parse`) when the
    cursor reaches the file's row in Files mode, once per file, and keeps it. No
-   save event re-hashes a file today. Only `.jl` files are hashed: the status line for
+   save event re-hashes a file today, so STALE appears only for a file that changed before the window first put the
+   cursor on it. Restart the window to re-hash, including after you reconcile an annotation. Only `.jl` files are hashed: the status line for
    the annotation of any other file stays at "checking…" and never shows STALE.
 3. **The annotation is marked stale when the hashes differ.** The comparison is
    `file_hash != synced_against`, made for the annotation of the file under the
