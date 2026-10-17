@@ -766,7 +766,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1, "respawned after the fire");
     }
 
-    /// The kernel's argv carries `--startup-file=no`: it never loads the user's environment, and a startup file's
+    /// The kernel's argv carries `--startup-file=no` before `-e`: it never loads the user's environment, and a startup file's
     /// prints would land on its wire.
     #[cfg(unix)]
     #[tokio::test]
@@ -789,7 +789,11 @@ mod tests {
         let args = std::fs::read_to_string(&argv).unwrap();
         sig.fire().expect("fire");
         tokio::time::timeout(Duration::from_secs(3), task).await.expect("the supervisor loop outlived the shutdown").expect("supervisor task");
-        assert!(args.split_whitespace().any(|a| a == "--startup-file=no"), "kernel argv: {args}");
+        // Before `-e`: after the script, Julia reads the flag as one of the script's arguments.
+        let words: Vec<&str> = args.split_whitespace().collect();
+        let flag = words.iter().position(|a| *a == "--startup-file=no");
+        let script = words.iter().position(|a| *a == "-e");
+        assert!(flag.is_some() && flag < script, "kernel argv: {args}");
     }
 
     /// A kernel that stops reading fills its pipe and the supervisor sits in

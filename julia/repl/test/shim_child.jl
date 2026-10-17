@@ -4,11 +4,16 @@ using Test
 using ShipToolsRepl
 
 # Start the shim with `startup` as the user's startup file, send each of `codes` as an eval (`pauses[i]` seconds after
-# eval i, for a task it started to run), and return its envelopes per eval, every wire line, and its stderr.
-function shim_child(startup, codes; pauses = Dict{Int,Float64}())
+# eval i, for a task it started to run; `files` are written under the depot, and `@DEPOT@` in the startup file is its
+# path), and return its envelopes per eval, every wire line, and its stderr.
+function shim_child(startup, codes; pauses = Dict{Int,Float64}(), files = Dict{String,String}())
     depot = mktempdir()
     mkpath(joinpath(depot, "config"))
-    write(joinpath(depot, "config", "startup.jl"), startup)
+    for (rel, text) in files
+        mkpath(dirname(joinpath(depot, rel)))
+        write(joinpath(depot, rel), text)
+    end
+    write(joinpath(depot, "config", "startup.jl"), replace(startup, "@DEPOT@" => depot))
     script = "using ShipToolsRepl; ShipToolsRepl.run_shim(stdin, stdout)"
     cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --project=$(pkgdir(ShipToolsRepl)) -e $script`,
         "JULIA_DEPOT_PATH" => join([depot, ""], Sys.iswindows() ? ';' : ':'))
@@ -95,4 +100,29 @@ end
     @test [f[:text] for f in c.frames(1) if f[:kind] == "value"] == ["2"]
     @test !any(f -> f[:kind] == "stderr", c.frames(2))
     @test "before-boom" in split(c.stderr_text, '\n')
+end
+
+@testset "run_shim: a Revise the startup file loaded revises before each eval, and a failed revision is a stderr frame" begin
+    # A stdlib-only stand-in package named Revise, found through LOAD_PATH like the real one.
+    standin = """
+        module Revise
+        const calls = Ref(0)
+        function revise()
+            calls[] += 1
+            calls[] == 2 && @error "revise-logged-failure"
+            calls[] == 3 && error("revise-threw")
+            return nothing
+        end
+        end
+        """
+    c = shim_child("push!(LOAD_PATH, raw\"@DEPOT@/stand\")\nusing Revise\n", fill("Revise.calls[]", 3);
+        files = Dict("stand/Revise/src/Revise.jl" => standin))
+    @test all(c.got)
+    @test c.ok
+    for id in 1:3
+        @test [f[:text] for f in c.frames(id) if f[:kind] == "value"] == [string(id)]
+    end
+    @test !any(f -> f[:kind] == "stderr", c.frames(1))
+    @test any(f -> f[:kind] == "stderr" && occursin("revise-logged-failure", f[:text]), c.frames(2))
+    @test any(f -> f[:kind] == "stderr" && occursin("revise-threw", f[:text]), c.frames(3))
 end

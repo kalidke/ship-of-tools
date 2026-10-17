@@ -115,10 +115,13 @@ What this means for you:
 - **Headless.** The REPL has no display; CairoMakie figures come back as files,
   and interactive figures use WGLMakie with `wglshow`.
 - **Revise.** Ship of Tools does not load Revise; a `using Revise` in your
-  startup.jl loads it, and the REPL then calls `Revise.revise()` before each
-  evaluation, so an edit to a tracked package's `src/` takes effect on the next
-  one. Without Revise, re-running a script picks up edits to that script, but
-  an edit to a package's `src/` takes effect only after it is included again.
+  startup.jl (or in an evaluation) loads it, and the REPL then calls
+  `Revise.revise()` before each later evaluation, so an edit to a tracked
+  package's `src/` or an `includet` file takes effect on the next one. A
+  revision that fails (a syntax error in the edit) shows as error output of that
+  evaluation, which then runs the old code. Without Revise, re-running a script
+  picks up edits to that script, but an edit to a package's `src/` takes effect
+  only after it is included again.
 
 ## Structured output frames
 

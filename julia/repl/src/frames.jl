@@ -11,7 +11,7 @@ Base.flush(::EvalStdout) = flush(stdout)
 # `TextDisplay(stdout)` holds the wire, so each is swapped, in place so the stack's order holds, for a real `TextDisplay`
 # (packages find the stack's fallback by that type) on an `EvalStdout`; then the process's stdout (Julia's and fd 1)
 # becomes its stderr, which the supervisor drains, so a display or `println` outside an eval cannot glue onto an
-# envelope.  `run_shim` does it before the user's startup file.
+# envelope. `run_shim` does it before the user's startup file.
 function point_stdout_away_from_wire!(io_out::IO)
     ds = Base.Multimedia.displays
     for i in eachindex(ds)
@@ -83,6 +83,23 @@ function announce_browserview(bv::BrowserView)
     return bv
 end
 
+# Revise only revises on its own in a Julia REPL, which the shim is not: when the user's startup file or an earlier
+# eval loaded it into Main, revise before the eval, with the eval's stdout/stderr already captured, so a failed revision
+# (Revise logs it, it does not throw) is a stderr frame of that eval. The lookup and the call go through `invokelatest`:
+# `serve`'s world is older than the `using Revise` that created the binding. A throw is a stderr line; the eval still runs.
+function revise_loaded()
+    try
+        Base.invokelatest() do
+            isdefined(Main, :Revise) || return
+            rev = getglobal(Main, :Revise)
+            rev isa Module && rev.revise()
+        end
+    catch e
+        e isa InterruptException && rethrow()
+        println(stderr, "sot: Revise.revise() failed: ", Base.invokelatest(sprint, showerror, e))
+    end
+end
+
 function stream_eval_frames(f, emit)
     CURRENT_EMIT[] = emit
     empty!(ANNOUNCED_BROWSER_URLS)
@@ -102,6 +119,7 @@ function stream_eval_frames(f, emit)
     try
         redirect_stdout(pipe_out)
         redirect_stderr(pipe_err)
+        revise_loaded()
         try
             # The value's display is user code too, so it renders in the
             # interruptible region; its frames are emitted after the drain.

@@ -187,33 +187,6 @@ Base.flush(::CountingIO) = nothing
         @test res[:payload][:eval_id] == 99
     end
 
-    @testset "serve: before each eval, a loaded Revise revises, and its error is a stderr frame while the eval runs" begin
-        @eval Main module Revise
-            calls = 0
-            fail = false
-            revise() = (global calls += 1; fail && error("revise-broke"); nothing)
-        end
-        try
-            bs_in, bs_out, _ = drive(String[])
-            frames(id) = begin
-                write(bs_in, eval_line(id, "id = $id"))
-                flush(bs_in)
-                [e[:payload][:frame] for e in read_until_res(bs_out) if get(e, :op, "") == "repl.frame"]
-            end
-            fs = frames(1)
-            @test Main.Revise.calls == 1
-            @test !any(f -> f[:kind] == "stderr", fs)
-            Main.Revise.fail = true
-            fs = frames(2)
-            @test Main.Revise.calls == 2
-            @test any(f -> f[:kind] == "stderr" && occursin("revise-broke", f[:text]), fs)
-            @test any(f -> f[:kind] == "value" && f[:text] == "2", fs)
-            close(bs_in)
-        finally
-            Main.Revise.fail = false      # a module binding cannot be removed; the stand-in stays, harmless
-        end
-    end
-
     @testset "serve: a child says once, at the start of its first eval, why the REPL before it ended and why it has no display" begin
         evals(bs_in, bs_out, ids) = map(ids) do eval_id
             write(bs_in, sprint(DR.json_write, Dict(:v => 1, :id => eval_id, :op => "repl.eval",
@@ -735,6 +708,6 @@ Base.flush(::CountingIO) = nothing
             )
         end
     end
-end
 
-include("shim_child.jl")
+    include("shim_child.jl")
+end

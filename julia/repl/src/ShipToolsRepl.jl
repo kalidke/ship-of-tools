@@ -75,9 +75,7 @@ function run_shim(io_in::IO, io_out::IO)
     try
         Base.load_julia_startup()
     catch e
-        file = joinpath(first(DEPOT_PATH), "config", "startup.jl")
-        isfile(file) || (file = "the global startup.jl")
-        STARTUP_FAILURE[] = "sot: the startup file ($file) failed: " *
+        STARTUP_FAILURE[] = "sot: the startup file failed: " *
             Base.invokelatest(sprint, showerror, e, catch_backtrace()) * "\n"
     end
     serve(io_in, io_out)
@@ -235,7 +233,6 @@ function spawn_eval(work, io::IO, id, eval_id, op, ack)
             DISPLAY_NOTICE[] = nothing
             emit(Dict(:kind => "stderr", :text => notice))
         end
-        revise_before_eval(emit)
         try
             work(emit)
         catch e
@@ -251,19 +248,6 @@ function spawn_eval(work, io::IO, id, eval_id, op, ack)
     CURRENT_EVAL[] = Eval(eval_id, task, :waiting)
     schedule(task)
     return
-end
-
-# Revise only revises on its own in a Julia REPL, which the shim is not: when the user's startup file (or an earlier
-# eval) loaded it into Main, revise before each eval. Its error is a stderr frame, and the eval still runs.
-function revise_before_eval(emit)
-    isdefined(Main, :Revise) && getglobal(Main, :Revise) isa Module || return
-    try
-        Base.invokelatest(getproperty(getglobal(Main, :Revise), :revise))
-    catch e
-        e isa InterruptException && rethrow()
-        emit(Dict(:kind => "stderr",
-                  :text => "sot: Revise.revise() failed: " * Base.invokelatest(sprint, showerror, e) * "\n"))
-    end
 end
 
 # Runs the calling eval's user code, the only place an interrupt reaches the eval
