@@ -51,7 +51,9 @@ if (-not (Test-Path -LiteralPath $exe)) {
 # manifest must describe what is actually installed. `sot --version` prints
 # "sot X.Y.Z (<sha> <date>)", "sot X.Y.Z+src (...)" or
 # "sot X.Y.Z+<sha> (...)".
-$versionLine = & $exe --version 2>&1 | Select-Object -First 1
+# Collected whole before the first line is taken: `Select-Object -First 1` on the native pipeline ends the command early,
+# and its exit code (-1 when the pipe closes first) would then be what this script leaves in $LASTEXITCODE.
+$versionLine = @(& $exe --version 2>&1)[0]
 if ($versionLine -notmatch '^\s*sot\s+(\S+)') {
     Write-Warning "install-manifest: could not read a version from '$versionLine' - skipping manifest."
     exit 0
@@ -88,7 +90,7 @@ $config = Join-Path $env:APPDATA 'sot'
 # clone tracks main and its HEAD is usually past the staged binaries.
 $commit = ''
 try {
-    $commit = (& git -C $Repo rev-parse "$tag^{commit}" 2>$null | Select-Object -First 1)
+    $commit = @(& git -C $Repo rev-parse "$tag^{commit}" 2>$null)[0]
 } catch {}
 if (-not $commit) { $commit = 'unknown' }
 $manifest = Join-Path $Prefix 'install.json'
@@ -152,3 +154,6 @@ if ($Hub -and (Test-Path -LiteralPath $sotd)) {
     Write-Warning "install-manifest: no -Hub given and none recorded: this box cannot fetch hosts.toml until you run install-shortcut.ps1 -Hub <alias>."
 }
 Write-Host "  The frontend will now check for updates at startup and stage them for sot-apply.ps1."
+# Explicit, not whatever the last native command left in $LASTEXITCODE: a caller that ends with `exit $LASTEXITCODE`
+# (the hosted runner's PowerShell wrapper) would otherwise fail a run that did its work.
+exit 0

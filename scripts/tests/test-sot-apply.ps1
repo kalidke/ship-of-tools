@@ -335,3 +335,4 @@ if (-not (Test-Path -LiteralPath $realSotd)) {
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 if ($fail) { exit 1 }
+exit 0
