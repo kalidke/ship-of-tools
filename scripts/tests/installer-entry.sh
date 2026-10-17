@@ -94,7 +94,7 @@ echo "systemctl $*" >> "$CTL/systemctl.log"
 case "$*" in
     "--user is-active"*) [ -f "$CTL/unit-active" ]; exit $? ;;
     "--user cat sotd.service") [ -f "$CTL/unit-active" ] && printf "ExecStart=/bin/bash -c 'exec \"%s/bin/sotd\"'\n" "$HOME/.local/share/sot"; exit 0 ;;
-    *"enable --now"*) : > "$CTL/unit-active" ;;
+    *"enable --now"*) : > "$CTL/unit-active"; [ ! -f "$CTL/start-same" ] || echo 0 > "$CTL/same-rc" ;;
     *try-restart*) [ ! -f "$CTL/restart-same" ] || echo 0 > "$CTL/same-rc" ;;
 esac
 exit 0
@@ -169,7 +169,7 @@ before="$(entry_prefix_tree "$d")"
 entry_record "$d" 0.6.6-rc9.14-dev+abc123 1 0 none
 prelude --be-only
 check "a build with a + stops (exit 2)" "2" "$ENTRY_RC"
-check "it says why and names --version and --archive" "1" "$(said 'FAIL: target: this computer runs 0.6.6-rc9.14-dev+abc123, a build that is not a release: name the target with --version vX.Y.Z, or --archive <folder>')"
+check "it says why and sends a build of the line to a pack of the line" "1" "$(said 'FAIL: target: this computer runs 0.6.6-rc9.14-dev+abc123, a build of the line, not a release: install a pack of the line with --archive <folder>; a release named with --version is usually older and moves this computer back; ask the person who runs it which they want')"
 check "it ends with that one line" "yes" "$(case "$ENTRY_LAST" in ('FAIL: '*) echo yes ;; (*) echo no ;; esac)"
 check "it fetched no installer and no asset" "0" "$(count_in "$d/ctl/net.log" 'raw.githubusercontent\|releases/download\|api.github.com\|releases/latest')"
 entry_record "$d" 0.6.6-rc9.13 1 0 none
@@ -211,8 +211,13 @@ printf 'newer\n' > "$d/ctl/direction"
 entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
 check "an implicit run that moves forward goes on" "0 1" "$ENTRY_RC $(said '(newer)')"
 printf 'nonsense\n' > "$d/ctl/direction"
+entry_run "$d" SOT_INSTALL_TAG=v9.9.9 --be-only --no-service
+check "a pinned run whose sotd cannot say goes on, and says so" "0 1" "$ENTRY_RC $(said 'could not tell which way')"
+entry_record "$d" 9.9.10 1 0 none
 entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
-check "a sotd that cannot say goes on, and says so" "0 1" "$ENTRY_RC $(said 'could not tell which way')"
+check "an implicit run whose sotd cannot say stops like older (exit 2)" "2" "$ENTRY_RC"
+starts_with "and names --version" "FAIL: direction: could not tell which way v9.9.9 moves the install" "$ENTRY_LAST"
+check "nothing changed" "yes" "$([ "$(entry_installed "$d")" = 9.9.10 ] && echo yes || echo no)"
 d="$WORK/dir-first"; entry_fixture "$d"
 entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
 check "a first install asks nothing of the direction" "0 0" "$ENTRY_RC $(sotd_log "$d" | grep -c 'update direction' || true)"
@@ -290,7 +295,7 @@ d="$WORK/vd-held"; entry_fixture "$d"; P="$d/home/.local/share/sot"
 printf '9.9.8\n' > "$d/ctl/same-out"; printf '4\n' > "$d/ctl/same-rc"
 entry_archive "$d" --be-only --no-service
 check "a daemon a window holds, on the old version: exit 0" "0" "$ENTRY_RC"
-starts_with "and it is ONE STEP LEFT" "ONE STEP LEFT: start Ship of Tools again" "$ENTRY_LAST"
+starts_with "and it is ONE STEP LEFT, by hand since this install has no launcher" "ONE STEP LEFT: restart the sotd on $d/ctl/sot.sock by hand" "$ENTRY_LAST"
 check "and it is not restarted: no systemctl restart" "0" "$(count_in "$d/ctl/systemctl.log" 'restart')"
 
 # ---------------------------------------------------------------------------
@@ -307,6 +312,7 @@ entry_archive "$d" --be-only
 check "a live REPL stops the run (exit 2)" "2" "$ENTRY_RC"
 check "it names the rows whose REPL would end" "1" "$(said 'FAIL: daemon: the daemon on '"$d"'/ctl/sot.sock runs another version, and its rows with a live REPL are: Rig PC, scan')"
 check "it says to ask and how to answer" "1" "$(said 'Ask whoever uses this computer, then re-run with --restart-daemon.')"
+check "and that nothing under the install was changed" "1" "$(said 'Nothing under the install was changed.')"
 check "nothing changed" "$before" "$(entry_prefix_tree "$d")"
 check "the daemon was asked of the target's sotd, by its own socket" "1" "$(sotd_log "$d" | grep -c -x -F "sotd update repls --endpoint unix:$d/ctl/sot.sock" || true)"
 check "no restart was made" "0" "$(count_in "$d/ctl/systemctl.log" 'try-restart')"
@@ -319,12 +325,18 @@ entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; : > "$d/ctl/resta
 printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"; printf '0\n' > "$d/ctl/repls-rc"
 entry_archive "$d" --be-only
 check "no live REPL: the update restarts the unit and passes" "0 1 PASS" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
-# A daemon that cannot be asked: a note, then the restart.
+# A daemon that cannot be asked fails closed: the restart waits for the person's answer.
 d="$WORK/live-unknown"; entry_fixture "$d"
 entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; : > "$d/ctl/restart-same"
 printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"; printf '1\n' > "$d/ctl/repls-rc"
+before="$(entry_prefix_tree "$d")"
 entry_archive "$d" --be-only
-check "a daemon that cannot list its rows: a note and the restart" "0 1 1" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $(said 'could not ask the daemon')"
+check "a daemon that cannot list its rows: exit 2, no restart" "2 0" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart')"
+starts_with "its FAIL says what could not be asked and the answer" "FAIL: daemon: could not ask which rows have a live REPL" "$ENTRY_LAST"
+check "nothing changed" "$before" "$(entry_prefix_tree "$d")"
+check "it says --restart-daemon answers it, and that nothing under the install changed" "1 1" "$(said 're-run with --restart-daemon') $(said 'Nothing under the install was changed')"
+entry_archive "$d" --be-only --restart-daemon
+check "--restart-daemon answers it: the restart, and PASS" "0 1 PASS" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
 # The daemon already runs the target: nothing is asked and nothing is restarted.
 d="$WORK/live-same"; entry_fixture "$d"
 entry_record "$d" 9.9.9 1 0 systemd; : > "$d/ctl/unit-active"; printf '0\n' > "$d/ctl/same-rc"; printf 'Rig PC\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
@@ -402,6 +414,7 @@ entry_archive "$d" --backend hubbox
 check "the hub omits this box: FAIL enroll, exit 1" "1" "$ENTRY_RC"
 check "it names the hub-side command with this box's name" "1" "$(said "FAIL: enroll: the hosts.toml on 'hubbox' does not list this computer ('entrybox'), so the window would open with no hosts: on 'hubbox' run  sotd topology set add entrybox --frontend")"
 check "it is the last line" "yes" "$(case "$ENTRY_LAST" in ('FAIL: enroll:'*) echo yes ;; (*) echo no ;; esac)"
+check "it says that without --daemon this computer's own rows do not show" "1" "$(said "without --daemon this computer's own rows do not show in its window")"
 check "the sync asked the alias it was given" "1" "$(sotd_log "$d" | grep -c -x -F 'sotd topology sync --hub hubbox' || true)"
 printf '0\n' > "$d/ctl/sync-rc"; : > "$d/ctl/sync-out"
 entry_archive "$d" --backend hubbox
@@ -429,11 +442,16 @@ check "it says which folder and why" "1" "$(said 'keeping old version dir v0.1.0
 check "the clean old folder (its ignored Manifest.toml aside) is pruned" "no" "$([ -e "$P/repo/versions/v0.2.0" ] && echo yes || echo no)"
 check "the previously active folder is kept for rollback" "yes" "$([ -d "$P/repo/versions/v0.3.0" ] && echo yes || echo no)"
 check "the new version's folder is in place" "$(cat "$d/ctl/commit")" "$(git -C "$P/repo/versions/v9.9.9" rev-parse HEAD)"
+# A repair run (repo/current already at the target) prunes nothing; the next update names the dirty one again.
 entry_archive "$d" --be-only --no-service
-check "a second run names it again and keeps it" "yes 1" "$([ -d "$P/repo/versions/v0.1.0" ] && echo yes || echo no) $(said 'keeping old version dir v0.1.0')"
+check "a repair run prunes nothing and says nothing of it" "yes 0" "$([ -d "$P/repo/versions/v0.1.0" ] && echo yes || echo no) $(said 'old version dir')"
+ln -sfn "$P/repo/versions/v0.3.0" "$P/repo/current"
+entry_archive "$d" --be-only --no-service
+check "the next update names it again and keeps it" "yes 1" "$([ -d "$P/repo/versions/v0.1.0" ] && echo yes || echo no) $(said 'keeping old version dir v0.1.0')"
 git -C "$P/repo/versions/v0.1.0" checkout -q -- logo.png
+ln -sfn "$P/repo/versions/v0.3.0" "$P/repo/current"
 entry_archive "$d" --be-only --no-service
-check "once it is clean the next run prunes it" "no" "$([ -e "$P/repo/versions/v0.1.0" ] && echo yes || echo no)"
+check "once it is clean the next update prunes it" "no" "$([ -e "$P/repo/versions/v0.1.0" ] && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
 case_start "entry_gives_an_enrolled_frontend_the_launcher_that_dials_the_plan"
@@ -450,6 +468,7 @@ check "the run passes" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1
 check "the launcher is the one that execs the checkout's launch-sot.sh" "yes" "$(grep -q "exec \"$P/repo/current/scripts/launch-sot.sh\"" "$W" && echo yes || echo no)"
 check "it names no backend alias (the plan lists the hosts)" "0" "$(grep -c 'SOT_HOST' "$W" || true)"
 check "it says why" "1" "$(said 'the topology plan lists other daemon hosts')"
+check "and that this computer's own rows do not show until the hub lists it with --daemon" "1" "$(said "so its own rows do not show in its window until the hub lists it with --daemon")"
 # The launcher, run: the frontend is handed one --dial for each host of the plan.
 : > "$d/ctl/sot.log"
 ( env -i HOME="$d/home" PATH="$d/stubs:$ENTRY_TOOLS" CTL="$d/ctl" SOT_COMM_HOME="$d/comm" SOT_SELF_HOST=entrybox "$W" ) > "$d/launch.out" 2>&1 || true
@@ -459,6 +478,8 @@ entry_archive "$d" --no-service
 check "a plan with only this computer's own daemon keeps the all-in-one launcher" "yes" "$(grep -q '^# sot-launch: all-in-one$' "$W" && echo yes || echo no)"
 check "the pure choice: an alias or another host makes it remote" "remote remote all-in-one" \
     "$(installer_launcher_kind hub '') $(installer_launcher_kind '' yes) $(installer_launcher_kind '' '')"
+check "a plan that dials its own host is read as such" "yes|" \
+    "$(printf 'self a\ndial a unix:/x\ndial b ssh:h\n' | installer_plan_dials_self)|$(printf 'self a\ndial b ssh:h\n' | installer_plan_dials_self)"
 check "the plan's other hosts are read apart from its own" "yes|" \
     "$(printf 'self a\ndial a unix:/x\ndial b ssh:h\n' | installer_plan_dials_others)|$(printf 'self a\ndial a unix:/x\n' | installer_plan_dials_others)"
 
@@ -476,3 +497,136 @@ if [ -x "$RS" ]; then
 else
     printf '    SKIP the real sotd cases (no built sotd at %s; build it with cargo build -p sot-backend --bin sotd)\n' "$RS"
 fi
+
+# ---------------------------------------------------------------------------
+case_start "entry_does_not_pass_a_daemon_that_never_answers"
+# A restart, and a start of the unit, are verified: PASS needs the daemon on the socket to run the target.
+d="$WORK/ver-restart"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"
+printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"; printf '0\n' > "$d/ctl/repls-rc"
+entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only
+check "a restart after which the old daemon still answers: exit 1, restarted once" "1 1" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart')"
+starts_with "its last line is FAIL: daemon" "FAIL: daemon:" "$ENTRY_LAST"
+printf '2\n' > "$d/ctl/same-rc"
+entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only
+starts_with "a restart after which nothing answers: FAIL: daemon" "FAIL: daemon:" "$ENTRY_LAST"
+check "and the verdict is the only one" "1" "$(printf '%s\n' "$ENTRY_OUT" | grep -c -E '^(PASS|FAIL|ONE STEP LEFT):' || true)"
+# A unit that is active but whose daemon cannot be told (same-version exit 2) is not restarted, and is not PASS.
+d="$WORK/ver-told"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; printf '2\n' > "$d/ctl/same-rc"
+entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only
+check "an active unit whose daemon cannot be told: not restarted, exit 1" "0 1" "$(count_in "$d/ctl/systemctl.log" 'try-restart') $ENTRY_RC"
+starts_with "and FAIL: daemon" "FAIL: daemon:" "$ENTRY_LAST"
+# A unit the run starts: the daemon must answer after enable --now.
+d="$WORK/ver-fresh"; entry_fixture "$d"
+entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only
+check "a fresh unit whose daemon never answers: exit 1, FAIL: daemon" "1 FAIL: daemon" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-12)"
+: > "$d/ctl/start-same"; rm -f "$d/ctl/unit-active"; printf '2\n' > "$d/ctl/same-rc"
+entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only
+check "a fresh unit whose daemon answers as the target: PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
+
+# ---------------------------------------------------------------------------
+case_start "entry_names_the_rows_a_step_would_end_and_the_command_that_ends_them"
+# A daemon on another version that this run does not restart (a window holds it, or the launcher started it) is asked its
+# live rows too, and the ONE STEP LEFT names them and the command that fits this computer.
+check "the step: a launcher, a unit, or by hand" "start Ship of Tools again (the daemon on S still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A, B|run systemctl --user restart sotd.service once the window that holds the daemon on S is closed (it still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A|restart the sotd on S by hand (it still runs another version, beside the new repo/current and bin/sot-capsule); its rows with a live REPL could not be listed, so starting it again may end some" \
+    "$(installer_daemon_step launcher other S 'A, B' 0)|$(installer_daemon_step unit held S A 0)|$(installer_daemon_step hand other S '' 1)"
+# B: an owned unit a window holds, be-only (no launcher), a live REPL.
+d="$WORK/held-rows"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"
+printf '9.9.8\n' > "$d/ctl/same-out"; printf '4\n' > "$d/ctl/same-rc"; printf 'Rig PC\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
+entry_archive "$d" --be-only
+check "a held unit is asked its rows, and not restarted" "0 1 0" "$ENTRY_RC $(sotd_log "$d" | grep -c 'update repls' || true) $(count_in "$d/ctl/systemctl.log" 'try-restart')"
+check "the step is the systemctl command, with the row it ends, and no launcher" "1 1 0" "$(said 'ONE STEP LEFT: run systemctl --user restart sotd.service') $(said 'starting it again ends the REPLs of: Rig PC') $(printf '%s' "$ENTRY_LAST" | grep -c -F 'Ship of Tools' || true)"
+# The same unit on a box with a launcher and a local window: the launcher is the step, and the window step names the rows.
+entry_record "$d" 9.9.8 1 1 systemd
+P="$d/home/.local/share/sot"
+printf '4242 sot %s/bin/sot --socket /x/sot.sock\n' "$P" > "$d/ctl/ps"
+entry_archive "$d"
+starts_with "a held unit with a local window: quit and start it again, naming the rows" "ONE STEP LEFT: quit Ship of Tools and start it again: its window still runs 9.9.8 (starting it again ends the REPLs of: Rig PC)" "$ENTRY_LAST"
+rm -f "$d/ctl/ps"
+entry_record "$d" 9.9.8 1 1 systemd
+entry_archive "$d"
+check "a held unit with a launcher but no local window: the unit's command, not the launcher" "1" "$(said 'ONE STEP LEFT: run systemctl --user restart sotd.service')"
+# E: a daemon the launcher started (--no-service) on another version, with a live REPL.
+d="$WORK/nosvc-rows"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 none
+printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"; printf 'Rig PC\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
+entry_archive "$d" --be-only --no-service
+check "a daemon with no unit is asked its rows and left alone: exit 0" "0 1" "$ENTRY_RC $(sotd_log "$d" | grep -c 'update repls' || true)"
+check "the step is by hand and names the row" "1 1" "$(said "ONE STEP LEFT: restart the sotd on $d/ctl/sot.sock by hand") $(said 'starting it again ends the REPLs of: Rig PC')"
+entry_record "$d" 9.9.8 1 1 none
+entry_archive "$d" --no-service
+check "with a launcher the step is to start Ship of Tools again, naming the row" "1 1" "$(said 'ONE STEP LEFT: start Ship of Tools again') $(said 'starting it again ends the REPLs of: Rig PC')"
+# A daemon that cannot be asked, and is not restarted: the step says the rows could not be listed.
+printf '1\n' > "$d/ctl/repls-rc"
+entry_record "$d" 9.9.8 1 0 none
+entry_archive "$d" --be-only --no-service
+check "an unaskable daemon that is left alone: exit 0, the step says the rows could not be listed" "0 1" "$ENTRY_RC $(said 'could not be listed')"
+
+# ---------------------------------------------------------------------------
+case_start "entry_keeps_the_rollback_through_a_repair_run"
+# An update leaves the previous version's folder and the .prev binaries; a repair run on the finished install keeps them.
+d="$WORK/rb"; entry_fixture "$d"; P="$d/home/.local/share/sot"; B="$P/repo/base"
+git -C "$B" worktree add -q --detach "$P/repo/versions/v9.9.8" v9.9.8
+ln -sfn "$P/repo/versions/v9.9.8" "$P/repo/current"
+mkdir -p "$P/bin"; printf '#!/bin/sh\necho old sotd 9.9.8\n' > "$P/bin/sotd"; chmod +x "$P/bin/sotd"
+entry_record "$d" 9.9.8 1 0 none
+entry_archive "$d" --be-only --no-service
+check "the update keeps the previous folder and the old binary as .prev" "0 yes 1" "$ENTRY_RC $([ -d "$P/repo/versions/v9.9.8" ] && echo yes || echo no) $(grep -c 'old sotd 9.9.8' "$P/bin/sotd.prev" || true)"
+for run in repair again; do
+    entry_archive "$d" --be-only --no-service
+    check "a $run run passes and keeps the previous folder" "0 yes" "$ENTRY_RC $([ -d "$P/repo/versions/v9.9.8" ] && echo yes || echo no)"
+    check "and the old binary as .prev, which is not the installed one" "1 no" "$(grep -c 'old sotd 9.9.8' "$P/bin/sotd.prev" || true) $(cmp -s "$P/bin/sotd" "$P/bin/sotd.prev" && echo yes || echo no)"
+done
+# An --archive hop to another commit of the same version is not a repair run.
+d="$WORK/hop"; entry_fixture "$d"
+entry_record "$d" 9.9.9 1 0 none; sed -i 's/"commit": *"[^"]*"/"commit": "1111111111111111111111111111111111111111"/' "$d/home/.local/share/sot/install.json"
+printf 'same\n' > "$d/ctl/direction"
+entry_archive "$d" --be-only --no-service
+check "same version, another commit: it says so, not a repair run" "1 0" "$(said 'same version, another build') $(said 'a repair run')"
+
+# ---------------------------------------------------------------------------
+case_start "entry_ends_every_exit_in_one_verdict_line"
+# One EXIT trap prints FAIL when no verdict was printed: option errors, a command that fails under set -e, and an interrupt.
+verdicts() { printf '%s\n' "$ENTRY_OUT" | grep -c -E '^(PASS|FAIL|ONE STEP LEFT):' || true; }
+d="$WORK/vl1"; entry_fixture "$d"
+entry_archive "$d" --be-only --bogus
+check "an unknown option: exit 2, one verdict line, the last" "2 1 yes" "$ENTRY_RC $(verdicts) $(case "$ENTRY_LAST" in ('FAIL: '*'unknown flag: --bogus') echo yes ;; (*) echo no ;; esac)"
+d="$WORK/vl2"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 systemd
+cat > "$d/stubs/systemctl" <<'SC'
+#!/bin/sh
+echo "systemctl $*" >> "$CTL/systemctl.log"
+case "$*" in
+    "--user is-active"*) exit 3 ;;
+    "--user daemon-reload"|*"enable --now"*) echo "Failed to connect to bus: No medium found" >&2; exit 1 ;;
+esac
+exit 0
+SC
+entry_archive "$d" --be-only
+check "a user manager that cannot be reached: exit 1, one verdict line, the last" "1 1 FAIL: service: stopped (exit 1)" "$ENTRY_RC $(verdicts) $ENTRY_LAST"
+d="$WORK/vl3"; entry_fixture "$d"
+entry_run "$d" SOT_INSTALL_TAG=v9.9.9 --be-only --version
+check "--version with no value: exit 2, one verdict line" "2 1" "$ENTRY_RC $(verdicts)"
+starts_with "and it says which option" "FAIL: " "$ENTRY_LAST"
+check "naming it" "1" "$(said '--version needs a value')"
+# An interrupt mid-run: the signal ends the run after one verdict line, and the scratch folder is gone.
+d="$WORK/vl4"; entry_fixture "$d"; printf 'sleep 2\n' > "$d/ctl/hook"
+env -i HOME="$d/home" PATH="$d/stubs:$ENTRY_TOOLS" CTL="$d/ctl" SOT_COMM_HOME="$d/comm" SOT_SELF_HOST=entrybox TMPDIR="$d" \
+    bash "$ENTRY_SRC/scripts/install.sh" --archive "$d/rel" --be-only --no-service > "$d/sig.out" 2>&1 &
+sig_pid=$!
+n=0; while [ "$n" -lt 150 ] && ! grep -q update_comm "$d/ctl/julia.log" 2>/dev/null; do sleep 0.1; n=$((n + 1)); done
+kill -TERM "$sig_pid"
+sig_rc=0; wait "$sig_pid" || sig_rc=$?
+check "a TERM mid-run ends by the signal (143)" "143" "$sig_rc"
+check "with one verdict line, the last, naming the stage" "1 FAIL: comm: stopped (exit 143)" "$(grep -c -E '^(PASS|FAIL|ONE STEP LEFT):' "$d/sig.out" || true) $(tail -1 "$d/sig.out")"
+check "and its scratch folder is gone" "0" "$(ls "$d" | grep -c '^sot-install\.' || true)"
+
+# ---------------------------------------------------------------------------
+case_start "entry_records_say_the_person_picks_the_target"
+# The words an agent reads: the target and the direction are the person's to answer, and --archive runs the pack's installer.
+for f in agents/claude/sot-install/SKILL.md docs/INSTALL-AGENT.md; do
+    check "$f: a version the agent picks is never the answer" "1" "$(grep -c -F 'never a version the agent picks' "$ENTRY_SRC/$f" || true)"
+    check "$f: --archive runs the install.sh of the checkout that made the pack" "1" "$(grep -c -F 'the install.sh of the checkout that made the pack' "$ENTRY_SRC/$f" || true)"
+done

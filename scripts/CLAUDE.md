@@ -51,21 +51,31 @@ and the launch path fails open: no update step can stop a window from starting.
   new install drops the leftover pointer (`install.sh` for its target, `install-manifest.ps1` when the version or commit
   changes). The rule is ADR 0030's 2026-10-17 amendment; `installer-apply.sh`'s `a_refused_pointer_is_dropped_and_nothing_is_applied`
   group and `test-sot-apply.ps1` section 9 pin it.
-- On Unix the installer is the update entry (`install.sh`, run from the installed checkout or as the one-liner), and a run
-  ends with exactly one line: `PASS: Ship of Tools <v> at <short> on this computer`, `ONE STEP LEFT: <what a person
-  does>` (exit 0, the install is whole) or `FAIL: <check>: <detail>` (exit 1, or 2 for a refusal). With no `--version`
-  and no `--archive` it follows the channel `install.json` records (no install or a stable release: GitHub's latest
-  stable; a pre-release: the newest published release of any kind; a `+` build: stop and ask for `--version` or
-  `--archive`) and never moves an install backwards: the target's own `sotd update direction` says `older` and the run
-  fails, before anything under the prefix changes. With no role flag and no topology entry the role comes back from
+- On Unix the installer is the update entry (`install.sh`, run from the installed checkout or as the one-liner), and every
+  exit ends in exactly one line, printed by `fail`, by the verdict or by the one EXIT trap (`on_exit`) when a command
+  failed under `set -e` or a signal came: `PASS: Ship of Tools <v> at <short> on this computer`, `ONE STEP LEFT: <what a
+  person does>` (exit 0, the install is whole) or `FAIL: <check>: <detail>` (exit 1, or 2 for a refusal). With no
+  `--version` and no `--archive` it follows the channel `install.json` records (no install or a stable release: GitHub's
+  latest stable; a pre-release: the newest published release of any kind; a `+` build: stop and send the person to
+  `--archive <folder>` of a pack of the line) and never moves an install backwards: the target's own `sotd update
+  direction` says `older` (or cannot say) and the run fails, before anything under the prefix changes. `--archive` runs
+  the `install.sh` of the checkout that made the pack. With no role flag and no topology entry the role comes back from
   `install.json` (its bits, its `service`, its `hub`; a remote install's alias from its wrapper). A daemon is restarted
-  only when it runs another version (`sotd same-version`); when the unit would be restarted and `sotd update repls`
-  (the daemon's own `workspace.list`) names a row with a live REPL, the run stops first and asks for
-  `--restart-daemon`, changing nothing. A box the topology plan names, with another daemon host in the plan, gets the
-  launcher that dials the plan (`launch-sot.sh`) whether or not `--backend` is given again. A `--backend` install whose
-  hub's hosts.toml omits this computer ends `FAIL: enroll:` naming the `sotd topology set add` command to run on the
-  hub. The prune of old `repo/versions/<tag>` folders keeps, names and never deletes one with local changes.
-  `installer-entry.sh` (sourced by `installer-state.sh`) runs the installer end to end and pins each of these.
+  only when it runs another version (`sotd same-version`) and only an active unit no window holds; the restart, and a
+  fresh start of the unit, are verified: the daemon must answer as the target within `SOT_INSTALL_RESTART_WAIT_S`, and
+  an active unit whose daemon is in any other state is `FAIL: daemon:`, never PASS. Every daemon on another version is
+  asked `sotd update repls` (the daemon's own `workspace.list`) before anything changes. When the unit would be restarted
+  and a row has a live REPL, or the daemon cannot be asked, the run stops first and asks for `--restart-daemon`, changing
+  nothing under the install. A held unit and a launcher-started daemon are not restarted: the `ONE STEP LEFT` names the
+  live rows and the command that fits (the launcher, `systemctl --user restart sotd.service`, or by hand), and says the
+  old daemon runs beside the new `repo/current` and `bin/sot-capsule` until then. A box the topology plan names, with
+  another daemon host in the plan, gets the launcher that dials the plan (`launch-sot.sh`) whether or not `--backend` is
+  given again; without `--daemon` for this computer in the plan, its own rows do not show in its window. A `--backend`
+  install whose hub's hosts.toml omits this computer ends `FAIL: enroll:` naming the `sotd topology set add` command to
+  run on the hub. The rollback survives a repeat: a run whose `repo/current` is already at the target prunes no
+  `repo/versions/<tag>` folder and leaves a `bin/*.prev` equal to the installed binary alone; any prune keeps, names and
+  never deletes a folder with local changes. `installer-entry.sh` (sourced by `installer-state.sh`) runs the installer
+  end to end and pins each of these.
 - The launch path never stops on an update: every update or freshness step logs and the window still starts.
 - One launcher per user, and no window spawns without a lease held on the local daemon across the gap (Windows:
   `launch-sot.ps1`, `Open-SotLease`).

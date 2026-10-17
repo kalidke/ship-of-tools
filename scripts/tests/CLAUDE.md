@@ -26,10 +26,13 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   fixture release (a local git origin, an archive of stand-in binaries, and stand-in `curl`, `sotd`, `systemctl`,
   `julia` and `ps` driven by files), as the entry of an update: the channel the prelude follows from `install.json`, an
   implicit run that would move back stopping before anything changes, the role recovered from the record, the one
-  verdict line and each check that fails it, the stop-and-ask before a restart that would end a live REPL, a window
-  still on the old version, `--archive` offline, a run interrupted and repeated, a hub that omits this computer, an old
-  version folder with local changes kept, and the launcher an enrolled frontend gets; with a built `sotd`, the real
-  `update direction` answers. It SKIPs off Linux (a systemd unit).
+  verdict line on every exit (option errors, a failed command, a TERM) and each check that fails it, the daemon a restart
+  or a start of the unit must bring up (never PASS while it does not answer), the stop-and-ask before a restart that
+  would end a live REPL (also when the daemon cannot be asked), the step that names the rows of a held or
+  launcher-started daemon, a window still on the old version, `--archive` offline, a run interrupted and repeated, the
+  rollback a repair run keeps, a hub that omits this computer, an old version folder with local changes kept, and the
+  launcher an enrolled frontend gets; with a built `sotd`, the real `update direction` answers. It SKIPs off Linux (a
+  systemd unit).
 - `installer-wrapper.sh`: the rendered `sot-launch` under the sandboxed PATH: the bridge probe before every spawn, the
   crash-loop rollback, the exit-75 respawn, the service operations by unit ownership, the re-exec after an apply, and
   `apply_pending`'s refused pointer (a stand-in `sotd` answers `update pointer`: no stop, no restart, one drop-only
