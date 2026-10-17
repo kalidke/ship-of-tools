@@ -1425,10 +1425,12 @@ struct State {
     /// kernel was asked about (matches the suffix of `files:` node ids).
     /// Used by the drift badge: if a row's path has a hash here AND its
     /// annotation parses a `synced_against`, and the two differ, yellow it.
-    /// Grows as the user navigates — phase-2 may sweep eagerly.
+    /// Lazy, per file, on view; a `preview.changed` for the file, a workspace
+    /// switch and a reconnect drop it.
     file_ast_hashes: std::collections::HashMap<String, String>,
     /// Paths the GPU thread has already asked `file.parse` for. Prevents
-    /// re-firing while a request is in flight. Cleared on disconnect.
+    /// re-firing while a request is in flight, and a reply installs only while its
+    /// path is latched. Cleared on a switch and on a reconnect.
     file_parse_fired: std::collections::HashSet<String>,
     /// Failed `file.parse` bookkeeping: path → (last failure, attempt
     /// count). The retry gate in `maybe_fire_concept_read` re-fires only
@@ -1600,7 +1602,7 @@ mod scan_tests;
 pub(crate) mod preview;
 pub(crate) mod render;
 use render::*;
-use self::preview::concept::{drift_is_stale, split_frontmatter, ConceptInfo, FILE_PARSE_MAX_RETRIES};
+use self::preview::concept::{clear_drift, drift_is_stale, install_parsed_hash, split_frontmatter, ConceptInfo, FILE_PARSE_MAX_RETRIES};
 use self::preview::editor::state::EditState;
 use self::preview::reply_is_current;
 use self::preview::pane::{

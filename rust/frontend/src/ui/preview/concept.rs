@@ -33,46 +33,108 @@ pub(in crate::ui) fn annotation_target_of(node_id: &str) -> Option<String> {
     (!rel.is_empty()).then(|| rel.to_string())
 }
 
+type Hashes = std::collections::HashMap<String, String>;
+type Fired = std::collections::HashSet<String>;
+type Retries = std::collections::HashMap<String, (std::time::Instant, u32)>;
+
 /// Forget one file's drift check: its hash, its one-shot parse latch and its failure record. The next
 /// `maybe_fire_concept_read` with the cursor on it parses it again; no other file is touched.
-pub(in crate::ui) fn forget_drift(
-    path: &str,
-    hashes: &mut std::collections::HashMap<String, String>,
-    fired: &mut std::collections::HashSet<String>,
-    retry: &mut std::collections::HashMap<String, (std::time::Instant, u32)>,
-) {
+pub(in crate::ui) fn forget_drift(path: &str, hashes: &mut Hashes, fired: &mut Fired, retry: &mut Retries) {
     hashes.remove(path);
     fired.remove(path);
     retry.remove(path);
 }
 
+/// Forget every file's drift check. The cache lasts only while this window receives the workspace's changes, so a
+/// workspace switch and a reconnect clear it (the daemon sends no `preview.changed` for a row that is not active
+/// and replays none).
+pub(in crate::ui) fn clear_drift(hashes: &mut Hashes, fired: &mut Fired) {
+    hashes.clear();
+    fired.clear();
+}
+
 /// True when the file's hash is known and differs from the annotation's `synced_against`.
-pub(in crate::ui) fn drift_is_stale(
-    hashes: &std::collections::HashMap<String, String>,
-    path: &str,
-    synced: &str,
-) -> bool {
+pub(in crate::ui) fn drift_is_stale(hashes: &Hashes, path: &str, synced: &str) -> bool {
     hashes.get(path).is_some_and(|h| h != synced)
+}
+
+/// The drift check's fire gate for the cursored `.jl` path: true (and the latch taken) when a `file.parse` must go
+/// out now. A failed parse re-arms the latch only after an exponential backoff (`1u64 << n` with n=1,2 → 2s, 4s)
+/// and not at all at the attempt cap, where the latch STAYS latched, so a storm is structurally impossible: each
+/// re-arm buys exactly one fire (the failure handler re-stamps the timestamp).
+pub(in crate::ui) fn take_parse_fire(path: &str, hashes: &Hashes, fired: &mut Fired, retry: &Retries) -> bool {
+    if hashes.contains_key(path) {
+        return false;
+    }
+    if let Some(&(failed_at, attempts)) = retry.get(path) {
+        if attempts < FILE_PARSE_MAX_RETRIES
+            && failed_at.elapsed() >= std::time::Duration::from_secs(1u64 << attempts.min(4))
+        {
+            fired.remove(path);
+        }
+    }
+    fired.insert(path.to_string())
+}
+
+/// Install a `file.parse` reply's hash only while the path is still latched: a forget (the file changed) clears
+/// the latch, so a reply read before the edit is dropped. The kernel serves one request at a time, so a newer
+/// fire's reply follows it.
+pub(in crate::ui) fn install_parsed_hash(
+    path: &str,
+    hash: String,
+    hashes: &mut Hashes,
+    fired: &Fired,
+    retry: &mut Retries,
+) -> bool {
+    if !fired.contains(path) {
+        return false;
+    }
+    retry.remove(path);
+    hashes.insert(path.to_string(), hash);
+    true
+}
+
+/// What a `preview.changed` for a `files:` node means to the drift check.
+#[derive(Debug, PartialEq)]
+pub(in crate::ui) enum ChangeEffect<'a> {
+    /// The cursored target's annotation was rewritten: read it again.
+    ReadAnnotationAgain,
+    /// A file's bytes changed: forget its drift check.
+    ForgetFile(&'a str),
+    /// Another annotation, or not a file: nothing cached depends on it.
+    Nothing,
+}
+
+pub(in crate::ui) fn change_effect<'a>(node_id: &'a str, concept_target_fired: Option<&str>) -> ChangeEffect<'a> {
+    if let Some(target) = annotation_target_of(node_id) {
+        return if concept_target_fired == Some(target.as_str()) {
+            ChangeEffect::ReadAnnotationAgain
+        } else {
+            ChangeEffect::Nothing
+        };
+    }
+    match node_id.strip_prefix("files:") {
+        Some(path) => ChangeEffect::ForgetFile(path),
+        None => ChangeEffect::Nothing,
+    }
 }
 
 impl State {
     /// A `preview.changed` for `node_id` (a `files:` id): drop the changed file's cached drift check so the next
     /// view re-parses it, and re-read the cursored annotation when it is the one that changed (a reconcile
-    /// rewrote its `synced_against`). Per file; hashing stays lazy, on view.
+    /// rewrote its `synced_against`). Per file; hashing stays lazy, on view. Covered only by the native window
+    /// harness: this one call is not reached by a unit test.
     pub(in crate::ui) fn forget_changed_file(&mut self, node_id: &str) {
-        if let Some(target) = annotation_target_of(node_id) {
-            if self.concept_target_fired.as_deref() == Some(target.as_str()) {
-                self.concept_target_fired = None;
-            }
-        } else if let Some(path) = node_id.strip_prefix("files:") {
-            forget_drift(
+        match change_effect(node_id, self.concept_target_fired.as_deref()) {
+            ChangeEffect::ReadAnnotationAgain => self.concept_target_fired = None,
+            ChangeEffect::ForgetFile(path) => forget_drift(
                 path,
                 &mut self.file_ast_hashes,
                 &mut self.file_parse_fired,
                 &mut self.file_parse_retry,
-            );
+            ),
+            ChangeEffect::Nothing => {}
         }
-        self.window.request_redraw();
     }
 }
 
@@ -158,29 +220,11 @@ impl State {
             self.concept = None;
             self.preview_concept = None;
         }
-        // Drift check: ask the kernel for the file's ast_hash once per
-        // distinct path the user has visited. The HashMap grows over the
-        // session; phase-2 may add a TTL or eager sweep.
+        // Drift check: ask the kernel for the file's ast_hash once per view of a path whose hash this window does not
+        // hold. The cache is lazy (no sweep) and per file: a change to the file, a workspace switch or a reconnect
+        // drops it (`forget_changed_file`, `clear_drift`).
         if let Some(path) = files_path {
-            // Retry gate for failed parses: re-arm the one-shot latch only
-            // after an exponential backoff (`1u64 << n` with n=1,2 → 2s,
-            // 4s), and stop entirely at the attempt cap — at the cap the
-            // latch STAYS latched, so a storm is structurally impossible:
-            // each re-arm buys exactly one fire (the latch re-inserts on
-            // fire; the failure handler re-stamps the timestamp).
-            if !self.file_ast_hashes.contains_key(&path) {
-                if let Some(&(failed_at, attempts)) = self.file_parse_retry.get(&path) {
-                    if attempts < FILE_PARSE_MAX_RETRIES
-                        && failed_at.elapsed()
-                            >= std::time::Duration::from_secs(1u64 << attempts.min(4))
-                    {
-                        self.file_parse_fired.remove(&path);
-                    }
-                }
-            }
-            if !self.file_ast_hashes.contains_key(&path)
-                && self.file_parse_fired.insert(path.clone())
-            {
+            if take_parse_fire(&path, &self.file_ast_hashes, &mut self.file_parse_fired, &self.file_parse_retry) {
                 tracing::debug!(%path, label = %node_label, "→ file.parse for drift check");
                 if let Err(e) = self.send(crate::net::transport::OutgoingReq::FileParse {
                     path: path.clone(),
@@ -199,45 +243,112 @@ mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
 
-    type Seen = (HashMap<String, String>, HashSet<String>, HashMap<String, (std::time::Instant, u32)>);
-
-    /// Two files viewed once: each has a hash and a spent parse latch.
-    fn viewed() -> Seen {
-        let hashes = HashMap::from([("a.jl".to_string(), "h1".to_string()), ("b.jl".to_string(), "h2".to_string())]);
-        let fired = HashSet::from(["a.jl".to_string(), "b.jl".to_string()]);
-        (hashes, fired, HashMap::new())
+    /// The window's drift cache for one workspace, driven through the same gates the real code calls.
+    #[derive(Default)]
+    struct Cache {
+        hashes: HashMap<String, String>,
+        fired: HashSet<String>,
+        retry: HashMap<String, (std::time::Instant, u32)>,
+        target: Option<String>,
     }
 
-    /// An edit after the first view drops that file's hash and latch, so the next view parses it again and the
-    /// new hash differs from `synced_against`: STALE without a restart.
+    impl Cache {
+        /// The cursor reaches `path`: true when a `file.parse` goes out.
+        fn view(&mut self, path: &str) -> bool {
+            take_parse_fire(path, &self.hashes, &mut self.fired, &self.retry)
+        }
+        fn reply(&mut self, path: &str, hash: &str) -> bool {
+            install_parsed_hash(path, hash.to_string(), &mut self.hashes, &self.fired, &mut self.retry)
+        }
+        /// A `preview.changed` for `node_id`, applied as `forget_changed_file` applies it.
+        fn changed(&mut self, node_id: &str) {
+            match change_effect(node_id, self.target.as_deref()) {
+                ChangeEffect::ReadAnnotationAgain => self.target = None,
+                ChangeEffect::ForgetFile(p) => forget_drift(p, &mut self.hashes, &mut self.fired, &mut self.retry),
+                ChangeEffect::Nothing => {}
+            }
+        }
+        fn stale(&self, path: &str, synced: &str) -> bool {
+            drift_is_stale(&self.hashes, path, synced)
+        }
+    }
+
+    /// The whole sequence: view, parse, edit, parse again (STALE), reconcile (cleared), with no restart.
     #[test]
-    fn edited_file_is_parsed_again_and_turns_stale() {
-        let (mut hashes, mut fired, mut retry) = viewed();
-        assert!(!drift_is_stale(&hashes, "a.jl", "h1"));
-        forget_drift("a.jl", &mut hashes, &mut fired, &mut retry);
-        assert!(!hashes.contains_key("a.jl") && !fired.contains("a.jl"));
-        // The re-parse the next view fires.
-        assert!(fired.insert("a.jl".to_string()));
-        hashes.insert("a.jl".to_string(), "h1-edited".to_string());
-        assert!(drift_is_stale(&hashes, "a.jl", "h1"));
+    fn edit_turns_stale_and_reconcile_clears_it() {
+        let mut c = Cache::default();
+        assert!(c.view("a.jl"), "the first view parses");
+        assert!(!c.view("a.jl"), "a view while the parse is in flight does not fire again");
+        assert!(c.reply("a.jl", "h1"));
+        assert!(!c.view("a.jl"), "a hashed file is not parsed again");
+        assert!(!c.stale("a.jl", "h1"));
+        c.changed("files:a.jl");
+        assert!(c.view("a.jl"), "the view after an edit parses again");
+        assert!(c.reply("a.jl", "h2"));
+        assert!(c.stale("a.jl", "h1"), "the new hash differs from synced_against");
+        // The reconcile rewrites the annotation: the cursored one is read again, and its new synced_against agrees.
+        c.target = Some("files/a.jl".to_string());
+        c.changed("files:.concept/files/a.jl.md");
+        assert_eq!(c.target, None);
+        assert!(!c.stale("a.jl", "h2"));
     }
 
-    /// A reconcile writes the new hash into `synced_against`: the same file reads in sync again.
+    /// A reply read before the edit arrives after the forget: dropped, so the old hash never lands.
     #[test]
-    fn reconciled_annotation_clears_stale() {
-        let (mut hashes, ..) = viewed();
-        hashes.insert("a.jl".to_string(), "h1-edited".to_string());
-        assert!(drift_is_stale(&hashes, "a.jl", "h1"));
-        assert!(!drift_is_stale(&hashes, "a.jl", "h1-edited"));
+    fn reply_in_flight_across_an_edit_is_dropped() {
+        let mut c = Cache::default();
+        assert!(c.view("a.jl"));
+        c.changed("files:a.jl");
+        assert!(!c.reply("a.jl", "old"));
+        assert!(c.hashes.is_empty());
+        assert!(c.view("a.jl"));
+        assert!(c.reply("a.jl", "new"));
+        assert_eq!(c.hashes.get("a.jl").map(String::as_str), Some("new"));
+        // A reply for a path never latched (a Modules-mode parse) installs nothing.
+        assert!(!c.reply("/abs/m.jl", "x"));
     }
 
-    /// A change to one file leaves every other file's hash and latch alone.
+    /// An event for one file, or for another file's annotation, leaves this file's hash alone.
     #[test]
     fn change_to_another_file_keeps_this_files_hash() {
-        let (mut hashes, mut fired, mut retry) = viewed();
-        forget_drift("b.jl", &mut hashes, &mut fired, &mut retry);
-        assert_eq!(hashes.get("a.jl").map(String::as_str), Some("h1"));
-        assert!(fired.contains("a.jl"));
+        let mut c = Cache::default();
+        for p in ["a.jl", "b.jl"] {
+            c.view(p);
+            c.reply(p, "h");
+        }
+        c.target = Some("files/a.jl".to_string());
+        c.changed("files:b.jl");
+        c.changed("files:.concept/files/b.jl.md");
+        assert!(c.hashes.contains_key("a.jl") && c.fired.contains("a.jl"));
+        assert_eq!(c.target.as_deref(), Some("files/a.jl"));
+        assert!(!c.hashes.contains_key("b.jl"));
+    }
+
+    /// A switch or reconnect drops every hash and latch (their edits may have gone unseen), so each file parses
+    /// again at its next view.
+    #[test]
+    fn restore_and_reconnect_clear_the_cache() {
+        let mut c = Cache::default();
+        c.view("a.jl");
+        c.reply("a.jl", "h1");
+        c.view("b.jl");
+        clear_drift(&mut c.hashes, &mut c.fired);
+        assert!(!c.reply("b.jl", "late"), "an in-flight reply from before the clear is dropped");
+        assert!(c.view("a.jl") && c.view("b.jl"));
+    }
+
+    /// A failed parse is re-armed only after its backoff and not past the cap.
+    #[test]
+    fn failed_parse_waits_out_its_backoff() {
+        let mut c = Cache::default();
+        assert!(c.view("a.jl"));
+        c.retry.insert("a.jl".to_string(), (std::time::Instant::now(), 1));
+        assert!(!c.view("a.jl"));
+        let old = std::time::Instant::now() - std::time::Duration::from_secs(10);
+        c.retry.insert("a.jl".to_string(), (old, 1));
+        assert!(c.view("a.jl"));
+        c.retry.insert("a.jl".to_string(), (old, FILE_PARSE_MAX_RETRIES));
+        assert!(!c.view("a.jl"), "at the cap the latch stays");
     }
 
     #[test]

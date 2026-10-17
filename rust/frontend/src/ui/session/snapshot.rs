@@ -92,11 +92,6 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     /// `maybe_fire_concept_read` re-shapes it on the next frame from
     /// the fresh wire reply. The brief no-concept frame is the cost.
     concept: Option<ConceptInfo>,
-    /// Drift-badge bookkeeping — paths whose AST hash we know, and
-    /// paths we've already asked `file.parse` for. Per-workspace so
-    /// hashes from workspace A don't leak into workspace B's tree.
-    file_ast_hashes: std::collections::HashMap<String, String>,
-    file_parse_fired: std::collections::HashSet<String>,
     /// Concept-write modal state (header / buffer / dirty flag /
     /// banners). Captured so swap-back returns the user to mid-edit
     /// without losing typed content. preview_edit is *not* in the
@@ -159,8 +154,6 @@ impl State {
                 current_md_workspace_id: self.current_md_workspace_id.clone(),
                 preview_scale: self.preview_scale.clone(),
                 concept: self.concept.clone(),
-                file_ast_hashes: self.file_ast_hashes.clone(),
-                file_parse_fired: self.file_parse_fired.clone(),
                 edit_state: self.edit_state.clone(),
             },
         );
@@ -198,16 +191,9 @@ impl State {
         self.preview_concept = None;
         self.concept = snap.concept;
         self.concept_target_fired = None;
-        self.file_ast_hashes = snap.file_ast_hashes;
-        self.file_parse_fired = snap.file_parse_fired;
-        // Drop latched fires that never produced a hash: either long-dead
-        // in-flights or a failed parse whose retry record was lost on
-        // switch-away (`file_parse_retry` is deliberately not snapshotted),
-        // which would otherwise restore as an un-re-armable latch — an
-        // eternal "checking…" for exactly that path. Re-firing once on
-        // restore is cheap and correct.
-        self.file_parse_fired
-            .retain(|p| self.file_ast_hashes.contains_key(p));
+        // Not snapshotted: while this workspace was parked the daemon sent no `preview.changed` for it, so a
+        // cached hash may be of bytes since edited. Each file parses again at its next view.
+        clear_drift(&mut self.file_ast_hashes, &mut self.file_parse_fired);
         // Restore the edit modal — including dirty/discard/stale
         // banners — and re-shape its preview from the buffer.
         self.edit_state = snap.edit_state;

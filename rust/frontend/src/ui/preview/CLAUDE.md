@@ -32,6 +32,8 @@ rust/frontend/src/ui/render/quad.rs.
   stops at `FILE_PARSE_MAX_RETRIES` attempts in all (`maybe_fire_concept_read`).
 - A `preview.changed` for a file drops that file's cached hash, parse latch and failure record, so its next view parses it
   again; one for the cursored annotation's `.concept/` file re-reads the annotation (`forget_changed_file`). Per file, on view.
+  The cache lasts only while this window receives the workspace's changes: a workspace switch and a reconnect clear it
+  (`clear_drift`), and a parse reply installs only while its path is latched (`install_parsed_hash`).
 - The scroll clamp measures only the buffer on screen (`preview_scroll_target`).
 - A pinned preview suppresses the cursor-follow fetch (`maybe_fire_preview`).
 - Every `preview.get` carries a fresh generation, so only the newest reply installs (`next_preview_gen`).

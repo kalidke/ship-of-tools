@@ -506,18 +506,17 @@ impl State {
         // path across two PROJECTS) applies at least as much
         // across two HOSTS.
         let reply_ws_key: WsKey = (event_host.clone(), reply_ws);
-        // Drift-badge bookkeeping is ACTIVE-workspace state (both
-        // maps are per-workspace snapshotted), and the drift
+        // Drift-badge bookkeeping is ACTIVE-workspace state (the
+        // cache is cleared on a switch), and the drift
         // check's `path` is workspace-RELATIVE (`files:` strip) —
         // so a late reply fired for another workspace could
         // insert a COLLIDING relative path (both projects have a
         // `src/lib.jl`) into this workspace's map and fake its
         // drift verdict. Gate on the reply's workspace. The
         // skipped insert isn't lost: the owning workspace's
-        // restore drops hash-less fire-latches and re-fires.
+        // restore clears the cache and re-fires on view.
         if reply_ws_key == self.active_ws_key() {
-            self.file_parse_retry.remove(&path);
-            self.file_ast_hashes.insert(path.clone(), ast_hash);
+            install_parsed_hash(&path, ast_hash, &mut self.file_ast_hashes, &self.file_parse_fired, &mut self.file_parse_retry);
         }
         // If a module row's payload.path matches, synthesize
         // child TreeNodes from the parsed definitions and

@@ -297,8 +297,7 @@ impl State {
             self.preview_concept = None;
             self.concept = None;
             self.concept_target_fired = None;
-            self.file_ast_hashes.clear();
-            self.file_parse_fired.clear();
+            clear_drift(&mut self.file_ast_hashes, &mut self.file_parse_fired);
             self.edit_state = None;
             self.preview_edit = None;
         }
