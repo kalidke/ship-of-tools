@@ -183,12 +183,23 @@ async fn prepare_locked(spawner: &dyn Spawner, spec: &PrepareSpec) -> Result<Pre
         (Err(_), Some(ReadyManifest { source_commit: Some(src), .. }))
             if crate::semver::is_dev(&spec.identity.version) =>
         {
+            // The binaries' own stamp must name that commit: a `-dirty` or `+src` build, or a HEAD that moved during
+            // the build, would otherwise arm binaries over a checkout they were not built from.
+            let build = spec.identity.version.split_once('+').map_or("", |(_, b)| b);
+            if build.is_empty() || !src.starts_with(build) {
+                bail!("version {} is not the commit it was built from ({src}) — refusing", spec.identity.version);
+            }
             rev_parse(spawner, &base, &format!("{src}^{{commit}}"))
                 .await
                 .with_context(|| format!("commit {src} of {} not present after fetch", spec.identity.tag))?
         }
         (Err(e), _) => {
-            return Err(e).with_context(|| format!("tag {} not present after fetch", spec.identity.tag));
+            let why = if crate::semver::is_dev(&spec.identity.version) {
+                "; a dev build needs COMMIT in SHA256SUMS"
+            } else {
+                ""
+            };
+            return Err(e).with_context(|| format!("tag {} not present after fetch{why}", spec.identity.tag));
         }
     };
 
@@ -594,6 +605,8 @@ mod tests {
         dirty: Mutex<bool>,
         /// No `refs/tags/*` resolves, as for a build of the line between tags.
         tagless: bool,
+        /// No non-tag revision resolves: a commit origin does not have.
+        commit_missing: bool,
         commands: Mutex<Vec<Vec<String>>>,
     }
 
@@ -623,6 +636,7 @@ mod tests {
                 mode,
                 dirty: Mutex::new(false),
                 tagless: false,
+                commit_missing: false,
                 commands: Mutex::new(Vec::new()),
             }
         }
@@ -685,7 +699,8 @@ mod tests {
                     assert_eq!(args, ["fetch", "--tags", "--force", "origin"]);
                 }
                 "rev-parse" => {
-                    let found = dir.exists() && !(self.tagless && args[1].starts_with("refs/tags/"));
+                    let is_tag = args[1].starts_with("refs/tags/");
+                    let found = dir.exists() && !(self.tagless && is_tag) && !(self.commit_missing && !is_tag);
                     return Ok(output(if found { 0 } else { 1 }, if found { COMMIT.as_bytes() } else { b"" }));
                 }
                 "status" => {
@@ -777,13 +792,13 @@ mod tests {
         }
     }
 
-    fn dev_identity() -> ReleaseIdentity {
+    fn dev_identity(build: &str) -> ReleaseIdentity {
         ReleaseIdentity {
             repo: "example/project".into(),
-            tag: "v0.6.6-rc9.14-dev+abc".into(),
-            version: "0.6.6-rc9.14-dev+abc".into(),
+            tag: format!("v0.6.6-rc9.14-dev+{build}"),
+            version: format!("0.6.6-rc9.14-dev+{build}"),
             target: "linux-x86_64".into(),
-            asset: "sot-0.6.6-rc9.14-dev+abc-linux-x86_64.tar.gz".into(),
+            asset: format!("sot-0.6.6-rc9.14-dev+{build}-linux-x86_64.tar.gz"),
             asset_sha256: "ab".repeat(32),
         }
     }
@@ -792,13 +807,54 @@ mod tests {
     async fn a_dev_build_prepares_its_commit_without_a_tag() {
         let mut fixture = Fixture::new("none");
         fixture.tagless = true;
-        fixture.spec.identity = dev_identity();
-        ReadyManifest::new(dev_identity(), Some(COMMIT.into())).write(&fixture.spec.stage_dir).await.unwrap();
+        fixture.spec.identity = dev_identity("aaaaaaaaa");
+        ReadyManifest::new(dev_identity("aaaaaaaaa"), Some(COMMIT.into())).write(&fixture.spec.stage_dir).await.unwrap();
         let spawner = RecordingSpawner(|cmd: &tokio::process::Command| fixture.respond(cmd));
         let state = prepare(&spawner, &fixture.spec).await.unwrap();
         assert_eq!(state.commit, COMMIT);
-        assert_eq!(state.checkout, fixture.spec.repo_dir.join("versions/v0.6.6-rc9.14-dev+abc"));
+        assert_eq!(state.checkout, fixture.spec.repo_dir.join("versions/v0.6.6-rc9.14-dev+aaaaaaaaa"));
         assert!(state.checkout.join("README.md").exists());
+        let resolved = format!("{COMMIT}^{{commit}}");
+        assert!(
+            fixture.commands.lock().unwrap().iter().any(|c| c.ends_with(&["rev-parse".into(), resolved.clone()])),
+            "prepare never resolved the recorded commit"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dev_build_whose_version_is_not_its_commit_is_refused() {
+        for build in ["bbbbbbbbb", "aaaaaaaaa-dirty", "src"] {
+            let mut fixture = Fixture::new("none");
+            fixture.tagless = true;
+            fixture.spec.identity = dev_identity(build);
+            ReadyManifest::new(dev_identity(build), Some(COMMIT.into())).write(&fixture.spec.stage_dir).await.unwrap();
+            let spawner = RecordingSpawner(|cmd: &tokio::process::Command| fixture.respond(cmd));
+            let err = format!("{:#}", prepare(&spawner, &fixture.spec).await.unwrap_err());
+            assert!(err.contains("is not the commit it was built from"), "{build}: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dev_build_without_a_commit_names_the_cause() {
+        let mut fixture = Fixture::new("none");
+        fixture.tagless = true;
+        fixture.spec.identity = dev_identity("aaaaaaaaa");
+        ReadyManifest::new(dev_identity("aaaaaaaaa"), None).write(&fixture.spec.stage_dir).await.unwrap();
+        let spawner = RecordingSpawner(|cmd: &tokio::process::Command| fixture.respond(cmd));
+        let err = format!("{:#}", prepare(&spawner, &fixture.spec).await.unwrap_err());
+        assert!(err.contains("needs COMMIT in SHA256SUMS"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_dev_commit_origin_lacks_is_refused() {
+        let mut fixture = Fixture::new("none");
+        fixture.tagless = true;
+        fixture.commit_missing = true;
+        fixture.spec.identity = dev_identity("aaaaaaaaa");
+        ReadyManifest::new(dev_identity("aaaaaaaaa"), Some(COMMIT.into())).write(&fixture.spec.stage_dir).await.unwrap();
+        let spawner = RecordingSpawner(|cmd: &tokio::process::Command| fixture.respond(cmd));
+        let err = format!("{:#}", prepare(&spawner, &fixture.spec).await.unwrap_err());
+        assert!(err.contains("not present after fetch"), "{err}");
     }
 
     #[tokio::test]
