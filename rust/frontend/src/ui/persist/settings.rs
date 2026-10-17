@@ -83,10 +83,9 @@
 // matching fractional split, one per column (a count that differs
 // warns and falls back to the built-in columns and widths; values
 // renormalized on parse so they sum to ~1.0). Valid slot names: nav,
-// preview, llm. The drawer is a
-// separate bottom strip; `drawer` names the slot rendered there
-// (today only "repl") and `drawer_height` is its fraction of window
-// height when open.
+// preview, llm, repl. The drawer is a separate bottom strip; `drawer`
+// names the slot rendered there (today only "repl") and
+// `drawer_height` is its fraction of window height when open.
 //
 // Out-of-range or unparseable values warn and fall back to the
 // default; the chrome should never crash because the user wrote a
