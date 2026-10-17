@@ -30,6 +30,9 @@ pub struct Site {
 struct GitState {
     top: PathBuf,
     index: PathBuf,
+    /// False on a Mac without the Command Line Tools: git is never run, the
+    /// repo top comes from a walk up for `.git`, and no link is followed.
+    usable: bool,
     cache: Mutex<LinkCache>,
 }
 
@@ -129,6 +132,9 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, (bool, String)> {
     }
 }
 
+/// Why no link is followed where git cannot run.
+const NO_GIT: &str = "linked data needs git; on macOS install the Command Line Tools, then restart the daemon";
+
 /// Whether running `git` is safe. On macOS without the Command Line Tools,
 /// `/usr/bin/git` is a stub that pops an install prompt at every run, so a repo
 /// there tracks no links; everywhere else git is run as found.
@@ -158,8 +164,9 @@ impl GitState {
     /// (fail closed, no links) when it is not a repo or git will not answer.
     fn find(dir: &Path) -> Option<GitState> {
         if !git_present() {
-            tracing::debug!(dir = %dir.display(), "site_serve: no usable git, no links");
-            return None;
+            tracing::info!(dir = %dir.display(), "site_serve: no usable git (macOS Command Line Tools missing?), no links followed");
+            let top = dir.ancestors().find(|a| a.join(".git").exists())?.to_path_buf();
+            return Some(GitState { index: top.join(".git"), top, usable: false, cache: Mutex::new(LinkCache::default()) });
         }
         let out = match run_git(dir, &["rev-parse", "--show-toplevel", "--git-path", "index"]) {
             Ok(o) => o,
@@ -176,7 +183,7 @@ impl GitState {
         let mut lines = text.lines();
         let top = PathBuf::from(lines.next()?).canonicalize().ok()?;
         let index = dir.join(lines.next()?);
-        Some(GitState { top, index, cache: Mutex::new(LinkCache::default()) })
+        Some(GitState { top, index, usable: true, cache: Mutex::new(LinkCache::default()) })
     }
 
     /// Tracked symlinks under `url_root`, relative to it. Re-stats the index on
@@ -185,6 +192,9 @@ impl GitState {
     /// The stamp is taken BEFORE listing, so a write during the listing shows
     /// as changed next time.
     fn links(&self, url_root: &Path) -> BTreeSet<PathBuf> {
+        if !self.usable {
+            return BTreeSet::new();
+        }
         let stamp = index_stamp(&self.index);
         let mut c = self.cache.lock().unwrap_or_else(|p| p.into_inner());
         if stamp.is_none() || c.stamp != stamp {
@@ -567,9 +577,12 @@ fn follow_link(
     if roots.roots.is_empty() {
         return Err(forbid("R2c", format!("refused: {l} is a link, and links are followed only into a data root this machine declares in the data-roots file of its Ship of Tools config folder; none is declared{skipped}")));
     }
+    if site.git.as_ref().is_some_and(|g| !g.usable) {
+        return Err(forbid("R2e", format!("refused: {l} is a link, and {NO_GIT}")));
+    }
     let tracked = site.git.as_ref().is_some_and(|g| g.links(&site.url_root).contains(link));
     if !tracked {
-        return Err(forbid("R2b", format!("refused: {l} is a link git does not track in this repo, so it is not followed (git add it, then open the page again)")));
+        return Err(forbid("R2b", format!("refused: {l} is a link git does not track in this repo, so it is not followed (git add it and commit it: it serves at the next request once it is committed)")));
     }
     let Ok(t) = site.url_root.join(link).canonicalize() else {
         return Err(refuse(

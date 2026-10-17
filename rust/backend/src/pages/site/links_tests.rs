@@ -374,6 +374,7 @@ async fn a_never_committed_link_is_r2b_then_served_once_added_s1() {
     let (st, _, body) = get(addr, &path, &[]).await;
     assert_eq!(st, 403, "{}", body_text(&body));
     assert!(body_text(&body).contains("nas is a link git does not track"), "{}", body_text(&body));
+    assert!(body_text(&body).contains("serves at the next request once it is committed"), "{}", body_text(&body));
     git(&repo, &["add", "nas"]);
     let (st, _, body) = get(addr, &path, &[]).await;
     assert_eq!(st, 200, "{}", body_text(&body));
@@ -550,4 +551,19 @@ fn git_runs_unless_it_is_the_macos_install_stub() {
     assert!(git_usable(false, false));
     assert!(git_usable(true, true));
     assert!(!git_usable(true, false));
+}
+
+/// Where git cannot run, a tracked link is refused with words that say so, not "git does not track".
+#[tokio::test]
+async fn a_link_where_git_cannot_run_is_refused_with_the_install_words() {
+    let f = fixture();
+    let mut site = widened(&f).await;
+    site.git.as_mut().unwrap().usable = false;
+    let (addr, nonce, serial) = serve(site).await;
+    let (st, _, body) = get(addr, &format!("/{nonce}/{MOVIE}"), &[]).await;
+    assert_eq!(st, 403);
+    let body = body_text(&body);
+    assert!(body.contains("data is a link, and linked data needs git; on macOS install the Command Line Tools, then restart the daemon"), "{body}");
+    assert!(!body.contains("does not track"), "{body}");
+    remove_root(serial);
 }

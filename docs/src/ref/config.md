@@ -264,7 +264,8 @@ the one on that daemon's computer, not the window's. It lives in the per-user
 config folder (`$XDG_CONFIG_HOME/sot` or `~/.config/sot`;
 `%LOCALAPPDATA%\sot\config` on Windows) and never in a repository, so a repo
 cannot declare its own data roots. On Windows the file has no effect, because
-no link is followed there. It is not TOML: one absolute directory per
+no link is followed there. On macOS, following a link needs git, which means the Command Line Tools; without them a
+linked path is refused with a message saying so, and the daemon picks up tools installed later at its next restart. It is not TOML: one absolute directory per
 line, blank lines and lines starting with `#` ignored.
 
 ```

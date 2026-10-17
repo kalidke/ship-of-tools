@@ -252,8 +252,11 @@ escaping. What a page's script can read: the content root, plus files inside the
 targets of tracked links under a declared root; never anything inside a `.git`
 directory below the folder it is served from, never an untracked repo file
 outside the content root, never anything through an untracked link.
-Outside the content root there is no existence oracle: a path that reaches no link gets one refusal whether or not
-it exists, so a script learns the names of links under the URL root and nothing else about the repo's files.
+Outside the content root no answer depends on whether the path exists: a path that reaches no link gets one refusal
+whether or not it exists, so a script learns the names of links under the URL root and nothing else about the repo's
+files. The time to answer still differs slightly (an existing path costs a few `lstat`s more); that is a known limit.
+On a Mac without the Command Line Tools git is never run, no link is followed, and a link is refused with words that say
+git is needed.
 Range, content types and the empty-file case are shared with the video server.
 
 ## Amendment 2026-10-11: Quarto render diagnostics (QUARTO-ERROR)
