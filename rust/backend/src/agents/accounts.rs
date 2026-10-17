@@ -282,16 +282,24 @@ fn make_shared_link(target: &Path, link: &Path, _target_is_dir: bool) -> std::io
     std::os::unix::fs::symlink(target, link)
 }
 
-/// Windows half: a directory reparse point needs `symlink_dir`, anything
-/// else `symlink_file` — the brief pins both, no junctions, no cfg-gated
-/// second rule beyond this one already-required split.
+/// Windows half: a symlink first (`symlink_dir` for a directory,
+/// `symlink_file` for anything else); a box where the daemon holds no
+/// symlink privilege falls back per [`super::account_links`].
 #[cfg(windows)]
 fn make_shared_link(target: &Path, link: &Path, target_is_dir: bool) -> std::io::Result<()> {
-    if target_is_dir {
-        std::os::windows::fs::symlink_dir(target, link)
-    } else {
-        std::os::windows::fs::symlink_file(target, link)
-    }
+    super::account_links::link_with_fallback(
+        target,
+        link,
+        target_is_dir,
+        |target, link, is_dir| {
+            if is_dir {
+                std::os::windows::fs::symlink_dir(target, link)
+            } else {
+                std::os::windows::fs::symlink_file(target, link)
+            }
+        },
+        super::account_links::make_junction,
+    )
 }
 
 /// Link `home/.claude-auth/<account>` up to the default `home/.claude`
@@ -323,6 +331,16 @@ fn make_shared_link(target: &Path, link: &Path, target_is_dir: bool) -> std::io:
 /// account folder starting a degraded session is worse than a refused
 /// spawn.
 pub fn ensure_account_links(home: &Path, account: &str) -> Result<(), String> {
+    ensure_account_links_with(home, account, make_shared_link)
+}
+
+/// [`ensure_account_links`] with the link maker passed in, so a test can
+/// stand in for a daemon whose symlinks are refused.
+pub(super) fn ensure_account_links_with(
+    home: &Path,
+    account: &str,
+    make_link: impl Fn(&Path, &Path, bool) -> std::io::Result<()>,
+) -> Result<(), String> {
     if account.is_empty() || account == "default" {
         return Ok(());
     }
@@ -338,7 +356,7 @@ pub fn ensure_account_links(home: &Path, account: &str) -> Result<(), String> {
         if std::fs::symlink_metadata(&link).is_ok() {
             continue; // something is already there -- never replace it
         }
-        link_or_skip_if_racing(&source, &link, source.is_dir())
+        link_or_skip_if_racing(&make_link, &source, &link, source.is_dir())
             .map_err(|err| format!("could not link {name} into account {account:?}: {err}"))?;
     }
     Ok(())
@@ -351,8 +369,13 @@ pub fn ensure_account_links(home: &Path, account: &str) -> Result<(), String> {
 /// so two rows on one brand-new account both pass the existence check
 /// before either has linked anything). Any other OS error still refuses
 /// the whole [`ensure_account_links`] call.
-fn link_or_skip_if_racing(target: &Path, link: &Path, target_is_dir: bool) -> std::io::Result<()> {
-    match make_shared_link(target, link, target_is_dir) {
+fn link_or_skip_if_racing(
+    make_link: &impl Fn(&Path, &Path, bool) -> std::io::Result<()>,
+    target: &Path,
+    link: &Path,
+    target_is_dir: bool,
+) -> std::io::Result<()> {
+    match make_link(target, link, target_is_dir) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(err) => Err(err),
@@ -632,9 +655,9 @@ mod tests {
         touch_file(&target);
         let link = tmp.path().join("link");
 
-        link_or_skip_if_racing(&target, &link, false).unwrap();
+        link_or_skip_if_racing(&make_shared_link, &target, &link, false).unwrap();
         assert!(
-            link_or_skip_if_racing(&target, &link, false).is_ok(),
+            link_or_skip_if_racing(&make_shared_link, &target, &link, false).is_ok(),
             "a second call on the same link must not fail"
         );
     }

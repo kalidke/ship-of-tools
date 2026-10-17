@@ -1,5 +1,6 @@
 //! Account discovery, the folder-trust record, the awareness env, the launch recipe and the spawn env (backend agents).
 
+pub(crate) mod account_links;
 pub(crate) mod accounts;
 pub(crate) mod argv;
 pub(crate) mod awareness;
