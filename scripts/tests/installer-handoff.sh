@@ -53,8 +53,11 @@ else
 fi
 
 case_start "the_packed_sot_apply_is_executable"
-check "git holds scripts/sot-apply.sh at mode 100755" "100755" \
-    "$( (cd "$SRC" && git ls-files -s scripts/sot-apply.sh 2>/dev/null) | cut -d' ' -f1 | grep . || echo 100755)"
+if mode="$(cd "$SRC" && git ls-files -s scripts/sot-apply.sh 2>/dev/null | cut -d' ' -f1)" && [ -n "$mode" ]; then
+    check "git holds scripts/sot-apply.sh at mode 100755" "100755" "$mode"
+else
+    printf '    NOT CHECKED git holds the mode (this tree is not a git checkout); the archive check below still runs\n'
+fi
 # pack-build.sh itself, with cargo, git and getconf stood in: it packs sot-apply.sh with `cp`, and the archive lists the mode.
 if [ "$(uname -sm)" != "Linux x86_64" ]; then
     printf '    SKIP the packed archive (pack-build.sh runs on Linux x86_64 only)\n'
@@ -104,3 +107,87 @@ check "an apply that applied nothing refreshes nothing" "v9.9.8 0" "$(installed_
 d="$WORK/ho-comm-nojulia"; mk_apply_fixture "$d" 1 1
 run_handoff "$d"
 check "no julia: the apply still succeeds" "0 v9.9.9" "$AP_RC $(installed_tag "$d")"
+
+# ---- review-U3's own cases (scratch only, appended to installer-handoff.sh in scratch copies) ----
+run_args() {  # <dir> [args]: run the installed apply with args; sets AP_RC
+    local d="$1"; shift
+    rm -rf "${d:?}/prefix/updates/.lock"
+    AP_RC=0
+    ( HOME="$d/home" SOT_COMM_HOME="$d/ch" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log" STUB_SOCKET="$d/sot.sock" \
+        "$d/prefix/bin/sot-apply" "$@" ) > "$d/out" 2>&1 || AP_RC=$?
+}
+arm_next() {  # <dir>: arm v9.9.10 whose stage holds this tree's sot-apply, executable
+    local d="$1" top="sot-v9.9.10-$TGT"
+    mkdir -p "$d/prefix/updates/v9.9.10-$TGT/$top"
+    cp "$SRC/scripts/sot-apply.sh" "$d/prefix/updates/v9.9.10-$TGT/$top/sot-apply"; chmod 0755 "$d/prefix/updates/v9.9.10-$TGT/$top/sot-apply"
+    printf '{\n  "tag": "v9.9.10",\n  "target": "%s",\n  "checkout": "%s/co",\n  "commit": "x",\n  "asset": "%s.tar.gz",\n  "asset_sha256": "y"\n}\n' \
+        "$TGT" "$d" "$top" > "$d/prefix/updates/pending-$TGT.json"
+}
+case_start "a_rollback_through_a_hand_off_rolls_back"
+d="$WORK/rv-rb"; mk_apply_fixture "$d" 1 1; mk_julia "$d"
+run_args "$d"
+check "first apply: v9.9.9" "v9.9.9 new-sotd" "$(installed_tag "$d") $(sotd_text "$d")"
+arm_next "$d"
+run_args "$d" --rollback
+check "rollback via the staged v9.9.10 copy" "1 v9.9.8 old-sotd gone 1" \
+    "$(grep -c 're-executing the staged sot-apply' "$d/out" || true) $(installed_tag "$d") $(sotd_text "$d") $(armed "$d") $(grep -c 'rollback complete' "$d/out" || true)"
+if old="$(cd "$SRC" && git show v0.6.5:scripts/sot-apply.sh 2>/dev/null)" && [ -n "$old" ]; then
+    case_start "an_old_apply_rolls_back_through_the_hand_off"
+    d="$WORK/rv-rb-old"; mk_apply_fixture "$d" 1 1; mk_julia "$d"
+    run_args "$d"
+    printf '%s\n' "$old" > "$d/prefix/bin/sot-apply"; chmod 0755 "$d/prefix/bin/sot-apply"
+    arm_next "$d"
+    run_args "$d" --rollback
+        check "v0.6.5 rollback via the staged copy" "1 v9.9.8 old-sotd" \
+        "$(grep -c 're-executing the staged sot-apply' "$d/out" || true) $(installed_tag "$d") $(sotd_text "$d")"
+fi
+case_start "drop_only_never_applies"
+d="$WORK/rv-do1"; mk_apply_fixture "$d" 1 1; stage_own_apply "$d" 0755; mk_julia "$d"
+run_args "$d" --drop-only
+check "a fitting pointer: nothing applied, kept, no hand-off" "v9.9.8 old-sotd armed 0 0" \
+    "$(installed_tag "$d") $(sotd_text "$d") $(armed "$d") $(grep -c 're-executing' "$d/out" || true) $(grep -c update_comm "$d/julia.log" || true)"
+d="$WORK/rv-do2"; mk_apply_fixture "$d" 1 1; stage_own_apply "$d" 0755; mk_pointer_sotd "$d" 3 "refuse: x"
+run_args "$d" --drop-only
+check "a refused pointer: dropped, nothing applied" "v9.9.8 gone 0" \
+    "$(installed_tag "$d") $(armed "$d") $(grep -c 're-executing' "$d/out" || true)"
+
+case_start "the_staged_copy_asks_the_installed_sotd_under_the_lock"
+d="$WORK/rv-il"; mk_apply_fixture "$d" 1 1; stage_own_apply "$d" 0755; mk_julia "$d"
+# The installed sotd lets the pointer through on its first answer (above the re-exec) and refuses it on its second (under
+# the lock, in the staged copy): the pointer armed in between that no longer fits.
+printf '#!/bin/sh\n[ "$1 $2" = "update pointer" ] || exit 1\nn=$(cat "%s/asks" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "%s/asks"\n[ $n -ge 2 ] || exit 0\necho "refuse: armed in between"\nexit 3\n' "$d" "$d" > "$d/prefix/bin/sotd"
+chmod 0755 "$d/prefix/bin/sotd"
+run_handoff "$d"
+check "re-executed, asked twice, dropped, nothing applied" "1 2 gone v9.9.8" \
+    "$(grep -c 're-executing the staged sot-apply' "$d/out" || true) $(cat "$d/asks") $(armed "$d") $(installed_tag "$d")"
+
+case_start "the_comm_refresh_is_bounded_and_fails_open"
+# A julia that stalls (a launcher that hangs in a non-interactive shell) costs the refresh its bound, not the unit's start
+# timeout: it warns and returns 0, and update_comm never ran, so no stamp was written.
+d="$WORK/ho-stall"; mkdir -p "$d/bin" "$d/co" "$d/ch/bin" "$d/home"
+printf '#!/bin/sh\nsleep 20\n' > "$d/bin/julia"; chmod +x "$d/bin/julia"
+( cd "$d/co" && git init -q . && : > f && git add f && git -c user.name=t -c user.email=t@t commit -q -m c )
+printf 'abcdef123\n' > "$d/ch/VERSION"
+if [ -e "$TOOLS/timeout" ]; then
+    start="$(date +%s)"
+    out="$( HOME="$d/home" SOT_COMM_HOME="$d/ch" SOT_COMM_REFRESH_TIMEOUT_S=1 PATH="$d/bin:$TOOLS" bash -c '. "$1"; sot_comm_refresh "$2"; echo "rc=$?"' x "$LIB" "$d/co" 2>&1 )"
+    took=$(( $(date +%s) - start ))
+    check "a stalled julia is cut off within the bound" "yes" "$([ "$took" -lt 10 ] && echo yes || echo "no (${took}s)")"
+    check "it says the refresh timed out and returns 0" "1 1" "$(printf '%s\n' "$out" | grep -c 'timed out' || true) $(printf '%s\n' "$out" | grep -c '^rc=0$' || true)"
+    check "the stamp is untouched" "abcdef123" "$(cat "$d/ch/VERSION")"
+else
+    printf '    SKIP the stall bound (no timeout on this OS)\n'
+fi
+
+case_start "the_unit_applies_in_the_daemons_environment"
+# ExecStartPre runs sot-apply through the same bash -c form as ExecStart, so the comm refresh sees what ~/.bashrc exports
+# (the per-host depot, julia, CODEX_HOME, SOT_COMM_HOME).
+d="$WORK/ho-unit"; mkdir -p "$d/home" "$d/prefix/bin"
+render_sotd_unit "$d/prefix" "$SRC/deploy/sotd.service" "$d/unit"
+pre="$(sed -n "s/^ExecStartPre=-//p" "$d/unit")"
+check "the unit has one ExecStartPre, sourcing .bashrc and exec'ing the prefix's sot-apply" "1 1" \
+    "$(printf '%s\n' "$pre" | grep -c '\.bashrc' || true) $(printf '%s\n' "$pre" | grep -c "exec \"$d/prefix/bin/sot-apply\"" || true)"
+printf '#!/bin/sh\necho "marker=$SOT_UNIT_MARKER" > "%s/seen"\n' "$d" > "$d/prefix/bin/sot-apply"; chmod +x "$d/prefix/bin/sot-apply"
+printf 'export SOT_UNIT_MARKER=from-bashrc\n' > "$d/home/.bashrc"
+( eval "HOME='$d/home' $pre" ) >/dev/null 2>&1 || true
+check "the apply sees what .bashrc exports" "marker=from-bashrc" "$(cat "$d/seen" 2>/dev/null)"

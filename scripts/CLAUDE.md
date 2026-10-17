@@ -33,11 +33,13 @@ and the launch path fails open: no update step can stop a window from starting.
 - Apply verifies everything before it mutates, restores on a failure after mutation and exits 0; a rollback marks the
   bad tag so it is never armed again (`sot-apply.sh`, `sot-apply.ps1`).
 - On Unix a release runs its own `sot-apply` at every later update: `sot-apply.sh` is git mode 100755 (the packers copy it
-  with `cp`, which keeps the mode), and the installed apply hands the staged copy the install prefix in
-  `SOT_APPLY_PREFIX` (a v0.6.5 apply sets only `SOT_APPLY_REEXECED`; the staged copy then reads the prefix from where the
-  stage sits under `<prefix>/updates/`). After an apply `sot-apply.sh` runs `sot_comm_refresh` on the applied checkout,
+  with `cp`, which keeps the mode), and the staged copy, re-executed with `SOT_APPLY_REEXECED` set (every installed apply since v0.6.5
+  does), reads the install prefix from where the stage sits under `<prefix>/updates/<tag>-<target>/<top>/`: one rule for
+  every installed apply. After an apply `sot-apply.sh` runs `sot_comm_refresh` on the applied checkout,
   whatever the box's role, so comm follows every apply; the refresh is fail-open. `installer-handoff.sh`, sourced by
-  `installer-apply.sh`, runs a real staged copy and pins the mode in the packed archive.
+  `installer-apply.sh`, runs a real staged copy and pins the mode in the packed archive. The unit's `ExecStartPre` runs
+  `sot-apply` through the same `bash -c` form as `ExecStart` (it sees `~/.bashrc`), and the comm refresh's `julia` is
+  bounded by `timeout` (`SOT_COMM_REFRESH_TIMEOUT_S`, 60 s) where one exists.
 - `--drop-only` (`sot-apply.sh`) and `-DropOnly` (`sot-apply.ps1`) exit after the in-lock refusal check and never apply or
   re-execute: the wrapper's `apply_pending` and `Invoke-PendingApply` run them when their own question refused the
   pointer and left the daemon running, so a fitting pointer armed in between waits for the next start.

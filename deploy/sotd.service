@@ -36,7 +36,10 @@ Type=simple
 # on the new version. FAIL-OPEN twice over: the script always exits 0, and
 # the '-' prefix tolerates even a missing/broken script — a bad update path
 # must never keep the daemon down.
-ExecStartPre=-@SOT_APPLY@
+#
+# It runs through the same bash -c form as ExecStart, so the apply (and the comm refresh it ends with) sees what
+# ~/.bashrc exports: the per-host Julia depot, the real julia, CODEX_HOME and SOT_COMM_HOME.
+ExecStartPre=-/bin/bash -c '[ -r "$HOME/.bashrc" ] && . "$HOME/.bashrc"; exec "@SOT_APPLY@"'
 # sotd and everything it spawns inherit whatever ~/.bashrc exports above its
 # non-interactive guard; no path is carried in this unit or any config
 # (owner ruling 2026-09-02). A bare login shell (-l) is not enough: it reads

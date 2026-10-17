@@ -403,7 +403,7 @@ privilege, documented trade-off); Windows production auto-update (needs the
 Phase-D `install.ps1` + supervisor rework — the shared crate already handles
 Windows staging); macOS launchd wiring and daemon-side crash-loop
 auto-rollback (manual: `sot-apply --rollback`, or re-run the installer);
-refreshing agent comm resources (`update_comm`) on auto-apply (closed 2026-10-16: Windows by the freshness pass, Unix by the rendered wrapper, both by the VERSION stamp rule); routing the
+refreshing agent comm resources (`update_comm`) on auto-apply (closed 2026-10-16: Windows by the freshness pass, Unix by the rendered wrapper and by `sot-apply.sh` after every apply, the only path for a box with no wrapper, both by the VERSION stamp rule); routing the
 INSTALLER's own upgrade path through prepare/apply (it remains a live update
 with the safety probes above); flush-coupled `update.apply` exit; refreshing
 installed control-plane artifacts (`sotd.service`, the `sot-launch`

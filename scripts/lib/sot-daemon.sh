@@ -287,8 +287,16 @@ sot_comm_refresh() {  # <checkout>
     if [ -d "$home/bin" ] && { [ -z "$commit" ] || [ "$stamp" = "$commit" ]; }; then return 0; fi
     PATH="$PATH:$HOME/.juliaup/bin"
     command -v julia >/dev/null 2>&1 || { echo "WARNING: comm is not at this checkout's commit and julia is not on PATH" >&2; return 0; }
-    julia --project="$1" -e 'using ShipTools; ShipTools.update_comm()' >/dev/null 2>&1 \
-        || echo "WARNING: ShipTools.update_comm() failed; the next launch tries again" >&2
+    # Bounded where `timeout` exists (macOS has none): a stalled julia costs the refresh, not the unit's start timeout.
+    # update_comm writes the stamp last, so a refresh that did not finish leaves none and the next launch tries again.
+    local bound=""
+    ! command -v timeout >/dev/null 2>&1 || bound="timeout ${SOT_COMM_REFRESH_TIMEOUT_S:-60}"
+    $bound julia --project="$1" -e 'using ShipTools; ShipTools.update_comm()' >/dev/null 2>&1
+    case $? in
+        0) ;;
+        124) echo "WARNING: ShipTools.update_comm() timed out; the next launch tries again" >&2 ;;
+        *) echo "WARNING: ShipTools.update_comm() failed; the next launch tries again" >&2 ;;
+    esac
     return 0
 }
 

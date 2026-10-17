@@ -18,7 +18,7 @@
 # Every caller ignores the status. `--drop-only` (the rendered wrapper's, after its own pre-check refused the pointer)
 # exits after the in-lock refusal check, dropping a pointer that will not apply and applying nothing. Invoked by:
 #   - sot-launch (all Unix roles) — which stops/restarts the daemon around it;
-#   - systemd:  ExecStartPre=-<prefix>/bin/sot-apply  (daemon already stopped);
+#   - systemd:  ExecStartPre=-<prefix>/bin/sot-apply, through bash -c with ~/.bashrc sourced (daemon already stopped);
 #   - sotd's update.apply op (arms + exits; the restart path runs this).
 #
 # No network, no npm; Julia only for the comm refresh after an apply, which is fail-open. The rest happened at prepare
@@ -40,20 +40,16 @@ sot_install_copy() {  # <src> <dst> [mode]
     return 1
 }
 
-# Prefix = parent of this script's bin dir. A staged copy the installed apply re-executed (below) lies under
-# <prefix>/updates/<tag>-<target>/<top>/, so it is told the prefix: SOT_APPLY_PREFIX, set by the re-exec. An installed
-# v0.6.5 apply re-executes with SOT_APPLY_REEXECED alone; the stage's place under an `updates` folder names the prefix.
+# Prefix = parent of this script's bin dir. A staged copy the installed apply re-executed (below, with
+# SOT_APPLY_REEXECED set) lies under <prefix>/updates/<tag>-<target>/<top>/, which names the prefix: the installed apply
+# builds that path itself, and every installed apply since v0.6.5 sets the same variable, so one rule serves them all.
 SELF="$0"
 case "$SELF" in */*) ;; *) SELF="$(command -v -- "$0" || echo "$0")";; esac
 BIN_DIR="$(cd "$(dirname -- "$SELF")" && pwd)"
 PREFIX="$(dirname -- "$BIN_DIR")"
 if [ -n "${SOT_APPLY_REEXECED:-}" ]; then
-    if [ -n "${SOT_APPLY_PREFIX:-}" ]; then
-        PREFIX="$SOT_APPLY_PREFIX"
-    else
-        STAGE_UP="$(dirname -- "$(dirname -- "$BIN_DIR")")"
-        [ "$(basename -- "$STAGE_UP")" != updates ] || PREFIX="$(dirname -- "$STAGE_UP")"
-    fi
+    STAGE_UP="$(dirname -- "$(dirname -- "$BIN_DIR")")"
+    [ "$(basename -- "$STAGE_UP")" != updates ] || PREFIX="$(dirname -- "$STAGE_UP")"
 fi
 UPDATES="$PREFIX/updates"
 
@@ -94,7 +90,7 @@ ptr_refusal() {
 # lock section would just find the dir already there and refuse ("staging
 # lock held"). SOT_APPLY_REEXECED stops this from ever looping (the
 # staged copy sees it set and skips straight past this block), and
-# SOT_APPLY_PREFIX tells the staged copy which install it applies onto.
+# the staged copy's place under <prefix>/updates/ tells it which install it applies onto.
 # `--drop-only` never re-executes: the release's own copy may not know it.
 #
 # Only helps FUTURE upgrades: an old box's old apply predates this guard
@@ -109,7 +105,7 @@ if [ -z "${SOT_APPLY_REEXECED:-}" ] && [ "${1:-}" != --drop-only ] && [ -f "$PEN
         STAGE_APPLY="$UPDATES/$STAGE_TAG-$TARGET/$STAGE_TOP/sot-apply"
         if [ -x "$STAGE_APPLY" ]; then
             log "re-executing the staged sot-apply ($STAGE_APPLY)"
-            SOT_APPLY_REEXECED=1 SOT_APPLY_PREFIX="$PREFIX" exec "$STAGE_APPLY" "$@"
+            SOT_APPLY_REEXECED=1 exec "$STAGE_APPLY" "$@"
         fi
     fi
 fi
@@ -421,7 +417,8 @@ done
 log "APPLIED $TAG (previous: ${CUR_TAG:-unknown}; rollback state in $(basename "$LASTGOOD"))"
 
 # The agent comm scripts follow the applied commit, on every role: an applied tag can change the comm protocol. The
-# library is the applied checkout's; an older target without one refreshes nothing. Fail-open, like all of this.
+# library is the applied checkout's; an older target without one refreshes nothing. Fail-open, like all of this, and
+# bounded: its julia step is cut off at 60 s where `timeout` exists.
 if command -v sot_comm_refresh >/dev/null 2>&1; then
     sot_comm_refresh "$CHECKOUT" || true
 fi
