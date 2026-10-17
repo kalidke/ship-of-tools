@@ -82,13 +82,13 @@ Use `--backend <ssh-alias>` for a frontend here with the backend on a remote hos
 To update a Linux or macOS machine, tell a coding agent running there "update sot from the repo", or run `bash ~/.local/share/sot/repo/current/scripts/install.sh` yourself: with no options it moves to the newest release on the channel the machine already runs, never moves backwards, takes its role from the `hosts.toml` entry for this computer (else a role flag, else what the install recorded), and ends with one `PASS`, `ONE STEP LEFT` or `FAIL` line.
 
 Needs on every machine:
-- **git, curl and tar.**
+- **git, curl, tar and jq** (the installer stops before it changes anything when jq is missing).
 - **Julia 1.12 or newer**, on every role, not only the backend (installed with juliaup if missing; an existing juliaup only gets the 1.12 channel added, so the install ends with the one command to run, usually `juliaup default 1.12`, if your default channel is older; `SOT_JULIA_BIN`, if set, names the daemon's Julia and must meet the floor too).
 - **Claude Code or Codex**, installed and logged in.
 - **Frontend only:** Linux with glibc 2.35 or newer and a desktop session with a Vulkan driver (a `--be-only` backend is a static binary with no glibc floor).
 - **A home directory on NFS** (or another remote filesystem) needs a systemd drop-in pointing the daemon's state root at local disk before sessions will start; see [A session will not start on a shared home](https://kalidke.github.io/ship-of-tools/dev/guide/troubleshooting#A-session-will-not-start-on-a-shared-home).
 
-Optional on the backend machine: node/npm for typeset math, poppler-utils for PDF previews and ffmpeg for video poster frames.
+The optional tools (Xvfb for GLMakie, node/npm, poppler-utils, ffmpeg) are listed under [Prerequisites](https://kalidke.github.io/ship-of-tools/dev/start/install#install-prerequisites).
 
 What it touches:
 - Everything goes under your home directory, mostly `~/.local/share/sot`, plus user lingering (`loginctl enable-linger`) so the user-level `sotd` systemd service keeps the backend running after logout on Linux.

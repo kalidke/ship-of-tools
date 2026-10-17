@@ -321,32 +321,23 @@ check, pinning a version, and rolling back are in
   and that the daemon's own ends, a close, an update restart or a stop
   signal, end its processes as designed).
 
+### [Prerequisites](@id install-prerequisites)
+
+| Tool | Needed | What needs it | Install |
+|------|--------|---------------|---------|
+| `git`, `curl`, `tar` | required | the installer | your package manager |
+| `jq` | required | the comm scripts read and write JSON with it; the installer stops before it changes anything, naming the command | `sudo apt-get install jq` (macOS: `brew install jq`) |
+| Claude Code or Codex | required, logged in, on every machine that runs sessions | the agent; the installer does not install one | the agent's own installer |
+| Julia 1.12 or newer | required | the kernel, the REPL, Pluto; the installer installs it with juliaup when missing, and an existing juliaup only gets the 1.12 channel added, not made the default. The daemon runs the `julia` that `SOT_JULIA_BIN` names, else juliaup's default channel, else the one on `PATH`; the comm refresh runs the `julia` on `PATH`. When the `julia` on `PATH` is older than 1.12 the install stops there, before any step runs on it; when only the daemon's is older, or either cannot be asked, it ends ONE STEP LEFT. Either line names the version and the command: `juliaup default 1.12` (after `juliaup add 1.12` when that channel is not installed), or installing a newer Julia | [juliaup](https://github.com/JuliaLang/juliaup) |
+| `Xvfb` | optional, Linux backend | GLMakie in the REPL and in Pluto: each gets an X display of its own. Without it the REPL's first run says it has no display of its own, and CairoMakie and WGLMakie still work; the installer does not check for it | `sudo apt-get install xvfb` |
+| node/npm | optional, backend | typeset math in markdown previews renders in a long-lived node process, whose dependencies the installer fetches with `npm ci`. Without node the installer warns and continues, and math renders as raw LaTeX. To add math later, install node and re-run the installer (or `npm ci` in `<checkout>/rust/backend/sidecars/mathjax`) | your package manager |
+| `poppler-utils` (`pdftoppm`, `pdfinfo`) | optional, backend | PDF pages in previews; the installer does not check for them, and without them the preview shows a note naming the missing tool | `sudo apt-get install poppler-utils` |
+| `ffmpeg` | optional, backend | video poster frames in previews; the installer does not check for it, and without it the preview shows a note naming the missing tool | `sudo apt-get install ffmpeg` |
+
+Beyond the tools:
+
 - **linux-x86_64** or **macos-aarch64** release artifacts (a
   **windows-x86_64** zip also ships for the Windows frontend path below).
-- **git**, **curl**, **tar** and **jq**. The comm scripts read and write
-  JSON with jq, so the installer stops without it and names the command that
-  installs it (`sudo apt-get install jq`, or `brew install jq` on macOS).
-- A **coding agent** (Claude Code or Codex), installed and logged in on every
-  machine that runs sessions. The installer does not install one.
-- **Julia 1.12** or newer. The installer installs it with juliaup when
-  missing; an existing juliaup only gets the 1.12 channel added, not made the
-  default. The daemon runs the `julia` that `SOT_JULIA_BIN` names, else juliaup's
-  default channel, else the one on `PATH`; the comm refresh runs the `julia` on
-  `PATH`. When the `julia` on `PATH` is older than 1.12 the install stops there,
-  before any step runs on it; when only the daemon's is older, or either cannot
-  be asked, it ends ONE STEP LEFT. Either line names the version and the
-  command: `juliaup default 1.12` (after `juliaup add 1.12` when that channel is
-  not installed), or installing a newer Julia.
-- **node/npm**, optional, on the backend machine: typeset math in markdown
-  previews renders in a long-lived node process, whose dependencies the
-  installer fetches with `npm ci`. Without it the installer warns and
-  continues, and math renders as raw LaTeX. To add math later, install node
-  and re-run the installer (or `npm ci` in
-  `<checkout>/rust/backend/sidecars/mathjax`).
-- **poppler-utils** (`pdftoppm`, `pdfinfo`) and **ffmpeg**, optional, on the
-  backend machine: PDF pages and video poster frames in previews. The
-  installer does not check for them; without them the preview shows a note
-  naming the missing tool.
 - Frontend roles need **glibc 2.35** or newer (Ubuntu 22.04 or newer) and a
   desktop session (X11 or Wayland): the frontend is a native window. It
   renders with `wgpu` through Vulkan on Linux, Metal on macOS and DirectX 12

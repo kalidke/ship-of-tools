@@ -16,7 +16,7 @@ to pin one).
   figures, PDFs and typeset math itself, so it needs a graphical desktop, not
   a terminal. It renders through Vulkan on Linux (Metal on macOS, DirectX 12
   or Vulkan on Windows), so the machine needs a working Vulkan driver.
-- **git**, **curl** and **tar**.
+- **git**, **curl**, **tar** and **jq**: the installer stops before it changes anything when `jq` is missing.
 - **Claude Code** or **Codex**, installed and logged in. The installer does not
   install either.
 - **Julia 1.12** or newer. If Julia is missing, the installer installs it with
@@ -24,10 +24,9 @@ to pin one).
   default channel is older, the install ends naming the command to run, usually
   `juliaup default 1.12`. `SOT_JULIA_BIN`, if set, names the daemon's Julia and
   must be 1.12 or newer too.
-- Optional, on the backend machine: **node/npm** (typeset math in markdown
-  previews renders in a node process; without it math is not typeset),
-  **poppler-utils** (`pdftoppm` and `pdfinfo`, for PDF previews) and
-  **ffmpeg** (the poster frame of a video preview).
+
+The optional tools (Xvfb for GLMakie, node/npm, poppler-utils, ffmpeg) are listed under
+[Prerequisites](@ref install-prerequisites).
 
 !!! warning "Try it in a VM or a separate account"
     The installer changes your own agent setup (skills and hooks into your

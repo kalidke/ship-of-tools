@@ -42,7 +42,7 @@ hero:
 
 <div class="sot-section">
   <h2>Extend in Julia</h2>
-  <p class="sot-why">A preview for a new file type is a Julia plugin: a <code>FileType</code> subtype, a <code>matches</code> method and a <code>preview</code> method, with no Rust changes. This one shows a CSV file as a markdown table. The built-in text, source, PDF and video previews use the same interface. Today a third-party plugin loads only from a source checkout; see <a href="./extend/discovery">Discovery</a> and the <a href="./extend/hdf5">HDF5 preview tutorial</a>.</p>
+  <p class="sot-why">A preview for a new file type is a Julia plugin: a <code>FileType</code> subtype with a <code>matches</code> method and a <code>preview</code> method, with no Rust changes. This one shows a CSV file as a markdown table. The built-in text, source, PDF and video previews use the same interface. A plugin is added to the kernel's own environment in a source checkout; nothing discovers a package of yours by itself (see <a href="./extend/discovery">Discovery</a>). The <a href="./extend/hdf5">HDF5 preview tutorial</a> shows one.</p>
 </div>
 ```
 
@@ -56,7 +56,7 @@ function ConceptExplorerCore.preview(::Type{CsvFile}, path)
 end
 ```
 
-The full walkthrough, with the table-building body, is in [Writing a FileType Plugin](./extend/filetype.md).
+The walkthrough is [Writing a FileType Plugin](./extend/filetype.md).
 
 ```@raw html
 <div class="sot-section">
@@ -93,7 +93,7 @@ Install Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-t
     <li><a href="./start/quickstart">Quickstart</a> — install, launch, start an agent session.</li>
     <li><a href="./start/tour">Your first session</a> — the panes, the agent, drawers and modes, one at a time.</li>
     <li><a href="./guide/architecture">Architecture</a> — the frontend, the daemon, the Julia kernel and the agent sessions.</li>
-    <li><a href="./design/roadmap">Roadmap</a> — what is built, and what is planned.</li>
+    <li><a href="./design/roadmap">Phase 1 plan (historical)</a> — the original phase-1 plan, with a table of what is built.</li>
   </ul>
   <p class="sot-why">Status: in active development and used daily with a Linux backend and a Windows frontend (installed from the release zip, no installer script yet).</p>
 </div>

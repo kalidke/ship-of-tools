@@ -137,6 +137,7 @@ command -v git curl tar jq   # all required
 command -v node npm       # OPTIONAL — math rendering in markdown previews
 command -v pdftoppm pdfinfo  # OPTIONAL (poppler-utils) — PDF previews
 command -v ffmpeg         # OPTIONAL — video poster frames in previews
+command -v Xvfb           # OPTIONAL, Linux backend — GLMakie in the REPL and Pluto
 ```
 
 - **jq absent** → a blocker: the comm scripts read and write JSON with it,
@@ -151,6 +152,11 @@ command -v ffmpeg         # OPTIONAL — video poster frames in previews
   check for them. A PDF or video preview then shows a note naming the missing
   tool. Tell the human; install them with the system package manager on the
   backend machine if they want those previews.
+- **Xvfb absent on a Linux backend** → not a blocker: the installer does not
+  check for it. The REPL's first run then says it has no display of its own;
+  CairoMakie and WGLMakie still work, GLMakie does not. Tell the human;
+  `sudo apt-get install xvfb` (Debian/Ubuntu) adds it, and a REPL started
+  afterward gets its display.
 - An upgrade to a tmux-free tag removes the old sot-tmux.service unit by
   itself.
 - **Linux x86_64, glibc ≥ 2.35** → full install works.

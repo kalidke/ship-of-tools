@@ -75,6 +75,32 @@ stderr line, in the host row's status text. See
 [Transport](../concepts/transport.md). Reconnect with `F5`, then reopen the
 page.
 
+## The REPL says it has no display of its own
+
+The REPL's first run on a Linux backend prints, on stderr, `sot: this REPL has no display of its own (...), and GLMakie
+needs one. CairoMakie and WGLMakie (wglshow) work.` GLMakie needs an X display, and the daemon gives the REPL one by
+starting `Xvfb`. The reason in the parentheses says why it could not: `Xvfb is not installed: none on the daemon's PATH`
+means the program is missing, so install it (`sudo apt-get install xvfb` on Debian and Ubuntu) and run again; a REPL
+started afterward gets its display. Any other reason ends with the last lines Xvfb wrote. CairoMakie and WGLMakie need no
+display and keep working. See [Prerequisites](../start/install.md#install-prerequisites).
+
+## The REPL ended because its display ended
+
+The REPL's display, its `Xvfb`, ended while the REPL ran, so the daemon ended the REPL with it. An eval in flight
+answers `the REPL's own display (Xvfb) ended, so the REPL was ended with it before this eval ended`. Run again: the next
+run starts a new REPL with a new display and prints `sot: the REPL before this one was ended because its own display
+(Xvfb) ended; this is a new REPL with a new display, and nothing the old one defined or loaded is here` first. Redefine
+what you need; nothing of the old REPL survives. Pluto's server is ended the same way when its display ends.
+
+## A browser page opened in a different window than expected
+
+With several windows attached, a browser open (a `wglshow` figure, `sot-fe docs`, `sot-fe open-url`) goes to exactly
+one window: the one you used last, however long ago. A window counts as used from its second key press, click or wheel
+step within five minutes, and a switch between windows is noticed within about six seconds. With none used yet, it is
+the window that connected last. A window that is reconnecting is not chosen. To open the page on a particular window,
+pass `--fe <fe>` to `sot-fe`, or `open = "<fe>"` to `wglshow`. See
+[A second frontend](second-frontend.md).
+
 ## The Windows taskbar launch looks dead
 
 The Windows shortcut runs the launcher hidden, so an early failure can look like
