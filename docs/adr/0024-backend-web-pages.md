@@ -236,10 +236,13 @@ Follow rule, checked on every request:
   is rebuilt whenever the repo index file changes), and the file must resolve to
   a path under a mount folder (`/mnt`, `/media` or `/Volumes`), outside the home
   folder and the repository, with no part below the mount folder whose name
-  starts with `.`; and the link itself must point there too: its target, as
-  written (a leading mount folder mapped to its canonical path), must equal its
-  canonical path, so no symlink lies on its way (a route through the home folder
-  or another link is refused whatever it ends on), and that canonical target is
+  starts with `.`; and the link itself must point there too: its target
+  must be written as its absolute real path: absolute, with no `.` or `..` part,
+  and equal to its canonical path once a leading mount folder as written is
+  mapped to its canonical path. So no symlink lies on its way and no name of a
+  private folder can be walked into and left again (a route through the home
+  folder, another link or a `..` is refused whatever it ends on; a relative
+  target is refused outright). That canonical target is
   judged by the same bounds before the request is resolved, lies outside the
   repository, and names a data folder: a link to `/`, or to a folder holding the home folder or the
   repository, is never followed. No file lists data folders.
@@ -323,7 +326,7 @@ A symlink a repository tracks serves with no list of data folders to keep: the `
 A tracked link serves a file when the file's canonical path lies under a mount folder (`/mnt`, `/media`, `/Volumes`),
 outside the home folder, with no part below the mount folder whose name starts with `.`, through a link to neither
 `/` nor a folder holding the home folder or the repository (the follow rule above; `Bounds` in
-`rust/backend/src/pages/site/links.rs`). Only a link git tracks is followed. The link's own canonical target is
+`rust/backend/src/pages/site/links.rs`). Only a link git tracks is followed. The link's own target, written as its absolute real path (as `ln -s /mnt/<share>/...` writes it), is
 judged first, by the bounds the file meets and as not too wide (not `/`, nor a folder holding the home folder or the repository), and the repository's own files serve only from
 the site folder. Every refusal, of the link or of the file, is R3's one answer, so a link that names everything
 (`/`, `~`, `..` from a repo on a share) serves nothing and says nothing about where the home folder or the
@@ -343,8 +346,9 @@ what lay under a root the computer's `data-roots` file declared, and nothing whe
 mounted a second time under a mount folder (an NFS server's own export path, a bind mount) is not recognized as the
 home folder; its hidden folders stay refused. A symlink someone else placed on a share, below a link's target, is judged
 only by the file it reaches, so a route that enters the home folder by such a symlink and leaves it by another
-serves; writing to a share is what that takes. A regular file on `/proc` or `/sys` is refused (a root mounted under a
-mount folder with `/proc` bound inside it).
+serves; writing to a share is what that takes. Only a regular file on `/proc` or `/sys` is refused by filesystem type (a root mounted under a
+mount folder with `/proc` bound inside it); a root or a filesystem bind-mounted under a mount folder is otherwise read
+as files there, other kernel filesystems' included.
 
 Removed with the file: the refusal when no root is declared (R2c); the refusal of a link inside the linked folder
 that leads out of it (R4), since the bounds now judge the file a link reaches, wherever an inner link leads; and the

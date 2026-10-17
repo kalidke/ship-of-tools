@@ -63,13 +63,13 @@ fn fixture() -> Fixture {
     write(&base.join("mnt/other/fig.png"), b"png");
     write(&base.join("mnt/home/u/notes.txt"), b"home");
     write(&outside.join("secret.txt"), b"secret");
-    symlink("../mnt/share", repo.join("data")).unwrap();
-    symlink("../outside", repo.join("bad")).unwrap();
-    symlink("../mnt/nowhere", repo.join("dangling")).unwrap();
+    symlink(&share, repo.join("data")).unwrap();
+    symlink(&outside, repo.join("bad")).unwrap();
+    symlink(base.join("mnt/nowhere"), repo.join("dangling")).unwrap();
     symlink("../../../../outside", share.join("results/r1/esc")).unwrap();
     symlink("../../../other", share.join("results/r1/side")).unwrap();
-    symlink("../mnt/share", repo.join("loose")).unwrap();
-    symlink("../../mnt/share", repo.join("site/lnk")).unwrap();
+    symlink(&share, repo.join("loose")).unwrap();
+    symlink(&share, repo.join("site/lnk")).unwrap();
     git(&repo, &["add", "data", "bad", "dangling", "other.txt", "site"]);
     let bounds = Bounds::new(&[&base.join("mnt")], Some(base.join("mnt/home/u").as_path()));
     Fixture { _dir: dir, base, repo, share, bounds }
@@ -405,7 +405,7 @@ async fn a_never_committed_link_is_r2b_then_served_once_added_s1() {
     git(&repo, &["init", "-q"]);
     write(&repo.join("site/index.html"), b"<html></html>");
     git(&repo, &["add", "site"]);
-    symlink("../mnt/share", repo.join("nas")).unwrap();
+    symlink(f.base.join("mnt/share"), repo.join("nas")).unwrap();
     let site = opened(&f, repo.join("site"), repo.clone()).await;
     let (addr, nonce, serial) = serve(site).await;
     let path = format!("/{nonce}/nas/results/r1/movie.mp4");
@@ -559,15 +559,15 @@ async fn a_link_to_root_home_or_above_the_repo_gets_r3_like_any_private_path() {
     symlink(f.share.clone(), home.join("work/proj/nas")).unwrap();
     symlink("/", f.repo.join("root")).unwrap();
     for (n, t) in [
-        ("up", ".."),
-        ("gh", "../home/u"),
-        ("gw", "../home/u/work"),
-        ("gx", "../home/wrong/work"),
-        ("gp", "../home"),
+        ("up", f.base.clone()),
+        ("gh", f.base.join("home/u")),
+        ("gw", f.base.join("home/u/work")),
+        ("gx", f.base.join("home/wrong/work")),
+        ("gp", f.base.join("home")),
     ] {
         symlink(t, f.repo.join(n)).unwrap();
     }
-    symlink("../mnt", f.repo.join("allmnt")).unwrap();
+    symlink(f.base.join("mnt"), f.repo.join("allmnt")).unwrap();
     git(&f.repo, &["add", "root", "allmnt", "up", "gh", "gw", "gx", "gp"]);
     let mut site = widened(&f).await;
     site.bounds = Bounds::new(&[&f.base.join("mnt")], Some(home.as_path()));
@@ -610,8 +610,8 @@ async fn a_repo_under_a_mount_folder_serves_none_of_its_files_through_a_link() {
     write(&repo.join("site/index.html"), b"<html></html>");
     write(&repo.join("private/credentials.json"), b"{\"secret\":1}");
     write(&repo.join("figs/a.png"), b"png");
-    symlink("../private", repo.join("site/p")).unwrap();
-    symlink("../figs", repo.join("site/f")).unwrap();
+    symlink(repo.join("private"), repo.join("site/p")).unwrap();
+    symlink(repo.join("figs"), repo.join("site/f")).unwrap();
     git(&repo, &["add", "site"]);
     let (addr, nonce, serial) = serve(opened(&f, repo.join("site"), repo.clone()).await).await;
     for (asked, l) in [("site/p/credentials.json", "site/p"), ("site/f/a.png", "site/f")] {
@@ -703,51 +703,61 @@ async fn without_git_the_walk_up_for_dot_git_widens_only_within_the_workspace() 
     }
 }
 
-/// A link whose target is written through the home folder, or through another link, is refused whatever it ends on:
-/// the one answer cannot tell a right guess of the home folder from a wrong one.
+/// A link's target must be written as its absolute real path. A route through the home folder, another link or a `..`
+/// is refused whatever it ends on, so a right guess of a private name answers as a wrong one; a relative target is
+/// refused outright; the real path, however spelled with `//` or a mount folder behind a symlink, serves.
 #[tokio::test]
-async fn rv2_link_target_through_home_resolving_to_the_share() {
+async fn a_link_target_written_other_than_as_its_absolute_real_path_gets_r3_whatever_it_ends_on() {
     let f = fixture();
     let home = f.base.join("home/u");
     std::fs::create_dir_all(home.join("work/proj")).unwrap();
-    symlink(f.share.clone(), home.join("work/proj/nas")).unwrap();
-    for (n, t) in [
-        ("w2", home.join("work/proj/nas")),
-        ("w3", f.base.join("home/wrong/work/proj/nas")),
-        ("y", home.join("work/proj/nas")),
-    ] {
-        symlink(&t, f.repo.join(n)).unwrap();
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    symlink(&f.share, home.join("work/proj/nas")).unwrap();
+    write(&f.base.join("mntx/share/results/r1/movie.mp4"), b"0123456789abcdef");
+    let b = f.base.display().to_string();
+    let links: Vec<(&str, String, u16)> = vec![
+        ("w2", format!("{b}/home/u/work/proj/nas"), 403),
+        ("w3", format!("{b}/home/wrong/work/proj/nas"), 403),
+        ("x", "y".into(), 403),
+        ("y", format!("{b}/home/u/work/proj/nas"), 403),
+        ("d1", format!("{b}/home/u/work/proj/../../../../mnt/share"), 403),
+        ("d2", format!("{b}/home/wrong/work/proj/../../../../mnt/share"), 403),
+        ("d3", format!("{b}/home/u/.ssh/../../../mnt/share"), 403),
+        ("d4", format!("{b}/home/u/.gnupg/../../../mnt/share"), 403),
+        ("d5", "../home/u/work/../../../mnt/share".into(), 403),
+        ("d6", "../home/x/work/../../../mnt/share".into(), 403),
+        ("e3", format!("{b}/mntx/share"), 403),
+        ("e4", "../mnt/share".into(), 403),
+        ("e5", "../../mnt/share".into(), 403),
+        ("e1", format!("{b}//mnt/share/"), 206),
+        ("e2", format!("/{b}/mnt/./share"), 206),
+        ("ok", format!("{b}/mnt/share"), 206),
+    ];
+    for (n, t, _) in &links {
+        symlink(t, f.repo.join(n)).unwrap();
+        git(&f.repo, &["add", n]);
     }
-    symlink("y", f.repo.join("x")).unwrap();
-    git(&f.repo, &["add", "w2", "w3", "x", "y"]);
     let mut site = widened(&f).await;
     site.bounds = Bounds::new(&[&f.base.join("mnt")], Some(home.as_path()));
     let (addr, nonce, serial) = serve(site).await;
-    for (l, asked) in [
-        ("w2", "w2/results/r1/movie.mp4"),
-        ("w3", "w3/results/r1/movie.mp4"),
-        ("x", "x/results/r1/movie.mp4"),
-    ] {
+    for (n, _, want) in &links {
+        let asked = format!("{n}/results/r1/movie.mp4");
         let (st, _, body) = get(addr, &format!("/{nonce}/{asked}"), &["Range: bytes=0-9"]).await;
-        assert_eq!((st, body_text(&body)), (403, r3(asked, l)), "{asked}");
+        if *want == 403 {
+            assert_eq!((st, body_text(&body)), (403, r3(&asked, n)), "{asked}");
+        } else {
+            assert_eq!(st, *want, "{asked}");
+        }
     }
     remove_root(serial);
-}
-
-/// A repository on a share routes through its own committed links: a target inside the repository is refused.
-#[tokio::test]
-async fn rv2_repo_on_share_inner_link_through_home() {
-    let f = fixture();
-    let home = f.base.join("home/u");
-    std::fs::create_dir_all(home.join("work/proj")).unwrap();
-    symlink(f.share.clone(), home.join("work/proj/nas")).unwrap();
+    // A repository on a share routes through its own committed links: a target inside it is refused.
     let repo = f.share.join("clone");
     std::fs::create_dir_all(repo.join("data")).unwrap();
     git(&repo, &["init", "-q"]);
     write(&repo.join("site/index.html"), b"<html></html>");
     symlink(home.join("work"), repo.join("data/h")).unwrap();
     symlink(f.base.join("home/wrong/work"), repo.join("data/h2")).unwrap();
-    symlink("../data", repo.join("site/x")).unwrap();
+    symlink(repo.join("data"), repo.join("site/x")).unwrap();
     git(&repo, &["add", "site", "data"]);
     let mut site = opened(&f, repo.join("site"), repo.clone()).await;
     site.bounds = Bounds::new(&[&f.base.join("mnt")], Some(home.as_path()));

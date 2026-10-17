@@ -80,26 +80,14 @@ impl Bounds {
         Ok(m)
     }
 
-    /// `p` with a leading mount folder as written (`/mnt`) replaced by its
-    /// canonical path, and `.` and `..` resolved by name only.
+    /// The absolute `p` with a leading mount folder as written (`/mnt`)
+    /// replaced by its canonical path.
     fn as_written(&self, p: &Path) -> PathBuf {
-        use std::path::Component;
-        let mut lexical = PathBuf::new();
-        for c in p.components() {
-            match c {
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    lexical.pop();
-                }
-                c => lexical.push(c.as_os_str()),
-            }
-        }
-        for (w, c) in self.written.iter().zip(&self.mounts) {
-            if let Ok(rest) = lexical.strip_prefix(w) {
-                return c.join(rest);
-            }
-        }
-        lexical
+        self.written
+            .iter()
+            .zip(&self.mounts)
+            .find_map(|(w, c)| p.strip_prefix(w).ok().map(|rest| c.join(rest)))
+            .unwrap_or_else(|| p.to_path_buf())
     }
 
     /// Whether a link to the canonical `t` names no data folder: `/`, or a
@@ -583,10 +571,11 @@ fn follow_link(
     }
 }
 
-/// The link's target must be written with no symlink on its way (as written,
-/// with a leading mount folder mapped to its canonical path, it equals its
-/// canonical path `t`: a route through the home folder or another link is
-/// refused whatever it ends on), lie in the bounds like a file, name a data
+/// The link's target must be written as its absolute real path (no `.` or `..`
+/// part, so no name of a private folder can be walked into and left again; with
+/// a leading mount folder mapped to its canonical path it equals its canonical
+/// path `t`: a route through the home folder or another link is refused
+/// whatever it ends on), lie in the bounds like a file, name a data
 /// folder (not `/`, nor one holding the home folder or the repository `top`)
 /// and lie outside the repository; then the canonical file `f` of `q` must lie
 /// in the bounds and outside the repository, whose files serve only from the
@@ -597,8 +586,11 @@ fn judge(site: &Site, q: &Path, link: &Path, top: Option<&Path>) -> Result<(Path
     let at = site.url_root.join(link);
     let t = at.canonicalize().map_err(|_| "the link does not resolve")?;
     let raw = std::fs::read_link(&at).map_err(|_| "the link does not read")?;
-    let written = site.bounds.as_written(&at.parent().unwrap_or(Path::new("/")).join(raw));
-    if written != t {
+    use std::path::Component;
+    if !raw.is_absolute() || raw.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
+        return Err("the link's target is not an absolute path without . or ..");
+    }
+    if site.bounds.as_written(&raw) != t {
         return Err("the link's target runs through a symlink");
     }
     site.bounds.base_for(&t).map_err(|_| "the link points outside the bounds")?;

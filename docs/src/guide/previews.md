@@ -82,7 +82,9 @@ These all follow the same "rich/interactive content lives in the browser" policy
 A page can also show data that lives outside its repo. When the repo tracks a
 symlink to a folder on a mounted share or drive (under `/mnt`, `/media` or, on
 macOS, `/Volumes`), images and movies on the page load through that link, and
-movies seek; nothing needs to be declared. A file in your home folder, or with a
+movies seek; nothing needs to be declared. Write the link as the share's absolute
+path, as `ln -s /mnt/<share>/... <name>` does: a relative target, or one that runs
+through another link or a `..`, is refused. A file in your home folder, or with a
 folder or name below the mount folder, on the file's real path, that starts with `.`,
 is never served through a link (a link itself named `.data` still serves).
 Anything else is refused with a message saying why, which the browser shows when
@@ -90,7 +92,7 @@ the missing file is opened in a tab of its own: a link git does not track (`git
 add` it and reload), a linked file that is not under those folders or does not
 exist on the computer whose daemon serves the page (is its share mounted?), a
 link to `/`, to a folder holding your home folder or the repository, to a folder inside the
-repository, to a link whose target runs through another link, a
+repository, to a link whose target is not written as the share's absolute real path, a
 `..` in the path, `.git`, a repo file outside the page's site folder (the
 outermost folder above it, within its repository, that holds an `index.html`),
 or a file that changed while it was being
