@@ -403,6 +403,13 @@ case_start "pack_build_passes_the_glibc_gate_at_the_floor"
 d="$WORK/pk-ok"; mk_pack_fixture "$d" 2.31; run_pack "$d"
 pack_check "the glibc gate does not refuse" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'newer than the fleet' || true)"
 pack_check "it goes on to the tree checks, which this git-less PATH stops" "yes" "$(printf '%s\n' "$PK_OUT" | grep -q 'git' && echo yes || echo no)"
+case_start "pack_build_names_an_unreadable_glibc_without_musl"
+d="$WORK/pk-bad-getconf"; mk_pack_fixture "$d" 2.31; printf '#!/bin/sh\nexit 1\n' > "$d/bin/getconf"; run_pack "$d"
+pack_check "the pack exits non-zero when getconf fails" "yes" "$([ "$PK_RC" -ne 0 ] && echo yes || echo no)"
+pack_check "it names the unreadable glibc when getconf fails" "1" "$(printf '%s\n' "$PK_OUT" | grep -c 'no readable glibc version' || true)"
+d="$WORK/pk-no-getconf"; mk_pack_fixture "$d" 2.31; rm -f "$d/bin/getconf"; run_pack "$d"
+pack_check "the pack exits non-zero when getconf is absent" "yes" "$([ "$PK_RC" -ne 0 ] && echo yes || echo no)"
+pack_check "it names the unreadable glibc when getconf is absent" "1" "$(printf '%s\n' "$PK_OUT" | grep -c 'no readable glibc version' || true)"
 
 # ---------------------------------------------------------------------------
 case_start "archive_install_prints_the_libc"

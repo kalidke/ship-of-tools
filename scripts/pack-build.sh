@@ -26,7 +26,7 @@ if command -v x86_64-linux-musl-gcc >/dev/null || command -v musl-gcc >/dev/null
     triple=x86_64-unknown-linux-musl
     libc="musl (static)"
 else
-    host_glibc="$(getconf GNU_LIBC_VERSION 2>/dev/null | cut -d' ' -f2)"
+    host_glibc="$(getconf GNU_LIBC_VERSION 2>/dev/null | cut -d' ' -f2)" || host_glibc=""
     [ -n "$host_glibc" ] || { echo "pack-build: no musl C compiler and no readable glibc version on this host" >&2; exit 1; }
     [ "$(printf '%s\n%s\n' "$host_glibc" "$FLEET_GLIBC_FLOOR" | sort -V | tail -1)" = "$FLEET_GLIBC_FLOOR" ] \
         || { echo "pack-build: no musl C compiler, and this host's glibc $host_glibc is newer than the fleet's oldest ($FLEET_GLIBC_FLOOR), so a gnu sotd built here would not run everywhere: run it on a host with glibc <= $FLEET_GLIBC_FLOOR, e.g. the fleet's oldest glibc host" >&2; exit 1; }
