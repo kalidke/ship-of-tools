@@ -228,9 +228,11 @@ Follow rule, checked on every request:
 
 - `.git` in any path part is refused, and so is a `..` part. A resolved path
   with a `.git` component below the folder it is served from (the site or the
-  mount folder) is refused too (a tracked link into `.git`, an 8.3 short name): no
-  file whose resolved path lies inside a `.git` directory below that folder is
-  served.
+  mount folder) is refused too (a tracked link into `.git`): no file whose resolved
+  path lies inside a `.git` directory below that folder is served. Below a mount
+  folder a name is opened as written and not resolved, so an 8.3 short name for
+  `.git` is not caught there; that alias is the residual recorded under the follow
+  rule.
 - A path that resolves inside the content root is served as before.
 - Otherwise the first symlink below the URL root must be tracked by git (the set
   is rebuilt whenever the repo index file changes), and the file must resolve to
@@ -249,17 +251,23 @@ Follow rule, checked on every request:
   target is refused outright), and it is judged as that text
   to start with a mount folder as written before anything below the link is
   looked up (a link whose text fails, and leads out of the site folder, is
-  answered at once; the folder check and the fast path never walk it). That
-  canonical target is judged by the same bounds and lies outside the
-  repository, so a link to `/`, the home folder or the repository is never
-  followed. No file lists data folders.
+  answered at once; the folder check and the fast path never walk it; a folder's
+  `index.html` is judged the same way once its name is appended). That canonical
+  target is judged by the same bounds and lies outside the repository, so a link
+  to `/`, the home folder or the repository is never followed, in any letter case
+  (the home folder and the repository are compared by folded names, see
+  `starts_with_folded`). That comparison has one false refusal: a sibling that
+  differs from the home or the repository only by case, on a case-sensitive volume
+  under a mount folder, is refused too. Residual, not refused: 8.3 short names and
+  Unicode-normalization aliases (NFD and NFC), none of them live here. No file
+  lists data folders.
   A file on a dead hard-mounted share hangs the request that resolves it, as
   reading it would.
 - Each refusal says why. A linked path that does not serve (the link's target or
   the file outside the bounds, missing, private, hidden, unreadable or not a
   regular file) gets one answer, naming the path as asked; the daemon's log
   says which.
-- Off Linux and macOS no link is followed.
+- Off unix no link is followed.
 
 The file is opened without following a symlink below its base (`openat` with
 `O_NOFOLLOW`), so a link swapped in after the check fails the open instead of
@@ -335,8 +343,8 @@ anywhere below the link. Such a file lies under a mount folder (`/mnt`, `/media`
 with no part below the mount folder whose name starts with `.`, through a link whose target is itself such a place
 (the follow rule above; `Bounds` in `rust/backend/src/pages/site/links.rs`). Only a link git tracks is followed. The
 link's own target, written as its absolute real path (as `ln -s /mnt/<share>/...` writes it), is judged first, as text
-and then by the bounds the file meets, and lies outside the repository; the repository's own files serve only from
-the site folder. Every refusal, of the link or of the file, is R3's one answer, so a link that names everything
+and then by the bounds the file meets, and lies outside the repository (by folded names, as above); the repository's
+own files serve only from the site folder. Every refusal, of the link or of the file, is R3's one answer, so a link that names everything
 (`/`, `~`, `..` from a repo on a share) serves nothing and says nothing about where the home folder or the
 repository is, or whether a guessed path exists.
 

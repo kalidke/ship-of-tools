@@ -9,7 +9,7 @@ const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 /// Far outside the serials other tests in this file use.
 static NEXT_SERIAL: AtomicU64 = AtomicU64::new(8_100_000_000);
 
-fn git(dir: &Path, args: &[&str]) {
+pub(super) fn git(dir: &Path, args: &[&str]) {
     sot_log::test_wait::run_within(
         std::process::Command::new("git")
             .arg("-C")
@@ -23,7 +23,7 @@ fn git(dir: &Path, args: &[&str]) {
     .ok();
 }
 
-fn write(path: &Path, bytes: &[u8]) {
+pub(super) fn write(path: &Path, bytes: &[u8]) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, bytes).unwrap();
 }
@@ -35,15 +35,15 @@ const MOVIE_LEN: usize = 300_000;
 /// the site folder), and the untracked link `loose`. `mnt/` stands for a mount
 /// folder and holds `share/` (the movie, a link out of `mnt/` and one to
 /// `mnt/other/`) and the home folder `home/u`; `outside/` lies beside `mnt/`.
-struct Fixture {
+pub(super) struct Fixture {
     _dir: tempfile::TempDir,
-    base: PathBuf,
-    repo: PathBuf,
-    share: PathBuf,
-    bounds: Bounds,
+    pub(super) base: PathBuf,
+    pub(super) repo: PathBuf,
+    pub(super) share: PathBuf,
+    pub(super) bounds: Bounds,
 }
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path().canonicalize().unwrap();
     let repo = base.join("repo");
@@ -126,7 +126,7 @@ async fn widened(f: &Fixture) -> Site {
 }
 
 /// The one answer to a linked path a link may not serve, whether or not it exists.
-fn r3(asked: &str, link: &str) -> String {
+pub(super) fn r3(asked: &str, link: &str) -> String {
     format!("refused: {asked} is behind the tracked link {link}, and a link serves only a file that exists on this host under /mnt, /media or /Volumes, outside the home folder and hidden folders, through a link written as an absolute path into those folders, with no symlink below it (is its share mounted?)")
 }
 

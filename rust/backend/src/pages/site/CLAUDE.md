@@ -10,6 +10,7 @@ daemon's page serving; charter: rust/backend/src/pages/CLAUDE.md.
   for a connection's requests and `serve_request` for one.
 - `links.rs`: `Site` and what a request path may open: the git link set, the bounds of a link (`Bounds`), the R-rules.
 - `links_tests.rs`: tests of the follow rule over a real git repo and a stand-in mount folder (unix).
+- `links_case_tests.rs`: the folded home and repository comparison, and a folder index whose text leads out (unix).
 - `tests.rs`: tests of pool assignment, bind fallback, serving a prefix site and requests on a kept connection.
 
 ## Start here
@@ -26,9 +27,9 @@ daemon's page serving; charter: rust/backend/src/pages/CLAUDE.md.
 - Once `spawn_pool` ran, a pool port is assigned only from the ports it bound (`assign_pool_port`); when every one is
   held, the port of the window away longest is taken with a new secret (`Clients::away_sites`), never a live owner's.
 - A request resolves by `resolve_and_open`: ordinary files only under the content root; through a link only when git
-  tracks it and the file's canonical path lies under a mount folder (`MOUNT_FOLDERS`), outside the home folder, with no
+  tracks it and the file's written path lies under a mount folder (`MOUNT_FOLDERS`), outside the home folder, with no
   hidden part below the mount folder (`Bounds`, fixed in code: no file lists data folders), and outside the
-  repository; the link's own target is judged first: as text, absolute plain names starting with a mount folder as
+  repository (the home folder and the repository by folded names, `starts_with_folded`); the link's own target is judged first: as text, absolute plain names starting with a mount folder as
   written, before anything below the link is looked up; then equal to its canonical path (no symlink on its way),
   inside the same bounds and outside the repository. A tracked link serves exactly the files under its written target,
   reached by their written names, with no symlink anywhere below the link: the file is the target joined with the

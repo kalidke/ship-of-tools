@@ -67,7 +67,7 @@ impl Bounds {
     fn base_for(&self, f: &Path) -> Result<&Path, &'static str> {
         use std::os::unix::ffi::OsStrExt;
         let Some(home) = &self.home else { return Err("no home folder is known") };
-        if f.starts_with(home) {
+        if starts_with_folded(f, home) {
             return Err("in the home folder");
         }
         let Some(m) = self.mounts.iter().find(|m| f.starts_with(m)) else {
@@ -465,21 +465,18 @@ pub(crate) fn resolve_and_open(
         q.push(p);
     }
     let asked = if parts.is_empty() { "index.html".to_string() } else { parts.join("/") };
-    // A link whose target text leads out of the site folder and is not a plain
-    // absolute path under a mount folder is answered before anything below it
-    // is looked up.
+    let mut first = first_link(site, &parts);
     #[cfg(unix)]
-    if let Some(link) = first_link(site, &parts) {
-        if leads_out_by_text(site, &link) {
-            let l = link.to_string_lossy().into_owned();
-            tracked_gate(site, &link, &asked, &l)?;
-            tracing::info!(path = asked, why = "the link's target is not an absolute path of plain names under a mount folder", "site_serve: a linked path is outside the bounds");
-            return Err(refused_r3(&asked, &l));
-        }
-    }
+    refuse_leads_out(site, first.as_deref(), &asked)?;
     if parts.is_empty() || q.is_dir() {
         q.push("index.html");
         parts.push("index.html");
+        if first.is_none() {
+            // The appended index may be a link of its own: its text is judged before anything below it is looked up.
+            first = first_link(site, &parts);
+            #[cfg(unix)]
+            refuse_leads_out(site, first.as_deref(), &asked)?;
+        }
     }
     let shown = parts.join("/");
 
@@ -492,7 +489,6 @@ pub(crate) fn resolve_and_open(
     }
 
     // Slow path: the first symlink below url_root.
-    let first = first_link(site, &parts);
     let found = first.is_some();
     let link = first.unwrap_or_default();
     if !found {
@@ -521,6 +517,21 @@ pub(crate) fn resolve_and_open(
     }
     #[cfg(unix)]
     follow_link(site, &q, &asked, &shown, &link, &l)
+}
+
+/// A link whose target text leads out of the site folder and is not a plain
+/// absolute path under a mount folder is answered before anything below it is
+/// looked up.
+#[cfg(unix)]
+fn refuse_leads_out(site: &Site, first: Option<&Path>, asked: &str) -> Result<(), Refusal> {
+    let Some(link) = first else { return Ok(()) };
+    if !leads_out_by_text(site, link) {
+        return Ok(());
+    }
+    let l = link.to_string_lossy().into_owned();
+    tracked_gate(site, link, asked, &l)?;
+    tracing::info!(path = asked, why = "the link's target is not an absolute path of plain names under a mount folder", "site_serve: a linked path is outside the bounds");
+    Err(refused_r3(asked, &l))
 }
 
 /// R2e and R2b: git runs here, and tracks the link.
@@ -618,6 +629,22 @@ fn follow_link(
     }
 }
 
+/// Whether `path` lies under `folder`, component by component: each name equal to
+/// its folder's name, or equal to it after Unicode lowercase on both sides, since
+/// the volumes served here (CIFS under /mnt/nas, APFS under /Volumes) answer names
+/// in any case. A name that is not UTF-8 is compared exactly.
+#[cfg(unix)]
+fn starts_with_folded(path: &Path, folder: &Path) -> bool {
+    let mut names = path.components();
+    folder.components().all(|want| {
+        let Some(got) = names.next() else { return false };
+        match (got.as_os_str().to_str(), want.as_os_str().to_str()) {
+            (Some(g), Some(w)) => g.to_lowercase() == w.to_lowercase(),
+            _ => got.as_os_str() == want.as_os_str(),
+        }
+    })
+}
+
 /// A tracked link serves exactly the files under its written target, reached by
 /// their written names, with no symlink anywhere below the link.
 ///
@@ -641,12 +668,12 @@ fn judge(site: &Site, q: &Path, link: &Path, top: Option<&Path>) -> Result<(Path
         return Err("the link's target runs through a symlink");
     }
     site.bounds.base_for(&t).map_err(|_| "the link points outside the bounds")?;
-    if top.is_some_and(|r| t.starts_with(r)) {
+    if top.is_some_and(|r| starts_with_folded(&t, r)) {
         return Err("the link points into the repository");
     }
     let f = t.join(q.strip_prefix(&at).map_err(|_| "the request is not below the link")?);
     let m = site.bounds.base_for(&f)?.to_path_buf();
-    if top.is_some_and(|r| f.starts_with(r)) {
+    if top.is_some_and(|r| starts_with_folded(&f, r)) {
         return Err("in the repository");
     }
     Ok((m, f))
@@ -685,3 +712,7 @@ fn refused_r3(asked: &str, l: &str) -> Refusal {
 #[cfg(all(test, unix))]
 #[path = "links_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "links_case_tests.rs"]
+mod case_tests;
