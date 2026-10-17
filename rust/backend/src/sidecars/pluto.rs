@@ -782,26 +782,29 @@ exit(0)
     const KEEP_PIPES: &str = r#"cmd = `$(Base.julia_cmd()) --startup-file=no -e "sleep(300)"`; p = run(pipeline(Sys.iswindows() ? detach(cmd) : cmd, stdin=stdin, stdout=stdout), wait=false); write(joinpath(dir, "desc"), string(getpid(p)))"#;
 
     struct Harness {
-        dir: PathBuf,
-        sig: &'static Signal,
         tx: Running,
-        _owned: OwnedRoot,
+        owned: OwnedRoot,
     }
 
     impl Harness {
         async fn start(ready_url: &str, descendant: &str) -> Harness {
-            let root = tempfile::tempdir().expect("owned fixture root");
-            let dir = root.path().to_path_buf();
-            let script = start_script(&dir, ready_url, descendant);
-            let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
+            let owned = OwnedRoot::new(Box::leak(Box::new(Signal::new())));
+            let script = start_script(owned.path(), ready_url, descendant);
             let julia = executable("julia").to_string_lossy().into_owned();
-            let tx = served(&julia, &dir, &script, sig).await.expect("the fixture says READY");
-            let dir = root.keep();
-            Harness { _owned: OwnedRoot::new(&dir, sig), dir, sig, tx }
+            let tx = served(&julia, owned.path(), &script, owned.sig()).await.expect("the fixture says READY");
+            Harness { tx, owned }
+        }
+
+        fn dir(&self) -> &Path {
+            self.owned.path()
+        }
+
+        fn sig(&self) -> &'static Signal {
+            self.owned.sig()
         }
 
         fn number(&self, name: &str) -> Option<u32> {
-            std::fs::read_to_string(self.dir.join(name)).ok()?.trim().parse().ok()
+            std::fs::read_to_string(self.dir().join(name)).ok()?.trim().parse().ok()
         }
 
         async fn wait_number(&self, name: &str) -> u32 {
@@ -817,20 +820,18 @@ exit(0)
 
         /// Lets the child exit on its own.
         fn open_gate(&self) {
-            std::fs::write(self.dir.join("gate"), "x").unwrap();
+            std::fs::write(self.dir().join("gate"), "x").unwrap();
         }
 
         async fn finish(self) {
-            self.sig.fire().expect("fire");
-            within(REACT, "owned children reaped", || self.sig.live() == 0).await;
-            std::fs::remove_dir_all(&self.dir).expect("remove the owned fixture root");
+            self.owned.end().await;
         }
     }
 
     /// Whether the fixture's child has begun exiting: its script writes `exiting` as its last act before `exit(0)`,
     /// so the observation is the same on every platform (the supervisor, not the test, waits for the child).
     fn exited(h: &Harness) -> bool {
-        h.dir.join("exiting").exists()
+        h.dir().join("exiting").exists()
     }
 
     /// Whether a process of this id is running (a zombie is not).
@@ -937,10 +938,10 @@ exit(0)
             std::env::set_var(key, tmp.path());
         }
         let h = Harness::start(READY_LOCAL, r#"write(joinpath(dir, "made"), mktemp()[1])"#).await;
-        within(REACT, "the child makes its temporary file", || h.dir.join("made").exists()).await;
-        let made = PathBuf::from(std::fs::read_to_string(h.dir.join("made")).unwrap());
+        within(REACT, "the child makes its temporary file", || h.dir().join("made").exists()).await;
+        let made = PathBuf::from(std::fs::read_to_string(h.dir().join("made")).unwrap());
         assert!(made.exists(), "setup: the child's temporary file exists");
-        h.sig.fire().expect("fire");
+        h.sig().fire().expect("fire");
         within(REACT, "the killed child's temporary file is gone", || !made.exists()).await;
         h.finish().await;
     }
@@ -958,8 +959,8 @@ exit(0)
         executable("Xvfb");
         let record = r#"run(pipeline(detach(`sleep 300`), stdin=devnull, stdout=devnull, stderr=devnull); wait=false); write(joinpath(dir, "display.tmp"), get(ENV, "DISPLAY", "-"), "\n", get(ENV, "XAUTHORITY", "-")); mv(joinpath(dir, "display.tmp"), joinpath(dir, "display"))"#;
         let h = Harness::start(READY_LOCAL, record).await;
-        within(REACT, "the server records its display", || h.dir.join("display").exists()).await;
-        let named = std::fs::read_to_string(h.dir.join("display")).unwrap();
+        within(REACT, "the server records its display", || h.dir().join("display").exists()).await;
+        let named = std::fs::read_to_string(h.dir().join("display")).unwrap();
         let (display, path) = named.split_once('\n').expect("two lines");
         let number: u32 = display.strip_prefix(':').and_then(|n| n.parse().ok()).unwrap_or_else(|| {
             panic!("the server names a display of its own: {named:?}")
@@ -1111,7 +1112,7 @@ exit(0)
         }
         let h = Harness::start(READY_LOCAL, KEEP_PIPES).await;
         let (port, _descendant, replies) = blocked_write_scenario(&h).await;
-        h.sig.fire().expect("fire");
+        h.sig().fire().expect("fire");
         within(REACT, "the grant is released", || !granted(port)).await;
         for (i, rx) in replies.into_iter().enumerate() {
             errors(rx, &format!("request {i}")).await;

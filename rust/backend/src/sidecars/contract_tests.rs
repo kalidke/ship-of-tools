@@ -72,31 +72,33 @@ pub(crate) fn require_mathjax_modules() {
     );
 }
 
+/// Copies the folder `source` to `destination`, leaving out a Julia manifest (`Manifest*.toml`), which a package
+/// operation writes: the repository ignores it and a release does not ship it.
 pub(crate) fn copy_folder(source: &Path, destination: &Path) {
     std::fs::create_dir_all(destination).expect("create owned fixture folder");
     for entry in std::fs::read_dir(source).expect("read fixture source") {
         let entry = entry.expect("fixture source entry");
         let target = destination.join(entry.file_name());
+        let name = entry.file_name().to_string_lossy().into_owned();
         if entry.file_type().expect("fixture source kind").is_dir() {
             copy_folder(&entry.path(), &target);
-        } else {
+        } else if !(name.starts_with("Manifest") && name.ends_with(".toml")) {
             std::fs::copy(entry.path(), target).expect("copy fixture source");
         }
     }
 }
 
 /// An owned resource root holding a copy of the real `julia/repl` shim, so a package operation or a precompile
-/// cannot touch the installed shim, and an owned depot. Points the process's `SOT_RESOURCE_ROOT`, `SOT_JULIA_BIN`
-/// and `JULIA_DEPOT_PATH` at them: call only in an isolated body. The depot path ends in an empty entry, which Julia
-/// expands to its own bundled depots, so the stdlibs the shim loads come precompiled from there; Julia writes to the
-/// owned depot, the first entry, and of a bundled cache it loads updates only the timestamp.
+/// cannot touch the installed shim, and an owned depot. The copy is the whole folder, `ext/` included, as a release
+/// ships it (an install is a checkout of the release, which the daemon runs in place). Points the process's
+/// `SOT_RESOURCE_ROOT`, `SOT_JULIA_BIN` and `JULIA_DEPOT_PATH` at them: call only in an isolated body. The depot path
+/// ends in an empty entry, which Julia expands to its own bundled depots, so the stdlibs the shim loads come
+/// precompiled from there; Julia writes to the owned depot, the first entry, and of a bundled cache it loads updates
+/// only the timestamp.
 pub(crate) fn owned_julia_env(root: &Path) -> PathBuf {
     let resources = root.join("resources");
     let shim = resources.join("julia").join("repl");
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../julia/repl");
-    copy_folder(&source.join("src"), &shim.join("src"));
-    std::fs::copy(source.join("Project.toml"), shim.join("Project.toml"))
-        .expect("copy shim project");
+    copy_folder(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../julia/repl"), &shim);
     std::env::set_var("SOT_RESOURCE_ROOT", &resources);
     std::env::set_var("SOT_JULIA_BIN", executable("julia"));
     std::env::set_var("JULIA_DEPOT_PATH", depot_path(&root.join("depot"), None));
@@ -273,38 +275,58 @@ pub(crate) async fn within(bound: Duration, what: &str, mut condition: impl FnMu
     }
 }
 
-/// A fixture's owned root, which the fixture's own end removes once every child is reaped. A test that fails before
-/// that end drops this with the root still there: the drop fires `sig`, which requests the end of every child it holds,
-/// then removes the root. A drop cannot await the reaps that end waits for (the failure unwinds the runtime that runs
-/// them), so a removal that meets a killed child's last write is tried again, within 60 s, the longest an end gives
-/// its children (`project_tests::Fixture::finish`); a fire that fails may leave a child running, so then the root
-/// stays and its path is printed.
+/// The longest a fixture's end gives its children to be reaped.
+const END: Duration = Duration::from_secs(60);
+
+/// A fixture's owned root, a temporary folder, with the Signal that holds the children the fixture starts. `end` is the
+/// fixture's one end: it ends every child, waits until each is reaped, then removes the root. A test that fails before
+/// its end drops this instead: the drop fires the Signal, which requests the end of every child it holds, then removes
+/// the root. A drop cannot await the reaps (the failure unwinds the runtime that runs them), so a removal that meets a
+/// killed child's last write is tried again, within `END`; a fire that fails may leave a child running, so then the
+/// root stays and its path is printed. The root is removed once: `end` takes it, and a drop after `end` finds none.
 pub(crate) struct OwnedRoot {
-    root: PathBuf,
+    dir: Option<tempfile::TempDir>,
     sig: &'static Signal,
 }
 
 impl OwnedRoot {
-    pub(crate) fn new(root: &Path, sig: &'static Signal) -> Self {
-        OwnedRoot { root: root.to_path_buf(), sig }
+    pub(crate) fn new(sig: &'static Signal) -> Self {
+        OwnedRoot { dir: Some(tempfile::tempdir().expect("owned fixture root")), sig }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        self.dir.as_ref().expect("a root is held until its end").path()
+    }
+
+    pub(crate) fn sig(&self) -> &'static Signal {
+        self.sig
+    }
+
+    /// Ends every child the Signal holds, waits within `END` until each is reaped, then removes the root.
+    pub(crate) async fn end(mut self) {
+        self.sig.fire().expect("fire");
+        within(END, "owned children reaped", || self.sig.live() == 0).await;
+        let dir = self.dir.take().expect("a root is held until its end");
+        dir.close().expect("remove the owned fixture root");
     }
 }
 
 impl Drop for OwnedRoot {
     fn drop(&mut self) {
-        if !self.root.exists() {
+        let Some(dir) = self.dir.take() else {
             return;
-        }
+        };
+        let root = dir.keep();
         if let Err(e) = self.sig.fire() {
-            eprintln!("fixture root {} kept: its children are not confirmed ended: {e}", self.root.display());
+            eprintln!("fixture root {} kept: its children are not confirmed ended: {e}", root.display());
             return;
         }
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + END;
         loop {
-            match std::fs::remove_dir_all(&self.root) {
+            match std::fs::remove_dir_all(&root) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                     if Instant::now() >= deadline {
-                        eprintln!("fixture root {} not removed: {e}", self.root.display());
+                        eprintln!("fixture root {} not removed: {e}", root.display());
                         return;
                     }
                     std::thread::sleep(Duration::from_millis(50));
@@ -366,15 +388,12 @@ async fn repl_uses_private_signal() {
     }
     #[cfg(target_os = "linux")]
     executable("Xvfb");
-    let dir = tempfile::tempdir().expect("owned fixture root");
-    let root = dir.path().to_path_buf();
-    owned_julia_env(&root);
-    let sig = private_signal();
+    let root = OwnedRoot::new(private_signal());
+    owned_julia_env(root.path());
+    let sig = root.sig();
     let (frames, _keep) = broadcast::channel(64);
-    let workspace = root.join("workspace");
+    let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("create the workspace");
-    let root = dir.keep();
-    let _owned = OwnedRoot::new(&root, sig);
     let repl = Repl::new(frames, Some("ws".into()), workspace, sig);
 
     let (reply, collector) = repl
@@ -422,7 +441,7 @@ async fn repl_uses_private_signal() {
     assert!(refused.is_err(), "a fired Signal must refuse another start");
     assert_eq!(sig.live(), 0, "the refused start created no child");
     println!("D-L repl private Signal PASS");
-    std::fs::remove_dir_all(&root).expect("remove fixture only after the child is reaped");
+    root.end().await;
 }
 
 /// A REPL child that ends leaves its last stderr lines in the log at warn. The stand-in for julia writes an error to
