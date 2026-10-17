@@ -17,8 +17,8 @@ parent folder, owns the pipeline both reach. Part of distribution; charter: scri
 
 ## Rules
 - `direction` and `repls` start no daemon and write nothing. `direction` exits 1 when `install.json` cannot be read or
-  names no version, and 2 for bad arguments; `repls` exits 0 with nothing printed when no REPL is live and no notebook open,
-  3 with one line each (`repl <label>`, `pluto server`) when some are. It exits 1, with one reason on stderr, when the daemon
+  names no version, and 2 for bad arguments; `repls` exits 0 with nothing printed when no REPL is live and no notebook open
+  and the Pluto server is not running, 3 with one line each (`repl <label>`, `pluto server`) when some are. It exits 1, with one reason on stderr, when the daemon
   cannot be asked in full (a daemon of another protocol refuses the hello, no answer comes in the bound, the reply carries
   no workspace list, an error payload being one, or it carries no `pluto_server_up`: a daemon older than the field may be
   running a Pluto server it cannot report, so the first update from it asks for `--restart-daemon`); the `repl` lines it

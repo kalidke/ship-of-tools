@@ -142,7 +142,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `sot-apply.sh`: offline apply and rollback of an armed update (Unix).
 - `sot-apply.ps1`: the same for Windows.
 ### Launch (Unix)
-- `launch-sot.sh`: reads the topology plan, ensures the local daemon and execs the window with `--dial` arguments.
+- `launch-sot.sh`: reads the topology plan, ensures the local daemon and execs the window with `--socket` for this computer's own daemon when the install runs one, plus one `--dial` per plan host other than this one (a dev checkout runs no daemon of its own and dials this host's plan line too).
 ### Launch (Windows)
 - `launch-sot.ps1`: the supervisor: self-update, apply, handover, local daemon, respawn loop; it dot-sources the helper files below.
 - `launch-splash.ps1`: the launch progress window.

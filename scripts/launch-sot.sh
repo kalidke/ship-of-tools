@@ -146,9 +146,11 @@ if [ "${SOT_LAUNCH_REBUILD:-0}" = 1 ] && [ "${SOT_NO_UPDATE:-0}" != 1 ]; then
 fi
 read_topology_plan
 
-# 4. Frontend (blocks; GPU window). Always runs -- one --dial per plan.Dials
-# entry (this box's own local daemon, if it's ALSO a declared daemon host,
-# plus every other dialable host), passed UNCONDITIONALLY: an ssh child
+# 4. Frontend (blocks; GPU window). Always runs. Its daemon arguments are
+# `--socket` for this box's own daemon when the install runs one
+# (SOT_OWN_DAEMON=1, see below), and one --dial per plan.Dials entry: this
+# box's own entry only when no such daemon is ensured (a dev checkout), plus
+# every other dialable host. All are passed UNCONDITIONALLY: an ssh child
 # that fails to connect just means the frontend shows that host
 # unreachable and keeps retrying, never a reason to hold an arg back. No
 # plan at all (no sotd binary anywhere) means no --dial args -- the

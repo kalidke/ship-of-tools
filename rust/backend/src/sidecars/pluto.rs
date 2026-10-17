@@ -1275,6 +1275,44 @@ mod open_bound_tests {
         drop(pluto);
     }
 
+    /// The server is up while it is still starting, before its READY: an open waiting on the start has a running server
+    /// to wait for. The stand-in says READY only when the test creates `go`, so the start is held open for the check.
+    #[tokio::test]
+    async fn the_server_is_up_while_it_is_still_starting() {
+        let name = "sidecars::pluto::open_bound_tests::the_server_is_up_while_it_is_still_starting";
+        if !isolated(name, Duration::from_secs(60)) {
+            return;
+        }
+        let dir = tempfile::Builder::new().prefix("sot-pluto-up-").tempdir().unwrap();
+        let (stub, go, said) = (dir.path().join("stub-julia"), dir.path().join("go"), dir.path().join("said"));
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\necho 'READY http://pluto.invalid/'\n\
+                 while read l; do echo 'URL http://pluto.invalid/edit'; done\n",
+                said.display(),
+                go.display()
+            ),
+        );
+        let script = dir.path().join("start.jl");
+        std::fs::write(&script, "").unwrap();
+        let _pin = pin_env(&stub, dir.path());
+        let pluto = Pluto::new(dir.path().to_path_buf(), script);
+        assert!(!pluto.server_up().await, "no server started, none up");
+        let open = {
+            let (pluto, path) = (pluto.clone(), dir.path().join("a.jl"));
+            tokio::spawn(async move { pluto.open_notebook(&path).await })
+        };
+        within(Duration::from_secs(20), "the stand-in has started", || said.exists()).await;
+        assert!(!open.is_finished(), "the open waits for READY");
+        assert!(pluto.server_up().await, "a server still starting, before READY, is up");
+        std::fs::write(&go, "").unwrap();
+        let answer = open.await.expect("the open task").expect("the open");
+        assert_eq!(answer, super::Opened::Url("http://pluto.invalid/edit".to_string()));
+        assert!(pluto.server_up().await, "the server is up once READY came");
+        drop(pluto);
+    }
+
     /// An open behind a server that has not said READY answers within `PLUTO_START_WAIT` that the server is still
     /// starting, with its age and the child's own stderr lines, and logs that at warn; the start goes on, and the next
     /// open joins it (one server started) and is served once READY comes. The stand-in for julia writes what a juliaup
