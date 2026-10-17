@@ -9,7 +9,7 @@ The root `CLAUDE.md` sends every session here, in a row or outside any.
   on branch `wt/<short>` with its own session; `/worktree status|sync|clean` manage it.
 - Window restart (ADR 0017; read it before any restart): `scripts/relaunch-sot.ps1` writes the relaunch sentinel and
   the Windows launcher respawns the window on exit 75 or 76. On Linux and macOS the installed all-in-one `sot-launch`
-  respawns on 75 only, and a window started by `scripts/launch-sot.sh` is not respawned.
+  respawns on 75 or 76 (a converge applies any pending update and respawns), and a window started by `scripts/launch-sot.sh` is not respawned.
 - Releases follow the `release` skill and `scripts/release.sh`.
 - A session's handoff is its recovery file, `dev/output/handoff-<handle>.md` (gitignored), written at milestones.
 

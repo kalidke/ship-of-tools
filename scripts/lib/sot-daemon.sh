@@ -82,9 +82,10 @@ apply_pending() {
     [ -f "\$PENDING" ] || return 1
     [ -x "$prefix/bin/sot-apply" ] || return 1
     # A pointer the installed sotd refuses costs nothing: sot-apply drops it under the lock, and the daemon, with the
-    # REPLs it holds, is neither stopped nor restarted for an update that will not happen.
+    # REPLs it holds, is neither stopped nor restarted for an update that will not happen. It runs drop-only: a pointer
+    # that fits and was armed since the question waits for the next start, with the daemon stopped as usual.
     if type sot_pointer_refused >/dev/null 2>&1 && sot_pointer_refused "$prefix" "$target"; then
-        "$prefix/bin/sot-apply" >&2
+        "$prefix/bin/sot-apply" --drop-only >&2
         return 1
     fi
     if sot_service_owned "$prefix" && systemctl --user is-active --quiet sotd.service >/dev/null 2>&1; then
@@ -112,8 +113,8 @@ while :; do
     RUNTIME=\$((NOW - START))
     # A healthy run closes the crash-loop health window.
     [ "\$RUNTIME" -ge 60 ] && rm -f "\${MARKER:?}" 2>/dev/null
-    if [ "\$RC" -eq 75 ]; then
-        # ADR-0017 self-relaunch: pick up any staged update, then respawn.
+    if [ "\$RC" -eq 75 ] || [ "\$RC" -eq 76 ]; then
+        # ADR-0017 self-relaunch (75) or converge (76): on Unix both pick up any staged update, then respawn.
         if apply_pending; then exec "\$0" "\$@"; fi
         FAILS=0
         continue
@@ -286,8 +287,16 @@ sot_comm_refresh() {  # <checkout>
     if [ -d "$home/bin" ] && { [ -z "$commit" ] || [ "$stamp" = "$commit" ]; }; then return 0; fi
     PATH="$PATH:$HOME/.juliaup/bin"
     command -v julia >/dev/null 2>&1 || { echo "WARNING: comm is not at this checkout's commit and julia is not on PATH" >&2; return 0; }
-    julia --project="$1" -e 'using ShipTools; ShipTools.update_comm()' >/dev/null 2>&1 \
-        || echo "WARNING: ShipTools.update_comm() failed; the next launch tries again" >&2
+    # Bounded where `timeout` exists (macOS has none): a stalled julia costs the refresh, not the unit's start timeout.
+    # update_comm writes the stamp last, so a refresh that did not finish leaves none and the next launch tries again.
+    local bound=""
+    ! command -v timeout >/dev/null 2>&1 || bound="timeout ${SOT_COMM_REFRESH_TIMEOUT_S:-30}"
+    $bound julia --project="$1" -e 'using ShipTools; ShipTools.update_comm()' >/dev/null 2>&1
+    case $? in
+        0) ;;
+        124) echo "WARNING: ShipTools.update_comm() timed out; the next launch tries again" >&2 ;;
+        *) echo "WARNING: ShipTools.update_comm() failed; the next launch tries again" >&2 ;;
+    esac
     return 0
 }
 

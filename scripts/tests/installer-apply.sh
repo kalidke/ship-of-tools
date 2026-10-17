@@ -750,6 +750,9 @@ check "it names COMMIT as unlisted" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'CO
 check "it refuses before the commit is fetched" "0" "$(printf '%s\n' "$AR_OUT" | grep -c 'is not in origin' || true)"
 check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
 
+# shellcheck source=installer-handoff.sh
+. "$(dirname "$0")/installer-handoff.sh"
+
 # ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then

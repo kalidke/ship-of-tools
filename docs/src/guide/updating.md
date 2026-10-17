@@ -34,6 +34,10 @@ runs no `sotd` and never arms into an install it shares; and each armed update r
 cannot be read) without stopping the daemon. `sotd update stage <folder> --prefix <prefix>`, the operator's command for a
 packed build, is the one way to arm the same or an older build.
 
+On **Linux and macOS** each release's own `sot-apply` applies the next update: the installed one hands the staged copy
+the install it applies onto. Comm (the agent scripts in `~/.sot-comm`) is brought to the applied commit by the apply
+itself, on every role, and under the all-in-one `sot-launch` an exit-76 converge of the window is an apply-pending-and-respawn, as an exit 75 is.
+
 On **Windows** the frontend runs the same check itself, since there is no
 local backend to do it, and `launch-sot.ps1` applies the staged update at the
 next launch through `scripts\sot-apply.ps1`: the same verification and

@@ -403,7 +403,7 @@ privilege, documented trade-off); Windows production auto-update (needs the
 Phase-D `install.ps1` + supervisor rework — the shared crate already handles
 Windows staging); macOS launchd wiring and daemon-side crash-loop
 auto-rollback (manual: `sot-apply --rollback`, or re-run the installer);
-refreshing agent comm resources (`update_comm`) on auto-apply (closed 2026-10-16: Windows by the freshness pass, Unix by the rendered wrapper, both by the VERSION stamp rule); routing the
+refreshing agent comm resources (`update_comm`) on auto-apply (closed 2026-10-16: Windows by the freshness pass, Unix by the rendered wrapper and by `sot-apply.sh` after every apply, the only path for a box with no wrapper, both by the VERSION stamp rule); routing the
 INSTALLER's own upgrade path through prepare/apply (it remains a live update
 with the safety probes above); flush-coupled `update.apply` exit; refreshing
 installed control-plane artifacts (`sotd.service`, the `sot-launch`
@@ -783,7 +783,9 @@ apply would have downgraded it. The rule:
    armed". `sot-apply.sh` and `sot-apply.ps1` ask above their re-exec of the pointer's own release's script, so a refused
    pointer never reaches it, and drop the pointer under the lock. `sot-launch`'s `apply_pending` and Windows
    `Invoke-PendingApply` ask before they stop or restart the daemon, so a pointer that will not apply costs no restart and
-   no REPL its state. The `update.apply` op refuses the same pointers.
+   no REPL its state; then they run `sot-apply` drop-only (`--drop-only`, `-DropOnly`), which exits after the in-lock
+   refusal check, so a pointer that fits and was armed between the two questions waits for the next start, with the daemon
+   stopped as usual. The `update.apply` op refuses the same pointers.
 5. **A new install drops the leftover pointer**: `install.sh` for its target, `install-manifest.ps1` when the version or
    commit it writes differs from the one it replaces.
 

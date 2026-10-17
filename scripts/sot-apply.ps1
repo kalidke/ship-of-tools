@@ -37,6 +37,9 @@ param(
     # Restore the last-good transaction after a crash-loop. Invoked by
     # launch-sot.ps1's supervisor, gated there on a FRESH just-applied marker.
     [switch]$Rollback,
+    # Exit after the in-lock refusal check, applying nothing: the caller's own question refused the pointer and left the
+    # daemon running (sot-freshness.ps1's Invoke-PendingApply).
+    [switch]$DropOnly,
     # Install prefix override (tests). Default: the manifest's own prefix,
     # else %LOCALAPPDATA%\sot -- matching updater's legacy_updates_root().
     [string]$Prefix
@@ -102,16 +105,19 @@ function Get-PointerRefusal {
 # SOT_APPLY_REEXECED stops this from ever looping (the staged copy sees it
 # set and skips straight past this block). Only helps FUTURE upgrades: an
 # old box's old apply predates this guard too, so it can never reach it.
-if (-not $env:SOT_APPLY_REEXECED -and (Test-Path -LiteralPath $Pending) -and -not (Get-PointerRefusal)) {
+if (-not $env:SOT_APPLY_REEXECED -and -not $DropOnly -and (Test-Path -LiteralPath $Pending) -and -not (Get-PointerRefusal)) {
     $stagePtr = $null
     try { $stagePtr = (Get-Content -LiteralPath $Pending -Raw -ErrorAction Stop | ConvertFrom-Json) } catch {}
     if ($stagePtr -and $stagePtr.checkout) {
         $stageApply = Join-Path ([string]$stagePtr.checkout) 'scripts\sot-apply.ps1'
         if (Test-Path -LiteralPath $stageApply) {
             Write-ApplyLog "re-executing the staged sot-apply ($stageApply)"
+            # The variable guards the staged copy's own run only: this script also runs in-process in the resident
+            # supervisor, which would otherwise carry it for life and skip every later hand-off.
             $env:SOT_APPLY_REEXECED = '1'
-            & $stageApply @PSBoundParameters
-            exit $LASTEXITCODE
+            try { & $stageApply @PSBoundParameters; $stageCode = $LASTEXITCODE }
+            finally { Remove-Item Env:SOT_APPLY_REEXECED -ErrorAction SilentlyContinue }
+            exit $stageCode
         }
     }
 }
@@ -328,6 +334,7 @@ $refusal = Get-PointerRefusal
 if ($refusal) {
     Write-ApplyLog "pending pointer will not apply ($refusal) -- dropping"; Remove-Pending; Exit-Apply 0
 }
+if ($DropOnly) { Exit-Apply 0 }
 
 $tag       = [string]$ptr.tag
 $ptrTarget = [string]$ptr.target

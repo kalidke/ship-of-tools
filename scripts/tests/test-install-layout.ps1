@@ -238,7 +238,7 @@ try {
     Write-Host "`n=== 6. Invoke-PendingApply: a pointer the installed sotd refuses costs no daemon stop ===" -ForegroundColor Cyan
     # UPDATER-ARMS-INSTALLED: the daemon is stopped before an apply only when the apply will happen. The prefix holds the
     # real sotd (it answers `update pointer`), an install at 0.7.0 and a pointer; the local-daemon and apply scripts are
-    # stand-ins that record that they ran.
+    # stand-ins that record that they ran. A refused pointer runs the apply drop-only.
     $savedEAP6 = $ErrorActionPreference
     try {
         . (Join-Path $repoRoot 'scripts\sot-freshness.ps1')
@@ -254,7 +254,7 @@ try {
         $sotLocalDaemon = Join-Path $root 'daemon6.ps1'
         Set-Content -LiteralPath $sotLocalDaemon -Value "Add-Content -LiteralPath '$calls6' -Value 'stop'"
         $sotApply = Join-Path $root 'apply6.ps1'
-        Set-Content -LiteralPath $sotApply -Value "Add-Content -LiteralPath '$calls6' -Value 'apply'"
+        Set-Content -LiteralPath $sotApply -Value "param([switch]`$DropOnly); Add-Content -LiteralPath '$calls6' -Value `$(if (`$DropOnly) { 'drop' } else { 'apply' })"
         $applyMarker = Join-Path $updates6 'just-applied-windows-x86_64'
         $NoUpdate = $false
         $ptrPath6 = Join-Path $updates6 'pending-windows-x86_64.json'
@@ -263,8 +263,8 @@ try {
         }
         $cases6 = @(
             @{ name = 'a pointer above the install'; text = (New-Pointer6 '0.8.0'); want = 'stop apply' },
-            @{ name = 'a pointer below the install'; text = (New-Pointer6 '0.6.0'); want = 'apply' },
-            @{ name = 'a pointer that cannot be read'; text = '{not json'; want = 'apply' }
+            @{ name = 'a pointer below the install'; text = (New-Pointer6 '0.6.0'); want = 'drop' },
+            @{ name = 'a pointer that cannot be read'; text = '{not json'; want = 'drop' }
         )
         foreach ($c in $cases6) {
             [System.IO.File]::WriteAllText($ptrPath6, $c.text, $utf8)

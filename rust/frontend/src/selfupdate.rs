@@ -233,7 +233,9 @@ async fn run(install: InstallManifest, current: String) {
             return;
         }
     };
-    if cfg.current_version.contains('+') {
+    // The install's version when there is one, else this process's: the same dev-build rule `arm` and `admits` apply.
+    let running = InstalledBuild { version: cfg.current_version.clone(), commit: None };
+    if running.is_dev_build() {
         tracing::info!(current = %cfg.current_version, "fe self-update: the install is a dev build — nothing to do");
         return;
     }

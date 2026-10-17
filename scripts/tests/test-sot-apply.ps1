@@ -330,7 +330,41 @@ if (-not (Test-Path -LiteralPath $realSotd)) {
     Check 'above the install: the installed sotd lets the pointer through (exit 0)' ((Get-SotdExit (Join-Path $f9c.bin 'sotd.exe') $p9c) -eq 0) 'the sotd did not answer 0'
     & $apply -Prefix $p9c 6>&1 2>&1 | Out-Null
     Check 'above the install: applied' ((Get-Content (Join-Path $f9c.bin 'sot.exe') -Raw) -eq 'NEW-BINARY') 'not applied'
+
+    # -DropOnly: the caller's own question refused the pointer and left the daemon running, so the applier drops one that
+    # still does not fit and applies nothing, and a pointer that fits (armed in between) waits for the next start.
+    $p9e = Join-Path $root 'p9e'
+    $f9e = New-Fixture $p9e 'v0.7.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9e.bin 'sotd.exe') -Force
+    Add-RustFields (Join-Path $f9e.updates 'pending-windows-x86_64.json') '0.6.0' $null $null
+    & $apply -Prefix $p9e -DropOnly 6>&1 2>&1 | Out-Null
+    Check 'drop-only, below the install: pointer dropped' (-not (Test-Path (Join-Path $f9e.updates 'pending-windows-x86_64.json'))) 'pointer kept'
+    Check 'drop-only, below the install: binary untouched' ((Get-Content (Join-Path $f9e.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied'
+    $p9f = Join-Path $root 'p9f'
+    $f9f = New-Fixture $p9f 'v0.5.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9f.bin 'sotd.exe') -Force
+    Add-RustFields (Join-Path $f9f.updates 'pending-windows-x86_64.json') '0.6.0' $null $null
+    & $apply -Prefix $p9f -DropOnly 6>&1 2>&1 | Out-Null
+    Check 'drop-only, a pointer that fits: kept for the next start' (Test-Path (Join-Path $f9f.updates 'pending-windows-x86_64.json')) 'pointer gone'
+    Check 'drop-only, a pointer that fits: binary untouched' ((Get-Content (Join-Path $f9f.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied'
 }
+
+Write-Host "`n=== 10. the hand-off's loop guard does not outlive the staged run ===" -ForegroundColor Cyan
+# sot-apply.ps1 runs in-process in the resident supervisor (Invoke-PendingApply, the rollback), so a guard variable left
+# set by the first hand-off would skip every later one. A stand-in staged script records what it saw and consumes nothing.
+$p10 = Join-Path $root 'p10'
+$f10 = New-Fixture $p10 'v0.5.0' 'v0.6.0'
+$calls10 = Join-Path $root 'calls10.txt'
+$ptr10 = Get-Content -LiteralPath (Join-Path $f10.updates 'pending-windows-x86_64.json') -Raw | ConvertFrom-Json
+$stage10 = Join-Path ([string]$ptr10.checkout) 'scripts\sot-apply.ps1'
+New-Item -ItemType Directory -Force -Path (Split-Path $stage10) | Out-Null
+Set-Content -LiteralPath $stage10 -Value "Add-Content -LiteralPath '$calls10' -Value ('guard=' + `$env:SOT_APPLY_REEXECED); exit 0"
+Remove-Item -LiteralPath $calls10 -Force -ErrorAction SilentlyContinue
+& $apply -Prefix $p10 6>&1 2>&1 | Out-Null
+Check 'the guard is gone after the first hand-off' (-not $env:SOT_APPLY_REEXECED) "SOT_APPLY_REEXECED is '$($env:SOT_APPLY_REEXECED)'"
+& $apply -Prefix $p10 6>&1 2>&1 | Out-Null
+$got10 = if (Test-Path -LiteralPath $calls10) { (@(Get-Content -LiteralPath $calls10) -join ' ') } else { '' }
+Check 'the second apply in the same process hands off too, and the staged copy saw the guard each time' ($got10 -ceq 'guard=1 guard=1') "calls: '$got10'"
 
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
