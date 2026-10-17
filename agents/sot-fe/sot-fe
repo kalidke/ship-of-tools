@@ -4,18 +4,17 @@
 # `fe.command.send` request, sends it to the running sotd daemon over its
 # socket (no comm relay, no FE LLM), and the daemon re-emits it as an
 # `fe.command` evt. The FE shows the target in place when it is already on
-# that workspace and otherwise badges it (see preview below). With no --fe, the daemon delivers to ONE window, never
-# all: for a show (preview, reveal, docs, open-url), the window showing the show's row that a person used within five
-# minutes, else the window a person used last, else the window that connected last; any other verb goes to the window
-# used last (relaunch: only one used within five minutes). A window counts as used from the second key or button
-# press in it (`fe.presence`). --fe <host> always scopes delivery to the
+# that workspace and otherwise badges it (see preview below). With no --fe, preview and reveal go to EVERY window;
+# every other verb, docs and open-url included, goes to ONE window, never all: the window in use, the one a person
+# used last, else the window that connected last (relaunch: only one used within five minutes). A window counts as
+# used from the second key or button press in it (`fe.presence`). --fe <host> always scopes delivery to the
 # frontend on that host (wire `target` = `fe@<host>`, the address every
 # frontend declares as its hello `name`), overriding that choice.
 #
 # Usage:
-#   sot-fe preview <workspace> <path> [--urgent] [--fe <host>] [--roi x,y,w,h]
+#   sot-fe preview <workspace> <path> [--urgent --fe <host>] [--fe <host>] [--roi x,y,w,h]
 #                                     [--caption <text>]
-#   sot-fe reveal  <workspace> <path> [--urgent] [--fe <host>] [--caption <text>]
+#   sot-fe reveal  <workspace> <path> [--urgent --fe <host>] [--fe <host>] [--caption <text>]
 #   sot-fe goto    <workspace>        [--fe <host>]
 #   sot-fe mode    <mode>             [--fe <host>]
 #   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <host>]
@@ -48,8 +47,8 @@
 #              manager, is a no-op and the URL must already resolve on its
 #              own. A tab that opens to a refused connection means THAT
 #              frontend has no proxy for the port — not that nothing was
-#              sent. Opens on one window, chosen as for preview (the row is
-#              $SOT_WORKSPACE_ID, else $SOT_WORKSPACE, when set); --fe targets one.
+#              sent. Opens in one window, the window in use (the header
+#              above); --fe targets one.
 #   docs     — open a LOCAL .html/site (ABSOLUTE backend path) in the FE's OS
 #              BROWSER via docs.open (the `W` key, backend-triggered): the FE
 #              serves the file from backend disk over the forwarded site_serve
@@ -174,9 +173,9 @@
 #              failure after a successful version.query, exits 2.
 #
 #   --fe <host>    scope delivery to the frontend on that host (sets the
-#                  wire `target` to `fe@<host>`); absent = the daemon delivers to the one
-#                  window the header above names, never to every FE.
-#   --urgent       hint the FE to force-show now (preview/reveal); sets args.urgent.
+#                  wire `target` to `fe@<host>`); absent = the daemon delivers as the
+#                  header above says: preview and reveal to every FE, any other verb to one.
+#   --urgent       hint the FE to force-show now (preview/reveal); sets args.urgent. Needs --fe: refused without it.
 #   --roi x,y,w,h   (preview) aim the viewport at a SOURCE-IMAGE-PIXEL rect (ADR-0022
 #                  image.crop vocabulary; round-trippable). FE clamps to image bounds.
 #                  The effective (clamped) rect echoes via a follow-up event, not this
@@ -287,7 +286,9 @@ source "$SCRIPT_DIR/sot-fe-version.sh"
 case "$CMD" in
     preview|reveal)
         WS="${POS[0]:-}"; PATH_ARG="${POS[1]:-}"
-        [ -n "$WS" ] && [ -n "$PATH_ARG" ] || { echo "usage: sot-fe $CMD <workspace> <path> [--urgent] [--fe <host>] [--roi x,y,w,h] [--caption <text>]" >&2; exit 1; }
+        [ -n "$WS" ] && [ -n "$PATH_ARG" ] || { echo "usage: sot-fe $CMD <workspace> <path> [--urgent --fe <host>] [--fe <host>] [--roi x,y,w,h] [--caption <text>]" >&2; exit 1; }
+        # A preview reaches every window, so a switch-now hint with no one window named could only be ignored.
+        [ "$URGENT" != true ] || [ -n "$FE" ] || { echo "ERROR: --urgent needs --fe <host>: with none, a preview reaches every window and none is switched" >&2; exit 1; }
         # Keep the file nav INSIDE the repo: a node_id must be REPO-RELATIVE (the
         # daemon rejects absolute node_ids, and the FE tree positions its cursor by
         # relative id — an absolute path would show a "floating" file the nav can't
@@ -431,9 +432,7 @@ case "$CMD" in
             http://*|https://*) : ;;
             *) echo "usage: sot-fe open-url <http(s)-url> [--fe <host>]  (http/https only)" >&2; exit 1 ;;
         esac
-        # The row the page belongs to, when this runs in one: the daemon opens it in a window showing that row.
-        ROW="${SOT_WORKSPACE_ID:-${SOT_WORKSPACE:-}}"
-        ARGS="$(jq -nc --arg u "$URL" --arg w "$ROW" '{url:$u} + (if $w == "" then {} else {workspace:$w} end)')"
+        ARGS="$(jq -nc --arg u "$URL" '{url:$u}')"
         send_fe_command open_url "$ARGS"
         ;;
     repl)

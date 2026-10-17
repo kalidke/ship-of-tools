@@ -394,8 +394,8 @@ async fn next_browser_frame(conn: &mut Conn) -> serde_json::Value {
 }
 
 /// Two windows on one daemon: `fe@host-a` shows the daemon's default row (whose REPL the evals below run in) and
-/// `fe@host-b` another; each sends `fe.presence`, `fe@host-b` last, as one stray click on an unused window did at the
-/// base (SHOW-ROUTE). Returns both, their next request ids and the default row's id.
+/// `fe@host-b` another; each sends `fe.presence`, `fe@host-b` last, so `fe@host-b` is the window in use. Returns both,
+/// their next request ids and the default row's id.
 async fn two_windows(env: &Env) -> ((Conn, u64), (Conn, u64), String) {
     let (mut conn_a, mut id_a) = connect_and_hello(&env.socket_path, "show-a", "fe@host-a").await;
     let (mut conn_b, mut id_b) = connect_and_hello(&env.socket_path, "show-b", "fe@host-b").await;
@@ -412,11 +412,11 @@ async fn two_windows(env: &Env) -> ((Conn, u64), (Conn, u64), String) {
 }
 
 /// A page an eval announces for every frontend (`wglshow(fig)`, `open: true`) opens in one window, never all: the one
-/// that connected last while no window has been used, then the window showing the REPL's row over a window used later
-/// on another row. Every other window is sent it with `open: false`.
+/// that connected last while no window has been used, then the window in use (the latest input), over the window
+/// showing the REPL's row. Every other window is sent it with `open: false`.
 #[cfg(unix)]
 #[tokio::test]
-async fn an_announced_page_opens_in_one_window_the_one_showing_its_row() {
+async fn an_announced_page_opens_in_one_window_the_one_in_use() {
     let stub = tempfile::tempdir().expect("tempdir");
     let julia = stub.path().join("julia");
     sot_log::test_exec::write_executable(&julia, PAGE_JULIA);
@@ -438,8 +438,8 @@ async fn an_announced_page_opens_in_one_window_the_one_showing_its_row() {
         let ((mut conn_a, _), (mut conn_b, _), _row) = two_windows(&env).await;
         let ack = call(&mut sender, id_s, op::REPL_EVAL, serde_json::json!({"code": "wglshow(fig)", "eval_id": 2})).await;
         assert_eq!(ack["accepted"], true, "{ack}");
-        assert_eq!(next_browser_frame(&mut conn_a).await["open"], true, "the window showing the REPL's row opens it");
-        assert_eq!(next_browser_frame(&mut conn_b).await["open"], false, "a window used later on another row opens nothing");
+        assert_eq!(next_browser_frame(&mut conn_a).await["open"], false, "the window on the REPL's row, used before");
+        assert_eq!(next_browser_frame(&mut conn_b).await["open"], true, "the window in use opens it");
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }
@@ -470,33 +470,66 @@ async fn a_page_a_windows_own_eval_announces_opens_there_under_its_own_number() 
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }
 
-/// An untargeted show (`sot-fe preview`, show-result) goes to the window showing its row over a window used later on
-/// another row (one stray click, SHOW-ROUTE), and to that window alone; a command that names no row goes to the window
-/// used last.
+/// What a session puts in the preview pane (`sot-fe preview`, show-result) reaches every window, not only the window
+/// showing its row or the window in use; with no window attached, the answer says none was reached.
 #[tokio::test]
-async fn an_untargeted_show_goes_to_the_window_showing_its_row() {
-    let env = Env::spawn("show");
-    let (mut sender, mut id_s) = connect_as(&env.socket_path, "show-sender", "cli", "show-sender").await;
+async fn a_preview_reaches_every_window() {
+    let env = Env::spawn("preview");
+    let (mut sender, mut id_s) = connect_as(&env.socket_path, "preview-sender", "cli", "preview-sender").await;
     let body = async {
-        let ((mut conn_a, _), (mut conn_b, _), row) = two_windows(&env).await;
-        let show = serde_json::json!({"cmd": "preview", "args": {"workspace": row, "path": "README.md"}});
-        let ack = call(&mut sender, id_s, op::FE_COMMAND_SEND, show).await;
+        let preview =
+            |row: &str| serde_json::json!({"cmd": "preview", "args": {"workspace": row, "path": "README.md"}});
+        let ack = call(&mut sender, id_s, op::FE_COMMAND_SEND, preview("any")).await;
         id_s += 1;
-        assert_eq!(ack["resolved_target"], "fe@host-a", "the window showing the row: {ack}");
-        assert_eq!(ack["delivered_to"], 1, "{ack}");
-        assert_eq!(next_fe_command(&mut conn_a, BOUND).await.expect("fe@host-a gets the show")["cmd"], "preview");
-        assert!(next_fe_command(&mut conn_b, ABSENCE_WAIT).await.is_none(), "fe@host-b gets nothing");
+        assert_eq!(ack["delivered_to"], 0, "no window attached: none reached: {ack}");
+
+        let ((mut conn_a, _), (mut conn_b, _), row) = two_windows(&env).await;
+        let ack = call(&mut sender, id_s, op::FE_COMMAND_SEND, preview(&row)).await;
+        assert_eq!(ack["resolved_target"], serde_json::Value::Null, "no one window: {ack}");
+        assert_eq!(ack["delivered_to"], 2, "every window: {ack}");
+        for (conn, name) in [(&mut conn_a, "fe@host-a"), (&mut conn_b, "fe@host-b")] {
+            let evt = next_fe_command(conn, BOUND).await.unwrap_or_else(|| panic!("{name} gets the preview"));
+            assert_eq!(evt["cmd"], "preview", "{evt}");
+            assert_eq!(evt["target"], serde_json::Value::Null, "{evt}");
+        }
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// What opens the OS browser (`sot-fe open-url`, `sot-fe docs`) reaches one window, the window in use (the latest
+/// input), over the window showing the session's row; a command that names no row goes to the window in use too. With
+/// no window attached, the answer says none was reached.
+#[tokio::test]
+async fn a_browser_open_reaches_only_the_window_in_use() {
+    let env = Env::spawn("open");
+    let (mut sender, mut id_s) = connect_as(&env.socket_path, "open-sender", "cli", "open-sender").await;
+    let body = async {
+        let url = "http://127.0.0.1:9/p";
+        let open = |row: &str| serde_json::json!({"cmd": "open_url", "args": {"url": url, "workspace": row}});
+        let ack = call(&mut sender, id_s, op::FE_COMMAND_SEND, open("any")).await;
+        id_s += 1;
+        assert_eq!(ack["delivered_to"], 0, "no window attached: none reached: {ack}");
+
+        let ((mut conn_a, _), (mut conn_b, _), row) = two_windows(&env).await;
+        let docs = serde_json::json!({"cmd": "docs", "args": {"workspace": row, "path": "/x/index.html"}});
+        for cmd in [open(&row), docs] {
+            let ack = call(&mut sender, id_s, op::FE_COMMAND_SEND, cmd).await;
+            id_s += 1;
+            assert_eq!(ack["resolved_target"], "fe@host-b", "the window in use, not the one showing the row: {ack}");
+            assert_eq!(ack["delivered_to"], 1, "{ack}");
+            assert!(next_fe_command(&mut conn_b, BOUND).await.is_some(), "fe@host-b opens it");
+            assert!(next_fe_command(&mut conn_a, ABSENCE_WAIT).await.is_none(), "fe@host-a opens nothing");
+        }
 
         let notice = serde_json::json!({"cmd": "notify", "args": {"text": "hi"}});
         let ack = call(&mut sender, id_s, op::FE_COMMAND_SEND, notice).await;
-        assert_eq!(ack["resolved_target"], "fe@host-b", "no row: the window used last: {ack}");
+        assert_eq!(ack["resolved_target"], "fe@host-b", "no row: the window in use: {ack}");
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }
 
 /// A window that redials is the same window (its hello's `instance`): the window in use before its link dropped is
-/// still the one in use, with no new press, and still shows its row, before it says so again; what goes to it goes to
-/// its new connection.
+/// still the one in use, with no new press; what goes to it goes to its new connection.
 #[tokio::test]
 async fn a_redialed_window_that_was_in_use_stays_in_use() {
     let env = Env::spawn("redial");
@@ -505,9 +538,7 @@ async fn a_redialed_window_that_was_in_use_stays_in_use() {
         let (mut b, id_b) = connect_and_hello(&env.socket_path, "redial-b", "fe@host-b").await;
         assert_eq!(call(&mut b, id_b, op::FE_PRESENCE, serde_json::json!({})).await["ok"], true);
         let (mut a, id_a) = connect_and_hello(&env.socket_path, "redial-a", "fe@host-a").await;
-        let shown = call(&mut a, id_a, op::WORKSPACE_ACTIVATE, serde_json::json!({"workspace_id": null})).await;
-        let row = shown["workspace_id"].as_str().unwrap_or_else(|| panic!("the default row's id: {shown}")).to_string();
-        assert_eq!(call(&mut a, id_a + 1, op::FE_PRESENCE, serde_json::json!({})).await["ok"], true);
+        assert_eq!(call(&mut a, id_a, op::FE_PRESENCE, serde_json::json!({})).await["ok"], true);
         drop(a); // the link drops and the window redials, with the same hello
         let (mut a, _) = connect_and_hello(&env.socket_path, "redial-a", "fe@host-a").await;
         let (mut roster, id_r) = connect_as(&env.socket_path, "redial-roster", "cli", "redial-roster").await;
@@ -524,10 +555,6 @@ async fn a_redialed_window_that_was_in_use_stays_in_use() {
         assert_eq!(ack["resolved_target"], "fe@host-a", "the window in use before its redial: {ack}");
         assert_eq!(next_fe_command(&mut a, BOUND).await.expect("its new connection gets it")["cmd"], "notify");
         assert!(next_fe_command(&mut b, ABSENCE_WAIT).await.is_none(), "fe@host-b gets nothing");
-        assert_eq!(call(&mut b, id_b + 1, op::FE_PRESENCE, serde_json::json!({})).await["ok"], true);
-        let show = serde_json::json!({"cmd": "preview", "args": {"workspace": row, "path": "README.md"}});
-        let ack = call(&mut sender, id_s + 1, op::FE_COMMAND_SEND, show).await;
-        assert_eq!(ack["resolved_target"], "fe@host-a", "a show from the row it still shows: {ack}");
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }

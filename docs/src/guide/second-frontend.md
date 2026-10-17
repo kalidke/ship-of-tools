@@ -30,6 +30,15 @@ more client of the daemon. Nothing on the server changes.
 Closing one frontend affects nothing the other sees: the agents run under the
 backend's own supervisors, not under any frontend.
 
+## Where a session's output lands
+
+With two windows attached, a file an agent shows (`sot-fe preview`, `show-result`) reaches the preview pane and the
+badge of **every** window. A browser an agent opens (a docs site, a URL, a `wglshow` figure) opens on **one** computer:
+the window you used last, however long ago; with none used yet, the one that connected last. A window counts as used
+from its second key press, click or wheel step within five minutes, and a switch between windows is noticed within
+about six seconds. Name a window with `--fe <host>` to override this. A window that is reconnecting at that moment is
+not chosen, and a browser open cannot wait for it.
+
 ## Many machines, one workspace
 
 To make a server reachable from every frontend in a fleet — not only the one

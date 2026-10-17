@@ -25,7 +25,7 @@ impl State {
             // `docs.open` instead (ADR 0024's site server, full asset
             // fidelity) — the same request `W` dispatches today.
             if let Some(path) = self.previewed_files_path() {
-                self.docs_open_external(path);
+                self.docs_open_external(&self.active_host.clone(), path);
             } else if let Some((_, bytes)) = self.preview_src.as_ref() {
                 if let Err(e) = open_html_in_browser(bytes) {
                     tracing::warn!(error = %e, "failed to open preview in browser");
@@ -66,9 +66,10 @@ impl State {
     }
 
     /// `W` — open the project's built Documenter site in the OS browser
-    /// (ADR 0024), deep-linking `path` when it's a built docs page.
-    pub(in crate::ui) fn docs_open_external(&mut self, path: String) {
-        if let Err(e) = self.send(crate::net::transport::OutgoingReq::DocsOpen { path }) {
+    /// (ADR 0024), deep-linking `path` when it's a built docs page. `host` is the daemon that knows the path: the
+    /// viewed one for a key, the sender for a `docs` command.
+    pub(in crate::ui) fn docs_open_external(&mut self, host: &HostKey, path: String) {
+        if let Err(e) = self.send_to(host, crate::net::transport::OutgoingReq::DocsOpen { path }) {
             tracing::warn!(error = %e, "failed to dispatch docs.open");
         } else {
             self.status = "docs · opening…".to_string();

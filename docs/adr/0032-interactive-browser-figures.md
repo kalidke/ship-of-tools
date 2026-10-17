@@ -197,7 +197,7 @@ dynamically) and returns `browserview(url)`.
   >
   > *Note (0.6.6, decision 0031): every page the frontend opens reaches the browser through a one-use redirect, and wglshow keeps one server per REPL.*
   >
-  > *Note (0.6.6, WGLSHOW-ONE-FE): a `browser` frame with `open` true opens in one window, never all: the window a show from the REPL's row goes to (ADR 0025's 0.6.6 update: the window showing the row that a person used within five minutes, else the window used last, else the window that connected last). The daemon chooses it once per frame and sends every other connection `open: false` (`repl_frame_for`). A figure has one live viewer: a new page load of a figure closes the viewer before it (`replace_viewer!`), since every viewer resizes the figure's one scene to its own window. The workspace gate above is not built; this rule replaces it.*
+  > *Note (0.6.6, WGLSHOW-ONE-FE, SHOW-ACTIVE-FE): a `browser` frame with `open` true opens in one window, never all: the window in use (ADR 0025's 0.6.6 update: the window a person used last, else the window that connected last). The daemon chooses it once per frame and sends every other connection `open: false` (`repl_frame_for`). A figure has one live viewer: a new page load of a figure closes the viewer before it (`replace_viewer!`), since every viewer resizes the figure's one scene to its own window. The workspace gate above is not built; this rule replaces it.*
 - **Focus**: opening a browser window is a deliberate, user-initiated action
   (the user returned a `BrowserView`), so it does not violate the no-yank
   show-image doctrine — it is the requested show, on the user's own machine.

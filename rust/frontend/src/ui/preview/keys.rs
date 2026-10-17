@@ -147,7 +147,7 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
                 .previewed_files_path()
                 .or_else(|| state.cursored_files_path())
                 .unwrap_or_default();
-            state.docs_open_external(path);
+            state.docs_open_external(&state.active_host.clone(), path);
         }
         Some(Action::OpenExecute) if !event.repeat =>
         {

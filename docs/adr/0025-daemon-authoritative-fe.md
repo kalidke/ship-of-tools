@@ -3,18 +3,23 @@
 **Status:** partly superseded by ADR 0046 — 0046 amends §2, §4, the caption update and `fe_handle`. Originally: Accepted (co-design converged 2026-06-22; building on `feat/op-fe-command`)
 **Date:** 2026-06-22
 
-> **Update — 0.6.6 (WGLSHOW-ONE-FE, SHOW-ROUTE): one window per show, never a broadcast.** An untargeted
-> `fe.command.send` no longer falls back to every frontend. A show (`preview`, `reveal`, `docs`, `open_url`, and a
-> `wglshow` page's `browser` frame) goes to the window showing the row it names (its `workspace` argument; a REPL
-> frame's own row) that a person used within five minutes; otherwise to the window a person used last, however long ago;
-> otherwise to the window that connected last (`ClientsSnapshot::show_target`). `goto_workspace`, `goto_mode` and
-> `notify` go to the window used last; `relaunch` keeps the rule below. A window's shown row is what its last
-> `workspace.activate` resolved to, and a window that switches to another host's row tells the host it left (an activate
-> with no id). The row and when a person last used the window belong to the window, its hello's host and `instance` (ADR
-> 0046 decision 1), not to one connection: a window that redials keeps both, and of its connections the newest gets what
-> goes to it (`rust/backend/src/clients_window.rs`). `fe.presence` now comes only from a press (not a button release or
-> a key repeat), from the second press in a window within five minutes (one stray click reports nothing), at most once
-> per 5 s. The relay logs the chosen window and why (`row`, `last-used`, `last-connected`).
+> **Update — 0.6.6 (WGLSHOW-ONE-FE, SHOW-ROUTE, SHOW-ACTIVE-FE): the preview pane to every window, the browser to
+> the window in use.** What a session puts in the preview pane (`preview`, `reveal`: the badge, the caption) goes to
+> every attached window, the badge floor below. Everything else, and every open in the OS browser (`docs`, `open_url`,
+> a `wglshow` page's `browser` frame) above all, goes to exactly one window, never all: the window in use, the one a
+> person used last however long ago (within five minutes it is the active frontend `sot-fe version` marks), else the
+> window that connected last (`ClientsSnapshot::window_for`, `in_use`); no row enters the choice. `relaunch` keeps the
+> rule below. When a person last used a window belongs to the window, its hello's host and `instance` (ADR 0046
+> decision 1), not to one connection: a window that redials keeps it, and of its connections the newest gets what goes
+> to it (`rust/backend/src/clients_window.rs`). `fe.presence` now comes only from a press (not a button release or a key
+> repeat), from the second press in a window within five minutes (one stray click reports nothing), at most once per
+> 5 s, a press the throttle held back going out on the window's next one-second tick once the 5 s have passed. The relay logs the chosen window and why (`every`, `last-used`, `last-connected`). "Transparently" does not cover
+> these (B18 review N3): a window disconnected between the choice and the write loses the command (the `fe.command` bus
+> is live-only); an open sent while the window in use is reconnecting goes to the other window, since no connection of it
+> exists to deliver to and holding the command would be a queue nobody asked for; a connection that died and is not yet
+> reaped (up to 90 s, `PING_READ_DEADLINE`) can still be chosen when the window has no newer connection, as the daemon
+> keeps no per-frame liveness. A redial that overlaps its old connection is covered: both carry the window's stamp and
+> the newer connection wins. The wheel counts as input; window focus does not.
 
 > **Update — 2026-09-08: v1.1 landed — "the active frontend," presence from the
 > frontend, not inferred by the daemon.** §5's `v1.1` promised daemon primary-tracking

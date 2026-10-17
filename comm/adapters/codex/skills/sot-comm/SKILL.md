@@ -19,7 +19,7 @@ do not retry or join.
 ~/.sot-comm/bin/comm-list.sh                           # registered sessions
 ~/.sot-comm/bin/comm-status.sh waiting "watching X"    # purple until you report
 ~/.sot-comm/bin/comm-status.sh blocked "need Y"        # red
-~/.sot-comm/bin/sot-fe notify "message"                # toast on the attached FE(s)
+~/.sot-comm/bin/sot-fe notify "message"                # toast on the window in use
 ~/.sot-comm/bin/sot-fe preview <workspace> <path>      # badge/show result in FE
 ```
 

@@ -15,9 +15,8 @@
 // teardown call. Registration is keyed by a per-connection serial, not by
 // `client_id`, so a machine that reconnects (same `client_id`, new socket)
 // is a distinct entry until its old connection task winds down. What a window
-// carries across its connections (the REPL runs it numbered, its presence, its
-// shown row and the pages it opened) is kept by window, not by connection
-// (`clients_window.rs`).
+// carries across its connections (the REPL runs it numbered, its presence and
+// the pages it opened) is kept by window, not by connection (`clients_window.rs`).
 //
 // The registry is intentionally minimal: a count + a roster for logging
 // and the `clients_connected` field in `HelloRes`. Write policy (single-
@@ -117,9 +116,6 @@ pub struct ClientInfo {
     /// from `Some(vec![])`, a box that HAS declared and has nothing to
     /// report right now. See `Clients::declare_sessions`.
     pub sessions: Option<Vec<sot_protocol::DeclaredSession>>,
-    /// The row this connection's window shows: what its latest `workspace.activate` resolved to (`server/dispatch.rs`;
-    /// a redial keeps it). `None` until the first. A show goes to a window on its row (`ClientsSnapshot::show_target`).
-    pub shown_row: Option<String>,
 }
 
 /// A hello refused because its declared host has said hello to this daemon as two different OS accounts: two
@@ -236,7 +232,6 @@ impl Clients {
             name,
             last_person_input_at: None,
             sessions: None,
-            shown_row: None,
         };
         let (count, roster, (numbers, sites)) = {
             let mut g = self.inner.lock().unwrap();
@@ -276,7 +271,7 @@ impl Clients {
     /// yet).
     pub fn touch_person_input(&self, serial: u64) {
         let now = Instant::now();
-        self.inner.lock().unwrap().report(serial, |at, _| *at = Some(now));
+        self.inner.lock().unwrap().report(serial, now);
     }
 
     /// Store the connection at `serial`'s latest `fe.sessions` declaration
@@ -341,7 +336,7 @@ impl Clients {
         let now = Instant::now();
         let clients: Vec<ClientInfo> = self.inner.lock().unwrap().by_conn.values().cloned().collect();
         let active = Self::resolve_active(&clients, now);
-        ClientsSnapshot { clients, active, now }
+        ClientsSnapshot { clients, active }
     }
 
     /// Pure resolution: the `"fe"`-role, named connection with the most
@@ -393,8 +388,6 @@ pub struct ActiveFrontend {
 pub struct ClientsSnapshot {
     pub clients: Vec<ClientInfo>,
     active: Option<ActiveFrontend>,
-    /// The one instant `active` was resolved at, which `show_target` resolves at too.
-    now: Instant,
 }
 
 impl ClientsSnapshot {
@@ -587,34 +580,34 @@ pub async fn handle_version_query(
 /// `fe.command.send` (ADR 0025): parse the imperative UI command, build an `FeCommandEvt { v:1, cmd, args, target }`,
 /// publish it onto the FE-command broadcast channel (each connection turns it into an `fe.command` evt), and ack.
 ///
-/// An untargeted request (`target: None`) is resolved HERE, before publish, from ONE `snapshot_with_active()`, and is
-/// delivered to that ONE connection by serial (`evt.target_serial`, which `server/events.rs` filters on; `target`
-/// carries its handle for the FE's own `route_fe_command` check):
-/// - a show (`SHOWS`) goes to `show_target` of the row its `workspace` argument names; every other command but
-///   `relaunch` to `show_target` with no row (the window a person used most recently). Neither broadcasts.
+/// An untargeted request (`target: None`) is resolved HERE, before publish, from ONE `snapshot_with_active()`
+/// (`ClientsSnapshot::window_for`):
+/// - a preview or a reveal, what a session puts in the preview pane, goes to every window (`target: None`).
 /// - `relaunch` goes to the active frontend (used within `ACTIVE_WINDOW`), and with none publishes NOTHING: an
 ///   unresolved relaunch is a command nobody can safely execute.
+/// - every other command, a browser open (`docs`, `open_url`) included, goes to the window in use (`in_use`).
 ///
-/// An explicit `target` is never touched and stays a handle-matched broadcast (`target_serial: None`).
-/// `resolved_target` on the ack mirrors the final `target`. `delivered_to` (2026-09-09 field incident: a broadcast
-/// `open-url` acked `ok:true` while landing on a machine other than the owner's) counts the frontends that will act,
-/// read off the same snapshot: 1 for a resolved serial however many connections share its handle, the handle count for
-/// an explicit target, every named frontend for `target: None` (none are attached), 0 for an unresolved relaunch. The
-/// relay's log line names the command's `workspace` and `path` arguments, the target and why it was chosen.
+/// A resolved window gets it alone, by serial (`evt.target_serial`, which `server/events.rs` filters on; `target`
+/// carries its handle for the FE's own `route_fe_command` check). An explicit `target` is never touched and stays a
+/// handle-matched broadcast (`target_serial: None`). `resolved_target` on the ack mirrors the final `target`.
+/// `delivered_to` (2026-09-09 field incident: a broadcast `open-url` acked `ok:true` while landing on a machine other
+/// than the owner's) counts the frontends that will act, read off the same snapshot: 1 for a resolved serial however
+/// many connections share its handle, the handle count for an explicit target, every named frontend for `target: None`
+/// (0 when none is attached), 0 for an unresolved relaunch. The relay's log line names the command's `workspace` and
+/// `path` arguments, the target and why it was chosen.
 pub async fn handle_fe_command_send(
     req_id: u64,
     payload_json: serde_json::Value,
     fe_tx: &broadcast::Sender<FeCommandEvt>,
     clients: &crate::clients::Clients,
-    workspaces: &crate::rows::Workspaces,
 ) -> Result<HandlerOutput> {
     let mut req: FeCommandSendReq =
         serde_json::from_value(payload_json).context("fe.command.send payload")?;
     let mut target_serial: Option<u64> = None;
-    let mut why = if req.target.is_some() { "named" } else { "none" };
+    let mut why = if req.target.is_some() { "named" } else { "every" };
     let snap = clients.snapshot_with_active();
     if req.target.is_none() {
-        if let Some((to, reason)) = snap.window_for(&req.cmd, &req.args, workspaces) {
+        if let Some((to, reason)) = snap.window_for(&req.cmd) {
             req.target = Some(to.handle);
             target_serial = Some(to.serial);
             why = reason;
@@ -664,12 +657,11 @@ pub async fn handle_fe_command_send(
             .iter()
             .filter(|c| c.role == "fe" && c.name.as_deref() == Some(handle))
             .count(),
-        // Unresolved: no named frontend is attached, so this counts none.
-        (None, None) => snap
-            .clients
-            .iter()
-            .filter(|c| c.role == "fe" && c.name.as_deref().is_some_and(|h| !h.is_empty()))
-            .count(),
+        // Every window: a preview or a reveal, or a command with no named frontend attached to resolve to. A window
+        // that holds an old connection beside its redial is one audience, not two.
+        (None, None) => window::window_count(
+            snap.clients.iter().filter(|c| c.role == "fe" && c.name.as_deref().is_some_and(|h| !h.is_empty())),
+        ),
     };
 
     tracing::info!(cmd = %req.cmd, workspace, path, target = ?req.target, why, delivered_to, "fe.command.send relay");

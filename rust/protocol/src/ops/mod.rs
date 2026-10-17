@@ -246,10 +246,10 @@ pub mod op {
     /// existing `dispatch_fe_command` sink. `target` (a FE sot-comm handle)
     /// optionally scopes it: `None` → every FE acts (the badge floor);
     /// `Some(handle)` → only the matching FE acts (force-show to a specific FE).
-    /// An untargeted `fe.command.send` is auto-resolved daemon-side to the
-    /// active frontend (2026-09-08 review rework) — exclusively, by connection
-    /// identity, not merely by re-checking `target` FE-side (see
-    /// `FeCommandEvt::target_serial`). Payload `FeCommandEvt`.
+    /// An untargeted `fe.command.send` is a `preview` or `reveal` to every
+    /// window (no target serial), and any other command to the window in use
+    /// exclusively, by connection identity, not merely by re-checking `target`
+    /// FE-side (see `FeCommandEvt::target_serial`). Payload `FeCommandEvt`.
     pub const FE_COMMAND: &str = "fe.command";
     /// A person is providing real input right now (2026-09-08 review rework,
     /// design point A). Sent by the frontend from its own winit

@@ -300,7 +300,6 @@
             name: Some(handle.to_string()),
             last_person_input_at,
             sessions: None,
-            shown_row: None,
         }
     }
 
@@ -515,7 +514,7 @@ mod fe_command_send_tests {
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
@@ -534,6 +533,24 @@ mod fe_command_send_tests {
         assert_ne!(active.serial(), stale.serial(), "two distinct connections");
     }
 
+    /// A preview goes to every window: a window holding an old connection beside its redial is one window, so
+    /// `delivered_to` says 2 for two windows, not 3 for three connections.
+    #[tokio::test]
+    async fn a_broadcast_counts_windows_not_connections() {
+        let clients = Clients::new();
+        let fe = |id: &str, host: &str, instance: &str, name: &str| {
+            clients.register(id, "0.6.0", 1, "fe".to_string(), Some(host.into()), Some(instance.into()), Some(name.into()))
+        };
+        let _old = fe("c-old", "host-a", "inst-a", "fe@host-a");
+        let _redial = fe("c-redial", "host-a", "inst-a", "fe@host-a");
+        let _other = fe("c-other", "host-b", "inst-b", "fe@host-b");
+        let _bare = clients.register("c-bare", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-c".into()));
+
+        let (tx, _rx) = broadcast::channel::<FeCommandEvt>(8);
+        let out = handle_fe_command_send(1, req_json("preview", None), &tx, &clients).await.expect("handler ok");
+        assert_eq!(delivered_to_of(&out), Some(3), "two named windows and one connection of no window");
+    }
+
     /// No `target` on the wire + an active client registered → the daemon
     /// resolves delivery to that client's CONNECTION EXCLUSIVELY
     /// (`target_serial`, design point B) — not merely its handle, which a
@@ -546,7 +563,7 @@ mod fe_command_send_tests {
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
@@ -580,7 +597,7 @@ mod fe_command_send_tests {
         let idle_b = clients.register("c-idle-b", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-b"));
@@ -607,7 +624,7 @@ mod fe_command_send_tests {
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-explicit")), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-explicit")), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-explicit"));
@@ -630,7 +647,7 @@ mod fe_command_send_tests {
         let _target = clients.register("c-target", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-target".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-target")), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-target")), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-target"));
@@ -652,7 +669,7 @@ mod fe_command_send_tests {
         let _idle = clients.register("c-idle", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out), None);
@@ -672,7 +689,7 @@ mod fe_command_send_tests {
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients, &crate::rows::Workspaces::new())
+        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));

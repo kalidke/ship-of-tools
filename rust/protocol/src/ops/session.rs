@@ -169,9 +169,10 @@ pub struct HelloRes {
 /// "goto_mode", "notify"} for v1; `args` is the per-cmd object (e.g.
 /// `preview` = `{workspace, path, urgent?}`, `goto_workspace` = `{workspace}`).
 /// `target` optionally scopes delivery to one FE by its sot-comm handle;
-/// absent = the daemon resolves the active frontend (2026-09-08 review
-/// rework) and delivers to that ONE connection exclusively, falling back to
-/// every FE (the badge floor) only when none is active.
+/// absent = the daemon chooses (`ClientsSnapshot::window_for`): a `preview`
+/// or `reveal` goes to every FE (the badge floor); any other command, a
+/// browser open (`open_url`, `docs`) included, goes to ONE connection
+/// exclusively, the window in use (the one a person used last).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeCommandSendReq {
     pub cmd: String,

@@ -100,7 +100,7 @@ pub(in crate::ui) fn nav_file_key(state: &mut State, key: KeyPress<'_>) -> Contr
         Some(Action::OpenDocs) if !event.repeat =>
         {
             let path = state.cursored_files_path().unwrap_or_default();
-            state.docs_open_external(path);
+            state.docs_open_external(&state.active_host.clone(), path);
         }
         // `O` (Shift+O): full render WITH code execution
         // for a cursored `.qmd`, then open in the browser.

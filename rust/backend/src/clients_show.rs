@@ -1,74 +1,48 @@
-//! Which window a show goes to: the roster's one answer for a preview, a reveal, `docs`, `open-url` or a `wglshow` page
-//! sent with no window named, and for every other untargeted `fe.command` but `relaunch`.
+//! Which window a command sent with no window named goes to: what a session puts in the preview pane (a preview or a
+//! reveal) to every window, and everything else, an open in the OS browser (`docs`, `open-url`, a `wglshow` page)
+//! included, to one window, the window in use.
 
-use super::{ActiveFrontend, ClientInfo, Clients, ClientsSnapshot, ACTIVE_WINDOW};
-use std::time::Instant;
+use super::{ActiveFrontend, ClientsSnapshot};
 
-impl Clients {
-    /// Record the row the window on connection `serial` now shows (`workspace.activate`, `server/dispatch.rs`), on
-    /// the connection and on its window. A no-op for an unregistered serial.
-    pub fn show_row(&self, serial: u64, row: String) {
-        self.inner.lock().unwrap().report(serial, |_, shown| *shown = Some(row.clone()));
-    }
-}
-
-/// The commands that show something from a row, whose `workspace` argument names the row: they go to a window on it.
-const SHOWS: &[&str] = &["preview", "reveal", "docs", "open_url"];
+/// The commands that put something in the preview pane: every window gets them, so none is chosen.
+const PANE: &[&str] = &["preview", "reveal"];
 
 impl ClientsSnapshot {
-    /// The window an untargeted `fe.command` `cmd` goes to, and why (`handle_fe_command_send`): `relaunch` to the
-    /// active frontend alone (`used`, none when no window was used within `ACTIVE_WINDOW`); a show (`SHOWS`) to
-    /// `show_target` of the row its `workspace` argument names; any other command to `show_target` with no row.
-    pub fn window_for(
-        &self,
-        cmd: &str,
-        args: &serde_json::Value,
-        workspaces: &crate::rows::Workspaces,
-    ) -> Option<(ActiveFrontend, &'static str)> {
-        if cmd == "relaunch" {
-            return self.active().cloned().map(|to| (to, "used"));
+    /// The one window an untargeted `fe.command` `cmd` goes to, and why (`handle_fe_command_send`); `None` sends it to
+    /// every window. `relaunch` goes to the active frontend alone (`used`; none when no window was used within
+    /// `ACTIVE_WINDOW`, and then it goes nowhere); a preview-pane command (`PANE`) to every window; any other command,
+    /// a browser open included, to `in_use`.
+    pub fn window_for(&self, cmd: &str) -> Option<(ActiveFrontend, &'static str)> {
+        match cmd {
+            "relaunch" => self.active().cloned().map(|to| (to, "used")),
+            _ if PANE.contains(&cmd) => None,
+            _ => self.in_use(),
         }
-        let named = SHOWS.contains(&cmd).then(|| args.get("workspace")).flatten().and_then(serde_json::Value::as_str);
-        let row = named.and_then(|w| workspaces.resolve(Some(w)));
-        self.show_target(row.as_ref().map(|ws| ws.workspace_id.as_str()))
     }
 
-    /// The one window a show from row `row` (a canonical row id; `None` for a command that names no row) goes to, and
-    /// why: `row`, the window showing `row` that a person used most recently, if within `ACTIVE_WINDOW`; otherwise
-    /// `last-used`, the window a person used most recently, however long ago; otherwise `last-connected`, the window
-    /// that connected last. `None` only when no named frontend is attached: a show never goes to every window.
-    pub fn show_target(&self, row: Option<&str>) -> Option<(ActiveFrontend, &'static str)> {
-        resolve_show(&self.clients, row, self.now)
+    /// The window in use, and why: `last-used`, the window a person used most recently, however long ago (within
+    /// `ACTIVE_WINDOW` that is the active frontend `sot-fe version` marks); otherwise `last-connected`, the window
+    /// that connected last. `None` only when no named frontend is attached: a browser open never goes to every window.
+    /// One ordering, highest first: (last used, connection serial).
+    pub fn in_use(&self) -> Option<(ActiveFrontend, &'static str)> {
+        let (c, handle) = self
+            .clients
+            .iter()
+            .filter(|c| c.role == "fe")
+            .filter_map(|c| Some((c, c.name.as_deref().filter(|n| !n.is_empty())?)))
+            .max_by_key(|(c, _)| (c.last_person_input_at, c.serial))?;
+        let why = if c.last_person_input_at.is_some() { "last-used" } else { "last-connected" };
+        Some((ActiveFrontend { serial: c.serial, handle: handle.to_string() }, why))
     }
-}
-
-/// `show_target`'s rule, with `now` passed in for tests: one ordering, highest first: (shows `row` and used within
-/// `ACTIVE_WINDOW`, last used, connection serial).
-fn resolve_show(clients: &[ClientInfo], row: Option<&str>, now: Instant) -> Option<(ActiveFrontend, &'static str)> {
-    let on_row = |c: &ClientInfo| {
-        row.is_some()
-            && c.shown_row.as_deref() == row
-            && c.last_person_input_at.is_some_and(|at| now.saturating_duration_since(at) <= ACTIVE_WINDOW)
-    };
-    let (c, handle) = clients
-        .iter()
-        .filter(|c| c.role == "fe")
-        .filter_map(|c| Some((c, c.name.as_deref().filter(|n| !n.is_empty())?)))
-        .max_by_key(|(c, _)| (on_row(c), c.last_person_input_at, c.serial))?;
-    let why = match (on_row(c), c.last_person_input_at) {
-        (true, _) => "row",
-        (false, Some(_)) => "last-used",
-        (false, None) => "last-connected",
-    };
-    Some((ActiveFrontend { serial: c.serial, handle: handle.to_string() }, why))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use crate::clients::{ClientInfo, Clients};
+    use std::time::{Duration, Instant};
 
-    fn fe(serial: u64, name: &str, row: Option<&str>, used: Option<Instant>) -> ClientInfo {
+    fn fe(serial: u64, name: &str, used: Option<Instant>) -> ClientInfo {
         ClientInfo {
             serial,
             client_id: format!("c{serial}"),
@@ -80,12 +54,12 @@ mod tests {
             name: Some(name.into()),
             last_person_input_at: used,
             sessions: None,
-            shown_row: row.map(Into::into),
         }
     }
 
-    fn chosen(clients: &[ClientInfo], row: Option<&str>, now: Instant) -> Option<(String, &'static str)> {
-        resolve_show(clients, row, now).map(|(to, why)| (to.handle, why))
+    fn chosen(clients: &[ClientInfo]) -> Option<(String, &'static str)> {
+        let snapshot = ClientsSnapshot { clients: clients.to_vec(), active: None };
+        snapshot.in_use().map(|(to, why)| (to.handle, why))
     }
 
     fn pick(handle: &str, why: &'static str) -> Option<(String, &'static str)> {
@@ -93,37 +67,43 @@ mod tests {
     }
 
     #[test]
-    fn a_show_goes_to_the_window_on_its_row_over_one_used_later_elsewhere() {
+    fn the_window_in_use_is_the_one_with_the_latest_input_the_one_marked_active() {
         let now = Instant::now() + Duration::from_secs(3600);
         let s = |secs| Some(now - Duration::from_secs(secs));
-        let clients = [fe(1, "fe@a", Some("ws-x"), s(180)), fe(2, "fe@b", Some("ws-y"), s(5))];
-        assert_eq!(chosen(&clients, Some("ws-x"), now), pick("fe@a", "row"), "P2: the window on the row");
-        assert_eq!(chosen(&clients, None, now), pick("fe@b", "last-used"), "no row: the window used last");
-        let both = [fe(1, "fe@a", Some("ws-x"), s(120)), fe(2, "fe@c", Some("ws-x"), s(60)), fe(3, "fe@b", Some("ws-y"), s(1))];
-        assert_eq!(chosen(&both, Some("ws-x"), now), pick("fe@c", "row"), "P1: of two on the row, the one used last");
+        let clients = [fe(1, "fe@a", s(180)), fe(2, "fe@b", s(5)), fe(3, "fe@c", None)];
+        assert_eq!(chosen(&clients), pick("fe@b", "last-used"), "the latest input, not the window connected last");
+        let active = Clients::resolve_active(&clients, now).map(|a| a.handle);
+        assert_eq!(active.as_deref(), Some("fe@b"), "the window `sot-fe version` marks active");
     }
 
     #[test]
-    fn an_idle_window_on_the_row_never_takes_a_show_from_the_window_in_use() {
+    fn with_no_window_active_the_one_used_last_and_with_none_used_the_one_connected_last() {
         let now = Instant::now() + Duration::from_secs(3600);
         let s = |secs| Some(now - Duration::from_secs(secs));
-        let clients = [fe(1, "fe@idle", Some("ws-x"), s(301)), fe(2, "fe@b", Some("ws-y"), s(400))];
-        assert_eq!(chosen(&clients, Some("ws-x"), now), pick("fe@idle", "last-used"), "no window in use: used last");
-        let clients = [fe(1, "fe@idle", Some("ws-x"), s(301)), fe(2, "fe@b", Some("ws-y"), s(10))];
-        assert_eq!(chosen(&clients, Some("ws-x"), now), pick("fe@b", "last-used"), "the idle window on the row loses");
-        let at_edge = [fe(1, "fe@a", Some("ws-x"), s(300)), fe(2, "fe@b", Some("ws-y"), s(1))];
-        assert_eq!(chosen(&at_edge, Some("ws-x"), now), pick("fe@a", "row"), "five minutes still counts");
-    }
-
-    #[test]
-    fn exactly_one_window_whenever_one_is_named_and_attached() {
-        let now = Instant::now() + Duration::from_secs(3600);
-        let never = [fe(1, "fe@a", Some("ws-x"), None), fe(2, "fe@b", None, None)];
-        assert_eq!(chosen(&never, Some("ws-x"), now), pick("fe@b", "last-connected"), "P3: no window ever used");
-        let mut others = [fe(1, "fe@a", None, None), fe(2, "", None, None), fe(3, "fe@c", None, None)];
+        let idle = [fe(1, "fe@a", s(1200)), fe(2, "fe@b", s(600)), fe(3, "fe@c", None)];
+        assert_eq!(Clients::resolve_active(&idle, now), None, "no window used within five minutes");
+        assert_eq!(chosen(&idle), pick("fe@b", "last-used"), "the window used last, however long ago");
+        let never = [fe(1, "fe@a", None), fe(2, "fe@b", None)];
+        assert_eq!(chosen(&never), pick("fe@b", "last-connected"), "no window ever used");
+        let mut others = [fe(1, "fe@a", None), fe(2, "", None), fe(3, "fe@c", None)];
         others[2].role = "agent".into();
-        assert_eq!(chosen(&others, None, now), pick("fe@a", "last-connected"), "only named frontends are chosen");
+        assert_eq!(chosen(&others), pick("fe@a", "last-connected"), "only named frontends are chosen");
         others[0].name = None;
-        assert_eq!(chosen(&others, None, now), None, "nothing to choose: no window");
+        assert_eq!(chosen(&others), None, "no window attached: none");
+    }
+
+    #[test]
+    fn a_preview_goes_to_every_window_and_every_other_command_to_one() {
+        let clients = Clients::new();
+        let a = clients.register("a", "0.6.6", 1, "fe".into(), None, None, Some("fe@a".into()));
+        let _b = clients.register("b", "0.6.6", 1, "fe".into(), None, None, Some("fe@b".into()));
+        clients.touch_person_input(a.serial());
+        let snap = clients.snapshot_with_active();
+        for cmd in ["preview", "reveal"] {
+            assert_eq!(snap.window_for(cmd), None, "{cmd}: every window");
+        }
+        for cmd in ["docs", "open_url", "notify", "goto_workspace", "goto_mode", "relaunch"] {
+            assert_eq!(snap.window_for(cmd).map(|(to, _)| to.serial), Some(a.serial()), "{cmd}: the window in use");
+        }
     }
 }

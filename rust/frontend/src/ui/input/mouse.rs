@@ -70,6 +70,8 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
 }
 
 pub(in crate::ui) fn mouse_wheel(state: &mut State, modifiers: ModifiersState, delta: MouseScrollDelta) {
+    // A person reading with the wheel is at this window: it counts as a press for presence.
+    state.report_presence(true);
     // Convert the platform delta into fractional rows, then
     // accumulate. Precision touchpads emit small sub-row
     // pixel deltas that would otherwise truncate to zero
@@ -231,4 +233,17 @@ fn wheel_agent_pane(state: &mut State, rows_above: i32) {
     // build, there is no tmux fallback to forward
     // wheel events to). Drop the residue and no-op.
     state.wheel_residue_y = 0.0;
+}
+
+#[cfg(test)]
+mod tests {
+    /// `State` needs a window, so the wheel's presence hook is checked in the source: a wheel step reports a person
+    /// to the window in use, as a press does.
+    #[test]
+    fn a_wheel_step_reports_presence() {
+        let src = include_str!("mouse.rs");
+        let body = src.split("fn mouse_wheel(").nth(1).expect("mouse_wheel");
+        let body = body.split("\n}\n").next().unwrap_or(body);
+        assert!(body.contains("state.report_presence(true)"), "the wheel does not count as input");
+    }
 }

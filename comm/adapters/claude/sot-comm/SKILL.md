@@ -122,11 +122,11 @@ like any other, named the same way as everything above. Full table:
 
 ## Driving the frontend (`sot-fe`)
 
-The show verbs (`preview`, `reveal`, `goto`, `mode`, `notify`, `open-url`)
-go to whichever FE the owner is active on (the daemon resolves this itself;
-falls back to broadcast when no frontend is active) unless scoped with
-`--fe <host>`; `repl`, `type` and `screen` are daemon requests answered to
-you. Full reference: `sot-fe --help`; rarer essays: `references/fe-verbs.md`.
+`preview` and `reveal` go to every attached window. The other show verbs
+(`goto`, `mode`, `notify`, `open-url`, `docs`) go to one window, the one the
+owner is using (the latest input; the daemon resolves it itself), unless
+scoped with `--fe <host>`; `repl`, `type` and `screen` are daemon requests
+answered to you. Full reference: `sot-fe --help`; rarer essays: `references/fe-verbs.md`.
 
 | Verb | Does |
 |------|------|

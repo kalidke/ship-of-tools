@@ -151,8 +151,8 @@ pub enum ReplFrame {
         /// ADR-0035 proxy allowlist still learns the port) (`fe` names the
         /// one frontend that opens it anyway). Absent (older shims)
         /// defaults to true. The daemon writes a true frame as it came to
-        /// one window, the one a show from the REPL's row goes to, and with
-        /// `open: false` and no `fe` to every other connection
+        /// one window, the window in use (the one a person used last), and
+        /// with `open: false` and no `fe` to every other connection
         /// (`repl_frame_for`).
         #[serde(default = "default_open")]
         open: bool,

@@ -281,7 +281,8 @@ impl State {
                 // the site_serve nonce, so the URL outlives the send (a backend
                 // one-shot docs.open would have its nonce reaped on disconnect).
                 tracing::info!(%workspace, %path, "fe-command: docs");
-                self.docs_open_external(path);
+                let host = from_host.unwrap_or(&self.active_host).clone();
+                self.docs_open_external(&host, path);
             }
         }
     }
