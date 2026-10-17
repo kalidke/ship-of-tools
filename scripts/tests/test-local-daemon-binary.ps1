@@ -1,8 +1,9 @@
-# test-local-daemon-binary.ps1 -- sections 2c and 7c, the local daemon's one binary (ADR 0049, User isolation): the
-# resolver the daemon, -Stop and the launcher's query and lease share (2c), and the bytes the lease's and the probe's
-# bridges read, which are only their callers' (7c). Dot-sourced by test-local-daemon.ps1 right after
+# test-local-daemon-binary.ps1 -- sections 2c, 7c and 7d, the local daemon's one binary (ADR 0049, User isolation):
+# the resolver the daemon, -Stop and the launcher's query and lease share (2c), the bytes the lease's and the probe's
+# bridges read, which are only their callers' (7c), and a running daemon of another version, which the ensure replaces
+# (7d). Dot-sourced by test-local-daemon.ps1 right after
 # test-local-daemon-fake.ps1, in its scope: $script, $repo, $root, $compiled, $fakeExe, the support helpers and the
-# fake's. 7c needs the fake daemon and runs only when it compiled. ASCII only; Windows PowerShell 5.1.
+# fake's. 7c and 7d need the fake daemon and run only when it compiled. ASCII only; Windows PowerShell 5.1.
 
     try {
     Write-Host "`n=== 2c. OneResolver: a lone dev sotd.exe never outranks a complete install pair ===" -ForegroundColor Cyan
@@ -109,4 +110,56 @@ try {
             Clear-FakeEnv
         }
         } catch { Check '7c: section ran' $false $_.Exception.Message }
+    }
+
+    if ($compiled) {
+        try {
+        Write-Host "`n=== 7d. StaleDaemonReplaced: a daemon of this version is kept, one of another version is replaced ===" -ForegroundColor Cyan
+        # A Windows field box, 2026-10-16: an apply renamed the running rc1 sotd.exe aside and installed rc9.13, and
+        # every launch kept the rc1 daemon because its pipe answered. The fake's same-version answers FAKE_SOTD_SAME (3
+        # prints a version: another one runs). The ensure's -Stop ends the fake by its process name and --socket.
+        Clear-FakeEnv
+        $p7d = New-FakePrefix 'p7d'
+        $pipe7d = New-TestPipeName
+        $first7d = @()
+        try {
+            $null = & $script -Prefix $p7d -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7d -ProjectRoot $root 6>&1 2>&1
+            $first7d = @(Get-DaemonProcs (Get-PipePath $pipe7d) | ForEach-Object { $_.ProcessId })
+            Check '7d: the first ensure started one daemon' ($first7d.Count -eq 1) "found $($first7d.Count)"
+            $out7d = & $script -Prefix $p7d -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7d -ProjectRoot $root 6>&1 2>&1
+            $kept7d = @(Get-DaemonProcs (Get-PipePath $pipe7d) | ForEach-Object { $_.ProcessId })
+            Check '7d: a daemon of this version is kept' ((($out7d -join ' ') -match 'already running') -and ("$kept7d" -eq "$first7d")) "log: $out7d; pids $kept7d"
+            # As an apply does while the daemon runs: its mapped image renamed aside, a new sotd.exe in its place. -Stop
+            # still finds the old process by its name and --socket, which a rename does not change.
+            Rename-Item -LiteralPath (Join-Path $p7d 'bin\sotd.exe') -NewName 'sotd-stale-7d.exe'
+            Copy-Item -LiteralPath $fakeExe -Destination (Join-Path $p7d 'bin\sotd.exe')
+            $env:FAKE_SOTD_SAME = '3'
+            $out7d = & $script -Prefix $p7d -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7d -ProjectRoot $root 6>&1 2>&1
+            $exit7d = $LASTEXITCODE
+            Remove-Item Env:\FAKE_SOTD_SAME -ErrorAction SilentlyContinue
+            $after7d = @(Get-DaemonProcs (Get-PipePath $pipe7d) | ForEach-Object { $_.ProcessId })
+            Check '7d: another version is replaced (exit 0)' ($exit7d -eq 0) "got $exit7d; log: $out7d"
+            Check '7d: the ensure names the version it replaced' (($out7d -join ' ') -match 'runs 0\.0\.0-older, another version') "log: $out7d"
+            Check '7d: the ensure notice says the rows keep running and the REPLs restart' (($out7d -join ' ') -match 'NOTICE: the local daemon ran .* and was replaced; its rows keep running and their REPLs restart') "log: $out7d"
+            $oldAlive7d = $null -ne (Get-Process -Id $first7d[0] -ErrorAction SilentlyContinue)
+            Check '7d: the old daemon is gone and one new one serves' ((-not $oldAlive7d) -and ($after7d.Count -eq 1) -and ($first7d -notcontains $after7d[0])) "before $first7d, after $after7d, old alive $oldAlive7d"
+            # Another version under a window's lease (same-version exit 4) is kept, and the launch says it is out of date.
+            $env:FAKE_SOTD_SAME = '4'
+            $outL7d = & $script -Prefix $p7d -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7d -ProjectRoot $root 6>&1 2>&1
+            $exitL7d = $LASTEXITCODE
+            Remove-Item Env:\FAKE_SOTD_SAME -ErrorAction SilentlyContinue
+            $leasedAfter7d = @(Get-DaemonProcs (Get-PipePath $pipe7d) | ForEach-Object { $_.ProcessId })
+            Check '7d: a daemon of another version is kept while a window holds a lease, with a notice' (($exitL7d -eq 0) -and ("$leasedAfter7d" -eq "$after7d") -and (($outL7d -join ' ') -match 'NOTICE: daemon out of date, restart when ready')) "exit $exitL7d, pids $leasedAfter7d vs $after7d, log: $outL7d"
+            # A launch that named the old daemon before it asked ends nothing when another launch already replaced it:
+            # its -Stop is scoped to the old pid, so the successor lives.
+            $null = & $script -Stop -Prefix $p7d -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7d -OnlyPids $first7d 6>&1 2>&1
+            $racedExit7d = $LASTEXITCODE
+            $racedAfter7d = @(Get-DaemonProcs (Get-PipePath $pipe7d) | ForEach-Object { $_.ProcessId })
+            Check '7d: a -Stop scoped to the old pid leaves the successor alive' (($racedExit7d -eq 0) -and ("$racedAfter7d" -eq "$after7d")) "exit $racedExit7d, before $after7d, after $racedAfter7d"
+        } finally {
+            Stop-FakeOn $pipe7d
+            foreach ($pid7d in @($first7d)) { if ($pid7d) { Stop-Process -Id $pid7d -Force -ErrorAction SilentlyContinue } }
+            Clear-FakeEnv
+        }
+        } catch { Check '7d: section ran' $false $_.Exception.Message }
     }

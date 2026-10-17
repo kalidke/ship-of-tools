@@ -45,8 +45,8 @@ impl State {
                     self.on_repl_running(&event_host, repl_running);
                     self.on_connected(event_host, session_id, revision, project_root, proxy, resolved, backend_version)
                 }
-                crate::net::transport::IncomingEvt::Disconnected { reason } => {
-                    self.on_disconnected(event_host, reason)
+                crate::net::transport::IncomingEvt::Disconnected { reason, refused } => {
+                    self.on_disconnected(event_host, reason, refused)
                 }
                 crate::net::transport::IncomingEvt::HelloRefused { message } => {
                     self.on_hello_refused(event_host, message)

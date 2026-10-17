@@ -83,9 +83,13 @@ apply_pending() {
     [ ! -f "\$PENDING" ]
 }
 if apply_pending; then exec "\$0" "\$@"; fi
+# The agent comm scripts follow the checkout, whoever applied it: an applied tag can change the comm protocol.
+sot_comm_refresh "$prefix/repo/current"
 FAILS=0; ROLLED=0
 while :; do
     sot_daemon_ensure "$prefix" "$prefix/bin/sotd" "\$SOCKET" || exit 1
+    # What the ensure did, for the window's startup notice (the frontend reads SOT_LAUNCH_NOTICE).
+    if [ -n "\$SOT_ENSURE_NOTICE" ]; then export SOT_LAUNCH_NOTICE="\$SOT_ENSURE_NOTICE"; else unset SOT_LAUNCH_NOTICE; fi
     START="\$(date +%s)"
     "$prefix/bin/sot" --socket "\$SOCKET"
     RC=\$?
@@ -184,21 +188,113 @@ sot_prune_logs() {  # <dir>
     return 0
 }
 
-# Make the backend's socket answer: return 0 once it does, 1 (with the reason
-# on stderr) if it cannot. Waits SOT_LAUNCH_WAIT_S for a successor while a
-# previous instance is still shutting down. Never removes the socket: the
+# The pid of this account's daemon on SOCKET, else (LABEL given) of the first one
+# started with exactly LABEL; nothing when there is none. Among this account's
+# processes named `sotd` (the kernel's `comm`, so a program that only mentions sotd
+# in its arguments is not one; macOS's ps prints the program's path, so its last
+# part is compared), the one started with `--socket` and exactly this socket. Both
+# are literal comparisons of whole arguments: the values reach awk through its
+# environment, never as a pattern or an escape, and a socket or label that only
+# begins with this one is another daemon's (ADR 0049, User isolation).
+sot_daemon_pid() {  # <socket> [label]
+    ps -u "$(id -u)" -o pid=,comm=,args= | FIND_SOCKET="$1" FIND_LABEL="${2:-}" awk '
+        BEGIN { sock = " --socket " ENVIRON["FIND_SOCKET"] " "; label = " --label " ENVIRON["FIND_LABEL"] " " }
+        { n = $2; sub(/.*\//, "", n) } n != "sotd" { next }
+        { args = $0; sub(/^ *[0-9]+ +[^ ]+ +/, "", args); args = " " args " " }
+        index(args, sock) { print $1; found = 1; exit }
+        ENVIRON["FIND_LABEL"] != "" && index(args, label) && first == "" { first = $1 }
+        END { if (!found && first != "") print first }
+    '
+}
+
+# Whether the daemon answering on SOCKET may stay: 0 when it may, 1 once it was asked
+# to end (the ensure's start and wait loop then takes over, whatever came of it). It
+# may stay unless `sotd same-version`, asked of the binary this install runs (an owned
+# unit's own, else SOTD-BIN), says it runs another version (exit 3), which an update
+# leaves when it replaces the binary and not the process; exit 4 says the same while a
+# window holds a lease, and that daemon stays. SOT_ENSURE_NOTICE names what a launch
+# did for the window to show (daemon out of date, or replaced). That daemon is named before it is asked,
+# so a launch ends only the daemon it asked and never the successor another launch just
+# started: an owned unit's MainPID, else the pid found by its socket (sot_daemon_pid).
+# An owned unit is restarted through systemd onto the new binary only while MainPID is
+# still that pid; a nohup daemon is sent TERM and waited for, at most 10 s. A daemon it
+# cannot name or end stays, with a warning: the window still starts and names the skew.
+sot_daemon_current() {  # <prefix> <sotd-bin> <socket>
+    local run="$2" owned=0 theirs pid now t0 rc
+    if sot_service_owned "$1"; then
+        owned=1; run="$1/bin/sotd"
+        pid="$(systemctl --user show -p MainPID --value sotd.service 2>/dev/null)"
+    else
+        pid="$(sot_daemon_pid "$3")"
+    fi
+    theirs="$("$run" same-version --endpoint "unix:$3" 2>/dev/null)"
+    rc=$?
+    if [ "$rc" -eq 4 ]; then
+        SOT_ENSURE_NOTICE="daemon out of date, restart when ready"
+        echo "the backend on $3 runs $theirs, not the version of $run, and a window holds it: kept; $SOT_ENSURE_NOTICE" >&2
+        return 0
+    fi
+    [ "$rc" -eq 3 ] || return 0
+    case "$pid" in ''|0|*[!0-9]*)
+        echo "WARNING: could not find the backend on $3 to end it; the window will show it out of date" >&2
+        return 0 ;;
+    esac
+    SOT_ENSURE_NOTICE="the backend ran $theirs and was replaced; its rows keep running and their REPLs restart"
+    echo "the backend on $3 runs $theirs, not the version of $run: replacing it (its rows keep running; their REPLs restart)" >&2
+    if [ "$owned" = 1 ]; then
+        now="$(systemctl --user show -p MainPID --value sotd.service 2>/dev/null)"
+        [ "$now" != "$pid" ] || systemctl --user restart sotd.service >/dev/null 2>&1
+    else
+        kill "$pid" 2>/dev/null || ! kill -0 "$pid" 2>/dev/null || {
+            echo "WARNING: could not end the backend on $3; the window will show it out of date" >&2
+            return 0
+        }
+        t0="$(date +%s)"
+        while sot_socket_open "$2" "$3" && [ "$(date +%s)" -lt $((t0 + 10)) ]; do sleep 0.25; done
+        if sot_socket_open "$2" "$3"; then
+            echo "WARNING: the backend on $3 did not end; the window will show it out of date" >&2
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Bring the agent comm resources to the checkout's commit: `ShipTools.update_comm()` runs when the comm install is
+# missing or its VERSION stamp (the short commit update_comm writes last, `-dirty` when its tree had changes) names
+# another commit than CHECKOUT's, the rule sot-freshness.ps1 states for Windows. Answered from disk, so whoever applied
+# the update and whenever, an apply refreshes comm at the next launch; a commit that cannot be read decides nothing. A
+# failure warns and returns 0, and leaves no stamp, so the next launch tries again.
+sot_comm_refresh() {  # <checkout>
+    local home="${SOT_COMM_HOME:-$HOME/.sot-comm}" stamp="" commit
+    commit="$(cd "$1" 2>/dev/null && git rev-parse --short=9 HEAD 2>/dev/null)"
+    [ ! -f "$home/VERSION" ] || stamp="$(sed -e 's/-dirty$//' -e 1q "$home/VERSION")"
+    if [ -d "$home/bin" ] && { [ -z "$commit" ] || [ "$stamp" = "$commit" ]; }; then return 0; fi
+    PATH="$PATH:$HOME/.juliaup/bin"
+    command -v julia >/dev/null 2>&1 || { echo "WARNING: comm is not at this checkout's commit and julia is not on PATH" >&2; return 0; }
+    julia --project="$1" -e 'using ShipTools; ShipTools.update_comm()' >/dev/null 2>&1 \
+        || echo "WARNING: ShipTools.update_comm() failed; the next launch tries again" >&2
+    return 0
+}
+
+# Make the backend's socket answer, with a daemon of this install's version
+# (sot_daemon_current): return 0 once it does, 1 (with the reason on stderr) if
+# it cannot. Waits SOT_LAUNCH_WAIT_S for a successor while a previous instance
+# is still shutting down. Never removes the socket: the
 # daemon unlinks a stale one itself, and an ensure-side rm can delete a
 # successor's fresh bind. Never kills a daemon it started: the daemon's own
 # lock wait is shorter than this one. A backend it starts itself logs under
 # the install to a file of its own, <prefix>/logs/sotd.<UTC start>Z-<pid>.log,
 # never to a path another user can hold; the newest by name is the current one.
 sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
+    SOT_ENSURE_NOTICE=""
     local prefix="$1" sotd_bin="$2" socket="$3" mode=nohup pid="" code="" start now warned=0
     local logdir="$1/logs" logfile="" stamp err
     # A logs folder that exists is owner-only whichever way the daemon starts: an install that ran nohup before and is
     # systemd-owned now still holds its old logs (unmasked secrets) there.
     [ ! -d "$logdir" ] || chmod 700 "$logdir" 2>/dev/null || echo "WARNING: cannot secure $logdir" >&2
-    sot_socket_open "$sotd_bin" "$socket" && return 0
+    if sot_socket_open "$sotd_bin" "$socket"; then
+        sot_daemon_current "$prefix" "$sotd_bin" "$socket" && return 0
+    fi
     if sot_service_owned "$prefix"; then
         mode=systemd
     else

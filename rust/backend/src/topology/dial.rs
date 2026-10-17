@@ -332,12 +332,7 @@ fn dial_and_call_tracked(
         }
     };
 
-    let hello = HelloReq {
-        name: Some(self_host.to_string()),
-        ..HelloReq::this_process(format!("sotd-topology-cli-{}", std::process::id()), "cli", Some(self_host.to_string()))
-            .map_err(|e| fold(&guard, format!("{endpoint}: {e}")))?
-    };
-    let hello_payload = serde_json::to_value(hello).map_err(|e| e.to_string())?;
+    let hello_payload = cli_hello(self_host).map_err(|e| fold(&guard, format!("{endpoint}: {e}")))?;
     codec::write_frame_blocking(&mut w, &Frame::req(0, sot_protocol::op::HELLO, hello_payload))
         .map_err(|e| fold(&guard, format!("{endpoint}: hello: {e}")))?;
     let reply = codec::read_frame_blocking(&mut br).map_err(|e| fold(&guard, format!("{endpoint}: hello reply: {e}")))?;
@@ -358,6 +353,39 @@ fn dial_and_call_tracked(
         }
     }
     Err(fold(&guard, format!("{endpoint}: no reply to {req_op} within 8 frames")))
+}
+
+/// The `cli` hello every call here sends: this process's identity, declaring `self_host` as its host and its name.
+fn cli_hello(self_host: &str) -> Result<serde_json::Value, String> {
+    let hello = HelloReq {
+        name: Some(self_host.to_string()),
+        ..HelloReq::this_process(format!("sotd-topology-cli-{}", std::process::id()), "cli", Some(self_host.to_string()))
+            .map_err(|e| e.to_string())?
+    };
+    serde_json::to_value(hello).map_err(|e| e.to_string())
+}
+
+/// Dial `endpoint`, send the `cli` hello, and return the reply's payload verbatim, a refusal included: `sotd
+/// same-version` reads the daemon's version from either. Waits at most `within`; a read still blocked then is left to
+/// its thread, which ends with the process.
+pub fn hello_reply(endpoint: &str, self_host: &str, within: std::time::Duration) -> Result<serde_json::Value, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (e, h) = (endpoint.to_string(), self_host.to_string());
+    std::thread::spawn(move || {
+        let _ = tx.send(hello_reply_blocking(&e, &h));
+    });
+    rx.recv_timeout(within).map_err(|_| format!("{endpoint}: no hello reply within {}s", within.as_secs()))?
+}
+
+fn hello_reply_blocking(endpoint: &str, self_host: &str) -> Result<serde_json::Value, String> {
+    let sig = crate::lifecycle::child_signal::process();
+    let (mut w, r, _guard) = connect(endpoint, sig)?.split().map_err(|e| format!("{endpoint}: {e}"))?;
+    let hello = cli_hello(self_host).map_err(|e| format!("{endpoint}: {e}"))?;
+    codec::write_frame_blocking(&mut w, &Frame::req(0, sot_protocol::op::HELLO, hello))
+        .map_err(|e| format!("{endpoint}: hello: {e}"))?;
+    let reply = codec::read_frame_blocking(&mut std::io::BufReader::new(r))
+        .map_err(|e| format!("{endpoint}: hello reply: {e}"))?;
+    Ok(reply.payload)
 }
 
 #[cfg(test)]

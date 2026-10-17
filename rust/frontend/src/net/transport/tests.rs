@@ -88,7 +88,7 @@ fn a_daemon_that_answers_the_hello_and_drops_is_redialed_on_the_doubling_wait() 
     let mut waits: Vec<u64> = Vec::new();
     while waits.len() < 3 {
         match evt_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
-            Ok((_, IncomingEvt::Disconnected { reason })) => {
+            Ok((_, IncomingEvt::Disconnected { reason, .. })) => {
                 let ms = reason.rsplit_once("retry in ").and_then(|(_, rest)| rest.split_once("ms")).and_then(|(n, _)| n.parse().ok());
                 waits.push(ms.unwrap_or_else(|| panic!("no wait named in {reason:?}")));
             }
@@ -108,6 +108,68 @@ fn a_daemon_that_answers_the_hello_and_drops_is_redialed_on_the_doubling_wait() 
     for (gap, wait) in gaps.iter().zip([200, 400]) {
         assert!(*gap >= std::time::Duration::from_millis(wait), "a gap of {gap:?} after the loop reported a {wait} ms wait: it slept less than it said");
     }
+}
+
+/// A host that refused the hello and then stops answering reads unreachable, not "daemon out of date": the first end
+/// is a refusal (the `Disconnected` says so), the redial after the daemon is gone is a failed dial (it says not). The
+/// reconnect loop `spawn` runs dials an endpoint this test serves once, with a protocol refusal, and then closes.
+#[test]
+fn a_refusal_and_then_a_failed_dial_are_told_apart() {
+    use interprocess::local_socket::{tokio::prelude::*, GenericFilePath, ListenerOptions};
+    let _env = crate::net::state::test_env::set_test_env();
+    #[cfg(windows)]
+    let sock_path = std::path::PathBuf::from(format!(r"\\.\pipe\sot-refusal-test-{}", std::process::id()));
+    #[cfg(not(windows))]
+    let sock_path = {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = std::path::PathBuf::from(format!("/tmp/sot-refusal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).expect("private folder");
+        dir.join("s.sock")
+    };
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    rt.block_on(async {
+        let name = sock_path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new().name(name).create_tokio().expect("bind test endpoint");
+        tokio::spawn(async move {
+            if let Ok(conn) = listener.accept().await {
+                let (rx, mut tx) = conn.split();
+                let mut rx = codec::buffered(rx);
+                if let Ok((hello, _)) = codec::read_frame(&mut rx).await {
+                    let reply = serde_json::json!({ "error": "protocol mismatch: update the older side", "code": "protocol_mismatch" });
+                    let _ = codec::write_frame(&mut tx, &Frame::res(hello.id, op::HELLO, reply).with_rev(0), None).await;
+                }
+            }
+            // The listener drops here: the next dial finds nothing.
+        });
+    });
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    let (_out_tx, out_rx) = outgoing_channel();
+    let config = TransportConfig { dial: Dial::Relay(sock_path.clone()), token: None };
+    spawn(
+        &rt,
+        "refusal-test".to_string(),
+        config,
+        evt_tx,
+        out_rx,
+        NoWindow,
+        Arc::new(tokio::sync::Notify::new()),
+        sot_protocol::topology::ssh_bridge::LinkGate::default(),
+        crate::lease::Leases::new(true, Vec::new()),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut ends: Vec<bool> = Vec::new();
+    while ends.len() < 2 {
+        match evt_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok((_, IncomingEvt::Disconnected { refused, .. })) => ends.push(refused),
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    rt.shutdown_timeout(std::time::Duration::from_secs(2));
+    #[cfg(not(windows))]
+    let _ = std::fs::remove_dir_all(sock_path.parent().unwrap());
+    assert_eq!(ends, [true, false], "the refusal ends as a refusal, the dial after the daemon is gone does not");
 }
 
 // --- ADR 0045 decision 4: the link gate. ---

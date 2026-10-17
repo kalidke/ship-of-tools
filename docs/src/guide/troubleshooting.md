@@ -39,6 +39,11 @@ Update the frontend (see [Updating](updating.md)). `daemon out of date` is the
 reverse skew: the daemon is the side that is behind. The preview pane shows both
 versions.
 
+When a launch finds the daemon on an older version while a window is open, it leaves that daemon running and the new
+window's startup notice says `daemon out of date, restart when ready`. Restart the daemon after closing your other
+windows, or launch again once none is open; a launch that replaces a daemon says its rows keep running and their REPLs
+restart.
+
 ## The bottom of the preview
 
 The preview stops each block of text and each table at its last whole line, so no line is drawn

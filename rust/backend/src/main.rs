@@ -178,7 +178,10 @@ Pure queries (no startup side effects, answered before any of the above):
                           (`sotd topology` alone prints the details)
   status [--json]        declared + LIVE: fans out to every reachable
                           daemon (topology plan §E; `sotd topology status`
-                          stays the offline, declared-only view)"#;
+                          stays the offline, declared-only view)
+  same-version --endpoint <unix:PATH|pipe:PATH>
+                          exit 0 if the daemon there runs this version,
+                          3 (printing its version) if it runs another"#;
 
 /// The usage to print when `--help`/`-h` is among `sotd`'s OWN arguments, else `None`.
 /// `sotd`'s own arguments are all of `args` (argv without argv[0]) except for `agent-exec`,
@@ -198,6 +201,7 @@ fn help_for(args: &[String]) -> Option<&'static str> {
         "topology" => topology::cli::USAGE,
         "status" => topology::status::USAGE,
         "stdio-bridge" => topology::stdio_bridge::USAGE,
+        "same-version" => topology::same_version::USAGE,
         "ancestors" => comm::registry::ancestors::USAGE,
         _ => SOTD_HELP,
     })
@@ -226,6 +230,7 @@ mod help_tests {
             ("stdio-bridge --host a --help", topology::stdio_bridge::USAGE),
             ("stdio-bridge --endpoint unix:/x --help", topology::stdio_bridge::USAGE),
             ("status --help", topology::status::USAGE),
+            ("same-version --endpoint unix:/x --help", topology::same_version::USAGE),
             ("topology --help", topology::cli::USAGE),
             ("topology plan --help", topology::cli::USAGE),
             ("topology status --help", topology::cli::USAGE),
@@ -336,6 +341,12 @@ fn main() -> Result<()> {
             "stdio-bridge" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
                 lifecycle::shutdown::exit(topology::stdio_bridge::run(&args));
+            }
+            // Whether the daemon on a local endpoint runs this binary's version: the launch scripts' ensure asks it
+            // before keeping a daemon it finds running. A pure query, answered here like the bridge above.
+            "same-version" => {
+                let args: Vec<String> = std::env::args().skip(2).collect();
+                lifecycle::shutdown::exit(topology::same_version::run(&args));
             }
             // The declared topology (`hosts.toml` v2): what this box
             // derives from it — the launcher's tunnel/dial plan, the relay

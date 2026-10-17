@@ -43,22 +43,9 @@ if [ -z "$SOCKET" ]; then
 fi
 
 # This account's daemon only (ADR 0049, User isolation: another user's `sotd --label sot` is never judged, killed or
-# reported as this one). Among this account's processes named `sotd` (the kernel's `comm`, so a program that only
-# mentions sotd in its arguments is not one; macOS's ps prints the program's path, so its last part is compared), the
-# one started with `--socket` and exactly this socket, else the first
-# started with `--label` and exactly this label. Both are literal comparisons of whole arguments: the values reach awk
-# through its environment, never as a pattern or an escape, and a socket or label that only begins with this one is
-# another daemon's.
-find_pid() {
-    ps -u "$(id -u)" -o pid=,comm=,args= | FIND_SOCKET="$SOCKET" FIND_LABEL="$LABEL" awk '
-        BEGIN { sock = " --socket " ENVIRON["FIND_SOCKET"] " "; label = " --label " ENVIRON["FIND_LABEL"] " " }
-        { n = $2; sub(/.*\//, "", n) } n != "sotd" { next }
-        { args = $0; sub(/^ *[0-9]+ +[^ ]+ +/, "", args); args = " " args " " }
-        index(args, sock) { print $1; found = 1; exit }
-        index(args, label) && first == "" { first = $1 }
-        END { if (!found && first != "") print first }
-    '
-}
+# reported as this one): the one on exactly this socket, else the first started with exactly this label
+# (sot_daemon_pid, lib/sot-daemon.sh).
+find_pid() { sot_daemon_pid "$SOCKET" "$LABEL"; }
 
 # The times, read and printed with GNU's or BSD's (macOS's) tools: the binary's mtime by stat -c or -f, the daemon's
 # age by ps's portable etime ([[dd-]hh:]mm:ss), and a time printed by date -d @ or -r.

@@ -403,7 +403,7 @@ privilege, documented trade-off); Windows production auto-update (needs the
 Phase-D `install.ps1` + supervisor rework — the shared crate already handles
 Windows staging); macOS launchd wiring and daemon-side crash-loop
 auto-rollback (manual: `sot-apply --rollback`, or re-run the installer);
-refreshing agent comm resources (`update_comm`) on auto-apply; routing the
+refreshing agent comm resources (`update_comm`) on auto-apply (closed 2026-10-16: Windows by the freshness pass, Unix by the rendered wrapper, both by the VERSION stamp rule); routing the
 INSTALLER's own upgrade path through prepare/apply (it remains a live update
 with the safety probes above); flush-coupled `update.apply` exit; refreshing
 installed control-plane artifacts (`sotd.service`, the `sot-launch`
@@ -726,9 +726,11 @@ base only. `Test-SotPinnedCheckout` (a detached worktree) is the one
 predicate replacing the old `.git`-exists pull gate and staged-sotd-absent
 layout check; the dev-pair-first binary rule is unrelated (picks which
 *binary* runs, not whether the *script* is pinned) and stays. `update_comm`
-on a pinned checkout now triggers on an applied update or a missing comm
-install, not "a pull succeeded" — closing the auto-apply `update_comm` item
-above.
+on a pinned checkout triggers on a missing comm install or a VERSION stamp
+that differs from the checkout's commit (2026-10-16: not "an update was
+applied this launch", which a launch that did not apply never repaired), not
+"a pull succeeded" — closing the auto-apply `update_comm` item above for
+Windows.
 
 ## Amendment 2026-10-16 — the line carries the next version with -dev
 

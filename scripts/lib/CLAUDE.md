@@ -6,7 +6,8 @@ The one place the `sotd` unit, the all-in-one `sot-launch` wrapper and the backe
 distribution; charter: scripts/CLAUDE.md.
 
 ## Files
-- `sot-daemon.sh`: the unit and wrapper renderers, the daemon ensure, the log pruner and the copy and backup helpers.
+- `sot-daemon.sh`: the unit and wrapper renderers, the daemon ensure, the daemon finder (`sot_daemon_pid`), the log
+  pruner and the copy and backup helpers.
 - `sot-hosts.sh`: the `sotd topology plan` reader (`sot_topology_plan`) and the `topology sync` runner; `launch-sot.sh` sources it.
 
 ## Start here
@@ -33,3 +34,12 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
   logged and skipped, never fatal (`SOT_LOG_KEEP`, `SOT_LOG_CAP_BYTES`).
 - The logs folder `sot_daemon_ensure` writes a started daemon's log into is made owner-only (mode 700), new or existing and
   whichever way the daemon starts, because the daemon copies every log line to it and earlier logs hold unmasked secrets.
+- `sot_daemon_ensure` keeps a daemon whose socket answers only when `sotd same-version`, run from the binary the install
+  runs (an owned unit's own), does not say it runs another version (`sot_daemon_current`): an update that replaced
+  the binary and not the process is finished there, by a restart of an owned unit or a TERM to the nohup daemon on
+  that socket (`sot_daemon_pid`), never a pattern kill; the daemon is named (MainPID or pid) before it is asked, and a daemon
+  `same-version` says another version while a window holds a lease (exit 4) is kept, with `SOT_ENSURE_NOTICE` for the wrapper
+  to export as `SOT_LAUNCH_NOTICE`.
+- The rendered `sot-launch` runs `sot_comm_refresh` after an apply and before the ensure: `ShipTools.update_comm()` when comm's
+  install is missing or its VERSION stamp names another commit than the checkout's (a commit it cannot read decides nothing),
+  so an auto-apply refreshes the comm scripts the new daemon's protocol needs, as `sot-freshness.ps1` does on Windows.

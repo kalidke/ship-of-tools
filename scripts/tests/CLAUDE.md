@@ -22,8 +22,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
-- `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper, the network refusal and the dev launcher's git stall bound. Runs in the
-  `rust.yml` step "Test installer apply (bash)" (job `checks-linux`) and in `rc-gate.sh`.
+- `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper, the network refusal, the dev launcher's
+  git stall bound, and the ensure's replacement of a daemon an update left on the old binary (`sot_daemon_current`).
+  Runs in the `rust.yml` step "Test installer apply (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-shared-home.sh`: a home several hosts share holds one install. Every path that writes, re-renders or
   retires `sotd.service` (`installer_enable_local_service`, `installer_retire_local_service`, `sot_rerender_owned`) pins
   it with `sotd topology pin` before any reload, and none disables the shared unit under a declared topology; with no
@@ -71,7 +72,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   the ssh session it runs under ends (its nearest sshd ancestor exits; exit 129). A CMD with no path is looked up on PATH, as the calling shell would (CreateProcess alone finds System32's WSL `bash` first). Exit status CMD's, 2 on a usage error; 8 when CMD exits 0 with processes of the job still running: then a stderr line names up to 16 of them (image and pid, and how many more), the job ends them (`TerminateJobObject`), and the script exits 8. A CMD that exits non-zero keeps its own status. Run by hand and by the Windows box's runner; the `rust.yml` step "Parse PowerShell scripts" parses it. Limits: the job's `CREATE_BREAKAWAY_FROM_JOB` always fails (the capsule spawn takes its degraded path, as on hosted CI), so the box does not exercise the breakaway path; words such as `--` and `-x:y` pass through `powershell.exe -File` parsing first and are untested, so a runner passes one script.
 - `rc-gate.sh`: the Linux candidate gate, run as the main process of its own test container (`in-container.sh`); a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy. It runs the daemon lifetime harness as rust.yml's Linux job does (`job_lifetime`), with `SOT_LIFETIME_KEEP_DIR` at `lifetime-keep` in its result folder, where a failed case keeps its daemon logs, answers and process lists.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
-  `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test
+  `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1), and `Invoke-FreshnessPass`'s comm
+  decision by the comm stamp (scripts/sot-freshness.ps1, section 5). Runs in the `rust.yml` step "Test
   install layout (pinned-checkout predicate)".
 - `test-sot-within.ps1`: the PowerShell scripts' network bounds. `Invoke-SotWithin` (scripts/sot-hosts.ps1, through
   sot-lease.ps1's `Start-SotRedirected` and `Stop-SotTree`): a stalled command ends at its bound with code 124, with
@@ -99,8 +101,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   under load (cases (iii)-(viii): large requests behind an accepted and a refused hello, the inbound buffer's memory, a
   peer the daemon gives up on, a session that ends on a frame the daemon will not read).
 - `test-local-daemon-binary.ps1`: dot-sourced by test-local-daemon.ps1 right after the fake daemon's compilation is attempted, in its
-  scope: the local daemon's one binary, shared by the daemon, `-Stop` and the launcher's query and lease (2c), and the
-  bytes the lease's and the probe's bridges read in a hidden console, which are only their callers' (7c, only when the fake compiled).
+  scope: the local daemon's one binary, shared by the daemon, `-Stop` and the launcher's query and lease (2c), the
+  bytes the lease's and the probe's bridges read in a hidden console, which are only their callers' (7c), and the
+  ensure's replacement of a running daemon of another version (7d; 7c and 7d only when the fake compiled).
 - `pipe-request.ps1`: the local-daemon suites' raw pipe client (5c, 5d): a hello and one request into a named pipe,
   the reply whose op matches printed. Test code; it checks no account.
 - `test-local-daemon-support.ps1`: dot-sourced by both local-daemon suites: `Check`, the fixture and pipe helpers, the

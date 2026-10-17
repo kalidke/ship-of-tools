@@ -375,6 +375,186 @@ check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
 check "no .prev copy was written" "gone" "$([ -e "$d/prefix/bin/sotd.prev" ] && echo exists || echo gone)"
 
 # ---------------------------------------------------------------------------
+case_start "the ensure replaces a daemon an update left on the old binary (sot_daemon_current)"
+# An apply that ran while the daemon ran swaps the binary and leaves the process (a Windows field box, 2026-10-16: an
+# rc1 daemon kept serving after rc9.13 landed, and every launch kept it because its pipe answered). The stand-in sotd is
+# a daemon that listens on its --socket and logs its pid, a bridge that connects, and a same-version that answers
+# STUB_THEIRS (exit 3) or nothing (exit 0). The stand-in ps lists this account's processes as the old daemon's: the
+# ensure finds it there by its socket and ends it by its pid.
+d="$WORK/stale"; mkdir -p "$d/bin" "$d/home" "$d/prefix"
+cat > "$d/bin/sotd" <<'PY'
+#!/usr/bin/env python3
+import os, socket, sys
+a = sys.argv[1:]
+if a[:1] == ["stdio-bridge"]:
+    try:
+        socket.socket(socket.AF_UNIX).connect(a[2][len("unix:"):])
+    except OSError:
+        sys.exit(1)
+    sys.exit(0)
+if a[:1] == ["same-version"]:
+    if os.environ.get("STUB_RACE"):
+        # another launch replaces the daemon while this one's probe is out: it ends the old one, starts a new one
+        # and the account's process list now names the new one
+        import subprocess, time
+        n = sum(1 for l in open(os.environ["STUB_LOG"]) if l.startswith("daemon "))
+        old = int([l for l in open(os.environ["STUB_LOG"]) if l.startswith("daemon ")][-1].split()[1])
+        os.kill(old, 15)
+        for _ in range(100):
+            try:
+                os.kill(old, 0)
+                time.sleep(0.05)
+            except OSError:
+                break
+        subprocess.Popen([sys.argv[0], "--socket", os.environ["STUB_SOCKET"]], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        for _ in range(100):
+            if sum(1 for l in open(os.environ["STUB_LOG"]) if l.startswith("daemon ")) > n:
+                break
+            time.sleep(0.05)
+        new = [l for l in open(os.environ["STUB_LOG"]) if l.startswith("daemon ")][-1].split()[1]
+        open(os.environ["STUB_PSLIST"], "w").write("%s sotd %s --socket %s --label sot\n" % (new, sys.argv[0], os.environ["STUB_SOCKET"]))
+    if os.environ.get("STUB_THEIRS"):
+        print(os.environ["STUB_THEIRS"])
+        sys.exit(4 if os.environ.get("STUB_LEASED") else 3)
+    sys.exit(0)
+path = a[a.index("--socket") + 1]
+if os.path.exists(path):
+    os.unlink(path)
+s = socket.socket(socket.AF_UNIX)
+s.bind(path)
+s.listen(8)
+with open(os.environ["STUB_LOG"], "a") as log:
+    log.write("daemon %d\n" % os.getpid())
+while True:
+    s.accept()[0].close()
+PY
+chmod +x "$d/bin/sotd"
+: > "$d/log"
+( STUB_LOG="$d/log" "$d/bin/sotd" --socket "$d/s.sock" --project-root "$d/home" --label sot >/dev/null 2>&1 & )
+for _ in $(seq 1 100); do grep -q '^daemon ' "$d/log" && break; sleep 0.05; done
+old="$(sed -n 's/^daemon //p' "$d/log" | head -1)"
+# Before it, a daemon (a pid no process has) on a socket that only begins with this one, which must be left alone.
+printf '999999999 sotd %s/bin/sotd --socket %s/s.sock.old\n%s sotd %s/bin/sotd --socket %s/s.sock --project-root %s/home --label sot\n' \
+    "$d" "$d" "$old" "$d" "$d" "$d" > "$d/pslist"
+printf '#!/bin/sh\ncat "%s/pslist"\n' "$d" > "$d/bin/ps"
+chmod +x "$d/bin/ps"
+state() {  # <pid>: alive, or gone once it has exited (a zombie not yet reaped is gone)
+    case "$(ps -o stat= -p "$1" 2>/dev/null)" in ''|Z*) echo gone ;; *) echo alive ;; esac
+}
+stale_ensure() {  # [STUB_THEIRS]: run the ensure once; its rc and stderr in ST_RC and ST_ERR
+    ST_RC=0
+    ( HOME="$d/home" PATH="$d/bin:$TOOLS" STUB_LOG="$d/log" STUB_THEIRS="${1:-}" STUB_RACE="${2:-}" STUB_LEASED="${3:-}" \
+        STUB_SOCKET="$d/s.sock" STUB_PSLIST="$d/pslist" \
+        bash -c '. "$1"; sot_daemon_ensure "$2" "$3" "$4"; rc=$?; printf %s "$SOT_ENSURE_NOTICE" > "$5"; exit $rc' ensure "$LIB" "$d/prefix" "$d/bin/sotd" "$d/s.sock" "$d/notice" \
+        2> "$d/err" ) || ST_RC=$?
+    ST_ERR="$(cat "$d/err")"
+    ST_NOTICE="$(cat "$d/notice")"
+}
+stale_ensure
+check "a daemon of this version is kept" "0 1 alive" \
+    "$ST_RC $(grep -c '^daemon ' "$d/log") $(state "$old")"
+stale_ensure 0.6.6-rc1
+new="$(sed -n 's/^daemon //p' "$d/log" | tail -1)"
+check "a daemon of another version is ended and this version's started in its place" "0 gone 2 up" \
+    "$ST_RC $(state "$old") $(grep -c '^daemon ' "$d/log") $(sot_socket_open "$d/bin/sotd" "$d/s.sock" && echo up || echo down)"
+case "$ST_ERR" in
+    *"the backend on $d/s.sock runs 0.6.6-rc1, not the version of $d/bin/sotd: replacing it"*) check "the ensure says which version it replaced" ok ok ;;
+    *) check "the ensure says which version it replaced" "a replacing line" "$ST_ERR" ;;
+esac
+case "$ST_ERR" in
+    *"their REPLs restart"*) check "the ensure says the rows keep running and the REPLs restart" ok ok ;;
+    *) check "the ensure says the rows keep running and the REPLs restart" "the cost sentence" "$ST_ERR" ;;
+esac
+case "$ST_NOTICE" in
+    *"was replaced; its rows keep running and their REPLs restart"*) check "the launch notice names the replace and its cost" ok ok ;;
+    *) check "the launch notice names the replace and its cost" "the cost sentence" "$ST_NOTICE" ;;
+esac
+# A window holds a lease: the daemon of another version is kept, and the launch says it is out of date.
+ps_before="$(grep -c '^daemon ' "$d/log")"
+printf '%s sotd %s/bin/sotd --socket %s/s.sock --label sot\n' "$new" "$d" "$d" > "$d/pslist"
+kill "$new" 2>/dev/null || true
+for _ in $(seq 1 100); do sot_socket_open "$d/bin/sotd" "$d/s.sock" || break; sleep 0.05; done
+( STUB_LOG="$d/log" "$d/bin/sotd" --socket "$d/s.sock" --project-root "$d/home" --label sot >/dev/null 2>&1 & )
+for _ in $(seq 1 100); do [ "$(grep -c '^daemon ' "$d/log")" -gt "$ps_before" ] && break; sleep 0.05; done
+leased="$(sed -n 's/^daemon //p' "$d/log" | tail -1)"
+printf '%s sotd %s/bin/sotd --socket %s/s.sock --label sot\n' "$leased" "$d" "$d" > "$d/pslist"
+stale_ensure 0.6.6-rc1 "" 1
+check "a daemon of another version is kept while a window holds a lease, and the launch says so" "0 alive daemon out of date, restart when ready" \
+    "$ST_RC $(state "$leased") $ST_NOTICE"
+kill "$leased" 2>/dev/null || true
+for _ in $(seq 1 100); do sot_socket_open "$d/bin/sotd" "$d/s.sock" || break; sleep 0.05; done
+( STUB_LOG="$d/log" "$d/bin/sotd" --socket "$d/s.sock" --project-root "$d/home" --label sot >/dev/null 2>&1 & )
+for _ in $(seq 1 100); do [ "$(grep -c '^daemon ' "$d/log")" -gt "$((ps_before + 1))" ] && break; sleep 0.05; done
+new="$(sed -n 's/^daemon //p' "$d/log" | tail -1)"
+# Two launches: the second one's probe is out while the first replaces the daemon. It named the old daemon before it
+# asked, so it ends nothing and the first launch's successor lives.
+printf '%s sotd %s/bin/sotd --socket %s/s.sock --label sot\n' "$new" "$d" "$d" > "$d/pslist"
+n0="$(grep -c '^daemon ' "$d/log")"
+stale_ensure 0.6.6-rc1 1
+race="$(sed -n 's/^daemon //p' "$d/log" | tail -1)"
+check "a launch racing a replace leaves the successor alive" "0 $((n0 + 1)) alive up" \
+    "$ST_RC $(grep -c '^daemon ' "$d/log") $(state "$race") $(sot_socket_open "$d/bin/sotd" "$d/s.sock" && echo up || echo down)"
+for p in "$old" "$new" "$leased" "$race"; do kill "$p" 2>/dev/null || true; done
+
+# An owned unit whose restart stops the daemon and then fails: the replace is an attempted end, so the ensure's start
+# and wait loop takes over (its `systemctl start`) instead of returning 0 with nothing running.
+mkdir -p "$d/oprefix/bin" "$d/home/.config/systemd/user"
+cp "$d/bin/sotd" "$d/oprefix/bin/sotd"
+printf '{\n  "service": "systemd"\n}\n' > "$d/oprefix/install.json"
+printf '[Service]\nExecStart=%s/oprefix/bin/sotd --x\n' "$d" > "$d/home/.config/systemd/user/sotd.service"
+: > "$d/log"
+( STUB_LOG="$d/log" "$d/bin/sotd" --socket "$d/s.sock" --project-root "$d/home" --label sot >/dev/null 2>&1 & )
+for _ in $(seq 1 100); do grep -q '^daemon ' "$d/log" && break; sleep 0.05; done
+old="$(sed -n 's/^daemon //p' "$d/log" | head -1)"
+cat > "$d/bin/systemctl" <<SC
+#!/bin/sh
+echo "\$*" >> "$d/sc.log"
+case "\$*" in
+    *"show -p MainPID"*) echo "$old" ;;
+    *restart*) kill "$old"; sleep 0.5; exit 1 ;;
+esac
+exit 1
+SC
+chmod +x "$d/bin/systemctl"
+: > "$d/sc.log"
+ST_RC=0
+( HOME="$d/home" PATH="$d/bin:$TOOLS" STUB_LOG="$d/log" STUB_THEIRS=0.6.6-rc1 \
+    bash -c '. "$1"; SOT_LAUNCH_WAIT_S=2; sot_daemon_ensure "$2" "$3" "$4"' ensure "$LIB" "$d/oprefix" "$d/oprefix/bin/sotd" "$d/s.sock" \
+    2> "$d/err" ) || ST_RC=$?
+check "a replace that fails to restart hands over to the start and wait loop" "1 gone started" \
+    "$ST_RC $(state "$old") $(grep -q '^--user start sotd.service' "$d/sc.log" && echo started || echo not-started)"
+kill "$old" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+case_start "comm follows the checkout's commit after an apply (sot_comm_refresh, the rendered wrapper)"
+# The 0.6.5 -> 0.6.6 apply changed the comm protocol and nothing refreshed the scripts (review of the stale-daemon work).
+# The rule is the one sot-freshness.ps1 states: update comm when its install is missing or its VERSION stamp names another
+# commit than the checkout's. A julia stand-in logs each update_comm it is asked for.
+d="$WORK/comm"; mkdir -p "$d/bin" "$d/co" "$d/ch/bin" "$d/prefix/updates" "$d/home"
+printf '#!/bin/sh\necho "julia $*" >> "%s/julia.log"\n' "$d" > "$d/bin/julia"; chmod +x "$d/bin/julia"
+( cd "$d/co" && git init -q . && : > f && git add f && git -c user.name=t -c user.email=t@t commit -q -m c )
+commit="$(cd "$d/co" && git rev-parse --short=9 HEAD)"
+refresh() {  # <stamp-or-"none"> [comm dir]: the number of update_comm calls this refresh made
+    : > "$d/julia.log"
+    [ "$1" = none ] && rm -f "$d/ch/VERSION" || printf '%s\n' "$1" > "$d/ch/VERSION"
+    ( HOME="$d/home" SOT_COMM_HOME="${2:-$d/ch}" PATH="$d/bin:$TOOLS" bash -c '. "$1"; sot_comm_refresh "$2"' x "$LIB" "$d/co" ) >/dev/null 2>&1 || true
+    grep -c 'update_comm' "$d/julia.log" || true
+}
+check "a stamp naming the checkout's commit runs nothing" "0" "$(refresh "$commit")"
+check "a -dirty stamp of the checkout's commit runs nothing" "0" "$(refresh "$commit-dirty")"
+check "a stamp naming another commit updates comm" "1" "$(refresh abcdef123)"
+check "no stamp updates comm" "1" "$(refresh none)"
+check "a missing comm install updates comm" "1" "$(refresh "$commit" "$d/absent")"
+mkdir -p "$d/nogit"
+: > "$d/julia.log"
+( HOME="$d/home" SOT_COMM_HOME="$d/ch" PATH="$d/bin:$TOOLS" bash -c '. "$1"; sot_comm_refresh "$2"' x "$LIB" "$d/nogit" ) >/dev/null 2>&1 || true
+check "a checkout whose commit cannot be read decides nothing" "0" "$(grep -c 'update_comm' "$d/julia.log" || true)"
+render_sot_launch "$d/prefix" "$TGT" "$d/launch" >/dev/null 2>&1 || true
+check "the rendered wrapper refreshes comm after the apply and before the ensure" "refresh<ensure" \
+    "$(awk '/sot_comm_refresh/ && !r { r = NR } /sot_daemon_ensure/ && !e { e = NR } /^if apply_pending/ && !a { a = NR } END { print (a && r > a && r < e) ? "refresh<ensure" : "a=" a " r=" r " e=" e }' "$d/launch")"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-apply: all checks passed\n'

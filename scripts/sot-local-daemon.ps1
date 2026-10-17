@@ -97,6 +97,12 @@
 # `sotd.exe` as a mapped image while it runs, so if the daemon is up, ITS
 # binary is still resolvable at its original location.
 #
+# A daemon that already answers is kept only when it runs the resolved
+# binary's version (`sotd same-version`; exit 3 is another): an apply renames a
+# mapped sotd.exe aside, so the process goes on running the old build while
+# sotd.exe on disk is the new one. A daemon of another version is ended by
+# this script's own -Stop (wait, kill, confirm down) and then started anew.
+#
 # Spawn hygiene: every start redirects stdout/stderr to files of its own,
 # <prefix>\logs\sotd-local.{stdout,stderr}.<yyyyMMdd-HHmmss-fff>Z-<pid>.log
 # (UTC start time to the millisecond, then this launcher's pid), so among
@@ -168,7 +174,10 @@ param(
     [string]$PipeName,
     # Set by shutdown-sot.ps1 when it just ended the frontend: the daemon is
     # then ending this computer's sessions by itself, and -Stop waits for it.
-    [switch]$FrontendKilled
+    [switch]$FrontendKilled,
+    # The ensure's replace passes the pids it named before it asked the daemon: -Stop then ends only those, so a launch
+    # never ends the successor another launch just started. Empty: every daemon on the pipe.
+    [int[]]$OnlyPids
 )
 
 # Bounds the launcher and the daemon agree on (rust/protocol/src/ops/lease.rs;
@@ -389,8 +398,12 @@ function Get-StopWaitMs([string]$State, [string]$Text, [int64]$NowMs) {
     return [int64]0
 }
 
+function Get-StopTargets {
+    Get-LocalDaemonProcess | Where-Object { (-not $OnlyPids) -or ($OnlyPids -contains $_.ProcessId) }
+}
+
 if ($Stop) {
-    $procs = @(Get-LocalDaemonProcess)
+    $procs = @(Get-StopTargets)
     if ($procs.Count -eq 0) {
         Write-LocalDaemonLog "stop: not running (no sotd.exe with pipe $PipeName)"
         exit 0
@@ -413,10 +426,10 @@ if ($Stop) {
     if ($waitMs -gt 0) {
         Write-LocalDaemonLog "stop: waiting up to $([math]::Ceiling($waitMs / 1000))s for the daemon to finish its own shutdown (frontendKilled=$([bool]$FrontendKilled) held=$heldState)"
         $waitSw = [System.Diagnostics.Stopwatch]::StartNew()
-        while (@(Get-LocalDaemonProcess).Count -gt 0 -and $waitSw.Elapsed.TotalMilliseconds -lt $waitMs) {
+        while (@(Get-StopTargets).Count -gt 0 -and $waitSw.Elapsed.TotalMilliseconds -lt $waitMs) {
             Start-Sleep -Milliseconds 500
         }
-        $procs = @(Get-LocalDaemonProcess)
+        $procs = @(Get-StopTargets)
         if ($procs.Count -eq 0) {
             Write-LocalDaemonLog "stop: the daemon exited by itself"
             exit 0
@@ -432,7 +445,7 @@ if ($Stop) {
     $down = $false
     for ($i = 0; $i -lt 8; $i++) {
         Start-Sleep -Milliseconds 250
-        if ((-not (Test-SotPipeOpen $PipeName)) -and ((@(Get-LocalDaemonProcess)).Count -eq 0)) {
+        if (((@(Get-StopTargets)).Count -eq 0) -and (($OnlyPids) -or (-not (Test-SotPipeOpen $PipeName)))) {
             $down = $true
             break
         }
@@ -449,8 +462,38 @@ if ($Stop) {
 # ---- ensure-started (default mode) ------------------------------------------
 
 if (Test-SotPipeOpen $PipeName) {
-    Write-LocalDaemonLog "already running on $PipePath"
-    exit 0
+    # The pipe answering says only that some daemon is there. One an update left running on the old binary (an apply
+    # renames a mapped sotd.exe aside and installs the new one beside it) is replaced, the way -Stop ends a daemon:
+    # `sotd same-version` exits 3 and prints its version when the daemon runs another than $daemonExe (4 when a window holds a lease: kept, with a notice), and any other
+    # exit (a sotd.exe that predates the command, a daemon that does not say) keeps it.
+    # The daemon is named before it is asked, so the replace ends that one and never a successor another launch started.
+    $askedPids = @(Get-LocalDaemonProcess | ForEach-Object { [int]$_.ProcessId })
+    $theirs = @(& $daemonExe same-version --endpoint "pipe:$PipePath" 2>$null)
+    if ($LASTEXITCODE -eq 4) {
+        # Another version, and a window holds a lease (the daemon's own record): the launch keeps it and says so.
+        Write-LocalDaemonLog "the daemon on $PipePath runs $($theirs -join ' '), another version than $daemonExe, and a window holds it - keeping it"
+        Write-LocalDaemonLog "NOTICE: daemon out of date, restart when ready"
+        exit 0
+    }
+    if ($LASTEXITCODE -ne 3) {
+        Write-LocalDaemonLog "already running on $PipePath"
+        exit 0
+    }
+    if ($askedPids.Count -eq 0) {
+        Write-LocalDaemonLog "could not find the daemon process on $PipePath to end it (it runs $($theirs -join ' ')) - keeping it"
+        exit 0
+    }
+    Write-LocalDaemonLog "the daemon on $PipePath runs $($theirs -join ' '), another version than $daemonExe - replacing it"
+    & $PSCommandPath -Stop -Prefix $Prefix -DevBinDir $DevBinDir -PipeName $PipeName -OnlyPids $askedPids
+    if ($LASTEXITCODE -ne 0) {
+        Write-LocalDaemonLog "REFUSED: the daemon of another version on $PipePath did not stop"
+        exit 1
+    }
+    Write-LocalDaemonLog "NOTICE: the local daemon ran $($theirs -join ' ') and was replaced; its rows keep running and their REPLs restart"
+    if (Test-SotPipeOpen $PipeName) {
+        Write-LocalDaemonLog "a successor already answers on $PipePath"
+        exit 0
+    }
 }
 
 if (-not $daemonExe) {

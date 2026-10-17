@@ -53,6 +53,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
   nothing when a pin cannot be written, and a dry `apply` writes no pin;
   `status` without a hosts.toml prints the words the installer matches; and the installer's role rule agrees with
   `sotd_hosts`
+- `same_version.rs`: topology; `sotd same-version` against a real daemon of this build answers the same version (exit 0)
 - `shell_dial.rs`: topology; comm-lib's `sot_dial` (with and without its bound) and `sot_oneshot_request`, and the
   launch scripts' `sot_socket_open`, run by bash against the built `sotd`: a socket another account listens on (needs
   passwordless `sudo -n`; skips without it except on CI) and a pipe another account serves are refused with nothing
