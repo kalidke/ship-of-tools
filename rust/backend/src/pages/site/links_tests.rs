@@ -218,20 +218,48 @@ async fn git_dir_of_a_repo_top_site_is_refused() {
     remove_root(serial);
 }
 
+/// The path a browser requests for `link` on the page at URL path `page`: `..` stops at `/`.
+fn browser_path(page: &str, link: &str) -> String {
+    let mut parts: Vec<&str> = page.split('/').filter(|p| !p.is_empty()).collect();
+    parts.pop();
+    for seg in link.split('/') {
+        match seg {
+            "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    format!("/{}", parts.join("/"))
+}
+
+/// With no root declared the URL space still widens, so the page's own link above its site folder reaches the
+/// server and is refused with R2c's words (a browser would otherwise collapse it above the nonce, where the answer is
+/// that no site is open), and a root declared after the open is followed at the next request.
 #[tokio::test]
-async fn g_no_roots_means_todays_url_space_and_r2c() {
+async fn g_a_page_link_with_no_root_is_r2c_until_a_root_is_declared() {
     let f = fixture();
     let empty = f.base.join("empty-roots");
     std::fs::write(&empty, "# nothing\n").unwrap();
-    let site = Site::with_roots(f.repo.join("site"), f.repo.clone(), true, empty).await;
-    assert_eq!(site.url_path("exp/page.html"), "exp/page.html");
+    let site = Site::with_roots(f.repo.join("site"), f.repo.clone(), true, empty.clone()).await;
+    let page = site.url_path("exp/page.html");
     let (addr, nonce, serial) = serve(site).await;
-    let (st, _, body) = get(addr, &format!("/{nonce}/lnk/results/r1/movie.mp4"), &[]).await;
+    let page = format!("/{nonce}/{page}");
+    let (st, _, _) = get(addr, &page, &[]).await;
+    assert_eq!(st, 200);
+    let movie = browser_path(&page, "../../data/results/r1/movie.mp4");
+    let (st, _, body) = get(addr, &movie, &[]).await;
+    assert_eq!(st, 403, "{}", body_text(&body));
+    assert!(body_text(&body).contains("refused: data is a link"), "{}", body_text(&body));
+    assert!(body_text(&body).contains("none is declared"), "{}", body_text(&body));
+    let (st, _, body) = get(addr, &format!("/{nonce}/site/lnk/results/r1/movie.mp4"), &[]).await;
     assert_eq!(st, 403);
     assert!(body_text(&body).contains("none is declared"), "{}", body_text(&body));
-    // The site itself is untouched.
-    let (st, _, _) = get(addr, &format!("/{nonce}/exp/page.html"), &[]).await;
-    assert_eq!(st, 200);
+    std::fs::write(&empty, format!("{}\n", f.share.display())).unwrap();
+    let (st, _, body) = get(addr, &movie, &[]).await;
+    assert_eq!(st, 200, "{}", body_text(&body));
+    assert_eq!(body.len(), MOVIE_LEN);
     remove_root(serial);
 }
 
@@ -282,6 +310,75 @@ async fn a_page_outside_the_site_is_r2a() {
     let (st, _, body) = get(addr, &format!("/{nonce}/other.txt"), &[]).await;
     assert_eq!(st, 403);
     assert!(body_text(&body).contains("other.txt is outside the site folder"));
+    remove_root(serial);
+}
+
+/// Outside the site folder a path that reaches no link gets one answer, whether it exists, is a file or a folder, with
+/// or without an `index.html`, with a data root declared or not: a page's script learns nothing about the repo's files
+/// beyond its own site and the names of links it asks for. A link's own name is the one thing the answer still shows.
+#[tokio::test]
+async fn outside_the_site_a_path_with_no_link_has_one_answer_b1() {
+    let f = fixture();
+    write(&f.repo.join(".ssh/id_ed25519"), b"key");
+    write(&f.repo.join("plaindir/a.txt"), b"a");
+    write(&f.repo.join("sitedir/index.html"), b"<html></html>");
+    write(&f.repo.join("untracked.env"), b"x=1");
+    let empty = f.base.join("empty-roots");
+    std::fs::write(&empty, "# nothing\n").unwrap();
+    let cases = [
+        "other.txt",
+        "untracked.env",
+        "missing.env",
+        ".ssh/id_ed25519",
+        ".ssh/missing",
+        "plaindir",
+        "plaindir/a.txt",
+        "sitedir",
+        "nolink/x",
+        "nolink",
+    ];
+    for roots in [f.roots_file.clone(), empty] {
+        let site = Site::with_roots(f.repo.join("site"), f.repo.clone(), true, roots).await;
+        let (addr, nonce, serial) = serve(site).await;
+        for c in cases {
+            let (st, _, body) = get(addr, &format!("/{nonce}/{c}"), &[]).await;
+            let body = body_text(&body);
+            assert_eq!(st, 403, "{c}: {body}");
+            assert_eq!(
+                body,
+                format!("refused: {c} is outside the site folder; only the site folder and the repo's tracked data links are served"),
+                "{c}"
+            );
+        }
+        // A link is named by the requester, so its refusal may differ; it is still a refusal.
+        let (st, _, _) = get(addr, &format!("/{nonce}/loose/x"), &[]).await;
+        assert_eq!(st, 403);
+        remove_root(serial);
+    }
+}
+
+/// A repo whose only link was never committed still widens: the link is refused as untracked, and once it is
+/// committed the next request serves it, with no reopen.
+#[tokio::test]
+async fn a_never_committed_link_is_r2b_then_served_once_added_s1() {
+    let f = fixture();
+    let repo = f.base.join("repo2");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    write(&repo.join("site/index.html"), b"<html></html>");
+    git(&repo, &["add", "site"]);
+    symlink("../share", repo.join("nas")).unwrap();
+    let site = Site::with_roots(repo.join("site"), repo.clone(), true, f.roots_file.clone()).await;
+    let (addr, nonce, serial) = serve(site).await;
+    let path = format!("/{nonce}/nas/results/r1/movie.mp4");
+    let (st, _, body) = get(addr, &path, &[]).await;
+    assert_eq!(st, 403, "{}", body_text(&body));
+    assert!(body_text(&body).contains("nas is a link git does not track"), "{}", body_text(&body));
+    assert!(body_text(&body).contains("git add it: it serves at the next request"), "{}", body_text(&body));
+    git(&repo, &["add", "nas"]);
+    let (st, _, body) = get(addr, &path, &[]).await;
+    assert_eq!(st, 200, "{}", body_text(&body));
+    assert_eq!(body.len(), MOVIE_LEN);
     remove_root(serial);
 }
 
@@ -446,4 +543,44 @@ async fn a_root_declared_through_a_symlinked_path_matches_its_canonical_target()
     assert_eq!(st, 200);
     assert_eq!(body.len(), MOVIE_LEN);
     remove_root(serial);
+}
+
+/// Git is run everywhere but on a Mac with no Command Line Tools, where `/usr/bin/git` is an install prompt.
+#[test]
+fn git_runs_unless_it_is_the_macos_install_stub() {
+    assert!(git_usable(false, false));
+    assert!(git_usable(true, true));
+    assert!(!git_usable(true, false));
+}
+
+/// Where git cannot run, a tracked link is refused with words that say so, not "git does not track".
+#[tokio::test]
+async fn a_link_where_git_cannot_run_is_refused_with_the_install_words() {
+    let f = fixture();
+    let mut site = widened(&f).await;
+    site.git.as_mut().unwrap().usable = false;
+    let (addr, nonce, serial) = serve(site).await;
+    let (st, _, body) = get(addr, &format!("/{nonce}/{MOVIE}"), &[]).await;
+    assert_eq!(st, 403);
+    let body = body_text(&body);
+    assert!(body.contains("data is a link, and linked data needs git; on macOS install the Command Line Tools, then restart the daemon"), "{body}");
+    assert!(!body.contains("does not track"), "{body}");
+    remove_root(serial);
+}
+
+/// With git unusable the repo top comes from a walk up for `.git`, and the URL space widens to it only within the
+/// workspace root, never above it and not when the workspace is the site folder.
+#[tokio::test]
+async fn without_git_the_walk_up_for_dot_git_widens_only_within_the_workspace() {
+    let f = fixture();
+    let site_dir = f.repo.join("site");
+    for (ws, widened) in [(&f.repo, true), (&f.base, true), (&site_dir, false)] {
+        let mut site = Site::plain(site_dir.clone());
+        site.attach_git(ws, true, false);
+        let git = site.git.as_ref().expect("a repo found by the walk");
+        assert!(!git.usable);
+        assert_eq!(git.top, f.repo);
+        assert_eq!(site.url_root, if widened { f.repo.clone() } else { site_dir.clone() }, "workspace {}", ws.display());
+        assert!(site.git.as_ref().unwrap().links(&site.url_root).is_empty());
+    }
 }

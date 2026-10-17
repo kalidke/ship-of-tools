@@ -360,8 +360,9 @@ mod keep_tests {
     }
 
     /// A file of a megabyte served through a 1 KiB pipe: the file is read at most a chunk ahead of the client.
-    async fn big_file() -> (std::path::PathBuf, tokio::fs::File) {
-        let path = std::env::temp_dir().join(format!("sot-keep-test-{}", sot_updater::unique::suffix()));
+    /// The guard removes the file when the test ends, however it ends.
+    async fn big_file() -> (tempfile::TempPath, tokio::fs::File) {
+        let path = tempfile::Builder::new().prefix("sot-keep-test-").tempfile().unwrap().into_temp_path();
         std::fs::write(&path, vec![7u8; 1 << 20]).unwrap();
         let file = tokio::fs::File::open(&path).await.unwrap();
         (path, file)
@@ -383,7 +384,7 @@ mod keep_tests {
     async fn a_reply_keeps_its_connection_only_when_sent_whole() {
         let timeout = Duration::from_secs(10);
         // Whole.
-        let (path, file) = big_file().await;
+        let (_path, file) = big_file().await;
         let (mut client, mut server) = duplex(1024);
         let sent = tokio::spawn(async move { serve_file(&mut server, &get(true), file, "text/plain", "").await.unwrap() });
         let mut raw = Vec::new();
@@ -407,15 +408,12 @@ mod keep_tests {
         tokio::time::timeout(timeout, client.read_to_end(&mut rest)).await.unwrap().unwrap();
         assert!(!tokio::time::timeout(timeout, sent).await.unwrap().unwrap(), "a short reply closes the connection");
         // Failed: the client leaves after the head.
-        let (failing, file) = big_file().await;
+        let (_failing, file) = big_file().await;
         let (mut client, mut server) = duplex(1024);
         let sent = tokio::spawn(async move { serve_file(&mut server, &get(true), file, "text/plain", "").await.unwrap() });
         read_head(&mut client).await;
         drop(client);
         assert!(!tokio::time::timeout(timeout, sent).await.unwrap().unwrap(), "a failed reply closes the connection");
-        for path in [path, shrinking, failing] {
-            let _ = std::fs::remove_file(path);
-        }
     }
 
     /// The bound is one deadline for a whole head: one sent a line every 10 s is closed 30 s after the wait began,
@@ -442,7 +440,7 @@ mod keep_tests {
     /// keeps taking a chunk every 20 s gets the whole reply.
     #[tokio::test(start_paused = true)]
     async fn a_client_that_stops_reading_is_cut_at_the_write_bound() {
-        let (path, file) = big_file().await;
+        let (_path, file) = big_file().await;
         let (mut client, mut server) = duplex(1024);
         let sent = tokio::spawn(async move { serve_file(&mut server, &get(true), file, "text/plain", "").await.unwrap() });
         read_head(&mut client).await;
@@ -451,7 +449,7 @@ mod keep_tests {
         assert!(!kept);
         assert!(start.elapsed() >= WRITE_BOUND, "cut after {:?}", start.elapsed());
         drop(client);
-        let (_, file) = big_file().await;
+        let (_path2, file) = big_file().await;
         let (mut client, mut server) = duplex(READ_CHUNK);
         let sent = tokio::spawn(async move { serve_file(&mut server, &get(true), file, "text/plain", "").await.unwrap() });
         read_head(&mut client).await;
@@ -462,6 +460,5 @@ mod keep_tests {
             got += client.read(&mut buf).await.unwrap();
         }
         assert!(sent.await.unwrap(), "a slow client that keeps reading gets the whole reply");
-        let _ = std::fs::remove_file(path);
     }
 }

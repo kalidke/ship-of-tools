@@ -21,9 +21,9 @@
 // A `Site` splits two roots that used to be one. CONTENT root S is where
 // ordinary files are served from (`find_site_root`, unchanged). URL root is
 // where the URL path space maps: the repo top when the page is opened from the
-// shared prefix server, git tracks a symlink under it and this machine declares
-// a data root, else S. A page's `../../data/x.mp4` can only reach the link
-// folder when the URL space starts above S. Widening the URL space does not
+// shared prefix server and sits in a git repo, else S. A page's
+// `../../data/x.mp4` can only reach the link folder, to be served or refused
+// with words, when the URL space starts above S. Widening the URL space does not
 // widen what is served: outside S, only files inside the target of a link git
 // tracks, under a data root the machine's own `data-roots` file declares, are
 // served (see `resolve_and_open` for the refusals). No file whose resolved path
@@ -543,7 +543,8 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
                     stream,
                     "404 Not Found",
                     "no site open for this link (it was reopened, the daemon restarted or forgot the window \
-                     that opened it, or this site uses root-relative links and should open via a pool port)",
+                     that opened it, a `../` link on the page climbs above the top of the site, or this site \
+                     uses root-relative links and should open via a pool port)",
                     keep,
                 )
                 .await;

@@ -3,8 +3,8 @@
 use super::*;
 
 /// One open site: where ordinary files are served from, where the URL space
-/// maps, and (unix, when this machine declares data roots and the folder is in
-/// a git repo) the state needed to follow tracked links. See the header.
+/// maps, and (unix, when the folder is in a git repo) the state needed to
+/// follow tracked links. See the header.
 pub struct Site {
     /// Canonical S: the only place ordinary files are served from.
     pub(super) content_root: PathBuf,
@@ -30,6 +30,9 @@ pub struct Site {
 struct GitState {
     top: PathBuf,
     index: PathBuf,
+    /// False on a Mac without the Command Line Tools: git is never run, the
+    /// repo top comes from a walk up for `.git`, and no link is followed.
+    usable: bool,
     cache: Mutex<LinkCache>,
 }
 
@@ -129,11 +132,42 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, (bool, String)> {
     }
 }
 
+/// Why no link is followed where git cannot run.
+const NO_GIT: &str = "linked data needs git; on macOS install the Command Line Tools, then restart the daemon";
+
+/// Whether running `git` is safe. On macOS without the Command Line Tools,
+/// `/usr/bin/git` is a stub that pops an install prompt at every run, so a repo
+/// there tracks no links; everywhere else git is run as found.
+#[cfg(unix)]
+fn git_usable(macos: bool, command_line_tools: bool) -> bool {
+    !macos || command_line_tools
+}
+
+#[cfg(unix)]
+fn git_present() -> bool {
+    static PRESENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PRESENT.get_or_init(|| {
+        let clt = cfg!(target_os = "macos") && {
+            let mut cmd = std::process::Command::new("xcode-select");
+            cmd.arg("-p").stdin(std::process::Stdio::null());
+            crate::lifecycle::child_signal::process()
+                .output(&mut cmd, Duration::from_secs(10))
+                .is_ok_and(|o| o.status.success())
+        };
+        git_usable(cfg!(target_os = "macos"), clt)
+    })
+}
+
 #[cfg(unix)]
 impl GitState {
     /// The repo containing `dir`: its canonical top and index file. `None`
     /// (fail closed, no links) when it is not a repo or git will not answer.
-    fn find(dir: &Path) -> Option<GitState> {
+    fn find(dir: &Path, git_ok: bool) -> Option<GitState> {
+        if !git_ok {
+            tracing::info!(dir = %dir.display(), "site_serve: no usable git (macOS Command Line Tools missing?), no links followed");
+            let top = dir.ancestors().find(|a| a.join(".git").exists())?.to_path_buf();
+            return Some(GitState { index: top.join(".git"), top, usable: false, cache: Mutex::new(LinkCache::default()) });
+        }
         let out = match run_git(dir, &["rev-parse", "--show-toplevel", "--git-path", "index"]) {
             Ok(o) => o,
             Err((true, first)) if first.is_empty() || first.contains("not a git repository") => {
@@ -149,7 +183,7 @@ impl GitState {
         let mut lines = text.lines();
         let top = PathBuf::from(lines.next()?).canonicalize().ok()?;
         let index = dir.join(lines.next()?);
-        Some(GitState { top, index, cache: Mutex::new(LinkCache::default()) })
+        Some(GitState { top, index, usable: true, cache: Mutex::new(LinkCache::default()) })
     }
 
     /// Tracked symlinks under `url_root`, relative to it. Re-stats the index on
@@ -158,6 +192,9 @@ impl GitState {
     /// The stamp is taken BEFORE listing, so a write during the listing shows
     /// as changed next time.
     fn links(&self, url_root: &Path) -> BTreeSet<PathBuf> {
+        if !self.usable {
+            return BTreeSet::new();
+        }
         let stamp = index_stamp(&self.index);
         let mut c = self.cache.lock().unwrap_or_else(|p| p.into_inner());
         if stamp.is_none() || c.stamp != stamp {
@@ -208,9 +245,9 @@ impl Site {
         }
     }
 
-    /// Open a site for `docs.open`, reading the machine's data-roots file.
-    /// `ws_root` bounds how far the URL space may widen; `widen` is false for
-    /// root-relative sites (they keep S as their URL root).
+    /// Open a site for `docs.open`. `ws_root` bounds how far the URL space may
+    /// widen; `widen` is false for root-relative sites (they keep S as their
+    /// URL root).
     pub async fn open(content_root: PathBuf, ws_root: PathBuf, widen: bool) -> Site {
         Self::build(content_root, ws_root, widen, None).await
     }
@@ -236,12 +273,11 @@ impl Site {
         site.roots_file = roots_file;
         #[cfg(unix)]
         {
-            // git is only asked when the machine declares at least one root;
-            // no root is canonicalized here, a dead share must not stall open.
+            // Widened whether or not a data root is declared, so a page's link
+            // above S reaches `follow_link` and its refusal names why. No root
+            // is canonicalized here: a dead share must not stall open.
             let site = tokio::task::spawn_blocking(move || {
-                if site.declares_a_root() {
-                    site.attach_git(&ws_root, widen);
-                }
+                site.attach_git(&ws_root, widen, git_present());
                 site
             })
             .await;
@@ -255,8 +291,8 @@ impl Site {
     }
 
     #[cfg(unix)]
-    fn attach_git(&mut self, ws_root: &Path, widen: bool) {
-        let Some(mut g) = GitState::find(&self.content_root) else { return };
+    fn attach_git(&mut self, ws_root: &Path, widen: bool, git_ok: bool) {
+        let Some(g) = GitState::find(&self.content_root, git_ok) else { return };
         if widen {
             let ws = ws_root.canonicalize().unwrap_or_else(|_| ws_root.to_path_buf());
             // The inner of the repo top and the workspace root; both are
@@ -269,16 +305,10 @@ impl Site {
                 None
             };
             if let Some(r) = inner {
-                if self.content_root.starts_with(&r)
-                    && r != self.content_root
-                    && !g.links(&r).is_empty()
-                {
+                if self.content_root.starts_with(&r) {
                     self.url_root = r;
                 }
             }
-            // The probe above listed links relative to the candidate root;
-            // start clean so the set is always relative to the final one.
-            g.cache = Mutex::new(LinkCache::default());
         }
         self.git = Some(g);
     }
@@ -288,16 +318,6 @@ impl Site {
         self.roots_file
             .clone()
             .or_else(|| sot_log::host::state_dir::sot_config_dir().map(|d| d.join("data-roots")))
-    }
-
-    /// Whether the data-roots file has a non-comment absolute line: text only,
-    /// nothing is resolved.
-    #[cfg(unix)]
-    fn declares_a_root(&self) -> bool {
-        let Some(text) = self.roots_path().and_then(|f| std::fs::read_to_string(f).ok()) else {
-            return false;
-        };
-        text.lines().map(str::trim).any(|l| !l.starts_with('#') && Path::new(l).is_absolute())
     }
 
     /// The data roots as of the file's current stat: a root added or removed
@@ -480,6 +500,7 @@ pub(crate) fn resolve_and_open(
     for p in &parts {
         q.push(p);
     }
+    let asked = if parts.is_empty() { "index.html".to_string() } else { parts.join("/") };
     if parts.is_empty() || q.is_dir() {
         q.push("index.html");
         parts.push("index.html");
@@ -502,7 +523,7 @@ pub(crate) fn resolve_and_open(
         cur.push(p);
         link.push(p);
         match std::fs::symlink_metadata(&cur) {
-            Err(_) => return Err(not_found()),
+            Err(_) => break,
             Ok(m) if m.file_type().is_symlink() => {
                 found = true;
                 break;
@@ -511,11 +532,16 @@ pub(crate) fn resolve_and_open(
         }
     }
     if !found {
+        // No existence oracle outside S: whether or not the path exists, is a
+        // folder or has an index, it gets this one answer, named as asked.
+        if q.starts_with(&site.content_root) {
+            return Err(not_found());
+        }
         return Err(refuse(
-            &shown,
+            &asked,
             "403 Forbidden",
             "R2a",
-            format!("refused: {shown} is outside the site folder; only the site folder and the repo's tracked data links are served"),
+            format!("refused: {asked} is outside the site folder; only the site folder and the repo's tracked data links are served"),
         ));
     }
     let l = link.to_string_lossy().into_owned();
@@ -551,9 +577,12 @@ fn follow_link(
     if roots.roots.is_empty() {
         return Err(forbid("R2c", format!("refused: {l} is a link, and links are followed only into a data root this machine declares in the data-roots file of its Ship of Tools config folder; none is declared{skipped}")));
     }
+    if site.git.as_ref().is_some_and(|g| !g.usable) {
+        return Err(forbid("R2e", format!("refused: {l} is a link, and {NO_GIT}")));
+    }
     let tracked = site.git.as_ref().is_some_and(|g| g.links(&site.url_root).contains(link));
     if !tracked {
-        return Err(forbid("R2b", format!("refused: {l} is a link git does not track in this repo, so it is not followed (git add it, then open the page again)")));
+        return Err(forbid("R2b", format!("refused: {l} is a link git does not track in this repo, so it is not followed (git add it: it serves at the next request)")));
     }
     let Ok(t) = site.url_root.join(link).canonicalize() else {
         return Err(refuse(

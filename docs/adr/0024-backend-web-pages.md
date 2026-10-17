@@ -217,10 +217,12 @@ A page can show data that lives outside its repo, through a symlink the repo
 tracks. Two roots, once one, are now separate. The **content root** is where
 ordinary files are served from (`find_site_root`, unchanged). The **URL root** is
 where the URL path space maps: the repo top when the page rides the shared prefix
-server, git tracks a symlink under it and the machine declares a data root, else
-the content root. A browser collapses `../../../data/x.mp4` above the nonce
-segment, so the link folder is reachable only when the URL space starts at a
-common ancestor. Root-relative sites keep their own pool origin and are not
+server and sits in a git repo, else the content root. A browser
+collapses `../../../data/x.mp4` above the nonce segment, so the link folder is
+reachable only when the URL space starts at a common ancestor. The URL space
+widens whether or not the machine declares a data root, so a page's link on a
+machine that declares none is refused with words that say so, not answered that
+no site is open. Root-relative sites keep their own pool origin and are not
 widened. Widening the URL space does not widen what is served.
 
 Follow rule, checked on every request:
@@ -250,6 +252,11 @@ escaping. What a page's script can read: the content root, plus files inside the
 targets of tracked links under a declared root; never anything inside a `.git`
 directory below the folder it is served from, never an untracked repo file
 outside the content root, never anything through an untracked link.
+Outside the content root no answer depends on whether the path exists: a path that reaches no link gets one refusal
+whether or not it exists, so a script learns the names of links under the URL root and nothing else about the repo's
+files. The time to answer still differs slightly (an existing path costs a few `lstat`s more); that is a known limit.
+On a Mac without the Command Line Tools git is never run, no link is followed, and once a data root is declared a link is
+refused with words that say git is needed (with none declared, the "none is declared" refusal comes first).
 Range, content types and the empty-file case are shared with the video server.
 
 ## Amendment 2026-10-11: Quarto render diagnostics (QUARTO-ERROR)
