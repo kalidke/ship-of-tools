@@ -115,6 +115,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-sot-apply.ps1`: scripts/sot-apply.ps1 against a synthetic staged update: apply, damaged stage, rollback,
   already applied, wrong target, lock held, and (section 9, with a built `sotd.exe`, else SKIP) a pointer that no
   longer fits the install. Runs in the `rust.yml` step "Test sot-apply.ps1".
+- `test-install-manifest.ps1`: scripts/install-manifest.ps1's pointer rule: a changed version or commit drops the armed
+  pointer, a same-version rewrite keeps it, no pointer breaks nothing. A stand-in sot.exe built with csc.exe and a scratch
+  git repo; runs under Windows PowerShell 5.1 and pwsh. Runs in the `rust.yml` step "Test install-manifest.ps1".
 - `test-topology-plan.ps1`: `Get-SotTopologyPlan` and `Invoke-SotTopologySync` (scripts/sot-hosts.ps1) against a fake
   `sotd`. Runs in the `rust.yml` step "Test topology plan".
 - `test-topology-plan.sh`: `sot_topology_plan` (scripts/lib/sot-hosts.sh) against a fake `sotd`. Runs in the `rust.yml` step
