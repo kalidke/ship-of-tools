@@ -206,6 +206,30 @@ Base.flush(::CountingIO) = nothing
         @test text == "before\n42\nafter\n"
     end
 
+    @testset "serve: in a child process, nothing but envelopes reaches stdout when an eval calls display" begin
+        script = "using ShipToolsRepl; ShipToolsRepl.serve(stdin, stdout)"
+        cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(pkgdir(ShipToolsRepl)) -e $script`
+        proc = open(pipeline(cmd; stderr = devnull), "r+")
+        watchdog = @async (sleep(120); kill(proc))
+        write(proc, eval_line(1, "println(\"before\"); display(42); println(\"after\")"))
+        flush(proc)
+        lines = String[]
+        while !eof(proc)
+            line = readline(proc)
+            push!(lines, line)
+            startswith(line, "{") && occursin("\"kind\":\"res\"", line) && break
+        end
+        close(proc.in)
+        wait(proc)
+        # every line the child wrote is one envelope (a raw `42` parses as a number)
+        envs = [DR.json_read(l) for l in lines]
+        @test all(e -> e isa AbstractDict, envs)
+        filter!(e -> e isa AbstractDict, envs)
+        text = join([e[:payload][:frame][:text] for e in envs
+                     if get(e, :op, "") == "repl.frame" && e[:payload][:frame][:kind] == "stdout"])
+        @test text == "before\n42\nafter\n"
+    end
+
     @testset "serve: a child says once, at the start of its first eval, why the REPL before it ended and why it has no display" begin
         evals(bs_in, bs_out, ids) = map(ids) do eval_id
             write(bs_in, sprint(DR.json_write, Dict(:v => 1, :id => eval_id, :op => "repl.eval",
