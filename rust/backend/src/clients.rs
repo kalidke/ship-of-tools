@@ -657,12 +657,11 @@ pub async fn handle_fe_command_send(
             .iter()
             .filter(|c| c.role == "fe" && c.name.as_deref() == Some(handle))
             .count(),
-        // Every window: a preview or a reveal, or a command with no named frontend attached to resolve to.
-        (None, None) => snap
-            .clients
-            .iter()
-            .filter(|c| c.role == "fe" && c.name.as_deref().is_some_and(|h| !h.is_empty()))
-            .count(),
+        // Every window: a preview or a reveal, or a command with no named frontend attached to resolve to. A window
+        // that holds an old connection beside its redial is one audience, not two.
+        (None, None) => window::window_count(
+            snap.clients.iter().filter(|c| c.role == "fe" && c.name.as_deref().is_some_and(|h| !h.is_empty())),
+        ),
     };
 
     tracing::info!(cmd = %req.cmd, workspace, path, target = ?req.target, why, delivered_to, "fe.command.send relay");

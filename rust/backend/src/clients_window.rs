@@ -39,6 +39,11 @@ fn window_key(info: &ClientInfo) -> Option<WindowKey> {
     Some((info.host.clone()?, info.instance.clone().filter(|i| !i.is_empty())?))
 }
 
+/// How many windows `infos` are: a window's connections count once, a connection of no window counts as its own.
+pub(super) fn window_count<'a>(infos: impl Iterator<Item = &'a ClientInfo>) -> usize {
+    infos.map(|info| window_key(info).ok_or(info.serial)).collect::<std::collections::HashSet<_>>().len()
+}
+
 impl super::Clients {
     /// The owners of the pages of the windows with no live connection, the one away longest first: whose pool port a
     /// new open may take when every port is held (`pages::site::assign_pool_port`). Never a live window's.
