@@ -16,8 +16,11 @@ tp="$(get .transcript_path)"
 eff="$(get .effort.level)"; th="$(get .thinking.enabled)"
 if [ "$th" != "true" ]; then think=off; tc=90; elif [ -n "$eff" ]; then think="$eff"; tc=35; else think=on; tc=35; fi
 cur="$(get .workspace.current_dir)"; [ -z "$cur" ] && cur=.
-br="$(git -C "$cur" branch --show-current 2>/dev/null)"
-if [ -n "$br" ]; then repo="$(basename "$cur"):$br"; unc="$(git -C "$cur" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"; else repo=no-git; unc=0; fi
+# A detached HEAD shows the short commit. --no-optional-locks: the count never takes the index lock.
+if [ "$(git -C "$cur" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
+  br="$(git -C "$cur" branch --show-current 2>/dev/null)"; [ -n "$br" ] || br="$(git -C "$cur" rev-parse --short HEAD 2>/dev/null)"
+  repo="$(basename "$cur"):$br"; unc="$(git --no-optional-locks -C "$cur" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+else repo=no-git; unc=0; fi
 [ "${unc:-0}" -eq 0 ] && uc=32 || uc=31
 inT="$(get .context_window.total_input_tokens)"; outT="$(get .context_window.total_output_tokens)"
 cost="$(get .cost.total_cost_usd)"; cost=${cost:-0}

@@ -21,8 +21,13 @@ $thinkSeg = if ($think -eq 'off') { Col '90' "think:$think" } else { Col '35' "t
 $ver = if ($j.version) { Col '33' "v$($j.version)" } else { '' }
 $cur = if ($j.workspace.current_dir) { [string]$j.workspace.current_dir } else { '.' }
 Push-Location $cur 2>$null
-$branch = git branch --show-current 2>$null
-if ($branch) { $repo = "$(Split-Path $cur -Leaf):$branch"; $unc = @(git status --porcelain 2>$null).Count }
+# A detached HEAD shows the short commit. --no-optional-locks: the count never takes the index lock.
+$inside = (git rev-parse --is-inside-work-tree 2>$null) -eq 'true'
+if ($inside) {
+    $branch = git branch --show-current 2>$null
+    if (-not $branch) { $branch = git rev-parse --short HEAD 2>$null }
+    $repo = "$(Split-Path $cur -Leaf):$branch"; $unc = @(git --no-optional-locks status --porcelain 2>$null).Count
+}
 else { $repo = 'no-git'; $unc = 0 }
 Pop-Location 2>$null
 $uncCol = if ($unc -eq 0) { '32' } else { '31' }
