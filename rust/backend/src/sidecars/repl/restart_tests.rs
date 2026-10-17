@@ -24,7 +24,7 @@ const BODY: Duration = Duration::from_secs(600);
 
 /// A shim that announces itself and then reads requests forever, answering none.
 const IDLE_SHIM: &str = r#"module ShipToolsRepl
-function serve(i, o)
+function run_shim(i, o)
     println(o, "{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}")
     flush(o)
     while !eof(i)

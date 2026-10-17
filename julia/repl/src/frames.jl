@@ -7,15 +7,32 @@ Base.unsafe_write(::EvalStdout, p::Ptr{UInt8}, n::UInt) = unsafe_write(stdout, p
 Base.write(::EvalStdout, b::UInt8) = write(stdout, b)
 Base.flush(::EvalStdout) = flush(stdout)
 
-# Julia's startup `TextDisplay(stdout)` holds the process's stdout, which is the wire. Swap each for a real
-# `TextDisplay` (packages find the stack's fallback by that type) on an `EvalStdout`, in place so the stack's order holds.
-function replace_startup_text_display!()
+# Only the shim's own locked writer reaches the wire (`io_out`, which holds its own descriptor). Julia's startup
+# `TextDisplay(stdout)` holds the wire, so each is swapped, in place so the stack's order holds, for a real `TextDisplay`
+# (packages find the stack's fallback by that type) on an `EvalStdout`; then the process's stdout (Julia's and fd 1)
+# becomes its stderr, which the supervisor drains, so a display or `println` outside an eval cannot glue onto an
+# envelope. Idempotent: `run_shim` does it before the user's startup file, `serve` again.
+function point_stdout_away_from_wire!(io_out::IO)
     ds = Base.Multimedia.displays
     for i in eachindex(ds)
         d = ds[i]
-        d isa TextDisplay && d.io === Base.stdout && (ds[i] = TextDisplay(EvalStdout()))
+        d isa TextDisplay && d.io === io_out && (ds[i] = TextDisplay(EvalStdout()))
     end
+    io_out === stdout && redirect_stdout(stderr)
     return nothing
+end
+
+# The REPL child's entry: the spawn passes `--startup-file=no`, and the user's startup file runs here, as Julia would
+# run it (`Base.load_julia_startup`, the depot search order Julia uses), with stdout already on stderr. An error in it is
+# reported on stderr, and the shim still serves.
+function run_shim(io_in::IO, io_out::IO)
+    point_stdout_away_from_wire!(io_out)
+    try
+        Base.load_julia_startup()
+    catch e
+        println(stderr, "sot: the startup file failed: ", sprint(showerror, e, catch_backtrace()))
+    end
+    serve(io_in, io_out)
 end
 
 """

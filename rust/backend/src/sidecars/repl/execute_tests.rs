@@ -148,7 +148,7 @@ async fn submit_failure_closes_started_run() {
 
 /// A shim that answers with a terminal error res and streams no frame: the run is still closed, once.
 const RES_ONLY_SHIM: &str = r#"module ShipToolsRepl
-function serve(i, o)
+function run_shim(i, o)
     println(o, "{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}")
     flush(o)
     while !eof(i)

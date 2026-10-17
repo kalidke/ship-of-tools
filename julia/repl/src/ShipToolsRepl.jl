@@ -108,12 +108,7 @@ function serve(io_in::IO, io_out::IO)
     # (every test in this file does) doesn't pile up duplicate displays.
     any(d isa WGLDisplay for d in Base.Multimedia.displays) ||
         pushdisplay(WGLDisplay())
-    # Only the shim's own locked writer reaches the wire. Julia's startup `TextDisplay(stdout)` holds the wire, so it
-    # gives way to one on the eval's current `stdout`; then the process's stdout (Julia's and fd 1) becomes its stderr,
-    # which the supervisor drains, so a task's display or `println` between evals cannot glue onto an envelope.
-    # (`io_out` holds its own descriptor.)
-    replace_startup_text_display!()
-    io_out === stdout && redirect_stdout(stderr)
+    point_stdout_away_from_wire!(io_out)
 
     ended = get(ENV, "SOT_PREVIOUS_END", "")
     why = get(ENV, "SOT_NO_DISPLAY", "")

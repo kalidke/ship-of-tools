@@ -57,7 +57,7 @@ pub(super) async fn spawn_supervisor(
             repl_project.display()
         ));
     }
-    let julia_src = "using ShipToolsRepl; ShipToolsRepl.serve(stdin, stdout)";
+    let julia_src = "using ShipToolsRepl; ShipToolsRepl.run_shim(stdin, stdout)";
 
     // JULIA_LOAD_PATH uses ':' on Unix and ';' on Windows. ORDER MATTERS: the
     // workspace project (`@` = --project) comes FIRST so a dependency the
@@ -90,6 +90,8 @@ pub(super) async fn spawn_supervisor(
         // resolves where the user expects: the workspace/project root.
         .current_dir(user_project)
         .arg(format!("--project={}", user_project.display()))
+        // The shim runs the user's startup file itself, with stdout on stderr (`run_shim`).
+        .arg("--startup-file=no")
         .arg("-e")
         .arg(julia_src)
         .stdin(Stdio::piped())

@@ -232,6 +232,42 @@ Base.flush(::CountingIO) = nothing
         @test stdout_text(3) == "x\n"
     end
 
+    @testset "run_shim: the user's startup file runs with stdout on stderr, and a failing one leaves a serving shim" for
+            (startup, expected_stderr) in (
+                ("println(\"startup-line\"); display(7)", ["startup-line", "7"]),
+                ("println(\"before-boom\"); error(\"boom\")", ["before-boom", "boom"]))
+        depot = mktempdir()
+        mkpath(joinpath(depot, "config"))
+        write(joinpath(depot, "config", "startup.jl"), startup)
+        script = "using ShipToolsRepl; ShipToolsRepl.run_shim(stdin, stdout)"
+        cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --project=$(pkgdir(ShipToolsRepl)) -e $script`,
+            "JULIA_DEPOT_PATH" => depot * ":")
+        errpath = tempname()
+        proc = open(pipeline(cmd; stderr = errpath), "r+")
+        @async (sleep(120); kill(proc))
+        write(proc, eval_line(1, "1 + 1"))
+        flush(proc)
+        lines = String[]
+        got_res = false
+        while !got_res && !eof(proc)
+            line = readline(proc)
+            push!(lines, line)
+            got_res = occursin("\"kind\":\"res\"", line)
+        end
+        close(proc.in)
+        wait(proc)
+        stderr_text = read(errpath, String)
+        rm(errpath; force = true)
+        rm(depot; recursive = true, force = true)
+        @test got_res
+        envs = Any[try DR.json_read(l) catch; l end for l in lines]
+        @test all(e -> e isa AbstractDict, envs) || (println(stderr, "child stderr:\n", stderr_text); false)
+        @test first(lines) |> DR.json_read |> e -> e[:op] == "repl.ready"
+        for needle in expected_stderr
+            @test occursin(needle, stderr_text)
+        end
+    end
+
     @testset "serve: a child says once, at the start of its first eval, why the REPL before it ended and why it has no display" begin
         evals(bs_in, bs_out, ids) = map(ids) do eval_id
             write(bs_in, sprint(DR.json_write, Dict(:v => 1, :id => eval_id, :op => "repl.eval",
