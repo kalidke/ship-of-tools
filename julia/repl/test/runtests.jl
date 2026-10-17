@@ -187,84 +187,30 @@ Base.flush(::CountingIO) = nothing
         @test res[:payload][:eval_id] == 99
     end
 
-    @testset "serve: the stack keeps a real TextDisplay at the bottom, as Plots, Makie and Bonito look for it" begin
-        DR.serve(IOBuffer(""), IOBuffer())
-        @test Base.Multimedia.displays[1] isa TextDisplay
-        @test findlast(d -> d isa TextDisplay, Base.Multimedia.displays) !== nothing
-    end
-
-    @testset "serve: in a child process, nothing but envelopes reaches stdout, in an eval or between evals" begin
-        script = "using ShipToolsRepl; ShipToolsRepl.serve(stdin, stdout)"
-        cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(pkgdir(ShipToolsRepl)) -e $script`
-        errpath = tempname()
-        proc = open(pipeline(cmd; stderr = errpath), "r+")
-        watchdog = @async (sleep(120); kill(proc))
-        lines = String[]
-        # Send one eval and read the wire to its res; `pause` lets a task it started run before the next eval.
-        function eval_and_read(id, code; pause = 0.0)
-            write(proc, eval_line(id, code))
-            flush(proc)
-            got_res = false
-            while !got_res && !eof(proc)
-                line = readline(proc)
-                push!(lines, line)
-                got_res = occursin("\"kind\":\"res\"", line)
+    @testset "serve: before each eval, a loaded Revise revises, and its error is a stderr frame while the eval runs" begin
+        @eval Main module Revise
+            calls = 0
+            fail = false
+            revise() = (global calls += 1; fail && error("revise-broke"); nothing)
+        end
+        try
+            bs_in, bs_out, _ = drive(String[])
+            frames(id) = begin
+                write(bs_in, eval_line(id, "id = $id"))
+                flush(bs_in)
+                [e[:payload][:frame] for e in read_until_res(bs_out) if get(e, :op, "") == "repl.frame"]
             end
-            sleep(pause)
-            return got_res
-        end
-        res1 = eval_and_read(1, "println(\"before\"); display(42); println(\"after\")")
-        # A task's display and println land after the eval that started it has ended, then eval 3 runs.
-        res2 = eval_and_read(2, "@async (sleep(0.3); display(42); println(\"late\")); nothing"; pause = 1.0)
-        res3 = eval_and_read(3, "println(\"x\"); 2")
-        close(proc.in)
-        wait(proc)
-        stderr_text = read(errpath, String)
-        rm(errpath; force = true)
-        @test (res1, res2, res3) == (true, true, true)
-        # every line the child wrote is one envelope (a raw `42` parses as a number)
-        envs = Any[try DR.json_read(l) catch; l end for l in lines]
-        @test all(e -> e isa AbstractDict, envs) || (println(stderr, "child stderr:\n", stderr_text); false)
-        filter!(e -> e isa AbstractDict, envs)
-        stdout_text(id) = join([e[:payload][:frame][:text] for e in envs
-            if get(e, :op, "") == "repl.frame" && e[:id] == id && e[:payload][:frame][:kind] == "stdout"])
-        @test stdout_text(1) == "before\n42\nafter\n"
-        @test stdout_text(3) == "x\n"
-    end
-
-    @testset "run_shim: the user's startup file runs with stdout on stderr, and a failing one leaves a serving shim" for
-            (startup, expected_stderr) in (
-                ("println(\"startup-line\"); display(7)", ["startup-line", "7"]),
-                ("println(\"before-boom\"); error(\"boom\")", ["before-boom", "boom"]))
-        depot = mktempdir()
-        mkpath(joinpath(depot, "config"))
-        write(joinpath(depot, "config", "startup.jl"), startup)
-        script = "using ShipToolsRepl; ShipToolsRepl.run_shim(stdin, stdout)"
-        cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --project=$(pkgdir(ShipToolsRepl)) -e $script`,
-            "JULIA_DEPOT_PATH" => depot * ":")
-        errpath = tempname()
-        proc = open(pipeline(cmd; stderr = errpath), "r+")
-        @async (sleep(120); kill(proc))
-        write(proc, eval_line(1, "1 + 1"))
-        flush(proc)
-        lines = String[]
-        got_res = false
-        while !got_res && !eof(proc)
-            line = readline(proc)
-            push!(lines, line)
-            got_res = occursin("\"kind\":\"res\"", line)
-        end
-        close(proc.in)
-        wait(proc)
-        stderr_text = read(errpath, String)
-        rm(errpath; force = true)
-        rm(depot; recursive = true, force = true)
-        @test got_res
-        envs = Any[try DR.json_read(l) catch; l end for l in lines]
-        @test all(e -> e isa AbstractDict, envs) || (println(stderr, "child stderr:\n", stderr_text); false)
-        @test first(lines) |> DR.json_read |> e -> e[:op] == "repl.ready"
-        for needle in expected_stderr
-            @test occursin(needle, stderr_text)
+            fs = frames(1)
+            @test Main.Revise.calls == 1
+            @test !any(f -> f[:kind] == "stderr", fs)
+            Main.Revise.fail = true
+            fs = frames(2)
+            @test Main.Revise.calls == 2
+            @test any(f -> f[:kind] == "stderr" && occursin("revise-broke", f[:text]), fs)
+            @test any(f -> f[:kind] == "value" && f[:text] == "2", fs)
+            close(bs_in)
+        finally
+            Main.Revise.fail = false      # a module binding cannot be removed; the stand-in stays, harmless
         end
     end
 
@@ -790,3 +736,5 @@ Base.flush(::CountingIO) = nothing
         end
     end
 end
+
+include("shim_child.jl")

@@ -64,6 +64,25 @@ const CURRENT_EVAL = Ref{Union{Eval,Nothing}}(nothing)
 # their run's output.
 const DISPLAY_NOTICE = Ref{Union{String,Nothing}}(nothing)
 
+# What `run_shim` says about a startup file that failed, for `serve` to say at the first eval.
+const STARTUP_FAILURE = Ref("")
+
+# The REPL child's entry: the spawn passes `--startup-file=no`, and the user's startup file runs here, as Julia would
+# run it (`Base.load_julia_startup`, the depot search order Julia uses), with stdout already on stderr. An error in it is
+# said once at the first eval (`STARTUP_FAILURE`), and the shim still serves.
+function run_shim(io_in::IO, io_out::IO)
+    point_stdout_away_from_wire!(io_out)
+    try
+        Base.load_julia_startup()
+    catch e
+        file = joinpath(first(DEPOT_PATH), "config", "startup.jl")
+        isfile(file) || (file = "the global startup.jl")
+        STARTUP_FAILURE[] = "sot: the startup file ($file) failed: " *
+            Base.invokelatest(sprint, showerror, e, catch_backtrace()) * "\n"
+    end
+    serve(io_in, io_out)
+end
+
 """
     serve(io_in::IO, io_out::IO)
 
@@ -108,12 +127,12 @@ function serve(io_in::IO, io_out::IO)
     # (every test in this file does) doesn't pile up duplicate displays.
     any(d isa WGLDisplay for d in Base.Multimedia.displays) ||
         pushdisplay(WGLDisplay())
-    point_stdout_away_from_wire!(io_out)
 
     ended = get(ENV, "SOT_PREVIOUS_END", "")
     why = get(ENV, "SOT_NO_DISPLAY", "")
     notice = (isempty(ended) ? "" : "sot: $ended.\n") * (isempty(why) ? "" :
-        "sot: this REPL has no display of its own ($why), and GLMakie needs one. CairoMakie and WGLMakie (wglshow) work.\n")
+        "sot: this REPL has no display of its own ($why), and GLMakie needs one. CairoMakie and WGLMakie (wglshow) work.\n") *
+        STARTUP_FAILURE[]
     DISPLAY_NOTICE[] = isempty(notice) ? nothing : notice
 
     write_envelope(io_out, "evt", 0, "repl.ready",
@@ -216,6 +235,7 @@ function spawn_eval(work, io::IO, id, eval_id, op, ack)
             DISPLAY_NOTICE[] = nothing
             emit(Dict(:kind => "stderr", :text => notice))
         end
+        revise_before_eval(emit)
         try
             work(emit)
         catch e
@@ -231,6 +251,19 @@ function spawn_eval(work, io::IO, id, eval_id, op, ack)
     CURRENT_EVAL[] = Eval(eval_id, task, :waiting)
     schedule(task)
     return
+end
+
+# Revise only revises on its own in a Julia REPL, which the shim is not: when the user's startup file (or an earlier
+# eval) loaded it into Main, revise before each eval. Its error is a stderr frame, and the eval still runs.
+function revise_before_eval(emit)
+    isdefined(Main, :Revise) && getglobal(Main, :Revise) isa Module || return
+    try
+        Base.invokelatest(getproperty(getglobal(Main, :Revise), :revise))
+    catch e
+        e isa InterruptException && rethrow()
+        emit(Dict(:kind => "stderr",
+                  :text => "sot: Revise.revise() failed: " * Base.invokelatest(sprint, showerror, e) * "\n"))
+    end
 end
 
 # Runs the calling eval's user code, the only place an interrupt reaches the eval

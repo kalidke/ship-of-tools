@@ -12,6 +12,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - The julia choice: `julia::resolve_bin` takes an absolute `SOT_JULIA_BIN`, then juliaup's default channel, then a verified PATH candidate, never a bare `julia`. On Windows the selected existing file is inspected through ordinary filesystem links: `IO_REPARSE_TAG_APPEXECLINK` and inspection errors are refused; a directory called `WindowsApps` is not evidence of an alias. PATH skips refused candidates; an explicit/default-channel alias is an error. A missing explicit absolute path still fails at spawn. The kernel, the REPL, Pluto, quarto (`run_quarto`) and the update prepare (`prepare_julia`) all run its answer.
 
 ## Promises
+- The kernel runs with `--startup-file=no`: it never loads the user's environment, and a startup file's prints would land on its wire (`the_kernel_spawn_passes_startup_file_no`).
 - A kernel caller waits at most `KERNEL_REQUEST_TIMEOUT` (10 s, `Kernel::request`) and never spawns or kills.
 - `supervisor_loop` respawns a dead kernel with a backoff from 250 ms doubling to 30 s on platform's `Redial`, started
   over only after a kernel that served `STABLE` (60 s) after its hello: a kernel that never answers, or answers and then

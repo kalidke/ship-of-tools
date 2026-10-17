@@ -19,10 +19,14 @@ help mode, no `;` shell mode and no Tab completion; use the Terminal drawer
 or the agent pane for shell commands.
 
 The REPL and the kernel run the `julia` that `SOT_JULIA_BIN` names, else
-juliaup's default channel, else a `julia` on `PATH`; neither passes
-`--startup-file=no`, so Julia's own default applies and the depot's
-`config/startup.jl` (`DEPOT_PATH[1]/config/startup.jl`, usually
-`~/.julia/config/startup.jl`) loads — a `using Revise` there works.
+juliaup's default channel, else a `julia` on `PATH`. Both start with
+`--startup-file=no`. The REPL then loads your depot's `config/startup.jl`
+(`DEPOT_PATH[1]/config/startup.jl`, usually `~/.julia/config/startup.jl`)
+itself, with its standard output pointed at its standard error, so what the file
+prints shows as error output; a file that throws is reported once, at your
+first evaluation, and the REPL still starts. The kernel never loads it, because
+it never runs your code. Julia processes your code starts with `Base.julia_cmd()`
+also get `--startup-file=no`.
 
 ## A supervised, separate process
 
@@ -110,10 +114,11 @@ What this means for you:
   refused as `busy`, not queued.
 - **Headless.** The REPL has no display; CairoMakie figures come back as files,
   and interactive figures use WGLMakie with `wglshow`.
-- **Revise is not loaded.** Ship of Tools does not load Revise; a `using
-  Revise` in your startup.jl still runs. Without it, re-running a script
-  picks up edits to that script, but an edit to a package's `src/` takes
-  effect only after it is included again.
+- **Revise.** Ship of Tools does not load Revise; a `using Revise` in your
+  startup.jl loads it, and the REPL then calls `Revise.revise()` before each
+  evaluation, so an edit to a tracked package's `src/` takes effect on the next
+  one. Without Revise, re-running a script picks up edits to that script, but
+  an edit to a package's `src/` takes effect only after it is included again.
 
 ## Structured output frames
 

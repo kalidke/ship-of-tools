@@ -1,5 +1,5 @@
 # How an eval's output becomes typed frames: stream_eval_frames, pipe capture, value frames,
-# BrowserView announcements.
+# BrowserView announcements, and the wire guard (`EvalStdout`, `point_stdout_away_from_wire!`).
 
 # An IO that writes to whatever `stdout` is at the time of the write: during an eval, its capture pipe.
 struct EvalStdout <: IO end
@@ -11,7 +11,7 @@ Base.flush(::EvalStdout) = flush(stdout)
 # `TextDisplay(stdout)` holds the wire, so each is swapped, in place so the stack's order holds, for a real `TextDisplay`
 # (packages find the stack's fallback by that type) on an `EvalStdout`; then the process's stdout (Julia's and fd 1)
 # becomes its stderr, which the supervisor drains, so a display or `println` outside an eval cannot glue onto an
-# envelope. Idempotent: `run_shim` does it before the user's startup file, `serve` again.
+# envelope.  `run_shim` does it before the user's startup file.
 function point_stdout_away_from_wire!(io_out::IO)
     ds = Base.Multimedia.displays
     for i in eachindex(ds)
@@ -20,19 +20,6 @@ function point_stdout_away_from_wire!(io_out::IO)
     end
     io_out === stdout && redirect_stdout(stderr)
     return nothing
-end
-
-# The REPL child's entry: the spawn passes `--startup-file=no`, and the user's startup file runs here, as Julia would
-# run it (`Base.load_julia_startup`, the depot search order Julia uses), with stdout already on stderr. An error in it is
-# reported on stderr, and the shim still serves.
-function run_shim(io_in::IO, io_out::IO)
-    point_stdout_away_from_wire!(io_out)
-    try
-        Base.load_julia_startup()
-    catch e
-        println(stderr, "sot: the startup file failed: ", sprint(showerror, e, catch_backtrace()))
-    end
-    serve(io_in, io_out)
 end
 
 """
@@ -146,9 +133,10 @@ function stream_eval_frames(f, emit)
             :line => s.line,
             :fn => string(s.func),
         ) for s in local_bt]
+        # invokelatest: `serve`'s world is older than the startup file and every eval, which may define the `showerror`.
         msg = threw isa InterruptException ?
             "InterruptException: eval interrupted by repl.interrupt" :
-            sprint(showerror, threw)
+            Base.invokelatest(sprint, showerror, threw)
         emit(Dict(:kind => "error", :message => msg, :stacktrace => stack))
     else
         for fr in frames
@@ -265,7 +253,7 @@ function value_frames_for(result)
         Base.invokelatest(show, valbuf, MIME"text/plain"(), result)
     catch e
         e isa InterruptException && rethrow()
-        print(valbuf, "<unshowable $(typeof(result)): $(sprint(showerror, e))>")
+        print(valbuf, "<unshowable $(typeof(result)): $(Base.invokelatest(sprint, showerror, e))>")
     end
     push!(out, Dict(
         :kind => "value",
