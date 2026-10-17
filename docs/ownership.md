@@ -247,6 +247,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | work-state fields (`floor, question, waiting, done, note, state, summary, status_at, stop_at`) | state | messaging | `comm/work_state/comm-status.sh`; `comm/work_state/hooks/comm-status-idle.sh` |
 | `clear_comm_unread` (clears `done` on view) | state | messaging | `rust/backend/src/comm/registry/registry.rs` `clear_comm_unread` |
 | `update.check`, `update.apply` | op | distribution | `rust/backend/src/update.rs` `handle_update_check`, `handle_update_apply` |
+| `sotd update stage <folder> --prefix <prefix>` | command | distribution | `rust/backend/src/update.rs` `stage_cli`, `stage_prepare_arm_with` |
 | `topology.set` | op | topology | `rust/backend/src/topology/set.rs` `handle_topology_set` |
 | `topology.changed` | event, bus | topology | `rust/backend/src/topology/store.rs` `TopologyChanged`; `rust/backend/src/server/events.rs` `write_topology_changed` |
 | capsule lanes SOM0, SOA0 (v1-v3), SOSV | wire | capsule | `rust/log/src/lane/wire/mgmt.rs`; `rust/log/src/lane/wire/attach.rs`; `rust/log/src/lane/wire/supervisor.rs` |

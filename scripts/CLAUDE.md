@@ -10,7 +10,7 @@ and the launch path fails open: no update step can stop a window from starting.
 - Install: `install.sh` (Linux and macOS); on Windows `install-shortcut.ps1` then `install-manifest.ps1`, plus
   `Initialize-InstallLayout` (in `sot-install-layout.ps1`, run by `launch-sot.ps1`).
 - Update discovery and staging: `rust/updater`, `rust/backend/src/update.rs` (the `update.check` and `update.apply`
-  ops), `rust/frontend/src/selfupdate.rs`.
+  ops, and `sotd update stage`), `rust/frontend/src/selfupdate.rs`.
 - Apply: `sot-apply.sh`, `sot-apply.ps1`.
 - Launch and supervision: `lib/sot-daemon.sh`, `launch-sot.sh`, `launch-sot.ps1`, `sot-local-daemon.ps1`,
   `sot-hosts.*`, `relaunch-sot.ps1`, `shutdown-sot.ps1`, `deploy/sotd.service`.
@@ -79,6 +79,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   folder in place of a release download.
 - `pack-build.sh`: builds this checkout's Linux release archive, COMMIT and SHA256SUMS into a folder, as release.yml's
   Linux job does.
+- `pack-build.ps1`: the same for Windows, as release.yml's Windows job does; `sotd update stage <folder> --prefix <prefix>`
+  arms the folder for the supervisor's converge.
 - `sot.svg`: the desktop-entry icon the sot-setup skill names.
 - `install-shortcut.ps1`: Windows shortcut and taskbar pin; calls the manifest writer.
 - `install-manifest.ps1`: writes `install.json` for a Windows install and runs the first topology sync.

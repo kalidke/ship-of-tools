@@ -741,4 +741,7 @@ build of the line reads `0.6.6-rc9.14-dev+<sha>`. `sot_updater::semver` orders a
 and below it (`rc9.13 < rc9.14-dev < rc9.14`); Julia's `VersionNumber`, cargo's semver and `sort -V` order it above
 `rc9.14`, and nothing in the product asks them to order its versions. §4's hard guard is unchanged: a dev build never
 self-updates; it moves when someone installs the next build, on Linux with `scripts/pack-build.sh` and
-`scripts/install.sh --archive <folder>`.
+`scripts/install.sh --archive <folder>`. On Windows a dev build goes in by a release's route: `sotd update stage <folder>
+--prefix <prefix>` stages, prepares and arms a folder `scripts/pack-build.ps1` packed (no release-build guard and no
+newer-than test: the operator chose it), and the supervisor's converge applies it; prepare checks out a dev build's
+COMMIT, which has no tag.
