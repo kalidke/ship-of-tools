@@ -451,7 +451,7 @@ mod keep_tests {
         assert!(!kept);
         assert!(start.elapsed() >= WRITE_BOUND, "cut after {:?}", start.elapsed());
         drop(client);
-        let (_, file) = big_file().await;
+        let (path2, file) = big_file().await;
         let (mut client, mut server) = duplex(READ_CHUNK);
         let sent = tokio::spawn(async move { serve_file(&mut server, &get(true), file, "text/plain", "").await.unwrap() });
         read_head(&mut client).await;
@@ -463,5 +463,6 @@ mod keep_tests {
         }
         assert!(sent.await.unwrap(), "a slow client that keeps reading gets the whole reply");
         let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path2);
     }
 }
