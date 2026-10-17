@@ -45,7 +45,7 @@ scripts/CLAUDE.md.
   before "Test workspace", and in the shard `sotd`, the step "Prepare the Julia depot the WGL page test reads" runs
   `wgl-depot.sh`: it adds WGLMakie 0.13, precompiled, to a depot in the runner's temporary folder, built over Julia's
   bundled depots, and names that same list in `JULIA_DEPOT_PATH` for the rest of the job: the sidecar tests start that
-  Julia, and the WGL page test adds WGLMakie from that depot offline, compiling only the shim. The Linux sidecar tests
+  Julia, and the WGL page test adds WGLMakie from that depot offline, compiling the shim and WGLMakie (whose precompile workload the test turns off, a setting its cache is keyed on). The Linux sidecar tests
   also start Xvfb, which the ubuntu-24.04 image ships; a host without it fails them as setup (`executable`).
   The heartbeat context-deadline suite runs independently on Ubuntu, macOS and Windows Git Bash. Its per-behavior and sensitivity receipts distinguish fixture entry, actual release times, hook exit, both EOFs and positive lifetime cleanup; MSYS budget coverage remains separate from native Python P5 and its termination acceptance gate.
   window-close-windows and window-close-macos run the opt-in main-thread native window_close suite on hosted Windows and macOS; a missing body, native window or required observation is not a passing result. Ordinary native close must exit 0 before 2.5 seconds without the backstop; deliberate stalled teardown must end under the three-second backstop with the decided code.

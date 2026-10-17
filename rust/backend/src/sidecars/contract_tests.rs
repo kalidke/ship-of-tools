@@ -10,7 +10,7 @@ use crate::sidecars::mathjax::MathJax;
 use crate::sidecars::repl::{lifecycle::ReplLifecycle, Repl};
 use tokio::sync::broadcast;
 
-const CHILD_ENV: &str = "SOT_TEST_SIDECAR_ISOLATED";
+pub(crate) const CHILD_ENV: &str = "SOT_TEST_SIDECAR_ISOLATED";
 
 /// Runs `name` in a child of this test binary (own process environment, own working directory) within `bound`, and
 /// returns `false` in the parent once the child exited 0 having entered the body exactly once. In the child it
@@ -273,6 +273,48 @@ pub(crate) async fn within(bound: Duration, what: &str, mut condition: impl FnMu
     }
 }
 
+/// A fixture's owned root, which the fixture's own end removes once every child is reaped. A test that fails before
+/// that end drops this with the root still there: the drop fires `sig`, which requests the end of every child it holds,
+/// then removes the root. A drop cannot await the reaps that end waits for (the failure unwinds the runtime that runs
+/// them), so a removal that meets a killed child's last write is tried again, within 60 s, the longest an end gives
+/// its children (`project_tests::Fixture::finish`); a fire that fails may leave a child running, so then the root
+/// stays and its path is printed.
+pub(crate) struct OwnedRoot {
+    root: PathBuf,
+    sig: &'static Signal,
+}
+
+impl OwnedRoot {
+    pub(crate) fn new(root: &Path, sig: &'static Signal) -> Self {
+        OwnedRoot { root: root.to_path_buf(), sig }
+    }
+}
+
+impl Drop for OwnedRoot {
+    fn drop(&mut self) {
+        if !self.root.exists() {
+            return;
+        }
+        if let Err(e) = self.sig.fire() {
+            eprintln!("fixture root {} kept: its children are not confirmed ended: {e}", self.root.display());
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            match std::fs::remove_dir_all(&self.root) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    if Instant::now() >= deadline {
+                        eprintln!("fixture root {} not removed: {e}", self.root.display());
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                _ => return,
+            }
+        }
+    }
+}
+
 /// `SOT_JULIA_BIN` and `SOT_RESOURCE_ROOT` are process-global and read on every spawn attempt, so pinning them takes
 /// the crate-wide env serialization lock (`paths::ENV_TEST_LOCK`); the previous values come back when the pin drops.
 /// Unix only, as every test that pins them is.
@@ -332,6 +374,7 @@ async fn repl_uses_private_signal() {
     let workspace = root.join("workspace");
     std::fs::create_dir(&workspace).expect("create the workspace");
     let root = dir.keep();
+    let _owned = OwnedRoot::new(&root, sig);
     let repl = Repl::new(frames, Some("ws".into()), workspace, sig);
 
     let (reply, collector) = repl

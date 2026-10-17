@@ -15,7 +15,7 @@ use tokio::sync::broadcast;
 use super::project_tests::{eval, raw, stdout_of};
 use super::*;
 use crate::lifecycle::child_signal::Signal;
-use crate::sidecars::contract_tests::{depot_path, executable, isolated, owned_julia_env, within};
+use crate::sidecars::contract_tests::{depot_path, executable, isolated, owned_julia_env, within, OwnedRoot};
 
 /// A first start compiles the shim in an empty depot, which several parallel tests slow further.
 #[cfg_attr(windows, allow(dead_code, reason = "used by the Unix-only tests of this file"))]
@@ -53,6 +53,7 @@ struct Fixture {
     sig: &'static Signal,
     repl: Repl,
     frames: broadcast::Receiver<ReplFrameMsg>,
+    _owned: OwnedRoot,
 }
 
 impl Fixture {
@@ -94,6 +95,7 @@ impl Fixture {
         let repl = Repl::new(tx, Some("ws-restart".into()), first.clone(), sig);
         let root = dir.keep();
         Fixture {
+            _owned: OwnedRoot::new(&root, sig),
             root,
             first,
             second,

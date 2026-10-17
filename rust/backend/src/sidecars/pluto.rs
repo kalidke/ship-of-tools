@@ -555,7 +555,7 @@ mod port_parse_tests {
     use {
         super::{bound_pluto_port, seams, Ready, Running, Submission},
         crate::lifecycle::child_signal::Signal,
-        crate::sidecars::contract_tests::{executable, isolated, within},
+        crate::sidecars::contract_tests::{executable, isolated, within, OwnedRoot},
         std::path::{Path, PathBuf},
         tokio::sync::oneshot,
     };
@@ -785,6 +785,7 @@ exit(0)
         dir: PathBuf,
         sig: &'static Signal,
         tx: Running,
+        _owned: OwnedRoot,
     }
 
     impl Harness {
@@ -796,7 +797,7 @@ exit(0)
             let julia = executable("julia").to_string_lossy().into_owned();
             let tx = served(&julia, &dir, &script, sig).await.expect("the fixture says READY");
             let dir = root.keep();
-            Harness { dir, sig, tx }
+            Harness { _owned: OwnedRoot::new(&dir, sig), dir, sig, tx }
         }
 
         fn number(&self, name: &str) -> Option<u32> {

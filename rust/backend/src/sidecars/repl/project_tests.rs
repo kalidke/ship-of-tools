@@ -11,7 +11,7 @@ use tokio::sync::broadcast;
 
 use super::*;
 use crate::rows::Workspace;
-use crate::sidecars::contract_tests::{depot_path, isolated, owned_julia_env, within};
+use crate::sidecars::contract_tests::{depot_path, isolated, owned_julia_env, within, OwnedRoot};
 #[cfg(target_os = "linux")]
 use crate::sidecars::contract_tests::{executable, holding_display, x11_answer, x11_cookie, x11_server};
 use super::tree_argv_tests::tree_argv_leaks;
@@ -20,10 +20,11 @@ use super::tree_argv_tests::tree_argv_leaks;
 pub(super) const BODY: Duration = Duration::from_secs(240);
 const EVAL: Duration = Duration::from_secs(180);
 /// The WGLMakie setup's bound. The fixture reads the depot list whole (`depot_path`; unset, Julia's default list), so
-/// the offline add reuses the read depot's caches and compiles only the shim (5 s) when the depot is named on the list
-/// it was built on (CI's: .github/wgl-depot.sh). A read depot holding other versions recompiles those (25 packages on
-/// one host). Named on another list, a depot can recompile most of WGLMakie's environment (420 s on hosted Linux, past
-/// 600 s on hosted Windows); setup fails fast on that instead (`one_fresh_pkg_cache`).
+/// the offline add reuses the read depot's caches and compiles only the shim and WGLMakie, without its precompile
+/// workload (`add_wglmakie`; WGLMakie in 5 s on one host), when the depot is named on the list it was built on (CI's:
+/// .github/wgl-depot.sh). A read depot holding other versions recompiles those (25 packages on one host). Named on
+/// another list, a depot can recompile most of WGLMakie's environment (420 s on hosted Linux, past 600 s on hosted
+/// Windows); setup fails fast on that instead (`one_fresh_pkg_cache`).
 const SETUP: Duration = Duration::from_secs(600);
 
 /// A bare workspace (no `Project.toml`) whose path holds a space, and the real `Workspace::repl` factory over it.
@@ -33,6 +34,7 @@ struct Fixture {
     shim: PathBuf,
     repl: Repl,
     _frames: broadcast::Receiver<ReplFrameMsg>,
+    _owned: OwnedRoot,
 }
 
 impl Fixture {
@@ -46,6 +48,8 @@ impl Fixture {
     /// bookkeeping any session does there: Pkg makes and at once removes a lock file beside each package version it
     /// resolves (`packages/<name>/<slug>.pid`), and loading a cache updates its timestamp.
     fn with_read_depot(read_depot: Option<std::ffi::OsString>) -> Self {
+        // The process-wide signal fired by `finish` is safe only inside an isolated body.
+        debug_assert!(std::env::var_os(crate::sidecars::contract_tests::CHILD_ENV).is_some());
         let dir = tempfile::tempdir().expect("owned fixture root");
         let root = dir.path().to_path_buf();
         let shim = owned_julia_env(&root);
@@ -71,6 +75,7 @@ impl Fixture {
         let repl = row.repl(frame_tx);
         let root = dir.keep();
         Fixture {
+            _owned: OwnedRoot::new(&root, crate::lifecycle::child_signal::process()),
             root,
             workspace,
             shim,
@@ -618,12 +623,21 @@ async fn observer_rejects_a_deliberate_leak() {
 }
 
 /// Adds WGLMakie to the fixture's workspace from the read depot, offline; its precompile is setup, bounded by `SETUP`.
+/// WGLMakie's precompile workload serves a page from Bonito's default server, on 127.0.0.1:9384, a port the whole
+/// host shares: while anything else holds it (another test job compiling WGLMakie, a Bonito session), the build fails
+/// (Bonito moves to the next port only on the errors it knows, and HTTP 2.11's `AddressInUseError` is not one), and so
+/// does the page's `using WGLMakie`. The page needs WGLMakie loaded, not its workload, so the workspace turns it off.
 async fn add_wglmakie(fixture: &Fixture) {
     offline_pkg(&fixture.root);
+    std::fs::write(
+        fixture.workspace.join("LocalPreferences.toml"),
+        "[WGLMakie]\nprecompile_workload = false\n",
+    )
+    .expect("turn WGLMakie's precompile workload off");
     let added = eval_within(
         &fixture.repl,
         1,
-        "import Pkg; Pkg.offline(true); Pkg.add(\"WGLMakie\"; io=devnull); println(\"added\")",
+        "import Pkg; Pkg.offline(true); Pkg.add(\"WGLMakie\"; io=devnull); Pkg.precompile(\"WGLMakie\"); println(\"added\")",
         SETUP,
     )
     .await
@@ -636,13 +650,19 @@ async fn add_wglmakie(fixture: &Fixture) {
         stdout_of(&added),
         "added",
         "setup: WGLMakie must be installable from the read depot: {}",
-        added
-            .iter()
-            .filter(|f| f["kind"] == "error")
-            .map(|f| f["message"].to_string())
-            .collect::<Vec<_>>()
-            .join(" ")
+        failure_frames(&added)
     );
+}
+
+/// The `error` and `stderr` frames of an eval, whole: the reason a child's eval failed (Pkg reports a failed
+/// precompile on stderr, and a failed `using` as an `error`).
+fn failure_frames(frames: &[Value]) -> String {
+    frames
+        .iter()
+        .filter(|f| f["kind"] == "error" || f["kind"] == "stderr")
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A page served by the real `wglshow` path never puts its secret, or the address that carries it, on a command
@@ -714,7 +734,7 @@ async fn repl_page_secret_never_reaches_command_line() {
         );
         let page = eval(&fixture.repl, base + 2, "using WGLMakie; fig = WGLMakie.Makie.scatter(1:3); println(ShipToolsRepl.wglshow(fig; open=false) isa BrowserView)").await;
         let address = announced_address(&page)
-            .unwrap_or_else(|| panic!("{route}: the page was not announced"));
+            .unwrap_or_else(|| panic!("{route}: the page was not announced: {}", failure_frames(&page)));
         let secret = address.rsplit('/').next().unwrap_or_default().to_owned();
         assert_eq!(
             secret.len(),
