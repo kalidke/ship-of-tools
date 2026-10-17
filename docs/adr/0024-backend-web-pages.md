@@ -289,6 +289,15 @@ The site is everything a page's script may read, so the walk has two bounds:
   walk stops below it, and a page whose own folder holds it is refused. Before this, a page directly in the home
   directory, or with no index between it and an `index.html` there, was served from the home directory.
 
-The cost: an index page at the top of a repository, or at a workspace root outside any repository, now takes in every
-page below it, and those pages may read every file under it, untracked ones too. Before this, a folder with no index
-kept a nested site apart; to keep one apart now, move or rename that index page.
+The cost: an index page in any folder above a page, up to the top of its repository (a source tree's `index.html` above
+its build output, or `web/index.html` above `web/dist/`), or up to a workspace root outside any repository, now takes in
+every page below it, and those pages may read every file under it, untracked ones too. Before this, a folder with no
+index kept a nested site apart, and now a build's `dist/index.html` directly below a source `index.html` is taken in
+with no folder between. Two measured cases: a Vite build with base `./` reads the source tree's `.env.local` through
+`../.env.local`, and a page outside any repository under an index page at the workspace root reads another repository's
+`.env`; both were refused before. On a workspace that is the home folder, the walk reaches the folder below home. To
+keep a nested site apart, move or rename the outer index page. A page with root-relative links is not widened this way:
+it keeps its own origin, rooted at the innermost folder on the walk under which its first root-relative link resolves
+(a Vite build's `dist/`, a Jekyll `_site/`), else at the walk's root. A rule rooting every page at the innermost folder
+that holds the files it loads would narrow the cases above; it is not taken, since a page that names a file at the walk's
+root still takes in everything under it.
