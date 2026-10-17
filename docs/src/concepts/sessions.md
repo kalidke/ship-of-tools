@@ -55,10 +55,11 @@ daemon starts capsules and lists them, but does not hold them up.
 | What goes away | What happens to the session |
 |----------------|-----------------------------|
 | the network, or the laptop lid | nothing — the frontend reconnects on its own when the network is back; `F5` retries at once |
-| the last window on this computer (closed, crashed or killed) | it ends, with the backend; the next window starts with none. `Ctrl+Q` asks first and can keep them running |
+| the last window on this computer (closed, crashed or killed) | it ends, with the backend; the next window starts with none. `Ctrl+Q` (⌘Q on macOS) from any pane but the agent and the Terminal drawer asks first and can keep them running |
 | one of two windows on this computer | nothing — sessions end with the last window |
 | a window relaunch (update) | nothing, if the new window opens within a minute |
 | a window on another computer | nothing — the next window reattaches |
+| your window, when the sessions run on a remote host | nothing — a remote backend's sessions outlive any window |
 | the daemon (restart, upgrade) | the capsule keeps running and the restarted daemon re-adopts it |
 
 When a session's agent restarts, or a session is reopened after it ended, the agent starts a fresh conversation, which
@@ -73,7 +74,7 @@ degraded mode that shares the daemon's lifetime, and the daemon log says why.
 
 ## Where the state lives
 
-The daemon's state root is `${XDG_STATE_HOME:-~/.local/state}/sot`: the
+The daemon's state root is `${XDG_STATE_HOME:-~/.local/state}/sot` (`%LOCALAPPDATA%\sot` on Windows): the
 capsule records and the daemon's own `sotd.log`. It must be a **local, durable
 filesystem** — the daemon refuses to start a capsule on a network or volatile
 filesystem rather than risk the record. On a home directory shared across

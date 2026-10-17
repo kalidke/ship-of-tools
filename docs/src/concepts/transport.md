@@ -4,20 +4,16 @@ How a frontend reaches a daemon that is not on its own box.
 
 ## No loopback ports on the control plane
 
-Reaching another box's daemon used to mean an `ssh -L` forward binding a
-port on `127.0.0.1`, chosen from a series derived from a hash of the OS
-user name. Any account on the box could connect to that port — the
-control plane never checked who did. That whole class is gone: the
-control plane is now an ssh child's stdin/stdout, or a Unix
-socket/Windows pipe in a directory only the owning account can read.
-There is nothing left on the control plane for a second account on the
-same box to reach.
+The control plane opens no loopback port. It is an ssh child's stdin/stdout, or a Unix socket or Windows pipe in a
+directory only the owning account can read, so there is nothing on it for a second account on the same box to reach.
 
 ## The endpoint grammar
 
 Every endpoint this version can dial has one of three schemes:
 
-- unix:<path> / pipe:<name> — a socket or named pipe reached directly. A generated hub relay socket is a route to a remote daemon: the window classifies its complete derived path once, does not lease that remote daemon, and reuses the path for gated page and lane connections. Other local endpoints retain their existing policy.
+- `unix:<path>` / `pipe:<name>` — a socket or named pipe reached directly. A generated hub relay socket is a route to a
+  remote daemon: the window does not lease that remote daemon, and reuses the path for gated page and lane
+  connections.
 - `ssh:<target>` — that box's own daemon, reached by spawning
   `ssh <target> sotd stdio-bridge` and speaking the protocol over its
   stdin/stdout. `<target>` is a plain host name (`hosts.toml`'s own
@@ -30,23 +26,15 @@ Every endpoint this version can dial has one of three schemes:
 
 `sotd stdio-bridge` takes no caller-supplied label. With no argument it
 resolves this box's own daemon, at the label this box resolves for
-itself — never one a caller names, which is exactly the mistake that let
-a Windows box dial a pipe nothing listens on.
+itself, never one a caller names.
 
 `--endpoint <unix:path|pipe:path>` is for a script on this same box that
 already holds a local endpoint; the ssh forms above never carry one.
 
 ## What `sotd topology plan` gives out
 
-`sotd topology plan --self <host>` answers, one fact per line: `self`,
-`hub`, `relay-endpoint` (what this box uses to reach the relay — its own
-socket on the hub, `ssh:<hub>` on a box that reaches the hub directly,
-or the unchanged reverse-tunnel socket everywhere else), and one `dial`
-line per daemon host (its own socket for itself, the hub's own relay
-socket for a remote host when this box IS the hub, and `ssh:<hub>` /
-`ssh:<hub>/<host>` everywhere else). There is no `tunnel` line and
-nothing to forward: dialing a host now means spawning an ssh child, not
-opening a port ahead of time.
+`sotd topology plan --self <host>` prints the facts the launchers use to pick each box's relay endpoint and the endpoint
+to dial for each daemon host. Dialing a host means spawning an ssh child, not opening a port ahead of time.
 
 **A box that has never declared a topology resolves its own daemon.** A
 single-box install needs no `hosts.toml` at all: `sotd topology
@@ -62,9 +50,6 @@ replaced by a local one.** A stale `SOT_FE_ENDPOINT` or
 `SOT_SPAWN_ENDPOINT` naming a form this version does not speak (a leftover
 `tcp:` value, most often) is refused with a line naming it; clear the
 variable rather than expecting it to be silently reinterpreted.
-`SOT_RELAY_ENDPOINT` is no longer read: the relay endpoint is what `sotd
-topology relay-endpoint` answers at each send, so a profile line that still
-exports it changes nothing and can be deleted.
 
 ## The second and third connections
 
@@ -76,11 +61,20 @@ second, independent guess at how to reach it. Each of these connections
 starts with a `hello` whose role is `handoff` and carries its
 `lane.connect` or `proxy.connect` in the same write, so the hello costs no
 extra round trip.
-An SSH pane needs a supervisor login and a voyage login for its initial cold attach; a proxied browser connection uses one login. Cold attach may start a voyage login alongside its supervisor login as an optional optimization. Local endpoints park no SSH login. If spare creation fails or the parked login expires, the first voyage uses its ordinary gated fresh dial, so overlap is not guaranteed. After first voyage consumption, every later dial uses one login. Pre-voyage retries follow ADR 0045's retry exception. A page served by a remote daemon pays once per browser connection, not once per file: the daemon's page servers keep a connection for the next request, so a browser's few connections to a page carry all of its files, and a connection with no whole request head within 30 s of its wait's start is closed, as is one whose client takes more than 30 s to accept 64 KiB of a reply. A port the daemon answers as not served (`bad_port`) is parked: its listener stays bound but closes each browser
-connection at once, with no login and no log line, until a page on that port is opened again from the frontend. A
-tab left open on a dead page therefore stops costing a login per retry after the daemon's first refusal. The daemon
-logs a refused port once, until that port is served again. While the host's link is down, a browser connection
-closes at once with no log line; the status line says the link is down.
+An SSH pane needs a supervisor login and a voyage login for its initial cold attach; a proxied browser connection uses
+one login. Cold attach may start the voyage login alongside the supervisor login. Local endpoints park no ssh login. If
+the spare fails or expires, the first voyage uses its ordinary gated fresh dial. After the first voyage, every later dial
+uses one login.
+
+A page served by a remote daemon pays once per browser connection, not once per file: the daemon's page servers keep a
+connection for the next request. A connection with no whole request head within 30 s of its wait's start is closed, as is
+one whose client takes more than 30 s to accept 64 KiB of a reply.
+
+A port the daemon answers as not served (`bad_port`) is parked: its listener stays bound but closes each browser
+connection at once, with no login and no log line, until a page on that port is opened again from the frontend. A tab
+left open on a dead page therefore stops costing a login per retry after the daemon's first refusal. The daemon logs a
+refused port once, until that port is served again. While the host's link is down, a browser connection closes at once
+with no log line; the status line says the link is down.
 
 **The link gate.** While a host's link is down — its control transport's
 last attempt got no hello reply, or its session ended — the frontend starts
@@ -104,16 +98,12 @@ the gate is down.
 kind; it dials when you next view it. An attach whose lane dial finds the link down stops dialing, shows "host
 offline, waiting for the link", and checks every 100 ms whether the link is up and its pane is the one on screen. The
 transport's hello reply reopens the gate, so the viewed pane dials within a tick of it; parked panes keep their last
-screen and dial when next viewed. A resize read while paused is the size of the next attach. The pass bar is
-therefore: at the link's return, the transport's one login plus two lane logins (supervisor and voyage) per viewed
-row, and no login of any kind while the link is down.
+screen and dial when next viewed. A resize read while paused is the size of the next attach. At the link's return the cost is the transport's one login
+plus two lane logins (supervisor and voyage) per viewed row, and no login of any kind while the link is down.
 
-**Residual.** After a silent network drop the transport can take up to its
-keepalive window (about 45 s) to notice, so a lane that dies first may still
-dial once. Each such dial is bounded by the connect timeout and its backoff
-and reaches no sshd, because the host is unreachable. Closing this would let
-lane failures close a gate that only the transport can reopen, so it is
-accepted.
+**Residual.** After a silent network drop the transport can take up to its keepalive window (about 45 s) to notice, so
+a lane that dies first may still dial once. Each such dial is bounded by the connect timeout and its backoff and reaches
+no sshd, because the host is unreachable.
 
 A failed login or a dead `sotd` on the far end is the child exiting before
 speaking the protocol; its last stderr line is the diagnosis, surfaced in
@@ -188,23 +178,15 @@ nothing, quickly. The guarantee is isolation, not availability.
 
 One listener is the exception to that isolation. On Linux the REPL and the Pluto server each have an X display of
 their own, an Xvfb on an abstract socket, which has no permissions: any account on the computer can connect to it, and
-its only lock is a 128-bit cookie kept in the child's own folder. ADR 0049 ("User isolation") records this as the
-accepted exception. The child ends when its display ends, and gets a new display at its next start.
+its only lock is a 128-bit cookie kept in the child's own folder. ADR 0049 records it under
+[User isolation](https://github.com/kalidke/ship-of-tools/blob/main/docs/adr/0049-messaging-on-one-page.md). The child
+ends when its display ends, and gets a new display at its next start.
 
-## What this page does not yet cover
-
-Known limits of the link gate:
-
-- Backend ssh callers are outside this frontend invariant and pass an
-  always-up gate.
-- A gate starts up and stays so until the transport's first attempt.
-- A partly queued input cut at the 8 KiB take queue, and a queue cleared
-  on a lost pen or when the 30 s checkpoint-in-flight wait runs out, are
-  reported by their own status line, not the discard count.
+## Who may connect
 
 The window and the bridge speak only to an endpoint of their own OS account: on
 Unix a socket whose listener ran as that account when it called `listen()`, on
 Windows a pipe served by that account's process.
 
-Later work in this same design (the daemon-side account guard) lands in stages after this one and extends this page
-when it does.
+The daemon admits a connection only from its own OS account: at accept it checks the peer's account, and its first
+frame is a hello naming the OS account. A second account using the same hub account is refused with `os_user_conflict`.

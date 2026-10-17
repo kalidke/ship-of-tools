@@ -44,9 +44,10 @@ built yet; see the status breakdown below.
 |------|--------|
 | Files | **Built.** Filesystem navigation with previews. |
 | Modules | **Built, read-only.** Structural view derived from `JuliaSyntax.jl`. |
-| Types | Planned (after phase 1). |
-| Math | Planned (after phase 1). |
-| Outputs | Planned (after phase 1). |
+| Project | Planned, not built. |
+| Types | Planned, not built. |
+| Math | Planned, not built. |
+| Outputs | Planned, not built. |
 | Agents | **Partly here.** Multi-agent is real *today* — concurrent Claude Code sessions coordinated over the comm bus and surfaced in the Sessions view. What is pinned for later is *this dedicated mode*: an in-UI tasks → timeline → step-detail view for orchestrating them. |
 
 The conceptual set above describes where modes are going. What you can switch
@@ -81,8 +82,7 @@ new one. The session picker uses three chords on the cursored directory:
 | `Shift+Enter` | Create a workspace with a plain shell and no agent. |
 
 One backend daemon hosts one Julia kernel per workspace, routed by `workspace_id`,
-so switching workspaces is fast and does not tear down the kernel — switching is
-"like tmux windows in the same session." You can also cycle the active workspace
+so switching workspaces is fast and does not tear down the kernel. You can also cycle the active workspace
 directly with `Shift+ArrowRight` / `Shift+ArrowLeft`.
 
 #### Accounts
@@ -146,8 +146,8 @@ An account name is lowercase letters, digits, `-`, and `_` only, and must
 start with a letter or digit — `team`, `team-2`, and `a_b` all work,
 `Team` and `../etc` do not.
 
-Claude only, this release — Codex accounts are deferred, so a codex row
-always runs the default login.
+Only Claude rows use accounts. A Codex row (`Ctrl+Enter`) or a plain-shell row (`Shift+Enter`) is refused while a named
+account is chosen in the picker: choose the default account first.
 
 ### [Hosts mode (`h`)](@id hosts-mode)
 
@@ -159,24 +159,6 @@ older version than the window speaks), tagged `[current]` for the host
 you are working on and `[default]` for the first connection. `Enter` on a host
 moves the Sessions view to that host's group; there is nothing to relaunch.
 
-The launcher's primary host is the hub unless `SOT_HOST_NAME` (or `SOT_HOST`)
-names another.
-
-## Switching, focus, and layout keys
-
-Mode switches share the keymap with pane focus and layout. The relevant chords:
-
-| Chord | Action |
-|-------|--------|
-| `f` / `m` / `s` / `h` | switch nav mode (nav focus only) |
-| `Shift+ArrowLeft` / `Shift+ArrowRight` | cycle the active workspace |
-| `Ctrl+ArrowLeft/Right/Up/Down` | move pane focus (4-way, spatial) |
-| `Alt+=` | maximize the focused pane; `Escape` restores |
-| `Ctrl+j` / `Ctrl+t` / `Ctrl+m` | toggle the REPL / Terminal / Monitor drawers |
-| `Ctrl+?` | show pane actions briefly; press again for the Help drawer |
-| `F1` | open or close the Help drawer |
-
-Because the mode keys are plain single characters, they are deliberately scoped to
-navigation focus — the keymap matches them only when a nav pane is focused, so
-typing `f` into the REPL or the editor inserts an `f`. The authoritative chord list
-lives in [Keybindings](../ref/keybindings.md).
+The mode keys are plain single characters, so they are scoped to navigation focus: typing `f` into the REPL or the
+editor inserts an `f`. Pane focus, layout and drawer chords are in [Keybindings](../ref/keybindings.md). On macOS, `Ctrl`
+in the chords on this page is ⌘ (`Primary`).

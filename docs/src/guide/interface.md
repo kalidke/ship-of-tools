@@ -4,7 +4,7 @@ Ship of Tools is three columns: navigation, preview and agent. The bottom
 drawer, when open, sits under the navigation and preview columns; the agent
 column always runs the full height. The columns are fixed in role; the drawer
 swaps between four contents. Every pane is keyboard-driven and every chord is
-rebindable; see [Keybindings](../ref/keybindings.md).
+rebindable; see [Keybindings](../ref/keybindings.md). On macOS, `Ctrl` in the chords below is ⌘ (`Primary`).
 
 ```@raw html
 <DemoShot path="layout-labelled.png" caption="The default layout with the Julia drawer open." />
@@ -67,8 +67,6 @@ context while you read; switching away leaves Julia and terminal processes runni
 | Temporary pane actions / promote to Help drawer | `Ctrl+?` / press again |
 | Open Help directly | `F1` |
 
-`Alt+=` maximizes the focused pane, `Escape` restores.
-
 Plain arrows, `Ctrl+Arrow`, and `Shift+Arrow` are scoped so they do not
 conflict: `Shift+Arrow` switches sessions, except in a text editor, where it
 extends the selection, and in an image preview, where `Shift+Up` and
@@ -92,19 +90,13 @@ cursor is on.
 
 A **mode** is a switchable root for this tree. A hotkey swaps which tree fills the
 columns, and **cursor position is preserved per mode**, so jumping between modes
-and back lands you where you left each one. The modes bound today:
-
-| Key | Mode | Roots the tree at |
-|-----|------|-------------------|
-| `f` | Files | the project filesystem |
-| `m` | Modules | modules and their definitions (types, functions, macros and submodules), read-only, from `JuliaSyntax.jl` |
-| `s` | Sessions | the workspaces this backend is hosting |
-| `h` | Hosts | the remote hosts you can target |
+and back lands you where you left each one. The modes bound today are `f` Files,
+`m` Modules, `s` Sessions and `h` Hosts; the [Modes](modes.md) page describes each
+and what is planned.
 
 The mode keys are plain single characters, so they are **scoped to navigation
 focus**: typing `f` into the REPL or a prompt inserts an `f`, it does not switch
-modes. The full conceptual mode set (Project, Types, Math, Outputs, Agents) and
-what is built today is on the [Modes](modes.md) page.
+modes.
 
 ### Driving it
 
@@ -129,23 +121,14 @@ what is built today is on the [Modes](modes.md) page.
   sessions that cannot carry one.
 - **`key:`** shows the last key the window received, which helps when a
   binding does not do what you expect.
-- In Sessions mode, a tag in brackets after a session's name is the state of
-  its supervised process: `[starting]`, `[ready]`, `[ending]`, `[stopped]` (no
+- In Sessions mode, a tag in brackets after a session's name is the phase of
+  its supervised process, for example `[starting]`, `[ready]`, `[ending]`, `[stopped]` (no
   process has run for it yet), `[terminal]` (it ended and will not restart), or
   `[unreachable]` (the backend could not query it). The row is coloured by the
   agent's [work state](../concepts/work-state.md) and ends with the reason the
   agent last reported.
 - The bottom border of the window shows the frontend (`fe`) and backend (`be`)
   versions.
-
-Modes are a **planned plugin surface**: the design is a `Mode` subtype with
-`tree_root` / `tree_children` / `preview_for` methods — the core modes shipping
-the same way, with no privileged path. Today the nav roots are fixed (the four
-above) and built into the frontend and backend; the mode-plugin seam is not yet
-wired. See
-[Writing a Mode Plugin](../extend/mode.md) and
-[The Dispatch ABI](../extend/abi.md).
-
 
 ## The Preview Pane
 
@@ -163,7 +146,7 @@ The backend first asks the Julia kernel: a `FileType` plugin claims the path
 with `matches` and returns a `PreviewPayload` from `preview`. When no plugin
 claims it, the backend reads the file itself; that is how raster images and
 plain text are served. The payload's `mime` tells the frontend which renderer to
-use; the bytes are opaque to Rust, so adding a format is a **Julia-only** change. A sampling of the built-ins:
+use; the bytes are opaque to Rust, so adding a format needs no Rust change when the plugin returns a MIME the window already renders. A sampling of the built-ins:
 
 | Kind | Rendered as |
 |------|-------------|
@@ -206,15 +189,14 @@ there. See [Agent sessions](orchestrator.md).
 
 ### What fills it
 
-Each session runs Claude Code, Codex or a plain shell. A session belongs to a
-workspace on the **backend daemon**, so it sits alongside project state and
-**survives a frontend restart**.
+A session belongs to a workspace on the **backend daemon**, so it sits alongside project state. It survives a
+window relaunch and a dropped connection; closing the last window on a computer ends that computer's sessions unless you
+keep them (see [Sessions and persistence](../concepts/sessions.md)).
 
-Several sessions run concurrently — one per workspace/session, across machines — coordinated over the
+Several sessions run concurrently, coordinated over the
 [inter-agent communication system](messaging.md). You start and switch them
 from [Sessions mode](#The-Navigation-Pane) (`s`); cycle the active workspace with
-`Shift+Arrow`. What is still deferred is a dedicated in-UI **Agents mode** (a
-tasks → timeline → step-detail view).
+`Shift+Arrow`. A dedicated in-UI **Agents mode** is not built.
 
 ### How it acts
 
@@ -223,11 +205,8 @@ tasks → timeline → step-detail view).
   workspace REPL (`sot-fe repl`), show a file in your preview pane
   (`show-result`) and message other sessions, and hooks that report its work
   state. See [How agents use the REPL](@ref agents-repl).
-- **Permissions come from the agent CLI.** Sessions launch Claude Code with
-  `--permission-mode auto` and Codex with
-  `--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust`;
-  Ship of Tools adds no
-  permission layer of its own. See [Agent sessions](orchestrator.md#Permission-mode).
+- **Permissions come from the agent CLI.** Ship of Tools adds no permission layer of its own. See
+  [Agent sessions](orchestrator.md#Permission-mode).
 
 ### Hand it a file, or a crop of an image
 
@@ -294,13 +273,10 @@ and ends it). `Ctrl+C` stops the running evaluation if it is one the drawer show
 
 ### Structured output
 
-Instead of one undifferentiated text stream, the display shim emits **typed
-frames** — `stdout`, `stderr`, `value`, `image`, `error`, and a terminal `done` —
-so the frontend renders each correctly: `stdout`/`stderr` stream as bytes arrive,
-errors carry a structured stacktrace with `file:line` links, and a showable value
-(a CairoMakie `Figure`, a `Plots.Plot`, anything with `show(io, MIME"image/png")`)
-becomes an `image` frame **drawn inline through the preview layer** — never a
-degraded terminal-graphics protocol.
+The display shim emits **typed frames**, so the frontend renders each correctly: `stdout`/`stderr` stream as bytes
+arrive, errors carry a structured stacktrace with `file:line` links, and a showable value (a CairoMakie `Figure`, a
+`Plots.Plot`, anything with `show(io, MIME"image/png")`) becomes an `image` frame drawn inline through the preview
+layer. The frame kinds are listed in [The REPL](repl.md).
 
 ## The Terminal Drawer
 
@@ -311,7 +287,7 @@ unreachable. It shares the bottom drawer slot with the [REPL](#The-REPL-Pane) (`
 and the [Monitor](#The-Monitor-Drawer) (`Ctrl+M`): each key toggles its own content, and
 pressing another swaps it in place.
 
-`Ctrl+T` opens the Terminal drawer, a shell in the project root.
+`Ctrl+T` opens the Terminal drawer, a shell on this computer in the window's working directory.
 
 | Key | Drawer closed | Showing this content | Showing other content |
 |-----|---------------|----------------------|-----------------------|
@@ -365,8 +341,7 @@ fleet; to see the fleet, dial the hub.
 Sampling is **always on** for the life of the daemon, so the drawer shows real
 history the moment it opens rather than starting from a blank axis; what
 `monitor.subscribe` gates is per-connection *delivery* of ticks, not collection.
-(ADR 0020 originally specified reactive spawn-on-subscribe; the implementation
-went the other way and the ADR carries a note.) The hub keeps an in-memory
+The hub keeps an in-memory
 tiered ring buffer per host, so the time axis can rescale to wider windows
 without a round-trip. Restarting the hub restarts that history.
 
@@ -383,7 +358,5 @@ If the drawer is missing a host you just added, restart the hub.
 ### How the traces are drawn
 
 Traces are drawn as **real SVG**, rasterized through the same `resvg` → wgpu-quad
-pipeline that renders typeset math — not braille/cell plotting, which is the same
-class of degraded hack the project rejects for images. A host whose SSH or sampler
-dies renders an explicit **gap**, never a silent flatline or a quiet fallback to
-"looks fine."
+pipeline that renders typeset math. A host whose SSH or sampler
+dies renders an explicit **gap**.

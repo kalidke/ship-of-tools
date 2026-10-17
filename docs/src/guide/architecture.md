@@ -7,15 +7,16 @@ how the same architecture runs a remote project with almost no extra plumbing.
 
 ## The processes
 
-![Frontends connect over one socket to the backend daemon, which supervises the Julia kernel, the REPL and the agent-session capsules](../assets/architecture.svg)
+![Frontends connect over one socket to the backend daemon, which supervises the Julia kernel and the REPL and starts the agent-session capsules](../assets/architecture.svg)
 
 
 | Process | Language | Owns |
 |---------|----------|------|
 | Frontend | Rust (winit + wgpu) | the native window, chrome, preview rendering, keystrokes. Stateless about the project — it renders what the backend sends and forwards input. |
-| Backend daemon | Rust (tokio) | project state, file watching, process supervision of the kernels, the REPL and the agent sessions, the comm relay. Exposes a JSON line protocol to the frontend. |
+| Backend daemon | Rust (tokio) | project state, file watching, process supervision of the kernels and the REPL, starting and listing the agent sessions' capsules, the comm relay. Exposes a JSON line protocol to the frontend. |
 | Julia kernel | Julia | the `FileType` dispatch table and Julia-aware previews, project scans (the Modules tree), the file content hash behind the drift check. Reads your sources statically; it never runs your code and never loads your project's environment. |
 | REPL | Julia | your interactive session, supervised by the backend and run in your project's environment, with a display shim that emits structured frames (stdout, stderr, value, image, error) over stdio. |
+| Capsule | Rust | one per agent session: supervises the agent on a real terminal and records it. The daemon starts and lists capsules but does not hold them up. |
 
 The frontend holds no project knowledge. The backend is the single owner of
 project state and the one protocol entry point. The Julia kernel is where every
@@ -26,8 +27,7 @@ daemon that supervises it.
 ## Why client/server, even on one machine
 
 The frontend and the daemon communicate over a socket locally exactly as they would
-across a network. That looks like overhead on a single box, but it is the whole
-point: the same protocol serves local and remote; only the transport differs. The plumbing cost is paid once, up front, instead of being
+across a network. That looks like overhead on a single box, but the same protocol serves local and remote; only the transport differs. The plumbing cost is paid once, up front, instead of being
 retrofitted later when local-only assumptions have already hardened.
 
 This directly serves a requirement: local and remote operation must offer the
@@ -47,46 +47,19 @@ and `wgpu` cover that stack. Keep this layer boring and predictable; it should
 rarely need to change when the feature set grows.
 
 **Julia is for everything plugin-extensible and Julia-aware.** `JuliaSyntax.jl`
-parses Julia source — reimplementing a Julia parser in Rust is a non-starter, and
-it is the parser the language itself uses. More fundamentally, the unique value
-proposition here is *multiple dispatch as the plugin mechanism*: a small set of
+parses Julia source — it is the parser the language itself uses. More fundamentally, the plugin
+mechanism is *multiple dispatch*: a small set of
 abstract types whose methods are the extension ABI. That only works in Julia. See
 [The Dispatch ABI](../extend/abi.md).
 
 ## The serialization seam
 
-The Rust↔Julia boundary is crossed by exactly two generic structs, both carrying
-**opaque, kernel-defined payloads**:
-
-```julia
-struct TreeNode
-    id::String                # opaque to Rust
-    label::String
-    kind::Symbol              # :module, :function, :pngfile, ...
-    has_children::Bool
-    badges::Vector{Symbol}    # design of the unbuilt per-entity layer: :stale, :user_edited, :immutable, ...
-    payload::Dict{String,Any} # opaque, kernel-defined per kind
-end
-
-struct PreviewPayload
-    mime::String
-    data::Vector{UInt8}
-    extras::Dict{String,Any}
-end
-```
-
-Of the two, `PreviewPayload` is built (file-type previews return it). Core's Julia
-`TreeNode` is declared but not built: no Julia code constructs one today. The
-window's trees are built by the daemon and from the kernel's project scan, and
-travel as the Rust wire type `TreeNode` with the same fields.
-
-The frontend draws whatever tree the kernel sends and dispatches on `PreviewPayload`'s
-`mime` to pick a renderer. It never inspects `id` or `payload`; it never learns
-what a `:pngfile` *is*. The consequence is the load-bearing property of the whole
-design: **adding a new `FileType` needs no Rust change** unless its output must be bounded, in which case the daemon's preview gates also name its extensions (`Mode` is not built: the modes are native Rust views today). A plugin
-that teaches the kernel to preview a new file format ships entirely in Julia, and
-the frontend renders it because the MIME type tells it how. See
-[`TreeNode`](@ref) and [`PreviewPayload`](@ref) in the API reference.
+The seam between Rust and Julia is JSON frames over stdio. For a preview the kernel returns a MIME type, the bytes and
+an `extras` map, and the window picks a renderer by MIME without learning file types. Trees are built in Rust; the
+Modules tree comes from the kernel's project scan. The consequence is that **adding a new `FileType` needs no Rust
+change** when it returns a MIME the window already renders, unless its output must be bounded, in which case the
+daemon's preview gates also name its extensions (`Mode` is not built: the modes are native Rust views today). See
+[`PreviewPayload`](@ref) in the API reference.
 
 ## Deployment topology
 
@@ -95,7 +68,7 @@ or local frontend driving a Linux backend where the Julia kernel and GPU live.
 
 - The **backend runs as a long-lived daemon on the remote** — the
   `systemd --user` unit `sotd.service` — so it survives SSH disconnects.
-- It listens on a **per-session Unix socket**, not a host-allocated TCP port.
+- It listens on a **per-user Unix socket**, not a host-allocated TCP port.
 - The **frontend spawns its own `ssh` child** running `sotd stdio-bridge` on
   the remote and speaks the same JSON line protocol over its stdin/stdout — no
   forward, no local port. See [Transport](../concepts/transport.md).
@@ -107,17 +80,15 @@ or local frontend driving a Linux backend where the Julia kernel and GPU live.
 A single daemon can host **one Julia kernel per workspace**, routed by
 `workspace_id`, so switching the active project is fast and never tears the kernel
 down. Each agent session runs in its own **capsule** supervisor, which the
-daemon starts and lists but does not hold up, so sessions survive frontend relaunches and
-daemon restarts alike (closing the window ends this computer's sessions; see ADR 0050) — see [Sessions and persistence](../concepts/sessions.md).
+daemon starts and lists but does not hold up, so sessions survive a window relaunch and
+daemon restarts; closing the last window on a computer ends its sessions unless you keep them. See
+[Sessions and persistence](../concepts/sessions.md).
 
-On Linux the daemon runs as the child of a small guard process, which is the process the launcher or the unit starts.
-The kernel, the REPL, Pluto and every other process the daemon starts, at any depth and however they detach, end
-within a few seconds of the daemon's end, even when the daemon is killed; a capsule does not, by design. On Linux a Pluto
-server's notebook workers, and a process your code starts in the REPL detached, end with the server's or the REPL's own
-display, so a crashed Pluto server leaves none behind; on a host without Xvfb they end when the daemon ends. The guard
-exits with the daemon's own status. A process a broker starts, the loss of the guard itself and a process stuck in an
-uninterruptible kernel call are outside it, and macOS has no guard: only a controlled end of the daemon ends its
-children there, and not a process that left a child's process group, such as Pluto's notebook worker (ADR 0050).
+Everything the daemon starts except capsules ends with it. On Linux a small guard process ends them within seconds of
+the daemon's end, even when the daemon is killed, and a Pluto server's notebook workers, and a process your code starts
+in the REPL detached, end with the server's or the REPL's own display, so a crashed Pluto server leaves none behind; on
+a host without Xvfb they end when the daemon ends. macOS has no guard: only a normal end of the daemon ends its
+children there, and not a process that left a child's process group, such as a Pluto notebook worker.
 
 ## Where to go next
 

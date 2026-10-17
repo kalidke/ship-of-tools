@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" role="img" aria-label="Ship of Tools architecture: frontends connect over one socket to the backend daemon, which supervises the Julia kernel, the REPL and the agent session capsules" font-family="Inter, -apple-system, 'Segoe UI', sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" role="img" aria-label="Ship of Tools architecture: frontends connect over one socket to the backend daemon, which supervises the Julia kernel and the REPL and starts the agent session capsules" font-family="Inter, -apple-system, 'Segoe UI', sans-serif">
   <title>Ship of Tools architecture</title>
   <defs>
     <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -26,8 +26,8 @@
   <!-- socket boundary -->
   <line x1="330" y1="36" x2="330" y2="436" stroke="#6d8cf0" stroke-width="2" stroke-dasharray="3 6"/>
   <text x="340" y="66" fill="#6d8cf0" font-size="13" font-weight="600">one socket</text>
-  <text x="340" y="84" fill="#939dad" font-size="12">SSH-forwarded, or</text>
-  <text x="340" y="100" fill="#939dad" font-size="12">local on one box</text>
+  <text x="340" y="84" fill="#939dad" font-size="12">ssh child (stdin/stdout),</text>
+  <text x="340" y="100" fill="#939dad" font-size="12">or a local socket</text>
   <text x="340" y="118" fill="#939dad" font-size="12">JSON line protocol</text>
   <path d="M270,155 L466,196" stroke="#939dad" stroke-width="2" fill="none" marker-end="url(#arr)" marker-start="url(#arr)"/>
   <path d="M270,293 L466,216" stroke="#939dad" stroke-width="2" fill="none" marker-end="url(#arr)"/>
@@ -57,8 +57,8 @@
   <text x="728" y="316" fill="#e6e8ee" font-size="16" font-weight="700">Agent sessions</text>
   <text x="728" y="338" fill="#aab2c0" font-size="13">Claude Code, Codex, shell</text>
   <text x="728" y="360" fill="#aab2c0" font-size="13">each in its own capsule</text>
-  <text x="728" y="382" fill="#aab2c0" font-size="13">supervisor; survives FE</text>
-  <text x="728" y="400" fill="#aab2c0" font-size="13">and daemon restarts</text>
+  <text x="728" y="382" fill="#aab2c0" font-size="13">supervisor; survives daemon</text>
+  <text x="728" y="400" fill="#aab2c0" font-size="13">restarts, window relaunch</text>
 
   <path d="M668,190 L710,122" stroke="#939dad" stroke-width="2" fill="none" marker-end="url(#arr)"/>
   <path d="M668,220 L710,224" stroke="#939dad" stroke-width="2" fill="none" marker-end="url(#arr)"/>

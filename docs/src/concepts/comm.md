@@ -3,29 +3,26 @@
 The comm relay is how sessions find and talk to each other, on one machine or
 across many. It has two halves with different jobs.
 
-**Data at rest: the registry and the inboxes.** Under `~/.sot-comm/` each host
-keeps a `registry.json` (every session's handle, host, workspace, and its
+**Data at rest: the registry and the inboxes.** Under `~/.sot-comm/` each comm folder
+holds a `registry.json` (every session's handle, host, workspace, and its
 work-state facts) and one append-only `inbox/<handle>.jsonl` per session.
 Discovery, catch-up after a sleep, and the work-state colours all read these
 files; nothing about them needs a live broker.
 
-**One lock guards the registry.** Every registry write holds
-`~/.sot-comm/.registry.lock`, a file naming its holder's host, pid and start. A
-holder that died on this machine is reclaimed by the next comm command here,
-on Linux or macOS, in the same pid namespace, on a filesystem `comm/PROTOCOL.md` lists,
-through one marker file per dead holder,
-so exactly one waiter removes it; a holder that is alive, frozen, or on
-another machine is never forced, and the failure names it along with the
-recovery: run any comm command on its host, or, for a holder no box can prove dead (no
-proof fields, or a host that will not run again or whose comm commands say they cannot prove a death), remove the lock
-by hand. The rules are in `comm/PROTOCOL.md`.
+**One lock guards the registry.** Every registry write holds `~/.sot-comm/.registry.lock`, a file naming its holder.
+A holder that died on this machine clears itself at the next comm command here. Any other holder is never forced:
+the failure names it and what to run (`comm-registry-lock-clear.sh`) or says to delete the lock by hand. The rules are
+in the [Comm protocol](../ref/comm.md).
 
 **Delivery is a file.** A send to a handle this host's registry names is
 appended to that handle's inbox directly only when this host provably shares
 the hub's lock on `~/.sot-comm/`. Otherwise the frame goes to a daemon as
 `comm.file`, and a daemon that is not the folder's hub hands it to the hub,
 which files it. Either way the send answers `filed -> @handle`, which is the
-acknowledgement: **the file is the ack.** A filed frame is read by the recipient's next turn boundary,
+acknowledgement: **the file is the ack.** A send is filed only to a live handle,
+one whose registry `last_seen` is under 600 s (the daemon that runs a row stamps
+it each minute); a session outside any row that has sat idle for ten minutes
+cannot be written to, and the send fails with `no live session holds @handle`. A filed frame is read by the recipient's next turn boundary,
 because the recipient's own end-of-turn hook reads its inbox and will not let
 the turn end while directed mail sits unread. That is also how a BUSY session
 is reached — no process, no keystrokes, nobody to ask. If a poll finds the inbox mid-write it says so and asks to be run again; it never skips a message.
@@ -38,8 +35,8 @@ nothing and its line says only that the message was filed.
 **The wire: the daemon.** For a handle this host cannot name — one on another
 box — the frame rides the Ship of Tools daemon, the same connection the
 frontend already uses. The hub files it itself when its own comm folder holds
-that handle; any other handle is still offered to the receiving side's
-box's own daemon (or, on Windows, the frontend itself), which files it. Because the relay reuses the backend connection, a
+that handle; otherwise it offers the frame to every daemon linked to it, and the
+daemon whose comm folder lists the handle files it. Because the relay reuses the backend connection, a
 message from a GPU server reaches a session on your laptop with no extra port
 or service. The daemon does not queue frames, so a send nothing can file is
 reported as a failure — `FAILED -> @h: …` — instead of an ack for the daemon's
@@ -55,19 +52,12 @@ cannot read in full is refused too. An agent that needs its own handle is
 started as its own row. The [Comm protocol](../ref/comm.md) states the rule and
 lists what the check does not see.
 
-A row started on this version runs its agent with Claude Code's agent view off,
-so its conversation stays in the row. That switch reaches only rows started after
-the install. A row already open then is covered by the install step: add
-`"disableAgentView": true` to the user settings file of every Claude Code account
-an open row uses. Claude Code 2.1.287 and later read that file while running. A
-row on an older Claude Code, or one whose project settings set the key to false,
-keeps agent view until it is next started.
+A row runs its agent with Claude Code's agent view off, so its conversation stays in the row.
 
 ## The contract
 
-`comm/PROTOCOL.md` is the contract every client implements — the Claude Code
+The [Comm protocol](../ref/comm.md) is the contract every client implements — the Claude Code
 skill, the Codex adapter, and any future client — so all of them are mutually
-addressable through the same registry and inboxes. It is published here as the
-[Comm protocol](../ref/comm.md) reference.
+addressable through the same registry and inboxes.
 
 For day-to-day use, see [Agents messaging each other](../guide/messaging.md).

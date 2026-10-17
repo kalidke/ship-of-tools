@@ -11,8 +11,7 @@ so you scan one list instead of tabbing through panes.
 
 ## The five states
 
-The colours are the four Julia brand colours plus gray — the same palette as
-the helm in the logo.
+The colours are the four Julia brand colours plus gray.
 
 ```@raw html
 <table>
@@ -33,7 +32,7 @@ bright white with a leading `●` until you switch to it. The bottom strip order
 the rows on each host red, white, blue, green, purple, then gray, so what needs
 you comes first.
 
-A `working` stamp that is not refreshed for a while is dimmed as stale, so a
+A `working` stamp that is not refreshed for 10 minutes is dimmed as stale, so a
 session that died mid-turn does not look busy forever.
 
 ## Where the colours come from
@@ -51,17 +50,18 @@ A row's state is not a single value the agent sets; it is a small set of
 The display picks the highest-priority fact that holds: a dialog that waits on
 you is **red**, even while its turn runs; an open question with no turn running
 is **red**; otherwise a running turn is **green**; otherwise a wait is
-**purple**; otherwise an unread result is **blue**; otherwise **gray**. So red
-always wins, and typing into a session (which starts a turn you own) clears both
-red and blue. A Codex session's permission request raises the dialog. For a
-Claude Code session, which sends no event when a dialog shows, the backend reads
-the session's screen every few seconds; on Windows it does not, and such a
-session still reads green.
+**purple**; otherwise an unread result is **blue**; otherwise **gray**. Red wins
+whenever it holds: a dialog at once, a question you must answer once the running
+turn ends. Typing into a session (which starts a turn you own) clears both red
+and blue, and looking at a blue row for 10 seconds marks it read. A Codex
+session's permission request raises the dialog. For a Claude Code session, which
+sends no event when a dialog shows, the backend reads the session's screen every
+few seconds; on Windows it does not, and such a session still reads green.
 
 These facts live in the comm registry, next to each session's handle, which is
 why another agent — and every frontend attached to the backend — sees the same
-colour you do. The declarations are sent with `comm-status.sh`; see
-[The comm relay](comm.md).
+colour you do. An agent sends a declaration with `comm-status.sh`, for example
+`comm-status.sh blocked "<question>"`; the usage is in the [Comm protocol](../ref/comm.md).
 
 The per-entity *provenance* colours (who edited this function, is it accepted)
 are a separate, not-yet-built layer: see
