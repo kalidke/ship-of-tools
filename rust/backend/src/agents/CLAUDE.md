@@ -7,6 +7,7 @@ agents/CLAUDE.md at the repo root (lands with the repo-root agents/ folder).
 
 ## Files
 - `mod.rs`: declares the agent modules and test support module.
+- `account_links.rs`: the Windows fallback where a symlink is refused: a junction for a folder, a one-time copy for a file.
 - `accounts.rs`: account discovery, the account name rules, `account_env`, and the shared links a named account gets.
 - `argv.rs`: the launch argv per agent kind (`agent_argv`, `agent_exec_argv`, `claude_resume_argv`) and the Unix path resolution of `claude` and `ccx`.
 - `env.rs`: spawn environment, account preparation and effective Claude trust-file selection.
@@ -25,7 +26,7 @@ trust record; `agent_argv` in `argv.rs` for a spawn's argv, and `agent_exec_argv
 execs.
 
 ## Rules
-- A named account never shares the login: only the names in `SHARED_ENTRIES` are linked, by `ensure_account_links`.
+- A named account never shares the login: only the names in `SHARED_ENTRIES` are linked, by `ensure_account_links`. On Windows a refused symlink (error 1314) falls back in `account_links.rs`: a folder becomes a junction the daemon proves it can traverse (else it is removed and the spawn refused with the OS reason, 448 under redirection trust), a file is copied once and the account owns it after; an existing entry in any form is never replaced.
 - Folder trust is recorded only when the OS-resolved root lies under the OS-resolved declared prefix. The key uses the child cwd's spelling; an already accepted entry is not rewritten. Outside, undeclared and failed preparation are observable and the agent still starts. The trust file follows the child's effective `CLAUDE_CONFIG_DIR`: account additions override inheritance; with no config override it is the home-level file. Automated evidence establishes preparation; actual child-config consumption remains a human done-test proof limit. Interactive trust recognition, parent coverage and no-dialog behavior remain outside the headless proof.
 - The prefix is parsed as TOML from the user-level settings file at each spawn; no environment variable or project file
   declares it. Invalid input is diagnostic and declares no trust.

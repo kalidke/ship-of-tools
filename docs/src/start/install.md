@@ -163,7 +163,7 @@ installs the agent integration:
 | `~/.local/bin/` | `ccb` (Claude Code launcher), `ccx` (Codex launcher), `sot-fe`, `show-result`, `sot-gh-auth` |
 | `~/.claude/skills/` | the Claude Code skills: `julia-repl`, `show-result`, `sot-comm`, `sot-session-start`, `sot-status`, `sitrep`, `worktree`, `project-log`, `sot-install`, `sot-setup`, `sot-statusline-setup`, `sot-gh-auth` |
 | `~/.claude/settings.json` | hook entries for `UserPromptSubmit`, `PreToolUse` (on `AskUserQuestion`), `PostToolUse` and `Stop`, each calling a `comm-*.sh` script in `~/.sot-comm/bin`; merged in without removing existing hooks |
-| `~/.claude-auth/<name>/settings.json` | the same hook entries, merged the same way into each Claude account that has a `settings.json`; a link is followed and its target written once, and an account folder with none is skipped and none is created there (the backend links the shared one in at the account's first spawn) |
+| `~/.claude-auth/<name>/settings.json` | the same hook entries, merged the same way into each Claude account that has a `settings.json`; a link is followed and its target written once, and an account folder with none is skipped and none is created there (the backend links the shared one in at the account's first spawn, or on Windows without symlinks copies it once, and that copy then gets the hooks like any account's own) |
 | `~/.codex/skills/` | the Codex skills `sot-comm` and `sot-session-start` |
 | `~/.codex/AGENTS.md` | the repo's `AGENTS.md`, installed when none is there and replaced only while the installed file holds "Codex sessions in Ship of Tools"; any other file there is left alone and a warning says to merge by hand |
 | `~/.agents/plugins/sot-comm/`, `~/.agents/plugins/marketplace.json` | the Codex work-state hook plugin; written whether or not Codex is installed, and registered with `codex plugin add sot-comm@sot-local` when it is |
@@ -176,7 +176,7 @@ the first table are always written in your home directory, and an existing
 elsewhere. If `CLAUDE_CONFIG_DIR` names an account folder under
 `~/.claude-auth` that has no `settings.json`, none is created there; the hooks
 go into `~/.claude/settings.json` (created if missing), which the backend links
-into the account. The install ends by naming every Claude settings file it
+into the account (on Windows without symlinks, copies in once). The install ends by naming every Claude settings file it
 left without the hooks, with the reason (an account with no `settings.json`, a
 file made read-only, one that could not be read or parsed). Setting those three
 variables is therefore not an isolated try-out; for that, install under a separate user
