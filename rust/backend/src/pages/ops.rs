@@ -22,7 +22,7 @@ use crate::rows::Workspaces;
 /// `docs.open`'s site root for a page in `dir`: from `dir` up to the top of its
 /// repository (the nearest folder holding `.git`) or `workspace_root`,
 /// whichever comes first, the OUTERMOST folder that directly holds an
-/// `index.html`/`index.htm`, else `dir` itself. A folder with no index on the
+/// `index.html`, else `dir` itself. A folder with no index on the
 /// way does not end the site: a project log's campaign page
 /// (`<log>/experiments/<campaign>/run.html`, where `<campaign>/` holds an index
 /// and `experiments/` none) is served from `<log>/`, so its `../../assets/`
@@ -38,16 +38,7 @@ async fn find_site_root(
     home: Option<&std::path::Path>,
 ) -> Option<std::path::PathBuf> {
     async fn has_index(dir: &std::path::Path) -> bool {
-        for name in ["index.html", "index.htm"] {
-            if tokio::fs::metadata(dir.join(name))
-                .await
-                .map(|m| m.is_file())
-                .unwrap_or(false)
-            {
-                return true;
-            }
-        }
-        false
+        tokio::fs::metadata(dir.join("index.html")).await.is_ok_and(|m| m.is_file())
     }
 
     let holds_home = |p: &std::path::Path| home.is_some_and(|h| h.starts_with(p));
@@ -152,7 +143,7 @@ pub async fn handle_video_open(
 /// the cursored file, or the cursored folder's `index.html`, is served from the
 /// site it belongs to: the outermost folder holding an index between it and
 /// the top of its repository or the workspace root (`find_site_root`), opened
-/// at its place below that folder (an index page at its folder's URL). So
+/// at its place below that folder (a file at its own name, a folder at its folder's URL). So
 /// `<site>/api/reference.html`, `<log>/journal/index.html`, `<log>/journal/`
 /// and `<log>/experiments/<campaign>/run.html` all resolve `../assets/x.css`
 /// against their site. With no index on the way, the file's own folder is
@@ -244,8 +235,7 @@ pub async fn handle_docs_open(
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let index = fname.eq_ignore_ascii_case("index.html") || fname.eq_ignore_ascii_case("index.htm");
-        (dir, if index { String::new() } else { fname }, canon_p.clone())
+        (dir, fname, canon_p.clone())
     };
     let home = std::env::home_dir().and_then(|h| h.canonicalize().ok());
     let Some(root) = find_site_root(&dir, &ws_root, home.as_deref()).await else {

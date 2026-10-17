@@ -262,3 +262,24 @@ async fn a_franklin_site_serves_its_css_from_every_page() {
     drop(w);
     env.kill_daemon_bounded().await;
 }
+
+/// A file opens at its own name, so an index page spelled `index.htm` or `INDEX.HTML` is a page like any other; only
+/// the folder rule's `index.html` opens at its folder's URL.
+#[tokio::test]
+async fn a_page_named_like_an_index_opens_at_its_own_name() {
+    let env = daemon("siteroot-indexname");
+    let docs = env.daemon_project_root.join("code/docs");
+    repo(&docs);
+    write(&docs.join("a/index.htm"), "<link href=\"x.css\">");
+    write(&docs.join("a/x.css"), "p {}");
+    write(&docs.join("b/INDEX.HTML"), "<link href=\"x.css\">");
+    write(&docs.join("b/x.css"), "p {}");
+    let mut w = window(&env).await;
+    for (id, page) in ["a/index.htm", "b/INDEX.HTML"].into_iter().enumerate() {
+        let url = open(&mut w, 2 + id as u64, &docs.join(page)).await;
+        let itself = url.rsplit('/').next().expect("a last segment");
+        assert_eq!((status(&url, itself).await, status(&url, "x.css").await), (200, 200), "{page}: {url}");
+    }
+    drop(w);
+    env.kill_daemon_bounded().await;
+}
