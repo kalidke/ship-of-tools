@@ -13,7 +13,13 @@
 > decision 1), not to one connection: a window that redials keeps it, and of its connections the newest gets what goes
 > to it (`rust/backend/src/clients_window.rs`). `fe.presence` now comes only from a press (not a button release or a key
 > repeat), from the second press in a window within five minutes (one stray click reports nothing), at most once per
-> 5 s, a press the throttle held back going out on the window's next one-second tick once the 5 s have passed. The relay logs the chosen window and why (`every`, `last-used`, `last-connected`).
+> 5 s, a press the throttle held back going out on the window's next one-second tick once the 5 s have passed. The relay logs the chosen window and why (`every`, `last-used`, `last-connected`). "Transparently" does not cover
+> these (B18 review N3): a window disconnected between the choice and the write loses the command (the `fe.command` bus
+> is live-only); an open sent while the window in use is reconnecting goes to the other window, since no connection of it
+> exists to deliver to and holding the command would be a queue nobody asked for; a connection that died and is not yet
+> reaped (up to 90 s, `PING_READ_DEADLINE`) can still be chosen when the window has no newer connection, as the daemon
+> keeps no per-frame liveness. A redial that overlaps its old connection is covered: both carry the window's stamp and
+> the newer connection wins. The wheel counts as input; window focus does not.
 
 > **Update — 2026-09-08: v1.1 landed — "the active frontend," presence from the
 > frontend, not inferred by the daemon.** §5's `v1.1` promised daemon primary-tracking
