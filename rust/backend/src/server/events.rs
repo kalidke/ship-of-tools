@@ -406,17 +406,16 @@ mod tests {
 
         /// A registry with one real, on-disk workspace named `slug`.
         /// Returns (registry, its CANONICAL workspace_id, its canonicalized
-        /// root). Caller removes the returned root's directory when done.
-        fn registry_with_workspace(tag: &str, slug: &str) -> (Workspaces, String, PathBuf) {
-            let dir = std::env::temp_dir().join(format!(
-                "sot-preview-fanout-{tag}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
+        /// root, the folder that holds the root: its drop removes it).
+        fn registry_with_workspace(
+            tag: &str,
+            slug: &str,
+        ) -> (Workspaces, String, PathBuf, tempfile::TempDir) {
+            let held = tempfile::Builder::new()
+                .prefix(&format!("sot-preview-fanout-{tag}-"))
+                .tempdir()
+                .unwrap();
+            let dir = held.path().to_path_buf();
             let workspaces = Workspaces::new();
             let ws = workspaces.insert(Workspace::from_label(
                 slug,
@@ -427,17 +426,16 @@ mod tests {
                 String::new(),
             ));
             let root = ws.files_mode().unwrap().root_path().to_path_buf();
-            (workspaces, ws.workspace_id.clone(), root)
+            (workspaces, ws.workspace_id.clone(), root, held)
         }
 
         #[test]
         fn same_workspace_tag_is_sent() {
-            let (workspaces, id, root) = registry_with_workspace("tag", "alpha");
+            let (workspaces, id, _root, _held) = registry_with_workspace("tag", "alpha");
             // Trusted on the tag alone — the path doesn't even need to be
             // real or nearby.
             let c = change(Some("alpha"), PathBuf::from("/anywhere/at/all"));
             assert!(preview_changed_visible(&c, Some(&id), &workspaces));
-            let _ = std::fs::remove_dir_all(&root);
         }
 
         #[test]
@@ -445,18 +443,16 @@ mod tests {
             // The umbrella-workspace / watch-budget case: tagged "beta" but
             // the path is really inside the active workspace's own
             // (canonical, on-disk) tree.
-            let (workspaces, id, root) = registry_with_workspace("under", "alpha");
+            let (workspaces, id, root, _held) = registry_with_workspace("under", "alpha");
             let c = change(Some("beta"), root.join("src").join("main.jl"));
             assert!(preview_changed_visible(&c, Some(&id), &workspaces));
-            let _ = std::fs::remove_dir_all(&root);
         }
 
         #[test]
         fn foreign_tag_elsewhere_is_dropped() {
-            let (workspaces, id, root) = registry_with_workspace("elsewhere", "alpha");
+            let (workspaces, id, _root, _held) = registry_with_workspace("elsewhere", "alpha");
             let c = change(Some("beta"), PathBuf::from("/repos/beta/src/main.jl"));
             assert!(!preview_changed_visible(&c, Some(&id), &workspaces));
-            let _ = std::fs::remove_dir_all(&root);
         }
 
         #[test]

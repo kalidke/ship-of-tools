@@ -48,6 +48,8 @@ impl Fixture {
     /// bookkeeping any session does there: Pkg makes and at once removes a lock file beside each package version it
     /// resolves (`packages/<name>/<slug>.pid`), and loading a cache updates its timestamp.
     fn with_read_depot(read_depot: Option<std::ffi::OsString>) -> Self {
+        // The process-wide signal fired by `finish` is safe only inside an isolated body.
+        debug_assert!(std::env::var_os(crate::sidecars::contract_tests::CHILD_ENV).is_some());
         let dir = tempfile::tempdir().expect("owned fixture root");
         let root = dir.path().to_path_buf();
         let shim = owned_julia_env(&root);
@@ -635,7 +637,7 @@ async fn add_wglmakie(fixture: &Fixture) {
     let added = eval_within(
         &fixture.repl,
         1,
-        "import Pkg; Pkg.offline(true); Pkg.add(\"WGLMakie\"; io=devnull); println(\"added\")",
+        "import Pkg; Pkg.offline(true); Pkg.add(\"WGLMakie\"; io=devnull); Pkg.precompile(\"WGLMakie\"); println(\"added\")",
         SETUP,
     )
     .await
@@ -648,13 +650,19 @@ async fn add_wglmakie(fixture: &Fixture) {
         stdout_of(&added),
         "added",
         "setup: WGLMakie must be installable from the read depot: {}",
-        added
-            .iter()
-            .filter(|f| f["kind"] == "error")
-            .map(|f| f["message"].to_string())
-            .collect::<Vec<_>>()
-            .join(" ")
+        failure_frames(&added)
     );
+}
+
+/// The `error` and `stderr` frames of an eval, whole: the reason a child's eval failed (Pkg reports a failed
+/// precompile on stderr, and a failed `using` as an `error`).
+fn failure_frames(frames: &[Value]) -> String {
+    frames
+        .iter()
+        .filter(|f| f["kind"] == "error" || f["kind"] == "stderr")
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A page served by the real `wglshow` path never puts its secret, or the address that carries it, on a command
@@ -726,7 +734,7 @@ async fn repl_page_secret_never_reaches_command_line() {
         );
         let page = eval(&fixture.repl, base + 2, "using WGLMakie; fig = WGLMakie.Makie.scatter(1:3); println(ShipToolsRepl.wglshow(fig; open=false) isa BrowserView)").await;
         let address = announced_address(&page)
-            .unwrap_or_else(|| panic!("{route}: the page was not announced"));
+            .unwrap_or_else(|| panic!("{route}: the page was not announced: {}", failure_frames(&page)));
         let secret = address.rsplit('/').next().unwrap_or_default().to_owned();
         assert_eq!(
             secret.len(),

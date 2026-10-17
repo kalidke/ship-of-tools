@@ -10,7 +10,7 @@ use crate::sidecars::mathjax::MathJax;
 use crate::sidecars::repl::{lifecycle::ReplLifecycle, Repl};
 use tokio::sync::broadcast;
 
-const CHILD_ENV: &str = "SOT_TEST_SIDECAR_ISOLATED";
+pub(crate) const CHILD_ENV: &str = "SOT_TEST_SIDECAR_ISOLATED";
 
 /// Runs `name` in a child of this test binary (own process environment, own working directory) within `bound`, and
 /// returns `false` in the parent once the child exited 0 having entered the body exactly once. In the child it

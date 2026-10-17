@@ -452,65 +452,54 @@ mod secure_private_dir_tests {
     use super::secure_private_dir;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn scratch_path(name: &str) -> PathBuf {
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!(
-            "sot-secure-dir-test-{}-{}-{name}",
-            std::process::id(),
-            n
-        ))
+    /// A fresh folder and a path `name` inside it; the folder's drop removes both, even when the test panics.
+    fn scratch_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        (dir, path)
     }
 
     #[test]
     fn absent_dir_is_created_owner_only() {
-        let d = scratch_path("absent");
+        let (_d_dir, d) = scratch_path("absent");
         assert!(secure_private_dir(&d).is_ok());
         let meta = std::fs::symlink_metadata(&d).unwrap();
         assert!(meta.is_dir());
         assert_eq!(meta.permissions().mode() & 0o777, 0o700);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn existing_owner_only_dir_is_accepted() {
-        let d = scratch_path("existing-ok");
+        let (_d_dir, d) = scratch_path("existing-ok");
         std::fs::create_dir_all(&d).unwrap();
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(secure_private_dir(&d).is_ok());
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn existing_group_readable_dir_is_rejected() {
-        let d = scratch_path("existing-group-readable");
+        let (_d_dir, d) = scratch_path("existing-group-readable");
         std::fs::create_dir_all(&d).unwrap();
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o750)).unwrap();
         assert!(secure_private_dir(&d).is_err());
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn existing_symlink_is_rejected_even_to_a_valid_dir() {
-        let target = scratch_path("symlink-target");
+        let (_target_dir, target) = scratch_path("symlink-target");
         std::fs::create_dir_all(&target).unwrap();
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let link = scratch_path("symlink-link");
+        let (_link_dir, link) = scratch_path("symlink-link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(secure_private_dir(&link).is_err());
-        let _ = std::fs::remove_file(&link);
-        let _ = std::fs::remove_dir_all(&target);
     }
 
     #[test]
     fn existing_regular_file_is_rejected() {
-        let d = scratch_path("a-file");
+        let (_d_dir, d) = scratch_path("a-file");
         std::fs::write(&d, b"not a dir").unwrap();
         assert!(secure_private_dir(&d).is_err());
-        let _ = std::fs::remove_file(&d);
     }
 }
 
