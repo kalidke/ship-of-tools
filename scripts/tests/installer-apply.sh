@@ -410,6 +410,11 @@ pack_check "it names the unreadable glibc when getconf fails" "1" "$(printf '%s\
 d="$WORK/pk-no-getconf"; mk_pack_fixture "$d" 2.31; rm -f "$d/bin/getconf"; run_pack "$d"
 pack_check "the pack exits non-zero when getconf is absent" "yes" "$([ "$PK_RC" -ne 0 ] && echo yes || echo no)"
 pack_check "it names the unreadable glibc when getconf is absent" "1" "$(printf '%s\n' "$PK_OUT" | grep -c 'no readable glibc version' || true)"
+case_start "pack_build_orders_glibc_versions_by_number"
+for v in 2.4 2.9; do
+    d="$WORK/pk-order-$v"; mk_pack_fixture "$d" "$v"; run_pack "$d"
+    pack_check "glibc $v is older than the floor, so the gate does not refuse it" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'newer than the fleet' || true)"
+done
 
 # ---------------------------------------------------------------------------
 case_start "archive_install_prints_the_libc"
