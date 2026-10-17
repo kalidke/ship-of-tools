@@ -7,7 +7,7 @@ and the launch path fails open: no update step can stop a window from starting.
 
 ## Owns
 - The release cut and CI: `release.sh`, `tests/rc-gate.sh`, `.github/`.
-- Install: `install.sh` (Linux and macOS); on Windows `install-shortcut.ps1` then `install-manifest.ps1`, plus
+- Install and the Unix update entry: `install.sh` (Linux and macOS; "update sot from the repo" runs it); on Windows `install-shortcut.ps1` then `install-manifest.ps1`, plus
   `Initialize-InstallLayout` (in `sot-install-layout.ps1`, run by `launch-sot.ps1`).
 - Update discovery and staging: `rust/updater`, `rust/backend/src/update.rs` (the `update.check` and `update.apply`
   ops, and `sotd update stage`), `rust/frontend/src/selfupdate.rs`.
@@ -51,6 +51,21 @@ and the launch path fails open: no update step can stop a window from starting.
   new install drops the leftover pointer (`install.sh` for its target, `install-manifest.ps1` when the version or commit
   changes). The rule is ADR 0030's 2026-10-17 amendment; `installer-apply.sh`'s `a_refused_pointer_is_dropped_and_nothing_is_applied`
   group and `test-sot-apply.ps1` section 9 pin it.
+- On Unix the installer is the update entry (`install.sh`, run from the installed checkout or as the one-liner), and a run
+  ends with exactly one line: `PASS: Ship of Tools <v> at <short> on this computer`, `ONE STEP LEFT: <what a person
+  does>` (exit 0, the install is whole) or `FAIL: <check>: <detail>` (exit 1, or 2 for a refusal). With no `--version`
+  and no `--archive` it follows the channel `install.json` records (no install or a stable release: GitHub's latest
+  stable; a pre-release: the newest published release of any kind; a `+` build: stop and ask for `--version` or
+  `--archive`) and never moves an install backwards: the target's own `sotd update direction` says `older` and the run
+  fails, before anything under the prefix changes. With no role flag and no topology entry the role comes back from
+  `install.json` (its bits, its `service`, its `hub`; a remote install's alias from its wrapper). A daemon is restarted
+  only when it runs another version (`sotd same-version`); when the unit would be restarted and `sotd update repls`
+  (the daemon's own `workspace.list`) names a row with a live REPL, the run stops first and asks for
+  `--restart-daemon`, changing nothing. A box the topology plan names, with another daemon host in the plan, gets the
+  launcher that dials the plan (`launch-sot.sh`) whether or not `--backend` is given again. A `--backend` install whose
+  hub's hosts.toml omits this computer ends `FAIL: enroll:` naming the `sotd topology set add` command to run on the
+  hub. The prune of old `repo/versions/<tag>` folders keeps, names and never deletes one with local changes.
+  `installer-entry.sh` (sourced by `installer-state.sh`) runs the installer end to end and pins each of these.
 - The launch path never stops on an update: every update or freshness step logs and the window still starts.
 - One launcher per user, and no window spawns without a lease held on the local daemon across the gap (Windows:
   `launch-sot.ps1`, `Open-SotLease`).
@@ -74,7 +89,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `ExecStartPre=-`, `sot-launch`, `Invoke-PendingApply`, `render_sot_launch`, `launch-sot.ps1`. Uses: `UpdaterSpawner`, `WindowSpawner`, `Signal::spawn`, `fe.lease`,
 `fe.leaving`, `scripts/sot-lease.ps1`, `launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`,
 `is_release_build`, `rust/backend/src/update.rs`, `rust/frontend/src/selfupdate.rs`, `version_line`, `--version`,
-`sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
+`sotd topology plan|sync|status`, `sotd update direction|repls`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
 `scripts/lib/sot-daemon.sh`, `sotd stdio-bridge`, `Leases::commit_update`, `julia::resolve_bin`, `check_remote_fs`,
 `scripts/install.sh`, `REMOTE_FS_TYPES`, `docs/make.jl`, `.github/workflows/CI.yml`,
 `sotd trust declare <absolute-prefix>`, `sotd topology pin`, `HeldDir`, `remove_ended`.
@@ -94,8 +109,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `release.sh`: stamps the version, runs the workspace tests, commits and tags the cut, stamps the line's next -dev
   version in its own commit, and pushes both.
 ### Install
-- `install.sh`: the Unix installer; the one-liner fetches its own tag's copy; `--archive <folder>` installs a packed
-  folder in place of a release download.
+- `install.sh`: the Unix installer and update entry; the one-liner fetches its own tag's copy (the channel's, with no
+  `--version`); `--archive <folder>` installs a packed folder in place of a release download; ends with one verdict line.
 - `pack-build.sh`: builds this checkout's Linux release archive, COMMIT, LIBC and SHA256SUMS into a folder, as
   release.yml's Linux job does. sotd and sot-capsule are musl static when a musl compiler is present; with none it
   builds them for the gnu target and only on a host whose glibc is at most `FLEET_GLIBC_FLOOR` (the fleet's oldest
@@ -135,7 +150,9 @@ Read `lib/sot-daemon.sh` for anything on the Unix launch path, `sot-apply.sh` fo
 launch). A new suite joins a named step of `.github/workflows/rust.yml` in the same change.
 
 ## Rules
-- Entry-point paths are an interface and do not move: `install.sh` fetches `scripts/install.sh` of its own tag
+- Entry-point paths are an interface and do not move, and neither do the option names of `install.sh` (`--version`,
+  `--archive`, `--local`, `--backend`, `--be-only`, `--prefix`, `--hub`, `--no-service`, `--force-role-change`; a new
+  option is added, never renamed): an agent's instructions name them. `install.sh` fetches `scripts/install.sh` of its own tag
   (the prelude before step 0), shortcuts run `repo\current\scripts\launch-sot.ps1`, and `Get-SotLauncherCodeId` hashes
   `launch-sot.ps1`, `sot-hosts.ps1`, `sot-install-layout.ps1`, `sot-freshness.ps1` and `sot-lease.ps1`
   (`tests/test-install-layout.ps1` section 3). A new launcher file joins that list.

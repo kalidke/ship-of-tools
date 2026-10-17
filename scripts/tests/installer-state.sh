@@ -663,6 +663,9 @@ check "a binary newer than an hour-old daemon is STALE, both times printed, noth
 starts_with "a comm that is the program's path (macOS's ps) names the same daemon" "running daemon pid 222 " "$path_line"
 starts_with "restart judges this account's daemon by its exact label" "running daemon pid 333 " "$label_line"
 
+# shellcheck source=installer-entry.sh
+. "$(dirname "$0")/installer-entry.sh"
+
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'
 else

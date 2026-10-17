@@ -22,6 +22,14 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
+- `installer-entry.sh`: sourced by `installer-state.sh`, never run: install.sh run end to end in a scratch HOME from a
+  fixture release (a local git origin, an archive of stand-in binaries, and stand-in `curl`, `sotd`, `systemctl`,
+  `julia` and `ps` driven by files), as the entry of an update: the channel the prelude follows from `install.json`, an
+  implicit run that would move back stopping before anything changes, the role recovered from the record, the one
+  verdict line and each check that fails it, the stop-and-ask before a restart that would end a live REPL, a window
+  still on the old version, `--archive` offline, a run interrupted and repeated, a hub that omits this computer, an old
+  version folder with local changes kept, and the launcher an enrolled frontend gets; with a built `sotd`, the real
+  `update direction` answers. It SKIPs off Linux (a systemd unit).
 - `installer-wrapper.sh`: the rendered `sot-launch` under the sandboxed PATH: the bridge probe before every spawn, the
   crash-loop rollback, the exit-75 respawn, the service operations by unit ownership, the re-exec after an apply, and
   `apply_pending`'s refused pointer (a stand-in `sotd` answers `update pointer`: no stop, no restart, one drop-only
@@ -270,7 +278,7 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
 - A suite runs only if a step of `.github/workflows/rust.yml` or a job of `rc-gate.sh` names it; a new suite is added
   to the step list in the commit that adds it. `rc-gate.sh` lists the three installer/topology shell suites and the finite selected-body proof here by name
   (`SHELL_ALL` in `producer`).
-- `installer-state.sh`, `installer-wrapper.sh`, `installer-apply.sh`, `installer-shared-home.sh` and `test-topology-plan.sh` run wholly under
+- `installer-state.sh` (and `installer-entry.sh` it sources), `installer-wrapper.sh`, `installer-apply.sh`, `installer-shared-home.sh` and `test-topology-plan.sh` run wholly under
   bash 3.2 in `under-bash.sh`'s run, since they source the scripts they test, so they hold under 3.2 themselves: inside
   `$( )` a `case` pattern opens with `(`, because 3.2 ends the substitution at a bare pattern's `)`.
 - `installer-support.sh` sources `install.sh` with `SOT_INSTALL_SOURCE_ONLY=1` and `lib/sot-daemon.sh` for both installer
