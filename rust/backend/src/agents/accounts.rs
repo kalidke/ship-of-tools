@@ -32,8 +32,8 @@
 //
 // The sharing ruling (2026-09-15): a named account folder shares
 // EVERYTHING the default `.claude` folder carries except the login —
-// shared in by [`ensure_account_links`] (a symlink; where the OS refuses symlinks, see `account_links.rs`) the first time a row spawns
-// against that account, so a folder made with a bare `mkdir` is fully
+// shared in by [`ensure_account_links`] (a symlink; where the OS refuses symlinks, see
+// `account_links.rs`) the first time a row spawns against that account, so a folder made with a bare `mkdir` is fully
 // linked before its first session starts. It is an ALLOWLIST
 // ([`SHARED_ENTRIES`]), not a denylist: an unknown or new entry stays
 // per-account by default, and the OAuth identity plus any runtime state a
@@ -314,8 +314,9 @@ fn make_shared_link(target: &Path, link: &Path, target_is_dir: bool) -> std::io:
 /// Refuses an invalid account name before any path join, same check as
 /// [`account_env`] (see [`check_account_name`]) — public, so it must not
 /// trust a caller to have validated `account` already. One ABSOLUTE
-/// symlink per entry (a junction or a one-time copy where the OS refuses symlinks, see `account_links.rs`), `<home>/.claude/<entry>` built from the `home` this
-/// function is given (never a relative `../../.claude/<entry>`, which
+/// symlink per entry (a junction or a one-time copy where the OS refuses
+/// symlinks, see `account_links.rs`), `<home>/.claude/<entry>` built from
+/// the `home` this function is given (never a relative `../../.claude/<entry>`, which
 /// resolves to the wrong place when `.claude-auth` or the account folder
 /// is itself a symlink): a no-op for an empty account or `"default"`; an
 /// entry the default folder does not have is never linked (never produce

@@ -55,7 +55,10 @@ fn remove_own(temp: &Path) {
 #[cfg(any(windows, test))]
 fn junction_or_refuse(target: &Path, link: &Path, junction: impl Fn(&Path, &Path) -> io::Result<()>) -> io::Result<()> {
     let temp = unique_beside(link);
-    junction(target, &temp)?;
+    // Whatever stops the call's own temp from being made is never "the entry is there": only the publish says that.
+    if let Err(err) = junction(target, &temp) {
+        return Err(io::Error::other(format!("could not make the junction {}: {err}", temp.display())));
+    }
     if let Err(err) = std::fs::metadata(&temp) {
         remove_own(&temp);
         return Err(io::Error::other(format!("the junction to {} cannot be traversed: {err}", target.display())));
@@ -93,7 +96,10 @@ fn publish_dir(temp: &Path, link: &Path) -> io::Result<()> {
 fn seed_file(target: &Path, link: &Path) -> io::Result<()> {
     let name = link.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let temp = unique_beside(link);
-    std::fs::copy(target, &temp)?;
+    if let Err(err) = std::fs::copy(target, &temp) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(io::Error::other(format!("could not copy {} to {}: {err}", target.display(), temp.display())));
+    }
     let made = std::fs::hard_link(&temp, link);
     let _ = std::fs::remove_file(&temp);
     made?;
@@ -169,7 +175,7 @@ mod tests {
     use super::super::accounts::ensure_account_links_with;
     #[cfg(windows)]
     use super::super::support_tests::assert_shared_as_the_box_allows;
-    use super::super::support_tests::{link_form_here, touch_dir, touch_file, LinkForm};
+    use super::super::support_tests::{link_facts, touch_dir, touch_file};
     use super::*;
 
     fn refused(_: &Path, _: &Path, _: bool) -> io::Result<()> {
@@ -199,8 +205,9 @@ mod tests {
 
     #[test]
     fn a_refused_symlink_becomes_a_junction_and_copies() {
-        if link_form_here() == LinkForm::Refused {
-            return; // this token cannot cross a junction it makes (os error 448); the real-call test asserts the refusal
+        if !link_facts().crosses_junction {
+            println!("NOT CHECKED: this token cannot cross a junction it makes (os error 448); the real-call test asserts the refusal");
+            return;
         }
         let (tmp, account) = setup();
         let home = tmp.path();
@@ -242,7 +249,7 @@ mod tests {
 
     #[test]
     fn two_first_spawns_of_one_account_never_refuse_each_other() {
-        let crosses = link_form_here() != LinkForm::Refused;
+        let crosses = link_facts().crosses_junction;
         for round in 0..100 {
             let (tmp, account) = setup();
             let default = tmp.path().join(".claude");
@@ -340,5 +347,23 @@ mod tests {
         }
         std::fs::remove_dir(&link).unwrap();
         assert!(target.join("foo").is_dir());
+    }
+
+    #[test]
+    fn a_failure_making_the_calls_own_temp_is_never_read_as_a_present_entry() {
+        let (tmp, account) = setup();
+        let stale = |_: &Path, _: &Path| Err(io::Error::from(io::ErrorKind::AlreadyExists));
+        let result = ensure_account_links_with(tmp.path(), "team", |t, l, d| link_with_fallback(t, l, d, refused, stale));
+        assert!(result.unwrap_err().contains("could not make the junction"));
+        assert!(std::fs::symlink_metadata(account.join("skills")).is_err());
+    }
+
+    #[test]
+    fn a_failed_copy_leaves_no_temp() {
+        let (_tmp, account) = setup();
+        let missing = account.join("no-such-source");
+        let err = link_with_fallback(&missing, &account.join("settings.json"), false, refused, |_, _| unreachable!());
+        assert!(err.unwrap_err().to_string().contains("could not copy"));
+        assert_eq!(std::fs::read_dir(&account).unwrap().count(), 0);
     }
 }
