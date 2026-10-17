@@ -306,11 +306,11 @@ case_start "entry_asks_before_it_restarts_a_daemon_with_a_live_repl"
 d="$WORK/live"; entry_fixture "$d"; P="$d/home/.local/share/sot"
 entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; : > "$d/ctl/restart-same"
 printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"
-printf 'Rig PC\nscan\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
+printf 'repl Rig PC\nrepl scan\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
 before="$(entry_prefix_tree "$d")"
 entry_archive "$d" --be-only
 check "a live REPL stops the run (exit 2)" "2" "$ENTRY_RC"
-check "it names the rows whose REPL would end" "1" "$(said 'FAIL: daemon: the daemon on '"$d"'/ctl/sot.sock runs another version, and its rows with a live REPL are: Rig PC, scan')"
+check "it names the rows whose REPL would end" "1" "$(said 'FAIL: daemon: the daemon on '"$d"'/ctl/sot.sock runs another version, and restarting it would end the REPLs of: Rig PC, scan')"
 check "it says to ask and how to answer" "1" "$(said 'Ask whoever uses this computer, then re-run with --restart-daemon.')"
 check "and that nothing under the install was changed" "1" "$(said 'Nothing under the install was changed.')"
 check "nothing changed" "$before" "$(entry_prefix_tree "$d")"
@@ -332,14 +332,14 @@ printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"; printf '1
 before="$(entry_prefix_tree "$d")"
 entry_archive "$d" --be-only
 check "a daemon that cannot list its rows: exit 2, no restart" "2 0" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart')"
-starts_with "its FAIL says what could not be asked and the answer" "FAIL: daemon: could not ask which rows have a live REPL" "$ENTRY_LAST"
+starts_with "its FAIL says what could not be asked and the answer" "FAIL: daemon: could not ask which REPLs and Pluto sessions are live" "$ENTRY_LAST"
 check "nothing changed" "$before" "$(entry_prefix_tree "$d")"
 check "it says --restart-daemon answers it, and that nothing under the install changed" "1 1" "$(said 're-run with --restart-daemon') $(said 'Nothing under the install was changed')"
 entry_archive "$d" --be-only --restart-daemon
 check "--restart-daemon answers it: the restart, and PASS" "0 1 PASS" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
 # The daemon already runs the target: nothing is asked and nothing is restarted.
 d="$WORK/live-same"; entry_fixture "$d"
-entry_record "$d" 9.9.9 1 0 systemd; : > "$d/ctl/unit-active"; printf '0\n' > "$d/ctl/same-rc"; printf 'Rig PC\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
+entry_record "$d" 9.9.9 1 0 systemd; : > "$d/ctl/unit-active"; printf '0\n' > "$d/ctl/same-rc"; printf 'repl Rig PC\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
 entry_archive "$d" --be-only
 check "a daemon on the target version: no question, no restart, PASS" "0 0 0 PASS" \
     "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $(sotd_log "$d" | grep -c 'update repls' || true) $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
@@ -494,6 +494,11 @@ if [ -x "$RS" ]; then
     check "the real sotd: a dev build is above the candidate it follows, below the next one" "older newer same" "$(ask 0.6.6-rc9.13) $(ask 0.6.6-rc9.14) $(ask v0.6.6-rc9.14-dev+a)"
     rm -f "$d/p/install.json"; check "no install.json: exit 1" "exit 1" "$(ask 0.6.6)"
     rc=0; "$RS" update repls --endpoint "unix:$d/none.sock" >/dev/null 2>&1 || rc=$?; check "no daemon to ask: exit 1" "1" "$rc"
+    # An enrolled frontend runs a private daemon of its own, which the plan does not dial unless the host is also a daemon host:
+    # its own rows do not show in its window (the enroll FAIL and the launcher say so).
+    printf 'hub = "hubbox"\n\n[host.hubbox]\ndaemon = true\n\n[host.laptop]\nfrontend = true\n' > "$d/hosts.toml"
+    check "the real plan: a frontend-only host dials the hub and not itself" "dial hubbox ssh:hubbox" \
+        "$(env SOT_HOSTS="$d/hosts.toml" HOME="$d" "$RS" topology plan --self laptop | grep '^dial' | tr '\n' ';' | sed 's/;$//')"
 else
     printf '    SKIP the real sotd cases (no built sotd at %s; build it with cargo build -p sot-backend --bin sotd)\n' "$RS"
 fi
@@ -529,12 +534,12 @@ check "a fresh unit whose daemon answers as the target: PASS" "0 PASS" "$ENTRY_R
 case_start "entry_names_the_rows_a_step_would_end_and_the_command_that_ends_them"
 # A daemon on another version that this run does not restart (a window holds it, or the launcher started it) is asked its
 # live rows too, and the ONE STEP LEFT names them and the command that fits this computer.
-check "the step: a launcher, a unit, or by hand" "start Ship of Tools again (the daemon on S still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A, B|run systemctl --user restart sotd.service once the window that holds the daemon on S is closed (it still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A|restart the sotd on S by hand (it still runs another version, beside the new repo/current and bin/sot-capsule); its rows with a live REPL could not be listed, so starting it again may end some" \
-    "$(installer_daemon_step launcher other S 'A, B' 0)|$(installer_daemon_step unit held S A 0)|$(installer_daemon_step hand other S '' 1)"
+check "the step: a launcher, a unit, or by hand" "start Ship of Tools again (the daemon on S still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A, B|run systemctl --user restart sotd.service once the window that holds the daemon on S is closed (it still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A|restart the sotd on S by hand (it still runs another version, beside the new repo/current and bin/sot-capsule); its live REPLs and Pluto sessions could not be listed, so starting it again may end some" \
+    "$(installer_daemon_step launcher other S 'A, B' '' 0)|$(installer_daemon_step unit held S A '' 0)|$(installer_daemon_step hand other S '' '' 1)"
 # B: an owned unit a window holds, be-only (no launcher), a live REPL.
 d="$WORK/held-rows"; entry_fixture "$d"
 entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"
-printf '9.9.8\n' > "$d/ctl/same-out"; printf '4\n' > "$d/ctl/same-rc"; printf 'Rig PC\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
+printf '9.9.8\n' > "$d/ctl/same-out"; printf '4\n' > "$d/ctl/same-rc"; printf 'repl Rig PC\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
 entry_archive "$d" --be-only
 check "a held unit is asked its rows, and not restarted" "0 1 0" "$ENTRY_RC $(sotd_log "$d" | grep -c 'update repls' || true) $(count_in "$d/ctl/systemctl.log" 'try-restart')"
 check "the step is the systemctl command, with the row it ends, and no launcher" "1 1 0" "$(said 'ONE STEP LEFT: run systemctl --user restart sotd.service') $(said 'starting it again ends the REPLs of: Rig PC') $(printf '%s' "$ENTRY_LAST" | grep -c -F 'Ship of Tools' || true)"
@@ -551,7 +556,7 @@ check "a held unit with a launcher but no local window: the unit's command, not 
 # E: a daemon the launcher started (--no-service) on another version, with a live REPL.
 d="$WORK/nosvc-rows"; entry_fixture "$d"
 entry_record "$d" 9.9.8 1 0 none
-printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"; printf 'Rig PC\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
+printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"; printf 'repl Rig PC\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
 entry_archive "$d" --be-only --no-service
 check "a daemon with no unit is asked its rows and left alone: exit 0" "0 1" "$ENTRY_RC $(sotd_log "$d" | grep -c 'update repls' || true)"
 check "the step is by hand and names the row" "1 1" "$(said "ONE STEP LEFT: restart the sotd on $d/ctl/sot.sock by hand") $(said 'starting it again ends the REPLs of: Rig PC')"
@@ -563,6 +568,31 @@ printf '1\n' > "$d/ctl/repls-rc"
 entry_record "$d" 9.9.8 1 0 none
 entry_archive "$d" --be-only --no-service
 check "an unaskable daemon that is left alone: exit 0, the step says the rows could not be listed" "0 1" "$ENTRY_RC $(said 'could not be listed')"
+
+# ---------------------------------------------------------------------------
+case_start "entry_asks_about_pluto_sessions_as_it_asks_about_repls"
+# A restart ends the Pluto server and every notebook it has open, as it ends a REPL: one question, one list, on one path.
+check "the live work, in words" "the REPLs of: A|the Pluto sessions of: /p/a.jl|the REPLs of: A and the Pluto sessions of: /p/a.jl, /p/b.jl" \
+    "$(installer_live_work A '')|$(installer_live_work '' /p/a.jl)|$(installer_live_work A '/p/a.jl, /p/b.jl')"
+check "the step carries both" "start Ship of Tools again (the daemon on S still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A and the Pluto sessions of: /p/a.jl" \
+    "$(installer_daemon_step launcher other S A /p/a.jl 0)"
+d="$WORK/pluto-only"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; : > "$d/ctl/restart-same"
+printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"
+printf 'pluto /p/a.jl\npluto /p/b.jl\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
+before="$(entry_prefix_tree "$d")"
+entry_archive "$d" --be-only
+check "a live Pluto session alone stops the restart (exit 2), changing nothing" "2 0 yes" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $([ "$before" = "$(entry_prefix_tree "$d")" ] && echo yes || echo no)"
+check "it names the notebooks" "1" "$(said 'FAIL: daemon: the daemon on '"$d"'/ctl/sot.sock runs another version, and restarting it would end the Pluto sessions of: /p/a.jl, /p/b.jl')"
+entry_archive "$d" --be-only --restart-daemon
+check "--restart-daemon answers it" "0 1 PASS" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
+# A held unit with a notebook and a REPL: the step names both.
+d="$WORK/pluto-held"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"
+printf '9.9.8\n' > "$d/ctl/same-out"; printf '4\n' > "$d/ctl/same-rc"
+printf 'repl Rig PC\npluto /p/a.jl\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
+entry_archive "$d" --be-only
+check "a held unit's step names the REPLs and the Pluto sessions" "0 1" "$ENTRY_RC $(said 'starting it again ends the REPLs of: Rig PC and the Pluto sessions of: /p/a.jl')"
 
 # ---------------------------------------------------------------------------
 case_start "entry_keeps_the_rollback_through_a_repair_run"

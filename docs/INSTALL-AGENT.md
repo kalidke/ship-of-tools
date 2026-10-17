@@ -28,8 +28,8 @@ said to be older and installed). It ends with exactly one line; read that line, 
 - `ONE STEP LEFT: <step>`: the install is whole and one thing remains that only the human can do (usually: quit the
   window and start it again, since it still runs the old version). Tell the human that step in those words.
 - `FAIL: <check>: <detail>`: stop and report the line. Three are decisions, not faults. `daemon:` names rows with a live
-  REPL that a restart would end (their variables are lost; the rows and their agents keep running), or says the daemon
-  could not be asked which rows have one: ask the human, and re-run with `--restart-daemon` only on a yes. `target:` and
+  REPL and Pluto notebooks that a restart would end (their variables are lost; the rows and their agents keep running),
+  or says the daemon could not be asked which are live: ask the human, and re-run with `--restart-daemon` only on a yes. `target:` and
   `direction:` are the human's to answer, never a version the agent picks. `target:` says the install is a build of the
   line (a `+` in its version): a pack of the line (`scripts/pack-build.sh` in the checkout that built it) goes in with
   `--archive <folder>`, while a release named with `--version` is usually older and moves this computer back.

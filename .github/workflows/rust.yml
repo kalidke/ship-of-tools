@@ -805,10 +805,17 @@ jobs:
         run: bash scripts/tests/test-test-binary-bound.sh
         working-directory: .
 
+      # The installer suites' real-sotd cases (installer-entry's `update direction` and `update repls` answers,
+      # installer-apply's pointer rule) run only when this binary exists: a skipped case is not covered.
+      - name: Build sotd for the installer suites
+        run: cargo build -p sot-backend --bin sotd --locked
+
       # The installer's pure decisions and the sot-launch socket probe, run
       # from install.sh's own text; hermetic and fast.
       - name: Test installer state (bash)
         timeout-minutes: 5
+        env:
+          SOT_TEST_SOTD: "${{ github.workspace }}/rust/target/debug/sotd"
         run: bash scripts/tests/installer-state.sh
         working-directory: .
 
@@ -819,6 +826,8 @@ jobs:
 
       - name: Test installer apply (bash)
         timeout-minutes: 5
+        env:
+          SOT_TEST_SOTD: "${{ github.workspace }}/rust/target/debug/sotd"
         run: bash scripts/tests/installer-apply.sh
         working-directory: .
 

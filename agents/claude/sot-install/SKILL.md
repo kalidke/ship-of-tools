@@ -23,8 +23,8 @@ backwards. Read its **last line** and tell the human:
 - `ONE STEP LEFT: <step>`: the install is whole; give the human that step in those words (usually: quit the window and
   start it again).
 - `FAIL: <check>: <detail>`: report the line. Do not retry blindly.
-  - `daemon:` names rows with a live REPL that a restart would end, or says the daemon could not be asked which rows
-    have one. Ask the human; run it again with `--restart-daemon` only on a yes.
+  - `daemon:` names rows with a live REPL and Pluto notebooks that a restart would end, or says the daemon could not be
+    asked which are live. Ask the human; run it again with `--restart-daemon` only on a yes.
   - `target:` and `direction:` are the human's to answer, never a version the agent picks. `target:` means the machine
     runs a build of the line (a `+` in its version): a pack of the line goes in with `--archive <folder>`, while a release
     named with `--version` is usually older and moves this computer back. `direction:` means the newest release is older
