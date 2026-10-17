@@ -786,7 +786,12 @@ dl() {
 }
 if [ -n "$ARCHIVE" ]; then
     say "copying ${#ASSETS[@]} assets from $ARCHIVE"
-    for a in "${ASSETS[@]}"; do cp "$ARCHIVE/$a" "$WORK/$a" || die "cannot copy $a from $ARCHIVE"; done
+    for a in "${ASSETS[@]}"; do
+        # sha256sum -c --ignore-missing checks only the names SHA256SUMS lists, so an unlisted asset would pass unchecked.
+        [ "$a" = SHA256SUMS ] || grep -q -E "^[0-9a-fA-F]+ [ *]$a\$" "$ARCHIVE/SHA256SUMS" \
+            || die "$a is not listed in $ARCHIVE/SHA256SUMS; every copied asset must be checksummed"
+        cp "$ARCHIVE/$a" "$WORK/$a" || die "cannot copy $a from $ARCHIVE"
+    done
 else
     say "downloading ${#ASSETS[@]} assets"
     for a in "${ASSETS[@]}"; do dl "$a"; done
