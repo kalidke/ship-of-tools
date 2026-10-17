@@ -16,8 +16,8 @@ Help remembers which pane you asked about while you browse or search it.
 
 In the Help drawer, type to search action names, descriptions or shortcuts;
 use arrows to select, Tab to switch between this pane and all panes, and Enter
-to open the selected action's manual section. A shadowed shortcut is identified
-instead of being advertised as working. Embedded terminal applications own
+to open the manual page for the action's group in the browser (the published dev manual). A shadowed shortcut is
+listed as "binding shadowed" instead of being advertised as working. Embedded terminal applications own
 their own shortcuts; the catalog describes SoT controls around them.
 **Primary+p** (`Ctrl+p` on Windows/Linux, `⌘P` on macOS) in the Help drawer
 writes a printable cheat sheet of the loaded bindings and opens it in the
@@ -29,13 +29,14 @@ Each action maps to one chord or a list of chords in a `[keys]` table:
 
 ```toml
 [keys]
-help.toggle = "Primary+?"
+help.toggle = "F2"
 drawer.help = "F1"
 files.run_current = "F8"
 preview.png.zoom_in = ["Shift+ArrowUp", "+", "="]
 ```
 
-The first existing configuration file is selected, in this order. Its listed
+The first existing configuration file is selected, in this order (see
+[Where the files are](@ref config-file-locations) for what each step reads on each OS). Its listed
 actions override the defaults; unlisted actions keep their defaults:
 
 1. `$SOT_KEYBINDINGS`.
@@ -43,15 +44,17 @@ actions override the defaults; unlisted actions keep their defaults:
 3. `$HOME/.config/sot/keybindings.toml`.
 4. Built-in defaults.
 
-Bindings load on frontend startup and again on a `reload_keybindings` command. Invalid entries log a warning and retain the
+Bindings load when the window starts. An agent can reload them live with the `reload_keybindings` frontend command
+(a command file in the window's command directory); otherwise restart the window. Invalid entries log a warning and retain the
 previous binding. The active Help drawer and pane borders reflect that resolved
 result. When two actions share a chord in the same context, catalog order defines
 dispatch precedence; Help identifies a shadowed binding.
 
 Where a pane takes typed text (agent, terminal, Julia input, the editor,
-prompts, Help's search), a binding with no `Ctrl`, `Alt` or `Super` never
-fires: the character is typed. Bind such actions with a modifier if they must
-work there; Help shows them as unavailable in those panes.
+prompts, Help's search), a binding that is a single printable character, with or
+without `Shift`, never fires: the character is typed. Bind such actions with
+`Ctrl`, `Alt` or `Super`, or to a named key such as `F8`, if they must work there;
+Help lists them as "binding shadowed" in those panes.
 
 ## Modifiers and keyboard layouts
 
@@ -75,7 +78,8 @@ Shift is `⇧`. Explicit Control bindings remain Control; they do not silently
 become Command bindings. A Command binding must match the Command modifier.
 
 Letter and named-key bindings match Shift explicitly: `r` and `Shift+r` are
-different actions, and Shift+ArrowUp does not also pan an image. A bare uppercase
+different actions, and Shift+ArrowUp does not also pan an image. A punctuation binding written without
+`Shift` fires with or without it held (`+` and `=` both zoom in). A bare uppercase
 letter is shorthand for its shifted binding. Modified letter spelling is case
 insensitive (`Ctrl+s` and `Ctrl+S` mean the same chord).
 
@@ -89,8 +93,8 @@ All shortcuts can be reassigned for layouts or OS shortcuts that conflict.
 macOS reserves some chords at the system level regardless of what SoT binds:
 Control+Arrow switches Spaces or opens Mission Control, and F11 shows the
 desktop, which is why pane focus is `⌘Arrow` there and fullscreen also accepts
-`Ctrl+Cmd+F` (F11 still works if that system shortcut is off). `⌘Q` and `⌘H`
-are handled by the OS-level application menu, not by SoT's own key dispatch.
+`Ctrl+Cmd+F` (F11 still works if that system shortcut is off). `⌘H` and
+`⌘Q` also belong to the default macOS application menu.
 `⇧⌘/` is the system Help-menu shortcut, on by default, and never reaches the
 app at all — that is why `help.toggle`'s macOS default is the bare `⌘/`
 instead of the cross-platform `Primary+?` pattern. On Mac laptop keyboards
@@ -147,7 +151,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `mode.sessions` | `s` | Browse workspaces and agent sessions. |
 | `files.pin` | `p` | Keep the selected file in preview while browsing. Unpin returns to the pinned file. |
 | `mode.hosts` | `h` | Browse backend hosts. |
-| `files.toggle_hidden` | `.` | Show or hide dotfiles. |
+| `files.toggle_hidden` | `.` | Show or hide dotfiles here or in the folder picker (a hidden folder can be a workspace root). |
 | `session.destroy` | `Shift+d` | Press twice to destroy the selected session. Any other command cancels confirmation. |
 | `file.open` | `o` | Open HTML, video or an interactive document in the browser; Julia files open in Pluto. |
 | `file.docs` | `Shift+w` | Open the built documentation site for this file in the browser. |

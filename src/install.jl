@@ -31,7 +31,7 @@ function _repo_commit()
 end
 
 """
-    install_comm(; clis = [:claude])
+    install_comm(; clis = [:claude, :codex])
 
 Install sot-comm, creating the comm folder owner-only (0700) when it does not
 exist. Installs the files of every folder listed in

@@ -1,9 +1,25 @@
 # Configuration Files
 
 `settings.toml` holds the frontend's settings (layout, font, terminal and the rest); the frontend reads it when it
-starts. `hosts.toml` declares the hosts and is read by `sotd`; the frontend reads no file for hosts. Chords live in a
-third file, `keybindings.toml`, described on its own page: [Keybindings](keybindings.md). A missing or out-of-range
-value falls back to its default rather than crashing the chrome.
+starts. `hosts.toml` declares the hosts and is read by `sotd`; the window also reads it for the hub's name and for
+whether this box owns updates, but its connections come only from `--dial` flags. Chords live in a third file,
+`keybindings.toml`, described on its own page: [Keybindings](keybindings.md). A missing or out-of-range value falls back
+to its default rather than crashing the chrome.
+
+## [Where the files are](@id config-file-locations)
+
+The window and `sotd` do not look in the same places.
+
+- **The window** reads `settings.toml` and `keybindings.toml` from the first of: `$SOT_SETTINGS` (or
+  `$SOT_KEYBINDINGS`); `.sot/<file>` found by walking upward from the window's working directory; `$HOME/.config/sot/<file>`.
+  It never consults `XDG_CONFIG_HOME`, and where `HOME` is unset (a normal Windows login) the last step finds nothing.
+  On Windows the launcher sets `$SOT_SETTINGS` to the clone's `.sot\settings.toml`.
+- **`sotd`** reads `hosts.toml` (unless `$SOT_HOSTS` names a file) and the `[trust]` table of `settings.toml` from its
+  config directory: `$XDG_CONFIG_HOME/sot` when that is set, else `~/.config/sot`; on Windows
+  `%LOCALAPPDATA%\sot\config`.
+
+So on Linux and macOS with `XDG_CONFIG_HOME` set, the daemon's `settings.toml` is not the window's. On Windows they are
+two files: set `[trust] root_prefix` in the daemon's, not in the clone-local file the window reads.
 
 ## `settings.toml`
 
@@ -17,8 +33,8 @@ Frontend settings.
 3. `$HOME/.config/sot/settings.toml` — per-user settings.
 4. Built-in defaults.
 
-Any value that is missing or out of range silently falls back to its default —
-the chrome never crashes on a malformed settings file.
+A value that is missing or does not parse keeps its default, and the reason is written to the window's log. A preset's
+`widths` has one entry per entry in its `columns`.
 
 ### [`[layout]`](@id layout)
 
@@ -43,8 +59,8 @@ shared bottom drawer.
 | `drawer_height` | fraction `[0.10, 0.80]` | `0.35` | Drawer height as a fraction of window height when open; clamped to range. |
 
 Laptop defaults to `0.18,0.32,0.50` widths with a `0.40` drawer; portrait drops
-the `llm` column (`nav,preview` at `0.30,0.70`, `0.40` drawer). Unknown keys and
-out-of-range values warn and fall back to the default.
+the `llm` column (`nav,preview` at `0.30,0.70`, `0.40` drawer). Unknown keys are ignored with
+a logged warning, and a value that does not parse keeps the default.
 
 ### Other sections
 
@@ -52,11 +68,11 @@ out-of-range values warn and fall back to the default.
 |---------------|------|---------|---------|
 | `[terminal] shell` | string | *(auto)* | Shell the Terminal drawer spawns. Unset resolves per platform: `$SHELL`, then `/bin/bash`, `/bin/sh` on Unix; `pwsh.exe`, `powershell.exe`, `cmd.exe` on Windows. |
 | `[repl] auto_open_drawer_on_run` | bool | `true` | Running a `.jl` file from the navigation tree with `r`/`R` opens the REPL drawer if it is closed, so the run's output is visible. Navigation keeps focus. |
-| `[font] scale` | number `[0.5, 3.0]` | *(by monitor width)* | Text-size multiplier at startup. A zoom you saved with `Ctrl+=`/`Ctrl+-`/`Ctrl+0` wins over this key, and `--font-scale` on the command line overrides both. Unset, wide monitors start with larger text. |
+| `[font] scale` | number `[0.5, 3.0]` | *(by monitor width)* | Text-size multiplier at startup. A zoom you saved with the font-scale keys wins over this key, and `--font-scale` on the command line overrides both. Unset, wide monitors start with larger text. |
 | `[nav] spill_ms` | integer, ms | `2000` | While the navigation cursor is moving, a row too long for the column floats its full text over the preview pane's left edge, and the text vanishes this many milliseconds after the last move. `0` turns it off. |
-| `[trust] root_prefix` | absolute path | *(none)* | Read by the daemon, from the user-level `settings.toml` only (the frontend ignores it). When it starts an agent in a project folder under this prefix, it marks Claude Code's trust dialog for that folder as answered. Set it with `sotd trust declare <absolute-prefix>`. |
+| `[trust] root_prefix` | absolute path | *(none)* | Read by the daemon from its own `settings.toml` (see [Where the files are](@ref config-file-locations)); the frontend ignores it. When it starts an agent in a project folder under this prefix, it marks Claude Code's trust dialog for that folder as answered. Set it with `sotd trust declare <absolute-prefix>`. |
 | `[downloads] dir` | path | *(OS download dir)* | Local directory `d` (download) writes to. Empty means the OS download directory. |
-| `[sessions] new_session_root` | path | *(fallback chain)* | Backend-host directory the new-session picker starts browsing from. Unset falls back to `$SOT_PROJECTS_ROOT`, `$SOT_REMOTE_HOME`, the daemon's default root, then `$HOME`. |
+| `[sessions] new_session_root` | path | *(fallback chain)* | Backend-host directory the new-session picker starts browsing from. Unset falls back to `$SOT_PROJECTS_ROOT`. For a remote host the picker then tries `$SOT_REMOTE_HOME`, the daemon's default root, then the window's `$HOME`. For the local host the configured root counts only if it exists on this disk; otherwise the picker starts at the daemon's default root, then `$HOME`. |
 | `[drawer] attach_only` | bool | `false` | Windows only: the Terminal drawer attaches to a running capsule instead of spawning a local shell. Dormant: nothing starts a drawer capsule to attach to, so leave it `false`. Read when the drawer is created; takes a frontend restart. |
 
 ### `[gpu]`
@@ -68,7 +84,7 @@ out-of-range values warn and fall back to the default.
 The frontend renders glyph quads and image blits — a 2D workload an integrated
 GPU handles comfortably — so it asks for the **low-power adapter by default**. On
 a hybrid-graphics laptop, requesting the discrete GPU keeps it awake for the
-entire session (measured ~11 W on an otherwise idle RTX 4070): an active surface
+entire session: an active surface
 prevents the dGPU from power-gating. Set `high` if you are on a desktop with a
 real GPU, or if the integrated adapter renders incorrectly.
 
@@ -95,9 +111,7 @@ fullscreen.
 
 There is no VRR/adaptive-sync detection API worth trusting, so this is a
 setting rather than a heuristic, and it defaults to `false`: most panels are
-fixed-refresh and the pin only burns power for no visible benefit — measured
-25.5 points of one core and 8.5 points of iGPU 3D continuously at idle in
-fullscreen (measured on one laptop). Set `true` on a VRR/adaptive-sync OLED
+fixed-refresh and the pin only burns power for no visible benefit. Set `true` on a VRR/adaptive-sync OLED
 panel that pumps brightness in borderless fullscreen.
 
 ### Example
@@ -122,34 +136,31 @@ fullscreen_vsync_pin = false    # default false | true on a VRR/OLED panel
 ## `hosts.toml`
 
 The declared topology: which host is the relay hub, which hosts run a
-daemon, which run a frontend, and which hosts a `Ctrl+M` monitor drawer
-samples. `sot_protocol::topology` (Rust) is the **one parser** for this
+daemon, which run a frontend, and which hosts the Monitor drawer
+(`drawer.monitor`) samples. `sot_protocol::topology` (Rust) is the **one parser** for this
 file — the daemon's `sotd topology plan|status|sync|relay-endpoint` CLI is
 the one way anything reads it. Neither the frontend nor the PowerShell
-launcher parses `hosts.toml` itself any more: the launcher runs
+launcher parses `hosts.toml` itself: the launcher runs
 `sotd topology plan --self <host>` and renders its plain-line output into
 `--dial <host>=<endpoint>` flags for the frontend (each an ssh child the
 frontend spawns itself, or a local socket/pipe). `sot --dial` takes one
-connection per flag and may repeat; `sot --help` lists it. The frontend reads no
-config file for hosts at all (`rust/protocol/src/topology/mod.rs`'s `plan` doc comment has the exact
-line-oriented contract).
+connection per flag and may repeat; `sot --help` lists it. The window does load `hosts.toml` through the same parser, but only for the hub's name (the Monitor drawer's
+subscription) and to decide whether this box owns updates; which daemons it connects to comes only from `--dial`
+(`rust/protocol/src/topology/mod.rs`'s `plan` doc comment has the exact line-oriented contract).
 
 The format is deliberately simple — a section per host, scalar
-`key = value` lines — so it needs no TOML library. Values pass through
-**verbatim**: there is no TOML escape processing, so Windows pipe paths
-use single backslashes.
+`key = value` lines — so it needs no TOML library.
 
 ### Discovery order
 
 The one search order, used everywhere this file is read:
 
 1. `$SOT_HOSTS` — explicit path override (tests, scratch daemons).
-2. `<config dir>/hosts.toml` — `~/.config/sot/hosts.toml` on Linux/macOS,
-   `%LOCALAPPDATA%\sot\config\hosts.toml` on Windows.
+2. `<config dir>/hosts.toml` — `$XDG_CONFIG_HOME/sot/hosts.toml` when `XDG_CONFIG_HOME` is set, else
+   `~/.config/sot/hosts.toml` on Linux/macOS; `%LOCALAPPDATA%\sot\config\hosts.toml` on Windows.
 
-There is no repo-local `.sot/hosts.toml` layer any more: the hub's own copy
-is canonical, and every other box's copy is a `sotd topology sync --hub
-<alias>` fetch of it (see below).
+There is no repo-local `.sot/hosts.toml` layer: the hub's own copy is canonical, and every other box's copy is a
+`sotd topology sync --hub <alias>` fetch of it.
 
 ### Top-level
 
@@ -168,11 +179,11 @@ box needs one for the hub.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `daemon` | bool | `false` | This host runs `sotd` and can be dialled. `sotd topology plan` emits a `dial` line for every daemon host: this box's own socket for itself, the hub's own relay socket for a remote host (on the hub only), and `ssh:<hub>` / `ssh:<hub>/<host>` everywhere else. |
-| `frontend` | bool | `false` | This host runs a frontend and its launcher. |
+| `frontend` | bool | `false` | This host runs a frontend and its launcher, and so its own private `sotd`. |
 
-A host can be `daemon = true`, `frontend = true`, neither (the section is
-otherwise pointless), or both (a workstation running its own daemon *and*
-driving a local frontend). The hub itself needs `daemon = true` too — it
+A host can be `daemon = true`, `frontend = true`, or both (a workstation running its own daemon *and*
+driving a local frontend). A host declared with neither runs no `sotd`: `sotd.service` is pinned only to hosts that declare
+`daemon` or `frontend`, and the updater arms nothing there. The hub itself needs `daemon = true` too — it
 is still a listed host, just the one every other daemon host's relay
 handles register on.
 
@@ -189,7 +200,7 @@ navigation still refreshes previews reactively.
 
 ### `[monitor]`
 
-The hosts sampled for the `Ctrl+M` server-monitor drawer. **Hub-scoped:**
+The hosts sampled for the Monitor drawer (`drawer.monitor`). **Hub-scoped:**
 declared once, but only the declared `hub` executes it — every non-hub daemon
 samples just the host it runs on, regardless of what this table says, so the
 roster's ssh aliases need only resolve **on the hub**. The drawer itself

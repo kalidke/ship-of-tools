@@ -31,16 +31,17 @@ and its previews:
 | `tree_children(::Type{M}, node)` | `Vector{`[`TreeNode`](@ref)`}` | children of a node (lazy column fill) |
 | `preview_for(::Type{M}, node)` | [`PreviewPayload`](@ref) | preview for the selected node |
 
-These mirror the [`FileType`](@ref) methods ([`matches`](@ref) /
+These would mirror the [`FileType`](@ref) methods ([`matches`](@ref) /
 [`preview`](@ref) / [`parse_entities`](@ref)) in style: a small set of generic
 functions, one method per mode. As [the ABI page](abi.md) notes, core does not
-ship the generic `tree_root` / `tree_children` / `preview_for` stubs in phase 1 —
-they are dispatched the same way and implemented by the modes layered above core.
+define the generic `tree_root` / `tree_children` / `preview_for` stubs, and no
+package defines them.
 
 ## The tree IR
 
-Both mode outputs cross the Rust↔Julia boundary as opaque-payload structs, so the
-frontend renders any mode without learning its internals:
+In the design, both mode outputs are opaque-payload structs, so the
+frontend renders any mode without learning its internals. (What crosses the
+Rust↔Julia seam today is in [the serialization seam](@ref abi-serialization-seam).) The two structs:
 
 - [`TreeNode`](@ref) — one node of a column. Fields: `id` (opaque to Rust),
   `label`, `kind` (a `Symbol` like `:module`, `:function`, `:pngfile`),
@@ -85,8 +86,8 @@ kernel's project scan):
 |------|------------------|---------|
 | Files | parent dir → current dir → contents | file at appropriate fidelity |
 | Modules (read-only) | modules → definitions (types, functions, macros, submodules) | method source + concept artifact |
-| Sessions | workspaces → timeline → detail | session detail |
-| Hosts | configured hosts → endpoint detail | host endpoint summary |
+| Sessions | host → workspaces | `Enter` switches to the session |
+| Hosts | hosts (a flat list) | `Enter` moves the Sessions view to the host |
 
 Types, Math, and Outputs modes are designed but not yet built; Agents mode is
 not built (pinned for later). The [Modes](../guide/modes.md) page lists the full intended set and what is built.

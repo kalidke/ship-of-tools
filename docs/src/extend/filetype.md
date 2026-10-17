@@ -31,7 +31,7 @@ Two things, both dispatched on your subtype:
 
 [`parse_entities`](@ref)`(::Type{T}, path)` is optional — it yields the
 [`ConceptEntity`](@ref) values a file declares, for the concept layer. Nothing calls
-it today (NOT BUILT), and the phase-1 plugins return an empty vector; see
+it today (NOT BUILT), and the built-in plugins return an empty vector; see
 [below](#Optional:-parse_entities).
 
 At runtime the kernel finds every loaded subtype with [`file_types`](@ref) (a
@@ -125,6 +125,18 @@ the only contract the frontend cares about, and it is why a new `FileType` needs
 no Rust change — unless its output must be bounded, in which case the daemon's
 preview gates (`is_bounded_output_plugin` in the backend) also name its extensions.
 
+The kernel always calls the three-argument form `preview(T, path, params)`, where `params` holds the request's
+parameters (the PDF plugin reads `"page"`); a plugin that defines only the two-argument form gets the same call with
+the parameters dropped. A paged plugin overrides the three-argument form and reports its position in `extras`
+(`"page"`, `"page_count"`).
+
+### Running an external tool
+
+The kernel serves one request at a time, so a child process that never ends would freeze every preview for the row.
+A plugin that runs an external program (the PDF and video plugins do) runs it through
+`ConceptExplorerCore.read_within(cmd, seconds)`, which reads the program's output like `read(cmd)` and kills the
+program when the bound passes. The built-in plugins use 20 seconds.
+
 ### Choosing a MIME
 
 Pick a MIME the frontend already renders, or emit `text/markdown` and let its
@@ -133,9 +145,10 @@ markdown renderer do the layout. MIMEs in use by the built-in plugins:
 | MIME | Frontend rendering | Used by |
 |------|--------------------|---------|
 | `text/markdown` | comrak + cosmic-text (headings, code fences, inline math) | Markdown plugin; the HDF5 example wraps its metadata tree in fenced markdown |
-| `text/plain` | plain UTF-8 text | error fallbacks |
+| `text/plain` | plain UTF-8 text | Plain-text plugin (`.txt`); error fallbacks |
+| `text/x-toml` | plain UTF-8 text | TOML plugin |
 | `application/json` | plain UTF-8 text today (pretty-print / syntax colour planned) | JSON plugin |
-| `image/png` | native image quad | the PNG example in [the ABI page](abi.md) |
+| `image/png` | native image quad | PDF plugin (one page) and video plugin (a poster frame) |
 | `application/vnd.sot.tokens+json` | pre-tokenised span renderer (`{spans:[{text,kind},…]}`) | Julia-source plugin |
 
 If none fits, the pragmatic choice is to format your content as markdown
@@ -155,7 +168,7 @@ don't swallow it.
 
 If your file kind declares conceptual units the concept layer should track
 (functions, types, sections, datasets), implement `parse_entities`. Every
-phase-1 built-in returns an empty vector — the method exists so the concept layer
+built-in plugin returns an empty vector — the method exists so the concept layer
 can grow later without an ABI change:
 
 ```julia
@@ -183,7 +196,8 @@ of Ship of Tools:
    a package with heavy dependencies, add a row to `LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/preview.jl` instead,
    mapping each lowercase extension (`".myext"`) to the package name; the kernel runs `using` on it the first time a
    file with that extension is previewed.
-3. If the preview's size does not grow with the file's (a metadata tree, a poster frame), add its extensions to
+3. If the preview's size does not grow with the file's (a metadata tree, a poster frame; the HDF5, PDF and video
+   plugins are in this group), add its extensions to
    `is_bounded_output_plugin` in `rust/backend/src/files/preview/mod.rs`. Without that, the daemon never calls the
    plugin for a file over its 2 MiB input cap and falls back to the raw bytes. This is a Rust change.
 

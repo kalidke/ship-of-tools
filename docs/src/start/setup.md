@@ -78,8 +78,9 @@ is nothing else to fill in by hand.
 ## What gets written
 
 The files are `hosts.toml` (the declared topology), `settings.toml` (frontend
-settings) and `keybindings.toml`. Their grammar, discovery order and every
-setting are in [Configuration Files](../ref/config.md). A minimal `hosts.toml`
+settings) and `keybindings.toml`. Where each is read from is
+[Where the files are](@ref config-file-locations); their grammar and every setting are in
+[Configuration Files](../ref/config.md). A minimal `hosts.toml`
 for one server and one laptop:
 
 ```toml

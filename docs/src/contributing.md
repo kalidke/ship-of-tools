@@ -18,50 +18,60 @@ scope. This page and the design pages define structure.
   file types are methods on the same abstract type a third-party plugin
   extends (the core modes are native Rust views, since `Mode` is not built). If core seems to want privileged access, the rule is to *fix the ABI*,
   not to special-case core. This keeps the extension surface honest.
-- **Boundaries are serialization seams.** `TreeNode` and `PreviewPayload` carry
-  opaque, kernel-defined payloads. Rust never learns about new entity kinds —
-  adding a `FileType` needs no Rust change unless its output must be bounded,
-  which also names its extensions in the daemon's preview gates; `Mode` is not
-  built. See
+- **Boundaries are serialization seams.** Rust never learns about new entity
+  kinds: the window dispatches on a preview's MIME type. Adding a `FileType`
+  needs no frontend change unless its output must be bounded, which also names
+  its extensions in the daemon's preview gates. See
+  [the serialization seam](@ref abi-serialization-seam) and
   [Line Protocol](design/protocol.md).
 - **Reactive over eager** for staleness, refresh, and indexing. Visible drift
   (e.g., a stale-annotation badge) is a feature, not a bug.
-- **Defer until forced.** If a feature can wait for a later phase, it should.
+- **Defer until forced.** If a feature can wait, it should. A diagnosed defect is never deferred.
+- **One owner per concept, and the checks.** Before adding code, find the concept's owner (`docs/ownership.md`) and
+  change it there. CI enforces the limits: a file holds at most 800 code lines, a folder at most 12 source files and
+  3,000 lines, a function at most 100 lines (`scripts/tests/check-layout.sh`). A manual page changes in the commit
+  that changes the code it describes. The root `CLAUDE.md` ("Rules" and "Limits") has the full list.
 
 ## The decision process
 
 Cross-cutting decisions get documented — **never only in a code
-comment or a commit message.** Some decisions are explicitly
-deferred (multi-agent coordination, remote transport variants, MCP as the internal
-protocol, an embedded editor, a user-preferences mechanism, automatic plot
-capture); when you reach for one of these, check whether it is still deferred
-before building it.
-
-Plan amendments go through a pull request. The phase plan is a committed
-document — argue changes in the diff, not in side channels. See the
+comment or a commit message.** Decisions are recorded as ADRs in `docs/adr/`.
+Parts of the design are unbuilt (the orchestrator chat, the Types, Math and Outputs modes,
+plugin discovery); the pages that describe them say so. See the
 [Phase 1 plan (historical)](design/roadmap.md) for the original milestone structure.
 
 ## Build and test
 
 The repository is a Julia umbrella package with a Rust workspace inside it.
 
-Julia — run the umbrella suite and the core package suite:
+Julia — the umbrella suite runs from the root, and each package runs from its own environment, as CI does:
 
 ```julia
 using Pkg
-Pkg.test()                          # umbrella package
-Pkg.test("ConceptExplorerCore")     # core, from its own environment
+Pkg.test()                          # umbrella package, from the repository root
 ```
-
-Rust — the frontend, backend, and protocol crates live under `rust/`:
 
 ```bash
-cargo test --manifest-path rust/Cargo.toml
+julia --project=core -e 'using Pkg; Pkg.instantiate(); Pkg.test()'    # likewise julia/kernel, julia/repl,
+                                                                      # julia/plugins/pdf-file,
+                                                                      # julia/plugins/video-file, julia/sotlog
 ```
 
-## Developing the frontend: rebuild without dropping your session
+Rust — the frontend, backend, and protocol crates live under `rust/`. Build the workspace first (the backend's
+integration tests need `sot-capsule` built), then test it; the MathJax tests need `npm ci` in
+`rust/backend/sidecars/mathjax`:
 
-Ship of Tools can rebuild and restart its own frontend — so you can edit the frontend,
+```bash
+cargo build --workspace --locked --manifest-path rust/Cargo.toml
+cargo test --workspace --locked --manifest-path rust/Cargo.toml
+```
+
+`.github/workflows/rust.yml` and `CI.yml` hold the exact steps, including the system tools the preview-plugin tests
+use (`pdftoppm`, `ffmpeg`).
+
+## Developing the frontend on Windows: rebuild without dropping your session
+
+On Windows, Ship of Tools can rebuild and restart its own frontend — so you can edit the frontend,
 recompile, and relaunch into the new binary without leaving the app. The moving
 parts:
 
@@ -71,7 +81,7 @@ parts:
   the staged copy, `cargo build --release` can overwrite `rust/target/release/`
   freely — no running-exe file lock — and you see build output live.
 - **Exit-75 sentinel.** The frontend requests a relaunch by exiting with code
-  **75**; any other code is a real quit. A background watcher polls for a
+  **75**; **76** ("converge") also relaunches, after the launcher updates and rebuilds; any other code is a real quit. A background watcher polls for a
   relaunch-request sentinel file; on seeing it, the frontend exits 75 and the
   supervisor re-stages the (freshly built) binary and respawns with
   `--relaunched`.
@@ -94,6 +104,9 @@ build** — a failed build leaves the running app untouched.
     respawn) — rather than a process kill: it re-stages the freshly built
     binary, and the swap costs one reconnect per host — the frontend's
     backoff respawns each `ssh` child.
+
+On Linux and macOS the installed `sot-launch` respawns the window on exit 75 only, and a window started by
+`scripts/launch-sot.sh` is not respawned: restart it by hand. ADR 0017 says how the window restarts.
 
 Note that changes to the *supervisor script itself* (`launch-sot.ps1`) are not
 picked up by the exit-75 in-place loop — those require a full restart of the

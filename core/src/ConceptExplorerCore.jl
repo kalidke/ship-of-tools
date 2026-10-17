@@ -9,11 +9,13 @@ dispatch tables grow, with no registration step and no manifest.
 
 The surface is six abstract types — [`FileType`](@ref), [`Mode`](@ref),
 [`ConceptEntity`](@ref), [`AnnotationKind`](@ref), [`Tool`](@ref) and
-[`Capture`](@ref) — plus two serialization structs, [`TreeNode`](@ref) and
-[`PreviewPayload`](@ref), that carry opaque payloads across the Rust↔Julia
-boundary.
+[`Capture`](@ref) — plus two structs, [`TreeNode`](@ref) and [`PreviewPayload`](@ref).
+`PreviewPayload` is what [`preview`](@ref) returns, and the kernel re-encodes it
+for the wire; `TreeNode` is declared, and nothing outside core's tests builds
+one, because Rust builds every tree node. *The Dispatch ABI* in the manual
+describes the seam.
 
-Implementation status (v0.3.x): **`FileType` is the surface that is wired
+Implementation status: **`FileType` is the surface that is wired
 end-to-end today** — the seven standard file types ship as ordinary
 `matches`/`preview` methods with no privileged access, and third-party plugins
 (e.g. the HDF5 example) travel the identical path. The other five types are
@@ -64,8 +66,8 @@ across switches.
 
 A mode plugin implements the tree contract — `tree_root`, `tree_children` and
 `preview_for` — returning [`TreeNode`](@ref) values for the frontend to render
-and a [`PreviewPayload`](@ref) for the focused node. (Those methods are defined
-by the mode plugins layered above core, not in this module.)
+and a [`PreviewPayload`](@ref) for the focused node. (No package defines these
+methods yet, and this module does not.)
 """
 abstract type Mode end
 
@@ -97,8 +99,7 @@ abstract type AnnotationKind end
 
 Abstract supertype for an action the orchestrator LLM can invoke. A tool plugin
 defines `tool_spec` (the schema advertised to the model) and `tool_call` (the
-implementation). The tool surface is static in phase 1; plugin-defined tools
-are a phase-2 seam.
+implementation). Not built: no `Tool` subtype exists.
 """
 abstract type Tool end
 
@@ -132,7 +133,8 @@ preview(T::Type{<:FileType}, path, params::AbstractDict) = preview(T, path)
     parse_entities(::Type{<:FileType}, path) -> Vector{ConceptEntity}
 
 Extract the conceptual entities the file declares (modules, types,
-functions, etc.). Phase-1 returns an empty vector for unknown types.
+functions, etc.). There is no generic method: a type without one raises a
+`MethodError`, and each built-in plugin returns an empty vector.
 """
 function parse_entities end
 
@@ -178,8 +180,8 @@ end
 """
     matches(::Type{<:FileType}, path) -> Bool
 
-Plugin contract: return true if this `FileType` should claim `path`. Phase-1
-plugins typically inspect the file extension. The first plugin to return
+Plugin contract: return true if this `FileType` should claim `path`. The
+built-in plugins inspect the file extension. The first plugin to return
 true gets the preview / parse_entities calls.
 """
 function matches end
@@ -187,8 +189,9 @@ function matches end
 """
     TreeNode(id, label, kind; has_children=false, badges=Symbol[], payload=Dict())
 
-One node in a mode's navigation tree, and the unit of structure that
-crosses to the frontend. Fields:
+One node in a mode's navigation tree. Declared for the mode design; no Julia
+code builds one outside core's tests, because Rust builds every tree node.
+Fields:
 
 - `id::String` — opaque, kernel-defined identity (Rust never interprets it).
 - `label::String` — display text.
@@ -217,8 +220,8 @@ TreeNode(id, label, kind; has_children=false, badges=Symbol[], payload=Dict{Stri
 """
     PreviewPayload(mime, data, extras=Dict())
 
-A rendered preview crossing to the frontend: a MIME type, the raw `data` bytes,
-and an opaque `extras` dictionary for kind-specific metadata (for example
+A rendered preview, as `preview` returns it: a MIME type, the raw `data` bytes,
+and an `extras` dictionary for kind-specific metadata (for example
 `"page"`/`"page_count"` for paginated content). The frontend dispatches on
 `mime` to choose a renderer and never needs to learn about new entity kinds.
 """

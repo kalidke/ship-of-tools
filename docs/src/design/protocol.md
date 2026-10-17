@@ -1,14 +1,13 @@
 # Line Protocol
 
 !!! note "Status: partly built"
-    The envelope, the blobs and the REPL frames below are built, as corrected here. The page is the phase-1 design:
-    the op set has grown since, and the ops are defined in `rust/protocol/src/ops/`, not in this page.
+    The envelope, the blobs and the REPL frames below are built, as corrected here. The op set has grown since this
+    page was written, and the ops are defined in `rust/protocol/src/ops/`, not in this page.
 
-Ship of Tools is three processes that talk over sockets and stdio: the frontend, the
-backend daemon, and the Julia kernel (plus a supervised REPL). Every seam
-between them carries the same wire format — newline-delimited JSON for control,
-length-prefixed binary frames for payloads. The format is deliberately
-hand-debuggable: you can `tail -f` any seam and read what is happening.
+Ship of Tools talks over sockets and stdio between the window, the backend daemon and the daemon's Julia children
+(a kernel and a REPL per row). Every seam carries newline-delimited JSON for control; the
+window-daemon seam also carries length-prefixed binary blobs for payloads. The format is deliberately
+hand-debuggable: you can `tail -f` any JSON seam and read what is happening.
 
 This page describes the *application* protocol. The separate session-to-session
 messaging used by Claude instances (sot-comm) is a different transport
@@ -26,7 +25,7 @@ is fixed; the variable part is `op` plus its `payload`:
 
 | Field | Meaning |
 |-------|---------|
-| `v` | protocol version (`PROTOCOL_VERSION`, 3); the daemon refuses a hello that speaks another |
+| `v` | protocol version (`PROTOCOL_VERSION`, 3 between the window and the daemon); the daemon refuses a hello that speaks another. The kernel seam carries its own number (`KERNEL_PROTOCOL_VERSION`, 1) |
 | `id` | client-chosen `u64`; responses echo it, events use `0` |
 | `kind` | `"req"` request, `"res"` response, `"evt"` event |
 | `op` | the verb (see Ops below) |
@@ -43,7 +42,7 @@ sides must agree on it.
 
 ### Binary blobs
 
-Control frames stay small and printable; bytes ride alongside them. A payload
+On the window-daemon seam, control frames stay small and printable and bytes ride alongside them. A payload
 that carries binary content declares it inline:
 
 ```json
@@ -52,7 +51,8 @@ that carries binary content declares it inline:
 
 The next `len` bytes on the stream *are* the blob; after them the stream resumes
 with the next JSON line. This avoids base64 — roughly a third of bandwidth and
-CPU on every PNG — while keeping the control channel greppable.
+CPU on every PNG — while keeping the control channel greppable. The kernel and REPL seams have no blobs: the kernel's
+`file.preview` reply carries the bytes as base64 in `blob_base64`, and the REPL's `image` frame carries `data_base64`.
 
 ### Ops
 

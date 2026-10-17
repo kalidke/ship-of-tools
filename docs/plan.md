@@ -7,7 +7,8 @@ The plan names files, plugin packages and a TUI that were not built, and it was 
 replaced tmux sessions. Read it for the reasoning behind the milestones, not as a description of the code. What is
 built is described in the rest of this manual; the unbuilt parts are described, marked unbuilt, in
 [Modes](../guide/modes.md), [The Concept Layer](../guide/concept-layer.md), [Color Coding](../guide/color-coding.md),
-[The Dispatch ABI](../extend/abi.md) and [Mode plugins](../extend/mode.md).
+[The Dispatch ABI](../extend/abi.md) and [Mode plugins](../extend/mode.md). (These links resolve in the built manual, where this file is staged as
+`design/roadmap.md`; on GitHub they do not.)
 
 | Plan part | Status | What is true now |
 |-----------|--------|------------------|
@@ -22,13 +23,13 @@ built is described in the rest of this manual; the unbuilt parts are described, 
 | M7 HDF5Preview as an external plugin | Partly built | `examples/plugins/HDF5Preview/` loads through `LAZY_PLUGIN_FOR_EXT`; nothing reads `[sot].extensions` |
 | Types, Math and Outputs modes; the Agents mode | Not built | [Modes](../guide/modes.md) |
 
-A dependency-ordered plan for the Phase 1 milestone defined in `CLAUDE.md`. The first milestone is a thin end-to-end skeleton; each subsequent milestone adds exactly one capability.
+A dependency-ordered plan. The first milestone is a thin end-to-end skeleton; each subsequent milestone adds exactly one capability.
 
 > **Note (2026-05-07):** Plan revised after the C-pivot. The original plan assumed the frontend was a TUI rendered into the user's terminal. That premise was wrong for the user's deployment (Windows → SSH → tmux → Linux remote). The revised plan keeps the kernel, core IR, line protocol, and backend daemon intact but rebuilds the frontend as a **native local window** that owns rendering end-to-end.
 
 ## Scope
 
-Phase 1, per `CLAUDE.md`:
+The plan's scope:
 
 - Files mode (filesystem nav with previews — markdown, PNG, syntax-highlighted .jl)
 - Modules mode, read-only (structural via `JuliaSyntax.jl`)
@@ -169,23 +170,3 @@ If any of those fail in a way the architecture can't fix, switch to option B bef
 - `examples/plugins/README.md`.
 
 **Acceptance:** drop an `.h5`, add `HDF5Preview` to `[sot].extensions`, navigate, see structured preview. **Zero Rust changes were required.** That's the test of the ABI.
-
-## Phase 2 seams
-
-Noted but not built:
-
-- **Multi-laptop / multi-client** — `client_id` already in handshake; first-wins is the M1+ default; richer policies later.
-- **Multi-agent** — `chat.send` already takes a session id (always `"main"` in Phase 1).
-- **Remote transport variants** — protocol is transport-agnostic; backend just listens on a different socket.
-- **Types/Math/Outputs modes** — `mode.list` already returns a vector.
-- **Background staleness sweep** — `is_stale` is on-demand in M5; future is a kernel timer.
-- **Plugin-defined tools** — `core/src/ToolSpec.jl` defined, unwired in M6; Phase 2 adds `kernel.tools.list`.
-- **Full LaTeX docs (`tectonic`)** — only inline math via MathJax in M1; document-level TeX comes when a plugin needs it.
-- **Option B fallback path** — Tauri/wry wrapping a web frontend. The kernel, backend, line protocol, core IR are unchanged across that swap; only the frontend surface differs. Kept warm in case M1 spike findings demote C.
-
-## Working agreement
-
-- Plan amendments go through PR (this file is committed; argue in the diff).
-- Decisions get documented — never in code comments or commit messages alone.
-- Working-session handoff state lives outside the public repo in the private ops sidecar.
-- Within-session granular tracking via TaskCreate (ephemeral by design).

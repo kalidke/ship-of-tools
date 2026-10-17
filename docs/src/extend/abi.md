@@ -28,7 +28,7 @@ Six abstract types name everything that can be extended:
 
 | Type | What it pluralizes | A plugin adds … | Status |
 |------|--------------------|-----------------|--------|
-| [`FileType`](@ref) | file kinds the explorer can preview / parse | `struct PngFile <: FileType end` | built |
+| [`FileType`](@ref) | file kinds the explorer can preview / parse | `struct MyFile <: FileType end` | built |
 | [`Mode`](@ref) | switchable nav-tree roots | `struct FilesMode <: Mode end` | declared, NOT BUILT (no implementation) |
 | [`ConceptEntity`](@ref) | conceptual units a file declares | a function / type / derivation entity | declared, NOT BUILT (no implementation) |
 | [`AnnotationKind`](@ref) | categories of concept annotation | a `TypeMeaning` kind | declared, NOT BUILT (no implementation) |
@@ -48,6 +48,7 @@ core today:
 # FileType
 matches(::Type{<:FileType}, path)        -> Bool              # claim a path
 preview(::Type{<:FileType}, path)        -> PreviewPayload    # render it
+preview(::Type{<:FileType}, path, params) -> PreviewPayload   # the form the kernel calls; falls back to the above
 parse_entities(::Type{<:FileType}, path) -> Vector{ConceptEntity}   # declared, NOT BUILT: no caller
 
 # ConceptEntity
@@ -70,41 +71,40 @@ them: NOT BUILT.
 ### A minimal FileType plugin
 
 ```julia
-module PngPreview
+module MyPreview
 
 using ConceptExplorerCore
 
-struct PngFile <: FileType end
+struct MyFile <: FileType end
 
-ConceptExplorerCore.matches(::Type{PngFile}, path) =
-    endswith(lowercase(path), ".png")
+ConceptExplorerCore.matches(::Type{MyFile}, path) =
+    endswith(lowercase(path), ".myext")
 
-ConceptExplorerCore.preview(::Type{PngFile}, path) =
-    PreviewPayload("image/png", read(path))
+ConceptExplorerCore.preview(::Type{MyFile}, path) =
+    PreviewPayload("text/plain", read(path))
 
 end
 ```
 
-Once the package is loaded in the kernel (see [Discovery](discovery.md)), PNGs
+Once the package is loaded in the kernel (see [Discovery](discovery.md)), `.myext` files
 are previewed through it, with no registration call.
 
-## The serialization seam
+## [The serialization seam](@id abi-serialization-seam)
 
-The Rust↔Julia boundary is crossed by exactly two generic structs, both with
-**opaque payloads** so Rust never has to learn about new entity kinds:
+The kernel and the daemon talk in JSON lines; the daemon and the window use Rust types. Julia values do not cross as
+structs:
 
-- [`TreeNode`](@ref) — one node of a mode's column tree: `id`, `label`, `kind`,
-  `has_children`, `badges`, and a kind-defined `payload` dictionary. Declared in
-  core but not built: no Julia code constructs one today; the window's trees
-  travel as the Rust wire type of the same shape.
-- [`PreviewPayload`](@ref) — a rendered preview: `mime`, `data` bytes, and an
-  `extras` dictionary. The frontend dispatches on `mime` to pick a renderer.
+- A plugin's [`preview`](@ref) returns a [`PreviewPayload`](@ref): `mime`, `data` bytes and an `extras` dictionary.
+  The kernel re-encodes it as the reply to `file.preview`: `mime`, the bytes as base64 in `blob_base64`, `extras`, and
+  for text-like MIME types the decoded `text`. The daemon forwards the bytes to the window as a Rust `PreviewPayload`
+  (`rust/protocol/src/ir.rs`), and the window picks a renderer from `mime`.
+- [`TreeNode`](@ref) — `id`, `label`, `kind`, `has_children`, `badges` and a kind-defined `payload` — is declared in
+  core and no Julia code constructs one outside core's tests. Rust builds every tree node, from the kernel's
+  `project.scan` reply and the daemon's file listings.
 
-Because both carry opaque, kernel-defined payloads, **adding a new `FileType`
-needs no Rust change** unless its output must be bounded, in which case the
-daemon's preview gates also name its extensions. `Mode` is NOT BUILT (the modes
-are native Rust views; see [Writing a Mode Plugin](mode.md)).
-The frontend renders whatever the MIME says and draws the tree the kernel sends.
+Because the window dispatches on the MIME type, **adding a new `FileType` needs no frontend change**; if its output
+must be bounded, the daemon's preview gates also name its extensions (see [Writing a FileType Plugin](filetype.md),
+Step 5). `Mode` is NOT BUILT (the modes are native Rust views; see [Writing a Mode Plugin](mode.md)).
 
 ## Core is a plugin to itself
 

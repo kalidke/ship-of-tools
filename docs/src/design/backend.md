@@ -11,7 +11,7 @@ language split, read [Architecture at a Glance](../guide/architecture.md).
 
 ## What the daemon owns
 
-A single long-lived Rust process (tokio) holds everything stateful:
+A single long-lived Rust process (tokio) holds the row registry, the file watchers and the kernel and REPL children:
 
 - **Rows** — the registry of rows (workspaces), each with its project directory, its kernel and REPL, and its file
   watcher.
@@ -21,8 +21,8 @@ A single long-lived Rust process (tokio) holds everything stateful:
   crash and surfacing failures as protocol events.
 
 The frontend never touches kernel state directly, even when everything runs on
-one laptop. Local-only operation is "a client connecting to a localhost-bound
-backend," not a separate code path.
+one laptop. Local-only operation is "a client connecting to the local daemon's
+socket," not a separate code path.
 
 ## Kernel launch and supervision
 

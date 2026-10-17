@@ -148,9 +148,9 @@ The tree is built by a depth-first walk that the plugin keeps bounded and safe:
   counts, and an `omitted` count.
 - `dataset_label` formats one dataset line as `name {shape} eltype chunk` — e.g.
   `name {100×200} Float64 chunk {32×32}` — all from metadata, no data read.
-- `attr_lines!` renders attributes marked `@`, showing values only for small
-  scalars/strings (truncated at `MAX_ATTR_VALUE_CHARS = 60`), never reading large
-  attribute arrays.
+- `attr_lines!` renders attributes marked `@`, printing values only for
+  scalars and strings (truncated at `MAX_ATTR_VALUE_CHARS = 60`); an attribute of
+  any other type shows its name alone.
 - `walk_group!` recurses with `├─` / `└─` connectors, closing each child it
   opens.
 
@@ -165,7 +165,7 @@ Two project rules show up directly in the code:
   payload describing the error (via `sprint(showerror, e)`) — the gap is rendered
   on screen, never a fake-success blank or a panic.
 
-## `parse_entities` — empty for phase 1
+## `parse_entities` — empty
 
 ```julia
 ConceptExplorerCore.parse_entities(::Type{HDF5File}, path::AbstractString) =
@@ -194,8 +194,8 @@ checkout; see the warning at the top of [Discovery & Configuration](discovery.md
 
 `HDF5Preview` is a third-party-shaped package — its own `Project.toml`, its own
 `[deps]`, living outside `core/`. It adds a previewable file type with **one
-subtype and two methods**, and the frontend renders the result with **no Rust
-changes** because the payload is just a MIME plus bytes. That is the extension
+subtype and two methods**, and the frontend renders the result with **no frontend
+change** because the payload is just a MIME plus bytes. That is the extension
 surface working exactly as [the ABI](abi.md) promises: core ships as plugins to
 itself, and a plugin from outside core travels the identical path.
 

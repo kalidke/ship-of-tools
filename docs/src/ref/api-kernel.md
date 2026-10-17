@@ -1,8 +1,8 @@
 # API — Kernel
 
 The Julia **kernel** (`ShipToolsKernel`) is the plugin host process. It owns the
-dispatch tables, computes mode trees, indexes the project, hashes ASTs, and
-produces Julia-aware previews — exposing all of it to the backend daemon over an
+dispatch tables, scans a project's modules and definitions statically, hashes
+a file's bytes on `file.parse`, and produces Julia-aware previews — exposing all of it to the backend daemon over an
 NDJSON line protocol.
 
 !!! note "Reference under construction"
@@ -18,7 +18,7 @@ NDJSON line protocol.
 ## [Built-in preview plugins](@id builtin-preview-plugins)
 
 The standard file types ship under `julia/plugins/` and the kernel loads them at
-startup. The MIME type tells the frontend which renderer to use; what each one
+startup, except HDF5Preview, which loads on its first `.h5`, `.hdf5` or `.hdf` preview. The MIME type tells the frontend which renderer to use; what each one
 shows is in [Previews](../guide/previews.md).
 
 | Extension | Plugin | MIME |

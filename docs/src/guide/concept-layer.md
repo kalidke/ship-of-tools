@@ -1,8 +1,9 @@
 # The Concept Layer
 
 !!! note "Status: partly built"
-    Built: `.concept/` annotations are read and written from the window, and a file's annotation shows stale when the
-    file's hash differs from its `synced_against`. Not built: per-entity staleness, the one-key refresh, and
+    Built: `.concept/` annotations are read from the window, their prose can be edited there, and the annotation of a
+    `.jl` file shows stale when the file's hash differs from its `synced_against`. Not built: per-entity staleness, the
+    one-key refresh (the window cannot re-stamp `synced_against`), a drift check for files that are not `.jl`, and
     verification of `references`.
 
 The concept layer is what makes Ship of Tools a *concept explorer* rather than a file
@@ -30,23 +31,28 @@ drift* rather than trying to prevent it.
 
 ## The `.concept/` sidecar
 
-Annotations live in a sidecar `.concept/` directory at the project root, mirroring
-the conceptual structure of the project:
+Annotations live in a sidecar `.concept/` directory at the project root. The window asks for exactly two forms:
 
 ```text
 .concept/
+  files/src/foo.jl.md     # the annotation for src/foo.jl: its path under files/, with .md appended
+  modules/MyModule.md     # the annotation for the module MyModule in Modules mode
+```
+
+Nothing reads any other path. The layout the design describes for more kinds of node is not built, and an annotation
+written there is never shown:
+
+```text
+.concept/                       # design, not built
   project/intent.md
-  modules/MyModule.md
-  types/MyModule/MyType.md
+  types/MyModule/MyType.md      # Types mode
   functions/MyModule/myfunction.md
-  math/geometry/rotation.md
+  math/geometry/rotation.md     # Math mode
 ```
 
 The directory is plain files on disk. That is deliberate: it survives a restart,
-diffs cleanly in git, and is readable without Ship of Tools running. Each path
-corresponds to a node you can navigate to in a mode — a module in Modules mode,
-a type in Types mode, a derivation in Math mode — so the annotation for a node
-is always at a predictable location.
+diffs cleanly in git, and is readable without Ship of Tools running. The annotation for a node
+in Files or Modules mode is always at a predictable location.
 
 ## Frontmatter
 
@@ -111,17 +117,18 @@ Drift detection is reactive — Ship of Tools surfaces it, you fix it when you c
 1. **You save a file.** (Either you edited it, or an agent did.)
 2. **The window asks the kernel for the file's hash** (`file.parse`) when the
    cursor reaches the file's row in Files mode, once per file, and keeps it. No
-   save event re-hashes a file today.
+   save event re-hashes a file today. Only `.jl` files are hashed: the status line for
+   the annotation of any other file stays at "checking…" and never shows STALE.
 3. **The annotation is marked stale when the hashes differ.** The comparison is
    `file_hash != synced_against`, made for the annotation of the file under the
    cursor.
-4. **The stale annotation renders yellowed** on that file's row and in the
-   annotation status line. See [Color Coding](color-coding.md).
+4. **The stale annotation renders yellowed** on the file's row while the cursor is on
+   it, and in the annotation status line. See [Color Coding](color-coding.md).
 
 Not built: per-entity staleness (a changed entity marking only its own annotation
 stale) and the badge in every mode. Both rest on the per-entity hash above.
 
-There is no background sweep in phase 1. Nothing recomputes annotations on a
+There is no background sweep. Nothing recomputes annotations on a
 timer or refreshes them behind your back. Visible drift is the feature: a
 yellowed badge tells you the prose may no longer match the code.
 
@@ -133,10 +140,11 @@ to the file's current hash, marking the prose as reconciled against the present
 code. You stay in control of *when* — a refresh asserts the annotation is still
 accurate, so it is a deliberate act, not an automatic one.
 
-That one-key re-stamp is not yet built. Today you reconcile a stale annotation by
-editing it in place (`e`), updating its `synced_against` in the frontmatter, and
-saving (`Ctrl+S`); `Esc` discards. A background staleness sweep is also
-explicitly deferred; refresh is on-demand only.
+That one-key re-stamp is not built, and the window cannot re-stamp an annotation. `e` on a file with an annotation
+edits the prose only: the frontmatter shows read-only above the editor and is saved unchanged (`Ctrl+S` saves; `Esc`
+with unsaved edits asks before it discards them). So an annotation still shows STALE after you save it in the window.
+To reconcile one, an agent or a script writes the file's current hash into `synced_against` in
+`.concept/files/<path>.md`. That hash is the SHA-256 of the file's bytes, as 64 hex digits (what `sha256sum` prints).
 
 ## Reference verification (planned)
 

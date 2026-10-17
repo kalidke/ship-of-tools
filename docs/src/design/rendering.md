@@ -4,8 +4,8 @@
     The window, its two drawing layers and the preview renderers in the table below are built. Video does not play in
     the pane (the pane shows a poster frame), and nothing renders full LaTeX documents.
 
-Rendering everything ourselves is the project's reason to exist. The window is a
-native program that draws its own pixels, not a terminal program. No terminal graphics
+The window draws every pixel itself. It is a
+native program, not a terminal program. No terminal graphics
 protocol delivers acceptable rich previews through ssh and a terminal multiplexer, and
 the universally-supported fallback (halfblocks) is too low-fidelity for figures, math, and
 rendered docs, so none is used.
@@ -19,9 +19,10 @@ looks like in use see [Previews](../guide/previews.md).
 The frontend is a **native Rust window** (`winit`) with a GPU-backed canvas
 (`wgpu`). It writes no escape sequences and is not hosted in a terminal. Image
 fidelity is bounded by what the host GPU can display, not by what the terminal
-stack happens to forward. A PNG round-trips as: kernel emits bytes → backend
-forwards over the [line protocol](protocol.md) → frontend decodes via the `image`
-crate → uploads as a wgpu texture → composites into the preview rectangle.
+stack happens to forward. A PNG file round-trips as: the daemon reads the bytes → forwards
+them over the [line protocol](protocol.md) → frontend decodes via the `image`
+crate → uploads as a wgpu texture → composites into the preview rectangle. (The kernel emits PNG only for a PDF page or
+a video poster frame; a REPL figure arrives as an `image` frame from the REPL.)
 
 ## Two layers, one surface
 
@@ -37,12 +38,12 @@ labels, focus state, keymaps, scroll indicators, the cursor. Painted by a custom
 font (cosmic-text) — explicitly *not* crossterm.
 
 **Layer 2 — the preview surface.** Takes a `Rect` from ratatui's layout and a
-`PreviewPayload` from the kernel and draws directly into the wgpu surface inside
+`PreviewPayload` from the daemon and draws directly into the wgpu surface inside
 that rect, bypassing the cell stream. It dispatches on the payload's `mime`:
 
 | MIME | Renderer |
 |------|----------|
-| `text/plain` | cosmic-text line layout |
+| `text/plain` and other `text/*` except markdown | cosmic-text line layout |
 | `application/vnd.sot.tokens+json` | pre-tokenized spans (Julia source), colored by kind |
 | `text/markdown` | `comrak` AST → flowed text, tables, inline images and math; fenced code highlighted with tree-sitter |
 | `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/bmp` | `image` decode → wgpu texture |
@@ -86,9 +87,7 @@ The libraries that implement both layers:
 
 ## What is deliberately rejected
 
-- **Sixel, Kitty graphics, iTerm2, halfblocks — none, anywhere.** `ratatui-image`
-  and `crossterm` are removed from the frontend; the old `img-probe` scratch
-  binary is deleted.
+- **Sixel, iTerm2 and the other terminal image protocols, halfblocks: none, anywhere.**
 - **No browser/webview** in the chosen path. ADR 0012 names a Tauri/wry web frontend
   only as the option-B fallback — taken only if preview requirements broaden into
   arbitrary HTML / iframes / WebGL. Across that swap the kernel, backend, line
