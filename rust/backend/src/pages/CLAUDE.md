@@ -11,7 +11,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 
 - The video listener and its token grants (`video.rs`).
 - The site prefix and pool listeners and their tables (`site/`), the
-  `git` child of a site open, and the `<config>/data-roots` read.
+  `git` child of a site open, and the bounds of a tracked link (`site/links.rs` `Bounds`).
 - `proxy.connect` and its loopback allowlist (`proxy.rs`).
 
 ## Promises
@@ -50,8 +50,9 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   daemon's port (`bind_proxy_listener`, `with_loopback_port`, `PageListener`, `armed_url`). A URL user code announced
   or `open_url` named keeps the daemon's number and is refused when that number is taken (`PageSource`; ADR 0035,
   PAGE-PORT update).
-- `.git` and `..` are never served, and a link is followed only when git tracks it and its target lies under a
-  declared data root (`site/` `resolve_and_open`).
+- `.git` and `..` are never served, and a link is followed only when git tracks it and the file lies under `/mnt`,
+  `/media` or `/Volumes`, outside the home folder, with no hidden part below that folder (`site/` `resolve_and_open`,
+  `Bounds`).
 - `docs.open` serves a file, or a folder's `index.html`, from the outermost folder holding an `index.html` between it
   and the top of its repository or the workspace root, else from its own folder. No site root holds the home folder:
   a page whose own folder does is refused (`find_site_root`).
@@ -65,7 +66,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `rust/protocol/src/page_url.rs`.
 Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`,
 `dispatch`, `ClientGuard::site_owner`, `Clients::away_sites`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `ContainedStd`, `Signal`, `child_signal::process`, `resolve_bin`,
-`sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `bound_pluto_port`, `allowed_proxy_ports`, `lane_dial`, `ResolvedDial`, `sot_protocol::video_path::video_mime`.
+`sot_state_dir`, `host_name`, `state_dir_hash`, `bound_pluto_port`, `allowed_proxy_ports`, `lane_dial`, `ResolvedDial`, `sot_protocol::video_path::video_mime`.
 
 ## Folders
 

@@ -24,11 +24,12 @@
 // shared prefix server and sits in a git repo, else S. A page's
 // `../../data/x.mp4` can only reach the link folder, to be served or refused
 // with words, when the URL space starts above S. Widening the URL space does not
-// widen what is served: outside S, only files inside the target of a link git
-// tracks, under a data root the machine's own `data-roots` file declares, are
-// served (see `resolve_and_open` for the refusals). No file whose resolved path
-// lies inside a `.git` directory below the folder it is served from (the site
-// or the data root) is served.
+// widen what is served: outside S, only files reached through a link git tracks
+// are served, and only those under a mount folder (`/mnt`, `/media`,
+// `/Volumes`), outside the home folder, with no hidden part below the mount
+// folder (`Bounds`; see `resolve_and_open` for the refusals). No file whose
+// resolved path lies inside a `.git` directory below the site folder is served,
+// and a linked file has no hidden part at all.
 //
 // Scope/security: binds 127.0.0.1 only, but neither port has auth of its own — any local user on a shared
 // host can reach them once something is being served. Guards (security

@@ -1,8 +1,7 @@
 # Configuration Files
 
-Three TOML files and one plain list file, each read by a different piece and
-none of them by more than one parser. The list file, `data-roots`, is
-described [below](#data-roots). The TOML files: `settings.toml` (layout + terminal, read by the frontend,
+Three TOML files, each read by a different piece and none of them by more than
+one parser: `settings.toml` (layout + terminal, read by the frontend,
 first file found wins), `hosts.toml` (the declared topology —
 hub, daemon and frontend hosts, monitor targets — read ONLY by
 `sot_protocol::topology`/`sotd topology`; the frontend reads no config
@@ -255,37 +254,6 @@ the frontend: an ssh child into the hub, no argument for the hub's own
 daemon and `--host otherbox` to reach the hub's relay socket for the
 other one. No port, no forward — read the actual endpoints from
 `sotd topology plan`, never hardcode one.
-
-## `data-roots`
-
-The data folders a browser page opened with `W` may reach through git-tracked
-symlinks. The daemon that serves the page reads it, so the file that counts is
-the one on that daemon's computer, not the window's. It lives in the per-user
-config folder (`$XDG_CONFIG_HOME/sot` or `~/.config/sot`;
-`%LOCALAPPDATA%\sot\config` on Windows) and never in a repository, so a repo
-cannot declare its own data roots. On Windows the file has no effect, because
-no link is followed there. On macOS, following a link needs git, which means the Command Line Tools; without them a
-linked path is refused with a message saying so, and the daemon picks up tools installed later at its next restart. It
-is not TOML: one absolute directory per line, blank lines and lines starting with `#` ignored.
-
-```
-# where the lab's results live
-/mnt/lab/results
-```
-
-With that line, a page in a repo that tracks the link
-`results -> /mnt/lab/results/run-7` shows the figures and movies in that run's
-folder, such as `results/fig.png`. The line may name the target itself or any
-folder above it that the rules below do not skip.
-
-A line is skipped, and named in the refusal message, when it is not an absolute
-path, does not exist on this host, is not a directory, is `/`, or contains your
-home directory. Each root is resolved to its canonical path, so a root given
-through a symlinked path still matches. The file is re-read whenever it changes,
-so adding or removing a root takes effect at a page's next request, with no
-restart. A root that cannot be resolved when the file is read stays skipped until
-the file changes or the page is reopened with `W`. With no file, or no usable
-line, no link is followed, and the refusal says that none is declared.
 
 ## See also
 

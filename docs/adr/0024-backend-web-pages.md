@@ -220,43 +220,42 @@ where the URL path space maps: the repo top when the page rides the shared prefi
 server and sits in a git repo, else the content root. A browser
 collapses `../../../data/x.mp4` above the nonce segment, so the link folder is
 reachable only when the URL space starts at a common ancestor. The URL space
-widens whether or not the machine declares a data root, so a page's link on a
-machine that declares none is refused with words that say so, not answered that
-no site is open. Root-relative sites keep their own pool origin and are not
+widens in every repo, so a page's link is served or refused with words, never
+answered that no site is open. Root-relative sites keep their own pool origin and are not
 widened. Widening the URL space does not widen what is served.
 
 Follow rule, checked on every request:
 
 - `.git` in any path part is refused, and so is a `..` part. A resolved path
   with a `.git` component below the folder it is served from (the site or the
-  data root) is refused too (a tracked link into `.git`, an 8.3 short name): no
+  mount folder) is refused too (a tracked link into `.git`, an 8.3 short name): no
   file whose resolved path lies inside a `.git` directory below that folder is
   served.
 - A path that resolves inside the content root is served as before.
 - Otherwise the first symlink below the URL root must be tracked by git (the set
-  is rebuilt whenever the repo index file changes), a data root must be declared
-  in the machine's own `data-roots` file (re-read when its stat changes, its
-  roots canonicalized once per file state), the link's target must lie under
-  one, and the file must stay inside that target: a link inside the linked
-  folder is not followed out of it. A root that cannot be resolved when the
-  file is read stays skipped until the file changes or the page is reopened.
-  A dead root on a hard NFS mount hangs the first request that resolves the
-  roots, and the page's later linked requests queue behind it; this is not a
-  regression, since resolving at every request hung the same way.
-- Each refusal names the rule and, for a root that did not count, why.
+  is rebuilt whenever the repo index file changes), and the file must resolve to
+  a path under a mount folder (`/mnt`, `/media` or `/Volumes`), outside the home
+  folder, with no part below the mount folder whose name starts with `.`. No
+  file lists data folders. A file on a dead hard-mounted share hangs the request
+  that resolves it, as reading it would.
+- Each refusal says why. A linked path that is missing, private or hidden gets
+  one answer, naming the path as asked; the daemon's log says which.
 - Off Linux and macOS no link is followed.
 
 The file is opened without following a symlink below its base (`openat` with
 `O_NOFOLLOW`), so a link swapped in after the check fails the open instead of
-escaping. What a page's script can read: the content root, plus files inside the
-targets of tracked links under a declared root; never anything inside a `.git`
-directory below the folder it is served from, never an untracked repo file
-outside the content root, never anything through an untracked link.
+escaping. What a page's script can read: the content root, plus, through a
+tracked link, files under a mount folder outside the home folder and hidden
+folders; never anything inside a `.git` directory below the folder it is served
+from, never an untracked repo file outside the content root, never anything
+through an untracked link.
 Outside the content root no answer depends on whether the path exists: a path that reaches no link gets one refusal
 whether or not it exists, so a script learns the names of links under the URL root and nothing else about the repo's
-files. The time to answer still differs slightly (an existing path costs a few `lstat`s more); that is a known limit.
-On a Mac without the Command Line Tools git is never run, no link is followed, and once a data root is declared a link is
-refused with words that say git is needed (with none declared, the "none is declared" refusal comes first).
+files; and a linked path the bounds refuse gets one refusal whether or not it exists, so a link learns nothing about
+what exists in a private place. The time to answer still differs slightly (an existing path costs a few `lstat`s
+more); that is a known limit.
+On a Mac without the Command Line Tools git is never run, no link is followed, and a link is refused with words that
+say git is needed.
 Range, content types and the empty-file case are shared with the video server.
 
 ## Amendment 2026-10-11: Quarto render diagnostics (QUARTO-ERROR)
@@ -308,3 +307,28 @@ root still takes in everything under it.
 
 The repository top is the nearest folder holding `.git`, a folder or a worktree's file. A checkout with none (an extracted
 archive, a Mercurial checkout) is bounded by the workspace root, or on a home-folder workspace by the folder below home.
+
+## Amendment 2026-10-16: linked data with no list (LINKS-NO-LIST)
+
+A symlink a repository tracks serves with no list of data folders to keep: the `data-roots` file is no longer read.
+A tracked link serves a file when the file's canonical path lies under a mount folder (`/mnt`, `/media`, `/Volumes`),
+outside the home folder, with no part below the mount folder whose name starts with `.` (the follow rule above;
+`Bounds` in `rust/backend/src/pages/site/links.rs`).
+
+The rule allows where the operating systems mount shares and drives, rather than denying a list of private places.
+An allow rule fails closed: a link anywhere else is refused with words that name the mount folders. A deny list fails
+open at every place it forgets (the Julia depot, temporary folders, `/proc`, other accounts' homes, each platform's
+own), and keeping it current is the list this replaces.
+
+What a page's script can read through a link its repository commits, and so what a repository cloned from someone
+else can read: every file the account can read under the mount folders, outside the home folder and hidden folders.
+That is every share mounted on the computer, other groups' shares included; on WSL, the Windows drives under `/mnt`;
+and a copy of a home folder kept on a mounted volume, outside its hidden folders. Before this, a link reached only
+what lay under a root the computer's `data-roots` file declared, and nothing where no file existed. A home folder
+mounted a second time under a mount folder (an NFS server's own export path, a bind mount) is not recognized as the
+home folder; its hidden folders stay refused.
+
+Removed with the file: the refusal when no root is declared (R2c); the refusal of a link inside the linked folder
+that leads out of it (R4), since the bounds now judge the file a link reaches, wherever an inner link leads; and the
+separate answer for a link that does not resolve (R5), now R3's one answer, which names the path as asked, as R2a
+does, so it never shows whether a folder lies behind it.

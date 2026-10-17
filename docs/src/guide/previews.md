@@ -80,18 +80,20 @@ in-pane:
 These all follow the same "rich/interactive content lives in the browser" policy.
 
 A page can also show data that lives outside its repo. When the repo tracks a
-symlink to a folder on a data share and the target lies under a root declared in
-the `data-roots` file of the computer whose daemon serves the page (see
-[Configuration Files](../ref/config.md)), images and movies on the page load
-through that link, and movies seek. Anything else is refused with a message
-saying why, which the browser shows when the missing file is opened in a tab of
-its own: no data root declared, a link git does not track, a target under no
-declared root, a `..` in the path, a link inside the linked folder, `.git`, a
-repo file outside the page's site folder (the outermost folder above it, within
-its repository, that holds an `index.html`) that is not behind a tracked link, a
-linked folder that does not resolve on this computer (is its share mounted?), or
-a file that changed while it was being opened. On Windows no link is followed, so
-a page there never shows linked data.
+symlink to a folder on a mounted share or drive (under `/mnt`, `/media` or, on
+macOS, `/Volumes`), images and movies on the page load through that link, and
+movies seek; nothing needs to be declared. A file in your home folder, or with a
+folder or name on its way that starts with `.`, is never served through a link.
+Anything else is refused with a message saying why, which the browser shows when
+the missing file is opened in a tab of its own: a link git does not track (`git
+add` it and reload), a linked file that is not under those folders or does not
+exist on the computer whose daemon serves the page (is its share mounted?), a
+`..` in the path, `.git`, a repo file outside the page's site folder (the
+outermost folder above it, within its repository, that holds an `index.html`)
+that is not behind a tracked link, or a file that changed while it was being
+opened. On macOS, following a link needs git, which means the Command Line
+Tools; the daemon picks up tools installed later at its next restart. On Windows
+no link is followed, so a page there never shows linked data.
 
 ## Pan and zoom images
 

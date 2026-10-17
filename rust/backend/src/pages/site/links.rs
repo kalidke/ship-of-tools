@@ -1,4 +1,4 @@
-//! What a request path may open: the site's roots, the git link set, the data-roots file and the R0-R6 rules.
+//! What a request path may open: the site's roots, the git link set, the folders a link may reach and the R-rules.
 
 use super::*;
 
@@ -10,19 +10,71 @@ pub struct Site {
     pub(super) content_root: PathBuf,
     /// Canonical root of the URL path space: S, or the repo top when widened.
     url_root: PathBuf,
-    /// Test-only override of the data-roots file; `None` reads the config dir.
-    roots_file: Option<PathBuf>,
-    /// The canonical data roots, keyed on the data-roots file's stat: an
-    /// unchanged file is never canonicalized again (a stalled share would
-    /// otherwise stall every request). A miss still canonicalizes every root,
-    /// so a dead hard mount stalls that request and the ones queued behind it.
+    /// Where a tracked link may lead.
     #[cfg(unix)]
-    roots_cache: Mutex<Option<(Option<IndexStamp>, std::sync::Arc<DataRoots>)>>,
-    /// Test-only: how many times the file was read and its roots canonicalized.
-    #[cfg(all(unix, test))]
-    roots_reads: std::sync::atomic::AtomicUsize,
+    bounds: Bounds,
     #[cfg(unix)]
     git: Option<GitState>,
+}
+
+/// The folders a tracked link may serve from, fixed by the operating systems,
+/// not kept by a person: where Linux mounts shares and drives (`/mnt`,
+/// `/media`) and where macOS mounts every volume but its own disk (`/Volumes`).
+#[cfg(unix)]
+const MOUNT_FOLDERS: [&str; 3] = ["/mnt", "/media", "/Volumes"];
+
+/// Where a tracked link may lead: a file under a mount folder, outside the
+/// home folder (which may itself lie under one), with no hidden part below the
+/// mount folder (where a copy of a home keeps its keys). Both canonical.
+#[cfg(unix)]
+#[derive(Clone, Debug)]
+pub(super) struct Bounds {
+    mounts: Vec<PathBuf>,
+    /// `None` when the daemon has no home folder (`home_folder`): then no link is followed.
+    home: Option<PathBuf>,
+}
+
+#[cfg(unix)]
+impl Bounds {
+    /// Canonical forms of `mounts` that exist (a mount folder that resolves to
+    /// `/` would make every file linked data) and of `home`.
+    pub(super) fn new(mounts: &[&Path], home: Option<&Path>) -> Bounds {
+        Bounds {
+            mounts: mounts
+                .iter()
+                .filter_map(|m| m.canonicalize().ok())
+                .filter(|m| m.parent().is_some())
+                .collect(),
+            home: home.and_then(|h| h.canonicalize().ok()),
+        }
+    }
+
+    /// This process's bounds, resolved once. Only the mount folders themselves
+    /// and the home folder are resolved, so a dead share stalls nothing here.
+    fn of_process() -> Bounds {
+        static BOUNDS: std::sync::OnceLock<Bounds> = std::sync::OnceLock::new();
+        BOUNDS
+            .get_or_init(|| Bounds::new(&MOUNT_FOLDERS.map(Path::new), crate::pages::home_folder().as_deref()))
+            .clone()
+    }
+
+    /// The mount folder the canonical file `f` is opened beneath, or why it is
+    /// not served (for the log: the page gets one answer either way).
+    fn base_for(&self, f: &Path) -> Result<&Path, &'static str> {
+        use std::os::unix::ffi::OsStrExt;
+        let Some(home) = &self.home else { return Err("no home folder is known") };
+        if f.starts_with(home) {
+            return Err("in the home folder");
+        }
+        let Some(m) = self.mounts.iter().find(|m| f.starts_with(m)) else {
+            return Err("outside the mount folders");
+        };
+        let rel = f.strip_prefix(m).expect("f starts with m");
+        if rel.components().any(|c| c.as_os_str().as_bytes().starts_with(b".")) {
+            return Err("hidden");
+        }
+        Ok(m)
+    }
 }
 
 /// The repo a site sits in, and the tracked-link set built from its index.
@@ -54,58 +106,6 @@ fn index_stamp(index: &Path) -> Option<IndexStamp> {
     use std::os::unix::fs::MetadataExt;
     let m = std::fs::metadata(index).ok()?;
     Some((m.modified().ok()?, m.len(), m.ino()))
-}
-
-/// The declared data roots as read from the file, canonical, plus every line
-/// that was skipped and why (named in the R2c/R3 refusal so a person sees why
-/// their root did not count).
-#[cfg(unix)]
-#[derive(Debug, Default, Clone)]
-pub(crate) struct DataRoots {
-    pub(crate) roots: Vec<PathBuf>,
-    pub(crate) skipped: Vec<String>,
-}
-
-/// Read the data-roots file: one absolute directory per line, blank and `#`
-/// lines ignored. A line is skipped (fail closed) when it is relative, does not
-/// canonicalize (not on this host), is not a directory, or is `/` or contains
-/// the canonical `home`: that would make a tracked link to the user's ssh
-/// directory followable. A missing file declares nothing.
-#[cfg(unix)]
-pub(crate) fn read_data_roots(file: &Path, home: Option<&Path>) -> DataRoots {
-    let mut out = DataRoots::default();
-    let Ok(text) = std::fs::read_to_string(file) else {
-        return out;
-    };
-    let home = home.and_then(|h| h.canonicalize().ok());
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let p = Path::new(line);
-        if !p.is_absolute() {
-            tracing::warn!(root = line, "data-roots: relative path skipped");
-            out.skipped.push(format!("{line} (not an absolute path)"));
-            continue;
-        }
-        let Ok(canon) = p.canonicalize() else {
-            tracing::debug!(root = line, "data-roots: not on this host, skipped");
-            out.skipped.push(format!("{line} (does not exist on this host)"));
-            continue;
-        };
-        if !canon.is_dir() {
-            out.skipped.push(format!("{line} (not a directory)"));
-            continue;
-        }
-        if canon.parent().is_none() || home.as_ref().is_some_and(|h| h.starts_with(&canon)) {
-            tracing::warn!(root = line, "data-roots: root contains the home directory, skipped");
-            out.skipped.push(format!("{line} (contains the home directory)"));
-            continue;
-        }
-        out.roots.push(canon);
-    }
-    out
 }
 
 /// Run `git` in `dir` with the repo-selecting env removed, stdin null, and a
@@ -235,11 +235,8 @@ impl Site {
         Site {
             content_root: root.clone(),
             url_root: root,
-            roots_file: None,
             #[cfg(unix)]
-            roots_cache: Mutex::new(None),
-            #[cfg(all(unix, test))]
-            roots_reads: std::sync::atomic::AtomicUsize::new(0),
+            bounds: Bounds::of_process(),
             #[cfg(unix)]
             git: None,
         }
@@ -249,34 +246,14 @@ impl Site {
     /// widen; `widen` is false for root-relative sites (they keep S as their
     /// URL root).
     pub async fn open(content_root: PathBuf, ws_root: PathBuf, widen: bool) -> Site {
-        Self::build(content_root, ws_root, widen, None).await
-    }
-
-    /// As `open`, naming the data-roots file (tests never read the real config).
-    #[cfg(test)]
-    pub(crate) async fn with_roots(
-        content_root: PathBuf,
-        ws_root: PathBuf,
-        widen: bool,
-        roots_file: PathBuf,
-    ) -> Site {
-        Self::build(content_root, ws_root, widen, Some(roots_file)).await
-    }
-
-    async fn build(
-        content_root: PathBuf,
-        ws_root: PathBuf,
-        widen: bool,
-        roots_file: Option<PathBuf>,
-    ) -> Site {
-        let mut site = Site::plain(content_root);
-        site.roots_file = roots_file;
+        let site = Site::plain(content_root);
         #[cfg(unix)]
         {
-            // Widened whether or not a data root is declared, so a page's link
-            // above S reaches `follow_link` and its refusal names why. No root
-            // is canonicalized here: a dead share must not stall open.
+            // Widened in every repo, so a page's link above S reaches
+            // `follow_link`, to be served or refused with words. No link
+            // target is resolved here: a dead share must not stall open.
             let site = tokio::task::spawn_blocking(move || {
+                let mut site = site;
                 site.attach_git(&ws_root, widen, git_present());
                 site
             })
@@ -311,35 +288,6 @@ impl Site {
             }
         }
         self.git = Some(g);
-    }
-
-    #[cfg(unix)]
-    fn roots_path(&self) -> Option<PathBuf> {
-        self.roots_file
-            .clone()
-            .or_else(|| sot_log::host::state_dir::sot_config_dir().map(|d| d.join("data-roots")))
-    }
-
-    /// The data roots as of the file's current stat: a root added or removed
-    /// is seen at the next request, an unchanged file is not re-read. No
-    /// config dir (`None`) means no roots.
-    #[cfg(unix)]
-    fn data_roots(&self) -> std::sync::Arc<DataRoots> {
-        let Some(f) = self.roots_path() else {
-            return Default::default();
-        };
-        let stamp = index_stamp(&f);
-        let mut cache = self.roots_cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((s, r)) = cache.as_ref() {
-            if *s == stamp {
-                return r.clone();
-            }
-        }
-        #[cfg(test)]
-        self.roots_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let r = std::sync::Arc::new(read_data_roots(&f, crate::pages::home_folder().as_deref()));
-        *cache = Some((stamp, r.clone()));
-        r
     }
 
     /// The URL path (below the nonce) of a page `rel` under the content root:
@@ -462,10 +410,11 @@ fn open_checked(base: &Path, rel: &Path, shown: &str) -> Result<std::fs::File, R
 ///
 /// R0 `.git` anywhere; R1 a `..` part; then Q = url_root + parts (a directory
 /// gets `index.html`). Fast path: Q canonicalizes inside S. Slow path: the
-/// first symlink below url_root must be a link git tracks (R2b), a data root
-/// must be declared (R2c), the link's target must lie under one (R3), it must
-/// resolve (R5), the file must stay inside the target (R4), and the open is
-/// `open_beneath` the data root (R6). Not unix: no link is ever followed (R2d).
+/// first symlink below url_root must be a link git tracks (R2b, R2e where git
+/// cannot run), Q must resolve to a file `Bounds` allows (R3: one answer for a
+/// missing, private or hidden file), and the open is `open_beneath` its mount
+/// folder (R6). Not unix: no link is ever followed (R2d). R2a and R3 name the
+/// path as asked, so neither shows whether a folder lies behind it.
 pub(crate) fn resolve_and_open(
     site: &Site,
     decoded: &str,
@@ -553,27 +502,19 @@ pub(crate) fn resolve_and_open(
         ));
     }
     #[cfg(unix)]
-    follow_link(site, &q, &shown, &link, &l)
+    follow_link(site, &q, &asked, &shown, &link, &l)
 }
 
 #[cfg(unix)]
 fn follow_link(
     site: &Site,
     q: &Path,
+    asked: &str,
     shown: &str,
     link: &Path,
     l: &str,
 ) -> Result<(std::fs::File, PathBuf), Refusal> {
-    let forbid = |code: &str, body: String| refuse(shown, "403 Forbidden", code, body);
-    let roots = site.data_roots();
-    let skipped = if roots.skipped.is_empty() {
-        String::new()
-    } else {
-        format!(" (skipped: {})", roots.skipped.join("; "))
-    };
-    if roots.roots.is_empty() {
-        return Err(forbid("R2c", format!("refused: {l} is a link, and links are followed only into a data root this machine declares in the data-roots file of its Ship of Tools config folder; none is declared{skipped}")));
-    }
+    let forbid = |code: &str, body: String| refuse(asked, "403 Forbidden", code, body);
     if site.git.as_ref().is_some_and(|g| !g.usable) {
         return Err(forbid("R2e", format!("refused: {l} is a link, and {NO_GIT}")));
     }
@@ -581,25 +522,22 @@ fn follow_link(
     if !tracked {
         return Err(forbid("R2b", format!("refused: {l} is a link git does not track in this repo, so it is not followed (git add it: it serves at the next request)")));
     }
-    let Ok(t) = site.url_root.join(link).canonicalize() else {
-        return Err(refuse(
-            shown,
-            "404 Not Found",
-            "R5",
-            format!("the linked folder {l} does not resolve on this host (is its share mounted?)"),
-        ));
+    // One answer whether the file is missing, private or hidden, so a committed
+    // link learns nothing about what exists there; the log says which.
+    let served = match q.canonicalize() {
+        Ok(f) => site.bounds.base_for(&f).map(|m| (m.to_path_buf(), f)),
+        Err(_) => Err("does not resolve"),
     };
-    let Some(d) = roots.roots.iter().find(|r| t.starts_with(r)) else {
-        return Err(forbid("R3", format!("refused: {l} is a tracked link, but its target is not under a data root declared in this machine's data-roots file{skipped}")));
+    let (m, f) = match served {
+        Ok(v) => v,
+        Err(why) => {
+            tracing::info!(path = asked, why, "site_serve: a linked path is outside the bounds");
+            let [a, b, c] = MOUNT_FOLDERS;
+            return Err(forbid("R3", format!("refused: {asked} is behind the tracked link {l}, and a link serves only a file that exists on this host under {a}, {b} or {c}, outside the home folder and hidden folders (is its share mounted?)")));
+        }
     };
-    let Ok(f) = q.canonicalize() else {
-        return Err(not_found());
-    };
-    if !f.starts_with(&t) {
-        return Err(forbid("R4", format!("refused: {shown} leaves the linked folder {l} through a link inside it")));
-    }
-    let rel = f.strip_prefix(d).expect("f is under t, which is under d");
-    let file = open_checked(d, rel, shown)?;
+    let rel = f.strip_prefix(&m).expect("base_for found f under m");
+    let file = open_checked(&m, rel, shown)?;
     Ok((file, f))
 }
 

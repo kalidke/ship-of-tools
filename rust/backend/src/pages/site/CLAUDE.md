@@ -8,8 +8,8 @@ daemon's page serving; charter: rust/backend/src/pages/CLAUDE.md.
 ## Files
 - `mod.rs`: the grant tables (prefix nonces, pool ports, each by owner), the prefix and pool listeners, `handle_conn`
   for a connection's requests and `serve_request` for one.
-- `links.rs`: `Site` and what a request path may open: the git link set, the data-roots file, the R0-R6 rules.
-- `links_tests.rs`: tests of the follow rule over a real git repo and symlinked data roots (unix).
+- `links.rs`: `Site` and what a request path may open: the git link set, the bounds of a link (`Bounds`), the R-rules.
+- `links_tests.rs`: tests of the follow rule over a real git repo and a stand-in mount folder (unix).
 - `tests.rs`: tests of pool assignment, bind fallback, serving a prefix site and requests on a kept connection.
 
 ## Start here
@@ -25,11 +25,14 @@ daemon's page serving; charter: rust/backend/src/pages/CLAUDE.md.
   cookie), and anything else is 403 (`serve_request`, secrets compared with `ct_eq`).
 - Once `spawn_pool` ran, a pool port is assigned only from the ports it bound (`assign_pool_port`); when every one is
   held, the port of the window away longest is taken with a new secret (`Clients::away_sites`), never a live owner's.
-- A request resolves by `resolve_and_open` in the order R0-R6: ordinary files only under the content root; a link only
-  when git tracks it, a data root is declared, its target lies under one and the file stays inside it; the final open
-  is `open_beneath`. Links are followed only on unix (R2d).
-- The data-roots file and the git index are re-read only when their stat changes (`Site::data_roots`,
-  `GitState::links`), and opening a site canonicalizes no data root.
+- A request resolves by `resolve_and_open`: ordinary files only under the content root; through a link only when git
+  tracks it and the file's canonical path lies under a mount folder (`MOUNT_FOLDERS`), outside the home folder, with no
+  hidden part below the mount folder (`Bounds`, fixed in code: no file lists data folders); the final open is
+  `open_beneath` that mount folder. Links are followed only on unix (R2d).
+- Past the fast path no answer depends on whether a path exists: a path that reaches no link gets R2a, and a linked
+  path the bounds refuse, missing or not, gets R3; each names the path as asked.
+- The git index is re-read only when its stat changes (`GitState::links`), and opening a site resolves no link
+  target.
 - Resolution runs in `spawn_blocking` (`serve_request`); an owner's end (a connection of no window that disconnects, a
   window the roster forgets) drops its entries (`remove_root`).
 - The pool is one table per process, so a unit test takes a pool port only while it holds `own_pool` (`tests.rs`),

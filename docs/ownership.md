@@ -61,7 +61,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `<config>/keybindings.toml` | disk, setting | fe-ui | `rust/frontend/src/ui/input/keybindings.rs` `KeyBindings`, `load_layered` |
 | `<config>/hosts.toml`, `SOT_HOSTS` | disk, setting | topology | `rust/protocol/src/topology/mod.rs` `locate`, `load`, `parse` |
 | `[monitor]` roster in hosts.toml (the grammar is topology's; the sidecars read it) | setting | topology | `rust/protocol/src/topology/mod.rs` `monitor_targets`; `rust/backend/src/sidecars/monitor.rs` `load_hosts`, `sampling_roster` |
-| `<config>/data-roots` | disk | pages | `rust/backend/src/pages/site/links.rs` `read_data_roots`, `DataRoots` |
+| the folders a page's tracked link may reach | rule | pages | `rust/backend/src/pages/site/links.rs` `MOUNT_FOLDERS`, `Bounds` |
 | a row's capsule state dir `<state>/workspaces/<id>` (name) | disk rule | rows | `rust/backend/src/rows/spawn/state_root.rs` `state_dir_for` |
 | `<sd>/supervisor.lock` | disk, lock | capsule | `rust/log/src/supervisor/journal/fence.rs` `lock_supervisor`; `rust/log/src/host/lock.rs` `lock_supervisor` |
 | `<sd>/drawer.voyage` (pointer) | disk | capsule | `rust/log/src/supervisor/journal/pointer.rs` |
