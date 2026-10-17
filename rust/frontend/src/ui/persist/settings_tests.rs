@@ -155,23 +155,35 @@
     }
 
     #[test]
-    fn widths_one_per_column_mismatch_falls_back_without_panic() {
+    fn widths_one_per_column_mismatch_keeps_columns_with_equal_split() {
         // The window indexes widths per column (layout::compute at startup,
         // wide_preview on the toggle); a short list must never reach them.
+        // Four columns and two widths: the built-in list has three, which
+        // fits neither count, so the four columns split evenly.
         let mut s = Settings::default();
         s.merge_text(
             "[layout.ultrawide]\ncolumns = \"nav,preview,llm,repl\"\nwidths = \"0.5,0.5\"\n",
         );
+        assert_eq!(
+            s.ultrawide.columns,
+            vec![Slot::Nav, Slot::Preview, Slot::Llm, Slot::Repl]
+        );
+        assert_eq!(s.ultrawide.widths, vec![0.25; 4]);
         let area = ratatui::layout::Rect::new(0, 0, 120, 40);
         let _ = crate::ui::chrome::layout::compute(area, &s.ultrawide, true, None);
         let _ = s.ultrawide.wide_preview();
-        let d = LayoutPreset::default_ultrawide();
-        assert_eq!(s.ultrawide.columns, d.columns);
-        assert_eq!(s.ultrawide.widths, d.widths);
+        // The interior is 118 cells, so a quarter is 29.5: each of the first
+        // three columns lands on 30 within a cell of rounding.
+        let geom = crate::ui::chrome::layout::compute(area, &s.ultrawide, false, None);
+        let widths: Vec<u16> = [geom.nav, geom.preview, geom.llm]
+            .iter()
+            .map(|r| r.map_or(0, |r| r.width))
+            .collect();
+        assert!(widths.iter().all(|w| w.abs_diff(30) <= 1), "{widths:?}");
     }
 
     #[test]
-    fn widths_one_short_of_columns_fall_back() {
+    fn widths_alone_wrong_count_gives_built_in_layout() {
         // Two widths for the default three columns: wide_preview removes the
         // Llm column's width, which is past the end of this list.
         let mut s = Settings::default();
@@ -183,12 +195,72 @@
     }
 
     #[test]
-    fn widths_longer_than_columns_fall_back() {
+    fn widths_wrong_count_takes_built_in_widths_when_they_fit() {
+        // Reordered columns with two widths: the built-in ultrawide list has
+        // one width per column, so it fits the three columns and stands.
+        let mut s = Settings::default();
+        s.merge_text("[layout.ultrawide]\ncolumns = \"llm,nav,preview\"\nwidths = \"0.5,0.5\"\n");
+        let d = LayoutPreset::default_ultrawide();
+        assert_eq!(s.ultrawide.columns, vec![Slot::Llm, Slot::Nav, Slot::Preview]);
+        assert_eq!(s.ultrawide.widths, d.widths);
+    }
+
+    #[test]
+    fn columns_alone_keep_columns_with_equal_split() {
+        // The built-in ultrawide widths have three entries; two columns need
+        // two, so the columns keep their names and split evenly.
+        let mut s = Settings::default();
+        s.merge_text("[layout.ultrawide]\ncolumns = \"nav,llm\"\n");
+        assert_eq!(s.ultrawide.columns, vec![Slot::Nav, Slot::Llm]);
+        assert_eq!(s.ultrawide.widths, vec![0.5, 0.5]);
+        let area = ratatui::layout::Rect::new(0, 0, 120, 40);
+        let geom = crate::ui::chrome::layout::compute(area, &s.ultrawide, false, None);
+        assert!(geom.nav.is_some() && geom.llm.is_some());
+        assert!(geom.preview.is_none());
+    }
+
+    #[test]
+    fn widths_longer_than_columns_keep_columns_with_equal_split() {
         let mut s = Settings::default();
         s.merge_text("[layout.laptop]\ncolumns = \"nav,llm\"\nwidths = \"0.2,0.3,0.5\"\n");
-        let d = LayoutPreset::default_laptop();
-        assert_eq!(s.laptop.columns, d.columns);
-        assert_eq!(s.laptop.widths, d.widths);
+        assert_eq!(s.laptop.columns, vec![Slot::Nav, Slot::Llm]);
+        assert_eq!(s.laptop.widths, vec![0.5, 0.5]);
+    }
+
+    /// The writer the warning test reads: a clone shares the same bytes.
+    #[derive(Clone, Default)]
+    struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn columns_alone_warning_names_the_preset_and_the_fallback() {
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            // Sibling tests hit the same warn! with no subscriber set, and tracing
+            // caches that callsite as uninteresting; rebuild it for this scope.
+            tracing::callsite::rebuild_interest_cache();
+            let mut s = Settings::default();
+            s.merge_text("[layout.ultrawide]\ncolumns = \"nav,llm\"\n");
+        });
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(log.contains("layout.ultrawide"), "{log}");
+        assert!(log.contains("widths: expected one fraction per column"), "{log}");
+        assert!(log.contains("keeping the columns"), "{log}");
     }
 
     #[test]

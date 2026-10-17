@@ -81,8 +81,9 @@
 //
 // `columns` lists named slots in left-to-right order; `widths` is the
 // matching fractional split, one per column (a count that differs
-// warns and falls back to the built-in columns and widths; values
-// renormalized on parse so they sum to ~1.0). Valid slot names: nav,
+// warns and keeps the columns: the built-in widths when their count
+// fits, else an equal split; values renormalized on parse so they sum
+// to ~1.0). Valid slot names: nav,
 // preview, llm, repl. The drawer is a separate bottom strip; `drawer`
 // names the slot rendered there (today only "repl") and
 // `drawer_height` is its fraction of window height when open.
@@ -193,8 +194,9 @@ impl Slot {
 pub struct LayoutPreset {
     pub columns: Vec<Slot>,
     /// Fractional column widths summing to (approximately) 1.0.
-    /// Same length as `columns`; a settings file that breaks this falls
-    /// back to the built-in columns and widths. Renormalized at parse time so the
+    /// Same length as `columns`; a settings file that breaks this keeps the
+    /// columns and takes the built-in widths when their count fits, else an
+    /// equal split. Renormalized at parse time so the
     /// user can write `0.167,0.333,0.5` and not worry about a stray
     /// 0.001.
     pub widths: Vec<f32>,
@@ -539,20 +541,25 @@ impl Settings {
 }
 
 /// `columns` and `widths` are parsed apart, so the pair is checked once every
-/// key of the file is in: one width per column, or the bucket's built-in
-/// columns and widths stand (the window indexes widths per column).
+/// key of the file is in: one width per column. On a mismatch the columns
+/// stand, with the built-in widths when their count fits and an equal split
+/// when it does not (the window indexes widths per column).
 fn check_widths(name: &str, preset: &mut LayoutPreset, built_in: LayoutPreset) {
     if preset.widths.len() == preset.columns.len() {
         return;
     }
+    let n = preset.columns.len();
     tracing::warn!(
         preset = name,
-        columns = preset.columns.len(),
+        columns = n,
         widths = preset.widths.len(),
-        "widths: expected one fraction per column; using the built-in columns and widths"
+        "widths: expected one fraction per column; keeping the columns with the built-in widths or an equal split"
     );
-    preset.columns = built_in.columns;
-    preset.widths = built_in.widths;
+    preset.widths = if built_in.widths.len() == n {
+        built_in.widths
+    } else {
+        vec![1.0 / n as f32; n]
+    };
 }
 
 fn merge_preset_kv(preset: &mut LayoutPreset, key: &str, value: &str, lineno: usize) {
