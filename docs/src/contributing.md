@@ -105,7 +105,8 @@ build** — a failed build leaves the running app untouched.
     binary, and the swap costs one reconnect per host — the frontend's
     backoff respawns each `ssh` child.
 
-On Linux and macOS the installed `sot-launch` respawns the window on exit 75 only, and a window started by
+On Linux and macOS the installed `sot-launch` respawns the window on exit 75 or 76, after it applies any pending
+update, and a window started by
 `scripts/launch-sot.sh` is not respawned: restart it by hand. ADR 0017 says how the window restarts.
 
 Note that changes to the *supervisor script itself* (`launch-sot.ps1`) are not
