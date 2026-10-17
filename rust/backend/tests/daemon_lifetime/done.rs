@@ -20,8 +20,8 @@ pub fn repo_file(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-/// The case's own copy of `julia/pluto`, the whole folder but for its manifests (the source tree's was written by CI's warm step or a developer's instantiate;
-/// a release ships none), where the daemon finds it (`SOT_RESOURCE_ROOT`):
+/// The case's own copy of `julia/pluto`, the whole folder but for its manifests (the source tree's was written by CI's
+/// warm step or a developer's instantiate; a release ships none), where the daemon finds it (`SOT_RESOURCE_ROOT`):
 /// `session_options.jl` carries one more line, the worker's startup expression from the environment, so a worker starts
 /// the case's tree without a cell being run. The environment is instantiated here unless `SOT_L2_PLUTO_MANIFEST` names
 /// a manifest to use.

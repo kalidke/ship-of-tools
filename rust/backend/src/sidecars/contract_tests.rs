@@ -669,7 +669,8 @@ async fn an_end_whose_removal_fails_leaves_the_retry_to_the_drop() {
     let releaser = {
         let locked = locked.clone();
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(300));
+            // Under host load a 300 ms window can close before `end` reaches its first attempt.
+            std::thread::sleep(Duration::from_secs(2));
             unlock(&locked);
         })
     };
