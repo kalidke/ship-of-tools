@@ -72,22 +72,6 @@ pub(crate) fn require_mathjax_modules() {
     );
 }
 
-/// Copies the folder `source` to `destination`, leaving out a Julia manifest (`Manifest*.toml`), which a package
-/// operation writes: the repository ignores it and a release does not ship it.
-pub(crate) fn copy_folder(source: &Path, destination: &Path) {
-    std::fs::create_dir_all(destination).expect("create owned fixture folder");
-    for entry in std::fs::read_dir(source).expect("read fixture source") {
-        let entry = entry.expect("fixture source entry");
-        let target = destination.join(entry.file_name());
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if entry.file_type().expect("fixture source kind").is_dir() {
-            copy_folder(&entry.path(), &target);
-        } else if !(name.starts_with("Manifest") && name.ends_with(".toml")) {
-            std::fs::copy(entry.path(), target).expect("copy fixture source");
-        }
-    }
-}
-
 /// An owned resource root holding a copy of the real `julia/repl` shim, so a package operation or a precompile
 /// cannot touch the installed shim, and an owned depot. The copy is the whole folder, `ext/` included, as a release
 /// ships it (an install is a checkout of the release, which the daemon runs in place). Points the process's
@@ -98,7 +82,7 @@ pub(crate) fn copy_folder(source: &Path, destination: &Path) {
 pub(crate) fn owned_julia_env(root: &Path) -> PathBuf {
     let resources = root.join("resources");
     let shim = resources.join("julia").join("repl");
-    copy_folder(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../julia/repl"), &shim);
+    sot_log::test_copy::copy_release_folder(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../julia/repl"), &shim);
     std::env::set_var("SOT_RESOURCE_ROOT", &resources);
     std::env::set_var("SOT_JULIA_BIN", executable("julia"));
     std::env::set_var("JULIA_DEPOT_PATH", depot_path(&root.join("depot"), None));
@@ -278,6 +262,11 @@ pub(crate) async fn within(bound: Duration, what: &str, mut condition: impl FnMu
 /// The longest a fixture's end gives its children to be reaped.
 const END: Duration = Duration::from_secs(60);
 
+/// A Signal of its own, which no other fixture's fire reaches.
+fn private_signal() -> &'static Signal {
+    Box::leak(Box::new(Signal::new()))
+}
+
 /// A fixture's owned root, a temporary folder, with the Signal that holds the children the fixture starts. `end` is the
 /// fixture's one end: it ends every child, waits until each is reaped, then removes the root. A test that fails before
 /// its end drops this instead: the drop fires the Signal, which requests the end of every child it holds, then removes
@@ -294,6 +283,11 @@ impl OwnedRoot {
         OwnedRoot { dir: Some(tempfile::tempdir().expect("owned fixture root")), sig }
     }
 
+    /// A root whose children answer to a Signal of its own.
+    pub(crate) fn private() -> Self {
+        Self::new(private_signal())
+    }
+
     pub(crate) fn path(&self) -> &Path {
         self.dir.as_ref().expect("a root is held until its end").path()
     }
@@ -306,8 +300,9 @@ impl OwnedRoot {
     pub(crate) async fn end(mut self) {
         self.sig.fire().expect("fire");
         within(END, "owned children reaped", || self.sig.live() == 0).await;
-        let dir = self.dir.take().expect("a root is held until its end");
-        dir.close().expect("remove the owned fixture root");
+        // Removed while the folder is still held: a removal that fails panics into a drop that retries it.
+        std::fs::remove_dir_all(self.path()).expect("remove the owned fixture root");
+        self.dir.take().map(tempfile::TempDir::keep);
     }
 }
 
@@ -372,10 +367,6 @@ pub(crate) fn pin_env(julia_bin: &Path, resource_root: &Path) -> EnvPin {
     pin
 }
 
-fn private_signal() -> &'static Signal {
-    Box::leak(Box::new(Signal::new()))
-}
-
 /// A real eval completes under the REPL's own Signal; firing only that Signal closes the supervisor out and reaps
 /// its child, and the REPL then refuses to start another.
 #[tokio::test]
@@ -388,7 +379,7 @@ async fn repl_uses_private_signal() {
     }
     #[cfg(target_os = "linux")]
     executable("Xvfb");
-    let root = OwnedRoot::new(private_signal());
+    let root = OwnedRoot::private();
     owned_julia_env(root.path());
     let sig = root.sig();
     let (frames, _keep) = broadcast::channel(64);
@@ -654,4 +645,36 @@ async fn listener_observer_rejects_a_listening_node_tree() {
     let _ = owned.kill().await;
     drop(owned);
     within(Duration::from_secs(30), "the listener is reaped", || sig.live() == 0).await;
+}
+
+/// An `end` whose removal fails keeps the root held, so the drop that the panic unwinds into retries the removal and
+/// the root does not outlive the failure. The removal fails while a folder inside it cannot be written, then succeeds.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_end_whose_removal_fails_leaves_the_retry_to_the_drop() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = OwnedRoot::private();
+    let path = root.path().to_path_buf();
+    let locked = path.join("locked");
+    std::fs::create_dir(&locked).expect("create the locked folder");
+    std::fs::write(locked.join("file"), "x").expect("write into it");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).expect("lock it");
+    let unlock = |dir: &Path| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).expect("unlock");
+    if std::fs::remove_file(locked.join("file")).is_ok() {
+        // A process that ignores permissions cannot make the removal fail.
+        unlock(&locked);
+        root.end().await;
+        return;
+    }
+    let releaser = {
+        let locked = locked.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            unlock(&locked);
+        })
+    };
+    let ended = tokio::spawn(root.end()).await;
+    releaser.join().expect("the releaser ends");
+    assert!(ended.is_err(), "the failed removal fails the end");
+    assert!(!path.exists(), "the drop's retry removed the root");
 }

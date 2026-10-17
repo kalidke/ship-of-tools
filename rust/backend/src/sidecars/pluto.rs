@@ -788,7 +788,7 @@ exit(0)
 
     impl Harness {
         async fn start(ready_url: &str, descendant: &str) -> Harness {
-            let owned = OwnedRoot::new(Box::leak(Box::new(Signal::new())));
+            let owned = OwnedRoot::private();
             let script = start_script(owned.path(), ready_url, descendant);
             let julia = executable("julia").to_string_lossy().into_owned();
             let tx = served(&julia, owned.path(), &script, owned.sig()).await.expect("the fixture says READY");

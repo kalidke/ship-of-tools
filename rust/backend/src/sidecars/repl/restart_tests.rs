@@ -12,7 +12,6 @@ use tokio::sync::broadcast;
 #[cfg(unix)]
 use super::project_tests::{eval, raw, stdout_of};
 use super::*;
-use crate::lifecycle::child_signal::Signal;
 use crate::sidecars::contract_tests::{depot_path, executable, isolated, owned_julia_env, OwnedRoot};
 #[cfg(unix)]
 use crate::sidecars::contract_tests::within;
@@ -33,10 +32,6 @@ function serve(i, o)
 end
 end
 "#;
-
-fn private_signal() -> &'static Signal {
-    Box::leak(Box::new(Signal::new()))
-}
 
 /// Whether a process with this id still exists; a zombie counts, so false means the child was reaped.
 #[cfg(unix)]
@@ -79,7 +74,7 @@ impl Fixture {
     }
 
     fn new(julia: bool) -> Self {
-        let owned = OwnedRoot::new(private_signal());
+        let owned = OwnedRoot::private();
         let root = owned.path();
         if julia {
             owned_julia_env(root);

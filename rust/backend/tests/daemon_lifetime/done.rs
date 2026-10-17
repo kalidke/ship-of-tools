@@ -20,31 +20,15 @@ pub fn repo_file(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-/// Copies the folder `source` to `destination`, leaving out a Julia manifest (`Manifest*.toml`), which the case's own
-/// instantiate writes: the repository ignores it and a release does not ship it.
-fn copy_folder(source: &Path, destination: &Path) {
-    std::fs::create_dir_all(destination).expect("create the copy's folder");
-    for entry in std::fs::read_dir(source).expect("read the source folder") {
-        let entry = entry.expect("a source entry");
-        let target = destination.join(entry.file_name());
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if entry.file_type().expect("a source entry's kind").is_dir() {
-            copy_folder(&entry.path(), &target);
-        } else if !(name.starts_with("Manifest") && name.ends_with(".toml")) {
-            std::fs::copy(entry.path(), target).expect("copy a Pluto file");
-        }
-    }
-}
-
-/// The case's own copy of `julia/pluto`, the whole folder, where the daemon finds it (`SOT_RESOURCE_ROOT`):
+/// The case's own copy of `julia/pluto`, the whole folder but for its manifests (the source tree's was written by CI's warm step or a developer's instantiate;
+/// a release ships none), where the daemon finds it (`SOT_RESOURCE_ROOT`):
 /// `session_options.jl` carries one more line, the worker's startup expression from the environment, so a worker starts
 /// the case's tree without a cell being run. The environment is instantiated here unless `SOT_L2_PLUTO_MANIFEST` names
 /// a manifest to use.
 pub fn pluto_resource_root(case: &Path, julia: &str) -> PathBuf {
     let root = case.join("resources");
     let dir = root.join("julia").join("pluto");
-    std::fs::create_dir_all(&dir).expect("create the resource folder");
-    copy_folder(&repo_file("julia/pluto"), &dir);
+    sot_log::test_copy::copy_release_folder(&repo_file("julia/pluto"), &dir);
     let options = std::fs::read_to_string(repo_file("julia/pluto/session_options.jl"))
         .expect("read session_options.jl");
     let marker = "    session.options.evaluation.workspace_use_distributed_stdlib = true\n";
