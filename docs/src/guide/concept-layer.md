@@ -116,9 +116,11 @@ Drift detection is reactive — Ship of Tools surfaces it, you fix it when you c
 
 1. **You save a file.** (Either you edited it, or an agent did.)
 2. **The window asks the kernel for the file's hash** (`file.parse`) when the
-   cursor reaches the file's row in Files mode, once per file, and keeps it. No
-   save event re-hashes a file today, so STALE appears only for a file that changed before the window first put the
-   cursor on it. Restart the window to re-hash, including after you reconcile an annotation. Only `.jl` files are hashed: the status line for
+   cursor reaches the file's row in Files mode, and keeps it until the file changes on disk; the next view after a
+   change asks again. After an edit the annotation line shows "checking…" and then STALE, at the next view with the
+   cursor on the file (nothing sweeps in the background); after a reconcile it reads the annotation again and shows
+   "in sync". No restart is needed. Only `.jl` files
+   are hashed: the status line for
    the annotation of any other file stays at "checking…" and never shows STALE.
 3. **The annotation is marked stale when the hashes differ.** The comparison is
    `file_hash != synced_against`, made for the annotation of the file under the
