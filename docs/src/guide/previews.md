@@ -89,10 +89,11 @@ Anything else is refused with a message saying why, which the browser shows when
 the missing file is opened in a tab of its own: a link git does not track (`git
 add` it and reload), a linked file that is not under those folders or does not
 exist on the computer whose daemon serves the page (is its share mounted?), a
-link to `/`, to a folder holding your home folder or the repository (or into either), a
+link to `/`, to a folder holding your home folder or the repository, to a folder inside the
+repository, to a link whose target runs through another link, a
 `..` in the path, `.git`, a repo file outside the page's site folder (the
-outermost folder above it, within its repository, that holds an `index.html`)
-that is not behind a tracked link, or a file that changed while it was being
+outermost folder above it, within its repository, that holds an `index.html`),
+or a file that changed while it was being
 opened. On macOS, following a link needs git, which means the Command Line
 Tools; the daemon picks up tools installed later at its next restart. On Windows
 no link is followed, so a page there never shows linked data.

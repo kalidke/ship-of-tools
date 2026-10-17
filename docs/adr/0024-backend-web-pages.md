@@ -236,9 +236,12 @@ Follow rule, checked on every request:
   is rebuilt whenever the repo index file changes), and the file must resolve to
   a path under a mount folder (`/mnt`, `/media` or `/Volumes`), outside the home
   folder and the repository, with no part below the mount folder whose name
-  starts with `.`; and the link itself must point there too (its canonical
-  target is judged by the same bounds, before the request is resolved) and name
-  a data folder: a link to `/`, or to a folder holding the home folder or the
+  starts with `.`; and the link itself must point there too: its target, as
+  written (a leading mount folder mapped to its canonical path), must equal its
+  canonical path, so no symlink lies on its way (a route through the home folder
+  or another link is refused whatever it ends on), and that canonical target is
+  judged by the same bounds before the request is resolved, lies outside the
+  repository, and names a data folder: a link to `/`, or to a folder holding the home folder or the
   repository, is never followed. No file lists data folders.
   A file on a dead hard-mounted share hangs the request that resolves it, as
   reading it would.
@@ -338,9 +341,10 @@ the Windows install's own sot folder there (`AppData/Local/sot` under the Window
 folder kept on a mounted volume, outside its hidden folders. Before this, a link reached only
 what lay under a root the computer's `data-roots` file declared, and nothing where no file existed. A home folder
 mounted a second time under a mount folder (an NFS server's own export path, a bind mount) is not recognized as the
-home folder; its hidden folders stay refused. A link planted on a share itself that leads into the home folder (a
-repository's author cannot plant one) is judged by the file it reaches, which the home folder's bound refuses, and
-by nothing before it.
+home folder; its hidden folders stay refused. A symlink someone else placed on a share, below a link's target, is judged
+only by the file it reaches, so a route that enters the home folder by such a symlink and leaves it by another
+serves; writing to a share is what that takes. A regular file on `/proc` or `/sys` is refused (a root mounted under a
+mount folder with `/proc` bound inside it).
 
 Removed with the file: the refusal when no root is declared (R2c); the refusal of a link inside the linked folder
 that leads out of it (R4), since the bounds now judge the file a link reaches, wherever an inner link leads; and the

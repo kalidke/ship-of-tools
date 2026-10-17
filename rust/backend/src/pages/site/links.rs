@@ -30,6 +30,8 @@ const MOUNT_FOLDERS: [&str; 3] = ["/mnt", "/media", "/Volumes"];
 #[derive(Clone, Debug)]
 pub(super) struct Bounds {
     mounts: Vec<PathBuf>,
+    /// Each kept mount folder as written, for `as_written` (same order as `mounts`).
+    written: Vec<PathBuf>,
     /// `None` when the daemon has no home folder (`home_folder`): then no link is followed.
     home: Option<PathBuf>,
 }
@@ -39,12 +41,14 @@ impl Bounds {
     /// Canonical forms of `mounts` that exist (a mount folder that resolves to
     /// `/` would make every file linked data) and of `home`.
     pub(super) fn new(mounts: &[&Path], home: Option<&Path>) -> Bounds {
+        let kept: Vec<(PathBuf, PathBuf)> = mounts
+            .iter()
+            .filter_map(|m| Some((m.to_path_buf(), m.canonicalize().ok()?)))
+            .filter(|(_, c)| c.parent().is_some())
+            .collect();
         Bounds {
-            mounts: mounts
-                .iter()
-                .filter_map(|m| m.canonicalize().ok())
-                .filter(|m| m.parent().is_some())
-                .collect(),
+            written: kept.iter().map(|(w, _)| w.clone()).collect(),
+            mounts: kept.into_iter().map(|(_, c)| c).collect(),
             home: home.and_then(|h| h.canonicalize().ok()),
         }
     }
@@ -74,6 +78,28 @@ impl Bounds {
             return Err("hidden");
         }
         Ok(m)
+    }
+
+    /// `p` with a leading mount folder as written (`/mnt`) replaced by its
+    /// canonical path, and `.` and `..` resolved by name only.
+    fn as_written(&self, p: &Path) -> PathBuf {
+        use std::path::Component;
+        let mut lexical = PathBuf::new();
+        for c in p.components() {
+            match c {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    lexical.pop();
+                }
+                c => lexical.push(c.as_os_str()),
+            }
+        }
+        for (w, c) in self.written.iter().zip(&self.mounts) {
+            if let Ok(rest) = lexical.strip_prefix(w) {
+                return c.join(rest);
+            }
+        }
+        lexical
     }
 
     /// Whether a link to the canonical `t` names no data folder: `/`, or a
@@ -329,7 +355,8 @@ fn not_found() -> Refusal {
 
 /// Open `rel` beneath `base` without following a symlink anywhere below it: `base`
 /// by its canonical path, each intermediate component `O_DIRECTORY|O_NOFOLLOW`,
-/// the last `O_NOFOLLOW|O_NONBLOCK` (a FIFO cannot hang the task). A symlink
+/// the last `O_NOFOLLOW|O_NONBLOCK|O_NOCTTY` (a FIFO cannot hang the task, a
+/// terminal never becomes its controlling one). A symlink
 /// swapped in after the caller's check fails with ELOOP or ENOTDIR.
 #[cfg(unix)]
 fn open_beneath(base: &Path, rel: &Path) -> std::io::Result<std::fs::File> {
@@ -361,7 +388,7 @@ fn open_beneath(base: &Path, rel: &Path) -> std::io::Result<std::fs::File> {
     for (i, c) in comps.iter().enumerate() {
         let cc = cstr(c.as_bytes())?;
         let f = if i == last {
-            flags | libc::O_NOFOLLOW | libc::O_NONBLOCK
+            flags | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY
         } else {
             flags | libc::O_DIRECTORY | libc::O_NOFOLLOW
         };
@@ -549,22 +576,35 @@ fn follow_link(
     // A file past the bounds that will not open (unreadable, gone) or is not a
     // regular file (a FIFO, a socket) is the missing file's answer.
     match open_checked(&m, rel, shown) {
-        Ok(file) if file.metadata().map_or(false, |md| md.is_file()) => Ok((file, f)),
+        Ok(file) if file.metadata().map_or(false, |md| md.is_file()) && !on_kernel_filesystem(&file) => Ok((file, f)),
         Ok(_) => Err(refused_r3(asked, l)),
         Err(r) if r.status.starts_with("404") => Err(refused_r3(asked, l)),
         Err(r) => Err(r),
     }
 }
 
-/// The canonical link target `t` must lie in the bounds like a file and name a
-/// data folder (not `/`, nor one holding the home folder or the repository
-/// `top`); then the canonical file `f` of `q` must too, and lie outside the
-/// repository, whose files serve only from the site folder. Returns the mount
-/// folder `f` is opened beneath, and `f`; or why not.
+/// The link's target must be written with no symlink on its way (as written,
+/// with a leading mount folder mapped to its canonical path, it equals its
+/// canonical path `t`: a route through the home folder or another link is
+/// refused whatever it ends on), lie in the bounds like a file, name a data
+/// folder (not `/`, nor one holding the home folder or the repository `top`)
+/// and lie outside the repository; then the canonical file `f` of `q` must lie
+/// in the bounds and outside the repository, whose files serve only from the
+/// site folder. Returns the mount folder `f` is opened beneath, and `f`; or
+/// why not.
 #[cfg(unix)]
 fn judge(site: &Site, q: &Path, link: &Path, top: Option<&Path>) -> Result<(PathBuf, PathBuf), &'static str> {
-    let t = site.url_root.join(link).canonicalize().map_err(|_| "the link does not resolve")?;
+    let at = site.url_root.join(link);
+    let t = at.canonicalize().map_err(|_| "the link does not resolve")?;
+    let raw = std::fs::read_link(&at).map_err(|_| "the link does not read")?;
+    let written = site.bounds.as_written(&at.parent().unwrap_or(Path::new("/")).join(raw));
+    if written != t {
+        return Err("the link's target runs through a symlink");
+    }
     site.bounds.base_for(&t).map_err(|_| "the link points outside the bounds")?;
+    if top.is_some_and(|r| t.starts_with(r)) {
+        return Err("the link points into the repository");
+    }
     if site.bounds.too_wide(&t, top) {
         return Err("the link points at /, the home folder or the repository, or a folder holding them");
     }
@@ -574,6 +614,29 @@ fn judge(site: &Site, q: &Path, link: &Path, top: Option<&Path>) -> Result<(Path
         return Err("in the repository");
     }
     Ok((m, f))
+}
+
+/// Whether `f` lies on `/proc` or `/sys`, where a regular file can be the
+/// daemon's environment (a root mounted under a mount folder with `/proc` bound
+/// inside it). Device nodes of a devtmpfs are not regular files and are refused
+/// by that check; its magic is tmpfs's, so it cannot be told by type. macOS has
+/// no such filesystem with regular files.
+#[cfg(unix)]
+fn on_kernel_filesystem(f: &std::fs::File) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: fstatfs(2) on a live fd into a zeroed out-parameter.
+        let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::fstatfs(f.as_raw_fd(), &mut st) };
+        // Fail closed when the type cannot be read.
+        return rc != 0 || [0x9fa0, 0x6265_6572].contains(&(st.f_type as i64));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = f;
+        false
+    }
 }
 
 /// R3's one answer to every linked path that does not serve.

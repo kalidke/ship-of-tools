@@ -625,6 +625,8 @@ async fn a_repo_under_a_mount_folder_serves_none_of_its_files_through_a_link() {
 #[tokio::test]
 async fn an_unreadable_file_a_fifo_and_a_missing_name_under_the_mount_get_one_answer() {
     use std::os::unix::fs::PermissionsExt;
+    // Run as root the mode-000 file below would be readable and serve.
+    assert_ne!(unsafe { libc::geteuid() }, 0, "this test needs a non-root runner: root reads a mode-000 file");
     let f = fixture();
     let locked = f.share.join("results/locked.png");
     write(&locked, b"x");
@@ -647,12 +649,17 @@ async fn a_mount_folder_given_through_a_symlink_matches_its_canonical_path() {
     let f = fixture();
     let alias = f.base.join("mnt-alias");
     symlink(f.base.join("mnt"), &alias).unwrap();
+    // A target written through the symlinked mount folder serves too.
+    symlink(alias.join("share"), f.repo.join("al")).unwrap();
+    git(&f.repo, &["add", "al"]);
     let mut site = widened(&f).await;
     site.bounds = Bounds::new(&[&alias], Some(f.base.join("mnt/home/u").as_path()));
     let (addr, nonce, serial) = serve(site).await;
     let (st, _, body) = get(addr, &format!("/{nonce}/{MOVIE}"), &[]).await;
     assert_eq!(st, 200);
     assert_eq!(body.len(), MOVIE_LEN);
+    let (st, _, body) = get(addr, &format!("/{nonce}/al/results/r1/movie.mp4"), &[]).await;
+    assert_eq!((st, body.len()), (200, MOVIE_LEN));
     remove_root(serial);
 }
 
@@ -694,4 +701,73 @@ async fn without_git_the_walk_up_for_dot_git_widens_only_within_the_workspace() 
         assert_eq!(site.url_root, if widened { f.repo.clone() } else { site_dir.clone() }, "workspace {}", ws.display());
         assert!(site.git.as_ref().unwrap().links(&site.url_root).is_empty());
     }
+}
+
+/// A link whose target is written through the home folder, or through another link, is refused whatever it ends on:
+/// the one answer cannot tell a right guess of the home folder from a wrong one.
+#[tokio::test]
+async fn rv2_link_target_through_home_resolving_to_the_share() {
+    let f = fixture();
+    let home = f.base.join("home/u");
+    std::fs::create_dir_all(home.join("work/proj")).unwrap();
+    symlink(f.share.clone(), home.join("work/proj/nas")).unwrap();
+    for (n, t) in [
+        ("w2", home.join("work/proj/nas")),
+        ("w3", f.base.join("home/wrong/work/proj/nas")),
+        ("y", home.join("work/proj/nas")),
+    ] {
+        symlink(&t, f.repo.join(n)).unwrap();
+    }
+    symlink("y", f.repo.join("x")).unwrap();
+    git(&f.repo, &["add", "w2", "w3", "x", "y"]);
+    let mut site = widened(&f).await;
+    site.bounds = Bounds::new(&[&f.base.join("mnt")], Some(home.as_path()));
+    let (addr, nonce, serial) = serve(site).await;
+    for (l, asked) in [
+        ("w2", "w2/results/r1/movie.mp4"),
+        ("w3", "w3/results/r1/movie.mp4"),
+        ("x", "x/results/r1/movie.mp4"),
+    ] {
+        let (st, _, body) = get(addr, &format!("/{nonce}/{asked}"), &["Range: bytes=0-9"]).await;
+        assert_eq!((st, body_text(&body)), (403, r3(asked, l)), "{asked}");
+    }
+    remove_root(serial);
+}
+
+/// A repository on a share routes through its own committed links: a target inside the repository is refused.
+#[tokio::test]
+async fn rv2_repo_on_share_inner_link_through_home() {
+    let f = fixture();
+    let home = f.base.join("home/u");
+    std::fs::create_dir_all(home.join("work/proj")).unwrap();
+    symlink(f.share.clone(), home.join("work/proj/nas")).unwrap();
+    let repo = f.share.join("clone");
+    std::fs::create_dir_all(repo.join("data")).unwrap();
+    git(&repo, &["init", "-q"]);
+    write(&repo.join("site/index.html"), b"<html></html>");
+    symlink(home.join("work"), repo.join("data/h")).unwrap();
+    symlink(f.base.join("home/wrong/work"), repo.join("data/h2")).unwrap();
+    symlink("../data", repo.join("site/x")).unwrap();
+    git(&repo, &["add", "site", "data"]);
+    let mut site = opened(&f, repo.join("site"), repo.clone()).await;
+    site.bounds = Bounds::new(&[&f.base.join("mnt")], Some(home.as_path()));
+    let (addr, nonce, serial) = serve(site).await;
+    for asked in ["site/x/h/proj/nas/results/r1/movie.mp4", "site/x/h2/proj/nas/results/r1/movie.mp4"] {
+        let (st, _, body) = get(addr, &format!("/{nonce}/{asked}"), &["Range: bytes=0-9"]).await;
+        assert_eq!((st, body_text(&body)), (403, r3(asked, "site/x")), "{asked}");
+    }
+    remove_root(serial);
+}
+
+/// A regular file of the kernel's own filesystems is never served; a file of a disk is.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_file_on_proc_or_sysfs_is_a_kernel_file() {
+    let proc_stat = std::fs::File::open("/proc/self/stat").unwrap();
+    assert!(on_kernel_filesystem(&proc_stat));
+    if let Ok(sys) = std::fs::File::open("/sys/kernel/uevent_seqnum") {
+        assert!(on_kernel_filesystem(&sys));
+    }
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    assert!(!on_kernel_filesystem(tmp.as_file()));
 }
