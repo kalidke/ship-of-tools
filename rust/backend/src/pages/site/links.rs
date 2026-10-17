@@ -255,7 +255,7 @@ impl Site {
 
     #[cfg(unix)]
     fn attach_git(&mut self, ws_root: &Path, widen: bool) {
-        let Some(mut g) = GitState::find(&self.content_root) else { return };
+        let Some(g) = GitState::find(&self.content_root) else { return };
         if widen {
             let ws = ws_root.canonicalize().unwrap_or_else(|_| ws_root.to_path_buf());
             // The inner of the repo top and the workspace root; both are
@@ -268,16 +268,10 @@ impl Site {
                 None
             };
             if let Some(r) = inner {
-                if self.content_root.starts_with(&r)
-                    && r != self.content_root
-                    && !g.links(&r).is_empty()
-                {
+                if self.content_root.starts_with(&r) {
                     self.url_root = r;
                 }
             }
-            // The probe above listed links relative to the candidate root;
-            // start clean so the set is always relative to the final one.
-            g.cache = Mutex::new(LinkCache::default());
         }
         self.git = Some(g);
     }

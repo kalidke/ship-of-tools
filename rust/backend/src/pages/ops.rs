@@ -188,8 +188,8 @@ pub async fn handle_video_open(
 ///   deliberately does not do (no HTML heuristics for routing decisions).
 ///
 /// URL root (v0.6.6): the rooting rule above picks the CONTENT root, where
-/// ordinary files are served from. A page on the shared prefix server whose
-/// repo tracks a symlink gets a URL space starting at the repo top instead, so
+/// ordinary files are served from. A page on the shared prefix server in a
+/// git repo gets a URL space starting at the repo top instead, so
 /// `../../data/x.mp4` reaches the link folder, which serves it only under a
 /// root this machine declares in its `data-roots` file and otherwise refuses
 /// it with words; the returned path is then prefixed with the content root's

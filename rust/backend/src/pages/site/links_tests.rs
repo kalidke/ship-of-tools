@@ -357,6 +357,30 @@ async fn outside_the_site_a_path_with_no_link_has_one_answer_b1() {
     }
 }
 
+/// A repo whose only link was never committed still widens: the link is refused as untracked, and once it is
+/// committed the next request serves it, with no reopen.
+#[tokio::test]
+async fn a_never_committed_link_is_r2b_then_served_once_added_s1() {
+    let f = fixture();
+    let repo = f.base.join("repo2");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    write(&repo.join("site/index.html"), b"<html></html>");
+    git(&repo, &["add", "site"]);
+    symlink("../share", repo.join("nas")).unwrap();
+    let site = Site::with_roots(repo.join("site"), repo.clone(), true, f.roots_file.clone()).await;
+    let (addr, nonce, serial) = serve(site).await;
+    let path = format!("/{nonce}/nas/results/r1/movie.mp4");
+    let (st, _, body) = get(addr, &path, &[]).await;
+    assert_eq!(st, 403, "{}", body_text(&body));
+    assert!(body_text(&body).contains("nas is a link git does not track"), "{}", body_text(&body));
+    git(&repo, &["add", "nas"]);
+    let (st, _, body) = get(addr, &path, &[]).await;
+    assert_eq!(st, 200, "{}", body_text(&body));
+    assert_eq!(body.len(), MOVIE_LEN);
+    remove_root(serial);
+}
+
 #[tokio::test]
 async fn a_dangling_tracked_link_is_r5() {
     let f = fixture();

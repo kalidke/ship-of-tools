@@ -217,7 +217,7 @@ A page can show data that lives outside its repo, through a symlink the repo
 tracks. Two roots, once one, are now separate. The **content root** is where
 ordinary files are served from (`find_site_root`, unchanged). The **URL root** is
 where the URL path space maps: the repo top when the page rides the shared prefix
-server and git tracks a symlink under it, else the content root. A browser
+server and sits in a git repo, else the content root. A browser
 collapses `../../../data/x.mp4` above the nonce segment, so the link folder is
 reachable only when the URL space starts at a common ancestor. The URL space
 widens whether or not the machine declares a data root, so a page's link on a

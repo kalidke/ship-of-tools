@@ -21,7 +21,7 @@
 // A `Site` splits two roots that used to be one. CONTENT root S is where
 // ordinary files are served from (`find_site_root`, unchanged). URL root is
 // where the URL path space maps: the repo top when the page is opened from the
-// shared prefix server and git tracks a symlink under it, else S. A page's
+// shared prefix server and sits in a git repo, else S. A page's
 // `../../data/x.mp4` can only reach the link folder, to be served or refused
 // with words, when the URL space starts above S. Widening the URL space does not
 // widen what is served: outside S, only files inside the target of a link git
