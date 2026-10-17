@@ -24,7 +24,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-wrapper.sh`: the rendered `sot-launch` under the sandboxed PATH: the bridge probe before every spawn, the
   crash-loop rollback, the exit-75 respawn, the service operations by unit ownership, the re-exec after an apply, and
-  `apply_pending`'s refused pointer (a stand-in `sotd` answers `update pointer`: no stop, no restart, one sot-apply).
+  `apply_pending`'s refused pointer (a stand-in `sotd` answers `update pointer`: no stop, no restart, one drop-only
+  sot-apply), and the exit-76 converge respawn.
   Runs in the `rust.yml` step "Test installer wrapper (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper, the network refusal, the dev launcher's
   git stall bound, the ensure's replacement of a daemon an update left on the old binary (`sot_daemon_current`), and the
@@ -47,6 +48,10 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   Julia (the hosted ubuntu-24.04 image links one there) would skip the Julia installer. Runs in the
   `rust.yml` step "Test installer shared home (bash)"
   (job `checks-linux`) and in `rc-gate.sh`.
+- `installer-handoff.sh`: sourced by `installer-apply.sh`, never run: a real staged `sot-apply` (a copy made by `cp`, the
+  packer's own, and an installed v0.6.5 one when the tag is in the checkout) applying onto the install that re-executed
+  it, `pack-build.sh` with stand-in cargo and git listing `sot-apply` executable in its archive, and the comm refresh
+  an apply makes.
 - `installer-support.sh`: the setup the installer suites source: install.sh and lib/sot-daemon.sh, `check`,
   `starts_with`, `case_start`, the sandboxed tool dir (`mk_tools`) and the recording stubs (`mk_stubs`).
 - `check-layout.sh`: the layout check (file and folder sizes, pages, `## Files` lists); see Tools below.

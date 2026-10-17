@@ -37,6 +37,9 @@ param(
     # Restore the last-good transaction after a crash-loop. Invoked by
     # launch-sot.ps1's supervisor, gated there on a FRESH just-applied marker.
     [switch]$Rollback,
+    # Exit after the in-lock refusal check, applying nothing: the caller's own question refused the pointer and left the
+    # daemon running (sot-freshness.ps1's Invoke-PendingApply).
+    [switch]$DropOnly,
     # Install prefix override (tests). Default: the manifest's own prefix,
     # else %LOCALAPPDATA%\sot -- matching updater's legacy_updates_root().
     [string]$Prefix
@@ -102,7 +105,7 @@ function Get-PointerRefusal {
 # SOT_APPLY_REEXECED stops this from ever looping (the staged copy sees it
 # set and skips straight past this block). Only helps FUTURE upgrades: an
 # old box's old apply predates this guard too, so it can never reach it.
-if (-not $env:SOT_APPLY_REEXECED -and (Test-Path -LiteralPath $Pending) -and -not (Get-PointerRefusal)) {
+if (-not $env:SOT_APPLY_REEXECED -and -not $DropOnly -and (Test-Path -LiteralPath $Pending) -and -not (Get-PointerRefusal)) {
     $stagePtr = $null
     try { $stagePtr = (Get-Content -LiteralPath $Pending -Raw -ErrorAction Stop | ConvertFrom-Json) } catch {}
     if ($stagePtr -and $stagePtr.checkout) {
@@ -328,6 +331,7 @@ $refusal = Get-PointerRefusal
 if ($refusal) {
     Write-ApplyLog "pending pointer will not apply ($refusal) -- dropping"; Remove-Pending; Exit-Apply 0
 }
+if ($DropOnly) { Exit-Apply 0 }
 
 $tag       = [string]$ptr.tag
 $ptrTarget = [string]$ptr.target

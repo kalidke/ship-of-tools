@@ -32,11 +32,20 @@ and the launch path fails open: no update step can stop a window from starting.
   included), and an automatic arm goes only strictly above `install.json`'s version and never into a dev build.
 - Apply verifies everything before it mutates, restores on a failure after mutation and exits 0; a rollback marks the
   bad tag so it is never armed again (`sot-apply.sh`, `sot-apply.ps1`).
+- On Unix a release runs its own `sot-apply` at every later update: `sot-apply.sh` is git mode 100755 (the packers copy it
+  with `cp`, which keeps the mode), and the installed apply hands the staged copy the install prefix in
+  `SOT_APPLY_PREFIX` (a v0.6.5 apply sets only `SOT_APPLY_REEXECED`; the staged copy then reads the prefix from where the
+  stage sits under `<prefix>/updates/`). After an apply `sot-apply.sh` runs `sot_comm_refresh` on the applied checkout,
+  whatever the box's role, so comm follows every apply; the refresh is fail-open. `installer-handoff.sh`, sourced by
+  `installer-apply.sh`, runs a real staged copy and pins the mode in the packed archive.
+- `--drop-only` (`sot-apply.sh`) and `-DropOnly` (`sot-apply.ps1`) exit after the in-lock refusal check and never apply or
+  re-execute: the wrapper's `apply_pending` and `Invoke-PendingApply` run them when their own question refused the
+  pointer and left the daemon running, so a fitting pointer armed in between waits for the next start.
 - A pointer is applied only onto the install it was armed over. Both apply scripts ask the installed `sotd update
   pointer` above their re-exec of the pointer's own release's script (so a refused pointer never reaches it) and drop a
   pointer it refuses (exit 3, an unreadable one included) under the lock; any other answer, an older `sotd` included,
   leaves the exact-tag check. `apply_pending` in the rendered `sot-launch` and `Invoke-PendingApply` ask first, so a
-  pointer that will not apply stops and restarts no daemon. A
+  pointer that will not apply stops and restarts no daemon, and they run the apply drop-only. A
   new install drops the leftover pointer (`install.sh` for its target, `install-manifest.ps1` when the version or commit
   changes). The rule is ADR 0030's 2026-10-17 amendment; `installer-apply.sh`'s `a_refused_pointer_is_dropped_and_nothing_is_applied`
   group and `test-sot-apply.ps1` section 9 pin it.

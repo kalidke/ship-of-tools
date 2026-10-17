@@ -82,9 +82,10 @@ apply_pending() {
     [ -f "\$PENDING" ] || return 1
     [ -x "$prefix/bin/sot-apply" ] || return 1
     # A pointer the installed sotd refuses costs nothing: sot-apply drops it under the lock, and the daemon, with the
-    # REPLs it holds, is neither stopped nor restarted for an update that will not happen.
+    # REPLs it holds, is neither stopped nor restarted for an update that will not happen. It runs drop-only: a pointer
+    # that fits and was armed since the question waits for the next start, with the daemon stopped as usual.
     if type sot_pointer_refused >/dev/null 2>&1 && sot_pointer_refused "$prefix" "$target"; then
-        "$prefix/bin/sot-apply" >&2
+        "$prefix/bin/sot-apply" --drop-only >&2
         return 1
     fi
     if sot_service_owned "$prefix" && systemctl --user is-active --quiet sotd.service >/dev/null 2>&1; then
@@ -112,8 +113,8 @@ while :; do
     RUNTIME=\$((NOW - START))
     # A healthy run closes the crash-loop health window.
     [ "\$RUNTIME" -ge 60 ] && rm -f "\${MARKER:?}" 2>/dev/null
-    if [ "\$RC" -eq 75 ]; then
-        # ADR-0017 self-relaunch: pick up any staged update, then respawn.
+    if [ "\$RC" -eq 75 ] || [ "\$RC" -eq 76 ]; then
+        # ADR-0017 self-relaunch (75) or converge (76): on Unix both pick up any staged update, then respawn.
         if apply_pending; then exec "\$0" "\$@"; fi
         FAILS=0
         continue

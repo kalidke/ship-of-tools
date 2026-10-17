@@ -330,6 +330,23 @@ if (-not (Test-Path -LiteralPath $realSotd)) {
     Check 'above the install: the installed sotd lets the pointer through (exit 0)' ((Get-SotdExit (Join-Path $f9c.bin 'sotd.exe') $p9c) -eq 0) 'the sotd did not answer 0'
     & $apply -Prefix $p9c 6>&1 2>&1 | Out-Null
     Check 'above the install: applied' ((Get-Content (Join-Path $f9c.bin 'sot.exe') -Raw) -eq 'NEW-BINARY') 'not applied'
+
+    # -DropOnly: the caller's own question refused the pointer and left the daemon running, so the applier drops one that
+    # still does not fit and applies nothing, and a pointer that fits (armed in between) waits for the next start.
+    $p9e = Join-Path $root 'p9e'
+    $f9e = New-Fixture $p9e 'v0.7.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9e.bin 'sotd.exe') -Force
+    Add-RustFields (Join-Path $f9e.updates 'pending-windows-x86_64.json') '0.6.0' $null $null
+    & $apply -Prefix $p9e -DropOnly 6>&1 2>&1 | Out-Null
+    Check 'drop-only, below the install: pointer dropped' (-not (Test-Path (Join-Path $f9e.updates 'pending-windows-x86_64.json'))) 'pointer kept'
+    Check 'drop-only, below the install: binary untouched' ((Get-Content (Join-Path $f9e.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied'
+    $p9f = Join-Path $root 'p9f'
+    $f9f = New-Fixture $p9f 'v0.5.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9f.bin 'sotd.exe') -Force
+    Add-RustFields (Join-Path $f9f.updates 'pending-windows-x86_64.json') '0.6.0' $null $null
+    & $apply -Prefix $p9f -DropOnly 6>&1 2>&1 | Out-Null
+    Check 'drop-only, a pointer that fits: kept for the next start' (Test-Path (Join-Path $f9f.updates 'pending-windows-x86_64.json')) 'pointer gone'
+    Check 'drop-only, a pointer that fits: binary untouched' ((Get-Content (Join-Path $f9f.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied'
 }
 
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })

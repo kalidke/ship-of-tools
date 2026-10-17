@@ -43,3 +43,5 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
 - The rendered `sot-launch` runs `sot_comm_refresh` after an apply and before the ensure: `ShipTools.update_comm()` when comm's
   install is missing or its VERSION stamp names another commit than the checkout's (a commit it cannot read decides nothing),
   so an auto-apply refreshes the comm scripts the new daemon's protocol needs, as `sot-freshness.ps1` does on Windows.
+  `sot-apply.sh` calls it too after an apply, so a box with no rendered wrapper (a `--be-only` one) follows as well. The
+  wrapper treats exit 76 like 75, and its refused-pointer branch runs `sot-apply --drop-only`.

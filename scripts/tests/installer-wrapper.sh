@@ -66,7 +66,7 @@ SA
         *)
             cat > "$prefix/bin/sot-apply" <<'SA'
 #!/bin/sh
-case "$*" in *--rollback*) echo rollback >> "$STUB_LOG" ;; *) echo apply >> "$STUB_LOG" ;; esac
+case "$*" in *--rollback*) echo rollback >> "$STUB_LOG" ;; *--drop-only*) echo drop >> "$STUB_LOG" ;; *) echo apply >> "$STUB_LOG" ;; esac
 SA
             ;;
     esac
@@ -113,14 +113,15 @@ run_wrapper "$d"
 check "a foreign unit: rollback is pkill, no systemd stop" \
     "0 1" "$(grep -c 'sotd.service' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
 # A pointer the installed sotd refuses (exit 3) costs no restart: sot-apply runs once to drop it and nothing stops or
-# restarts the daemon. Exit 1, an older sotd's answer to the verb, leaves the restart in charge.
-refused() {  # <name> <owned> <sotd exit>: the log's restart/stop, pkill and apply counts
+# restarts the daemon, and sot-apply runs in its drop-only mode: a pointer that fits and was armed in between waits for the
+# next start, when the daemon is stopped as usual. Exit 1, an older sotd's answer to the verb, leaves the restart in charge.
+refused() {  # <name> <owned> <sotd exit>: the log's restart/stop, pkill, full-apply and drop-only counts
     local d="$WORK/w-$1"; mk_wrapper "$d" "0" "$2" 1; echo "$3" > "$d/pointer-exit"; run_wrapper "$d"
-    echo "$(grep -c -e try-restart -e '--user stop' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true)"
+    echo "$(grep -c -e try-restart -e '--user stop' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true) $(grep -c '^drop$' "$d/log" || true)"
 }
-check "an owned unit, pointer refused: no restart, one sot-apply" "0 0 1" "$(refused r-owned 1 3)"
-check "a foreign unit, pointer refused: no pkill, one sot-apply" "0 0 1" "$(refused r-foreign 0 3)"
-check "an older sotd's answer (exit 1) leaves the restart in charge" "1 0 0" "$(refused r-older 1 1)"
+check "an owned unit, pointer refused: no restart, one drop-only sot-apply" "0 0 0 1" "$(refused r-owned 1 3)"
+check "a foreign unit, pointer refused: no pkill, one drop-only sot-apply" "0 0 0 1" "$(refused r-foreign 0 3)"
+check "an older sotd's answer (exit 1) leaves the restart in charge" "1 0 0 0" "$(refused r-older 1 1)"
 # A real foreign unit, as sot_service_owned defines one: systemctl is here and
 # the manifest says systemd, but the unit runs another prefix's sotd.
 foreign_unit() {  # <dir>
@@ -136,6 +137,22 @@ d="$WORK/w-real-for-rb"; mk_wrapper "$d" "$(printf '1\n1\n0')" 0 0; foreign_unit
 run_wrapper "$d"
 check "a real foreign unit: rollback runs no service op, only pkill" \
     "0 1" "$(grep -c 'sotd.service' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+
+# ---------------------------------------------------------------------------
+case_start "a_converge_relaunches_the_all_in_one_window"
+# Exit 76 is a converge (ADR 0017): on Unix it is apply-pending-and-respawn, as 75 is, never a close.
+for code in 75 76; do
+    d="$WORK/w-conv-$code"; mk_wrapper "$d" "$(printf '%s\n%s\n0' "$code" "$code")" 0 0
+    run_wrapper "$d"
+    # Two fast exits would be a crash loop, and roll back inside the just-applied window, if the code were a failure.
+    check "exit $code twice: the window is respawned each time, never rolled back, and the third run ends it" \
+        "0 probe spawn probe spawn probe spawn" "$WR_RC $(events "$d")"
+done
+d="$WORK/w-conv-apply"; mk_wrapper "$d" "76" 0 0 consume
+# A pending update armed while the window ran is applied at the converge, and the wrapper re-execs itself.
+printf '#!/bin/sh\necho spawn >> "$STUB_LOG"\nprintf "{}\\n" > "%s/updates/pending-testtarget.json"\nexit 76\n' "$d/prefix" > "$d/prefix/bin/sot"
+run_wrapper "$d"
+check "exit 76 applies a pending update and re-execs" "0 hop" "$WR_RC $(events "$d" | sed 's/^probe spawn //')"
 
 # ---------------------------------------------------------------------------
 case_start "wrapper_reexecs_after_apply"

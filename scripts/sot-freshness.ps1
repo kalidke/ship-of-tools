@@ -53,12 +53,15 @@ function Test-SotPointerRefused {
 function Invoke-PendingApply {
     param([switch]$Handover)
 
+    $dropOnly = $false
+
     # The stop exists ONLY to keep the daemon from pinning a stale binary while
     # sot-apply swaps it, so a pass that will not apply must not bounce it.
     if (-not $NoUpdate -and -not $Handover -and (Test-Path $sotLocalDaemon)) {
         $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
         if ($updatePending -and (Test-SotPointerRefused)) {
             Write-SupLog 'local daemon: the armed update will not apply (sot-apply drops it) - not stopping the daemon'
+            $dropOnly = $true
         } elseif ($updatePending) {
             Write-SupLog 'local daemon: stopping before apply so it does not pin a stale binary'
             $stopOut = & $sotLocalDaemon -Stop 6>&1 2>&1
@@ -73,7 +76,9 @@ function Invoke-PendingApply {
     if (-not $NoUpdate -and -not $Handover -and (Test-Path $sotApply)) {
         Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
         Set-LaunchStatus 'Applying update...'
-        $applyOut = & $sotApply 6>&1 2>&1
+        # Drop-only after a refusal: a pointer that fits and was armed since the question waits for the next start,
+        # with the daemon stopped as usual.
+        $applyOut = if ($dropOnly) { & $sotApply -DropOnly 6>&1 2>&1 } else { & $sotApply 6>&1 2>&1 }
         foreach ($l in @($applyOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
     }
     # Read ONCE, right after the apply attempt above: the migration/handover
