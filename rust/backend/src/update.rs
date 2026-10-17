@@ -332,7 +332,7 @@ Usage: sotd update stage <folder> --prefix <install prefix>
   Stage, prepare and arm the release in <folder> (SHA256SUMS, the archive for this platform, COMMIT: what
   scripts/pack-build.sh and scripts/pack-build.ps1 write) for the install at <prefix>; the supervisor's converge
   applies it. The operator chose the folder, so there is no release-build guard and no newer-than test. A dev build
-  prepares the checkout at its COMMIT, which has no tag. Prints `armed <tag> for <target>` and exits 0, or names why
+  prepares the checkout at its COMMIT, which has no tag. Prints `armed <tag> for <target> (installed <v>: newer, same or older)` and exits 0, or names why
   and exits 1.";
 
 /// `sotd update stage <folder> --prefix <prefix>`: the folder and prefix, or the reason the arguments are not those.
@@ -353,6 +353,18 @@ fn parse_stage_args(args: &[String]) -> Result<(std::path::PathBuf, std::path::P
         folder.ok_or("no folder given")?.into(),
         prefix.ok_or("no --prefix given")?.into(),
     ))
+}
+
+/// The line `update stage` prints on success: the direction against the installed version, so a downgrade is never silent.
+fn armed_line(id: &ReleaseIdentity, installed: Option<&str>) -> String {
+    let armed = format!("armed {} for {}", id.tag, id.target);
+    let Some(installed) = installed else { return armed };
+    let direction = match sot_updater::semver::compare_versions(&id.version, installed) {
+        std::cmp::Ordering::Greater => "newer",
+        std::cmp::Ordering::Equal => "same",
+        std::cmp::Ordering::Less => "older",
+    };
+    format!("{armed} (installed v{}: {direction})", sot_updater::semver::strip_v(installed))
 }
 
 /// The folder and prefix as absolute paths: the pointer records paths under the prefix, and the apply runs later from
@@ -380,7 +392,7 @@ async fn stage_folder(folder: &std::path::Path, prefix: &std::path::Path) -> Res
         updates_root: install.updates_root(),
     };
     match stage_prepare_arm_with(&cfg, &id, Some(&install)).await {
-        Ok(Pipeline::Armed) => Ok(format!("armed {} for {}", id.tag, id.target)),
+        Ok(Pipeline::Armed) => Ok(armed_line(&id, install.version.as_deref())),
         Ok(_) => Err(format!("{} was staged but not armed: a newer release is armed, or this one is marked bad", id.tag)),
         Err(e) => Err(e.to_string()),
     }
@@ -1096,6 +1108,15 @@ mod tests {
         let (folder, prefix) = absolute_paths("d".as_ref(), "p/q".as_ref()).unwrap();
         assert_eq!((folder, prefix), (cwd.join("d"), cwd.join("p/q")));
         assert_eq!(absolute_paths(&cwd, &cwd).unwrap(), (cwd.clone(), cwd));
+    }
+
+    #[test]
+    fn the_armed_line_says_which_way_the_install_moves() {
+        let line = |installed: Option<&str>, tag: &str| armed_line(&fake_identity(tag), installed);
+        assert_eq!(line(Some("0.6.6-rc9.13"), "v0.6.5"), "armed v0.6.5 for linux-x86_64 (installed v0.6.6-rc9.13: older)");
+        assert_eq!(line(Some("0.6.5"), "v0.6.6-rc9.13"), "armed v0.6.6-rc9.13 for linux-x86_64 (installed v0.6.5: newer)");
+        assert_eq!(line(Some("0.6.6-rc9.14-dev+aaa"), "v0.6.6-rc9.14-dev+bbb"), "armed v0.6.6-rc9.14-dev+bbb for linux-x86_64 (installed v0.6.6-rc9.14-dev+aaa: same)");
+        assert_eq!(line(None, "v0.6.5"), "armed v0.6.5 for linux-x86_64");
     }
 
     fn fake_identity(tag: &str) -> ReleaseIdentity {
