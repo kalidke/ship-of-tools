@@ -155,6 +155,43 @@
     }
 
     #[test]
+    fn widths_one_per_column_mismatch_falls_back_without_panic() {
+        // The window indexes widths per column (layout::compute at startup,
+        // wide_preview on the toggle); a short list must never reach them.
+        let mut s = Settings::default();
+        s.merge_text(
+            "[layout.ultrawide]\ncolumns = \"nav,preview,llm,repl\"\nwidths = \"0.5,0.5\"\n",
+        );
+        let area = ratatui::layout::Rect::new(0, 0, 120, 40);
+        let _ = crate::ui::chrome::layout::compute(area, &s.ultrawide, true, None);
+        let _ = s.ultrawide.wide_preview();
+        let d = LayoutPreset::default_ultrawide();
+        assert_eq!(s.ultrawide.columns, d.columns);
+        assert_eq!(s.ultrawide.widths, d.widths);
+    }
+
+    #[test]
+    fn widths_one_short_of_columns_fall_back() {
+        // Two widths for the default three columns: wide_preview removes the
+        // Llm column's width, which is past the end of this list.
+        let mut s = Settings::default();
+        s.merge_text("[layout.ultrawide]\nwidths = \"0.5,0.5\"\n");
+        let _ = s.ultrawide.wide_preview();
+        let d = LayoutPreset::default_ultrawide();
+        assert_eq!(s.ultrawide.columns, d.columns);
+        assert_eq!(s.ultrawide.widths, d.widths);
+    }
+
+    #[test]
+    fn widths_longer_than_columns_fall_back() {
+        let mut s = Settings::default();
+        s.merge_text("[layout.laptop]\ncolumns = \"nav,llm\"\nwidths = \"0.2,0.3,0.5\"\n");
+        let d = LayoutPreset::default_laptop();
+        assert_eq!(s.laptop.columns, d.columns);
+        assert_eq!(s.laptop.widths, d.widths);
+    }
+
+    #[test]
     fn merge_clamps_drawer_height() {
         let mut s = Settings::default();
         s.merge_text("[layout.laptop]\ndrawer_height = \"0.99\"\n");
