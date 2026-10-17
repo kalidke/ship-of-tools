@@ -120,6 +120,28 @@ update also merges them into an account's own `settings.json`, so a session in
 that account still reports its work state. User-scope MCP servers live with the per-account
 state, so add them separately for each account you want to use them from.
 
+On Windows, a symlink needs Developer Mode or the symlink privilege, and a standard desktop user has
+neither. Where the daemon cannot make a symlink, it shares each folder through a **junction**, which
+needs no privilege, and checks that it can read through it; if it cannot, it removes the junction and
+the session does not start, naming the reason. `CLAUDE.md`, `settings.json` and `history.jsonl` become
+**copies**, made once at the account's first session and its own after: later changes to the default's
+file do not reach the account, and the account's do not reach the default (a file the default lacks is
+not created). Two limits follow. A junction made by a non-administrator cannot be crossed by a process
+that enforces redirection trust, such as an ssh session on a host that sets it for `sshd.exe` or a
+process a system service starts; the desktop does not enforce it. And a junction works on a local NTFS
+or ReFS volume only. To share the three files by symlink instead, an administrator turns on Developer
+Mode (Settings, System, For developers; a standard user cannot), and then, with no session running in
+that account and after saving anything you want from its copies:
+
+```powershell
+$acct = "$env:USERPROFILE\.claude-auth\team"
+foreach ($n in 'CLAUDE.md', 'settings.json', 'history.jsonl') { Remove-Item -LiteralPath "$acct\$n" -ErrorAction SilentlyContinue }
+```
+
+The next session in that account links each file the default folder has. The folders keep the junctions
+already made, with the same redirection-trust limit. Without an administrator, the copies stay the
+account's own.
+
 An account name is lowercase letters, digits, `-`, and `_` only, and must
 start with a letter or digit — `team`, `team-2`, and `a_b` all work,
 `Team` and `../etc` do not.

@@ -69,3 +69,64 @@ pub(super) fn self_file_env_guarded() -> SelfFileEnvGuard {
         _serial: serial,
     }
 }
+
+/// Two separate facts about the machine running the test: its token can make a symlink, and it can cross a junction
+/// it made (a process that enforces redirection trust cannot, os error 448). Probed in a temp folder.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LinkFacts {
+    pub symlink: bool,
+    pub crosses_junction: bool,
+}
+
+pub(super) fn link_facts() -> LinkFacts {
+    #[cfg(unix)]
+    return LinkFacts { symlink: true, crosses_junction: true };
+    #[cfg(windows)]
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("t");
+        std::fs::create_dir(&target).unwrap();
+        let symlink = std::os::windows::fs::symlink_dir(&target, tmp.path().join("s")).is_ok();
+        let junction = tmp.path().join("j");
+        let made = super::account_links::make_junction(&target, &junction).is_ok();
+        let crosses_junction = made && std::fs::metadata(&junction).is_ok();
+        let _ = std::fs::remove_dir(&junction);
+        LinkFacts { symlink, crosses_junction }
+    }
+}
+
+/// Assert `result` and the account folder show the form `link_facts` predicts: symlinks to the default's entries,
+/// junctions for `folders` and copies for `files`, or a refusal naming the untraversable junction with nothing made.
+pub(super) fn assert_shared_as_the_box_allows(
+    result: &Result<(), String>,
+    default_dir: &Path,
+    account_dir: &Path,
+    folders: &[&str],
+    files: &[&str],
+) {
+    let facts = link_facts();
+    match (facts.symlink, facts.crosses_junction) {
+        (false, false) => {
+            let msg = result.as_ref().unwrap_err();
+            assert!(msg.contains("cannot be traversed"), "{msg}");
+            for name in folders.iter().chain(files) {
+                assert!(std::fs::symlink_metadata(account_dir.join(name)).is_err(), "{name}: a refused call leaves nothing");
+            }
+        }
+        (symlinks, _) => {
+            result.as_ref().unwrap();
+            for name in folders.iter().chain(files) {
+                let entry = account_dir.join(name);
+                let meta = std::fs::symlink_metadata(&entry).unwrap();
+                let shared = default_dir.join(name);
+                if symlinks || folders.contains(name) {
+                    assert!(meta.file_type().is_symlink(), "{name} should be a link ({facts:?})");
+                    assert_eq!(std::fs::read_link(&entry).unwrap(), shared, "{name} should point at the default's entry");
+                } else {
+                    assert!(!meta.file_type().is_symlink(), "{name} should be a copy");
+                    assert_eq!(std::fs::read(&entry).unwrap(), std::fs::read(&shared).unwrap());
+                }
+            }
+        }
+    }
+}

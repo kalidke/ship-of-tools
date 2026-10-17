@@ -47,7 +47,7 @@ create dir: `claude_dir`, unless that is `home/.claude-auth` or lies in it
 caught), in which case `home/.claude` (the backend's link then carries that file into the
 account), where `_add_comm_hook!` creates it fresh. No file is ever created
 under `.claude-auth`: a real file there would permanently shadow the shared
-settings.json the daemon links in at spawn (`ensure_account_links` leaves
+settings.json the daemon links in (or copies in) at spawn (`ensure_account_links` leaves
 any existing entry alone). Any other dir without one is skipped. A dangling link, or a path that resolves to
 something other than a regular file, is skipped with a warning and never
 created through. Every skipped folder or file is also pushed onto `unhooked` with its reason.
@@ -82,8 +82,8 @@ function _claude_settings_targets(home::AbstractString, claude_dir::AbstractStri
                 if _dirkey(dir) == _dirkey(create_dir)
                     push!(targets, path)  # the one dir where a missing file is created fresh
                 elseif _is_under(dir, auth)
-                    @info "no settings.json in this Claude account folder — skipped, none created (the daemon links the shared one in at the account's first spawn)" dir = dir
-                    push!(unhooked, "$dir (no settings.json; none created — the backend links the shared one in at the account's first spawn)")
+                    @info "no settings.json in this Claude account folder — skipped, none created (the daemon links the shared one in at the account's first spawn, or copies it once where symlinks are refused)" dir = dir
+                    push!(unhooked, "$dir (no settings.json; none created — the backend links the shared one in at the account's first spawn, or copies it once where symlinks are refused)")
                 elseif isdir(dir)
                     push!(unhooked, "$dir (no settings.json; none created)")
                 end

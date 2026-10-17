@@ -632,6 +632,11 @@ fn windows_junction_escape_records_nothing() {
         ));
         return;
     }
+    if std::fs::metadata(&link).is_err() {
+        not_checked("W1 P4 junction NOT CHECKED: this token cannot cross the fixture junction it made (redirection trust)");
+        let _ = std::fs::remove_dir(&link);
+        return;
+    }
     assert_eq!(
         crate::agents::support_tests::platform_spelling(&link),
         crate::agents::support_tests::platform_spelling(&outside),

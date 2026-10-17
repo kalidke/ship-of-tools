@@ -303,7 +303,7 @@ fn auto_memory_reason(
 ///
 /// Only asked when the child's config dir is unknown, and only a REAL file can
 /// matter: `settings.json` is a `SHARED_ENTRIES` name, so the ordinary layout
-/// is one symlink per account to the default's single file, which the caller
+/// is one link per account to the default's single file (a symlink; a copy where the OS refuses symlinks), which the caller
 /// has already read. A real file of its own is permitted — and permanent,
 /// because [`crate::agents::accounts::ensure_account_links`] never replaces an entry
 /// that is already there — and means that account's memory directory is its own
