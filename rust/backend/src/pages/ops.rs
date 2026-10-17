@@ -258,14 +258,6 @@ pub async fn handle_docs_open(
             "home_folder",
         ));
     };
-    // `root` is `dir` or an ancestor of it, so the strip cannot fail.
-    let below = dir
-        .strip_prefix(&root)
-        .unwrap_or(std::path::Path::new(""))
-        .to_string_lossy()
-        .replace(std::path::MAIN_SEPARATOR, "/");
-    let rel = if below.is_empty() { page } else { format!("{below}/{page}") };
-
     // A folder must hold an index page to open.
     if meta.is_dir() {
         let has_index = tokio::fs::metadata(&entry)
@@ -280,36 +272,22 @@ pub async fn handle_docs_open(
         }
     }
 
-    // Loud root-relative guard (ADR 0029). The prefix scheme serves under
-    // `/<nonce>/`, so page-relative links resolve but ROOT-relative ones
-    // (`/assets/x.css`) escape the prefix and 404. Documenter output is clean; a
-    // a project's `__site` / genhtml coverage tree is not. Scan the entry HTML and
-    // refuse with a clear error rather than serve a silently-broken page (Option B's
-    // per-port pool is the deferred fix for those).
-    let entry_is_html = entry
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
-        .unwrap_or(false);
-    // Root-relative detection is now a ROUTER, not a refusal (ADR 0029 Option B,
+    // Root-relative detection is a ROUTER, not a refusal (ADR 0029 Option B,
     // implemented per maintainer decision, 2026-07-03 — "make proper fix now"): a site whose
     // entry HTML uses `/asset`-style links can't ride the shared `/{nonce}/`
     // prefix server (the link escapes the prefix and 404s), so it gets a
     // DEDICATED pool port — its own origin, served from its true root, both
     // link styles resolve. A project's `__site` / genhtml trees open via W again.
-    // `root` is already canonical (the confinement check above), so this
-    // reuses it directly instead of re-canonicalizing with an unchecked
-    // fallback to a possibly-uncanonical path (security review — that
-    // fallback was the TOCTOU: if a second canonicalize somehow failed, it
-    // silently registered the raw, unverified root instead of erroring).
-    let mut root_relative = false;
-    if entry_is_html {
-        if let Ok(bytes) = tokio::fs::read(&entry).await {
-            // Cap the scan — an index is small, but a bundled SPA can be large.
-            let head = &bytes[..bytes.len().min(512 * 1024)];
-            root_relative = has_root_relative_refs(&String::from_utf8_lossy(head));
-        }
-    }
+    let links = root_relative_links(&entry).await;
+    let root_relative = !links.is_empty();
+    let root = narrow_to_links(root, &dir, &links).await;
+    // `root` is `dir` or an ancestor of it, so the strip cannot fail.
+    let below = dir
+        .strip_prefix(&root)
+        .unwrap_or(std::path::Path::new(""))
+        .to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    let rel = if below.is_empty() { page } else { format!("{below}/{page}") };
     // The site: content root `root`, and a URL space that reaches a tracked
     // data link's folder when the page rides the shared prefix server (a
     // root-relative site keeps its own origin, so it is never widened).
@@ -387,23 +365,55 @@ pub async fn handle_docs_open(
     )])
 }
 
-/// Does this HTML contain ROOT-relative `href="/…"` / `src="/…"` references
-/// (ADR 0029)? Protocol-relative `//host` URLs (external CDN) are NOT
-/// root-relative and must not trip the guard. Both quote styles are checked.
-fn has_root_relative_refs(html: &str) -> bool {
-    for needle in ["href=\"/", "src=\"/", "href='/", "src='/"] {
+/// The root-relative `href="/…"` / `src="/…"` paths in the page `entry` (ADR 0029), each without its leading `/`,
+/// query or fragment; none for a file that is not HTML or cannot be read. Protocol-relative `//host` URLs (external
+/// CDN) are not root-relative. Both quote styles are checked.
+async fn root_relative_links(entry: &std::path::Path) -> Vec<String> {
+    let is_html = entry
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
+    if !is_html {
+        return Vec::new();
+    }
+    let Ok(bytes) = tokio::fs::read(entry).await else {
+        return Vec::new();
+    };
+    // Cap the scan — an index is small, but a bundled SPA can be large.
+    root_relative_paths(&String::from_utf8_lossy(&bytes[..bytes.len().min(512 * 1024)]))
+}
+
+fn root_relative_paths(html: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for (needle, quote) in [("href=\"/", '"'), ("src=\"/", '"'), ("href='/", '\''), ("src='/", '\'')] {
         let mut from = 0;
         while let Some(pos) = html[from..].find(needle) {
             let after = from + pos + needle.len();
-            // The char right after the leading `/`: another `/` means `//host`
-            // (protocol-relative, external) — not a root-relative path.
-            if html[after..].chars().next() != Some('/') {
-                return true;
+            let rest = &html[after..];
+            // Another `/` right after the leading one means `//host` (external), not a root-relative path.
+            if !rest.starts_with('/') {
+                let end = rest.find([quote, '?', '#']).unwrap_or(rest.len());
+                paths.push(rest[..end].to_string());
             }
             from = after;
         }
     }
-    false
+    paths
+}
+
+/// A root-relative page's site root: the innermost folder from `dir` up to `root` under which its first link
+/// resolves to a file (a build's `dist/`, not the source tree's index above it), else `root`. It only narrows `root`,
+/// and the link comes from the page, so a page can pick nothing wider than the walk gave it.
+async fn narrow_to_links(root: std::path::PathBuf, dir: &std::path::Path, links: &[String]) -> std::path::PathBuf {
+    let Some(link) = links.iter().find(|l| !l.is_empty() && !l.split('/').any(|c| c == "..")) else {
+        return root;
+    };
+    for folder in dir.ancestors().take_while(|a| a.starts_with(&root)) {
+        if tokio::fs::metadata(folder.join(link)).await.is_ok_and(|m| m.is_file()) {
+            return folder.to_path_buf();
+        }
+    }
+    root
 }
 
 /// The longest a render may run, `--no-execute` included: the longest `repl.execute` run (`repl/execute.rs`). Quarto
@@ -753,7 +763,7 @@ mod find_site_root_tests {
     // directories: `find_site_root` is a pure path-and-filesystem function, so
     // this is the cheap place to pin each bound. The handler end to end, over
     // the wire, is `rust/backend/tests/site_root.rs`.
-    use super::find_site_root;
+    use super::{find_site_root, narrow_to_links, root_relative_paths};
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -839,6 +849,33 @@ mod find_site_root_tests {
         page(&page_dir.join("2026-09-01.html"));
 
         assert_eq!(find_site_root(&page_dir, &ws, None).await, Some(page_dir.clone()));
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn root_relative_paths_are_cut_at_the_quote_query_and_fragment() {
+        let html = "<link href=\"/css/a.css?v=2\"><script src='/js/b.js#x'></script><img src=\"//cdn/x.png\"><a href=\"/\">";
+        let mut paths = root_relative_paths(html);
+        paths.sort();
+        assert_eq!(paths, ["", "css/a.css", "js/b.js"], "protocol-relative links are not root-relative");
+        assert!(root_relative_paths("<a href=\"rel/x.html\">").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_root_relative_page_is_rooted_where_its_first_link_resolves() {
+        // <ws>/index.html (a source index) above <ws>/dist/ (the build, `/assets/` links).
+        let ws = scratch("narrow");
+        let dist = ws.join("dist");
+        page(&ws.join("index.html"));
+        page(&dist.join("index.html"));
+        page(&dist.join("assets").join("a.js"));
+        let links = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        assert_eq!(narrow_to_links(ws.clone(), &dist, &links(&["assets/a.js"])).await, dist);
+        assert_eq!(narrow_to_links(ws.clone(), &dist, &links(&["nowhere.js"])).await, ws, "no folder resolves it");
+        assert_eq!(narrow_to_links(ws.clone(), &dist, &links(&["../index.html"])).await, ws, "a `..` link is ignored");
+        assert_eq!(narrow_to_links(ws.clone(), &dist, &[]).await, ws);
 
         let _ = std::fs::remove_dir_all(&ws);
     }

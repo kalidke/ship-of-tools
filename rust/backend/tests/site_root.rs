@@ -50,13 +50,19 @@ async fn open(conn: &mut Conn, id: u64, path: &Path) -> String {
 }
 
 /// The status a browser is answered for `link` on the page at `page`: `link` resolves against the page's URL as a
-/// browser resolves it, a `..` stopping at the origin's `/`.
+/// browser resolves it, a `..` stopping at the origin's `/`, and a `/` link at the origin's root. A dedicated origin's
+/// page URL carries its secret, which each request repeats.
 async fn status(page: &str, link: &str) -> u16 {
     let rest = page.strip_prefix("http://127.0.0.1:").expect("a loopback page URL");
     let (port, path) = rest.split_once('/').expect("a path");
+    let (path, secret) = path.split_once("?secret=").map_or((path, String::new()), |(p, s)| (p, format!("?secret={s}")));
     let port: u16 = port.parse().expect("a port");
     let mut parts: Vec<&str> = path.split('/').collect();
     parts.pop();
+    let link = link.strip_prefix('/').map_or(link, |l| {
+        parts.clear();
+        l
+    });
     for seg in link.split('/') {
         match seg {
             "." => {}
@@ -67,7 +73,7 @@ async fn status(page: &str, link: &str) -> u16 {
         }
     }
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.expect("the page server");
-    let request = format!("GET /{} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", parts.join("/"));
+    let request = format!("GET /{}{secret} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", parts.join("/"));
     stream.write_all(request.as_bytes()).await.expect("a request");
     let mut reply = Vec::new();
     tokio::time::timeout(BOUND, stream.read_to_end(&mut reply)).await.expect("a reply within the bound").expect("read");
@@ -186,6 +192,73 @@ async fn a_page_in_the_home_folder_is_refused() {
     let mut w = window(&env).await;
     let reply = open_reply(&mut w, 2, &home.join("report.html")).await;
     assert_eq!(reply["code"], "home_folder", "a page in the home folder: {reply}");
+    drop(w);
+    env.kill_daemon_bounded().await;
+}
+
+/// A source tree with an index page of its own, and its build below: `dist/index.html` loads `/assets/` root-relative.
+/// The page's origin is the build, as before the site walk: its assets load and the source tree's untracked files
+/// are not on it.
+fn vite_project(env: &Env) -> std::path::PathBuf {
+    let app = env.daemon_project_root.join("code/app");
+    repo(&app);
+    write(&app.join("index.html"), "<script type=\"module\" src=\"/src/main.js\"></script>");
+    write(&app.join(".env.local"), "VITE_API_KEY=secret");
+    write(&app.join("dist/index.html"), "<script src=\"/assets/index-a.js\"></script><link href=\"/assets/index-a.css\">");
+    write(&app.join("dist/assets/index-a.js"), "");
+    write(&app.join("dist/assets/index-a.css"), "p {}");
+    app
+}
+
+/// The review's blocker: a root-relative build below a source index page was rooted at the source tree, so its assets
+/// 404ed and the origin served `.env.local`.
+#[tokio::test]
+async fn a_root_relative_build_below_a_source_index_is_its_own_origin() {
+    let env = daemon("siteroot-vite");
+    let app = vite_project(&env);
+    let mut w = window(&env).await;
+    for (id, entry) in [(2, app.join("dist/index.html")), (3, app.join("dist"))] {
+        let page = open(&mut w, id, &entry).await;
+        let assets = (status(&page, "/assets/index-a.js").await, status(&page, "/assets/index-a.css").await);
+        assert_eq!(assets, (200, 200), "the build's assets: {page}");
+        assert_eq!(status(&page, "/.env.local").await, 404, "the source tree's secret: {page}");
+    }
+    drop(w);
+    env.kill_daemon_bounded().await;
+}
+
+/// A Jekyll site: a front-matter `index.html` at the top and the built `_site/index.html` loading `/css/main.css`.
+#[tokio::test]
+async fn a_jekyll_build_below_a_source_index_loads_its_css() {
+    let env = daemon("siteroot-jekyll");
+    let blog = env.daemon_project_root.join("code/blog");
+    repo(&blog);
+    write(&blog.join("index.html"), "---\n---\n<p>home</p>");
+    write(&blog.join("_site/index.html"), "<link href=\"/css/main.css\">");
+    write(&blog.join("_site/css/main.css"), "p {}");
+    let mut w = window(&env).await;
+    let page = open(&mut w, 2, &blog.join("_site/index.html")).await;
+    assert_eq!(status(&page, "/css/main.css").await, 200, "the built site's css: {page}");
+    drop(w);
+    env.kill_daemon_bounded().await;
+}
+
+/// A Franklin `__site` served from its own folder and from a page below it, each root-relative.
+#[tokio::test]
+async fn a_franklin_site_serves_its_css_from_every_page() {
+    let env = daemon("siteroot-franklin");
+    let site = env.daemon_project_root.join("code/lab/__site");
+    repo(&env.daemon_project_root.join("code/lab"));
+    let css = "<link href=\"/css/x.css\">";
+    write(&site.join("index.html"), css);
+    write(&site.join("blog/index.html"), css);
+    write(&site.join("blog/post.html"), css);
+    write(&site.join("css/x.css"), "p {}");
+    let mut w = window(&env).await;
+    for (id, page) in ["index.html", "blog/index.html", "blog/post.html"].into_iter().enumerate() {
+        let url = open(&mut w, 2 + id as u64, &site.join(page)).await;
+        assert_eq!(status(&url, "/css/x.css").await, 200, "{page}: {url}");
+    }
     drop(w);
     env.kill_daemon_bounded().await;
 }
