@@ -279,6 +279,11 @@ impl std::fmt::Display for PipelineError {
     }
 }
 
+/// An error with its whole context chain: the OS error at the end is what names the fault, and `to_string` drops it.
+fn chain(e: &anyhow::Error) -> String {
+    e.chain().map(|c| c.to_string()).collect::<Vec<_>>().join(": ")
+}
+
 /// The one stage-prepare-arm both the daemon and `sotd update stage` run; `install` is the manifest to prepare and
 /// arm for, `None` stopping after the stage.
 async fn stage_prepare_arm_with(
@@ -286,25 +291,24 @@ async fn stage_prepare_arm_with(
     id: &ReleaseIdentity,
     install: Option<&InstallManifest>,
 ) -> Result<Pipeline, PipelineError> {
-    sot_updater::stage(&updater_spawner(), cfg, id).await.map_err(|e| {
-        // The whole chain, not just the outermost context: the OS error is the
-        // thing that names the fault, and `%e` drops it.
-        PipelineError::Stage(e.chain().map(|c| c.to_string()).collect::<Vec<_>>().join(": "))
-    })?;
+    tracing::info!(tag = %id.tag, "staging");
+    sot_updater::stage(&updater_spawner(), cfg, id).await.map_err(|e| PipelineError::Stage(chain(&e)))?;
     // Defect 0c: the commit landed, so a block recorded for a PRIOR attempt (this tag or an older one) no longer
     // describes reality — and the prepare below can take an hour.
     clear_stage_block();
     let Some(install) = install else {
         return Ok(Pipeline::Staged);
     };
+    tracing::info!(tag = %id.tag, "preparing the checkout and environments; this can take many minutes");
     let spec = prepare_spec(install, cfg, id).map_err(PipelineError::Prepare)?;
     let state = sot_updater::prepare::prepare(&updater_spawner(), &spec)
         .await
-        .map_err(|e| PipelineError::Prepare(e.to_string()))?;
+        .map_err(|e| PipelineError::Prepare(chain(&e)))?;
+    tracing::info!(tag = %id.tag, "arming");
     match sot_updater::pending::arm(&cfg.updates_root, id, &state.checkout, &state.commit).await {
         Ok(true) => Ok(Pipeline::Armed),
         Ok(false) => Ok(Pipeline::Kept),
-        Err(e) => Err(PipelineError::Arm(e.to_string())),
+        Err(e) => Err(PipelineError::Arm(chain(&e))),
     }
 }
 
@@ -399,8 +403,9 @@ async fn stage_folder(folder: &std::path::Path, prefix: &std::path::Path) -> Res
     }
 }
 
-/// `sotd update <args>`: the exit code. 2 for arguments that are not `stage <folder> --prefix <prefix>`.
-pub(crate) fn stage_cli(args: &[String]) -> i32 {
+/// `sotd update <args>`: the exit code. 2 for arguments that are not `stage <folder> --prefix <prefix>`. Progress goes
+/// to stderr, because a stage on a daemon box runs Julia and npm and can take tens of minutes.
+pub(crate) async fn stage_cli(args: &[String]) -> i32 {
     let (folder, prefix) = match parse_stage_args(args) {
         Ok(parsed) => parsed,
         Err(why) => {
@@ -408,14 +413,12 @@ pub(crate) fn stage_cli(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("sotd update stage: building the tokio runtime: {e}");
-            return 1;
-        }
-    };
-    match runtime.block_on(stage_folder(&folder, &prefix)) {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
+        .with_ansi(false)
+        .with_writer(std::io::stderr)
+        .try_init();
+    match stage_folder(&folder, &prefix).await {
         Ok(line) => {
             println!("{line}");
             0
@@ -1089,10 +1092,10 @@ mod tests {
         s.split_whitespace().map(String::from).collect()
     }
 
-    #[test]
-    fn stage_cli_without_its_folder_or_prefix_exits_2() {
+    #[tokio::test]
+    async fn stage_cli_without_its_folder_or_prefix_exits_2() {
         for bad in ["", "stage", "stage d", "stage --prefix p", "stage d e --prefix p", "stage d --prefix", "other d --prefix p"] {
-            assert_eq!(stage_cli(&argv(bad)), 2, "{bad:?}");
+            assert_eq!(stage_cli(&argv(bad)).await, 2, "{bad:?}");
         }
     }
 
@@ -1123,6 +1126,40 @@ mod tests {
     /// The recorded block is process-wide: tests that record or clear it run one at a time.
     static STAGE_BLOCK_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+    /// A release folder for this platform that stages, and the config and identity that stage it.
+    #[cfg(unix)]
+    async fn staged_release(dir: &std::path::Path) -> (UpdaterConfig, ReleaseIdentity) {
+        let target = sot_updater::platform::this_platform().unwrap();
+        let asset = sot_updater::platform::platform_asset("9.9.9").unwrap();
+        let top = dir.join("build").join(format!("sot-9.9.9-{target}"));
+        std::fs::create_dir_all(&top).unwrap();
+        for f in ["sot", "sotd", "sot-capsule"] {
+            std::fs::write(top.join(f), f).unwrap();
+        }
+        let release = dir.join("release");
+        std::fs::create_dir_all(&release).unwrap();
+        let tar = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(release.join(&asset))
+            .arg("-C")
+            .arg(dir.join("build"))
+            .arg(top.file_name().unwrap())
+            .status()
+            .unwrap();
+        assert!(tar.success());
+        let digest = sot_updater::fetch::hash::sha256_file(&release.join(&asset)).await.unwrap();
+        std::fs::write(release.join("SHA256SUMS"), format!("{digest}  {asset}\n")).unwrap();
+        let sums = std::fs::read_to_string(release.join("SHA256SUMS")).unwrap();
+        let id = sot_updater::fetch::sums::discover(&sot_updater::fetch::sums::parse_sums(&sums).unwrap(), "example/project", target).unwrap();
+        let cfg = UpdaterConfig {
+            repo: "example/project".into(),
+            current_version: "0.1.0".into(),
+            fetcher: Fetcher::Dir(release),
+            updates_root: dir.join("updates"),
+        };
+        (cfg, id)
+    }
+
     /// The block a failed commit recorded stops describing reality the moment the next attempt stages: the prepare that
     /// follows can take an hour, and `update.check` must not report the old reason meanwhile.
     #[cfg(unix)]
@@ -1130,42 +1167,45 @@ mod tests {
     async fn a_successful_stage_clears_the_recorded_block_before_prepare() {
         let _block = STAGE_BLOCK_TEST.lock().await;
         let dir = tempfile::tempdir().unwrap();
-        let target = sot_updater::platform::this_platform().unwrap();
-        let asset = sot_updater::platform::platform_asset("9.9.9").unwrap();
-        let top = dir.path().join("build").join(format!("sot-9.9.9-{target}"));
-        std::fs::create_dir_all(&top).unwrap();
-        for f in ["sot", "sotd", "sot-capsule"] {
-            std::fs::write(top.join(f), f).unwrap();
-        }
-        let release = dir.path().join("release");
-        std::fs::create_dir_all(&release).unwrap();
-        let tar = std::process::Command::new("tar")
-            .arg("-czf")
-            .arg(release.join(&asset))
-            .arg("-C")
-            .arg(dir.path().join("build"))
-            .arg(top.file_name().unwrap())
-            .status()
-            .unwrap();
-        assert!(tar.success());
-        let digest = sot_updater::fetch::hash::sha256_file(&release.join(&asset)).await.unwrap();
-        std::fs::write(release.join("SHA256SUMS"), format!("{digest}  {asset}\n")).unwrap();
-        let id = sot_updater::fetch::sums::discover(
-            &sot_updater::fetch::sums::parse_sums(&std::fs::read_to_string(release.join("SHA256SUMS")).unwrap()).unwrap(),
-            "example/project",
-            target,
-        )
-        .unwrap();
-        let cfg = UpdaterConfig {
-            repo: "example/project".into(),
-            current_version: "0.1.0".into(),
-            fetcher: Fetcher::Dir(release),
-            updates_root: dir.path().join("updates"),
-        };
+        let (cfg, id) = staged_release(dir.path()).await;
         record_stage_block(&id.tag, "Access is denied. (os error 5)");
         let staged = stage_prepare_arm_with(&cfg, &id, None).await;
         assert!(matches!(staged, Ok(Pipeline::Staged)), "{staged:?}");
         assert_eq!(overlay_stage_block(ok_outcome(id)).status, "ok");
+    }
+
+    /// Each step says so on the log, which `sotd update stage` sends to stderr: the stage and, when there is an install to
+    /// prepare for, the prepare and the arm.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_pipeline_logs_a_line_for_each_step() {
+        #[derive(Clone, Default)]
+        struct Buf(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let _block = STAGE_BLOCK_TEST.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (cfg, id) = staged_release(dir.path()).await;
+        let buf = Buf::default();
+        let sink = buf.clone();
+        let subscriber = tracing_subscriber::fmt().with_ansi(false).with_writer(move || sink.clone()).finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        stage_prepare_arm_with(&cfg, &id, None).await.unwrap();
+        let log = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(log.contains("staging"), "{log}");
+    }
+
+    #[test]
+    fn a_failure_names_every_context_down_to_its_cause() {
+        let e = anyhow::anyhow!("os error 2").context("fetching tags into base clone");
+        assert_eq!(chain(&e), "fetching tags into base clone: os error 2");
     }
 
     fn fake_identity(tag: &str) -> ReleaseIdentity {

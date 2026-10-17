@@ -108,7 +108,7 @@ impl StageLock {
         // to touch a lock whose owner has changed since this observation.
         let observed_owner = std::fs::read_to_string(dir.join("owner")).unwrap_or_default();
         let mut stale = age > TAKEOVER_AGE;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if !stale {
             // Owner format "<pid>@<host>#<nonce>": if it's this host and the
             // pid is gone, the holder died without releasing.
@@ -191,7 +191,7 @@ impl Drop for StageLock {
 }
 
 /// Parse "<pid>@<host>" out of an owner line "<pid>@<host>#<nonce>".
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn owner_pid_host(owner: &str) -> Option<(&str, &str)> {
     let owner = owner.trim();
     let (pid_host, _nonce) = owner.split_once('#').unwrap_or((owner, ""));
@@ -228,6 +228,25 @@ fn pid_alive(pid: i32) -> bool {
     }
 }
 
+/// Whether `pid` is a live process on this host: a handle that still waits (not signalled) is a running process, and
+/// one this account may not open (access denied) is alive too. Only ever called for same-host pids.
+#[cfg(windows)]
+fn pid_alive(pid: i32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    // SAFETY: `OpenProcess` returns null on failure; a non-null handle is closed before returning, and a zero-timeout
+    // wait only asks whether the process has ended.
+    unsafe {
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid as u32);
+        if handle.is_null() {
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let alive = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+        CloseHandle(handle);
+        alive
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,7 +278,7 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     #[tokio::test]
     async fn dead_pid_lock_is_broken() {
         let root = test_root("stale");
@@ -273,6 +292,18 @@ mod tests {
         .unwrap();
         let l = StageLock::acquire(&root, Duration::from_secs(2)).await.unwrap();
         drop(l);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A lock whose owner is a live process on this host is kept, on every platform that probes the pid.
+    #[cfg(any(target_os = "linux", windows))]
+    #[tokio::test]
+    async fn a_live_pid_lock_is_kept() {
+        let root = test_root("live");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(LOCK_DIR)).unwrap();
+        std::fs::write(root.join(LOCK_DIR).join("owner"), format!("{}@{}#123\n", std::process::id(), this_host())).unwrap();
+        assert!(StageLock::acquire(&root, Duration::from_millis(300)).await.is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

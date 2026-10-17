@@ -360,7 +360,10 @@ fn main() -> Result<()> {
                 lifecycle::shutdown::exit(runtime()?.block_on(topology::status::run(&args)));
             }
             // `sotd update stage <folder> --prefix <prefix>`: arm a packed build for an install's converge.
-            "update" => lifecycle::shutdown::exit(update::stage_cli(&args[1..])),
+            "update" => {
+                apply_umask();
+                lifecycle::shutdown::exit(runtime()?.block_on(update::stage_cli(&args[1..])));
+            }
             "--version" | "-V" => {
                 println!("{}", sot_protocol::version_line("sotd"));
                 return Ok(());
