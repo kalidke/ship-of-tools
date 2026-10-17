@@ -79,6 +79,8 @@ Install Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-t
 
 Use `--backend <ssh-alias>` for a frontend here with the backend on a remote host, or `--be-only` for a headless backend.
 
+To update a Linux or macOS machine, tell a coding agent running there "update sot from the repo", or run `bash ~/.local/share/sot/repo/current/scripts/install.sh` yourself: with no options it moves to the newest release on the channel the machine already runs, keeps its role, never moves backwards, and ends with one `PASS`, `ONE STEP LEFT` or `FAIL` line.
+
 Needs on every machine:
 - **git, curl and tar.**
 - **Julia 1.12 or newer**, on every role, not only the backend (installed with juliaup if missing; an existing juliaup only gets the 1.12 channel added, so run `juliaup default 1.12` yourself if your default channel is older, or set `SOT_JULIA_BIN`).
