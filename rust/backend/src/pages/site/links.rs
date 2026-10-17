@@ -469,6 +469,7 @@ pub(crate) fn resolve_and_open(
     for p in &parts {
         q.push(p);
     }
+    let asked = if parts.is_empty() { "index.html".to_string() } else { parts.join("/") };
     if parts.is_empty() || q.is_dir() {
         q.push("index.html");
         parts.push("index.html");
@@ -491,7 +492,7 @@ pub(crate) fn resolve_and_open(
         cur.push(p);
         link.push(p);
         match std::fs::symlink_metadata(&cur) {
-            Err(_) => return Err(not_found()),
+            Err(_) => break,
             Ok(m) if m.file_type().is_symlink() => {
                 found = true;
                 break;
@@ -500,11 +501,16 @@ pub(crate) fn resolve_and_open(
         }
     }
     if !found {
+        // No existence oracle outside S: whether or not the path exists, is a
+        // folder or has an index, it gets this one answer, named as asked.
+        if q.starts_with(&site.content_root) {
+            return Err(not_found());
+        }
         return Err(refuse(
-            &shown,
+            &asked,
             "403 Forbidden",
             "R2a",
-            format!("refused: {shown} is outside the site folder; only the site folder and the repo's tracked data links are served"),
+            format!("refused: {asked} is outside the site folder; only the site folder and the repo's tracked data links are served"),
         ));
     }
     let l = link.to_string_lossy().into_owned();

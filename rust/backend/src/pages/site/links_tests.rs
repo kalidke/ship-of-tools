@@ -313,6 +313,50 @@ async fn a_page_outside_the_site_is_r2a() {
     remove_root(serial);
 }
 
+/// Outside the site folder a path that reaches no link gets one answer, whether it exists, is a file or a folder, with
+/// or without an `index.html`, with a data root declared or not: a page's script learns nothing about the repo's files
+/// beyond its own site and the names of links it asks for. A link's own name is the one thing the answer still shows.
+#[tokio::test]
+async fn outside_the_site_a_path_with_no_link_has_one_answer_b1() {
+    let f = fixture();
+    write(&f.repo.join(".ssh/id_ed25519"), b"key");
+    write(&f.repo.join("plaindir/a.txt"), b"a");
+    write(&f.repo.join("sitedir/index.html"), b"<html></html>");
+    write(&f.repo.join("untracked.env"), b"x=1");
+    let empty = f.base.join("empty-roots");
+    std::fs::write(&empty, "# nothing\n").unwrap();
+    let cases = [
+        "other.txt",
+        "untracked.env",
+        "missing.env",
+        ".ssh/id_ed25519",
+        ".ssh/missing",
+        "plaindir",
+        "plaindir/a.txt",
+        "sitedir",
+        "nolink/x",
+        "nolink",
+    ];
+    for roots in [f.roots_file.clone(), empty] {
+        let site = Site::with_roots(f.repo.join("site"), f.repo.clone(), true, roots).await;
+        let (addr, nonce, serial) = serve(site).await;
+        for c in cases {
+            let (st, _, body) = get(addr, &format!("/{nonce}/{c}"), &[]).await;
+            let body = body_text(&body);
+            assert_eq!(st, 403, "{c}: {body}");
+            assert_eq!(
+                body,
+                format!("refused: {c} is outside the site folder; only the site folder and the repo's tracked data links are served"),
+                "{c}"
+            );
+        }
+        // A link is named by the requester, so its refusal may differ; it is still a refusal.
+        let (st, _, _) = get(addr, &format!("/{nonce}/loose/x"), &[]).await;
+        assert_eq!(st, 403);
+        remove_root(serial);
+    }
+}
+
 #[tokio::test]
 async fn a_dangling_tracked_link_is_r5() {
     let f = fixture();
