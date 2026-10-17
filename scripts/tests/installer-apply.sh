@@ -332,8 +332,8 @@ check "the prefix was never created" "gone" "$([ -e "$d/prefix" ] && echo exists
 # A real tarball: sot and sotd are stubs that print <sotd-line> / <sot-line> for --version and answer nothing else.
 # <dir>/prefix holds an old sotd to prove it survives a refusal (--force-role-change lets the gates pass over it).
 # <dir>/origin is an empty bare repository the installer's base clone reaches through insteadOf (no network).
-mk_packed() {  # <dir> <sotd-version> <sotd-sha> <sot-version>: <dir>/arch is sot-1.2.3-dev, COMMIT 0123456789abcdef...
-    local d="$1" a="$1/arch" top="sot-1.2.3-dev-$TGT"
+mk_packed() {  # <dir> <sotd-version> <sotd-sha> <sot-version> [<folder-version>]: <dir>/arch is sot-<folder-version> (1.2.3-dev), COMMIT 0123456789abcdef...
+    local d="$1" a="$1/arch" top="sot-${5:-1.2.3-dev}-$TGT"
     mkdir -p "$a" "$d/home" "$d/pack/$top" "$d/prefix/bin"
     printf '#!/bin/sh\n[ "$1" = --version ] && echo "sotd %s (%s 2026-10-16, protocol 1)"\nexit 0\n' "$2" "$3" > "$d/pack/$top/sotd"
     printf '#!/bin/sh\n[ "$1" = --version ] && echo "sot %s (%s 2026-10-16, protocol 1)"\nexit 0\n' "$4" "$3" > "$d/pack/$top/sot"
@@ -374,6 +374,14 @@ check "the install exits non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || ec
 check "it says the commit is not in origin" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'is not in origin' || true)"
 check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
 check "no .prev copy was written" "gone" "$([ -e "$d/prefix/bin/sotd.prev" ] && echo exists || echo gone)"
+
+# ---------------------------------------------------------------------------
+# A dev version's + is a regex quantifier to grep -E: the listing check must match the folder's name as text.
+case_start "a dev version with a plus sign passes the listing check"
+v=0.6.6-rc9.14-dev+7a64a6060
+d="$WORK/ar-plus"; mk_packed "$d" "$v" 012345678 "$v" "$v"; run_packed "$d"
+check "it is not refused as unlisted" "0" "$(printf '%s\n' "$AR_OUT" | grep -c 'is not listed in' || true)"
+check "it gets to the commit check, which refuses the empty origin" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'is not in origin' || true)"
 
 # ---------------------------------------------------------------------------
 case_start "the ensure replaces a daemon an update left on the old binary (sot_daemon_current)"
