@@ -59,7 +59,7 @@ case "$1 $2" in
     "trust declare") echo Declared; exit 0 ;;
     "session-socket-path sot"|"session-socket-path ") echo "$CTL/sot.sock"; exit 0 ;;
     "update direction") if [ -f "$CTL/direction" ]; then f direction; exit 0; fi; exit 1 ;;
-    "update repls") f repls-out; rc repls-rc 0 ;;
+    "update repls") f repls-out; f repls-err >&2; rc repls-rc 0 ;;
     "same-version --endpoint") f same-out; rc same-rc 2 ;;
     "stdio-bridge --endpoint") exit 0 ;;
 esac
@@ -325,18 +325,35 @@ entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; : > "$d/ctl/resta
 printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"; printf '0\n' > "$d/ctl/repls-rc"
 entry_archive "$d" --be-only
 check "no live REPL: the update restarts the unit and passes" "0 1 PASS" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
-# A daemon that cannot be asked fails closed: the restart waits for the person's answer.
+# A daemon that cannot be asked in full fails closed: the restart waits for the person's answer, and the stop says why it
+# could not ask and names the REPL rows it could read.
+LIVE_PLUTO_OLD="sotd update repls: the daemon's reply says nothing of its Pluto server (a daemon older than this build cannot say whether it is running)"
 d="$WORK/live-unknown"; entry_fixture "$d"
 entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; : > "$d/ctl/restart-same"
-printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"; printf '1\n' > "$d/ctl/repls-rc"
+printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"
+printf 'repl Rig PC\n' > "$d/ctl/repls-out"; printf '%s\n' "$LIVE_PLUTO_OLD" > "$d/ctl/repls-err"; printf '1\n' > "$d/ctl/repls-rc"
 before="$(entry_prefix_tree "$d")"
 entry_archive "$d" --be-only
-check "a daemon that cannot list its rows: exit 2, no restart" "2 0" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart')"
-starts_with "its FAIL says what could not be asked and the answer" "FAIL: daemon: could not ask which REPLs and Pluto sessions are live" "$ENTRY_LAST"
+check "an rc9.13-shaped reply (rows, no Pluto field): exit 2, no restart" "2 0" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart')"
+check "the stop names its REPL rows and says the daemon cannot say whether its Pluto server is running" "1" "$(said "FAIL: daemon: could not ask the daemon on $d/ctl/sot.sock in full: it runs another version, and restarting it would end the REPLs of: Rig PC; $LIVE_PLUTO_OLD")"
 check "nothing changed" "$before" "$(entry_prefix_tree "$d")"
 check "it says --restart-daemon answers it, and that nothing under the install changed" "1 1" "$(said 're-run with --restart-daemon') $(said 'Nothing under the install was changed')"
 entry_archive "$d" --be-only --restart-daemon
 check "--restart-daemon answers it: the restart, and PASS" "0 1 PASS" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
+check "and it notes why it could not ask in full" "1" "$(said "note: could not ask the daemon on $d/ctl/sot.sock in full ($LIVE_PLUTO_OLD)")"
+# A protocol refusal and a silence: each stop carries the sotd's own line, and no REPL rows (none could be read).
+d="$WORK/live-refused"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; : > "$d/ctl/restart-same"
+printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"; : > "$d/ctl/repls-out"
+printf 'sotd update repls: unix:/x: the daemon refused the hello (it speaks protocol 2, this sotd 3)\n' > "$d/ctl/repls-err"; printf '1\n' > "$d/ctl/repls-rc"
+entry_archive "$d" --be-only
+check "a protocol refusal: exit 2, no restart, the FAIL carries the refusal" "2 0 1" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $(said 'it runs another version; sotd update repls: unix:/x: the daemon refused the hello (it speaks protocol 2, this sotd 3)')"
+printf 'sotd update repls: unix:/x: no reply to workspace.list within 10s\n' > "$d/ctl/repls-err"
+entry_archive "$d" --be-only
+check "a silence: the FAIL carries the timeout" "2 1" "$ENTRY_RC $(said 'it runs another version; sotd update repls: unix:/x: no reply to workspace.list within 10s')"
+: > "$d/ctl/repls-err"
+entry_archive "$d" --be-only
+check "a sotd that gives no reason: the FAIL names its exit status" "2 1" "$ENTRY_RC $(said 'sotd update repls gave no reason (exit 1)')"
 # The daemon already runs the target: nothing is asked and nothing is restarted.
 d="$WORK/live-same"; entry_fixture "$d"
 entry_record "$d" 9.9.9 1 0 systemd; : > "$d/ctl/unit-active"; printf '0\n' > "$d/ctl/same-rc"; printf 'repl Rig PC\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
@@ -553,8 +570,8 @@ check "the FAIL names the pin as the cause" "1" "$(said "FAIL: daemon: sotd.serv
 case_start "entry_names_the_rows_a_step_would_end_and_the_command_that_ends_them"
 # A daemon on another version that this run does not restart (a window holds it, or the launcher started it) is asked its
 # live rows too, and the ONE STEP LEFT names them and the command that fits this computer.
-check "the step: a launcher, a unit, or by hand" "start Ship of Tools again (the daemon on S still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A, B|run systemctl --user restart sotd.service once the window that holds the daemon on S is closed (it still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A|restart the sotd on S by hand (it still runs another version, beside the new repo/current and bin/sot-capsule); its live REPLs and Pluto sessions could not be listed, so starting it again may end some" \
-    "$(installer_daemon_step launcher other S 'A, B' '' 0)|$(installer_daemon_step unit held S A '' 0)|$(installer_daemon_step hand other S '' '' 1)"
+check "the step: a launcher, a unit, or by hand" "start Ship of Tools again (the daemon on S still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A, B|run systemctl --user restart sotd.service once the window that holds the daemon on S is closed (it still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A|restart the sotd on S by hand (it still runs another version, beside the new repo/current and bin/sot-capsule); its live REPLs and Pluto server could not be listed, so starting it again may end some" \
+    "$(installer_daemon_step launcher other S 'A, B' 0 0)|$(installer_daemon_step unit held S A 0 0)|$(installer_daemon_step hand other S '' 0 1)"
 # B: an owned unit a window holds, be-only (no launcher), a live REPL.
 d="$WORK/held-rows"; entry_fixture "$d"
 entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"
@@ -583,35 +600,48 @@ entry_record "$d" 9.9.8 1 1 none
 entry_archive "$d" --no-service
 check "with a launcher the step is to start Ship of Tools again, naming the row" "1 1" "$(said 'ONE STEP LEFT: start Ship of Tools again') $(said 'starting it again ends the REPLs of: Rig PC')"
 # A daemon that cannot be asked, and is not restarted: the step says the rows could not be listed.
-printf '1\n' > "$d/ctl/repls-rc"
+: > "$d/ctl/repls-out"; printf '1\n' > "$d/ctl/repls-rc"
 entry_record "$d" 9.9.8 1 0 none
 entry_archive "$d" --be-only --no-service
 check "an unaskable daemon that is left alone: exit 0, the step says the rows could not be listed" "0 1" "$ENTRY_RC $(said 'could not be listed')"
+printf 'repl Rig PC\n' > "$d/ctl/repls-out"
+entry_archive "$d" --be-only --no-service
+check "one that listed a row and could not say the rest: the step names the row and the gap" "0 1" "$ENTRY_RC $(said 'starting it again ends the REPLs of: Rig PC; it could not say the rest')"
 
 # ---------------------------------------------------------------------------
-case_start "entry_asks_about_pluto_sessions_as_it_asks_about_repls"
-# A restart ends the Pluto server and every notebook it has open, as it ends a REPL: one question, one list, on one path.
-check "the live work, in words" "the REPLs of: A|the Pluto sessions of: /p/a.jl|the REPLs of: A and the Pluto sessions of: /p/a.jl, /p/b.jl" \
-    "$(installer_live_work A '')|$(installer_live_work '' /p/a.jl)|$(installer_live_work A '/p/a.jl, /p/b.jl')"
-check "the step carries both" "start Ship of Tools again (the daemon on S still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A and the Pluto sessions of: /p/a.jl" \
-    "$(installer_daemon_step launcher other S A /p/a.jl 0)"
+case_start "entry_asks_whether_the_pluto_server_is_running_as_it_asks_about_repls"
+# A restart ends the Pluto server and every notebook open in it, however each was opened (Pluto's own home page opens some
+# the daemon never sees): one question on the REPLs' path, and the fact is that the server is running.
+PL="the Pluto server is running: restarting the daemon ends every notebook open in it"
+check "the live work, in words" "restarting it would end the REPLs of: A|$PL|restarting it would end the REPLs of: A; $PL|" \
+    "$(installer_live_work A 0 'restarting it would end')|$(installer_live_work '' 1 'restarting it would end')|$(installer_live_work A 1 'restarting it would end')|$(installer_live_work '' 0 'restarting it would end')"
+check "the step carries both" "start Ship of Tools again (the daemon on S still runs another version, beside the new repo/current and bin/sot-capsule); starting it again ends the REPLs of: A; $PL" \
+    "$(installer_daemon_step launcher other S A 1 0)"
+check "a daemon that listed some and could not say the rest: the step names what it listed" "starting it again ends the REPLs of: A; it could not say the rest, so starting it again may end more" \
+    "$(installer_rows_note A 0 1)"
 d="$WORK/pluto-only"; entry_fixture "$d"
 entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; : > "$d/ctl/restart-same"
 printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"
-printf 'pluto /p/a.jl\npluto /p/b.jl\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
+printf 'pluto server\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
 before="$(entry_prefix_tree "$d")"
 entry_archive "$d" --be-only
-check "a live Pluto session alone stops the restart (exit 2), changing nothing" "2 0 yes" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $([ "$before" = "$(entry_prefix_tree "$d")" ] && echo yes || echo no)"
-check "it names the notebooks" "1" "$(said 'FAIL: daemon: the daemon on '"$d"'/ctl/sot.sock runs another version, and restarting it would end the Pluto sessions of: /p/a.jl, /p/b.jl')"
+check "a running Pluto server alone (no notebook opened through the daemon) stops the restart (exit 2), changing nothing" "2 0 yes" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $([ "$before" = "$(entry_prefix_tree "$d")" ] && echo yes || echo no)"
+check "it says the server is running" "1" "$(said 'FAIL: daemon: the daemon on '"$d"'/ctl/sot.sock runs another version, and '"$PL")"
 entry_archive "$d" --be-only --restart-daemon
 check "--restart-daemon answers it" "0 1 PASS" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
-# A held unit with a notebook and a REPL: the step names both.
+# A server not started: the daemon prints no Pluto line, so nothing is asked and the unit restarts.
+d="$WORK/pluto-none"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; : > "$d/ctl/restart-same"
+printf '9.9.8\n' > "$d/ctl/same-out"; printf '3\n' > "$d/ctl/same-rc"; : > "$d/ctl/repls-out"; printf '0\n' > "$d/ctl/repls-rc"
+entry_archive "$d" --be-only
+check "no Pluto line and no REPL: the unit restarts and passes" "0 1 PASS" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart') $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
+# A held unit with the server running and a REPL: the step names both.
 d="$WORK/pluto-held"; entry_fixture "$d"
 entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"
 printf '9.9.8\n' > "$d/ctl/same-out"; printf '4\n' > "$d/ctl/same-rc"
-printf 'repl Rig PC\npluto /p/a.jl\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
+printf 'repl Rig PC\npluto server\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
 entry_archive "$d" --be-only
-check "a held unit's step names the REPLs and the Pluto sessions" "0 1" "$ENTRY_RC $(said 'starting it again ends the REPLs of: Rig PC and the Pluto sessions of: /p/a.jl')"
+check "a held unit's step names the REPLs and the running Pluto server" "0 1" "$ENTRY_RC $(said "starting it again ends the REPLs of: Rig PC; $PL")"
 
 # ---------------------------------------------------------------------------
 case_start "entry_keeps_the_rollback_through_a_repair_run"

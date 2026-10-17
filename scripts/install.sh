@@ -516,21 +516,23 @@ installer_daemon_wait() {  # <sotd> <socket> <seconds> <held-ok 0|1>
     printf '%s' "$st"
 }
 
-# The work a restart of the daemon would end, in words: the rows with a live REPL and the notebooks its Pluto server has
-# open (each comma-joined, empty when none). Nothing when there is none.
-installer_live_work() {  # <rows> <notebooks>
-    if [ -n "$1" ] && [ -n "$2" ]; then printf 'the REPLs of: %s and the Pluto sessions of: %s' "$1" "$2"
-    elif [ -n "$1" ]; then printf 'the REPLs of: %s' "$1"
-    elif [ -n "$2" ]; then printf 'the Pluto sessions of: %s' "$2"
-    fi
+# The work a restart of the daemon would end, in words: the rows with a live REPL (comma-joined, empty when none) and the
+# Pluto server when it is running (PLUTO 1: every notebook open in it ends with the daemon). LEAD opens the REPL part.
+# Nothing when there is none.
+installer_live_work() {  # <rows> <pluto 0|1> <lead>
+    local out=""
+    [ -z "$1" ] || out="$3 the REPLs of: $1"
+    [ "$2" != 1 ] || out="${out:+$out; }the Pluto server is running: restarting the daemon ends every notebook open in it"
+    printf '%s' "$out"
 }
 
-# What starting the daemon again would cost, for the step: the live work (installer_live_work), or that it could not be
-# listed (UNKNOWN 1). Nothing when there is none.
-installer_rows_note() {  # <rows> <notebooks> <unknown 0|1>
-    local work; work="$(installer_live_work "$1" "$2")"
-    if [ -n "$work" ]; then printf 'starting it again ends %s' "$work"
-    elif [ "$3" = 1 ]; then printf 'its live REPLs and Pluto sessions could not be listed, so starting it again may end some'
+# What starting the daemon again would cost, for the step: the live work (installer_live_work), and that the daemon could
+# not say all of it (UNKNOWN 1: what it did list is named). Nothing when there is none.
+installer_rows_note() {  # <rows> <pluto 0|1> <unknown 0|1>
+    local work; work="$(installer_live_work "$1" "$2" 'starting it again ends')"
+    if [ "$3" = 1 ] && [ -n "$work" ]; then printf '%s; it could not say the rest, so starting it again may end more' "$work"
+    elif [ "$3" = 1 ]; then printf 'its live REPLs and Pluto server could not be listed, so starting it again may end some'
+    else printf '%s' "$work"
     fi
 }
 
@@ -542,7 +544,7 @@ installer_live_lines() {  # <prefix>
 # The one step a daemon this run leaves on another version needs, the command that fits this computer: HOW is "launcher"
 # (the window's launcher replaces it), "unit" (this install's sotd.service) or "hand" (no launcher, no unit). STATE is
 # held (a window holds it) or other. It runs the old binary beside the new repo/current and bin/sot-capsule until then.
-installer_daemon_step() {  # <how> <state> <socket> <rows> <notebooks> <unknown 0|1>
+installer_daemon_step() {  # <how> <state> <socket> <rows> <pluto 0|1> <unknown 0|1>
     local skew="still runs another version, beside the new repo/current and bin/sot-capsule" out note
     case "$1" in
         launcher) out="start Ship of Tools again (the daemon on $3 $skew)" ;;
@@ -1250,14 +1252,14 @@ esac
 # An update brings the daemon onto the new binary only when it runs another version (the target's own `sotd
 # same-version`), so a repair run costs no REPL its state. An active owned unit on another version is restarted below;
 # one a window holds, and a daemon the launcher started (macOS, --no-service), are left for a step a person takes. Each
-# daemon on another version is asked its rows with a live REPL and the notebooks its Pluto server has open, from its own
+# daemon on another version is asked its rows with a live REPL and whether its Pluto server is running, from its own
 # `workspace.list`, before anything changes: the unit this run restarts stops here and asks (--restart-daemon is the
 # answer yes), and the step of the others names them. A daemon that cannot be asked is not read as "none live".
 STEP=daemon
 DEFAULT_SOCKET="$("$BINDIR/sotd" session-socket-path sot)"
 DAEMON_BEFORE=none
 UNIT_RUNS=0
-LIVE_ROWS="" LIVE_PLUTO="" ROWS_UNKNOWN=0
+LIVE_ROWS="" LIVE_PLUTO=0 ROWS_UNKNOWN=0
 if [ "$WANT_DAEMON" = 1 ]; then
     DAEMON_BEFORE="$(installer_daemon_state "$BINDIR/sotd" "$DEFAULT_SOCKET")"
     if [ "$OS" = Linux ] && [ "$NO_SERVICE" = 0 ] && systemctl --user is-active sotd.service >/dev/null 2>&1; then UNIT_RUNS=1; fi
@@ -1267,30 +1269,37 @@ if [ "$DAEMON_BEFORE" = other ] || [ "$DAEMON_BEFORE" = held ]; then
     WILL_RESTART=0
     if [ "$UNIT_RUNS" = 1 ] && [ "$DAEMON_BEFORE" = other ]; then WILL_RESTART=1; fi
     repl_rc=0
-    LIVE_OUT="$("$BINDIR/sotd" update repls --endpoint "unix:$DEFAULT_SOCKET" 2>/dev/null)" || repl_rc=$?
+    # stdout carries the lines it could read, stderr its one reason when it could not read all.
+    LIVE_OUT="$("$BINDIR/sotd" update repls --endpoint "unix:$DEFAULT_SOCKET" 2>&1)" || repl_rc=$?
+    LIVE_ROWS="$(printf '%s\n' "$LIVE_OUT" | installer_live_lines repl)"
+    case "
+$LIVE_OUT
+" in *"
+pluto server
+"*) LIVE_PLUTO=1 ;; esac
     case "$repl_rc" in
         0) ;;
         3)
-            LIVE_ROWS="$(printf '%s\n' "$LIVE_OUT" | installer_live_lines repl)"
-            LIVE_PLUTO="$(printf '%s\n' "$LIVE_OUT" | installer_live_lines pluto)"
-            LIVE_WORK="$(installer_live_work "$LIVE_ROWS" "$LIVE_PLUTO")"
             if [ "$WILL_RESTART" = 0 ]; then
                 :
             elif [ "$RESTART_DAEMON" = 1 ]; then
-                say "restarting the daemon ends $LIVE_WORK (--restart-daemon)"
+                say "$(installer_live_work "$LIVE_ROWS" "$LIVE_PLUTO" 'restarting the daemon ends') (--restart-daemon)"
             else
                 printf '       Restarting the daemon ends those REPLs and notebooks (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.\n' >&2
-                fail 2 "the daemon on $DEFAULT_SOCKET runs another version, and restarting it would end $LIVE_WORK"
+                fail 2 "the daemon on $DEFAULT_SOCKET runs another version, and $(installer_live_work "$LIVE_ROWS" "$LIVE_PLUTO" 'restarting it would end')"
             fi ;;
         *)
             ROWS_UNKNOWN=1
+            # The one line sotd gives for what it could not read; a sotd that gave none is named by its exit status.
+            LIVE_WHY="$(printf '%s\n' "$LIVE_OUT" | grep -v -e '^repl ' -e '^pluto server$' | head -1 || true)"
+            [ -n "$LIVE_WHY" ] || LIVE_WHY="sotd update repls gave no reason (exit $repl_rc)"
             if [ "$WILL_RESTART" = 0 ]; then
                 :
             elif [ "$RESTART_DAEMON" = 1 ]; then
-                say "note: could not ask the daemon on $DEFAULT_SOCKET which REPLs and Pluto sessions are live; restarting it ends any that is (--restart-daemon)"
+                say "note: could not ask the daemon on $DEFAULT_SOCKET in full ($LIVE_WHY); restarting it ends any REPL or Pluto notebook that is live (--restart-daemon)"
             else
-                printf '       Restarting the daemon ends every live REPL and Pluto session (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.\n' >&2
-                fail 2 "could not ask which REPLs and Pluto sessions are live: the daemon on $DEFAULT_SOCKET runs another version and did not answer in full (a daemon older than this build cannot list its Pluto sessions)"
+                printf '       Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.\n' >&2
+                fail 2 "could not ask the daemon on $DEFAULT_SOCKET in full: it runs another version${LIVE_ROWS:+, and restarting it would end the REPLs of: $LIVE_ROWS}; $LIVE_WHY"
             fi ;;
     esac
 fi

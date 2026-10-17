@@ -65,11 +65,13 @@ and the launch path fails open: no update step can stop a window from starting.
   fresh start of the unit, are verified: the daemon must answer as the target within `SOT_INSTALL_RESTART_WAIT_S` seconds by the clock (a daemon whose socket accepts
   and never answers costs the bound plus one ask), and an active unit whose daemon is in any other state is `FAIL: daemon:`,
   never PASS; a unit that is not running because its host pin excludes this computer says the pin is the cause. Every daemon on another version is
-  asked `sotd update repls` (the daemon's own `workspace.list`: the rows with a live REPL and the notebooks its Pluto
-  server has open) before anything changes. When the unit would be restarted and a REPL or a Pluto session is live, or the
-  daemon cannot be asked in full (a daemon older than the Pluto field cannot), the run stops first and asks for
-  `--restart-daemon`, changing nothing under the install. A held unit and a launcher-started daemon are not restarted: the
-  `ONE STEP LEFT` names the live REPLs and Pluto sessions and the command that fits (the launcher, `systemctl --user restart sotd.service`, or by hand), and says the
+  asked `sotd update repls` (the daemon's own `workspace.list`: the rows with a live REPL and whether its Pluto server is
+  running, which ends every notebook open in it) before anything changes. When the unit would be restarted and a REPL is
+  live or the Pluto server is running, or the daemon cannot be asked in full (a daemon older than the Pluto field cannot
+  say), the run stops first and asks for `--restart-daemon`, changing nothing under the install; a stop for a daemon that
+  could not be asked carries `sotd update repls`' one stderr line as its reason and names the REPL rows it could read. A
+  held unit and a launcher-started daemon are not restarted: the
+  `ONE STEP LEFT` names the live REPLs, the running Pluto server and the command that fits (the launcher, `systemctl --user restart sotd.service`, or by hand), and says the
   old daemon runs beside the new `repo/current` and `bin/sot-capsule` until then. A box the topology plan names, with
   another daemon host in the plan, gets the launcher that dials the plan (`launch-sot.sh`) whether or not `--backend` is
   given again. That launcher exports `SOT_OWN_DAEMON=1` (a `--backend <alias>` install runs no daemon and does not), and `launch-sot.sh`
@@ -104,7 +106,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `ExecStartPre=-`, `sot-launch`, `Invoke-PendingApply`, `render_sot_launch`, `launch-sot.ps1`. Uses: `UpdaterSpawner`, `WindowSpawner`, `Signal::spawn`, `fe.lease`,
 `fe.leaving`, `scripts/sot-lease.ps1`, `launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`,
 `is_release_build`, `rust/backend/src/update.rs`, `rust/frontend/src/selfupdate.rs`, `version_line`, `--version`,
-`sotd topology plan|sync|status`, `sotd update direction|repls`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
+`sotd topology plan|sync|status`, `sotd update direction|repls`, `pluto_server_up`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
 `scripts/lib/sot-daemon.sh`, `sotd stdio-bridge`, `Leases::commit_update`, `julia::resolve_bin`, `check_remote_fs`,
 `scripts/install.sh`, `REMOTE_FS_TYPES`, `docs/make.jl`, `.github/workflows/CI.yml`,
 `sotd trust declare <absolute-prefix>`, `sotd topology pin`, `HeldDir`, `remove_ended`.

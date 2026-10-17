@@ -24,11 +24,12 @@ install backwards. It ends with exactly one line:
 
 Three `FAIL` lines are questions rather than faults:
 
-- `daemon:` names the rows whose REPL is live and the notebooks its Pluto server has open, or says the daemon could not
-  be asked in full (a v0.6.5 daemon refuses the question, and a daemon older than the Pluto field cannot list its
-  notebooks, so the first update from either pays one flag). Updating restarts the backend, which ends those REPLs' and
-  notebooks' variables (the rows and their agents keep running). Nothing under the install was changed. Run it again with
-  `--restart-daemon` when that is fine.
+- `daemon:` names the rows whose REPL is live and says when the Pluto server is running (restarting the daemon ends every
+  notebook open in it, however it was opened), or says why the daemon could not be asked in full, naming the REPL rows it
+  could read (a v0.6.5 daemon refuses the question, and a daemon older than the Pluto field cannot say whether its Pluto
+  server is running, so the first update from either pays one flag). Updating restarts the backend, which ends those REPLs'
+  and notebooks' variables (the rows and their agents keep running). Nothing under the install was changed. Run it again
+  with `--restart-daemon` when that is fine.
 - `target:` says the machine runs a build of the line (a `+` in its version). Install a pack of the line with
   `--archive <folder>`, a folder `scripts/pack-build.sh` packed; that runs the `install.sh` of the checkout that made the
   pack, not the installed one. A release named with `--version` is usually older than a build of the line and moves the
@@ -36,7 +37,7 @@ Three `FAIL` lines are questions rather than faults:
 - `direction:` says the newest release is older than what runs here. Add `--version vX.Y.Z` to go back on purpose.
 
 A daemon that a window holds, or that the launcher started, is not restarted by the update (the built-in `auto` mode
-keeps a daemon under an attached window too). It is asked which REPLs and Pluto sessions are live all the same, and the `ONE STEP
+keeps a daemon under an attached window too). It is asked which REPLs are live and whether the Pluto server is running all the same, and the `ONE STEP
 LEFT` line names them and the command that fits the computer (the launcher, `systemctl --user restart sotd.service`, or
 starting `sotd` by hand). Until it is taken the old daemon runs beside the new `repo/current` and `bin/sot-capsule`.
 
