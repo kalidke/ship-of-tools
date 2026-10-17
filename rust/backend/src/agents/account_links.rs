@@ -11,11 +11,11 @@ use std::path::Path;
 const PRIVILEGE_NOT_HELD: i32 = 1314;
 
 /// One shared entry for a daemon whose symlink may be refused. `symlink` is tried first and its result stands, unless
-/// the OS refused symlinks outright (error 1314, or `Unsupported`). Then a folder becomes a junction that the daemon
-/// proves it can traverse (a process enforcing redirection trust cannot cross one a non-admin made, error 448), else
-/// the junction is removed and the call fails with the OS reason. A file is copied once and the account owns it after.
-/// Nothing is written to the default folder, and an existing entry is the caller's to skip, so a racing sibling's
-/// `AlreadyExists` passes through.
+/// the OS refused symlinks outright (error 1314). Then a folder becomes a junction that the daemon proves it can
+/// traverse (a process enforcing redirection trust cannot cross one a non-admin made, error 448), else the call fails
+/// with the OS reason. A file is copied once and the account owns it after. Each entry is built under a name unique to
+/// the call and put in place without replacing anything, so the real name only ever holds a complete entry and a
+/// sibling spawn's `AlreadyExists` always means one is there. Nothing is written to the default folder.
 #[cfg(any(windows, test))]
 pub(super) fn link_with_fallback(
     target: &Path,
@@ -25,7 +25,7 @@ pub(super) fn link_with_fallback(
     junction: impl Fn(&Path, &Path) -> io::Result<()>,
 ) -> io::Result<()> {
     match symlink(target, link, target_is_dir) {
-        Err(err) if err.raw_os_error() == Some(PRIVILEGE_NOT_HELD) || err.kind() == io::ErrorKind::Unsupported => {
+        Err(err) if err.raw_os_error() == Some(PRIVILEGE_NOT_HELD) => {
             if target_is_dir {
                 junction_or_refuse(target, link, junction)
             } else {
@@ -36,15 +36,54 @@ pub(super) fn link_with_fallback(
     }
 }
 
+/// `link` with a name no other call in any process shares: the pid, a per-process counter and the entry's own name.
+#[cfg(any(windows, test))]
+fn unique_beside(link: &Path) -> std::path::PathBuf {
+    static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = link.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    link.with_file_name(format!(".{name}.{}-{call}.tmp", std::process::id()))
+}
+
+/// Remove this call's own temp junction: the reparse point only, never what it names (`remove_dir` on Windows; the
+/// Unix stand-in is a symlink).
+#[cfg(any(windows, test))]
+fn remove_own(temp: &Path) {
+    let _ = std::fs::remove_dir(temp).or_else(|_| std::fs::remove_file(temp));
+}
+
 #[cfg(any(windows, test))]
 fn junction_or_refuse(target: &Path, link: &Path, junction: impl Fn(&Path, &Path) -> io::Result<()>) -> io::Result<()> {
-    junction(target, link)?;
-    if let Err(err) = std::fs::metadata(link) {
-        // The reparse point only, never what it names (`remove_dir` on Windows; the Unix stand-in is a symlink).
-        let _ = std::fs::remove_dir(link).or_else(|_| std::fs::remove_file(link));
+    let temp = unique_beside(link);
+    junction(target, &temp)?;
+    if let Err(err) = std::fs::metadata(&temp) {
+        remove_own(&temp);
         return Err(io::Error::other(format!("the junction to {} cannot be traversed: {err}", target.display())));
     }
+    if let Err(err) = publish_dir(&temp, link) {
+        remove_own(&temp);
+        return Err(err);
+    }
     tracing::debug!(link = %link.display(), "account folder shared through a junction");
+    Ok(())
+}
+
+/// Move a verified junction to its real name, failing with `AlreadyExists` when anything is there.
+#[cfg(windows)]
+fn publish_dir(temp: &Path, link: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+    let wide = |p: &Path| p.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let (from, to) = (wide(temp), wide(link));
+    // SAFETY: both buffers are NUL-terminated and outlive the call. Flags 0: no replace, no copy across volumes.
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
+/// The Unix stand-in's publish: the temp is a symlink, and `symlink` fails on an existing name.
+#[cfg(all(unix, test))]
+fn publish_dir(temp: &Path, link: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(std::fs::read_link(temp)?, link)?;
+    remove_own(temp);
     Ok(())
 }
 
@@ -53,8 +92,7 @@ fn junction_or_refuse(target: &Path, link: &Path, junction: impl Fn(&Path, &Path
 #[cfg(any(windows, test))]
 fn seed_file(target: &Path, link: &Path) -> io::Result<()> {
     let name = link.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let temp = link.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
-    let _ = std::fs::remove_file(&temp);
+    let temp = unique_beside(link);
     std::fs::copy(target, &temp)?;
     let made = std::fs::hard_link(&temp, link);
     let _ = std::fs::remove_file(&temp);
@@ -63,7 +101,8 @@ fn seed_file(target: &Path, link: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// A directory junction (no privilege needed, local NTFS only): create the folder, then set its reparse point.
+/// A directory junction (no privilege needed, local NTFS only) at `link`, a name the caller owns: create the folder,
+/// then set its reparse point.
 #[cfg(windows)]
 pub(super) fn make_junction(target: &Path, link: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
@@ -128,7 +167,9 @@ pub(super) fn make_junction(target: &Path, link: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::super::accounts::ensure_account_links_with;
-    use super::super::support_tests::{touch_dir, touch_file};
+    #[cfg(windows)]
+    use super::super::support_tests::assert_shared_as_the_box_allows;
+    use super::super::support_tests::{link_form_here, touch_dir, touch_file, LinkForm};
     use super::*;
 
     fn refused(_: &Path, _: &Path, _: bool) -> io::Result<()> {
@@ -156,10 +197,11 @@ mod tests {
         (tmp, account)
     }
 
-    // Unix only: a Windows token in a redirection-trust tree cannot traverse a junction (the real-call test below).
-    #[cfg(unix)]
     #[test]
     fn a_refused_symlink_becomes_a_junction_and_copies() {
+        if link_form_here() == LinkForm::Refused {
+            return; // this token cannot cross a junction it makes (os error 448); the real-call test asserts the refusal
+        }
         let (tmp, account) = setup();
         let home = tmp.path();
         ensure_account_links_with(home, "team", |t, l, d| link_with_fallback(t, l, d, refused, fake_junction)).unwrap();
@@ -179,19 +221,6 @@ mod tests {
         assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
     }
 
-    // Unix only: a Windows token in a redirection-trust tree cannot traverse a junction (the real-call test below).
-    #[cfg(unix)]
-    #[test]
-    fn an_entry_already_present_is_left_untouched_by_the_fallback() {
-        let (tmp, account) = setup();
-        std::fs::write(account.join("settings.json"), "mine").unwrap();
-        std::fs::write(account.join("CLAUDE.md"), "my rules").unwrap();
-        ensure_account_links_with(tmp.path(), "team", |t, l, d| link_with_fallback(t, l, d, refused, fake_junction))
-            .unwrap();
-        assert_eq!(std::fs::read_to_string(account.join("settings.json")).unwrap(), "mine");
-        assert_eq!(std::fs::read_to_string(account.join("CLAUDE.md")).unwrap(), "my rules");
-    }
-
     #[test]
     fn a_junction_the_daemon_cannot_traverse_is_removed_and_the_spawn_refused() {
         let (tmp, account) = setup();
@@ -204,6 +233,49 @@ mod tests {
         assert!(err.contains("could not link"), "{err}");
         assert!(err.contains("junction"), "{err}");
         assert!(std::fs::symlink_metadata(account.join("skills")).is_err(), "the reparse point is removed");
+        for name in ["CLAUDE.md", "settings.json"] {
+            assert!(std::fs::symlink_metadata(account.join(name)).is_err(), "{name}: a refused folder leaves no copy");
+        }
+        let left: Vec<_> = std::fs::read_dir(&account).unwrap().collect();
+        assert!(left.is_empty(), "the call's own temps are gone: {left:?}");
+    }
+
+    #[test]
+    fn two_first_spawns_of_one_account_never_refuse_each_other() {
+        let crosses = link_form_here() != LinkForm::Refused;
+        for round in 0..100 {
+            let (tmp, account) = setup();
+            let default = tmp.path().join(".claude");
+            std::fs::write(default.join("history.jsonl"), "x".repeat(1 << 20)).unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let joins: Vec<_> = (0..2)
+                .map(|_| {
+                    let (home, barrier) = (tmp.path().to_path_buf(), barrier.clone());
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        ensure_account_links_with(&home, "team", |t, l, d| {
+                            link_with_fallback(t, l, d, refused, fake_junction)
+                        })
+                    })
+                })
+                .collect();
+            let results: Vec<_> = joins.into_iter().map(|j| j.join().unwrap()).collect();
+            // A box that cannot cross its own junction refuses every call; any other box refuses none.
+            for r in &results {
+                assert_eq!(r.is_ok(), crosses, "round {round}: {r:?}");
+            }
+            let names: Vec<_> = std::fs::read_dir(&account)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            if crosses {
+                assert!(account.join("skills").join("foo").is_dir());
+                assert_eq!(std::fs::read(account.join("history.jsonl")).unwrap().len(), 1 << 20);
+                assert!(names.iter().all(|n| !n.contains(".tmp")), "round {round}: temps left: {names:?}");
+            } else {
+                assert!(names.is_empty(), "round {round}: a refused account holds {names:?}");
+            }
+        }
     }
 
     // Hand-made junctions, symlinks, hard links and real files are all left alone, whatever the link maker would do.
@@ -237,37 +309,36 @@ mod tests {
         assert_eq!(err.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
     }
 
-    /// The real Windows calls, whichever token runs the test: an admin links by symlink, a Basic User by junction
-    /// and copy; a Basic User inside a redirection-trust tree is refused naming the OS reason, with no
-    /// reparse point left behind.
+    /// The real calls, whatever token runs the test: symlinks, junctions plus copies, or the clean refusal.
     #[cfg(windows)]
     #[test]
-    fn the_real_calls_either_share_every_entry_or_refuse_cleanly() {
+    fn the_real_calls_give_the_form_this_token_allows() {
         let (tmp, account) = setup();
-        let target = tmp.path().join(".claude").join("skills");
-        let probe = tmp.path().join("probe");
-        match make_junction(&target, &probe) {
-            Ok(()) => {
-                assert!(std::fs::symlink_metadata(&probe).unwrap().file_type().is_symlink());
-                assert_eq!(std::fs::read_link(&probe).unwrap(), target);
-                if std::fs::metadata(&probe).is_ok() {
-                    assert!(probe.join("foo").is_dir());
-                }
-                std::fs::remove_dir(&probe).unwrap();
-                assert!(target.join("foo").is_dir(), "removing a junction leaves what it names");
-            }
-            Err(err) => panic!("a junction needs no privilege: {err}"),
+        let result = crate::agents::accounts::ensure_account_links(tmp.path(), "team");
+        assert_shared_as_the_box_allows(
+            &result,
+            &tmp.path().join(".claude"),
+            &account,
+            &["skills"],
+            &["CLAUDE.md", "settings.json"],
+        );
+    }
+
+    /// A junction to a verbatim (`\\?\`) target reads back as the plain spelling, and removing it keeps its target.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_reads_back_and_removes_without_touching_its_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = std::fs::canonicalize(tmp.path()).unwrap().join("t");
+        touch_dir(&target.join("foo"));
+        let link = tmp.path().join("l");
+        make_junction(&target, &link).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_link(&link).unwrap(), crate::paths::simplify_verbatim(target.clone()));
+        if std::fs::metadata(&link).is_ok() {
+            assert!(link.join("foo").is_dir());
         }
-        match crate::agents::accounts::ensure_account_links(tmp.path(), "team") {
-            Ok(()) => {
-                assert!(account.join("skills").join("foo").is_dir());
-                assert_eq!(std::fs::read_to_string(account.join("CLAUDE.md")).unwrap(), "global rules");
-                assert_eq!(std::fs::read_to_string(account.join("settings.json")).unwrap(), "{\"theme\":\"dark\"}");
-            }
-            Err(msg) => {
-                assert!(msg.contains("junction") && msg.contains("cannot be traversed"), "{msg}");
-                assert!(std::fs::symlink_metadata(account.join("skills")).is_err(), "the reparse point is removed");
-            }
-        }
+        std::fs::remove_dir(&link).unwrap();
+        assert!(target.join("foo").is_dir());
     }
 }

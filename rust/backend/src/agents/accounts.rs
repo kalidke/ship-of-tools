@@ -32,7 +32,7 @@
 //
 // The sharing ruling (2026-09-15): a named account folder shares
 // EVERYTHING the default `.claude` folder carries except the login —
-// symlinked in by [`ensure_account_links`] the first time a row spawns
+// shared in by [`ensure_account_links`] (a symlink; where the OS refuses symlinks, see `account_links.rs`) the first time a row spawns
 // against that account, so a folder made with a bare `mkdir` is fully
 // linked before its first session starts. It is an ALLOWLIST
 // ([`SHARED_ENTRIES`]), not a denylist: an unknown or new entry stays
@@ -314,7 +314,7 @@ fn make_shared_link(target: &Path, link: &Path, target_is_dir: bool) -> std::io:
 /// Refuses an invalid account name before any path join, same check as
 /// [`account_env`] (see [`check_account_name`]) — public, so it must not
 /// trust a caller to have validated `account` already. One ABSOLUTE
-/// symlink per entry, `<home>/.claude/<entry>` built from the `home` this
+/// symlink per entry (a junction or a one-time copy where the OS refuses symlinks, see `account_links.rs`), `<home>/.claude/<entry>` built from the `home` this
 /// function is given (never a relative `../../.claude/<entry>`, which
 /// resolves to the wrong place when `.claude-auth` or the account folder
 /// is itself a symlink): a no-op for an empty account or `"default"`; an
@@ -329,7 +329,8 @@ fn make_shared_link(target: &Path, link: &Path, target_is_dir: bool) -> std::io:
 /// (`ErrorKind::AlreadyExists` — see `resume_all`'s parallel spawns);
 /// any other creation error refuses the whole call: a half-linked
 /// account folder starting a degraded session is worse than a refused
-/// spawn.
+/// spawn. Folders are linked before files, so a refused folder leaves no
+/// copy behind that the never-replace rule would keep.
 pub fn ensure_account_links(home: &Path, account: &str) -> Result<(), String> {
     ensure_account_links_with(home, account, make_shared_link)
 }
@@ -347,17 +348,19 @@ pub(super) fn ensure_account_links_with(
     check_account_name(account)?;
     let default_dir = claude_config_dir(home, "");
     let account_dir = claude_config_dir(home, account);
-    for name in SHARED_ENTRIES {
-        let source = default_dir.join(name);
-        if !source.exists() {
-            continue; // the default folder doesn't have this entry either
+    for folders in [true, false] {
+        for name in SHARED_ENTRIES {
+            let source = default_dir.join(name);
+            if !source.exists() || source.is_dir() != folders {
+                continue; // the default folder doesn't have this entry either, or it is the other pass's
+            }
+            let link = account_dir.join(name);
+            if std::fs::symlink_metadata(&link).is_ok() {
+                continue; // something is already there -- never replace it
+            }
+            link_or_skip_if_racing(&make_link, &source, &link, folders)
+                .map_err(|err| format!("could not link {name} into account {account:?}: {err}"))?;
         }
-        let link = account_dir.join(name);
-        if std::fs::symlink_metadata(&link).is_ok() {
-            continue; // something is already there -- never replace it
-        }
-        link_or_skip_if_racing(&make_link, &source, &link, source.is_dir())
-            .map_err(|err| format!("could not link {name} into account {account:?}: {err}"))?;
     }
     Ok(())
 }
@@ -565,20 +568,15 @@ mod tests {
         let account_dir = home.join(".claude-auth").join("team");
         touch_dir(&account_dir);
 
-        ensure_account_links(home, "team").unwrap();
+        let result = ensure_account_links(home, "team");
 
-        for name in ["CLAUDE.md", "settings.json", "skills", "history.jsonl"] {
-            let link = account_dir.join(name);
-            let meta = std::fs::symlink_metadata(&link).unwrap();
-            assert!(meta.file_type().is_symlink(), "{name} should be a symlink");
-            let target = std::fs::read_link(&link).unwrap();
-            assert!(target.is_absolute(), "{name}'s link target should be absolute: {target:?}");
-            assert_eq!(
-                target,
-                home.join(".claude").join(name),
-                "{name} should point straight at the default's own entry"
-            );
-        }
+        super::super::support_tests::assert_shared_as_the_box_allows(
+            &result,
+            &home.join(".claude"),
+            &account_dir,
+            &["skills"],
+            &["CLAUDE.md", "settings.json", "history.jsonl"],
+        );
         for name in ["agents", "commands", "plugins", "output-styles", "projects"] {
             assert!(
                 std::fs::symlink_metadata(account_dir.join(name)).is_err(),

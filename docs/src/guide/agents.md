@@ -81,6 +81,6 @@ CLAUDE_CONFIG_DIR=~/.claude-auth/team claude
 
 It then appears as a choice in the session picker (`Tab` cycles it), and rows
 running under it show a `· team` suffix. Ship of Tools discovers accounts; it
-never creates them or stores a credential. On Windows without Developer Mode, an account shares folders through
-junctions and starts with copies of `CLAUDE.md`, `settings.json` and `history.jsonl`. Details in
-[Modes](modes.md#Accounts).
+never creates them or stores a credential. Where the daemon cannot make a symlink on Windows, an account
+shares folders through junctions and starts with copies of `CLAUDE.md`, `settings.json` and `history.jsonl`.
+Details in [Modes](modes.md#Accounts).
