@@ -35,6 +35,8 @@
 > since Bonito loads *after* `WGLDisplay` is already on the stack, an
 > unclaimed html MIME here would let Bonito's display land on top and
 > capture every `display(fig)` before `WGLDisplay` saw it.
+>
+> **Display wire (2026-10-17):** below it, the child's entry (`run_shim`) swaps Julia's startup `TextDisplay(stdout)` (bound to the shim's JSON wire) for a real `TextDisplay` on an IO that writes to the current `stdout`, so `display(42)` in an eval is a stdout frame and packages that look for the stack's `TextDisplay` still find it. When the wire is the process's stdout, it then points that stdout at stderr, so only the shim's locked writer reaches the wire. It runs the user's startup file after that redirect, so its prints show as stderr; a startup file that throws is said once, at the first eval.
 
 The full path works and was confirmed by the maintainer in a real FE browser:
 `wglshow(fig)` → Bonito serves the figure on `127.0.0.1:1241` → the REPL emits a

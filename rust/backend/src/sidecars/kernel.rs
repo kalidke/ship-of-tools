@@ -395,6 +395,7 @@ async fn run_one_generation(
     let mut cmd = Command::new(&julia_bin);
     tmp.apply(&mut cmd);
     cmd.arg(format!("--project={}", kernel_project.display()))
+        .arg("--startup-file=no")
         .arg("-e")
         .arg(&julia_src)
         .stdin(Stdio::piped())
@@ -763,6 +764,36 @@ mod tests {
         assert!(sig.held_groups().is_empty());
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1, "respawned after the fire");
+    }
+
+    /// The kernel's argv carries `--startup-file=no` before `-e`: it never loads the user's environment, and a startup file's
+    /// prints would land on its wire.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_kernel_spawn_passes_startup_file_no() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv = dir.path().join("argv");
+        let stub = dir.path().join("stub-julia");
+        sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho \"$@\" > {}\nexec sleep 30\n", argv.display()));
+        let project = dir.path().join("kp");
+        std::fs::create_dir(&project).unwrap();
+        STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (status, _keep) = watch::channel(Status::Starting);
+        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, KernelBounds::PRODUCT));
+        let began = std::time::Instant::now();
+        while std::fs::read_to_string(&argv).map_or(true, |s| s.is_empty()) {
+            assert!(began.elapsed() < Duration::from_secs(5), "the stub child never ran");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let args = std::fs::read_to_string(&argv).unwrap();
+        sig.fire().expect("fire");
+        tokio::time::timeout(Duration::from_secs(3), task).await.expect("the supervisor loop outlived the shutdown").expect("supervisor task");
+        // Before `-e`: after the script, Julia reads the flag as one of the script's arguments.
+        let words: Vec<&str> = args.split_whitespace().collect();
+        let flag = words.iter().position(|a| *a == "--startup-file=no");
+        let script = words.iter().position(|a| *a == "-e");
+        assert!(flag.is_some() && flag < script, "kernel argv: {args}");
     }
 
     /// A kernel that stops reading fills its pipe and the supervisor sits in

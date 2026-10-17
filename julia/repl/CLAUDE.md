@@ -8,11 +8,12 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 ## Files
 - `Project.toml`: the package, stdlib dependencies only.
 - `ext/ShipToolsReplWGLMakieExt.jl`: the WGLMakie package extension, the only place WGLMakie code lives.
-- `src/ShipToolsRepl.jl`: the module, `serve` and its ops (eval, run_file, interrupt), `write_envelope`.
+- `src/ShipToolsRepl.jl`: the module, the child's entry `run_shim`, `serve` and its ops (eval, run_file, interrupt), `write_envelope`.
 - `src/json.jl`: the stdlib-only JSON codec.
-- `src/wgl.jl`: browser-served artifacts, `BrowserView`, `page_server`, private `wgl_server` listener selection and `wglshow`.
-- `src/frames.jl`: how an eval's output becomes typed frames, and the BrowserView announcements.
+- `src/wgl.jl`: browser-served artifacts, `BrowserView`, `page_server`, private `wgl_server` listener selection and `wglshow`; `WGLDisplay`.
+- `src/frames.jl`: how an eval's output becomes typed frames, the BrowserView announcements, the wire guard (`EvalStdout`, `point_stdout_away_from_wire!`) and `revise_loaded`.
 - `test/runtests.jl`: the streaming tests and the stdlib-only guard test.
+- `test/shim_child.jl`: the shim as the daemon starts it, a child process running `run_shim` with a scratch depot whose `config/startup.jl` is the user's startup file: the wire, the startup output, error rendering, the display stack, a failing startup file.
 - `test/answer_then_next.jl`: an output stream that hands `serve` the next request the moment a given frame of an answer (by default its done frame) is written, the order a real pipe allows, and an eval request's line (`eval_line`).
 - `test/bonito/`: the `wglshow` page test's own environment (Bonito): the page carries its assets, its port has no asset route, and (Linux) serving it opens exactly one listener (CI's "wglshow pages" job). Actual owned-process listener, loopback HTTP/bind and selection-preservation controls, with an extra-listener rejection control, and the live-port refusal proof.
 
@@ -26,6 +27,10 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
   (`SOT_PREVIOUS_END`, the daemon's sentence: its display ended) and why it has no display of its own
   (`SOT_NO_DISPLAY`, its reason), in that order (`DISPLAY_NOTICE`, `spawn_eval`).
 - One eval at a time, and a second gets error then done (`handle_eval`). An eval releases that guard once, just before its done frame and res go out (`spawn_eval`), so a request sent the moment an answer arrives is accepted.
+- Only the shim's own locked writer reaches the wire. The child's entry `run_shim` swaps Julia's startup `TextDisplay(stdout)` (bound to the wire) for a real `TextDisplay` on `EvalStdout`, which writes to the current `stdout` (the eval's capture pipe), so `display(x)` in an eval is a stdout frame; packages that look for the stack's `TextDisplay` (Plots, Makie, Bonito) still find it. Then, when `io_out` is the process's stdout, it redirects that stdout to stderr, so a task's display or `println` between evals goes to stderr, which the supervisor drains. All of this runs before the user's startup file (`Base.load_julia_startup`; the spawn passes `--startup-file=no`), so startup.jl runs with stdout on stderr and its prints show as stderr; an error in it is said once, as a stderr frame at the first eval (`STARTUP_FAILURE`), and the shim still serves. Code that calls `serve` directly gets none of this. stderr is not the wire.
+- `--startup-file=no` also reaches every Julia process user code starts through `Base.julia_cmd()`: those children do not load the startup file.
+- Anything that renders a user value or exception after user code ran goes through `Base.invokelatest` (`sprint(showerror, ...)` included), because `serve`'s world is older than the startup file and every eval.
+- Before each eval, inside `stream_eval_frames` after its redirects, when `Main.Revise` is a module (the user's startup file or an earlier eval loaded it), the shim calls `Revise.revise()` (`revise_loaded`): the shim is not a Julia REPL, so Revise never revises on its own. The lookup and the call go through `invokelatest`, because `serve`'s world is older than the `using Revise` that bound it. Revise logs a failed revision instead of throwing, and that log and any throw are stderr frames of that eval; the eval still runs.
 - Text frames precede value or error, and done is last (`stream_eval_frames`).
 - Program output is bytes, not UTF-8: only a character a read cut waits for its other bytes (`utf8_prefix`), and the
   JSON writer writes a malformed character as U+FFFD (`write_json_string`), so no byte holds back later output or

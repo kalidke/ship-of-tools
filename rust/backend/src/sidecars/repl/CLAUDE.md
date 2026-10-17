@@ -30,6 +30,7 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
   1.15 to 1.18 s after the retire began, `restart_with_project` returned at 1.21 to 1.24 s, and the new child answered an
   eval 3.4 to 3.5 s after the retire began.
 - A supervisor is joined before a replacement generation opens, so its retired output cannot restore a revoked browser grant. The existing lifecycle generation guard still bounds state transitions. The child's exit ends supervision independently of inherited pipes.
+- The child runs with `--startup-file=no`; the shim's entry (`run_shim`) runs the user's startup file with stdout on stderr, so its prints never touch the wire (julia/repl/CLAUDE.md).
 - `Repl::request_if_running` never spawns (`repl.interrupt` must not pay a spawn to answer "not running").
 - No submission waits on the child: one to a full queue is refused at once (`enqueue`, `ReplBusy`), and
   `repl.interrupt` waits at most `REPL_INTERRUPT_WAIT` (10 s) for the child's answer.

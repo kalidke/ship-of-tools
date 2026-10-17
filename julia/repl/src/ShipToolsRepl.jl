@@ -64,6 +64,23 @@ const CURRENT_EVAL = Ref{Union{Eval,Nothing}}(nothing)
 # their run's output.
 const DISPLAY_NOTICE = Ref{Union{String,Nothing}}(nothing)
 
+# What `run_shim` says about a startup file that failed, for `serve` to say at the first eval.
+const STARTUP_FAILURE = Ref("")
+
+# The REPL child's entry: the spawn passes `--startup-file=no`, and the user's startup file runs here, as Julia would
+# run it (`Base.load_julia_startup`, the depot search order Julia uses), with stdout already on stderr. An error in it is
+# said once at the first eval (`STARTUP_FAILURE`), and the shim still serves.
+function run_shim(io_in::IO, io_out::IO)
+    point_stdout_away_from_wire!(io_out)
+    try
+        Base.load_julia_startup()
+    catch e
+        STARTUP_FAILURE[] = "sot: the startup file failed: " *
+            Base.invokelatest(sprint, showerror, e, catch_backtrace()) * "\n"
+    end
+    serve(io_in, io_out)
+end
+
 """
     serve(io_in::IO, io_out::IO)
 
@@ -112,7 +129,8 @@ function serve(io_in::IO, io_out::IO)
     ended = get(ENV, "SOT_PREVIOUS_END", "")
     why = get(ENV, "SOT_NO_DISPLAY", "")
     notice = (isempty(ended) ? "" : "sot: $ended.\n") * (isempty(why) ? "" :
-        "sot: this REPL has no display of its own ($why), and GLMakie needs one. CairoMakie and WGLMakie (wglshow) work.\n")
+        "sot: this REPL has no display of its own ($why), and GLMakie needs one. CairoMakie and WGLMakie (wglshow) work.\n") *
+        STARTUP_FAILURE[]
     DISPLAY_NOTICE[] = isempty(notice) ? nothing : notice
 
     write_envelope(io_out, "evt", 0, "repl.ready",

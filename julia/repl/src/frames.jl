@@ -1,5 +1,26 @@
 # How an eval's output becomes typed frames: stream_eval_frames, pipe capture, value frames,
-# BrowserView announcements.
+# BrowserView announcements, and the wire guard (`EvalStdout`, `point_stdout_away_from_wire!`).
+
+# An IO that writes to whatever `stdout` is at the time of the write: during an eval, its capture pipe.
+struct EvalStdout <: IO end
+Base.unsafe_write(::EvalStdout, p::Ptr{UInt8}, n::UInt) = unsafe_write(stdout, p, n)
+Base.write(::EvalStdout, b::UInt8) = write(stdout, b)
+Base.flush(::EvalStdout) = flush(stdout)
+
+# Only the shim's own locked writer reaches the wire (`io_out`, which holds its own descriptor). Julia's startup
+# `TextDisplay(stdout)` holds the wire, so each is swapped, in place so the stack's order holds, for a real `TextDisplay`
+# (packages find the stack's fallback by that type) on an `EvalStdout`; then the process's stdout (Julia's and fd 1)
+# becomes its stderr, which the supervisor drains, so a display or `println` outside an eval cannot glue onto an
+# envelope. `run_shim` does it before the user's startup file.
+function point_stdout_away_from_wire!(io_out::IO)
+    ds = Base.Multimedia.displays
+    for i in eachindex(ds)
+        d = ds[i]
+        d isa TextDisplay && d.io === io_out && (ds[i] = TextDisplay(EvalStdout()))
+    end
+    io_out === stdout && redirect_stdout(stderr)
+    return nothing
+end
 
 """
     stream_eval_frames(f, emit)
@@ -62,6 +83,23 @@ function announce_browserview(bv::BrowserView)
     return bv
 end
 
+# Revise only revises on its own in a Julia REPL, which the shim is not: when the user's startup file or an earlier
+# eval loaded it into Main, revise before the eval, with the eval's stdout/stderr already captured, so a failed revision
+# (Revise logs it, it does not throw) is a stderr frame of that eval. The lookup and the call go through `invokelatest`:
+# `serve`'s world is older than the `using Revise` that created the binding. A throw is a stderr line; the eval still runs.
+function revise_loaded()
+    try
+        Base.invokelatest() do
+            isdefined(Main, :Revise) || return
+            rev = getglobal(Main, :Revise)
+            rev isa Module && rev.revise()
+        end
+    catch e
+        e isa InterruptException && rethrow()
+        println(stderr, "sot: Revise.revise() failed: ", Base.invokelatest(sprint, showerror, e))
+    end
+end
+
 function stream_eval_frames(f, emit)
     CURRENT_EMIT[] = emit
     empty!(ANNOUNCED_BROWSER_URLS)
@@ -81,6 +119,7 @@ function stream_eval_frames(f, emit)
     try
         redirect_stdout(pipe_out)
         redirect_stderr(pipe_err)
+        revise_loaded()
         try
             # The value's display is user code too, so it renders in the
             # interruptible region; its frames are emitted after the drain.
@@ -112,9 +151,10 @@ function stream_eval_frames(f, emit)
             :line => s.line,
             :fn => string(s.func),
         ) for s in local_bt]
+        # invokelatest: `serve`'s world is older than the startup file and every eval, which may define the `showerror`.
         msg = threw isa InterruptException ?
             "InterruptException: eval interrupted by repl.interrupt" :
-            sprint(showerror, threw)
+            Base.invokelatest(sprint, showerror, threw)
         emit(Dict(:kind => "error", :message => msg, :stacktrace => stack))
     else
         for fr in frames
@@ -231,7 +271,7 @@ function value_frames_for(result)
         Base.invokelatest(show, valbuf, MIME"text/plain"(), result)
     catch e
         e isa InterruptException && rethrow()
-        print(valbuf, "<unshowable $(typeof(result)): $(sprint(showerror, e))>")
+        print(valbuf, "<unshowable $(typeof(result)): $(Base.invokelatest(sprint, showerror, e))>")
     end
     push!(out, Dict(
         :kind => "value",

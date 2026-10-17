@@ -708,4 +708,6 @@ Base.flush(::CountingIO) = nothing
             )
         end
     end
+
+    include("shim_child.jl")
 end
