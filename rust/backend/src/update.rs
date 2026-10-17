@@ -250,46 +250,159 @@ async fn stage_prepare_arm(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
     result
 }
 
-async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
-    let staged = sot_updater::stage(&updater_spawner(), cfg, id).await;
-    if let Err(e) = staged {
+/// What one stage-prepare-arm run did when it did not fail.
+#[derive(Debug, PartialEq, Eq)]
+enum Pipeline {
+    /// Staged, prepared and armed.
+    Armed,
+    /// Staged and prepared; a newer release is already armed, or this one is marked bad.
+    Kept,
+    /// Staged only: the box has no install manifest to prepare for.
+    Staged,
+}
+
+/// The step a stage-prepare-arm run failed at, with the cause.
+#[derive(Debug)]
+enum PipelineError {
+    Stage(String),
+    Prepare(String),
+    Arm(String),
+}
+
+impl std::fmt::Display for PipelineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stage(e) => write!(f, "staging update failed: {e}"),
+            Self::Prepare(e) => write!(f, "preparing update failed: {e}"),
+            Self::Arm(e) => write!(f, "arming update failed: {e}"),
+        }
+    }
+}
+
+/// The one stage-prepare-arm both the daemon and `sotd update stage` run; `install` is the manifest to prepare and
+/// arm for, `None` stopping after the stage.
+async fn stage_prepare_arm_with(
+    cfg: &UpdaterConfig,
+    id: &ReleaseIdentity,
+    install: Option<&InstallManifest>,
+) -> Result<Pipeline, PipelineError> {
+    sot_updater::stage(&updater_spawner(), cfg, id).await.map_err(|e| {
         // The whole chain, not just the outermost context: the OS error is the
         // thing that names the fault, and `%e` drops it.
-        let cause = e.chain().map(|c| c.to_string()).collect::<Vec<_>>().join(": ");
-        tracing::warn!(tag = %id.tag, error = %cause, "staging update failed");
-        // Defect 0c: the shared crate already retried the commit rename for
-        // about a minute before giving up. Record it so the NEXT check
-        // reports the concrete reason instead of a bare "ok" that hides a
-        // release which never manages to land — the failure mode a healthy-
-        // looking, never-updating box actually exhibited.
-        record_stage_block(&id.tag, &cause);
-        return;
-    }
-    // The commit landed — any block recorded for a PRIOR attempt (this tag
-    // or an older one) no longer describes reality.
-    clear_stage_block();
-    let Some(install) = InstallManifest::for_current_exe() else {
-        tracing::info!(tag = %id.tag, "staged (no install manifest — prepare/arm skipped)");
-        return;
+        PipelineError::Stage(e.chain().map(|c| c.to_string()).collect::<Vec<_>>().join(": "))
+    })?;
+    let Some(install) = install else {
+        return Ok(Pipeline::Staged);
     };
-    let spec = match prepare_spec(&install, cfg, id) {
-        Ok(spec) => spec,
-        Err(e) => {
-            tracing::warn!(tag = %id.tag, error = %e, "preparing update failed — not arming");
-            return;
-        }
-    };
-    let state = match sot_updater::prepare::prepare(&updater_spawner(), &spec).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(tag = %id.tag, error = %e, "preparing update failed — not arming");
-            return;
-        }
-    };
+    let spec = prepare_spec(install, cfg, id).map_err(PipelineError::Prepare)?;
+    let state = sot_updater::prepare::prepare(&updater_spawner(), &spec)
+        .await
+        .map_err(|e| PipelineError::Prepare(e.to_string()))?;
     match sot_updater::pending::arm(&cfg.updates_root, id, &state.checkout, &state.commit).await {
-        Ok(true) => {}
-        Ok(false) => tracing::info!(tag = %id.tag, "a newer release is already armed (or this one is marked bad)"),
-        Err(e) => tracing::warn!(tag = %id.tag, error = %e, "arming update failed"),
+        Ok(true) => Ok(Pipeline::Armed),
+        Ok(false) => Ok(Pipeline::Kept),
+        Err(e) => Err(PipelineError::Arm(e.to_string())),
+    }
+}
+
+async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
+    let install = InstallManifest::for_current_exe();
+    let result = stage_prepare_arm_with(cfg, id, install.as_ref()).await;
+    // Defect 0c: the shared crate already retried the commit rename for about a minute before giving up. Record it so
+    // the NEXT check reports the concrete reason instead of a bare "ok" that hides a release which never manages to
+    // land — the failure mode a healthy-looking, never-updating box actually exhibited. Any other outcome means the
+    // commit landed, so a block recorded for a PRIOR attempt (this tag or an older one) no longer describes reality.
+    match &result {
+        Err(PipelineError::Stage(cause)) => record_stage_block(&id.tag, cause),
+        _ => clear_stage_block(),
+    }
+    match result {
+        Err(PipelineError::Stage(cause)) => tracing::warn!(tag = %id.tag, error = %cause, "staging update failed"),
+        Err(PipelineError::Prepare(e)) => tracing::warn!(tag = %id.tag, error = %e, "preparing update failed — not arming"),
+        Err(PipelineError::Arm(e)) => tracing::warn!(tag = %id.tag, error = %e, "arming update failed"),
+        Ok(Pipeline::Staged) => tracing::info!(tag = %id.tag, "staged (no install manifest — prepare/arm skipped)"),
+        Ok(Pipeline::Kept) => tracing::info!(tag = %id.tag, "a newer release is already armed (or this one is marked bad)"),
+        Ok(Pipeline::Armed) => {}
+    }
+}
+
+pub(crate) const USAGE: &str = "\
+Usage: sotd update stage <folder> --prefix <install prefix>
+
+  Stage, prepare and arm the release in <folder> (SHA256SUMS, the archive for this platform, COMMIT: what
+  scripts/pack-build.sh and scripts/pack-build.ps1 write) for the install at <prefix>; the supervisor's converge
+  applies it. The operator chose the folder, so there is no release-build guard and no newer-than test. A dev build
+  prepares the checkout at its COMMIT, which has no tag. Prints `armed <tag> for <target>` and exits 0, or names why
+  and exits 1.";
+
+/// `sotd update stage <folder> --prefix <prefix>`: the folder and prefix, or the reason the arguments are not those.
+fn parse_stage_args(args: &[String]) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let mut rest = args.iter();
+    if rest.next().map(String::as_str) != Some("stage") {
+        return Err("expected `stage`".into());
+    }
+    let (mut folder, mut prefix) = (None, None);
+    while let Some(a) = rest.next() {
+        if a == "--prefix" {
+            prefix = Some(rest.next().ok_or("--prefix needs a folder")?);
+        } else if folder.replace(a).is_some() {
+            return Err(format!("unexpected argument {a:?}"));
+        }
+    }
+    Ok((
+        folder.ok_or("no folder given")?.into(),
+        prefix.ok_or("no --prefix given")?.into(),
+    ))
+}
+
+/// Stage → prepare → arm the one release a pack folder holds, for the install at `prefix`.
+async fn stage_folder(folder: &std::path::Path, prefix: &std::path::Path) -> Result<String, String> {
+    let mut install = InstallManifest::read(&prefix.join(sot_updater::manifest::INSTALL_MANIFEST)).map_err(|e| format!("{e:#}"))?;
+    install.prefix = prefix.to_path_buf();
+    let sums = std::fs::read_to_string(folder.join("SHA256SUMS"))
+        .map_err(|e| format!("reading {}: {e}", folder.join("SHA256SUMS").display()))?;
+    let entries = sot_updater::fetch::sums::parse_sums(&sums).map_err(|e| format!("{e:#}"))?;
+    let target = sot_updater::platform::this_platform().ok_or("this platform is not in the release matrix")?;
+    let repo = repo_from_env();
+    let id = sot_updater::fetch::sums::discover(&entries, &repo, target).map_err(|e| format!("{e:#}"))?;
+    let cfg = UpdaterConfig {
+        repo,
+        current_version: install.version.clone().unwrap_or_default(),
+        fetcher: Fetcher::Dir(folder.to_path_buf()),
+        updates_root: install.updates_root(),
+    };
+    match stage_prepare_arm_with(&cfg, &id, Some(&install)).await {
+        Ok(Pipeline::Armed) => Ok(format!("armed {} for {}", id.tag, id.target)),
+        Ok(_) => Err(format!("{} was staged but not armed: a newer release is armed, or this one is marked bad", id.tag)),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// `sotd update <args>`: the exit code. 2 for arguments that are not `stage <folder> --prefix <prefix>`.
+pub(crate) fn stage_cli(args: &[String]) -> i32 {
+    let (folder, prefix) = match parse_stage_args(args) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            eprintln!("sotd update: {why}\n{USAGE}");
+            return 2;
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("sotd update stage: building the tokio runtime: {e}");
+            return 1;
+        }
+    };
+    match runtime.block_on(stage_folder(&folder, &prefix)) {
+        Ok(line) => {
+            println!("{line}");
+            0
+        }
+        Err(why) => {
+            eprintln!("sotd update stage: {why}");
+            1
+        }
     }
 }
 
@@ -949,6 +1062,24 @@ mod tests {
         }
         assert!(!laptop, "a frontend-only entry wants no backend role");
         assert!(hub, "a daemon entry wants the backend role");
+    }
+
+    fn argv(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn stage_cli_without_its_folder_or_prefix_exits_2() {
+        for bad in ["", "stage", "stage d", "stage --prefix p", "stage d e --prefix p", "stage d --prefix", "other d --prefix p"] {
+            assert_eq!(stage_cli(&argv(bad)), 2, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn stage_args_take_the_folder_and_the_prefix_in_either_order() {
+        let want = Ok(("d".into(), "p".into()));
+        assert_eq!(parse_stage_args(&argv("stage d --prefix p")), want);
+        assert_eq!(parse_stage_args(&argv("stage --prefix p d")), want);
     }
 
     fn fake_identity(tag: &str) -> ReleaseIdentity {

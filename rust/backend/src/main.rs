@@ -158,6 +158,9 @@ const SOTD_HELP: &str = r#"Usage: sotd [OPTIONS]
 Offline command (returns before daemon initialization):
   trust declare <absolute-prefix>
                           declare folder trust in user-level settings
+  update stage <folder> --prefix <prefix>
+                          stage, prepare and arm a packed build for the
+                          install at <prefix> (its converge applies it)
 
 Pure queries (no startup side effects, answered before any of the above):
   --version, -V           print the version line and exit
@@ -199,6 +202,7 @@ fn help_for(args: &[String]) -> Option<&'static str> {
         "status" => topology::status::USAGE,
         "stdio-bridge" => topology::stdio_bridge::USAGE,
         "ancestors" => comm::registry::ancestors::USAGE,
+        "update" => update::USAGE,
         _ => SOTD_HELP,
     })
 }
@@ -226,6 +230,9 @@ mod help_tests {
             ("stdio-bridge --host a --help", topology::stdio_bridge::USAGE),
             ("stdio-bridge --endpoint unix:/x --help", topology::stdio_bridge::USAGE),
             ("status --help", topology::status::USAGE),
+            ("update --help", update::USAGE),
+            ("update stage --help", update::USAGE),
+            ("update stage d --prefix p --help", update::USAGE),
             ("topology --help", topology::cli::USAGE),
             ("topology plan --help", topology::cli::USAGE),
             ("topology status --help", topology::cli::USAGE),
@@ -352,6 +359,8 @@ fn main() -> Result<()> {
                 let args: Vec<String> = std::env::args().skip(2).collect();
                 lifecycle::shutdown::exit(runtime()?.block_on(topology::status::run(&args)));
             }
+            // `sotd update stage <folder> --prefix <prefix>`: arm a packed build for an install's converge.
+            "update" => lifecycle::shutdown::exit(update::stage_cli(&args[1..])),
             "--version" | "-V" => {
                 println!("{}", sot_protocol::version_line("sotd"));
                 return Ok(());
