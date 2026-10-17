@@ -59,10 +59,11 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   `checks-linux` runs. Prints `under-bash: PASS|FAIL` lines and exits with the count of FAIL lines, 2 on a wrong setup.
   Runs in the `rust.yml` job `bash32-linux` (GNU bash 3.2.57, every hermetic suite) and in `test` on macOS
   (`/bin/bash` under the scripts, every hermetic suite, run by Homebrew's bash, which the step installs).
-- `in-container.sh`: `in-container.sh [--user-manager] UNIT -- CMD [ARG...]` runs CMD as the main process of the transient
+- `in-container.sh`: `in-container.sh [--user-manager] [--tmpdir-empty] UNIT -- CMD [ARG...]` runs CMD as the main process of the transient
   `systemd --user` service UNIT.service, the test container (Linux): a private empty `XDG_RUNTIME_DIR` and no
   `DBUS_SESSION_BUS_ADDRESS`, so every capsule row stays in its control group, and every process left in it is SIGKILLed
-  when CMD ends. `--user-manager` keeps the manager's address. CMD runs as written (`$` is doubled for systemd, which expands
+  when CMD ends. `--user-manager` keeps the manager's address. `--tmpdir-empty` (opt-in; TMPDIR must be set to the job's fresh folder) fails
+  the job with exit 3 and names what CMD left in TMPDIR, unless CMD already failed. CMD runs as written (`$` is doubled for systemd, which expands
   `$VAR` and `${VAR}`); the exit status is CMD's when CMD exits, and a CMD killed by a signal gives 255; a failed start
   leaves no `/tmp/sot-job-*`.
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
