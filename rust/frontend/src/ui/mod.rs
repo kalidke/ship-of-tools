@@ -1616,6 +1616,7 @@ mod result_tests {
         pub(in crate::ui) fn result_target_uses_host_and_listed_identity(&mut self) -> Result<()> {
             let (a, b, mut a_rx, mut b_rx) = self.prepare_result_probe();
             self.result_host_probe(&b, &mut a_rx)?;
+            self.docs_host_probe(&a, &b, &mut a_rx, &mut b_rx)?;
             self.result_identity_probe(&b, &mut b_rx)?;
             self.result_entry_controls(&a, &b, &mut a_rx, &mut b_rx)?;
             self.result_caption_roi_probe(&a, &b, &mut a_rx, &mut b_rx)?;
@@ -1676,6 +1677,23 @@ mod result_tests {
             );
             anyhow::ensure!(self.pending_result_path(b, "project").as_deref() == Some("same.png")
                 && a_rx.try_recv().is_err(), "result_target_uses_host_and_listed_identity: another host's same slug rendered in the active view");
+            Ok(())
+        }
+
+        /// `docs` goes to the daemon that sent it, not the one this window is viewing: only that daemon knows the path.
+        fn docs_host_probe(
+            &mut self,
+            a: &HostKey,
+            b: &HostKey,
+            a_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+            b_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+        ) -> Result<()> {
+            anyhow::ensure!(self.active_host == *a, "docs probe: the window must view host a");
+            self.dispatch_fe_command(Some(b), FeCommand::Docs { workspace: "project".into(), path: "/site/page.html".into() });
+            anyhow::ensure!(
+                matches!(b_rx.try_recv(), Ok(OutgoingReq::DocsOpen { .. })) && a_rx.try_recv().is_err(),
+                "docs went to the viewed host, not the host that sent it"
+            );
             Ok(())
         }
 
