@@ -4,8 +4,8 @@
 // Sibling to `pages/video.rs` (the single-file, video-gated server). Where that
 // one serves one explicit file path by extension, this serves a whole DIRECTORY
 // TREE rooted at a CURRENT SITE ROOT that the `docs.open` handler sets per open:
-// the cursored file's own directory. Serving from the true site root is what
-// makes BOTH relative and root-relative (`/asset`) links resolve — `o`'s file://
+// the site root it finds for the page (`find_site_root`). Serving from the true
+// site root is what makes BOTH relative and root-relative (`/asset`) links resolve — `o`'s file://
 // open can't (search/JS and root-relative assets break off-origin).
 //
 // One site per owner at a time (its last open wins): an owner is a window,
