@@ -36,7 +36,7 @@
 > unclaimed html MIME here would let Bonito's display land on top and
 > capture every `display(fig)` before `WGLDisplay` saw it.
 >
-> Below it, `serve` swaps Julia's startup `TextDisplay(stdout)` (bound to the shim's JSON wire) for `EvalTextDisplay`, which writes to the eval's current `stdout`, so `display(42)` is a stdout frame and nothing but the shim's locked writer touches the wire.
+> **Display wire (2026-10-17):** below it, `serve` swaps Julia's startup `TextDisplay(stdout)` (bound to the shim's JSON wire) for a real `TextDisplay` on an IO that writes to the current `stdout`, so `display(42)` in an eval is a stdout frame and packages that look for the stack's `TextDisplay` still find it. When the wire is the process's stdout, `serve` then points that stdout at stderr, so only the shim's locked writer reaches the wire. Code that runs before `serve` is outside this.
 
 The full path works and was confirmed by the maintainer in a real FE browser:
 `wglshow(fig)` → Bonito serves the figure on `127.0.0.1:1241` → the REPL emits a

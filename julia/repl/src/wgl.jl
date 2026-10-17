@@ -95,23 +95,6 @@ struct WGLDisplay <: Base.AbstractDisplay end
 # nothing on its own; it exists only to keep Bonito off the top of the stack.
 Base.displayable(::WGLDisplay, ::MIME"text/html") = true
 
-# The text display `serve` leaves at the bottom of the stack: Julia's own `TextDisplay`, built at display time on the
-# eval's current `stdout` (the captured pipe), never on the stream the process started with.
-struct EvalTextDisplay <: Base.AbstractDisplay end
-Base.display(::EvalTextDisplay, @nospecialize x) = display(TextDisplay(stdout), x)
-Base.display(::EvalTextDisplay, M::MIME, @nospecialize x) = display(TextDisplay(stdout), M, x)
-Base.displayable(::EvalTextDisplay, M::MIME) = istextmime(M)
-
-# Swap each startup `TextDisplay` on the process's stdout for an `EvalTextDisplay`, in place so the stack's order holds.
-function replace_startup_text_display!()
-    ds = Base.Multimedia.displays
-    for i in eachindex(ds)
-        d = ds[i]
-        d isa TextDisplay && d.io === Base.stdout && (ds[i] = EvalTextDisplay())
-    end
-    return nothing
-end
-
 # Client-side error overlay injected into every wglshow page. Bonito already
 # turns Julia-side render errors into inline error HTML, but a WebGL/JS error
 # (e.g. WGLMakie/THREE "computeBoundingBox NaN" from an under-constrained scene)

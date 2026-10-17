@@ -1,6 +1,23 @@
 # How an eval's output becomes typed frames: stream_eval_frames, pipe capture, value frames,
 # BrowserView announcements.
 
+# An IO that writes to whatever `stdout` is at the time of the write: during an eval, its capture pipe.
+struct EvalStdout <: IO end
+Base.unsafe_write(::EvalStdout, p::Ptr{UInt8}, n::UInt) = unsafe_write(stdout, p, n)
+Base.write(::EvalStdout, b::UInt8) = write(stdout, b)
+Base.flush(::EvalStdout) = flush(stdout)
+
+# Julia's startup `TextDisplay(stdout)` holds the process's stdout, which is the wire. Swap each for a real
+# `TextDisplay` (packages find the stack's fallback by that type) on an `EvalStdout`, in place so the stack's order holds.
+function replace_startup_text_display!()
+    ds = Base.Multimedia.displays
+    for i in eachindex(ds)
+        d = ds[i]
+        d isa TextDisplay && d.io === Base.stdout && (ds[i] = TextDisplay(EvalStdout()))
+    end
+    return nothing
+end
+
 """
     stream_eval_frames(f, emit)
 
