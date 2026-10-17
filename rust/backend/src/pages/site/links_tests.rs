@@ -327,23 +327,14 @@ fn i_the_bounds_of_this_process_refuse_every_private_place() {
     let home = base.join("m/home/u");
     let b = Bounds::new(&[&base.join("alias"), &base.join("missing"), Path::new("/")], Some(home.as_path()));
     assert_eq!(b.mounts, vec![base.join("m")], "canonical, existing, never /");
+    // Judged as text before any lookup: only a target starting with a mount folder, as written or canonical, passes.
+    assert_eq!(b.as_written(&base.join("alias/share")), Some(base.join("m/share")));
+    assert_eq!(b.as_written(&base.join("m/share")), Some(base.join("m/share")));
+    assert_eq!(b.as_written(&base.join("mx/share")), None);
+    assert_eq!(b.as_written(Path::new("/")), None);
     assert_eq!(b.base_for(&base.join("m/home/u/notes.txt")), Err("in the home folder"));
     assert_eq!(b.base_for(&base.join("m/share/a.png")), Ok(base.join("m").as_path()));
     assert_eq!(Bounds::new(&[&base.join("m")], None).base_for(&base.join("m/a.png")), Err("no home folder is known"));
-    // A link names a data folder: never `/`, nor a folder holding the home folder or the repository.
-    let top = base.join("m/repos/r");
-    for (t, wide) in [
-        (PathBuf::from("/"), true),
-        (home.clone(), true),
-        (base.join("m/home"), true),
-        (base.join("m"), true),
-        (top.clone(), true),
-        (base.join("m/repos"), true),
-        (base.join("m/share"), false),
-        (top.join("data"), false),
-    ] {
-        assert_eq!(b.too_wide(&t, Some(&top)), wide, "{}", t.display());
-    }
 }
 
 #[tokio::test]
@@ -592,11 +583,14 @@ async fn a_link_to_root_home_or_above_the_repo_gets_r3_like_any_private_path() {
         assert_eq!((st, body_text(&body)), (403, r3(&asked, l)), "{asked}");
     }
     remove_root(serial);
-    // Where the home folder lies under the mount folder, a link to the mount folder holds it.
+    // Where the home folder lies under the mount folder, a link to the mount folder serves what lies beside the home
+    // folder and refuses the home folder's own files.
     let (addr, nonce, serial) = serve(widened(&f).await).await;
-    let asked = format!("allmnt/share/{movie}");
+    let (st, _, _) = get(addr, &format!("/{nonce}/allmnt/share/{movie}"), &[]).await;
+    assert_eq!(st, 200);
+    let asked = "allmnt/home/u/notes.txt";
     let (st, _, body) = get(addr, &format!("/{nonce}/{asked}"), &[]).await;
-    assert_eq!((st, body_text(&body)), (403, r3(&asked, "allmnt")), "{asked}");
+    assert_eq!((st, body_text(&body)), (403, r3(asked, "allmnt")), "{asked}");
     remove_root(serial);
 }
 
@@ -727,6 +721,11 @@ async fn a_link_target_written_other_than_as_its_absolute_real_path_gets_r3_what
         ("d5", "../home/u/work/../../../mnt/share".into(), 403),
         ("d6", "../home/x/work/../../../mnt/share".into(), 403),
         ("e3", format!("{b}/mntx/share"), 403),
+        ("root", "/".into(), 403),
+        ("home", format!("{b}/home/u"), 403),
+        ("above-home", format!("{b}/home"), 403),
+        ("repo", format!("{b}/repo"), 403),
+        ("above-repo", b.clone(), 403),
         ("e4", "../mnt/share".into(), 403),
         ("e5", "../../mnt/share".into(), 403),
         ("e1", format!("{b}//mnt/share/"), 206),

@@ -242,10 +242,11 @@ Follow rule, checked on every request:
   mapped to its canonical path. So no symlink lies on its way and no name of a
   private folder can be walked into and left again (a route through the home
   folder, another link or a `..` is refused whatever it ends on; a relative
-  target is refused outright). That canonical target is
-  judged by the same bounds before the request is resolved, lies outside the
-  repository, and names a data folder: a link to `/`, or to a folder holding the home folder or the
-  repository, is never followed. No file lists data folders.
+  target is refused outright), and it is judged as that text, before any lookup,
+  to start with a mount folder as written. That canonical target is
+  judged by the same bounds before the request is resolved and lies outside the
+  repository, so a link to `/`, the home folder or the repository is never
+  followed. No file lists data folders.
   A file on a dead hard-mounted share hangs the request that resolves it, as
   reading it would.
 - Each refusal says why. A linked path that does not serve (the link's target or
@@ -324,11 +325,10 @@ archive, a Mercurial checkout) is bounded by the workspace root, or on a home-fo
 
 A symlink a repository tracks serves with no list of data folders to keep: the `data-roots` file is no longer read.
 A tracked link serves a file when the file's canonical path lies under a mount folder (`/mnt`, `/media`, `/Volumes`),
-outside the home folder, with no part below the mount folder whose name starts with `.`, through a link to neither
-`/` nor a folder holding the home folder or the repository (the follow rule above; `Bounds` in
+outside the home folder, with no part below the mount folder whose name starts with `.`, through a link whose target is itself such a place (the follow rule above; `Bounds` in
 `rust/backend/src/pages/site/links.rs`). Only a link git tracks is followed. The link's own target, written as its absolute real path (as `ln -s /mnt/<share>/...` writes it), is
-judged first, by the bounds the file meets and as not too wide (not `/`, nor a folder holding the home folder or the repository), and the repository's own files serve only from
-the site folder. Every refusal, of the link or of the file, is R3's one answer, so a link that names everything
+judged first, as text and then by the bounds the file meets, and lies outside the repository; the repository's own
+files serve only from the site folder. Every refusal, of the link or of the file, is R3's one answer, so a link that names everything
 (`/`, `~`, `..` from a repo on a share) serves nothing and says nothing about where the home folder or the
 repository is, or whether a guessed path exists.
 

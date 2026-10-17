@@ -80,23 +80,14 @@ impl Bounds {
         Ok(m)
     }
 
-    /// The absolute `p` with a leading mount folder as written (`/mnt`)
-    /// replaced by its canonical path.
-    fn as_written(&self, p: &Path) -> PathBuf {
+    /// The absolute `p` with its leading mount folder, as written (`/mnt`) or
+    /// canonical, replaced by that folder's canonical path; `None` when it
+    /// starts with no mount folder, so a target outside them is never looked up.
+    fn as_written(&self, p: &Path) -> Option<PathBuf> {
         self.written
             .iter()
             .zip(&self.mounts)
-            .find_map(|(w, c)| p.strip_prefix(w).ok().map(|rest| c.join(rest)))
-            .unwrap_or_else(|| p.to_path_buf())
-    }
-
-    /// Whether a link to the canonical `t` names no data folder: `/`, or a
-    /// folder holding the home folder or the repository `top` (the repository
-    /// itself included). Such a link would reach every mount folder below it.
-    fn too_wide(&self, t: &Path, top: Option<&Path>) -> bool {
-        t.parent().is_none()
-            || self.home.as_deref().is_some_and(|h| h.starts_with(t))
-            || top.is_some_and(|r| r.starts_with(t))
+            .find_map(|(w, c)| p.strip_prefix(w).or_else(|_| p.strip_prefix(c)).ok().map(|rest| c.join(rest)))
     }
 }
 
@@ -571,34 +562,32 @@ fn follow_link(
     }
 }
 
-/// The link's target must be written as its absolute real path (no `.` or `..`
-/// part, so no name of a private folder can be walked into and left again; with
-/// a leading mount folder mapped to its canonical path it equals its canonical
-/// path `t`: a route through the home folder or another link is refused
-/// whatever it ends on), lie in the bounds like a file, name a data
-/// folder (not `/`, nor one holding the home folder or the repository `top`)
-/// and lie outside the repository; then the canonical file `f` of `q` must lie
-/// in the bounds and outside the repository, whose files serve only from the
-/// site folder. Returns the mount folder `f` is opened beneath, and `f`; or
-/// why not.
+/// The link's target is judged as text first, before any lookup: absolute, plain
+/// names only (no `.` or `..` part, so no name of a private folder can be walked
+/// into and left again) and starting with a mount folder as written. Only then
+/// is it resolved, and with that mount folder mapped to its canonical path it
+/// must equal its canonical path `t` (no symlink on its way: a route through the
+/// home folder or another link is refused whatever it ends on), lie in the
+/// bounds like a file and outside the repository `top`; then the canonical file
+/// `f` of `q` must lie in the bounds and outside the repository, whose files
+/// serve only from the site folder. Returns the mount folder `f` is opened
+/// beneath, and `f`; or why not.
 #[cfg(unix)]
 fn judge(site: &Site, q: &Path, link: &Path, top: Option<&Path>) -> Result<(PathBuf, PathBuf), &'static str> {
-    let at = site.url_root.join(link);
-    let t = at.canonicalize().map_err(|_| "the link does not resolve")?;
-    let raw = std::fs::read_link(&at).map_err(|_| "the link does not read")?;
     use std::path::Component;
-    if !raw.is_absolute() || raw.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
-        return Err("the link's target is not an absolute path without . or ..");
-    }
-    if site.bounds.as_written(&raw) != t {
+    let at = site.url_root.join(link);
+    let raw = std::fs::read_link(&at).map_err(|_| "the link does not read")?;
+    let plain = raw.is_absolute() && raw.components().all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+    let Some(written) = plain.then(|| site.bounds.as_written(&raw)).flatten() else {
+        return Err("the link's target is not an absolute path of plain names under a mount folder");
+    };
+    let t = at.canonicalize().map_err(|_| "the link does not resolve")?;
+    if written != t {
         return Err("the link's target runs through a symlink");
     }
     site.bounds.base_for(&t).map_err(|_| "the link points outside the bounds")?;
     if top.is_some_and(|r| t.starts_with(r)) {
         return Err("the link points into the repository");
-    }
-    if site.bounds.too_wide(&t, top) {
-        return Err("the link points at /, the home folder or the repository, or a folder holding them");
     }
     let f = q.canonicalize().map_err(|_| "does not resolve")?;
     let m = site.bounds.base_for(&f)?.to_path_buf();
