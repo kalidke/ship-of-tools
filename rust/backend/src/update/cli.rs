@@ -8,7 +8,8 @@
 //!   nothing.
 //!
 //! The pointer verb's exit code is the contract. 0 means the script goes on to its own checks (no pointer, a pointer
-//! that fits, or nothing to compare); `REFUSED` means drop the pointer. An older `sotd` exits 1 on the unknown word
+//! that fits, or no install here to compare with); `REFUSED` means drop the pointer, one that cannot be read included.
+//! An older `sotd` exits 1 on the unknown word
 //! `update` and a `sotd update` that predates this verb exits 2 on bad arguments, so a refusal is neither: any other
 //! answer leaves the script on today's exact-tag check.
 
@@ -33,8 +34,9 @@ Usage: sotd update pointer --prefix <install prefix> --target <release target>
 
   May the pointer armed for <target> apply onto the install at <prefix>? The apply scripts ask before they apply it.
   Reads the pointer and install.json; starts no daemon and writes nothing. Prints `ok` and exits 0 (no pointer, a
-  pointer that fits, or nothing to compare), or prints `refuse: <why>` and exits 3: the pointer was armed over an
-  install that is no longer the one on disk, or sits at or below the installed version.";
+  pointer that fits, or no install here to compare with), or prints `refuse: <why>` and exits 3: the pointer cannot be
+  read, was armed over an install that is no longer the one on disk, or sits at or below the installed version (a
+  pointer with no record never applies onto a dev build).";
 
 /// `sotd update stage <folder> --prefix <prefix>`: the folder and prefix, or the reason the arguments are not those.
 fn parse_stage_args(args: &[String]) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
@@ -156,12 +158,18 @@ fn parse_pointer_args(args: &[String]) -> Result<(PathBuf, String), String> {
     ))
 }
 
-/// The refusal for the pointer armed for `target` under `prefix`, or `None` when it may apply.
+/// The refusal for the pointer armed for `target` under `prefix`, or `None` when it may apply. Without a readable
+/// `install.json` the prefix is not an install of ours and there is nothing to compare. A pointer that exists and cannot
+/// be read is refused: every pointer a Rust writer wrote carries its schema, repo and version, so one that does not
+/// parse is corrupt or another program's, and the apply must not guess.
 async fn refusal(prefix: &Path, target: &str) -> Option<String> {
     let updates = prefix.join("updates");
-    // A missing or unreadable pointer is the script's own business: it has checks and messages for both.
-    let ptr = pending::read(&updates, target).await.ok().flatten()?;
-    pending::stale_reason(&ptr, &InstalledBuild::read(&updates)?)
+    let installed = InstalledBuild::read(&updates)?;
+    match pending::read(&updates, target).await {
+        Ok(None) => None,
+        Ok(Some(ptr)) => pending::stale_reason(&ptr, &installed),
+        Err(e) => Some(format!("the pending pointer cannot be read: {e:#}")),
+    }
 }
 
 /// `sotd update pointer ...`: 0, `REFUSED`, or 2 for arguments that are not `--prefix <prefix> --target <target>`.
@@ -305,13 +313,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nothing_armed_or_nothing_to_compare_leaves_the_script_to_its_own_checks() {
+    async fn nothing_armed_or_no_install_here_leaves_the_script_to_its_own_checks() {
         assert_eq!(code(&prefix(("0.6.6-rc9.13", "c0"), None)).await, 0);
         let dir = prefix(("0.6.6-rc9.13", "c0"), Some(("0.6.6-rc9.13", None)));
         std::fs::remove_file(dir.path().join("install.json")).unwrap();
-        assert_eq!(code(&dir).await, 0, "no install.json");
-        let garbled = prefix(("0.6.6-rc9.13", "c0"), Some(("0.6.6-rc9.13", None)));
-        std::fs::write(garbled.path().join("updates").join(format!("pending-{T}.json")), b"{not json").unwrap();
-        assert_eq!(code(&garbled).await, 0, "an unreadable pointer is the script's to drop");
+        assert_eq!(code(&dir).await, 0, "no install.json: not an install of ours");
+    }
+
+    #[tokio::test]
+    async fn a_pointer_that_cannot_be_read_is_refused_with_the_parse_error() {
+        let garbled = prefix(("0.6.6-rc9.13", "c0"), Some(("0.6.6-rc9.14", None)));
+        let path = garbled.path().join("updates").join(format!("pending-{T}.json"));
+        std::fs::write(&path, b"{not json").unwrap();
+        assert_eq!(code(&garbled).await, REFUSED);
+        let why = refusal(garbled.path(), T).await.unwrap();
+        assert!(why.contains("cannot be read") && why.contains("parsing"), "{why}");
+        // A pointer without the fields every Rust writer writes (schema, repo, version) is just as unreadable.
+        std::fs::write(&path, br#"{"tag":"v0.6.6-rc9.14","target":"linux-x86_64"}"#).unwrap();
+        assert_eq!(code(&garbled).await, REFUSED);
+    }
+
+    // The review's measurement: a no-record release pointer above a dev stamp used to be answered `ok`.
+    #[tokio::test]
+    async fn a_pointer_with_no_record_never_applies_onto_a_dev_build() {
+        let dir = prefix(("0.6.6-rc9.14-dev+d94ed0fac", "c1"), Some(("0.6.6-rc9.14", None)));
+        assert_eq!(code(&dir).await, REFUSED);
+        let operator = prefix(("0.6.6-rc9.14-dev+d94ed0fac", "c1"), Some(("0.6.6-rc9.14", Some(("0.6.6-rc9.14-dev+d94ed0fac", "c1")))));
+        assert_eq!(code(&operator).await, 0, "an operator's pointer carries its record");
     }
 }

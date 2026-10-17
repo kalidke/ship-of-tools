@@ -154,11 +154,12 @@ impl Updater {
     /// Mechanism config for the shared crate; errors when no updates root can
     /// be resolved (no install manifest and no usable env — never a temp dir).
     fn mechanism(&self) -> Result<UpdaterConfig> {
+        let updates_root = sot_updater::resolve_updates_root()?;
         Ok(UpdaterConfig {
             repo: self.repo.clone(),
-            current_version: self.current.clone(),
+            current_version: InstalledBuild::version_or(&updates_root, &self.current),
             fetcher: Fetcher::from_env(),
-            updates_root: sot_updater::resolve_updates_root()?,
+            updates_root,
         })
     }
 
@@ -179,28 +180,25 @@ impl Updater {
         if self.mode == Mode::Off {
             return disabled("disabled: update mode off");
         }
-        let out = sot_updater::check_release(
-            &updater_spawner(),
-            &self.repo,
-            &self.current,
-            &Fetcher::from_env(),
-        )
-        .await;
-        let installed = sot_updater::resolve_updates_root().ok().and_then(|root| InstalledBuild::read(&root));
-        clamp_to_install(out, installed.as_ref())
-    }
-}
-
-/// `current` is the version this process booted with, and a shared prefix can have moved past it since: a release the
-/// install on disk is already at or above is no update, whatever the process believes.
-fn clamp_to_install(mut out: CheckOutcome, installed: Option<&InstalledBuild>) -> CheckOutcome {
-    if let (true, Some(id), Some(installed)) = (out.update_available, &out.identity, installed) {
-        if !installed.admits(&id.version) {
-            tracing::debug!(latest = %id.tag, installed = %installed.version, "the install is already at or above the latest release");
-            out.update_available = false;
+        match self.check_basis() {
+            Ok(version) => {
+                sot_updater::check_release(&updater_spawner(), &self.repo, &version, &Fetcher::from_env()).await
+            }
+            Err(status) => disabled(status),
         }
     }
-    out
+
+    /// The version a check follows the channel of and compares with: the install's, read now. This process booted with
+    /// `current`, and a shared prefix can have been installed past it, or onto another channel, since; `current` stands
+    /// only where there is no install to read. A dev build as the install is no basis for a release check.
+    fn check_basis(&self) -> std::result::Result<String, &'static str> {
+        let installed = sot_updater::resolve_updates_root().ok().and_then(|root| InstalledBuild::read(&root));
+        match installed {
+            Some(i) if i.is_dev_build() => Err("disabled: the install is a dev build"),
+            Some(i) => Ok(i.version),
+            None => Ok(self.current.clone()),
+        }
+    }
 }
 
 /// Process-local dedupe for the background pipeline: repeated `update.check`
@@ -275,7 +273,7 @@ pub(crate) enum Pipeline {
     Armed,
     /// Staged and prepared; a newer release is already armed, or this one is marked bad.
     Kept,
-    /// Not armed: an automatic writer offered a release at or below the install.
+    /// Not armed: an automatic writer offered a release at or below the install, or into a dev build.
     NotAbove,
     /// Staged only: the box has no install manifest to prepare for.
     Staged,
@@ -330,27 +328,31 @@ pub(crate) async fn stage_prepare_arm_with(
     match sot_updater::pending::arm(&cfg.updates_root, id, &state.checkout, &state.commit, writer).await {
         Ok(ArmOutcome::Armed) => Ok(Pipeline::Armed),
         Ok(ArmOutcome::KeptNewer | ArmOutcome::MarkedBad) => Ok(Pipeline::Kept),
-        Ok(ArmOutcome::NotAboveInstall) => Ok(Pipeline::NotAbove),
+        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall) => Ok(Pipeline::NotAbove),
         Err(e) => Err(PipelineError::Arm(chain(&e))),
     }
 }
 
-/// Is the install at `install.prefix` a daemon install that this host is not declared a daemon for? On a shared home
-/// one prefix serves hosts that run no backend of their own (the hub's `hosts.toml` says so), and a pointer such a host
-/// arms is prepared without the Julia environments the daemon install needs. An install that never set up a daemon
-/// (`daemon` false, or not recorded) is not another host's: whoever runs a daemon over it owns it.
-fn belongs_to_a_daemon_host(install: &InstallManifest) -> bool {
-    install.daemon == Some(true) && !backend_role_wanted(install)
+/// Does the declared topology name this host and give it neither `daemon` nor `frontend`? Such a host runs no sotd of its
+/// own: on a shared home it is a guest of the prefix, and a pointer it arms is prepared without the Julia environments
+/// the host that does run the daemon needs. A host the topology does not name (or no topology) is not taken for one.
+fn host_runs_no_sotd() -> bool {
+    let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
+    let me = crate::comm::mail::filer::comm_self_host();
+    topo.is_some_and(|t| sot_protocol::topology::runs_no_sotd(&t, &me))
 }
 
-/// Why this daemon arms nothing into the install it runs from, or `None` when it may: the install is another host's
-/// (see [`belongs_to_a_daemon_host`]), or the release is not strictly above the install on disk (the process may be
+/// Why this daemon arms nothing into the install it runs from, or `None` when it may: this host runs no sotd
+/// (see [`host_runs_no_sotd`]), or the release is not strictly above the install on disk (the process may be
 /// older than the install).
 fn arm_refusal(foreign: bool, installed: Option<&InstalledBuild>, id: &ReleaseIdentity) -> Option<String> {
     if foreign {
-        return Some("this host is not declared a daemon for this install".into());
+        return Some("the topology declares this host neither daemon nor frontend".into());
     }
     let installed = installed?;
+    if installed.is_dev_build() {
+        return Some(format!("the installed {} is a dev build", installed.version));
+    }
     (!installed.admits(&id.version)).then(|| format!("{} is not above the installed {}", id.tag, installed.version))
 }
 
@@ -358,7 +360,7 @@ fn arm_refusal(foreign: bool, installed: Option<&InstalledBuild>, id: &ReleaseId
 /// and a pointer that no longer fits the install on disk.
 fn apply_refusal(foreign: bool, installed: Option<&InstalledBuild>, pending: &PendingPointer) -> Option<String> {
     if foreign {
-        return Some("this host is not declared a daemon for this install".into());
+        return Some("the topology declares this host neither daemon nor frontend".into());
     }
     let why = sot_updater::pending::stale_reason(pending, installed?)?;
     Some(format!("the armed {} will not apply: {why}", pending.identity.tag))
@@ -369,7 +371,7 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
     // Refused before the download: `arm` re-reads the install under the lock and is the authority, this only spares
     // a stale or foreign daemon the bytes and the prepare.
     let refusal = install.as_ref().and_then(|i| {
-        arm_refusal(belongs_to_a_daemon_host(i), InstalledBuild::read(&i.updates_root()).as_ref(), id)
+        arm_refusal(host_runs_no_sotd(), InstalledBuild::read(&i.updates_root()).as_ref(), id)
     });
     if let Some(why) = refusal {
         tracing::info!(tag = %id.tag, "not staging: {why}");
@@ -388,7 +390,7 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
         Err(PipelineError::Arm(e)) => tracing::warn!(tag = %id.tag, error = %e, "arming update failed"),
         Ok(Pipeline::Staged) => tracing::info!(tag = %id.tag, "staged (no install manifest — prepare/arm skipped)"),
         Ok(Pipeline::Kept) => tracing::info!(tag = %id.tag, "a newer release is already armed (or this one is marked bad)"),
-        Ok(Pipeline::NotAbove) => tracing::info!(tag = %id.tag, "not armed: not above the installed build"),
+        Ok(Pipeline::NotAbove) => tracing::info!(tag = %id.tag, "not armed: not above the installed build, or the install is a dev build"),
         Ok(Pipeline::Armed) => {}
     }
 }
@@ -695,7 +697,7 @@ pub async fn handle_update_apply(
     };
 
     let install = InstallManifest::for_current_exe();
-    let foreign = install.as_ref().is_some_and(belongs_to_a_daemon_host);
+    let foreign = install.is_some() && host_runs_no_sotd();
     if let Some(why) = apply_refusal(foreign, InstalledBuild::read(&cfg.updates_root).as_ref(), &pending) {
         return refuse(&why);
     }
@@ -1056,29 +1058,25 @@ mod tests {
         assert!(hub, "a daemon entry wants the backend role");
     }
 
-    // The shared-home guest and its two neighbours, through the real declared-host read: a daemon install is another host's
-    // when the topology declares this host no daemon; an install that never set up a daemon is not.
+    // The shape that must be stopped and the shapes that must not: through the real declared-host read, a host the
+    // topology names with neither `daemon` nor `frontend` runs no sotd; a frontend host runs its own, and a host the
+    // topology does not name is not said to be a guest.
     #[test]
-    fn a_daemon_install_belongs_to_a_daemon_host_only() {
+    fn only_a_host_named_with_neither_key_runs_no_sotd() {
         let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let saved = (std::env::var_os("SOT_HOSTS"), std::env::var_os("SOT_SELF_HOST"));
         let dir = tempfile::tempdir().unwrap();
         let hosts = dir.path().join("hosts.toml");
-        std::fs::write(&hosts, "hub = \"hubbox\"\n[host.hubbox]\ndaemon = true\n[host.guest]\nfrontend = true\n").unwrap();
+        std::fs::write(
+            &hosts,
+            "hub = \"hubbox\"\n[host.hubbox]\ndaemon = true\n[host.guest]\n[host.laptop]\nfrontend = true\n",
+        )
+        .unwrap();
         std::env::set_var("SOT_HOSTS", &hosts);
-        let install = |daemon: Option<bool>| -> InstallManifest {
-            serde_json::from_value(json!({"schema": 1, "prefix": "/nowhere", "daemon": daemon})).unwrap()
-        };
-        let foreign = |me: &str, daemon: Option<bool>| {
+        let answers = ["guest", "laptop", "hubbox", "unlisted"].map(|me| {
             std::env::set_var("SOT_SELF_HOST", me);
-            belongs_to_a_daemon_host(&install(daemon))
-        };
-        let answers = [
-            foreign("guest", Some(true)),
-            foreign("hubbox", Some(true)),
-            foreign("guest", Some(false)),
-            foreign("guest", None),
-        ];
+            host_runs_no_sotd()
+        });
         for (key, value) in [("SOT_HOSTS", saved.0), ("SOT_SELF_HOST", saved.1)] {
             match value {
                 Some(v) => std::env::set_var(key, v),
@@ -1192,8 +1190,11 @@ mod tests {
         assert!(arm_refusal(false, Some(&at("0.6.6-rc9.12")), &id).is_none());
         assert!(arm_refusal(false, None, &id).is_none(), "no install manifest: nothing to compare");
         assert!(arm_refusal(false, Some(&at("0.6.6-rc9.13")), &id).unwrap().contains("not above"));
-        assert!(arm_refusal(false, Some(&at("0.6.6-rc9.14-dev+d94ed0fac")), &id).unwrap().contains("not above"));
-        assert!(arm_refusal(true, Some(&at("0.6.6-rc9.12")), &id).unwrap().contains("not declared a daemon"));
+        assert!(arm_refusal(false, Some(&at("0.6.6-rc9.14-dev+d94ed0fac")), &id).unwrap().contains("dev build"));
+        // Not a release above a dev stamp either.
+        let above = fake_identity("v0.6.6-rc9.14");
+        assert!(arm_refusal(false, Some(&at("0.6.6-rc9.14-dev+d94ed0fac")), &above).unwrap().contains("dev build"));
+        assert!(arm_refusal(true, Some(&at("0.6.6-rc9.12")), &id).unwrap().contains("neither daemon nor frontend"));
     }
 
     #[test]
@@ -1202,21 +1203,38 @@ mod tests {
         let now = installed("0.6.6-rc9.13", "c0");
         assert!(apply_refusal(false, Some(&now), &fits).is_none());
         assert!(apply_refusal(false, None, &fits).is_none(), "no install manifest: nothing to compare");
-        assert!(apply_refusal(true, Some(&now), &fits).unwrap().contains("not declared a daemon"));
+        assert!(apply_refusal(true, Some(&now), &fits).unwrap().contains("neither daemon nor frontend"));
         let moved = installed("0.6.6-rc9.14-dev+d94ed0fac", "c1");
         assert!(apply_refusal(false, Some(&moved), &fits).unwrap().contains("will not apply"));
         // A pointer armed before the record existed: judged by its version alone.
         let old = pointer("v0.6.6-rc9.13", None);
-        assert!(apply_refusal(false, Some(&moved), &old).unwrap().contains("not above"));
+        assert!(apply_refusal(false, Some(&moved), &old).unwrap().contains("dev build"));
     }
 
+    // The channel comes from the install on disk, not from the version the process booted with.
     #[test]
-    fn a_check_reports_no_update_when_the_install_is_already_there() {
-        let out = || ok_outcome(fake_identity("v0.6.6-rc9.13"));
-        assert!(clamp_to_install(out(), Some(&installed("0.6.6-rc9.12", "c0"))).update_available);
-        assert!(clamp_to_install(out(), None).update_available);
-        assert!(!clamp_to_install(out(), Some(&installed("0.6.6-rc9.13", "c0"))).update_available);
-        assert!(!clamp_to_install(out(), Some(&installed("0.6.6-rc9.14-dev+d94ed0fac", "c0"))).update_available);
+    fn a_check_follows_the_install_not_the_process() {
+        let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var_os("SOT_UPDATE_ROOT");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("updates")).unwrap();
+        std::env::set_var("SOT_UPDATE_ROOT", dir.path().join("updates"));
+        let installed_at = |version: &str| {
+            std::fs::write(dir.path().join("install.json"), format!(r#"{{"schema":1,"prefix":"/p","version":"{version}"}}"#)).unwrap();
+        };
+        let process_on_an_rc = Updater { current: "0.6.6-rc9.12".into(), dev: false, mode: Mode::Notify, repo: "o/r".into() };
+        let none = process_on_an_rc.check_basis();
+        installed_at("0.6.7");
+        let stable = process_on_an_rc.check_basis();
+        installed_at("0.6.7-dev+abc");
+        let dev = process_on_an_rc.check_basis();
+        match saved {
+            Some(v) => std::env::set_var("SOT_UPDATE_ROOT", v),
+            None => std::env::remove_var("SOT_UPDATE_ROOT"),
+        }
+        assert_eq!(none, Ok("0.6.6-rc9.12".to_string()), "no install: the process's version");
+        assert_eq!(stable, Ok("0.6.7".to_string()), "the install's channel, not the process's rc");
+        assert!(dev.is_err(), "a dev install is no basis for a release check");
     }
 
     #[test]

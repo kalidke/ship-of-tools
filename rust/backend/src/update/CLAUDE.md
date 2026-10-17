@@ -14,7 +14,7 @@ parent folder, owns the pipeline both reach. Part of distribution; charter: scri
 `run` in `cli.rs`; `pointer_cli` for what apply asks.
 
 ## Rules
-- `pointer` starts no daemon and writes nothing. Its refusal code is 3: an older `sotd` exits 1 on the word `update` and
+- `pointer` starts no daemon and writes nothing. It refuses a pointer that cannot be read as well as one that no longer fits; with no readable `install.json` or no pointer it answers 0. Its refusal code is 3: an older `sotd` exits 1 on the word `update` and
   a `sotd update` without the verb exits 2, so the apply scripts read only 3 as a refusal and keep the exact-tag check
   for any other answer.
 - `stage` is the explicit exception to "arm only above the install": it prints the direction (`newer`, `same` or

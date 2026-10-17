@@ -22,7 +22,7 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
   login in flight its `LinkWatch`), in `ssh_bridge.rs`.
 - The lane dial `DaemonLaneEndpoint`, the attach worker's endpoint over op `lane.connect`, in `lane_client.rs`.
 - The systemd unit text sotd generates, in `relay_units.rs`: the hub's relay units for each relayed host, and the host
-  pins (`host_pin`, `daemon_pin`, `hub_pins`) built from the hosts that run sotd (`sotd_hosts`, in `mod.rs`), and the
+  pins (`host_pin`, `daemon_pin`, `hub_pins`) built from the hosts that run sotd (`sotd_hosts`, in `mod.rs`; `runs_no_sotd` is its complement over the named hosts), and the
   installing host's pin where there is no hosts.toml (`install_pin`).
 - Generated hub-relay path classification (relay_host_for_path in mod.rs), distinct from this computer's daemon endpoint.
 

@@ -380,6 +380,12 @@ pub fn sotd_hosts(topo: &Topology) -> Vec<&str> {
     topo.hosts.iter().filter(|h| h.daemon || h.frontend).map(|h| h.name.as_str()).collect()
 }
 
+/// Does the declared topology name `name` and leave it out of [`sotd_hosts`], with neither `daemon` nor `frontend`? Such a
+/// host runs no sotd of its own. A host the topology does not name is not this: nothing says what it runs.
+pub fn runs_no_sotd(topo: &Topology, name: &str) -> bool {
+    topo.host(name).is_some_and(|h| !h.daemon && !h.frontend)
+}
+
 /// `(host, endpoint)` for every [`dialable_hosts`] entry, resolved for
 /// `self_host`: its own local socket for itself; on the hub, the hub's own
 /// socket for a remote host ([`relay_socket_path`] — no forward needed,
