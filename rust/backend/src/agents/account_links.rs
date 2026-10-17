@@ -206,6 +206,25 @@ mod tests {
         assert!(std::fs::symlink_metadata(account.join("skills")).is_err(), "the reparse point is removed");
     }
 
+    // Hand-made junctions, symlinks, hard links and real files are all left alone, whatever the link maker would do.
+    #[cfg(unix)]
+    #[test]
+    fn every_hand_made_entry_form_is_left_untouched() {
+        let (tmp, account) = setup();
+        let default = tmp.path().join(".claude");
+        std::fs::write(default.join("history.jsonl"), "h").unwrap();
+        touch_dir(&default.join("projects"));
+        fake_junction(&default.join("skills"), &account.join("skills")).unwrap();
+        std::os::unix::fs::symlink(default.join("CLAUDE.md"), account.join("CLAUDE.md")).unwrap();
+        std::fs::hard_link(default.join("settings.json"), account.join("settings.json")).unwrap();
+        std::fs::write(account.join("history.jsonl"), "own").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("gone"), account.join("projects")).unwrap();
+        ensure_account_links_with(tmp.path(), "team", |_, _, _| panic!("no entry may be made")).unwrap();
+        assert_eq!(std::fs::read_link(account.join("CLAUDE.md")).unwrap(), default.join("CLAUDE.md"));
+        assert_eq!(std::fs::read_to_string(account.join("history.jsonl")).unwrap(), "own");
+        assert!(std::fs::symlink_metadata(account.join("projects")).unwrap().file_type().is_symlink());
+    }
+
     #[test]
     fn a_symlink_that_works_is_used_and_another_error_is_not_a_fallback() {
         let (_tmp, account) = setup();
