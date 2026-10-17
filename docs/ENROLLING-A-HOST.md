@@ -5,7 +5,7 @@ attach to one, and type — without that frontend having an account, a key,
 or a route to the box. The route is: frontend → its own `ssh` child to the
 hub → the **hub**'s socket for that box → one `ssh` from the hub → `sotd
 stdio-bridge` on the box → that box's daemon. The hub is the only machine
-that ever ssh's in. The `hosts.toml` grammar is ADR 0015; this page is the procedure.
+that ever ssh's in. The `hosts.toml` grammar is under "hosts.toml" in Configuration files; this page is the procedure.
 
 Everything here is run by an operator, once per box. Nothing in it is
 automatic, and every step has a check that fails loudly — "it looked
@@ -115,7 +115,8 @@ Each step's check must pass before the next one is worth doing.
 
    Then on the hub: `sotd topology apply` (a dry run — read it) and
    `sotd topology apply --yes`. It must enable exactly one
-   `sot-host-relay-<host>.socket` and disable nothing you did not expect.
+   `sot-host-relay-<host>.socket` and disable nothing you did not expect. It also enables
+   `sot-relay-tunnel@<host>` (the reverse tunnel for messaging) unless the box is a `frontend`; expect that line.
    On every other box: `sotd topology sync`. A box that shares the hub's
    home reads the new `sotd.service` pin at its next boot, or after
    `systemctl --user daemon-reload` there; a reload starts nothing, so a box
@@ -147,7 +148,7 @@ Each step's check must pass before the next one is worth doing.
 ## Removing a box
 
 Delete its `[host.<host>]` block on the hub, `sotd topology apply --yes`
-(which disables the listener and removes the generated files), and
+(which disables the listener and the box's `sot-relay-tunnel@<host>`, and removes the generated files), and
 `sotd topology sync` elsewhere. Nothing needs doing on the box itself —
 the hub was the only side holding a route — unless it shares the hub's home
 and runs a daemon from there: then stop it on the box with

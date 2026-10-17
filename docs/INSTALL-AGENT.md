@@ -113,9 +113,9 @@ intent is ambiguous.
 
 ## 0. Ground rules
 
-- The installer needs no root and everything installs under `$HOME`; installing a missing prerequisite may need it
-  (`sudo apt-get install`)
-  (`~/.local/share/sot`, `~/.config/sot`, `~/.local/bin`). The installer
+- The installer needs no root: everything it writes is under `$HOME` (`~/.local/share/sot`, `~/.config/sot`,
+  `~/.local/bin`, plus the agent folders in 2.2). Installing a missing prerequisite (`sudo apt-get install ...`) may
+  need root. The installer
   honors `SOT_PREFIX` and `XDG_CONFIG_HOME` overrides — if you set them,
   substitute your prefix in every path below (verify, uninstall, all of it).
 - Use the installer's **flags**, not its interactive TTY Q&A — you are the
@@ -199,7 +199,8 @@ cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launc
   whose `ExecStart` is outside this prefix, the `~/.local/bin/sot-launch`
   wrapper, the desktop entry, and the macOS app — any one of these already
   pointing at a source checkout or another `--prefix` means installing here
-  would replace or disable it (the ownership check runs only for frontend roles). Stop and tell the human — unless they asked
+  would replace or disable it (the running `sotd.service` is checked for every role; the wrapper, desktop entry and
+  macOS app only when a frontend is being installed). Stop and tell the human — unless they asked
   you to replace a source build with a release install, which is that
   authorization already; then proceed with the flag. A unit file alone
   (e.g. seen over a shared home, not active here) is not this case, and
@@ -231,12 +232,7 @@ cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launc
   systemd service, and overwrites it.
 - **Neither** → a fresh install; carry on below.
 
-Only when a live daemon or integration file from a different prefix is blocking
-you and the human has explicitly authorized stepping on it, or when a host or
-record refusal above stands and the human says this machine's own role changed,
-add
-`--force-role-change` to
-the install command. Never add it to get past an error you did not understand.
+Never add `--force-role-change` to get past an error you did not understand.
 
 ### 2.1 Ask the human (one question, fresh installs)
 
@@ -276,19 +272,20 @@ quote these facts to the human and wait for an explicit yes:
 - Everything goes under their home directory, mostly `~/.local/share/sot`,
   plus user lingering (`loginctl enable-linger`) so the user-level `sotd`
   systemd service keeps the backend running after logout on Linux.
-- Skills and hooks go into their global `~/.claude` and `~/.codex`. Hooks are
+- Skills go into `~/.claude/skills` and `$CODEX_HOME/skills`. Claude hooks are
   merged into `~/.claude/settings.json`, and into each
   `~/.claude-auth/<name>/settings.json` that exists, without removing existing
   ones. A skill of theirs with the same name as any of the 13 shipped ones
   (`julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `worktree`, and the `sot-*` skills) is
   overwritten without a backup.
 - Codex side: `$CODEX_HOME/AGENTS.md` is written when absent or ours, and a local plugin with a marketplace file goes
-  under `~/.agents/plugins/` (Codex hooks are that plugin, not `~/.codex`).
+  under `~/.agents/plugins/` (Codex hooks are that plugin).
 - Launchers `ccb`, `ccx`, `sot-fe`, `show-result` and `sot-gh-auth` go into `~/.local/bin`.
 - The installer declares the home folder as the folder-trust root (`sotd trust declare $HOME`): the daemon then
   marks Claude Code's trust dialog answered for every project folder under `$HOME` when it starts a session.
-- With no Julia 1.12 or newer, it runs juliaup's own installer from the network (`curl https://install.julialang.org`;
-  juliaup's defaults may edit shell startup files) and downloads Julia package depots.
+- With no Julia 1.12 or newer, it installs juliaup from the network if juliaup is absent (`curl
+  https://install.julialang.org`; juliaup's defaults may edit shell startup files), else adds the 1.12 channel; it does
+  not change juliaup's default channel. It also downloads Julia package depots.
 - Sessions start Claude Code in auto mode; Codex with approvals, the sandbox
   and hook trust all bypassed (`--dangerously-bypass-approvals-and-sandbox
   --dangerously-bypass-hook-trust`).
@@ -464,12 +461,14 @@ git -C ~/.local/share/sot/repo/current describe --tags   # must equal the tag
 cat ~/.local/share/sot/install.json          # schema 1; version and tag equal the release
 ```
 
-For frontend roles with `--backend`, also check that the hub's `hosts.toml` lists this machine:
-`~/.local/share/sot/bin/sotd topology plan` must print a `dial` line for the backend. If it fails with
-`<host> is not a listed host`, or `sot-launch` prints `continuing with no declared hosts`, enrol this machine on
-the hub first (§2.1).
+For frontend roles with `--backend`, also check that the hub lists this machine: run
+`~/.local/share/sot/bin/sotd topology sync --hub <backend alias>`, then `~/.local/share/sot/bin/sotd topology plan`,
+which must print a `dial` line for the backend. A sync refusal (`does not list this box`), or `sot-launch` printing
+`continuing with no declared hosts`, means the machine is not enrolled on the hub yet (§2.1).
 
-For backend roles, check that a coding agent exists on the host: `command -v claude || command -v ccx` (the
+Check that Julia is 1.12 or newer: `julia --version`; if it reads older, run `juliaup default 1.12`.
+
+For backend roles, check that a coding agent exists on the host: `command -v claude || command -v codex` (the
 installer only warns). Tell the human to log in to it there.
 
 For backend roles, prove the daemon answers a hello. Two branches:
@@ -534,7 +533,7 @@ macOS) for the focused pane's shortcuts, F1 for the Help drawer.**
 | `topology sync failed: hub's hosts.toml does not list this box; add [host.<me>] on the hub`, or `<host> is not a listed host` from `sotd topology plan` | the hub does not know this machine → on the hub add `[host.<this box>]` with `frontend = true` (`docs/ENROLLING-A-HOST.md`), then relaunch |
 | dirty-checkout refusal on upgrade | the human edited `repo/current` → `git -C ... stash` (or commit), re-run |
 | ssh to `<host>` fails | read its own stderr line in the host row (the ssh child's own complaint, e.g. a refused key, is the diagnosis) |
-| `topology sync failed: no hosts.toml ... yet: pass --hub <alias>` | the box never had its first sync (fresh install without `-Hub`, or migrated off a checkout whose `.sot\hosts.toml` is no longer read) → `& "$env:LOCALAPPDATA\sot\bin\sotd.exe" topology sync --hub <alias>` (or re-run `install-shortcut.ps1 -Hub <alias>`), then relaunch |
+| `topology sync failed: no hosts.toml ... yet: pass --hub <alias>` | the box never had its first sync (fresh install without `-Hub`, or migrated off a checkout whose `.sot\hosts.toml` is no longer read) → `& "$env:LOCALAPPDATA\sot\bin\sotd.exe" topology sync --hub <alias>` (or re-run `install-shortcut.ps1 -Hub <alias>`); on Linux/macOS `~/.local/share/sot/bin/sotd topology sync --hub <alias>`; then relaunch |
 | backend socket missing | failed daemon start → `systemctl --user status sotd`, restart it |
 | Julia instantiate fails "project and manifest are out of sync" (often naming a stdlib, e.g. `Sockets`) | stale `Manifest.toml` from a previous install left in the checkout's env dirs → manual fix: `rm ~/.local/share/sot/repo/current/julia/{kernel,repl,pluto}/Manifest.toml` and re-run |
 | Julia instantiate slow on first run | normal (precompilation); minutes, once |

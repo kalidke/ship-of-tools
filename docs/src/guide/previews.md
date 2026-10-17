@@ -64,15 +64,14 @@ returns a `text/markdown` note explaining the gap — never a silent blank pane.
 ## Opens in the browser, not the pane
 
 Some formats are interactive HTML and belong in a real browser rather than a
-static pane. Consistent with the video policy, these are popped out to the OS
-browser through the backend connection, local or remote, rather than rendered
-in-pane:
+static pane. Consistent with the video policy, these are served by the daemon's
+page server and opened in the OS browser, local or remote, rather than rendered
+in-pane.
 
 `o` on the cursored or previewed file opens it in the right tool:
 
 - **HTML** (`sample.html`) — opened in the browser, with the figure and movie
-  beside it served by the daemon's page server, so a missing one shows the page
-  path dropped it.
+  beside it served by the daemon's page server.
 - **Pluto notebooks** (`pluto_demo.jl`, `pluto_demo2.jl`) — opened as live Pluto
   sessions in the browser. As `.jl` files they still get a syntax-highlighted
   source preview in the pane.

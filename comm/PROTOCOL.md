@@ -114,7 +114,8 @@ are events the hooks send: `prompt` (a turn starts; sets `floor`, and a user pro
 session that is not a joined comm agent, an event is a silent no-op; a declaration fails with rc 1 and
 `comm-status.sh: no registry row for ... stamp discarded`. The daemon's one work-state write is clearing `done`
 when a person views the row (`clear_comm_unread`). The daemon joins `state`, `summary` and `status_at` onto
-`workspace.list` as `agent_state` / `agent_summary` / `agent_status_at`, keyed by the workspace's `agent_name`,
+`workspace.list` as `agent_state` / `agent_summary` / `agent_status_at`, keyed by the row's handle (the one its session declared, else the one in its pinned self file, else the row's
+stored `agent_name`; `comm_handle_for_workspace`),
 so the frontend, which cannot read this registry directly, renders `summary` as the per-session glance, colored
 by `state` and aged off `status_at`.
 
@@ -300,8 +301,8 @@ a stream; the record keeps its colons.
 ISO-8601 UTC timestamps sort lexically, but they are NOT the read cursor: the
 cursor is the NUMBER of inbox lines already shown, which cannot lose a frame filed in
 the same second as one already read. `comm-poll.sh` is the only writer;
-a legacy timestamp cursor is converted on first read (the count of lines at or
-before it). The cursor is `<count> <crc>-<len>`: the count, then the `cksum` of
+a legacy timestamp cursor is read as the number of lines before the first line
+whose `ts` is later than it; nothing is written until the next poll that shows a line. The cursor is `<count> <crc>-<len>`: the count, then the `cksum` of
 line `<count>` without its newline and NUL bytes — one hash, taken alike of the
 file's line and of the reader's copy. If that line no longer hashes so, a
 cut-back removed it, and the reader steps back one line and says so. A
@@ -337,7 +338,8 @@ reach.
 its box name; two boxes never share one. A row's session declares its
 handle to its daemon when it first starts; the daemon keeps it through
 restarts, compactions and clears, gives each handle to one row only, and a
-newer declaration moves it. A box whose daemon runs no rows holds no
+newer declaration moves it. Not built: nothing tells the row that lost the handle, whose self file still names it,
+so its scripts still act as that handle until it re-joins (ADR 0049 stage B6). A box whose daemon runs no rows holds no
 addresses.
 
 **Inbox.** One file per handle, `inbox/<handle>.jsonl`, in the box's comm

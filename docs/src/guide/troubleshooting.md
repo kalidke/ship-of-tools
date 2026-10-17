@@ -68,12 +68,10 @@ kill domain.
 ## A browser page says `127.0.0.1 refused to connect`
 
 `Shift+W` (built docs), `o` (video playback, Pluto) and `wglshow` pages are
-relayed through the frontend↔daemon connection, over the same `ssh` child that
-connection already dialled for that host — not a separate port forward. A
-failed dial shows up the same way any dial failure does: that child's last
-stderr line, in the host row's status text. See
-[Transport](../concepts/transport.md). Reconnect with `F5`, then reopen the
-page.
+served by the daemon and relayed by your window on a loopback port of its own; no port is forwarded ahead of
+time (see [Transport](../concepts/transport.md#Browser-facing-ports)). A tab outlives neither a restart of the window
+nor of the daemon: open the page again. A failed login for a page is a line in the window's log, not in the host row.
+If the link is down, reconnect with `F5` first.
 
 ## The REPL says it has no display of its own
 

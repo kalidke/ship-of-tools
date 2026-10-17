@@ -196,8 +196,8 @@ interactive `wglshow`, is [Figures](figures.md).
 `wglshow` serves the figure over Bonito on a loopback port the OS assigns, at an address with a secret in it (another
 account on the box that finds the port gets nothing), and returns a `BrowserView`, which makes the frontend open the
 figure in your OS browser with no URL to copy. The frontend hands the browser a one-use local address that redirects to
-the figure, so the secret is never on a command line. On a remote backend the page and its WebSocket ride the daemon
-proxy over the control connection (ADR 0035), with no dedicated forward. One server per REPL lives as long as the REPL;
+the figure, so the secret is never on a command line. On a remote backend the window relays the page and its WebSocket
+to the daemon's proxy (ADR 0035), with no setup (see [Transport](../concepts/transport.md#Browser-facing-ports)). One server per REPL lives as long as the REPL;
 calling `wglshow` again shows the new figure at the same address. With several frontends attached the figure opens in
 the window in use ([A second frontend](@ref browser-window)); `wglshow(fig; open = "<fe>")` opens it only on the
 frontend `sot-fe --fe <fe>` names, and `open = false` opens it nowhere. A figure has one live viewer: a new tab of a
