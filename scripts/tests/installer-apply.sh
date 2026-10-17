@@ -425,6 +425,21 @@ printf 'gnu (glibc 2.31, runs on glibc >= 2.31)\n' > "$d/arch/LIBC"
 check "the install prints the libc line" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'archive sotd libc: gnu (glibc 2.31' || true)"
 
 # ---------------------------------------------------------------------------
+# A sotd that cannot run here: the install prints its loader's error and the libc its pack names, and blames nothing.
+case_start "archive_install_names_the_libc_when_its_sotd_cannot_run"
+d="$WORK/ar-norun"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev
+printf 'gnu (glibc 2.31, runs on glibc >= 2.31)\n' > "$d/arch/LIBC"
+printf '#!/bin/sh\necho "loader: GLIBC_2.34 not found (required by sotd)" >&2\nexit 1\n' > "$d/pack/sot-1.2.3-dev-$TGT/sotd"
+chmod 0755 "$d/pack/sot-1.2.3-dev-$TGT/sotd"
+tar -czf "$d/arch/sot-1.2.3-dev-$TGT.tar.gz" -C "$d/pack" "sot-1.2.3-dev-$TGT"
+( cd "$d/arch" && sha256_of "sot-1.2.3-dev-$TGT.tar.gz" COMMIT LIBC > SHA256SUMS ); run_packed "$d"
+check "an unrunnable sotd makes the install exit non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
+check "it prints the loader's error" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'GLIBC_2.34 not found' || true)"
+check "it names the pack's libc" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'archive sotd libc: gnu (glibc 2.31' || true)"
+check "it does not blame TMPDIR" "0" "$(printf '%s\n' "$AR_OUT" | grep -c 'noexec' || true)"
+check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
+
+# ---------------------------------------------------------------------------
 # --ignore-missing checks only the names SHA256SUMS lists, so a copied COMMIT or LIBC it does not list is refused, not trusted.
 case_start "archive_install_refuses_a_copied_asset_its_sha256sums_does_not_list"
 d="$WORK/ar-unlisted-libc"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev

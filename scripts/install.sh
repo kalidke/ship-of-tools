@@ -810,9 +810,11 @@ mkdir -p "$CONFIG"
 tar -xzf "$WORK/sot-$VER-$TARGET.tar.gz" -C "$WORK"
 BINDIR="$WORK/sot-$VER-$TARGET"
 # Every answer the gates read comes from this sotd, so one that cannot run here
-# (a TMPDIR mounted noexec) stops the install instead of reading as a topology.
-"$BINDIR/sotd" --version >/dev/null 2>&1 \
-    || die "the unpacked sotd cannot run from $WORK (is ${TMPDIR:-/tmp} mounted noexec?); set TMPDIR to a folder that allows execution"
+# stops the install instead of reading as a topology. Its loader's error says why.
+if ! "$BINDIR/sotd" --version >/dev/null 2>"$WORK/sotd.err"; then
+    cat "$WORK/sotd.err" >&2
+    die "the unpacked sotd cannot run on this host (its error is above)"
+fi
 # An archive's binaries name their own version and commit: they must be the ones its folder (SHA256SUMS, COMMIT) names,
 # so a half-written or mislabelled folder installs nothing.
 if [ -n "$ARCHIVE" ]; then
@@ -943,7 +945,7 @@ if [ "$OS" = Linux ] && [ "$WANT_FRONTEND" = 1 ]; then
     [ -n "$glibc" ] || glibc=0
     lowest="$(printf '%s\n%s\n' "$GLIBC_FLOOR_FE" "$glibc" | sort -V | sed -n 1p)"
     [ "$lowest" = "$GLIBC_FLOOR_FE" ] \
-        || die "the frontend binary needs glibc >= $GLIBC_FLOOR_FE (this box: $glibc). The backend (musl, --be-only) runs anywhere."
+        || die "the frontend binary needs glibc >= $GLIBC_FLOOR_FE (this box: $glibc); --be-only installs the backend without it."
 fi
 
 # ---- ownership gate ------------------------------------------------------------
