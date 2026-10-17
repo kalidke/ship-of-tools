@@ -59,7 +59,7 @@ PREFIX="${SOT_PREFIX:-$HOME/.local/share/sot}"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sot"
 
 
-ROLE="" VERSION="" ARCHIVE="" BE_ALIAS="" HUB_ALIAS="" NO_SERVICE=0 FORCE_ROLE_CHANGE=0 RESTART_DAEMON=0
+ROLE="" VERSION="" ARCHIVE="" BE_ALIAS="" HUB_ALIAS="" NO_SERVICE=0 FORCE_ROLE_CHANGE=0 RESTART_DAEMON=0 PINNED=0
 GLIBC_FLOOR_FE="2.35"
 
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
@@ -574,12 +574,15 @@ json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 # `backend_owns_updates_here`). `hub` is the plan's one local declaration,
 # for a box that does not share the hub's home; empty string when this box
 # has none. Extracted to a pure function so scripts/tests/installer-state.sh
-# can check its shape without a real install.
-installer_manifest_json() {  # <prefix> <config> <service> <version> <tag> <commit> <installed_at> <hub> <daemon 0|1> <frontend 0|1>
+# can check its shape without a real install. `pinned` appears only when the run named what to install (--version or
+# --archive): the automatic updaters leave a pinned install where it is (rust/updater/src/pending.rs's `admits`), and a
+# run that names no version writes the record without it.
+installer_manifest_json() {  # <prefix> <config> <service> <version> <tag> <commit> <installed_at> <hub> <daemon 0|1> <frontend 0|1> [pinned 0|1]
     local prefix="$1" config="$2" service="$3" version="$4" tag="$5" commit="$6" installed_at="$7" hub="$8"
-    local daemon_json=false frontend_json=false
+    local daemon_json=false frontend_json=false pin_line=""
     [ "$9" = 1 ] && daemon_json=true
     [ "${10}" = 1 ] && frontend_json=true
+    [ "${11:-0}" = 1 ] && pin_line=$',\n  "pinned": true'
     cat <<EOF
 {
   "schema": 1,
@@ -592,7 +595,7 @@ installer_manifest_json() {  # <prefix> <config> <service> <version> <tag> <comm
   "installed_at": "$installed_at",
   "hub": "$(json_str "$hub")",
   "daemon": $daemon_json,
-  "frontend": $frontend_json
+  "frontend": $frontend_json$pin_line
 }
 EOF
 }
@@ -852,9 +855,9 @@ while [ $# -gt 0 ]; do
         # This box does not share the hub's home: fetch its hosts.toml
         # (`sotd topology sync`) with the unpacked sotd, below.
         --hub) need_value "$1" "${2:-}" "an ssh alias"; HUB_ALIAS="$2"; shift ;;
-        --version) need_value "$1" "${2:-}" "a value"; VERSION="$2"; shift ;;
+        --version) need_value "$1" "${2:-}" "a value"; VERSION="$2"; PINNED=1; shift ;;
         # A folder scripts/pack-build.sh packed: SHA256SUMS, the tarball, COMMIT and LIBC when present, installed in place of a download.
-        --archive) need_value "$1" "${2:-}" "a folder"; ARCHIVE="$2"; shift ;;
+        --archive) need_value "$1" "${2:-}" "a folder"; ARCHIVE="$2"; PINNED=1; shift ;;
         --prefix) need_value "$1" "${2:-}" "a folder"; PREFIX="$2"; shift ;;
         # Skip the systemd unit install/enable: the caller supervises sotd
         # itself (e.g. a systemd-run --user transient unit). A shared home
@@ -974,6 +977,8 @@ if [ -n "$ARCHIVE" ]; then
     [[ "$ARCHIVE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "$ARCHIVE/COMMIT is not a 40-digit commit id"
 fi
 VERSION="${VERSION:-${SOT_INSTALL_TAG:-}}"
+# A body run by hand on a tag (SOT_INSTALL_TAG with no implicit mark) was told what to install, as --version tells it.
+[ -z "${SOT_INSTALL_TAG:-}" ] || [ "${SOT_INSTALL_IMPLICIT:-}" = 1 ] || PINNED=1
 VER="${VERSION#v}"
 say "installing Ship of Tools $VERSION into $PREFIX"
 
@@ -1660,10 +1665,11 @@ SERVICE="$(installer_service_record "$OS" "$WANT_DAEMON" "$NO_SERVICE")"
 COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
 # Temp file plus rename: a heredoc straight onto the live path truncates it
 # first, so an interrupt would leave the machine with no readable manifest.
-installer_manifest_json "$PREFIX" "$CONFIG" "$SERVICE" "${VERSION#v}" "$VERSION" "$COMMIT" "$(date -u +%FT%TZ)" "$HUB_ALIAS" "$WANT_DAEMON" "$WANT_FRONTEND" \
+installer_manifest_json "$PREFIX" "$CONFIG" "$SERVICE" "${VERSION#v}" "$VERSION" "$COMMIT" "$(date -u +%FT%TZ)" "$HUB_ALIAS" "$WANT_DAEMON" "$WANT_FRONTEND" "$PINNED" \
     > "$PREFIX/install.json.new.$$"
 mv "$PREFIX/install.json.new.$$" "$PREFIX/install.json"
 say "wrote $PREFIX/install.json (schema 1, daemon=$WANT_DAEMON frontend=$WANT_FRONTEND, service=$SERVICE)"
+[ "$PINNED" = 0 ] || say "pinned at $VER: automatic updates stay off for this install until a run that names no version"
 
 say "Ship of Tools $VERSION installed (daemon=$WANT_DAEMON frontend=$WANT_FRONTEND)."
 [ -n "$BE_ALIAS" ] && say "reminder: key-based ssh to '$BE_ALIAS' is required (ssh $BE_ALIAS true)"

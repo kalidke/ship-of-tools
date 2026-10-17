@@ -709,3 +709,20 @@ for f in agents/claude/sot-install/SKILL.md docs/INSTALL-AGENT.md; do
     check "$f: a version the agent picks is never the answer" "1" "$(grep -c -F 'never a version the agent picks' "$ENTRY_SRC/$f" || true)"
     check "$f: --archive runs the install.sh of the checkout that made the pack" "1" "$(grep -c -F 'the install.sh of the checkout that made the pack' "$ENTRY_SRC/$f" || true)"
 done
+
+# ---------------------------------------------------------------------------
+case_start "entry_pins_an_install_whose_run_named_the_version"
+# An operator's downgrade is not undone by the next daily check: a run that names what to install (--version, --archive)
+# records the pin in install.json, which the updater's arm guard reads; a run that names none removes it.
+d="$WORK/pin1"; entry_fixture "$d"
+entry_archive "$d" --be-only --no-service
+check "--archive: the record says pinned" "1" "$(grep -c '"pinned": true' "$d/home/.local/share/sot/install.json" || true)"
+check "and the run says what that means" "1" "$(said 'pinned at 9.9.9: automatic updates stay off for this install until a run that names no version')"
+printf 'same\n' > "$d/ctl/direction"
+entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+check "an implicit run removes the pin" "0 0" "$ENTRY_RC $(grep -c 'pinned' "$d/home/.local/share/sot/install.json" || true)"
+check "and says nothing of one" "0" "$(said 'pinned at')"
+entry_run "$d" SOT_INSTALL_TAG=v9.9.9 --be-only --no-service
+check "a body run on a tag by hand is a named version" "1" "$(grep -c '"pinned": true' "$d/home/.local/share/sot/install.json" || true)"
+check "a record without the argument writes no pin" "0" "$(installer_manifest_json /p /c none 1.0.0 v1.0.0 abc 2026-10-17T00:00:00Z '' 1 0 | grep -c pinned || true)"
+check "and with it ends the object with the pin" '  "pinned": true }' "$(installer_manifest_json /p /c none 1.0.0 v1.0.0 abc 2026-10-17T00:00:00Z '' 1 0 1 | tail -2 | tr '\n' ' ' | sed 's/ $//')"
