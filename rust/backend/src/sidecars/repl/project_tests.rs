@@ -29,12 +29,11 @@ const SETUP: Duration = Duration::from_secs(600);
 
 /// A bare workspace (no `Project.toml`) whose path holds a space, and the real `Workspace::repl` factory over it.
 struct Fixture {
-    root: PathBuf,
     workspace: PathBuf,
     shim: PathBuf,
     repl: Repl,
     _frames: broadcast::Receiver<ReplFrameMsg>,
-    _owned: OwnedRoot,
+    owned: OwnedRoot,
 }
 
 impl Fixture {
@@ -48,11 +47,11 @@ impl Fixture {
     /// bookkeeping any session does there: Pkg makes and at once removes a lock file beside each package version it
     /// resolves (`packages/<name>/<slug>.pid`), and loading a cache updates its timestamp.
     fn with_read_depot(read_depot: Option<std::ffi::OsString>) -> Self {
-        // The process-wide signal fired by `finish` is safe only inside an isolated body.
+        // The process-wide signal fired by the owned root's end, and by its drop, is safe only inside an isolated body.
         debug_assert!(std::env::var_os(crate::sidecars::contract_tests::CHILD_ENV).is_some());
-        let dir = tempfile::tempdir().expect("owned fixture root");
-        let root = dir.path().to_path_buf();
-        let shim = owned_julia_env(&root);
+        let owned = OwnedRoot::new(crate::lifecycle::child_signal::process());
+        let root = owned.path();
+        let shim = owned_julia_env(root);
         if let Some(read) = read_depot {
             std::env::set_var("JULIA_DEPOT_PATH", depot_path(&root.join("depot"), Some(&read)));
             crate::sidecars::contract_tests::one_fresh_pkg_cache();
@@ -73,15 +72,17 @@ impl Fixture {
             String::new(),
         );
         let repl = row.repl(frame_tx);
-        let root = dir.keep();
         Fixture {
-            _owned: OwnedRoot::new(&root, crate::lifecycle::child_signal::process()),
-            root,
             workspace,
             shim,
             repl,
             _frames: frames,
+            owned,
         }
+    }
+
+    fn root(&self) -> &Path {
+        self.owned.path()
     }
 
     /// The workspace as Julia's `realpath` spells it.
@@ -94,12 +95,7 @@ impl Fixture {
 
     /// Ends every child the process owns, then removes the fixture. Only the owned root is removed.
     async fn finish(self) {
-        crate::lifecycle::child_signal::process().fire().expect("fire");
-        within(Duration::from_secs(60), "owned children reaped", || {
-            crate::lifecycle::child_signal::process().live() == 0
-        })
-        .await;
-        std::fs::remove_dir_all(&self.root).expect("remove the owned fixture root");
+        self.owned.end().await;
     }
 }
 
@@ -189,7 +185,7 @@ async fn first_start_compiles_only_the_shim() {
     }
     let fixture = Fixture::new();
     eval(&fixture.repl, 1, "1").await;
-    let compiled_root = fixture.root.join("depot").join("compiled");
+    let compiled_root = fixture.root().join("depot").join("compiled");
     let mut compiled = Vec::new();
     for version in std::fs::read_dir(compiled_root).expect("compiled") {
         for package in std::fs::read_dir(version.expect("version").path()).expect("packages") {
@@ -215,7 +211,7 @@ async fn pkg_add_does_not_edit_shim() {
         return;
     }
     let fixture = Fixture::new();
-    offline_pkg(&fixture.root);
+    offline_pkg(fixture.root());
     let shim_project =
         std::fs::read(fixture.shim.join("Project.toml")).expect("read the shim project");
     let frames = eval(
@@ -260,7 +256,7 @@ async fn a_killed_child_leaves_no_temp_files() {
     }
     let fixture = Fixture::new();
     // This process's temporary folder is the fixture's, so a file a child leaves outside its own folder stays here.
-    let tmp = fixture.root.join("tmp");
+    let tmp = fixture.root().join("tmp");
     std::fs::create_dir(&tmp).expect("create the owned temporary folder");
     let tmp_vars: &[&str] = if cfg!(windows) {
         &["TMP", "TEMP"]
@@ -628,7 +624,7 @@ async fn observer_rejects_a_deliberate_leak() {
 /// (Bonito moves to the next port only on the errors it knows, and HTTP 2.11's `AddressInUseError` is not one), and so
 /// does the page's `using WGLMakie`. The page needs WGLMakie loaded, not its workload, so the workspace turns it off.
 async fn add_wglmakie(fixture: &Fixture) {
-    offline_pkg(&fixture.root);
+    offline_pkg(fixture.root());
     std::fs::write(
         fixture.workspace.join("LocalPreferences.toml"),
         "[WGLMakie]\nprecompile_workload = false\n",
@@ -665,11 +661,12 @@ fn failure_frames(frames: &[Value]) -> String {
         .join(" ")
 }
 
-/// A page served by the real `wglshow` path never puts its secret, or the address that carries it, on a command
-/// line of the REPL's tree, before or after the page exists, on every spawn route; a deliberately leaking process is
-/// rejected by the same observer, and a sentinel proves the observation sees a value the child really has. It reads
-/// every process of the tree; on Windows the Julia root's own command line cannot be read (Julia's loader), so there
-/// the check covers the descendants only.
+/// On every spawn route, loading WGLMakie loads the shim's WGLMakie extension, and `display(fig)` serves the figure
+/// through it on the real `wglshow` path and announces the page. That page never puts its secret, or the address
+/// that carries it, on a command line of the REPL's tree, before or after the page exists; a deliberately leaking
+/// process is rejected by the same observer, and a sentinel proves the observation sees a value the child really has.
+/// It reads every process of the tree; on Windows the Julia root's own command line cannot be read (Julia's loader),
+/// so there the check covers the descendants only.
 #[tokio::test]
 async fn repl_page_secret_never_reaches_command_line() {
     if !isolated(
@@ -732,7 +729,11 @@ async fn repl_page_secret_never_reaches_command_line() {
             !tree_argv_leaks(pid, &[SENTINEL]),
             "{route}: the sentinel is not on a command line"
         );
-        let page = eval(&fixture.repl, base + 2, "using WGLMakie; fig = WGLMakie.Makie.scatter(1:3); println(ShipToolsRepl.wglshow(fig; open=false) isa BrowserView)").await;
+        let ext = "using WGLMakie; println(Base.get_extension(ShipToolsRepl, :ShipToolsReplWGLMakieExt) !== nothing)";
+        let loaded = eval(&fixture.repl, base + 2, ext).await;
+        let why = failure_frames(&loaded);
+        assert_eq!(stdout_of(&loaded), "true", "{route}: the shim's WGLMakie extension loads: {why}");
+        let page = eval(&fixture.repl, base + 3, "display(WGLMakie.Makie.scatter(1:3))").await;
         let address = announced_address(&page)
             .unwrap_or_else(|| panic!("{route}: the page was not announced: {}", failure_frames(&page)));
         let secret = address.rsplit('/').next().unwrap_or_default().to_owned();

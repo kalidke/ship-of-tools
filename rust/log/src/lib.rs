@@ -23,6 +23,8 @@ pub mod test_log;
 #[cfg(feature = "test-support")]
 pub mod test_scan;
 #[cfg(feature = "test-support")]
+pub mod test_copy;
+#[cfg(feature = "test-support")]
 pub mod test_exec;
 #[cfg(all(unix, feature = "test-support"))]
 pub mod test_foreign;

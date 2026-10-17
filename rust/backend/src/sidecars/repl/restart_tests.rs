@@ -2,9 +2,7 @@
 //! child opens, a death respawn keeps the selected project, and every submission sender closing still closes the
 //! streamed runs out.
 
-use std::path::PathBuf;
-#[cfg(unix)]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -14,8 +12,9 @@ use tokio::sync::broadcast;
 #[cfg(unix)]
 use super::project_tests::{eval, raw, stdout_of};
 use super::*;
-use crate::lifecycle::child_signal::Signal;
-use crate::sidecars::contract_tests::{depot_path, executable, isolated, owned_julia_env, within, OwnedRoot};
+use crate::sidecars::contract_tests::{depot_path, executable, isolated, owned_julia_env, OwnedRoot};
+#[cfg(unix)]
+use crate::sidecars::contract_tests::within;
 
 /// A first start compiles the shim in an empty depot, which several parallel tests slow further.
 #[cfg_attr(windows, allow(dead_code, reason = "used by the Unix-only tests of this file"))]
@@ -34,10 +33,6 @@ end
 end
 "#;
 
-fn private_signal() -> &'static Signal {
-    Box::leak(Box::new(Signal::new()))
-}
-
 /// Whether a process with this id still exists; a zombie counts, so false means the child was reaped.
 #[cfg(unix)]
 fn alive(pid: u32) -> bool {
@@ -47,13 +42,11 @@ fn alive(pid: u32) -> bool {
 
 #[cfg_attr(windows, allow(dead_code, reason = "used by the Unix-only tests of this file"))]
 struct Fixture {
-    root: PathBuf,
     first: PathBuf,
     second: PathBuf,
-    sig: &'static Signal,
     repl: Repl,
     frames: broadcast::Receiver<ReplFrameMsg>,
-    _owned: OwnedRoot,
+    owned: OwnedRoot,
 }
 
 impl Fixture {
@@ -61,7 +54,7 @@ impl Fixture {
     /// second on every platform, and its spawns are counted by the lifecycle generation.
     fn idle() -> Self {
         let fx = Fixture::new(false);
-        let shim = fx.root.join("resources").join("julia").join("repl");
+        let shim = fx.root().join("resources").join("julia").join("repl");
         std::fs::create_dir_all(shim.join("src")).unwrap();
         std::fs::write(
             shim.join("Project.toml"),
@@ -69,9 +62,9 @@ impl Fixture {
         )
         .unwrap();
         std::fs::write(shim.join("src").join("ShipToolsRepl.jl"), IDLE_SHIM).unwrap();
-        std::env::set_var("SOT_RESOURCE_ROOT", fx.root.join("resources"));
+        std::env::set_var("SOT_RESOURCE_ROOT", fx.root().join("resources"));
         std::env::set_var("SOT_JULIA_BIN", executable("julia"));
-        std::env::set_var("JULIA_DEPOT_PATH", depot_path(&fx.root.join("depot"), None));
+        std::env::set_var("JULIA_DEPOT_PATH", depot_path(&fx.root().join("depot"), None));
         fx
     }
 
@@ -81,38 +74,33 @@ impl Fixture {
     }
 
     fn new(julia: bool) -> Self {
-        let dir = tempfile::tempdir().expect("owned fixture root");
-        let root = dir.path().to_path_buf();
+        let owned = OwnedRoot::private();
+        let root = owned.path();
         if julia {
-            owned_julia_env(&root);
+            owned_julia_env(root);
         }
         let first = root.join("first");
         let second = root.join("second");
         std::fs::create_dir(&first).expect("create first project");
         std::fs::create_dir(&second).expect("create second project");
-        let sig = private_signal();
         let (tx, frames) = broadcast::channel(256);
-        let repl = Repl::new(tx, Some("ws-restart".into()), first.clone(), sig);
-        let root = dir.keep();
+        let repl = Repl::new(tx, Some("ws-restart".into()), first.clone(), owned.sig());
         Fixture {
-            _owned: OwnedRoot::new(&root, sig),
-            root,
             first,
             second,
-            sig,
             repl,
             frames,
+            owned,
         }
+    }
+
+    fn root(&self) -> &Path {
+        self.owned.path()
     }
 
     /// Ends every child this fixture started, then removes only its own root.
     async fn finish(self) {
-        self.sig.fire().expect("fire");
-        within(Duration::from_secs(60), "owned children reaped", || {
-            self.sig.live() == 0
-        })
-        .await;
-        std::fs::remove_dir_all(&self.root).expect("remove the owned fixture root");
+        self.owned.end().await;
     }
 }
 
@@ -147,7 +135,7 @@ async fn restart_reaps_before_replacement() {
     let fx = Fixture::new(true);
     let held = fx.repl.ensure_supervisor().await.expect("start");
     let old = pid_of(&fx.repl, 1).await;
-    let marker = fx.root.join("spinning");
+    let marker = fx.root().join("spinning");
     let spin = format!("write({}, \"x\"); while true end", raw(&marker.to_string_lossy()));
     fx.repl
         .submit("repl.eval", json!({ "code": spin, "eval_id": 2 }), &Default::default())
@@ -225,8 +213,7 @@ async fn channel_close_finishes_streamed_runs() {
             break;
         }
     }
-    let sig = fx.sig;
-    let root = fx.root.clone();
+    let owned = fx.owned;
     let mut frames = fx.frames;
     drop(held);
     drop(fx.repl);
@@ -246,9 +233,7 @@ async fn channel_close_finishes_streamed_runs() {
     }
     assert_eq!(kinds.last().map(String::as_str), Some("done"));
     assert!(kinds.contains(&"error".to_owned()), "an error precedes the done: {kinds:?}");
-    sig.fire().expect("fire");
-    within(Duration::from_secs(60), "owned children reaped", || sig.live() == 0).await;
-    std::fs::remove_dir_all(&root).expect("remove the owned fixture root");
+    owned.end().await;
 }
 
 /// A submission whose permit was taken before the close-out's close and pushed after it is answered by the close-out,
@@ -260,12 +245,12 @@ async fn a_submission_pushed_after_the_close_is_answered() {
         return;
     }
     let fx = Fixture::new(false);
-    let stub = fx.root.join("julia");
+    let stub = fx.root().join("julia");
     sot_log::test_exec::write_executable(
         &stub,
         "#!/bin/sh\nprintf '%s\\n' '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}'\nsleep 1\nexit 0\n".to_owned(),
     );
-    let resources = fx.root.join("resources");
+    let resources = fx.root().join("resources");
     std::fs::create_dir_all(resources.join("julia").join("repl")).expect("create resources");
     std::env::set_var("SOT_RESOURCE_ROOT", &resources);
     std::env::set_var("SOT_JULIA_BIN", &stub);
@@ -297,9 +282,9 @@ async fn retired_generation_cannot_grant() {
         return;
     }
     let fx = Fixture::new(false);
-    let stub = fx.root.join("julia");
+    let stub = fx.root().join("julia");
     sot_log::test_exec::write_executable(&stub, LATE_BROWSER_STUB.to_owned());
-    let resources = fx.root.join("resources");
+    let resources = fx.root().join("resources");
     std::fs::create_dir_all(resources.join("julia").join("repl")).expect("create resources");
     std::env::set_var("SOT_RESOURCE_ROOT", &resources);
     std::env::set_var("SOT_JULIA_BIN", &stub);
