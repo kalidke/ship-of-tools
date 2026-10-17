@@ -51,7 +51,7 @@ user only what you can't derive. Use `AskUserQuestion` with these:
 3. **sot-comm handle** — short stable name for this session
    (e.g. `myrepo-hub-box`, `lab-box-be`). Default `<repo>-<host>`.
 
-4. **Statusline?** (yes/no, default yes) — install the 2-line Claude statusline.
+4. **Statusline?** (yes/no, default yes) — install the 3-line Claude statusline.
 
 Echo the collected answers back as a short plan before proceeding.
 
@@ -456,7 +456,7 @@ sot --socket \\.\pipe\sot-local
 - [ ] `sot` + `sotd` built
 - [ ] (frontend-client) remote BE provisioned + `sotd` built over SSH (§6b), or confirmed already built (`KERNEL_OK`)
 - [ ] hosts.toml / settings.toml written with the Q&A answers
-- [ ] statusline scripts in `~/.claude/`, settings.json command uses **forward slashes**, prints 2 lines under `bash -c`
+- [ ] statusline scripts in `~/.claude/`, settings.json command uses **forward slashes**, prints 3 lines under `bash -c`
 - [ ] sot-comm installed + joined (`comm-list.sh` shows this handle)
 - [ ] launcher/shortcut created; first launch renders Files mode
 - [ ] (Windows) taskbar button shows the SoT wheel icon and the running window
