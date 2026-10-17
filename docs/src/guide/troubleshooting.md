@@ -44,7 +44,7 @@ window's startup notice says `daemon out of date, restart when ready`. Restart t
 windows, or launch again once none is open; a launch that replaces a daemon says its rows keep running and their REPLs
 restart.
 
-## The bottom of the preview
+## Text is cut off at the bottom of the preview
 
 The preview stops each block of text and each table at its last whole line, so no line is drawn
 cut in half; figure captions and the scale-bar label are not covered. While you edit an annotation
@@ -80,8 +80,9 @@ page.
 The REPL's first run on a Linux backend prints, on stderr, `sot: this REPL has no display of its own (...), and GLMakie
 needs one. CairoMakie and WGLMakie (wglshow) work.` GLMakie needs an X display, and the daemon gives the REPL one by
 starting `Xvfb`. The reason in the parentheses says why it could not: `Xvfb is not installed: none on the daemon's PATH`
-means the program is missing, so install it (`sudo apt-get install xvfb` on Debian and Ubuntu) and run again; a REPL
-started afterward gets its display. Any other reason ends with the last lines Xvfb wrote. CairoMakie and WGLMakie need no
+means the program is missing, so install it (`sudo apt-get install xvfb` on Debian and Ubuntu). The REPL that printed
+the notice keeps running without a display; start a new one with `r` on a `.jl` file in Files mode, or
+`sot-fe repl run <ws> <path> --fresh`, and it gets its display. Any other reason ends with the last lines Xvfb wrote. CairoMakie and WGLMakie need no
 display and keep working. See [Prerequisites](../start/install.md#install-prerequisites).
 
 ## The REPL ended because its display ended
@@ -94,12 +95,8 @@ what you need; nothing of the old REPL survives. Pluto's server is ended the sam
 
 ## A browser page opened in a different window than expected
 
-With several windows attached, a browser open (a `wglshow` figure, `sot-fe docs`, `sot-fe open-url`) goes to exactly
-one window: the one you used last, however long ago. A window counts as used from its second key press, click or wheel
-step within five minutes, and a switch between windows is noticed within about six seconds. With none used yet, it is
-the window that connected last. A window that is reconnecting is not chosen. To open the page on a particular window,
-pass `--fe <fe>` to `sot-fe`, or `open = "<fe>"` to `wglshow`. See
-[A second frontend](second-frontend.md).
+A browser open goes to exactly one window, the one in use, and `--fe <fe>` names another. The rule is in
+[A second frontend](@ref browser-window).
 
 ## The Windows taskbar launch looks dead
 
@@ -120,7 +117,7 @@ shortcut re-run needed for that. Re-run the shortcut installer only after
 moving the repo or the launcher script:
 
 ```powershell
-pwsh -File scripts\install-shortcut.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1
 ```
 
 That refreshes the desktop shortcut and repoints any existing Ship of Tools

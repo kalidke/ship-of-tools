@@ -16,8 +16,9 @@ Press **`s`** for Sessions mode and pick **`[+ create new]`**; the steps are in
 [Start an agent session](@ref start-session).
 
 The daemon starts the agent in its own supervised **capsule**, so it keeps
-running when you switch rows, close the frontend, or lose the connection (see
-[Sessions and persistence](../concepts/sessions.md)).
+running when you switch rows or lose the connection, and when you close a window on a computer that does not run the
+backend. Closing the last window on the computer that runs the backend ends its sessions unless you answer Yes to the
+`Ctrl+Q` prompt; see [What keeps running](../start/running.md).
 
 ## Move between sessions
 
@@ -25,18 +26,16 @@ running when you switch rows, close the frontend, or lose the connection (see
 |-----|--------|
 | `s` | Sessions mode — every row on every connected host, grouped by host |
 | `Shift+ArrowRight` / `Shift+ArrowLeft` | cycle the active session from anywhere |
-| `Ctrl+Arrow` | move focus between panes inside the session |
+| `Primary+Arrow` | move focus between panes inside the session |
 
 Switching rows is a frontend state change: it never restarts a session's
 REPL, so the REPL holding `x = 5` still holds it when you come back.
 
 ## Read the colours
 
-Each row is coloured by the agent's current work state — green while it works,
-red when it is blocked waiting for your answer, purple while it waits on a peer or a long
-job, blue when it has finished a turn you have not looked at, gray when idle.
-Scan the list instead of tabbing through each pane. See
-[Work-state colours](../concepts/work-state.md).
+Each row is coloured by the agent's work state, so you can scan the list instead of tabbing through each pane; the
+colours are in [Work-state colours](../concepts/work-state.md). All keys are in the
+[keybindings reference](../ref/keybindings.md).
 
 ## One worktree per agent
 
@@ -47,7 +46,8 @@ git worktree next to the repo and spawns a new session bound to it:
 
 - directory `<repo-parent>/worktrees/<repo>-wt-<short>` (never inside the repo),
 - branch `wt/<short>` off the current `HEAD`,
-- a session labelled `<repo>-wt-<short>`, listed next to the parent row.
+- a session labelled `<repo>-wt-<short>` (a committed `.sot/worktree.toml` `display_prefix`, or `--display-prefix`,
+  replaces the repo name in the label), listed next to the parent row.
 
 `/worktree status` shows the family and whether each worktree is ready to clean
 up, `/worktree sync` reminds the parent and worktree sessions to sync, and
@@ -69,18 +69,5 @@ window off the row you are on.
 
 ## A separate subscription per session
 
-A session normally runs under the agent's default login. To spend a different
-Claude subscription — a team account, say — create an account folder once
-outside Ship of Tools:
-
-```sh
-mkdir -p ~/.claude-auth/team
-CLAUDE_CONFIG_DIR=~/.claude-auth/team claude
-# then, inside that claude session: /login
-```
-
-It then appears as a choice in the session picker (`Tab` cycles it), and rows
-running under it show a `· team` suffix. Ship of Tools discovers accounts; it
-never creates them or stores a credential. Where the daemon cannot make a symlink on Windows, an account
-shares folders through junctions and starts with copies of `CLAUDE.md`, `settings.json` and `history.jsonl`.
-Details in [Modes](modes.md#Accounts).
+A session runs under the agent's default login unless you pick another account folder in the session picker; rows
+running under one show a `· <name>` suffix. How to add an account is in [Modes](modes.md#Accounts).

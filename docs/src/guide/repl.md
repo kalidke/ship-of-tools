@@ -9,7 +9,7 @@ your interactive Julia session — the same bindings, the same loaded packages �
 but its output is structured, and the figures it produces render inline in the
 native window rather than as text.
 
-The REPL drawer toggles with `Ctrl+J`.
+The REPL drawer toggles with `Primary+j` (`Ctrl+J` on Windows and Linux, `⌘J` on macOS).
 
 The drawer is Ship of Tools' own input line, not Julia's REPL: `]` at the
 start of an empty line enters pkg mode (`pkg>`, run through
@@ -50,8 +50,8 @@ You drive the REPL two ways, without retyping code:
 
 - **Run a whole `.jl` file** from Files mode. `Shift+R` `include`s the cursored file
   into the current persistent session, so its definitions land in your
-  interactive state. `r` first resets the REPL into the file's own project —
-  walking up to the nearest `Project.toml` — then runs it there.
+  interactive state. `r` restarts the REPL in the session's project (the session root when it
+  has a `Project.toml`, else the nearest `Project.toml` above the file) and runs the file there.
 - **Type at the prompt** in the REPL drawer. `Enter` submits the input;
   `Shift+Enter` inserts a newline, so you can build a multi-line entry before
   submitting.
@@ -60,50 +60,48 @@ Per-line and per-block dispatch — running just the line at the cursor, or the
 surrounding top-level form computed by the kernel — are **planned**, not yet
 built.
 
-An evaluation runs on its own task, so whenever it yields (`sleep`, I/O that waits,
-`yield()`) the REPL reads the next request, and you can interrupt it mid-eval. An
-interrupt schedules a real `InterruptException` onto the running evaluation — the
-same semantics as `Ctrl-C` in the stock REPL — which surfaces as an `error` frame. It
-reaches only the evaluation's own code and the display of its value (a figure
-rendering, for example): an interrupt sent before that starts stops it before it runs,
-and one sent after it has finished does nothing. An evaluation that never yields (a
-tight numeric loop, a long `ccall`) holds the REPL's one thread, so the REPL cannot
-read the interrupt. While an evaluation is running, an interrupt that names it (or
-names none) and has gone a second unanswered makes the daemon send the REPL one
-interrupt signal, as `Ctrl-C` does to the stock REPL: Julia raises it at the code's
-next safepoint, which stops an allocating or calling loop, and holds it through C
-code (BLAS), compiling and garbage collection until they return. The REPL keeps
-everything it defined. Code with no safepoint at all (`while true end`) ignores that
-one signal, and the interrupt is answered with an error that says so. A second
-`Ctrl+C` in the drawer while the same evaluations run, or `sot-fe repl interrupt
-<ws> --force`, forces it: a burst of signals, which Julia forces into code with
-none (it prints `WARNING: Force throwing a SIGINT` in the evaluation's output).
-Under heavy CPU load forcing may not stop it (`sot-fe repl interrupt --force` then
-answers with an error that says so).
-**Forcing can crash or hang the REPL** when the thread is inside C code (a BLAS call
-is a measured crash), compiling or collecting garbage, and the REPL's state is then
-lost; `--fresh` restarts it. The daemon sends a signal only for an evaluation it has
-seen start and not finish, never to an idle REPL, though it cannot see an evaluation
-that has just finished and whose `done` it has not yet read. On Windows the signal is
-a Ctrl+Break to the REPL's console process group, which reaches every process in it,
-a server an earlier evaluation left running with `run(cmd; wait = false)` included,
-and a console program's default Ctrl+Break handler ends it. Code that catches the
-`InterruptException` and goes on still holds the REPL (`sot-fe repl interrupt` says
-so after 10 s); a restart ends it at once: `r` on a `.jl` file in Files mode, or
-`sot-fe repl run <ws> <path> --fresh`, whose run every window's drawer shows. On Julia 1.12, 1 of 20 interrupts of a loop that ends on its own at that very moment was answered with an error (`InterruptException`, code `repl_exception`) while the REPL kept running and kept its state; a signal that arrives as the REPL idles between evaluations can end it on 1.12, which only a synthetic signal has produced. `Ctrl+C` in the drawer names, by number, the
-evaluations the drawer shows as running, and stops the running evaluation only if
-its number is one of them (an interrupt that names other evaluations sends no
-signal). Every drawer on a row shows every run on it: its own, another window's
-(labelled `⟨window ▸ …⟩`) and a session's (labelled `⟨session ▸ …⟩`). If the link to a computer drops while an
-evaluation runs, its entry says so and keeps what it had printed; when the window reconnects and the evaluation is
-still running, the entry says the connection is back and shows the rest, and `Ctrl+C` stops it.
+An evaluation runs on its own task, so whenever it yields (`sleep`, I/O that waits, `yield()`) the REPL reads the next
+request, and you can interrupt it mid-eval.
+
+- An interrupt schedules a real `InterruptException` onto the running evaluation, the same semantics as `Ctrl-C` in the
+  stock REPL, which surfaces as an `error` frame. It reaches only the evaluation's own code and the display of its value
+  (a figure rendering, for example): an interrupt sent before that starts stops it before it runs, and one sent after it
+  has finished does nothing.
+- An evaluation that never yields (a tight numeric loop, a long `ccall`) holds the REPL's one thread, so the REPL cannot
+  read the interrupt. When an interrupt that names the running evaluation (or names none) has gone a second unanswered,
+  the daemon sends the REPL one interrupt signal, as `Ctrl-C` does to the stock REPL. Julia raises it at the code's next
+  safepoint, which stops an allocating or calling loop, and holds it through C code (BLAS), compiling and garbage
+  collection until they return. The REPL keeps everything it defined. Code with no safepoint at all (`while true end`)
+  ignores that one signal, and the interrupt is answered with an error that says so.
+- A second `Ctrl+C` in the drawer while the same evaluations run, or `sot-fe repl interrupt <ws> --force`, forces it:
+  a burst of signals, which Julia forces into code with none (it prints `WARNING: Force throwing a SIGINT` in the
+  evaluation's output). Under heavy CPU load forcing may not stop it (`sot-fe repl interrupt --force` then answers with
+  an error that says so). **Forcing can crash or hang the REPL** when the thread is inside C code (a BLAS call is a
+  measured crash), compiling or collecting garbage, and the REPL's state is then lost; `--fresh` restarts it.
+- The daemon sends a signal only for an evaluation it has seen start and not finish, never to an idle REPL, though it
+  cannot see an evaluation that has just finished and whose `done` it has not yet read. On Windows the signal is a
+  Ctrl+Break to the REPL's console process group, which reaches every process in it, a server an earlier evaluation
+  left running with `run(cmd; wait = false)` included, and a console program's default Ctrl+Break handler ends it.
+- Code that catches the `InterruptException` and goes on still holds the REPL (`sot-fe repl interrupt` says so after
+  10 s). A restart ends it at once: `r` on a `.jl` file in Files mode, or `sot-fe repl run <ws> <path> --fresh`, whose
+  run every window's drawer shows.
+- On Julia 1.12, 1 of 20 interrupts of a loop that ends on its own at that very moment was answered with an error
+  (`InterruptException`, code `repl_exception`) while the REPL kept running and kept its state; a signal that arrives
+  as the REPL idles between evaluations can end it on 1.12, which only a synthetic signal has produced.
+- `Ctrl+C` in the drawer names, by number, the evaluations the drawer shows as running, and stops the running
+  evaluation only if its number is one of them (an interrupt that names other evaluations sends no signal). Every
+  drawer on a row shows every run on it: its own, another window's (labelled `⟨window ▸ …⟩`) and a session's
+  (labelled `⟨session ▸ …⟩`).
+- If the link to a computer drops while an evaluation runs, its entry says so and keeps what it had printed; when the
+  window reconnects and the evaluation is still running, the entry says the connection is back and shows the rest, and
+  `Ctrl+C` stops it.
 
 ## [How agents use the REPL](@id agents-repl)
 
 Claude Code sessions run code in the same REPL you use, the session's own,
 through the `sot-fe repl` command that the `julia-repl` skill teaches them.
-That REPL starts with `--project` set to the session root's directory when
-it has a `Project.toml`, else the shim's environment.
+That REPL starts with `--project` set to the session root's directory, whether or not it
+has a `Project.toml`.
 The skill is installed for Claude Code only (see
 [What the installer changes](@ref install-footprint)); Codex sessions have no
 REPL skill yet. The REPL runs one evaluation at a time; a request that arrives
@@ -116,7 +114,7 @@ while another runs comes back `busy` (see
 | `sot-fe repl eval <ws> --code '<julia>'` | run a chunk of code and return its output |
 | `sot-fe repl status [<ws>]` | report whether the workspace has a live REPL |
 | `sot-fe repl interrupt <ws>` | stop a running evaluation, keeping loaded packages |
-| `sot-fe repl run <ws> <path> --fresh` | restart the REPL into the file's project, then run it; the run's output goes to every window's drawer, not to the caller |
+| `sot-fe repl run <ws> <path> --fresh` | restart the REPL in the session's project, then run the file; the run's output goes to every window's drawer, not to the caller |
 
 `<ws>` is the workspace id, label or slug; a session finds its own id in
 `$SOT_WORKSPACE_ID`. The call returns the collected stdout, stderr, value and
@@ -125,7 +123,9 @@ errors to the agent. Figures are written to files under
 put one in your preview pane with `show-result <path>`. Nothing adds
 `.sot/` to your project's `.gitignore` — add it yourself.
 
-The call prints `outcome: <outcome>` on its first line and exits 0 only for `ok`, else 2, so read the outcome:
+`run` and `eval` print `outcome: <outcome>` on their first line and exit 0 only for `ok`, else 2, so read the outcome
+(`run --fresh` prints `fresh-run accepted: REPL restarted into <dir> (<source>)` instead; `interrupt` exits 3 when there is
+nothing to interrupt):
 
 - `ok`: the run finished. `error`: it threw (the error follows). `interrupted`: an interrupt (`sot-fe repl interrupt`, or `Ctrl+C` in a drawer) stopped it.
 - `busy`: another run was going, and nothing ran.
@@ -175,7 +175,7 @@ backend wraps each frame as a `repl.frame` event on the main protocol stream.
 | `stderr` | `{text}` — streamed incrementally |
 | `value` | `{mime, text}` — the last expression's value rendered as text |
 | `image` | `{mime, data_base64, bytes}` — e.g. `image/png` |
-| `browser` | `{url, open, fe}` — a loopback URL for a live browser-served artifact (`wglshow(fig)`, a `BrowserView`); `open` says whether a frontend opens a tab (the window in use: the one you used last, else the one that connected last); `fe`, when present, names the one frontend that opens it |
+| `browser` | `{url, open, fe}` — a loopback URL for a live browser-served artifact (`wglshow(fig)`, a `BrowserView`); `open` says whether a frontend opens a tab (the window in use; see [A second frontend](@ref browser-window)); `fe`, when present, names the one frontend that opens it |
 | `error` | `{message, stacktrace: [{file, line, fn}, …]}` |
 | `done` | `{eval_id, elapsed_ms}` — always the last frame for an evaluation |
 
@@ -187,44 +187,21 @@ frontend render stacktraces with `file:line` links. Adding a new MIME (HTML,
 LaTeX, custom) is a frontend-side render change — the frame schema is open via
 the `mime` field.
 
-## Figures render inline
+## Figures
 
-When the last expression is showable as an image — a CairoMakie `Figure`, a
-`Plots.Plot`, or anything that implements `show(io, MIME"image/png"(), x)` — the
-REPL emits an `image` frame, and the frontend draws it **inline through the
-preview layer**: the Ship of Tools renderer paints it into the window.
+An image value becomes an `image` frame that the frontend draws inline through the preview layer, never through a
+terminal graphics protocol (see [Frontend Rendering](../design/rendering.md)). The walkthrough, with GLMakie and the
+interactive `wglshow`, is [Figures](figures.md).
 
-It is never reduced to a terminal graphics protocol (sixel, kitty, half-blocks).
-Rendering visual output natively is a core premise of the project, and it applies
-to REPL figures exactly as it applies to file previews. See
-[Frontend Rendering](../design/rendering.md).
-
-## Interactive figures in the browser
-
-Static plots render inline (above); an **interactive** figure — one you pan,
-zoom, or rotate — belongs in a real browser. Call `wglshow(fig)` on a WGLMakie
-figure:
-
-```julia
-using WGLMakie
-wglshow(surface(-10:0.4:10, -10:0.4:10, (x, y) -> sin(sqrt(x^2 + y^2));
-                axis = (; type = Axis3)))
-```
-
-`wglshow` serves the figure over Bonito on a loopback port the OS assigns, at an
-address with a secret in it (another account on the box that finds the port gets
-nothing), and returns a `BrowserView`, which makes the
-frontend open the figure in your OS browser with no URL to copy. The frontend hands the browser a one-use local
-address that redirects to the figure, so the secret is never on a command line. On a remote backend the page and
-its WebSocket ride the daemon proxy over the control connection (ADR 0035), with no dedicated forward, so
-pan/zoom/rotate work whether the backend is local or remote. One server per REPL lives as long as the REPL;
-calling `wglshow` again shows the new figure at the same address. With several frontends attached, the figure opens
-in one window, the window in use (the one you used last, else the one that connected last); `wglshow(fig; open = "<fe>")` opens it only on the frontend
-`sot-fe --fe <fe>` names, and `open = false` opens it nowhere. A figure has one live viewer: a new tab of a figure stops the earlier tab of the same figure.
-
-WGLMakie and Bonito are resolved from *your own* project env at call time
-(`using WGLMakie` first) — Ship of Tools ships no plotting dependency of its own,
-so the REPL stays light until you ask for an interactive figure.
+`wglshow` serves the figure over Bonito on a loopback port the OS assigns, at an address with a secret in it (another
+account on the box that finds the port gets nothing), and returns a `BrowserView`, which makes the frontend open the
+figure in your OS browser with no URL to copy. The frontend hands the browser a one-use local address that redirects to
+the figure, so the secret is never on a command line. On a remote backend the page and its WebSocket ride the daemon
+proxy over the control connection (ADR 0035), with no dedicated forward. One server per REPL lives as long as the REPL;
+calling `wglshow` again shows the new figure at the same address. With several frontends attached the figure opens in
+the window in use ([A second frontend](@ref browser-window)); `wglshow(fig; open = "<fe>")` opens it only on the
+frontend `sot-fe --fe <fe>` names, and `open = false` opens it nowhere. A figure has one live viewer: a new tab of a
+figure stops the earlier tab of the same figure.
 
 ## See also
 

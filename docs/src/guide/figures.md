@@ -24,19 +24,15 @@ lines!(ax, 0:0.01:2π, sin)
 fig
 ```
 
-On a Linux backend GLMakie works too: the REPL has a private display of its own, and a GLMakie figure comes back
-as a file and renders the same way. See [The REPL](repl.md) for how code gets there.
+On a Linux backend GLMakie works too when the REPL has a display of its own (an Xvfb; see
+[The REPL says it has no display of its own](troubleshooting.md#The-REPL-says-it-has-no-display-of-its-own)), and
+its figure arrives as an image the same way. See [The REPL](repl.md) for how code gets there.
 
 ## Saved figures, in the preview pane
 
-A PNG the agent (or your script) writes to disk previews in the preview pane as
-you cursor over it in Files mode. Zoom into any image preview and pan around;
-same-size figures in one directory **share** the zoom and pan, so stepping
-through a run's plots keeps your framing instead of resetting it each time.
-
-To point the agent at what you are looking at, zoom in and press **`c`**: the
-visible region is cropped from the source image and handed to the agent in
-your session.
+A PNG or SVG the agent (or your script) writes to disk previews in the preview pane as you cursor over it in Files
+mode. Zooming, panning and cropping a region to hand to the agent are in
+[Previews](previews.md#Pan-and-zoom-images).
 
 ```@raw html
 <DemoShot name="repl-figure" caption="A CairoMakie figure rendered in the window, not in a terminal." />
@@ -55,8 +51,10 @@ wglshow(surface(-10:0.4:10, -10:0.4:10, (x, y) -> sin(sqrt(x^2 + y^2));
 
 The figure opens in your OS browser, and pan, zoom and rotate work the same
 with a local or a remote backend: the page and its WebSocket ride the existing
-control connection. WGLMakie and Bonito come from *your* project environment
-(`using WGLMakie` first); Ship of Tools adds no plotting dependency of its own.
+control connection. With several windows attached it opens in one, the window in use; see
+[A second frontend](@ref browser-window). Once WGLMakie is loaded, plain `display(fig)` on a Makie figure does the
+same. WGLMakie and Bonito come from *your* project environment (`using WGLMakie` first; `wglshow` needs Bonito 5.1 or
+a later 5.x); Ship of Tools adds no plotting dependency of its own.
 
 ## Pluto notebooks
 

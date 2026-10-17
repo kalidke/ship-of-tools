@@ -6,7 +6,7 @@ appropriate to its type. The backend first asks the Julia kernel: a
 [`PreviewPayload`](@ref) from [`preview`](@ref). When no plugin claims it, the
 backend reads the file itself; that is how raster images and plain text are
 served. The payload's `mime` tells the
-frontend which renderer to use; the bytes are opaque to Rust. Adding a format is a
+frontend which renderer to use. Adding a format is a
 Julia-only change — see [The Dispatch ABI](../extend/abi.md) and
 [Writing a FileType Plugin](../extend/filetype.md).
 
@@ -38,7 +38,10 @@ The plugin module and MIME type behind each row are listed under
 [Built-in preview plugins](@ref builtin-preview-plugins).
 
 PNG (and other raster images) render directly through the frontend's image quad
-path — the same path the PDF and video plugins reuse by returning `image/png`.
+path — the same path the PDF and video plugins reuse by returning `image/png`. SVG and `.svgz` also render in the pane.
+
+Text over 512 KiB, or bytes that look binary, show a one-line summary (`large file — N bytes. Not previewed as
+text`) instead. The backend itself truncates text at 2 MiB and refuses binary over 512 MiB with a note.
 
 A few notes on the table:
 
@@ -65,44 +68,49 @@ static pane. Consistent with the video policy, these are popped out to the OS
 browser through the backend connection, local or remote, rather than rendered
 in-pane:
 
+`o` on the cursored or previewed file opens it in the right tool:
+
 - **HTML** (`sample.html`) — opened in the browser, with the figure and movie
   beside it served by the daemon's page server, so a missing one shows the page
   path dropped it.
 - **Pluto notebooks** (`pluto_demo.jl`, `pluto_demo2.jl`) — opened as live Pluto
   sessions in the browser. As `.jl` files they still get a syntax-highlighted
   source preview in the pane.
-- **Quarto documents** (`quarto_julia.qmd`) — the rich rendered form opens in the
-  browser; the source previews as text in-pane. On Linux the Julia engine server a
+- **Quarto documents** (`quarto_julia.qmd`) — `o` renders without running code and opens the result in the
+  browser, `Shift+O` renders with code execution; the source previews as text in-pane. On Linux the Julia engine server a
   render starts ends when the backend daemon ends; a `quarto render` of your own that
   found and reused that server (Quarto finds it through `XDG_RUNTIME_DIR`) starts a
   new one after that.
 
-These all follow the same "rich/interactive content lives in the browser" policy.
+`Shift+W` opens the built documentation site for the file. These all follow the same "rich/interactive content lives
+in the browser" policy. The example files named here are in `examples/preview/` of the release checkout
+(`$SOT_MANUAL/examples/preview/`).
 
-A page can also show data that lives outside its repo. When the repo tracks a
-symlink to a folder on a mounted share or drive (under `/mnt`, `/media` or, on
-macOS, `/Volumes`), images and movies on the page load through that link, and
-movies seek; nothing needs to be declared. Write the link as the share's absolute
-path, as `ln -s /mnt/<share>/... <name>` does: a relative target, or one that runs
-through another link or a `..`, is refused, and so is a symlink inside the share: a
-link serves only the files directly under its target folder, by their own names. A file in your home folder, or with a
-folder or name below the mount folder, on the file's real path, that starts with `.`,
-is never served through a link (a link itself named `.data` still serves).
-Anything else is refused with a message saying why, which the browser shows when
-the missing file is opened in a tab of its own: a link git does not track (`git
-add` it and reload), a linked file that is not under those folders or does not
-exist on the computer whose daemon serves the page (is its share mounted?), a
-link to `/`, to your home folder or the repository or a folder inside it (in any letter case), to a link whose target is not written as the share's absolute real path, a
-`..` in the path, `.git`, a repo file outside the page's site folder (the
-outermost folder above it, within its repository, that holds an `index.html`),
-or a file that changed while it was being
-opened. On macOS, following a link needs git, which means the Command Line
-Tools; the daemon picks up tools installed later at its next restart. On Windows
-no link is followed, so a page there never shows linked data.
+## Data on a mounted share
+
+A page can also show data that lives outside its repo. When the repo tracks a symlink to a folder on a mounted share or
+drive, images and movies on the page load through that link, and movies seek; nothing needs to be declared. A link is
+followed only when:
+
+- git tracks the link (`git add` it and reload);
+- its target is written as an absolute real path under `/mnt`, `/media` or, on macOS, `/Volumes`, as
+  `ln -s /mnt/<share>/... <name>` does: a relative target, or one that runs through another link or a `..`, is refused;
+- no symlink lies below the link, on the way to the file (the file served is the target joined with the names below the
+  link, at any depth);
+- the file is not in your home folder, the repository, `.git` or a folder inside them (in any letter case), and no
+  folder or name below the mount folder on its real path starts with `.` (a link itself named `.data` still serves);
+- the file exists on the computer whose daemon serves the page (is its share mounted?) and does not change while it
+  is being opened.
+
+Anything else is refused with a message saying why, which the browser shows when the missing file is opened in a tab of
+its own. A repo file outside the page's site folder (the outermost folder above it, within its repository, that holds
+an `index.html`) is refused too. On macOS, following a link needs git, which means the Command Line Tools; the daemon
+picks up tools installed later at its next restart. On Windows no link is followed, so a page there never shows linked
+data.
 
 ## Pan and zoom images
 
-With the preview focused (`Ctrl+Right`), `=` zooms an image in and the arrow
+With the preview focused (`Primary+ArrowRight`; `⌘→` on macOS), `=` zooms an image in and the arrow
 keys pan it. Same-size images in a directory share zoom and pan, so stepping through a run's plots keeps your
 framing.
 
@@ -112,12 +120,11 @@ framing.
 
 ## Capturing a preview region for the LLM
 
-For raster image previews you can zoom in, then, with the preview focused
-(`Ctrl+Right`), press `c` to crop the visible
-region and hand it to the session's agent in the agent pane, with a question
-such as "what's the artifact here?". The crop is taken from
-the source image on the backend and delivered to the agent, so it
-sees exactly the region you are looking at.
+For raster image previews you can zoom in, then, with the preview focused (`Primary+ArrowRight`), press `c` to crop
+the visible region from the source image on the backend. The crop is written to
+`<project>/.sot/captures/<name>-roi-<stamp>.png`, and the frontend pastes a "Look at this cropped region ..." line
+naming the source and the crop into the agent pane, **unsent**, and moves focus there. Add your question, such as
+"what's the artifact here?", and press Enter. The agent sees exactly the region you are looking at.
 
 ## Formats added by external plugins
 

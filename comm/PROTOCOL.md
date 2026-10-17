@@ -536,8 +536,8 @@ Monitor exists.
 
 **Cases.**
 
-- A Claude or Codex row gets the same line and check; the free-prompt test
-  knows each tool's prompt.
+- Only a Claude Code row is typed into; the free-prompt test knows its prompt. A Codex row is never typed into,
+  since no Codex screen has been captured to know its prompt (`rust/backend/src/comm/wake/screen.rs`).
 - A row that just restarted, compacted or cleared re-arms nothing: the
   handle stays with the row and the count is a file.
 - A session outside any row (a bare terminal, or one on a box with no

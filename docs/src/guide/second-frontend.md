@@ -7,16 +7,12 @@ colours and the same REPLs.
 
 ## Add one
 
-On the second machine, install the frontend role against the same backend SSH
-alias:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/install.sh | bash -s -- --backend myserver
-```
-
-(On Windows, use the release zip and `scripts\install-shortcut.ps1`; see [Install](../start/install.md).)
-Launch it with `sot-launch`; it spawns its own `ssh` child and connects as one
-more client of the daemon. Nothing on the server changes.
+The hub's `~/.config/sot/hosts.toml` must list the second machine (`[host.<box>]` with `frontend = true`) before its
+install, or its window opens with no host. Then install the frontend role on that machine against the same backend SSH
+alias, with `install.sh --backend <ssh-alias>`; on Windows, extract all three binaries from the release zip and run
+`scripts\install-shortcut.ps1 -Hub <hub-ssh-alias>`. The commands are in [Going remote](../start/remote.md) and
+[Install](../start/install.md). Launch it with `sot-launch`; it spawns its own `ssh` child and connects as one more
+client of the daemon.
 
 ## What is shared and what is not
 
@@ -27,10 +23,11 @@ more client of the daemon. Nothing on the server changes.
 | work-state colours and comm messages | the Terminal drawer (a shell on *that* machine) |
 | files and previews | `settings.toml` (layout preset, GPU preference) |
 
-Closing one frontend affects nothing the other sees: the agents run under the
-backend's own supervisors, not under any frontend.
+The agents run under the backend's own supervisors, not under any frontend, so closing a frontend on another computer
+than the backend ends nothing. Closing the last window on the computer that runs the backend ends its sessions, including
+any that the other frontend was viewing; see [What keeps running](../start/running.md).
 
-## Where a session's output lands
+## [Where a session's output lands](@id browser-window)
 
 With two windows attached, a file an agent shows (`sot-fe preview`, `show-result`) reaches the preview pane and the
 badge of **every** window. A browser an agent opens (a docs site, a URL, a `wglshow` figure) opens on **one** computer:
