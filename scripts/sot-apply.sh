@@ -58,6 +58,18 @@ MARKER="$UPDATES/just-applied-$TARGET"
 UNIT_BAK="$UPDATES/sotd.service.prev-$TARGET"
 WRAP_BAK="$UPDATES/sot-launch.prev-$TARGET"
 
+# ---- a pointer that no longer fits this install ------------------------------
+# The installed sotd answers (it holds the version comparison, so there is no second semver in shell): `update
+# pointer` exits 3 for a pointer armed over an install that is no longer this one, or sitting at or below this
+# install's version, and prints why. Any other answer (0; 1 or 2 from a sotd that predates the verb; 126 or 127 for no
+# sotd at all) leaves the checks below to decide, as before. Asked ABOVE the re-exec that follows, so a pointer's own
+# release's script is never handed a pointer the installed one would refuse; the drop itself waits for the lock.
+ptr_refusal() {
+    [ -x "$BIN_DIR/sotd" ] || return 1
+    PTR_WHY="$("$BIN_DIR/sotd" update pointer --prefix "$PREFIX" --target "$TARGET" 2>/dev/null)"
+    [ $? -eq 3 ]
+}
+
 # ---- prefer a STAGED release's OWN sot-apply, once -------------------------
 # Finding 1b (v0.6.5 macOS field report): the INSTALLED copy of this
 # script (the one actually running right now) can predate fixes a newer
@@ -74,7 +86,7 @@ WRAP_BAK="$UPDATES/sot-launch.prev-$TARGET"
 # Only helps FUTURE upgrades: an old box's old apply predates this guard
 # too, so it can never reach it -- finding 1a's daemon-side sibling check
 # is what protects an upgrade already in the past.
-if [ -z "${SOT_APPLY_REEXECED:-}" ] && [ -f "$PENDING" ]; then
+if [ -z "${SOT_APPLY_REEXECED:-}" ] && [ -f "$PENDING" ] && ! ptr_refusal; then
     stage_field() { sed -n 's/^ *"'"$1"'": *"\([^"]*\)".*/\1/p' "$PENDING" | head -1; }
     STAGE_TAG="$(stage_field tag)"
     STAGE_ASSET="$(stage_field asset)"
@@ -190,6 +202,14 @@ ASSET="$(field asset)"
 ASSET_SHA="$(field asset_sha256)"
 
 drop_pending() { rm -f "${PENDING:?}"; }
+
+# Under the lock now: the pointer the question above refused goes. A staged copy that was handed the pointer already
+# passed the question in the script that handed it over (its BIN_DIR is the stage's, not the install's).
+if [ -z "${SOT_APPLY_REEXECED:-}" ] && ptr_refusal; then
+    log "pending pointer will not apply (${PTR_WHY#refuse: }) — dropping"
+    drop_pending
+    exit 0
+fi
 
 case "$TAG" in
     v[0-9]*) ;;

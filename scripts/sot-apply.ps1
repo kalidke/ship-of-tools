@@ -71,6 +71,22 @@ $InstallJson = Join-Path $Prefix 'install.json'
 
 if (-not (Test-Path -LiteralPath $Updates)) { exit 0 }
 
+# ---- a pointer that no longer fits this install -----------------------------
+# Mirror of sot-apply.sh's ptr_refusal: the installed sotd answers (it holds the version comparison, so there is no
+# second semver here). `update pointer` exits 3 for a pointer armed over an install that is no longer this one, or
+# sitting at or below this install's version, and prints why. Any other answer (0; 1 or 2 from a sotd that predates the
+# verb; no sotd at all) is $null: the checks below decide, as before. Asked ABOVE the re-exec that follows, so a
+# pointer's own release's script is never handed a pointer the installed one would refuse; the drop waits for the lock.
+function Get-PointerRefusal {
+    $sotd = Join-Path $BinDir 'sotd.exe'
+    if (-not (Test-Path -LiteralPath $sotd)) { return $null }
+    try {
+        $out = & $sotd update pointer --prefix $Prefix --target $TARGET 2>$null
+        if ($LASTEXITCODE -ne 3) { return $null }
+        return ([string]($out | Select-Object -First 1) -replace '^refuse: ', '')
+    } catch { return $null }
+}
+
 # ---- prefer a STAGED release's OWN sot-apply, once --------------------------
 # Mirror of sot-apply.sh's "prefer a STAGED release's OWN sot-apply" guard
 # (see that script's comment): the INSTALLED copy of this script -- the one
@@ -86,7 +102,7 @@ if (-not (Test-Path -LiteralPath $Updates)) { exit 0 }
 # SOT_APPLY_REEXECED stops this from ever looping (the staged copy sees it
 # set and skips straight past this block). Only helps FUTURE upgrades: an
 # old box's old apply predates this guard too, so it can never reach it.
-if (-not $env:SOT_APPLY_REEXECED -and (Test-Path -LiteralPath $Pending)) {
+if (-not $env:SOT_APPLY_REEXECED -and (Test-Path -LiteralPath $Pending) -and -not (Get-PointerRefusal)) {
     $stagePtr = $null
     try { $stagePtr = (Get-Content -LiteralPath $Pending -Raw -ErrorAction Stop | ConvertFrom-Json) } catch {}
     if ($stagePtr -and $stagePtr.checkout) {
@@ -305,6 +321,13 @@ if (-not (Test-Path -LiteralPath $Pending)) { Exit-Apply 0 }
 $ptr = Read-JsonFile $Pending
 function Remove-Pending { Remove-Item -LiteralPath $Pending -Force -ErrorAction SilentlyContinue }
 if (-not $ptr) { Write-ApplyLog 'pending pointer unreadable -- dropping'; Remove-Pending; Exit-Apply 0 }
+
+# Under the lock now: the pointer the question above refused goes (asked again here, for the staged copy that was
+# handed a pointer, and for the one that was not).
+$refusal = Get-PointerRefusal
+if ($refusal) {
+    Write-ApplyLog "pending pointer will not apply ($refusal) -- dropping"; Remove-Pending; Exit-Apply 0
+}
 
 $tag       = [string]$ptr.tag
 $ptrTarget = [string]$ptr.target

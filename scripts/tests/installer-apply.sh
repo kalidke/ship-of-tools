@@ -118,6 +118,96 @@ check "a second apply installs the new tag" "1 new-sotd no" \
     "$(grep -c '"tag": "v9.9.9"' "$d/prefix/install.json" || true) $(cat "$d/prefix/bin/sotd") $([ -f "$d/prefix/updates/pending-$TGT.json" ] && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
+# A pointer that no longer fits the install (UPDATER-ARMS-INSTALLED): sot-apply asks the installed sotd's `update
+# pointer` before it re-executes a staged copy or applies anything. Exit 3 refuses; any other answer leaves today's
+# tag check in charge. The stand-in answers with the exit code it is given; the real sotd (SOT_TEST_SOTD) answers from
+# the pointer and install.json it finds.
+mk_pointer_sotd() {  # <dir> <exit> <line>
+    printf '#!/bin/sh\n[ "$1 $2" = "update pointer" ] || exit 1\necho "%s"\nexit %s\n' "$3" "$2" > "$1/prefix/bin/sotd"
+    chmod 0755 "$1/prefix/bin/sotd"
+}
+installed_tag() { sed -n 's/^ *"tag": *"\([^"]*\)".*/\1/p' "$1/prefix/install.json" | head -1; }
+armed() { [ -f "$1/prefix/updates/pending-$TGT.json" ] && echo armed || echo gone; }
+
+case_start "a_refused_pointer_is_dropped_and_nothing_is_applied"
+d="$WORK/pg1"; mk_apply_fixture "$d" 1 1; mk_pointer_sotd "$d" 3 "refuse: armed over 9.9.7 but the install is now 9.9.8; it no longer fits"
+cp "$d/prefix/bin/sotd" "$d/sotd.orig"
+run_apply "$d"
+check "the install still names its tag" "v9.9.8" "$(installed_tag "$d")"
+check "sotd is not replaced" "same" "$(cmp -s "$d/sotd.orig" "$d/prefix/bin/sotd" && echo same || echo differ)"
+check "the pointer is dropped" "gone" "$(armed "$d")"
+check "it says why" "1" "$(grep -c 'will not apply (armed over 9.9.7 but the install is now 9.9.8' "$d/out" || true)"
+check "no rollback state is written" "no" "$([ -e "$d/prefix/updates/last-good-$TGT.json" ] && echo yes || echo no)"
+
+case_start "the_refusal_runs_above_the_staged_copys_re_exec"
+# The pointer's own release ships a sot-apply the installed one would run next. A refused pointer never reaches it.
+for code in 3 0; do
+    d="$WORK/pg2-$code"; mk_apply_fixture "$d" 1 1; mk_pointer_sotd "$d" "$code" "refuse: x"
+    printf '#!/bin/sh\necho ran > "%s/reexec"\nexit 0\n' "$d" > "$d/prefix/updates/v9.9.9-$TGT/sot-v9.9.9-$TGT/sot-apply"
+    chmod 0755 "$d/prefix/updates/v9.9.9-$TGT/sot-v9.9.9-$TGT/sot-apply"
+    run_apply "$d"
+    check "sotd says exit $code: the staged copy $([ "$code" = 3 ] && echo is not run || echo is run)" \
+        "$([ "$code" = 3 ] && echo no || echo yes)" "$([ -e "$d/reexec" ] && echo yes || echo no)"
+done
+
+case_start "a_sotd_that_does_not_answer_leaves_the_tag_check_in_charge"
+# 1 is an older sotd's answer to the unknown word, 2 is a sotd that has `update` and not `pointer`, 4 is anything else.
+for code in 0 1 2 4; do
+    d="$WORK/pg3-$code"; mk_apply_fixture "$d" 1 1; mk_pointer_sotd "$d" "$code" "refuse: x"
+    run_apply "$d"
+    check "sotd exits $code: the pointer applies as before" "v9.9.9 gone" "$(installed_tag "$d") $(armed "$d")"
+done
+d="$WORK/pg3-none"; mk_apply_fixture "$d" 1 1; rm -f "$d/prefix/bin/sotd"
+run_apply "$d"
+check "no sotd at all: the pointer applies as before" "v9.9.9 gone" "$(installed_tag "$d") $(armed "$d")"
+d="$WORK/pg3-tag"; mk_apply_fixture "$d" 1 1; mk_pointer_sotd "$d" 1 ""
+sed 's/"v9.9.8"/"v9.9.9"/; s/"9.9.8"/"9.9.9"/' "$d/prefix/install.json" > "$d/install.new"; mv "$d/install.new" "$d/prefix/install.json"
+run_apply "$d"
+check "an install already at the pointer's tag is still cleared by the tag check" "gone" "$(armed "$d")"
+
+# The real sotd, when the caller names it: the same pointer, now judged from its own content.
+real_apply() {  # <name> <installed tag> <pointer version> [<over-version> <over-commit>]: sets RD
+    RD="$WORK/$1"; mk_apply_fixture "$RD" 1 1
+    local u="$RD/prefix/updates"
+    # The staged copy is named for the pointer's version; its files are the fixture's.
+    mv "$u/v9.9.9-$TGT/sot-v9.9.9-$TGT.tar.gz" "$u/v9.9.9-$TGT/sot-$3-$TGT.tar.gz"
+    mv "$u/v9.9.9-$TGT/sot-v9.9.9-$TGT" "$u/v9.9.9-$TGT/sot-$3-$TGT"
+    [ "$3" = 9.9.9 ] || mv "$u/v9.9.9-$TGT" "$u/v$3-$TGT"
+    f() { sed -n 's/^ *"'"$1"'": *"\([^"]*\)".*/\1/p' "$u/pending-$TGT.json" | head -1; }
+    local sha co cm; sha="$(f asset_sha256)"; co="$(f checkout)"; cm="$(f commit)"
+    printf '{\n  "schema": 1,\n  "repo": "kalidke/ship-of-tools",\n  "tag": "v%s",\n  "version": "%s",\n  "target": "%s",\n  "asset": "sot-%s-%s.tar.gz",\n  "asset_sha256": "%s",\n  "checkout": "%s",\n  "commit": "%s",\n  "armed_at": 1' \
+        "$3" "$3" "$TGT" "$3" "$TGT" "$sha" "$co" "$cm" > "$u/pending-$TGT.json"
+    [ -z "${4:-}" ] || printf ',\n  "armed_over_version": "%s",\n  "armed_over_commit": "%s"' "$4" "$5" >> "$u/pending-$TGT.json"
+    printf '\n}\n' >> "$u/pending-$TGT.json"
+    printf '{\n  "schema": 1,\n  "prefix": "%s",\n  "tag": "%s",\n  "version": "%s",\n  "commit": "aaa",\n  "service": "systemd"\n}\n' \
+        "$RD/prefix" "$2" "${2#v}" > "$RD/prefix/install.json"
+    cp "$SOT_TEST_SOTD" "$RD/prefix/bin/sotd"; chmod 0755 "$RD/prefix/bin/sotd"
+    cp "$RD/prefix/bin/sotd" "$RD/sotd.orig"
+}
+case_start "the_real_sotd_judges_the_pointer_from_its_content"
+if [ -z "${SOT_TEST_SOTD:-}" ] || [ ! -x "${SOT_TEST_SOTD:-}" ]; then
+    printf '    SKIP the real sotd cases (SOT_TEST_SOTD names no built sotd)\n'
+else
+    # Installed 9.9.10, a pointer for 9.9.9 that records nothing: the daemon that armed it predates the record.
+    real_apply pr1 v9.9.10 9.9.9
+    run_apply "$RD"; sed 's/^/      | /' "$RD/out"
+    check "below the install: nothing is downgraded" "v9.9.10 same" "$(installed_tag "$RD") $(cmp -s "$RD/sotd.orig" "$RD/prefix/bin/sotd" && echo same || echo differ)"
+    check "below the install: the pointer is dropped" "gone" "$(armed "$RD")"
+    real_apply pr2 v9.9.8 9.9.9
+    run_apply "$RD"
+    check "above the install: a pointer with no record applies" "v9.9.9 gone" "$(installed_tag "$RD") $(armed "$RD")"
+    real_apply pr3 v9.9.8 9.9.9 9.9.7 aaa
+    run_apply "$RD"
+    check "armed over another install: refused" "v9.9.8 gone" "$(installed_tag "$RD") $(armed "$RD")"
+    real_apply pr4 v9.9.8 9.9.9 9.9.8 bbb
+    run_apply "$RD"
+    check "armed over the same version at another commit: refused" "v9.9.8 gone" "$(installed_tag "$RD") $(armed "$RD")"
+    real_apply pr5 v9.9.8 9.9.9 9.9.8 aaa
+    run_apply "$RD"
+    check "armed over this install: applies" "v9.9.9 gone" "$(installed_tag "$RD") $(armed "$RD")"
+fi
+
+# ---------------------------------------------------------------------------
 case_start "partial_wrapper_write_restores"
 d="$WORK/ap8"; mk_apply_fixture "$d" 1 1
 cat > "$d/stubs/cat" <<'CAT'

@@ -102,6 +102,13 @@ if (-not $Hub -and (Test-Path -LiteralPath $manifest)) {
 function ConvertTo-JsonStr([string]$s) { return ($s -replace '\\', '\\' -replace '"', '\"') }
 
 New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
+$sameInstall = $false
+if (Test-Path -LiteralPath $manifest) {
+    try {
+        $before = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+        $sameInstall = ([string]$before.version -eq $version) -and ([string]$before.commit -eq $commit)
+    } catch {}
+}
 $body = @"
 {
   "schema": 1,
@@ -120,6 +127,13 @@ $body = @"
 [System.IO.File]::WriteAllText($manifest, $body, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host "install-manifest: wrote $manifest (schema 1, version=$version, hub=$Hub)"
+
+# A new install is a new transaction: a pointer armed over the install this one replaces names a release chosen
+# against that install, and would apply onto the new one (a downgrade, when the new one is already past it). A rewrite
+# of the same version and commit (the launcher's refresh after an apply) replaces nothing, so it keeps the pointer.
+if (-not $sameInstall) {
+    Remove-Item -LiteralPath (Join-Path $Prefix 'updates\pending-windows-x86_64.json') -Force -ErrorAction SilentlyContinue
+}
 
 # First topology sync. `sotd topology sync` reads --hub only while no local
 # hosts.toml exists; afterwards the copy's own hub wins and the launcher

@@ -263,6 +263,46 @@ if ($short -eq $longName -or $short -notmatch '~') {
     Check '8.3 prefix: marker armed' (Test-Path (Join-Path $f8.updates 'just-applied-windows-x86_64')) 'no marker'
 }
 
+Write-Host "`n=== 9. a pointer that no longer fits the install is refused (the installed sotd answers) ===" -ForegroundColor Cyan
+# The fixture's sotd.exe is text, not a program: cases 1-8 already show an unrunnable sotd leaves today's checks in
+# charge (the pointer applies). The question itself needs a real sotd.exe that has the `update pointer` verb:
+# this tree's build of it (rust\target\debug, else release), or the one SOT_TEST_SOTD_EXE names; none built, none run.
+$realSotd = $env:SOT_TEST_SOTD_EXE
+if (-not $realSotd) { $realSotd = Join-Path $repo 'rust\target\debug\sotd.exe' }
+if (-not (Test-Path -LiteralPath $realSotd)) { $realSotd = Join-Path $repo 'rust\target\release\sotd.exe' }
+if (-not (Test-Path -LiteralPath $realSotd)) {
+    Write-Host "  SKIP  no sotd.exe built (cargo build -p sot-backend) and SOT_TEST_SOTD_EXE names none" -ForegroundColor Yellow
+} else {
+    # Installed v0.7.0, pointer v0.6.0 with no record (armed by a daemon older than the record): below the install.
+    $p9 = Join-Path $root 'p9'
+    $f9 = New-Fixture $p9 'v0.7.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9.bin 'sotd.exe') -Force
+    $out9 = & $apply -Prefix $p9 6>&1 2>&1
+    Write-Host ($out9 | ForEach-Object { "    $_" }) -ForegroundColor DarkGray
+    Check 'below the install: binary untouched' ((Get-Content (Join-Path $f9.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'downgraded'
+    Check 'below the install: install.json untouched' ((Get-Content (Join-Path $p9 'install.json') -Raw) -match '"tag":\s*"v0\.7\.0"') 'install.json moved'
+    Check 'below the install: pointer dropped' (-not (Test-Path (Join-Path $f9.updates 'pending-windows-x86_64.json'))) 'pointer kept'
+    Check 'below the install: said why' (($out9 -join ' ') -match 'will not apply') "log was: $out9"
+
+    # A record over another install: armed over v0.4.0, the install is v0.5.0.
+    $p9b = Join-Path $root 'p9b'
+    $f9b = New-Fixture $p9b 'v0.5.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9b.bin 'sotd.exe') -Force
+    $pp9b = Join-Path $f9b.updates 'pending-windows-x86_64.json'
+    (Get-Content $pp9b -Raw) -replace '"asset_sha256"', '"armed_over_version": "0.4.0", "armed_over_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "asset_sha256"' |
+        Set-Content -LiteralPath $pp9b -NoNewline
+    & $apply -Prefix $p9b 6>&1 2>&1 | Out-Null
+    Check 'armed over another install: binary untouched' ((Get-Content (Join-Path $f9b.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied'
+    Check 'armed over another install: pointer dropped' (-not (Test-Path $pp9b)) 'pointer kept'
+
+    # A pointer above the install, with no record: applies.
+    $p9c = Join-Path $root 'p9c'
+    $f9c = New-Fixture $p9c 'v0.5.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9c.bin 'sotd.exe') -Force
+    & $apply -Prefix $p9c 6>&1 2>&1 | Out-Null
+    Check 'above the install: applied' ((Get-Content (Join-Path $f9c.bin 'sot.exe') -Raw) -eq 'NEW-BINARY') 'not applied'
+}
+
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 if ($fail) { exit 1 }

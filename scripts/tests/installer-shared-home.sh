@@ -188,6 +188,9 @@ shared_install_run() {  # <dir> <topology status lines> <mode of the release's s
         printf 'daemon host %s\n' "$b" > "$d/prefix/bin/$b"; printf 'previous %s\n' "$b" > "$d/prefix/bin/$b.prev"
     done
     printf '{"tag": "v9.9.7"}\n' > "$d/prefix/updates/last-good-$TGT.json"
+    # A pointer armed over this install, and another platform's on the same home.
+    printf '{"tag": "v9.9.9"}\n' > "$d/prefix/updates/pending-$TGT.json"
+    printf '{"tag": "v9.9.9"}\n' > "$d/prefix/updates/pending-other-target.json"
     installer_manifest_json "$d/prefix" "$d/home/.config/sot" systemd 9.9.8 v9.9.8 abc 2026-10-09T00:00:00Z "" 1 0 \
         > "$d/prefix/install.json"
     snapshot "$d" > "$d/before"
@@ -263,6 +266,8 @@ d="$WORK/net-bounds"; mkdir -p "$d/prefix/repo/versions/v9.9.9/scripts/lib"
 cp "$(dirname "$0")/../lib/sot-daemon.sh" "$d/prefix/repo/versions/v9.9.9/scripts/lib/sot-daemon.sh"
 rc=0; out="$(shared_install_run "$d" "$me daemon" 755 --be-only --no-service --force-role-change)" || rc=$?
 check "a pinned run goes on to ask for Julia" "1" "$(says "$out" 'Julia install failed')"
+check "the install drops the pointer armed over the install it replaced, and keeps another platform's" "gone kept" \
+    "$([ -e "$d/prefix/updates/pending-$TGT.json" ] && echo kept || echo gone) $([ -e "$d/prefix/updates/pending-other-target.json" ] && echo kept || echo gone)"
 env -i HOME="$d/home" PATH="$d/stubs:$INSTALL_TOOLS" bash "$(dirname "$0")/../install.sh" --be-only --prefix "$d/prefix" >/dev/null 2>&1 || true
 check "the log holds the prelude, the downloads and the Julia installer's curl calls" "yes" \
     "$([ "$(grep -c '^curl ' "$d/net.log")" -ge 6 ] && echo yes || echo no)"

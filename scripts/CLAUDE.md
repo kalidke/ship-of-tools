@@ -27,11 +27,17 @@ and the launch path fails open: no update step can stop a window from starting.
   gates run on the unpacked `sotd` before the layout, and an unpacked `sotd` that cannot run stops the install. Without
   `--force-role-change`, a host a readable hosts.toml runs no sotd on never writes over an install at the prefix
   (`installer_host_decision`), and under a declared topology a run never records less than install.json does
-  (`installer_record_decision`). Limit: the update stager (`stage_prepare_arm` in `rust/backend/src/update.rs`) writes
-  `updates/` wherever its `sotd` runs; the host pin keeps a server's manager from starting one, but a `sotd` started by
-  hand on such a host still stages into the shared install.
+  (`installer_record_decision`). The update stager (`stage_prepare_arm` in `rust/backend/src/update.rs`) arms nothing
+  into a daemon install whose host the topology does not declare a daemon, whether a `sotd` started by hand or the
+  host's pinned unit; it arms only strictly above `install.json`'s version.
 - Apply verifies everything before it mutates, restores on a failure after mutation and exits 0; a rollback marks the
   bad tag so it is never armed again (`sot-apply.sh`, `sot-apply.ps1`).
+- A pointer is applied only onto the install it was armed over. Both apply scripts ask the installed `sotd update
+  pointer` above their re-exec of the pointer's own release's script (so a refused pointer never reaches it) and drop a
+  pointer it refuses (exit 3) under the lock; any other answer, an older `sotd` included, leaves the exact-tag check. A
+  new install drops the leftover pointer (`install.sh` for its target, `install-manifest.ps1` when the version or commit
+  changes). The rule is ADR 0030's 2026-10-17 amendment; `installer-apply.sh`'s `a_refused_pointer_is_dropped_and_nothing_is_applied`
+  group and `test-sot-apply.ps1` section 9 pin it.
 - The launch path never stops on an update: every update or freshness step logs and the window still starts.
 - One launcher per user, and no window spawns without a lease held on the local daemon across the gap (Windows:
   `launch-sot.ps1`, `Open-SotLease`).

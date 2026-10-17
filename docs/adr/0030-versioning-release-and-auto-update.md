@@ -747,3 +747,32 @@ self-updates; it moves when someone installs the next build, on Linux with `scri
 --prefix <prefix>` stages, prepares and arms a folder `scripts/pack-build.ps1` packed (no release-build guard and no
 newer-than test: the operator chose it), and the supervisor's converge applies it; prepare checks out a dev build's
 COMMIT, which has no tag.
+
+## Amendment 2026-10-17 — what is installed is what `install.json` says; an automatic arm goes only above it
+
+A pointer is a decision made against one install. The updater used to take "installed" to mean the running process's
+own compiled-in version, which on a shared `$HOME` (one prefix serving every host's daemon) can be days older than the
+install: a daemon on a host that booted at `rc9.12` armed `rc9.13` into a prefix already at `rc9.14-dev`, and the next
+apply would have downgraded it. The rule:
+
+1. **The authority is `<prefix>/install.json`**, its `version` and `commit`, read fresh under the staging lock, never
+   cached in a long-lived process. `pending::arm` (`rust/updater`), the only pointer writer, enforces it: an automatic
+   writer (the daemon's daily check and `update.check`, the window's self-update) arms a version strictly above the
+   installed build, never at or below it. `sotd update stage` is the one operator writer and may arm the same or an
+   older build (it prints the direction): dev builds of one stamp compare equal, and the operator chose the folder.
+2. **A host not declared a daemon never arms into, or applies from, a daemon install.** When `install.json` records
+   `daemon: true` and the declared topology says this host runs none, the daemon's check, `update.apply` and the
+   window's self-update leave the install alone (the pointer would be prepared without the Julia environments the
+   daemon install needs). An install that never set up a daemon belongs to whoever runs one over it.
+3. **Each pointer records the install it was armed over** (`armed_over_version`, `armed_over_commit`). Apply refuses a
+   pointer whose recorded install is no longer the one on disk; a pointer with no record (armed by a build that predates
+   this) is judged by its version alone and applies only strictly above the install. A pointer that no longer fits does
+   not hold the slot: a later arm replaces it.
+4. **Apply asks the installed `sotd`**, which holds the comparison (`sotd update pointer --prefix <p> --target <t>`,
+   answered before daemon startup; exit 3 refuses, anything else leaves the old exact-tag check in charge, since an older
+   `sotd` exits 1 on the unknown word and a `sotd update` without the verb exits 2). `sot-apply.sh` and `sot-apply.ps1`
+   ask above their re-exec of the pointer's own release's script, so a refused pointer never reaches it, and drop the
+   pointer under the lock. The `update.apply` op refuses the same pointers.
+5. **A new install drops the leftover pointer**: `install.sh` for its target, `install-manifest.ps1` when the version or
+   commit it writes differs from the one it replaces.
+

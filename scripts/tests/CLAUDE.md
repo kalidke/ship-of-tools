@@ -23,7 +23,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper, the network refusal, the dev launcher's
-  git stall bound, and the ensure's replacement of a daemon an update left on the old binary (`sot_daemon_current`).
+  git stall bound, the ensure's replacement of a daemon an update left on the old binary (`sot_daemon_current`), and the
+  refusal of a pointer that no longer fits the install (a stand-in `sotd` answers `update pointer`; `SOT_TEST_SOTD`
+  names a built `sotd` for the cases that judge from the pointer's own content, else they print SKIP).
   Runs in the `rust.yml` step "Test installer apply (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-shared-home.sh`: a home several hosts share holds one install. Every path that writes, re-renders or
   retires `sotd.service` (`installer_enable_local_service`, `installer_retire_local_service`, `sot_rerender_owned`) pins
@@ -34,7 +36,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   on an unlisted host asking for a daemon, and with an unpacked sotd that cannot run, refuses and leaves every entry
   under the prefix and `~/.local` as it was; run without jq, it stops with the one line naming the command that installs
   jq on this OS, before any curl call or change. It also reads the argv of the stand-in curl and git of
-  a run that reaches the base clone, the tag fetch and the Julia installer: each carries its stall bound. install.sh's
+  a run that reaches the base clone, the tag fetch and the Julia installer: each carries its stall bound; the same run drops
+  the pointer armed over the install it replaced and keeps another platform's. install.sh's
   PATH is the stand-ins and a tool dir of its own (`mk_tools` plus tar, gzip, tr and jq), never the host's /usr/bin, where a
   Julia (the hosted ubuntu-24.04 image links one there) would skip the Julia installer. Runs in the
   `rust.yml` step "Test installer shared home (bash)"
@@ -110,7 +113,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-local-daemon-support.ps1`: dot-sourced by both local-daemon suites: `Check`, the fixture and pipe helpers, the
   test root and `Complete-LocalDaemonTest`, their cleanup.
 - `test-sot-apply.ps1`: scripts/sot-apply.ps1 against a synthetic staged update: apply, damaged stage, rollback,
-  already applied, wrong target, lock held. Runs in the `rust.yml` step "Test sot-apply.ps1".
+  already applied, wrong target, lock held, and (section 9, with a built `sotd.exe`, else SKIP) a pointer that no
+  longer fits the install. Runs in the `rust.yml` step "Test sot-apply.ps1".
 - `test-topology-plan.ps1`: `Get-SotTopologyPlan` and `Invoke-SotTopologySync` (scripts/sot-hosts.ps1) against a fake
   `sotd`. Runs in the `rust.yml` step "Test topology plan".
 - `test-topology-plan.sh`: `sot_topology_plan` (scripts/lib/sot-hosts.sh) against a fake `sotd`. Runs in the `rust.yml` step
