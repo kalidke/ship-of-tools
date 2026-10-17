@@ -57,7 +57,18 @@ try {
     if (-not "$got".StartsWith("sot $v (")) { Stop-Pack "VERSION MISMATCH for sot: $got (sotd says $v)" }
     $zip = Join-Path $out "$stage.zip"
     Remove-Item -LiteralPath $zip -ErrorAction SilentlyContinue
-    Compress-Archive -Path (Join-Path $work $stage) -DestinationPath $zip
+    # Entries are written with `/` as release.yml's pwsh does: Windows PowerShell 5.1's Compress-Archive writes `\`, which
+    # the updater refuses.
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = New-Object IO.Compression.ZipArchive([IO.File]::Create($zip), [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($f in Get-ChildItem -LiteralPath (Join-Path $work $stage) -File) {
+            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $f.FullName, "$stage/$($f.Name)")
+        }
+    } finally {
+        $archive.Dispose()
+    }
 } finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
