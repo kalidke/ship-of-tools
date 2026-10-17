@@ -273,10 +273,25 @@ if (-not (Test-Path -LiteralPath $realSotd)) { $realSotd = Join-Path $repo 'rust
 if (-not (Test-Path -LiteralPath $realSotd)) {
     Write-Host "  SKIP  no sotd.exe built (cargo build -p sot-backend) and SOT_TEST_SOTD_EXE names none" -ForegroundColor Yellow
 } else {
+    # The fixture's pointer is the applier's view of the file (tag, target, checkout, commit, asset, asset_sha256). The
+    # sotd that answers reads it as the Rust arm wrote it, which also carries schema, repo, version and armed_at; a
+    # pointer without them is unreadable to it, and an unreadable pointer is left to the applier's own checks.
+    function Add-RustFields([string]$pointerPath, [string]$version, [string]$overVersion, [string]$overCommit) {
+        $extra = "  `"schema`": 1,`n  `"repo`": `"kalidke/ship-of-tools`",`n  `"version`": `"$version`",`n  `"armed_at`": 1,`n"
+        if ($overVersion) { $extra += "  `"armed_over_version`": `"$overVersion`",`n  `"armed_over_commit`": `"$overCommit`",`n" }
+        $text = (Get-Content -LiteralPath $pointerPath -Raw) -replace '(?m)^  "tag"', ($extra + '  "tag"')
+        [System.IO.File]::WriteAllText($pointerPath, $text, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    function Get-SotdExit([string]$sotd, [string]$prefix) {
+        & $sotd update pointer --prefix $prefix --target windows-x86_64 2>&1 | Out-Null
+        return $LASTEXITCODE
+    }
     # Installed v0.7.0, pointer v0.6.0 with no record (armed by a daemon older than the record): below the install.
     $p9 = Join-Path $root 'p9'
     $f9 = New-Fixture $p9 'v0.7.0' 'v0.6.0'
     Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9.bin 'sotd.exe') -Force
+    Add-RustFields (Join-Path $f9.updates 'pending-windows-x86_64.json') '0.6.0' $null $null
+    Check 'below the install: the installed sotd refuses the pointer itself (exit 3)' ((Get-SotdExit (Join-Path $f9.bin 'sotd.exe') $p9) -eq 3) 'the sotd did not answer 3: the pointer or install.json is unreadable to it'
     $out9 = & $apply -Prefix $p9 6>&1 2>&1
     Write-Host ($out9 | ForEach-Object { "    $_" }) -ForegroundColor DarkGray
     Check 'below the install: binary untouched' ((Get-Content (Join-Path $f9.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'downgraded'
@@ -289,8 +304,8 @@ if (-not (Test-Path -LiteralPath $realSotd)) {
     $f9b = New-Fixture $p9b 'v0.5.0' 'v0.6.0'
     Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9b.bin 'sotd.exe') -Force
     $pp9b = Join-Path $f9b.updates 'pending-windows-x86_64.json'
-    (Get-Content $pp9b -Raw) -replace '"asset_sha256"', '"armed_over_version": "0.4.0", "armed_over_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "asset_sha256"' |
-        Set-Content -LiteralPath $pp9b -NoNewline
+    Add-RustFields $pp9b '0.6.0' '0.4.0' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    Check 'armed over another install: the installed sotd refuses the pointer itself (exit 3)' ((Get-SotdExit (Join-Path $f9b.bin 'sotd.exe') $p9b) -eq 3) 'the sotd did not answer 3'
     & $apply -Prefix $p9b 6>&1 2>&1 | Out-Null
     Check 'armed over another install: binary untouched' ((Get-Content (Join-Path $f9b.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied'
     Check 'armed over another install: pointer dropped' (-not (Test-Path $pp9b)) 'pointer kept'
@@ -299,6 +314,8 @@ if (-not (Test-Path -LiteralPath $realSotd)) {
     $p9c = Join-Path $root 'p9c'
     $f9c = New-Fixture $p9c 'v0.5.0' 'v0.6.0'
     Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9c.bin 'sotd.exe') -Force
+    Add-RustFields (Join-Path $f9c.updates 'pending-windows-x86_64.json') '0.6.0' $null $null
+    Check 'above the install: the installed sotd lets the pointer through (exit 0)' ((Get-SotdExit (Join-Path $f9c.bin 'sotd.exe') $p9c) -eq 0) 'the sotd did not answer 0'
     & $apply -Prefix $p9c 6>&1 2>&1 | Out-Null
     Check 'above the install: applied' ((Get-Content (Join-Path $f9c.bin 'sot.exe') -Raw) -eq 'NEW-BINARY') 'not applied'
 }
