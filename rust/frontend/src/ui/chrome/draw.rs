@@ -76,7 +76,7 @@ impl State {
         // result is written back to self.tree_scroll after the draw.
         let mut nav_scroll = self.tree_scroll;
         self.fire_due_read_mark();
-        self.fire_held_presence();
+        self.report_presence(false);
         if self.pane_attach_term.is_some() {
             self.pump_pane_attach_term();
         }

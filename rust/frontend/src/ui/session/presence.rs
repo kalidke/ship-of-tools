@@ -46,21 +46,15 @@ fn presence_due(clock: &mut PresenceClock, press: bool, now: std::time::Instant)
     let due = paired && clock.last_sent.is_none_or(|at| now.saturating_duration_since(at) >= PRESENCE_THROTTLE);
     if due {
         clock.last_sent = Some(now);
-        clock.held = false;
-    } else if paired {
-        clock.held = true;
     }
+    clock.held = paired && !due;
     due
 }
 
-/// Whether the report `presence_due` held back is due at `now` (the once-a-second tick), updating `clock`.
+/// Whether the report `presence_due` held back is due at `now` (the once-a-second tick): the press again, once the
+/// throttle has passed.
 fn presence_held_due(clock: &mut PresenceClock, now: std::time::Instant) -> bool {
-    let due = clock.held && clock.last_sent.is_none_or(|at| now.saturating_duration_since(at) >= PRESENCE_THROTTLE);
-    if due {
-        clock.last_sent = Some(now);
-        clock.held = false;
-    }
-    due
+    clock.held && presence_due(clock, true, now)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,25 +86,17 @@ fn read_mark_decision(
 }
 
 impl State {
-    /// Send `fe.presence` if this input is due (`presence_due`; design point A). Called ONLY from `window_event`'s real
-    /// `KeyboardInput`/`MouseInput`/`MouseWheel` arms, never from a command file, `--capture-cycle` or any simulated path: every op
-    /// the daemon once stamped from had an automated producer. A harness run (`--ephemeral`/`--capture`) is excluded.
+    /// Send `fe.presence` if this input is due (`presence_due`; design point A). Called from `window_event`'s real
+    /// `KeyboardInput`/`MouseInput`/`MouseWheel` arms, and with `press` false from every redraw (`draw.rs`), which
+    /// sends the report a throttled press held back once the throttle has passed (`presence_held_due`). Never from a
+    /// command file, `--capture-cycle` or any simulated path: every op the daemon once stamped from had an automated
+    /// producer. A harness run (`--ephemeral`/`--capture`) is excluded.
     pub(in crate::ui) fn report_presence(&mut self, press: bool) {
-        if self.ephemeral || !presence_due(&mut self.presence, press, std::time::Instant::now()) {
+        let now = std::time::Instant::now();
+        let due = if press { presence_due(&mut self.presence, true, now) } else { presence_held_due(&mut self.presence, now) };
+        if self.ephemeral || !due {
             return;
         }
-        self.send_presence();
-    }
-
-    /// Send the report a throttled press held back, once the throttle has passed. Runs every redraw, beside
-    /// `fire_due_read_mark`.
-    pub(in crate::ui) fn fire_held_presence(&mut self) {
-        if !self.ephemeral && presence_held_due(&mut self.presence, std::time::Instant::now()) {
-            self.send_presence();
-        }
-    }
-
-    fn send_presence(&self) {
         // EVERY connected host, not just `active_host` (2026-09-08 review correction): each daemon's agents route
         // commands through it, so each must know when a person is at this window. One clock covers the fan-out.
         for (host, _) in &self.conns {
