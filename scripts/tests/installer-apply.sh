@@ -384,7 +384,7 @@ mk_pack_fixture() {  # <dir> <glibc-version>: <dir>/tree/scripts/pack-build.sh, 
     mkdir -p "$d/tree/scripts" "$d/bin"
     cp "$SRC/scripts/pack-build.sh" "$d/tree/scripts/"
     printf '#!/bin/sh\necho "glibc %s"\n' "$2" > "$d/bin/getconf"; chmod 0755 "$d/bin/getconf"
-    for t in uname dirname sort tail cut printf; do ln -s "$(command -v "$t")" "$d/bin/$t"; done
+    for t in uname dirname sort tail cut; do ln -s "$(command -v "$t")" "$d/bin/$t"; done
 }
 run_pack() {  # <dir>: sets PK_RC and PK_OUT
     local d="$1"
@@ -416,6 +416,10 @@ for v in 2.4 2.9; do
     d="$WORK/pk-order-$v"; mk_pack_fixture "$d" "$v"; run_pack "$d"
     pack_check "glibc $v is older than the floor, so the gate does not refuse it" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'newer than the fleet' || true)"
 done
+case_start "pack_build_takes_the_musl_branch_when_a_musl_compiler_is_present"
+d="$WORK/pk-musl"; mk_pack_fixture "$d" 2.39; printf '#!/bin/sh\nexit 0\n' > "$d/bin/musl-gcc"; chmod 0755 "$d/bin/musl-gcc"; run_pack "$d"
+pack_check "with a musl compiler the glibc gate does not refuse 2.39" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'newer than the fleet' || true)"
+pack_check "it goes on to the tree checks, which this git-less PATH stops" "yes" "$(printf '%s\n' "$PK_OUT" | grep -q 'git' && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
 case_start "archive_install_prints_the_libc"

@@ -57,13 +57,14 @@ commit="$(git rev-parse HEAD)"
     cargo build --release -p sot-backend -p sot-log --bin sotd --bin sot-capsule --target "$triple" --locked
 )
 
-musl="$target/$triple/release"
-v="$("$musl/sotd" --version | cut -d' ' -f2)"
+# The backend folder: musl static or gnu, whichever the triple above chose.
+be="$target/$triple/release"
+v="$("$be/sotd" --version | cut -d' ' -f2)"
 stage="sot-$v-linux-x86_64"
 work="$(mktemp -d "${TMPDIR:-/tmp}/sot-pack.XXXXXX")"
 trap 'rm -rf "${work:?}"' EXIT
 mkdir "$work/$stage"
-cp "$target/release/sot" "$musl/sotd" "$musl/sot-capsule" "$work/$stage/"
+cp "$target/release/sot" "$be/sotd" "$be/sot-capsule" "$work/$stage/"
 got="$("$work/$stage/sot" --version)"
 case "$got" in "sot $v ("*) ;; *) echo "pack-build: VERSION MISMATCH for sot: $got (sotd says $v)" >&2; exit 1 ;; esac
 cp deploy/sotd.service "$work/$stage/"

@@ -639,7 +639,7 @@ while [ $# -gt 0 ]; do
         # (`sotd topology sync`) with the unpacked sotd, below.
         --hub) HUB_ALIAS="${2:?--hub needs an ssh alias}"; shift ;;
         --version) VERSION="${2:?}"; shift ;;
-        # A folder scripts/pack-build.sh packed: SHA256SUMS, the tarball and COMMIT, installed in place of a download.
+        # A folder scripts/pack-build.sh packed: SHA256SUMS, the tarball, COMMIT and LIBC when present, installed in place of a download.
         --archive) ARCHIVE="${2:?--archive needs a folder}"; shift ;;
         --prefix) PREFIX="${2:?}"; shift ;;
         # Skip the systemd unit install/enable: the caller supervises sotd
