@@ -18,8 +18,9 @@ parent folder, owns the pipeline both reach. Part of distribution; charter: scri
 ## Rules
 - `direction` and `repls` start no daemon and write nothing. `direction` exits 1 when `install.json` cannot be read or
   names no version, and 2 for bad arguments; `repls` exits 0 with nothing printed when no REPL is live, 3 with one label per
-  line when some are, and 1 when the daemon cannot be asked (a daemon of another protocol refuses the hello). Live means
-  the daemon says `ready`: a `starting` REPL holds no state yet.
+  line when some are, and 1 when the daemon cannot be asked (a daemon of another protocol refuses the hello, no answer
+  comes in the bound, or the reply carries no workspace list, an error payload being one). Live means the daemon says
+  `ready`: a `starting` REPL holds no state yet.
 - `pointer` starts no daemon and writes nothing. It refuses a pointer that cannot be read as well as one that no longer fits; with no readable `install.json` or no pointer it answers 0. Its refusal code is 3: an older `sotd` exits 1 on the word `update` and
   a `sotd update` without the verb exits 2, so the apply scripts read only 3 as a refusal and keep the exact-tag check
   for any other answer.

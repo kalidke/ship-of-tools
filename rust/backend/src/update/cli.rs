@@ -266,16 +266,18 @@ const LIST_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The label of every row of a `workspace.list` reply whose REPL is live: its `repl_state` is `ready`, a Julia process
 /// holding the row's variables. `starting` holds none yet and `dead` or `not_started` none any more.
-fn live_repl_rows(reply: &serde_json::Value) -> Vec<String> {
+/// A reply with no `workspaces` list (an error payload is one) is no answer: the caller must not read it as "none live".
+fn live_repl_rows(reply: &serde_json::Value) -> Result<Vec<String>, String> {
     let text = |row: &serde_json::Value, key: &str| row.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
-    reply
-        .get("workspaces")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
+    let rows = reply.get("workspaces").and_then(|v| v.as_array()).ok_or_else(|| {
+        let said = reply.get("error").and_then(|v| v.as_str()).unwrap_or("no `workspaces` key");
+        format!("the daemon answered without a workspace list: {said}")
+    })?;
+    Ok(rows
+        .iter()
         .filter(|row| row.get("repl_state").and_then(|v| v.as_str()) == Some("ready"))
         .filter_map(|row| text(row, "label").or_else(|| text(row, "slug")))
-        .collect()
+        .collect())
 }
 
 /// `--endpoint <unix:PATH|pipe:PATH>`, or the reason the arguments are not that.
@@ -299,7 +301,7 @@ fn repls_cli(args: &[String]) -> i32 {
     let asked = sot_log::host::state_dir::host_name().and_then(|me| {
         crate::topology::dial::dial_and_call(&endpoint, &me, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({}), LIST_BOUND)
     });
-    match asked.map(|reply| live_repl_rows(&reply)) {
+    match asked.and_then(|reply| live_repl_rows(&reply)) {
         Ok(rows) if rows.is_empty() => 0,
         Ok(rows) => {
             for row in rows {
@@ -531,9 +533,17 @@ mod tests {
             { "workspace_id": "ws-e", "slug": "scan", "label": "", "repl_state": "ready" },
             { "workspace_id": "ws-f", "slug": "old" },
         ]});
-        assert_eq!(live_repl_rows(&reply), ["Rig PC", "scan"]);
-        assert!(live_repl_rows(&serde_json::json!({ "workspaces": [] })).is_empty());
-        assert!(live_repl_rows(&serde_json::json!({})).is_empty());
+        assert_eq!(live_repl_rows(&reply), Ok(vec!["Rig PC".to_string(), "scan".to_string()]));
+        assert_eq!(live_repl_rows(&serde_json::json!({ "workspaces": [] })), Ok(vec![]));
+    }
+
+    #[test]
+    fn a_reply_with_no_rows_is_not_an_answer() {
+        // An error payload is a reply too; reading it as "no live REPL" would restart the daemon unasked.
+        let refused = serde_json::json!({ "error": "unknown op" });
+        assert_eq!(live_repl_rows(&refused), Err("the daemon answered without a workspace list: unknown op".to_string()));
+        assert!(live_repl_rows(&serde_json::json!({})).is_err());
+        assert!(live_repl_rows(&serde_json::json!({ "workspaces": "none" })).is_err());
     }
 
     #[test]
