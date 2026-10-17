@@ -12,7 +12,7 @@ rust/frontend/src/ui/CLAUDE.md. The record is ADR 0042, 0044 and 0025.
 - `switch.rs`: switch_to_workspace and cycle_workspace; attachment uses the row's stored session_name.
 - `keys.rs`: Session keys from the tree: the workspace picker, Enter on a Sessions row, and the two-press destroy.
 - `picker.rs`: `WorkspacePicker` and its start directory, and `State`'s `begin_create_session` through `commit_workspace_create`.
-- `presence.rs`: `ReadMark`, `read_mark_decision`, and `State`'s `report_presence` and `fire_due_read_mark`.
+- `presence.rs`: `ReadMark`, `read_mark_decision`, and `State`'s `report_presence`, `fire_held_presence` and `fire_due_read_mark`.
 - `badge.rs`: canonical-row PendingNav and its replace/start/invalidate/cursor/preview/presentation transitions, pending_nav_status, mark_pending_nav and live badged_keys.
 - `replies.rs`: host and workspace replies; authoritative lists and successful non-kept destruction invalidate removed canonical result identities before view effects.
 
@@ -28,7 +28,8 @@ rust/frontend/src/ui/CLAUDE.md. The record is ADR 0042, 0044 and 0025.
   row, so an unchanged list reproduces it (`activity_order`).
 - `fe.presence` reaches every connected daemon at most once per `PRESENCE_THROTTLE`, only for a press paired with the
   press before it within `PRESENCE_PAIR` (a lone press, a release or a key repeat reports nothing), and never from a
-  harness instance (`report_presence`, `presence_due`).
+  harness instance (`report_presence`, `presence_due`); a press the throttle held back goes out on the once-a-second
+  redraw tick (`fire_held_presence`, `presence_held_due`).
 - A badged result never switches the view (`mark_pending_nav`).
 - Strip keys retain the listed (host, slug); view keys normalize that host's default. A command never inserts its unresolved spelling as a row key.
 - A listed row is attached by its session_name from workspace.list; neither a slug nor a session name is derived from the other.

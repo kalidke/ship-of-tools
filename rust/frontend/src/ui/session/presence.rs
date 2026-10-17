@@ -17,8 +17,9 @@ pub(in crate::ui) struct ReadMark {
 /// How long a person must stay on a row before it counts as read.
 pub(in crate::ui) const READ_DWELL: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Minimum gap between `fe.presence` sends while input keeps coming (design point A): how stale the daemon's "used
-/// most recently" may be when a person moves between windows (SHOW-ROUTE). Well under its five-minute window.
+/// Minimum gap between `fe.presence` sends while input keeps coming (design point A). A report the gap held back is
+/// sent by `presence_held_due` once the gap has passed, so the daemon's "used most recently" is wrong for a person who
+/// moves between windows for at most this gap plus the one-second tick (SHOW-ROUTE). Well under its five-minute window.
 const PRESENCE_THROTTLE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How close two presses must be for the second to report a person: one stray press reports nothing (SHOW-ROUTE).
@@ -29,10 +30,13 @@ const PRESENCE_PAIR: std::time::Duration = std::time::Duration::from_secs(5 * 60
 pub(in crate::ui) struct PresenceClock {
     last_press: Option<std::time::Instant>,
     last_sent: Option<std::time::Instant>,
+    /// A paired press fell inside `PRESENCE_THROTTLE` and its report has not gone out yet.
+    held: bool,
 }
 
 /// Whether input at `now` sends `fe.presence`, updating `clock`: a press (not a release or a key repeat) within
-/// `PRESENCE_PAIR` of the press before it, at most once per `PRESENCE_THROTTLE`.
+/// `PRESENCE_PAIR` of the press before it, at most once per `PRESENCE_THROTTLE`; a paired press the throttle refuses
+/// is held for `presence_held_due`.
 fn presence_due(clock: &mut PresenceClock, press: bool, now: std::time::Instant) -> bool {
     if !press {
         return false;
@@ -42,6 +46,19 @@ fn presence_due(clock: &mut PresenceClock, press: bool, now: std::time::Instant)
     let due = paired && clock.last_sent.is_none_or(|at| now.saturating_duration_since(at) >= PRESENCE_THROTTLE);
     if due {
         clock.last_sent = Some(now);
+        clock.held = false;
+    } else if paired {
+        clock.held = true;
+    }
+    due
+}
+
+/// Whether the report `presence_due` held back is due at `now` (the once-a-second tick), updating `clock`.
+fn presence_held_due(clock: &mut PresenceClock, now: std::time::Instant) -> bool {
+    let due = clock.held && clock.last_sent.is_none_or(|at| now.saturating_duration_since(at) >= PRESENCE_THROTTLE);
+    if due {
+        clock.last_sent = Some(now);
+        clock.held = false;
     }
     due
 }
@@ -82,6 +99,18 @@ impl State {
         if self.ephemeral || !presence_due(&mut self.presence, press, std::time::Instant::now()) {
             return;
         }
+        self.send_presence();
+    }
+
+    /// Send the report a throttled press held back, once the throttle has passed. Runs every redraw, beside
+    /// `fire_due_read_mark`.
+    pub(in crate::ui) fn fire_held_presence(&mut self) {
+        if !self.ephemeral && presence_held_due(&mut self.presence, std::time::Instant::now()) {
+            self.send_presence();
+        }
+    }
+
+    fn send_presence(&self) {
         // EVERY connected host, not just `active_host` (2026-09-08 review correction): each daemon's agents route
         // commands through it, so each must know when a person is at this window. One clock covers the fan-out.
         for (host, _) in &self.conns {
@@ -155,6 +184,29 @@ mod read_mark_tests {
 mod presence_tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    /// The review's sequence: a person works in A, clicks into B, comes back to A and types. The daemon stamps each
+    /// report as it arrives; the window last stamped must be A once the held report goes out.
+    #[test]
+    fn a_throttled_report_is_sent_by_the_tick_so_the_window_in_use_wins() {
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let (mut a, mut b) = (PresenceClock::default(), PresenceClock::default());
+        assert!(!presence_due(&mut a, true, at(58)));
+        assert!(presence_due(&mut a, true, at(60)));
+        assert!(!presence_due(&mut b, true, at(60)));
+        assert!(presence_due(&mut b, true, at(61)));
+        let stamp_b = 61;
+        for t in [62, 63] {
+            assert!(!presence_due(&mut a, true, at(t)), "throttled");
+        }
+        assert!(!presence_held_due(&mut a, at(64)), "the throttle has not passed");
+        assert!(presence_held_due(&mut a, at(65)), "the held report goes out on the tick");
+        let stamp_a = 65;
+        assert!(!presence_held_due(&mut a, at(66)), "once");
+        assert!(!presence_held_due(&mut b, at(66)), "a window with nothing held sends nothing");
+        assert!(stamp_a > stamp_b, "an open at 120 s goes to A");
+    }
 
     #[test]
     fn a_lone_press_or_a_release_reports_nothing_a_second_press_reports_a_person() {

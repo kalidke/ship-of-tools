@@ -13,7 +13,7 @@
 > decision 1), not to one connection: a window that redials keeps it, and of its connections the newest gets what goes
 > to it (`rust/backend/src/clients_window.rs`). `fe.presence` now comes only from a press (not a button release or a key
 > repeat), from the second press in a window within five minutes (one stray click reports nothing), at most once per
-> 5 s. The relay logs the chosen window and why (`every`, `last-used`, `last-connected`).
+> 5 s, a press the throttle held back going out on the window's next one-second tick once the 5 s have passed. The relay logs the chosen window and why (`every`, `last-used`, `last-connected`).
 
 > **Update — 2026-09-08: v1.1 landed — "the active frontend," presence from the
 > frontend, not inferred by the daemon.** §5's `v1.1` promised daemon primary-tracking
