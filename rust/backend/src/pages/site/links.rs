@@ -129,11 +129,38 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, (bool, String)> {
     }
 }
 
+/// Whether running `git` is safe. On macOS without the Command Line Tools,
+/// `/usr/bin/git` is a stub that pops an install prompt at every run, so a repo
+/// there tracks no links; everywhere else git is run as found.
+#[cfg(unix)]
+fn git_usable(macos: bool, command_line_tools: bool) -> bool {
+    !macos || command_line_tools
+}
+
+#[cfg(unix)]
+fn git_present() -> bool {
+    static PRESENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PRESENT.get_or_init(|| {
+        let clt = cfg!(target_os = "macos") && {
+            let mut cmd = std::process::Command::new("xcode-select");
+            cmd.arg("-p").stdin(std::process::Stdio::null());
+            crate::lifecycle::child_signal::process()
+                .output(&mut cmd, Duration::from_secs(10))
+                .is_ok_and(|o| o.status.success())
+        };
+        git_usable(cfg!(target_os = "macos"), clt)
+    })
+}
+
 #[cfg(unix)]
 impl GitState {
     /// The repo containing `dir`: its canonical top and index file. `None`
     /// (fail closed, no links) when it is not a repo or git will not answer.
     fn find(dir: &Path) -> Option<GitState> {
+        if !git_present() {
+            tracing::debug!(dir = %dir.display(), "site_serve: no usable git, no links");
+            return None;
+        }
         let out = match run_git(dir, &["rev-parse", "--show-toplevel", "--git-path", "index"]) {
             Ok(o) => o,
             Err((true, first)) if first.is_empty() || first.contains("not a git repository") => {

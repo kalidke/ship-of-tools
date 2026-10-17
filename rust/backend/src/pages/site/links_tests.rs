@@ -543,3 +543,11 @@ async fn a_root_declared_through_a_symlinked_path_matches_its_canonical_target()
     assert_eq!(body.len(), MOVIE_LEN);
     remove_root(serial);
 }
+
+/// Git is run everywhere but on a Mac with no Command Line Tools, where `/usr/bin/git` is an install prompt.
+#[test]
+fn git_runs_unless_it_is_the_macos_install_stub() {
+    assert!(git_usable(false, false));
+    assert!(git_usable(true, true));
+    assert!(!git_usable(true, false));
+}
