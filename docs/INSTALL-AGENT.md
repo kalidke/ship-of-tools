@@ -393,9 +393,12 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
 ```
 
 You are RIGHT to be wary of piping remote scripts to a shell — inspecting
-first is encouraged: download it to a file, read it (a long commented script,
-everything under `$HOME`, no sudo, checksums verified before use),
-then run the file with the same flags.
+first is encouraged: download `.../ship-of-tools/<tag>/scripts/install.sh` for
+the tag you will install, read it (a long commented bash script, everything under `$HOME`, no sudo,
+checksums verified before use), then run `SOT_INSTALL_TAG=<tag> bash install.sh <flags>`. Run without
+`SOT_INSTALL_TAG`, the file instead fetches and runs the installer of the tag it resolves: the one `--version` names,
+else the latest release (the newest release of any kind on a machine that runs a pre-release). Your read cannot cover
+the `curl https://install.julialang.org | sh` it runs when Julia is absent.
 
 Two flags beyond the role: `--version vX.Y.Z` pins a specific release (the
 leading `v` is required — the flag is used verbatim as the tag), and
