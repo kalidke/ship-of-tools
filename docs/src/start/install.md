@@ -337,22 +337,19 @@ check, pinning a version, and rolling back are in
   will start; see
   [A session will not start on a shared home](../guide/troubleshooting.md#A-session-will-not-start-on-a-shared-home).
 
-On **Windows** there is no `install.ps1` yet (`scripts/install.sh` exits with
-a Windows-specific message), but no Rust toolchain is needed: the release
-ships `sot-<ver>-windows-x86_64.zip`. Extract `sot.exe` into
-`%LOCALAPPDATA%\sot\bin`, clone the repo for the launcher scripts and config,
-and wire the shortcut with `scripts\install-shortcut.ps1`, which points the
-desktop shortcut (and any taskbar pin) at `scripts\launch-sot.ps1`. Do not
-point a shortcut at bare `sot.exe`, which skips the launcher's update and
-relaunch handling. The launcher also declares the home folder as the trusted
-folder prefix in `%LOCALAPPDATA%\sot\config\settings.toml` (a `[trust]` table,
-written once and never rewritten), so a session the daemon starts there does not
-stop at the agent's folder-trust dialog. The step-by-step walkthrough is
-[INSTALL-AGENT.md §2b](https://github.com/kalidke/ship-of-tools/blob/main/docs/INSTALL-AGENT.md)
-(written for a coding agent, equally followable by hand). A Windows box's
-comm scripts need **jq** on `PATH` too (`winget install jqlang.jq`): the
-launcher's comm install stops without it, changes nothing, and names that
-command in a startup notice.
+On **Windows** the installer is `scripts/install.ps1` (Windows PowerShell 5.1; it needs git and `curl.exe` on `PATH`), and
+no Rust toolchain is needed: it downloads and verifies the release's `sot-<ver>-windows-x86_64.zip`, puts `sot.exe`,
+`sotd.exe` and `sot-capsule.exe` in `%LOCALAPPDATA%\sot\bin`, lays out `repo\base`, `repo\versions\v<ver>` and the
+`repo\current` junction, installs the comm layer, and creates the desktop shortcut (and re-syncs any taskbar pin) that runs
+`repo\current\scripts\launch-sot.ps1`. On a fresh box fetch the installer of the release you chose and run it with `-Version`
+and `-Hub` (the hub's ssh alias); to update, run it again from the installed checkout with no options. It ends with one
+`PASS`, `ONE STEP LEFT` or `FAIL` line. Do not point a shortcut at bare `sot.exe`, which skips the launcher's update and
+relaunch handling. The launcher also declares the home folder as the trusted folder prefix in
+`%LOCALAPPDATA%\sot\config\settings.toml` (a `[trust]` table, written once and never rewritten), so a session the daemon
+starts there does not stop at the agent's folder-trust dialog. The step-by-step walkthrough is
+[INSTALL-AGENT.md §2b](https://github.com/kalidke/ship-of-tools/blob/main/docs/INSTALL-AGENT.md) (written for a coding
+agent, equally followable by hand). A Windows box's comm scripts need **jq** on `PATH` too (`winget install jqlang.jq`): the
+installer's last line names that command when it is missing.
 
 On **macOS aarch64** the bash installer works, but there is no launchd
 service; local roles start `sotd` on demand. See [Platforms](@ref platforms)

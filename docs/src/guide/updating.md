@@ -1,6 +1,6 @@
 # [Updating and rollback](@id updating)
 
-Updating a release install on Linux or macOS is one command. Tell a coding agent running on the machine
+Updating a release install on Linux, macOS or Windows is one command. Tell a coding agent running on the machine
 
 ```text
 update sot from the repo
@@ -11,6 +11,19 @@ or run it yourself:
 ```bash
 bash ~/.local/share/sot/repo/current/scripts/install.sh
 ```
+
+On Windows the same entry is `install.ps1` in the installed checkout (its versions path also works over ssh, where
+`repo\current` cannot be traversed):
+
+```powershell
+$p="$env:LOCALAPPDATA\sot"; $t=(Get-Content "$p\install.json" -Raw | ConvertFrom-Json).tag
+powershell -NoProfile -ExecutionPolicy Bypass -File "$p\repo\versions\$t\scripts\install.ps1"
+```
+
+Its options are `-Version`, `-Archive`, `-Hub`, `-Prefix` and `-RestartDaemon`, and it ends in the same one line. A
+`ONE STEP LEFT` there is usually to quit Ship of Tools (choose Keep) and start it from the shortcut, when the window's
+launcher is older than release candidate 9.13 or no window is up to be told, or to start it at the desk when the run was
+over ssh; with a current launcher running, the entry asks it to converge and waits for it, and your sessions keep running.
 
 With no options it moves to the newest release on the channel the machine already runs (a stable release follows the
 stable releases; a release candidate follows the candidates), keeps the role the install recorded, and never moves the
@@ -85,8 +98,11 @@ and the resource tree, and changes in it are not carried to the next version.
 
 ## Pinning and going back
 
-- **Pin a release.** Add `--version vX.Y.Z` to move to (or stay on) a specific tag; the same flag moves you *back* to an
-  older tag.
+- **Pin a release.** Add `--version vX.Y.Z` (Windows: `-Version`) to move to (or stay on) a specific tag; the same flag
+  moves you *back* to an older tag. A run that names what to install (`--version`, `--archive`) pins the install:
+  `install.json` records `"pinned": true` and the daily check and the window's own check leave it alone, so a downgrade is
+  not undone the next morning. The update status says "pinned at <version>: automatic updates stay off for this install
+  until a run that names no version". A run that names no version removes the pin.
 - **Automatic rollback.** Applying a staged update is an offline pointer flip done by `sot-apply`, which records the
   previous install as *last good*. The `--local` launcher runs `sot-apply --rollback` if the frontend exits with an error
   within 10 seconds twice in the 30 minutes after an update. Windows rolls back after a single such exit within two hours

@@ -7,8 +7,10 @@ and the launch path fails open: no update step can stop a window from starting.
 
 ## Owns
 - The release cut and CI: `release.sh`, `tests/rc-gate.sh`, `.github/`.
-- Install and the Unix update entry: `install.sh` (Linux and macOS; "update sot from the repo" runs it); on Windows `install-shortcut.ps1` then `install-manifest.ps1`, plus
-  `Initialize-InstallLayout` (in `sot-install-layout.ps1`, run by `launch-sot.ps1`).
+- Install and the update entry: `install.sh` (Linux and macOS) and `install.ps1` (Windows); "update sot from the repo"
+  runs the one for the OS. On Windows `install.ps1` runs `install-shortcut.ps1` and `install-manifest.ps1` and the
+  launcher's own `Initialize-InstallLayout` (in `sot-install-layout.ps1`, also run by `launch-sot.ps1`) and
+  `Invoke-FreshnessPass` from the target checkout.
 - Update discovery and staging: `rust/updater`, `rust/backend/src/update.rs` (the `update.check` and `update.apply`
   ops, and `sotd update stage`), `rust/frontend/src/selfupdate.rs`.
 - Apply: `sot-apply.sh`, `sot-apply.ps1`.
@@ -135,8 +137,12 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `pack-build.ps1`: the same for Windows, as release.yml's Windows job does; `sotd update stage <folder> --prefix <prefix>`
   arms the folder for the supervisor's converge.
 - `sot.svg`: the desktop-entry icon the sot-setup skill names.
-- `install-shortcut.ps1`: Windows shortcut and taskbar pin; calls the manifest writer.
-- `install-manifest.ps1`: writes `install.json` for a Windows install and runs the first topology sync.
+- `install.ps1`: the Windows installer and update entry (Windows PowerShell 5.1); the prelude fetches its own tag's copy;
+  `-Archive <folder>` installs a packed folder; ends with one verdict line (see the rule below).
+- `install-shortcut.ps1`: Windows shortcut and taskbar pin; calls the manifest writer. A step of `install.ps1`
+  (`-Prefix` passes its prefix); ends with an explicit `exit 0`.
+- `install-manifest.ps1`: writes `install.json` for a Windows install (keeping a recorded `pinned`) and runs the first
+  topology sync.
 - `set-shortcut-aumid.ps1`: stamps the window's AppUserModelID on a shortcut.
 ### Update-apply
 - `sot-apply.sh`: offline apply and rollback of an armed update (Unix).
@@ -167,10 +173,29 @@ Read `lib/sot-daemon.sh` for anything on the Unix launch path, `sot-apply.sh` fo
 launch). A new suite joins a named step of `.github/workflows/rust.yml` in the same change.
 
 ## Rules
+- On Windows the installer is the update entry too (`install.ps1`, run from the installed checkout's `repo\versions\<tag>`
+  path or fetched as the one-liner). Its options are `-Version`, `-Archive`, `-Hub`, `-Prefix` and `-RestartDaemon` (parsed
+  by hand from `$args`, so an option error ends in the same one verdict line), and every exit ends in exactly one `PASS`,
+  `ONE STEP LEFT` or `FAIL` line, then an explicit `exit`: the one `try`/`finally` in `Invoke-InstallEntry` prints it,
+  Ctrl+C included. The channel, the never-backwards direction (`sotd update direction`, asked of the target's own sotd
+  before anything under the prefix changes), the `+` stop and the live-work ask (`sotd update repls`: a live REPL or the
+  Pluto server stops the run with sotd's own reason, `-RestartDaemon` answers it) are install.sh's, in PowerShell. It
+  never traverses `repo\current`: it reads the junction's target and works on `repo\versions\<tag>`, because an ssh
+  session on a box with redirection trust cannot traverse the junction. A fresh install lays down `bin`, `repo\base`,
+  `repo\versions\v<v>` and the junction, then the launcher's `Initialize-InstallLayout` and comm and the shortcut. An
+  update stages with the target's own `sotd update stage` and applies by what runs here: a supervisor whose start line
+  carries `code=` gets the converge sentinel and the entry waits for `sot-apply: APPLIED` and `status: DONE`; an older
+  supervisor, or a window with none, leaves the update armed and the step is to quit and start from the shortcut (never a
+  sentinel without a window); with nothing running a desktop session applies it here, and an ssh session leaves it armed
+  with the step to start at the desk. A daemon the converge restarted must answer as the target within
+  `SOT_INSTALL_DAEMON_WAIT_S` by the clock. A run that names what to install (`-Version`, `-Archive`; `install.sh`'s
+  `--version`, `--archive`) pins the install: `install.json` records `"pinned": true`, the updaters' arm guards
+  (`InstalledBuild::admits`) never arm over it ("pinned at <v>: automatic updates stay off for this install until a run
+  that names no version"), and a run that names none removes the pin. `tests/test-install-entry.ps1` pins all of it.
 - Entry-point paths are an interface and do not move, and neither do the option names of `install.sh` (`--version`,
-  `--archive`, `--local`, `--backend`, `--be-only`, `--prefix`, `--hub`, `--no-service`, `--force-role-change`; a new
-  option is added, never renamed): an agent's instructions name them. `install.sh` fetches `scripts/install.sh` of its own tag
-  (the prelude before step 0), shortcuts run `repo\current\scripts\launch-sot.ps1`, and `Get-SotLauncherCodeId` hashes
+  `--archive`, `--local`, `--backend`, `--be-only`, `--prefix`, `--hub`, `--no-service`, `--force-role-change`) or of
+  `install.ps1` (`-Version`, `-Archive`, `-Hub`, `-Prefix`, `-RestartDaemon`); a new option is added, never renamed: an agent's instructions name
+  them. `install.sh` fetches `scripts/install.sh` of its own tag and `install.ps1` its tag's `scripts/install.ps1` (the preludes), shortcuts run `repo\current\scripts\launch-sot.ps1`, and `Get-SotLauncherCodeId` hashes
   `launch-sot.ps1`, `sot-hosts.ps1`, `sot-install-layout.ps1`, `sot-freshness.ps1` and `sot-lease.ps1`
   (`tests/test-install-layout.ps1` section 3). A new launcher file joins that list.
 - Every file `launch-sot.ps1` dot-sources is in `Get-SotLauncherCodeId`'s list and in the converge parse loop of

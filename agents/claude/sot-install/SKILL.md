@@ -1,6 +1,6 @@
 ---
 name: sot-install
-description: Install or update Ship of Tools on this computer. Activates for "update sot", "update sot from the repo", "update Ship of Tools", "install sot", "sot install", "update sot comm". Runs the installer (the update entry) and reports its one verdict line; the agent comm and skills are refreshed as part of it.
+description: Install or update Ship of Tools on this computer (Linux, macOS and Windows). Activates for "update sot", "update sot from the repo", "update Ship of Tools", "install sot", "sot install", "update sot comm". Runs the installer (the update entry) and reports its one verdict line; the agent comm and skills are refreshed as part of it.
 ---
 
 # sot-install
@@ -43,8 +43,41 @@ its first `tag_name`). Tell the human that version before running
 `curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash -s -- --version <tag>`.
 With no `install.json` this is a first install:
 follow `docs/INSTALL-AGENT.md` in the checkout, or fetch it from the repo. A source checkout (no `install.json`, a `+`
-in `sotd --version`) updates by `git pull` and a rebuild. On Windows there is no installer script yet; follow
-`docs/INSTALL-AGENT.md`, "Updating later".
+in `sotd --version`) updates by `git pull` and a rebuild.
+
+## Update (Windows)
+
+If `%LOCALAPPDATA%\sot\install.json` exists (pass `-Prefix <dir>` for another prefix), run the installer from the
+installed checkout. The versions path works from an ssh session too, where `repo\current` cannot be traversed:
+
+```powershell
+$p="$env:LOCALAPPDATA\sot"; $t=(Get-Content "$p\install.json" -Raw | ConvertFrom-Json).tag
+powershell -NoProfile -ExecutionPolicy Bypass -File "$p\repo\versions\$t\scripts\install.ps1"
+```
+
+It reads the same way as the Unix one: no options follows the channel the machine already runs, never moves backwards,
+and ends with exactly one line. Tell the human what it says:
+
+- `PASS: Ship of Tools <v> at <short> on this computer`: done.
+- `ONE STEP LEFT: <step>`: the install is whole, or the update is armed and waits for one thing only the human can do:
+  quit Ship of Tools (choose Keep) and start it from the shortcut, start it at the desk, or install Julia or jq with the
+  winget command the line names. Give the human the step in those words, then run the installer again to confirm.
+- `FAIL: <check>: <detail>`: report the line. Do not retry blindly.
+  - `daemon:` names rows with a live REPL and says when the Pluto server is running (a restart would end both), or says
+    why the daemon could not be asked in full. Ask the human; run it again with `-RestartDaemon` only on a yes.
+  - `target:` and `direction:` are the human's to answer: the agent does not choose a version. `target:` means the machine
+    runs a build of the line (a `+` in its version): a pack of the line (`scripts\pack-build.ps1` in the checkout that
+    built it) goes in with `-Archive <folder>`, while a release named with `-Version vX.Y.Z` is usually older and moves
+    this computer back. `direction:` means the newest release is older than what runs here: only a version the human
+    names goes back. Ask which they want.
+  - `-Archive` runs the install.ps1 of the checkout that made the pack, not the installed one:
+    `powershell -NoProfile -ExecutionPolicy Bypass -File <that checkout>\scripts\install.ps1 -Archive <folder>`.
+
+A run that names what to install (`-Version`, `-Archive`) pins the install: automatic updates stay off until a run that
+names no version. If a run stops half way, run it again: a repeat is a repair run. With no install here, a first
+install is `docs/INSTALL-AGENT.md` (fetch `https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.ps1`
+with `curl.exe` and run it with `-Version <tag>`). A source checkout (no `install.json`, a `+` in `sotd.exe --version`)
+updates by `git pull` and a rebuild.
 
 ## Only the agent comm and skills
 

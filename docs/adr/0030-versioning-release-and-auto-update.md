@@ -805,3 +805,30 @@ cannot judge, and none can arm or apply a downgrade without another rule catchin
 - *An older `sotd` without the verb* (exit 1 or 2, or none at all): the scripts keep the exact-tag check. The first
   release carrying the verb closes it for every later apply; until then a pointer armed before the fix is caught only by
   its tag.
+
+## Amendment 2026-10-17 — the installer is the update; a named version pins the install
+
+"Update sot from the repo" is one command per OS: `scripts/install.sh` (Linux, macOS) and `scripts/install.ps1` (Windows,
+Windows PowerShell 5.1). Run with no options it moves the install to the newest release on the channel `install.json`
+records (none installed or a stable release: the latest stable release; a pre-release: the newest published release of
+any kind; a `+` build: it stops and sends the person to `-Archive`/`--archive` of a pack of the line, because a named
+release is usually older), never moves it backwards unless told (the target's own `sotd update direction` says which way),
+asks before it ends a live REPL or the Pluto server (`sotd update repls`; `-RestartDaemon`/`--restart-daemon` answers), and
+ends in exactly one `PASS`, `ONE STEP LEFT` or `FAIL` line. The Windows entry is the same decisions in PowerShell. A fresh
+install lays down `bin`, `repo\base`, `repo\versions\v<v>` and the `repo\current` junction and runs the launcher's own
+layout and comm code from the target checkout; an update stages with the target's `sotd update stage` and is applied by
+what runs here: a supervisor whose start line carries its launcher code id (release candidate 9.13 and later) is asked to
+converge by the sentinel and waited for, so sessions keep running; an older supervisor, or a window with none, gets the
+update left armed and the step to quit and start from the shortcut (a sentinel is never written without a window to read
+it); with nothing running a desktop session applies it directly, and an ssh session leaves it armed with the step to start
+at the desk. The entry reads `repo\current`'s target and works on `repo\versions\<tag>` paths, because an ssh session on a
+box with redirection trust cannot traverse the junction.
+
+**A named version pins the install.** An operator's downgrade is not sticky if the next daily check arms the newest
+release over it. A run that names what to install (`--version`, `--archive`, `-Version`, `-Archive`) writes
+`"pinned": true` into `install.json`; `InstalledBuild::admits` is false for a pinned install, so the daemon's daily check,
+`update.check`, the window's self-update and `pending::arm` for an automatic writer all leave it where the person put it,
+and the status reads "pinned at <version>: automatic updates stay off for this install until a run that names no version".
+`sotd update stage` (the operator) still arms. A run that names no version removes the pin; an apply keeps it (it rewrites
+the record field by field), and `install-manifest.ps1` keeps a recorded pin when it rewrites the file. The pin is a fact
+about the run, not a setting for the person to maintain.
