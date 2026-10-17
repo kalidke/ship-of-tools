@@ -160,9 +160,28 @@ pub fn compute(
     let inner_left = area.x + 1;
     let inner_right = area.x + area.width - 2; // last interior column
     let inner_total = (inner_right as i32 - inner_left as i32 + 1).max(0) as u16;
-    // Column `i`'s span from its fraction of the interior. The last column
-    // takes the remainder instead, so this is only read for `i < n - 1`.
+    // Column `i`'s share of the interior, from its fraction. Only read for
+    // `i < n - 1`: the last column takes the remainder instead.
     let share = |i: usize| ((inner_total as f32) * preset.widths[i]).round() as u16;
+
+    // Every column's span, computed once before the walk. A column before the
+    // last takes its share, capped so its right border still lands inside the
+    // interior; the last column takes the remainder. A span under 2 is skipped
+    // and moves the cursor by nothing, as the walk below does.
+    let n = preset.columns.len();
+    let mut spans = Vec::with_capacity(n);
+    let mut next = inner_left;
+    for i in 0..n {
+        let span = if i + 1 == n {
+            inner_right.saturating_sub(next).saturating_add(1)
+        } else {
+            share(i).min(inner_right.saturating_sub(next))
+        };
+        if span >= 2 {
+            next = next.saturating_add(span).saturating_add(1);
+        }
+        spans.push(span);
+    }
 
     // When the preset has an Llm column AND the drawer is open, the
     // drawer is scoped to the columns left of Llm — Llm stays full
@@ -174,19 +193,11 @@ pub fn compute(
     // full width and every column is clipped alike.
     let llm_idx = preset.columns.iter().position(|s| *s == Slot::Llm);
     let partial_drawer = drawer_top_y.is_some()
-        && llm_idx.map(|i| i > 0 && share(i - 1) >= 2).unwrap_or(false);
+        && llm_idx.map(|i| i > 0 && spans[i - 1] >= 2).unwrap_or(false);
 
     let mut cursor = inner_left;
-    let n = preset.columns.len();
     for (i, slot) in preset.columns.iter().enumerate() {
-        let span = if i + 1 == n {
-            // Final column takes whatever's left — avoids the cumulative
-            // rounding gap that would otherwise show as a 1-cell strip
-            // at the right edge.
-            inner_right.saturating_sub(cursor).saturating_add(1)
-        } else {
-            share(i)
-        };
+        let span = spans[i];
         if span < 2 {
             // Too small to render; skip but keep cursor stable so the
             // next column doesn't double-count.
@@ -644,5 +655,50 @@ mod tests {
         }
         let g = compute(area(120, 7), &preset, true, None);
         assert!(g.repl.is_some());
+    }
+
+    /// Every column rect, divider and drawer edge lies between the border
+    /// cells of `area`.
+    fn assert_inside_interior(area: Rect, g: &LayoutGeom) {
+        let left = area.x + 1;
+        let right = area.x + area.width - 2;
+        let bottom = area.y + area.height - 2;
+        for rect in [g.nav, g.preview, g.llm, g.repl].into_iter().flatten() {
+            assert!(rect.x >= left, "{rect:?} starts left of the interior of {area:?}");
+            assert!(rect.x + rect.width - 1 <= right, "{rect:?} ends right of the interior of {area:?}");
+            assert!(rect.y + rect.height - 1 <= bottom, "{rect:?} ends below the interior of {area:?}");
+        }
+        for &x in g.vlines.iter().chain(g.drawer_x_end.iter()) {
+            assert!(x >= left && x <= right, "divider at {x} is outside the interior of {area:?}");
+        }
+    }
+
+    #[test]
+    fn every_column_and_divider_stays_inside_the_area() {
+        // `widths` renormalize on parse: 1,1,1.02,0.0001 becomes these. The
+        // repl share asks for more than the room left, and llm is too small
+        // to lay out, so the cap decides where the divider lands.
+        let squeezed = LayoutPreset {
+            columns: vec![Slot::Nav, Slot::Preview, Slot::Repl, Slot::Llm],
+            widths: vec![0.331_115, 0.331_115, 0.337_737, 0.000_033],
+            drawer: Some(Slot::Repl),
+            drawer_height: 0.40,
+        };
+        for preset in [
+            squeezed,
+            LayoutPreset::default_ultrawide(),
+            LayoutPreset::default_laptop(),
+            LayoutPreset::default_portrait(),
+        ] {
+            for width in 5..=130 {
+                for height in 5..=40 {
+                    for drawer_open in [false, true] {
+                        let a = area(width, height);
+                        let g = compute_default(a, &preset, drawer_open);
+                        assert_inside_interior(a, &g);
+                    }
+                }
+            }
+        }
     }
 }
