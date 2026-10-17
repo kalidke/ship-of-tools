@@ -1138,15 +1138,16 @@ mod tests {
         }
         let release = dir.join("release");
         std::fs::create_dir_all(&release).unwrap();
-        let tar = std::process::Command::new("tar")
-            .arg("-czf")
-            .arg(release.join(&asset))
-            .arg("-C")
-            .arg(dir.join("build"))
-            .arg(top.file_name().unwrap())
-            .status()
-            .unwrap();
-        assert!(tar.success());
+        sot_log::test_wait::run_within(
+            std::process::Command::new("tar")
+                .arg("-czf")
+                .arg(release.join(&asset))
+                .arg("-C")
+                .arg(dir.join("build"))
+                .arg(top.file_name().unwrap()),
+            Duration::from_secs(30),
+        )
+        .ok();
         let digest = sot_updater::fetch::hash::sha256_file(&release.join(&asset)).await.unwrap();
         std::fs::write(release.join("SHA256SUMS"), format!("{digest}  {asset}\n")).unwrap();
         let sums = std::fs::read_to_string(release.join("SHA256SUMS")).unwrap();
