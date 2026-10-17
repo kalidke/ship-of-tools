@@ -1207,7 +1207,15 @@ fi
 # public-flip history rewrite) otherwise makes the whole fetch abort with
 # "would clobber existing tag", blocking every upgrade re-run (issue #4).
 # The checkouts are READ-ONLY BY CONVENTION, so force-updating tags is safe.
-git "${GIT_BOUND[@]}" -C "$BASE" fetch --tags --force origin || die "fetch failed"
+# An --archive install of a commit the base clone already holds needs no origin: carried to a machine with no network,
+# it installs without the fetch.
+if ! git "${GIT_BOUND[@]}" -C "$BASE" fetch --tags --force origin; then
+    if [ -n "$ARCHIVE" ] && git -C "$BASE" rev-parse --verify "$ARCHIVE_COMMIT^{commit}" >/dev/null 2>&1; then
+        say "note: could not fetch origin; $BASE already holds ${ARCHIVE_COMMIT:0:9}"
+    else
+        die "fetch failed"
+    fi
+fi
 if [ -n "$ARCHIVE" ]; then
     want="$(git -C "$BASE" rev-parse --verify "$ARCHIVE_COMMIT^{commit}" 2>/dev/null)" \
         || die "commit $ARCHIVE_COMMIT is not in origin after fetch — push the line first"

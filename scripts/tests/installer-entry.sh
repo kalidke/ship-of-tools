@@ -369,6 +369,11 @@ entry_archive "$d" --be-only --no-service
 check "an offline archive install passes" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
 check "it made no curl call" "no" "$([ -s "$d/ctl/net.log" ] && echo yes || echo no)"
 check "the checkout is the folder's commit" "$(cat "$d/ctl/commit")" "$(git -C "$d/home/.local/share/sot/repo/current" rev-parse HEAD)"
+# Carried to a machine that cannot reach the origin, the same folder installs when the base clone already holds its commit.
+mv "$d/origin" "$d/origin.gone"
+entry_archive "$d" --be-only --no-service
+check "an unreachable origin, the commit already in the base clone: PASS" "0 PASS 1" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4) $(said 'could not fetch origin')"
+
 
 # ---------------------------------------------------------------------------
 case_start "entry_repeats_and_resumes_after_an_interrupted_run"
