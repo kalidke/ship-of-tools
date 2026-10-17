@@ -113,7 +113,8 @@ intent is ambiguous.
 
 ## 0. Ground rules
 
-- Don't run anything as root; everything installs under `$HOME`
+- The installer needs no root and everything installs under `$HOME`; installing a missing prerequisite may need it
+  (`sudo apt-get install`)
   (`~/.local/share/sot`, `~/.config/sot`, `~/.local/bin`). The installer
   honors `SOT_PREFIX` and `XDG_CONFIG_HOME` overrides — if you set them,
   substitute your prefix in every path below (verify, uninstall, all of it).
@@ -133,7 +134,8 @@ case "$(uname -s)" in
   Linux)  ldd --version | head -1 ;;   # frontend needs glibc >= 2.35
   Darwin) sw_vers -productVersion ;;   # macOS aarch64 artifact only
 esac
-command -v git curl tar jq   # all required
+command -v git curl tar jq perl   # all required
+command -v flock          # required on Linux (the comm inbox lock)
 command -v node npm       # OPTIONAL — math rendering in markdown previews
 command -v pdftoppm pdfinfo  # OPTIONAL (poppler-utils) — PDF previews
 command -v ffmpeg         # OPTIONAL — video poster frames in previews
@@ -144,6 +146,9 @@ command -v Xvfb           # OPTIONAL, Linux backend — GLMakie in the REPL and 
   and the installer stops without it. Install it with
   `sudo apt-get install jq` (Linux), `brew install jq` (macOS) or
   `winget install jqlang.jq` (Windows).
+- **perl or flock absent** → the installer does not check for them, but the comm scripts need `perl` (registry
+  writes; the clock before bash 5, which is every Mac) and, on Linux, `flock`, and a session without them never sees
+  its mail. Install them (`sudo apt-get install perl util-linux`, `brew install perl`) before you report success.
 - **node/npm absent** → not a blocker: the installer skips the MathJax
   sidecar deps with a warning and math in markdown previews shows raw LaTeX.
   Tell the human; if they want math, install node and re-run (or run
@@ -157,41 +162,27 @@ command -v Xvfb           # OPTIONAL, Linux backend — GLMakie in the REPL and 
   CairoMakie and WGLMakie still work, GLMakie does not. Tell the human;
   `sudo apt-get install xvfb` (Debian/Ubuntu) adds it, and a REPL started
   afterward gets its display.
-- An upgrade to a tmux-free tag removes the old sot-tmux.service unit by
-  itself.
 - **Linux x86_64, glibc ≥ 2.35** → full install works.
 - **Linux, older glibc** → only `--be-only` (the backend is static musl);
   the frontend must run on another machine.
 - **Windows** → no bash installer. Use **§2b Windows frontend → remote
   backend** (release zip + repo scripts — no Rust toolchain needed), or build
   from source.
-- **macOS (Apple Silicon)** → EXPERIMENTAL; say so. The tested use is
-  `--backend <ssh-alias>`: frontend on the Mac, backend on a Linux box — ONE
-  command, the installer writes a launcher that dials it over its own ssh
-  child (C3, no forward). The other roles
-  install (no systemd on macOS: the local-role launcher starts `sotd` on
-  demand), but agent sessions on a Mac backend are not supported yet, so
-  recommend `--backend`, and tell the human plainly: no agent session has
-  run end to end on a Mac; the only rows a test starts there are the
-  pane-timing job's plain shells; the successor and controlled-outcome cases
-  are not built for macOS (the tests that a session outlives a restart of
-  its daemon, and that the daemon's own ends, a close, an update restart or
-  a stop signal, end its processes as designed). Intel Macs: from-source
-  only.
+- **macOS (Apple Silicon)** → EXPERIMENTAL; say so. Use `--backend <ssh-alias>`
+  (frontend on the Mac, backend on a Linux box enrolled first; §2.1 (b)). The other roles install, but agent
+  sessions on a Mac backend are not supported; see the Platforms section of the install page in the manual. Intel
+  Macs: from-source only.
 
 ## 2. Choose the topology
 
 ### 2.0 First: is there already an install here?
 
 **Look before you ask.** A machine with a working install has already answered
-this question, and re-answering it differently reconfigures a live system —
-that is a real incident, not a hypothetical: a documented install run on a box
-with a live backend re-roled it, and the first anyone noticed was a monitoring
-pane quietly showing one host.
+this question, and re-answering it differently reconfigures a live system.
 
 ```bash
 cat ~/.local/share/sot/install.json 2>/dev/null        # prior install here (no role: derived fresh, below)
-sotd topology status 2>/dev/null                        # does the declared list already name this box?
+~/.local/share/sot/bin/sotd topology status 2>/dev/null   # (use your prefix) does the declared list already name this box?
 systemctl --user is-active --quiet sotd.service && systemctl --user cat sotd.service 2>/dev/null | grep ExecStart
 cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launcher belong to another prefix?
 ```
@@ -208,15 +199,15 @@ cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launc
   whose `ExecStart` is outside this prefix, the `~/.local/bin/sot-launch`
   wrapper, the desktop entry, and the macOS app — any one of these already
   pointing at a source checkout or another `--prefix` means installing here
-  would replace or disable it. Stop and tell the human — unless they asked
+  would replace or disable it (the ownership check runs only for frontend roles). Stop and tell the human — unless they asked
   you to replace a source build with a release install, which is that
   authorization already; then proceed with the flag. A unit file alone
   (e.g. seen over a shared home, not active here) is not this case, and
   neither is a wrapper/desktop entry/app that already points at THIS prefix
   (that's an upgrade). A `sot-launch` wrapper whose shape the installer
-  doesn't recognize is refused the same way, but **not** overridable with
-  `--force-role-change` — its owner can't be identified at all, so tell the
-  human to move it aside instead.
+  doesn't recognize is refused the same way, as is a desktop entry or macOS app that does not launch
+  `~/.local/bin/sot-launch`; neither is overridable with `--force-role-change`
+  (an owner that can't be identified), so tell the human to move it aside instead.
 - **`hosts.toml` runs no sotd on this host and an install is already at the
   prefix** (this host is not listed, or is listed with neither `daemon` nor
   `frontend`), or **the manifest records a daemon or its unit and this run
@@ -236,7 +227,8 @@ cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launc
   machine's own role changed.
 - **A manifest you cannot read** — truncated, unknown schema, recording a
   different prefix — is NOT the same as no install. Treat it as unknown state
-  and stop; the installer does the same.
+  and stop. The installer does not check this for you: it reads only whether the manifest records a daemon and a
+  systemd service, and overwrites it.
 - **Neither** → a fresh install; carry on below.
 
 Only when a live daemon or integration file from a different prefix is blocking
@@ -260,8 +252,15 @@ the install command. Never add it to get past an error you did not understand.
 
 For (b): verify key-based SSH first — `ssh -o BatchMode=yes <alias> true`.
 If it fails, walk the human through `ssh-keygen` + `ssh-copy-id`, then
-recheck. The *remote* machine also needs a `--be-only` install (offer to do
-it over SSH after this one). **On a shared-home deployment** (one `$HOME` on
+recheck. The *remote* machine needs a `--be-only` install first (offer to do
+it over SSH before this one).
+
+(b) also needs the hub (the backend you name) to know this machine. The wrapper `--backend` writes passes no
+`--dial` of its own: the launcher syncs `~/.config/sot/hosts.toml` from the hub and builds its dials from
+`sotd topology plan`, and the sync refuses a hub whose `hosts.toml` does not list this machine. So, on the hub,
+`~/.config/sot/hosts.toml` must list this machine as `[host.<this box>]` with `frontend = true` (see
+`docs/ENROLLING-A-HOST.md`, or `/sot-setup` on the hub). Install and enrol the backend first, then run
+`--backend`; `--be-only` writes no `hosts.toml`. **On a shared-home deployment** (one `$HOME` on
 several hosts), `~/.config/sot/hosts.toml` must list every host that shares
 it: the installer pins `sotd.service`, whose file and boot drop-in
 (`default.target.d/sotd.conf`; the unit has no `[Install]`, so `enable` and `disable` change no file) every such
@@ -280,10 +279,16 @@ quote these facts to the human and wait for an explicit yes:
 - Skills and hooks go into their global `~/.claude` and `~/.codex`. Hooks are
   merged into `~/.claude/settings.json`, and into each
   `~/.claude-auth/<name>/settings.json` that exists, without removing existing
-  ones. A
-  skill of theirs with the same name as a shipped one (`julia-repl`,
-  `show-result`, `sitrep`, `worktree`, `project-log`) is overwritten without a
-  backup.
+  ones. A skill of theirs with the same name as any of the 13 shipped ones
+  (`julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `worktree`, and the `sot-*` skills) is
+  overwritten without a backup.
+- Codex side: `$CODEX_HOME/AGENTS.md` is written when absent or ours, and a local plugin with a marketplace file goes
+  under `~/.agents/plugins/` (Codex hooks are that plugin, not `~/.codex`).
+- Launchers `ccb`, `ccx`, `sot-fe`, `show-result` and `sot-gh-auth` go into `~/.local/bin`.
+- The installer declares the home folder as the folder-trust root (`sotd trust declare $HOME`): the daemon then
+  marks Claude Code's trust dialog answered for every project folder under `$HOME` when it starts a session.
+- With no Julia 1.12 or newer, it runs juliaup's own installer from the network (`curl https://install.julialang.org`;
+  juliaup's defaults may edit shell startup files) and downloads Julia package depots.
 - Sessions start Claude Code in auto mode; Codex with approvals, the sandbox
   and hook trust all bypassed (`--dangerously-bypass-approvals-and-sandbox
   --dangerously-bypass-hook-trust`).
@@ -350,16 +355,12 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
   # or: --local (everything on the Mac) / --be-only (headless Mac backend)
 ```
 
-`--backend` writes a `sot-launch` that passes `--dial <host>=ssh:<host>`
-(the frontend spawns its own ssh child, C3 — no port, no forward; browser
-pages ride that same child through the daemon proxy, ADR 0035) and starts
-the frontend; `--local` and `--be-only` are not supported for agent
-sessions on a Mac backend yet — use `--backend`. No agent session has run
-end to end on a Mac; the only rows a test starts there are the pane-timing
-job's plain shells; the successor and controlled-outcome cases are not built
-for macOS. If the human prefers manual
+`--backend` writes a `sot-launch` that sets `SOT_HOST=<ssh-alias>` and runs the launcher, which syncs the hub's
+`hosts.toml` and dials from `sotd topology plan` (the frontend spawns its own ssh child: no port, no forward). It
+needs the backend installed and enrolled first, with the hub's `hosts.toml` listing this Mac (§2.1). `--local` and
+`--be-only` are not supported for agent sessions on a Mac backend; use `--backend`. If the human prefers manual
 steps: download `sot-<ver>-macos-aarch64.tar.gz` + `SHA256SUMS`, verify
-(`shasum -a 256 -c`), `xattr -d com.apple.quarantine ./sot ./sotd`,
+(`shasum -a 256 -c`), `xattr -d com.apple.quarantine ./sot ./sotd ./sot-capsule`,
 `./sot --dial <name>=ssh:<ssh-alias>` (no systemd on macOS; launchd wiring
 is roadmap).
 
@@ -415,7 +416,7 @@ roles, unless `--no-service`).
 ### Windows (§2b installs)
 
 Every command below is PowerShell. Run them from the clone. All five must
-pass before you report success — the last two are the difference between a
+pass before you report success — checks 3 and 4 are the difference between a
 working install and one that can never update itself.
 
 ```powershell
@@ -439,19 +440,16 @@ $e = $null
 $e.Count   # must be 0
 
 # 5. The plan resolves a dial for the hub — there is no port or tunnel to
-#    check any more (C3): reaching it is an ssh child the frontend spawns
-#    itself, once running.
+#    check: reaching it is an ssh child the frontend spawns itself.
 (& "$env:LOCALAPPDATA\sot\bin\sotd.exe" topology plan |
          Select-String '^dial ') -ne $null   # must be True
 ```
 
-Then launch from the desktop shortcut (not `sot.exe` directly — that is a
-"naive" frontend with no self-relaunch). A native window should
+Then launch from the desktop shortcut (not `sot.exe` directly — that has no launcher). A native window should
 open and connect. Confirm the **bottom border line** shows
 `fe <version> · be <version>`: dark gray means the two halves agree, **yellow
 means the frontend and backend are on different builds** and the backend
-needs updating. Tell the human: **press `?` for help; the top line of the nav
-pane always shows the pane-switch keys.**
+needs updating. Tell the human: **press Ctrl+? for the focused pane's shortcuts, F1 for the Help drawer.**
 
 If step 3 printed nothing, run `powershell -File scripts\install-manifest.ps1
 -Hub <hub-ssh-alias>` and re-check. If its version has a `+` in it, that is a source install: it
@@ -465,6 +463,14 @@ and needs no manifest.
 git -C ~/.local/share/sot/repo/current describe --tags   # must equal the tag
 cat ~/.local/share/sot/install.json          # schema 1; version and tag equal the release
 ```
+
+For frontend roles with `--backend`, also check that the hub's `hosts.toml` lists this machine:
+`~/.local/share/sot/bin/sotd topology plan` must print a `dial` line for the backend. If it fails with
+`<host> is not a listed host`, or `sot-launch` prints `continuing with no declared hosts`, enrol this machine on
+the hub first (§2.1).
+
+For backend roles, check that a coding agent exists on the host: `command -v claude || command -v ccx` (the
+installer only warns). Tell the human to log in to it there.
 
 For backend roles, prove the daemon answers a hello. Two branches:
 
@@ -516,8 +522,8 @@ echo "backend answers: $ans"
 For frontend roles: run `sot-launch` (it lives in `~/.local/bin` — if the
 command isn't found, that directory isn't on the human's `PATH`; add it or
 use the desktop entry / app bundle the installer also created). A native
-window should open and connect. Tell the human: **press `?` for help; the
-top line of the nav pane always shows the pane-switch keys.**
+window should open and connect. Tell the human: **press Ctrl+? (Cmd+/ on
+macOS) for the focused pane's shortcuts, F1 for the Help drawer.**
 
 ## 5. Troubleshooting (the known failure modes)
 
@@ -525,12 +531,12 @@ top line of the nav pane always shows the pane-switch keys.**
 |---------|-------------|
 | `glibc >= 2.35` error | distro too old for the prebuilt frontend → use `--be-only` here + frontend elsewhere, or build from source |
 | checksum verification FAILED | truncated download → re-run; still failing = report, don't bypass |
-| `ssh ... doesn't work` during (b) | no key auth → `ssh-copy-id` then re-run |
+| `topology sync failed: hub's hosts.toml does not list this box; add [host.<me>] on the hub`, or `<host> is not a listed host` from `sotd topology plan` | the hub does not know this machine → on the hub add `[host.<this box>]` with `frontend = true` (`docs/ENROLLING-A-HOST.md`), then relaunch |
 | dirty-checkout refusal on upgrade | the human edited `repo/current` → `git -C ... stash` (or commit), re-run |
-| ssh to `<host>` fails | read its own stderr line in the host row (C3 — the ssh child's own complaint, e.g. a refused key, is the diagnosis) |
-| `topology sync failed: no hosts.toml ... yet: pass --hub <alias>` | the box never had its first sync (fresh install without `-Hub`, or migrated off a checkout whose `.sot\hosts.toml` is no longer read) → `sotd topology sync --hub <alias>` (or re-run `install-shortcut.ps1 -Hub <alias>`), then relaunch |
-| backend socket missing | old TCP-based service unit or failed daemon start → reinstall/restart the socket-based `sotd.service` |
-| Julia instantiate fails "project and manifest are out of sync" (often naming a stdlib, e.g. `Sockets`) | stale `Manifest.toml` from a previous install left in the checkout's env dirs → re-run the installer (it drops stale manifests since 2026-08-11); manual fix: `rm ~/.local/share/sot/repo/current/julia/{kernel,repl,pluto}/Manifest.toml` and re-run |
+| ssh to `<host>` fails | read its own stderr line in the host row (the ssh child's own complaint, e.g. a refused key, is the diagnosis) |
+| `topology sync failed: no hosts.toml ... yet: pass --hub <alias>` | the box never had its first sync (fresh install without `-Hub`, or migrated off a checkout whose `.sot\hosts.toml` is no longer read) → `& "$env:LOCALAPPDATA\sot\bin\sotd.exe" topology sync --hub <alias>` (or re-run `install-shortcut.ps1 -Hub <alias>`), then relaunch |
+| backend socket missing | failed daemon start → `systemctl --user status sotd`, restart it |
+| Julia instantiate fails "project and manifest are out of sync" (often naming a stdlib, e.g. `Sockets`) | stale `Manifest.toml` from a previous install left in the checkout's env dirs → manual fix: `rm ~/.local/share/sot/repo/current/julia/{kernel,repl,pluto}/Manifest.toml` and re-run |
 | Julia instantiate slow on first run | normal (precompilation); minutes, once |
 | session rows die / capsule pane blinks "supervisor lane not answering" forever, journal claims a start that produced no process | `$HOME` or the state dir is on a remote filesystem (NFS/CIFS/SMB2/9p/FUSE) — capsule records need a local disk (ADR 0043 decision 23) → set `XDG_STATE_HOME` to a local-disk directory (`systemctl --user set-environment XDG_STATE_HOME=/path`, or export it in `~/.bashrc`, which the unit sources) and restart `sotd` |
 
@@ -567,5 +573,8 @@ top line of the nav pane always shows the pane-switch keys.**
   config there, remove `"$env:USERPROFILE\Desktop\Ship of Tools.lnk"` and
   unpin the taskbar shortcut, then delete the clone. Agent comm resources written by
   `ShipTools.update_comm()` (`~/.sot-comm`, skills under `~/.claude` /
-  `$CODEX_HOME` (default `~/.codex`), launchers in `~/.local/bin`) are shared with other checkouts —
-  remove them only if this was the machine's only Ship of Tools install.
+  `$CODEX_HOME` (default `~/.codex`), the Codex plugin and marketplace under `~/.agents/plugins/`, and the launchers
+  `ccb`, `ccx`, `sot-fe`, `show-result` and `sot-gh-auth` in `~/.local/bin`) are shared with other checkouts —
+  remove them only if this was the machine's only Ship of Tools install. Before removing `~/.sot-comm`, take the
+  four comm hook entries (commands under `$HOME/.sot-comm/bin/comm-status-*.sh`) out of `~/.claude/settings.json` and
+  each `~/.claude-auth/*/settings.json`, or Claude Code keeps running hooks whose script is gone.
