@@ -24,12 +24,20 @@ install backwards. It ends with exactly one line:
 
 Three `FAIL` lines are questions rather than faults:
 
-- `daemon:` names the rows whose REPL is live. Updating restarts the backend, which ends those REPLs' variables (the rows
-  and their agents keep running). Nothing was changed. Run it again with `--restart-daemon` when that is fine.
-- `target:` says the machine runs a build that is not a release (a `+` in its version, a build of the line or a source
-  build). Name the target with `--version vX.Y.Z`, or give `--archive <folder>` for a folder `scripts/pack-build.sh`
-  packed.
+- `daemon:` names the rows whose REPL is live, or says the daemon could not be asked which rows have one (a v0.6.5
+  daemon refuses the question, so the first update from it pays one flag). Updating restarts the backend, which ends those
+  REPLs' variables (the rows and their agents keep running). Nothing under the install was changed. Run it again with
+  `--restart-daemon` when that is fine.
+- `target:` says the machine runs a build of the line (a `+` in its version). Install a pack of the line with
+  `--archive <folder>`, a folder `scripts/pack-build.sh` packed; that runs the `install.sh` of the checkout that made the
+  pack, not the installed one. A release named with `--version` is usually older than a build of the line and moves the
+  machine back, so a person chooses it.
 - `direction:` says the newest release is older than what runs here. Add `--version vX.Y.Z` to go back on purpose.
+
+A daemon that a window holds, or that the launcher started, is not restarted by the update (the built-in `auto` mode
+keeps a daemon under an attached window too). It is asked which rows have a live REPL all the same, and the `ONE STEP
+LEFT` line names them and the command that fits the computer (the launcher, `systemctl --user restart sotd.service`, or
+starting `sotd` by hand). Until it is taken the old daemon runs beside the new `repo/current` and `bin/sot-capsule`.
 
 Without a network, `--archive <folder>` installs from a folder carried to the machine (the base clone still needs the
 repo's origin unless it already holds the commit). On Windows the frontend stages the update and `launch-sot.ps1` applies
@@ -68,8 +76,9 @@ through `scripts\sot-apply.ps1`: the same verification and rollback.
 The installer fetches tags into `$PREFIX/repo/base`, adds a worktree for the release at `$PREFIX/repo/versions/<tag>`,
 checks that its `HEAD` is the tag's recorded commit (a moved tag or a half checkout fails at update time, not at first
 use), and points `$PREFIX/repo/current` at it. It refuses to go on only if that new tag's own folder has local changes.
-The previous version's folder stays for rollback, and older ones are removed, except a folder with local changes: the
-installer names it, keeps it, and removes it on a later run once it is clean. Do not edit the checkout; it is the manual
+An update keeps the previous version's folder for rollback, and the previous binaries as `bin/*.prev`, and removes older
+folders, except a folder with local changes: the installer names it, keeps it, and removes it on a later update once it
+is clean. A repair run (the same version again) prunes nothing and keeps both. Do not edit the checkout; it is the manual
 and the resource tree, and changes in it are not carried to the next version.
 
 ## Pinning and going back

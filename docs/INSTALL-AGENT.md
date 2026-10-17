@@ -27,23 +27,29 @@ said to be older and installed). It ends with exactly one line; read that line, 
 - `PASS: Ship of Tools <v> at <short> on this computer`: done. Say so.
 - `ONE STEP LEFT: <step>`: the install is whole and one thing remains that only the human can do (usually: quit the
   window and start it again, since it still runs the old version). Tell the human that step in those words.
-- `FAIL: <check>: <detail>`: stop and report the line. Two are decisions, not faults. `daemon:` names rows with a live
-  REPL that a restart would end (their variables are lost; the rows and their agents keep running): ask the human, and
-  re-run with `--restart-daemon` only on a yes. `target:` or `direction:` say the install is a build that is not a
-  release (a `+` in its version), or that the newest release is older than what runs here: name the target with
-  `--version vX.Y.Z`, or for a build of the line pack it (`scripts/pack-build.sh` in the checkout that built it) and
-  give `--archive <folder>`.
+- `FAIL: <check>: <detail>`: stop and report the line. Three are decisions, not faults. `daemon:` names rows with a live
+  REPL that a restart would end (their variables are lost; the rows and their agents keep running), or says the daemon
+  could not be asked which rows have one: ask the human, and re-run with `--restart-daemon` only on a yes. `target:` and
+  `direction:` are the human's to answer, never a version the agent picks. `target:` says the install is a build of the
+  line (a `+` in its version): a pack of the line (`scripts/pack-build.sh` in the checkout that built it) goes in with
+  `--archive <folder>`, while a release named with `--version` is usually older and moves this computer back.
+  `direction:` says the newest release is older than what runs here: only a version the human names goes back. Ask the
+  human which they want.
+
+`--archive` runs the install.sh of the checkout that made the pack, not the installed one:
+`bash <that checkout>/scripts/install.sh --archive <folder>`.
 
 If a run stops half way (a lost connection, a Ctrl-C), run it again: `install.json` is written last, and a repeat is a
 repair run that ends in `PASS`. With no network, `--archive <folder>` installs from a folder carried here (the base
 clone still needs the repo's origin unless it already holds the commit).
 
 An install old enough to predate this entry has an `install.sh` that does not end in one of those lines
-(`grep -q 'ONE STEP LEFT' ~/.local/share/sot/repo/current/scripts/install.sh` says which): name the newest release
-instead, `curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash -s -- --version <tag>`
-with `<tag>` from `gh release list --repo kalidke/ship-of-tools --limit 1`. A source checkout (no `install.json`)
-updates by `git pull` and a rebuild. On **Windows** there is no installer script yet: see §6, "Updating later". With
-no install here at all, go on to the next sections.
+(`grep -q 'ONE STEP LEFT' ~/.local/share/sot/repo/current/scripts/install.sh` says which). Read `version` in its
+`install.json` first: a `+` in it is the `target:` case above, so ask the human; otherwise follow the channel (a stable
+version takes the latest stable release, a pre-release the newest published one), tell the human the version, and run
+`curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash -s -- --version <tag>`.
+A source checkout (no `install.json`) updates by `git pull` and a rebuild. On **Windows** there is no installer script
+yet: see §6, "Updating later". With no install here at all, go on to the next sections.
 
 ## Which install is this?
 

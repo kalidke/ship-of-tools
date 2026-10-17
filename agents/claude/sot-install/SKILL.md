@@ -23,18 +23,25 @@ backwards. Read its **last line** and tell the human:
 - `ONE STEP LEFT: <step>`: the install is whole; give the human that step in those words (usually: quit the window and
   start it again).
 - `FAIL: <check>: <detail>`: report the line. Do not retry blindly.
-  - `daemon:` names rows with a live REPL that a restart would end. Ask the human; run it again with `--restart-daemon`
-    only on a yes.
-  - `target:` the machine runs a build that is not a release (a `+` in its version): name the target with
-    `--version vX.Y.Z`, or give `--archive <folder>` for a folder `scripts/pack-build.sh` packed in the checkout that
-    built it.
-  - `direction:` the newest release is older than what runs here: only `--version vX.Y.Z`, said by the human, goes back.
+  - `daemon:` names rows with a live REPL that a restart would end, or says the daemon could not be asked which rows
+    have one. Ask the human; run it again with `--restart-daemon` only on a yes.
+  - `target:` and `direction:` are the human's to answer, never a version the agent picks. `target:` means the machine
+    runs a build of the line (a `+` in its version): a pack of the line goes in with `--archive <folder>`, while a release
+    named with `--version` is usually older and moves this computer back. `direction:` means the newest release is older
+    than what runs here (or the direction could not be told): only a version the human names with `--version vX.Y.Z` goes
+    back. Ask which they want.
+  - `--archive` runs the install.sh of the checkout that made the pack (the folder `scripts/pack-build.sh` wrote there),
+    not the installed one: `bash <that checkout>/scripts/install.sh --archive <folder>`.
   - `enroll:` the hub's hosts.toml omits this computer: run the command the line names on the hub, then run this again.
 
 If a run stops half way, run it again: a repeat is a repair run. If the installed `install.sh` does not contain
-`ONE STEP LEFT` it predates this entry: use the newest release's installer, with the tag named,
-`curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash -s -- --version <tag>`
-(`<tag>` from `gh release list --repo kalidke/ship-of-tools --limit 1`). With no `install.json` this is a first install:
+`ONE STEP LEFT` it predates this entry. Read `version` in `~/.local/share/sot/install.json` first. A `+` in it is the
+`target:` case above: ask the human. Otherwise follow the channel: a stable version takes the latest stable release
+(`curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/kalidke/ship-of-tools/releases/latest` ends in its
+tag), a pre-release the newest published one (`curl -fsSL 'https://api.github.com/repos/kalidke/ship-of-tools/releases?per_page=1'`,
+its first `tag_name`). Tell the human that version before running
+`curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash -s -- --version <tag>`.
+With no `install.json` this is a first install:
 follow `docs/INSTALL-AGENT.md` in the checkout, or fetch it from the repo. A source checkout (no `install.json`, a `+`
 in `sotd --version`) updates by `git pull` and a rebuild. On Windows there is no installer script yet; follow
 `docs/INSTALL-AGENT.md`, "Updating later".
