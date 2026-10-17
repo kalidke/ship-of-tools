@@ -124,7 +124,7 @@ modes.
 - In Sessions mode, a tag in brackets after a session's name is the phase of
   its supervised process, for example `[starting]`, `[ready]`, `[ending]`, `[stopped]` (no
   process has run for it yet), `[terminal]` (it ended and will not restart), or
-  `[unreachable]` (the backend could not query it). The row is coloured by the
+  `[unreachable]` (the backend could not query it). The row is colored by the
   agent's [work state](../concepts/work-state.md) and ends with the reason the
   agent last reported.
 - The bottom border of the window shows the frontend (`fe`) and backend (`be`)
@@ -152,7 +152,7 @@ use; the bytes are opaque to Rust, so adding a format needs no Rust change when 
 |------|-------------|
 | `.jl` | syntax-highlighted source (tokenized kernel-side, no client re-parsing) |
 | `.md` | rendered markdown, including inline math |
-| `.json` / `.toml` / `.txt` | plain text (JSON/TOML pretty-print / colour planned) |
+| `.json` / `.toml` / `.txt` | plain text (JSON/TOML pretty-print / color planned) |
 | `.pdf` | one rasterized page; with the preview focused (`Ctrl+Right`) `n` / `p` turn pages |
 | video (`.mp4`, `.webm`, …) | a poster frame; `o` opens playback in the browser |
 

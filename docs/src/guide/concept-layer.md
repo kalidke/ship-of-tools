@@ -76,7 +76,7 @@ references:
 | `target_kind` | what kind of entity (`type`, `function`, `module`, …) |
 | `synced_against` | the content hash of the target's file at the last reconciliation |
 | `synced_at` | timestamp of that reconciliation |
-| `authored_by` | free text, an agent or the user; nothing reads it today (the provenance colouring it is meant to feed is not built — see [Color Coding](color-coding.md)) |
+| `authored_by` | free text, an agent or the user; nothing reads it today (the provenance coloring it is meant to feed is not built — see [Color Coding](color-coding.md)) |
 | `references` | links to other entities or annotations (verification is planned — see below) |
 
 The load-bearing field is `synced_against`. It is the hash of the target's file as

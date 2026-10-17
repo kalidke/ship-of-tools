@@ -3,7 +3,7 @@
 The backend owns the project state — sessions, kernels, file watching — and the
 frontend renders what it is sent. So a desktop and a laptop can attach to the
 **same backend at once** and see the same sessions, the same work-state
-colours and the same REPLs.
+colors and the same REPLs.
 
 ## Add one
 
@@ -20,7 +20,7 @@ client of the daemon.
 |-------------------------------|--------------|
 | sessions and their agents | window layout and which pane has focus |
 | each workspace's Julia kernel and REPL | the active session and cursor positions |
-| work-state colours and comm messages | the Terminal drawer (a shell on *that* machine) |
+| work-state colors and comm messages | the Terminal drawer (a shell on *that* machine) |
 | files and previews | `settings.toml` (layout preset, GPU preference) |
 
 The agents run under the backend's own supervisors, not under any frontend, so closing a frontend on another computer

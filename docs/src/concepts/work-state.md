@@ -1,7 +1,7 @@
-# Work-state colours
+# Work-state colors
 
 With several agents running, the question is always the same: *which one needs
-me?* Ship of Tools answers it with colour. Every session row in Sessions mode
+me?* Ship of Tools answers it with color. Every session row in Sessions mode
 and on the bottom session strip is tinted by that agent's current work state,
 so you scan one list instead of tabbing through panes.
 
@@ -11,11 +11,11 @@ so you scan one list instead of tabbing through panes.
 
 ## The five states
 
-The colours are the four Julia brand colours plus gray.
+The colors are the four Julia brand colors plus gray.
 
 ```@raw html
 <table>
-  <thead><tr><th>Colour</th><th>State</th><th>Meaning</th><th>What to do</th></tr></thead>
+  <thead><tr><th>Color</th><th>State</th><th>Meaning</th><th>What to do</th></tr></thead>
   <tbody>
     <tr><td><span class="sot-state working"></span>green</td><td><strong>working</strong></td><td>a turn is running</td><td>nothing; let it work</td></tr>
     <tr><td><span class="sot-state question"></span>red</td><td><strong>blocked</strong></td><td>waiting for your answer: the agent stopped with a question for you</td><td>answer it; typing into the session clears the red</td></tr>
@@ -35,7 +35,7 @@ you comes first.
 A `working` stamp that is not refreshed for 10 minutes is dimmed as stale, so a
 session that died mid-turn does not look busy forever.
 
-## Where the colours come from
+## Where the colors come from
 
 A row's state is not a single value the agent sets; it is a small set of
 **facts** reduced by priority:
@@ -60,9 +60,9 @@ few seconds; on Windows it does not, and such a session still reads green.
 
 These facts live in the comm registry, next to each session's handle, which is
 why another agent — and every frontend attached to the backend — sees the same
-colour you do. An agent sends a declaration with `comm-status.sh`, for example
+color you do. An agent sends a declaration with `comm-status.sh`, for example
 `comm-status.sh blocked "<question>"`; the usage is in the [Comm protocol](../ref/comm.md).
 
-The per-entity *provenance* colours (who edited this function, is it accepted)
+The per-entity *provenance* colors (who edited this function, is it accepted)
 are a separate, not-yet-built layer: see
-[Provenance colours (design)](../guide/color-coding.md).
+[Provenance colors (design)](../guide/color-coding.md).

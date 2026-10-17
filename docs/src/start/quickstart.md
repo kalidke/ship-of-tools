@@ -129,9 +129,9 @@ drawer. That REPL starts in the session root's project — `~/DemoProject`'s
 `Project.toml` here. The drawer is Ship of Tools' own input line, not Julia's
 REPL: no `?` help, no `;` shell and no Tab completion; use the Terminal
 drawer or the agent pane for shell commands. When the agent produces a
-figure it can put the file in your preview pane. Meanwhile its row colour in
+figure it can put the file in your preview pane. Meanwhile its row color in
 Sessions mode shows whether it is working, waiting for your answer or done; see
-[Work-state colours](../concepts/work-state.md).
+[Work-state colors](../concepts/work-state.md).
 See [How agents use the REPL](@ref agents-repl).
 
 ## 6. End a session, close the window

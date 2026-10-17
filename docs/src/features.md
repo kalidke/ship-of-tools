@@ -29,13 +29,13 @@ macOS equivalents are in [Keybindings](ref/keybindings.md).
 ### Claude Code and Codex sessions
 
 Each agent session is one row in Sessions mode, on this machine or on any
-connected host. The row colour is the agent's work state, so you can see which
-session needs you without opening each one; the colours are listed in
-[Work-state colours](concepts/work-state.md). Codex sessions have no REPL
+connected host. The row color is the agent's work state, so you can see which
+session needs you without opening each one; the colors are listed in
+[Work-state colors](concepts/work-state.md). Codex sessions have no REPL
 integration yet: only Claude Code sessions run Julia in the shared REPL.
 
 ```@raw html
-<DemoLoop name="sessions" caption="Demo session rows changing colour as a script sets their work states: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle. Each row's ready tag means its supervisor has a live agent process running." />
+<DemoLoop name="sessions" caption="Demo session rows changing color as a script sets their work states: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle. Each row's ready tag means its supervisor has a live agent process running." />
 ```
 
 ### Hand the agent a file path
@@ -66,7 +66,7 @@ the source file and the region, with the crop attached.
   preview pane instead of describing it in text.
 - **Agents messaging each other.** A built-in message relay (the comm relay)
   carries directed or broadcast messages between sessions, across machines; the same channel
-  drives the row colours above. See
+  drives the row colors above. See
   [Agents messaging each other](guide/messaging.md).
 
 ## Navigation and previews
@@ -206,7 +206,7 @@ The setup is in [Going remote](start/remote.md).
   to a Linux backend (macOS is experimental). See
   [Platforms](start/install.md#platforms).
 - **Several frontends.** A desktop and a laptop can attach to the same backend
-  at once and see the same sessions, work-state colours and REPLs. See
+  at once and see the same sessions, work-state colors and REPLs. See
   [A second frontend](guide/second-frontend.md).
 - **Sessions outlive the connection.** Agent sessions run under their own
   supervisor, and their REPLs under the backend daemon, so a dropped

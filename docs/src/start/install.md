@@ -119,7 +119,7 @@ installer's comm step on every role, which is why it is needed here too; the
 skills and hooks it installs are inert unless a session runs on this
 machine.
 
-Connection behaviour is role-specific:
+Connection behavior is role-specific:
 
 - `--local` runs frontend and backend on one machine over the backend user's
   per-user socket. There is no SSH-to-localhost requirement.
@@ -245,7 +245,7 @@ settings:
 Claude Code's auto mode is not a bypass. It runs without routine permission
 prompts, but a separate classifier model reviews each action before it runs and
 blocks anything that goes beyond your request, targets infrastructure it does
-not recognise, or looks driven by hostile content; your own `ask` rules still
+not recognize, or looks driven by hostile content; your own `ask` rules still
 prompt. See Claude Code's
 [permission modes](https://code.claude.com/docs/en/permission-modes).
 Codex has no equivalent reviewed mode here: its flags turn approvals and the

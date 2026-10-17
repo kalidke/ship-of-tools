@@ -21,7 +21,7 @@ The installer gives each agent CLI a set of skills and hooks (listed under
   Codex gets only `sot-comm` and `sot-session-start`, so Codex sessions have no
   REPL skill yet.
 - **Hooks** that report the session's work state (working, blocked, done),
-  which is what colours its row. See [Work-state colours](../concepts/work-state.md).
+  which is what colors its row. See [Work-state colors](../concepts/work-state.md).
 
 ## Permission mode
 

@@ -4,10 +4,10 @@ Ship of Tools is built for more than one agent at a time. Every session is a
 **row** in Sessions mode: a project directory with its own Julia REPL and an
 agent pane running **Claude Code**, **Codex**, or a bare shell (see
 [Hosts, sessions, REPLs](@ref session-model)). You move between rows
-from the keyboard, and each row's colour tells you whether it needs you.
+from the keyboard, and each row's color tells you whether it needs you.
 
 ```@raw html
-<DemoLoop name="sessions" caption="Demo session rows changing colour as a script sets their work states: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle." />
+<DemoLoop name="sessions" caption="Demo session rows changing color as a script sets their work states: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle." />
 ```
 
 ## Start a session
@@ -31,10 +31,10 @@ backend. Closing the last window on the computer that runs the backend ends its 
 Switching rows is a frontend state change: it never restarts a session's
 REPL, so the REPL holding `x = 5` still holds it when you come back.
 
-## Read the colours
+## Read the colors
 
-Each row is coloured by the agent's work state, so you can scan the list instead of tabbing through each pane; the
-colours are in [Work-state colours](../concepts/work-state.md). All keys are in the
+Each row is colored by the agent's work state, so you can scan the list instead of tabbing through each pane; the
+colors are in [Work-state colors](../concepts/work-state.md). All keys are in the
 [keybindings reference](../ref/keybindings.md).
 
 ## One worktree per agent

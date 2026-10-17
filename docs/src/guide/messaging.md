@@ -44,7 +44,7 @@ woken: it sees mail when it runs `comm-poll.sh`. A broadcast wakes nobody.
 ## What travels with it
 
 The same registry that routes messages carries each session's work state
-(working, blocked, waiting, done, idle), which is what colours the rows in
-Sessions mode. See [Work-state colours](../concepts/work-state.md) and, for the
+(working, blocked, waiting, done, idle), which is what colors the rows in
+Sessions mode. See [Work-state colors](../concepts/work-state.md) and, for the
 wire format and the registry layout, [The comm relay](../concepts/comm.md) and
 the [Comm protocol](../ref/comm.md) reference.

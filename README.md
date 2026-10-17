@@ -34,7 +34,7 @@ The window is GPU-rendered, with a keyboard-driven, terminal-style layout: a nav
 ## What it does
 
 **Agents**
-- Each session is a row running Claude Code, Codex or a plain shell, coloured by its [work state](https://kalidke.github.io/ship-of-tools/dev/concepts/work-state) so you can see which one needs you.
+- Each session is a row running Claude Code, Codex or a plain shell, colored by its [work state](https://kalidke.github.io/ship-of-tools/dev/concepts/work-state) so you can see which one needs you.
 - Claude Code sessions run Julia in the session's persistent REPL, and each run appears in your REPL drawer.
 - Sessions message each other over a built-in relay and can start sessions for worktrees and other repos.
 - An agent can open a file or figure in your preview pane to show you what it produced, and you can hand it a file path or a cropped region of an image.
@@ -59,7 +59,7 @@ The window is GPU-rendered, with a keyboard-driven, terminal-style layout: a nav
 
 See the [feature gallery](https://kalidke.github.io/ship-of-tools/dev/features) for a short recording of each one.
 
-<p align="center"><img src="docs/src/assets/readme/sessions-crop.png" alt="Session rows in Sessions mode, coloured by work state" width="70%"></p>
+<p align="center"><img src="docs/src/assets/readme/sessions-crop.png" alt="Session rows in Sessions mode, colored by work state" width="70%"></p>
 <p align="center"><sub>Demo session rows tinted by work state: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle.</sub></p>
 
 ## Install

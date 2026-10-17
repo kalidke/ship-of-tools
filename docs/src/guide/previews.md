@@ -29,7 +29,7 @@ would.
 | `.jl` | token spans (kind + text) from `JuliaSyntax.jl` | syntax-highlighted source, no client-side re-tokenizing |
 | `.md`, `.markdown` | raw UTF-8 bytes | rendered markdown (comrak + cosmic-text), including inline math |
 | `.toml` | raw UTF-8 bytes | code/text renderer |
-| `.json` | raw UTF-8 bytes | plain text today (pretty-print / colour planned) |
+| `.json` | raw UTF-8 bytes | plain text today (pretty-print / color planned) |
 | `.txt` | raw UTF-8 bytes | plain text renderer |
 | `.pdf` | one poppler-rasterized page | paged; `n`/`p` turn pages with the preview focused, rasterized backend-side to fit the pane |
 | `.mp4`, `.webm`, `.mov`, `.mkv`, `.m4v` | a single ffmpeg poster frame | still poster in the pane; `o` opens playback in the browser |
@@ -46,8 +46,8 @@ text`) instead. The backend itself truncates text at 2 MiB and refuses binary ov
 A few notes on the table:
 
 - **Julia source** is tokenized on the kernel side into `{spans: [{text, kind}]}`,
-  so the frontend colours it without parsing Julia. The token kinds map to the
-  frontend's colour set (`keyword`, `comment`, `string`, `number`, `op`, `punct`,
+  so the frontend colors it without parsing Julia. The token kinds map to the
+  frontend's color set (`keyword`, `comment`, `string`, `number`, `op`, `punct`,
   `type`, `ident`, `text`); concatenating every span reproduces the file
   byte-for-byte.
 - **PDF** is the one format whose preview takes a page parameter — the only

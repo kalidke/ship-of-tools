@@ -503,7 +503,7 @@ row's handle has unread mail and the row sits at a free prompt — the cursor
 sitting at the start of the input line marked by the prompt glyph (`❯`,
 or on Windows `❯` or `>`, the latter being Claude Code's fallback when its
 unicode check fails), followed by a no-break space, between the input box's
-two rules (on every OS; on Windows a bare glyph too, for now), so a grey
+two rules (on every OS; on Windows a bare glyph too, for now), so a gray
 suggestion (drawn dim) or any other dim decoration does not count as a draft, while
 a draft is not free wherever its cursor sits, and the screen down to the
 input box's lower rule (the background-agent footer below it is not watched)
@@ -656,7 +656,7 @@ Monitor exists.
   file is not named after it; and a shim that starts `node` under the agent's
   own name (a
   volta-style shim), which may be refused instead. On macOS a capsule binary
-  installed under a path that holds a space is not recognised (`ps` splits its
+  installed under a path that holds a space is not recognized (`ps` splits its
   argv[0]), and a state path holding a standalone `--` word ends the argument
   scan early; either way a process naming its row is refused there. An argument
   whose state root itself lies inside another row's voyages folder (a path

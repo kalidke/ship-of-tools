@@ -9,7 +9,7 @@
 CurrentModule = ConceptExplorerCore
 ```
 
-A `FileType` plugin teaches the explorer to recognise and preview a new kind of
+A `FileType` plugin teaches the explorer to recognize and preview a new kind of
 file. It is the smallest, most common extension you can write — a package, one
 abstract-type subtype, and two methods. Once the kernel has loaded the package, its subtype joins the dispatch
 tables (Step 5 below says how it gets loaded); a file kind whose preview output is bounded also
@@ -147,7 +147,7 @@ markdown renderer do the layout. MIMEs in use by the built-in plugins:
 | `text/markdown` | comrak + cosmic-text (headings, code fences, inline math) | Markdown plugin; the HDF5 example wraps its metadata tree in fenced markdown |
 | `text/plain` | plain UTF-8 text | Plain-text plugin (`.txt`); error fallbacks |
 | `text/x-toml` | plain UTF-8 text | TOML plugin |
-| `application/json` | plain UTF-8 text today (pretty-print / syntax colour planned) | JSON plugin |
+| `application/json` | plain UTF-8 text today (pretty-print / syntax color planned) | JSON plugin |
 | `image/png` | native image quad | PDF plugin (one page) and video plugin (a poster frame) |
 | `application/vnd.sot.tokens+json` | pre-tokenised span renderer (`{spans:[{text,kind},…]}`) | Julia-source plugin |
 

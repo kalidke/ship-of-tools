@@ -6,7 +6,7 @@ across many. It has two halves with different jobs.
 **Data at rest: the registry and the inboxes.** Under `~/.sot-comm/` each comm folder
 holds a `registry.json` (every session's handle, host, workspace, and its
 work-state facts) and one append-only `inbox/<handle>.jsonl` per session.
-Discovery, catch-up after a sleep, and the work-state colours all read these
+Discovery, catch-up after a sleep, and the work-state colors all read these
 files; nothing about them needs a live broker.
 
 **One lock guards the registry.** Every registry write holds `~/.sot-comm/.registry.lock`, a file naming its holder.

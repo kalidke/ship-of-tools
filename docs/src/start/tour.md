@@ -53,9 +53,9 @@ nothing runs there until you create a session.
 4. **It shows you figures.** A figure the agent produces is saved to a file,
    and the agent can put it in your preview pane with `show-result`; figures you
    produce yourself at the REPL prompt appear inline in the drawer.
-5. **Watch the row colour.** In Sessions mode the row colour shows whether
-   the agent is working, waiting for your answer or done; the colours are in
-   [Work-state colours](../concepts/work-state.md).
+5. **Watch the row color.** In Sessions mode the row color shows whether
+   the agent is working, waiting for your answer or done; the colors are in
+   [Work-state colors](../concepts/work-state.md).
 
 The session keeps running when you switch rows. Closing the window ends it; see [What keeps running](running.md).
 

@@ -131,7 +131,7 @@ Each step's check must pass before the next one is worth doing.
 - **The socket file exists and the box is down.** Expected, and not a
   contradiction: systemd owns that socket, so it is present whether or not
   anything is behind it. The frontend renders the host unreachable and
-  greys its last-known rows. Only a completed hello ever means "up".
+  grays its last-known rows. Only a completed hello ever means "up".
 - **The host stays unreachable and its row's status text shows an ssh error.** The hub has no listener for the box:
   step 6 was not applied on the hub, or apply ran while the box was not yet declared.
 - **`sotd topology apply` refuses.** It only runs on the hub, and says so,

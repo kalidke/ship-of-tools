@@ -52,7 +52,7 @@ There is no single project-root rule. Each process answers "what project is this
 With the right packages loaded, resolving a path to a renderer is two functions
 in `ConceptExplorerCore`:
 
-| Function | Returns | Behaviour |
+| Function | Returns | Behavior |
 |----------|---------|-----------|
 | [`file_types`](@ref)`()` | `Vector{Type{<:FileType}}` | every loaded subtype — `subtypes(FileType)` |
 | [`file_type_for`](@ref)`(path)` | `Union{Type{<:FileType}, Nothing}` | first subtype whose [`matches`](@ref) is `true`, else `nothing` |

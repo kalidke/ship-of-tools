@@ -8,7 +8,7 @@ running on the server (a backend on the same computer as the window ends with
 its last window; see [What keeps running](running.md)).
 
 ```@raw html
-<DemoLoop name="sessions" caption="Session rows and their work-state colours." />
+<DemoLoop name="sessions" caption="Session rows and their work-state colors." />
 ```
 
 ## 1. Install the backend on the server

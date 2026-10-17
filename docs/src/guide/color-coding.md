@@ -1,7 +1,7 @@
 # Color Coding
 
 !!! note "Status: partly built"
-    What renders today is the per-session **agent work-state** colour (idle · working · blocked · waiting · done, on the Sessions strip and nav rows) and the **stale-annotation** drift badge, which is per file (the file's content hash against the annotation's `synced_against`) and shows on the selected file row in Files mode. The per-entity provenance states in the table below (user-edited, agent-edited accept/reject, immutable/external, favorited) are planned; a pinned file already renders, as a bright cyan row in the navigation tree rather than an accented border.
+    What renders today is the per-session **agent work-state** color (idle · working · blocked · waiting · done, on the Sessions strip and nav rows) and the **stale-annotation** drift badge, which is per file (the file's content hash against the annotation's `synced_against`) and shows on the selected file row in Files mode. The per-entity provenance states in the table below (user-edited, agent-edited accept/reject, immutable/external, favorited) are planned; a pinned file already renders, as a bright cyan row in the navigation tree rather than an accented border.
 
 Color coding is a cross-cutting layer. The same entity carries the same
 provenance no matter which mode you view it in, so Ship of Tools renders that provenance
@@ -14,7 +14,7 @@ the color layer decides *how each node is tinted* based on who touched it, when,
 and whether its annotation still matches the code.
 
 ```@raw html
-<DemoShot name="state-colors" caption="Session rows in their work-state colours, each with the reason it last reported." />
+<DemoShot name="state-colors" caption="Session rows in their work-state colors, each with the reason it last reported." />
 ```
 
 ## The states
@@ -27,7 +27,7 @@ and whether its annotation still matches the code.
 | Immutable / external | Dimmed | Base, dependencies, vendored code — not yours to edit, rendered dimmed. | No |
 | Stale annotation | Yellowed | The entity's [concept annotation](concept-layer.md) was written against an older version of its file (the file's content hash differs from `synced_against`). | Yes, per file, on the selected row in Files mode; per-entity staleness is not built |
 | Pinned file | Bright cyan, bold row | You pinned this file to keep its preview while browsing. | Yes, in the navigation tree; no other entity can be pinned or favorited |
-| Agent work state | Green, red, purple, blue, gray | A session's idle, working, waiting, blocked or done state; see [Work-state colours](../concepts/work-state.md). | Yes, on Sessions rows and the session strip |
+| Agent work state | Green, red, purple, blue, gray | A session's idle, working, waiting, blocked or done state; see [Work-state colors](../concepts/work-state.md). | Yes, on Sessions rows and the session strip |
 
 ## Why it is mode-independent
 
