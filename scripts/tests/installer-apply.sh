@@ -376,7 +376,8 @@ check "no .prev copy was written" "gone" "$([ -e "$d/prefix/bin/sotd.prev" ] && 
 
 # ---------------------------------------------------------------------------
 # pack-build.sh without a musl compiler: a gnu sotd only from a host whose glibc is within the fleet floor. The script
-# is copied into a throwaway tree so it cd's there; PATH holds stubs only, so no musl compiler is found.
+# is copied into a throwaway tree so it cd's there; PATH holds stubs only, so no musl compiler is found. Its first check
+# refuses every host but Linux x86_64, so its cases are that platform's: elsewhere they print SKIP lines.
 mk_pack_fixture() {  # <dir> <glibc-version>: <dir>/tree/scripts/pack-build.sh, <dir>/bin with stub getconf
     local d="$1"
     mkdir -p "$d/tree/scripts" "$d/bin"
@@ -389,16 +390,19 @@ run_pack() {  # <dir>: sets PK_RC and PK_OUT
     PK_RC=0
     PK_OUT="$(env -i PATH="$d/bin" /bin/bash "$d/tree/scripts/pack-build.sh" "$d/out" 2>&1)" || PK_RC=$?
 }
+pack_check() {  # <description> <expected> <actual>: check on Linux x86_64; elsewhere a SKIP line
+    if [ "$(uname -sm)" = "Linux x86_64" ]; then check "$@"; else printf '    SKIP %s (pack-build.sh runs on Linux x86_64 only)\n' "$1"; fi
+}
 case_start "pack_build_refuses_a_too_new_glibc_without_musl"
 d="$WORK/pk-new"; mk_pack_fixture "$d" 2.39; run_pack "$d"
-check "the pack exits non-zero" "yes" "$([ "$PK_RC" -ne 0 ] && echo yes || echo no)"
-check "it names the glibc floor route" "1" "$(printf '%s\n' "$PK_OUT" | grep -c 'glibc <= 2.31' || true)"
-check "it does not ask for a package install" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'install musl' || true)"
-check "nothing was packed" "gone" "$([ -e "$d/out" ] && echo exists || echo gone)"
+pack_check "the pack exits non-zero" "yes" "$([ "$PK_RC" -ne 0 ] && echo yes || echo no)"
+pack_check "it names the glibc floor route" "1" "$(printf '%s\n' "$PK_OUT" | grep -c 'glibc <= 2.31' || true)"
+pack_check "it does not ask for a package install" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'install musl' || true)"
+pack_check "nothing was packed" "gone" "$([ -e "$d/out" ] && echo exists || echo gone)"
 case_start "pack_build_passes_the_glibc_gate_at_the_floor"
 d="$WORK/pk-ok"; mk_pack_fixture "$d" 2.31; run_pack "$d"
-check "the glibc gate does not refuse" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'newer than the fleet' || true)"
-check "it goes on to the tree checks, which this git-less PATH stops" "yes" "$(printf '%s\n' "$PK_OUT" | grep -q 'git' && echo yes || echo no)"
+pack_check "the glibc gate does not refuse" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'newer than the fleet' || true)"
+pack_check "it goes on to the tree checks, which this git-less PATH stops" "yes" "$(printf '%s\n' "$PK_OUT" | grep -q 'git' && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
 case_start "archive_install_prints_the_libc"
