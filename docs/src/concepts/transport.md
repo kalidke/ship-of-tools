@@ -100,15 +100,13 @@ than a down one; the daemon's hub link and each pane's attach worker follow
 the same rule. F5 retries at once. A browser connection to a proxied page is refused while
 the gate is down.
 
-**Pause and resume.** An attach worker whose lane dial finds the link down
-stops dialing, shows "host offline, waiting for the link", and checks every
-100 ms whether the link is up and its pane is the one on screen. The
-transport's hello reply reopens the gate, so the viewed pane dials within a
-tick of it; parked panes keep their last screen and dial when next viewed.
-A resize read while paused is the size of the next attach. The pass bar is
-therefore: at the link's return, the transport's one login plus two lane
-logins (supervisor and voyage) per viewed row, and no login of any kind while
-the link is down.
+**Pause and resume.** A pane that is not on screen starts no new attach or voyage re-dial after a failure of any
+kind; it dials when you next view it. An attach whose lane dial finds the link down stops dialing, shows "host
+offline, waiting for the link", and checks every 100 ms whether the link is up and its pane is the one on screen. The
+transport's hello reply reopens the gate, so the viewed pane dials within a tick of it; parked panes keep their last
+screen and dial when next viewed. A resize read while paused is the size of the next attach. The pass bar is
+therefore: at the link's return, the transport's one login plus two lane logins (supervisor and voyage) per viewed
+row, and no login of any kind while the link is down.
 
 **Residual.** After a silent network drop the transport can take up to its
 keepalive window (about 45 s) to notice, so a lane that dies first may still
@@ -187,6 +185,11 @@ can change that. Serve figures with `wglshow`.
 Another account can still fill one of these listeners' queues and slow your
 own connections; each connection it opens is refused, or answered with
 nothing, quickly. The guarantee is isolation, not availability.
+
+One listener is the exception to that isolation. On Linux the REPL and the Pluto server each have an X display of
+their own, an Xvfb on an abstract socket, which has no permissions: any account on the computer can connect to it, and
+its only lock is a 128-bit cookie kept in the child's own folder. ADR 0049 ("User isolation") records this as the
+accepted exception. The child ends when its display ends, and gets a new display at its next start.
 
 ## What this page does not yet cover
 

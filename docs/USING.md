@@ -6,10 +6,11 @@ This page is the entry point for what to do next.
 ## What this is
 
 Ship of Tools is a keyboard-driven development environment for Julia that turns
-coding into **directing Claude Code agents**: a four-pane window (navigation,
-preview, agent, REPL) lets you steer, watch, and review while the agent
-writes and runs the code. It is opinionated by design — the layout isn't
-configured, it's built around one workflow.
+coding into **directing Claude Code agents**: a window of three columns
+(navigation, preview, agent) and a bottom drawer (Julia REPL, Terminal, Help,
+Monitor) lets you steer, watch, and review while the agent writes and runs the
+code. The layout follows your monitor's shape and takes a few settings; see
+`docs/src/ref/config.md`.
 
 ## Help while you work
 
@@ -23,7 +24,7 @@ where you were working. See `docs/src/ref/keybindings.md` for configuration.
 ## Ask the app, not just the docs
 
 Your workspace's Claude Code agent — running in the **agent pane**
-(bottom-left), the agent associated with your workspace — is more than a
+(the right column), the agent associated with your workspace — is more than a
 coding assistant; it's also your help system. Ask it plain questions
 like:
 
@@ -48,45 +49,16 @@ in the published docs: shortest install, first launch, connecting, opening a
 project, and the handful of keys that get you moving. (Locally, that's
 `docs/src/start/quickstart.md`.)
 
-## Where the daemon keeps its state
+## State, survival and Windows launches
 
-The backend daemon's state root is `${XDG_STATE_HOME:-~/.local/state}/sot` —
-capsule session records (Ship's Log voyages) and the daemon's own `sotd.log`
-live there. It must be a local, durable filesystem: the daemon refuses to
-start a capsule row on a REMOTE filesystem (NFS, SMB/CIFS, 9p, an
-unqualified FUSE mount) or a VOLATILE one (tmpfs, ramfs), answering
-`state_root_unqualified` and naming the filesystem.
+Where the daemon keeps its state, what a session survives and the Windows rule about launching from an agent's shell
+are in the manual (published at <https://kalidke.github.io/ship-of-tools/dev/>; locally under `docs/src/`):
 
-On a shared home (the same `$HOME` mounted on multiple backend hosts over
-NFS), point the state root at each host's own local disk with one drop-in,
-verbatim, per host:
-
-```
-~/.config/systemd/user/sotd.service.d/state.conf
-```
-
-```ini
-[Service]
-Environment=XDG_STATE_HOME=/scratch/<user>/state
-```
-
-then, on that host:
-
-```
-systemctl --user daemon-reload && systemctl --user restart sotd
-```
-
-The daemon's log moves with the root — a fresh `sotd.log` at the new
-location; the old one stays where it was, as history.
-
-**Relocation does not migrate rows.** Changing `XDG_STATE_HOME` points the
-daemon at a different (and initially empty) state root — it does not move
-anything there for you. Before changing it on a host that already has
-capsule rows: end that host's capsule runs first; if any complete state
-directories need to survive, move them yourself (their ids are the
-directory names, and must be preserved); then verify the daemon's actual
-environment after the change (`systemctl --user show sotd -p Environment`)
-and that the destination has the retention you expect.
+- [Sessions and persistence](https://kalidke.github.io/ship-of-tools/dev/concepts/sessions/) — "Capsules: what a
+  session survives" and "Where the state lives" (`docs/src/concepts/sessions.md`).
+- [Troubleshooting](https://kalidke.github.io/ship-of-tools/dev/guide/troubleshooting/) — "A session will not start on
+  a shared home" (the `state_root_unqualified` refusal and the per-host `XDG_STATE_HOME` drop-in) and "Windows: never
+  launch the daemon from an agent's shell" (`docs/src/guide/troubleshooting.md`).
 
 `SOT_SELF_HOST` is the one declared-host override (ADR 0046): the daemon,
 the frontend and the comm scripts all read it, so a value set for one of
@@ -96,34 +68,12 @@ the host pins on `sotd.service` and on the hub's relay units compare the kernel
 hostname, so a Linux box whose hosts.toml name differs from its hostname runs
 `sotd` without the unit (`--no-service`).
 
-## Survival
-
-Every session, on every host, runs as a capsule row (ADR 0042). On Linux, a
-capsule supervisor runs in its own transient user scope
-(`systemctl --user list-units --type=scope` lists it, not under `sotd`'s
-own unit) and survives a daemon restart. On a host with no
-reachable `systemd --user` manager it runs `--survival degraded` instead
-(a warn line in `sotd.log` names why) and shares the daemon's own kill
-domain there.
-
-## Windows: never launch the daemon from an agent's shell
-
-Never launch the frontend or the daemon from a shell running under an
-agent (a Claude pane, a capsule row's shell): the agent process puts
-itself in a job object that forbids breakaway, every descendant inherits
-it, and a daemon started there can never free the supervisors it spawns.
-Breakaway is attempted for every supervisor spawn; where the daemon's own
-job forbids it, the supervisor is contained in that job instead and shares
-its lifetime, reported once in the daemon log (`this daemon's own job
-forbids breakaway`) — launch the daemon from the launcher or a plain
-shell outside any job for capsule survival. A contained daemon also fakes
-a failed survival proof: rows die with it for a reason unrelated to the
-lane gate.
-
 ## Extending it
 
-Ship of Tools is built to be extended with Julia multiple dispatch, not Rust
-changes. Start with:
+A new file type is a `FileType` plugin written in Julia with multiple dispatch, no Rust changes. The kernel loads
+plugins only from its own project, so in a source checkout you add the plugin package to the kernel's environment
+(`julia/kernel/Project.toml`) and a `using` line in `julia/kernel/src/ShipToolsKernel.jl`; a package in your own
+project is not picked up. Start with:
 
 - `docs/src/extend/filetype.md` — writing a `FileType` plugin (the smallest,
   most common extension: recognize and preview a new kind of file).

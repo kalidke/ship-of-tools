@@ -1,22 +1,9 @@
 # Configuration Files
 
-Three TOML files, each read by a different piece and none of them by more than
-one parser: `settings.toml` (layout + terminal, read by the frontend,
-first file found wins), `hosts.toml` (the declared topology —
-hub, daemon and frontend hosts, monitor targets — read ONLY by
-`sot_protocol::topology`/`sotd topology`; the frontend reads no config
-file for hosts at all, see below), and `keybindings.toml` (chords, read by
-the frontend, same discovery). Keybindings have their own page —
-[Keybindings](keybindings.md) — so this page covers `settings.toml` and
-`hosts.toml`.
-
-`settings.toml` and `keybindings.toml` share one discovery pattern: the
-frontend reads the first file it finds among an env-var path, a `.sot/` file
-found by walking up from the frontend's working directory, and a per-user
-file, and never reads the others; built-in defaults fill anything the file
-leaves out. Missing or
-out-of-range values fall back to the default rather than crashing the
-chrome. `hosts.toml` has its own, simpler search order — see below.
+`settings.toml` holds the frontend's settings (layout, font, terminal and the rest); the frontend reads it when it
+starts. `hosts.toml` declares the hosts and is read by `sotd`; the frontend reads no file for hosts. Chords live in a
+third file, `keybindings.toml`, described on its own page: [Keybindings](keybindings.md). A missing or out-of-range
+value falls back to its default rather than crashing the chrome.
 
 ## `settings.toml`
 
@@ -64,6 +51,10 @@ out-of-range values warn and fall back to the default.
 | Section / key | Type | Default | Meaning |
 |---------------|------|---------|---------|
 | `[terminal] shell` | string | *(auto)* | Shell the Terminal drawer spawns. Unset resolves per platform: `$SHELL`, then `/bin/bash`, `/bin/sh` on Unix; `pwsh.exe`, `powershell.exe`, `cmd.exe` on Windows. |
+| `[repl] auto_open_drawer_on_run` | bool | `true` | Running a `.jl` file from the navigation tree with `r`/`R` opens the REPL drawer if it is closed, so the run's output is visible. Navigation keeps focus. |
+| `[font] scale` | number `[0.5, 3.0]` | *(by monitor width)* | Text-size multiplier at startup. A zoom you saved with `Ctrl+=`/`Ctrl+-`/`Ctrl+0` wins over this key, and `--font-scale` on the command line overrides both. Unset, wide monitors start with larger text. |
+| `[nav] spill_ms` | integer, ms | `2000` | While the navigation cursor is moving, a row too long for the column floats its full text over the preview pane's left edge, and the text vanishes this many milliseconds after the last move. `0` turns it off. |
+| `[trust] root_prefix` | absolute path | *(none)* | Read by the daemon, from the user-level `settings.toml` only (the frontend ignores it). When it starts an agent in a project folder under this prefix, it marks Claude Code's trust dialog for that folder as answered. Set it with `sotd trust declare <absolute-prefix>`. |
 | `[downloads] dir` | path | *(OS download dir)* | Local directory `d` (download) writes to. Empty means the OS download directory. |
 | `[sessions] new_session_root` | path | *(fallback chain)* | Backend-host directory the new-session picker starts browsing from. Unset falls back to `$SOT_PROJECTS_ROOT`, `$SOT_REMOTE_HOME`, the daemon's default root, then `$HOME`. |
 | `[drawer] attach_only` | bool | `false` | Windows only: the Terminal drawer attaches to a running capsule instead of spawning a local shell. Dormant: nothing starts a drawer capsule to attach to, so leave it `false`. Read when the drawer is created; takes a frontend restart. |
@@ -138,10 +129,9 @@ the one way anything reads it. Neither the frontend nor the PowerShell
 launcher parses `hosts.toml` itself any more: the launcher runs
 `sotd topology plan --self <host>` and renders its plain-line output into
 `--dial <host>=<endpoint>` flags for the frontend (each an ssh child the
-frontend spawns itself, or a local socket/pipe);
-the frontend reads no config file for hosts at all
-(see `--dial` under [CLI flags](../start/setup.md), and
-`rust/protocol/src/topology/mod.rs`'s `plan` doc comment for the exact
+frontend spawns itself, or a local socket/pipe). `sot --dial` takes one
+connection per flag and may repeat; `sot --help` lists it. The frontend reads no
+config file for hosts at all (`rust/protocol/src/topology/mod.rs`'s `plan` doc comment has the exact
 line-oriented contract).
 
 The format is deliberately simple — a section per host, scalar
@@ -204,7 +194,8 @@ declared once, but only the declared `hub` executes it — every non-hub daemon
 samples just the host it runs on, regardless of what this table says, so the
 roster's ssh aliases need only resolve **on the hub**. The drawer itself
 subscribes to the hub, not to whichever host the frontend happens to be
-navigating. Each line is `<display-name> = "<ssh-alias>"`.
+navigating. Each line is `<display-name> = "<ssh-alias>"`. A monitor target is not a `[host.*]`: it can be any box you can
+reach with `ssh`, and it needs no section above.
 
 | Form | Meaning |
 |------|---------|
@@ -234,7 +225,7 @@ daemon = true
 [monitor]
 myserver = "myserver"
 otherbox = "otherbox"
-host-c = "host-c"
+host-c = "host-c"    # sampled over ssh; not a [host.*] above
 ```
 
 `sotd topology plan --self laptop` on the laptop above renders as (see
@@ -257,4 +248,5 @@ other one. No port, no forward — read the actual endpoints from
 
 ## See also
 
-- [Keybindings](keybindings.md) — chords and grammar (still repo-local, under `.sot/`).
+- [Keybindings](keybindings.md) — chords and grammar; the file is found as `settings.toml` is: `$SOT_KEYBINDINGS`, then `.sot/keybindings.toml`
+  up from the working directory, then `~/.config/sot/keybindings.toml`.
