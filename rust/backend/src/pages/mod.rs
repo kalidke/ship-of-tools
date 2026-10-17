@@ -7,6 +7,13 @@ pub(super) mod proxy;
 pub(super) mod site;
 pub(super) mod video;
 
+/// The home folder, canonical: the one folder no site root or data root may hold, since a page there could read the
+/// ssh keys and the daemon's own token. `std::env::home_dir`: `HOME`, else the account database (`USERPROFILE` on
+/// Windows). `None` when the daemon has no home or it does not resolve; the bounds that use it then hold none.
+pub(crate) fn home_folder() -> Option<std::path::PathBuf> {
+    std::env::home_dir().and_then(|h| h.canonicalize().ok())
+}
+
 /// A loopback listener on `port` for a page server (0: the OS picks). Bound through std, whose Windows sockets are
 /// made non-inheritable at creation, and handed to tokio, whose own sockets are inheritable: a child process the daemon
 /// starts must not hold a page listener (ADR 0049, User isolation). Call it inside the runtime.

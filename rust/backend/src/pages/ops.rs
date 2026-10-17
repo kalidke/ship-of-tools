@@ -237,7 +237,7 @@ pub async fn handle_docs_open(
             .unwrap_or_default();
         (dir, fname, canon_p.clone())
     };
-    let home = std::env::home_dir().and_then(|h| h.canonicalize().ok());
+    let home = crate::pages::home_folder();
     let Some(root) = find_site_root(&dir, &ws_root, home.as_deref()).await else {
         return Ok(err(
             format!(

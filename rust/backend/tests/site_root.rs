@@ -19,7 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 fn daemon(tag: &str) -> Env {
     let env = Env::new(tag);
     let home = env.daemon_project_root.to_string_lossy().into_owned();
-    env.spawn_sotd_with_env(&[("SOT_DOCS_PORT", "0"), ("SOT_VIDEO_PORT", "0"), ("HOME", &home)]);
+    env.spawn_sotd_with_env(&[("SOT_DOCS_PORT", "0"), ("SOT_VIDEO_PORT", "0"), ("HOME", &home), ("USERPROFILE", &home)]);
     env
 }
 

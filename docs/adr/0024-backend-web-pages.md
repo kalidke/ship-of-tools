@@ -301,3 +301,6 @@ it keeps its own origin, rooted at the innermost folder on the walk under which 
 (a Vite build's `dist/`, a Jekyll `_site/`), else at the walk's root. A rule rooting every page at the innermost folder
 that holds the files it loads would narrow the cases above; it is not taken, since a page that names a file at the walk's
 root still takes in everything under it.
+
+The repository top is the nearest folder holding `.git`, a folder or a worktree's file. A checkout with none (an extracted
+archive, a Mercurial checkout) is bounded by the workspace root, or on a home-folder workspace by the folder below home.

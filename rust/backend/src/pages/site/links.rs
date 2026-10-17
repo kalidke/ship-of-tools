@@ -337,10 +337,7 @@ impl Site {
         }
         #[cfg(test)]
         self.roots_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let r = std::sync::Arc::new(read_data_roots(
-            &f,
-            std::env::var_os("HOME").map(PathBuf::from).as_deref(),
-        ));
+        let r = std::sync::Arc::new(read_data_roots(&f, crate::pages::home_folder().as_deref()));
         *cache = Some((stamp, r.clone()));
         r
     }
