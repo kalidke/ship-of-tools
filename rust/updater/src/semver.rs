@@ -82,6 +82,12 @@ fn dev_stem(s: &str) -> (&str, bool) {
     }
 }
 
+/// True for a version on the line between tags: its last pre-release identifier is `dev` or ends in `-dev`
+/// (`0.6.7-dev`, `0.6.6-rc9.14-dev+abc`), so no tag names it.
+pub fn is_dev(version: &str) -> bool {
+    parse_semver(version).is_some_and(|v| v.pre.last().is_some_and(|id| id == "dev" || id.ends_with("-dev")))
+}
+
 fn cmp_plain(x: &str, y: &str) -> Ordering {
     match (x.parse::<u64>(), y.parse::<u64>()) {
         (Ok(a), Ok(b)) => a.cmp(&b),
@@ -249,5 +255,15 @@ mod tests {
             compare_versions("0.6.6-rc9.14-dev+a", "0.6.6-rc9.14-dev+b"),
             Ordering::Equal
         );
+    }
+
+    #[test]
+    fn is_dev_names_the_lines_stamps() {
+        for v in ["0.6.7-dev", "0.6.6-rc9.14-dev+abc", "v0.6.6-rc9.14-dev"] {
+            assert!(is_dev(v), "{v}");
+        }
+        for v in ["0.6.6-rc9.14", "0.6.6+src", "0.6.6-devel", "0.6.6", "garbage"] {
+            assert!(!is_dev(v), "{v}");
+        }
     }
 }
