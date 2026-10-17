@@ -13,7 +13,7 @@ change lives in the parent folder. Part of the daemon's rows subsystem; charter:
 - `destroy.rs`: `workspace.destroy`, which ends a row's run and then removes the row; the default row only ends its run
 - `destroy_tests.rs`: tests of `destroy.rs`: `workspace.destroy` on the default row, with the state-root fixtures they share
 - `lane_bridge.rs`: `lane.connect`, the byte pipe onto a row's supervisor or voyage lane after one answered frame
-- `list.rs`: `workspace.list` (the rows the window shows, with their comm state) and `workspace.activate`
+- `list.rs`: `workspace.list` (the rows the window shows, with their comm state, and the notebooks the daemon's Pluto server has open) and `workspace.activate`
 - `pty.rs`: `pty.open` (starts a capsule row's supervisor on attach, then answers `attach_direct`), `pty.input` and `pty.screen` through the supervisor lane, and the test-only activation barrier and marker
 
 ## Start here

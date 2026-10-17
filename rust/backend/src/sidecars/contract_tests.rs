@@ -12,6 +12,20 @@ use tokio::sync::broadcast;
 
 pub(crate) const CHILD_ENV: &str = "SOT_TEST_SIDECAR_ISOLATED";
 
+/// What `f` logs on this thread at every level, as text: the one capture the sidecars' log-content tests share.
+pub(crate) fn logged_by(f: impl FnOnce()) -> String {
+    let log = sot_log::test_log::capture();
+    f();
+    log.text()
+}
+
+/// Whether a line of `logged` (one event a line, as `logged_by` and `sot_log::test_log::capture` write it) is at warn
+/// and holds `needle`.
+#[cfg(unix)]
+pub(crate) fn warned(logged: &str, needle: &str) -> bool {
+    logged.lines().any(|line| line.contains(" WARN ") && line.contains(needle))
+}
+
 /// Runs `name` in a child of this test binary (own process environment, own working directory) within `bound`, and
 /// returns `false` in the parent once the child exited 0 having entered the body exactly once. In the child it
 /// records the entry and returns `true`.

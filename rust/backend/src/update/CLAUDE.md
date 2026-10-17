@@ -9,18 +9,20 @@ parent folder, owns the pipeline both reach. Part of distribution; charter: scri
 ## Files
 - `cli.rs`: the `sotd update` dispatch and usage text, `stage` (the one writer that may arm the same or an older build,
   `Writer::Operator`) and `pointer` (reads the pointer and `install.json`, prints `ok` or `refuse: <why>`, exits 0 or
-  `REFUSED`), `direction` (prints `newer`, `same` or `older` against `install.json`) and `repls` (the rows of a running
-  daemon whose REPL is `ready`, from its own `workspace.list`), with their tests
+  `REFUSED`), `direction` (prints `newer`, `same` or `older` against `install.json`) and `repls` (what a restart of a running
+  daemon would end, from its own `workspace.list`: the rows whose REPL is `ready` and the notebooks its Pluto server has open), with their tests
 
 ## Start here
 `run` in `cli.rs`; `pointer_cli` for what apply asks.
 
 ## Rules
 - `direction` and `repls` start no daemon and write nothing. `direction` exits 1 when `install.json` cannot be read or
-  names no version, and 2 for bad arguments; `repls` exits 0 with nothing printed when no REPL is live, 3 with one label per
-  line when some are, and 1 when the daemon cannot be asked (a daemon of another protocol refuses the hello, no answer
-  comes in the bound, or the reply carries no workspace list, an error payload being one). Live means the daemon says
-  `ready`: a `starting` REPL holds no state yet.
+  names no version, and 2 for bad arguments; `repls` exits 0 with nothing printed when no REPL is live and no notebook open,
+  3 with one line each (`repl <label>`, `pluto <path>`) when some are, and 1 when the daemon cannot be asked (a daemon of
+  another protocol refuses the hello, no answer comes in the bound, the reply carries no workspace list, an error payload
+  being one, or it lists no `pluto_notebooks`: a daemon older than the field may hold sessions it cannot name, so the
+  first update from it asks for `--restart-daemon`). Live means the daemon says `ready`: a `starting` REPL holds no
+  state yet.
 - `pointer` starts no daemon and writes nothing. It refuses a pointer that cannot be read as well as one that no longer fits; with no readable `install.json` or no pointer it answers 0. Its refusal code is 3: an older `sotd` exits 1 on the word `update` and
   a `sotd update` without the verb exits 2, so the apply scripts read only 3 as a refusal and keep the exact-tag check
   for any other answer.

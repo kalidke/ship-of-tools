@@ -41,6 +41,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   own words, never a bare timeout. An Xvfb that names no display within its bound, and a sampler ended for silence,
   name the last lines they wrote in the reason they log at warn.
 - Once the server is ready, a Pluto open answers within `PLUTO_OPEN_BOUND` (30 s, from its submission) or fails naming it, and the server that did not answer is ended, since its replies are matched oldest-first.
+- A notebook Pluto answered an open for is a live session until its server ends: `Pluto::live_notebooks` lists them (none when no server is up), and `workspace.list` carries them as `pluto_notebooks`, so the update's question covers them with the rows' REPLs.
 - Pluto's proxy port is a supervisor-owned generation grant, published only after a loopback READY URL and released on every supervisor exit or cancellation before cleanup awaits. An old generation's release cannot erase its replacement's grant (`bound_pluto_port`).
 - Pluto polls child exit and its supplied Signal during each stdin write and flush. Cancelling a submission retires the supervisor, releases its grant and closes current, pending and queued replies before checked cleanup; it never resends a partial OPEN line.
 - A REPL restart explicitly retires and joins its owned supervisor before replacement; it never relies on Julia reaching stdin EOF. Errors retain retirement ownership and prevent replacement.

@@ -10,8 +10,9 @@
 //! - `direction <version> --prefix <prefix>`: does the install at <prefix> move `newer`, `same` or `older` to <version>?
 //!   The installer (scripts/install.sh) asks the target release's own `sotd` before it changes anything, so its
 //!   never-backwards default is Rust's `compare_versions` and not a second semver in shell.
-//! - `repls --endpoint <unix:PATH|pipe:PATH>`: which rows of the daemon there have a live REPL, from the daemon's own
-//!   `workspace.list`. The installer asks before an update would restart that daemon.
+//! - `repls --endpoint <unix:PATH|pipe:PATH>`: what a restart of the daemon there would end, from the daemon's own
+//!   `workspace.list`: the rows with a live REPL and the notebooks its Pluto server has open. The installer asks before
+//!   an update would restart that daemon.
 //!
 //! The pointer verb's exit code is the contract. 0 means the script goes on to its own checks (no pointer, a pointer
 //! that fits, or no install here to compare with); `REFUSED` means drop the pointer, one that cannot be read included.
@@ -52,10 +53,11 @@ Usage: sotd update direction <version> --prefix <install prefix>
 
 Usage: sotd update repls --endpoint <unix:PATH|pipe:PATH>
 
-  Which rows of the daemon answering there have a live REPL (its `repl_state` is `ready`: a Julia process holding the
-  row's variables)? Asks the daemon's `workspace.list`; starts nothing and writes nothing. Prints nothing and exits 0
-  when none has; prints one row label per line and exits 3 when some do; exits 1, naming why on stderr, when the
-  daemon cannot be asked.";
+  What would a restart of the daemon answering there end? A live REPL (the row's `repl_state` is `ready`: a Julia
+  process holding the row's variables) or a notebook its Pluto server has open. Asks the daemon's `workspace.list`;
+  starts nothing and writes nothing. Prints nothing and exits 0 when there is none; prints one line each, `repl <row
+  label>` or `pluto <notebook path>`, and exits 3 when there are some; exits 1, naming why on stderr, when the daemon
+  cannot be asked, or cannot say which notebooks are open.";
 
 /// `sotd update stage <folder> --prefix <prefix>`: the folder and prefix, or the reason the arguments are not those.
 fn parse_stage_args(args: &[String]) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
@@ -264,20 +266,27 @@ pub(crate) const REPLS_LIVE: i32 = 3;
 /// How long the daemon may take to list its rows: it answers from memory.
 const LIST_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The label of every row of a `workspace.list` reply whose REPL is live: its `repl_state` is `ready`, a Julia process
-/// holding the row's variables. `starting` holds none yet and `dead` or `not_started` none any more.
-/// A reply with no `workspaces` list (an error payload is one) is no answer: the caller must not read it as "none live".
-fn live_repl_rows(reply: &serde_json::Value) -> Result<Vec<String>, String> {
+/// What a restart of the daemon would end, from a `workspace.list` reply, one line each: `repl <label>` for every row whose
+/// REPL is live (its `repl_state` is `ready`, a Julia process holding the row's variables; `starting` holds none yet and
+/// `dead` or `not_started` none any more) and `pluto <path>` for every notebook the Pluto server has open. A reply with no
+/// `workspaces` list (an error payload is one), or from a daemon that cannot list its notebooks (no `pluto_notebooks`),
+/// is no answer: the caller must not read it as "none live".
+fn live_work(reply: &serde_json::Value) -> Result<Vec<String>, String> {
     let text = |row: &serde_json::Value, key: &str| row.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
     let rows = reply.get("workspaces").and_then(|v| v.as_array()).ok_or_else(|| {
         let said = reply.get("error").and_then(|v| v.as_str()).unwrap_or("no `workspaces` key");
         format!("the daemon answered without a workspace list: {said}")
     })?;
-    Ok(rows
+    let notebooks = reply.get("pluto_notebooks").and_then(|v| v.as_array()).ok_or_else(|| {
+        "the daemon's reply lists no Pluto notebooks (a daemon older than this build cannot say which are open)".to_string()
+    })?;
+    let repls = rows
         .iter()
         .filter(|row| row.get("repl_state").and_then(|v| v.as_str()) == Some("ready"))
         .filter_map(|row| text(row, "label").or_else(|| text(row, "slug")))
-        .collect())
+        .map(|label| format!("repl {label}"));
+    let sessions = notebooks.iter().filter_map(|path| path.as_str()).map(|path| format!("pluto {path}"));
+    Ok(repls.chain(sessions).collect())
 }
 
 /// `--endpoint <unix:PATH|pipe:PATH>`, or the reason the arguments are not that.
@@ -288,8 +297,8 @@ fn parse_repls_args(args: &[String]) -> Result<String, String> {
     }
 }
 
-/// `sotd update repls ...`: 0 (none live), `REPLS_LIVE` (labels on stdout), 1 (the daemon cannot be asked) or 2 (bad
-/// arguments).
+/// `sotd update repls ...`: 0 (none live), `REPLS_LIVE` (the `repl` and `pluto` lines on stdout), 1 (the daemon cannot be
+/// asked) or 2 (bad arguments).
 fn repls_cli(args: &[String]) -> i32 {
     let endpoint = match parse_repls_args(args) {
         Ok(ep) => ep,
@@ -301,7 +310,7 @@ fn repls_cli(args: &[String]) -> i32 {
     let asked = sot_log::host::state_dir::host_name().and_then(|me| {
         crate::topology::dial::dial_and_call(&endpoint, &me, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({}), LIST_BOUND)
     });
-    match asked.and_then(|reply| live_repl_rows(&reply)) {
+    match asked.and_then(|reply| live_work(&reply)) {
         Ok(rows) if rows.is_empty() => 0,
         Ok(rows) => {
             for row in rows {
@@ -525,7 +534,7 @@ mod tests {
 
     #[test]
     fn a_live_repl_is_one_the_daemon_says_is_ready() {
-        let reply = serde_json::json!({ "workspaces": [
+        let reply = serde_json::json!({ "pluto_notebooks": [], "workspaces": [
             { "workspace_id": "ws-a", "slug": "rig", "label": "Rig PC", "repl_state": "ready" },
             { "workspace_id": "ws-b", "slug": "idle", "label": "Idle", "repl_state": "not_started" },
             { "workspace_id": "ws-c", "slug": "boot", "label": "Boot", "repl_state": "starting" },
@@ -533,17 +542,40 @@ mod tests {
             { "workspace_id": "ws-e", "slug": "scan", "label": "", "repl_state": "ready" },
             { "workspace_id": "ws-f", "slug": "old" },
         ]});
-        assert_eq!(live_repl_rows(&reply), Ok(vec!["Rig PC".to_string(), "scan".to_string()]));
-        assert_eq!(live_repl_rows(&serde_json::json!({ "workspaces": [] })), Ok(vec![]));
+        assert_eq!(live_work(&reply), Ok(vec!["repl Rig PC".to_string(), "repl scan".to_string()]));
+        assert_eq!(live_work(&serde_json::json!({ "workspaces": [], "pluto_notebooks": [] })), Ok(vec![]));
+    }
+
+    #[test]
+    fn a_notebook_the_pluto_server_has_open_is_live_work_too() {
+        let reply = serde_json::json!({
+            "workspaces": [{ "slug": "rig", "label": "Rig PC", "repl_state": "ready" }],
+            "pluto_notebooks": ["/p/a.jl", "/p/b.jl"],
+        });
+        let live = ["repl Rig PC", "pluto /p/a.jl", "pluto /p/b.jl"].map(String::from).to_vec();
+        assert_eq!(live_work(&reply), Ok(live));
+        let only = serde_json::json!({ "workspaces": [], "pluto_notebooks": ["/p/a.jl"] });
+        assert_eq!(live_work(&only), Ok(vec!["pluto /p/a.jl".to_string()]));
+    }
+
+    #[test]
+    fn a_daemon_that_cannot_list_its_notebooks_has_not_answered() {
+        // A daemon older than the field lists rows only: it may hold Pluto sessions it cannot name.
+        let old = serde_json::json!({ "workspaces": [] });
+        assert_eq!(
+            live_work(&old),
+            Err("the daemon's reply lists no Pluto notebooks (a daemon older than this build cannot say which are open)".to_string())
+        );
     }
 
     #[test]
     fn a_reply_with_no_rows_is_not_an_answer() {
         // An error payload is a reply too; reading it as "no live REPL" would restart the daemon unasked.
         let refused = serde_json::json!({ "error": "unknown op" });
-        assert_eq!(live_repl_rows(&refused), Err("the daemon answered without a workspace list: unknown op".to_string()));
-        assert!(live_repl_rows(&serde_json::json!({})).is_err());
-        assert!(live_repl_rows(&serde_json::json!({ "workspaces": "none" })).is_err());
+        assert_eq!(live_work(&refused), Err("the daemon answered without a workspace list: unknown op".to_string()));
+        assert!(live_work(&serde_json::json!({})).is_err());
+        assert!(live_work(&serde_json::json!({ "workspaces": "none", "pluto_notebooks": [] })).is_err());
+        assert!(live_work(&serde_json::json!({ "workspaces": [], "pluto_notebooks": "none" })).is_err());
     }
 
     #[test]
