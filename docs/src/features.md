@@ -7,7 +7,7 @@ aside: false
 # What it does
 
 The main features, with a short recording where one exists. The design notes mark
-what is not built; the original plan is [Phase 1 plan (historical)](design/roadmap.md). Keys are given for Linux and Windows; the
+what is not built; Keys are given for Linux and Windows; the
 macOS equivalents are in [Keybindings](ref/keybindings.md).
 
 ```@raw html
@@ -135,10 +135,12 @@ shows every run the agent made, and with `git` in a shell session.
 ### More on previews
 
 - **Add a file type in Julia.** A `FileType` subtype, a `matches` method and a
-  `preview` method; no Rust changes. See [The dispatch ABI](extend/abi.md).
+  `preview` method; no Rust changes. A plugin loads from a source checkout
+  only; see [The dispatch ABI](extend/abi.md) and
+  [Discovery](extend/discovery.md).
 - **Video and interactive documents open in the browser.** Video shows a
   poster frame in the pane; `o` opens playback in your browser. Pluto
-  notebooks, Quarto documents and HTML pages follow the same policy, served
+  notebooks, Quarto documents (Quarto must be installed) and HTML pages follow the same policy, served
   through the backend connection, local or remote, with no SSH setup.
 
 ## The REPL
@@ -149,8 +151,8 @@ A persistent Julia REPL per session. Run a whole `.jl` file (`r` into a
 fresh REPL — this also clears what the agent built in `Main` — `Shift+R`
 into the current session) or type at the prompt.
 CairoMakie figures render inline in the drawer as images, not through a
-terminal graphics protocol; on a Linux backend GLMakie works too, on a private display
-the REPL starts for itself, and its figures come back the same way. See [The REPL](guide/repl.md).
+terminal graphics protocol; GLMakie works on a Linux backend that has Xvfb installed: the REPL starts a
+display of its own for it, and its figures come back the same way. See [The REPL](guide/repl.md).
 
 ```@raw html
 <DemoLoop name="repl-g" caption="Asked to run scripts/route.jl, the agent runs it in the shared Julia drawer; the output and the leg-distance bar chart land inline, then it answers." />

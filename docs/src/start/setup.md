@@ -32,13 +32,13 @@ machine (Windows, Linux, or macOS). Done manually, these are the steps:
 7. **Create a launcher / shortcut** so you can start the app without typing the
    build paths.
 
-On Windows frontend machines, run `scripts\install-shortcut.ps1` after
-`hosts.toml` exists (`%LOCALAPPDATA%\sot\config\hosts.toml`, or `$SOT_HOSTS`
-— see [Configuration Files](../ref/config.md)). Besides creating the desktop shortcut to
+On Windows frontend machines, run `scripts\install-shortcut.ps1 -Hub
+<hub-ssh-alias>`; the launcher refreshes `hosts.toml` from the hub at every
+launch (see [Configuration Files](../ref/config.md)). Besides creating the desktop shortcut to
 `scripts\launch-sot.ps1`, it sets the SoT icon (`logo.ico`) and stamps the
 `ShipOfTools.Sot` AppUserModelID on the `.lnk`, so the running window merges
 into the shortcut's taskbar button with the right icon (a hand-made shortcut
-gets neither). Re-run it after editing host config or pinning to the taskbar
+gets neither). Re-run it after pinning to the taskbar
 so the pin is repointed to the launcher.
 
 ## The cross-OS topology
@@ -48,7 +48,7 @@ Linux frontend is first-class, same as Windows or a Mac; the split that
 matters is backend vs. frontend, not one OS vs. another:
 
 - **The backend runs on Linux.** The daemon and the Julia kernel run on a
-  Linux server (for example `myserver`, `host-b`, or `host-c`). The daemon
+  Linux server (for example `myserver`). The daemon
   runs under the `systemd --user` unit `sotd.service`, and each session runs
   in its own capsule, so both survive SSH drops.
 - **The frontend** — the native window that renders previews and owns the
@@ -64,11 +64,11 @@ The Q&A asks which of three roles the machine fills:
 
 | Role | What runs here | Typical machine |
 |------|----------------|-----------------|
-| **frontend-local** | the frontend only; backend is on a remote | Windows laptop / workstation |
-| **backend-remote** | the backend + kernel, reached over SSH | Linux server |
-| **all-local** | frontend and backend on one machine | a single Linux box for offline work |
+| **Frontend client** | the frontend only; backend is on a remote | Windows laptop / workstation |
+| **Backend server** | the backend + kernel, reached over SSH | Linux server |
+| **All-in-one (local backend)** | frontend and backend on one machine | a single Linux box for offline work |
 
-For **frontend-local**, the flow also records this machine as a `frontend`
+For **Frontend client**, the flow also records this machine as a `frontend`
 host and the backend server as a `daemon` host in `hosts.toml` (the hub's
 copy). The launcher derives everything else — how to dial each host, and the
 remote's socket path (`sotd session-socket-path sot`, always queried, never
@@ -77,14 +77,10 @@ is nothing else to fill in by hand.
 
 ## What gets written
 
-### `hosts.toml` — the declared topology
-
-One section per host, in a deliberately simple `key = value` format so it
-needs no TOML library. `sot_protocol::topology` (Rust) is the one parser;
-`sotd topology plan|status|sync|relay-endpoint` is the one way anything
-reads it — see [Configuration Files](../ref/config.md) for the full
-grammar. The in-app Hosts mode (hotkey `h`) lists every dialable host with
-its live connected/unreachable status.
+The files are `hosts.toml` (the declared topology), `settings.toml` (frontend
+settings) and `keybindings.toml`. Their grammar, discovery order and every
+setting are in [Configuration Files](../ref/config.md). A minimal `hosts.toml`
+for one server and one laptop:
 
 ```toml
 hub = "myserver"
@@ -96,31 +92,8 @@ daemon = true
 frontend = true
 ```
 
-Discovery order: `$SOT_HOSTS` → `<config dir>/hosts.toml`
-(`~/.config/sot/hosts.toml` on Linux/macOS,
-`%LOCALAPPDATA%\sot\config\hosts.toml` on Windows) — no repo-local `.sot/`
-copy. The hub's copy is canonical; every other box's is a
-`sotd topology sync --hub <alias>` fetch of it. Adding a new remote is one
-`[host.<name>]` section on the hub, then `sync` on every box that dials it
-— no launcher edit.
-
-### `settings.toml` — frontend settings
-
-The layout preset (see [`[layout]`](../ref/config.md#layout)). Any value missing or
-out of range silently falls back to the built-in default; a malformed settings
-file never crashes the chrome.
-
-```toml
-[layout]
-preset = "auto"   # auto | ultrawide | laptop | portrait
-```
-
-The frontend reads the first of `$SOT_SETTINGS`, a `.sot/settings.toml`
-found by walking up from the frontend's working directory, and
-`$HOME/.config/sot/settings.toml`; built-in defaults fill the rest. Keybindings live in a
-sibling `.sot/keybindings.toml` with the same discovery order.
-
-The other sections are listed in [Configuration Files](../ref/config.md).
+The in-app Hosts mode (hotkey `h`) lists every dialable host with its live
+connected/unreachable status.
 
 ## After setup
 

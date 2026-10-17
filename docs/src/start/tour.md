@@ -9,7 +9,7 @@ If Ship of Tools is not installed yet, start with the
 
 ## The window
 
-The window has three columns. When the bottom drawer is open it sits under
+The window has three columns (two in the portrait preset, which drops the agent column). When the bottom drawer is open it sits under
 the navigation and preview columns; the agent column always runs the full
 height of the window.
 
@@ -131,7 +131,7 @@ Two more nav-tree roots switch the *target*, not the content:
   `[+ create new]` to start one (see [The agent](#The-agent) above). What a
   session is, and what it shares with other sessions, is in
   [Sessions and persistence](../concepts/sessions.md).
-- **`h` — Hosts.** List the connected backend hosts; `Enter` jumps to that
+- **`h` — Hosts.** List every host the window dials, with its link state; `Enter` jumps to that
   host's sessions. See [Hosts mode](../guide/modes.md#hosts-mode).
 
 ## Help — `Ctrl+?` and `F1`
@@ -158,7 +158,7 @@ A few global keys manage the window itself:
 | Restore layout | `Esc` | one layer per press: un-maximize first, then exit wide-preview (only while maximized or in wide-preview) |
 | Font scale | `Ctrl+=` / `Ctrl+-` | zoom the UI font up / down (`Ctrl+0` resets) |
 | Reconnect | `F5` | reconnect the transport after a drop |
-| Quit | `Ctrl+Q` | close the window, asking whether to keep the daemon and sessions running (every pane but the agent and the Terminal drawer) |
+| Quit | `Ctrl+Q` | close the window, asking first; see [What keeps running](running.md) |
 
 Plain arrows move within a pane, `Ctrl+Arrow` moves *between* panes, and
 `Shift+Arrow` switches sessions. The same chords are scoped so they do not

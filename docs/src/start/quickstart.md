@@ -25,7 +25,7 @@ to pin one).
   `juliaup default 1.12`. `SOT_JULIA_BIN`, if set, names the daemon's Julia and
   must be 1.12 or newer too.
 
-The optional tools (Xvfb for GLMakie, node/npm, poppler-utils, ffmpeg) are listed under
+The optional tools (Xvfb for GLMakie, node/npm, poppler-utils, ffmpeg, quarto) are listed under
 [Prerequisites](@ref install-prerequisites).
 
 !!! warning "Try it in a VM or a separate account"
@@ -73,8 +73,9 @@ them in a fresh copy.
 
 Run `sot-launch`, or open **Ship of Tools** from your desktop's application
 menu. The launcher starts the backend if it is not already running, then opens
-the window. (With the backend on another machine, the launcher also opens the
-SSH connection; see [Going remote](remote.md).) If no window appears, see
+the window. (With the backend on another machine, the window opens its own SSH
+connection; see [Going remote](remote.md).) If `sot-launch` is not found, use
+`~/.local/bin/sot-launch` or the desktop entry until your next login. If no window appears, see
 [The window does not open](@ref window-does-not-open).
 
 ## 3. What you see on first launch
@@ -94,19 +95,22 @@ Help drawer.
 Codex sessions have no REPL skill yet; the REPL steps below are Claude Code only.
 
 1. Press **`s`** for Sessions mode.
-2. Move to **`[+ create new]`** and press **Enter** to open the directory
+2. Open your host's row (`→` or `Enter`); **`[+ create new]`** is its first
+   child. Move to it and press **Enter** to open the directory
    picker: a folder tree of the backend machine in the navigation pane,
    starting at your home directory. Move the cursor to your project
    directory, or to `~/DemoProject` if you copied the demo package in step 1;
-   `Backspace` goes up a folder and `.` shows hidden folders.
+   `→` goes into a folder, `Backspace` goes up one, and `.` hides or shows
+   hidden folders (they are shown at first).
 3. Press **Enter** for a Claude Code session, **Ctrl+Enter** (Cmd+Enter on
    macOS) for a Codex session, or **Shift+Enter** for a plain shell with no
    agent.
 
 The session appears as a row in Sessions mode, and the agent starts in the
-agent pane with the project directory as its working directory. The first time
-Claude Code starts in a folder it asks, in the agent pane, whether you trust
-the files in it; answer there once and the session continues. Each session
+agent pane with the project directory as its working directory. The installer
+declares your home directory as trusted, so Claude Code is set up not to ask
+about folder trust for a project under it; a project outside home asks once,
+in the agent pane. Each session
 runs under its own supervisor process on the backend (a *capsule*), so it
 keeps running while you switch sessions or the connection drops.
 
@@ -135,10 +139,7 @@ See [How agents use the REPL](@ref agents-repl).
 - In Sessions mode, `Shift+D` pressed twice on a session's row ends that
   session; any other command in between cancels.
 - Closing the window ends the backend on this computer and every session it
-  runs; the next window starts with none. `Ctrl+Q`, in any pane but the agent
-  and the Terminal drawer, asks first, in a dialog in the middle of the window: **Keep the
-  daemon and sessions running?** No is the
-  default; `Tab` selects Yes, `Enter` confirms, `Esc` cancels. See
+  runs; the next window starts with none. `Ctrl+Q` asks first; see
   [What keeps running](running.md).
 
 ## Next

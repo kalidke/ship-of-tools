@@ -27,7 +27,6 @@ Ship of Tools is an agentic development environment for Julia: you and a Claude 
 
 The window is GPU-rendered, with a keyboard-driven, terminal-style layout: a navigation tree, a file preview, an agent pane and a Julia REPL drawer. The agents write code and run it in the persistent REPL while you watch and review the results.
 
-Compared with Claude Code next to a REPL in tmux, or with VS Code, its Julia extension and a Claude Code panel:
 - The agent and you share one REPL.
 - Figures, PDFs and typeset math render in one keyboard-driven window.
 - The backend and its sessions keep running on the server when the window closes.
@@ -81,18 +80,20 @@ Use `--backend <ssh-alias>` for a frontend here with the backend on a remote hos
 
 To update a Linux or macOS machine, tell a coding agent running there "update sot from the repo", or run `bash ~/.local/share/sot/repo/current/scripts/install.sh` yourself: with no options it moves to the newest release on the channel the machine already runs, never moves backwards, takes its role from the `hosts.toml` entry for this computer (else a role flag, else what the install recorded), and ends with one `PASS`, `ONE STEP LEFT` or `FAIL` line.
 
+Install and enrol the backend before running `--backend`: the hub's `~/.config/sot/hosts.toml` must list the hub, the server as a daemon host and this machine as `frontend = true`, or the window opens with no host. See [Going remote](https://kalidke.github.io/ship-of-tools/dev/start/remote).
+
 Needs on every machine:
 - **git, curl, tar and jq** (the installer stops before it changes anything when jq is missing).
 - **Julia 1.12 or newer**, on every role, not only the backend (installed with juliaup if missing; an existing juliaup only gets the 1.12 channel added, so the install ends with the one command to run, usually `juliaup default 1.12`, if your default channel is older; `SOT_JULIA_BIN`, if set, names the daemon's Julia and must meet the floor too).
-- **Claude Code or Codex**, installed and logged in.
+- **Claude Code or Codex**, installed and logged in, on every machine that runs sessions (not on a frontend-only machine).
 - **Frontend only:** Linux with glibc 2.35 or newer and a desktop session with a Vulkan driver (a `--be-only` backend is a static binary with no glibc floor).
 - **A home directory on NFS** (or another remote filesystem) needs a systemd drop-in pointing the daemon's state root at local disk before sessions will start; see [A session will not start on a shared home](https://kalidke.github.io/ship-of-tools/dev/guide/troubleshooting#A-session-will-not-start-on-a-shared-home).
 
-The optional tools (Xvfb for GLMakie, node/npm, poppler-utils, ffmpeg) are listed under [Prerequisites](https://kalidke.github.io/ship-of-tools/dev/start/install#install-prerequisites).
+The optional tools (Xvfb for GLMakie, node/npm, poppler-utils, ffmpeg, quarto) are listed under [Prerequisites](https://kalidke.github.io/ship-of-tools/dev/start/install#install-prerequisites).
 
 What it touches:
 - Everything goes under your home directory, mostly `~/.local/share/sot`, plus user lingering (`loginctl enable-linger`) so the user-level `sotd` systemd service keeps the backend running after logout on Linux.
-- Skills and hooks go into your global `~/.claude` and `~/.codex`, where your own sessions see them; the hooks do nothing in a session that has not joined the Ship of Tools session registry. Hooks are merged into `~/.claude/settings.json`, and into each `~/.claude-auth/<name>/settings.json` that exists, without removing existing ones; a skill of yours with the same name as a shipped one is overwritten without a backup; the generic names are `julia-repl`, `show-result`, `sitrep`, `worktree` and `project-log`.
+- Skills and hooks go into your global `~/.claude` and `~/.codex`, where your own sessions see them; the hooks do nothing in a session that has not joined the Ship of Tools session registry. Hooks are merged into `~/.claude/settings.json`, and into each `~/.claude-auth/<name>/settings.json` that exists, without removing existing ones; a skill of yours with the same name as a shipped one is overwritten without a backup. The full list of files is in [What the installer changes](https://kalidke.github.io/ship-of-tools/dev/start/install#install-footprint).
 - Sessions start their agent with fixed permission flags: Claude Code in auto mode; Codex with approvals, the sandbox and hook trust all bypassed (`--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust`). What each setting means is in [How agent sessions are launched](https://kalidke.github.io/ship-of-tools/dev/start/install#How-agent-sessions-are-launched).
 - There is no uninstall script; removal is manual, with the commands in [Uninstall](https://kalidke.github.io/ship-of-tools/dev/start/install#install-uninstall).
 

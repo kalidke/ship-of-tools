@@ -125,7 +125,15 @@ Connection behaviour is role-specific:
   per-user socket. There is no SSH-to-localhost requirement.
 - `--backend <ssh-alias>` writes a launcher that passes `--dial <host>=ssh:<host>`
   to the frontend, which reaches the remote user's per-user backend socket by
-  spawning its own `ssh` child — no forward.
+  spawning its own `ssh` child — no forward. The launcher builds every
+  `--dial` from the hosts the hub's `hosts.toml` declares, and fetches that
+  file from the hub, named by this alias, at each launch; it refuses a file
+  that does not list this machine. So install and enrol the backend first
+  (`--be-only` on the server, then the hub's `~/.config/sot/hosts.toml` lists
+  the hub, the server as a `daemon` host and this machine as `frontend = true`;
+  see [Going remote](remote.md) and [Enrolling a host](../guide/enrolling.md)),
+  and only then run `--backend`. Without that entry the window opens with no
+  host.
 - `--be-only` installs the headless backend and, unless `--no-service`, runs it
   as the `systemd --user` unit `sotd.service`.
 
@@ -150,7 +158,8 @@ that call is refused). Nothing needs root. The default prefix is
 [Uninstall](@ref install-uninstall) lists the commands to remove each item by hand.
 
 Roles: *all* is every install; *backend* is `--local` and `--be-only`;
-*frontend* is `--local` and `--backend`.
+*frontend* is `--local` and `--backend`. A host that `hosts.toml` declares gets
+the parts its entry names (`daemon`, `frontend`) instead of its flags.
 
 | Path | What |
 |------|------|
@@ -159,12 +168,13 @@ Roles: *all* is every install; *backend* is `--local` and `--be-only`;
 | `~/.local/share/sot/julia/current` | *all* · a link to the same checkout |
 | `~/.local/share/sot/updates/` | *all* · staging area for downloaded updates |
 | `~/.local/share/sot/install.json` | *all* · install manifest: prefix, version, and which parts (daemon, frontend) were installed |
-| `~/.config/sot/settings.toml` | *all* · a one-line stub, written only if missing |
+| `~/.config/sot/settings.toml` | *all* · a `[trust]` table with `root_prefix` set to your home directory, written when the file is missing and appended when the file has no `[trust]` table; an existing `[trust]` is kept. The daemon uses it to skip Claude Code's folder-trust dialog for projects under your home (see [Configuration files](../ref/config.md)) |
 | `~/.config/sot/hosts.toml` | *all* · written only with `--hub`, as a copy fetched from the hub; otherwise only read |
 | `~/.juliaup/` | *all* · Julia 1.12, installed with the juliaup installer, only if no Julia 1.12 or newer is on `PATH` (an existing juliaup gets the 1.12 channel added instead) |
 | the first depot in `DEPOT_PATH` (usually `~/.julia`) | *backend* · packages for the kernel, REPL and Pluto environments |
 | `~/.config/systemd/user/sotd.service` | *backend, Linux, unless `--no-service`* · the backend service, started (its boot start is the drop-in below); `loginctl enable-linger` is also run so it survives logout. The service sources `~/.bashrc` before it starts `sotd`, so the backend and its sessions inherit your shell profile's exports. |
 | `~/.config/systemd/user/default.target.d/sotd.conf` | *backend, Linux, unless `--no-service`* · the boot drop-in (`Wants=sotd.service`) that starts the backend service at boot; written on a fresh install and kept or moved from an old enable link on a later one |
+| `~/.config/systemd/user/sotd.service.d/topology.conf` | *backend, Linux, unless `--no-service`* · the host pin described above |
 | `~/.local/bin/sot-launch` | *frontend* · the launcher wrapper |
 | `~/.local/share/applications/ship-of-tools.desktop` | *frontend, Linux* · the desktop entry |
 | `~/.local/share/icons/hicolor/` | *frontend, Linux* · the icon, `256x256/apps/ship-of-tools.png` |
@@ -177,7 +187,7 @@ installs the agent integration:
 |------|------|
 | `~/.sot-comm/` | the session messaging scripts (`bin/`) and their runtime state |
 | `~/.local/bin/` | `ccb` (Claude Code launcher), `ccx` (Codex launcher), `sot-fe`, `show-result`, `sot-gh-auth` |
-| `~/.claude/skills/` | the Claude Code skills: `julia-repl`, `show-result`, `sot-comm`, `sot-session-start`, `sot-status`, `sitrep`, `worktree`, `project-log`, `sot-install`, `sot-setup`, `sot-statusline-setup`, `sot-gh-auth` |
+| `~/.claude/skills/` | the thirteen Claude Code skills, one folder each: `julia-repl`, `show-result`, `sot-comm`, `sot-session-start`, `sot-status`, `sitrep`, `worktree`, `project-log`, `reauth`, `sot-install`, `sot-setup`, `sot-statusline-setup`, `sot-gh-auth` |
 | `~/.claude/settings.json` | hook entries for `UserPromptSubmit`, `PreToolUse` (on `AskUserQuestion`), `PostToolUse` and `Stop`, each calling a `comm-*.sh` script in `~/.sot-comm/bin`; merged in without removing existing hooks |
 | `~/.claude-auth/<name>/settings.json` | the same hook entries, merged the same way into each Claude account that has a `settings.json`; a link is followed and its target written once, and an account folder with none is skipped and none is created there (the backend links the shared one in at the account's first spawn, or on Windows without symlinks copies it once, and that copy then gets the hooks like any account's own) |
 | `~/.codex/skills/` | the Codex skills `sot-comm` and `sot-session-start` |
@@ -213,9 +223,9 @@ A skill directory with the same name as one of the skills above is
 overwritten: each shipped file replaces the file of the same name, and any
 other file in that directory is deleted. No backup is made. Every re-run of
 the installer, including each update, repeats this.
-The five skills without an `sot-` prefix are the likeliest to collide with
-one of your own: `julia-repl`, `show-result`, `sitrep`, `worktree` and
-`project-log`.
+The six skills without an `sot-` prefix are the likeliest to collide with
+one of your own: `julia-repl`, `show-result`, `sitrep`, `worktree`,
+`project-log` and `reauth`.
 
 The installer itself edits no shell profile. If no Julia 1.12 or newer is
 found and juliaup is not installed, it runs the juliaup installer, which adds
@@ -251,8 +261,12 @@ Ship of Tools, uses whatever flags you give it. See
 ## [Uninstall](@id install-uninstall)
 
 There is no uninstall script. To remove an install made with the default
-prefix, stop the service and delete what the installer wrote. On a home several
-hosts share these steps delete the shared install, so they uninstall every host:
+prefix, end the sessions, stop the service and delete what the installer
+wrote. Sessions outlive the service, so end them first (in Sessions mode,
+`Shift+D` twice on each row, or close the last window): deleting the install
+under a running session leaves it running from a deleted binary. On a home
+several hosts share, these steps delete the shared install, so they uninstall
+every host:
 
 ```bash
 systemctl --user stop sotd.service
@@ -266,7 +280,7 @@ rm -f ~/.local/bin/sot-launch ~/.local/bin/ccb ~/.local/bin/ccx ~/.local/bin/sot
 rm -f ~/.local/share/applications/ship-of-tools.desktop \
       ~/.local/share/icons/hicolor/256x256/apps/ship-of-tools.png
 rm -rf ~/.claude/skills/{julia-repl,show-result,sot-comm,sot-session-start,sot-status,\
-sitrep,worktree,project-log,sot-install,sot-setup,sot-statusline-setup,sot-gh-auth}
+sitrep,worktree,project-log,reauth,sot-install,sot-setup,sot-statusline-setup,sot-gh-auth}
 rm -rf ~/.codex/skills/{sot-comm,sot-session-start}
 rm -rf ~/.agents/plugins/sot-comm
 ```
@@ -311,15 +325,10 @@ check, pinning a version, and rolling back are in
 ### [Platforms](@id platforms)
 
 - **Linux x86_64**: all roles.
-- **Windows**: frontend only, against a Linux backend.
+- **Windows**: the frontend, against a Linux backend (see below).
 - **macOS (Apple Silicon)**: experimental; the tested use is a frontend
   against a Linux backend (`--backend`) — the other roles install but agent
-  sessions on a Mac backend are not supported yet. No agent session has run
-  end to end on a Mac; the only rows a test starts there are the pane-timing
-  job's plain shells; the successor and controlled-outcome cases are not
-  built for macOS (the tests that a session outlives a restart of its daemon,
-  and that the daemon's own ends, a close, an update restart or a stop
-  signal, end its processes as designed).
+  sessions on a Mac backend are not supported yet.
 
 ### [Prerequisites](@id install-prerequisites)
 
@@ -332,6 +341,7 @@ check, pinning a version, and rolling back are in
 | `Xvfb` | optional, Linux backend | GLMakie in the REPL and in Pluto: each gets an X display of its own. Without it the REPL's first run says it has no display of its own, and CairoMakie and WGLMakie still work; the installer does not check for it | `sudo apt-get install xvfb` |
 | node/npm | optional, backend | typeset math in markdown previews renders in a long-lived node process, whose dependencies the installer fetches with `npm ci`. Without node the installer warns and continues, and math renders as raw LaTeX. To add math later, install node and re-run the installer (or `npm ci` in `<checkout>/rust/backend/sidecars/mathjax`) | your package manager |
 | `poppler-utils` (`pdftoppm`, `pdfinfo`) | optional, backend | PDF pages in previews; the installer does not check for them, and without them the preview shows a note naming the missing tool | `sudo apt-get install poppler-utils` |
+| `quarto` | optional, backend | `o` on a `.qmd` file renders it with Quarto | the [Quarto](https://quarto.org) installer |
 | `ffmpeg` | optional, backend | video poster frames in previews; the installer does not check for it, and without it the preview shows a note naming the missing tool | `sudo apt-get install ffmpeg` |
 
 Beyond the tools:
@@ -448,12 +458,17 @@ same way, e.g.:
 julia --project=julia/plugins/julia-source -e 'using Pkg; Pkg.instantiate()'
 ```
 
+`rust/backend/sidecars/mathjax` needs `npm ci` for typeset math; without it math
+renders as raw LaTeX.
+
 ### Verify the build
 
 ```bash
 ls rust/target/release/sot rust/target/release/sotd rust/target/release/sot-capsule
 julia --project=core -e 'using ConceptExplorerCore; println("core OK")'
 ```
+
+To start the window from the checkout, run `scripts/launch-sot.sh`.
 
 ## Next steps
 
