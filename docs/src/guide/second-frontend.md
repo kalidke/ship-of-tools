@@ -39,5 +39,5 @@ not chosen, and a browser open cannot wait for it.
 ## Many machines, one workspace
 
 To make a server reachable from every frontend in a fleet — not only the one
-you installed it from — enrol it on the hub: see
+you installed it from — enroll it on the hub: see
 [Enrolling a host](enrolling.md).

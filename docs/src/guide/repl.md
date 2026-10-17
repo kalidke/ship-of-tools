@@ -90,8 +90,8 @@ request, and you can interrupt it mid-eval.
   as the REPL idles between evaluations can end it on 1.12, which only a synthetic signal has produced.
 - `Ctrl+C` in the drawer names, by number, the evaluations the drawer shows as running, and stops the running
   evaluation only if its number is one of them (an interrupt that names other evaluations sends no signal). Every
-  drawer on a row shows every run on it: its own, another window's (labelled `⟨window ▸ …⟩`) and a session's
-  (labelled `⟨session ▸ …⟩`).
+  drawer on a row shows every run on it: its own, another window's (labeled `⟨window ▸ …⟩`) and a session's
+  (labeled `⟨session ▸ …⟩`).
 - If the link to a computer drops while an evaluation runs, its entry says so and keeps what it had printed; when the
   window reconnects and the evaluation is still running, the entry says the connection is back and shows the rest, and
   `Ctrl+C` stops it.
@@ -129,13 +129,13 @@ nothing to interrupt):
 
 - `ok`: the run finished. `error`: it threw (the error follows). `interrupted`: an interrupt (`sot-fe repl interrupt`, or `Ctrl+C` in a drawer) stopped it.
 - `busy`: another run was going, and nothing ran.
-- `timeout`: `--timeout` (default 120 s) passed first. The run is not cancelled and keeps going; do not re-run it.
+- `timeout`: `--timeout` (default 120 s) passed first. The run is not canceled and keeps going; do not re-run it.
 - `restarted`: a restart (`--fresh`, or `r` in a window) retired the run before it ended.
 - `repl_died`: the REPL ended first any other way (it died, or its display ended); the next run starts a new REPL.
 
 What this means for you:
 
-- **Every agent run appears in your REPL drawer**, labelled with whatever
+- **Every agent run appears in your REPL drawer**, labeled with whatever
   label the caller passed with `--origin`, or "session" when none is passed.
   There is no quiet mode.
 - **The REPL is shared.** Your drawer, the session's agent and its subagents

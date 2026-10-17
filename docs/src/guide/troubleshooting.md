@@ -161,7 +161,7 @@ supervisors it spawns: its sessions die with it. Launch from the launcher or a
 plain shell. The daemon log says `this daemon's own job forbids breakaway`
 when this has happened.
 
-## Enrolment failures
+## Enrollment failures
 
 A host that should be reachable from every frontend but is not: see
-[Reading a failure](enrolling.md#Reading-a-failure) in the enrolment checklist.
+[Reading a failure](enrolling.md#Reading-a-failure) in the enrollment checklist.

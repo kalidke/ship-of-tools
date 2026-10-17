@@ -64,7 +64,7 @@ Each step's check must pass before the next one is worth doing.
 1. **ssh, from the hub, non-interactively.**
    `ssh -o BatchMode=yes <host> sotd --version` prints a version.
    A prompt, a host-key question or a "command not found" here is the
-   whole enrolment failing early: nothing downstream runs attended. If
+   whole enrollment failing early: nothing downstream runs attended. If
    `sotd` is found interactively but not this way, note its full path for
    the `SOT_RELAY_SOTD` override above rather than editing shell profiles.
 

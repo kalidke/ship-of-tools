@@ -248,8 +248,8 @@ A Julia process **supervised by the backend daemon**, separate from the kernel t
 restarting your interactive session never costs you the project view. See
 [A supervised, separate process](repl.md#A-supervised,-separate-process).
 
-Every drawer on a row shows every run on it: what you type, a run another window started (labelled `⟨window ▸ …⟩`)
-and a session's run (labelled `⟨session ▸ …⟩`). On a Linux backend the REPL has a display of its own, so GLMakie
+Every drawer on a row shows every run on it: what you type, a run another window started (labeled `⟨window ▸ …⟩`)
+and a session's run (labeled `⟨session ▸ …⟩`). On a Linux backend the REPL has a display of its own, so GLMakie
 works; see [The REPL](repl.md#agents-repl).
 
 ### Driving it

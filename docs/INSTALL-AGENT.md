@@ -255,8 +255,10 @@ it over SSH before this one).
 `--dial` of its own: the launcher syncs `~/.config/sot/hosts.toml` from the hub and builds its dials from
 `sotd topology plan`, and the sync refuses a hub whose `hosts.toml` does not list this machine. So, on the hub,
 `~/.config/sot/hosts.toml` must list this machine as `[host.<this box>]` with `frontend = true` (see
-`docs/ENROLLING-A-HOST.md`, or `/sot-setup` on the hub). Install and enrol the backend first, then run
-`--backend`; `--be-only` writes no `hosts.toml`. **On a shared-home deployment** (one `$HOME` on
+`docs/ENROLLING-A-HOST.md`, or `/sot-setup` on the hub). Install and enroll the backend first, then run
+`--backend`; `--be-only` writes no `hosts.toml`. A `--backend` install the hub does not list ends in
+`FAIL: enroll:`, naming `sotd topology set add <this box> --frontend` to run on the hub with the hub's own `sotd`; run
+it there, then run the installer again. **On a shared-home deployment** (one `$HOME` on
 several hosts), `~/.config/sot/hosts.toml` must list every host that shares
 it: the installer pins `sotd.service`, whose file and boot drop-in
 (`default.target.d/sotd.conf`; the unit has no `[Install]`, so `enable` and `disable` change no file) every such

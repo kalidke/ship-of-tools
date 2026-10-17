@@ -101,7 +101,9 @@ remedy for the second is to drop `--no-service`. `--force-role-change`
 overrides either refusal, for a machine whose own role changed.
 
 Every machine that runs a window also runs its own private local daemon, so
-an entry with `frontend = true` alone installs one as `--local` does.
+an entry with `frontend = true` alone installs one as `--local` does, and
+the window shows that daemon's sessions beside those of every daemon host the
+topology lists.
 `daemon = true` means other machines dial that daemon through the hub; the
 installer never adds this machine to anyone's dial list. A first install with
 `--backend <ssh-alias>`, made before the hub's `hosts.toml` lists this machine, installs no local daemon. Once the
@@ -129,12 +131,14 @@ Connection behavior is role-specific:
   spawning its own `ssh` child — no forward. The launcher builds every
   `--dial` from the hosts the hub's `hosts.toml` declares, and fetches that
   file from the hub, named by this alias, at each launch; it refuses a file
-  that does not list this machine. So install and enrol the backend first
+  that does not list this machine. So install and enroll the backend first
   (`--be-only` on the server, then the hub's `~/.config/sot/hosts.toml` lists
   the hub, the server as a `daemon` host and this machine as `frontend = true`;
   see [Going remote](remote.md) and [Enrolling a host](../guide/enrolling.md)),
-  and only then run `--backend`. Without that entry the window opens with no
-  host.
+  and only then run `--backend`. Without that entry the install ends in a
+  `FAIL: enroll:` line that names the command to run on the hub
+  (`sotd topology set add <this machine> --frontend`); run it there, then run
+  the installer again.
 - `--be-only` installs the headless backend and, unless `--no-service`, runs it
   as the `systemd --user` unit `sotd.service`.
 

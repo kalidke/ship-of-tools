@@ -46,7 +46,7 @@ git worktree next to the repo and spawns a new session bound to it:
 
 - directory `<repo-parent>/worktrees/<repo>-wt-<short>` (never inside the repo),
 - branch `wt/<short>` off the current `HEAD`,
-- a session labelled `<repo>-wt-<short>` (a committed `.sot/worktree.toml` `display_prefix`, or `--display-prefix`,
+- a session labeled `<repo>-wt-<short>` (a committed `.sot/worktree.toml` `display_prefix`, or `--display-prefix`,
   replaces the repo name in the label), listed next to the parent row.
 
 `/worktree status` shows the family and whether each worktree is ready to clean

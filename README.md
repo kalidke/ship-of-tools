@@ -21,7 +21,7 @@ Ship of Tools is an agentic development environment for Julia: you and a Claude 
 <p align="center"><sub>A Claude Code session edits the script, runs it in the shared Julia REPL, and shows the new chart (navigation column cropped). <a href="https://kalidke.github.io/ship-of-tools/dev/">Documentation</a></sub></p>
 
 <p align="center">
-  <img src="docs/src/assets/layout-labelled.png" alt="The default layout, labelled: navigation, preview and drawer on the left, the agent column full height on the right" width="100%">
+  <img src="docs/src/assets/layout-labelled.png" alt="The default layout, labeled: navigation, preview and drawer on the left, the agent column full height on the right" width="100%">
 </p>
 <p align="center"><sub>The default layout with the Julia drawer open.</sub></p>
 
@@ -78,9 +78,9 @@ Install Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-t
 
 Use `--backend <ssh-alias>` for a frontend here with the backend on a remote host, or `--be-only` for a headless backend.
 
-To update a Linux or macOS machine, tell a coding agent running there "update sot from the repo", or run `bash ~/.local/share/sot/repo/current/scripts/install.sh` yourself: with no options it moves to the newest release on the channel the machine already runs, never moves backwards, takes its role from the `hosts.toml` entry for this computer (else a role flag, else what the install recorded), and ends with one `PASS`, `ONE STEP LEFT` or `FAIL` line.
+Install and enroll the backend before running `--backend`: the hub's `~/.config/sot/hosts.toml` must list the hub, the server as a daemon host and this machine as `frontend = true`. If it does not, the install ends in a `FAIL: enroll:` line that names the command to run on the hub. See [Going remote](https://kalidke.github.io/ship-of-tools/dev/start/remote).
 
-Install and enrol the backend before running `--backend`: the hub's `~/.config/sot/hosts.toml` must list the hub, the server as a daemon host and this machine as `frontend = true`, or the window opens with no host. See [Going remote](https://kalidke.github.io/ship-of-tools/dev/start/remote).
+To update a Linux or macOS machine, tell a coding agent running there "update sot from the repo", or run `bash ~/.local/share/sot/repo/current/scripts/install.sh` yourself: with no options it moves to the newest release on the channel the machine already runs, never moves backwards, takes its role from the `hosts.toml` entry for this computer (else a role flag, else what the install recorded), and ends with one `PASS`, `ONE STEP LEFT` or `FAIL` line.
 
 Needs on every machine:
 - **git, curl, tar and jq** (the installer stops before it changes anything when jq is missing).

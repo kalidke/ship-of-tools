@@ -61,7 +61,7 @@ The walkthrough is [Writing a FileType Plugin](./extend/filetype.md).
 ```@raw html
 <div class="sot-section">
   <h2>Install</h2>
-  <p class="sot-why">Frontend and backend together on one Linux machine. For a remote backend (install and enrol the backend first: the hub's <code>hosts.toml</code> must list this machine), a second frontend or Windows, see <a href="./start/remote">Going remote</a> and <a href="./start/install">Install details</a>, which also lists what the installer writes and how to remove it. What it touches:</p>
+  <p class="sot-why">Frontend and backend together on one Linux machine. For a remote backend (install and enroll the backend first: the hub's <code>hosts.toml</code> must list this machine), a second frontend or Windows, see <a href="./start/remote">Going remote</a> and <a href="./start/install">Install details</a>, which also lists what the installer writes and how to remove it. What it touches:</p>
   <ul class="sot-why">
     <li>Everything goes under your home directory, mostly <code>~/.local/share/sot</code>, plus user lingering so the backend keeps running after logout on Linux.</li>
     <li>Skills and hooks go into your global <code>~/.claude</code> and <code>~/.codex</code>; a skill of yours with the same name as a shipped one is overwritten without a backup.</li>

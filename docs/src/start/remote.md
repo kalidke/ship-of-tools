@@ -32,7 +32,7 @@ If the server's home directory is itself on NFS, point the daemon's state
 root at local disk first — see
 [A session will not start on a shared home](../guide/troubleshooting.md#A-session-will-not-start-on-a-shared-home).
 
-Then enrol the machine you will sit at. The server is the hub: its
+Then enroll the machine you will sit at. The server is the hub: its
 `~/.config/sot/hosts.toml` must name it as hub and daemon host and list the
 laptop as a frontend. Name each machine by its short hostname in lowercase (what `hostname` prints up to the first
 dot), and make that also the name `ssh` accepts for it (from the other machines, and for the laptop from the server);
@@ -49,7 +49,8 @@ frontend = true
 ```
 
 [Enrolling a host](../guide/enrolling.md) and the `/sot-setup` skill cover it
-in full. Without the laptop's entry the launch in step 3 gets no host to dial.
+in full. Without the laptop's entry the install in step 2 ends in a `FAIL: enroll:` line that names the command to
+run on the hub, and the launch in step 3 gets no host to dial.
 
 ## 2. Install the frontend on your machine
 
