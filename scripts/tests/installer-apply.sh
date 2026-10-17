@@ -185,8 +185,10 @@ real_apply() {  # <name> <installed tag> <pointer version> [<over-version> <over
     cp "$RD/prefix/bin/sotd" "$RD/sotd.orig"
 }
 case_start "the_real_sotd_judges_the_pointer_from_its_content"
-if [ -z "${SOT_TEST_SOTD:-}" ] || [ ! -x "${SOT_TEST_SOTD:-}" ]; then
-    printf '    SKIP the real sotd cases (SOT_TEST_SOTD names no built sotd)\n'
+# SOT_TEST_SOTD names the sotd; unset, this tree's debug build (CARGO_TARGET_DIR, else rust/target) when it is there.
+[ -n "${SOT_TEST_SOTD:-}" ] || SOT_TEST_SOTD="${CARGO_TARGET_DIR:-$SRC/rust/target}/debug/sotd"
+if [ ! -x "$SOT_TEST_SOTD" ]; then
+    printf '    SKIP the real sotd cases (no built sotd at %s; build it with cargo build -p sot-backend --bin sotd)\n' "$SOT_TEST_SOTD"
 else
     # Installed 9.9.10, a pointer for 9.9.9 that records nothing: the daemon that armed it predates the record.
     real_apply pr1 v9.9.10 9.9.9
@@ -205,6 +207,15 @@ else
     real_apply pr5 v9.9.8 9.9.9 9.9.8 aaa
     run_apply "$RD"
     check "armed over this install: applies" "v9.9.9 gone" "$(installed_tag "$RD") $(armed "$RD")"
+    real_apply pr6 v9.9.8 9.9.9
+    # Every field the script reads, none the Rust arm adds (schema, repo, version): complete to the shell, unreadable to sotd.
+    grep -v -e '"schema"' -e '"repo"' -e '"version"' -e '"armed_at"' "$RD/prefix/updates/pending-$TGT.json" > "$RD/ptr.new"
+    mv "$RD/ptr.new" "$RD/prefix/updates/pending-$TGT.json"
+    run_apply "$RD"
+    check "a pointer the sotd cannot parse: refused" "v9.9.8 gone" "$(installed_tag "$RD") $(armed "$RD")"
+    real_apply pr7 v9.9.8-dev+abc 9.9.9
+    run_apply "$RD"
+    check "a pointer with no record onto a dev build: refused" "v9.9.8-dev+abc gone" "$(installed_tag "$RD") $(armed "$RD")"
 fi
 
 # ---------------------------------------------------------------------------

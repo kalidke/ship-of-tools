@@ -1,6 +1,19 @@
 # sot-freshness.ps1 -- what brings this box's code up to date before a window starts: the armed update, the
 # dev pull's rebuild, the comm install. Dot-sourced by launch-sot.ps1; ASCII ONLY in string literals.
 
+# Does the installed sotd refuse the armed pointer? `sotd update pointer` exits 3 for one that no longer fits the install,
+# or cannot be read (sot-apply.ps1 asks the same question and drops it). Any other answer, an older sotd's included, is
+# no refusal: sot-apply.ps1's own checks decide, as before. Asked before the daemon is stopped, so a pointer that will
+# not apply costs no restart and no REPL its state.
+function Test-SotPointerRefused {
+    $sotd = Join-Path $prefixDir 'bin\sotd.exe'
+    if (-not (Test-Path -LiteralPath $sotd)) { return $false }
+    try {
+        & $sotd update pointer --prefix $prefixDir --target windows-x86_64 2>$null | Out-Null
+        return ($LASTEXITCODE -eq 3)
+    } catch { return $false }
+}
+
 # ADR 0042 L2b design D: a running local daemon pins its sotd.exe/
 # sot-capsule.exe as mapped images (Windows) -- stop it BEFORE anything
 # that might replace those files out from under it. Checked, never
@@ -44,7 +57,9 @@ function Invoke-PendingApply {
     # sot-apply swaps it, so a pass that will not apply must not bounce it.
     if (-not $NoUpdate -and -not $Handover -and (Test-Path $sotLocalDaemon)) {
         $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
-        if ($updatePending) {
+        if ($updatePending -and (Test-SotPointerRefused)) {
+            Write-SupLog 'local daemon: the armed update will not apply (sot-apply drops it) - not stopping the daemon'
+        } elseif ($updatePending) {
             Write-SupLog 'local daemon: stopping before apply so it does not pin a stale binary'
             $stopOut = & $sotLocalDaemon -Stop 6>&1 2>&1
             foreach ($l in @($stopOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }

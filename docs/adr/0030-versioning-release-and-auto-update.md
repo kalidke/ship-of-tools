@@ -758,21 +758,48 @@ apply would have downgraded it. The rule:
 1. **The authority is `<prefix>/install.json`**, its `version` and `commit`, read fresh under the staging lock, never
    cached in a long-lived process. `pending::arm` (`rust/updater`), the only pointer writer, enforces it: an automatic
    writer (the daemon's daily check and `update.check`, the window's self-update) arms a version strictly above the
-   installed build, never at or below it. `sotd update stage` is the one operator writer and may arm the same or an
-   older build (it prints the direction): dev builds of one stamp compare equal, and the operator chose the folder.
-2. **A host not declared a daemon never arms into, or applies from, a daemon install.** When `install.json` records
-   `daemon: true` and the declared topology says this host runs none, the daemon's check, `update.apply` and the
-   window's self-update leave the install alone (the pointer would be prepared without the Julia environments the
-   daemon install needs). An install that never set up a daemon belongs to whoever runs one over it.
+   installed build, never at or below it, and never into an install that is a dev build (a `+` in its version): a release
+   does not replace a build someone put there. The check's channel (§4, 2026-09-08) and comparison come from the same
+   file, not from the version the process booted with, so a process older than its install neither selects the wrong
+   channel nor notifies for a release the install already has. `sotd update stage` is the one operator writer: it may arm
+   the same or an older build (it prints the direction), and its arm replaces any armed pointer, because the operator
+   named the folder and is not the late finisher newer-wins keeps out.
+2. **A host that runs no sotd never arms into, or applies from, an install.** The declared topology names it with
+   neither `daemon` nor `frontend` (`runs_no_sotd`, the complement of `sotd_hosts` over the named hosts, the predicate
+   that keeps `sotd.service` off such a host): on a shared home it is a guest of the prefix, and what it arms is prepared
+   without the Julia environments the daemon needs. The daemon's check, `update.apply` and the window's self-update leave
+   the install alone. A host declared `frontend` runs its own sotd and keeps updating, whatever `install.json`'s `daemon`
+   bit records. A shared-home guest declared `frontend` is not covered (the prepare would have to follow the install's
+   `daemon` bit rather than the host's role; no host has that shape).
 3. **Each pointer records the install it was armed over** (`armed_over_version`, `armed_over_commit`). Apply refuses a
    pointer whose recorded install is no longer the one on disk; a pointer with no record (armed by a build that predates
-   this) is judged by its version alone and applies only strictly above the install. A pointer that no longer fits does
-   not hold the slot: a later arm replaces it.
+   this) is judged by its version alone: it applies only strictly above the install, and never onto a dev build. A pointer
+   that no longer fits does not hold the slot: a later arm replaces it.
 4. **Apply asks the installed `sotd`**, which holds the comparison (`sotd update pointer --prefix <p> --target <t>`,
    answered before daemon startup; exit 3 refuses, anything else leaves the old exact-tag check in charge, since an older
-   `sotd` exits 1 on the unknown word and a `sotd update` without the verb exits 2). `sot-apply.sh` and `sot-apply.ps1`
-   ask above their re-exec of the pointer's own release's script, so a refused pointer never reaches it, and drop the
-   pointer under the lock. The `update.apply` op refuses the same pointers.
+   `sotd` exits 1 on the unknown word and a `sotd update` without the verb exits 2). A pointer that cannot be parsed is
+   refused too: every pointer a Rust writer wrote carries its schema, repo and version, so one that does not parse is
+   corrupt or another program's. Exit 0 stays for "this prefix is not mine" (no readable `install.json`) and "nothing
+   armed". `sot-apply.sh` and `sot-apply.ps1` ask above their re-exec of the pointer's own release's script, so a refused
+   pointer never reaches it, and drop the pointer under the lock. `sot-launch`'s `apply_pending` and Windows
+   `Invoke-PendingApply` ask before they stop or restart the daemon, so a pointer that will not apply costs no restart and
+   no REPL its state. The `update.apply` op refuses the same pointers.
 5. **A new install drops the leftover pointer**: `install.sh` for its target, `install-manifest.ps1` when the version or
    commit it writes differs from the one it replaces.
 
+**Fallbacks that fail open, and why each is acceptable.** Each leaves the old behavior in place for a case the new rule
+cannot judge, and none can arm or apply a downgrade without another rule catching it:
+- *`install.json` unreadable or without a version.* An automatic arm proceeds with no record and no comparison (there is
+  no install to compare with). The apply side catches it: a pointer with no record applies only strictly above whatever
+  `install.json` says by then, and a prefix with no readable `install.json` is not an install of ours (the verb answers 0
+  and the scripts' exact-tag check decides).
+- *An installed version that does not parse.* `compare_versions` ranks every parsable release above it, so an automatic
+  arm proceeds. Every writer of `install.json` writes the release's own tag, which the updater itself parsed to select
+  it; an unparsable one is hand-edited, and the operator's `update stage` is the repair.
+- *`hosts.toml` unreadable, or this host not named in it (a renamed host).* The host is not taken for a guest, so the
+  daemon and window arm as before. The topology is the only thing that can say a host is a guest, and a host it does not
+  name is indistinguishable from a first install; the arm is still held to rules 1 and 3, which do not read the
+  topology, and `install.sh` refuses a host the topology omits from an existing install (`installer_host_decision`).
+- *An older `sotd` without the verb* (exit 1 or 2, or none at all): the scripts keep the exact-tag check. The first
+  release carrying the verb closes it for every later apply; until then a pointer armed before the fix is caught only by
+  its tag.

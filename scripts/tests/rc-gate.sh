@@ -50,7 +50,8 @@ envs() {
     XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"
     ${CARGO_PROFILE_DEV_DEBUG:+CARGO_PROFILE_DEV_DEBUG="$CARGO_PROFILE_DEV_DEBUG"}
     ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
-  SE=(env -i HOME="$HOME" PATH="${RCG_NODE_DIR:+$RCG_NODE_DIR:}/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"})
+  # SOT_TEST_SOTD: the sotd the workspace build just made, so installer-apply.sh's real-sotd cases run in the gate.
+  SE=(env -i HOME="$HOME" PATH="${RCG_NODE_DIR:+$RCG_NODE_DIR:}/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" SOT_TEST_SOTD="$CARGO_TARGET_DIR/debug/sotd" ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"})
   JE=(env -i HOME="$HOME" PATH="$RCG_JULIA_DIR:/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
 }
 
@@ -186,7 +187,7 @@ producer() {
       *) SHELL_ALL+=("$f") ;;
     esac
   done
-  SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/installer-apply.sh" "$D/scripts/tests/installer-shared-home.sh" "$D/scripts/tests/test-topology-plan.sh" "$D/scripts/tests/test-test-body.sh")
+  SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/installer-wrapper.sh" "$D/scripts/tests/installer-apply.sh" "$D/scripts/tests/installer-shared-home.sh" "$D/scripts/tests/test-topology-plan.sh" "$D/scripts/tests/test-test-body.sh")
 
   [ -n "${RCG_LIFETIME:-}" ] && emit lifetime lifetime
   for s in julia-root "${JULIA_PKGS[@]/#/julia-}"; do echo unrun > "$L/steps/${s//\//-}.rc"; done

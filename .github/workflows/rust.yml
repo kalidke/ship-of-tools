@@ -812,6 +812,11 @@ jobs:
         run: bash scripts/tests/installer-state.sh
         working-directory: .
 
+      - name: Test installer wrapper (bash)
+        timeout-minutes: 5
+        run: bash scripts/tests/installer-wrapper.sh
+        working-directory: .
+
       - name: Test installer apply (bash)
         timeout-minutes: 5
         run: bash scripts/tests/installer-apply.sh

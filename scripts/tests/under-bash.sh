@@ -22,7 +22,7 @@ if [ $# -eq 0 ]; then
             *) set -- "$@" "$s" ;;
         esac
     done
-    set -- "$@" scripts/tests/installer-state.sh scripts/tests/installer-apply.sh \
+    set -- "$@" scripts/tests/installer-state.sh scripts/tests/installer-wrapper.sh scripts/tests/installer-apply.sh \
         scripts/tests/installer-shared-home.sh scripts/tests/test-topology-plan.sh
 fi
 shadow="$(mktemp -d "${TMPDIR:-/tmp}/under-bash-XXXXXX")" || exit 2

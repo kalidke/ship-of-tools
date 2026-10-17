@@ -22,10 +22,15 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`) and in `rc-gate.sh`.
+- `installer-wrapper.sh`: the rendered `sot-launch` under the sandboxed PATH: the bridge probe before every spawn, the
+  crash-loop rollback, the exit-75 respawn, the service operations by unit ownership, the re-exec after an apply, and
+  `apply_pending`'s refused pointer (a stand-in `sotd` answers `update pointer`: no stop, no restart, one sot-apply).
+  Runs in the `rust.yml` step "Test installer wrapper (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper, the network refusal, the dev launcher's
   git stall bound, the ensure's replacement of a daemon an update left on the old binary (`sot_daemon_current`), and the
-  refusal of a pointer that no longer fits the install (a stand-in `sotd` answers `update pointer`; `SOT_TEST_SOTD`
-  names a built `sotd` for the cases that judge from the pointer's own content, else they print SKIP).
+  refusal of a pointer that no longer fits the install (a stand-in `sotd` answers `update pointer`; `SOT_TEST_SOTD`,
+  by default this tree's `debug/sotd`, names a built `sotd` for the cases that judge from the pointer's own content,
+  else they print SKIP; `rc-gate.sh` sets it).
   Runs in the `rust.yml` step "Test installer apply (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-shared-home.sh`: a home several hosts share holds one install. Every path that writes, re-renders or
   retires `sotd.service` (`installer_enable_local_service`, `installer_retire_local_service`, `sot_rerender_owned`) pins
@@ -77,7 +82,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `rc-gate.sh`: the Linux candidate gate, run as the main process of its own test container (`in-container.sh`); a selected Rust job succeeds only when its exact body completed, and runtime-listed ignored tests are reported as skipped rather than submitted as ordinary jobs. Whole-binary jobs retain their existing status policy. It runs the daemon lifetime harness as rust.yml's Linux job does (`job_lifetime`), with `SOT_LIFETIME_KEEP_DIR` at `lifetime-keep` in its result folder, where a failed case keeps its daemon logs, answers and process lists.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
   `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1), and `Invoke-FreshnessPass`'s comm
-  decision by the comm stamp (scripts/sot-freshness.ps1, section 5). Runs in the `rust.yml` step "Test
+  decision by the comm stamp (scripts/sot-freshness.ps1, section 5), and `Invoke-PendingApply`'s daemon stop (section 6:
+  a pointer the real `sotd` refuses stops no daemon). Runs in the `rust.yml` step "Test
   install layout (pinned-checkout predicate)".
 - `test-sot-within.ps1`: the PowerShell scripts' network bounds. `Invoke-SotWithin` (scripts/sot-hosts.ps1, through
   sot-lease.ps1's `Start-SotRedirected` and `Stop-SotTree`): a stalled command ends at its bound with code 124, with
@@ -258,7 +264,7 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
 - A suite runs only if a step of `.github/workflows/rust.yml` or a job of `rc-gate.sh` names it; a new suite is added
   to the step list in the commit that adds it. `rc-gate.sh` lists the three installer/topology shell suites and the finite selected-body proof here by name
   (`SHELL_ALL` in `producer`).
-- `installer-state.sh`, `installer-apply.sh`, `installer-shared-home.sh` and `test-topology-plan.sh` run wholly under
+- `installer-state.sh`, `installer-wrapper.sh`, `installer-apply.sh`, `installer-shared-home.sh` and `test-topology-plan.sh` run wholly under
   bash 3.2 in `under-bash.sh`'s run, since they source the scripts they test, so they hold under 3.2 themselves: inside
   `$( )` a `case` pattern opens with `(`, because 3.2 ends the substitution at a bare pattern's `)`.
 - `installer-support.sh` sources `install.sh` with `SOT_INSTALL_SOURCE_ONLY=1` and `lib/sot-daemon.sh` for both installer
