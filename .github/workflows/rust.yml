@@ -424,6 +424,15 @@ jobs:
         run: .\scripts\tests\test-sot-apply.ps1
         working-directory: .
 
+      # install-manifest.ps1 drops the pointer armed over the install it replaces, and keeps it across a same-version
+      # rewrite. A stand-in sot.exe built with the runner's csc.exe, a scratch git repo, no network.
+      - name: Test install-manifest.ps1
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        timeout-minutes: 5
+        run: .\scripts\tests\test-install-manifest.ps1
+        working-directory: .
+
       # docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
       # amendment: the one pinned-checkout predicate that replaced four
       # disagreeing dev-vs-release heuristics, plus the shortcut-target
@@ -801,6 +810,11 @@ jobs:
       - name: Test installer state (bash)
         timeout-minutes: 5
         run: bash scripts/tests/installer-state.sh
+        working-directory: .
+
+      - name: Test installer wrapper (bash)
+        timeout-minutes: 5
+        run: bash scripts/tests/installer-wrapper.sh
         working-directory: .
 
       - name: Test installer apply (bash)

@@ -13,6 +13,14 @@
 //! `arm` serializes through the staging lock, so its newer-wins
 //! read-modify-write can't race a concurrent armer; `sot-apply` holds the
 //! same (mkdir) lock across read → verify → flip → clear.
+//!
+//! The install is the authority on what is installed, not any process: on a
+//! shared `$HOME` one prefix serves every host's daemon, and a long-lived one
+//! knows only the version it booted with. So an automatic arm reads
+//! `<prefix>/install.json` fresh under the lock and arms only a version
+//! strictly above it, and every pointer records the install it was armed over
+//! (`armed_over_*`) so an apply can tell a pointer that no longer fits the
+//! install it would land on.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -22,6 +30,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::ReleaseIdentity;
+use crate::manifest::{InstallManifest, INSTALL_MANIFEST};
 use crate::semver::compare_versions;
 
 /// The per-target pointer filename.
@@ -47,22 +56,120 @@ pub struct PendingPointer {
     pub commit: String,
     /// Unix seconds when armed.
     pub armed_at: u64,
+    /// `install.json`'s version and commit when this was armed: the install it was armed over. Absent in a pointer
+    /// armed before the record existed, or with no install manifest to read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub armed_over_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub armed_over_commit: Option<String>,
 }
 
-/// Arm `identity` for apply on its target. Newer-wins: when a pending pointer
-/// for a NEWER version already exists, it is kept and `Ok(false)` is
-/// returned; same or older pendings are replaced. A version marked bad
-/// (crash-loop rollback) is never armed again. Serialized across processes
-/// via the staging lock.
+/// What `<prefix>/install.json` says is installed: its version and commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledBuild {
+    pub version: String,
+    pub commit: Option<String>,
+}
+
+impl InstalledBuild {
+    /// Read fresh from the install beside `updates_root` (`<prefix>/updates`). `None` when there is no readable
+    /// manifest naming a version: a layout with no install (a dev box, a test root), where nothing is installed to
+    /// guard.
+    pub fn read(updates_root: &Path) -> Option<Self> {
+        let path = updates_root.parent()?.join(INSTALL_MANIFEST);
+        let manifest = InstallManifest::read(&path).ok()?;
+        Some(Self { version: manifest.version?, commit: manifest.commit })
+    }
+
+    /// Read the installed version fresh, or `fallback` (the running process's) when there is no install to read. The
+    /// channel a check follows and the version it compares with are the install's, not the boot version of a process
+    /// that may be older than the install.
+    pub fn version_or(updates_root: &Path, fallback: &str) -> String {
+        Self::read(updates_root).map_or_else(|| fallback.to_string(), |i| i.version)
+    }
+
+    /// Is the install a build that is not a release (a `+` in the version, the test `install-manifest.ps1` uses)? A
+    /// release is never armed into one, and a pointer with no record never applies onto one.
+    pub fn is_dev_build(&self) -> bool {
+        self.version.contains('+')
+    }
+
+    /// May an automatic arm offer `version`: only a release strictly above the installed build, and not into a dev
+    /// build.
+    pub fn admits(&self, version: &str) -> bool {
+        !self.is_dev_build() && compare_versions(version, &self.version) == Ordering::Greater
+    }
+}
+
+/// Who writes the pointer. An automatic writer (the daemon's daily check, the window's self-update) offers only a
+/// release strictly above the install; an operator names the folder and may move the install anywhere, so
+/// `sotd update stage` is the one operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Writer {
+    Automatic,
+    Operator,
+}
+
+/// What an [`arm`] did when it did not fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmOutcome {
+    Armed,
+    /// A pointer for a newer release is already armed over this install.
+    KeptNewer,
+    /// The version crash-looped after an apply and is marked bad.
+    MarkedBad,
+    /// An automatic writer offered a version at or below the installed build.
+    NotAboveInstall,
+    /// An automatic writer offered a release for an install that is a dev build.
+    DevInstall,
+}
+
+/// Why `ptr` must not apply onto `installed`, or `None` when it may. A pointer that records the install it was armed
+/// over applies only while that install is still the one on disk. A pointer with no record (armed before the record
+/// existed) applies only strictly above the installed version, the one thing it can still be judged by, and never
+/// onto a dev build.
+pub fn stale_reason(ptr: &PendingPointer, installed: &InstalledBuild) -> Option<String> {
+    match &ptr.armed_over_version {
+        Some(over) => {
+            let same = *over == installed.version && ptr.armed_over_commit == installed.commit;
+            (!same).then(|| {
+                format!(
+                    "armed over {over} but the install is now {}; it no longer fits",
+                    installed.version
+                )
+            })
+        }
+        None if installed.is_dev_build() => Some(format!(
+            "the installed {} is a dev build, which a pointer with no record never applies onto",
+            installed.version
+        )),
+        None => (!installed.admits(&ptr.identity.version)).then(|| {
+            format!(
+                "{} is not above the installed {}",
+                ptr.identity.version, installed.version
+            )
+        }),
+    }
+}
+
+/// Arm `identity` for apply on its target. A version marked bad (crash-loop
+/// rollback) is never armed again. An [`Writer::Automatic`] writer arms only a
+/// version strictly above the install read from `install.json` now, under the
+/// lock, and never into a dev build. Newer-wins, for an automatic writer: when a
+/// pending pointer for a NEWER version that still fits the install already
+/// exists, it is kept; same, older and no-longer-fitting pendings are replaced.
+/// The operator's arm replaces any pointer. The pointer records the install it was armed over.
+/// Serialized across processes via the staging lock.
 pub async fn arm(
     updates_root: &Path,
     identity: &ReleaseIdentity,
     checkout: &Path,
     commit: &str,
-) -> Result<bool> {
+    writer: Writer,
+) -> Result<ArmOutcome> {
     identity.validate()?;
     let lock = crate::lock::StageLock::acquire(updates_root, Duration::from_secs(120)).await?;
-    let result = arm_locked(updates_root, identity, checkout, commit).await;
+    let result = arm_locked(updates_root, identity, checkout, commit, writer).await;
     lock.release();
     result
 }
@@ -72,19 +179,41 @@ async fn arm_locked(
     identity: &ReleaseIdentity,
     checkout: &Path,
     commit: &str,
-) -> Result<bool> {
+    writer: Writer,
+) -> Result<ArmOutcome> {
     if bad_marker(updates_root, &identity.tag, &identity.target).exists() {
         tracing::warn!(tag = %identity.tag, "version is marked bad (crash-loop rollback) — not arming");
-        return Ok(false);
+        return Ok(ArmOutcome::MarkedBad);
     }
-    if let Ok(Some(existing)) = read(updates_root, &identity.target).await {
-        if compare_versions(&existing.identity.version, &identity.version) == Ordering::Greater {
+    let installed = InstalledBuild::read(updates_root);
+    if let (Writer::Automatic, Some(installed)) = (writer, &installed) {
+        if installed.is_dev_build() {
+            tracing::info!(installed = %installed.version, offered = %identity.tag, "the install is a dev build — not arming a release into it");
+            return Ok(ArmOutcome::DevInstall);
+        }
+        if !installed.admits(&identity.version) {
+            tracing::info!(
+                installed = %installed.version,
+                offered = %identity.tag,
+                "offered release is not above the installed build — not arming"
+            );
+            return Ok(ArmOutcome::NotAboveInstall);
+        }
+    }
+    // The operator's arm replaces whatever is armed: it named the folder, so it is not the late finisher newer-wins keeps out.
+    let existing = match writer {
+        Writer::Automatic => read(updates_root, &identity.target).await,
+        Writer::Operator => Ok(None),
+    };
+    if let Ok(Some(existing)) = existing {
+        let fits = installed.as_ref().is_none_or(|i| stale_reason(&existing, i).is_none());
+        if fits && compare_versions(&existing.identity.version, &identity.version) == Ordering::Greater {
             tracing::info!(
                 existing = %existing.identity.tag,
                 offered = %identity.tag,
                 "pending pointer already arms a newer release — keeping it"
             );
-            return Ok(false);
+            return Ok(ArmOutcome::KeptNewer);
         }
     }
     let ptr = PendingPointer {
@@ -96,6 +225,8 @@ async fn arm_locked(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0),
+        armed_over_version: installed.as_ref().map(|i| i.version.clone()),
+        armed_over_commit: installed.and_then(|i| i.commit),
     };
     // Unique temp name (two same-target armers are excluded by the lock, but
     // a unique name keeps even a broken-lock scenario from corrupting).
@@ -111,7 +242,7 @@ async fn arm_locked(
         .await
         .context("renaming pending pointer into place")?;
     tracing::info!(tag = %identity.tag, target = %identity.target, "pending pointer armed — applies at next launch");
-    Ok(true)
+    Ok(ArmOutcome::Armed)
 }
 
 /// Read the pending pointer for a target; `Ok(None)` when nothing is armed.
@@ -155,32 +286,162 @@ mod tests {
         }
     }
 
+    /// A fresh `<prefix>/updates` (returned) beside a `<prefix>/install.json` naming `installed`, or none.
+    async fn prefix(name: &str, installed: Option<(&str, &str)>) -> PathBuf {
+        let prefix = std::env::temp_dir().join(format!("sot-updater-{name}-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&prefix).await;
+        tokio::fs::create_dir_all(prefix.join("updates")).await.unwrap();
+        if let Some((version, commit)) = installed {
+            let json = format!(
+                r#"{{"schema":1,"prefix":"{}","version":"{version}","tag":"v{version}","commit":"{commit}"}}"#,
+                prefix.display()
+            );
+            tokio::fs::write(prefix.join(INSTALL_MANIFEST), json).await.unwrap();
+        }
+        prefix.join("updates")
+    }
+
+    async fn cleanup(root: &Path) {
+        tokio::fs::remove_dir_all(root.parent().unwrap()).await.unwrap();
+    }
+
     #[tokio::test]
     async fn arm_read_clear_newer_wins_and_bad_marker() {
-        let root = std::env::temp_dir().join(format!("sot-updater-pending-{}", std::process::id()));
-        let _ = tokio::fs::remove_dir_all(&root).await;
-        tokio::fs::create_dir_all(&root).await.unwrap();
+        let root = prefix("pending", None).await;
 
         assert!(read(&root, T).await.unwrap().is_none());
 
         let co = PathBuf::from("/x/repo/versions/v0.6.0");
-        assert!(arm(&root, &identity("0.6.0"), &co, "aaa").await.unwrap());
+        let offer = |v: &'static str, c: &'static str| {
+            let (root, co) = (root.clone(), co.clone());
+            async move { arm(&root, &identity(v), &co, c, Writer::Automatic).await.unwrap() }
+        };
+        assert_eq!(offer("0.6.0", "aaa").await, ArmOutcome::Armed);
         let got = read(&root, T).await.unwrap().unwrap();
         assert_eq!(got.identity.tag, "v0.6.0");
         // Another target sees nothing.
         assert!(read(&root, "macos-aarch64").await.unwrap().is_none());
 
         // Newer replaces older…
-        assert!(arm(&root, &identity("0.7.0"), &co, "bbb").await.unwrap());
+        assert_eq!(offer("0.7.0", "bbb").await, ArmOutcome::Armed);
         // …but an older late-finisher cannot clobber a newer arm.
-        assert!(!arm(&root, &identity("0.6.1"), &co, "ccc").await.unwrap());
+        assert_eq!(offer("0.6.1", "ccc").await, ArmOutcome::KeptNewer);
         assert_eq!(read(&root, T).await.unwrap().unwrap().identity.tag, "v0.7.0");
 
         // A bad-marked version refuses to arm.
         std::fs::write(bad_marker(&root, "v0.8.0", T), b"").unwrap();
-        assert!(!arm(&root, &identity("0.8.0"), &co, "ddd").await.unwrap());
+        assert_eq!(offer("0.8.0", "ddd").await, ArmOutcome::MarkedBad);
 
-        tokio::fs::remove_dir_all(&root).await.unwrap();
+        cleanup(&root).await;
+    }
+
+    #[tokio::test]
+    async fn an_automatic_arm_goes_only_above_the_install_and_records_it() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.13");
+        // The red this pins: a stale process offers rc9.13 into an install that already moved past it.
+        for installed in ["0.6.6-rc9.13", "0.6.6-rc9.14"] {
+            let root = prefix("below", Some((installed, "c0"))).await;
+            let out = arm(&root, &identity("0.6.6-rc9.13"), &co, "cc", Writer::Automatic).await.unwrap();
+            assert_eq!(out, ArmOutcome::NotAboveInstall, "installed {installed}");
+            assert!(read(&root, T).await.unwrap().is_none(), "installed {installed}: nothing armed");
+            cleanup(&root).await;
+        }
+        // A dev build takes no release from an automatic writer, whether below or above it.
+        for offered in ["0.6.6-rc9.13", "0.6.6-rc9.14", "0.6.7"] {
+            let root = prefix("dev", Some(("0.6.6-rc9.14-dev+d94ed0fac", "c0"))).await;
+            let out = arm(&root, &identity(offered), &co, "cc", Writer::Automatic).await.unwrap();
+            assert_eq!(out, ArmOutcome::DevInstall, "offered {offered}");
+            assert!(read(&root, T).await.unwrap().is_none(), "offered {offered}: nothing armed");
+            cleanup(&root).await;
+        }
+
+        let root = prefix("above", Some(("0.6.6-rc9.13", "c0"))).await;
+        let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap();
+        assert_eq!(out, ArmOutcome::Armed);
+        let ptr = read(&root, T).await.unwrap().unwrap();
+        assert_eq!(ptr.armed_over_version.as_deref(), Some("0.6.6-rc9.13"));
+        assert_eq!(ptr.armed_over_commit.as_deref(), Some("c0"));
+        let text = tokio::fs::read_to_string(pointer_path(&root, T)).await.unwrap();
+        assert!(text.contains("\"armed_over_version\": \"0.6.6-rc9.13\""), "{text}");
+        cleanup(&root).await;
+    }
+
+    #[tokio::test]
+    async fn the_operator_may_arm_the_same_or_an_older_build() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.13");
+        let root = prefix("operator", Some(("0.6.6-rc9.14-dev+abc", "c0"))).await;
+        let out = arm(&root, &identity("0.6.6-rc9.13"), &co, "cc", Writer::Operator).await.unwrap();
+        assert_eq!(out, ArmOutcome::Armed);
+        let ptr = read(&root, T).await.unwrap().unwrap();
+        assert_eq!(ptr.armed_over_version.as_deref(), Some("0.6.6-rc9.14-dev+abc"));
+        // The same stamp, another build of it.
+        let out = arm(&root, &identity("0.6.6-rc9.14-dev+abd"), &co, "cd", Writer::Operator).await.unwrap();
+        assert_eq!(out, ArmOutcome::Armed);
+        cleanup(&root).await;
+    }
+
+    #[tokio::test]
+    async fn the_operators_arm_replaces_a_newer_pointer() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.16");
+        let root = prefix("operator-newer", Some(("0.6.6-rc9.13", "c0"))).await;
+        let out = arm(&root, &identity("0.6.6-rc9.16"), &co, "cc", Writer::Automatic).await.unwrap();
+        assert_eq!(out, ArmOutcome::Armed);
+        // An automatic late finisher loses to it; the operator does not.
+        let late = arm(&root, &identity("0.6.6-rc9.14"), &co, "cd", Writer::Automatic).await.unwrap();
+        assert_eq!(late, ArmOutcome::KeptNewer);
+        let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cd", Writer::Operator).await.unwrap();
+        assert_eq!(out, ArmOutcome::Armed);
+        assert_eq!(read(&root, T).await.unwrap().unwrap().identity.tag, "v0.6.6-rc9.14");
+        cleanup(&root).await;
+    }
+
+    #[tokio::test]
+    async fn a_pointer_that_no_longer_fits_the_install_does_not_hold_the_slot() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.15");
+        let root = prefix("refit", Some(("0.6.6-rc9.13", "c0"))).await;
+        let out = arm(&root, &identity("0.6.6-rc9.16"), &co, "cc", Writer::Automatic).await.unwrap();
+        assert_eq!(out, ArmOutcome::Armed);
+        // The install moves to another commit of rc9.14; the pointer was armed over rc9.13.
+        let json = r#"{"schema":1,"prefix":"/p","version":"0.6.6-rc9.14","commit":"c1"}"#;
+        tokio::fs::write(root.parent().unwrap().join(INSTALL_MANIFEST), json).await.unwrap();
+        // A lower release, still above the install, replaces the stale pointer instead of losing to it.
+        let out = arm(&root, &identity("0.6.6-rc9.15"), &co, "cd", Writer::Automatic).await.unwrap();
+        assert_eq!(out, ArmOutcome::Armed);
+        let ptr = read(&root, T).await.unwrap().unwrap();
+        assert_eq!(ptr.identity.tag, "v0.6.6-rc9.15");
+        assert_eq!(ptr.armed_over_commit.as_deref(), Some("c1"));
+        cleanup(&root).await;
+    }
+
+    #[test]
+    fn stale_reason_judges_a_pointer_by_its_record_or_by_the_version() {
+        let ptr = |version: &str, over: Option<(&str, &str)>| PendingPointer {
+            schema: 1,
+            identity: identity(version),
+            checkout: PathBuf::from("/x"),
+            commit: "cc".into(),
+            armed_at: 0,
+            armed_over_version: over.map(|o| o.0.into()),
+            armed_over_commit: over.map(|o| o.1.into()),
+        };
+        let at = |version: &str, commit: &str| InstalledBuild { version: version.into(), commit: Some(commit.into()) };
+        // A record: the install is still the one it was armed over.
+        assert!(stale_reason(&ptr("0.6.6-rc9.14", Some(("0.6.6-rc9.13", "c0"))), &at("0.6.6-rc9.13", "c0")).is_none());
+        // A same-stamp operator pointer is fine while the install is unchanged.
+        assert!(stale_reason(&ptr("0.6.6-rc9.14-dev+a", Some(("0.6.6-rc9.14-dev+b", "c0"))), &at("0.6.6-rc9.14-dev+b", "c0")).is_none());
+        // The install moved: another version, or another commit of the same version.
+        assert!(stale_reason(&ptr("0.6.6-rc9.14", Some(("0.6.6-rc9.13", "c0"))), &at("0.6.6-rc9.14", "c0")).is_some());
+        assert!(stale_reason(&ptr("0.6.6-rc9.14", Some(("0.6.6-rc9.13", "c0"))), &at("0.6.6-rc9.13", "c1")).is_some());
+        // No record: only strictly above the install applies.
+        assert!(stale_reason(&ptr("0.6.6-rc9.14", None), &at("0.6.6-rc9.13", "c0")).is_none());
+        assert!(stale_reason(&ptr("0.6.6-rc9.13", None), &at("0.6.6-rc9.14-dev+d94", "c0")).is_some());
+        assert!(stale_reason(&ptr("0.6.6-rc9.13", None), &at("0.6.6-rc9.13", "c0")).is_some());
+        // Never onto a dev build, even a release above its stamp.
+        let dev = at("0.6.6-rc9.14-dev+d94ed0fac", "c1");
+        assert!(stale_reason(&ptr("0.6.6-rc9.14", None), &dev).unwrap().contains("dev build"));
+        assert!(stale_reason(&ptr("0.6.7", None), &dev).is_some());
+        // An operator's pointer carries a record, and that is what it is judged by.
+        assert!(stale_reason(&ptr("0.6.6-rc9.14", Some(("0.6.6-rc9.14-dev+d94ed0fac", "c1"))), &dev).is_none());
     }
 
     #[tokio::test]

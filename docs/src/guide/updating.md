@@ -26,6 +26,14 @@ restarts the backend to apply once no frontend is attached. That restarts
 REPLs and kernels, so their in-memory state is lost, which is why it is
 opt-in; agent sessions survive it.
 
+The check never moves an install backwards or sideways. It reads `install.json` when it checks and again when it arms, so
+a daemon that has run since before the last install follows the installed version's channel and arms only a release above
+it, and never arms a release into a dev build; a host the hub's `hosts.toml` names with neither `daemon` nor `frontend`
+runs no `sotd` and never arms into an install it shares; and each armed update records the install it was armed over, so
+`sot-apply` drops one that no longer fits (the installer moved on, the version is not above the install, or the file
+cannot be read) without stopping the daemon. `sotd update stage <folder> --prefix <prefix>`, the operator's command for a
+packed build, is the one way to arm the same or an older build.
+
 On **Windows** the frontend runs the same check itself, since there is no
 local backend to do it, and `launch-sot.ps1` applies the staged update at the
 next launch through `scripts\sot-apply.ps1`: the same verification and

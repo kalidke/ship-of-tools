@@ -51,7 +51,9 @@ if (-not (Test-Path -LiteralPath $exe)) {
 # manifest must describe what is actually installed. `sot --version` prints
 # "sot X.Y.Z (<sha> <date>)", "sot X.Y.Z+src (...)" or
 # "sot X.Y.Z+<sha> (...)".
-$versionLine = & $exe --version 2>&1 | Select-Object -First 1
+# Collected whole before the first line is taken: `Select-Object -First 1` on the native pipeline ends the command early,
+# and its exit code (-1 when the pipe closes first) would then be what this script leaves in $LASTEXITCODE.
+$versionLine = @(& $exe --version 2>&1)[0]
 if ($versionLine -notmatch '^\s*sot\s+(\S+)') {
     Write-Warning "install-manifest: could not read a version from '$versionLine' - skipping manifest."
     exit 0
@@ -88,7 +90,7 @@ $config = Join-Path $env:APPDATA 'sot'
 # clone tracks main and its HEAD is usually past the staged binaries.
 $commit = ''
 try {
-    $commit = (& git -C $Repo rev-parse "$tag^{commit}" 2>$null | Select-Object -First 1)
+    $commit = @(& git -C $Repo rev-parse "$tag^{commit}" 2>$null)[0]
 } catch {}
 if (-not $commit) { $commit = 'unknown' }
 $manifest = Join-Path $Prefix 'install.json'
@@ -102,6 +104,13 @@ if (-not $Hub -and (Test-Path -LiteralPath $manifest)) {
 function ConvertTo-JsonStr([string]$s) { return ($s -replace '\\', '\\' -replace '"', '\"') }
 
 New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
+$sameInstall = $false
+if (Test-Path -LiteralPath $manifest) {
+    try {
+        $before = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+        $sameInstall = ([string]$before.version -eq $version) -and ([string]$before.commit -eq $commit)
+    } catch {}
+}
 $body = @"
 {
   "schema": 1,
@@ -121,6 +130,13 @@ $body = @"
 
 Write-Host "install-manifest: wrote $manifest (schema 1, version=$version, hub=$Hub)"
 
+# A new install is a new transaction: a pointer armed over the install this one replaces names a release chosen
+# against that install, and would apply onto the new one (a downgrade, when the new one is already past it). A rewrite
+# of the same version and commit (the launcher's refresh after an apply) replaces nothing, so it keeps the pointer.
+if (-not $sameInstall) {
+    Remove-Item -LiteralPath (Join-Path $Prefix 'updates\pending-windows-x86_64.json') -Force -ErrorAction SilentlyContinue
+}
+
 # First topology sync. `sotd topology sync` reads --hub only while no local
 # hosts.toml exists; afterwards the copy's own hub wins and the launcher
 # refreshes it on every launch. Without this a fresh box launches local-only
@@ -138,3 +154,6 @@ if ($Hub -and (Test-Path -LiteralPath $sotd)) {
     Write-Warning "install-manifest: no -Hub given and none recorded: this box cannot fetch hosts.toml until you run install-shortcut.ps1 -Hub <alias>."
 }
 Write-Host "  The frontend will now check for updates at startup and stage them for sot-apply.ps1."
+# Explicit, not whatever the last native command left in $LASTEXITCODE: a caller that ends with `exit $LASTEXITCODE`
+# (the hosted runner's PowerShell wrapper) would otherwise fail a run that did its work.
+exit 0

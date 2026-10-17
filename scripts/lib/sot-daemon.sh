@@ -37,6 +37,15 @@ render_sotd_unit() {  # <prefix> <template> <dest>
         "$2" > "$3.new.$$" && chmod 0644 "$3.new.$$" && mv -f "$3.new.$$" "$3" || { rm -f "${3:?}.new.$$"; return 1; }
 }
 
+# Does the installed sotd refuse the pointer armed for TARGET under PREFIX? `sotd update pointer` exits 3 for one that no
+# longer fits the install, or cannot be read. Any other answer (an older sotd exits 1 or 2, none at all 126 or 127) is
+# no refusal here: sot-apply's own checks decide, as before. sot-apply.sh asks the same question and drops the pointer.
+sot_pointer_refused() {  # <prefix> <target>
+    [ -x "$1/bin/sotd" ] || return 1
+    "$1/bin/sotd" update pointer --prefix "$1" --target "$2" >/dev/null 2>&1
+    [ $? -eq 3 ]
+}
+
 # Write the all-in-one sot-launch wrapper for PREFIX / TARGET into DEST.
 render_sot_launch() {  # <prefix> <target> <dest>
     local prefix="$1" target="$2" dest="$3"
@@ -72,6 +81,12 @@ stop_daemon() {
 apply_pending() {
     [ -f "\$PENDING" ] || return 1
     [ -x "$prefix/bin/sot-apply" ] || return 1
+    # A pointer the installed sotd refuses costs nothing: sot-apply drops it under the lock, and the daemon, with the
+    # REPLs it holds, is neither stopped nor restarted for an update that will not happen.
+    if type sot_pointer_refused >/dev/null 2>&1 && sot_pointer_refused "$prefix" "$target"; then
+        "$prefix/bin/sot-apply" >&2
+        return 1
+    fi
     if sot_service_owned "$prefix" && systemctl --user is-active --quiet sotd.service >/dev/null 2>&1; then
         echo "pending update armed - restarting sotd so ExecStartPre applies it" >&2
         systemctl --user try-restart sotd.service || true

@@ -263,6 +263,76 @@ if ($short -eq $longName -or $short -notmatch '~') {
     Check '8.3 prefix: marker armed' (Test-Path (Join-Path $f8.updates 'just-applied-windows-x86_64')) 'no marker'
 }
 
+Write-Host "`n=== 9. a pointer that no longer fits the install is refused (the installed sotd answers) ===" -ForegroundColor Cyan
+# The fixture's sotd.exe is text, not a program: cases 1-8 already show an unrunnable sotd leaves today's checks in
+# charge (the pointer applies). The question itself needs a real sotd.exe that has the `update pointer` verb:
+# this tree's build of it (rust\target\debug, else release), or the one SOT_TEST_SOTD_EXE names; none built, none run.
+$realSotd = $env:SOT_TEST_SOTD_EXE
+if (-not $realSotd) { $realSotd = Join-Path $repo 'rust\target\debug\sotd.exe' }
+if (-not (Test-Path -LiteralPath $realSotd)) { $realSotd = Join-Path $repo 'rust\target\release\sotd.exe' }
+if (-not (Test-Path -LiteralPath $realSotd)) {
+    Write-Host "  SKIP  no sotd.exe built (cargo build -p sot-backend) and SOT_TEST_SOTD_EXE names none" -ForegroundColor Yellow
+} else {
+    # The fixture's pointer is the applier's view of the file (tag, target, checkout, commit, asset, asset_sha256). The
+    # sotd that answers reads it as the Rust arm wrote it, which also carries schema, repo, version and armed_at; a
+    # pointer without them is unreadable to it, and an unreadable pointer is left to the applier's own checks.
+    function Add-RustFields([string]$pointerPath, [string]$version, [string]$overVersion, [string]$overCommit) {
+        $extra = "  `"schema`": 1,`n  `"repo`": `"kalidke/ship-of-tools`",`n  `"version`": `"$version`",`n  `"armed_at`": 1,`n"
+        if ($overVersion) { $extra += "  `"armed_over_version`": `"$overVersion`",`n  `"armed_over_commit`": `"$overCommit`",`n" }
+        $text = (Get-Content -LiteralPath $pointerPath -Raw) -replace '(?m)^  "tag"', ($extra + '  "tag"')
+        [System.IO.File]::WriteAllText($pointerPath, $text, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    function Get-SotdExit([string]$sotd, [string]$prefix) {
+        & $sotd update pointer --prefix $prefix --target windows-x86_64 2>&1 | Out-Null
+        return $LASTEXITCODE
+    }
+    # Installed v0.7.0, pointer v0.6.0 with no record (armed by a daemon older than the record): below the install.
+    $p9 = Join-Path $root 'p9'
+    $f9 = New-Fixture $p9 'v0.7.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9.bin 'sotd.exe') -Force
+    Add-RustFields (Join-Path $f9.updates 'pending-windows-x86_64.json') '0.6.0' $null $null
+    Check 'below the install: the installed sotd refuses the pointer itself (exit 3)' ((Get-SotdExit (Join-Path $f9.bin 'sotd.exe') $p9) -eq 3) 'the sotd did not answer 3: the pointer or install.json is unreadable to it'
+    $out9 = & $apply -Prefix $p9 6>&1 2>&1
+    Write-Host ($out9 | ForEach-Object { "    $_" }) -ForegroundColor DarkGray
+    Check 'below the install: binary untouched' ((Get-Content (Join-Path $f9.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'downgraded'
+    Check 'below the install: install.json untouched' ((Get-Content (Join-Path $p9 'install.json') -Raw) -match '"tag":\s*"v0\.7\.0"') 'install.json moved'
+    Check 'below the install: pointer dropped' (-not (Test-Path (Join-Path $f9.updates 'pending-windows-x86_64.json'))) 'pointer kept'
+    Check 'below the install: said why' (($out9 -join ' ') -match 'is not above the installed') "log was: $out9"
+
+    # A record over another install: armed over v0.4.0, the install is v0.5.0.
+    $p9b = Join-Path $root 'p9b'
+    $f9b = New-Fixture $p9b 'v0.5.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9b.bin 'sotd.exe') -Force
+    $pp9b = Join-Path $f9b.updates 'pending-windows-x86_64.json'
+    Add-RustFields $pp9b '0.6.0' '0.4.0' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    Check 'armed over another install: the installed sotd refuses the pointer itself (exit 3)' ((Get-SotdExit (Join-Path $f9b.bin 'sotd.exe') $p9b) -eq 3) 'the sotd did not answer 3'
+    $out9b = & $apply -Prefix $p9b 6>&1 2>&1
+    Check 'armed over another install: said why' (($out9b -join ' ') -match 'armed over 0\.4\.0') "log was: $out9b"
+    Check 'armed over another install: binary untouched' ((Get-Content (Join-Path $f9b.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied'
+    Check 'armed over another install: pointer dropped' (-not (Test-Path $pp9b)) 'pointer kept'
+
+    # A pointer the sotd cannot read (the fixture's own shape: every field the applier reads, none of schema, repo and
+    # version) is dropped, not applied: the applier must not guess at a file the daemon's reader refuses.
+    $p9d = Join-Path $root 'p9d'
+    $f9d = New-Fixture $p9d 'v0.5.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9d.bin 'sotd.exe') -Force
+    Check 'unreadable pointer: the installed sotd refuses it itself (exit 3)' ((Get-SotdExit (Join-Path $f9d.bin 'sotd.exe') $p9d) -eq 3) 'the sotd did not answer 3'
+    $out9d = & $apply -Prefix $p9d 6>&1 2>&1
+    Check 'unreadable pointer: said so' (($out9d -join ' ') -match 'unreadable pointer') "log was: $out9d"
+    Check 'unreadable pointer: binary untouched' ((Get-Content (Join-Path $f9d.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied'
+    Check 'unreadable pointer: pointer dropped' (-not (Test-Path (Join-Path $f9d.updates 'pending-windows-x86_64.json'))) 'pointer kept'
+
+    # A pointer above the install, with no record: applies.
+    $p9c = Join-Path $root 'p9c'
+    $f9c = New-Fixture $p9c 'v0.5.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9c.bin 'sotd.exe') -Force
+    Add-RustFields (Join-Path $f9c.updates 'pending-windows-x86_64.json') '0.6.0' $null $null
+    Check 'above the install: the installed sotd lets the pointer through (exit 0)' ((Get-SotdExit (Join-Path $f9c.bin 'sotd.exe') $p9c) -eq 0) 'the sotd did not answer 0'
+    & $apply -Prefix $p9c 6>&1 2>&1 | Out-Null
+    Check 'above the install: applied' ((Get-Content (Join-Path $f9c.bin 'sot.exe') -Raw) -eq 'NEW-BINARY') 'not applied'
+}
+
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 if ($fail) { exit 1 }
+exit 0

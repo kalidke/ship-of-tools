@@ -293,6 +293,18 @@ fn a_planned_relay_dial_is_recognized_and_the_hubs_own_is_not() {
 }
 
 #[test]
+fn a_host_named_with_neither_key_runs_no_sotd_and_an_unnamed_one_is_not_said_to() {
+    let t = parse(V2).unwrap();
+    let said: Vec<&str> = t.hosts.iter().map(|h| h.name.as_str()).filter(|h| runs_no_sotd(&t, h)).collect();
+    assert_eq!(said, vec!["beta"]);
+    assert!(!runs_no_sotd(&t, "nowhere"));
+    // The two predicates split the named hosts between them.
+    for h in &t.hosts {
+        assert_ne!(runs_no_sotd(&t, &h.name), sotd_hosts(&t).contains(&h.name.as_str()), "{}", h.name);
+    }
+}
+
+#[test]
 fn sotd_runs_on_every_daemon_or_frontend_host() {
     let t = parse(V2).unwrap();
     assert_eq!(sotd_hosts(&t), vec!["alpha", "gamma", "delta"]);

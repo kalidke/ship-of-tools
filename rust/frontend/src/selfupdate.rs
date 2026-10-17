@@ -23,7 +23,15 @@
 //     topology-plan.md §D), so this reads the same declared topology the
 //     installer and `sot-backend`'s own `update::backend_role_from_topology`
 //     do (duplicated rather than shared: `sot-updater` is mechanism only,
-//     this is policy, and each side already carries its own guards).
+//     this is policy, and each side already carries its own guards);
+//   - the topology names this machine with neither `daemon` nor `frontend`:
+//     on a shared home the prefix is another host's, and a checkout-only
+//     prepare armed into it would hand that host a version whose Julia
+//     environments were never instantiated;
+//   - the release must be strictly above the install on disk, on the
+//     install's channel, and the install must not be a dev build: all read
+//     from install.json now (a long-lived window knows only the version it
+//     started with), and `arm` checks them again under the staging lock.
 //
 // Runs on a small dedicated thread + current-thread runtime so the winit
 // main thread and the transport runtime never wait on it. Outcomes go to
@@ -31,6 +39,7 @@
 // already surfaces availability to attached FEs).
 
 use sot_protocol::app_version;
+use sot_updater::pending::{ArmOutcome, InstalledBuild, Writer};
 use sot_updater::prepare::{PrepareSpec, PreparedState};
 use sot_updater::{Fetcher, InstallManifest, UpdaterConfig};
 
@@ -90,6 +99,9 @@ fn guard() -> std::result::Result<InstallManifest, &'static str> {
     if backend_owns_updates_here(&install) {
         return Err("fe self-update: the backend on this machine owns updates (declared topology, install.json, or the default), skipping");
     }
+    if runs_no_sotd_here() {
+        return Err("fe self-update: the declared topology gives this machine neither daemon nor frontend — the install is another machine's, skipping");
+    }
     Ok(install)
 }
 
@@ -142,6 +154,15 @@ fn backend_owns_updates(
     }
 }
 
+/// Does the declared topology name this machine with neither `daemon` nor `frontend`? It runs no sotd and no window of
+/// its own, so on a shared home the install is another machine's; a machine the topology does not name is not taken
+/// for one.
+fn runs_no_sotd_here() -> bool {
+    let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
+    let me = sot_log::host::state_dir::host_name().unwrap_or_default();
+    topo.is_some_and(|t| sot_protocol::topology::runs_no_sotd(&t, &me))
+}
+
 /// Does the backend on THIS machine own the update pipeline, so the FE
 /// should stay out of it? See `backend_owns_updates` for the decision and
 /// `spawn_startup_selfcheck`'s doc comment for the guard order this sits in.
@@ -159,7 +180,8 @@ fn config(current: String) -> std::result::Result<UpdaterConfig, String> {
     let updates_root = sot_updater::resolve_updates_root().map_err(|e| format!("no updates root: {e}"))?;
     Ok(UpdaterConfig {
         repo,
-        current_version: current,
+        // The install's version, read now: its channel and its comparison, not the version this window started with.
+        current_version: InstalledBuild::version_or(&updates_root, &current),
         fetcher: Fetcher::from_env(),
         updates_root,
     })
@@ -211,12 +233,22 @@ async fn run(install: InstallManifest, current: String) {
             return;
         }
     };
+    if cfg.current_version.contains('+') {
+        tracing::info!(current = %cfg.current_version, "fe self-update: the install is a dev build — nothing to do");
+        return;
+    }
     let out = sot_updater::check_release(&WindowSpawner, &cfg.repo, &cfg.current_version, &cfg.fetcher).await;
     if !out.update_available {
         tracing::info!(status = %out.status, current = %cfg.current_version, "fe self-update: no newer release — nothing to do");
         return;
     }
     let Some(id) = out.identity else { return };
+    // The window may be older than the install; only a release above the install on disk is worth the download. `arm`
+    // reads the install again under the lock and decides.
+    if let Some(installed) = InstalledBuild::read(&cfg.updates_root).filter(|i| !i.admits(&id.version)) {
+        tracing::info!(tag = %id.tag, installed = %installed.version, "fe self-update: the install is already at or above this release — nothing to do");
+        return;
+    }
     // Name the point this launch starts from. Every stage below short-circuits
     // on work a previous launch finished, so without this line a log cannot
     // distinguish a run that resumed a nearly-finished pipeline from one that
@@ -261,11 +293,16 @@ async fn run(install: InstallManifest, current: String) {
             return;
         }
     };
-    match sot_updater::pending::arm(&cfg.updates_root, &id, &state.checkout, &state.commit).await {
-        Ok(true) => {
+    match sot_updater::pending::arm(&cfg.updates_root, &id, &state.checkout, &state.commit, Writer::Automatic).await {
+        Ok(ArmOutcome::Armed) => {
             tracing::info!(tag = %id.tag, "fe self-update: armed — applies at next launch")
         }
-        Ok(false) => tracing::info!(tag = %id.tag, "fe self-update: a newer/blocked arm exists"),
+        Ok(ArmOutcome::KeptNewer | ArmOutcome::MarkedBad) => {
+            tracing::info!(tag = %id.tag, "fe self-update: a newer/blocked arm exists")
+        }
+        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall) => {
+            tracing::info!(tag = %id.tag, "fe self-update: not above the installed build — not armed")
+        }
         Err(e) => tracing::warn!(tag = %id.tag, error = %e, "fe self-update: arming failed"),
     }
 }

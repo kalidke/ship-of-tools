@@ -26,8 +26,12 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 
 use sot_updater::identity::repo_from_env;
+use sot_updater::pending::{ArmOutcome, InstalledBuild, PendingPointer, Writer};
 use sot_updater::prepare::{PrepareSpec, PreparedState};
 use sot_updater::{CheckOutcome, Fetcher, InstallManifest, ReleaseIdentity, UpdaterConfig};
+
+mod cli;
+pub(crate) use cli::{run, USAGE};
 
 use crate::server::reply::HandlerOutput;
 use crate::lifecycle::lease::Leases;
@@ -150,11 +154,12 @@ impl Updater {
     /// Mechanism config for the shared crate; errors when no updates root can
     /// be resolved (no install manifest and no usable env — never a temp dir).
     fn mechanism(&self) -> Result<UpdaterConfig> {
+        let updates_root = sot_updater::resolve_updates_root()?;
         Ok(UpdaterConfig {
             repo: self.repo.clone(),
-            current_version: self.current.clone(),
+            current_version: InstalledBuild::version_or(&updates_root, &self.current),
             fetcher: Fetcher::from_env(),
-            updates_root: sot_updater::resolve_updates_root()?,
+            updates_root,
         })
     }
 
@@ -175,13 +180,24 @@ impl Updater {
         if self.mode == Mode::Off {
             return disabled("disabled: update mode off");
         }
-        sot_updater::check_release(
-            &updater_spawner(),
-            &self.repo,
-            &self.current,
-            &Fetcher::from_env(),
-        )
-        .await
+        match self.check_basis() {
+            Ok(version) => {
+                sot_updater::check_release(&updater_spawner(), &self.repo, &version, &Fetcher::from_env()).await
+            }
+            Err(status) => disabled(status),
+        }
+    }
+
+    /// The version a check follows the channel of and compares with: the install's, read now. This process booted with
+    /// `current`, and a shared prefix can have been installed past it, or onto another channel, since; `current` stands
+    /// only where there is no install to read. A dev build as the install is no basis for a release check.
+    fn check_basis(&self) -> std::result::Result<String, &'static str> {
+        let installed = sot_updater::resolve_updates_root().ok().and_then(|root| InstalledBuild::read(&root));
+        match installed {
+            Some(i) if i.is_dev_build() => Err("disabled: the install is a dev build"),
+            Some(i) => Ok(i.version),
+            None => Ok(self.current.clone()),
+        }
     }
 }
 
@@ -252,18 +268,20 @@ async fn stage_prepare_arm(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
 
 /// What one stage-prepare-arm run did when it did not fail.
 #[derive(Debug, PartialEq, Eq)]
-enum Pipeline {
+pub(crate) enum Pipeline {
     /// Staged, prepared and armed.
     Armed,
     /// Staged and prepared; a newer release is already armed, or this one is marked bad.
     Kept,
+    /// Not armed: an automatic writer offered a release at or below the install, or into a dev build.
+    NotAbove,
     /// Staged only: the box has no install manifest to prepare for.
     Staged,
 }
 
 /// The step a stage-prepare-arm run failed at, with the cause.
 #[derive(Debug)]
-enum PipelineError {
+pub(crate) enum PipelineError {
     Stage(String),
     Prepare(String),
     Arm(String),
@@ -285,11 +303,13 @@ fn chain(e: &anyhow::Error) -> String {
 }
 
 /// The one stage-prepare-arm both the daemon and `sotd update stage` run; `install` is the manifest to prepare and
-/// arm for, `None` stopping after the stage.
-async fn stage_prepare_arm_with(
+/// arm for, `None` stopping after the stage. `writer` says who is arming: only the operator's `update stage` may arm
+/// a build at or below the install.
+pub(crate) async fn stage_prepare_arm_with(
     cfg: &UpdaterConfig,
     id: &ReleaseIdentity,
     install: Option<&InstallManifest>,
+    writer: Writer,
 ) -> Result<Pipeline, PipelineError> {
     tracing::info!(tag = %id.tag, "staging");
     sot_updater::stage(&updater_spawner(), cfg, id).await.map_err(|e| PipelineError::Stage(chain(&e)))?;
@@ -305,16 +325,59 @@ async fn stage_prepare_arm_with(
         .await
         .map_err(|e| PipelineError::Prepare(chain(&e)))?;
     tracing::info!(tag = %id.tag, "arming");
-    match sot_updater::pending::arm(&cfg.updates_root, id, &state.checkout, &state.commit).await {
-        Ok(true) => Ok(Pipeline::Armed),
-        Ok(false) => Ok(Pipeline::Kept),
+    match sot_updater::pending::arm(&cfg.updates_root, id, &state.checkout, &state.commit, writer).await {
+        Ok(ArmOutcome::Armed) => Ok(Pipeline::Armed),
+        Ok(ArmOutcome::KeptNewer | ArmOutcome::MarkedBad) => Ok(Pipeline::Kept),
+        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall) => Ok(Pipeline::NotAbove),
         Err(e) => Err(PipelineError::Arm(chain(&e))),
     }
 }
 
+/// Does the declared topology name this host and give it neither `daemon` nor `frontend`? Such a host runs no sotd of its
+/// own: on a shared home it is a guest of the prefix, and a pointer it arms is prepared without the Julia environments
+/// the host that does run the daemon needs. A host the topology does not name (or no topology) is not taken for one.
+fn host_runs_no_sotd() -> bool {
+    let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
+    let me = crate::comm::mail::filer::comm_self_host();
+    topo.is_some_and(|t| sot_protocol::topology::runs_no_sotd(&t, &me))
+}
+
+/// Why this daemon arms nothing into the install it runs from, or `None` when it may: this host runs no sotd
+/// (see [`host_runs_no_sotd`]), or the release is not strictly above the install on disk (the process may be
+/// older than the install).
+fn arm_refusal(foreign: bool, installed: Option<&InstalledBuild>, id: &ReleaseIdentity) -> Option<String> {
+    if foreign {
+        return Some("the topology declares this host neither daemon nor frontend".into());
+    }
+    let installed = installed?;
+    if installed.is_dev_build() {
+        return Some(format!("the installed {} is a dev build", installed.version));
+    }
+    (!installed.admits(&id.version)).then(|| format!("{} is not above the installed {}", id.tag, installed.version))
+}
+
+/// Why `update.apply` must not exit for the apply owner to flip to `pending`, or `None`: the same foreign-install rule,
+/// and a pointer that no longer fits the install on disk.
+fn apply_refusal(foreign: bool, installed: Option<&InstalledBuild>, pending: &PendingPointer) -> Option<String> {
+    if foreign {
+        return Some("the topology declares this host neither daemon nor frontend".into());
+    }
+    let why = sot_updater::pending::stale_reason(pending, installed?)?;
+    Some(format!("the armed {} will not apply: {why}", pending.identity.tag))
+}
+
 async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
     let install = InstallManifest::for_current_exe();
-    let result = stage_prepare_arm_with(cfg, id, install.as_ref()).await;
+    // Refused before the download: `arm` re-reads the install under the lock and is the authority, this only spares
+    // a stale or foreign daemon the bytes and the prepare.
+    let refusal = install.as_ref().and_then(|i| {
+        arm_refusal(host_runs_no_sotd(), InstalledBuild::read(&i.updates_root()).as_ref(), id)
+    });
+    if let Some(why) = refusal {
+        tracing::info!(tag = %id.tag, "not staging: {why}");
+        return;
+    }
+    let result = stage_prepare_arm_with(cfg, id, install.as_ref(), Writer::Automatic).await;
     // Defect 0c: the shared crate already retried the commit rename for about a minute before giving up. Record it so
     // the NEXT check reports the concrete reason instead of a bare "ok" that hides a release which never manages to
     // land — the failure mode a healthy-looking, never-updating box actually exhibited. A landed stage clears it.
@@ -327,106 +390,8 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
         Err(PipelineError::Arm(e)) => tracing::warn!(tag = %id.tag, error = %e, "arming update failed"),
         Ok(Pipeline::Staged) => tracing::info!(tag = %id.tag, "staged (no install manifest — prepare/arm skipped)"),
         Ok(Pipeline::Kept) => tracing::info!(tag = %id.tag, "a newer release is already armed (or this one is marked bad)"),
+        Ok(Pipeline::NotAbove) => tracing::info!(tag = %id.tag, "not armed: not above the installed build, or the install is a dev build"),
         Ok(Pipeline::Armed) => {}
-    }
-}
-
-pub(crate) const USAGE: &str = "\
-Usage: sotd update stage <folder> --prefix <install prefix>
-
-  Stage, prepare and arm the release in <folder> (SHA256SUMS, the archive for this platform, COMMIT: what
-  scripts/pack-build.sh and scripts/pack-build.ps1 write) for the install at <prefix>; the supervisor's converge
-  applies it. The operator chose the folder, so there is no release-build guard and no newer-than test. A dev build
-  prepares the checkout at its COMMIT, which has no tag. Prints `armed <tag> for <target> (installed <v>: newer, same or older)` and exits 0, or names why
-  and exits 1.";
-
-/// `sotd update stage <folder> --prefix <prefix>`: the folder and prefix, or the reason the arguments are not those.
-fn parse_stage_args(args: &[String]) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-    let mut rest = args.iter();
-    if rest.next().map(String::as_str) != Some("stage") {
-        return Err("expected `stage`".into());
-    }
-    let (mut folder, mut prefix) = (None, None);
-    while let Some(a) = rest.next() {
-        if a == "--prefix" {
-            prefix = Some(rest.next().ok_or("--prefix needs a folder")?);
-        } else if folder.replace(a).is_some() {
-            return Err(format!("unexpected argument {a:?}"));
-        }
-    }
-    Ok((
-        folder.ok_or("no folder given")?.into(),
-        prefix.ok_or("no --prefix given")?.into(),
-    ))
-}
-
-/// The line `update stage` prints on success: the direction against the installed version, so a downgrade is never silent.
-fn armed_line(id: &ReleaseIdentity, installed: Option<&str>) -> String {
-    let armed = format!("armed {} for {}", id.tag, id.target);
-    let Some(installed) = installed else { return armed };
-    let direction = match sot_updater::semver::compare_versions(&id.version, installed) {
-        std::cmp::Ordering::Greater => "newer",
-        std::cmp::Ordering::Equal => "same",
-        std::cmp::Ordering::Less => "older",
-    };
-    format!("{armed} (installed v{}: {direction})", sot_updater::semver::strip_v(installed))
-}
-
-/// The folder and prefix as absolute paths: the pointer records paths under the prefix, and the apply runs later from
-/// the launcher's own working folder, where a relative one leads nowhere.
-fn absolute_paths(folder: &std::path::Path, prefix: &std::path::Path) -> std::io::Result<(std::path::PathBuf, std::path::PathBuf)> {
-    Ok((std::path::absolute(folder)?, std::path::absolute(prefix)?))
-}
-
-/// Stage → prepare → arm the one release a pack folder holds, for the install at `prefix`.
-async fn stage_folder(folder: &std::path::Path, prefix: &std::path::Path) -> Result<String, String> {
-    let (folder, prefix) = absolute_paths(folder, prefix).map_err(|e| format!("making the paths absolute: {e}"))?;
-    let (folder, prefix) = (folder.as_path(), prefix.as_path());
-    let mut install = InstallManifest::read(&prefix.join(sot_updater::manifest::INSTALL_MANIFEST)).map_err(|e| format!("{e:#}"))?;
-    install.prefix = prefix.to_path_buf();
-    let sums = std::fs::read_to_string(folder.join("SHA256SUMS"))
-        .map_err(|e| format!("reading {}: {e}", folder.join("SHA256SUMS").display()))?;
-    let entries = sot_updater::fetch::sums::parse_sums(&sums).map_err(|e| format!("{e:#}"))?;
-    let target = sot_updater::platform::this_platform().ok_or("this platform is not in the release matrix")?;
-    let repo = repo_from_env();
-    let id = sot_updater::fetch::sums::discover(&entries, &repo, target).map_err(|e| format!("{e:#}"))?;
-    let cfg = UpdaterConfig {
-        repo,
-        current_version: install.version.clone().unwrap_or_default(),
-        fetcher: Fetcher::Dir(folder.to_path_buf()),
-        updates_root: install.updates_root(),
-    };
-    match stage_prepare_arm_with(&cfg, &id, Some(&install)).await {
-        Ok(Pipeline::Armed) => Ok(armed_line(&id, install.version.as_deref())),
-        Ok(_) => Err(format!("{} was staged but not armed: a newer release is armed, or this one is marked bad", id.tag)),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-/// `sotd update <args>`: the exit code. 2 for arguments that are not `stage <folder> --prefix <prefix>`. Progress goes
-/// to stderr, because a stage on a daemon box runs Julia and npm and can take tens of minutes.
-pub(crate) async fn stage_cli(args: &[String]) -> i32 {
-    let (folder, prefix) = match parse_stage_args(args) {
-        Ok(parsed) => parsed,
-        Err(why) => {
-            eprintln!("sotd update: {why}\n{USAGE}");
-            return 2;
-        }
-    };
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
-        .with_ansi(false)
-        .with_writer(std::io::stderr)
-        .try_init();
-    match stage_folder(&folder, &prefix).await {
-        Ok(line) => {
-            println!("{line}");
-            0
-        }
-        Err(why) => {
-            eprintln!("sotd update stage: {why}");
-            1
-        }
     }
 }
 
@@ -731,7 +696,12 @@ pub async fn handle_update_apply(
         Err(e) => return refuse(&format!("pending pointer unreadable: {e}")),
     };
 
-    let will_restart = InstallManifest::for_current_exe()
+    let install = InstallManifest::for_current_exe();
+    let foreign = install.is_some() && host_runs_no_sotd();
+    if let Some(why) = apply_refusal(foreign, InstalledBuild::read(&cfg.updates_root).as_ref(), &pending) {
+        return refuse(&why);
+    }
+    let will_restart = install
         .and_then(|m| m.service)
         .is_some_and(|s| s == "systemd");
     let tag = pending.identity.tag.clone();
@@ -1088,39 +1058,32 @@ mod tests {
         assert!(hub, "a daemon entry wants the backend role");
     }
 
-    fn argv(s: &str) -> Vec<String> {
-        s.split_whitespace().map(String::from).collect()
-    }
-
-    #[tokio::test]
-    async fn stage_cli_without_its_folder_or_prefix_exits_2() {
-        for bad in ["", "stage", "stage d", "stage --prefix p", "stage d e --prefix p", "stage d --prefix", "other d --prefix p"] {
-            assert_eq!(stage_cli(&argv(bad)).await, 2, "{bad:?}");
+    // The shape that must be stopped and the shapes that must not: through the real declared-host read, a host the
+    // topology names with neither `daemon` nor `frontend` runs no sotd; a frontend host runs its own, and a host the
+    // topology does not name is not said to be a guest.
+    #[test]
+    fn only_a_host_named_with_neither_key_runs_no_sotd() {
+        let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = (std::env::var_os("SOT_HOSTS"), std::env::var_os("SOT_SELF_HOST"));
+        let dir = tempfile::tempdir().unwrap();
+        let hosts = dir.path().join("hosts.toml");
+        std::fs::write(
+            &hosts,
+            "hub = \"hubbox\"\n[host.hubbox]\ndaemon = true\n[host.guest]\n[host.laptop]\nfrontend = true\n",
+        )
+        .unwrap();
+        std::env::set_var("SOT_HOSTS", &hosts);
+        let answers = ["guest", "laptop", "hubbox", "unlisted"].map(|me| {
+            std::env::set_var("SOT_SELF_HOST", me);
+            host_runs_no_sotd()
+        });
+        for (key, value) in [("SOT_HOSTS", saved.0), ("SOT_SELF_HOST", saved.1)] {
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
         }
-    }
-
-    #[test]
-    fn stage_args_take_the_folder_and_the_prefix_in_either_order() {
-        let want = Ok(("d".into(), "p".into()));
-        assert_eq!(parse_stage_args(&argv("stage d --prefix p")), want);
-        assert_eq!(parse_stage_args(&argv("stage --prefix p d")), want);
-    }
-
-    #[test]
-    fn stage_paths_are_absolute_before_anything_records_them() {
-        let cwd = std::env::current_dir().unwrap();
-        let (folder, prefix) = absolute_paths("d".as_ref(), "p/q".as_ref()).unwrap();
-        assert_eq!((folder, prefix), (cwd.join("d"), cwd.join("p/q")));
-        assert_eq!(absolute_paths(&cwd, &cwd).unwrap(), (cwd.clone(), cwd));
-    }
-
-    #[test]
-    fn the_armed_line_says_which_way_the_install_moves() {
-        let line = |installed: Option<&str>, tag: &str| armed_line(&fake_identity(tag), installed);
-        assert_eq!(line(Some("0.6.6-rc9.13"), "v0.6.5"), "armed v0.6.5 for linux-x86_64 (installed v0.6.6-rc9.13: older)");
-        assert_eq!(line(Some("0.6.5"), "v0.6.6-rc9.13"), "armed v0.6.6-rc9.13 for linux-x86_64 (installed v0.6.5: newer)");
-        assert_eq!(line(Some("0.6.6-rc9.14-dev+aaa"), "v0.6.6-rc9.14-dev+bbb"), "armed v0.6.6-rc9.14-dev+bbb for linux-x86_64 (installed v0.6.6-rc9.14-dev+aaa: same)");
-        assert_eq!(line(None, "v0.6.5"), "armed v0.6.5 for linux-x86_64");
+        assert_eq!(answers, [true, false, false, false]);
     }
 
     /// The recorded block is process-wide: tests that record or clear it run one at a time.
@@ -1170,7 +1133,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (cfg, id) = staged_release(dir.path()).await;
         record_stage_block(&id.tag, "Access is denied. (os error 5)");
-        let staged = stage_prepare_arm_with(&cfg, &id, None).await;
+        let staged = stage_prepare_arm_with(&cfg, &id, None, Writer::Automatic).await;
         assert!(matches!(staged, Ok(Pipeline::Staged)), "{staged:?}");
         assert_eq!(overlay_stage_block(ok_outcome(id)).status, "ok");
     }
@@ -1198,9 +1161,80 @@ mod tests {
         let sink = buf.clone();
         let subscriber = tracing_subscriber::fmt().with_ansi(false).with_writer(move || sink.clone()).finish();
         let _guard = tracing::subscriber::set_default(subscriber);
-        stage_prepare_arm_with(&cfg, &id, None).await.unwrap();
+        stage_prepare_arm_with(&cfg, &id, None, Writer::Automatic).await.unwrap();
         let log = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
         assert!(log.contains("staging"), "{log}");
+    }
+
+    fn installed(version: &str, commit: &str) -> InstalledBuild {
+        InstalledBuild { version: version.into(), commit: Some(commit.into()) }
+    }
+
+    fn pointer(tag: &str, over: Option<(&str, &str)>) -> PendingPointer {
+        PendingPointer {
+            schema: 1,
+            identity: fake_identity(tag),
+            checkout: "/x".into(),
+            commit: "cc".into(),
+            armed_at: 0,
+            armed_over_version: over.map(|o| o.0.into()),
+            armed_over_commit: over.map(|o| o.1.into()),
+        }
+    }
+
+    // The shared-home red: a daemon that booted on rc9.12 offers rc9.13 into an install that is already on rc9.14.
+    #[test]
+    fn a_daemon_arms_only_a_declared_host_and_only_above_the_install() {
+        let id = fake_identity("v0.6.6-rc9.13");
+        let at = |v: &str| installed(v, "c0");
+        assert!(arm_refusal(false, Some(&at("0.6.6-rc9.12")), &id).is_none());
+        assert!(arm_refusal(false, None, &id).is_none(), "no install manifest: nothing to compare");
+        assert!(arm_refusal(false, Some(&at("0.6.6-rc9.13")), &id).unwrap().contains("not above"));
+        assert!(arm_refusal(false, Some(&at("0.6.6-rc9.14-dev+d94ed0fac")), &id).unwrap().contains("dev build"));
+        // Not a release above a dev stamp either.
+        let above = fake_identity("v0.6.6-rc9.14");
+        assert!(arm_refusal(false, Some(&at("0.6.6-rc9.14-dev+d94ed0fac")), &above).unwrap().contains("dev build"));
+        assert!(arm_refusal(true, Some(&at("0.6.6-rc9.12")), &id).unwrap().contains("neither daemon nor frontend"));
+    }
+
+    #[test]
+    fn update_apply_refuses_a_foreign_host_and_a_pointer_that_no_longer_fits() {
+        let fits = pointer("v0.6.6-rc9.14", Some(("0.6.6-rc9.13", "c0")));
+        let now = installed("0.6.6-rc9.13", "c0");
+        assert!(apply_refusal(false, Some(&now), &fits).is_none());
+        assert!(apply_refusal(false, None, &fits).is_none(), "no install manifest: nothing to compare");
+        assert!(apply_refusal(true, Some(&now), &fits).unwrap().contains("neither daemon nor frontend"));
+        let moved = installed("0.6.6-rc9.14-dev+d94ed0fac", "c1");
+        assert!(apply_refusal(false, Some(&moved), &fits).unwrap().contains("will not apply"));
+        // A pointer armed before the record existed: judged by its version alone.
+        let old = pointer("v0.6.6-rc9.13", None);
+        assert!(apply_refusal(false, Some(&moved), &old).unwrap().contains("dev build"));
+    }
+
+    // The channel comes from the install on disk, not from the version the process booted with.
+    #[test]
+    fn a_check_follows_the_install_not_the_process() {
+        let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var_os("SOT_UPDATE_ROOT");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("updates")).unwrap();
+        std::env::set_var("SOT_UPDATE_ROOT", dir.path().join("updates"));
+        let installed_at = |version: &str| {
+            std::fs::write(dir.path().join("install.json"), format!(r#"{{"schema":1,"prefix":"/p","version":"{version}"}}"#)).unwrap();
+        };
+        let process_on_an_rc = Updater { current: "0.6.6-rc9.12".into(), dev: false, mode: Mode::Notify, repo: "o/r".into() };
+        let none = process_on_an_rc.check_basis();
+        installed_at("0.6.7");
+        let stable = process_on_an_rc.check_basis();
+        installed_at("0.6.7-dev+abc");
+        let dev = process_on_an_rc.check_basis();
+        match saved {
+            Some(v) => std::env::set_var("SOT_UPDATE_ROOT", v),
+            None => std::env::remove_var("SOT_UPDATE_ROOT"),
+        }
+        assert_eq!(none, Ok("0.6.6-rc9.12".to_string()), "no install: the process's version");
+        assert_eq!(stable, Ok("0.6.7".to_string()), "the install's channel, not the process's rc");
+        assert!(dev.is_err(), "a dev install is no basis for a release check");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# installer-support.sh -- shared setup for installer-state.sh and installer-apply.sh: sources install.sh and
+# installer-support.sh -- shared setup for installer-state.sh, installer-wrapper.sh and installer-apply.sh: sources install.sh and
 # lib/sot-daemon.sh, the check helpers, and the sandboxed tool dir and recording stubs. Sourced, never run.
 
 SOT_INSTALL_SOURCE_ONLY=1
@@ -109,3 +109,5 @@ exec python3 -c 'import socket,sys,time; time.sleep(float(sys.argv[2])); socket.
 SD
     chmod +x "$1/systemctl" "$1/sotd"
 }
+# events DIR -- the stand-ins' event log of a launcher case (wrapper or dev launcher), on one line.
+events() { grep -E '^(probe|spawn|rollback|hop|started|fe )' "$1/log" | tr '\n' ' ' | sed 's/ $//'; }

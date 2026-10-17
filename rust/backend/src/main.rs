@@ -161,6 +161,9 @@ Offline command (returns before daemon initialization):
   update stage <folder> --prefix <prefix>
                           stage, prepare and arm a packed build for the
                           install at <prefix> (its converge applies it)
+  update pointer --prefix <prefix> --target <target>
+                          whether the pointer armed for <target> may apply
+                          onto the install at <prefix> (exit 3: it may not)
 
 Pure queries (no startup side effects, answered before any of the above):
   --version, -V           print the version line and exit
@@ -238,6 +241,8 @@ mod help_tests {
             ("update --help", update::USAGE),
             ("update stage --help", update::USAGE),
             ("update stage d --prefix p --help", update::USAGE),
+            ("update pointer --help", update::USAGE),
+            ("update pointer --prefix p --target t --help", update::USAGE),
             ("topology --help", topology::cli::USAGE),
             ("topology plan --help", topology::cli::USAGE),
             ("topology status --help", topology::cli::USAGE),
@@ -371,9 +376,10 @@ fn main() -> Result<()> {
                 lifecycle::shutdown::exit(runtime()?.block_on(topology::status::run(&args)));
             }
             // `sotd update stage <folder> --prefix <prefix>`: arm a packed build for an install's converge.
+            // `sotd update pointer --prefix <prefix> --target <target>`: may the armed pointer apply onto the install?
             "update" => {
                 apply_umask();
-                lifecycle::shutdown::exit(runtime()?.block_on(update::stage_cli(&args[1..])));
+                lifecycle::shutdown::exit(runtime()?.block_on(update::run(&args[1..])));
             }
             "--version" | "-V" => {
                 println!("{}", sot_protocol::version_line("sotd"));

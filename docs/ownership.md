@@ -247,7 +247,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | work-state fields (`floor, question, waiting, done, note, state, summary, status_at, stop_at`) | state | messaging | `comm/work_state/comm-status.sh`; `comm/work_state/hooks/comm-status-idle.sh` |
 | `clear_comm_unread` (clears `done` on view) | state | messaging | `rust/backend/src/comm/registry/registry.rs` `clear_comm_unread` |
 | `update.check`, `update.apply` | op | distribution | `rust/backend/src/update.rs` `handle_update_check`, `handle_update_apply` |
-| `sotd update stage <folder> --prefix <prefix>` | command | distribution | `rust/backend/src/update.rs` `stage_cli`, `stage_prepare_arm_with` |
+| `sotd update stage <folder> --prefix <prefix>`, `sotd update pointer --prefix <prefix> --target <target>` | command | distribution | `rust/backend/src/update/cli.rs` `stage_cli`, `pointer_cli`; `rust/backend/src/update.rs` `stage_prepare_arm_with` |
+| What may be armed into an install, and which pointer may apply onto it: strictly above `install.json`'s version for an automatic writer, a record of the install armed over | rule | distribution | `rust/updater/src/pending.rs` `arm`, `InstalledBuild`, `stale_reason`; `rust/backend/src/update.rs` `arm_refusal`, `apply_refusal`; `scripts/sot-apply.sh` `ptr_refusal`; `scripts/sot-apply.ps1` `Get-PointerRefusal` |
 | `topology.set` | op | topology | `rust/backend/src/topology/set.rs` `handle_topology_set` |
 | `topology.changed` | event, bus | topology | `rust/backend/src/topology/store.rs` `TopologyChanged`; `rust/backend/src/server/events.rs` `write_topology_changed` |
 | capsule lanes SOM0, SOA0 (v1-v3), SOSV | wire | capsule | `rust/log/src/lane/wire/mgmt.rs`; `rust/log/src/lane/wire/attach.rs`; `rust/log/src/lane/wire/supervisor.rs` |

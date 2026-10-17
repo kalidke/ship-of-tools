@@ -235,6 +235,47 @@ try {
         $env:SOT_COMM_HOME = $savedComm5
     }
 
+    Write-Host "`n=== 6. Invoke-PendingApply: a pointer the installed sotd refuses costs no daemon stop ===" -ForegroundColor Cyan
+    # UPDATER-ARMS-INSTALLED: the daemon is stopped before an apply only when the apply will happen. The prefix holds the
+    # real sotd (it answers `update pointer`), an install at 0.7.0 and a pointer; the local-daemon and apply scripts are
+    # stand-ins that record that they ran.
+    $savedEAP6 = $ErrorActionPreference
+    try {
+        . (Join-Path $repoRoot 'scripts\sot-freshness.ps1')
+        function Write-SupLog([string]$Message) { }
+        function Set-LaunchStatus([string]$Message) { }
+        $prefixDir = Join-Path $root 'prefix6'
+        $updates6 = Join-Path $prefixDir 'updates'
+        New-Item -ItemType Directory -Force -Path (Join-Path $prefixDir 'bin'), $updates6 | Out-Null
+        Copy-Item -LiteralPath $SotdPath -Destination (Join-Path $prefixDir 'bin\sotd.exe')
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText((Join-Path $prefixDir 'install.json'), '{"schema":1,"prefix":"x","version":"0.7.0","commit":"aaa"}', $utf8)
+        $calls6 = Join-Path $root 'calls6.txt'
+        $sotLocalDaemon = Join-Path $root 'daemon6.ps1'
+        Set-Content -LiteralPath $sotLocalDaemon -Value "Add-Content -LiteralPath '$calls6' -Value 'stop'"
+        $sotApply = Join-Path $root 'apply6.ps1'
+        Set-Content -LiteralPath $sotApply -Value "Add-Content -LiteralPath '$calls6' -Value 'apply'"
+        $applyMarker = Join-Path $updates6 'just-applied-windows-x86_64'
+        $NoUpdate = $false
+        $ptrPath6 = Join-Path $updates6 'pending-windows-x86_64.json'
+        function New-Pointer6([string]$version) {
+            '{"schema":1,"repo":"kalidke/ship-of-tools","tag":"v' + $version + '","version":"' + $version + '","target":"windows-x86_64","asset":"sot-' + $version + '-windows-x86_64.zip","asset_sha256":"' + ('ab' * 32) + '","checkout":"C:\\x","commit":"cc","armed_at":1}'
+        }
+        $cases6 = @(
+            @{ name = 'a pointer above the install'; text = (New-Pointer6 '0.8.0'); want = 'stop apply' },
+            @{ name = 'a pointer below the install'; text = (New-Pointer6 '0.6.0'); want = 'apply' },
+            @{ name = 'a pointer that cannot be read'; text = '{not json'; want = 'apply' }
+        )
+        foreach ($c in $cases6) {
+            [System.IO.File]::WriteAllText($ptrPath6, $c.text, $utf8)
+            Remove-Item -LiteralPath $calls6 -Force -ErrorAction SilentlyContinue
+            Invoke-PendingApply
+            $got = if (Test-Path -LiteralPath $calls6) { (@(Get-Content -LiteralPath $calls6) -join ' ') } else { '' }
+            Check "6: $($c.name) runs '$($c.want)'" ($got -ceq $c.want) "ran: '$got'"
+        }
+    } catch { Check '6: section ran' $false $_.Exception.Message }
+    finally { $ErrorActionPreference = $savedEAP6 }
+
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

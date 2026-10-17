@@ -1031,6 +1031,9 @@ fi
 # previous auto-apply must not pair old last-good pointers with these fresh
 # .prev binaries (a later crash-loop rollback would mix versions).
 rm -f "${PREFIX:?}"/updates/last-good-*.json "${PREFIX:?}"/updates/just-applied-* 2>/dev/null || true
+# And a pointer armed over the install this run replaces names a release chosen against that install: it would apply
+# onto the new one (a downgrade, when the new one is already past it). Only this target's: a shared home serves others.
+rm -f "${PREFIX:?}/updates/pending-$TARGET.json" 2>/dev/null || true
 say "binaries: $("$PREFIX/bin/sotd" --version)"
 DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 
