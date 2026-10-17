@@ -20,7 +20,8 @@ cd "$(dirname "$0")/.."
 [ "$(uname -sm)" = "Linux x86_64" ] || { echo "pack-build: Linux x86_64 only (this is $(uname -sm))" >&2; exit 1; }
 
 # The glibc of the fleet's oldest host: a glibc binary runs only on a host whose glibc is at least the one it was
-# linked against, and a glibc sotd that cannot start stops that host's mail. This is the one place the floor is written.
+# linked against, and a glibc sotd that cannot start stops that host's mail. The floor is written in two places that
+# change together: here, and release.yml's Linux smoke test, whose container (ubuntu:20.04, glibc 2.31) boots the artifact.
 FLEET_GLIBC_FLOOR=2.31
 if command -v x86_64-linux-musl-gcc >/dev/null || command -v musl-gcc >/dev/null; then
     triple=x86_64-unknown-linux-musl
