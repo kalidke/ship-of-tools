@@ -184,17 +184,18 @@ impl Updater {
             Ok(version) => {
                 sot_updater::check_release(&updater_spawner(), &self.repo, &version, &Fetcher::from_env()).await
             }
-            Err(status) => disabled(status),
+            Err(status) => disabled(&status),
         }
     }
 
     /// The version a check follows the channel of and compares with: the install's, read now. This process booted with
     /// `current`, and a shared prefix can have been installed past it, or onto another channel, since; `current` stands
-    /// only where there is no install to read. A dev build as the install is no basis for a release check.
-    fn check_basis(&self) -> std::result::Result<String, &'static str> {
+    /// only where there is no install to read. A dev build or a pinned install is no basis for a release check.
+    fn check_basis(&self) -> std::result::Result<String, String> {
         let installed = sot_updater::resolve_updates_root().ok().and_then(|root| InstalledBuild::read(&root));
         match installed {
-            Some(i) if i.is_dev_build() => Err("disabled: the install is a dev build"),
+            Some(i) if i.is_dev_build() => Err("disabled: the install is a dev build".into()),
+            Some(i) if i.pinned => Err(format!("disabled: {}", i.pin_note().unwrap_or_default())),
             Some(i) => Ok(i.version),
             None => Ok(self.current.clone()),
         }
@@ -328,7 +329,7 @@ pub(crate) async fn stage_prepare_arm_with(
     match sot_updater::pending::arm(&cfg.updates_root, id, &state.checkout, &state.commit, writer).await {
         Ok(ArmOutcome::Armed) => Ok(Pipeline::Armed),
         Ok(ArmOutcome::KeptNewer | ArmOutcome::MarkedBad) => Ok(Pipeline::Kept),
-        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall) => Ok(Pipeline::NotAbove),
+        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall | ArmOutcome::Pinned) => Ok(Pipeline::NotAbove),
         Err(e) => Err(PipelineError::Arm(chain(&e))),
     }
 }
@@ -352,6 +353,9 @@ fn arm_refusal(foreign: bool, installed: Option<&InstalledBuild>, id: &ReleaseId
     let installed = installed?;
     if installed.is_dev_build() {
         return Some(format!("the installed {} is a dev build", installed.version));
+    }
+    if let Some(note) = installed.pin_note() {
+        return Some(note);
     }
     (!installed.admits(&id.version)).then(|| format!("{} is not above the installed {}", id.tag, installed.version))
 }
@@ -1167,7 +1171,7 @@ mod tests {
     }
 
     fn installed(version: &str, commit: &str) -> InstalledBuild {
-        InstalledBuild { version: version.into(), commit: Some(commit.into()) }
+        InstalledBuild { version: version.into(), commit: Some(commit.into()), pinned: false }
     }
 
     fn pointer(tag: &str, over: Option<(&str, &str)>) -> PendingPointer {
@@ -1195,6 +1199,19 @@ mod tests {
         let above = fake_identity("v0.6.6-rc9.14");
         assert!(arm_refusal(false, Some(&at("0.6.6-rc9.14-dev+d94ed0fac")), &above).unwrap().contains("dev build"));
         assert!(arm_refusal(true, Some(&at("0.6.6-rc9.12")), &id).unwrap().contains("neither daemon nor frontend"));
+    }
+
+    // An operator's downgrade is not undone by the next daily check: the run that names a version pins the install.
+    #[test]
+    fn a_pinned_install_is_never_armed_over() {
+        let id = fake_identity("v0.6.6-rc9.14");
+        let pinned = InstalledBuild { pinned: true, ..installed("0.6.6-rc9.12", "c0") };
+        assert!(arm_refusal(false, Some(&installed("0.6.6-rc9.12", "c0")), &id).is_none());
+        assert_eq!(
+            arm_refusal(false, Some(&pinned), &id).unwrap(),
+            "pinned at 0.6.6-rc9.12: automatic updates stay off for this install until a run that names no version"
+        );
+        assert!(!pinned.admits("0.6.6-rc9.14"));
     }
 
     #[test]
@@ -1228,6 +1245,8 @@ mod tests {
         let stable = process_on_an_rc.check_basis();
         installed_at("0.6.7-dev+abc");
         let dev = process_on_an_rc.check_basis();
+        std::fs::write(dir.path().join("install.json"), r#"{"schema":1,"prefix":"/p","version":"0.6.6-rc9.12","pinned":true}"#).unwrap();
+        let pinned = process_on_an_rc.check_basis();
         match saved {
             Some(v) => std::env::set_var("SOT_UPDATE_ROOT", v),
             None => std::env::remove_var("SOT_UPDATE_ROOT"),
@@ -1235,6 +1254,11 @@ mod tests {
         assert_eq!(none, Ok("0.6.6-rc9.12".to_string()), "no install: the process's version");
         assert_eq!(stable, Ok("0.6.7".to_string()), "the install's channel, not the process's rc");
         assert!(dev.is_err(), "a dev install is no basis for a release check");
+        assert_eq!(
+            pinned,
+            Err("disabled: pinned at 0.6.6-rc9.12: automatic updates stay off for this install until a run that names no version".to_string()),
+            "a pinned install is no basis either, and the verdict says why"
+        );
     }
 
     #[test]

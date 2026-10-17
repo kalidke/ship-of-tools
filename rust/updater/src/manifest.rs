@@ -65,6 +65,11 @@ pub struct InstallManifest {
     /// `sot-launch`)? Same "what decided it" as `daemon`.
     #[serde(default)]
     pub frontend: Option<bool>,
+    /// Did the run that wrote this install name what to install (`--version`, `--archive`)? A pinned install is never
+    /// armed by an automatic writer, so the next daily check cannot undo the choice; a run that names no version
+    /// removes the pin.
+    #[serde(default)]
+    pub pinned: Option<bool>,
 }
 
 impl InstallManifest {
