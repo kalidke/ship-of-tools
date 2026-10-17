@@ -235,6 +235,7 @@ pub(crate) fn spawn<Wn: Redraw + Clone + Send + Sync + 'static>(
                         host.clone(),
                         IncomingEvt::Disconnected {
                             reason: format!("{e:#} — retry in {wait_ms}ms (F5 to retry now)"),
+                            refused: e.is::<HelloRefused>(),
                         },
                     ));
                     window.request_redraw();
@@ -275,7 +276,7 @@ async fn connect_and_run<Wn: Redraw>(
             let unanswered = |waited: std::time::Duration| {
                 let reason =
                     format!("this computer's backend has not answered the window lease in {waited:?}; waiting for its answer");
-                let _ = evt_tx.send((host.clone(), IncomingEvt::Disconnected { reason }));
+                let _ = evt_tx.send((host.clone(), IncomingEvt::Disconnected { reason, refused: false }));
                 window.request_redraw();
             };
             let not_ended = leases

@@ -72,6 +72,9 @@ pub enum IncomingEvt {
     },
     Disconnected {
         reason: String,
+        /// The session ended with the daemon's refusal of the hello (which `HelloRefused` just showed), not a drop or a
+        /// failed dial: only then does the host keep its refusal on screen; any other end says nothing answered.
+        refused: bool,
     },
     /// The backend refused the hello (ADR 0049 `## User isolation`): another protocol (ADR 0030 §2), no host or OS
     /// account named, or a second OS account on this host. Unlike a transient `Disconnected`, a refusal is

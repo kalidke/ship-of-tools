@@ -2816,7 +2816,7 @@ mod result_tests {
                 ]
             };
             self.on_workspaces(a.clone(), rows("<host-control-a>", "shared-id"));
-            self.on_disconnected(a.clone(), "link lost".into());
+            self.on_disconnected(a.clone(), "link lost".into(), false);
             self.on_workspace_destroyed(
                 a.clone(),
                 Ok(crate::net::transport::WorkspaceDestroyedInfo {

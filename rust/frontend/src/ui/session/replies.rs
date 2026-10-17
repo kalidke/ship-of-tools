@@ -260,7 +260,12 @@ impl State {
         } // if event_host == self.active_host
     }
 
-    pub(crate) fn on_disconnected(&mut self, event_host: HostKey, reason: String) {
+    pub(crate) fn on_disconnected(&mut self, event_host: HostKey, reason: String, refused: bool) {
+        // A refusal says "daemon out of date" only while the daemon answers: a drop or a failed dial after it means
+        // nothing answers now, so the host reads unreachable again.
+        if !refused {
+            self.clear_hello_refused(event_host.clone());
+        }
         if event_host == self.active_host {
             self.status = format!("disconnected · {reason}");
         } else {

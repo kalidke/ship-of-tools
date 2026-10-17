@@ -614,7 +614,7 @@ fn an_unanswered_lease_is_named_and_held_until_its_answer() {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let reason = loop {
         match evt_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
-            Ok((_, IncomingEvt::Disconnected { reason })) => break reason,
+            Ok((_, IncomingEvt::Disconnected { reason, .. })) => break reason,
             Ok(_) => continue,
             Err(_) => panic!("no named state within 10s of an unanswered lease"),
         }
