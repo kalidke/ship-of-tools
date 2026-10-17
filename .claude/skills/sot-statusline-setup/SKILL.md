@@ -65,7 +65,7 @@ POSIX paths are native here, no `bash -c` mangling.
 
 ## 6. Verify
 Pipe sample JSON through the exact command now in `settings.json` and
-confirm it prints two colored lines and exits 0:
+confirm it prints three colored lines and exits 0:
 ```sh
 echo '{"model":{"display_name":"Opus 4.8"},"session_id":"abc","version":"x","workspace":{"current_dir":"'$PWD'"},"context_window":{"total_input_tokens":120000,"total_output_tokens":34000},"cost":{"total_cost_usd":0.42}}' \
   | bash -c "<the exact command from settings.json>"

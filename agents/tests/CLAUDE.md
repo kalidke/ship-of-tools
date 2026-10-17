@@ -14,6 +14,7 @@ does (`working-directory: agents/tests`).
   on Unix, Git for Windows' launcher with the script as its file argument in a `pipe:` daemon's cmd.exe row (a
   stand-in cygpath on every box; on Git Bash, the real launcher)
 - `test-despawn-resolve.sh`: `comm-despawn.sh` resolves first, fails and changes nothing on an unknown name, removes a registry row only after a confirmed destroy; `comm-worktree-clean.sh` despawns once
+- `test-skill-copies.sh`: every skill under `.claude/skills/` that has an install payload in `agents/claude/` is byte-identical to it, file for file; a changed line, a missing payload file and a tree with no pair each fail
 - `test-sot-fe-goto.sh`: `sot-fe goto` has no `--boot` and `preview`/`reveal` refuse `--urgent` without `--fe`: each is refused before anything is sent
 - `test-sot-fe-paths.sh`: an absolute path given to `sot-fe preview` or `sot-nav.sh preview` is sent relative to its
   root in every spelling Windows or a link above the root gives one folder (on Windows in any case, also a root typed

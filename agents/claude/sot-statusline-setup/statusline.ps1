@@ -1,4 +1,4 @@
-# Claude Code statusLine (Windows) - 2 lines, single PowerShell pass.
+# Claude Code statusLine (Windows) - 3 lines, single PowerShell pass.
 $ErrorActionPreference = 'SilentlyContinue'
 $esc = [char]27
 function Col([string]$c,[string]$t){ "$esc[${c}m$t$esc[0m" }
@@ -21,17 +21,24 @@ $thinkSeg = if ($think -eq 'off') { Col '90' "think:$think" } else { Col '35' "t
 $ver = if ($j.version) { Col '33' "v$($j.version)" } else { '' }
 $cur = if ($j.workspace.current_dir) { [string]$j.workspace.current_dir } else { '.' }
 Push-Location $cur 2>$null
-$branch = git branch --show-current 2>$null
-if ($branch) { $repo = "$(Split-Path $cur -Leaf):$branch"; $unc = @(git status --porcelain 2>$null).Count }
+# A detached HEAD shows the short commit. --no-optional-locks: the count never takes the index lock.
+$inside = (git rev-parse --is-inside-work-tree 2>$null) -eq 'true'
+if ($inside) {
+    $branch = git branch --show-current 2>$null
+    if (-not $branch) { $branch = git rev-parse --short HEAD 2>$null }
+    $repo = "$(Split-Path $cur -Leaf):$branch"; $unc = @(git --no-optional-locks status --porcelain 2>$null).Count
+}
 else { $repo = 'no-git'; $unc = 0 }
 Pop-Location 2>$null
 $uncCol = if ($unc -eq 0) { '32' } else { '31' }
 $acctSeg = if ($acct) { ' ' + (Col '36' $acct) } else { '' }
 $l1 = @((Col '34' $model) + ' ' + (Col '90' "[$sess]") + $acctSeg, $thinkSeg)
 if ($ver) { $l1 += $ver }
-$l1 += (Col '38;5;208' $repo); $l1 += (Col $uncCol "$unc uncommitted")
+$l1 += (Col '38;5;208' $repo)
+# The count sits on its own line so a narrow window never cuts it off the end of line 1.
+$lu = Col $uncCol "$unc uncommitted"
 $inT = [int64]$j.context_window.total_input_tokens; $outT = [int64]$j.context_window.total_output_tokens
 $cost = [double]$j.cost.total_cost_usd
 $costCol = if ($cost -gt 0.50) { '31' } elseif ($cost -gt 0.10) { '33' } else { '32' }
 $l2 = (Col '36' "Session: $(Fmt ($inT+$outT)) (in:$(Fmt $inT) out:$(Fmt $outT))") + ' | ' + (Col $costCol ('${0:N2}' -f $cost))
-[Console]::Out.Write([string]::Join(' | ', $l1) + "`n" + $l2)
+[Console]::Out.Write([string]::Join(' | ', $l1) + "`n" + $lu + "`n" + $l2)

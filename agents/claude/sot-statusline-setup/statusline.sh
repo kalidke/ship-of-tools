@@ -16,8 +16,11 @@ tp="$(get .transcript_path)"
 eff="$(get .effort.level)"; th="$(get .thinking.enabled)"
 if [ "$th" != "true" ]; then think=off; tc=90; elif [ -n "$eff" ]; then think="$eff"; tc=35; else think=on; tc=35; fi
 cur="$(get .workspace.current_dir)"; [ -z "$cur" ] && cur=.
-br="$(git -C "$cur" branch --show-current 2>/dev/null)"
-if [ -n "$br" ]; then repo="$(basename "$cur"):$br"; unc="$(git -C "$cur" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"; else repo=no-git; unc=0; fi
+# A detached HEAD shows the short commit. --no-optional-locks: the count never takes the index lock.
+if [ "$(git -C "$cur" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
+  br="$(git -C "$cur" branch --show-current 2>/dev/null)"; [ -n "$br" ] || br="$(git -C "$cur" rev-parse --short HEAD 2>/dev/null)"
+  repo="$(basename "$cur"):$br"; unc="$(git --no-optional-locks -C "$cur" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+else repo=no-git; unc=0; fi
 [ "${unc:-0}" -eq 0 ] && uc=32 || uc=31
 inT="$(get .context_window.total_input_tokens)"; outT="$(get .context_window.total_output_tokens)"
 cost="$(get .cost.total_cost_usd)"; cost=${cost:-0}
@@ -26,7 +29,8 @@ l1="$(col 34 "$model") $(col 90 "[$sess]")"
 [ -n "$acct" ] && l1="$l1 $(col 36 "$acct")"
 l1="$l1 | $(col "$tc" "think:$think")"
 [ -n "$ver" ] && l1="$l1 | $(col 33 "v$ver")"
-l1="$l1 | $(col '38;5;208' "$repo") | $(col "$uc" "$unc uncommitted")"
-printf '%s\n%s | %s\n' "$l1" \
+l1="$l1 | $(col '38;5;208' "$repo")"
+# The count sits on its own line so a narrow window never cuts it off the end of line 1.
+printf '%s\n%s\n%s | %s\n' "$l1" "$(col "$uc" "$unc uncommitted")" \
   "$(col 36 "Session: $(fmt $(( ${inT:-0} + ${outT:-0} ))) (in:$(fmt ${inT:-0}) out:$(fmt ${outT:-0}))")" \
   "$(col "$cc" "$(printf '$%.2f' "$cost")")"

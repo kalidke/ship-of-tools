@@ -920,6 +920,8 @@ jobs:
           bash test-crlf-gh-auth.sh
           # No agents script leaves a file in its temporary folders; a signal or the code's expiry ends the sign-in poll.
           bash test-temp-files.sh
+          # Each skill's canonical copy under .claude/skills/ and its install payload under agents/claude/ stay byte-identical.
+          bash test-skill-copies.sh
 
   # comm/CLAUDE.md and scripts/CLAUDE.md promise the scripts run under bash 3.2. GNU bash 3.2.57, built from its
   # tarball (sha256 pinned), parses each shipped script and is the bash every hermetic suite's scripts run under
