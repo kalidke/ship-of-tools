@@ -335,10 +335,7 @@ impl State {
                     info.synced_against.as_ref(),
                     row.node.id.strip_prefix("files:"),
                 ) {
-                    self.file_ast_hashes
-                        .get(path)
-                        .map(|h| h != synced)
-                        .unwrap_or(false)
+                    drift_is_stale(&self.file_ast_hashes, path, synced)
                 } else {
                     false
                 }

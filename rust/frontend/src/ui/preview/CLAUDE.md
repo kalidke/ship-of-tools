@@ -30,6 +30,8 @@ rust/frontend/src/ui/render/quad.rs.
   (`resolve_preview_changed`), which is in the daemon's spelling of it (`workspace.list`'s `canonical_root`).
 - The concept read fires once per cursored node; a failed drift parse is re-armed after a 2 s then 4 s backoff and
   stops at `FILE_PARSE_MAX_RETRIES` attempts in all (`maybe_fire_concept_read`).
+- A `preview.changed` for a file drops that file's cached hash, parse latch and failure record, so its next view parses it
+  again; one for the cursored annotation's `.concept/` file re-reads the annotation (`forget_changed_file`). Per file, on view.
 - The scroll clamp measures only the buffer on screen (`preview_scroll_target`).
 - A pinned preview suppresses the cursor-follow fetch (`maybe_fire_preview`).
 - Every `preview.get` carries a fresh generation, so only the newest reply installs (`next_preview_gen`).

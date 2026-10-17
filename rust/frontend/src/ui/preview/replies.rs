@@ -450,6 +450,9 @@ impl State {
             resolved = %node_id,
             "preview.changed received"
         );
+        // A file edited after the cursor first reached it must be hashed again (and a rewritten annotation
+        // read again), or its STALE mark waits for a window restart.
+        self.forget_changed_file(&node_id);
         if kind == "created" || kind == "removed" {
             let parent = parent_files_node_id(&node_id);
             self.refresh_tree_dir_if_expanded(&parent);
