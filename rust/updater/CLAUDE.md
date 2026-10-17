@@ -13,7 +13,7 @@ never because a marker file exists. Part of distribution; charter: scripts/CLAUD
 - `src/lock.rs`: the cross-process mkdir lock on `updates/.lock`, shared with sot-apply.
 - `src/manifest.rs`: `InstallManifest` (`$PREFIX/install.json`, a schema shared with scripts/install.sh and
   scripts/install-manifest.ps1) and the ready manifest of a stage.
-- `src/pending.rs`: the `pending-<target>.json` pointer that arms one release for the next launch.
+- `src/pending.rs`: the `pending-<target>.json` pointer that arms one release for the next launch: `arm` (the only writer), the install it was armed over (`InstalledBuild`, read from `<prefix>/install.json`) and `stale_reason`, the apply-side judgement.
 - `src/platform.rs`: which target triples ship, and the asset filename for a version and triple.
 - `src/prepare.rs`: transactional preparation of a version (checkout and Julia instantiate) and the children it runs; a
   release checks out its tag, a dev build (`semver::is_dev`) the COMMIT its stage recorded, since it has no tag.
@@ -31,3 +31,4 @@ leaves on disk.
   taken for a finished one.
 - Staging runs under the `updates/.lock` taken in `lock.rs`; sot-apply uses the same lock.
 - Every spawn-bearing entry, including `check_release`, `stage`, `prepare::prepare` and `prepare::PreparedState::matches`, requires its caller's `Spawner`. Fetch, archive and prepare helpers use that spawner for all process output; production updater code starts no process directly. The daemon supplies containment and the window supplies its own lifetime policy. The stage lock's liveness probe starts no process (`pid_alive`).
+- `pending::arm` reads `<prefix>/install.json` fresh under the staging lock. An automatic `Writer` arms only a version strictly above it (`ArmOutcome::NotAboveInstall` otherwise); the operator's `Writer::Operator` (`sotd update stage`) may arm the same or an older build. Every pointer records the install it was armed over (`armed_over_version`, `armed_over_commit`), and `stale_reason` says why a pointer no longer fits the install on disk (its record no longer matches it, or, with no record, it is not above the install). The scripts read none of this: they ask `sotd update pointer`.

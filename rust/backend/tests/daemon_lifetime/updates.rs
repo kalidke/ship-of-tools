@@ -69,10 +69,16 @@ async fn arm(updates: &Path) -> String {
         asset_sha256: "0".repeat(64),
     };
     std::fs::create_dir_all(updates).expect("the updates root");
-    let armed = sot_updater::pending::arm(updates, &id, &updates.join("checkout"), &"0".repeat(40))
-        .await
-        .expect("arm the release");
-    assert!(armed, "nothing newer was armed");
+    let armed = sot_updater::pending::arm(
+        updates,
+        &id,
+        &updates.join("checkout"),
+        &"0".repeat(40),
+        sot_updater::pending::Writer::Automatic,
+    )
+    .await
+    .expect("arm the release");
+    assert_eq!(armed, sot_updater::pending::ArmOutcome::Armed, "nothing newer was armed");
     id.tag
 }
 

@@ -23,7 +23,15 @@
 //     topology-plan.md §D), so this reads the same declared topology the
 //     installer and `sot-backend`'s own `update::backend_role_from_topology`
 //     do (duplicated rather than shared: `sot-updater` is mechanism only,
-//     this is policy, and each side already carries its own guards).
+//     this is policy, and each side already carries its own guards);
+//   - the install is not a daemon install (`install.json` records `daemon:
+//     true`): this box is not declared a daemon, so on a shared home the
+//     prefix is another host's, and a checkout-only prepare armed into it
+//     would hand that host a version whose Julia environments were never
+//     instantiated;
+//   - the release must be strictly above the install on disk, which `arm`
+//     checks under the staging lock (a long-lived window knows only the
+//     version it started with).
 //
 // Runs on a small dedicated thread + current-thread runtime so the winit
 // main thread and the transport runtime never wait on it. Outcomes go to
@@ -31,6 +39,7 @@
 // already surfaces availability to attached FEs).
 
 use sot_protocol::app_version;
+use sot_updater::pending::{ArmOutcome, InstalledBuild, Writer};
 use sot_updater::prepare::{PrepareSpec, PreparedState};
 use sot_updater::{Fetcher, InstallManifest, UpdaterConfig};
 
@@ -90,6 +99,9 @@ fn guard() -> std::result::Result<InstallManifest, &'static str> {
     if backend_owns_updates_here(&install) {
         return Err("fe self-update: the backend on this machine owns updates (declared topology, install.json, or the default), skipping");
     }
+    if installs_a_daemon(&install) {
+        return Err("fe self-update: this install runs a daemon but this machine is not declared one — the install is another machine's, skipping");
+    }
     Ok(install)
 }
 
@@ -140,6 +152,12 @@ fn backend_owns_updates(
         Some(h) => h.daemon,
         None => recorded_daemon.unwrap_or(true),
     }
+}
+
+/// Did the install this window would arm into set up a daemon? By now this box is not declared one, so a daemon
+/// install here is shared from a machine that is. `None` (a manifest from before the field) is not taken for yes.
+fn installs_a_daemon(install: &InstallManifest) -> bool {
+    install.daemon == Some(true)
 }
 
 /// Does the backend on THIS machine own the update pipeline, so the FE
@@ -217,6 +235,12 @@ async fn run(install: InstallManifest, current: String) {
         return;
     }
     let Some(id) = out.identity else { return };
+    // The window may be older than the install; only a release above the install on disk is worth the download. `arm`
+    // reads the install again under the lock and decides.
+    if let Some(installed) = InstalledBuild::read(&cfg.updates_root).filter(|i| !i.admits(&id.version)) {
+        tracing::info!(tag = %id.tag, installed = %installed.version, "fe self-update: the install is already at or above this release — nothing to do");
+        return;
+    }
     // Name the point this launch starts from. Every stage below short-circuits
     // on work a previous launch finished, so without this line a log cannot
     // distinguish a run that resumed a nearly-finished pipeline from one that
@@ -261,11 +285,16 @@ async fn run(install: InstallManifest, current: String) {
             return;
         }
     };
-    match sot_updater::pending::arm(&cfg.updates_root, &id, &state.checkout, &state.commit).await {
-        Ok(true) => {
+    match sot_updater::pending::arm(&cfg.updates_root, &id, &state.checkout, &state.commit, Writer::Automatic).await {
+        Ok(ArmOutcome::Armed) => {
             tracing::info!(tag = %id.tag, "fe self-update: armed — applies at next launch")
         }
-        Ok(false) => tracing::info!(tag = %id.tag, "fe self-update: a newer/blocked arm exists"),
+        Ok(ArmOutcome::KeptNewer | ArmOutcome::MarkedBad) => {
+            tracing::info!(tag = %id.tag, "fe self-update: a newer/blocked arm exists")
+        }
+        Ok(ArmOutcome::NotAboveInstall) => {
+            tracing::info!(tag = %id.tag, "fe self-update: not above the installed build — not armed")
+        }
         Err(e) => tracing::warn!(tag = %id.tag, error = %e, "fe self-update: arming failed"),
     }
 }
@@ -430,6 +459,26 @@ mod tests {
             lines.contains("next           nothing — the next converge or launcher start applies it"),
             "{lines}"
         );
+    }
+
+    // The shared-home guest: a window on a machine the topology does not declare a daemon, over a prefix another
+    // machine installed a daemon into, must not arm there.
+    #[test]
+    fn a_window_does_not_arm_into_a_daemon_install() {
+        let install = |daemon: Option<bool>| InstallManifest {
+            schema: 1,
+            prefix: "/p".into(),
+            config: None,
+            service: None,
+            version: None,
+            tag: None,
+            commit: None,
+            daemon,
+            frontend: None,
+        };
+        assert!(installs_a_daemon(&install(Some(true))));
+        assert!(!installs_a_daemon(&install(Some(false))));
+        assert!(!installs_a_daemon(&install(None)), "a manifest from before the field is not taken for a daemon install");
     }
 
     #[test]
