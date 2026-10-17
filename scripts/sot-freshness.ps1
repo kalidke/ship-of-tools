@@ -245,7 +245,11 @@ function Invoke-FreshnessPass {
                 $ErrorActionPreference = $savedEAP
             }
         } else {
-            Write-SupLog "freshness: pinned checkout - comm is at this checkout's commit ($checkoutCommit), skipping"
+            if ($checkoutCommit) {
+                Write-SupLog "freshness: pinned checkout - comm is at this checkout's commit ($checkoutCommit), skipping"
+            } else {
+                Write-SupLog "freshness: pinned checkout - the checkout's commit could not be read (no git?), comm kept as it is"
+            }
         }
         return
     }

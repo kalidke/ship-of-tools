@@ -220,7 +220,6 @@ try {
         $env:SOT_COMM_HOME = Join-Path $root 'comm5'
         New-Item -ItemType Directory -Force -Path (Join-Path $env:SOT_COMM_HOME 'bin') | Out-Null
         $script:sotPinned = $true
-        $script:sotJustApplied = $false
         $NoUpdate = $false
         $Local = $false
         foreach ($row in @(@('b9766d678-dirty', 1), @("$sha5-dirty", 0), @($sha5, 0))) {
