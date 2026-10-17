@@ -263,7 +263,8 @@ symlinks. The daemon that serves the page reads it, so the file that counts is
 the one on that daemon's computer, not the window's. It lives in the per-user
 config folder (`$XDG_CONFIG_HOME/sot` or `~/.config/sot`;
 `%LOCALAPPDATA%\sot\config` on Windows) and never in a repository, so a repo
-cannot declare its own data roots. It is not TOML: one absolute directory per
+cannot declare its own data roots. On Windows the file has no effect, because
+no link is followed there. It is not TOML: one absolute directory per
 line, blank lines and lines starting with `#` ignored.
 
 ```
