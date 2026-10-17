@@ -83,42 +83,41 @@ class P {
         if ($armed) { Set-Content -LiteralPath (Join-Path $updates $ptrName) -Value '{}' }
         return $prefix
     }
+    # No exit code is read: the script ends without `exit`, so $LASTEXITCODE is whatever its last native command left, and
+    # `& sot.exe --version | Select-Object -First 1` may end that command early. The files it leaves are the result.
     function Invoke-Manifest([string]$prefix) {
         & $script -Prefix $prefix -Repo $clone 6>&1 2>&1 | Out-Null
-        return $LASTEXITCODE
     }
     function Pointer([string]$prefix) { return (Test-Path -LiteralPath (Join-Path $prefix "updates\$ptrName")) }
     function Manifest([string]$prefix) { return (Get-Content -LiteralPath (Join-Path $prefix 'install.json') -Raw) }
 
     Write-Host "`n=== 1. a changed version drops the armed pointer ===" -ForegroundColor Cyan
     $p1 = New-Prefix 'p1' '0.6.0' '0.5.0' 'aaaa' $true
-    $rc = Invoke-Manifest $p1
-    Check 'exit code 0' ($rc -eq 0 -or $null -eq $rc) "got $rc"
+    Invoke-Manifest $p1
     Check 'install.json now names the new version' ((Manifest $p1) -match '"version":\s*"0\.6\.0"') (Manifest $p1)
     Check 'pointer dropped' (-not (Pointer $p1)) 'pointer kept'
 
     Write-Host "`n=== 2. the same version at another commit drops it ===" -ForegroundColor Cyan
     $p2 = New-Prefix 'p2' '0.6.0' '0.6.0' 'not-the-tag-commit' $true
-    Invoke-Manifest $p2 | Out-Null
+    Invoke-Manifest $p2
     Check 'install.json now names the tag commit' ((Manifest $p2) -match [regex]::Escape($commit060)) (Manifest $p2)
     Check 'pointer dropped' (-not (Pointer $p2)) 'pointer kept'
 
     Write-Host "`n=== 3. the same version and commit (the launcher's refresh) keeps it ===" -ForegroundColor Cyan
     $p3 = New-Prefix 'p3' '0.6.0' '0.6.0' $commit060 $true
-    Invoke-Manifest $p3 | Out-Null
+    Invoke-Manifest $p3
     Check 'install.json still names the version' ((Manifest $p3) -match '"version":\s*"0\.6\.0"') (Manifest $p3)
     Check 'pointer kept' (Pointer $p3) 'pointer dropped by a same-install rewrite'
 
     Write-Host "`n=== 4. a first install with no pointer: nothing breaks ===" -ForegroundColor Cyan
     $p4 = New-Prefix 'p4' '0.7.0' $null $null $false
-    $rc = Invoke-Manifest $p4
-    Check 'exit code 0' ($rc -eq 0 -or $null -eq $rc) "got $rc"
+    Invoke-Manifest $p4
     Check 'install.json written' ((Manifest $p4) -match '"version":\s*"0\.7\.0"') 'no manifest'
     Check 'still no pointer' (-not (Pointer $p4)) 'a pointer appeared'
 
     Write-Host "`n=== 5. a pointer with no install.json yet is dropped too ===" -ForegroundColor Cyan
     $p5 = New-Prefix 'p5' '0.7.0' $null $null $true
-    Invoke-Manifest $p5 | Out-Null
+    Invoke-Manifest $p5
     Check 'pointer dropped' (-not (Pointer $p5)) 'pointer kept'
 } finally {
     Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
