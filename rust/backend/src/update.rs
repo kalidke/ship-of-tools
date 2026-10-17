@@ -355,8 +355,16 @@ fn parse_stage_args(args: &[String]) -> Result<(std::path::PathBuf, std::path::P
     ))
 }
 
+/// The folder and prefix as absolute paths: the pointer records paths under the prefix, and the apply runs later from
+/// the launcher's own working folder, where a relative one leads nowhere.
+fn absolute_paths(folder: &std::path::Path, prefix: &std::path::Path) -> std::io::Result<(std::path::PathBuf, std::path::PathBuf)> {
+    Ok((std::path::absolute(folder)?, std::path::absolute(prefix)?))
+}
+
 /// Stage → prepare → arm the one release a pack folder holds, for the install at `prefix`.
 async fn stage_folder(folder: &std::path::Path, prefix: &std::path::Path) -> Result<String, String> {
+    let (folder, prefix) = absolute_paths(folder, prefix).map_err(|e| format!("making the paths absolute: {e}"))?;
+    let (folder, prefix) = (folder.as_path(), prefix.as_path());
     let mut install = InstallManifest::read(&prefix.join(sot_updater::manifest::INSTALL_MANIFEST)).map_err(|e| format!("{e:#}"))?;
     install.prefix = prefix.to_path_buf();
     let sums = std::fs::read_to_string(folder.join("SHA256SUMS"))
@@ -1080,6 +1088,14 @@ mod tests {
         let want = Ok(("d".into(), "p".into()));
         assert_eq!(parse_stage_args(&argv("stage d --prefix p")), want);
         assert_eq!(parse_stage_args(&argv("stage --prefix p d")), want);
+    }
+
+    #[test]
+    fn stage_paths_are_absolute_before_anything_records_them() {
+        let cwd = std::env::current_dir().unwrap();
+        let (folder, prefix) = absolute_paths("d".as_ref(), "p/q".as_ref()).unwrap();
+        assert_eq!((folder, prefix), (cwd.join("d"), cwd.join("p/q")));
+        assert_eq!(absolute_paths(&cwd, &cwd).unwrap(), (cwd.clone(), cwd));
     }
 
     fn fake_identity(tag: &str) -> ReleaseIdentity {
