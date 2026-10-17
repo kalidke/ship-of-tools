@@ -87,7 +87,7 @@ class P {
     function Invoke-Manifest([string]$prefix) {
         & $script -Prefix $prefix -Repo $clone 6>&1 2>&1 | Out-Null
     }
-    function Check-Exit([string]$name) { Check "$name: exit code 0" ($LASTEXITCODE -eq 0) "got $LASTEXITCODE" }
+    function Check-Exit([string]$name) { Check "${name}: exit code 0" ($LASTEXITCODE -eq 0) "got $LASTEXITCODE" }
     function Pointer([string]$prefix) { return (Test-Path -LiteralPath (Join-Path $prefix "updates\$ptrName")) }
     function Manifest([string]$prefix) { return (Get-Content -LiteralPath (Join-Path $prefix 'install.json') -Raw) }
 
