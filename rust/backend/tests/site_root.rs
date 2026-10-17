@@ -323,3 +323,39 @@ async fn a_build_whose_first_links_are_no_files_is_still_its_own_origin() {
     drop(w);
     env.kill_daemon_bounded().await;
 }
+
+/// A symlink to `/` inside the build let a link spell the build's absolute path and still resolve to a file in it, so
+/// the page's URL confirmed a guess at where it sits on disk. A link narrows only along a path with no symlink.
+#[tokio::test]
+async fn a_right_guess_of_the_pages_absolute_path_gives_the_same_url() {
+    let env = daemon("siteroot-guess");
+    let app = vite_project(&env);
+    std::os::unix::fs::symlink("/", app.join("dist/ext")).expect("symlink");
+    let dist = app.join("dist").canonicalize().expect("dist");
+    let mut urls = Vec::new();
+    for (id, guess) in [(2, dist.clone()), (3, dist.join("wrong"))] {
+        let link = format!("/ext{}/assets/index-a.js", guess.display());
+        write(&app.join("dist/index.html"), &format!("<script src=\"{link}\"></script>"));
+        let mut w = window(&env).await;
+        let url = open(&mut w, id, &app.join("dist/index.html")).await;
+        urls.push(url.split_once('/').map(|x| x.1.to_string()).and_then(|r| r.split_once('/').map(|x| x.1.split('?').next().unwrap().to_string())));
+    }
+    assert_eq!(urls[0], urls[1], "a right and a wrong guess");
+    env.kill_daemon_bounded().await;
+}
+
+/// A page with thousands of links that name nothing opens within a bound: each distinct plain link costs a few stats
+/// per folder on the walk, so the links tried are capped.
+#[tokio::test]
+async fn a_page_of_many_missing_links_opens_within_a_bound() {
+    let env = daemon("siteroot-manylinks");
+    let app = vite_project(&env);
+    let links: String = (0..17_000).map(|i| format!("<link href=\"/missing-{i}.css\">")).collect();
+    write(&app.join("a/b/c/d/index.html"), &links);
+    let mut w = window(&env).await;
+    let started = std::time::Instant::now();
+    open(&mut w, 2, &app.join("a/b/c/d/index.html")).await;
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
+    drop(w);
+    env.kill_daemon_bounded().await;
+}

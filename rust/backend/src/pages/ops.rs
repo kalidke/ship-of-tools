@@ -401,20 +401,27 @@ fn is_plain_link(link: &str) -> bool {
         && std::path::Path::new(link).components().all(|c| matches!(c, std::path::Component::Normal(_)))
 }
 
+/// The most distinct links `narrow_to_links` tries: each costs a canonicalize per folder on the walk, and a page's
+/// scan holds up to 512 KB of links, tens of thousands of them. A build's own assets come well within the first few.
+const NARROW_LINKS_TRIED: usize = 64;
+
 /// A root-relative page's site root: the innermost folder from `dir` up to `root` that holds the file its first
-/// plain link names (the links in document order, those naming no file there skipped), else `root`: a build's
-/// `dist/`, not the source tree's index above it. A folder counts only when the link's canonical path is a regular
-/// file inside the folder's own canonical path, so a link through a symlink out of the build never narrows, and the
-/// choice, which the page's URL shows, depends on no file outside `root`. It only narrows `root`.
+/// plain link names (the distinct links in document order, the first `NARROW_LINKS_TRIED` of them, those naming no
+/// file there skipped), else `root`: a build's `dist/`, not the source tree's index above it. A folder counts only
+/// when the link's canonical path is the folder's path joined with the link, so there is no symlink anywhere on it:
+/// a link through one never narrows, and the choice, which the page's URL shows, depends on no file outside `root`
+/// and confirms no guess at the page's own absolute path. `dir` is canonical, so every ancestor of it is. It only
+/// narrows `root`.
 async fn narrow_to_links(root: std::path::PathBuf, dir: &std::path::Path, links: &[String]) -> std::path::PathBuf {
-    for link in links.iter().filter(|l| is_plain_link(l)) {
+    let mut seen = std::collections::HashSet::new();
+    let tried = links.iter().filter(|l| is_plain_link(l) && seen.insert(l.as_str())).take(NARROW_LINKS_TRIED);
+    for link in tried {
         for folder in dir.ancestors().take_while(|a| a.starts_with(&root)) {
-            let (Ok(file), Ok(base)) =
-                (tokio::fs::canonicalize(folder.join(link)).await, tokio::fs::canonicalize(folder).await)
-            else {
+            let path = folder.join(link);
+            let Ok(file) = tokio::fs::canonicalize(&path).await else {
                 continue;
             };
-            if file.starts_with(&base) && tokio::fs::metadata(&file).await.is_ok_and(|m| m.is_file()) {
+            if file == path && tokio::fs::metadata(&file).await.is_ok_and(|m| m.is_file()) {
                 return folder.to_path_buf();
             }
         }

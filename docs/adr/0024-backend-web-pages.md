@@ -299,9 +299,10 @@ with no folder between. Two measured cases: a Vite build with base `./` reads th
 keep a nested site apart, move or rename the outer index page. A page with root-relative links has its own origin and is narrowed, not widened: it is rooted at the innermost folder
 on the walk that holds the file its first plain link names (a Vite build's `dist/`, a Jekyll `_site/`), taking the links
 in document order and skipping any that names no file there, else at the walk's root like any page. A link is plain
-when every part is a name (no `..`, drive, `\\` or `:`), and a folder counts only when the link's canonical path is a
-file inside the folder, so a link through a symlink out of the build never narrows and the page's URL, which its script
-can read, shows nothing about files outside the walk's root. A rule rooting every page at the innermost folder
+when every part is a name (no `..`, drive, `\` or `:`), and a folder counts only when the link, joined to the folder,
+names a regular file with no symlink anywhere on its path. So a link through a symlink never narrows, the page's URL,
+which its script can read, shows nothing about files outside the walk's root and confirms no guess at the page's own
+absolute path, and at most 64 distinct links are tried, which bounds the open. A rule rooting every page at the innermost folder
 that holds the files it loads would narrow the cases above; it is not taken, since a page that names a file at the walk's
 root still takes in everything under it.
 
