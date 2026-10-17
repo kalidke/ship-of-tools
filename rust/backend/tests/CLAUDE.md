@@ -46,6 +46,10 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
   window serves on after the window redials (the same hello `instance`), another window's open takes none of it, a
   reopen ends the page it replaces, a forgotten window's pages and a connection of no window's end, and a full pool
   takes a port only from a window with no live connection
+- `site_root.rs`: pages; the folder a page `docs.open` serves, against a real `sotd` whose home is its project root
+  (Unix): a project log's campaign page, its index pages and a folder opened directly load the log's assets, and the
+  walk to the site ends at the page's repository top and never takes in the home folder; a page directly in the home
+  folder is refused
 - `unit_pin.rs`: topology; `sotd topology pin` and `refresh` write host pins into a scratch systemd folder, real systemd
   loads it in test mode (`systemd --test --user`) and `systemd-analyze --user condition` evaluates the attached
   conditions on this box; with no hosts.toml the claim pins the unit to this box and a pin without it changes

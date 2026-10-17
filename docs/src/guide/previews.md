@@ -87,7 +87,8 @@ through that link, and movies seek. Anything else is refused with a message
 saying why, which the browser shows when the missing file is opened in a tab of
 its own: no data root declared, a link git does not track, a target under no
 declared root, a `..` in the path, a link inside the linked folder, `.git`, a
-repo file outside the page's own folder that is not behind a tracked link, a
+repo file outside the page's site folder (the outermost folder above it, within
+its repository, that holds an `index.html`) that is not behind a tracked link, a
 linked folder that does not resolve on this computer (is its share mounted?), or
 a file that changed while it was being opened. On Windows no link is followed, so
 a page there never shows linked data.

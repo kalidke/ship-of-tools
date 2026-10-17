@@ -215,7 +215,7 @@ name stays `docs.open` (legacy) to keep the change backend-only.
 
 A page can show data that lives outside its repo, through a symlink the repo
 tracks. Two roots, once one, are now separate. The **content root** is where
-ordinary files are served from (`find_site_root`, unchanged). The **URL root** is
+ordinary files are served from (`find_site_root`). The **URL root** is
 where the URL path space maps: the repo top when the page rides the shared prefix
 server and sits in a git repo, else the content root. A browser
 collapses `../../../data/x.mp4` above the nonce segment, so the link folder is
@@ -266,3 +266,45 @@ A failed `quarto.open` keeps its complete diagnostic message within 65,536 UTF-8
 Match the transport newline error in full decoded stderr. Its hint survives an omitted triggering occurrence, including an all-blank selected tail. It explains incomplete Julia server transport publication: Quarto 1.9.38 and later wait up to two seconds for the newline, slow server startup can still fail, and upgrading may help when using an older release.
 
 The bounded response fits the existing envelope cap and preserves `quarto_render_failed` and its wire shape. The daemon captures full stderr and attempts the render once.
+
+## Amendment 2026-10-16: a page is served from the site it belongs to (PROJLOG-STYLE)
+
+`docs.open` serves the cursored file, or the cursored folder's `index.html`, from the site it belongs to: the outermost
+folder holding an `index.html` between it and the top of its repository (the nearest folder holding `.git`) or the
+workspace root, whichever is nearer, and opens it at its place below that folder. With no index on the way, the file's
+own folder is served, as before.
+
+Before this, the walk took the innermost folder holding an index and climbed on only while each parent held one, and an
+`index.html` or a folder was served from its own folder. A project log is one site with index pages inside it
+(`journal/index.html`, each campaign's `experiments/<campaign>/index.html`) and a folder with none between them and the
+log's front page (`experiments/`). Its campaign pages, and its journal and campaign index pages opened directly, were
+served from their own folders and lost the log's `assets/`: its CSS, KaTeX and `site.js`. A Documenter page built with
+pretty URLs (`man/intro/index.html`) and a nested index page of a root-relative site (`__site/blog/index.html`) lost
+theirs the same way.
+
+The site is everything a page's script may read, so the walk has two bounds:
+- It ends at the top of the page's repository. Before this, the first index above a page could lie outside its
+  repository, in a folder of several repositories, and the page could read the other repositories' files.
+- No site root holds the home directory, since its pages could read the ssh keys and the daemon's own token: the
+  walk stops below it, and a page whose own folder holds it is refused. Before this, a page directly in the home
+  directory, or with no index between it and an `index.html` there, was served from the home directory.
+
+The cost: an index page in any folder above a page, up to the top of its repository (a source tree's `index.html` above
+its build output, or `web/index.html` above `web/dist/`), or up to a workspace root outside any repository, now takes in
+every page below it, and those pages may read every file under it, untracked ones too. Before this, a folder with no
+index kept a nested site apart, and now a build's `dist/index.html` directly below a source `index.html` is taken in
+with no folder between. Two measured cases: a Vite build with base `./` reads the source tree's `.env.local` through
+`../.env.local`, and a page outside any repository under an index page at the workspace root reads another repository's
+`.env`; both were refused before. On a workspace that is the home folder, the walk reaches the folder below home. To
+keep a nested site apart, move or rename the outer index page. A page with root-relative links has its own origin and is narrowed, not widened: it is rooted at the innermost folder
+on the walk that holds the file its first plain link names (a Vite build's `dist/`, a Jekyll `_site/`), taking the links
+in document order and skipping any that names no file there, else at the walk's root like any page. A link is plain
+when every part is a name (no `..`, drive, `\` or `:`), and a folder counts only when the link, joined to the folder,
+names a regular file with no symlink anywhere on its path. So a link through a symlink never narrows, the page's URL,
+which its script can read, shows nothing about files outside the walk's root and confirms no guess at the page's own
+absolute path, and at most 64 distinct links are tried, which bounds the open. A rule rooting every page at the innermost folder
+that holds the files it loads would narrow the cases above; it is not taken, since a page that names a file at the walk's
+root still takes in everything under it.
+
+The repository top is the nearest folder holding `.git`, a folder or a worktree's file. A checkout with none (an extracted
+archive, a Mercurial checkout) is bounded by the workspace root, or on a home-folder workspace by the folder below home.
