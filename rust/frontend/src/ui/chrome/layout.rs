@@ -132,26 +132,17 @@ pub fn compute(
 
     // Reserve the bottom drawer first (if any) so the column rects
     // get their final vertical extent in one pass.
-    let drawer_top_y = if drawer_open && preset.drawer.is_some() {
+    let drawer_top_y = if drawer_open && preset.drawer.is_some() && area.height >= 7 {
         let h = (area.height as f32 * preset.drawer_height).round() as u16;
         // Leave at least 2 rows above the drawer line and 2 inside it
-        // so neither half collapses; clamp inside the area.
+        // so neither half collapses; clamp inside the area. Below 7 rows
+        // the minimum of 3 exceeds the rows left, so no drawer opens.
         let h = h.clamp(3, area.height.saturating_sub(4));
         let y = area.y + area.height - 1 - h;
         Some(y)
     } else {
         None
     };
-
-    // When the preset has an Llm column AND the drawer is open, the
-    // drawer is scoped to the columns left of Llm — Llm stays full
-    // height. Saves the long-vertical pane (LLM with long plans /
-    // tables) from being trimmed every time the user pops the REPL.
-    // `llm_idx` is the 0-based index in `preset.columns`; `None` falls
-    // back to the full-width drawer.
-    let llm_idx = preset.columns.iter().position(|s| *s == Slot::Llm);
-    let partial_drawer = drawer_top_y.is_some()
-        && llm_idx.map(|i| i > 0).unwrap_or(false);
 
     let full_inner_top = area.y + 1;
     let full_inner_bot = area.y + area.height - 2;
@@ -169,18 +160,44 @@ pub fn compute(
     let inner_left = area.x + 1;
     let inner_right = area.x + area.width - 2; // last interior column
     let inner_total = (inner_right as i32 - inner_left as i32 + 1).max(0) as u16;
+    // Column `i`'s share of the interior, from its fraction. Only read for
+    // `i < n - 1`: the last column takes the remainder instead.
+    let share = |i: usize| ((inner_total as f32) * preset.widths[i]).round() as u16;
+
+    // Every column's span, computed once before the walk. A column before the
+    // last takes its share, capped so its right border still lands inside the
+    // interior; the last column takes the remainder. A span under 2 is skipped
+    // and moves the cursor by nothing, as the walk below does.
+    let n = preset.columns.len();
+    let mut spans = Vec::with_capacity(n);
+    let mut next = inner_left;
+    for i in 0..n {
+        let span = if i + 1 == n {
+            inner_right.saturating_sub(next).saturating_add(1)
+        } else {
+            share(i).min(inner_right.saturating_sub(next))
+        };
+        if span >= 2 {
+            next = next.saturating_add(span).saturating_add(1);
+        }
+        spans.push(span);
+    }
+
+    // When the preset has an Llm column AND the drawer is open, the
+    // drawer is scoped to the columns left of Llm — Llm stays full
+    // height. Saves the long-vertical pane (LLM with long plans /
+    // tables) from being trimmed every time the user pops the REPL.
+    // `llm_idx` is the 0-based index in `preset.columns`; `None` falls
+    // back to the full-width drawer. The column left of Llm must be laid
+    // out (span >= 2) for its divider to exist; otherwise the drawer stays
+    // full width and every column is clipped alike.
+    let llm_idx = preset.columns.iter().position(|s| *s == Slot::Llm);
+    let partial_drawer = drawer_top_y.is_some()
+        && llm_idx.map(|i| i > 0 && spans[i - 1] >= 2).unwrap_or(false);
 
     let mut cursor = inner_left;
-    let n = preset.columns.len();
     for (i, slot) in preset.columns.iter().enumerate() {
-        let span = if i + 1 == n {
-            // Final column takes whatever's left — avoids the cumulative
-            // rounding gap that would otherwise show as a 1-cell strip
-            // at the right edge.
-            inner_right.saturating_sub(cursor).saturating_add(1)
-        } else {
-            ((inner_total as f32) * preset.widths[i]).round() as u16
-        };
+        let span = spans[i];
         if span < 2 {
             // Too small to render; skip but keep cursor stable so the
             // next column doesn't double-count.
@@ -237,13 +254,14 @@ pub fn compute(
         let drawer_inner_top = y + 1;
         let drawer_inner_bot = area.y + area.height - 2;
         if drawer_inner_top <= drawer_inner_bot {
-            let (drawer_x, drawer_w, drawer_x_end) = if partial_drawer {
-                // Drawer ends one cell before Llm's left divider.
-                let lv = geom.llm_left_vline.expect("partial_drawer ⇒ llm_left_vline");
-                let dwidth = lv.saturating_sub(inner_left); // [inner_left..lv-1] inclusive
-                (inner_left, dwidth, Some(lv.saturating_sub(1)))
-            } else {
-                (inner_left, inner_total, None)
+            // Narrow only when the divider left of Llm was laid out.
+            let (drawer_x, drawer_w, drawer_x_end) = match geom.llm_left_vline {
+                Some(lv) => {
+                    // Drawer ends one cell before Llm's left divider.
+                    let dwidth = lv.saturating_sub(inner_left); // [inner_left..lv-1] inclusive
+                    (inner_left, dwidth, Some(lv.saturating_sub(1)))
+                }
+                None => (inner_left, inner_total, None),
             };
             if drawer_w >= 2 {
                 let drawer_rect = Rect {
@@ -591,5 +609,96 @@ mod tests {
         assert_eq!(buf[(x, y)].symbol(), "│");
         assert_eq!(buf[(x, y + 1)].symbol(), "│");
         assert_eq!(buf[(x, 19)].symbol(), "┴");
+    }
+
+    #[test]
+    fn tiny_preview_width_with_drawer_open_does_not_panic() {
+        // Preview's span rounds below 2 cells, so the divider left of Llm
+        // is never laid out and the drawer must span the full width.
+        let preset = LayoutPreset {
+            columns: vec![Slot::Nav, Slot::Preview, Slot::Llm],
+            widths: vec![0.18, 0.005, 0.815],
+            drawer: Some(Slot::Repl),
+            drawer_height: 0.40,
+        };
+        let g = compute(area(160, 45), &preset, true, None);
+        assert!(g.llm_left_vline.is_none());
+        assert!(g.drawer_x_end.is_none());
+        assert!(g.repl.is_some());
+        assert!(g.llm.is_some());
+    }
+
+    #[test]
+    fn six_cell_wide_window_with_drawer_open_does_not_panic() {
+        // Inner width 4: the column left of Llm rounds below 2 cells in the
+        // ultrawide and laptop presets; portrait has no Llm column.
+        for preset in [
+            LayoutPreset::default_ultrawide(),
+            LayoutPreset::default_laptop(),
+            LayoutPreset::default_portrait(),
+        ] {
+            let g = compute(area(6, 20), &preset, true, None);
+            assert!(g.llm_left_vline.is_none());
+            assert!(g.repl.is_some());
+        }
+    }
+
+    #[test]
+    fn drawer_opens_only_from_seven_rows() {
+        // Below 7 rows the drawer's height clamp has no room (its minimum
+        // of 3 exceeds the rows left after the 4 reserved), so none opens.
+        let preset = LayoutPreset::default_ultrawide();
+        for rows in 5..7 {
+            let g = compute(area(120, rows), &preset, true, None);
+            assert!(g.repl.is_none(), "no drawer at {rows} rows");
+            assert!(g.hlines.is_empty());
+        }
+        let g = compute(area(120, 7), &preset, true, None);
+        assert!(g.repl.is_some());
+    }
+
+    /// Every column rect, divider and drawer edge lies between the border
+    /// cells of `area`.
+    fn assert_inside_interior(area: Rect, g: &LayoutGeom) {
+        let left = area.x + 1;
+        let right = area.x + area.width - 2;
+        let bottom = area.y + area.height - 2;
+        for rect in [g.nav, g.preview, g.llm, g.repl].into_iter().flatten() {
+            assert!(rect.x >= left, "{rect:?} starts left of the interior of {area:?}");
+            assert!(rect.x + rect.width - 1 <= right, "{rect:?} ends right of the interior of {area:?}");
+            assert!(rect.y + rect.height - 1 <= bottom, "{rect:?} ends below the interior of {area:?}");
+        }
+        for &x in g.vlines.iter().chain(g.drawer_x_end.iter()) {
+            assert!(x >= left && x <= right, "divider at {x} is outside the interior of {area:?}");
+        }
+    }
+
+    #[test]
+    fn every_column_and_divider_stays_inside_the_area() {
+        // `widths` renormalize on parse: 1,1,1.02,0.0001 becomes these. The
+        // repl share asks for more than the room left, and llm is too small
+        // to lay out, so the cap decides where the divider lands.
+        let squeezed = LayoutPreset {
+            columns: vec![Slot::Nav, Slot::Preview, Slot::Repl, Slot::Llm],
+            widths: vec![0.331_115, 0.331_115, 0.337_737, 0.000_033],
+            drawer: Some(Slot::Repl),
+            drawer_height: 0.40,
+        };
+        for preset in [
+            squeezed,
+            LayoutPreset::default_ultrawide(),
+            LayoutPreset::default_laptop(),
+            LayoutPreset::default_portrait(),
+        ] {
+            for width in 5..=130 {
+                for height in 5..=40 {
+                    for drawer_open in [false, true] {
+                        let a = area(width, height);
+                        let g = compute_default(a, &preset, drawer_open);
+                        assert_inside_interior(a, &g);
+                    }
+                }
+            }
+        }
     }
 }

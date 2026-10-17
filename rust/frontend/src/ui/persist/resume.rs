@@ -252,6 +252,7 @@ mod tests {
         _serial: std::sync::MutexGuard<'static, ()>,
         xdg: Option<std::ffi::OsString>,
         host: Option<std::ffi::OsString>,
+        tmp: PathBuf,
     }
     impl Drop for Guard {
         fn drop(&mut self) {
@@ -263,10 +264,12 @@ mod tests {
                 Some(v) => std::env::set_var("HOSTNAME", v),
                 None => std::env::remove_var("HOSTNAME"),
             }
+            // Removed on pass and on failure, so no test leaves its folder in TMPDIR.
+            let _ = std::fs::remove_dir_all(&self.tmp);
         }
     }
 
-    fn set_test_env() -> (Guard, PathBuf) {
+    fn set_test_env() -> Guard {
         let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!(
             "sot-state-test-{}-{}",
@@ -281,15 +284,16 @@ mod tests {
             _serial: serial,
             xdg: std::env::var_os("XDG_CONFIG_HOME"),
             host: std::env::var_os("HOSTNAME"),
+            tmp,
         };
-        std::env::set_var("XDG_CONFIG_HOME", &tmp);
+        std::env::set_var("XDG_CONFIG_HOME", &g.tmp);
         std::env::set_var("HOSTNAME", "test-host");
-        (g, tmp)
+        g
     }
 
     #[test]
     fn load_returns_defaults_on_missing_file() {
-        let (_g, _tmp) = set_test_env();
+        let _g = set_test_env();
         let s = load();
         assert!(s.last_mode.is_none());
         assert!(s.last_bl_target.is_none());
@@ -297,7 +301,7 @@ mod tests {
 
     #[test]
     fn save_then_load_round_trips() {
-        let (_g, tmp) = set_test_env();
+        let _g = set_test_env();
         let original = GlobalState {
             last_mode: Some("sessions".to_string()),
             last_bl_target: Some("sot-be-mypkg".to_string()),
@@ -321,12 +325,11 @@ mod tests {
         assert_eq!(loaded.font_scale, Some(1.3));
         assert_eq!(loaded.nav_selected_id.as_deref(), Some("files:src/foo.jl"));
         assert_eq!(loaded.nav_scroll, Some(7));
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn state_path_uses_hostname_suffix() {
-        let (_g, tmp) = set_test_env();
+        let _g = set_test_env();
         // Normalize path separator so this passes on Windows too —
         // PathBuf uses `\` there and the literal in the assertion is
         // OS-agnostic.
@@ -335,12 +338,11 @@ mod tests {
             normalized.ends_with("/sot/state-test-host.toml"),
             "got {normalized:?}"
         );
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn load_tolerates_garbage_lines() {
-        let (_g, tmp) = set_test_env();
+        let _g = set_test_env();
         let path = state_path();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
@@ -350,6 +352,5 @@ mod tests {
         .unwrap();
         let s = load();
         assert_eq!(s.last_mode.as_deref(), Some("files"));
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -80,11 +80,13 @@
 //                                   # fullscreen (measured on one laptop).
 //
 // `columns` lists named slots in left-to-right order; `widths` is the
-// matching fractional split (must sum to ~1.0; values renormalised on
-// parse). Valid slot names: nav, preview, llm. The drawer is a
-// separate bottom strip; `drawer` names the slot rendered there
-// (today only "repl") and `drawer_height` is its fraction of window
-// height when open.
+// matching fractional split, one per column (a count that differs
+// warns and keeps the columns: the built-in widths when their count
+// fits, else an equal split; values renormalized on parse so they
+// sum to ~1.0). Valid slot names: nav, preview, llm, repl. The
+// drawer is a separate bottom strip; `drawer` names the slot rendered
+// there (today only "repl") and `drawer_height` is its fraction of
+// window height when open.
 //
 // Out-of-range or unparseable values warn and fall back to the
 // default; the chrome should never crash because the user wrote a
@@ -192,7 +194,9 @@ impl Slot {
 pub struct LayoutPreset {
     pub columns: Vec<Slot>,
     /// Fractional column widths summing to (approximately) 1.0.
-    /// Same length as `columns`. Renormalised at parse time so the
+    /// Same length as `columns`; a settings file that breaks this keeps the
+    /// columns and takes the built-in widths when their count fits, else an
+    /// equal split. Renormalized at parse time so the
     /// user can write `0.167,0.333,0.5` and not worry about a stray
     /// 0.001.
     pub widths: Vec<f32>,
@@ -518,6 +522,60 @@ impl Settings {
                 }
             }
         }
+        check_widths(
+            "layout.ultrawide",
+            &mut self.ultrawide,
+            LayoutPreset::default_ultrawide(),
+        );
+        check_widths(
+            "layout.laptop",
+            &mut self.laptop,
+            LayoutPreset::default_laptop(),
+        );
+        check_widths(
+            "layout.portrait",
+            &mut self.portrait,
+            LayoutPreset::default_portrait(),
+        );
+    }
+}
+
+/// The widths `check_widths` put in place of a preset's own. Only widths can
+/// fall back: the user's columns always stand.
+#[derive(Debug, PartialEq, Eq)]
+enum WidthsFallback {
+    /// The built-in widths, whose count fits the columns.
+    BuiltIn,
+    /// An equal split, because the built-in count does not fit either.
+    EqualSplit,
+}
+
+/// `columns` and `widths` are parsed apart, so the pair is checked once every
+/// key of the file is in: one width per column. On a mismatch the columns
+/// stand, with the built-in widths when their count fits and an equal split
+/// when it does not (the window indexes widths per column). Returns the
+/// replacement made, or `None` when the counts already matched.
+fn check_widths(
+    name: &str,
+    preset: &mut LayoutPreset,
+    built_in: LayoutPreset,
+) -> Option<WidthsFallback> {
+    if preset.widths.len() == preset.columns.len() {
+        return None;
+    }
+    let n = preset.columns.len();
+    tracing::warn!(
+        preset = name,
+        columns = n,
+        widths = preset.widths.len(),
+        "widths: expected one fraction per column; keeping the columns with the built-in widths or an equal split"
+    );
+    if built_in.widths.len() == n {
+        preset.widths = built_in.widths;
+        Some(WidthsFallback::BuiltIn)
+    } else {
+        preset.widths = vec![1.0 / n as f32; n];
+        Some(WidthsFallback::EqualSplit)
     }
 }
 
