@@ -375,6 +375,39 @@ check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
 check "no .prev copy was written" "gone" "$([ -e "$d/prefix/bin/sotd.prev" ] && echo exists || echo gone)"
 
 # ---------------------------------------------------------------------------
+# pack-build.sh without a musl compiler: a gnu sotd only from a host whose glibc is within the fleet floor. The script
+# is copied into a throwaway tree so it cd's there; PATH holds stubs only, so no musl compiler is found.
+mk_pack_fixture() {  # <dir> <glibc-version>: <dir>/tree/scripts/pack-build.sh, <dir>/bin with stub getconf
+    local d="$1"
+    mkdir -p "$d/tree/scripts" "$d/bin"
+    cp "$SRC/scripts/pack-build.sh" "$d/tree/scripts/"
+    printf '#!/bin/sh\necho "glibc %s"\n' "$2" > "$d/bin/getconf"; chmod 0755 "$d/bin/getconf"
+    for t in uname dirname sort tail cut printf; do ln -s "$(command -v "$t")" "$d/bin/$t"; done
+}
+run_pack() {  # <dir>: sets PK_RC and PK_OUT
+    local d="$1"
+    PK_RC=0
+    PK_OUT="$(env -i PATH="$d/bin" /bin/bash "$d/tree/scripts/pack-build.sh" "$d/out" 2>&1)" || PK_RC=$?
+}
+case_start "pack_build_refuses_a_too_new_glibc_without_musl"
+d="$WORK/pk-new"; mk_pack_fixture "$d" 2.39; run_pack "$d"
+check "the pack exits non-zero" "yes" "$([ "$PK_RC" -ne 0 ] && echo yes || echo no)"
+check "it names the glibc floor route" "1" "$(printf '%s\n' "$PK_OUT" | grep -c 'glibc <= 2.31' || true)"
+check "it does not ask for a package install" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'install musl' || true)"
+check "nothing was packed" "gone" "$([ -e "$d/out" ] && echo exists || echo gone)"
+case_start "pack_build_passes_the_glibc_gate_at_the_floor"
+d="$WORK/pk-ok"; mk_pack_fixture "$d" 2.31; run_pack "$d"
+check "the glibc gate does not refuse" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'newer than the fleet' || true)"
+check "it goes on to the tree checks, which this git-less PATH stops" "yes" "$(printf '%s\n' "$PK_OUT" | grep -q 'git' && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+case_start "archive_install_prints_the_libc"
+d="$WORK/ar-libc"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev
+printf 'gnu (glibc 2.31, runs on glibc >= 2.31)\n' > "$d/arch/LIBC"
+( cd "$d/arch" && sha256_of "sot-1.2.3-dev-$TGT.tar.gz" COMMIT LIBC > SHA256SUMS ); run_packed "$d"
+check "the install prints the libc line" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'archive sotd libc: gnu (glibc 2.31' || true)"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-apply: all checks passed\n'

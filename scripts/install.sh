@@ -777,6 +777,8 @@ lib_rc=0
 # ---- 2. download + verify ----------------------------------------------------
 ASSETS=("SHA256SUMS" "sot-$VER-$TARGET.tar.gz")
 [ -z "$ARCHIVE" ] || ASSETS+=("COMMIT")
+# A folder packed by pack-build.sh also names the libc its sotd targets; an older folder has no LIBC.
+[ -z "$ARCHIVE" ] || [ ! -f "$ARCHIVE/LIBC" ] || ASSETS+=("LIBC")
 
 dl() {
     curl "${CURL_BOUND[@]}" -fsSL -o "$WORK/$1" "https://github.com/$REPO/releases/download/$VERSION/$1" \
@@ -794,6 +796,7 @@ if command -v sha256sum >/dev/null; then
 else
     ( cd "$WORK" && shasum -a 256 -c --ignore-missing SHA256SUMS ) || die "checksum verification FAILED"
 fi
+[ ! -f "$WORK/LIBC" ] || say "archive sotd libc: $(cat "$WORK/LIBC")"
 
 # ---- 3. unpack ---------------------------------------------------------------
 # Unpacked into $WORK only: the role resolution and the gates below run the
