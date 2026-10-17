@@ -112,9 +112,12 @@ if (-not $env:SOT_APPLY_REEXECED -and -not $DropOnly -and (Test-Path -LiteralPat
         $stageApply = Join-Path ([string]$stagePtr.checkout) 'scripts\sot-apply.ps1'
         if (Test-Path -LiteralPath $stageApply) {
             Write-ApplyLog "re-executing the staged sot-apply ($stageApply)"
+            # The variable guards the staged copy's own run only: this script also runs in-process in the resident
+            # supervisor, which would otherwise carry it for life and skip every later hand-off.
             $env:SOT_APPLY_REEXECED = '1'
-            & $stageApply @PSBoundParameters
-            exit $LASTEXITCODE
+            try { & $stageApply @PSBoundParameters; $stageCode = $LASTEXITCODE }
+            finally { Remove-Item Env:SOT_APPLY_REEXECED -ErrorAction SilentlyContinue }
+            exit $stageCode
         }
     }
 }
