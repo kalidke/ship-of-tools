@@ -297,7 +297,7 @@ if (-not (Test-Path -LiteralPath $realSotd)) {
     Check 'below the install: binary untouched' ((Get-Content (Join-Path $f9.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'downgraded'
     Check 'below the install: install.json untouched' ((Get-Content (Join-Path $p9 'install.json') -Raw) -match '"tag":\s*"v0\.7\.0"') 'install.json moved'
     Check 'below the install: pointer dropped' (-not (Test-Path (Join-Path $f9.updates 'pending-windows-x86_64.json'))) 'pointer kept'
-    Check 'below the install: said why' (($out9 -join ' ') -match 'will not apply') "log was: $out9"
+    Check 'below the install: said why' (($out9 -join ' ') -match 'is not above the installed') "log was: $out9"
 
     # A record over another install: armed over v0.4.0, the install is v0.5.0.
     $p9b = Join-Path $root 'p9b'
@@ -306,9 +306,21 @@ if (-not (Test-Path -LiteralPath $realSotd)) {
     $pp9b = Join-Path $f9b.updates 'pending-windows-x86_64.json'
     Add-RustFields $pp9b '0.6.0' '0.4.0' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     Check 'armed over another install: the installed sotd refuses the pointer itself (exit 3)' ((Get-SotdExit (Join-Path $f9b.bin 'sotd.exe') $p9b) -eq 3) 'the sotd did not answer 3'
-    & $apply -Prefix $p9b 6>&1 2>&1 | Out-Null
+    $out9b = & $apply -Prefix $p9b 6>&1 2>&1
+    Check 'armed over another install: said why' (($out9b -join ' ') -match 'armed over 0\.4\.0') "log was: $out9b"
     Check 'armed over another install: binary untouched' ((Get-Content (Join-Path $f9b.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied'
     Check 'armed over another install: pointer dropped' (-not (Test-Path $pp9b)) 'pointer kept'
+
+    # A pointer the sotd cannot read (the fixture's own shape: every field the applier reads, none of schema, repo and
+    # version) is dropped, not applied: the applier must not guess at a file the daemon's reader refuses.
+    $p9d = Join-Path $root 'p9d'
+    $f9d = New-Fixture $p9d 'v0.5.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9d.bin 'sotd.exe') -Force
+    Check 'unreadable pointer: the installed sotd refuses it itself (exit 3)' ((Get-SotdExit (Join-Path $f9d.bin 'sotd.exe') $p9d) -eq 3) 'the sotd did not answer 3'
+    $out9d = & $apply -Prefix $p9d 6>&1 2>&1
+    Check 'unreadable pointer: said so' (($out9d -join ' ') -match 'unreadable pointer') "log was: $out9d"
+    Check 'unreadable pointer: binary untouched' ((Get-Content (Join-Path $f9d.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied'
+    Check 'unreadable pointer: pointer dropped' (-not (Test-Path (Join-Path $f9d.updates 'pending-windows-x86_64.json'))) 'pointer kept'
 
     # A pointer above the install, with no record: applies.
     $p9c = Join-Path $root 'p9c'

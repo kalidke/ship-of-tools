@@ -195,12 +195,14 @@ else
     run_apply "$RD"; sed 's/^/      | /' "$RD/out"
     check "below the install: nothing is downgraded" "v9.9.10 same" "$(installed_tag "$RD") $(cmp -s "$RD/sotd.orig" "$RD/prefix/bin/sotd" && echo same || echo differ)"
     check "below the install: the pointer is dropped" "gone" "$(armed "$RD")"
+    check "below the install: the reason is the version judgement" "1" "$(grep -c 'will not apply (9.9.9 is not above the installed 9.9.10)' "$RD/out" || true)"
     real_apply pr2 v9.9.8 9.9.9
     run_apply "$RD"
     check "above the install: a pointer with no record applies" "v9.9.9 gone" "$(installed_tag "$RD") $(armed "$RD")"
     real_apply pr3 v9.9.8 9.9.9 9.9.7 aaa
     run_apply "$RD"
     check "armed over another install: refused" "v9.9.8 gone" "$(installed_tag "$RD") $(armed "$RD")"
+    check "armed over another install: the reason names the record" "1" "$(grep -c 'will not apply (armed over 9.9.7 but the install is now 9.9.8' "$RD/out" || true)"
     real_apply pr4 v9.9.8 9.9.9 9.9.8 bbb
     run_apply "$RD"
     check "armed over the same version at another commit: refused" "v9.9.8 gone" "$(installed_tag "$RD") $(armed "$RD")"
@@ -212,10 +214,12 @@ else
     grep -v -e '"schema"' -e '"repo"' -e '"version"' -e '"armed_at"' "$RD/prefix/updates/pending-$TGT.json" > "$RD/ptr.new"
     mv "$RD/ptr.new" "$RD/prefix/updates/pending-$TGT.json"
     run_apply "$RD"
-    check "a pointer the sotd cannot parse: refused" "v9.9.8 gone" "$(installed_tag "$RD") $(armed "$RD")"
+    check "a pointer the sotd cannot read is dropped, not applied" "v9.9.8 gone" "$(installed_tag "$RD") $(armed "$RD")"
+    check "it says the pointer is unreadable" "1" "$(grep -c 'will not apply (unreadable pointer: ' "$RD/out" || true)"
     real_apply pr7 v9.9.8-dev+abc 9.9.9
     run_apply "$RD"
     check "a pointer with no record onto a dev build: refused" "v9.9.8-dev+abc gone" "$(installed_tag "$RD") $(armed "$RD")"
+    check "a pointer with no record onto a dev build: the reason names the dev build" "1" "$(grep -c 'is a dev build' "$RD/out" || true)"
 fi
 
 # ---------------------------------------------------------------------------

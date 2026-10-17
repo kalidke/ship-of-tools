@@ -168,7 +168,7 @@ async fn refusal(prefix: &Path, target: &str) -> Option<String> {
     match pending::read(&updates, target).await {
         Ok(None) => None,
         Ok(Some(ptr)) => pending::stale_reason(&ptr, &installed),
-        Err(e) => Some(format!("the pending pointer cannot be read: {e:#}")),
+        Err(e) => Some(format!("unreadable pointer: {e:#}")),
     }
 }
 
@@ -321,16 +321,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_pointer_that_cannot_be_read_is_refused_with_the_parse_error() {
+    async fn a_pointer_that_cannot_be_read_is_refused_with_the_error() {
         let garbled = prefix(("0.6.6-rc9.13", "c0"), Some(("0.6.6-rc9.14", None)));
         let path = garbled.path().join("updates").join(format!("pending-{T}.json"));
-        std::fs::write(&path, b"{not json").unwrap();
+        let why = |text: &[u8]| {
+            std::fs::write(&path, text).unwrap();
+            refusal(garbled.path(), T)
+        };
+        let asha = "ab".repeat(32);
+        let full = |tag: &str, version: &str| {
+            format!(
+                r#"{{"schema":1,"repo":"kalidke/ship-of-tools","tag":"{tag}","version":"{version}","target":"{T}","asset":"sot-{version}-{T}.tar.gz","asset_sha256":"{asha}","checkout":"/x","commit":"cc","armed_at":1}}"#
+            )
+        };
+        let cases = [
+            ("not json", "{not json".to_string()),
+            ("no schema, repo or version", format!(r#"{{"tag":"v0.6.6-rc9.14","target":"{T}"}}"#)),
+            ("no version", full("v0.6.6-rc9.14", "0.6.6-rc9.14").replace(r#""version":"0.6.6-rc9.14","#, "")),
+            ("tag and version disagree", full("v0.6.6-rc9.14", "0.6.6-rc9.15")),
+        ];
+        for (name, text) in cases {
+            let why = why(text.as_bytes()).await.unwrap_or_else(|| panic!("{name}: not refused"));
+            assert!(why.starts_with("unreadable pointer: "), "{name}: {why}");
+        }
         assert_eq!(code(&garbled).await, REFUSED);
-        let why = refusal(garbled.path(), T).await.unwrap();
-        assert!(why.contains("cannot be read") && why.contains("parsing"), "{why}");
-        // A pointer without the fields every Rust writer writes (schema, repo, version) is just as unreadable.
-        std::fs::write(&path, br#"{"tag":"v0.6.6-rc9.14","target":"linux-x86_64"}"#).unwrap();
-        assert_eq!(code(&garbled).await, REFUSED);
+        // The same pointer, whole and above the install, is read and fits.
+        assert!(why(full("v0.6.6-rc9.14", "0.6.6-rc9.14").as_bytes()).await.is_none());
     }
 
     // The review's measurement: a no-record release pointer above a dev stamp used to be answered `ok`.
