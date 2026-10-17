@@ -305,6 +305,7 @@ mk_archive() {  # <dir> <digest-of-the-tarball 0|1> <with-COMMIT 0|1>: <dir>/arc
         printf '%064d  sot-1.2.3-dev-%s.tar.gz\n' 0 "$TGT" > "$a/SHA256SUMS"
     fi
     [ "$3" = 0 ] || printf '%s\n' 0123456789abcdef0123456789abcdef01234567 > "$a/COMMIT"
+    [ "$3" = 0 ] || ( cd "$a" && sha256_of COMMIT >> SHA256SUMS )
 }
 run_archive() {  # <dir>: sets AR_RC and AR_OUT
     local d="$1"
@@ -553,6 +554,88 @@ check "a checkout whose commit cannot be read decides nothing" "0" "$(grep -c 'u
 render_sot_launch "$d/prefix" "$TGT" "$d/launch" >/dev/null 2>&1 || true
 check "the rendered wrapper refreshes comm after the apply and before the ensure" "refresh<ensure" \
     "$(awk '/sot_comm_refresh/ && !r { r = NR } /sot_daemon_ensure/ && !e { e = NR } /^if apply_pending/ && !a { a = NR } END { print (a && r > a && r < e) ? "refresh<ensure" : "a=" a " r=" r " e=" e }' "$d/launch")"
+# pack-build.sh without a musl compiler: a gnu sotd only from a host whose glibc is within the fleet floor. The script
+# is copied into a throwaway tree so it cd's there; PATH holds stubs only, so no musl compiler is found. Its first check
+# refuses every host but Linux x86_64, so its cases are that platform's: elsewhere they print SKIP lines.
+mk_pack_fixture() {  # <dir> <glibc-version>: <dir>/tree/scripts/pack-build.sh, <dir>/bin with stub getconf
+    local d="$1"
+    mkdir -p "$d/tree/scripts" "$d/bin"
+    cp "$SRC/scripts/pack-build.sh" "$d/tree/scripts/"
+    printf '#!/bin/sh\necho "glibc %s"\n' "$2" > "$d/bin/getconf"; chmod 0755 "$d/bin/getconf"
+    for t in uname dirname sort tail cut; do ln -s "$(command -v "$t")" "$d/bin/$t"; done
+}
+run_pack() {  # <dir>: sets PK_RC and PK_OUT
+    local d="$1"
+    PK_RC=0
+    PK_OUT="$(env -i PATH="$d/bin" /bin/bash "$d/tree/scripts/pack-build.sh" "$d/out" 2>&1)" || PK_RC=$?
+}
+pack_check() {  # <description> <expected> <actual>: check on Linux x86_64; elsewhere a SKIP line
+    if [ "$(uname -sm)" = "Linux x86_64" ]; then check "$@"; else printf '    SKIP %s (pack-build.sh runs on Linux x86_64 only)\n' "$1"; fi
+}
+case_start "pack_build_refuses_a_too_new_glibc_without_musl"
+d="$WORK/pk-new"; mk_pack_fixture "$d" 2.39; run_pack "$d"
+pack_check "the pack exits non-zero" "yes" "$([ "$PK_RC" -ne 0 ] && echo yes || echo no)"
+pack_check "it names the glibc floor route" "1" "$(printf '%s\n' "$PK_OUT" | grep -c 'glibc <= 2.31' || true)"
+pack_check "it does not ask for a package install" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'install musl' || true)"
+pack_check "nothing was packed" "gone" "$([ -e "$d/out" ] && echo exists || echo gone)"
+case_start "pack_build_passes_the_glibc_gate_at_the_floor"
+d="$WORK/pk-ok"; mk_pack_fixture "$d" 2.31; run_pack "$d"
+pack_check "the glibc gate does not refuse" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'newer than the fleet' || true)"
+pack_check "it goes on to the tree checks, which this git-less PATH stops" "yes" "$(printf '%s\n' "$PK_OUT" | grep -q 'git' && echo yes || echo no)"
+case_start "pack_build_names_an_unreadable_glibc_without_musl"
+d="$WORK/pk-bad-getconf"; mk_pack_fixture "$d" 2.31; printf '#!/bin/sh\nexit 1\n' > "$d/bin/getconf"; run_pack "$d"
+pack_check "the pack exits non-zero when getconf fails" "yes" "$([ "$PK_RC" -ne 0 ] && echo yes || echo no)"
+pack_check "it names the unreadable glibc when getconf fails" "1" "$(printf '%s\n' "$PK_OUT" | grep -c 'no readable glibc version' || true)"
+d="$WORK/pk-no-getconf"; mk_pack_fixture "$d" 2.31; rm -f "$d/bin/getconf"; run_pack "$d"
+pack_check "the pack exits non-zero when getconf is absent" "yes" "$([ "$PK_RC" -ne 0 ] && echo yes || echo no)"
+pack_check "it names the unreadable glibc when getconf is absent" "1" "$(printf '%s\n' "$PK_OUT" | grep -c 'no readable glibc version' || true)"
+case_start "pack_build_orders_glibc_versions_by_number"
+for v in 2.4 2.9; do
+    d="$WORK/pk-order-$v"; mk_pack_fixture "$d" "$v"; run_pack "$d"
+    pack_check "glibc $v is older than the floor, so the gate does not refuse it" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'newer than the fleet' || true)"
+done
+case_start "pack_build_takes_the_musl_branch_when_a_musl_compiler_is_present"
+d="$WORK/pk-musl"; mk_pack_fixture "$d" 2.39; printf '#!/bin/sh\nexit 0\n' > "$d/bin/musl-gcc"; chmod 0755 "$d/bin/musl-gcc"; run_pack "$d"
+pack_check "with a musl compiler the glibc gate does not refuse 2.39" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'newer than the fleet' || true)"
+pack_check "it goes on to the tree checks, which this git-less PATH stops" "yes" "$(printf '%s\n' "$PK_OUT" | grep -q 'git' && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+case_start "archive_install_prints_the_libc"
+d="$WORK/ar-libc"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev
+printf 'gnu (glibc 2.31, runs on glibc >= 2.31)\n' > "$d/arch/LIBC"
+( cd "$d/arch" && sha256_of "sot-1.2.3-dev-$TGT.tar.gz" COMMIT LIBC > SHA256SUMS ); run_packed "$d"
+check "the install prints the libc line" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'archive sotd libc: gnu (glibc 2.31' || true)"
+
+# ---------------------------------------------------------------------------
+# A sotd that cannot run here: the install prints its loader's error and the libc its pack names, and blames nothing.
+case_start "archive_install_names_the_libc_when_its_sotd_cannot_run"
+d="$WORK/ar-norun"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev
+printf 'gnu (glibc 2.31, runs on glibc >= 2.31)\n' > "$d/arch/LIBC"
+printf '#!/bin/sh\necho "loader: GLIBC_2.34 not found (required by sotd)" >&2\nexit 1\n' > "$d/pack/sot-1.2.3-dev-$TGT/sotd"
+chmod 0755 "$d/pack/sot-1.2.3-dev-$TGT/sotd"
+tar -czf "$d/arch/sot-1.2.3-dev-$TGT.tar.gz" -C "$d/pack" "sot-1.2.3-dev-$TGT"
+( cd "$d/arch" && sha256_of "sot-1.2.3-dev-$TGT.tar.gz" COMMIT LIBC > SHA256SUMS ); run_packed "$d"
+check "an unrunnable sotd makes the install exit non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
+check "it prints the loader's error" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'GLIBC_2.34 not found' || true)"
+check "it names the pack's libc" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'archive sotd libc: gnu (glibc 2.31' || true)"
+check "it does not blame TMPDIR" "0" "$(printf '%s\n' "$AR_OUT" | grep -c 'noexec' || true)"
+check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
+
+# ---------------------------------------------------------------------------
+# --ignore-missing checks only the names SHA256SUMS lists, so a copied COMMIT or LIBC it does not list is refused, not trusted.
+case_start "archive_install_refuses_a_copied_asset_its_sha256sums_does_not_list"
+d="$WORK/ar-unlisted-libc"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev
+printf 'gnu (glibc 2.31, runs on glibc >= 2.31)\n' > "$d/arch/LIBC"; run_packed "$d"
+check "an unlisted LIBC makes the install exit non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
+check "it names LIBC as unlisted" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'LIBC is not listed in' || true)"
+check "it refuses before the commit is fetched" "0" "$(printf '%s\n' "$AR_OUT" | grep -c 'is not in origin' || true)"
+check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
+d="$WORK/ar-unlisted-commit"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev
+( cd "$d/arch" && sha256_of "sot-1.2.3-dev-$TGT.tar.gz" > SHA256SUMS ); run_packed "$d"
+check "an unlisted COMMIT makes the install exit non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
+check "it names COMMIT as unlisted" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'COMMIT is not listed in' || true)"
+check "it refuses before the commit is fetched" "0" "$(printf '%s\n' "$AR_OUT" | grep -c 'is not in origin' || true)"
+check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
 
 # ---------------------------------------------------------------------------
 printf '\n'

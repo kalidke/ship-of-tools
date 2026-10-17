@@ -639,7 +639,7 @@ while [ $# -gt 0 ]; do
         # (`sotd topology sync`) with the unpacked sotd, below.
         --hub) HUB_ALIAS="${2:?--hub needs an ssh alias}"; shift ;;
         --version) VERSION="${2:?}"; shift ;;
-        # A folder scripts/pack-build.sh packed: SHA256SUMS, the tarball and COMMIT, installed in place of a download.
+        # A folder scripts/pack-build.sh packed: SHA256SUMS, the tarball, COMMIT and LIBC when present, installed in place of a download.
         --archive) ARCHIVE="${2:?--archive needs a folder}"; shift ;;
         --prefix) PREFIX="${2:?}"; shift ;;
         # Skip the systemd unit install/enable: the caller supervises sotd
@@ -777,6 +777,8 @@ lib_rc=0
 # ---- 2. download + verify ----------------------------------------------------
 ASSETS=("SHA256SUMS" "sot-$VER-$TARGET.tar.gz")
 [ -z "$ARCHIVE" ] || ASSETS+=("COMMIT")
+# A folder packed by pack-build.sh also names the libc its sotd targets; an older folder has no LIBC.
+[ -z "$ARCHIVE" ] || [ ! -f "$ARCHIVE/LIBC" ] || ASSETS+=("LIBC")
 
 dl() {
     curl "${CURL_BOUND[@]}" -fsSL -o "$WORK/$1" "https://github.com/$REPO/releases/download/$VERSION/$1" \
@@ -784,7 +786,12 @@ dl() {
 }
 if [ -n "$ARCHIVE" ]; then
     say "copying ${#ASSETS[@]} assets from $ARCHIVE"
-    for a in "${ASSETS[@]}"; do cp "$ARCHIVE/$a" "$WORK/$a" || die "cannot copy $a from $ARCHIVE"; done
+    for a in "${ASSETS[@]}"; do
+        # sha256sum -c --ignore-missing checks only the names SHA256SUMS lists, so an unlisted asset would pass unchecked.
+        [ "$a" = SHA256SUMS ] || grep -q -E "^[0-9a-fA-F]+ [ *]$a\$" "$ARCHIVE/SHA256SUMS" \
+            || die "$a is not listed in $ARCHIVE/SHA256SUMS; every copied asset must be checksummed"
+        cp "$ARCHIVE/$a" "$WORK/$a" || die "cannot copy $a from $ARCHIVE"
+    done
 else
     say "downloading ${#ASSETS[@]} assets"
     for a in "${ASSETS[@]}"; do dl "$a"; done
@@ -794,6 +801,7 @@ if command -v sha256sum >/dev/null; then
 else
     ( cd "$WORK" && shasum -a 256 -c --ignore-missing SHA256SUMS ) || die "checksum verification FAILED"
 fi
+[ ! -f "$WORK/LIBC" ] || say "archive sotd libc: $(cat "$WORK/LIBC")"
 
 # ---- 3. unpack ---------------------------------------------------------------
 # Unpacked into $WORK only: the role resolution and the gates below run the
@@ -802,9 +810,11 @@ mkdir -p "$CONFIG"
 tar -xzf "$WORK/sot-$VER-$TARGET.tar.gz" -C "$WORK"
 BINDIR="$WORK/sot-$VER-$TARGET"
 # Every answer the gates read comes from this sotd, so one that cannot run here
-# (a TMPDIR mounted noexec) stops the install instead of reading as a topology.
-"$BINDIR/sotd" --version >/dev/null 2>&1 \
-    || die "the unpacked sotd cannot run from $WORK (is ${TMPDIR:-/tmp} mounted noexec?); set TMPDIR to a folder that allows execution"
+# stops the install instead of reading as a topology. Its loader's error says why.
+if ! "$BINDIR/sotd" --version >/dev/null 2>"$WORK/sotd.err"; then
+    cat "$WORK/sotd.err" >&2
+    die "the unpacked sotd cannot run on this host (its error is above)"
+fi
 # An archive's binaries name their own version and commit: they must be the ones its folder (SHA256SUMS, COMMIT) names,
 # so a half-written or mislabelled folder installs nothing.
 if [ -n "$ARCHIVE" ]; then
@@ -935,7 +945,7 @@ if [ "$OS" = Linux ] && [ "$WANT_FRONTEND" = 1 ]; then
     [ -n "$glibc" ] || glibc=0
     lowest="$(printf '%s\n%s\n' "$GLIBC_FLOOR_FE" "$glibc" | sort -V | sed -n 1p)"
     [ "$lowest" = "$GLIBC_FLOOR_FE" ] \
-        || die "the frontend binary needs glibc >= $GLIBC_FLOOR_FE (this box: $glibc). The backend (musl, --be-only) runs anywhere."
+        || die "the frontend binary needs glibc >= $GLIBC_FLOOR_FE (this box: $glibc); --be-only installs the backend without it."
 fi
 
 # ---- ownership gate ------------------------------------------------------------

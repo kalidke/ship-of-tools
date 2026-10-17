@@ -77,8 +77,10 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ### Install
 - `install.sh`: the Unix installer; the one-liner fetches its own tag's copy; `--archive <folder>` installs a packed
   folder in place of a release download.
-- `pack-build.sh`: builds this checkout's Linux release archive, COMMIT and SHA256SUMS into a folder, as release.yml's
-  Linux job does.
+- `pack-build.sh`: builds this checkout's Linux release archive, COMMIT, LIBC and SHA256SUMS into a folder, as
+  release.yml's Linux job does. sotd and sot-capsule are musl static when a musl compiler is present; with none it
+  builds them for the gnu target and only on a host whose glibc is at most `FLEET_GLIBC_FLOOR` (the fleet's oldest
+  glibc host, so the binaries run everywhere), else it refuses. `install.sh --archive` prints the LIBC line.
 - `pack-build.ps1`: the same for Windows, as release.yml's Windows job does; `sotd update stage <folder> --prefix <prefix>`
   arms the folder for the supervisor's converge.
 - `sot.svg`: the desktop-entry icon the sot-setup skill names.
