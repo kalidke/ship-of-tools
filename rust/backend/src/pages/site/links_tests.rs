@@ -127,7 +127,7 @@ async fn widened(f: &Fixture) -> Site {
 
 /// The one answer to a linked path a link may not serve, whether or not it exists.
 fn r3(asked: &str, link: &str) -> String {
-    format!("refused: {asked} is behind the tracked link {link}, and a link serves only a file that exists on this host under /mnt, /media or /Volumes, outside the home folder and hidden folders, through a link that points into those folders and not at a folder holding the home folder or the repository (is its share mounted?)")
+    format!("refused: {asked} is behind the tracked link {link}, and a link serves only a file that exists on this host under /mnt, /media or /Volumes, outside the home folder and hidden folders, through a link written as an absolute path into those folders, with no symlink below it (is its share mounted?)")
 }
 
 /// The bounds of the real mount folders and this account's home folder, and that home folder, read while holding the
@@ -203,16 +203,16 @@ async fn d_dotdot_is_refused_r1() {
     remove_root(serial);
 }
 
-/// A link inside the linked folder is followed within the bounds and refused out of them.
+/// No symlink below a link is followed: one that leads out of the share and one that leads to another place on it are
+/// refused alike.
 #[tokio::test]
-async fn e_a_link_inside_the_linked_folder_serves_only_within_the_bounds() {
+async fn e_a_symlink_below_a_link_is_refused_whether_it_leaves_the_share_or_not() {
     let f = fixture();
     let (addr, nonce, serial) = serve(widened(&f).await).await;
-    let (st, _, body) = get(addr, &format!("/{nonce}/data/results/r1/side/fig.png"), &[]).await;
-    assert_eq!((st, body_text(&body)), (200, "png".to_string()));
-    let asked = "data/results/r1/esc/secret.txt";
-    let (st, _, body) = get(addr, &format!("/{nonce}/{asked}"), &[]).await;
-    assert_eq!((st, body_text(&body)), (403, r3(asked, "data")));
+    for asked in ["data/results/r1/side/fig.png", "data/results/r1/esc/secret.txt"] {
+        let (st, _, body) = get(addr, &format!("/{nonce}/{asked}"), &[]).await;
+        assert_eq!((st, body_text(&body)), (403, r3(asked, "data")), "{asked}");
+    }
     remove_root(serial);
 }
 
@@ -757,13 +757,20 @@ async fn a_link_target_written_other_than_as_its_absolute_real_path_gets_r3_what
     symlink(home.join("work"), repo.join("data/h")).unwrap();
     symlink(f.base.join("home/wrong/work"), repo.join("data/h2")).unwrap();
     symlink(repo.join("data"), repo.join("site/x")).unwrap();
+    // A link to the share folder holding the repository must not walk into it and follow its committed links.
+    symlink(&f.share, repo.join("site/s")).unwrap();
     git(&repo, &["add", "site", "data"]);
     let mut site = opened(&f, repo.join("site"), repo.clone()).await;
     site.bounds = Bounds::new(&[&f.base.join("mnt")], Some(home.as_path()));
     let (addr, nonce, serial) = serve(site).await;
-    for asked in ["site/x/h/proj/nas/results/r1/movie.mp4", "site/x/h2/proj/nas/results/r1/movie.mp4"] {
+    for (l, asked) in [
+        ("site/x", "site/x/h/proj/nas/results/r1/movie.mp4"),
+        ("site/x", "site/x/h2/proj/nas/results/r1/movie.mp4"),
+        ("site/s", "site/s/clone/data/h/proj/nas/results/r1/movie.mp4"),
+        ("site/s", "site/s/clone/data/h2/proj/nas/results/r1/movie.mp4"),
+    ] {
         let (st, _, body) = get(addr, &format!("/{nonce}/{asked}"), &["Range: bytes=0-9"]).await;
-        assert_eq!((st, body_text(&body)), (403, r3(asked, "site/x")), "{asked}");
+        assert_eq!((st, body_text(&body)), (403, r3(asked, l)), "{asked}");
     }
     remove_root(serial);
 }

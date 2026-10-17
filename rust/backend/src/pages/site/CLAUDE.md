@@ -29,8 +29,11 @@ daemon's page serving; charter: rust/backend/src/pages/CLAUDE.md.
   tracks it and the file's canonical path lies under a mount folder (`MOUNT_FOLDERS`), outside the home folder, with no
   hidden part below the mount folder (`Bounds`, fixed in code: no file lists data folders), and outside the
   repository; the link's own target is judged first: as text, absolute plain names starting with a mount folder as
-  written, before any lookup; then equal to its canonical path (no symlink on its way), inside the same bounds and
-  outside the repository; the final open is `open_beneath` that mount folder. Links are followed only on unix (R2d).
+  written, before anything below the link is looked up; then equal to its canonical path (no symlink on its way),
+  inside the same bounds and outside the repository. A tracked link serves exactly the files under its written target,
+  reached by their written names, with no symlink anywhere below the link: the file is the target joined with the
+  names asked, and the final open is `open_beneath` that mount folder, a symlink on the way answering as a missing
+  file. Links are followed only on unix (R2d).
 - Past the fast path no answer depends on whether a path exists: a path that reaches no link gets R2a, and a linked
   path that does not serve (target or file outside the bounds, missing, unreadable, not a regular file) gets R3; each
   names the path as asked.

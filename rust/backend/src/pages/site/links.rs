@@ -465,6 +465,18 @@ pub(crate) fn resolve_and_open(
         q.push(p);
     }
     let asked = if parts.is_empty() { "index.html".to_string() } else { parts.join("/") };
+    // A link whose target text leads out of the site folder and is not a plain
+    // absolute path under a mount folder is answered before anything below it
+    // is looked up.
+    #[cfg(unix)]
+    if let Some(link) = first_link(site, &parts) {
+        if leads_out_by_text(site, &link) {
+            let l = link.to_string_lossy().into_owned();
+            tracked_gate(site, &link, &asked, &l)?;
+            tracing::info!(path = asked, why = "the link's target is not an absolute path of plain names under a mount folder", "site_serve: a linked path is outside the bounds");
+            return Err(refused_r3(&asked, &l));
+        }
+    }
     if parts.is_empty() || q.is_dir() {
         q.push("index.html");
         parts.push("index.html");
@@ -479,22 +491,10 @@ pub(crate) fn resolve_and_open(
         }
     }
 
-    // Slow path: find the first symlink below url_root.
-    let mut cur = site.url_root.clone();
-    let mut link = PathBuf::new();
-    let mut found = false;
-    for p in &parts {
-        cur.push(p);
-        link.push(p);
-        match std::fs::symlink_metadata(&cur) {
-            Err(_) => break,
-            Ok(m) if m.file_type().is_symlink() => {
-                found = true;
-                break;
-            }
-            Ok(_) => {}
-        }
-    }
+    // Slow path: the first symlink below url_root.
+    let first = first_link(site, &parts);
+    let found = first.is_some();
+    let link = first.unwrap_or_default();
     if !found {
         // No existence oracle outside S: whether or not the path exists, is a
         // folder or has an index, it gets this one answer, named as asked.
@@ -523,6 +523,70 @@ pub(crate) fn resolve_and_open(
     follow_link(site, &q, &asked, &shown, &link, &l)
 }
 
+/// R2e and R2b: git runs here, and tracks the link.
+#[cfg(unix)]
+fn tracked_gate(site: &Site, link: &Path, asked: &str, l: &str) -> Result<(), Refusal> {
+    let forbid = |code: &str, body: String| refuse(asked, "403 Forbidden", code, body);
+    if site.git.as_ref().is_some_and(|g| !g.usable) {
+        return Err(forbid("R2e", format!("refused: {l} is a link, and {NO_GIT}")));
+    }
+    let tracked = site.git.as_ref().is_some_and(|g| g.links(&site.url_root).contains(link));
+    if !tracked {
+        return Err(forbid("R2b", format!("refused: {l} is a link git does not track in this repo, so it is not followed (git add it: it serves at the next request)")));
+    }
+    Ok(())
+}
+
+/// The first symlink on `parts` below the URL root, by `lstat` of each name.
+fn first_link(site: &Site, parts: &[&str]) -> Option<PathBuf> {
+    let mut cur = site.url_root.clone();
+    let mut link = PathBuf::new();
+    for p in parts {
+        cur.push(p);
+        link.push(p);
+        match std::fs::symlink_metadata(&cur) {
+            Err(_) => return None,
+            Ok(m) if m.file_type().is_symlink() => return Some(link),
+            Ok(_) => {}
+        }
+    }
+    None
+}
+
+/// Whether `link`'s raw target text leads out of the content root and is not
+/// the plain absolute path under a mount folder a link is judged by: such a
+/// link serves nothing, so nothing below it is looked up. A target that stays
+/// in the content root (by name) is left to the site's own fast path.
+#[cfg(unix)]
+fn leads_out_by_text(site: &Site, link: &Path) -> bool {
+    use std::path::Component;
+    let at = site.url_root.join(link);
+    let Ok(raw) = std::fs::read_link(&at) else { return false };
+    if plain_mount_path(&site.bounds, &raw).is_some() {
+        return false;
+    }
+    let mut lexical = PathBuf::new();
+    for c in at.parent().unwrap_or(Path::new("/")).join(&raw).components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                lexical.pop();
+            }
+            c => lexical.push(c.as_os_str()),
+        }
+    }
+    !lexical.starts_with(&site.content_root)
+}
+
+/// `raw` as the canonical path it names when it is absolute, made of plain
+/// names, and starts with a mount folder (as written or canonical).
+#[cfg(unix)]
+fn plain_mount_path(bounds: &Bounds, raw: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let plain = raw.is_absolute() && raw.components().all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+    plain.then(|| bounds.as_written(raw)).flatten()
+}
+
 #[cfg(unix)]
 fn follow_link(
     site: &Site,
@@ -532,14 +596,7 @@ fn follow_link(
     link: &Path,
     l: &str,
 ) -> Result<(std::fs::File, PathBuf), Refusal> {
-    let forbid = |code: &str, body: String| refuse(asked, "403 Forbidden", code, body);
-    if site.git.as_ref().is_some_and(|g| !g.usable) {
-        return Err(forbid("R2e", format!("refused: {l} is a link, and {NO_GIT}")));
-    }
-    let tracked = site.git.as_ref().is_some_and(|g| g.links(&site.url_root).contains(link));
-    if !tracked {
-        return Err(forbid("R2b", format!("refused: {l} is a link git does not track in this repo, so it is not followed (git add it: it serves at the next request)")));
-    }
+    tracked_gate(site, link, asked, l)?;
     // One answer whether the link's target or the file is missing, private or
     // hidden, so a committed link learns nothing about what exists there; the
     // log says which.
@@ -552,33 +609,31 @@ fn follow_link(
         }
     };
     let rel = f.strip_prefix(&m).expect("base_for found f under m");
-    // A file past the bounds that will not open (unreadable, gone) or is not a
-    // regular file (a FIFO, a socket) is the missing file's answer.
+    // A file past the bounds that will not open (unreadable, gone, a symlink on
+    // its way) or is not a regular file (a FIFO, a socket) is the missing file's
+    // answer.
     match open_checked(&m, rel, shown) {
         Ok(file) if file.metadata().map_or(false, |md| md.is_file()) && !on_kernel_filesystem(&file) => Ok((file, f)),
-        Ok(_) => Err(refused_r3(asked, l)),
-        Err(r) if r.status.starts_with("404") => Err(refused_r3(asked, l)),
-        Err(r) => Err(r),
+        _ => Err(refused_r3(asked, l)),
     }
 }
 
-/// The link's target is judged as text first, before any lookup: absolute, plain
-/// names only (no `.` or `..` part, so no name of a private folder can be walked
-/// into and left again) and starting with a mount folder as written. Only then
-/// is it resolved, and with that mount folder mapped to its canonical path it
-/// must equal its canonical path `t` (no symlink on its way: a route through the
-/// home folder or another link is refused whatever it ends on), lie in the
-/// bounds like a file and outside the repository `top`; then the canonical file
-/// `f` of `q` must lie in the bounds and outside the repository, whose files
-/// serve only from the site folder. Returns the mount folder `f` is opened
-/// beneath, and `f`; or why not.
+/// A tracked link serves exactly the files under its written target, reached by
+/// their written names, with no symlink anywhere below the link.
+///
+/// The link's target is judged as text (absolute, plain names only, starting
+/// with a mount folder), then must equal its canonical path `t` (no symlink on
+/// its way), lie in the bounds and outside the repository `top`. The file is
+/// `t` joined with the names asked below the link; it must lie in the bounds
+/// and outside the repository, whose files serve only from the site folder, and
+/// is opened name by name without following a symlink, so any symlink below the
+/// link answers as a missing file does. Returns the mount folder the file is
+/// opened beneath, and the file; or why not.
 #[cfg(unix)]
 fn judge(site: &Site, q: &Path, link: &Path, top: Option<&Path>) -> Result<(PathBuf, PathBuf), &'static str> {
-    use std::path::Component;
     let at = site.url_root.join(link);
     let raw = std::fs::read_link(&at).map_err(|_| "the link does not read")?;
-    let plain = raw.is_absolute() && raw.components().all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
-    let Some(written) = plain.then(|| site.bounds.as_written(&raw)).flatten() else {
+    let Some(written) = plain_mount_path(&site.bounds, &raw) else {
         return Err("the link's target is not an absolute path of plain names under a mount folder");
     };
     let t = at.canonicalize().map_err(|_| "the link does not resolve")?;
@@ -589,7 +644,7 @@ fn judge(site: &Site, q: &Path, link: &Path, top: Option<&Path>) -> Result<(Path
     if top.is_some_and(|r| t.starts_with(r)) {
         return Err("the link points into the repository");
     }
-    let f = q.canonicalize().map_err(|_| "does not resolve")?;
+    let f = t.join(q.strip_prefix(&at).map_err(|_| "the request is not below the link")?);
     let m = site.bounds.base_for(&f)?.to_path_buf();
     if top.is_some_and(|r| f.starts_with(r)) {
         return Err("in the repository");
@@ -624,7 +679,7 @@ fn on_kernel_filesystem(f: &std::fs::File) -> bool {
 #[cfg(unix)]
 fn refused_r3(asked: &str, l: &str) -> Refusal {
     let [a, b, c] = MOUNT_FOLDERS;
-    refuse(asked, "403 Forbidden", "R3", format!("refused: {asked} is behind the tracked link {l}, and a link serves only a file that exists on this host under {a}, {b} or {c}, outside the home folder and hidden folders, through a link that points into those folders and not at a folder holding the home folder or the repository (is its share mounted?)"))
+    refuse(asked, "403 Forbidden", "R3", format!("refused: {asked} is behind the tracked link {l}, and a link serves only a file that exists on this host under {a}, {b} or {c}, outside the home folder and hidden folders, through a link written as an absolute path into those folders, with no symlink below it (is its share mounted?)"))
 }
 
 #[cfg(all(test, unix))]

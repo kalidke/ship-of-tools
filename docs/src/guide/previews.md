@@ -84,7 +84,8 @@ symlink to a folder on a mounted share or drive (under `/mnt`, `/media` or, on
 macOS, `/Volumes`), images and movies on the page load through that link, and
 movies seek; nothing needs to be declared. Write the link as the share's absolute
 path, as `ln -s /mnt/<share>/... <name>` does: a relative target, or one that runs
-through another link or a `..`, is refused. A file in your home folder, or with a
+through another link or a `..`, is refused, and so is a symlink inside the share: a
+link serves only the files directly under its target folder, by their own names. A file in your home folder, or with a
 folder or name below the mount folder, on the file's real path, that starts with `.`,
 is never served through a link (a link itself named `.data` still serves).
 Anything else is refused with a message saying why, which the browser shows when

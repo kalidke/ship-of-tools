@@ -236,15 +236,21 @@ Follow rule, checked on every request:
   is rebuilt whenever the repo index file changes), and the file must resolve to
   a path under a mount folder (`/mnt`, `/media` or `/Volumes`), outside the home
   folder and the repository, with no part below the mount folder whose name
-  starts with `.`; and the link itself must point there too: its target
+  starts with `.`. A tracked link serves exactly the files under its written
+  target, reached by their written names, with no symlink anywhere below the
+  link (the file is the target joined with the names asked, opened name by name
+  without following a symlink; one below the link answers as a missing file
+  does). The link itself must point there too: its target
   must be written as its absolute real path: absolute, with no `.` or `..` part,
   and equal to its canonical path once a leading mount folder as written is
   mapped to its canonical path. So no symlink lies on its way and no name of a
   private folder can be walked into and left again (a route through the home
   folder, another link or a `..` is refused whatever it ends on; a relative
-  target is refused outright), and it is judged as that text, before any lookup,
-  to start with a mount folder as written. That canonical target is
-  judged by the same bounds before the request is resolved and lies outside the
+  target is refused outright), and it is judged as that text
+  to start with a mount folder as written before anything below the link is
+  looked up (a link whose text fails, and leads out of the site folder, is
+  answered at once; the folder check and the fast path never walk it). That
+  canonical target is judged by the same bounds and lies outside the
   repository, so a link to `/`, the home folder or the repository is never
   followed. No file lists data folders.
   A file on a dead hard-mounted share hangs the request that resolves it, as
@@ -324,11 +330,13 @@ archive, a Mercurial checkout) is bounded by the workspace root, or on a home-fo
 ## Amendment 2026-10-16: linked data with no list (LINKS-NO-LIST)
 
 A symlink a repository tracks serves with no list of data folders to keep: the `data-roots` file is no longer read.
-A tracked link serves a file when the file's canonical path lies under a mount folder (`/mnt`, `/media`, `/Volumes`),
-outside the home folder, with no part below the mount folder whose name starts with `.`, through a link whose target is itself such a place (the follow rule above; `Bounds` in
-`rust/backend/src/pages/site/links.rs`). Only a link git tracks is followed. The link's own target, written as its absolute real path (as `ln -s /mnt/<share>/...` writes it), is
-judged first, as text and then by the bounds the file meets, and lies outside the repository; the repository's own
-files serve only from the site folder. Every refusal, of the link or of the file, is R3's one answer, so a link that names everything
+A tracked link serves exactly the files under its written target, reached by their written names, with no symlink
+anywhere below the link. Such a file lies under a mount folder (`/mnt`, `/media`, `/Volumes`), outside the home folder,
+with no part below the mount folder whose name starts with `.`, through a link whose target is itself such a place
+(the follow rule above; `Bounds` in `rust/backend/src/pages/site/links.rs`). Only a link git tracks is followed. The
+link's own target, written as its absolute real path (as `ln -s /mnt/<share>/...` writes it), is judged first, as text
+and then by the bounds the file meets, and lies outside the repository; the repository's own files serve only from
+the site folder. Every refusal, of the link or of the file, is R3's one answer, so a link that names everything
 (`/`, `~`, `..` from a repo on a share) serves nothing and says nothing about where the home folder or the
 repository is, or whether a guessed path exists.
 
@@ -344,13 +352,11 @@ the Windows install's own sot folder there (`AppData/Local/sot` under the Window
 folder kept on a mounted volume, outside its hidden folders. Before this, a link reached only
 what lay under a root the computer's `data-roots` file declared, and nothing where no file existed. A home folder
 mounted a second time under a mount folder (an NFS server's own export path, a bind mount) is not recognized as the
-home folder; its hidden folders stay refused. A symlink someone else placed on a share, below a link's target, is judged
-only by the file it reaches, so a route that enters the home folder by such a symlink and leaves it by another
-serves; writing to a share is what that takes. Only a regular file on `/proc` or `/sys` is refused by filesystem type (a root mounted under a
+home folder; its hidden folders stay refused. Only a regular file on `/proc` or `/sys` is refused by filesystem type (a root mounted under a
 mount folder with `/proc` bound inside it); a root or a filesystem bind-mounted under a mount folder is otherwise read
 as files there, other kernel filesystems' included.
 
 Removed with the file: the refusal when no root is declared (R2c); the refusal of a link inside the linked folder
-that leads out of it (R4), since the bounds now judge the file a link reaches, wherever an inner link leads; and the
+that leads out of it (R4), since no symlink below a link is followed at all, wherever it leads; and the
 separate answer for a link that does not resolve (R5), now R3's one answer, which names the path as asked, as R2a
 does, so it never shows whether a folder lies behind it.
