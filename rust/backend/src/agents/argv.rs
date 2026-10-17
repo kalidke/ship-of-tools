@@ -199,8 +199,8 @@ fn claude_resume_argv_in(
 
 /// `"codex"`'s capsule recipe: `ccx --capsule`, which starts a fresh
 /// conversation with every `ccx` copy a host may hold: the installed
-/// launcher is refreshed only by `update_comm`, never by an auto-apply,
-/// and a released `ccx` run bare resumes by recency.
+/// launcher is refreshed by `update_comm`, which a launch runs when comm's
+/// stamp names another commit than the checkout's, and a released `ccx` run bare resumes by recency.
 /// macOS lane: `unix`, not `target_os = "linux"` — `ccx` is the same
 /// shell script installed to the same `~/.local/bin` on every Unix, so
 /// the Linux gate here was naming the install layout of one host, not a

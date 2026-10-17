@@ -83,6 +83,8 @@ apply_pending() {
     [ ! -f "\$PENDING" ]
 }
 if apply_pending; then exec "\$0" "\$@"; fi
+# The agent comm scripts follow the checkout, whoever applied it: an applied tag can change the comm protocol.
+sot_comm_refresh "$prefix/repo/current"
 FAILS=0; ROLLED=0
 while :; do
     sot_daemon_ensure "$prefix" "$prefix/bin/sotd" "\$SOCKET" || exit 1
@@ -244,6 +246,23 @@ sot_daemon_current() {  # <prefix> <sotd-bin> <socket>
         fi
     fi
     return 1
+}
+
+# Bring the agent comm resources to the checkout's commit: `ShipTools.update_comm()` runs when the comm install is
+# missing or its VERSION stamp (the short commit update_comm writes last, `-dirty` when its tree had changes) names
+# another commit than CHECKOUT's, the rule sot-freshness.ps1 states for Windows. Answered from disk, so whoever applied
+# the update and whenever, an apply refreshes comm at the next launch; a commit that cannot be read decides nothing. A
+# failure warns and returns 0, and leaves no stamp, so the next launch tries again.
+sot_comm_refresh() {  # <checkout>
+    local home="${SOT_COMM_HOME:-$HOME/.sot-comm}" stamp="" commit
+    commit="$(cd "$1" 2>/dev/null && git rev-parse --short=9 HEAD 2>/dev/null)"
+    [ ! -f "$home/VERSION" ] || stamp="$(sed -e 's/-dirty$//' -e 1q "$home/VERSION")"
+    if [ -d "$home/bin" ] && { [ -z "$commit" ] || [ "$stamp" = "$commit" ]; }; then return 0; fi
+    PATH="$PATH:$HOME/.juliaup/bin"
+    command -v julia >/dev/null 2>&1 || { echo "WARNING: comm is not at this checkout's commit and julia is not on PATH" >&2; return 0; }
+    julia --project="$1" -e 'using ShipTools; ShipTools.update_comm()' >/dev/null 2>&1 \
+        || echo "WARNING: ShipTools.update_comm() failed; the next launch tries again" >&2
+    return 0
 }
 
 # Make the backend's socket answer, with a daemon of this install's version

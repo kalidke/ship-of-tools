@@ -38,3 +38,6 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
   runs (an owned unit's own), does not say it runs another version (`sot_daemon_current`): an update that replaced
   the binary and not the process is finished there, by a restart of an owned unit or a TERM to the nohup daemon on
   that socket (`sot_daemon_pid`), never a pattern kill.
+- The rendered `sot-launch` runs `sot_comm_refresh` after an apply and before the ensure: `ShipTools.update_comm()` when comm's
+  install is missing or its VERSION stamp names another commit than the checkout's (a commit it cannot read decides nothing),
+  so an auto-apply refreshes the comm scripts the new daemon's protocol needs, as `sot-freshness.ps1` does on Windows.

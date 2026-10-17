@@ -504,6 +504,34 @@ check "a replace that fails to restart hands over to the start and wait loop" "1
 kill "$old" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
+case_start "comm follows the checkout's commit after an apply (sot_comm_refresh, the rendered wrapper)"
+# The 0.6.5 -> 0.6.6 apply changed the comm protocol and nothing refreshed the scripts (review of the stale-daemon work).
+# The rule is the one sot-freshness.ps1 states: update comm when its install is missing or its VERSION stamp names another
+# commit than the checkout's. A julia stand-in logs each update_comm it is asked for.
+d="$WORK/comm"; mkdir -p "$d/bin" "$d/co" "$d/ch/bin" "$d/prefix/updates" "$d/home"
+printf '#!/bin/sh\necho "julia $*" >> "%s/julia.log"\n' "$d" > "$d/bin/julia"; chmod +x "$d/bin/julia"
+( cd "$d/co" && git init -q . && : > f && git add f && git -c user.name=t -c user.email=t@t commit -q -m c )
+commit="$(cd "$d/co" && git rev-parse --short=9 HEAD)"
+refresh() {  # <stamp-or-"none"> [comm dir]: the number of update_comm calls this refresh made
+    : > "$d/julia.log"
+    [ "$1" = none ] && rm -f "$d/ch/VERSION" || printf '%s\n' "$1" > "$d/ch/VERSION"
+    ( HOME="$d/home" SOT_COMM_HOME="${2:-$d/ch}" PATH="$d/bin:$TOOLS" bash -c '. "$1"; sot_comm_refresh "$2"' x "$LIB" "$d/co" ) >/dev/null 2>&1 || true
+    grep -c 'update_comm' "$d/julia.log" || true
+}
+check "a stamp naming the checkout's commit runs nothing" "0" "$(refresh "$commit")"
+check "a -dirty stamp of the checkout's commit runs nothing" "0" "$(refresh "$commit-dirty")"
+check "a stamp naming another commit updates comm" "1" "$(refresh abcdef123)"
+check "no stamp updates comm" "1" "$(refresh none)"
+check "a missing comm install updates comm" "1" "$(refresh "$commit" "$d/absent")"
+mkdir -p "$d/nogit"
+: > "$d/julia.log"
+( HOME="$d/home" SOT_COMM_HOME="$d/ch" PATH="$d/bin:$TOOLS" bash -c '. "$1"; sot_comm_refresh "$2"' x "$LIB" "$d/nogit" ) >/dev/null 2>&1 || true
+check "a checkout whose commit cannot be read decides nothing" "0" "$(grep -c 'update_comm' "$d/julia.log" || true)"
+render_sot_launch "$d/prefix" "$TGT" "$d/launch" >/dev/null 2>&1 || true
+check "the rendered wrapper refreshes comm after the apply and before the ensure" "refresh<ensure" \
+    "$(awk '/sot_comm_refresh/ && !r { r = NR } /sot_daemon_ensure/ && !e { e = NR } /^if apply_pending/ && !a { a = NR } END { print (a && r > a && r < e) ? "refresh<ensure" : "a=" a " r=" r " e=" e }' "$d/launch")"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-apply: all checks passed\n'
