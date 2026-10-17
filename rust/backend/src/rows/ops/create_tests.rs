@@ -5,21 +5,16 @@ use super::*;
 mod duplicate_root_tests {
     use super::find_other_workspace_with_root;
     use crate::rows::{Workspace, Workspaces};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
-    /// Unique on-disk dir per test (no tempfile dev-dep; pid + a counter keep
-    /// parallel tests from colliding). Never cleaned up — OS temp is fine.
-    fn scratch_dir(tag: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let d = std::env::temp_dir().join(format!(
-            "sot-duproot-{}-{}-{}",
-            std::process::id(),
-            tag,
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&d).expect("create scratch dir");
-        d
+    /// A fresh folder per test, named by tempfile's random suffix. The caller
+    /// binds the guard, so the folder is removed when the test ends and also
+    /// when an assertion panics.
+    fn scratch_dir(tag: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("sot-duproot-{tag}-"))
+            .tempdir()
+            .unwrap()
     }
 
     fn ws(label: &str, root: &Path) -> Workspace {
@@ -36,8 +31,9 @@ mod duplicate_root_tests {
 
     #[test]
     fn same_root_different_slug_is_found() {
-        let root = scratch_dir("hit");
-        let existing = reg(vec![ws("sot", &root)]);
+        let scratch = scratch_dir("hit");
+        let root = scratch.path();
+        let existing = reg(vec![ws("sot", root)]);
         let canon = root.canonicalize().unwrap();
         let hit = find_other_workspace_with_root(&canon, "ship-of-tools", &existing)
             .expect("a second identity for one root must be caught");
@@ -48,8 +44,9 @@ mod duplicate_root_tests {
     fn same_slug_is_invisible_so_refresh_stays_allowed() {
         // A same-slug create is Workspaces::insert's id-preserving metadata
         // refresh; the gate must not turn that idempotent path into an error.
-        let root = scratch_dir("refresh");
-        let existing = reg(vec![ws("sot", &root)]);
+        let scratch = scratch_dir("refresh");
+        let root = scratch.path();
+        let existing = reg(vec![ws("sot", root)]);
         let canon = root.canonicalize().unwrap();
         assert!(find_other_workspace_with_root(&canon, "sot", &existing).is_none());
     }
@@ -58,8 +55,8 @@ mod duplicate_root_tests {
     fn different_roots_pass() {
         let a = scratch_dir("a");
         let b = scratch_dir("b");
-        let existing = reg(vec![ws("sot", &a)]);
-        let canon = b.canonicalize().unwrap();
+        let existing = reg(vec![ws("sot", a.path())]);
+        let canon = b.path().canonicalize().unwrap();
         assert!(find_other_workspace_with_root(&canon, "other", &existing).is_none());
     }
 
@@ -69,9 +66,10 @@ mod duplicate_root_tests {
         // The incident shape with a twist: the duplicate is registered via a
         // symlink to the same directory. Canonical comparison must see through
         // it — path-string comparison would not.
-        let root = scratch_dir("real");
-        let link = std::env::temp_dir().join(format!("sot-duproot-link-{}", std::process::id()));
-        let _ = std::fs::remove_file(&link);
+        let scratch = scratch_dir("real");
+        let root = scratch.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        let link = scratch.path().join("link");
         std::os::unix::fs::symlink(&root, &link).expect("create symlink");
         let existing = reg(vec![ws("sot", &link)]);
         let canon = root.canonicalize().unwrap();
@@ -86,10 +84,11 @@ mod duplicate_root_tests {
     /// carries an agent is still refused.
     #[test]
     fn inert_default_anchor_does_not_block_a_session_at_its_root() {
-        let root = scratch_dir("anchor");
+        let scratch = scratch_dir("anchor");
+        let root = scratch.path();
         let canon = root.canonicalize().unwrap();
         let existing = Workspaces::new();
-        let mut anchor = ws("local", &root);
+        let mut anchor = ws("local", root);
         anchor.runtime = "capsule".to_string();
         let anchor = existing.insert(anchor);
         existing.set_default(&anchor.workspace_id);
@@ -99,7 +98,7 @@ mod duplicate_root_tests {
         );
         // Control: the default row WITH an agent is a real session and is
         // still caught (same-slug insert keeps the id, so it stays default).
-        let mut sot = ws("local", &root);
+        let mut sot = ws("local", root);
         sot.agent = std::sync::Mutex::new("claude".to_string());
         existing.insert(sot);
         assert!(find_other_workspace_with_root(&canon, "home-session", &existing).is_some());
@@ -109,11 +108,11 @@ mod duplicate_root_tests {
     fn registered_root_that_no_longer_resolves_is_skipped_not_fatal() {
         // A workspace whose root was deleted is Phase 2's (reap) problem; the
         // gate must neither match it nor error on it.
-        let gone = std::env::temp_dir().join(format!("sot-duproot-gone-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&gone);
+        let scratch = scratch_dir("gone");
+        let gone = scratch.path().join("gone");
         let live = scratch_dir("live");
         let existing = reg(vec![ws("dead", &gone)]);
-        let canon = live.canonicalize().unwrap();
+        let canon = live.path().canonicalize().unwrap();
         assert!(find_other_workspace_with_root(&canon, "other", &existing).is_none());
     }
 }
@@ -190,21 +189,17 @@ mod refusal_tests {
     use crate::session::Session;
     use crate::rows::{Workspace, Workspaces};
     use serde_json::{json, Value};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use tokio::sync::broadcast;
 
-    /// Unique on-disk dir per case (pid + a counter); never cleaned up.
-    fn scratch_dir(tag: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let d = std::env::temp_dir().join(format!(
-            "sot-createref-{}-{}-{}",
-            std::process::id(),
-            tag,
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&d).expect("create scratch dir");
-        d
+    /// A fresh folder per case, named by tempfile's random suffix. The caller
+    /// binds the guard, so the folder is removed when the case ends and also
+    /// when an assertion panics.
+    fn scratch_dir(tag: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("sot-createref-{tag}-"))
+            .tempdir()
+            .unwrap()
     }
 
     fn seeded(label: &str, root: &Path, runtime: &str) -> Workspace {
@@ -258,10 +253,10 @@ mod refusal_tests {
 
     #[tokio::test]
     async fn workspace_create_refusals_are_unchanged() {
-        let _env = EnvPinned::new(&scratch_dir("env"));
+        let env_dir = scratch_dir("env");
+        let _env = EnvPinned::new(env_dir.path());
         // 1. missing root
-        let gone = std::env::temp_dir().join(format!("sot-createref-gone-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&gone);
+        let gone = env_dir.path().join("gone");
         let got = refused(&Workspaces::new(), json!({"label": "c1", "project_root": gone.to_string_lossy()})).await;
         assert_eq!(got, json!({
             "error": format!("project_root does not exist: {}", gone.display()),
@@ -269,7 +264,8 @@ mod refusal_tests {
         }));
 
         // 2. a file as root
-        let file = scratch_dir("file").join("plain.txt");
+        let file_dir = scratch_dir("file");
+        let file = file_dir.path().join("plain.txt");
         std::fs::write(&file, b"x").unwrap();
         let got = refused(&Workspaces::new(), json!({"label": "c2", "project_root": file.to_string_lossy()})).await;
         assert_eq!(got, json!({
@@ -278,9 +274,10 @@ mod refusal_tests {
         }));
 
         // 3. a root already held by another row
-        let root = scratch_dir("dup");
+        let dup_dir = scratch_dir("dup");
+        let root = dup_dir.path();
         let reg = Workspaces::new();
-        let other = reg.insert(seeded("other", &root, "capsule"));
+        let other = reg.insert(seeded("other", root, "capsule"));
         let got = refused(&reg, json!({"label": "c3", "project_root": root.to_string_lossy()})).await;
         assert_eq!(got, json!({
             "error": "project_root is already registered as workspace 'other' (slug 'other')",
@@ -290,8 +287,10 @@ mod refusal_tests {
 
         // 4. the same label again while its row is in use
         let reg = Workspaces::new();
-        let busy = reg.insert(seeded("busy", &scratch_dir("busy-seed"), "tmux"));
-        let got = refused(&reg, json!({"label": "busy", "project_root": scratch_dir("busy-new").to_string_lossy()})).await;
+        let busy_seed = scratch_dir("busy-seed");
+        let busy = reg.insert(seeded("busy", busy_seed.path(), "tmux"));
+        let busy_new = scratch_dir("busy-new");
+        let got = refused(&reg, json!({"label": "busy", "project_root": busy_new.path().to_string_lossy()})).await;
         assert_eq!(got, json!({
             "error": "workspace 'busy' (slug 'busy') is in use (tmux row, phase 'stopped'): attach to it, or destroy it before creating it again",
             "code": "label_in_use",
@@ -299,7 +298,8 @@ mod refusal_tests {
         }));
 
         // 5. 6. 7. a bad agent name, agent kind and runtime
-        let root = scratch_dir("agent").to_string_lossy().into_owned();
+        let agent_dir = scratch_dir("agent");
+        let root = agent_dir.path().to_string_lossy().into_owned();
         let got = refused(&Workspaces::new(), json!({"label": "c5", "project_root": root, "agent_name": "a b"})).await;
         assert_eq!(got, json!({
             "error": "invalid agent_name \"a b\" (want 1-64 chars of [A-Za-z0-9._-])",
@@ -324,10 +324,12 @@ mod refusal_tests {
         })).await;
         assert_eq!(got["code"], "no_such_path");
         // 2. a held root wins over a label in use
-        let held = scratch_dir("p2-held");
+        let held_dir = scratch_dir("p2-held");
+        let held = held_dir.path();
         let reg = Workspaces::new();
-        let other = reg.insert(seeded("other", &held, "capsule"));
-        reg.insert(seeded("busy", &scratch_dir("p2-busy"), "tmux"));
+        let other = reg.insert(seeded("other", held, "capsule"));
+        let p2_busy = scratch_dir("p2-busy");
+        reg.insert(seeded("busy", p2_busy.path(), "tmux"));
         let got = refused(&reg, json!({"label": "busy", "project_root": held.to_string_lossy()})).await;
         assert_eq!(got, json!({
             "error": "project_root is already registered as workspace 'other' (slug 'other')",

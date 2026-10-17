@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn absent_file_is_not_an_error() {
         let dir = tempdir();
-        let store = TopologyStore::new(dir.join("hosts.toml"));
+        let store = TopologyStore::new(dir.path().join("hosts.toml"));
         let r = store.refresh();
         assert!(r.topo.is_none());
         assert!(r.hash.is_none());
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn first_good_parse_is_not_reported_as_changed() {
         let dir = tempdir();
-        let path = dir.join("hosts.toml");
+        let path = dir.path().join("hosts.toml");
         write(&path, "hub = \"a\"\n[host.a]\ndaemon = true\n");
         let store = TopologyStore::new(path);
         let r = store.refresh();
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn unchanged_stat_short_circuits_and_reports_unchanged() {
         let dir = tempdir();
-        let path = dir.join("hosts.toml");
+        let path = dir.path().join("hosts.toml");
         write(&path, "hub = \"a\"\n[host.a]\ndaemon = true\n");
         let store = TopologyStore::new(path);
         store.refresh();
@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn content_change_is_reported_exactly_once() {
         let dir = tempdir();
-        let path = dir.join("hosts.toml");
+        let path = dir.path().join("hosts.toml");
         write(&path, "hub = \"a\"\n[host.a]\ndaemon = true\n");
         let store = TopologyStore::new(path.clone());
         store.refresh();
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn malformed_file_is_refused_without_losing_previous_content() {
         let dir = tempdir();
-        let path = dir.join("hosts.toml");
+        let path = dir.path().join("hosts.toml");
         write(&path, "hub = \"a\"\n[host.a]\ndaemon = true\n");
         let store = TopologyStore::new(path.clone());
         let good = store.refresh();
@@ -220,21 +220,14 @@ mod tests {
         assert_eq!(fixed.topo.unwrap().hosts.len(), 2);
     }
 
-    /// Unique per call BY CONSTRUCTION rather than by clock resolution.
-    ///
-    /// This helper takes no argument at all, so all six of its callers share one
-    /// name prefix and the clock was the only thing separating them — and the
-    /// harness runs them on parallel threads of one binary. That is
-    /// `sot_updater::fetch::tempdir`'s defect verbatim, where one caller's
-    /// cleanup deleted another's file between a write and a read and reddened a
-    /// macOS leg; only the coarser clock there made it visible first.
-    fn tempdir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "sot-topology-store-test-{}",
-            sot_updater::unique::suffix()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// A fresh folder per call, named by tempfile's random suffix, so the
+    /// parallel tests never share one. The guard removes it when the test ends,
+    /// and also when an assertion panics first.
+    fn tempdir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("sot-topology-store-test-")
+            .tempdir()
+            .unwrap()
     }
 
     /// Coarse filesystem mtime resolution (notably some CI overlay/tmpfs
