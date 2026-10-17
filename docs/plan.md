@@ -1,4 +1,26 @@
-# Ship of Tools — Phase 1 Implementation Plan
+# Ship of Tools — Phase 1 plan (historical)
+
+!!! note "Status: partly built"
+    This is the original phase-1 plan, kept as a record. The table below says which of its parts are built.
+
+The plan names files, plugin packages and a TUI that were not built, and it was written before capsule rows
+replaced tmux sessions. Read it for the reasoning behind the milestones, not as a description of the code. What is
+built is described in the rest of this manual; the unbuilt parts are described, marked unbuilt, in
+[Modes](../guide/modes.md), [The Concept Layer](../guide/concept-layer.md), [Color Coding](../guide/color-coding.md),
+[The Dispatch ABI](../extend/abi.md) and [Mode plugins](../extend/mode.md).
+
+| Plan part | Status | What is true now |
+|-----------|--------|------------------|
+| M1 native window: winit, wgpu, ratatui cells painted with cosmic-text | Built | `WgpuBackend` in `rust/frontend/src/ui/render/cells.rs`; the window is not a terminal program |
+| M1 previews: PNG, markdown, MathJax SVG | Built | `rust/frontend/src/ui/preview/image/`, `rust/frontend/src/ui/preview/markdown/`, `rust/backend/src/sidecars/mathjax.rs` |
+| M1 remote backend in a named tmux session, reconnect by revision | Partly built | Reconnect replays by `last_seen_revision` (`rust/backend/src/server/hello.rs`); the daemon starts no tmux sessions, rows are capsule rows |
+| M2 Files mode with file watching | Built | `rust/backend/src/files/watcher.rs` sends `preview.changed` |
+| M3 Modules mode, read-only | Built | `project.scan` in `julia/kernel/src/project_scan.jl`, tree in `rust/frontend/src/ui/nav/modules.rs`; no `modules-mode` plugin package exists |
+| M4 persistent REPL with line, block and file dispatch | Partly built | REPL in `rust/backend/src/sidecars/repl/` and `julia/repl/`; per-line and per-block dispatch is not built |
+| M5 `.concept/` annotations with AST-hash provenance | Partly built | `concept.read`, `concept.write` and `concept.list` exist; staleness compares a file hash, per-entity `ast_hash` is unused, one-key refresh is not built |
+| M6 orchestrator chat with tools | Not built | no orchestrator code in `rust/backend/src/`; `requirements.md` marks it NOT BUILT |
+| M7 HDF5Preview as an external plugin | Partly built | `examples/plugins/HDF5Preview/` loads through `LAZY_PLUGIN_FOR_EXT`; nothing reads `[sot].extensions` |
+| Types, Math and Outputs modes; the Agents mode | Not built | [Modes](../guide/modes.md) |
 
 A dependency-ordered plan for the Phase 1 milestone defined in `CLAUDE.md`. The first milestone is a thin end-to-end skeleton; each subsequent milestone adds exactly one capability.
 

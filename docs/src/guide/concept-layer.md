@@ -1,5 +1,10 @@
 # The Concept Layer
 
+!!! note "Status: partly built"
+    Built: `.concept/` annotations are read and written from the window, and a file's annotation shows stale when the
+    file's hash differs from its `synced_against`. Not built: per-entity staleness, the one-key refresh, and
+    verification of `references`.
+
 The concept layer is what makes Ship of Tools a *concept explorer* rather than a file
 browser. It is prose — intent, contracts, meaning, math — attached to the units
 of a Julia project and kept honest against the code those units describe. The

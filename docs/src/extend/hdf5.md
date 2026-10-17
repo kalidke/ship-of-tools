@@ -1,5 +1,9 @@
 # Worked Example: HDF5
 
+!!! note "Status: partly built"
+    `HDF5Preview` is built, and the kernel loads it on the first HDF5 preview. Enabling a plugin from a project's
+    `Project.toml` is not built; see "Enabling it" below.
+
 ```@meta
 CurrentModule = ConceptExplorerCore
 ```
@@ -23,7 +27,7 @@ this page walks the actual code top to bottom.
 name = "HDF5Preview"
 uuid = "c0d7e0f3-5a1c-4b8e-9f23-2e5a6c4b1f88"
 authors = ["kalidke"]
-version = "0.3.0"
+version = "..."                # the release version
 
 [deps]
 ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"
@@ -198,5 +202,5 @@ itself, and a plugin from outside core travels the identical path.
 ## See also
 
 - [Writing a FileType Plugin](filetype.md) — the generic build this example follows.
-- [Discovery & Configuration](discovery.md) — the `[sot].extensions` mechanism.
+- [Discovery & Configuration](discovery.md) — how plugins are found and loaded, and the unbuilt `[sot].extensions` key.
 - [The Dispatch ABI](abi.md) — why a plugin needs no frontend change.

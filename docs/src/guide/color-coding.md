@@ -1,5 +1,8 @@
 # Color Coding
 
+!!! note "Status: partly built"
+    What renders today is the per-session **agent work-state** colour (idle · working · blocked · waiting · done, on the Sessions strip and nav rows) and the **stale-annotation** drift badge, which is per file (the file's content hash against the annotation's `synced_against`) and shows on the selected file row in Files mode. The per-entity provenance states in the table below (user-edited, agent-edited accept/reject, immutable/external, favorited) are planned; a pinned file already renders, as a bright cyan row in the navigation tree rather than an accented border.
+
 Color coding is a cross-cutting layer. The same entity carries the same
 provenance no matter which mode you view it in, so Ship of Tools renders that provenance
 **uniformly across all modes** — in the design, a stale annotation looks stale in
@@ -9,9 +12,6 @@ staleness is a property of a *file* and shows on that file's row in Files mode.
 Color and badging are orthogonal to mode. A mode decides *what tree to show*;
 the color layer decides *how each node is tinted* based on who touched it, when,
 and whether its annotation still matches the code.
-
-!!! note "Design vs. built today"
-    This page describes the cross-cutting colour layer as designed. What renders today is the per-session **agent work-state** colour (idle · working · blocked · waiting · done, on the Sessions strip and nav rows) and the **stale-annotation** drift badge, which is per file (the file's content hash against the annotation's `synced_against`) and shows on the selected file row in Files mode. The per-entity provenance states in the table below — user-edited, agent-edited accept/reject, immutable/external, favorited — are planned. A pinned file already renders, as a bright cyan row in the navigation tree rather than an accented border.
 
 ```@raw html
 <DemoShot name="state-colors" caption="Session rows in their work-state colours, each with the reason it last reported." />

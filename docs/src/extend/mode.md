@@ -1,5 +1,10 @@
 # Writing a Mode Plugin
 
+!!! note "Status: not built"
+    `Mode` is declared in core and nothing implements it. The window's modes are native Rust views, and no mode-plugin
+    package exists. This page describes the contract a third-party mode would dispatch on; the plugin-shaped surface
+    that works today is [`FileType`](@ref) (see [Writing a FileType Plugin](filetype.md)).
+
 ```@meta
 CurrentModule = ConceptExplorerCore
 ```
@@ -13,17 +18,6 @@ across switches. A mode plugin would supply a new such root.
 This page documents the mode contract. For the conceptual overview see
 [The Dispatch ABI](abi.md); for the symbol reference see
 [API — ConceptExplorerCore](../ref/api-core.md).
-
-!!! note "Status: NOT BUILT; modes are built into the frontend and backend today"
-    The mode contract is part of the declared ABI, but in phase 1 the core modes are
-    implemented in the Rust frontend and backend, not in plugin packages. The packages under
-    `julia/plugins/` are all `FileType` plugins (Julia source, Markdown, JSON,
-    plain text, PDF, video) — there is **no** mode-plugin package in the tree
-    yet. This page describes the contract a third-party mode would dispatch on
-    and the shape core's own modes follow; it does not point at a `modes-mode`
-    package, because none exists. The narrowest extension surface that is fully
-    plugin-shaped today is the [`FileType`](@ref) — see
-    [Writing a FileType Plugin](filetype.md).
 
 ## The Mode contract
 
@@ -78,9 +72,8 @@ The contract is symmetrical with the FileType case. A mode package would:
    node, choosing a MIME the frontend renders (see the MIME table in
    [Writing a FileType Plugin](filetype.md)).
 
-Discovery would follow the same explicit model as FileType plugins: the package
-is listed in the project's `[sot].extensions` and `Base.require`d at kernel
-startup — see [Discovery & Configuration](discovery.md).
+Loading would follow the same route as FileType plugins, which is a kernel dependency
+today, not a project setting — see [Discovery & Configuration](discovery.md).
 
 ## The current core modes
 
@@ -96,8 +89,7 @@ kernel's project scan):
 | Hosts | configured hosts → endpoint detail | host endpoint summary |
 
 Types, Math, and Outputs modes are designed but not yet built; Agents mode is
-not built (pinned for later). The mode table in the
-[root design overview](../index.md) and `CLAUDE.md` lists the full intended set.
+not built (pinned for later). The [Modes](../guide/modes.md) page lists the full intended set and what is built.
 
 ## Why modes aren't packaged yet
 

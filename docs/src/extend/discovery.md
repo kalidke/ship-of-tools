@@ -1,71 +1,51 @@
 # Discovery & Configuration
 
+!!! warning "Status: partly built"
+    Runtime resolution (path to `FileType`) is built. The `[sot].extensions` key (ADR 0006) is a design that is not
+    built: nothing reads the `[sot]` table. Project-root detection below is what each process does today, not one
+    shared rule.
+
 ```@meta
 CurrentModule = ConceptExplorerCore
 ```
 
-Two questions decide which plugins run and what they apply to: *which extension
-packages does a project load*, and *which project am I in*. Ship of Tools answers both
-explicitly — an `[sot]` table in the project's `Project.toml`, and an
-outermost-`Project.toml` root rule. This page covers both, and how a path is
-resolved to a [`FileType`](@ref) at runtime once the right packages are loaded.
+Two questions decide which plugins run and what they apply to: *which packages does the kernel load*, and *which
+project am I in*. This page says what is built for each, shows the designed `[sot].extensions` table (unbuilt), and
+explains how a path is resolved to a [`FileType`](@ref) at runtime once the right packages are loaded.
 
 ## Enabling plugins: the `[sot].extensions` key
 
-!!! warning "Design, not yet shipped"
-    The `[sot].extensions` mechanism on this page is the **committed design**
-    (ADR 0006) but is **not implemented yet**: nothing reads the `[sot]`
-    table. What works today: the seven standard plugins load automatically
-    with the kernel, and the HDF5 example lazy-loads on the first `.h5`
-    preview through the kernel's built-in extension table
-    (`LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/preview.jl`). A
-    third-party plugin loads only from a source checkout: add it to
-    `julia/kernel`'s environment, then either add it to the kernel's `using`
-    list or map its file extension in `LAZY_PLUGIN_FOR_EXT`. On a release install the kernel
-    lives inside the pinned release checkout, and local changes there make the
-    next update refuse to run.
+What loads today: the seven standard plugins load with the kernel (`julia/kernel/src/ShipToolsKernel.jl`), and the
+HDF5 example lazy-loads on the first `.h5` preview through the kernel's built-in extension table
+(`LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/preview.jl`). The kernel loads only the packages in its own project,
+`julia/kernel`. A third-party plugin loads only from a source checkout: add it to the kernel's `Project.toml` as a
+`[deps]` entry and a `[sources]` path, then either add a `using` line to the kernel or map its file extensions in
+`LAZY_PLUGIN_FOR_EXT` (the steps are in [Writing a FileType Plugin](filetype.md)). On a release install the kernel
+lives inside the pinned release checkout, and updates refuse to move a checkout with local changes.
 
-A plugin's [`FileType`](@ref) subtype is discovered automatically *once the
-package is loaded* — but **whether** a package loads is an explicit choice, not an
-auto-scan. The design: the project's `Project.toml` carries a `[sot]` table
-listing the extensions to load:
+A plugin's [`FileType`](@ref) subtype is discovered automatically *once the package is loaded*. The design, not built,
+is that the project's `Project.toml` carries a `[sot]` table listing the extensions to load:
 
 ```toml
 [sot]
 extensions = ["HDF5Preview", "MyOrgPlugin"]
 ```
 
-The kernel calls `Base.require` on each entry at startup, in declared order,
-before serving any requests. Anything not listed is **not loaded, even if it is
-installed** in the active environment.
-
-The alternative — auto-scanning loaded packages for `ConceptExplorerCore`
-dependents — was rejected in favour of this explicit list. The reasoning:
-
-- **Predictable.** No magic load order, no "why is this plugin active?" debugging.
-- **Visible.** Adding a plugin is three explicit steps — install it, add it to
-  `extensions`, restart the kernel.
-- **Compatible with static tool registration.** The full plugin set is known at
-  kernel startup.
-
-Because there is no auto-discovery, plugins are discoverable only through
-documentation — so a plugin README should lead with its install + enable snippet.
+In that design the kernel calls `Base.require` on each entry at startup, in declared order, before serving any
+requests, and anything not listed is not loaded, even if installed. The alternative, auto-scanning loaded packages for
+`ConceptExplorerCore` dependents, was rejected in favor of the explicit list. Nothing implements either today.
 
 ## Project-root detection
 
-The kernel needs one unambiguous answer to "what project is this?" The rule:
+There is no single project-root rule. Each process answers "what project is this?" for itself:
 
-- Walk upward from the current directory until a `Project.toml` is found. That
-  directory is the project root.
-- In monorepos with nested `Project.toml` files (umbrella + sub-packages), the
-  **outermost** one — highest in the tree — wins by default.
-- Override with the backend's `--project <path>` flag.
-- If no `Project.toml` is found before the filesystem root, the backend exits with
-  an error telling you to run inside a Julia project or pass `--project`.
-
-The kernel then activates that environment (`Pkg.activate(<root>)`), and plugin
-discovery reads `[sot].extensions` from that **same** `Project.toml`. Root
-detection and plugin loading are anchored on one file.
+- **The daemon.** `sotd` takes `--project-root <path>`, else `$SOT_PROJECT_ROOT`, else its working directory, as the
+  filesystem root the Files-mode tree exposes. A row's own root is its project directory.
+- **The REPL.** The row's persistent REPL activates the row's project directory as its environment, whether or not it
+  holds a `Project.toml`. A fresh run of a file (`repl.run_file` with `fresh`) uses the row's `Project.toml` if it has
+  one, else the nearest `Project.toml` above the file, else the row's directory.
+- **The kernel.** It runs `--project=julia/kernel`, reads project sources statically, and never activates or loads
+  the user's environment.
 
 ## Runtime resolution: path → FileType
 
@@ -81,41 +61,16 @@ in `ConceptExplorerCore`:
 a `matches(::Type{T}, path)` method and calls it, returning the **first** type
 that claims the path. When nothing claims it, the result is `nothing` — a visible
 "no plugin handles this" rather than a guessed render. Once a type is chosen, the
-kernel calls [`preview`](@ref) (and, where wired, [`parse_entities`](@ref)) on it.
+kernel calls [`preview`](@ref) on it. Nothing calls [`parse_entities`](@ref).
 
-This is why enabling a plugin is enough to make its file kind previewable: load
-the package (via `extensions`), and its subtype joins the `file_types()` scan that
-`file_type_for` walks. No central registry, no Rust change. See
+Loading the package into the kernel is enough to make its file kind previewable: its subtype joins the `file_types()`
+scan that `file_type_for` walks. There is no central registry. See
 [The Dispatch ABI](abi.md) for the contract behind these calls and
-[Writing a FileType Plugin](filetype.md) for implementing `matches` / `preview`.
-
-## A complete `[sot]` snippet
-
-A project that enables the HDF5 example plus a hypothetical org plugin:
-
-```toml
-name = "MyProject"
-uuid = "..."
-version = "0.1.0"
-
-[deps]
-# ... your project's own dependencies ...
-
-[sot]
-extensions = ["HDF5Preview", "MyOrgPlugin"]
-```
-
-The extension packages themselves must be resolvable in the project's
-environment (added to `[deps]` or otherwise on the load path), since
-`Base.require` loads them by name.
-
-!!! note "Phase-2 diagnostic"
-    There is no auto-discovery of installed-but-unenabled plugins today.
-    A possible `--list-installed-extensions` diagnostic is flagged for a later
-    phase to surface candidates you have not enabled yet.
+[Writing a FileType Plugin](filetype.md) for implementing `matches` / `preview` and for the one Rust change a plugin
+with bounded output needs.
 
 ## See also
 
 - [Writing a FileType Plugin](filetype.md) — `matches` / `preview` implementation.
-- [Worked Example: HDF5](hdf5.md) — enabling a real external plugin.
+- [Worked Example: HDF5](hdf5.md) — a real external plugin and how the kernel loads it.
 - [API — ConceptExplorerCore](../ref/api-core.md) — `file_types`, `file_type_for`.

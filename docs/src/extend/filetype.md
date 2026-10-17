@@ -1,17 +1,23 @@
 # Writing a FileType Plugin
 
+!!! warning "Status: partly built"
+    The `FileType` dispatch (`matches`, `preview`) is built. Nothing reads a `[sot]` table or loads a package for you:
+    the kernel loads only the packages in its own project, so a new plugin is added to a source checkout of Ship of
+    Tools (Step 5), not enabled from a user's project.
+
 ```@meta
 CurrentModule = ConceptExplorerCore
 ```
 
 A `FileType` plugin teaches the explorer to recognise and preview a new kind of
 file. It is the smallest, most common extension you can write — a package, one
-abstract-type subtype, and two methods. No Rust changes, no registration call:
-`using YourPackage` and the dispatch tables grow.
+abstract-type subtype, and two methods. Once the kernel has loaded the package, its subtype joins the dispatch
+tables (Step 5 below says how it gets loaded); a file kind whose preview output is bounded also
+needs its extensions in one daemon function.
 
 This page is the step-by-step build. For the conceptual contract see
 [The Dispatch ABI](abi.md); for a complete external package see the
-[HDF5 worked example](hdf5.md); for turning the plugin on in a project see
+[HDF5 worked example](hdf5.md); for how plugins are discovered see
 [Discovery & Configuration](discovery.md).
 
 ## What a FileType plugin does
@@ -166,18 +172,23 @@ today either.
 
 ## Step 5 — Enable it
 
-Loaded subtypes are discovered automatically, but *which* packages a project
-loads is explicit. Add your package to the project's `Project.toml`:
+Loaded subtypes are discovered automatically, but nothing loads your package for you. The kernel runs only its own
+project, `julia/kernel`, and never activates the user's environment; no code reads an `[sot]` table from a
+`Project.toml` (see [Discovery & Configuration](discovery.md)). A plugin therefore loads only from a source checkout
+of Ship of Tools:
 
-```toml
-[sot]
-extensions = ["MyPreview"]
-```
+1. Make the package a dependency of the kernel: a `[deps]` entry and a `[sources]` path in
+   `julia/kernel/Project.toml`, as the built-in plugins and `HDF5Preview` have.
+2. Load it. Add a `using MyPreview` line to `julia/kernel/src/ShipToolsKernel.jl`, which loads it at kernel start. For
+   a package with heavy dependencies, add a row to `LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/preview.jl` instead,
+   mapping each lowercase extension (`".myext"`) to the package name; the kernel runs `using` on it the first time a
+   file with that extension is previewed.
+3. If the preview's size does not grow with the file's (a metadata tree, a poster frame), add its extensions to
+   `is_bounded_output_plugin` in `rust/backend/src/files/preview/mod.rs`. Without that, the daemon never calls the
+   plugin for a file over its 2 MiB input cap and falls back to the raw bytes. This is a Rust change.
 
-The kernel `Base.require`s each entry at startup, in order, before serving
-requests — so after `install` + this edit + a kernel restart, opening a matching
-file routes through your `preview`. See [Discovery & Configuration](discovery.md)
-for the full discovery rule.
+On a release install the kernel lives in the pinned release checkout, and updates refuse to move a checkout with local
+changes (see [Updating and rollback](../guide/updating.md)).
 
 ## Full skeleton
 
@@ -209,6 +220,6 @@ end # module
 ## Next steps
 
 - [Worked Example: HDF5](hdf5.md) — a real third-party plugin, end to end.
-- [Discovery & Configuration](discovery.md) — enabling plugins, project-root rules.
+- [Discovery & Configuration](discovery.md) — how plugins are found and loaded today.
 - [The Dispatch ABI](abi.md) — the conceptual contract behind every method here.
 - [API — ConceptExplorerCore](../ref/api-core.md) — symbol-by-symbol reference.

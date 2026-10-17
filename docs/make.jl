@@ -28,11 +28,25 @@ stage(joinpath(@__DIR__, "plan.md"),              joinpath(SRC, "design", "roadm
 stage(joinpath(REPO, "comm", "PROTOCOL.md"),      joinpath(SRC, "ref", "comm.md"))
 stage(joinpath(@__DIR__, "ENROLLING-A-HOST.md"),  joinpath(SRC, "guide", "enrolling.md"))
 
+# Every design and extend page, and the concept-layer and color-coding guides, opens right after its title with one
+# admonition titled "Status: built", "Status: partly built" or "Status: not built", so a reader is never left to guess
+# whether a described thing exists. design/requirements.md is exempt: each of its items carries its own status line.
+let status = r"\A# [^\n]*\n\n!!! (?:note|warning|info) \"Status: (?:built|partly built|not built)\"",
+    pages = [joinpath(SRC, d, f) for d in ("design", "extend") for f in sort(readdir(joinpath(SRC, d)))
+             if endswith(f, ".md")]
+    append!(pages, joinpath.(SRC, "guide", ["concept-layer.md", "color-coding.md"]))
+    bad = [relpath(p, SRC) for p in pages if basename(p) != "requirements.md" && !occursin(status, read(p, String))]
+    isempty(bad) || error("pages with no status line (an admonition titled \"Status: built|partly built|not built\" ",
+                          "right after the title):\n  " * join(bad, "\n  "))
+end
+
 DocMeta.setdocmeta!(ShipTools, :DocTestSetup, :(using ShipTools); recursive = true)
 DocMeta.setdocmeta!(ConceptExplorerCore, :DocTestSetup, :(using ConceptExplorerCore); recursive = true)
 
 makedocs(;
     modules = [ShipTools, ConceptExplorerCore],
+    # Named, not read from the clone's origin, so a clone of a clone or a fork builds the same source links.
+    repo = Documenter.Remotes.GitHub("kalidke", "ship-of-tools"),
     authors = "kalidke",
     sitename = "Ship of Tools",
     format = DocumenterVitepress.MarkdownVitepress(;
@@ -90,7 +104,7 @@ makedocs(;
         # Planned or partly built designs, kept out of the user path; the
         # sidebar shows this group collapsed like every other.
         "Design notes" => [
-            "Roadmap" => "design/roadmap.md",
+            "Phase 1 plan (historical)" => "design/roadmap.md",
             "Requirements" => "design/requirements.md",
             "Backend and sessions" => "design/backend.md",
             "Line protocol" => "design/protocol.md",

@@ -1,5 +1,9 @@
 # Backend & Sessions
 
+!!! note "Status: partly built"
+    The daemon, its per-row Julia kernel and REPL, and the socket transport are built. An in-app orchestrator LLM
+    session is not built (see [Requirements](requirements.md)), and the daemon starts no tmux sessions.
+
 The backend daemon owns project state. It is the only process the frontend talks
 to over the [line protocol](protocol.md), and it sits between the frontend and
 the Julia kernels it supervises. For the big picture and the reasoning behind the
@@ -9,14 +13,12 @@ language split, read [Architecture at a Glance](../guide/architecture.md).
 
 A single long-lived Rust process (tokio) holds everything stateful:
 
-- **Project state** — the mode trees, preview caches, and per-workspace
-  navigation state the frontend reads and mutates over the protocol.
+- **Rows** — the registry of rows (workspaces), each with its project directory, its kernel and REPL, and its file
+  watcher.
 - **File watching** — a `notify` watcher per workspace turns external edits into
-  `file.changed` events ([protocol](protocol.md)).
-- **Process supervision** — it spawns and supervises the Julia kernel(s) and the
-  REPL, restarting the kernel on crash and surfacing failures as protocol events.
-- **The orchestrator LLM session** — the Anthropic client and tool-use loop live
-  here, not in the frontend.
+  `preview.changed` events ([protocol](protocol.md)).
+- **Process supervision** — it spawns and supervises each row's Julia kernel and REPL, restarting the kernel on
+  crash and surfacing failures as protocol events.
 
 The frontend never touches kernel state directly, even when everything runs on
 one laptop. Local-only operation is "a client connecting to a localhost-bound
@@ -28,8 +30,8 @@ The daemon spawns the kernel as a child process and frames the conversation over
 its stdio, per the [line protocol](protocol.md):
 
 ```bash
-julia --project=<repo>/julia/kernel \
-  -e 'using ShipToolsKernel; ShipToolsKernel.serve(stdin, stdout)'
+julia --project=<repo>/julia/kernel --startup-file=no \
+  -e 'using ShipToolsKernel; ShipToolsKernel.serve(stdin, stdout; project_root="<row root>")'
 ```
 
 Spawning is `tokio::process::Command` through `lifecycle::child_signal::Signal::spawn`, which puts the
@@ -43,7 +45,7 @@ Restart policy differs by process:
 | Process | On exit |
 |---------|---------|
 | Kernel | auto-restart, backoff from 250 ms doubling to 30 s, started over only after a kernel that served a minute after its hello; callers get `Dead` meanwhile; state rebuilds from disk, so restart is safe |
-| REPL | never auto-restarts — a crashed REPL is meaningful; the user decides, and the UI must say "REPL is dead, press X to restart" |
+| REPL | not restarted in the background: its state is shown as `dead`, and the next eval starts a new REPL, which says why the old one ended |
 
 Orphaned `julia` processes are unacceptable, so the whole tree of every process
 the daemon starts, but those ADR 0050 names as outside it, is killed (SIGKILL to its process
@@ -56,100 +58,41 @@ residual 7).
 
 ## Transport, persistence, reconnect
 
-The primary workflow is remote: a Windows-local frontend reaches a Linux remote
-host where the kernel and GPU live. Local operation is
-the fall-through. The session must survive SSH disconnects, reconnect from a fresh
+A common workflow is remote: the window runs on one computer and reaches a daemon on another, where the kernel and
+GPU live. Local operation is the fall-through. The session must survive SSH disconnects, reconnect from a fresh
 client, and not depend on host-specific port allocation.
 
 - **Backend as a user service on the remote.** The daemon runs as the
   `systemd --user` unit `sotd.service` (installed by the release installer),
-  so its lifecycle survives SSH drops; its log is `sotd.log` under the state
-  root.
-- **Per-session Unix socket, not a TCP port.** It listens at
-  `$XDG_RUNTIME_DIR/sot/<session_id>.sock`. Cross-machine, the frontend reaches
+  so its lifecycle survives SSH drops.
+- **A per-user local socket, not a TCP port.** On Unix it listens at
+  `$XDG_RUNTIME_DIR/sot/sessions/<label>.sock` (a private runtime folder; `sot` is the label of the persistent
+  daemon), on Windows at a named pipe. Cross-machine, the frontend reaches
   it by spawning its own `ssh` child rather than forwarding a port — see
   [Transport](../concepts/transport.md).
-- **Transport auth.** SSH authenticates the Unix user for remote socket access,
-  and the socket path is private to that user. Direct TCP remains token-gated
-  because `localhost` on a shared remote is machine-scoped, not user-scoped.
+- **Transport auth.** The daemon has no TCP listener and no app-level token. The socket's folder is private to the
+  user, the daemon checks the connecting process's OS identity when it accepts, and cross-machine access is `ssh`.
 - **Reconnect carries revision.** Every connect sends
   `{session_id, client_id, last_seen_revision}`. The backend replays missed
-  events from a bounded ring or sends a full snapshot if the client is too far
-  behind; heartbeats (~5s) evict stale clients. `last_seen_revision` is what makes
-  reconnect feel like tmux — without it every disconnect would lose the
-  orchestrator session and any in-flight kernel work.
-
-`client_id` is in the handshake from day one; multi-client policy (first client
-read+write, second read-only follower) is stated but deferred.
-
-## Sessions
-
-!!! note "Superseded: tmux was the original session registry"
-    The design below — one tmux session per backend, tmux as the registry — is
-    how sessions began. Since ADR 0042 every new session on every host is a
-    **capsule** row under its own supervisor, and the daemon no longer starts tmux
-    sessions. The current model is described in
-    [Sessions and persistence](../concepts/sessions.md); this section is kept
-    as design history.
-
-A session is one project's backend, registered and supervised by tmux rather than
-by a second daemon. The insight here is that tmux already lists, supervises,
-multi-attaches, survives disconnect, and forwards across machines — so **tmux is
-the registry**, and the "orchestrator role" is a frontend-side library plus
-`tmux -F` queries, not a new crate.
-
-- **One tmux session per backend, plus `sot-home`.** Sessions are named
-  `sot-be-<slug>` (from `Project.toml`'s `name`, falling back to the directory
-  basename, with a `-N` disambiguator on collision). Home base is `sot-home`.
-- **Durable metadata on disk.** Tmux is runtime-only, so pointers live under
-  `~/.config/sot/`: `state-<hostname>.toml` records where the frontend left
-  off (the `-<hostname>` suffix matters because the Linux boxes share `$HOME`);
-  per-workspace toml records how to bring a backend back.
-- **Sessions mode** is a normal [mode](../guide/architecture.md): col 1 lists
-  sessions with a running/unreachable/stopped sigil, col 2 the panes, col 3 pane
-  metadata, and the preview is a live `tmux capture-pane` tail.
-- **Resume is the default.** Launched with no flags, Ship of Tools reads
-  `state-<hostname>.toml`, resolves the last session's toml, and — if the tmux
-  session is alive and the daemon socket answers — restores nav state, focus, and
-  scroll exactly where you left off. If the daemon died, or the tmux session is
-  gone, it shows a banner offering to restart or recreate. A startup
-  reconciliation pass matches `sessions/*.toml` against `tmux list-sessions`
-  (one cheap syscall) and offers to adopt orphans or delete stale toml.
+  events from a bounded ring or marks a full snapshot pending if the client is too far
+  behind. Each connection pings every 30 s, and the daemon reaps one that has been silent for 90 s.
 
 ## Workspaces
 
-Two requirements surfaced after the initial sessions design: switching projects
-must not stop the Julia kernel, and the deployment must stay one daemon, one
-socket, one `ssh` child. The earlier "frontend reconnects to a different daemon socket per
-session" approach satisfied the first but fought the second, so the two
-concerns — where kernels live vs. which process is the protocol entry point — are
-split.
+One daemon holds many rows (workspaces), reached over one socket and one `ssh` child. Each row has its own Julia
+kernel and its own persistent REPL, and the daemon routes an op to them by `workspace_id`.
 
-**One daemon. One Julia kernel child per workspace, spawned directly by the
-daemon and routed by `workspace_id`.**
+- The kernel is a direct child of the daemon, framed over stdio. It runs the daemon's own `julia/kernel` project
+  and reads the row's sources statically; it never runs user code and never loads the user's environment.
+- User code runs in the row's REPL, also a daemon child. The REPL activates the row's project directory as its
+  environment, so two rows can use different `Project.toml` environments (`MyPackage@0.1` in one, `@0.2` in
+  another) in separate Julia processes. Variables live in the REPL.
+- **Switching is a frontend state change.** There is no `workspace.switch` op: the window sets its active workspace,
+  tells the daemon with `workspace.activate`, and re-fires `tree.root` with the new id. Nothing restarts, so a REPL
+  holding `x = 5` still holds it when you return to its row.
+- **`workspace_id` is optional on tree, preview, kernel, REPL, concept and pty ops**; a missing field resolves to the
+  default workspace. Lifecycle ops are `workspace.list`, `workspace.create` and `workspace.destroy`.
 
-- The kernel is a direct child of the daemon (`std::process::Command`,
-  `--project=<workspace.project_root>`, framed over stdio), **not** a tmux
-  process. The workspace's tmux session still holds the shell/BL pane and any
-  optional LLM pane, but not the kernel.
-- The load-bearing invariant: **switching the active workspace never restarts a
-  kernel or rebuilds Julia state.** The kernel holding `x = 5` keeps holding it
-  while you visit another workspace and return.
-- **Switching is a frontend state change.** There is no `workspace.switch` op;
-  the frontend just sets `active_workspace_id` and re-fires `tree.root` with the
-  new id. Cost is one round-trip plus a redraw.
-- **`workspace_id` is additive.** Tree/preview/kernel/repl/concept/pty ops gain
-  an optional `workspace_id`; a missing field resolves to the default workspace,
-  so existing single-backend invocations keep working. Lifecycle ops are
-  `workspace.list`, `workspace.create`, `workspace.destroy`.
-- **Kernels can run different `Project.toml` environments** — each is its own
-  Julia process, so `MyPackage@0.1` in one workspace and `@0.2` in another
-  coexist.
-
-The trade-off: the daemon owns its kernel children, so a daemon restart loses
-Julia state across all workspaces. That buys away kernel-discovery sweeps and
-health probes; spawning sits behind a `KernelHost` trait so a tmux-hosted
-implementation can be swapped in later (phase 3) without protocol changes, if
-"kernel survives daemon restart" ever becomes a felt pain point. Cross-machine
-deployment is unchanged — one daemon, one socket, one `ssh` child, with workspace
-switching in-band on that single connection.
+The daemon owns its kernel and REPL children, so ending the daemon ends them and a REPL's variables go with it. The
+rows themselves, each running its agent under a capsule supervisor, outlive the daemon (see
+[Sessions and persistence](../concepts/sessions.md)).

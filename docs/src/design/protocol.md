@@ -1,5 +1,9 @@
 # Line Protocol
 
+!!! note "Status: partly built"
+    The envelope, the blobs and the REPL frames below are built, as corrected here. The page is the phase-1 design:
+    the op set has grown since, and the ops are defined in `rust/protocol/src/ops/`, not in this page.
+
 Ship of Tools is three processes that talk over sockets and stdio: the frontend, the
 backend daemon, and the Julia kernel (plus a supervised REPL). Every seam
 between them carries the same wire format — newline-delimited JSON for control,
@@ -17,24 +21,25 @@ Each control message is one UTF-8 JSON object terminated by `\n`. The envelope
 is fixed; the variable part is `op` plus its `payload`:
 
 ```json
-{"v":1,"id":42,"kind":"req","op":"mode.preview","payload":{}}
+{"v":3,"id":42,"kind":"req","op":"preview.get","payload":{"node_id":"files:README.md"}}
 ```
 
 | Field | Meaning |
 |-------|---------|
-| `v` | protocol version; a format bump is a one-line change |
+| `v` | protocol version (`PROTOCOL_VERSION`, 3); the daemon refuses a hello that speaks another |
 | `id` | client-chosen `u64`; responses echo it, events use `0` |
 | `kind` | `"req"` request, `"res"` response, `"evt"` event |
-| `op` | the verb (see the op table) |
+| `op` | the verb (see Ops below) |
 | `payload` | op-specific object; may declare a binary blob |
+| `rev` | optional; the session revision the frame represents, set on replayed events |
 
 Requests carry a client-chosen `id`; the matching response echoes that `id`.
-Events are unsolicited (file changed, a REPL frame arrived) and use `id:0`.
+Events are unsolicited (a file changed, a REPL frame arrived) and use `id:0`.
 
-Shared Rust types live in `rust/protocol/` and are consumed by both the frontend
-and the backend via `serde` (tagged on `op`). The kernel side uses `JSON3.jl`.
-Because the envelope is versioned, an old client and a new backend can negotiate
-on `v`.
+Shared Rust types live in `rust/protocol/`, consumed by both the frontend and the backend. The envelope is a
+`Frame` whose payload stays a JSON value until a receiver routes on `op` and reads it into the op's `serde` struct.
+The kernel side uses `JSON3.jl`. Every connection opens with a `hello` that carries `PROTOCOL_VERSION`, and the two
+sides must agree on it.
 
 ### Binary blobs
 
@@ -49,23 +54,12 @@ The next `len` bytes on the stream *are* the blob; after them the stream resumes
 with the next JSON line. This avoids base64 — roughly a third of bandwidth and
 CPU on every PNG — while keeping the control channel greppable.
 
-### Phase 1 ops
+### Ops
 
-The verbs the protocol defines in phase 1 (several later gained an additive
-`workspace_id` field):
-
-| Op | Direction | Purpose |
-|----|-----------|---------|
-| `mode.list` | req/res | enumerate available modes |
-| `mode.tree.root` | req/res | root node of a mode's tree |
-| `mode.tree.children` | req/res | children of a tree node |
-| `mode.preview` | req/res | rendered preview for a node (may blob) |
-| `repl.eval` | req/res | evaluate source in the REPL |
-| `repl.interrupt` | req | interrupt a running eval |
-| `fs.read` / `fs.write` | req/res | read/write a file |
-| `concept.read` / `concept.write` | req/res | read/write a `.concept/` annotation |
-
-Events: `tree.invalidate`, `repl.frame`, `chat.delta`, `file.changed`.
+The op names are constants in `rust/protocol/src/ops/mod.rs`, and each family's payload types sit beside them in
+`rust/protocol/src/ops/` (browse, repl, pty, workspace, agent, pages, monitor, update, lane, lease and session).
+`docs/integration.md` says which subsystem serves them. Requests, responses and events are told apart by `kind`;
+events (`preview.changed`, `repl.frame`, `workspace.changed`, `monitor.tick`, ...) use `id:0`.
 
 ## REPL streaming frames
 
@@ -81,8 +75,11 @@ channel, every field at the top level of the frame.
 |-------|--------|
 | `stdout` | `{text}` |
 | `stderr` | `{text}` |
-| `value` | `{mime, text}` for textual MIMEs; `{mime:"image/png", blob}` for binary |
-| `image` | `{mime:"image/png", blob}` — convenience for CairoMakie etc. |
+| `value` | `{mime, text}` |
+| `image` | `{mime, data_base64, bytes}` — a showable binary result such as a CairoMakie figure |
+| `browser` | `{url, open}` — a live page the eval serves (a WGLMakie figure) |
+| `started` | `{run_id, origin, display}` — a run began (sent by the daemon) |
+| `lifecycle` | `{state}` — the REPL child is `starting`, `ready` or `dead` (sent by the daemon) |
 | `error` | `{message, stacktrace:[{file, line, fn}, …]}` |
 | `done` | `{eval_id, elapsed_ms}` |
 
@@ -107,7 +104,7 @@ stacktraces with `file:line` links.
   itself the first time something hangs.
 - **Cross-platform and low-ceremony.** One object per line, UTF-8, works
   identically on Windows and Linux.
-- **Versioned.** The `v` field makes a format change explicit and one-line.
+- **Versioned.** The `v` field and the hello's version agreement make an incompatible change explicit.
 - **Cheap where it matters.** Length-prefixed blobs keep binary payloads off the
   JSON path; parse overhead on the control channel is negligible at
   human-interactive rates.

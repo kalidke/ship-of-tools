@@ -18,8 +18,11 @@ the commit that changes the code it describes, and a design that is not built is
 - An ADR is changed by a dated amendment inside it or by a new ADR that supersedes it, and the status token says
   which.
 - `make.jl` stages four single-source pages into `src/` at build time (`requirements.md`, `plan.md`, `comm/PROTOCOL.md`
-  and `ENROLLING-A-HOST.md`); the staged copies are gitignored. Its built-site checks fail the build on a literal
-  `<kbd>` and on a link to a missing section id, and doctests run inside it with both documented modules loaded.
+  and `ENROLLING-A-HOST.md`); the staged copies are gitignored. Before the build it fails on a page under `design/`
+  or `extend/` (and the concept-layer and color-coding guides) that does not open with a `Status: built | partly
+  built | not built` admonition, `design/requirements.md` exempt. Its built-site checks fail the build on a literal
+  `<kbd>` and on a link to a missing section id, and doctests run inside it with both documented modules loaded. It
+  names the GitHub repository, so a clone whose origin is not GitHub builds too.
 - Published text names no private hostname, username or LAN detail, and the screenshots are generated from
   `fixtures/DemoProject`, never from a private workspace.
 - Nothing below `docs/` carries a page: `adr/`, `fixtures/`, `tools/` and `src/` are described here, so `src/` holds only
@@ -51,14 +54,15 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `integration.md`: how the sixteen subsystems connect: one table of every connection, then six walk-throughs with a file and a function at every hop.
 - `make.jl`: builds the manual and runs the built-site checks.
 - `ownership.md`: the one table of who owns each state file, process, op, setting and lock, and the pairs of copies that remain.
-- `plan.md`: the phase-1 implementation plan; staged into the manual as the roadmap.
+- `plan.md`: the phase-1 implementation plan, with a table of what is built; staged into the manual as "Phase 1 plan
+  (historical)".
 - `tools/`: the docs media scripts: docs-media.sh, run by hand from `SCREENSHOTS.md`.
 - `src/.vitepress/`: the VitePress site configuration and theme.
 - `src/assets/`: images, media and stylesheets the pages use.
 - `src/components/`: the Vue components that show a demo still or loop.
 - `src/concepts/`: concept pages (sessions, work state, the comm relay, transport).
 - `src/contributing.md`: working conventions, the decision process, how to build and test.
-- `src/design/`: design notes for planned or partly built parts (the staged roadmap and requirements pages land here).
+- `src/design/`: design notes for planned or partly built parts (the staged phase-1 plan and requirements pages land here).
 - `src/extend/`: how to extend the system (the FileType ABI, the HDF5 tutorial, discovery and mode notes).
 - `src/features.md`: what the system does.
 - `src/guide/`: task guides and architecture pages.

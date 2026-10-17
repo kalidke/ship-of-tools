@@ -1,5 +1,11 @@
 # The Dispatch ABI
 
+!!! warning "Status: partly built"
+    Only `FileType` is wired end to end; the other five pluggable types are declared in core and nothing implements
+    them. Nothing discovers a user's packages and nothing reads a `[sot]` table: a `FileType` plugin loads only when
+    it is a dependency of the kernel's own project, so adding one means editing a source checkout of Ship of Tools
+    (see [Writing a FileType Plugin](filetype.md), Step 5).
+
 ```@meta
 CurrentModule = ConceptExplorerCore
 ```
@@ -7,8 +13,9 @@ CurrentModule = ConceptExplorerCore
 The Ship of Tools extension model is its defining idea: **multiple dispatch is the plugin
 system.** [`ConceptExplorerCore`](../ref/api-core.md) defines a small set of
 abstract types, and methods on those types *are* the ABI. A package extends
-Ship of Tools simply by being `using`-ed — the dispatch tables grow, with no
-registration call, no plugin manifest, and no central list to edit.
+Ship of Tools by being loaded in the kernel — the dispatch tables then grow, with no
+registration call. Today "loaded in the kernel" means a dependency of `julia/kernel` plus a `using` line or a
+`LAZY_PLUGIN_FOR_EXT` row in a source checkout; nothing loads a package from a user's project.
 
 This page is the conceptual contract. For the symbol-by-symbol reference see
 [API — ConceptExplorerCore](../ref/api-core.md); for step-by-step tutorials see
@@ -79,7 +86,7 @@ end
 ```
 
 Once the package is loaded in the kernel (see [Discovery](discovery.md)), PNGs
-are previewed through it: no registration step and no Rust code.
+are previewed through it, with no registration call.
 
 ## The serialization seam
 
@@ -113,8 +120,8 @@ travel exactly the path core travels.
 
 Loaded `FileType` subtypes are found automatically with [`file_types`](@ref) (a
 `subtypes(FileType)` scan), and the best match for a path is chosen by
-[`file_type_for`](@ref). *Which* extension packages a project loads is declared
-explicitly — see [Discovery & Configuration](discovery.md).
+[`file_type_for`](@ref). *Which* packages the kernel loads is fixed by the
+kernel's own project and sources, not by the user's project — see [Discovery & Configuration](discovery.md).
 
 ## Next steps
 

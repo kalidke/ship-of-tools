@@ -39,7 +39,7 @@ before building it.
 
 Plan amendments go through a pull request. The phase plan is a committed
 document — argue changes in the diff, not in side channels. See the
-[Roadmap](design/roadmap.md) for the milestone structure.
+[Phase 1 plan (historical)](design/roadmap.md) for the original milestone structure.
 
 ## Build and test
 
@@ -102,7 +102,7 @@ launcher. The exit-75 path only re-stages the frontend binary.
 ## See also
 
 - [Requirements](design/requirements.md) — the source of truth for scope.
-- [Roadmap](design/roadmap.md) — phase plan and milestones.
+- [Phase 1 plan (historical)](design/roadmap.md) — the original phase-1 plan, with a table of what is built.
 - [Design decisions](https://github.com/kalidke/ship-of-tools/tree/main/docs/adr) —
   the ADRs in `docs/adr/`.
 
