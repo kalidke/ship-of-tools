@@ -10,7 +10,7 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 - `ext/ShipToolsReplWGLMakieExt.jl`: the WGLMakie package extension, the only place WGLMakie code lives.
 - `src/ShipToolsRepl.jl`: the module, `serve` and its ops (eval, run_file, interrupt), `write_envelope`.
 - `src/json.jl`: the stdlib-only JSON codec.
-- `src/wgl.jl`: browser-served artifacts, `BrowserView`, `page_server`, private `wgl_server` listener selection and `wglshow`.
+- `src/wgl.jl`: browser-served artifacts, `BrowserView`, `page_server`, private `wgl_server` listener selection and `wglshow`; the display stack's two entries (`WGLDisplay`, `EvalTextDisplay`).
 - `src/frames.jl`: how an eval's output becomes typed frames, and the BrowserView announcements.
 - `test/runtests.jl`: the streaming tests and the stdlib-only guard test.
 - `test/answer_then_next.jl`: an output stream that hands `serve` the next request the moment a given frame of an answer (by default its done frame) is written, the order a real pipe allows, and an eval request's line (`eval_line`).
@@ -26,6 +26,7 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
   (`SOT_PREVIOUS_END`, the daemon's sentence: its display ended) and why it has no display of its own
   (`SOT_NO_DISPLAY`, its reason), in that order (`DISPLAY_NOTICE`, `spawn_eval`).
 - One eval at a time, and a second gets error then done (`handle_eval`). An eval releases that guard once, just before its done frame and res go out (`spawn_eval`), so a request sent the moment an answer arrives is accepted.
+- Nothing but the shim's own locked writer touches the wire: `serve` replaces Julia's startup `TextDisplay(stdout)` (bound to the wire) with `EvalTextDisplay`, which writes to the eval's current `stdout`, so `display(x)` reaches the drawer as stdout frames. It sits below `WGLDisplay`. stderr is not the wire.
 - Text frames precede value or error, and done is last (`stream_eval_frames`).
 - Program output is bytes, not UTF-8: only a character a read cut waits for its other bytes (`utf8_prefix`), and the
   JSON writer writes a malformed character as U+FFFD (`write_json_string`), so no byte holds back later output or

@@ -187,6 +187,25 @@ Base.flush(::CountingIO) = nothing
         @test res[:payload][:eval_id] == 99
     end
 
+    @testset "serve: display(x) in an eval reaches the drawer as stdout frames, never as raw text on the wire" begin
+        bs_in, bs_out, _ = drive(String[])
+        write(bs_in, eval_line(1, "println(\"before\"); display(42); println(\"after\")"))
+        flush(bs_in)
+        lines = String[]
+        while true
+            line = readline(bs_out)
+            isempty(line) && (eof(bs_out) ? break : continue)
+            push!(lines, line)
+            get(DR.json_read(line), :kind, "") == "res" && break
+        end
+        close(bs_in)
+        # every wire line is one envelope (a raw `42` makes json_read throw)
+        envs = [DR.json_read(l) for l in lines]
+        text = join([e[:payload][:frame][:text] for e in envs
+                     if get(e, :op, "") == "repl.frame" && e[:payload][:frame][:kind] == "stdout"])
+        @test text == "before\n42\nafter\n"
+    end
+
     @testset "serve: a child says once, at the start of its first eval, why the REPL before it ended and why it has no display" begin
         evals(bs_in, bs_out, ids) = map(ids) do eval_id
             write(bs_in, sprint(DR.json_write, Dict(:v => 1, :id => eval_id, :op => "repl.eval",
