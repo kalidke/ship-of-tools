@@ -27,7 +27,7 @@ rust/frontend/src/ui/CLAUDE.md. The record is ADR 0042, 0044 and 0025.
 - Strip order within a host block depends only on the rows, their state and stamp, the previous order and the pinned
   row, so an unchanged list reproduces it (`activity_order`).
 - `fe.presence` reaches every connected daemon at most once per `PRESENCE_THROTTLE`, only for a press paired with the
-  press before it within `PRESENCE_PAIR` (a lone press, a release or a key repeat reports nothing), and never from a
+  press before it within `PRESENCE_PAIR` (a lone press, a release or a key repeat reports nothing; a wheel step counts as a press), and never from a
   harness instance (`report_presence`, `presence_due`); a press the throttle held back goes out on the once-a-second
   redraw tick (`fire_held_presence`, `presence_held_due`).
 - A badged result never switches the view (`mark_pending_nav`).

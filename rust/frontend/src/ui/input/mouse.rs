@@ -70,6 +70,8 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
 }
 
 pub(in crate::ui) fn mouse_wheel(state: &mut State, modifiers: ModifiersState, delta: MouseScrollDelta) {
+    // A person reading with the wheel is at this window: it counts as a press for presence.
+    state.report_presence(true);
     // Convert the platform delta into fractional rows, then
     // accumulate. Precision touchpads emit small sub-row
     // pixel deltas that would otherwise truncate to zero

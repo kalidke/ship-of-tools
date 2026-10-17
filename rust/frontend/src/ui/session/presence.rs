@@ -35,8 +35,8 @@ pub(in crate::ui) struct PresenceClock {
 }
 
 /// Whether input at `now` sends `fe.presence`, updating `clock`: a press (not a release or a key repeat) within
-/// `PRESENCE_PAIR` of the press before it, at most once per `PRESENCE_THROTTLE`; a paired press the throttle refuses
-/// is held for `presence_held_due`.
+/// `PRESENCE_PAIR` of the press before it (a wheel step counts as a press), at most once per `PRESENCE_THROTTLE`; a
+/// paired press the throttle refuses is held for `presence_held_due`.
 fn presence_due(clock: &mut PresenceClock, press: bool, now: std::time::Instant) -> bool {
     if !press {
         return false;
@@ -93,7 +93,7 @@ fn read_mark_decision(
 
 impl State {
     /// Send `fe.presence` if this input is due (`presence_due`; design point A). Called ONLY from `window_event`'s real
-    /// `KeyboardInput`/`MouseInput` arms, never from a command file, `--capture-cycle` or any simulated path: every op
+    /// `KeyboardInput`/`MouseInput`/`MouseWheel` arms, never from a command file, `--capture-cycle` or any simulated path: every op
     /// the daemon once stamped from had an automated producer. A harness run (`--ephemeral`/`--capture`) is excluded.
     pub(in crate::ui) fn report_presence(&mut self, press: bool) {
         if self.ephemeral || !presence_due(&mut self.presence, press, std::time::Instant::now()) {
