@@ -75,6 +75,15 @@ impl Bounds {
         }
         Ok(m)
     }
+
+    /// Whether a link to the canonical `t` names no data folder: `/`, or a
+    /// folder holding the home folder or the repository `top` (the repository
+    /// itself included). Such a link would reach every mount folder below it.
+    fn too_wide(&self, t: &Path, top: Option<&Path>) -> bool {
+        t.parent().is_none()
+            || self.home.as_deref().is_some_and(|h| h.starts_with(t))
+            || top.is_some_and(|r| r.starts_with(t))
+    }
 }
 
 /// The repo a site sits in, and the tracked-link set built from its index.
@@ -412,8 +421,9 @@ fn open_checked(base: &Path, rel: &Path, shown: &str) -> Result<std::fs::File, R
 /// gets `index.html`). Fast path: Q canonicalizes inside S. Slow path: the
 /// first symlink below url_root must be a link git tracks (R2b, R2e where git
 /// cannot run), Q must resolve to a file `Bounds` allows (R3: one answer for a
-/// missing, private or hidden file), and the open is `open_beneath` its mount
-/// folder (R6). Not unix: no link is ever followed (R2d). R2a and R3 name the
+/// missing, private or hidden file), the link must name a data folder, not `/`
+/// or a folder holding the home folder or the repository (R7), and the open is
+/// `open_beneath` its mount folder (R6). Not unix: no link is ever followed (R2d). R2a and R3 name the
 /// path as asked, so neither shows whether a folder lies behind it.
 pub(crate) fn resolve_and_open(
     site: &Site,
@@ -536,6 +546,13 @@ fn follow_link(
             return Err(forbid("R3", format!("refused: {asked} is behind the tracked link {l}, and a link serves only a file that exists on this host under {a}, {b} or {c}, outside the home folder and hidden folders (is its share mounted?)")));
         }
     };
+    // Judged only once the file would serve, so the answer says nothing about
+    // the home folder or the repository that R3's one answer does not.
+    let top = site.git.as_ref().map(|g| g.top.as_path());
+    let t = site.url_root.join(link).canonicalize();
+    if t.as_deref().map_or(true, |t| site.bounds.too_wide(t, top)) {
+        return Err(forbid("R7", format!("refused: {l} is a tracked link to /, to a folder holding the home folder or to a folder holding this repository, and such a link is never followed")));
+    }
     let rel = f.strip_prefix(&m).expect("base_for found f under m");
     let file = open_checked(&m, rel, shown)?;
     Ok((file, f))

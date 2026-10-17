@@ -235,9 +235,11 @@ Follow rule, checked on every request:
 - Otherwise the first symlink below the URL root must be tracked by git (the set
   is rebuilt whenever the repo index file changes), and the file must resolve to
   a path under a mount folder (`/mnt`, `/media` or `/Volumes`), outside the home
-  folder, with no part below the mount folder whose name starts with `.`. No
-  file lists data folders. A file on a dead hard-mounted share hangs the request
-  that resolves it, as reading it would.
+  folder, with no part below the mount folder whose name starts with `.`, and
+  the link must name a data folder: a link to `/`, or to a folder holding the
+  home folder or the repository, is never followed. No file lists data folders.
+  A file on a dead hard-mounted share hangs the request that resolves it, as
+  reading it would.
 - Each refusal says why. A linked path that is missing, private or hidden gets
   one answer, naming the path as asked; the daemon's log says which.
 - Off Linux and macOS no link is followed.
@@ -312,8 +314,12 @@ archive, a Mercurial checkout) is bounded by the workspace root, or on a home-fo
 
 A symlink a repository tracks serves with no list of data folders to keep: the `data-roots` file is no longer read.
 A tracked link serves a file when the file's canonical path lies under a mount folder (`/mnt`, `/media`, `/Volumes`),
-outside the home folder, with no part below the mount folder whose name starts with `.` (the follow rule above;
-`Bounds` in `rust/backend/src/pages/site/links.rs`).
+outside the home folder, with no part below the mount folder whose name starts with `.`, through a link to neither
+`/` nor a folder holding the home folder or the repository (the follow rule above; `Bounds` in
+`rust/backend/src/pages/site/links.rs`). Only a link git tracks is followed. The link-target refusal (R7) adds no
+reach a repository could not get with a link to a mount folder itself; it keeps a link that names everything from
+serving everything, and it is judged only once the file would serve, so its answer says nothing about where the home
+folder or the repository is.
 
 The rule allows where the operating systems mount shares and drives, rather than denying a list of private places.
 An allow rule fails closed: a link anywhere else is refused with words that name the mount folders. A deny list fails

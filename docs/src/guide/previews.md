@@ -88,6 +88,7 @@ Anything else is refused with a message saying why, which the browser shows when
 the missing file is opened in a tab of its own: a link git does not track (`git
 add` it and reload), a linked file that is not under those folders or does not
 exist on the computer whose daemon serves the page (is its share mounted?), a
+link to `/`, to your home folder or to a folder holding the repository, a
 `..` in the path, `.git`, a repo file outside the page's site folder (the
 outermost folder above it, within its repository, that holds an `index.html`)
 that is not behind a tracked link, or a file that changed while it was being

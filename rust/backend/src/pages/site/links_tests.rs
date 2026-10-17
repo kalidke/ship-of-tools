@@ -321,6 +321,20 @@ fn i_the_bounds_of_this_process_refuse_every_private_place() {
     assert_eq!(b.base_for(&base.join("m/home/u/notes.txt")), Err("in the home folder"));
     assert_eq!(b.base_for(&base.join("m/share/a.png")), Ok(base.join("m").as_path()));
     assert_eq!(Bounds::new(&[&base.join("m")], None).base_for(&base.join("m/a.png")), Err("no home folder is known"));
+    // A link names a data folder: never `/`, nor a folder holding the home folder or the repository.
+    let top = base.join("m/repos/r");
+    for (t, wide) in [
+        (PathBuf::from("/"), true),
+        (home.clone(), true),
+        (base.join("m/home"), true),
+        (base.join("m"), true),
+        (top.clone(), true),
+        (base.join("m/repos"), true),
+        (base.join("m/share"), false),
+        (top.join("data"), false),
+    ] {
+        assert_eq!(b.too_wide(&t, Some(&top)), wide, "{}", t.display());
+    }
 }
 
 #[tokio::test]
@@ -522,6 +536,32 @@ async fn a_mixed_case_dot_git_behind_a_link_is_refused_b1b() {
     let (st, _, body) = get(addr, &format!("/{nonce}/g2/secret"), &[]).await;
     assert_eq!(st, 403, "{}", body_text(&body));
     assert!(body_text(&body).contains(".git is never served"));
+    remove_root(serial);
+}
+
+/// A tracked link to `/`, to a folder holding the home folder or to one holding the repository is refused even for a
+/// file the bounds allow; a file they refuse through it still gets R3's one answer.
+#[tokio::test]
+async fn a_link_to_root_home_or_above_the_repo_is_refused_r7() {
+    let f = fixture();
+    symlink("/", f.repo.join("root")).unwrap();
+    symlink("../mnt", f.repo.join("allmnt")).unwrap();
+    symlink("..", f.repo.join("up")).unwrap();
+    git(&f.repo, &["add", "root", "allmnt", "up"]);
+    let (addr, nonce, serial) = serve(widened(&f).await).await;
+    let share_movie = f.share.join("results/r1/movie.mp4");
+    let under_root = share_movie.strip_prefix("/").unwrap().display().to_string();
+    for (l, rest) in [("root", under_root.as_str()), ("allmnt", "share/results/r1/movie.mp4"), ("up", "mnt/share/results/r1/movie.mp4")] {
+        let (st, _, body) = get(addr, &format!("/{nonce}/{l}/{rest}"), &[]).await;
+        assert_eq!(
+            (st, body_text(&body)),
+            (403, format!("refused: {l} is a tracked link to /, to a folder holding the home folder or to a folder holding this repository, and such a link is never followed")),
+            "{l}"
+        );
+    }
+    let asked = "up/outside/secret.txt";
+    let (st, _, body) = get(addr, &format!("/{nonce}/{asked}"), &[]).await;
+    assert_eq!((st, body_text(&body)), (403, r3(asked, "up")));
     remove_root(serial);
 }
 

@@ -27,7 +27,8 @@
 // widen what is served: outside S, only files reached through a link git tracks
 // are served, and only those under a mount folder (`/mnt`, `/media`,
 // `/Volumes`), outside the home folder, with no hidden part below the mount
-// folder (`Bounds`; see `resolve_and_open` for the refusals). No file whose
+// folder, through a link to neither `/` nor a folder holding the home folder or
+// the repository (`Bounds`; see `resolve_and_open` for the refusals). No file whose
 // resolved path lies inside a `.git` directory below the site folder is served,
 // and a linked file has no hidden part at all.
 //

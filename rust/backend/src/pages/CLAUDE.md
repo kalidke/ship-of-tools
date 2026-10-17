@@ -50,9 +50,9 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   daemon's port (`bind_proxy_listener`, `with_loopback_port`, `PageListener`, `armed_url`). A URL user code announced
   or `open_url` named keeps the daemon's number and is refused when that number is taken (`PageSource`; ADR 0035,
   PAGE-PORT update).
-- `.git` and `..` are never served, and a link is followed only when git tracks it and the file lies under `/mnt`,
-  `/media` or `/Volumes`, outside the home folder, with no hidden part below that folder (`site/` `resolve_and_open`,
-  `Bounds`).
+- `.git` and `..` are never served, and a link is followed only when git tracks it, it points to neither `/` nor a
+  folder holding the home folder or the repository, and the file lies under `/mnt`, `/media` or `/Volumes`, outside the
+  home folder, with no hidden part below that folder (`site/` `resolve_and_open`, `Bounds`).
 - `docs.open` serves a file, or a folder's `index.html`, from the outermost folder holding an `index.html` between it
   and the top of its repository or the workspace root, else from its own folder. No site root holds the home folder:
   a page whose own folder does is refused (`find_site_root`).
