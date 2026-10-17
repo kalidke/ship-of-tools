@@ -140,8 +140,15 @@ try {
             $after7d = @(Get-DaemonProcs (Get-PipePath $pipe7d) | ForEach-Object { $_.ProcessId })
             Check '7d: another version is replaced (exit 0)' ($exit7d -eq 0) "got $exit7d; log: $out7d"
             Check '7d: the ensure names the version it replaced' (($out7d -join ' ') -match 'runs 0\.0\.0-older, another version') "log: $out7d"
+            Check '7d: the ensure notice says the rows keep running and the REPLs restart' (($out7d -join ' ') -match 'NOTICE: the local daemon ran .* and was replaced; its rows keep running and their REPLs restart') "log: $out7d"
             $oldAlive7d = $null -ne (Get-Process -Id $first7d[0] -ErrorAction SilentlyContinue)
             Check '7d: the old daemon is gone and one new one serves' ((-not $oldAlive7d) -and ($after7d.Count -eq 1) -and ($first7d -notcontains $after7d[0])) "before $first7d, after $after7d, old alive $oldAlive7d"
+            # A launch that named the old daemon before it asked ends nothing when another launch already replaced it:
+            # its -Stop is scoped to the old pid, so the successor lives.
+            $null = & $script -Stop -Prefix $p7d -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7d -OnlyPids $first7d 6>&1 2>&1
+            $racedExit7d = $LASTEXITCODE
+            $racedAfter7d = @(Get-DaemonProcs (Get-PipePath $pipe7d) | ForEach-Object { $_.ProcessId })
+            Check '7d: a -Stop scoped to the old pid leaves the successor alive' (($racedExit7d -eq 0) -and ("$racedAfter7d" -eq "$after7d")) "exit $racedExit7d, before $after7d, after $racedAfter7d"
         } finally {
             Stop-FakeOn $pipe7d
             foreach ($pid7d in @($first7d)) { if ($pid7d) { Stop-Process -Id $pid7d -Force -ErrorAction SilentlyContinue } }

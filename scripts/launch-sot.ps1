@@ -776,7 +776,10 @@ function Invoke-LocalDaemonEnsure {
     }
     Set-LaunchStatus 'Starting local daemon...'
     $localOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) -Prefix $prefixDir 6>&1 2>&1
-    foreach ($l in @($localOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+    foreach ($l in @($localOut)) {
+        if ("$l".Trim()) { Write-SupLog "$l" }
+        if ("$l" -match '^sot-local-daemon: NOTICE: (.+)$') { $script:launchNotices.Add($Matches[1]) | Out-Null }
+    }
     return ($LASTEXITCODE -eq 0)
 }
 
