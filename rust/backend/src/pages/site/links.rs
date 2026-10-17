@@ -3,8 +3,8 @@
 use super::*;
 
 /// One open site: where ordinary files are served from, where the URL space
-/// maps, and (unix, when this machine declares data roots and the folder is in
-/// a git repo) the state needed to follow tracked links. See the header.
+/// maps, and (unix, when the folder is in a git repo) the state needed to
+/// follow tracked links. See the header.
 pub struct Site {
     /// Canonical S: the only place ordinary files are served from.
     pub(super) content_root: PathBuf,
@@ -208,9 +208,9 @@ impl Site {
         }
     }
 
-    /// Open a site for `docs.open`, reading the machine's data-roots file.
-    /// `ws_root` bounds how far the URL space may widen; `widen` is false for
-    /// root-relative sites (they keep S as their URL root).
+    /// Open a site for `docs.open`. `ws_root` bounds how far the URL space may
+    /// widen; `widen` is false for root-relative sites (they keep S as their
+    /// URL root).
     pub async fn open(content_root: PathBuf, ws_root: PathBuf, widen: bool) -> Site {
         Self::build(content_root, ws_root, widen, None).await
     }
@@ -236,12 +236,11 @@ impl Site {
         site.roots_file = roots_file;
         #[cfg(unix)]
         {
-            // git is only asked when the machine declares at least one root;
-            // no root is canonicalized here, a dead share must not stall open.
+            // Widened whether or not a data root is declared, so a page's link
+            // above S reaches `follow_link` and its refusal names why. No root
+            // is canonicalized here: a dead share must not stall open.
             let site = tokio::task::spawn_blocking(move || {
-                if site.declares_a_root() {
-                    site.attach_git(&ws_root, widen);
-                }
+                site.attach_git(&ws_root, widen);
                 site
             })
             .await;
@@ -288,16 +287,6 @@ impl Site {
         self.roots_file
             .clone()
             .or_else(|| sot_log::host::state_dir::sot_config_dir().map(|d| d.join("data-roots")))
-    }
-
-    /// Whether the data-roots file has a non-comment absolute line: text only,
-    /// nothing is resolved.
-    #[cfg(unix)]
-    fn declares_a_root(&self) -> bool {
-        let Some(text) = self.roots_path().and_then(|f| std::fs::read_to_string(f).ok()) else {
-            return false;
-        };
-        text.lines().map(str::trim).any(|l| !l.starts_with('#') && Path::new(l).is_absolute())
     }
 
     /// The data roots as of the file's current stat: a root added or removed

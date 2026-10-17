@@ -80,12 +80,13 @@ in-pane:
 These all follow the same "rich/interactive content lives in the browser" policy.
 
 A page can also show data that lives outside its repo. When the repo tracks a
-symlink to a folder on a data share and the target lies under a root your machine
-declares in its `data-roots` file (see [Configuration Files](../ref/config.md)),
-images and movies on the page load through that link, and movies seek. Anything
-else is refused with a message saying why: a link git does not track, a target
-under no declared root, a `..` in the path, a link inside the linked folder, or
-`.git`.
+symlink to a folder on a data share and the target lies under a root declared in
+the `data-roots` file of the computer whose daemon serves the page (see
+[Configuration Files](../ref/config.md)), images and movies on the page load
+through that link, and movies seek. Anything else is refused with a message
+saying why, which the browser shows when the missing file is opened in a tab of
+its own: no data root declared, a link git does not track, a target under no
+declared root, a `..` in the path, a link inside the linked folder, or `.git`.
 
 ## Pan and zoom images
 

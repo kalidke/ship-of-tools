@@ -189,11 +189,12 @@ pub async fn handle_video_open(
 ///
 /// URL root (v0.6.6): the rooting rule above picks the CONTENT root, where
 /// ordinary files are served from. A page on the shared prefix server whose
-/// repo tracks a symlink to data under a root this machine declares in its
-/// `data-roots` file gets a URL space starting at the repo top instead, so
-/// `../../data/x.mp4` reaches the link folder; the returned path is then
-/// prefixed with the content root's place below it (`Site::url_path`). What is
-/// served does not widen; see `pages/site/mod.rs`.
+/// repo tracks a symlink gets a URL space starting at the repo top instead, so
+/// `../../data/x.mp4` reaches the link folder, which serves it only under a
+/// root this machine declares in its `data-roots` file and otherwise refuses
+/// it with words; the returned path is then prefixed with the content root's
+/// place below it (`Site::url_path`). What is served does not widen; see
+/// `pages/site/mod.rs`.
 #[allow(clippy::too_many_lines, reason = "the docs.open handler: maps the path into the page server's URL space and replies; predates the 100-line limit")]
 pub async fn handle_docs_open(
     req_id: u64,

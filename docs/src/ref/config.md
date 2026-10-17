@@ -259,24 +259,31 @@ other one. No port, no forward — read the actual endpoints from
 ## `data-roots`
 
 The data folders a browser page opened with `W` may reach through git-tracked
-symlinks. It lives in the per-user config folder (`$XDG_CONFIG_HOME/sot` or
-`~/.config/sot`; `%LOCALAPPDATA%\sot\config` on Windows) and never in a
-repository, so a repo cannot declare its own data roots. It is not TOML: one
-absolute directory per line, blank lines and lines starting with `#` ignored.
+symlinks. The daemon that serves the page reads it, so the file that counts is
+the one on that daemon's computer, not the window's. It lives in the per-user
+config folder (`$XDG_CONFIG_HOME/sot` or `~/.config/sot`;
+`%LOCALAPPDATA%\sot\config` on Windows) and never in a repository, so a repo
+cannot declare its own data roots. It is not TOML: one absolute directory per
+line, blank lines and lines starting with `#` ignored.
 
 ```
 # where the lab's results live
 /mnt/lab/results
 ```
 
+With that line, a page in a repo that tracks the link
+`results -> /mnt/lab/results/run-7` shows the figures and movies in that run's
+folder, such as `results/fig.png`. The line may name the target itself or any
+folder above it that the rules below do not skip.
+
 A line is skipped, and named in the refusal message, when it is not an absolute
 path, does not exist on this host, is not a directory, is `/`, or contains your
 home directory. Each root is resolved to its canonical path, so a root given
-through a symlinked path still matches. The file is re-read whenever it changes:
-removing a root stops the pages using it at the next request, with no restart. A
-root that cannot be resolved when the file is read stays skipped until the file
-changes or the page is reopened with `W`. Adding one takes effect at the next `W`. With no file, or no usable
-line, no link is followed.
+through a symlinked path still matches. The file is re-read whenever it changes,
+so adding or removing a root takes effect at a page's next request, with no
+restart. A root that cannot be resolved when the file is read stays skipped until
+the file changes or the page is reopened with `W`. With no file, or no usable
+line, no link is followed, and the refusal says that none is declared.
 
 ## See also
 

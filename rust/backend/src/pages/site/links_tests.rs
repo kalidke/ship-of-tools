@@ -218,20 +218,48 @@ async fn git_dir_of_a_repo_top_site_is_refused() {
     remove_root(serial);
 }
 
+/// The path a browser requests for `link` on the page at URL path `page`: `..` stops at `/`.
+fn browser_path(page: &str, link: &str) -> String {
+    let mut parts: Vec<&str> = page.split('/').filter(|p| !p.is_empty()).collect();
+    parts.pop();
+    for seg in link.split('/') {
+        match seg {
+            "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    format!("/{}", parts.join("/"))
+}
+
+/// With no root declared the URL space still widens, so the page's own link above its site folder reaches the
+/// server and is refused with R2c's words (a browser would otherwise collapse it above the nonce, where the answer is
+/// that no site is open), and a root declared after the open is followed at the next request.
 #[tokio::test]
-async fn g_no_roots_means_todays_url_space_and_r2c() {
+async fn g_a_page_link_with_no_root_is_r2c_until_a_root_is_declared() {
     let f = fixture();
     let empty = f.base.join("empty-roots");
     std::fs::write(&empty, "# nothing\n").unwrap();
-    let site = Site::with_roots(f.repo.join("site"), f.repo.clone(), true, empty).await;
-    assert_eq!(site.url_path("exp/page.html"), "exp/page.html");
+    let site = Site::with_roots(f.repo.join("site"), f.repo.clone(), true, empty.clone()).await;
+    let page = site.url_path("exp/page.html");
     let (addr, nonce, serial) = serve(site).await;
-    let (st, _, body) = get(addr, &format!("/{nonce}/lnk/results/r1/movie.mp4"), &[]).await;
+    let page = format!("/{nonce}/{page}");
+    let (st, _, _) = get(addr, &page, &[]).await;
+    assert_eq!(st, 200);
+    let movie = browser_path(&page, "../../data/results/r1/movie.mp4");
+    let (st, _, body) = get(addr, &movie, &[]).await;
+    assert_eq!(st, 403, "{}", body_text(&body));
+    assert!(body_text(&body).contains("refused: data is a link"), "{}", body_text(&body));
+    assert!(body_text(&body).contains("none is declared"), "{}", body_text(&body));
+    let (st, _, body) = get(addr, &format!("/{nonce}/site/lnk/results/r1/movie.mp4"), &[]).await;
     assert_eq!(st, 403);
     assert!(body_text(&body).contains("none is declared"), "{}", body_text(&body));
-    // The site itself is untouched.
-    let (st, _, _) = get(addr, &format!("/{nonce}/exp/page.html"), &[]).await;
-    assert_eq!(st, 200);
+    std::fs::write(&empty, format!("{}\n", f.share.display())).unwrap();
+    let (st, _, body) = get(addr, &movie, &[]).await;
+    assert_eq!(st, 200, "{}", body_text(&body));
+    assert_eq!(body.len(), MOVIE_LEN);
     remove_root(serial);
 }
 
