@@ -416,7 +416,7 @@ if a[:1] == ["same-version"]:
         open(os.environ["STUB_PSLIST"], "w").write("%s sotd %s --socket %s --label sot\n" % (new, sys.argv[0], os.environ["STUB_SOCKET"]))
     if os.environ.get("STUB_THEIRS"):
         print(os.environ["STUB_THEIRS"])
-        sys.exit(3)
+        sys.exit(4 if os.environ.get("STUB_LEASED") else 3)
     sys.exit(0)
 path = a[a.index("--socket") + 1]
 if os.path.exists(path):
@@ -444,11 +444,12 @@ state() {  # <pid>: alive, or gone once it has exited (a zombie not yet reaped i
 }
 stale_ensure() {  # [STUB_THEIRS]: run the ensure once; its rc and stderr in ST_RC and ST_ERR
     ST_RC=0
-    ( HOME="$d/home" PATH="$d/bin:$TOOLS" STUB_LOG="$d/log" STUB_THEIRS="${1:-}" STUB_RACE="${2:-}" \
+    ( HOME="$d/home" PATH="$d/bin:$TOOLS" STUB_LOG="$d/log" STUB_THEIRS="${1:-}" STUB_RACE="${2:-}" STUB_LEASED="${3:-}" \
         STUB_SOCKET="$d/s.sock" STUB_PSLIST="$d/pslist" \
-        bash -c '. "$1"; sot_daemon_ensure "$2" "$3" "$4"' ensure "$LIB" "$d/prefix" "$d/bin/sotd" "$d/s.sock" \
+        bash -c '. "$1"; sot_daemon_ensure "$2" "$3" "$4"; rc=$?; printf %s "$SOT_ENSURE_NOTICE" > "$5"; exit $rc' ensure "$LIB" "$d/prefix" "$d/bin/sotd" "$d/s.sock" "$d/notice" \
         2> "$d/err" ) || ST_RC=$?
     ST_ERR="$(cat "$d/err")"
+    ST_NOTICE="$(cat "$d/notice")"
 }
 stale_ensure
 check "a daemon of this version is kept" "0 1 alive" \
@@ -465,14 +466,36 @@ case "$ST_ERR" in
     *"their REPLs restart"*) check "the ensure says the rows keep running and the REPLs restart" ok ok ;;
     *) check "the ensure says the rows keep running and the REPLs restart" "the cost sentence" "$ST_ERR" ;;
 esac
+case "$ST_NOTICE" in
+    *"was replaced; its rows keep running and their REPLs restart"*) check "the launch notice names the replace and its cost" ok ok ;;
+    *) check "the launch notice names the replace and its cost" "the cost sentence" "$ST_NOTICE" ;;
+esac
+# A window holds a lease: the daemon of another version is kept, and the launch says it is out of date.
+ps_before="$(grep -c '^daemon ' "$d/log")"
+printf '%s sotd %s/bin/sotd --socket %s/s.sock --label sot\n' "$new" "$d" "$d" > "$d/pslist"
+kill "$new" 2>/dev/null || true
+for _ in $(seq 1 100); do sot_socket_open "$d/bin/sotd" "$d/s.sock" || break; sleep 0.05; done
+( STUB_LOG="$d/log" "$d/bin/sotd" --socket "$d/s.sock" --project-root "$d/home" --label sot >/dev/null 2>&1 & )
+for _ in $(seq 1 100); do [ "$(grep -c '^daemon ' "$d/log")" -gt "$ps_before" ] && break; sleep 0.05; done
+leased="$(sed -n 's/^daemon //p' "$d/log" | tail -1)"
+printf '%s sotd %s/bin/sotd --socket %s/s.sock --label sot\n' "$leased" "$d" "$d" > "$d/pslist"
+stale_ensure 0.6.6-rc1 "" 1
+check "a daemon of another version is kept while a window holds a lease, and the launch says so" "0 alive daemon out of date, restart when ready" \
+    "$ST_RC $(state "$leased") $ST_NOTICE"
+kill "$leased" 2>/dev/null || true
+for _ in $(seq 1 100); do sot_socket_open "$d/bin/sotd" "$d/s.sock" || break; sleep 0.05; done
+( STUB_LOG="$d/log" "$d/bin/sotd" --socket "$d/s.sock" --project-root "$d/home" --label sot >/dev/null 2>&1 & )
+for _ in $(seq 1 100); do [ "$(grep -c '^daemon ' "$d/log")" -gt "$((ps_before + 1))" ] && break; sleep 0.05; done
+new="$(sed -n 's/^daemon //p' "$d/log" | tail -1)"
 # Two launches: the second one's probe is out while the first replaces the daemon. It named the old daemon before it
 # asked, so it ends nothing and the first launch's successor lives.
 printf '%s sotd %s/bin/sotd --socket %s/s.sock --label sot\n' "$new" "$d" "$d" > "$d/pslist"
+n0="$(grep -c '^daemon ' "$d/log")"
 stale_ensure 0.6.6-rc1 1
 race="$(sed -n 's/^daemon //p' "$d/log" | tail -1)"
-check "a launch racing a replace leaves the successor alive" "0 3 alive up" \
+check "a launch racing a replace leaves the successor alive" "0 $((n0 + 1)) alive up" \
     "$ST_RC $(grep -c '^daemon ' "$d/log") $(state "$race") $(sot_socket_open "$d/bin/sotd" "$d/s.sock" && echo up || echo down)"
-for p in "$old" "$new" "$race"; do kill "$p" 2>/dev/null || true; done
+for p in "$old" "$new" "$leased" "$race"; do kill "$p" 2>/dev/null || true; done
 
 # An owned unit whose restart stops the daemon and then fails: the replace is an attempted end, so the ensure's start
 # and wait loop takes over (its `systemctl start`) instead of returning 0 with nothing running.

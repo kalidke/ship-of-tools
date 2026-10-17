@@ -89,9 +89,9 @@ public static class FakeSotd
     {
         if (a.Length == 3 && a[0] == "same-version")
         {
-            // FAKE_SOTD_SAME: the exit of `sotd same-version` (0 this version, 3 another, printed; section 7d).
+            // FAKE_SOTD_SAME: the exit of `sotd same-version` (0 this version, 3 another, 4 another under a window's lease; 3 and 4 print it; section 7d).
             int same = EnvInt("FAKE_SOTD_SAME", 0);
-            if (same == 3) { Console.WriteLine("0.0.0-older"); }
+            if (same == 3 || same == 4) { Console.WriteLine("0.0.0-older"); }
             return same;
         }
         string stdinLog = Environment.GetEnvironmentVariable("FAKE_SOTD_STDIN_LOG");

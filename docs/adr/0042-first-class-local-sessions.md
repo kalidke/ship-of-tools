@@ -557,6 +557,12 @@ when the launch was itself about to apply an update. An apply made anywhere else
 by it (a Windows field box, 2026-10-16: an rc1 daemon refused the rc9.13 window for an hour while the Hosts tree said
 `unreachable`). The ensure now asks the daemon its version, `sotd same-version`, read from its reply to a hello, and
 replaces one that runs another version the way a stop ends a daemon: `-Stop` on Windows; on Unix a restart of an owned
-unit, else a TERM to the daemon on that socket. Capsules outlive it, as on every stop. A daemon that cannot say is kept.
+unit, else a TERM to the daemon on that socket, naming the daemon before it asks so a launch ends only the one it asked
+(a racing launch never ends the successor another just started). Capsules outlive it, as on every stop, but the
+daemon's REPLs and kernels restart (Julia state is lost) and a lease held at the kill puts the rows on the successor's
+60 s handover; the launch says so in its startup notice. A replace waits for no window to close and ends nothing under
+one: while any window holds a lease (the daemon's own record, `held.json`, names a holder; `sotd same-version` exits 4)
+the old daemon is kept and the new window is told `daemon out of date, restart when ready`; the next launch with no
+lease held replaces it. A daemon that cannot say, or whose record cannot be read, is kept.
 The Hosts and Sessions trees name a host whose daemon refused the window by the refusal's headline (`daemon out of
 date`) instead of `unreachable`. The comm install follows the checkout by its stamp, not by whether this launch applied.

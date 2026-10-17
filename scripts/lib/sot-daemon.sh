@@ -88,6 +88,8 @@ sot_comm_refresh "$prefix/repo/current"
 FAILS=0; ROLLED=0
 while :; do
     sot_daemon_ensure "$prefix" "$prefix/bin/sotd" "\$SOCKET" || exit 1
+    # What the ensure did, for the window's startup notice (the frontend reads SOT_LAUNCH_NOTICE).
+    if [ -n "\$SOT_ENSURE_NOTICE" ]; then export SOT_LAUNCH_NOTICE="\$SOT_ENSURE_NOTICE"; else unset SOT_LAUNCH_NOTICE; fi
     START="\$(date +%s)"
     "$prefix/bin/sot" --socket "\$SOCKET"
     RC=\$?
@@ -208,15 +210,17 @@ sot_daemon_pid() {  # <socket> [label]
 # Whether the daemon answering on SOCKET may stay: 0 when it may, 1 once it was asked
 # to end (the ensure's start and wait loop then takes over, whatever came of it). It
 # may stay unless `sotd same-version`, asked of the binary this install runs (an owned
-# unit's own, else SOTD-BIN), says it runs another version, which an update leaves when
-# it replaces the binary and not the process. That daemon is named before it is asked,
+# unit's own, else SOTD-BIN), says it runs another version (exit 3), which an update
+# leaves when it replaces the binary and not the process; exit 4 says the same while a
+# window holds a lease, and that daemon stays. SOT_ENSURE_NOTICE names what a launch
+# did for the window to show (daemon out of date, or replaced). That daemon is named before it is asked,
 # so a launch ends only the daemon it asked and never the successor another launch just
 # started: an owned unit's MainPID, else the pid found by its socket (sot_daemon_pid).
 # An owned unit is restarted through systemd onto the new binary only while MainPID is
 # still that pid; a nohup daemon is sent TERM and waited for, at most 10 s. A daemon it
 # cannot name or end stays, with a warning: the window still starts and names the skew.
 sot_daemon_current() {  # <prefix> <sotd-bin> <socket>
-    local run="$2" owned=0 theirs pid now t0
+    local run="$2" owned=0 theirs pid now t0 rc
     if sot_service_owned "$1"; then
         owned=1; run="$1/bin/sotd"
         pid="$(systemctl --user show -p MainPID --value sotd.service 2>/dev/null)"
@@ -224,11 +228,18 @@ sot_daemon_current() {  # <prefix> <sotd-bin> <socket>
         pid="$(sot_daemon_pid "$3")"
     fi
     theirs="$("$run" same-version --endpoint "unix:$3" 2>/dev/null)"
-    [ $? -eq 3 ] || return 0
+    rc=$?
+    if [ "$rc" -eq 4 ]; then
+        SOT_ENSURE_NOTICE="daemon out of date, restart when ready"
+        echo "the backend on $3 runs $theirs, not the version of $run, and a window holds it: kept; $SOT_ENSURE_NOTICE" >&2
+        return 0
+    fi
+    [ "$rc" -eq 3 ] || return 0
     case "$pid" in ''|0|*[!0-9]*)
         echo "WARNING: could not find the backend on $3 to end it; the window will show it out of date" >&2
         return 0 ;;
     esac
+    SOT_ENSURE_NOTICE="the backend ran $theirs and was replaced; its rows keep running and their REPLs restart"
     echo "the backend on $3 runs $theirs, not the version of $run: replacing it (its rows keep running; their REPLs restart)" >&2
     if [ "$owned" = 1 ]; then
         now="$(systemctl --user show -p MainPID --value sotd.service 2>/dev/null)"
@@ -275,6 +286,7 @@ sot_comm_refresh() {  # <checkout>
 # the install to a file of its own, <prefix>/logs/sotd.<UTC start>Z-<pid>.log,
 # never to a path another user can hold; the newest by name is the current one.
 sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
+    SOT_ENSURE_NOTICE=""
     local prefix="$1" sotd_bin="$2" socket="$3" mode=nohup pid="" code="" start now warned=0
     local logdir="$1/logs" logfile="" stamp err
     # A logs folder that exists is owner-only whichever way the daemon starts: an install that ran nohup before and is

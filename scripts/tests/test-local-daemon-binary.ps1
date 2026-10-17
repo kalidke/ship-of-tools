@@ -143,6 +143,13 @@ try {
             Check '7d: the ensure notice says the rows keep running and the REPLs restart' (($out7d -join ' ') -match 'NOTICE: the local daemon ran .* and was replaced; its rows keep running and their REPLs restart') "log: $out7d"
             $oldAlive7d = $null -ne (Get-Process -Id $first7d[0] -ErrorAction SilentlyContinue)
             Check '7d: the old daemon is gone and one new one serves' ((-not $oldAlive7d) -and ($after7d.Count -eq 1) -and ($first7d -notcontains $after7d[0])) "before $first7d, after $after7d, old alive $oldAlive7d"
+            # Another version under a window's lease (same-version exit 4) is kept, and the launch says it is out of date.
+            $env:FAKE_SOTD_SAME = '4'
+            $outL7d = & $script -Prefix $p7d -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7d -ProjectRoot $root 6>&1 2>&1
+            $exitL7d = $LASTEXITCODE
+            Remove-Item Env:\FAKE_SOTD_SAME -ErrorAction SilentlyContinue
+            $leasedAfter7d = @(Get-DaemonProcs (Get-PipePath $pipe7d) | ForEach-Object { $_.ProcessId })
+            Check '7d: a daemon of another version is kept while a window holds a lease, with a notice' (($exitL7d -eq 0) -and ("$leasedAfter7d" -eq "$after7d") -and (($outL7d -join ' ') -match 'NOTICE: daemon out of date, restart when ready')) "exit $exitL7d, pids $leasedAfter7d vs $after7d, log: $outL7d"
             # A launch that named the old daemon before it asked ends nothing when another launch already replaced it:
             # its -Stop is scoped to the old pid, so the successor lives.
             $null = & $script -Stop -Prefix $p7d -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7d -OnlyPids $first7d 6>&1 2>&1

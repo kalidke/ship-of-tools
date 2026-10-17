@@ -464,11 +464,17 @@ if ($Stop) {
 if (Test-SotPipeOpen $PipeName) {
     # The pipe answering says only that some daemon is there. One an update left running on the old binary (an apply
     # renames a mapped sotd.exe aside and installs the new one beside it) is replaced, the way -Stop ends a daemon:
-    # `sotd same-version` exits 3 and prints its version when the daemon runs another than $daemonExe, and any other
+    # `sotd same-version` exits 3 and prints its version when the daemon runs another than $daemonExe (4 when a window holds a lease: kept, with a notice), and any other
     # exit (a sotd.exe that predates the command, a daemon that does not say) keeps it.
     # The daemon is named before it is asked, so the replace ends that one and never a successor another launch started.
     $askedPids = @(Get-LocalDaemonProcess | ForEach-Object { [int]$_.ProcessId })
     $theirs = @(& $daemonExe same-version --endpoint "pipe:$PipePath" 2>$null)
+    if ($LASTEXITCODE -eq 4) {
+        # Another version, and a window holds a lease (the daemon's own record): the launch keeps it and says so.
+        Write-LocalDaemonLog "the daemon on $PipePath runs $($theirs -join ' '), another version than $daemonExe, and a window holds it - keeping it"
+        Write-LocalDaemonLog "NOTICE: daemon out of date, restart when ready"
+        exit 0
+    }
     if ($LASTEXITCODE -ne 3) {
         Write-LocalDaemonLog "already running on $PipePath"
         exit 0

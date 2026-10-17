@@ -34,7 +34,8 @@ for `sotd status`; `stdio_bridge.rs` `run` for the bridge.
 - `sotd status`, `sotd stdio-bridge` and `sotd same-version` are answered in main's early argv match, before the umask,
   log or state dir.
 - `sotd same-version` exits 0 for a daemon of this binary's version and 3, printing its version, for another (a refusal
-  for another protocol is another); any other exit means it cannot tell, and a caller keeps the daemon then.
+  for another protocol is another), or 4, printing it, for another while the daemon's own `held.json` names a lease holder
+  or cannot be read (a caller keeps it then); any other exit means it cannot tell, and a caller keeps the daemon then.
 - `apply`, `relay-sockets` and `refresh` act only on the hub (`topology::relay_units::require_hub`).
 - `apply` is a dry run unless given `--yes`, and one failing unit does not stop the others.
 - `refresh_at_start` acts only when this daemon's guard is sotd.service's MainPID (`supervised_by_systemd` compares it with
