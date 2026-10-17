@@ -39,7 +39,7 @@ and the launch path fails open: no update step can stop a window from starting.
   whatever the box's role, so comm follows every apply; the refresh is fail-open. `installer-handoff.sh`, sourced by
   `installer-apply.sh`, runs a real staged copy and pins the mode in the packed archive. The unit's `ExecStartPre` runs
   `sot-apply` through the same `bash -c` form as `ExecStart` (it sees `~/.bashrc`), and the comm refresh's `julia` is
-  bounded by `timeout` (`SOT_COMM_REFRESH_TIMEOUT_S`, 60 s) where one exists.
+  bounded by `timeout` (`SOT_COMM_REFRESH_TIMEOUT_S`, 30 s) where one exists.
 - `--drop-only` (`sot-apply.sh`) and `-DropOnly` (`sot-apply.ps1`) exit after the in-lock refusal check and never apply or
   re-execute: the wrapper's `apply_pending` and `Invoke-PendingApply` run them when their own question refused the
   pointer and left the daemon running, so a fitting pointer armed in between waits for the next start.

@@ -290,7 +290,7 @@ sot_comm_refresh() {  # <checkout>
     # Bounded where `timeout` exists (macOS has none): a stalled julia costs the refresh, not the unit's start timeout.
     # update_comm writes the stamp last, so a refresh that did not finish leaves none and the next launch tries again.
     local bound=""
-    ! command -v timeout >/dev/null 2>&1 || bound="timeout ${SOT_COMM_REFRESH_TIMEOUT_S:-60}"
+    ! command -v timeout >/dev/null 2>&1 || bound="timeout ${SOT_COMM_REFRESH_TIMEOUT_S:-30}"
     $bound julia --project="$1" -e 'using ShipTools; ShipTools.update_comm()' >/dev/null 2>&1
     case $? in
         0) ;;

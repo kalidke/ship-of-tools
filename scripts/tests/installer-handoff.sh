@@ -108,7 +108,7 @@ d="$WORK/ho-comm-nojulia"; mk_apply_fixture "$d" 1 1
 run_handoff "$d"
 check "no julia: the apply still succeeds" "0 v9.9.9" "$AP_RC $(installed_tag "$d")"
 
-# ---- review-U3's own cases (scratch only, appended to installer-handoff.sh in scratch copies) ----
+# ---- what the hand-off makes live: a rollback through it, drop-only, and the in-lock question ----
 run_args() {  # <dir> [args]: run the installed apply with args; sets AP_RC
     local d="$1"; shift
     rm -rf "${d:?}/prefix/updates/.lock"
@@ -138,8 +138,11 @@ if old="$(cd "$SRC" && git show v0.6.5:scripts/sot-apply.sh 2>/dev/null)" && [ -
     printf '%s\n' "$old" > "$d/prefix/bin/sot-apply"; chmod 0755 "$d/prefix/bin/sot-apply"
     arm_next "$d"
     run_args "$d" --rollback
-        check "v0.6.5 rollback via the staged copy" "1 v9.9.8 old-sotd" \
+    check "v0.6.5 rollback via the staged copy" "1 v9.9.8 old-sotd" \
         "$(grep -c 're-executing the staged sot-apply' "$d/out" || true) $(installed_tag "$d") $(sotd_text "$d")"
+else
+    case_start "an_old_apply_rolls_back_through_the_hand_off"
+    printf '    SKIP the v0.6.5 rollback (no tag v0.6.5 in this checkout)\n'
 fi
 case_start "drop_only_never_applies"
 d="$WORK/rv-do1"; mk_apply_fixture "$d" 1 1; stage_own_apply "$d" 0755; mk_julia "$d"

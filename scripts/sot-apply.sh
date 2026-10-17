@@ -418,7 +418,7 @@ log "APPLIED $TAG (previous: ${CUR_TAG:-unknown}; rollback state in $(basename "
 
 # The agent comm scripts follow the applied commit, on every role: an applied tag can change the comm protocol. The
 # library is the applied checkout's; an older target without one refreshes nothing. Fail-open, like all of this, and
-# bounded: its julia step is cut off at 60 s where `timeout` exists.
+# bounded: its julia step is cut off at 30 s where `timeout` exists.
 if command -v sot_comm_refresh >/dev/null 2>&1; then
     sot_comm_refresh "$CHECKOUT" || true
 fi
