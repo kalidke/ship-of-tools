@@ -215,7 +215,7 @@ name stays `docs.open` (legacy) to keep the change backend-only.
 
 A page can show data that lives outside its repo, through a symlink the repo
 tracks. Two roots, once one, are now separate. The **content root** is where
-ordinary files are served from (`find_site_root`, unchanged). The **URL root** is
+ordinary files are served from (`find_site_root`). The **URL root** is
 where the URL path space maps: the repo top when the page rides the shared prefix
 server and sits in a git repo, else the content root. A browser
 collapses `../../../data/x.mp4` above the nonce segment, so the link folder is
@@ -266,3 +266,29 @@ A failed `quarto.open` keeps its complete diagnostic message within 65,536 UTF-8
 Match the transport newline error in full decoded stderr. Its hint survives an omitted triggering occurrence, including an all-blank selected tail. It explains incomplete Julia server transport publication: Quarto 1.9.38 and later wait up to two seconds for the newline, slow server startup can still fail, and upgrading may help when using an older release.
 
 The bounded response fits the existing envelope cap and preserves `quarto_render_failed` and its wire shape. The daemon captures full stderr and attempts the render once.
+
+## Amendment 2026-10-16: a page is served from the site it belongs to (PROJLOG-STYLE)
+
+`docs.open` serves the cursored file, or the cursored folder's `index.html`, from the site it belongs to: the outermost
+folder holding an `index.html` between it and the top of its repository (the nearest folder holding `.git`) or the
+workspace root, whichever is nearer, and opens it at its place below that folder. With no index on the way, the file's
+own folder is served, as before.
+
+Before this, the walk took the innermost folder holding an index and climbed on only while each parent held one, and an
+`index.html` or a folder was served from its own folder. A project log is one site with index pages inside it
+(`journal/index.html`, each campaign's `experiments/<campaign>/index.html`) and a folder with none between them and the
+log's front page (`experiments/`). Its campaign pages, and its journal and campaign index pages opened directly, were
+served from their own folders and lost the log's `assets/`: its CSS, KaTeX and `site.js`. A Documenter page built with
+pretty URLs (`man/intro/index.html`) and a nested index page of a root-relative site (`__site/blog/index.html`) lost
+theirs the same way.
+
+The site is everything a page's script may read, so the walk has two bounds:
+- It ends at the top of the page's repository. Before this, the first index above a page could lie outside its
+  repository, in a folder of several repositories, and the page could read the other repositories' files.
+- No site root holds the home directory, since its pages could read the ssh keys and the daemon's own token: the
+  walk stops below it, and a page whose own folder holds it is refused. Before this, a page directly in the home
+  directory, or with no index between it and an `index.html` there, was served from the home directory.
+
+The cost: an index page at the top of a repository, or at a workspace root outside any repository, now takes in every
+page below it, and those pages may read every file under it, untracked ones too. Before this, a folder with no index
+kept a nested site apart; to keep one apart now, move or rename that index page.

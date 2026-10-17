@@ -19,7 +19,7 @@
 // (`serve_file`), so a linked movie seeks the way a `video.open` one does.
 //
 // A `Site` splits two roots that used to be one. CONTENT root S is where
-// ordinary files are served from (`find_site_root`, unchanged). URL root is
+// ordinary files are served from (`find_site_root`). URL root is
 // where the URL path space maps: the repo top when the page is opened from the
 // shared prefix server and sits in a git repo, else S. A page's
 // `../../data/x.mp4` can only reach the link folder, to be served or refused

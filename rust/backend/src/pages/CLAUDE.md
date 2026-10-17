@@ -52,6 +52,9 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   PAGE-PORT update).
 - `.git` and `..` are never served, and a link is followed only when git tracks it and its target lies under a
   declared data root (`site/` `resolve_and_open`).
+- `docs.open` serves a file, or a folder's `index.html`, from the outermost folder holding an `index.html` between it
+  and the top of its repository or the workspace root, else from its own folder. No site root holds the home folder:
+  a page whose own folder does is refused (`find_site_root`).
 - Rust video opens, preview bounds and HTTP MIME decisions use sot_protocol::video_path::video_mime; leading-dot filenames follow the existing Julia suffix contract.
 
 ## Connections

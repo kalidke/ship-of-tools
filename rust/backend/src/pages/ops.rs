@@ -19,30 +19,23 @@ use crate::server::reply::HandlerOutput;
 use crate::session::Session;
 use crate::rows::Workspaces;
 
-/// `docs.open`'s site-root walk (v0.6.6): starting from `start` (a subpage's
-/// own directory), climb toward the OUTERMOST ancestor — bounded by
-/// `workspace_root`, never above it — that sits in an unbroken chain of
-/// directories each directly holding an `index.html`/`index.htm`.
+/// `docs.open`'s site root for a page in `dir`: from `dir` up to the top of its
+/// repository (the nearest folder holding `.git`) or `workspace_root`,
+/// whichever comes first, the OUTERMOST folder that directly holds an
+/// `index.html`/`index.htm`, else `dir` itself. A folder with no index on the
+/// way does not end the site: a project log's campaign page
+/// (`<log>/experiments/<campaign>/run.html`, where `<campaign>/` holds an index
+/// and `experiments/` none) is served from `<log>/`, so its `../../assets/`
+/// resolve. The repository top does end it, so a page never takes in a folder
+/// outside its repository. No site root contains `home`, since its pages could
+/// read the ssh keys and the daemon's own token: `None` when `dir` does.
 ///
-/// The chain's first (innermost) member need not be `start` itself: a
-/// subpage's own directory (`<site>/api/` for `<site>/api/reference.html`)
-/// usually has no index of its own — only the site root a few levels up
-/// does — and that gap is normal, not a stop signal, so the search for the
-/// first hit climbs through it freely. Once a hit is found, further climbing
-/// requires an unbroken chain: an unrelated ancestor higher up that happens
-/// to ALSO hold an index.html (a different, coincidental site one level
-/// further out) is never folded in — the walk stops at the first ancestor
-/// above the chain that lacks one.
-///
-/// Every directory visited is a `.parent()` of the already-canonical path the
-/// caller confined, so no new symlink resolution happens on the way up; the
-/// `workspace_root` bound (itself canonical) keeps the walk from ever
-/// producing a root outside the workspace. Returns `None` if nothing from
-/// `start` up to and including `workspace_root` has an index — the caller's
-/// documented fallback.
+/// Every folder visited is a `.parent()` of the already-canonical path the
+/// caller confined, and the walk never leaves `workspace_root`.
 async fn find_site_root(
-    start: &std::path::Path,
+    dir: &std::path::Path,
     workspace_root: &std::path::Path,
+    home: Option<&std::path::Path>,
 ) -> Option<std::path::PathBuf> {
     async fn has_index(dir: &std::path::Path) -> bool {
         for name in ["index.html", "index.htm"] {
@@ -57,35 +50,22 @@ async fn find_site_root(
         false
     }
 
-    // Find the first (innermost) ancestor — starting at `start` — that has
-    // an index, tolerating any number of index-less directories below it.
-    let mut cur = start.to_path_buf();
-    let first_hit = loop {
+    let holds_home = |p: &std::path::Path| home.is_some_and(|h| h.starts_with(p));
+    let mut root = None;
+    let mut cur = dir.to_path_buf();
+    while !holds_home(&cur) {
         if has_index(&cur).await {
-            break Some(cur.clone());
+            root = Some(cur.clone());
         }
-        if cur == workspace_root {
-            break None;
+        if cur == workspace_root || tokio::fs::symlink_metadata(cur.join(".git")).await.is_ok() {
+            break;
         }
         match cur.parent() {
             Some(p) if p.starts_with(workspace_root) => cur = p.to_path_buf(),
-            _ => break None,
+            _ => break,
         }
-    };
-    let mut root = first_hit?;
-
-    // Extend upward through the UNBROKEN chain above the first hit.
-    loop {
-        if root == workspace_root {
-            break;
-        }
-        let Some(parent) = root.parent() else { break };
-        if !parent.starts_with(workspace_root) || !has_index(parent).await {
-            break;
-        }
-        root = parent.to_path_buf();
     }
-    Some(root)
+    root.or_else(|| (!holds_home(dir)).then(|| dir.to_path_buf()))
 }
 
 /// `video.open` — return a loopback HTTP URL for the cursored video file so
@@ -169,23 +149,16 @@ pub async fn handle_video_open(
 /// for anything the daemon's owner can read, reachable by any local user.
 ///
 /// Rooting rule (so both relative AND root-relative `/asset` links resolve):
-/// - cursor on a directory → serve it, open `/` (its `index.html`);
-/// - cursor on `index.html`/`index.htm` → serve its parent, open `/`;
-/// - cursor on any other file → walk UP from its directory to the OUTERMOST
-///   ancestor (bounded by the workspace root) that sits in an unbroken chain
-///   of directories each directly holding an `index.html`/`index.htm` (see
-///   `find_site_root`) — that ancestor is the site root, and `rel` is the
-///   path from it down to the file. A subpage like `<site>/api/reference.html`
-///   is served at the SITE's root, not `api/`'s, so `../assets/x.css` from
-///   inside it resolves instead of escaping the served root and 404ing (this
-///   was the bug: rooting at the subpage's own directory). If no ancestor up
-///   to the workspace root has an index (v0.6.6: e.g. a project-log page
-///   whose assets sit in a sibling `assets/` one level up, with no per-page
-///   index anywhere), this falls back to the PRE-FIX behaviour — root = the
-///   file's own parent — as a documented limitation: a page in that shape
-///   using a parent-relative asset link still 404s. Fixing that would mean
-///   parsing the page's own HTML for its relative links, which this handler
-///   deliberately does not do (no HTML heuristics for routing decisions).
+/// the cursored file, or the cursored folder's `index.html`, is served from the
+/// site it belongs to: the outermost folder holding an index between it and
+/// the top of its repository or the workspace root (`find_site_root`), opened
+/// at its place below that folder (an index page at its folder's URL). So
+/// `<site>/api/reference.html`, `<log>/journal/index.html`, `<log>/journal/`
+/// and `<log>/experiments/<campaign>/run.html` all resolve `../assets/x.css`
+/// against their site. With no index on the way, the file's own folder is
+/// served, and a page whose assets sit beside that folder still 404s: the
+/// handler does not parse a page's HTML for its links. A page whose folder
+/// holds the home folder is refused, never served.
 ///
 /// URL root (v0.6.6): the rooting rule above picks the CONTENT root, where
 /// ordinary files are served from. A page on the shared prefix server in a
@@ -256,14 +229,14 @@ pub async fn handle_docs_open(
         }
     };
 
-    // Derive (site root, URL path, entry page) — all off the canonical path.
-    // `canon_p.parent()` inherits confinement from the check above (a path
-    // under a workspace root is still under it once its last component is
-    // dropped), so no second canonicalize/check is needed for `root`.
-    let (root, rel, entry): (std::path::PathBuf, String, std::path::PathBuf) = if meta.is_dir() {
+    // Derive (site root, URL path, entry page), all off the canonical path; a
+    // folder opens its index page. `dir` is `canon_p` or its parent, so it
+    // inherits confinement from the check above, and `find_site_root` climbs
+    // from it only inside `ws_root`.
+    let (dir, page, entry) = if meta.is_dir() {
         (canon_p.clone(), String::new(), canon_p.join("index.html"))
     } else {
-        let parent = canon_p
+        let dir = canon_p
             .parent()
             .unwrap_or_else(|| std::path::Path::new("/"))
             .to_path_buf();
@@ -271,29 +244,29 @@ pub async fn handle_docs_open(
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if fname.eq_ignore_ascii_case("index.html") || fname.eq_ignore_ascii_case("index.htm") {
-            (parent, String::new(), canon_p.clone())
-        } else {
-            match find_site_root(&parent, &ws_root).await {
-                Some(site_root) => {
-                    // `site_root` is an ancestor of `parent` (= `canon_p`'s
-                    // own parent), found by walking UP from it, so `canon_p`
-                    // always strips cleanly; the fallback is unreachable.
-                    let rel = canon_p
-                        .strip_prefix(&site_root)
-                        .unwrap_or(canon_p.as_path())
-                        .to_string_lossy()
-                        .replace(std::path::MAIN_SEPARATOR, "/");
-                    (site_root, rel, canon_p.clone())
-                }
-                // No ancestor up to `ws_root` holds an index.html — documented
-                // fallback (see the doc comment above): pre-fix behaviour.
-                None => (parent, fname, canon_p.clone()),
-            }
-        }
+        let index = fname.eq_ignore_ascii_case("index.html") || fname.eq_ignore_ascii_case("index.htm");
+        (dir, if index { String::new() } else { fname }, canon_p.clone())
     };
+    let home = std::env::home_dir().and_then(|h| h.canonicalize().ok());
+    let Some(root) = find_site_root(&dir, &ws_root, home.as_deref()).await else {
+        return Ok(err(
+            format!(
+                "{} is not opened: its folder holds the home folder, whose keys a page there could read \
+                 — move the page into a folder of its own",
+                req.path
+            ),
+            "home_folder",
+        ));
+    };
+    // `root` is `dir` or an ancestor of it, so the strip cannot fail.
+    let below = dir
+        .strip_prefix(&root)
+        .unwrap_or(std::path::Path::new(""))
+        .to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    let rel = if below.is_empty() { page } else { format!("{below}/{page}") };
 
-    // A directory must have an index to open at `/`.
+    // A folder must hold an index page to open.
     if meta.is_dir() {
         let has_index = tokio::fs::metadata(&entry)
             .await
@@ -301,7 +274,7 @@ pub async fn handle_docs_open(
             .unwrap_or(false);
         if !has_index {
             return Ok(err(
-                format!("no index.html in {}", root.display()),
+                format!("no index.html in {}", dir.display()),
                 "no_index",
             ));
         }
@@ -776,14 +749,10 @@ pub async fn handle_quarto_open(
 
 #[cfg(test)]
 mod find_site_root_tests {
-    // `docs.open`'s site-root walk (v0.6.6), tested directly against real
-    // temp directories rather than through the full handler: `find_site_root`
-    // is a pure path-and-filesystem function with no `Session`/`Workspaces`/
-    // `pages::site` dependency, so it's the cheap, isolated place to pin the
-    // walk's boundary behaviour. `handle_docs_open` end to end has no
-    // existing test harness in this crate (no test binds the real
-    // `pages::site` listener `bound_site_port()` requires) — out of scope to
-    // add here; see the report for what that leaves unverified.
+    // `docs.open`'s site-root walk, tested directly against real temp
+    // directories: `find_site_root` is a pure path-and-filesystem function, so
+    // this is the cheap place to pin each bound. The handler end to end, over
+    // the wire, is `rust/backend/tests/site_root.rs`.
     use super::find_site_root;
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -799,68 +768,77 @@ mod find_site_root_tests {
         dir
     }
 
+    fn page(path: &std::path::Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "<html></html>").unwrap();
+    }
+
     #[tokio::test]
     async fn climbs_through_index_less_dirs_to_a_distant_site_index() {
         // <ws>/site/index.html, subpage two levels down at
         // <ws>/site/guide/api/reference.html — `guide/` and `guide/api/`
-        // have no index of their own, matching a typical Documenter/
-        // project-log-style tree where only the top has one.
+        // have no index of their own, matching a typical Documenter tree
+        // where only the top has one.
         let ws = scratch("climb");
         let site = ws.join("site");
         let sub = site.join("guide").join("api");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(site.join("index.html"), "<html></html>").unwrap();
-        std::fs::write(sub.join("reference.html"), "<html></html>").unwrap();
+        page(&site.join("index.html"));
+        page(&sub.join("reference.html"));
 
-        let root = find_site_root(&sub, &ws).await.expect("site root found");
+        let root = find_site_root(&sub, &ws, None).await.expect("site root found");
         assert_eq!(root, site, "climbs past two index-less dirs to the site root");
 
         let _ = std::fs::remove_dir_all(&ws);
     }
 
     #[tokio::test]
-    async fn stops_at_the_outermost_of_an_unbroken_chain() {
-        // <ws>/site/index.html AND <ws>/index.html both exist (the outer one
-        // stands in for an "unrelated parent that happens to hold one" —
-        // e.g. a repo-level landing page one level above the real site).
-        // The chain breaks between them (nothing between `site/` and `ws`
-        // lacks an index here because they're adjacent, so pin a THIRD
-        // level: <ws>/outer/site/index.html with <ws>/outer/ having none),
-        // proving the walk stops at `site/`, not `outer/`'s parent.
-        let ws = scratch("stop-outer");
-        let outer = ws.join("outer");
-        let site = outer.join("site");
-        std::fs::create_dir_all(&site).unwrap();
-        std::fs::write(site.join("index.html"), "<html></html>").unwrap();
-        std::fs::write(ws.join("index.html"), "<html></html>").unwrap(); // unrelated
-        std::fs::write(site.join("page.html"), "<html></html>").unwrap();
+    async fn the_outermost_index_in_the_repository_is_the_site() {
+        // A project log: <repo>/log/index.html, a campaign index at
+        // <repo>/log/experiments/camp/index.html and no index in
+        // `experiments/`. An index page above the repository (<ws>/index.html)
+        // is never folded in: the walk ends at the folder holding `.git`.
+        let ws = scratch("outermost");
+        let repo = ws.join("repo");
+        let log = repo.join("log");
+        let camp = log.join("experiments").join("camp");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        page(&ws.join("index.html"));
+        page(&log.join("index.html"));
+        page(&camp.join("index.html"));
 
-        let root = find_site_root(&site, &ws)
-            .await
-            .expect("site root found");
-        assert_eq!(
-            root, site,
-            "must not walk past the outermost index.html (site/) into the \
-             unrelated ws/index.html one level further out, across the gap \
-             at outer/ which has no index of its own"
-        );
+        let root = find_site_root(&camp, &ws, None).await.expect("site root found");
+        assert_eq!(root, log, "across the index-less experiments/, and not past the repository top");
 
         let _ = std::fs::remove_dir_all(&ws);
     }
 
     #[tokio::test]
-    async fn no_index_anywhere_up_to_the_workspace_root_is_none() {
-        // The project-log shape: a standalone page with a SIBLING assets/
-        // dir, no index.html anywhere above it up to the workspace root.
-        // This is the documented fallback case — `find_site_root` returns
-        // `None` and the caller keeps the pre-fix parent-rooted behaviour.
+    async fn a_folder_holding_home_is_never_the_site_root() {
+        // <home>/index.html and a page in <home>/downloads/bundle/ with no
+        // index on the way: the page's own folder is its site, never the
+        // home folder; and a page directly in the home folder has none.
+        let ws = scratch("home");
+        let home = ws.join("home");
+        let bundle = home.join("downloads").join("bundle");
+        page(&home.join("index.html"));
+        page(&bundle.join("page.html"));
+
+        assert_eq!(find_site_root(&bundle, &ws, Some(&home)).await, Some(bundle.clone()));
+        assert_eq!(find_site_root(&home, &ws, Some(&home)).await, None);
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn no_index_up_to_the_workspace_root_serves_the_page_folder() {
+        // A standalone page with a SIBLING assets/ dir and no index.html
+        // anywhere above it up to the workspace root: its own folder.
         let ws = scratch("no-index");
         let page_dir = ws.join("journal");
-        std::fs::create_dir_all(&page_dir).unwrap();
         std::fs::create_dir_all(ws.join("assets")).unwrap();
-        std::fs::write(page_dir.join("2026-09-01.html"), "<html></html>").unwrap();
+        page(&page_dir.join("2026-09-01.html"));
 
-        assert_eq!(find_site_root(&page_dir, &ws).await, None);
+        assert_eq!(find_site_root(&page_dir, &ws, None).await, Some(page_dir.clone()));
 
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -870,10 +848,10 @@ mod find_site_root_tests {
         // <ws>/index.html with the page directly inside <ws> — the walk
         // must find <ws> itself and never look above it.
         let ws = scratch("at-root");
-        std::fs::write(ws.join("index.html"), "<html></html>").unwrap();
-        std::fs::write(ws.join("page.html"), "<html></html>").unwrap();
+        page(&ws.join("index.html"));
+        page(&ws.join("page.html"));
 
-        let root = find_site_root(&ws, &ws).await.expect("site root found");
+        let root = find_site_root(&ws, &ws, None).await.expect("site root found");
         assert_eq!(root, ws, "the workspace root itself is the site root");
 
         let _ = std::fs::remove_dir_all(&ws);
