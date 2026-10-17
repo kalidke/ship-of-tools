@@ -12,9 +12,9 @@
 # frontend declares as its hello `name`), overriding that choice.
 #
 # Usage:
-#   sot-fe preview <workspace> <path> [--urgent] [--fe <host>] [--roi x,y,w,h]
+#   sot-fe preview <workspace> <path> [--urgent --fe <host>] [--fe <host>] [--roi x,y,w,h]
 #                                     [--caption <text>]
-#   sot-fe reveal  <workspace> <path> [--urgent] [--fe <host>] [--caption <text>]
+#   sot-fe reveal  <workspace> <path> [--urgent --fe <host>] [--fe <host>] [--caption <text>]
 #   sot-fe goto    <workspace>        [--fe <host>]
 #   sot-fe mode    <mode>             [--fe <host>]
 #   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <host>]
@@ -175,7 +175,7 @@
 #   --fe <host>    scope delivery to the frontend on that host (sets the
 #                  wire `target` to `fe@<host>`); absent = the daemon delivers as the
 #                  header above says: preview and reveal to every FE, any other verb to one.
-#   --urgent       hint the FE to force-show now (preview/reveal); sets args.urgent.
+#   --urgent       hint the FE to force-show now (preview/reveal); sets args.urgent. Needs --fe: refused without it.
 #   --roi x,y,w,h   (preview) aim the viewport at a SOURCE-IMAGE-PIXEL rect (ADR-0022
 #                  image.crop vocabulary; round-trippable). FE clamps to image bounds.
 #                  The effective (clamped) rect echoes via a follow-up event, not this
@@ -286,7 +286,9 @@ source "$SCRIPT_DIR/sot-fe-version.sh"
 case "$CMD" in
     preview|reveal)
         WS="${POS[0]:-}"; PATH_ARG="${POS[1]:-}"
-        [ -n "$WS" ] && [ -n "$PATH_ARG" ] || { echo "usage: sot-fe $CMD <workspace> <path> [--urgent] [--fe <host>] [--roi x,y,w,h] [--caption <text>]" >&2; exit 1; }
+        [ -n "$WS" ] && [ -n "$PATH_ARG" ] || { echo "usage: sot-fe $CMD <workspace> <path> [--urgent --fe <host>] [--fe <host>] [--roi x,y,w,h] [--caption <text>]" >&2; exit 1; }
+        # A preview reaches every window, so a switch-now hint with no one window named could only be ignored.
+        [ "$URGENT" != true ] || [ -n "$FE" ] || { echo "ERROR: --urgent needs --fe <host>: with none, a preview reaches every window and none is switched" >&2; exit 1; }
         # Keep the file nav INSIDE the repo: a node_id must be REPO-RELATIVE (the
         # daemon rejects absolute node_ids, and the FE tree positions its cursor by
         # relative id — an absolute path would show a "floating" file the nav can't

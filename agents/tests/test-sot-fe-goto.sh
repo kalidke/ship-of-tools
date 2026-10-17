@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# test-sot-fe-goto.sh — hermetic suite for `sot-fe goto`: it switches a window's view and starts nothing, so it has no
-# `--boot` (the window never acted on one). The flag is refused as unknown before an endpoint is resolved, so nothing is
-# sent. No daemon: the endpoint named is a socket path nobody listens on, in this suite's own work directory; never a
+# test-sot-fe-goto.sh — hermetic suite for `sot-fe`'s refusals before anything is sent. `goto` switches a window's view
+# and starts nothing, so it has no `--boot` (the window never acted on one); `--urgent` acts only with `--fe`, so
+# `preview` and `reveal` refuse it alone. Each is refused before an endpoint is resolved, so nothing is sent. No daemon: the endpoint named is a socket path nobody listens on, in this suite's own work directory; never a
 # real ~/.sot-comm (a temp $SOT_COMM_HOME) or a real daemon socket.
 #
 # Usage: agents/tests/test-sot-fe-goto.sh
@@ -37,7 +37,17 @@ case_boot_is_refused() {
     [ "$rc" = 1 ] && [[ $out == *"ERROR: unknown flag '--boot'"* ]] || { echo "rc=$rc out=$out"; return 1; }
 }
 
+case_urgent_needs_fe() {
+    local out rc
+    out="$("$SOT_FE" preview demo a.png --urgent --endpoint "unix:$WORK/nobody.sock" --timeout 5 2>&1)"
+    rc=$?
+    [ "$rc" = 1 ] && [[ $out == *"--urgent needs --fe"* ]] || { echo "rc=$rc out=$out"; return 1; }
+    out="$("$SOT_FE" reveal demo a.png --urgent --fe host-x --endpoint "unix:$WORK/nobody.sock" --timeout 5 2>&1)"
+    [[ $out != *"--urgent needs --fe"* ]] || { echo "refused with --fe: $out"; return 1; }
+}
+
 check "goto --boot is refused as an unknown flag before anything is sent" case_boot_is_refused
+check "preview --urgent without --fe is refused before anything is sent" case_urgent_needs_fe
 
 echo ""
 echo "$PASS passed, $FAIL failed"
