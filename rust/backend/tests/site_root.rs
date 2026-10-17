@@ -283,3 +283,43 @@ async fn a_page_named_like_an_index_opens_at_its_own_name() {
     drop(w);
     env.kill_daemon_bounded().await;
 }
+
+/// The root a page is narrowed to shows in its own URL, and the page can read the URL, so it must not depend on a
+/// file outside the site: a link through a symlink out of the build never narrows by its target, present or missing.
+#[tokio::test]
+async fn a_link_out_of_the_build_does_not_change_the_page_url() {
+    let env = daemon("siteroot-oracle");
+    let app = vite_project(&env);
+    let outside = env.home_root.join("ext-target");
+    write(&app.join("dist/index.html"), "<link href=\"/ext/key\"><script src=\"/assets/index-a.js\"></script>");
+    std::os::unix::fs::symlink(&outside, app.join("dist/ext")).expect("symlink");
+    let mut w = window(&env).await;
+    let path = |url: &str| url.split_once("?secret=").expect("a pool URL").0.rsplit_once('/').expect("a path").0.to_string();
+    let missing = open(&mut w, 2, &app.join("dist/index.html")).await;
+    write(&outside.join("key"), "key");
+    let present = open(&mut w, 3, &app.join("dist/index.html")).await;
+    assert_eq!(
+        path(&missing).split_once('/').map(|x| x.1.to_string()),
+        path(&present).split_once('/').map(|x| x.1.to_string()),
+        "{missing} vs {present}"
+    );
+    drop(w);
+    env.kill_daemon_bounded().await;
+}
+
+/// A build whose first links are a folder URL and a missing icon is still rooted at the build.
+#[tokio::test]
+async fn a_build_whose_first_links_are_no_files_is_still_its_own_origin() {
+    let env = daemon("siteroot-firstlinks");
+    let app = vite_project(&env);
+    write(
+        &app.join("dist/index.html"),
+        "<a href=\"/about/\"><link rel=\"icon\" href=\"/missing.ico\"><script src=\"/assets/index-a.js\"></script>",
+    );
+    let mut w = window(&env).await;
+    let page = open(&mut w, 2, &app.join("dist/index.html")).await;
+    assert_eq!(status(&page, "/assets/index-a.js").await, 200, "the build's script: {page}");
+    assert_eq!(status(&page, "/.env.local").await, 404, "the source tree's secret: {page}");
+    drop(w);
+    env.kill_daemon_bounded().await;
+}

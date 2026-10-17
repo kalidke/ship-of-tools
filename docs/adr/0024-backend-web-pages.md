@@ -296,9 +296,12 @@ index kept a nested site apart, and now a build's `dist/index.html` directly bel
 with no folder between. Two measured cases: a Vite build with base `./` reads the source tree's `.env.local` through
 `../.env.local`, and a page outside any repository under an index page at the workspace root reads another repository's
 `.env`; both were refused before. On a workspace that is the home folder, the walk reaches the folder below home. To
-keep a nested site apart, move or rename the outer index page. A page with root-relative links is not widened this way:
-it keeps its own origin, rooted at the innermost folder on the walk under which its first root-relative link resolves
-(a Vite build's `dist/`, a Jekyll `_site/`), else at the walk's root. A rule rooting every page at the innermost folder
+keep a nested site apart, move or rename the outer index page. A page with root-relative links has its own origin and is narrowed, not widened: it is rooted at the innermost folder
+on the walk that holds the file its first plain link names (a Vite build's `dist/`, a Jekyll `_site/`), taking the links
+in document order and skipping any that names no file there, else at the walk's root like any page. A link is plain
+when every part is a name (no `..`, drive, `\\` or `:`), and a folder counts only when the link's canonical path is a
+file inside the folder, so a link through a symlink out of the build never narrows and the page's URL, which its script
+can read, shows nothing about files outside the walk's root. A rule rooting every page at the innermost folder
 that holds the files it loads would narrow the cases above; it is not taken, since a page that names a file at the walk's
 root still takes in everything under it.
 

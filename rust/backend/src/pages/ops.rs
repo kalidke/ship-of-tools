@@ -356,7 +356,7 @@ pub async fn handle_docs_open(
 }
 
 /// The root-relative `href="/…"` / `src="/…"` paths in the page `entry` (ADR 0029), each without its leading `/`,
-/// query or fragment; none for a file that is not HTML or cannot be read. Protocol-relative `//host` URLs (external
+/// query or fragment, in document order; none for a file that is not HTML or cannot be read. Protocol-relative `//host` URLs (external
 /// CDN) are not root-relative. Both quote styles are checked.
 async fn root_relative_links(entry: &std::path::Path) -> Vec<String> {
     let is_html = entry
@@ -374,7 +374,7 @@ async fn root_relative_links(entry: &std::path::Path) -> Vec<String> {
 }
 
 fn root_relative_paths(html: &str) -> Vec<String> {
-    let mut paths = Vec::new();
+    let mut found = Vec::new();
     for (needle, quote) in [("href=\"/", '"'), ("src=\"/", '"'), ("href='/", '\''), ("src='/", '\'')] {
         let mut from = 0;
         while let Some(pos) = html[from..].find(needle) {
@@ -383,24 +383,40 @@ fn root_relative_paths(html: &str) -> Vec<String> {
             // Another `/` right after the leading one means `//host` (external), not a root-relative path.
             if !rest.starts_with('/') {
                 let end = rest.find([quote, '?', '#']).unwrap_or(rest.len());
-                paths.push(rest[..end].to_string());
+                found.push((after, rest[..end].to_string()));
             }
             from = after;
         }
     }
-    paths
+    found.sort();
+    found.into_iter().map(|(_, path)| path).collect()
 }
 
-/// A root-relative page's site root: the innermost folder from `dir` up to `root` under which its first link
-/// resolves to a file (a build's `dist/`, not the source tree's index above it), else `root`. It only narrows `root`,
-/// and the link comes from the page, so a page can pick nothing wider than the walk gave it.
+/// A link that can narrow a site: a relative path of plain names only. Anything else (`..`, `.`, an empty part, a drive
+/// or root, a `\\` or `:`) is ignored, so no link names a path outside the folders the walk already holds.
+fn is_plain_link(link: &str) -> bool {
+    !link.is_empty()
+        && !link.contains(['\\', ':'])
+        && link.split('/').all(|c| !c.is_empty() && c != "." && c != "..")
+        && std::path::Path::new(link).components().all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// A root-relative page's site root: the innermost folder from `dir` up to `root` that holds the file its first
+/// plain link names (the links in document order, those naming no file there skipped), else `root`: a build's
+/// `dist/`, not the source tree's index above it. A folder counts only when the link's canonical path is a regular
+/// file inside the folder's own canonical path, so a link through a symlink out of the build never narrows, and the
+/// choice, which the page's URL shows, depends on no file outside `root`. It only narrows `root`.
 async fn narrow_to_links(root: std::path::PathBuf, dir: &std::path::Path, links: &[String]) -> std::path::PathBuf {
-    let Some(link) = links.iter().find(|l| !l.is_empty() && !l.split('/').any(|c| c == "..")) else {
-        return root;
-    };
-    for folder in dir.ancestors().take_while(|a| a.starts_with(&root)) {
-        if tokio::fs::metadata(folder.join(link)).await.is_ok_and(|m| m.is_file()) {
-            return folder.to_path_buf();
+    for link in links.iter().filter(|l| is_plain_link(l)) {
+        for folder in dir.ancestors().take_while(|a| a.starts_with(&root)) {
+            let (Ok(file), Ok(base)) =
+                (tokio::fs::canonicalize(folder.join(link)).await, tokio::fs::canonicalize(folder).await)
+            else {
+                continue;
+            };
+            if file.starts_with(&base) && tokio::fs::metadata(&file).await.is_ok_and(|m| m.is_file()) {
+                return folder.to_path_buf();
+            }
         }
     }
     root
@@ -753,7 +769,7 @@ mod find_site_root_tests {
     // directories: `find_site_root` is a pure path-and-filesystem function, so
     // this is the cheap place to pin each bound. The handler end to end, over
     // the wire, is `rust/backend/tests/site_root.rs`.
-    use super::{find_site_root, narrow_to_links, root_relative_paths};
+    use super::{find_site_root, is_plain_link, narrow_to_links, root_relative_paths};
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -846,10 +862,17 @@ mod find_site_root_tests {
     #[test]
     fn root_relative_paths_are_cut_at_the_quote_query_and_fragment() {
         let html = "<link href=\"/css/a.css?v=2\"><script src='/js/b.js#x'></script><img src=\"//cdn/x.png\"><a href=\"/\">";
-        let mut paths = root_relative_paths(html);
-        paths.sort();
-        assert_eq!(paths, ["", "css/a.css", "js/b.js"], "protocol-relative links are not root-relative");
+        assert_eq!(root_relative_paths(html), ["css/a.css", "js/b.js", ""], "document order; no protocol-relative");
+        assert_eq!(root_relative_paths("<script src=\"/a\"><link href=\"/b\">"), ["a", "b"], "not tag-type order");
         assert!(root_relative_paths("<a href=\"rel/x.html\">").is_empty());
+    }
+
+    #[test]
+    fn only_plain_names_are_links_that_narrow() {
+        assert!(is_plain_link("assets/a.js"));
+        for bad in ["", "a/", "a//b", "../x", "a/../x", "./a", "C:/Users/x", "..\\x", "a\\b", "c:x", "a/."] {
+            assert!(!is_plain_link(bad), "{bad:?}");
+        }
     }
 
     #[tokio::test]
