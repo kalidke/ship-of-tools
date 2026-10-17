@@ -78,8 +78,8 @@ unset SOT_LAUNCH_REEXEC || true
 resolve_local_sotd_bin() {
     if [ -x "$REPO/rust/target/release/sotd" ]; then
         printf '%s\n' "$REPO/rust/target/release/sotd"
-    elif [ -x "$HOME/.local/share/sot/bin/sotd" ]; then
-        printf '%s\n' "$HOME/.local/share/sot/bin/sotd"
+    elif [ -x "${SOT_PREFIX:-$HOME/.local/share/sot}/bin/sotd" ]; then
+        printf '%s\n' "${SOT_PREFIX:-$HOME/.local/share/sot}/bin/sotd"
     fi
 }
 
@@ -163,8 +163,18 @@ read_topology_plan
 dial_args=()
 local_sock=""
 self_host="$(sot_topology_field "$PLAN" SELF)"
+# An install that runs a daemon of its own (its wrapper exports SOT_OWN_DAEMON=1; a --backend <alias> install runs none)
+# always ensures it and hands the frontend its session socket, as launch-sot.ps1 does for its local daemon, so the
+# window shows this computer's own rows whether or not the plan lists this computer as a daemon host. The plan's dial
+# line for this host is then dropped: one connection, never two. Without the variable (a dev checkout) the plan's own
+# dial line names the socket to ensure.
+own_daemon=0
+if [ "${SOT_OWN_DAEMON:-0}" = 1 ] && [ -n "$SOTD_BIN" ]; then
+    if local_sock="$("$SOTD_BIN" session-socket-path 2>/dev/null)" && [ -n "$local_sock" ]; then own_daemon=1; else local_sock=""; fi
+fi
 while IFS='|' read -r d_tag d_host d_endpoint; do
     [ "$d_tag" = "DIAL" ] || continue
+    [ "$own_daemon" = 0 ] || [ "$d_host" != "$self_host" ] || continue
     dial_args+=(--dial "$d_host=$d_endpoint")
     # This computer's own backend: the plan's self dial line is the socket the
     # frontend dials, so it is the one to ensure.
@@ -178,6 +188,7 @@ if [ -n "$local_sock" ]; then
     sot_daemon_ensure "${SOT_PREFIX:-$HOME/.local/share/sot}" "$SOTD_BIN" "$local_sock" \
         || echo "WARNING: this computer's backend did not start; the window will show it unreachable" >&2
 fi
+[ "$own_daemon" = 0 ] || dial_args=(--socket "$local_sock" ${dial_args[@]+"${dial_args[@]}"})
 # Finding 3b (v0.6.5 macOS field report): bash 3.2 (macOS's stock
 # /bin/bash, still there under set -u) treats an EMPTY array's
 # "${arr[@]}" expansion as an unset variable and aborts -- the

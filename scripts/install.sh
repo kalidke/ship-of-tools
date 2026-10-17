@@ -469,11 +469,6 @@ installer_plan_dials_others() {
     awk '$1 == "self" { me = $2 } $1 == "dial" && $2 != "" { d[$2] = 1 } END { for (h in d) if (h != me) { print "yes"; exit } }'
 }
 
-# "yes" when a `sotd topology plan` (stdin) dials the plan's own `self` host: the window shows this computer's own rows only then.
-installer_plan_dials_self() {
-    awk '$1 == "self" { me = $2 } $1 == "dial" && $2 != "" { d[$2] = 1 } END { if (me in d) print "yes" }'
-}
-
 # Which launcher a frontend install gets: "remote" (the one that applies, then execs the checkout's launch-sot.sh, which
 # dials every host of the topology plan) when the run names a backend alias or the plan lists another daemon host, else
 # "all-in-one" (this computer's own daemon alone).
@@ -506,16 +501,17 @@ installer_daemon_state() {  # <sotd> <socket>
     case "$rc" in 0) printf current ;; 3) printf other ;; 4) printf held ;; *) printf none ;; esac
 }
 
-# The daemon's state once it has had up to SECONDS to answer as the target: "current" as soon as it does, else what the last
+# The daemon's state once it has had up to SECONDS (by the clock, so a slow ask counts) to answer as the target: "current" as soon as it does, else what the last
 # ask said. HELD-OK 1 also stops the wait at "held" (a unit this run did not restart, which a window keeps on its version).
 installer_daemon_wait() {  # <sotd> <socket> <seconds> <held-ok 0|1>
-    local waited=0 st
+    local t0 st
+    t0="$(date +%s)"
     while :; do
         st="$(installer_daemon_state "$1" "$2")"
         [ "$st" != current ] || break
         if [ "$st" = held ] && [ "$4" = 1 ]; then break; fi
-        [ "$waited" -lt "$3" ] || break
-        sleep 1; waited=$((waited + 1))
+        [ $(( $(date +%s) - t0 )) -lt "$3" ] || break
+        sleep 1
     done
     printf '%s' "$st"
 }
@@ -605,7 +601,11 @@ EOF
 # failed write leaves the old wrapper whole and returns 1.
 installer_render_remote_launch() {  # <prefix> <be-alias, or empty> <dest>
     local prefix="$1" be_alias="$2" tmp="$3.new.$$" host_line=""
-    [ -z "$be_alias" ] || host_line="export SOT_HOST=\"$be_alias\""
+    # A --backend <alias> install runs no daemon of its own; any other remote launcher is the window of a computer that
+    # does, and launch-sot.sh ensures that daemon and hands the frontend its socket beside the plan's dials.
+    if [ -n "$be_alias" ]; then host_line="export SOT_HOST=\"$be_alias\""
+    else host_line="export SOT_OWN_DAEMON=1"
+    fi
     cat > "$tmp" <<EOF || { rm -f "${tmp:?}"; return 1; }
 #!/usr/bin/env bash
 # FE-only install -> remote BE over SSH (key auth required, ADR 0030 §5).
@@ -632,6 +632,7 @@ if [ -x "$prefix/bin/sot-apply" ]; then
     [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
 fi
 $host_line
+export SOT_PREFIX="$prefix"
 export SOT_FRONTEND_BIN="$prefix/bin/sot"
 export SOT_NO_UPDATE=1
 exec "$prefix/repo/current/scripts/launch-sot.sh" "\$@"
@@ -1185,7 +1186,9 @@ else
 fi
 case "$RESOLVED" in *"daemon:1"*) WANT_DAEMON=1 ;; esac
 case "$RESOLVED" in *"frontend:1"*) WANT_FRONTEND=1 ;; esac
+PIN_EXCLUDES=0
 if [ "$TOPO_READABLE" = 1 ] && [ "$TOPO_ROLE" = none ] && [ "$WANT_DAEMON" = 1 ]; then
+    PIN_EXCLUDES=1
     say "WARNING: hosts.toml declares no daemon on '$SELF_HOST', so sotd.service's host pin keeps it from starting here; declare the host (daemon or frontend) in hosts.toml"
 fi
 
@@ -1534,16 +1537,14 @@ if [ "$WANT_FRONTEND" = 1 ]; then
     mkdir -p "$HOME/.local/bin"
     # A box the topology plan names, with other daemon hosts in it, gets the launcher that dials the plan (launch-sot.sh)
     # whether or not --backend is given again: an update must not drop the hosts the plan lists.
-    PLAN_OTHERS="" PLAN_SELF=""
+    PLAN_OTHERS=""
     if [ -z "$BE_ALIAS" ]; then
         PLAN_TEXT="$("$PREFIX/bin/sotd" topology plan --self "$SELF_HOST" 2>/dev/null)" || PLAN_TEXT=""
         PLAN_OTHERS="$(printf '%s\n' "$PLAN_TEXT" | installer_plan_dials_others)"
-        PLAN_SELF="$(printf '%s\n' "$PLAN_TEXT" | installer_plan_dials_self)"
     fi
     LAUNCHER_KIND="$(installer_launcher_kind "$BE_ALIAS" "$PLAN_OTHERS")"
     if [ -z "$BE_ALIAS" ] && [ "$LAUNCHER_KIND" = remote ]; then
-        say "the topology plan lists other daemon hosts: the launcher dials every host of the plan"
-        [ "$PLAN_SELF" = yes ] || say "this computer is not a daemon host in the plan, so its own rows do not show in its window until the hub lists it with --daemon"
+        say "the topology plan lists other daemon hosts: the launcher dials every host of the plan, and this computer's own daemon beside them"
     fi
     installer_render_wrapper "$PREFIX" "$TARGET" "$BE_ALIAS" "$HOME/.local/bin/sot-launch" "$LAUNCHER_KIND" \
         || die "writing $HOME/.local/bin/sot-launch failed"
@@ -1706,6 +1707,8 @@ if [ "$WANT_DAEMON" = 1 ]; then
                 other) verdict_fail daemon "sotd.service is active, but the daemon on $DEFAULT_SOCKET still runs another version, not $VER; see journalctl --user -u sotd.service" ;;
                 *) verdict_fail daemon "sotd.service is active, but no daemon answers on $DEFAULT_SOCKET; see journalctl --user -u sotd.service" ;;
             esac
+        elif [ "$PIN_EXCLUDES" = 1 ]; then
+            verdict_fail daemon "sotd.service is not running because its host pin excludes this computer ('$SELF_HOST'): hosts.toml declares no daemon here; declare the host (daemon or frontend) in hosts.toml, then run this installer again"
         elif [ "$RESTARTED" = 1 ]; then
             verdict_fail daemon "sotd.service is not running after the restart; see journalctl --user -u sotd.service"
         else
@@ -1742,7 +1745,7 @@ if [ -n "$BE_ALIAS" ] && [ "$TOPO_ROLE" = none ]; then
     if sync_out="$("$PREFIX/bin/sotd" topology sync --hub "$enroll_hub" 2>&1)"; then
         :
     elif [ "${sync_out#*does not list this box}" != "$sync_out" ]; then
-        verdict_fail enroll "the hosts.toml on '$enroll_hub' does not list this computer ('$SELF_HOST'), so the window would open with no hosts: on '$enroll_hub' run  sotd topology set add $SELF_HOST --frontend  (the sotd of its install; without --daemon this computer's own rows do not show in its window, add it if they should), then run this installer again"
+        verdict_fail enroll "the hosts.toml on '$enroll_hub' does not list this computer ('$SELF_HOST'), so the window would open with no hosts: on '$enroll_hub' run  sotd topology set add $SELF_HOST --frontend  (the sotd of its install), then run this installer again"
     elif ! "$PREFIX/bin/sotd" topology plan --self "$SELF_HOST" >/dev/null 2>&1; then
         verdict_fail enroll "could not read the hosts.toml on '$enroll_hub': $(printf '%s' "$sync_out" | tail -1)"
     fi

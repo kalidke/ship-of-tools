@@ -62,8 +62,9 @@ and the launch path fails open: no update step can stop a window from starting.
   the `install.sh` of the checkout that made the pack. With no role flag and no topology entry the role comes back from
   `install.json` (its bits, its `service`, its `hub`; a remote install's alias from its wrapper). A daemon is restarted
   only when it runs another version (`sotd same-version`) and only an active unit no window holds; the restart, and a
-  fresh start of the unit, are verified: the daemon must answer as the target within `SOT_INSTALL_RESTART_WAIT_S`, and
-  an active unit whose daemon is in any other state is `FAIL: daemon:`, never PASS. Every daemon on another version is
+  fresh start of the unit, are verified: the daemon must answer as the target within `SOT_INSTALL_RESTART_WAIT_S` seconds by the clock (a daemon whose socket accepts
+  and never answers costs the bound plus one ask), and an active unit whose daemon is in any other state is `FAIL: daemon:`,
+  never PASS; a unit that is not running because its host pin excludes this computer says the pin is the cause. Every daemon on another version is
   asked `sotd update repls` (the daemon's own `workspace.list`: the rows with a live REPL and the notebooks its Pluto
   server has open) before anything changes. When the unit would be restarted and a REPL or a Pluto session is live, or the
   daemon cannot be asked in full (a daemon older than the Pluto field cannot), the run stops first and asks for
@@ -71,8 +72,10 @@ and the launch path fails open: no update step can stop a window from starting.
   `ONE STEP LEFT` names the live REPLs and Pluto sessions and the command that fits (the launcher, `systemctl --user restart sotd.service`, or by hand), and says the
   old daemon runs beside the new `repo/current` and `bin/sot-capsule` until then. A box the topology plan names, with
   another daemon host in the plan, gets the launcher that dials the plan (`launch-sot.sh`) whether or not `--backend` is
-  given again; without `--daemon` for this computer in the plan, its own rows do not show in its window (a frontend host runs a private
-  daemon, but `sotd topology plan` dials only the `daemon` hosts: `rust/protocol/src/topology/mod.rs` `dialable_hosts`). A `--backend`
+  given again. That launcher exports `SOT_OWN_DAEMON=1` (a `--backend <alias>` install runs no daemon and does not), and `launch-sot.sh`
+  then ensures this computer's own daemon (`sot_daemon_ensure` on `sotd session-socket-path`, as `launch-sot.ps1` does) and starts the
+  frontend with `--socket <it>` beside the plan's `--dial`s, dropping the plan's dial line for this host: a window shows this computer's
+  own rows whether or not the plan lists it as a daemon host, and never connects twice. A `--backend`
   install whose hub's hosts.toml omits this computer ends `FAIL: enroll:` naming the `sotd topology set add` command to
   run on the hub. The rollback survives a repeat: a run whose `repo/current` is already at the target prunes no
   `repo/versions/<tag>` folder and leaves a `bin/*.prev` equal to the installed binary alone; any prune keeps, names and

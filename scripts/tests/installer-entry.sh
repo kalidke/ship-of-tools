@@ -57,7 +57,7 @@ case "$1 $2" in
     "topology sync") f sync-out >&2; rc sync-rc 0 ;;
     "topology pin") exit 0 ;;
     "trust declare") echo Declared; exit 0 ;;
-    "session-socket-path sot") echo "$CTL/sot.sock"; exit 0 ;;
+    "session-socket-path sot"|"session-socket-path ") echo "$CTL/sot.sock"; exit 0 ;;
     "update direction") if [ -f "$CTL/direction" ]; then f direction; exit 0; fi; exit 1 ;;
     "update repls") f repls-out; rc repls-rc 0 ;;
     "same-version --endpoint") f same-out; rc same-rc 2 ;;
@@ -94,7 +94,7 @@ echo "systemctl $*" >> "$CTL/systemctl.log"
 case "$*" in
     "--user is-active"*) [ -f "$CTL/unit-active" ]; exit $? ;;
     "--user cat sotd.service") [ -f "$CTL/unit-active" ] && printf "ExecStart=/bin/bash -c 'exec \"%s/bin/sotd\"'\n" "$HOME/.local/share/sot"; exit 0 ;;
-    *"enable --now"*) : > "$CTL/unit-active"; [ ! -f "$CTL/start-same" ] || echo 0 > "$CTL/same-rc" ;;
+    *"enable --now"*) [ -f "$CTL/pin-excludes" ] || : > "$CTL/unit-active"; [ ! -f "$CTL/start-same" ] || echo 0 > "$CTL/same-rc" ;;
     *try-restart*) [ ! -f "$CTL/restart-same" ] || echo 0 > "$CTL/same-rc" ;;
 esac
 exit 0
@@ -414,12 +414,13 @@ entry_archive "$d" --backend hubbox
 check "the hub omits this box: FAIL enroll, exit 1" "1" "$ENTRY_RC"
 check "it names the hub-side command with this box's name" "1" "$(said "FAIL: enroll: the hosts.toml on 'hubbox' does not list this computer ('entrybox'), so the window would open with no hosts: on 'hubbox' run  sotd topology set add entrybox --frontend")"
 check "it is the last line" "yes" "$(case "$ENTRY_LAST" in ('FAIL: enroll:'*) echo yes ;; (*) echo no ;; esac)"
-check "it says that without --daemon this computer's own rows do not show" "1" "$(said "without --daemon this computer's own rows do not show in its window")"
+check "it does not say this computer's own rows are missing" "0" "$(said "own rows do not show")"
 check "the sync asked the alias it was given" "1" "$(sotd_log "$d" | grep -c -x -F 'sotd topology sync --hub hubbox' || true)"
 printf '0\n' > "$d/ctl/sync-rc"; : > "$d/ctl/sync-out"
 entry_archive "$d" --backend hubbox
 check "the hub lists this box: PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
 check "a --backend install's launcher is the remote one" "yes" "$(grep -q 'launch-sot.sh' "$d/home/.local/bin/sot-launch" && grep -q '^export SOT_HOST="hubbox"$' "$d/home/.local/bin/sot-launch" && echo yes || echo no)"
+check "and it runs no daemon of its own: no SOT_OWN_DAEMON" "0" "$(grep -c 'SOT_OWN_DAEMON' "$d/home/.local/bin/sot-launch" || true)"
 printf '255\n' > "$d/ctl/sync-rc"; printf 'ssh: Could not resolve hostname hubbox\n' > "$d/ctl/sync-out"; rm -f "$d/ctl/plan"
 entry_archive "$d" --backend hubbox
 check "a hub that cannot be read, with no plan here: FAIL enroll naming why" "1 FAIL: enroll: could not read the hosts.toml on 'hubbox': ssh: Could not resolve hostname hubbox" "$ENTRY_RC $ENTRY_LAST"
@@ -468,18 +469,24 @@ check "the run passes" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1
 check "the launcher is the one that execs the checkout's launch-sot.sh" "yes" "$(grep -q "exec \"$P/repo/current/scripts/launch-sot.sh\"" "$W" && echo yes || echo no)"
 check "it names no backend alias (the plan lists the hosts)" "0" "$(grep -c 'SOT_HOST' "$W" || true)"
 check "it says why" "1" "$(said 'the topology plan lists other daemon hosts')"
-check "and that this computer's own rows do not show until the hub lists it with --daemon" "1" "$(said "so its own rows do not show in its window until the hub lists it with --daemon")"
-# The launcher, run: the frontend is handed one --dial for each host of the plan.
-: > "$d/ctl/sot.log"
-( env -i HOME="$d/home" PATH="$d/stubs:$ENTRY_TOOLS" CTL="$d/ctl" SOT_COMM_HOME="$d/comm" SOT_SELF_HOST=entrybox "$W" ) > "$d/launch.out" 2>&1 || true
-check "the frontend gets a --dial for every host of the plan" "sot --dial hubbox=ssh:hubbox --dial gpubox=ssh:hubbox/gpubox" "$(tail -1 "$d/ctl/sot.log")"
+check "and that this computer's own daemon is dialed beside them" "1" "$(said "and this computer's own daemon beside them")"
+check "it tells the launcher this install runs a daemon of its own" "1" "$(grep -c '^export SOT_OWN_DAEMON=1$' "$W" || true)"
+# The launcher, run: the frontend is handed this computer's own socket and one --dial for each host of the plan. The
+# plan does not list this computer as a daemon host, and its own rows show all the same (as on Windows).
+launch() { : > "$d/ctl/sot.log"; ( env -i HOME="$d/home" PATH="$d/stubs:$ENTRY_TOOLS" CTL="$d/ctl" SOT_COMM_HOME="$d/comm" SOT_SELF_HOST=entrybox "$W" ) > "$d/launch.out" 2>&1 || true; }
+launch
+check "the frontend gets --socket and a --dial for every host of the plan" "sot --socket $d/ctl/sot.sock --dial hubbox=ssh:hubbox --dial gpubox=ssh:hubbox/gpubox" "$(tail -1 "$d/ctl/sot.log")"
+check "this computer's own daemon was started on that socket" "1" "$(sotd_log "$d" | grep -c -F -e "sotd --socket $d/ctl/sot.sock --project-root" || true)"
+# A box that is both a window and a daemon host of the plan: its own socket once, no dial to itself.
+printf 'self entrybox\nhub hubbox\nrelay-endpoint ssh:hubbox\ndial hubbox ssh:hubbox\ndial entrybox unix:%s/ctl/sot.sock\n' "$d" > "$d/ctl/plan"
+launch
+check "a plan that lists this computer too: --socket once and no dial to itself" "sot --socket $d/ctl/sot.sock --dial hubbox=ssh:hubbox" "$(tail -1 "$d/ctl/sot.log")"
+printf 'self entrybox\nhub hubbox\nrelay-endpoint ssh:hubbox\ndial hubbox ssh:hubbox\ndial gpubox ssh:hubbox/gpubox\n' > "$d/ctl/plan"
 printf 'self entrybox\nhub entrybox\nrelay-endpoint unix:/x\ndial entrybox unix:/x\n' > "$d/ctl/plan"
 entry_archive "$d" --no-service
 check "a plan with only this computer's own daemon keeps the all-in-one launcher" "yes" "$(grep -q '^# sot-launch: all-in-one$' "$W" && echo yes || echo no)"
 check "the pure choice: an alias or another host makes it remote" "remote remote all-in-one" \
     "$(installer_launcher_kind hub '') $(installer_launcher_kind '' yes) $(installer_launcher_kind '' '')"
-check "a plan that dials its own host is read as such" "yes|" \
-    "$(printf 'self a\ndial a unix:/x\ndial b ssh:h\n' | installer_plan_dials_self)|$(printf 'self a\ndial b ssh:h\n' | installer_plan_dials_self)"
 check "the plan's other hosts are read apart from its own" "yes|" \
     "$(printf 'self a\ndial a unix:/x\ndial b ssh:h\n' | installer_plan_dials_others)|$(printf 'self a\ndial a unix:/x\n' | installer_plan_dials_others)"
 
@@ -494,8 +501,8 @@ if [ -x "$RS" ]; then
     check "the real sotd: a dev build is above the candidate it follows, below the next one" "older newer same" "$(ask 0.6.6-rc9.13) $(ask 0.6.6-rc9.14) $(ask v0.6.6-rc9.14-dev+a)"
     rm -f "$d/p/install.json"; check "no install.json: exit 1" "exit 1" "$(ask 0.6.6)"
     rc=0; "$RS" update repls --endpoint "unix:$d/none.sock" >/dev/null 2>&1 || rc=$?; check "no daemon to ask: exit 1" "1" "$rc"
-    # An enrolled frontend runs a private daemon of its own, which the plan does not dial unless the host is also a daemon host:
-    # its own rows do not show in its window (the enroll FAIL and the launcher say so).
+    # An enrolled frontend runs a private daemon of its own, which the plan does not list unless the host is also a daemon
+    # host: the launcher hands the window its socket itself (the lap case).
     printf 'hub = "hubbox"\n\n[host.hubbox]\ndaemon = true\n\n[host.laptop]\nfrontend = true\n' > "$d/hosts.toml"
     check "the real plan: a frontend-only host dials the hub and not itself" "dial hubbox ssh:hubbox" \
         "$(env SOT_HOSTS="$d/hosts.toml" HOME="$d" "$RS" topology plan --self laptop | grep '^dial' | tr '\n' ';' | sed 's/;$//')"
@@ -529,6 +536,18 @@ check "a fresh unit whose daemon never answers: exit 1, FAIL: daemon" "1 FAIL: d
 : > "$d/ctl/start-same"; rm -f "$d/ctl/unit-active"; printf '2\n' > "$d/ctl/same-rc"
 entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only
 check "a fresh unit whose daemon answers as the target: PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
+# The wait is bounded by the clock: a daemon that accepts and never answers costs each ask its own bound (3 s here), and the
+# wait still ends within the bound and one more ask, not after one ask per second of the bound.
+d="$WORK/ver-clock"; mkdir -p "$d"
+printf '#!/bin/sh\nsleep 3\nexit 2\n' > "$d/sotd"; chmod +x "$d/sotd"
+t0="$(date +%s)"; st="$(installer_daemon_wait "$d/sotd" "$d/none.sock" 4 0)"; t1="$(date +%s)"
+check "a daemon that never answers: none, within the bound and one ask" "none yes" "$st $([ $((t1 - t0)) -le 8 ] && echo yes || echo "no ($((t1 - t0)) s)")"
+# A daemon install whose host pin excludes this computer: the unit never starts, and the FAIL names the pin.
+d="$WORK/ver-pin"; entry_fixture "$d"
+printf 'hubbox hub,daemon\n' > "$d/ctl/topo-status"; : > "$d/ctl/pin-excludes"
+entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only
+check "a pin that excludes this computer: exit 1" "1" "$ENTRY_RC"
+check "the FAIL names the pin as the cause" "1" "$(said "FAIL: daemon: sotd.service is not running because its host pin excludes this computer ('entrybox')")"
 
 # ---------------------------------------------------------------------------
 case_start "entry_names_the_rows_a_step_would_end_and_the_command_that_ends_them"
