@@ -235,13 +235,17 @@ Follow rule, checked on every request:
 - Otherwise the first symlink below the URL root must be tracked by git (the set
   is rebuilt whenever the repo index file changes), and the file must resolve to
   a path under a mount folder (`/mnt`, `/media` or `/Volumes`), outside the home
-  folder, with no part below the mount folder whose name starts with `.`, and
-  the link must name a data folder: a link to `/`, or to a folder holding the
-  home folder or the repository, is never followed. No file lists data folders.
+  folder and the repository, with no part below the mount folder whose name
+  starts with `.`; and the link itself must point there too (its canonical
+  target is judged by the same bounds, before the request is resolved) and name
+  a data folder: a link to `/`, or to a folder holding the home folder or the
+  repository, is never followed. No file lists data folders.
   A file on a dead hard-mounted share hangs the request that resolves it, as
   reading it would.
-- Each refusal says why. A linked path that is missing, private or hidden gets
-  one answer, naming the path as asked; the daemon's log says which.
+- Each refusal says why. A linked path that does not serve (the link's target or
+  the file outside the bounds, missing, private, hidden, unreadable or not a
+  regular file) gets one answer, naming the path as asked; the daemon's log
+  says which.
 - Off Linux and macOS no link is followed.
 
 The file is opened without following a symlink below its base (`openat` with
@@ -316,10 +320,11 @@ A symlink a repository tracks serves with no list of data folders to keep: the `
 A tracked link serves a file when the file's canonical path lies under a mount folder (`/mnt`, `/media`, `/Volumes`),
 outside the home folder, with no part below the mount folder whose name starts with `.`, through a link to neither
 `/` nor a folder holding the home folder or the repository (the follow rule above; `Bounds` in
-`rust/backend/src/pages/site/links.rs`). Only a link git tracks is followed. The link-target refusal (R7) adds no
-reach a repository could not get with a link to a mount folder itself; it keeps a link that names everything from
-serving everything, and it is judged only once the file would serve, so its answer says nothing about where the home
-folder or the repository is.
+`rust/backend/src/pages/site/links.rs`). Only a link git tracks is followed. The link's own canonical target is
+judged first, by the bounds the file meets and as not too wide (not `/`, nor a folder holding the home folder or the repository), and the repository's own files serve only from
+the site folder. Every refusal, of the link or of the file, is R3's one answer, so a link that names everything
+(`/`, `~`, `..` from a repo on a share) serves nothing and says nothing about where the home folder or the
+repository is, or whether a guessed path exists.
 
 The rule allows where the operating systems mount shares and drives, rather than denying a list of private places.
 An allow rule fails closed: a link anywhere else is refused with words that name the mount folders. A deny list fails
@@ -329,10 +334,13 @@ own), and keeping it current is the list this replaces.
 What a page's script can read through a link its repository commits, and so what a repository cloned from someone
 else can read: every file the account can read under the mount folders, outside the home folder and hidden folders.
 That is every share mounted on the computer, other groups' shares included; on WSL, the Windows drives under `/mnt`;
-and a copy of a home folder kept on a mounted volume, outside its hidden folders. Before this, a link reached only
+the Windows install's own sot folder there (`AppData/Local/sot` under the Windows profile); and a copy of a home
+folder kept on a mounted volume, outside its hidden folders. Before this, a link reached only
 what lay under a root the computer's `data-roots` file declared, and nothing where no file existed. A home folder
 mounted a second time under a mount folder (an NFS server's own export path, a bind mount) is not recognized as the
-home folder; its hidden folders stay refused.
+home folder; its hidden folders stay refused. A link planted on a share itself that leads into the home folder (a
+repository's author cannot plant one) is judged by the file it reaches, which the home folder's bound refuses, and
+by nothing before it.
 
 Removed with the file: the refusal when no root is declared (R2c); the refusal of a link inside the linked folder
 that leads out of it (R4), since the bounds now judge the file a link reaches, wherever an inner link leads; and the

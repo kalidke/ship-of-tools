@@ -127,7 +127,17 @@ async fn widened(f: &Fixture) -> Site {
 
 /// The one answer to a linked path a link may not serve, whether or not it exists.
 fn r3(asked: &str, link: &str) -> String {
-    format!("refused: {asked} is behind the tracked link {link}, and a link serves only a file that exists on this host under /mnt, /media or /Volumes, outside the home folder and hidden folders (is its share mounted?)")
+    format!("refused: {asked} is behind the tracked link {link}, and a link serves only a file that exists on this host under /mnt, /media or /Volumes, outside the home folder and hidden folders, through a link that points into those folders and not at a folder holding the home folder or the repository (is its share mounted?)")
+}
+
+/// The bounds of the real mount folders and this account's home folder, and that home folder, read while holding the
+/// lock every test that sets `HOME` holds: never `Bounds::of_process()`, which keeps the home of whichever test
+/// first built a site.
+fn bounds_of_this_account() -> (PathBuf, Bounds) {
+    let _env = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = crate::pages::home_folder().expect("the home folder resolves");
+    let b = Bounds::new(&MOUNT_FOLDERS.map(Path::new), Some(home.as_path()));
+    (home, b)
 }
 
 fn body_text(b: &[u8]) -> String {
@@ -286,8 +296,7 @@ async fn h_empty_file_has_content_length_zero_through_the_site_server() {
 /// path with a hidden part or in the home folder is refused.
 #[test]
 fn i_the_bounds_of_this_process_refuse_every_private_place() {
-    let b = Bounds::of_process();
-    let home = b.home.clone().expect("the home folder resolves");
+    let (home, b) = bounds_of_this_account();
     let mut private: Vec<PathBuf> = [
         "/proc/1/environ", "/proc/self", "/sys/kernel", "/etc/passwd", "/tmp/x", "/run/user/1/x", "/var/log/x",
         "/root/x", "/private/etc/x", "/Users/x/y", "/",
@@ -418,7 +427,7 @@ async fn every_private_or_missing_target_has_one_answer() {
     let f = fixture();
     write(&f.share.join(".backup/key"), b"k");
     write(&f.share.join("results/.hidden.png"), b"h");
-    let real_home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
+    let (real_home, own) = bounds_of_this_account();
     let mut real: Vec<PathBuf> = [
         "/proc/self/environ", "/proc/1/cmdline", "/etc/passwd", "/etc/hostname", "/sys/kernel", "/tmp", "/run",
         "/var/log", "/root",
@@ -455,7 +464,7 @@ async fn every_private_or_missing_target_has_one_answer() {
     for own_bounds in [false, true] {
         let mut site = widened(&f).await;
         if own_bounds {
-            site.bounds = Bounds::of_process();
+            site.bounds = own.clone();
         }
         let (addr, nonce, serial) = serve(site).await;
         for (name, _) in links.iter().filter(|(n, _)| !own_bounds || n.starts_with('p')) {
@@ -539,29 +548,96 @@ async fn a_mixed_case_dot_git_behind_a_link_is_refused_b1b() {
     remove_root(serial);
 }
 
-/// A tracked link to `/`, to a folder holding the home folder or to one holding the repository is refused even for a
-/// file the bounds allow; a file they refuse through it still gets R3's one answer.
+/// A tracked link to `/`, to a folder holding the home folder or to one holding the repository gets R3's one answer, a
+/// file the bounds allow behind it included; and so does a link that leads through the home folder, whether or not the
+/// path beyond it exists.
 #[tokio::test]
-async fn a_link_to_root_home_or_above_the_repo_is_refused_r7() {
+async fn a_link_to_root_home_or_above_the_repo_gets_r3_like_any_private_path() {
     let f = fixture();
+    let home = f.base.join("home/u");
+    std::fs::create_dir_all(home.join("work/proj")).unwrap();
+    symlink(f.share.clone(), home.join("work/proj/nas")).unwrap();
     symlink("/", f.repo.join("root")).unwrap();
+    for (n, t) in [
+        ("up", ".."),
+        ("gh", "../home/u"),
+        ("gw", "../home/u/work"),
+        ("gx", "../home/wrong/work"),
+        ("gp", "../home"),
+    ] {
+        symlink(t, f.repo.join(n)).unwrap();
+    }
     symlink("../mnt", f.repo.join("allmnt")).unwrap();
-    symlink("..", f.repo.join("up")).unwrap();
-    git(&f.repo, &["add", "root", "allmnt", "up"]);
-    let (addr, nonce, serial) = serve(widened(&f).await).await;
+    git(&f.repo, &["add", "root", "allmnt", "up", "gh", "gw", "gx", "gp"]);
+    let mut site = widened(&f).await;
+    site.bounds = Bounds::new(&[&f.base.join("mnt")], Some(home.as_path()));
+    let (addr, nonce, serial) = serve(site).await;
     let share_movie = f.share.join("results/r1/movie.mp4");
     let under_root = share_movie.strip_prefix("/").unwrap().display().to_string();
-    for (l, rest) in [("root", under_root.as_str()), ("allmnt", "share/results/r1/movie.mp4"), ("up", "mnt/share/results/r1/movie.mp4")] {
-        let (st, _, body) = get(addr, &format!("/{nonce}/{l}/{rest}"), &[]).await;
-        assert_eq!(
-            (st, body_text(&body)),
-            (403, format!("refused: {l} is a tracked link to /, to a folder holding the home folder or to a folder holding this repository, and such a link is never followed")),
-            "{l}"
-        );
+    let movie = "results/r1/movie.mp4";
+    for (l, rest) in [
+        ("root", under_root.clone()),
+        ("up", format!("mnt/share/{movie}")),
+        ("up", "outside/secret.txt".to_string()),
+        ("gh", format!("work/proj/nas/{movie}")),
+        ("gh", "work/proj/nas/results/r1/missing.mp4".to_string()),
+        ("gw", format!("proj/nas/{movie}")),
+        ("gw", "proj/nas/results/r1/missing.mp4".to_string()),
+        ("gx", format!("proj/nas/{movie}")),
+        ("gp", format!("u/work/proj/nas/{movie}")),
+        ("gp", format!("v/work/proj/nas/{movie}")),
+    ] {
+        let asked = format!("{l}/{rest}");
+        let (st, _, body) = get(addr, &format!("/{nonce}/{asked}"), &["Range: bytes=0-9"]).await;
+        assert_eq!((st, body_text(&body)), (403, r3(&asked, l)), "{asked}");
     }
-    let asked = "up/outside/secret.txt";
+    remove_root(serial);
+    // Where the home folder lies under the mount folder, a link to the mount folder holds it.
+    let (addr, nonce, serial) = serve(widened(&f).await).await;
+    let asked = format!("allmnt/share/{movie}");
     let (st, _, body) = get(addr, &format!("/{nonce}/{asked}"), &[]).await;
-    assert_eq!((st, body_text(&body)), (403, r3(asked, "up")));
+    assert_eq!((st, body_text(&body)), (403, r3(&asked, "allmnt")), "{asked}");
+    remove_root(serial);
+}
+
+/// The repository's own files serve only from its site folder, even when the repository lies under a mount folder.
+#[tokio::test]
+async fn a_repo_under_a_mount_folder_serves_none_of_its_files_through_a_link() {
+    let f = fixture();
+    let repo = f.share.join("clone");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    write(&repo.join("site/index.html"), b"<html></html>");
+    write(&repo.join("private/credentials.json"), b"{\"secret\":1}");
+    write(&repo.join("figs/a.png"), b"png");
+    symlink("../private", repo.join("site/p")).unwrap();
+    symlink("../figs", repo.join("site/f")).unwrap();
+    git(&repo, &["add", "site"]);
+    let (addr, nonce, serial) = serve(opened(&f, repo.join("site"), repo.clone()).await).await;
+    for (asked, l) in [("site/p/credentials.json", "site/p"), ("site/f/a.png", "site/f")] {
+        let (st, _, body) = get(addr, &format!("/{nonce}/{asked}"), &[]).await;
+        assert_eq!((st, body_text(&body)), (403, r3(asked, l)), "{asked}");
+    }
+    remove_root(serial);
+}
+
+/// Past the bounds a file the account cannot read, a FIFO and a missing name get one answer.
+#[tokio::test]
+async fn an_unreadable_file_a_fifo_and_a_missing_name_under_the_mount_get_one_answer() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture();
+    let locked = f.share.join("results/locked.png");
+    write(&locked, b"x");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let fifo = std::ffi::CString::new(f.share.join("results/pipe.png").to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let (addr, nonce, serial) = serve(widened(&f).await).await;
+    for name in ["locked.png", "pipe.png", "missing.png"] {
+        let asked = format!("data/results/{name}");
+        let (st, _, body) = get(addr, &format!("/{nonce}/{asked}"), &[]).await;
+        assert_eq!((st, body_text(&body)), (403, r3(&asked, "data")), "{asked}");
+    }
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
     remove_root(serial);
 }
 

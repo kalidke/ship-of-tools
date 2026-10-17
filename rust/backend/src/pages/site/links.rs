@@ -420,11 +420,13 @@ fn open_checked(base: &Path, rel: &Path, shown: &str) -> Result<std::fs::File, R
 /// R0 `.git` anywhere; R1 a `..` part; then Q = url_root + parts (a directory
 /// gets `index.html`). Fast path: Q canonicalizes inside S. Slow path: the
 /// first symlink below url_root must be a link git tracks (R2b, R2e where git
-/// cannot run), Q must resolve to a file `Bounds` allows (R3: one answer for a
-/// missing, private or hidden file), the link must name a data folder, not `/`
-/// or a folder holding the home folder or the repository (R7), and the open is
-/// `open_beneath` its mount folder (R6). Not unix: no link is ever followed (R2d). R2a and R3 name the
-/// path as asked, so neither shows whether a folder lies behind it.
+/// cannot run), the link's target and Q must each resolve inside `Bounds`, the
+/// target naming a data folder (not `/` or a folder holding the home folder or
+/// the repository) and Q lying outside the repository (R3: one answer for
+/// everything else, a missing, private, hidden or unreadable file included),
+/// and the open is `open_beneath` its mount folder (R6). Not unix: no link is
+/// ever followed (R2d). R2a and R3 name the path as asked, so neither shows
+/// whether a folder lies behind it.
 pub(crate) fn resolve_and_open(
     site: &Site,
     decoded: &str,
@@ -532,30 +534,53 @@ fn follow_link(
     if !tracked {
         return Err(forbid("R2b", format!("refused: {l} is a link git does not track in this repo, so it is not followed (git add it: it serves at the next request)")));
     }
-    // One answer whether the file is missing, private or hidden, so a committed
-    // link learns nothing about what exists there; the log says which.
-    let served = match q.canonicalize() {
-        Ok(f) => site.bounds.base_for(&f).map(|m| (m.to_path_buf(), f)),
-        Err(_) => Err("does not resolve"),
-    };
-    let (m, f) = match served {
+    // One answer whether the link's target or the file is missing, private or
+    // hidden, so a committed link learns nothing about what exists there; the
+    // log says which.
+    let top = site.git.as_ref().map(|g| g.top.as_path());
+    let (m, f) = match judge(site, q, link, top) {
         Ok(v) => v,
         Err(why) => {
             tracing::info!(path = asked, why, "site_serve: a linked path is outside the bounds");
-            let [a, b, c] = MOUNT_FOLDERS;
-            return Err(forbid("R3", format!("refused: {asked} is behind the tracked link {l}, and a link serves only a file that exists on this host under {a}, {b} or {c}, outside the home folder and hidden folders (is its share mounted?)")));
+            return Err(refused_r3(asked, l));
         }
     };
-    // Judged only once the file would serve, so the answer says nothing about
-    // the home folder or the repository that R3's one answer does not.
-    let top = site.git.as_ref().map(|g| g.top.as_path());
-    let t = site.url_root.join(link).canonicalize();
-    if t.as_deref().map_or(true, |t| site.bounds.too_wide(t, top)) {
-        return Err(forbid("R7", format!("refused: {l} is a tracked link to /, to a folder holding the home folder or to a folder holding this repository, and such a link is never followed")));
-    }
     let rel = f.strip_prefix(&m).expect("base_for found f under m");
-    let file = open_checked(&m, rel, shown)?;
-    Ok((file, f))
+    // A file past the bounds that will not open (unreadable, gone) or is not a
+    // regular file (a FIFO, a socket) is the missing file's answer.
+    match open_checked(&m, rel, shown) {
+        Ok(file) if file.metadata().map_or(false, |md| md.is_file()) => Ok((file, f)),
+        Ok(_) => Err(refused_r3(asked, l)),
+        Err(r) if r.status.starts_with("404") => Err(refused_r3(asked, l)),
+        Err(r) => Err(r),
+    }
+}
+
+/// The canonical link target `t` must lie in the bounds like a file and name a
+/// data folder (not `/`, nor one holding the home folder or the repository
+/// `top`); then the canonical file `f` of `q` must too, and lie outside the
+/// repository, whose files serve only from the site folder. Returns the mount
+/// folder `f` is opened beneath, and `f`; or why not.
+#[cfg(unix)]
+fn judge(site: &Site, q: &Path, link: &Path, top: Option<&Path>) -> Result<(PathBuf, PathBuf), &'static str> {
+    let t = site.url_root.join(link).canonicalize().map_err(|_| "the link does not resolve")?;
+    site.bounds.base_for(&t).map_err(|_| "the link points outside the bounds")?;
+    if site.bounds.too_wide(&t, top) {
+        return Err("the link points at /, the home folder or the repository, or a folder holding them");
+    }
+    let f = q.canonicalize().map_err(|_| "does not resolve")?;
+    let m = site.bounds.base_for(&f)?.to_path_buf();
+    if top.is_some_and(|r| f.starts_with(r)) {
+        return Err("in the repository");
+    }
+    Ok((m, f))
+}
+
+/// R3's one answer to every linked path that does not serve.
+#[cfg(unix)]
+fn refused_r3(asked: &str, l: &str) -> Refusal {
+    let [a, b, c] = MOUNT_FOLDERS;
+    refuse(asked, "403 Forbidden", "R3", format!("refused: {asked} is behind the tracked link {l}, and a link serves only a file that exists on this host under {a}, {b} or {c}, outside the home folder and hidden folders, through a link that points into those folders and not at a folder holding the home folder or the repository (is its share mounted?)"))
 }
 
 #[cfg(all(test, unix))]

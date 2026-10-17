@@ -27,11 +27,12 @@ daemon's page serving; charter: rust/backend/src/pages/CLAUDE.md.
   held, the port of the window away longest is taken with a new secret (`Clients::away_sites`), never a live owner's.
 - A request resolves by `resolve_and_open`: ordinary files only under the content root; through a link only when git
   tracks it and the file's canonical path lies under a mount folder (`MOUNT_FOLDERS`), outside the home folder, with no
-  hidden part below the mount folder (`Bounds`, fixed in code: no file lists data folders), and the link names a data
-  folder, not `/` or a folder holding the home folder or the repository (R7, judged after the file passes); the final
-  open is `open_beneath` that mount folder. Links are followed only on unix (R2d).
+  hidden part below the mount folder (`Bounds`, fixed in code: no file lists data folders), and outside the
+  repository; the link's own canonical target is judged first by the same bounds and must name a data folder, not
+  `/` or a folder holding the home folder or the repository; the final open is `open_beneath` that mount folder. Links are followed only on unix (R2d).
 - Past the fast path no answer depends on whether a path exists: a path that reaches no link gets R2a, and a linked
-  path the bounds refuse, missing or not, gets R3; each names the path as asked.
+  path that does not serve (target or file outside the bounds, missing, unreadable, not a regular file) gets R3; each
+  names the path as asked.
 - The git index is re-read only when its stat changes (`GitState::links`), and opening a site resolves no link
   target.
 - Resolution runs in `spawn_blocking` (`serve_request`); an owner's end (a connection of no window that disconnects, a
