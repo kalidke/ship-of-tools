@@ -105,10 +105,13 @@ function ConvertTo-JsonStr([string]$s) { return ($s -replace '\\', '\\' -replace
 
 New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
 $sameInstall = $false
+$pinLine = ''
 if (Test-Path -LiteralPath $manifest) {
     try {
         $before = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
         $sameInstall = ([string]$before.version -eq $version) -and ([string]$before.commit -eq $commit)
+        # The pin belongs to the run that named the version (install.ps1 sets and removes it); a refresh keeps it.
+        if ($before.pinned -eq $true) { $pinLine = ",`n  `"pinned`": true" }
     } catch {}
 }
 $body = @"
@@ -121,7 +124,7 @@ $body = @"
   "version": "$version",
   "tag": "$tag",
   "commit": "$commit",
-  "installed_at": "$( (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') )"
+  "installed_at": "$( (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') )"$pinLine
 }
 "@
 # UTF8 without BOM: serde_json rejects a leading BOM, and Set-Content -Encoding

@@ -1,5 +1,6 @@
 # install-shortcut.ps1 — create a "Ship of Tools" shortcut on the desktop
-# that launches the chrome. First time: run this, then right-click the shortcut
+# that launches the chrome. A step of scripts/install.ps1 (the installer runs it through repo\current); run by hand it
+# does the same. First time: right-click the shortcut
 # and choose "Pin to taskbar" (modern Windows blocks pinning programmatically).
 # Every re-run AFTER that also re-syncs the existing taskbar pin to the launcher,
 # so the pin never drifts into launching a bare sot.exe ("naive" FE).
@@ -19,7 +20,9 @@ param(
     # can refresh a hosts.toml on every launch but cannot create the first one
     # without knowing the hub (a fresh box has no copy to read a hub from).
     # Same job as install.sh --hub on Linux/macOS.
-    [string]$Hub
+    [string]$Hub,
+    # The install prefix; default %LOCALAPPDATA%\sot. install.ps1 -Prefix passes its own.
+    [string]$Prefix
 )
 $ErrorActionPreference = 'Stop'
 
@@ -49,7 +52,7 @@ if (-not (Test-Path $launcher)) {
 # moved or renamed -- which is why this script's header has always said to
 # re-run it when the repo path changes. %LOCALAPPDATA%\sot is where the
 # binaries already live and does not move.
-$prefixDir = Join-Path $env:LOCALAPPDATA 'sot'
+$prefixDir = if ($Prefix) { $Prefix } else { Join-Path $env:LOCALAPPDATA 'sot' }
 New-Item -ItemType Directory -Force -Path $prefixDir | Out-Null
 $stableIcon = Join-Path $prefixDir 'logo.ico'
 if (Test-Path $logoIcon) {
@@ -134,3 +137,6 @@ if ($syncedPin) {
     Write-Host "  2. Choose 'Pin to taskbar' (Windows 11 may bury it under 'Show more options')"
     Write-Host "  (Re-run this script after pinning; it will then keep the pin in sync.)"
 }
+# Explicit, not whatever the last native command left in $LASTEXITCODE: a caller that ends with `exit $LASTEXITCODE`
+# would otherwise fail a run that did its work.
+exit 0
