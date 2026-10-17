@@ -45,12 +45,13 @@ pub(in crate::ui) fn forget_drift(path: &str, hashes: &mut Hashes, fired: &mut F
     retry.remove(path);
 }
 
-/// Forget every file's drift check. The cache lasts only while this window receives the workspace's changes, so a
+/// Forget every file's drift check, failure records included. The cache lasts only while this window receives the workspace's changes, so a
 /// workspace switch and a reconnect clear it (the daemon sends no `preview.changed` for a row that is not active
 /// and replays none).
-pub(in crate::ui) fn clear_drift(hashes: &mut Hashes, fired: &mut Fired) {
+pub(in crate::ui) fn clear_drift(hashes: &mut Hashes, fired: &mut Fired, retry: &mut Retries) {
     hashes.clear();
     fired.clear();
+    retry.clear();
 }
 
 /// True when the file's hash is known and differs from the annotation's `synced_against`.
@@ -332,7 +333,9 @@ mod tests {
         c.view("a.jl");
         c.reply("a.jl", "h1");
         c.view("b.jl");
-        clear_drift(&mut c.hashes, &mut c.fired);
+        c.retry.insert("b.jl".to_string(), (std::time::Instant::now(), 2));
+        clear_drift(&mut c.hashes, &mut c.fired, &mut c.retry);
+        assert!(c.retry.is_empty());
         assert!(!c.reply("b.jl", "late"), "an in-flight reply from before the clear is dropped");
         assert!(c.view("a.jl") && c.view("b.jl"));
     }
