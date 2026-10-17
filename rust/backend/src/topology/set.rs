@@ -145,21 +145,16 @@ mod tests {
     use crate::rows::Workspace;
     use std::path::PathBuf;
 
-    fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "sot-topology-set-test-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn store_with(tag: &str, text: &str) -> TopologyStore {
-        let dir = tempdir(tag);
-        let path = dir.join("hosts.toml");
+    /// The store's file in a fresh folder. The caller binds the guard, so the
+    /// folder is removed when the test ends and also when an assertion panics.
+    fn store_with(tag: &str, text: &str) -> (tempfile::TempDir, TopologyStore) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("sot-topology-set-test-{tag}-"))
+            .tempdir()
+            .unwrap();
+        let path = dir.path().join("hosts.toml");
         std::fs::write(&path, text).unwrap();
-        TopologyStore::new(path)
+        (dir, TopologyStore::new(path))
     }
 
     fn mk_ws(label: &str) -> Workspace {
@@ -176,7 +171,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_flag_remove_each_land_atomically_and_broadcast() {
-        let store = store_with("add-flag-remove", V2);
+        let (_dir, store) = store_with("add-flag-remove", V2);
         let workspaces = Workspaces::new();
         let (tx, mut rx) = broadcast::channel::<TopologyChanged>(4);
 
@@ -203,7 +198,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_hub_daemon_refuses() {
-        let store = store_with("non-hub", V2);
+        let (_dir, store) = store_with("non-hub", V2);
         let workspaces = Workspaces::new();
         let (tx, _rx) = broadcast::channel::<TopologyChanged>(4);
         let add = json!({"edit": {"kind": "add_host", "name": "gamma"}});
@@ -214,7 +209,7 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_removing_the_hub() {
-        let store = store_with("remove-hub", V2);
+        let (_dir, store) = store_with("remove-hub", V2);
         let workspaces = Workspaces::new();
         let (tx, _rx) = broadcast::channel::<TopologyChanged>(4);
         let remove = json!({"edit": {"kind": "remove_host", "name": "alpha"}});
@@ -224,7 +219,7 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_removing_the_requesters_own_declared_host() {
-        let store = store_with("remove-self", V2);
+        let (_dir, store) = store_with("remove-self", V2);
         let workspaces = Workspaces::new();
         let (tx, _rx) = broadcast::channel::<TopologyChanged>(4);
         let remove = json!({"edit": {"kind": "remove_host", "name": "beta"}});
@@ -234,7 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_clearing_daemon_on_the_hub_with_running_rows() {
-        let store = store_with("running-rows", V2);
+        let (_dir, store) = store_with("running-rows", V2);
         let workspaces = Workspaces::new();
         let ws = workspaces.insert(mk_ws("running"));
         mark_running(&ws);
@@ -249,7 +244,7 @@ mod tests {
 
         // Same guard on removal of a non-hub, non-hub-daemon host that IS
         // this daemon's own declared name (the daemon checking itself).
-        let store2 = store_with("running-rows-2", "hub = \"gamma\"\n\n[host.gamma]\ndaemon = true\n\n[host.alpha]\ndaemon = true\n");
+        let (_dir2, store2) = store_with("running-rows-2", "hub = \"gamma\"\n\n[host.gamma]\ndaemon = true\n\n[host.alpha]\ndaemon = true\n");
         let remove = json!({"edit": {"kind": "remove_host", "name": "alpha"}});
         let out = handle_topology_set(1, remove, &store2, &workspaces, "alpha", None, &tx).await.unwrap();
         assert_eq!(out[0].0.payload.get("code").and_then(|v| v.as_str()), Some("not_hub"), "alpha isn't the hub of this file, so not_hub fires before the rows check even applies");
@@ -257,7 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn hand_edit_on_disk_is_picked_up_by_the_next_op_and_broadcasts_once() {
-        let store = store_with("hand-edit", V2);
+        let (_dir, store) = store_with("hand-edit", V2);
         let workspaces = Workspaces::new();
         let (tx, mut rx) = broadcast::channel::<TopologyChanged>(4);
 
@@ -284,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_file_on_disk_is_refused_without_losing_previous_content() {
-        let store = store_with("malformed", V2);
+        let (_dir, store) = store_with("malformed", V2);
         let workspaces = Workspaces::new();
         let (tx, _rx) = broadcast::channel::<TopologyChanged>(4);
         // Prime the good cache.
