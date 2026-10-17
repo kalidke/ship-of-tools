@@ -2,7 +2,7 @@
 //! reveal) to every window, and everything else, an open in the OS browser (`docs`, `open-url`, a `wglshow` page)
 //! included, to one window, the window in use.
 
-use super::{ActiveFrontend, ClientInfo, ClientsSnapshot};
+use super::{ActiveFrontend, ClientsSnapshot};
 
 /// The commands that put something in the preview pane: every window gets them, so none is chosen.
 const PANE: &[&str] = &["preview", "reveal"];
@@ -23,26 +23,23 @@ impl ClientsSnapshot {
     /// The window in use, and why: `last-used`, the window a person used most recently, however long ago (within
     /// `ACTIVE_WINDOW` that is the active frontend `sot-fe version` marks); otherwise `last-connected`, the window
     /// that connected last. `None` only when no named frontend is attached: a browser open never goes to every window.
+    /// One ordering, highest first: (last used, connection serial).
     pub fn in_use(&self) -> Option<(ActiveFrontend, &'static str)> {
-        resolve_in_use(&self.clients)
+        let (c, handle) = self
+            .clients
+            .iter()
+            .filter(|c| c.role == "fe")
+            .filter_map(|c| Some((c, c.name.as_deref().filter(|n| !n.is_empty())?)))
+            .max_by_key(|(c, _)| (c.last_person_input_at, c.serial))?;
+        let why = if c.last_person_input_at.is_some() { "last-used" } else { "last-connected" };
+        Some((ActiveFrontend { serial: c.serial, handle: handle.to_string() }, why))
     }
-}
-
-/// `in_use`'s rule: one ordering, highest first: (last used, connection serial).
-fn resolve_in_use(clients: &[ClientInfo]) -> Option<(ActiveFrontend, &'static str)> {
-    let (c, handle) = clients
-        .iter()
-        .filter(|c| c.role == "fe")
-        .filter_map(|c| Some((c, c.name.as_deref().filter(|n| !n.is_empty())?)))
-        .max_by_key(|(c, _)| (c.last_person_input_at, c.serial))?;
-    let why = if c.last_person_input_at.is_some() { "last-used" } else { "last-connected" };
-    Some((ActiveFrontend { serial: c.serial, handle: handle.to_string() }, why))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::Clients;
+    use crate::clients::{ClientInfo, Clients};
     use std::time::{Duration, Instant};
 
     fn fe(serial: u64, name: &str, used: Option<Instant>) -> ClientInfo {
@@ -61,7 +58,8 @@ mod tests {
     }
 
     fn chosen(clients: &[ClientInfo]) -> Option<(String, &'static str)> {
-        resolve_in_use(clients).map(|(to, why)| (to.handle, why))
+        let snapshot = ClientsSnapshot { clients: clients.to_vec(), active: None };
+        snapshot.in_use().map(|(to, why)| (to.handle, why))
     }
 
     fn pick(handle: &str, why: &'static str) -> Option<(String, &'static str)> {
