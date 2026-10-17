@@ -374,7 +374,7 @@ async fn a_never_committed_link_is_r2b_then_served_once_added_s1() {
     let (st, _, body) = get(addr, &path, &[]).await;
     assert_eq!(st, 403, "{}", body_text(&body));
     assert!(body_text(&body).contains("nas is a link git does not track"), "{}", body_text(&body));
-    assert!(body_text(&body).contains("serves at the next request once it is committed"), "{}", body_text(&body));
+    assert!(body_text(&body).contains("git add it: it serves at the next request"), "{}", body_text(&body));
     git(&repo, &["add", "nas"]);
     let (st, _, body) = get(addr, &path, &[]).await;
     assert_eq!(st, 200, "{}", body_text(&body));
@@ -566,4 +566,21 @@ async fn a_link_where_git_cannot_run_is_refused_with_the_install_words() {
     assert!(body.contains("data is a link, and linked data needs git; on macOS install the Command Line Tools, then restart the daemon"), "{body}");
     assert!(!body.contains("does not track"), "{body}");
     remove_root(serial);
+}
+
+/// With git unusable the repo top comes from a walk up for `.git`, and the URL space widens to it only within the
+/// workspace root, never above it and not when the workspace is the site folder.
+#[tokio::test]
+async fn without_git_the_walk_up_for_dot_git_widens_only_within_the_workspace() {
+    let f = fixture();
+    let site_dir = f.repo.join("site");
+    for (ws, widened) in [(&f.repo, true), (&f.base, true), (&site_dir, false)] {
+        let mut site = Site::plain(site_dir.clone());
+        site.attach_git(ws, true, false);
+        let git = site.git.as_ref().expect("a repo found by the walk");
+        assert!(!git.usable);
+        assert_eq!(git.top, f.repo);
+        assert_eq!(site.url_root, if widened { f.repo.clone() } else { site_dir.clone() }, "workspace {}", ws.display());
+        assert!(site.git.as_ref().unwrap().links(&site.url_root).is_empty());
+    }
 }

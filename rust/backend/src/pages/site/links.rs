@@ -162,8 +162,8 @@ fn git_present() -> bool {
 impl GitState {
     /// The repo containing `dir`: its canonical top and index file. `None`
     /// (fail closed, no links) when it is not a repo or git will not answer.
-    fn find(dir: &Path) -> Option<GitState> {
-        if !git_present() {
+    fn find(dir: &Path, git_ok: bool) -> Option<GitState> {
+        if !git_ok {
             tracing::info!(dir = %dir.display(), "site_serve: no usable git (macOS Command Line Tools missing?), no links followed");
             let top = dir.ancestors().find(|a| a.join(".git").exists())?.to_path_buf();
             return Some(GitState { index: top.join(".git"), top, usable: false, cache: Mutex::new(LinkCache::default()) });
@@ -277,7 +277,7 @@ impl Site {
             // above S reaches `follow_link` and its refusal names why. No root
             // is canonicalized here: a dead share must not stall open.
             let site = tokio::task::spawn_blocking(move || {
-                site.attach_git(&ws_root, widen);
+                site.attach_git(&ws_root, widen, git_present());
                 site
             })
             .await;
@@ -291,8 +291,8 @@ impl Site {
     }
 
     #[cfg(unix)]
-    fn attach_git(&mut self, ws_root: &Path, widen: bool) {
-        let Some(g) = GitState::find(&self.content_root) else { return };
+    fn attach_git(&mut self, ws_root: &Path, widen: bool, git_ok: bool) {
+        let Some(g) = GitState::find(&self.content_root, git_ok) else { return };
         if widen {
             let ws = ws_root.canonicalize().unwrap_or_else(|_| ws_root.to_path_buf());
             // The inner of the repo top and the workspace root; both are
@@ -582,7 +582,7 @@ fn follow_link(
     }
     let tracked = site.git.as_ref().is_some_and(|g| g.links(&site.url_root).contains(link));
     if !tracked {
-        return Err(forbid("R2b", format!("refused: {l} is a link git does not track in this repo, so it is not followed (git add it and commit it: it serves at the next request once it is committed)")));
+        return Err(forbid("R2b", format!("refused: {l} is a link git does not track in this repo, so it is not followed (git add it: it serves at the next request)")));
     }
     let Ok(t) = site.url_root.join(link).canonicalize() else {
         return Err(refuse(
