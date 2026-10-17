@@ -291,6 +291,9 @@ async fn stage_prepare_arm_with(
         // thing that names the fault, and `%e` drops it.
         PipelineError::Stage(e.chain().map(|c| c.to_string()).collect::<Vec<_>>().join(": "))
     })?;
+    // Defect 0c: the commit landed, so a block recorded for a PRIOR attempt (this tag or an older one) no longer
+    // describes reality — and the prepare below can take an hour.
+    clear_stage_block();
     let Some(install) = install else {
         return Ok(Pipeline::Staged);
     };
@@ -310,11 +313,9 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
     let result = stage_prepare_arm_with(cfg, id, install.as_ref()).await;
     // Defect 0c: the shared crate already retried the commit rename for about a minute before giving up. Record it so
     // the NEXT check reports the concrete reason instead of a bare "ok" that hides a release which never manages to
-    // land — the failure mode a healthy-looking, never-updating box actually exhibited. Any other outcome means the
-    // commit landed, so a block recorded for a PRIOR attempt (this tag or an older one) no longer describes reality.
-    match &result {
-        Err(PipelineError::Stage(cause)) => record_stage_block(&id.tag, cause),
-        _ => clear_stage_block(),
+    // land — the failure mode a healthy-looking, never-updating box actually exhibited. A landed stage clears it.
+    if let Err(PipelineError::Stage(cause)) = &result {
+        record_stage_block(&id.tag, cause);
     }
     match result {
         Err(PipelineError::Stage(cause)) => tracing::warn!(tag = %id.tag, error = %cause, "staging update failed"),
@@ -1119,6 +1120,54 @@ mod tests {
         assert_eq!(line(None, "v0.6.5"), "armed v0.6.5 for linux-x86_64");
     }
 
+    /// The recorded block is process-wide: tests that record or clear it run one at a time.
+    static STAGE_BLOCK_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// The block a failed commit recorded stops describing reality the moment the next attempt stages: the prepare that
+    /// follows can take an hour, and `update.check` must not report the old reason meanwhile.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_successful_stage_clears_the_recorded_block_before_prepare() {
+        let _block = STAGE_BLOCK_TEST.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let target = sot_updater::platform::this_platform().unwrap();
+        let asset = sot_updater::platform::platform_asset("9.9.9").unwrap();
+        let top = dir.path().join("build").join(format!("sot-9.9.9-{target}"));
+        std::fs::create_dir_all(&top).unwrap();
+        for f in ["sot", "sotd", "sot-capsule"] {
+            std::fs::write(top.join(f), f).unwrap();
+        }
+        let release = dir.path().join("release");
+        std::fs::create_dir_all(&release).unwrap();
+        let tar = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(release.join(&asset))
+            .arg("-C")
+            .arg(dir.path().join("build"))
+            .arg(top.file_name().unwrap())
+            .status()
+            .unwrap();
+        assert!(tar.success());
+        let digest = sot_updater::fetch::hash::sha256_file(&release.join(&asset)).await.unwrap();
+        std::fs::write(release.join("SHA256SUMS"), format!("{digest}  {asset}\n")).unwrap();
+        let id = sot_updater::fetch::sums::discover(
+            &sot_updater::fetch::sums::parse_sums(&std::fs::read_to_string(release.join("SHA256SUMS")).unwrap()).unwrap(),
+            "example/project",
+            target,
+        )
+        .unwrap();
+        let cfg = UpdaterConfig {
+            repo: "example/project".into(),
+            current_version: "0.1.0".into(),
+            fetcher: Fetcher::Dir(release),
+            updates_root: dir.path().join("updates"),
+        };
+        record_stage_block(&id.tag, "Access is denied. (os error 5)");
+        let staged = stage_prepare_arm_with(&cfg, &id, None).await;
+        assert!(matches!(staged, Ok(Pipeline::Staged)), "{staged:?}");
+        assert_eq!(overlay_stage_block(ok_outcome(id)).status, "ok");
+    }
+
     fn fake_identity(tag: &str) -> ReleaseIdentity {
         ReleaseIdentity {
             repo: "kalidke/ship-of-tools".into(),
@@ -1145,6 +1194,7 @@ mod tests {
     // release's check is not tainted by an older tag's recorded block.
     #[test]
     fn a_recorded_stage_block_overlays_status_for_its_own_tag_only() {
+        let _block = STAGE_BLOCK_TEST.blocking_lock();
         clear_stage_block(); // isolate from any other test's leftover state
         record_stage_block("v9.9.9", "Access is denied. (os error 5)");
 
