@@ -136,9 +136,10 @@ pub mod op {
     /// not for recursion.
     pub const DIRECTORY_LIST: &str = "directory.list";
     /// Register a new workspace with the daemon (ADR 0014). Creates a
-    /// per-workspace toml, registers in-memory, and creates a tmux
-    /// session at `sot-be-<slug>` so BL pane attach works. Does
-    /// *not* spawn a second daemon — kernel + repl live inside the
+    /// per-workspace toml, registers in-memory, and starts the row's
+    /// capsule: a supervisor and a leg running the agent on a terminal of
+    /// its own, recorded in the row's state folder (ADR 0042). Spawns no tmux
+    /// session, and no second daemon — kernel + repl live inside the
     /// existing daemon, gated by the workspace_id this op returns.
     pub const WORKSPACE_CREATE: &str = "workspace.create";
     /// Enumerate the daemon's registered workspaces (ADR 0014). Empty
@@ -181,12 +182,13 @@ pub mod op {
     /// resolve — a stale id, or a race with a concurrent destroy — which
     /// the frontend does not act on today but could log).
     pub const WORKSPACE_ACTIVATE: &str = "workspace.activate";
-    /// Destroy a registered workspace (ADR 0014). Backend shuts down
-    /// the workspace's kernel child if it was spawned, kills the
-    /// `sot-be-<slug>` tmux session, removes the toml from disk,
-    /// and drops the in-memory registry entry. Idempotent: destroying
-    /// an unknown id returns ok with no side effects. The default
-    /// workspace is *not* destroyable — request returns an error.
+    /// Destroy a registered workspace (ADR 0014). Backend ends the row's
+    /// capsule run (the row stays when the run is not confirmed ended),
+    /// removes the toml from disk, and drops the in-memory registry entry;
+    /// the workspace's kernel and REPL children end with their last handle.
+    /// Destroying an unknown id answers with an `unknown_workspace` error and
+    /// changes nothing. The default workspace's row is never removed: its
+    /// run ends and the row stays.
     pub const WORKSPACE_DESTROY: &str = "workspace.destroy";
     /// Server→client push fired when a workspace is created or destroyed
     /// (ADR 0014). Mirrors `preview.changed`: the daemon broadcasts to every
