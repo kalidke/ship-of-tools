@@ -139,11 +139,12 @@ CI grows two jobs alongside the existing Julia workflow:
 1. **Rust PR gate** — `cargo build/test/clippy/fmt` (currently nonexistent). Red blocks
    merge.
 2. **Tag-triggered release** (`v*`) — build matrix, run tests, assemble the artifacts
-   above, generate the changelog with git-cliff from conventional commits, publish the
-   GitHub Release.
+   above, generate the changelog with git-cliff from conventional commits, create the
+   GitHub Release as a draft.
 
 Cutting a release = run the `/release` skill: bump workspace version, sync Julia versions,
-regenerate CHANGELOG, commit `release: vX.Y.Z`, tag, push. CI does the rest.
+regenerate CHANGELOG, commit `release: vX.Y.Z`, tag, push. CI does the rest up to the draft; the release skill
+publishes the draft on the go, and no updater moves a box to it before that.
 
 ### 4. Auto-update mechanism
 
@@ -244,7 +245,8 @@ the fix:
 ### 7. Dev-process changes
 
 - **main stays the integration branch; releases are tags.** The fleet's day-to-day
-  (push to main, pull, rebuild) is unchanged; only tagging publishes.
+  (push to main, pull, rebuild) is unchanged; only tagging creates a release, as a draft that no updater sees until the
+  release skill publishes it.
 - **Conventional commits become load-bearing** — the public changelog is generated from
   them.
 - **Protocol discipline gets teeth**: a non-additive wire change requires a
@@ -615,9 +617,9 @@ level, so both the workspace build and the musl `sotd` build inherit it — a
 per-step env would let a future build step be added without it and ship a
 release that refuses to update itself. It is gated on the ref being a tag —
 deliberately the SAME condition the `publish` job already uses, so the bare
-version is stamped on exactly the runs that can publish a release. Note
+version is stamped on exactly the runs that can create a release. Note
 that is a REF test, not an event test: this workflow also runs on
-`workflow_dispatch`, and a dispatch aimed at a tag both publishes and gets
+`workflow_dispatch`, and a dispatch aimed at a tag both creates a draft and gets
 stamped. That is consistent rather than a hole, and the two conditions must
 stay in step — if `publish` ever narrows, this must narrow with it, or we
 would stamp artifacts that never ship. The bare `X.Y.Z` is now emitted if

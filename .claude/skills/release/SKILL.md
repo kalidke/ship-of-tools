@@ -1,14 +1,15 @@
 ---
 name: release
-description: Cut a Ship of Tools release — stamp the product version everywhere, tag, and let CI build+publish the GitHub Release (ADR 0030 Phase B). Activates for "cut a release", "release vX.Y.Z", "tag a release", "publish a release".
+description: Cut a Ship of Tools release — stamp the product version everywhere, tag, let CI build the GitHub Release as a draft, and publish it on the go (ADR 0030 Phase B). Activates for "cut a release", "release vX.Y.Z", "tag a release", "publish a release".
 ---
 
 # release — cut a Ship of Tools release
 
 One product version across all components (ADR 0030 §1): the release unit is
 the whole ship, released as a git tag that CI turns into platform binaries +
-a published GitHub Release (installs clone the repo at the tag — there is no
-separate julia bundle). Read
+a GitHub Release. CI creates that release as a draft, which no updater lists;
+step 3 of *Watch + verify* publishes it (installs clone the repo at the tag —
+there is no separate julia bundle). Read
 `docs/adr/0030-versioning-release-and-auto-update.md` §1–3 before your first
 release from a fresh context.
 
@@ -102,12 +103,31 @@ re-run with `git push --atomic origin <branch> vX.Y.Z` once the branch is synced
 2. On success, verify the release assets:
    `gh release view vX.Y.Z` must list `sot-<ver>-linux-x86_64.tar.gz`,
    `sot-<ver>-windows-x86_64.zip`, `sot-<ver>-macos-aarch64.tar.gz`,
-   `SHA256SUMS`. No julia bundle — installs clone the repo at the tag; the
-   release-blocking `julia-check` job proves the envs resolve + load at this
-   ref.
-3. Announce: a sot-comm broadcast so fleet sessions know a release landed
+   `SHA256SUMS`. It shows the release as a draft (`gh release view vX.Y.Z
+   --json isDraft` reads `true`), which is the expected state until step 3.
+   No julia bundle — installs clone the repo at the tag; the release-blocking
+   `julia-check` job proves the envs resolve + load at this ref.
+3. **Publish the draft — on the go, run alone.** Until this step no updater
+   sees the release, so a box moves to it only after this publish. Publish only
+   on the go (the lead's lead for a candidate, the maintainer for a final).
+   Before the go, any box chosen to move first installs the draft's files by a
+   named archive run, which pins it at this tag. A draft has no public download
+   URL, so `install.ps1 -Version` cannot reach it:
+   ```bash
+   gh release download vX.Y.Z -p SHA256SUMS -p COMMIT -p 'sot-*-<platform>*' -D <folder>
+   scripts/install.sh --archive <folder>      # linux, macos
+   scripts/install.ps1 -Archive <folder>      # windows
+   ```
+   Then publish, in its own command, with nothing chained after it:
+   ```bash
+   gh release edit vX.Y.Z --draft=false
+   ```
+   The publish report names the boxes that moved by archive run and the go
+   that published it. A draft left unpublished is reported, as an unclosed loop
+   is.
+4. Announce: a sot-comm broadcast so fleet sessions know a release landed
    (they stay on dev builds; this is for awareness).
-4. **Close the loop on the named consumer**: the publish report says **who
+5. **Close the loop on the named consumer**: the publish report says **who
    installed the tag and what the test showed**. A candidate that was cut and
    never installed is reported as exactly that, on the same day — an unclosed
    loop is the finding, not an omission to leave quiet.
