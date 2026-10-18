@@ -125,13 +125,9 @@ fn home_dir() -> Option<PathBuf> {
     None
 }
 
-/// juliaup's own home directory: `juliaup.json` plus the versioned install
-/// dirs. An explicit `JULIAUP_DEPOT_PATH` names the depot root (juliaup's
-/// storage lives at `<root>/juliaup`); otherwise juliaup uses the default
-/// Julia depot `~/.julia` REGARDLESS of `JULIA_DEPOT_PATH` — juliaup manages
-/// its own toolchain installs independently of whatever depot the running
-/// Julia process uses for packages (matches upstream:
-/// https://github.com/JuliaLang/juliaup/blob/main/src/global_paths.rs).
+/// juliaup's own home directory: `juliaup.json` plus the versioned install dirs. An explicit `JULIAUP_DEPOT_PATH`
+/// names the depot root (storage at `<root>/juliaup`); otherwise `~/.julia` REGARDLESS of `JULIA_DEPOT_PATH`, since
+/// juliaup manages its toolchains apart from the running Julia's package depot (upstream `src/global_paths.rs`).
 fn juliaup_home_dir(home: &Path) -> PathBuf {
     match std::env::var_os("JULIAUP_DEPOT_PATH") {
         Some(p) if !p.is_empty() => PathBuf::from(p).join("juliaup"),
@@ -140,7 +136,7 @@ fn juliaup_home_dir(home: &Path) -> PathBuf {
 }
 
 /// Read juliaup's `juliaup.json` and resolve its DEFAULT channel to a real
-/// `bin/julia[.exe]` path, bypassing juliaup's own launcher shim entirely.
+/// `bin/julia[.exe]` path (see `juliaup_version_binary`), bypassing juliaup's own launcher shim entirely.
 /// `Ok(None)` means "juliaup isn't installed here" (no config file): a
 /// normal, silent case, never a failure. `Err` means a config WAS found but
 /// didn't parse the way juliaup documents its own layout — worth a warning;
@@ -189,16 +185,24 @@ fn resolve_juliaup_julia_from_config(
         .and_then(|v| v.get("Path"))
         .and_then(|p| p.as_str())
         .ok_or_else(|| format!("version {version:?} not in `InstalledVersions`"))?;
-    // juliaup writes `Path` as `./julia-<version>` (leading `./`); strip it
-    // so the joined path reads cleanly in logs (`PathBuf::join` doesn't
-    // normalize a literal `./` component away).
+    // juliaup writes `Path` as `./julia-<version>`; strip the `./` so the joined path reads cleanly in logs.
     let rel_path = rel_path.strip_prefix("./").unwrap_or(rel_path);
-    let bin = juliaup_dir.join(rel_path).join("bin").join(JULIA_EXE);
+    let bin = juliaup_version_binary(&juliaup_dir.join(rel_path));
     if is_present_file(&bin) {
         Ok(bin)
     } else {
         Err(format!("resolved binary missing on disk: {}", bin.display()))
     }
+}
+
+/// The Julia binary in a juliaup version directory, as juliaup resolves it: on macOS a DMG install is an app bundle,
+/// `<name>.app/Contents/Resources/julia/bin/julia` (the first `.app`, in directory order, holding the binary wins), else `bin/julia`.
+/// Not OS-gated, so a Linux test exercises the scan; with nothing present it names `bin/julia` for the error.
+fn juliaup_version_binary(version_dir: &Path) -> PathBuf {
+    let apps = std::fs::read_dir(version_dir).into_iter().flatten().flatten().map(|e| e.path());
+    let bundled = apps.filter(|p| p.extension().is_some_and(|x| x == "app"));
+    let mut bins = bundled.map(|app| app.join("Contents/Resources/julia/bin").join(JULIA_EXE));
+    bins.find(|b| is_present_file(b)).unwrap_or_else(|| version_dir.join("bin").join(JULIA_EXE))
 }
 
 /// Why the file at `path` must not be spawned as Julia because it is a Windows app-execution alias, or `None`.
@@ -417,6 +421,53 @@ mod tests {
             resolved,
             juliaup_dir.join("julia-1.12.6+0.x64.linux.gnu").join("bin").join(exe_name)
         );
+    }
+
+    const APP_CONFIG: &str = r#"{
+        "Default": "release",
+        "InstalledChannels": { "release": { "Version": "1.12.7+0.aarch64.apple.darwin14" } },
+        "InstalledVersions": { "1.12.7+0.aarch64.apple.darwin14": { "Path": "./julia-1.12.7+0.aarch64.apple.darwin14" } }
+    }"#;
+    const APP_VERSION_DIR: &str = "julia-1.12.7+0.aarch64.apple.darwin14";
+
+    fn app_bundle_bin(version_dir: &Path) -> PathBuf {
+        version_dir.join("Julia-1.12.app").join("Contents").join("Resources").join("julia").join("bin").join(JULIA_EXE)
+    }
+
+    fn write_exe(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        sot_log::test_exec::write_executable(path, vec![0u8; 8192]);
+    }
+
+    #[test]
+    fn resolves_an_app_bundle_version_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let version_dir = dir.path().join(APP_VERSION_DIR);
+        write_exe(&app_bundle_bin(&version_dir));
+        let resolved = resolve_juliaup_julia_from_config(dir.path(), APP_CONFIG).unwrap();
+        assert_eq!(resolved, app_bundle_bin(&version_dir));
+    }
+
+    #[test]
+    fn an_app_bundle_wins_over_bin_when_both_layouts_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let version_dir = dir.path().join(APP_VERSION_DIR);
+        write_exe(&app_bundle_bin(&version_dir));
+        write_exe(&version_dir.join("bin").join(JULIA_EXE));
+        let resolved = resolve_juliaup_julia_from_config(dir.path(), APP_CONFIG).unwrap();
+        assert_eq!(resolved, app_bundle_bin(&version_dir));
+    }
+
+    #[test]
+    fn an_app_entry_without_a_binary_falls_back_to_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let version_dir = dir.path().join(APP_VERSION_DIR);
+        std::fs::create_dir_all(version_dir.join("Julia-1.12.app").join("Contents")).unwrap();
+        let err = resolve_juliaup_julia_from_config(dir.path(), APP_CONFIG).unwrap_err();
+        assert!(err.contains("missing on disk") && err.ends_with(&version_dir.join("bin").join(JULIA_EXE).display().to_string()), "{err}");
+        write_exe(&version_dir.join("bin").join(JULIA_EXE));
+        let resolved = resolve_juliaup_julia_from_config(dir.path(), APP_CONFIG).unwrap();
+        assert_eq!(resolved, version_dir.join("bin").join(JULIA_EXE));
     }
 
     #[test]
