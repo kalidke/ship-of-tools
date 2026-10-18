@@ -13,9 +13,9 @@
 # install backwards unless told (an older target found by the channel fails; -Version names it, and is said to be
 # older). A run of the version already installed, with no daemon on another version, is a repair run whether or not it
 # names the version: it writes the pin if it names one, drops any armed update pointer, and stages, applies and restarts
-# nothing (a named one downloads nothing either). A run that names what to install pins the install: install.json records
-# "pinned", the PASS or ONE STEP LEFT line ends "; pinned at <v>: ...", and the updaters leave the install where the
-# person put it until a run that names no version removes the pin.
+# nothing (a named one downloads no release asset; the prelude still fetches the tag's install.ps1 unless SOT_INSTALL_TAG
+# is set). A run that names what to install pins the install: install.json records "pinned", the PASS or ONE STEP LEFT
+# line ends "; pinned at <v>: ...", and the updaters leave it where the person put it until a run names no version.
 #
 # The prelude fetches the target tag's own install.ps1 and runs it (SOT_INSTALL_TAG, SOT_INSTALL_IMPLICIT); -Archive
 # skips it and runs this file, which must be the packing checkout's. A fresh install lays down bin\, repo\base,
@@ -23,8 +23,9 @@
 # `sotd update stage` and applies it one way, by what runs here: a supervisor that logs its launcher code id gets the
 # converge sentinel (rows keep their sessions); an older supervisor or a window with none gets the update left armed and
 # a step; nothing running and a desktop session applies it here; nothing running over ssh leaves it armed. The last
-# line is exactly one of PASS, ONE STEP LEFT or FAIL, then an explicit exit. A run can outlast an agent's tool call (the
-# stage prepares Julia, the converge waits up to 30 minutes): the staging line says so, and the verdict is the last line.
+# line is exactly one of PASS, ONE STEP LEFT or FAIL (which also says the pin and any update still armed), then an explicit
+# exit. A run can outlast an agent's tool call (the stage prepares Julia, the converge waits up to 30 minutes): the staging
+# line says so, and the verdict is the last line.
 #
 # repo\current is read once by its target and never traversed, except by the one deliberate probe that runs
 # install-shortcut.ps1 through it (Invoke-Shortcut): an ssh session on a box with redirection trust enabled cannot
@@ -48,7 +49,13 @@ $script:launchNotices = New-Object System.Collections.ArrayList
 function Write-Verdict([string]$Line) {
     if ($script:Done) { return }
     $script:Done = $true
-    Write-EntryLine $Line
+    Write-EntryLine $(if ($Line.StartsWith('FAIL: ')) { "$Line$(Get-FailTail)" } else { $Line })
+}
+# What a FAIL leaves behind, said at its end: an update this run staged that is still armed (the next start applies it),
+# and the pin once the run wrote it (PASS and ONE STEP LEFT carry the pin themselves).
+function Get-FailTail {
+    $armed = $script:ArmedTag -and $script:PendingFile -and (Test-Path -LiteralPath $script:PendingFile)
+    return "$(if ($armed) { "; the update to $($script:ArmedTag) stays armed: the next start applies it" })$(if ($script:PinWritten) { $script:PinSuffix })"
 }
 function Stop-Entry([string]$Check, [string]$Detail, [int]$Code = 1) {
     $script:Rc = $Code
@@ -115,6 +122,7 @@ function Set-InstallPin([string]$InstallJson, [bool]$Pinned) {
     $new = [regex]::Replace($t, ',\s*"pinned"\s*:\s*(true|false)', '')
     if ($Pinned) { $new = [regex]::Replace($new, '\s*\}\s*$', ",`n  `"pinned`": true`n}") }
     if ($new -cne $t) { Write-Utf8NoBom $InstallJson $new }
+    $script:PinWritten = $Pinned
 }
 
 # What a binary says it is: "<name> <version> (<sha> <date>)".
@@ -284,19 +292,20 @@ function Get-DaemonPipe([string]$Sotd) {
     return ''
 }
 # Does a daemon run here: its pipe exists (listed, never opened: a probe must not take an instance), or a process runs
-# from this install's bin\sotd.exe.
+# from this install's bin\sotd.exe or the image sot-apply.ps1 renamed aside (bin\sotd-stale-*.exe).
 function Test-DaemonRuns([string]$Pipe, [string]$BinExe) {
     if ($Pipe) {
         $listed = @()
-        # The listing can throw on a pipe name .NET rejects; then the one existence probe is all there is.
-        try { $listed = @([System.IO.Directory]::GetFiles('\\.\pipe\')) } catch { if (Test-Path -LiteralPath $Pipe) { return $true } }
+        # When the listing throws, the process leg below decides.
+        try { $listed = @([System.IO.Directory]::GetFiles('\\.\pipe\')) } catch { }
         if (@($listed | Where-Object { $_ -ieq $Pipe }).Count -gt 0) { return $true }
     }
     if ($BinExe) {
-        foreach ($p in @(Get-Process -Name sotd -ErrorAction SilentlyContinue)) {
+        $stale = Join-Path (Split-Path $BinExe) 'sotd-stale-*.exe'
+        foreach ($p in @(Get-Process -Name 'sotd*' -ErrorAction SilentlyContinue)) {
             $path = ''
             try { $path = $p.Path } catch { }
-            if ($path -and ($path -ieq $BinExe)) { return $true }
+            if ($path -and (($path -ieq $BinExe) -or ($path -like $stale))) { return $true }
         }
     }
     return $false
@@ -423,13 +432,15 @@ function Invoke-LayoutAndComm([string]$PrefixDir, [string]$Checkout, [string]$Ba
     foreach ($n in @($script:launchNotices)) { Say "  note: $n" }
 }
 
+# Can this session read a file through repo\current (the suite replaces this to reach the branch that cannot)?
+function Test-JunctionTraversable([string]$ScriptPath) { return (Test-Path -LiteralPath $ScriptPath) }
 # The shortcut and pin: install-shortcut.ps1 through repo\current when this session can traverse it (the shortcut's working
 # folder is then the junction, not a versions folder a later apply prunes); over ssh on a box that enforces redirection
 # trust it is kept when it already targets the junction, else a step for the desk.
 function Invoke-Shortcut([string]$PrefixDir, [string]$Hub) {
     $script:Step = 'shortcut'
     $viaJunction = Join-Path $PrefixDir 'repo\current\scripts\install-shortcut.ps1'
-    if (Test-Path -LiteralPath $viaJunction) {
+    if (Test-JunctionTraversable $viaJunction) {
         $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $viaJunction, '-Prefix', $PrefixDir)
         if ($Hub) { $a += @('-Hub', $Hub) }
         $r = Invoke-Native 'powershell.exe' $a
@@ -576,6 +587,7 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
     # A body run on a tag by hand was told what to install, as -Version tells it.
     if ($env:SOT_INSTALL_TAG -and -not $implicit) { $named = $true }
     $script:Pinned = $named
+    $script:PendingFile = Join-Path $prefix 'updates\pending-windows-x86_64.json'
 
     $pack = $null
     $sotd = Join-Path $prefix 'bin\sotd.exe'
@@ -623,9 +635,9 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
         if ($repair) {
             Say "this computer already runs $installed at $($pack.Commit.Substring(0, 9)): a repair run"
             # A run that arms no pointer itself drops the one armed over this install, with the pin in one step: the
-            # pointer would otherwise move the box the pin was written to hold.
-            Remove-Item -LiteralPath (Join-Path $prefix 'updates\pending-windows-x86_64.json') -Force -ErrorAction SilentlyContinue
+            # pointer would otherwise move the box the pin was written to hold. The pin goes first: no arm lands between.
             Set-InstallPin $ij $script:Pinned
+            Remove-Item -LiteralPath (Join-Path $prefix 'updates\pending-windows-x86_64.json') -Force -ErrorAction SilentlyContinue
         }
         elseif ($direction -eq 'same') { Say "this run moves the install from $installed to $($pack.Version): same version, another build" }
         else { Say "this run moves the install from $installed to $($pack.Version) ($direction)" }
@@ -722,8 +734,10 @@ function Update-Installed([hashtable]$O, [string]$Prefix, $Pack, [string]$Base, 
         $detail = $(if ($said) { "$($said[-1])".Trim() } else { "sotd update stage ended with exit $($r.Code)" })
         if (@($r.Err + $r.Out) -join ' ' -match 'not armed') { $detail = "$detail (remove $Prefix\updates\bad-$($Pack.Tag)-windows-x86_64 if the version was marked bad, then run this again)" }
         Set-InstallPin $ijPath $wasPinned
+        $script:PinWritten = $false
         Stop-Entry 'stage' $detail
     }
+    $script:ArmedTag = $Pack.Tag
     $sup = Get-Supervisor $LogDir
     $windowOnly = (-not $sup) -and (Test-WindowRuns (Join-Path $Prefix 'bin'))
     $work = $(if ($liveText) { "; $liveText" } else { '' })
@@ -759,7 +773,7 @@ function Update-Installed([hashtable]$O, [string]$Prefix, $Pack, [string]$Base, 
 }
 
 function Invoke-InstallEntry([string[]]$Argv) {
-    $script:Done = $false; $script:Rc = 1; $script:Step = 'options'; $script:Steps = @(); $script:Pending = $false; $script:Pinned = $false; $script:PinSuffix = ''; $script:EnrollRefusal = ''; $script:DaemonWhy = ''; $script:ExpectDaemon = $false; $script:PassText = ''
+    $script:Done = $false; $script:Rc = 1; $script:Step = 'options'; $script:Steps = @(); $script:Pending = $false; $script:Pinned = $false; $script:PinSuffix = ''; $script:PinWritten = $false; $script:ArmedTag = ''; $script:PendingFile = ''; $script:EnrollRefusal = ''; $script:DaemonWhy = ''; $script:ExpectDaemon = $false; $script:PassText = ''
     $scratch = Join-Path $env:TEMP ('sot-install-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     $rc = 1
     try {

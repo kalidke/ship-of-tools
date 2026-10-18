@@ -485,12 +485,14 @@ installer_windows_running() {  # <prefix>
 }
 
 # The one verdict line a run ends with: FAIL (the first failed check, "<check>: <detail>"), else ONE STEP LEFT (the
-# steps that remain, joined), else PASS. A run that pinned the install (the fifth argument is the version) ends the PASS
-# and ONE STEP LEFT lines with where it is pinned. Pure. FAIL is exit 1; the others are 0, since the install is whole.
+# steps that remain, joined), else PASS. A run that pinned the install (the fifth argument is the version) ends every
+# line with where it is pinned, a FAIL too: the pin is written before the checks that can fail. install.sh arms no update
+# pointer itself (it drops the one armed over the install it replaces), so a FAIL has no "stays armed" clause here. Pure.
+# FAIL is exit 1; the others are 0, since the install is whole.
 installer_verdict() {  # <version> <short commit> <fail> <steps> [pinned version]
     local pin=""
     [ -z "${5:-}" ] || pin="; pinned at $5: automatic updates stay off until a run that names no version"
-    if [ -n "$3" ]; then printf 'FAIL: %s\n' "$3"
+    if [ -n "$3" ]; then printf 'FAIL: %s%s\n' "$3" "$pin"
     elif [ -n "$4" ]; then printf 'ONE STEP LEFT: %s%s\n' "$4" "$pin"
     else printf 'PASS: Ship of Tools %s at %s on this computer%s\n' "$1" "$2" "$pin"
     fi
@@ -1770,7 +1772,7 @@ fi
 
 VERDICT_PRINTED=1
 if [ -n "$FAIL_FIRST" ]; then
-    installer_verdict "$VER" "$SHORT" "$FAIL_FIRST" "" >&2
+    installer_verdict "$VER" "$SHORT" "$FAIL_FIRST" "" "$([ "$PINNED" = 0 ] || printf '%s' "$VER")" >&2
     exit 1
 fi
 installer_verdict "$VER" "$SHORT" "" "$STEPS_LEFT" "$([ "$PINNED" = 0 ] || printf '%s' "$VER")"

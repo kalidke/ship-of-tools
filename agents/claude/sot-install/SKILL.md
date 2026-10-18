@@ -84,7 +84,7 @@ half way, run it again: a repeat is a repair run. An install that predates `inst
 checkout: fetch the installer of the channel's tag (`https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.ps1`,
 with `curl.exe`) and run it with no version, so the install stays unpinned. With no install here, a first install is
 `docs/INSTALL-AGENT.md`: the same fetched installer with `-Hub`, no version (it takes the latest stable release; while the
-latest stable release has no `install.ps1`, the person may name a pre-release with `-Version <rc tag>`, which pins). A source
+latest stable release has no `install.ps1`, naming a pre-release with `-Version <rc tag>` is the person's choice, and pins). A source
 checkout (no `install.json`, a `+` in `sotd.exe --version`) updates by `git pull` and a rebuild.
 
 ## Only the agent comm and skills

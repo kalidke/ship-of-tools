@@ -269,7 +269,8 @@ check "PASS names the version and the commit" "PASS: Ship of Tools 1.2.3 at abc1
 check "a step left is ONE STEP LEFT, steps joined" "ONE STEP LEFT: quit it; start it" "$(installer_verdict 1.2.3 abc '' 'quit it; start it')"
 check "a pinned PASS ends with where it is pinned" "PASS: Ship of Tools 1.2.3 at abc on this computer; pinned at 1.2.3: automatic updates stay off until a run that names no version" "$(installer_verdict 1.2.3 abc '' '' 1.2.3)"
 check "a pinned ONE STEP LEFT does too" "ONE STEP LEFT: quit it; pinned at 1.2.3: automatic updates stay off until a run that names no version" "$(installer_verdict 1.2.3 abc '' 'quit it' 1.2.3)"
-check "a FAIL names no pin" "FAIL: comm: stale" "$(installer_verdict 1.2.3 abc 'comm: stale' 'quit it' 1.2.3)"
+check "a FAIL after the pin was written ends with it too" "FAIL: comm: stale; pinned at 1.2.3: automatic updates stay off until a run that names no version" "$(installer_verdict 1.2.3 abc 'comm: stale' 'quit it' 1.2.3)"
+check "and an unpinned run's FAIL names none" "FAIL: comm: stale" "$(installer_verdict 1.2.3 abc 'comm: stale' '' '')"
 check "a failed check is FAIL and wins over a step" "FAIL: comm: stale" "$(installer_verdict 1.2.3 abc 'comm: stale' 'quit it')"
 d="$WORK/vd"; entry_fixture "$d"; short="$(cat "$d/ctl/short")"
 entry_archive "$d" --be-only --no-service
@@ -280,6 +281,7 @@ broken() {  # <description> <expected fail prefix> <hook>: a run whose comm refr
     entry_archive "$dd" --be-only --no-service
     check "$1: exit 1" "1" "$ENTRY_RC"
     starts_with "$1: FAIL names the check" "FAIL: $2" "$ENTRY_LAST"
+    check "$1: and, the archive having pinned the install, the pin" "yes" "$(case "$ENTRY_LAST" in (*'; pinned at 9.9.9: automatic updates stay off until a run that names no version') echo yes ;; (*) echo no ;; esac)"
 }
 broken "a binary that reports another version" "binaries" 'printf "#!/bin/sh\necho sotd 1.0.0\n" > "$HOME/.local/share/sot/bin/sotd"'
 broken "an update pointer armed again" "pointer" ': > "$HOME/.local/share/sot/updates/pending-'"$TGT"'.json"'
@@ -443,7 +445,7 @@ check "a --backend install's launcher is the remote one" "yes" "$(grep -q 'launc
 check "and it runs no daemon of its own: no SOT_OWN_DAEMON" "0" "$(grep -c 'SOT_OWN_DAEMON' "$d/home/.local/bin/sot-launch" || true)"
 printf '255\n' > "$d/ctl/sync-rc"; printf 'ssh: Could not resolve hostname hubbox\n' > "$d/ctl/sync-out"; rm -f "$d/ctl/plan"
 entry_archive "$d" --backend hubbox
-check "a hub that cannot be read, with no plan here: FAIL enroll naming why" "1 FAIL: enroll: could not read the hosts.toml on 'hubbox': ssh: Could not resolve hostname hubbox" "$ENTRY_RC $ENTRY_LAST"
+check "a hub that cannot be read, with no plan here: FAIL enroll naming why" "1 FAIL: enroll: could not read the hosts.toml on 'hubbox': ssh: Could not resolve hostname hubbox; pinned at 9.9.9: automatic updates stay off until a run that names no version" "$ENTRY_RC $ENTRY_LAST"
 printf 'self entrybox\nhub hubbox\nrelay-endpoint x\ndial hubbox ssh:hubbox\n' > "$d/ctl/plan"
 entry_archive "$d" --backend hubbox
 check "a hub that cannot be reached, but a plan that lists this box: PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
@@ -716,11 +718,25 @@ done
 # ---------------------------------------------------------------------------
 case_start "entry_records_name_no_version_in_a_routine_command"
 # A routine command (the fallbacks for an install that predates the entry, a fresh install) runs the fetched installer
-# with no version, so nothing is pinned. A version appears only as the person's choice, in a paragraph that says it pins.
+# with no version, so nothing is pinned. A version appears only as the person's choice: any line that runs install.sh,
+# install.ps1 or `bash -s` and carries a -version/--version in any form fails unless it also carries the phrase the
+# three files use for that choice.
+CHOICE="the person's choice"
+version_lines() {  # <file>: the lines that run the installer with a version and do not mark it the person's choice
+    grep -E -- '(install\.sh|install\.ps1|bash -s)' "$1" | grep -E -- '-{1,2}[Vv]ersion' | grep -v -F -- "$CHOICE" || true
+}
 for f in agents/claude/sot-install/SKILL.md docs/INSTALL-AGENT.md docs/src/start/install.md; do
-    check "$f: no command runs the installer with --version <tag> through bash -s" "0" "$(grep -c -F 'bash -s -- --version' "$ENTRY_SRC/$f" || true)"
+    check "$f: no line that runs the installer carries a version unless it is marked the person's choice" "" "$(version_lines "$ENTRY_SRC/$f")"
     check "$f: every paragraph that names a version to run with says it pins" "0" "$(awk -v RS= '/(--version|-Version) (<|v[0-9X])/ && !/pin/ { n++ } END { print n + 0 }' "$ENTRY_SRC/$f")"
 done
+# The check itself: every spelling of a routine version is caught, and the marked line is not.
+printf '%s\n' \
+    'curl -fsSL .../install.sh | bash -s -- --local --version v0.6.6' \
+    'powershell -File install.ps1 -Version $tag' \
+    'bash install.sh --version="v0.6.6"' \
+    'bash -s -- --version v0.6.6 --hub rig' \
+    "run install.ps1 with -Version <tag>, the person's choice, which pins" > "$WORK/version-lines.txt"
+check "the check catches -Version \$tag, --version=\"v..\", --version v.. and bash -s forms, and passes the person's choice" "4" "$(version_lines "$WORK/version-lines.txt" | wc -l | tr -d ' ')"
 check "and none says to run the fetched installer with -Version <tag>" "0" "$(cat "$ENTRY_SRC/docs/INSTALL-AGENT.md" "$ENTRY_SRC/agents/claude/sot-install/SKILL.md" "$ENTRY_SRC/docs/src/start/install.md" | grep -c -F 'with `-Version <tag>`' || true)"
 
 # ---------------------------------------------------------------------------

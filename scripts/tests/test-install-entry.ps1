@@ -470,7 +470,7 @@ exit 0
         $ho = New-Home 'o1'
         $env:SOT_FAKE_SYNC = 'refuse'
         $e = Invoke-Entry @('-Archive', $r98.Pack, '-Hub', 'rig-hub')
-        Check '7o: a hub that does not list this computer is FAIL enroll naming the command for the hub' ($e.Rc -eq 1 -and $e.Verdicts -eq 1 -and $e.Last -ceq "FAIL: enroll: the hosts.toml on 'rig-hub' does not list this computer ('rig-pc'), so the window would open with no hosts: on 'rig-hub' run  sotd topology set add rig-pc --frontend  (the sotd of its install), then run this installer again") "rc=$($e.Rc) last='$($e.Last)'; $(@($e.Out | Where-Object { $_ -match 'sync|topology|hub' }) -join ' / ')"
+        Check '7o: a hub that does not list this computer is FAIL enroll naming the command for the hub, and the pin the run wrote' ($e.Rc -eq 1 -and $e.Verdicts -eq 1 -and $e.Last -ceq "FAIL: enroll: the hosts.toml on 'rig-hub' does not list this computer ('rig-pc'), so the window would open with no hosts: on 'rig-hub' run  sotd topology set add rig-pc --frontend  (the sotd of its install), then run this installer again$(Get-PinTail '9.9.8')") "rc=$($e.Rc) last='$($e.Last)'; $(@($e.Out | Where-Object { $_ -match 'sync|topology|hub' }) -join ' / ')"
         $ho2 = New-Home 'o2'
         $env:SOT_FAKE_SYNC = 'ok'
         $e = Invoke-Entry @('-Archive', $r98.Pack, '-Hub', 'rig-hub')
@@ -573,7 +573,126 @@ while (((Get-Date) - `$t0).TotalSeconds -lt 150) {
         $env:SOT_INSTALL_TAG = 'v9.9.8'
         $fetchLog.Clear(); $script:servePack = $r98.Pack
         $e = Invoke-Entry @('-Version', 'v9.9.8')
-        Check '7s: a named run of the installed version downloads nothing and ends PASS with the pin in the line' ($fetchLog.Count -eq 0 -and $e.Rc -eq 0 -and $e.Last -ceq "PASS: Ship of Tools 9.9.8 at $($r98.Short) on this computer$(Get-PinTail '9.9.8')" -and (Get-Pin $hz.Prefix)) "fetched=$($fetchLog.Count) rc=$($e.Rc) last='$($e.Last)'"
+        Check '7s: a named run of the installed version downloads no release asset and ends PASS with the pin in the line' ($fetchLog.Count -eq 0 -and $e.Rc -eq 0 -and $e.Last -ceq "PASS: Ship of Tools 9.9.8 at $($r98.Short) on this computer$(Get-PinTail '9.9.8')" -and (Get-Pin $hz.Prefix)) "fetched=$($fetchLog.Count) rc=$($e.Rc) last='$($e.Last)'"
+    }
+    # 19. A Julia the resolver refused is not a missing Julia: the stage skips Julia only when none is found, and a
+    # refusal (a relative override, an app-execution alias) stays the stage's error, naming itself.
+    Invoke-Case '7t' {
+        $ht = New-Home 't1'
+        [void](Invoke-Entry @('-Archive', $r98.Pack))
+        $env:SOT_JULIA_BIN = 'julia'
+        $e = Invoke-Entry @('-Archive', $r99.Pack)
+        Check '7t: SOT_JULIA_BIN=julia (relative) is FAIL stage naming the refusal, never a PASS' ($e.Rc -eq 1 -and $e.Verdicts -eq 1 -and $e.Last -like 'FAIL: stage: *SOT_JULIA_BIN="julia" is not an absolute path*') "rc=$($e.Rc) last='$($e.Last)'"
+        Check '7t: and the run moved nothing' ((Get-Json $ht.Prefix 'version') -eq '9.9.8') (Get-Json $ht.Prefix 'version')
+        $alias = Join-Path $savedEnv['LOCALAPPDATA'] 'Microsoft\WindowsApps\julia.exe'
+        if (Test-Path -LiteralPath $alias) {
+            $ht2 = New-Home 't2'
+            [void](Invoke-Entry @('-Archive', $r98.Pack))
+            $env:SOT_JULIA_BIN = $alias
+            $e = Invoke-Entry @('-Archive', $r99.Pack)
+            Check '7t: SOT_JULIA_BIN naming this box''s Store alias is FAIL stage naming the alias' ($e.Rc -eq 1 -and $e.Last -like 'FAIL: stage: *app-execution alias*') "rc=$($e.Rc) last='$($e.Last)'"
+        } else { Write-Host '  note  7t: this box has no Store julia alias; the alias case is not run' }
+    }
+
+    # 20. A FAIL says what the run left behind: the pin once written, and an update it staged that is still armed.
+    # A supervisor stand-in that logs code= and never takes the sentinel, so a converge times out.
+    function Start-IdleSupervisor($Hm) {
+        $logDir = Join-Path $Hm.Home 'AppData\Local\sot\logs'
+        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+        $sup = Join-Path $entryRoot 'launch-sot.ps1'
+        Set-Content -LiteralPath $sup -Value 'Start-Sleep -Seconds 120'
+        $proc = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $sup) -PassThru -WindowStyle Hidden
+        Start-Sleep -Seconds 2
+        Set-Content -LiteralPath (Join-Path $logDir 'launcher.pid') -Value "$($proc.Id)"
+        Set-Content -LiteralPath (Join-Path $logDir 'supervisor.log') -Value "2026-10-17T00:00:00  pid=$($proc.Id)  supervisor start (relaunched=False) depth=0 ws=1MB code=abc-def"
+        return $proc
+    }
+    function Stop-IdleSupervisor($Hm, $Proc) {
+        Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $Hm.Home 'AppData\Local\sot\logs\launcher.pid') -Force -ErrorAction SilentlyContinue
+        [Environment]::SetEnvironmentVariable('SOT_INSTALL_CONVERGE_WAIT_S', $null); [Environment]::SetEnvironmentVariable('SOT_INSTALL_TAG', $null); [Environment]::SetEnvironmentVariable('SOT_INSTALL_IMPLICIT', $null)
+    }
+    Invoke-Case '7u' {
+        # P7's shape: a named older run whose supervisor never takes the sentinel.
+        $hu = New-Home 'u1'
+        [void](Invoke-Entry @('-Archive', $r99.Pack))
+        $procU = Start-IdleSupervisor $hu
+        $ptrU = Join-Path $hu.Prefix 'updates\pending-windows-x86_64.json'
+        try {
+            $env:SOT_INSTALL_CONVERGE_WAIT_S = '3'
+            $env:SOT_INSTALL_TAG = 'v9.9.8'; $script:servePack = $r98.Pack
+            $e = Invoke-Entry @('-Version', 'v9.9.8')
+            Check '7u: a named run whose converge times out is FAIL apply, saying the update stays armed and the box is pinned' ($e.Rc -eq 1 -and $e.Verdicts -eq 1 -and $e.Last -like 'FAIL: apply: the supervisor did not report v9.9.8 applied within 3 s*' -and $e.Last.EndsWith("; the update to v9.9.8 stays armed: the next start applies it$(Get-PinTail '9.9.8')")) "rc=$($e.Rc) last='$($e.Last)'"
+            Check '7u: and the pointer and the pin are what the line says' ((Test-Path $ptrU) -and (Get-Pin $hu.Prefix) -and (Get-Json $hu.Prefix 'version') -eq '9.9.9') "pointer=$(Test-Path $ptrU) pin=$(Get-Pin $hu.Prefix) version=$(Get-Json $hu.Prefix 'version')"
+        } finally { Stop-IdleSupervisor $hu $procU }
+        # An unpinned run (the channel's own) that times out says it is armed and names no pin.
+        $hu2 = New-Home 'u2'
+        [void](Invoke-Entry @('-Archive', $r98.Pack))
+        $procU2 = Start-IdleSupervisor $hu2
+        try {
+            $env:SOT_INSTALL_CONVERGE_WAIT_S = '3'
+            $env:SOT_INSTALL_TAG = 'v9.9.9'; $env:SOT_INSTALL_IMPLICIT = '1'; $script:servePack = $r99.Pack
+            $e = Invoke-Entry @()
+            Check '7u: an unpinned run that times out says the update stays armed and names no pin' ($e.Rc -eq 1 -and $e.Last -like 'FAIL: apply: *' -and $e.Last.EndsWith('; the update to v9.9.9 stays armed: the next start applies it') -and -not (Get-Pin $hu2.Prefix)) "rc=$($e.Rc) last='$($e.Last)' pin=$(Get-Pin $hu2.Prefix)"
+        } finally { Stop-IdleSupervisor $hu2 $procU2 }
+    }
+
+    # 21. A daemon whose image sot-apply.ps1 renamed aside (bin\sotd-stale-*.exe) is still a daemon that runs.
+    Invoke-Case '7v' {
+        $hv = New-Home 'v1'
+        [void](Invoke-Entry @('-Archive', $r98.Pack))
+        $binV = Join-Path $hv.Prefix 'bin'
+        $staleExe = Join-Path $binV 'sotd-stale-20261017-000000.exe'
+        Copy-Item -LiteralPath (Join-Path $binV 'sotd.exe') -Destination $staleExe
+        Check '7v: nothing runs: no daemon' (-not (Test-DaemonRuns '' (Join-Path $binV 'sotd.exe'))) 'reported a daemon'
+        $env:SOT_FAKE_SLEEP = '1'
+        $heldV = Start-Process -FilePath $staleExe -PassThru -WindowStyle Hidden
+        [Environment]::SetEnvironmentVariable('SOT_FAKE_SLEEP', $null)
+        try {
+            Start-Sleep -Seconds 2
+            Check '7v: a process of bin\sotd-stale-*.exe is a daemon that runs' (Test-DaemonRuns '' (Join-Path $binV 'sotd.exe')) 'not seen'
+        } finally { Stop-Process -Id $heldV.Id -Force -ErrorAction SilentlyContinue }
+    }
+
+    # 22. Path (c) with a daemon to stop: the entry runs the installed checkout's sot-local-daemon.ps1 -Stop (a stand-in
+    # here, which records its argv and ends the stand-in daemon), then applies.
+    Invoke-Case '7w' {
+        $hw = New-Home 'w1'
+        [void](Invoke-Entry @('-Archive', $r98.Pack))
+        $binW = Join-Path $hw.Prefix 'bin\sotd.exe'
+        $env:SOT_FAKE_SLEEP = '1'
+        $heldW = Start-Process -FilePath $binW -PassThru -WindowStyle Hidden
+        [Environment]::SetEnvironmentVariable('SOT_FAKE_SLEEP', $null)
+        $argvFile = Join-Path $hw.Home 'stop-argv.txt'
+        $dfileW = Join-Path $hw.Home 'daemon.code'
+        Set-Content -LiteralPath $dfileW -Value '3'
+        $env:SOT_FAKE_DAEMON_FILE = $dfileW
+        Set-Content -LiteralPath (Join-Path $hw.Prefix 'repo\versions\v9.9.8\scripts\sot-local-daemon.ps1') -Value @"
+[System.IO.File]::WriteAllText('$argvFile', (`$args -join ' '))
+Stop-Process -Id $($heldW.Id) -Force
+Set-Content -LiteralPath '$dfileW' -Value '2'
+Write-Host 'sot-local-daemon: stopped'
+"@
+        try {
+            Start-Sleep -Seconds 2
+            $e = Invoke-Entry @('-Archive', $r99.Pack)
+            Check '7w: a daemon on another version with no live work is stopped by the installed checkout''s sot-local-daemon.ps1 -Stop' ((Test-Path $argvFile) -and ([System.IO.File]::ReadAllText($argvFile) -ceq '-Stop') -and $heldW.HasExited) "argv=$(if (Test-Path $argvFile) { [System.IO.File]::ReadAllText($argvFile) } else { 'none' }) exited=$($heldW.HasExited)"
+            Check '7w: and the apply goes on to PASS at the new version' ($e.Rc -eq 0 -and $e.Last -like 'PASS: *9.9.9*' -and (Get-Json $hw.Prefix 'version') -eq '9.9.9') "rc=$($e.Rc) last='$($e.Last)'"
+        } finally { Stop-Process -Id $heldW.Id -Force -ErrorAction SilentlyContinue }
+    }
+
+    # 23. A session that cannot traverse repo\current (replaced seam): the shortcut is kept when it already targets the
+    # junction, else the run asks for the desk.
+    Invoke-Case '7x' {
+        $hx = New-Home 'x1'
+        [void](Invoke-Entry @('-Archive', $r98.Pack))
+        function Test-JunctionTraversable([string]$ScriptPath) { return $false }
+        $e = Invoke-Entry @('-Archive', $r98.Pack)
+        Check '7x: an untraversable junction keeps a shortcut that already targets repo\current (PASS)' ($e.Rc -eq 0 -and $e.Last -like 'PASS: *' -and ($e.Out -match 'shortcut: kept').Count -eq 1) "rc=$($e.Rc) last='$($e.Last)'"
+        Remove-Item -LiteralPath (Join-Path $hx.Home 'Desktop\Ship of Tools.lnk') -Force
+        $e = Invoke-Entry @('-Archive', $r98.Pack)
+        Check '7x: with no such shortcut it is ONE STEP LEFT to run this again at the desk' ($e.Rc -eq 0 -and $e.Last -like 'ONE STEP LEFT: run this again at the desk, not over ssh*') "rc=$($e.Rc) last='$($e.Last)'"
+        function Test-JunctionTraversable([string]$ScriptPath) { return (Test-Path -LiteralPath $ScriptPath) }
     }
 } catch {
     Check '7: section ran' $false $_.Exception.Message
