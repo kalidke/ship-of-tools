@@ -16,7 +16,7 @@ If `~/.local/share/sot/install.json` exists (use `--prefix <dir>` or `SOT_PREFIX
 bash ~/.local/share/sot/repo/current/scripts/install.sh
 ```
 
-With no options it follows the channel the machine already runs, keeps the role the install recorded, and never moves
+With no options it follows the channel the machine already runs, takes the role from hosts.toml's entry for this computer, else a role flag, else what the install recorded, and never moves
 backwards. Read its **last line** and tell the human:
 
 - `PASS: Ship of Tools <v> at <short> on this computer`: done.

@@ -20,8 +20,8 @@ bash ~/.local/share/sot/repo/current/scripts/install.sh
 
 (`--prefix <dir>` or `SOT_PREFIX` if the install is not under `~/.local/share/sot`.) With no `--version` it follows the
 channel this computer already runs: a stable release takes the latest stable release; a pre-release takes the newest
-published release of any kind; and it keeps the role the install recorded, so it needs no `--local`, `--backend` or
-`--be-only`. It never moves the install backwards unless told (`--version vX.Y.Z` names the target; an older one is then
+published release of any kind. The role is `hosts.toml`'s entry for this computer first (it wins over a role flag), then
+the role flag, then what the install recorded, so an update needs no `--local`, `--backend` or `--be-only`. It never moves the install backwards unless told (`--version vX.Y.Z` names the target; an older one is then
 said to be older and installed). It ends with exactly one line; read that line, and act on it:
 
 - `PASS: Ship of Tools <v> at <short> on this computer`: done. Say so.
@@ -185,8 +185,8 @@ cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launc
 ```
 
 - **A schema-1 manifest** → this is an UPGRADE: "Update this computer" at the top
-  of this page. Role is derived fresh each run (the declared list, else the
-  role flag, else what the manifest records: its `daemon`/`frontend` bits, its
+  of this page. Role is derived fresh each run (the declared list first, which wins over a
+  role flag; then the role flag; then what the manifest records: its `daemon`/`frontend` bits, its
   `service`, its `hub`, and a remote install's alias from its wrapper) — so an
   update needs no role flag; the installer also reads `daemon` and `service`
   back, so a run never records less than they say under a declared topology

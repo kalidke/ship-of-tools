@@ -26,8 +26,11 @@ launcher is older than release candidate 9.13 or no window is up to be told, or 
 over ssh; with a current launcher running, the entry asks it to converge and waits for it, and your sessions keep running.
 
 With no options it moves to the newest release on the channel the machine already runs (a stable release follows the
-stable releases; a release candidate follows the candidates), keeps the role the install recorded, and never moves the
-install backwards. It ends with exactly one line:
+stable releases; a release candidate follows the candidates), and never moves the install backwards. The role is decided
+in this order: `hosts.toml`'s entry for this computer first (it wins over a role flag); then the role flag, used only when
+the topology names no entry; then the role the install recorded, used only when there is no flag either. An update
+therefore needs no role flag. On Windows there is no role flag: the topology entry says whether the box runs a daemon,
+else the install's recorded `daemon` bit does. It ends with exactly one line:
 
 | Last line | Meaning |
 |-----------|---------|
@@ -102,7 +105,9 @@ and the resource tree, and changes in it are not carried to the next version.
   moves you *back* to an older tag. A run that names what to install (`--version`, `--archive`) pins the install:
   `install.json` records `"pinned": true` and the daily check and the window's own check leave it alone, so a downgrade is
   not undone the next morning. The update status says "pinned at <version>: automatic updates stay off for this install
-  until a run that names no version". A run that names no version removes the pin.
+  until a run that names no version". A run that names no version removes the pin, and an `install.json` with no pin field (every install made before the
+  field existed) is unpinned and follows its channel. Running the version a machine already runs, by name, is how a machine
+  is pinned in place: when its daemon already answers as that version the run writes the pin and restarts nothing.
 - **Automatic rollback.** Applying a staged update is an offline pointer flip done by `sot-apply`, which records the
   previous install as *last good*. The `--local` launcher runs `sot-apply --rollback` if the frontend exits with an error
   within 10 seconds twice in the 30 minutes after an update. Windows rolls back after a single such exit within two hours

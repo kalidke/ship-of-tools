@@ -191,7 +191,9 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   `SOT_INSTALL_DAEMON_WAIT_S` by the clock. A run that names what to install (`-Version`, `-Archive`; `install.sh`'s
   `--version`, `--archive`) pins the install: `install.json` records `"pinned": true`, the updaters' arm guards
   (`InstalledBuild::admits`) never arm over it ("pinned at <v>: automatic updates stay off for this install until a run
-  that names no version"), and a run that names none removes the pin. `tests/test-install-entry.ps1` pins all of it.
+  that names no version"), and a run that names none removes the pin (a record with no pin field is unpinned). A named run of the version already
+  installed, with the daemon answering as it, is a repair run on both entries: it writes the pin and stages, applies and
+  restarts nothing. `tests/test-install-entry.ps1` pins all of it.
 - Entry-point paths are an interface and do not move, and neither do the option names of `install.sh` (`--version`,
   `--archive`, `--local`, `--backend`, `--be-only`, `--prefix`, `--hub`, `--no-service`, `--force-role-change`) or of
   `install.ps1` (`-Version`, `-Archive`, `-Hub`, `-Prefix`, `-RestartDaemon`); a new option is added, never renamed: an agent's instructions name
