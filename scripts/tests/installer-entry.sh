@@ -60,7 +60,7 @@ case "$1 $2" in
     "session-socket-path sot"|"session-socket-path ") echo "$CTL/sot.sock"; exit 0 ;;
     "update direction") if [ -f "$CTL/direction" ]; then f direction; exit 0; fi; exit 1 ;;
     "update repls") f repls-out; f repls-err >&2; rc repls-rc 0 ;;
-    "same-version --endpoint") f same-out; rc same-rc 2 ;;
+    "same-version --endpoint") f same-out; f same-err >&2; rc same-rc 2 ;;
     "stdio-bridge --endpoint") exit 0 ;;
 esac
 exit 0
@@ -304,6 +304,42 @@ starts_with "and it is ONE STEP LEFT, by hand since this install has no launcher
 check "and it is not restarted: no systemctl restart" "0" "$(count_in "$d/ctl/systemctl.log" 'restart')"
 
 # ---------------------------------------------------------------------------
+case_start "entry_never_reads_a_running_daemon_that_cannot_be_told_as_none"
+# A daemon runs when its unit is active or a process of this account runs with argv0 PREFIX/bin/sotd, never because a
+# socket file exists. One that runs and cannot be told its version (same-version exits 2) is unknown: the ask stops the
+# run with sotd's line and changes nothing, and the end check beside it is not a PASS.
+WHY='sotd same-version: no answer within 5 s'
+d="$WORK/unk-proc"; entry_fixture "$d"; P="$d/home/.local/share/sot"
+entry_record "$d" 9.9.8 1 0 none
+printf '%s\n' "$WHY" > "$d/ctl/same-err"; printf '4243 sotd %s/bin/sotd --socket %s/ctl/sot.sock\n4244 sotd /elsewhere/bin/sotd\n' "$P" "$d" > "$d/ctl/ps"
+check "the daemon of this install is found by argv0 alone" "4243" "$(CTL="$d/ctl" PATH="$d/stubs:$ENTRY_TOOLS" installer_daemon_running "$P" | tr '\n' ' ' | sed 's/ $//')"
+before="$(entry_prefix_tree "$d")"
+entry_archive "$d" --be-only --no-service
+check "a process that runs and cannot be told: exit 2, one verdict, the socket and sotd's line, nothing changed" "2 1 FAIL: daemon: a daemon runs on $d/ctl/sot.sock and could not be told its version ($WHY) $before" "$ENTRY_RC $(printf '%s\n' "$ENTRY_OUT" | grep -c -E '^(PASS|FAIL|ONE STEP LEFT):' || true) $ENTRY_LAST $(entry_prefix_tree "$d")"
+# No process, a stale socket file a crash left, and an answer of 2: none, as before.
+d="$WORK/unk-stale"; entry_fixture "$d"; entry_record "$d" 9.9.8 1 0 none
+printf '%s\n' "$WHY" > "$d/ctl/same-err"; : > "$d/ctl/sot.sock"
+entry_archive "$d" --be-only --no-service
+check "a stale socket file and no process is no daemon: the run goes on to PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
+# An active unit beside the same silence: the ask stops the run, --restart-daemon answers it, and the end check names
+# the daemon that runs and cannot be told (never "no daemon answers").
+d="$WORK/unk-unit"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; printf '%s\n' "$WHY" > "$d/ctl/same-err"
+before="$(entry_prefix_tree "$d")"
+entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only
+check "an active unit that cannot be told: exit 2, sotd's line, the way to answer, nothing changed or restarted" "2 1 1 $before 0" "$ENTRY_RC $(said "FAIL: daemon: a daemon runs on $d/ctl/sot.sock and could not be told its version ($WHY)") $(said 're-run with --restart-daemon') $(entry_prefix_tree "$d") $(count_in "$d/ctl/systemctl.log" 'try-restart')"
+entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only --restart-daemon
+check "--restart-daemon restarts the unit, and a daemon still silent ends FAIL daemon, never PASS" "1 1" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart')"
+check "the end check says the daemon runs and cannot be told" "FAIL: daemon: sotd.service is active, but the daemon on $d/ctl/sot.sock could not be told its version ($WHY); see journalctl --user -u sotd.service; pinned at 9.9.9: automatic updates stay off until a run that names no version" "$ENTRY_LAST"
+# With no unit, a daemon that appears during the run (the comm refresh starts it) and cannot be told is a FAIL at the end.
+d="$WORK/unk-after"; entry_fixture "$d"; P="$d/home/.local/share/sot"
+entry_record "$d" 9.9.8 1 0 none
+printf '%s\n' "$WHY" > "$d/ctl/same-err"
+printf 'printf "4243 sotd %%s/.local/share/sot/bin/sotd\\n" "$HOME" > "$CTL/ps"\n' > "$d/ctl/hook"
+entry_archive "$d" --be-only --no-service
+check "a daemon that runs after the install and cannot be told is FAIL daemon" "1 FAIL: daemon: a daemon runs on $d/ctl/sot.sock and could not be told its version ($WHY); pinned at 9.9.9: automatic updates stay off until a run that names no version" "$ENTRY_RC $ENTRY_LAST"
+
+# ---------------------------------------------------------------------------
 case_start "entry_asks_before_it_restarts_a_daemon_with_a_live_repl"
 # An owned unit on another version is restarted by the update. When the daemon says a row's REPL is ready, the run
 # stops first, names the rows and changes nothing; --restart-daemon is the answer yes. A daemon of this version is
@@ -387,7 +423,7 @@ case_start "entry_names_a_window_that_runs_the_old_version"
 # A window of this account, found before the swap, is ONE STEP LEFT when the version changed, and nothing on a repair run.
 d="$WORK/win"; entry_fixture "$d"; P="$d/home/.local/share/sot"
 entry_record "$d" 9.9.8 1 1 none
-printf '4242 sot %s/bin/sot --socket /x/sot.sock\n4243 sotd %s/bin/sotd --socket /x\n4244 sot /elsewhere/bin/sot\n' "$P" "$P" > "$d/ctl/ps"
+printf '4242 sot %s/bin/sot --socket /x/sot.sock\n4243 sotd %s/bin/sotd --socket /x\n4244 sot /elsewhere/bin/sot\n' "$P" "$P" > "$d/ctl/ps"; printf '0\n' > "$d/ctl/same-rc"
 check "the windows of this install are found by argv0 alone" "4242" "$(CTL="$d/ctl" PATH="$d/stubs:$ENTRY_TOOLS" installer_windows_running "$P" | tr '\n' ' ' | sed 's/ $//')"
 entry_archive "$d" --no-service
 check "a window on the old version: ONE STEP LEFT, with the pin in the line" "0 ONE STEP LEFT: quit Ship of Tools and start it again: its window still runs 9.9.8; pinned at 9.9.9: automatic updates stay off until a run that names no version" "$ENTRY_RC $ENTRY_LAST"
@@ -545,11 +581,12 @@ printf '2\n' > "$d/ctl/same-rc"
 entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only
 starts_with "a restart after which nothing answers: FAIL: daemon" "FAIL: daemon:" "$ENTRY_LAST"
 check "and the verdict is the only one" "1" "$(printf '%s\n' "$ENTRY_OUT" | grep -c -E '^(PASS|FAIL|ONE STEP LEFT):' || true)"
-# A unit that is active but whose daemon cannot be told (same-version exit 2) is not restarted, and is not PASS.
+# A unit that is active but whose daemon cannot be told (same-version exit 2) is unknown: the ask stops the run before
+# anything is restarted (entry_never_reads_a_running_daemon_that_cannot_be_told_as_none has the rest).
 d="$WORK/ver-told"; entry_fixture "$d"
 entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; printf '2\n' > "$d/ctl/same-rc"
 entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only
-check "an active unit whose daemon cannot be told: not restarted, exit 1" "0 1" "$(count_in "$d/ctl/systemctl.log" 'try-restart') $ENTRY_RC"
+check "an active unit whose daemon cannot be told: not restarted, exit 2" "0 2" "$(count_in "$d/ctl/systemctl.log" 'try-restart') $ENTRY_RC"
 starts_with "and FAIL: daemon" "FAIL: daemon:" "$ENTRY_LAST"
 # A unit the run starts: the daemon must answer after enable --now.
 d="$WORK/ver-fresh"; entry_fixture "$d"
@@ -730,12 +767,8 @@ for f in agents/claude/sot-install/SKILL.md docs/INSTALL-AGENT.md docs/src/start
     check "$f: every paragraph that names a version to run with says it pins" "0" "$(awk -v RS= '/(--version|-Version) (<|v[0-9X])/ && !/pin/ { n++ } END { print n + 0 }' "$ENTRY_SRC/$f")"
 done
 # The check itself: every spelling of a routine version is caught, and the marked line is not.
-printf '%s\n' \
-    'curl -fsSL .../install.sh | bash -s -- --local --version v0.6.6' \
-    'powershell -File install.ps1 -Version $tag' \
-    'bash install.sh --version="v0.6.6"' \
-    'bash -s -- --version v0.6.6 --hub rig' \
-    "run install.ps1 with -Version <tag>, the person's choice, which pins" > "$WORK/version-lines.txt"
+printf '%s\n' 'curl -fsSL .../install.sh | bash -s -- --local --version v0.6.6' 'powershell -File install.ps1 -Version $tag' \
+    'bash install.sh --version="v0.6.6"' 'bash -s -- --version v0.6.6 --hub rig' "run install.ps1 with -Version <tag>, the person's choice, which pins" > "$WORK/version-lines.txt"
 check "the check catches -Version \$tag, --version=\"v..\", --version v.. and bash -s forms, and passes the person's choice" "4" "$(version_lines "$WORK/version-lines.txt" | wc -l | tr -d ' ')"
 check "and none says to run the fetched installer with -Version <tag>" "0" "$(cat "$ENTRY_SRC/docs/INSTALL-AGENT.md" "$ENTRY_SRC/agents/claude/sot-install/SKILL.md" "$ENTRY_SRC/docs/src/start/install.md" | grep -c -F 'with `-Version <tag>`' || true)"
 

@@ -476,13 +476,16 @@ installer_launcher_kind() {  # <backend alias, or empty> <plan lists another dae
     if [ -n "$1" ] || [ "$2" = yes ]; then printf remote; else printf all-in-one; fi
 }
 
-# The ids of this account's running windows of the install at PREFIX: its `sot` process's argv0 is PREFIX/bin/sot.
-installer_windows_running() {  # <prefix>
-    { ps -u "$(id -u)" -o pid=,comm=,args= 2>/dev/null || true; } | PFX="$1/bin/sot" awk '
-        { n = $2; sub(/.*\//, "", n) } n != "sot" { next }
+# The ids of this account's running processes named NAME whose argv0 is PATH.
+installer_process_at() {  # <path> <name>
+    { ps -u "$(id -u)" -o pid=,comm=,args= 2>/dev/null || true; } | PFX="$1" NAME="$2" awk '
+        { n = $2; sub(/.*\//, "", n) } n != ENVIRON["NAME"] { next }
         { args = $0; sub(/^ *[0-9]+ +[^ ]+ +/, "", args); split(args, w, " ") }
         w[1] == ENVIRON["PFX"] { print $1 }'
 }
+# The windows of the install at PREFIX (argv0 is PREFIX/bin/sot), and its daemon's process (argv0 is PREFIX/bin/sotd).
+installer_windows_running() { installer_process_at "$1/bin/sot" sot; }  # <prefix>
+installer_daemon_running() { installer_process_at "$1/bin/sotd" sotd; }  # <prefix>
 
 # The one verdict line a run ends with: FAIL (the first failed check, "<check>: <detail>"), else ONE STEP LEFT (the
 # steps that remain, joined), else PASS. A run that pinned the install (the fifth argument is the version) ends every
@@ -498,21 +501,29 @@ installer_verdict() {  # <version> <short commit> <fail> <steps> [pinned version
     fi
 }
 
-# What a run knows of the daemon on SOCKET, asked of the target's own `sotd same-version`: "none" (nothing answers), "current"
-# (it runs the target), "other" (it runs another version) or "held" (another version, and a window holds it).
-installer_daemon_state() {  # <sotd> <socket>
+# What a run knows of the daemon on SOCKET, asked of the target's own `sotd same-version`: "current" (it runs the target),
+# "other" (it runs another version), "held" (another version, and a window holds it), else "unknown" when RUNS is 1 (a daemon
+# runs, by its unit or its process, and cannot be told: never read as none) or "none" (nothing runs, whatever a stale socket
+# file says).
+installer_daemon_state() {  # <sotd> <socket> [<runs 0|1>]
     local rc=0
     "$1" same-version --endpoint "unix:$2" >/dev/null 2>&1 || rc=$?
-    case "$rc" in 0) printf current ;; 3) printf other ;; 4) printf held ;; *) printf none ;; esac
+    case "$rc" in 0) printf current ;; 3) printf other ;; 4) printf held ;; *) if [ "${3:-0}" = 1 ]; then printf unknown; else printf none; fi ;; esac
+}
+# The one line sotd gives for why it could not tell the version of the daemon on SOCKET.
+installer_daemon_why() {  # <sotd> <socket>
+    local why
+    why="$("$1" same-version --endpoint "unix:$2" 2>&1 >/dev/null | tail -1)" || true
+    printf '%s' "${why:-sotd same-version gave no reason}"
 }
 
 # The daemon's state once it has had up to SECONDS (by the clock, so a slow ask counts) to answer as the target: "current" as soon as it does, else what the last
 # ask said. HELD-OK 1 also stops the wait at "held" (a unit this run did not restart, which a window keeps on its version).
-installer_daemon_wait() {  # <sotd> <socket> <seconds> <held-ok 0|1>
+installer_daemon_wait() {  # <sotd> <socket> <seconds> <held-ok 0|1> [<runs 0|1>]
     local t0 st
     t0="$(date +%s)"
     while :; do
-        st="$(installer_daemon_state "$1" "$2")"
+        st="$(installer_daemon_state "$1" "$2" "${5:-0}")"
         [ "$st" != current ] || break
         if [ "$st" = held ] && [ "$4" = 1 ]; then break; fi
         [ $(( $(date +%s) - t0 )) -lt "$3" ] || break
@@ -1271,10 +1282,25 @@ DAEMON_BEFORE=none
 UNIT_RUNS=0
 LIVE_ROWS="" LIVE_PLUTO=0 ROWS_UNKNOWN=0
 if [ "$WANT_DAEMON" = 1 ]; then
-    DAEMON_BEFORE="$(installer_daemon_state "$BINDIR/sotd" "$DEFAULT_SOCKET")"
     if [ "$OS" = Linux ] && [ "$NO_SERVICE" = 0 ] && systemctl --user is-active sotd.service >/dev/null 2>&1; then UNIT_RUNS=1; fi
+    DAEMON_RUNS="$UNIT_RUNS"
+    [ -z "$(installer_daemon_running "$PREFIX")" ] || DAEMON_RUNS=1
+    DAEMON_BEFORE="$(installer_daemon_state "$BINDIR/sotd" "$DEFAULT_SOCKET" "$DAEMON_RUNS")"
 fi
 WINDOWS_BEFORE="$(installer_windows_running "$PREFIX")"
+# A daemon that runs and cannot be told its version may be any version: the ask fails closed, with sotd's line. The
+# unit alone can be restarted by the run, so --restart-daemon answers it there and nowhere else.
+if [ "$DAEMON_BEFORE" = unknown ]; then
+    DAEMON_WHY="$(installer_daemon_why "$BINDIR/sotd" "$DEFAULT_SOCKET")"
+    if [ "$UNIT_RUNS" = 1 ] && [ "$RESTART_DAEMON" = 1 ]; then
+        say "note: the daemon on $DEFAULT_SOCKET could not be told its version ($DAEMON_WHY); restarting sotd.service ends any live REPL or Pluto notebook (--restart-daemon)"
+    else
+        hint="Find why it does not answer, or stop it, then run this again."
+        [ "$UNIT_RUNS" = 0 ] || hint="Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); ask whoever uses this computer, then re-run with --restart-daemon."
+        printf '       Nothing under the install was changed. %s\n' "$hint" >&2
+        fail 2 "a daemon runs on $DEFAULT_SOCKET and could not be told its version ($DAEMON_WHY)"
+    fi
+fi
 if [ "$DAEMON_BEFORE" = other ] || [ "$DAEMON_BEFORE" = held ]; then
     WILL_RESTART=0
     if [ "$UNIT_RUNS" = 1 ] && [ "$DAEMON_BEFORE" = other ]; then WILL_RESTART=1; fi
@@ -1653,7 +1679,7 @@ fi
 # (macOS / --no-service): the step at the end names the command, the skew and the rows.
 STEP=restart
 RESTARTED=0
-if [ "$UNIT_RUNS" = 1 ] && [ "$DAEMON_BEFORE" = other ]; then
+if [ "$UNIT_RUNS" = 1 ] && { [ "$DAEMON_BEFORE" = other ] || [ "$DAEMON_BEFORE" = unknown ]; }; then
     say "restarting sotd to pick up the new version"
     systemctl --user try-restart sotd.service || true
     RESTARTED=1
@@ -1719,11 +1745,12 @@ if [ "$WANT_DAEMON" = 1 ]; then
         held_ok=0
         if [ "$UNIT_RUNS" = 1 ] && [ "$RESTARTED" = 0 ]; then held_ok=1; fi
         if systemctl --user is-active sotd.service >/dev/null 2>&1; then
-            DAEMON_AFTER="$(installer_daemon_wait "$PREFIX/bin/sotd" "$DEFAULT_SOCKET" "${SOT_INSTALL_RESTART_WAIT_S:-30}" "$held_ok")"
+            DAEMON_AFTER="$(installer_daemon_wait "$PREFIX/bin/sotd" "$DEFAULT_SOCKET" "${SOT_INSTALL_RESTART_WAIT_S:-30}" "$held_ok" 1)"
             case "$DAEMON_AFTER" in
                 current) ;;
                 held) [ "$held_ok" = 1 ] || verdict_fail daemon "sotd.service is active, but the daemon on $DEFAULT_SOCKET still runs another version, held by a window; see journalctl --user -u sotd.service" ;;
                 other) verdict_fail daemon "sotd.service is active, but the daemon on $DEFAULT_SOCKET still runs another version, not $VER; see journalctl --user -u sotd.service" ;;
+                unknown) verdict_fail daemon "sotd.service is active, but the daemon on $DEFAULT_SOCKET could not be told its version ($(installer_daemon_why "$PREFIX/bin/sotd" "$DEFAULT_SOCKET")); see journalctl --user -u sotd.service" ;;
                 *) verdict_fail daemon "sotd.service is active, but no daemon answers on $DEFAULT_SOCKET; see journalctl --user -u sotd.service" ;;
             esac
         elif [ "$PIN_EXCLUDES" = 1 ]; then
@@ -1734,7 +1761,10 @@ if [ "$WANT_DAEMON" = 1 ]; then
             verdict_fail daemon "sotd.service is not running after this run enabled it; see journalctl --user -u sotd.service"
         fi
     else
-        DAEMON_AFTER="$(installer_daemon_state "$PREFIX/bin/sotd" "$DEFAULT_SOCKET")"
+        DAEMON_RUNS=0
+        [ -z "$(installer_daemon_running "$PREFIX")" ] || DAEMON_RUNS=1
+        DAEMON_AFTER="$(installer_daemon_state "$PREFIX/bin/sotd" "$DEFAULT_SOCKET" "$DAEMON_RUNS")"
+        [ "$DAEMON_AFTER" != unknown ] || verdict_fail daemon "a daemon runs on $DEFAULT_SOCKET and could not be told its version ($(installer_daemon_why "$PREFIX/bin/sotd" "$DEFAULT_SOCKET"))"
     fi
 fi
 CHANGED=1

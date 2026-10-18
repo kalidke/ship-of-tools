@@ -49,9 +49,13 @@ Three `FAIL` lines are questions rather than faults:
   could read (a v0.6.5 daemon refuses the question, and a daemon older than the Pluto field cannot say whether its Pluto
   server is running, so the first update from either pays one flag). Updating restarts the backend, which ends those REPLs'
   and notebooks' variables (the rows and their agents keep running). Nothing under the install was changed. Run it again
-  with `--restart-daemon` (Windows: `-RestartDaemon`) when that is fine. On Windows, a daemon that is running but cannot be
-  told its version (it does not answer, or refuses the question) is treated the same way: the run stops and asks, and a
-  daemon that already runs the target version is asked too before anything stops it.
+  with `--restart-daemon` (Windows: `-RestartDaemon`) when that is fine. A daemon that is running but cannot be told its
+  version (it does not answer, or refuses the question) is treated the same way: the run stops with `sotd`'s own line and
+  changes nothing, and the end check beside it is a `FAIL`, never a `PASS`. A daemon runs when `sotd.service` is active
+  (Linux) or a process of this account runs `<prefix>/bin/sotd` (Windows: its pipe is listed or a process runs from
+  `bin\sotd.exe`); a socket file alone, which a crash leaves behind, is no daemon. On Linux `--restart-daemon` answers it
+  for the unit and a daemon the run cannot restart is stopped by hand; on Windows a daemon that already runs the target
+  version is asked too before anything stops it.
 - `target:` says the machine runs a build of the line (a `+` in its version). Install a pack of the line with
   `--archive <folder>`, a folder `scripts/pack-build.sh` packed; that runs the `install.sh` of the checkout that made the
   pack, not the installed one. A release named with `--version` is usually older than a build of the line and moves the

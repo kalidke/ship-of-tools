@@ -72,6 +72,9 @@ and the launch path fails open: no update step can stop a window from starting.
   live or the Pluto server is running, or the daemon cannot be asked in full (a daemon older than the Pluto field cannot
   say), the run stops first and asks for `--restart-daemon`, changing nothing under the install; a stop for a daemon that
   could not be asked carries `sotd update repls`' one stderr line as its reason and names the REPL rows it could read. A
+  daemon runs when its unit is active or a process of this account runs `<prefix>/bin/sotd` (never a socket file alone);
+  one that runs and `sotd same-version` cannot tell is `unknown`: the run stops (exit 2) with sotd's line before anything
+  changes (`--restart-daemon` answers it for the unit), and the end check beside it is a FAIL, as on Windows. A
   held unit and a launcher-started daemon are not restarted: the
   `ONE STEP LEFT` names the live REPLs, the running Pluto server and the command that fits (the launcher, `systemctl --user restart sotd.service`, or by hand), and says the
   old daemon runs beside the new `repo/current` and `bin/sot-capsule` until then. A box the topology plan names, with
