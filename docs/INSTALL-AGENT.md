@@ -22,7 +22,9 @@ bash ~/.local/share/sot/repo/current/scripts/install.sh
 channel this computer already runs: a stable release takes the latest stable release; a pre-release takes the newest
 published release of any kind. The role is `hosts.toml`'s entry for this computer first (it wins over a role flag), then
 the role flag, then what the install recorded, so an update needs no `--local`, `--backend` or `--be-only`. It never moves the install backwards unless told (`--version vX.Y.Z` names the target; an older one is then
-said to be older and installed). It ends with exactly one line; read that line, and act on it:
+said to be older and installed, and a run that names a version pins the install). A run can take many minutes (the
+Julia environments are prepared), longer than a tool call's default timeout: run it in the background or with the
+longest timeout the tool allows. It ends with exactly one line; read the last line of its output, and act on it:
 
 - `PASS: Ship of Tools <v> at <short> on this computer`: done. Say so.
 - `ONE STEP LEFT: <step>`: the install is whole and one thing remains that only the human can do (usually: quit the
@@ -47,7 +49,8 @@ An install old enough to predate this entry has an `install.sh` that does not en
 (`grep -q 'ONE STEP LEFT' ~/.local/share/sot/repo/current/scripts/install.sh` says which). Read `version` in its
 `install.json` first: a `+` in it is the `target:` case above, so ask the human; otherwise follow the channel (a stable
 version takes the latest stable release, a pre-release the newest published one), tell the human the version, and run
-`curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash -s -- --version <tag>`.
+that tag's installer with no version: `curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash`.
+It follows the same channel itself, so the install stays unpinned and its automatic updates stay on (`--version` would pin it).
 A source checkout (no `install.json`) updates by `git pull` and a rebuild. With no install here at all, go on to the next
 sections.
 
@@ -64,8 +67,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$p\repo\versions\$t\scripts
 
 It follows the channel this computer already runs, exactly as the Unix installer does (a stable release takes the latest
 stable release; a pre-release the newest published one; a `+` build stops), and never moves the install backwards unless
-told (`-Version vX.Y.Z` names the target; an older one is then said to be older and installed). It ends with exactly one
-line; read that line, and act on it:
+told (`-Version vX.Y.Z` names the target; an older one is then said to be older and installed, and a run that names a
+version pins the install). A run can take many minutes (the stage prepares Julia, and a converge waits up to 30 minutes
+for the window), longer than a tool call's default timeout: run it in the background or with the longest timeout the tool
+allows. It ends with exactly one line; read the last line of its output, and act on it:
 
 - `PASS: Ship of Tools <v> at <short> on this computer`: done. Say so.
 - `ONE STEP LEFT: <step>`: the install is whole or the update is armed, and one thing remains that only the human can do:
@@ -82,13 +87,13 @@ line; read that line, and act on it:
 `-Archive` runs the install.ps1 of the checkout that made the pack, not the installed one:
 `powershell -NoProfile -ExecutionPolicy Bypass -File <that checkout>\scripts\install.ps1 -Archive <folder>`. A run that
 names what to install (`-Version`, `-Archive`) pins the install: automatic updates stay off until a run that names no
-version. If a run stops half way (a lost connection, a Ctrl-C), run it again: a repeat is a repair run that ends in `PASS`.
+version, and the PASS or ONE STEP LEFT line ends "pinned at <v>" (tell the human when it does). If a run stops half way (a lost connection, a Ctrl-C), run it again: a repeat is a repair run that ends in `PASS`.
 
 An install that predates `install.ps1` has no such file in its checkout. Read `version` in its `install.json` first: a `+`
 in it is the `target:` case above, so ask the human; otherwise tell the human the version (a stable one takes the latest
 stable release, a pre-release the newest published one) and fetch that tag's installer:
 `curl.exe -fsSL -o "$env:TEMP\sot-install.ps1" https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.ps1`,
-then run it with `-Version <tag>`.
+then run it with no version, so the install stays unpinned: its prelude follows the same channel.
 
 ## Which install is this?
 
@@ -281,15 +286,20 @@ quote these facts to the human and wait for an explicit yes:
 ## 2b. Windows frontend → remote backend
 
 Windows is a first-class *frontend* host (the backend stays on Linux). `scripts\install.ps1` is the whole install, and
-the update (the first section above). A fresh box has no checkout yet, so fetch the installer of the release you chose:
+the update (the first section above). A fresh box has no checkout yet, so fetch the installer of the latest stable release
+(`<tag>`) and run it with no version; it takes the latest stable release itself:
 
 ```powershell
 curl.exe -fsSL -o "$env:TEMP\sot-install.ps1" https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\sot-install.ps1" -Version <tag> -Hub <hub-ssh-alias>
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\sot-install.ps1" -Hub <hub-ssh-alias>
 ```
 
+While the latest stable release has no `scripts/install.ps1` (the fetch fails, or the run ends `FAIL: target:`), the person
+may choose a pre-release instead: fetch that tag's installer and run it with `-Version <rc tag>`, which pins the install,
+so its automatic updates stay off until a run that names no version. Never name a version the person did not choose.
+
 (It needs git and curl.exe on PATH; Julia and jq are for comm and local REPLs, and the last line names the winget command
-when one is missing.) What it does, so you can read its output:
+when one is missing, on a fresh install and on an update alike.) What it does, so you can read its output:
 
 1. **Download and verify.** `sot-<ver>-windows-x86_64.zip`, `SHA256SUMS` and `COMMIT` from the tag's release; the hashes
    are checked, and the three binaries (`sot.exe`, `sotd.exe`, `sot-capsule.exe`) go into `%LOCALAPPDATA%\sot\bin`

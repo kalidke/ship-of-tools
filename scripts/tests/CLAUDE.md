@@ -106,11 +106,16 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-install-entry.ps1`: section 7 of `test-install-layout.ps1` (dot-sourced there, so it runs in the same step), the
   Windows entry `scripts/install.ps1` against stand-ins in a scratch profile: a compiled sot/sotd/sot-capsule per version
   (the daemon questions answered from `SOT_FAKE_*`, every other `sotd` verb handed to the real one), a git origin at one
-  tag per version, a julia and a jq the comm step can run, the network replaced by copies from pack folders. It pins a
-  fresh install and an update from that layout (nothing running: applied here), the repair run, the never-backwards
-  default, the `+` stop, option errors and an interrupt each ending in one verdict line, the live-work ask (rows, the
-  Pluto server, a daemon that cannot be asked), the path choice (a supervisor with and without `code=`, ssh), the daemon
-  the converge restarted answering as the target by the clock, and the pin. `Write-EntryLine` is the output seam.
+  tag per version, a julia (a compiled one at `SOT_JULIA_BIN` for the stage's prepare, a script for the comm step) and a
+  jq, the network replaced by copies from pack folders. It pins the URLs the entry builds (as whole strings) and a
+  prelude run end to end (the child stopped at its first network call by a dead proxy), a fresh install and an update
+  from that layout (nothing running: applied here), the repair run (the pointer dropped, the pin written, nothing
+  downloaded when it names the installed version), the never-backwards default, the `+` stop, option errors and an
+  interrupt each ending in one verdict line, the live-work ask (rows, the Pluto server, a daemon that cannot be asked, a
+  daemon that cannot be told by pipe or by process), the path choice (a supervisor with and without `code=`, the
+  window's launcher code, a desk session or not), the converge to its end with the daemon answering as the target by the
+  clock, the enroll refusal, a box with no Julia, and the four launcher log lines the entry reads. `Write-EntryLine` is
+  the output seam, and `Get-EntrySessionId` the desk-session seam.
 - `test-sot-within.ps1`: the PowerShell scripts' network bounds. `Invoke-SotWithin` (scripts/sot-hosts.ps1, through
   sot-lease.ps1's `Start-SotRedirected` and `Stop-SotTree`): a stalled command ends at its bound with code 124, with
   every process it started; so does one whose descendant holds its output after it exits; a finished one returns its

@@ -341,8 +341,10 @@ On **Windows** the installer is `scripts/install.ps1` (Windows PowerShell 5.1; i
 no Rust toolchain is needed: it downloads and verifies the release's `sot-<ver>-windows-x86_64.zip`, puts `sot.exe`,
 `sotd.exe` and `sot-capsule.exe` in `%LOCALAPPDATA%\sot\bin`, lays out `repo\base`, `repo\versions\v<ver>` and the
 `repo\current` junction, installs the comm layer, and creates the desktop shortcut (and re-syncs any taskbar pin) that runs
-`repo\current\scripts\launch-sot.ps1`. On a fresh box fetch the installer of the release you chose and run it with `-Version`
-and `-Hub` (the hub's ssh alias); to update, run it again from the installed checkout with no options. It ends with one
+`repo\current\scripts\launch-sot.ps1`. On a fresh box fetch the installer of the latest stable release and run it with `-Hub`
+(the hub's ssh alias) and no version; to update, run it again from the installed checkout with no options. `-Version`
+names a release instead and pins the install, so its automatic updates stay off until a run that names no version (while the
+latest stable release has no `install.ps1`, naming a pre-release is the way in). It ends with one
 `PASS`, `ONE STEP LEFT` or `FAIL` line. Do not point a shortcut at bare `sot.exe`, which skips the launcher's update and
 relaunch handling. The launcher also declares the home folder as the trusted folder prefix in
 `%LOCALAPPDATA%\sot\config\settings.toml` (a `[trust]` table, written once and never rewritten), so a session the daemon

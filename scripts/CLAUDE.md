@@ -141,8 +141,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   `-Archive <folder>` installs a packed folder; ends with one verdict line (see the rule below).
 - `install-shortcut.ps1`: Windows shortcut and taskbar pin; calls the manifest writer. A step of `install.ps1`
   (`-Prefix` passes its prefix); ends with an explicit `exit 0`.
-- `install-manifest.ps1`: writes `install.json` for a Windows install (keeping a recorded `pinned`) and runs the first
-  topology sync.
+- `install-manifest.ps1`: writes `install.json` for a Windows install (`daemon` and `frontend` true, since every Windows
+  box runs its local daemon; keeping a recorded `pinned`) and runs the first topology sync, whose refusal it reports
+  as a warning (the entry reads it).
 - `set-shortcut-aumid.ps1`: stamps the window's AppUserModelID on a shortcut.
 ### Update-apply
 - `sot-apply.sh`: offline apply and rollback of an armed update (Unix).
@@ -179,21 +180,32 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   `ONE STEP LEFT` or `FAIL` line, then an explicit `exit`: the one `try`/`finally` in `Invoke-InstallEntry` prints it,
   Ctrl+C included. The channel, the never-backwards direction (`sotd update direction`, asked of the target's own sotd
   before anything under the prefix changes), the `+` stop and the live-work ask (`sotd update repls`: a live REPL or the
-  Pluto server stops the run with sotd's own reason, `-RestartDaemon` answers it) are install.sh's, in PowerShell. It
-  never traverses `repo\current`: it reads the junction's target and works on `repo\versions\<tag>`, because an ssh
-  session on a box with redirection trust cannot traverse the junction. A fresh install lays down `bin`, `repo\base`,
+  Pluto server stops the run with sotd's own reason, `-RestartDaemon` answers it) are install.sh's, in PowerShell. A
+  daemon runs when its pipe exists or a process runs from `bin\sotd.exe`; one `same-version` cannot tell is `unknown`, so
+  the ask fails closed and the end check is a FAIL, and a daemon of any version, the target's included, is asked before
+  a path stops or restarts it. It reads `repo\current` by its target and works on `repo\versions\<tag>`, because an ssh
+  session on a box with redirection trust cannot traverse the junction; the shortcut probe (`Invoke-Shortcut`, which runs
+  `install-shortcut.ps1` through the junction when this session can) is its one deliberate traversal. A fresh install lays down `bin`, `repo\base`,
   `repo\versions\v<v>` and the junction, then the launcher's `Initialize-InstallLayout` and comm and the shortcut. An
   update stages with the target's own `sotd update stage` and applies by what runs here: a supervisor whose start line
-  carries `code=` gets the converge sentinel and the entry waits for `sot-apply: APPLIED` and `status: DONE`; an older
-  supervisor, or a window with none, leaves the update armed and the step is to quit and start from the shortcut (never a
-  sentinel without a window); with nothing running a desktop session applies it here, and an ssh session leaves it armed
-  with the step to start at the desk. A daemon the converge restarted must answer as the target within
+  carries `code=` gets the converge sentinel (written by the installed checkout's `relaunch-sot.ps1 -Converge`, the one
+  writer) and the entry waits for `sot-apply: APPLIED` and `status: DONE`; an older supervisor, or a window with none,
+  leaves the update armed and the step is to quit and start from the shortcut (never a sentinel without a window); with
+  nothing running a session at the desk (a non-zero session id; an ssh logon runs in session 0) applies it here, and
+  another leaves it armed with the step to start at the desk. The end check compares the supervisor's `code=` with the
+  installed launcher's code id: a window on older launcher code is ONE STEP LEFT. A box with no Julia is a supported
+  state: the stage skips the Julia steps (`rust/backend/src/update.rs` `prepare_julia`) and the run ends ONE STEP LEFT
+  naming `winget install --id Julialang.Juliaup -e`. The stage prints one "staging and preparing" line first and a failed
+  one reports sotd's last line only. `SOT_INSTALL_REPO` names the release repo (default `kalidke/ship-of-tools`). A daemon the converge restarted must answer as the target within
   `SOT_INSTALL_DAEMON_WAIT_S` by the clock. A run that names what to install (`-Version`, `-Archive`; `install.sh`'s
   `--version`, `--archive`) pins the install: `install.json` records `"pinned": true`, the updaters' arm guards
   (`InstalledBuild::admits`) never arm over it ("pinned at <v>: automatic updates stay off for this install until a run
-  that names no version"), and a run that names none removes the pin (a record with no pin field is unpinned). A named run of the version already
-  installed, with the daemon answering as it, is a repair run on both entries: it writes the pin and stages, applies and
-  restarts nothing. `tests/test-install-entry.ps1` pins all of it.
+  that names no version", at the end of the `PASS` and `ONE STEP LEFT` lines of both entries), and a run that names none
+  removes the pin (a record with no pin field is unpinned). A named run of the version already installed, with the daemon
+  answering as it, is a repair run on both entries: it writes the pin, drops any update pointer armed over the install
+  and stages, applies and restarts nothing (on Windows it downloads nothing either). `tests/test-install-entry.ps1` pins
+  the URLs and the prelude, the verdicts, the daemon states, the pointer drop, the window check, the enroll refusal, the
+  Julia outcomes, the converge to its end, and the launcher's log lines it reads.
 - Entry-point paths are an interface and do not move, and neither do the option names of `install.sh` (`--version`,
   `--archive`, `--local`, `--backend`, `--be-only`, `--prefix`, `--hub`, `--no-service`, `--force-role-change`) or of
   `install.ps1` (`-Version`, `-Archive`, `-Hub`, `-Prefix`, `-RestartDaemon`); a new option is added, never renamed: an agent's instructions name
