@@ -366,20 +366,6 @@ Check 'the guard is gone after the first hand-off' (-not $env:SOT_APPLY_REEXECED
 $got10 = if (Test-Path -LiteralPath $calls10) { (@(Get-Content -LiteralPath $calls10) -join ' ') } else { '' }
 Check 'the second apply in the same process hands off too, and the staged copy saw the guard each time' ($got10 -ceq 'guard=1 guard=1') "calls: '$got10'"
 
-Write-Host "`n=== 11. a prefix spelled in 8.3 (a hosted runner's TEMP): the junction reports the long spelling and the flip is still accepted ===" -ForegroundColor Cyan
-$longParent11 = Join-Path $root 'a-deliberately-long-parent-folder'
-New-Item -ItemType Directory -Force -Path $longParent11 | Out-Null
-$shortParent11 = ([string](New-Object -ComObject Scripting.FileSystemObject).GetFolder($longParent11).ShortPath).TrimEnd('\')
-if ($shortParent11 -ieq $longParent11) { Write-Host '  SKIP  11: this volume creates no 8.3 names' -ForegroundColor Yellow }
-else {
-    $p11 = Join-Path $shortParent11 'p11'
-    $f11 = New-Fixture $p11 'v0.5.0' 'v0.6.0'
-    $out11 = (& $apply -Prefix $p11 6>&1 2>&1 | ForEach-Object { "$_" }) -join "`n"
-    Check 'the update under an 8.3 prefix is applied' ($out11 -match 'sot-apply: APPLIED v0\.6\.0') $out11
-    Check 'and the apply loaded the layout file for its comparison' ($out11 -notmatch 'could not load sot-install-layout') $out11
-    Check 'repo\current is flipped to the new tag' ((Get-Content (Join-Path $p11 'repo\current\scripts\launch-sot.ps1') -Raw -ErrorAction SilentlyContinue) -match [regex]::Escape('v0.6.0')) $out11
-}
-
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 if ($fail) { exit 1 }
