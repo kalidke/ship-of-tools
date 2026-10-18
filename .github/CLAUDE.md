@@ -1,6 +1,6 @@
 # .github/: CI and the tag gate (distribution)
 
-The workflows that verify a push to `main` and turn a `v*` tag into published release artifacts. CI is the tag gate, not
+The workflows that verify a push to `main` and turn a `v*` tag into release artifacts on a draft GitHub Release, which the release skill publishes. CI is the tag gate, not
 a pull-request gate: nothing here runs on a pull request except the secret scan. Part of distribution; charter:
 scripts/CLAUDE.md.
 
@@ -62,7 +62,7 @@ scripts/CLAUDE.md.
   version, by version order), the install smokes `install-linux`, `install-macos` and `install-windows` (the entry,
   `scripts/install.sh` or `scripts/install.ps1`, against this run's artifacts: a fresh install and an update from the
   release before, each ending in its PASS line; matrix legs, steps in `scripts/tests/install-smoke.sh` and
-  `.ps1`), then `publish` (`SHA256SUMS`, `COMMIT`, git-cliff notes, the GitHub Release). The notes are cut at a whole line below 120000 bytes, with a link to every change since the previous
+  `.ps1`), then `publish` (`SHA256SUMS`, `COMMIT`, git-cliff notes, the GitHub Release as a draft). The notes are cut at a whole line below 120000 bytes, with a link to every change since the previous
   tag, because GitHub rejects a release body over 125000 characters.
 - `workflows/gitleaks.yml`: a full-history secret scan on push to `main` and on pull requests.
 

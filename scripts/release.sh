@@ -9,7 +9,7 @@
 # suite, then commits `release: vX.Y.Z`, tags `vX.Y.Z`, stamps the line's next
 # -dev version in a commit of its own, and pushes both. The tag push triggers
 # .github/workflows/release.yml, which builds the
-# platform artifacts and publishes the GitHub Release (the julia bundle is
+# platform artifacts and creates the GitHub Release as a draft (the julia bundle is
 # retired — installs clone the repo at the tag; ADR 0030 amendment).
 #
 # --dry-run stamps, shows the diff, and restores — nothing committed.
@@ -233,7 +233,7 @@ fi
 
 # ---- commit, tag, push -----------------------------------------------------
 if [[ $YES -eq 0 ]]; then
-    read -r -p "Push release $TAG and the $NEXT dev stamp to origin (commit + tag -> CI builds + publishes)? [y/N] " ans
+    read -r -p "Push release $TAG and the $NEXT dev stamp to origin (commit + tag -> CI builds and creates the draft release)? [y/N] " ans
     [[ "$ans" == [yY]* ]] || { git restore -- "${STAMPED[@]}"; echo "aborted, restored"; exit 1; }
 fi
 
