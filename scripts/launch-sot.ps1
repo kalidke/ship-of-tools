@@ -435,12 +435,15 @@ Invoke-PendingApply -Handover:$script:reexecd
 # to yet (Initialize-InstallLayout failed to pin a tag).
 # ---------------------------------------------------------------------------
 $pinnedLauncher = Join-Path $repoCurrent 'scripts\launch-sot.ps1'
+# $PSCommandPath is the long spelling of the path this copy was started by, $pinnedLauncher the prefix's own, which an 8.3
+# profile spells short: compared as comparable paths.
+$atPinnedLauncher = (Get-SotComparablePath $pinnedLauncher) -eq (Get-SotComparablePath $PSCommandPath)
 if ((Test-Path -LiteralPath (Join-Path $prefixDir 'install.json')) -and
     -not $env:SOT_LAUNCH_REEXEC -and -not $script:reexecd -and
-    (($pinnedLauncher -ne $PSCommandPath) -or $script:sotJustApplied) -and
+    ((-not $atPinnedLauncher) -or $script:sotJustApplied) -and
     (-not $script:sotPinned -or $script:sotJustApplied) -and
     (Test-Path -LiteralPath $pinnedLauncher)) {
-    $handoverReason = if ($pinnedLauncher -ne $PSCommandPath) { 'migration' } else { 'post-apply refresh' }
+    $handoverReason = if (-not $atPinnedLauncher) { 'migration' } else { 'post-apply refresh' }
     Write-SupLog "${handoverReason}: handing over to $pinnedLauncher"
     $shortcutScript = Join-Path $PSScriptRoot 'install-shortcut.ps1'
     if (Test-Path -LiteralPath $shortcutScript) {

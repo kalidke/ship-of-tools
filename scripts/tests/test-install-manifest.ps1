@@ -88,6 +88,11 @@ class P {
         if ($commit) { & $script -Prefix $prefix -Repo $clone -Commit $commit 6>&1 2>&1 | Out-Null }
         else { & $script -Prefix $prefix -Repo $clone 6>&1 2>&1 | Out-Null }
     }
+    # The lines a run prints (information stream included), as one string.
+    function Get-ManifestOutput([string]$prefix, [string]$commit) {
+        if ($commit) { return ((& $script -Prefix $prefix -Repo $clone -Commit $commit 6>&1 2>&1) | ForEach-Object { "$_" }) -join "`n" }
+        return ((& $script -Prefix $prefix -Repo $clone 6>&1 2>&1) | ForEach-Object { "$_" }) -join "`n"
+    }
     function Check-Exit([string]$name) { Check "${name}: exit code 0" ($LASTEXITCODE -eq 0) "got $LASTEXITCODE" }
     function Pointer([string]$prefix) { return (Test-Path -LiteralPath (Join-Path $prefix "updates\$ptrName")) }
     function Manifest([string]$prefix) { return (Get-Content -LiteralPath (Join-Path $prefix 'install.json') -Raw) }
@@ -140,6 +145,11 @@ class P {
     Check 'a + build with no commit (a source checkout) writes none' (-not (Test-Path -LiteralPath (Join-Path $p7 'install.json'))) 'a record was written'
     Invoke-Manifest $p6
     Check 'and a later call with no commit leaves the record it finds' ((Manifest $p6) -match $packCommit) (Manifest $p6)
+    # The line says what happened: a record for this version and a commit is kept, and a source checkout has none to keep.
+    $out6 = Get-ManifestOutput $p6
+    Check 'a + build whose record is already there says it keeps that record, not that none is written' (($out6 -match 'keeping the record that names it') -and ($out6 -notmatch 'no manifest written')) $out6
+    $out7 = Get-ManifestOutput $p7
+    Check 'a source checkout keeps the line: not a release build, no manifest written' (($out7 -match 'is not a release build - no manifest written') -and ($out7 -notmatch 'keeping the record that names it')) $out7
     # The sync is its own concern: a + build with no commit writes no record, and still syncs the hub it is given.
     $srcD = Join-Path $root 'stubd.cs'
     Set-Content -LiteralPath $srcD -Encoding ASCII -Value @'

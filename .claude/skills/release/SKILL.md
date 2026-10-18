@@ -94,7 +94,11 @@ re-run with `git push --atomic origin <branch> vX.Y.Z` once the branch is synced
    **All three platform legs are blocking, macOS included** (`release.yml`
    sets `experimental: false` everywhere and `publish` requires
    `smoke-macos`) — a macOS failure fails the release; fix or revert, don't
-   wave it through.
+   wave it through. The same holds for the install smokes (`install-linux`,
+   `install-macos`, `install-windows`): `publish` requires them, and each runs
+   the installer against this run's artifacts, fresh and as an update from the
+   release before (`scripts/tests/install-smoke.sh`, `install-smoke.ps1`). A
+   leg that fails is an installer or artifact defect to fix, not a flake.
 2. On success, verify the release assets:
    `gh release view vX.Y.Z` must list `sot-<ver>-linux-x86_64.tar.gz`,
    `sot-<ver>-windows-x86_64.zip`, `sot-<ver>-macos-aarch64.tar.gz`,
@@ -110,9 +114,10 @@ re-run with `git push --atomic origin <branch> vX.Y.Z` once the branch is synced
 
 ## Pipeline validation without a tag
 
-`gh workflow run Release` (workflow_dispatch) runs build + julia-check with a
-`0.0.0-ci.<sha>` version and SKIPS publish — use it after editing the workflow
-or before a first-of-its-kind release.
+`gh workflow run Release` (workflow_dispatch) runs build, the smokes, julia-check
+and the install smokes with a `0.0.0-ci.<sha>` artifact name (the binaries carry
+their real `+<sha>` version, which the install smokes read) and SKIPS publish —
+use it after editing the workflow or before a first-of-its-kind release.
 
 ## Hard rules
 

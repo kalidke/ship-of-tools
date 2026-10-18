@@ -501,11 +501,6 @@ function Wait-Converge([string]$LogDir, [string]$Tag, [int]$Seconds, [string]$Re
 }
 
 # ---- the end checks (E6) ---------------------------------------------------------------------------------------------
-# The id of the launcher code in a scripts folder: the launcher's own function, loaded into this function's scope.
-function Get-LauncherCode([string]$ScriptsDir) {
-    . (Join-Path $ScriptsDir 'sot-install-layout.ps1')
-    return (Get-SotLauncherCodeId -ScriptsDir $ScriptsDir)
-}
 function Test-EndState([string]$PrefixDir, $Pack, [string]$Sotd, [string]$Pipe, [string]$LogDir) {
     $script:Step = 'check'
     $v = $Pack.Version; $short = $Pack.Commit.Substring(0, 9)
@@ -522,7 +517,12 @@ function Test-EndState([string]$PrefixDir, $Pack, [string]$Sotd, [string]$Pipe, 
     try { $target = (Get-Item -LiteralPath (Join-Path $PrefixDir 'repo\current') -Force -ErrorAction Stop).Target } catch { }
     $want = Join-Path $PrefixDir "repo\versions\$($Pack.Tag)"
     if (-not $target) { Stop-Entry 'checkout' "$PrefixDir\repo\current is missing or is not a junction" }
-    if ((@($target)[0] -replace '^\\\?\?\\', '') -ine $want) { Stop-Entry 'checkout' "repo\current points at $(@($target)[0]), not $want" }
+    # The target checkout's sot-install-layout.ps1 owns the launcher id and the path comparison (a prefix may be 8.3).
+    $layout = Join-Path $want 'scripts\sot-install-layout.ps1'
+    if (Test-Path -LiteralPath $layout) { . $layout }
+    $got = @($target)[0] -replace '^\\\?\?\\', ''
+    $same = ($got -ieq $want) -or ((Get-Command Get-SotComparablePath -ErrorAction SilentlyContinue) -and ((Get-SotComparablePath $got) -ieq (Get-SotComparablePath $want)))
+    if (-not $same) { Stop-Entry 'checkout' "repo\current points at $got, not $want" }
     if (-not (Test-Path -LiteralPath (Join-Path $want 'scripts\launch-sot.ps1'))) { Stop-Entry 'checkout' "$want holds no launcher" }
     if (Test-Path -LiteralPath (Join-Path $PrefixDir 'updates\pending-windows-x86_64.json')) { Stop-Entry 'pointer' 'an update pointer is still armed after this run' }
     $stamp = Join-Path $(if ($env:SOT_COMM_HOME) { $env:SOT_COMM_HOME } else { Join-Path $env:USERPROFILE '.sot-comm' }) 'VERSION'
@@ -540,7 +540,7 @@ function Test-EndState([string]$PrefixDir, $Pack, [string]$Sotd, [string]$Pipe, 
     # launcher, so one that did not logs an older id, or none).
     $sup = Get-Supervisor $LogDir
     if ($sup) {
-        $wantCode = Get-LauncherCode (Join-Path $want 'scripts')
+        $wantCode = Get-SotLauncherCodeId -ScriptsDir (Join-Path $want 'scripts')
         if ($wantCode -and $sup.Code -ne $wantCode) { Add-Step 'quit Ship of Tools, choose Keep, and start it from the shortcut; the window runs an older launcher' }
     }
     # A daemon the converge restarted is verified by the clock: it answers as the target within the bound, or this is a FAIL.

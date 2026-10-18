@@ -58,8 +58,11 @@ scripts/CLAUDE.md.
 - `workflows/release.yml` ("Release"): a `v*` tag or dispatch (`publish` runs only when the ref is a tag). Jobs: `build`
   (linux, windows and macos targets; the Linux `sotd` and `sot-capsule` are built musl static, with Ubuntu's
   `musl-tools` installed first as the C compiler for sot-log's native launcher), `julia-check`, the three smokes
-  `smoke`, `smoke-windows` and `smoke-macos`, then `publish` (`SHA256SUMS`, `COMMIT`, git-cliff notes, the GitHub
-  Release). The notes are cut at a whole line below 120000 bytes, with a link to every change since the previous
+  `smoke`, `smoke-windows` and `smoke-macos`, `release-before` (the newest published release older than the run's
+  version, by version order), the install smokes `install-linux`, `install-macos` and `install-windows` (the entry,
+  `scripts/install.sh` or `scripts/install.ps1`, against this run's artifacts: a fresh install and an update from the
+  release before, each ending in its PASS line; matrix legs, steps in `scripts/tests/install-smoke.sh` and
+  `.ps1`), then `publish` (`SHA256SUMS`, `COMMIT`, git-cliff notes, the GitHub Release). The notes are cut at a whole line below 120000 bytes, with a link to every change since the previous
   tag, because GitHub rejects a release body over 125000 characters.
 - `workflows/gitleaks.yml`: a full-history secret scan on push to `main` and on pull requests.
 
@@ -114,5 +117,8 @@ scripts/CLAUDE.md.
   the workflow that tests it. Both workflows skip a commit whose message starts `release: v`.
 - Release jobs pin every action by commit SHA, and only `publish` gets `contents: write`: the release is the updater's
   trust root (`workflows/release.yml`).
-- `publish` needs `build`, the three smokes and `julia-check`; the Linux smoke boots the artifact in an ubuntu 20.04
-  container to prove the old-glibc floor.
+- `publish` needs `build`, the three smokes, `julia-check` and the three install smokes; the Linux smoke boots the
+  artifact in an ubuntu 20.04 container to prove the old-glibc floor. The install smokes name their target by
+  `--archive`/`-Archive` (the run's artifacts) and `--version`/`-Version` (the release before), so a dispatch on a
+  branch runs them too, though it never publishes. The Linux ones run in a bare ubuntu 22.04 container with
+  `--no-service` for the backend scenarios (no systemd user manager there).

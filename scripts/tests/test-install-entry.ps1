@@ -134,9 +134,11 @@ exit 0
     $pathNone = "$stubsNone;$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0;$env:SystemRoot;C:\Program Files\Git\cmd;C:\Program Files\Git\mingw64\bin;C:\Program Files\Git\usr\bin"
     $basePath = $savedEnv['PATH']
 
-    function New-Home([string]$Name) {
+    # -Short spells the profile in its 8.3 form, as a hosted runner's TEMP is (junctions report the long form).
+    function New-Home([string]$Name, [switch]$Short) {
         $h = Join-Path $entryRoot $Name
         foreach ($d in @('Desktop', 'AppData\Roaming', 'AppData\Local', 'comm')) { New-Item -ItemType Directory -Force -Path (Join-Path $h $d) | Out-Null }
+        if ($Short) { $h = ([string](New-Object -ComObject Scripting.FileSystemObject).GetFolder($h).ShortPath).TrimEnd('\') }
         $env:USERPROFILE = $h; $env:APPDATA = Join-Path $h 'AppData\Roaming'; $env:LOCALAPPDATA = Join-Path $h 'AppData\Local'
         $env:SOT_COMM_HOME = Join-Path $h 'comm'; $env:PATH = "$stubs;$basePath"; $env:HOME = $h
         foreach ($n in @('SSH_CONNECTION', 'SOT_INSTALL_TAG', 'SOT_INSTALL_IMPLICIT', 'SOT_INSTALL_REPO', 'SOT_FAKE_DAEMON', 'SOT_FAKE_DAEMON_FILE', 'SOT_FAKE_REPLS', 'SOT_FAKE_REPLS_RC', 'SOT_FAKE_SYNC', 'SOT_FAKE_SLEEP', 'HTTPS_PROXY', 'ALL_PROXY')) { [Environment]::SetEnvironmentVariable($n, $null) }
@@ -722,7 +724,30 @@ Write-Host 'sot-local-daemon: stopped'
         $e = Invoke-Entry @('-Archive', $rdev2.Pack, '-Hub', 'rig-hub')
         Check '7a3: an update to another pack of the line whose hub does not list this computer is FAIL enroll' ($e.Rc -eq 1 -and $e.Verdicts -eq 1 -and $e.Last -like "FAIL: enroll: *" -and (Get-Json $hu.Prefix 'commit') -eq $rdev2.Commit) "rc=$($e.Rc) last='$($e.Last)' commit=$(Get-Json $hu.Prefix 'commit'); $(($e.Out | Select-Object -Last 4) -join ' / ')"
     }
-    # 26. A lone install.ps1 (a downloaded file with nothing beside it) installs a pack of the line fresh: the record script
+    # 26. A profile spelled in 8.3 (a hosted runner's TEMP is): the junction reports the long spelling of a correct
+    # install, which the end check must take for the short one it was given.
+    Invoke-Case '7a5' {
+        $hs = New-Home 'a-profile-with-a-long-name' -Short
+        if ($hs.Prefix -notmatch '~') { Write-Host '  SKIP  7a5: this volume creates no 8.3 names' -ForegroundColor Yellow; return }
+        # install.ps1 sees only what its own load of the target checkout's layout file defines: while its three installs run, the
+        # two layout functions this suite dot-sourced into script scope answer "unloaded:" and their input, which no checkout path
+        # equals, so an install whose own load fails cannot borrow them; they are restored afterward.
+        $harness = @{}
+        foreach ($f in @('Get-SotComparablePath', 'Get-SotLauncherCodeId')) { $harness[$f] = (Get-Item -LiteralPath "Function:$f").ScriptBlock }
+        Set-Item -LiteralPath 'Function:script:Get-SotComparablePath' -Value { param([string]$Path) "unloaded:$Path" }
+        Set-Item -LiteralPath 'Function:script:Get-SotLauncherCodeId' -Value { param([Parameter(Mandatory)][string]$ScriptsDir) "unloaded:$ScriptsDir" }
+        try {
+            $e = Invoke-Entry @('-Archive', $r98.Pack)
+            Check '7a5: a fresh install under an 8.3-spelled prefix ends in PASS' ($e.Rc -eq 0 -and $e.Last -like 'PASS: Ship of Tools 9.9.8 at *') "rc=$($e.Rc) last='$($e.Last)'"
+            $e = Invoke-Entry @('-Archive', $r99.Pack)
+            Check '7a5: and so does an update under it' ($e.Rc -eq 0 -and $e.Last -like 'PASS: Ship of Tools 9.9.9 at *') "rc=$($e.Rc) last='$($e.Last)'"
+            $e = Invoke-Entry @('-Archive', $r99.Pack)
+            Check '7a5: and a repair run' ($e.Rc -eq 0 -and $e.Last -like 'PASS: *' -and ($e.Out -match 'a repair run').Count -eq 1) "rc=$($e.Rc) last='$($e.Last)'"
+        } finally {
+            foreach ($f in $harness.Keys) { Set-Item -LiteralPath "Function:script:$f" -Value $harness[$f] }
+        }
+    }
+    # 27. A lone install.ps1 (a downloaded file with nothing beside it) installs a pack of the line fresh: the record script
     # is the target checkout's own. Last, because it dot-sources the lone copy over this scope's functions.
     Invoke-Case '7a4' {
         $lone = Join-Path $entryRoot 'lone'

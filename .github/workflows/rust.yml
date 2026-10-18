@@ -403,7 +403,7 @@ jobs:
         working-directory: scripts
         run: |
           $failed = $false
-          Get-ChildItem -Path '*.ps1', 'tests/in-job.ps1' | ForEach-Object {
+          Get-ChildItem -Path '*.ps1', 'tests/in-job.ps1', 'tests/install-smoke.ps1' | ForEach-Object {
             $errs = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs)
             if ($errs.Count -gt 0) {
@@ -838,6 +838,15 @@ jobs:
         run: bash scripts/tests/installer-shared-home.sh
         working-directory: .
 
+      # release.yml's release-before job picks the release an update smoke starts from: the pick over a fixture list,
+      # with the sotd built above (its `update direction` is the one version order).
+      - name: Test release-before (bash)
+        timeout-minutes: 5
+        env:
+          SOT_TEST_SOTD: "${{ github.workspace }}/rust/target/debug/sotd"
+        run: bash scripts/tests/test-release-before.sh
+        working-directory: .
+
       # The context deadline covers foreground children and the final wait.
       # Fixtures are finite, isolated, and require entry and completion evidence.
       - name: Test heartbeat context deadline (hermetic)
@@ -1169,8 +1178,11 @@ jobs:
   # SOT_INSTALL_TAG so the CHECKOUT's own install.sh body runs (skipping the
   # fetch-and-reexec prelude) against the newest PUBLISHED release's
   # artifacts -- a `--be-only` fresh install into a clean container (no
-  # tmux, no gh), the case only a brand-new user would hit. The prelude
-  # itself has no CI coverage.
+  # tmux, no gh), the case only a brand-new user would hit. The prelude is
+  # covered by release.yml's install smokes: their update legs install the
+  # release before with `--version`, which fetches and runs that tag's own
+  # installer (the implicit run, with no version, resolves a tag from the
+  # releases list and has no CI coverage).
   fresh-install-smoke:
     name: fresh install smoke (clean container)
     runs-on: ubuntu-latest
