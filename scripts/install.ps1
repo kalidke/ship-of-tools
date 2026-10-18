@@ -12,8 +12,10 @@
 # kind; a build with a + stops (it is not a release; a pack of the line goes in with -Archive). It never moves the
 # install backwards unless told (an older target found by the channel fails; -Version names it, and is said to be
 # older). A run of the version already installed, with no daemon on another version, is a repair run whether or not it
-# names the version: it writes the pin if it names one and stages, applies and restarts nothing. A run that names what to install pins the install: install.json records "pinned" and the updaters leave the
-# install where the person put it until a run that names no version removes the pin.
+# names the version: it writes the pin if it names one, drops any armed update pointer, and stages, applies and restarts
+# nothing (a named one downloads nothing either). A run that names what to install pins the install: install.json records
+# "pinned", the PASS or ONE STEP LEFT line ends "; pinned at <v>: ...", and the updaters leave the install where the
+# person put it until a run that names no version removes the pin.
 #
 # The prelude fetches the target tag's own install.ps1 and runs it (SOT_INSTALL_TAG, SOT_INSTALL_IMPLICIT); -Archive
 # skips it and runs this file, which must be the packing checkout's. A fresh install lays down bin\, repo\base,
@@ -21,10 +23,12 @@
 # `sotd update stage` and applies it one way, by what runs here: a supervisor that logs its launcher code id gets the
 # converge sentinel (rows keep their sessions); an older supervisor or a window with none gets the update left armed and
 # a step; nothing running and a desktop session applies it here; nothing running over ssh leaves it armed. The last
-# line is exactly one of PASS, ONE STEP LEFT or FAIL, then an explicit exit.
+# line is exactly one of PASS, ONE STEP LEFT or FAIL, then an explicit exit. A run can outlast an agent's tool call (the
+# stage prepares Julia, the converge waits up to 30 minutes): the staging line says so, and the verdict is the last line.
 #
-# repo\current is read once by its target and never traversed: an ssh session on a box with redirection trust enabled
-# cannot traverse the junction, so every path used here is repo\versions\<tag>.
+# repo\current is read once by its target and never traversed, except by the one deliberate probe that runs
+# install-shortcut.ps1 through it (Invoke-Shortcut): an ssh session on a box with redirection trust enabled cannot
+# traverse the junction, so every other path used here is repo\versions\<tag>.
 #
 # Test seams (the hermetic suite): SOT_INSTALL_REPO (owner/name), SOT_INSTALL_ORIGIN (the clone URL),
 # SOT_INSTALL_CONVERGE_WAIT_S, SOT_INSTALL_DAEMON_WAIT_S. The suite dot-sources this file and replaces the network
@@ -36,6 +40,8 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $script:StopMarker = 'sot-install-stop'
+# The release repo the downloads and the clone come from (install.sh's REPO).
+$script:Repo = $(if ($env:SOT_INSTALL_REPO) { $env:SOT_INSTALL_REPO } else { 'kalidke/ship-of-tools' })
 $script:launchNotices = New-Object System.Collections.ArrayList
 
 # ---- the one verdict -------------------------------------------------------------------------------------------------
@@ -166,7 +172,16 @@ function Read-Options([string[]]$Argv) {
         }
         $i++
     }
+    if ($o.Version -and $o.Archive) { Stop-Entry 'options' '-Archive and -Version are exclusive: the folder names its own version' 2 }
     return $o
+}
+# An absolute prefix with no trailing backslash (a relative one breaks the junction compare, and a trailing backslash
+# breaks native-argument quoting in Windows PowerShell 5.1).
+function Resolve-PrefixPath([string]$Path) {
+    if (-not [System.IO.Path]::IsPathRooted($Path)) { $Path = Join-Path (Get-Location).Path $Path }
+    $full = [System.IO.Path]::GetFullPath($Path)
+    if ($full.Length -gt 3) { $full = $full.TrimEnd('\') }
+    return $full
 }
 
 # ---- preflight (W-1) -------------------------------------------------------------------------------------------------
@@ -193,6 +208,8 @@ function Invoke-Prelude([string]$Tag, [bool]$Implicit, [string[]]$Argv, [string]
     $env:SOT_INSTALL_TAG = $Tag
     $env:SOT_INSTALL_IMPLICIT = $(if ($Implicit) { '1' } else { '0' })
     $verdict = $false; $last = ''
+    # The child prints the one verdict, so Ctrl+C while it runs must not make this run print a second.
+    $script:Done = $true
     try {
         $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $tmp @Argv 2>&1 | ForEach-Object {
@@ -207,9 +224,7 @@ function Invoke-Prelude([string]$Tag, [bool]$Implicit, [string[]]$Argv, [string]
         Remove-Item Env:SOT_INSTALL_TAG -ErrorAction SilentlyContinue
         Remove-Item Env:SOT_INSTALL_IMPLICIT -ErrorAction SilentlyContinue
     }
-    if (-not $verdict) { Stop-Entry 'prelude' "the installer of $Tag ended without a verdict (exit $code)" }
-    # The child printed the verdict; this run prints none of its own.
-    $script:Done = $true
+    if (-not $verdict) { $script:Done = $false; Stop-Entry 'prelude' "the installer of $Tag ended without a verdict (exit $code)" }
     return [int]$code
 }
 
@@ -268,16 +283,39 @@ function Get-DaemonPipe([string]$Sotd) {
     if ($r.Code -eq 0 -and $r.Out.Count -gt 0 -and $r.Out[0].StartsWith('\\.\pipe\')) { return $r.Out[0] }
     return ''
 }
-# 'current' (runs the version of $Sotd), 'other', 'held' (another version, a window holds it) or 'none'.
-function Get-DaemonState([string]$Sotd, [string]$Pipe) {
-    if (-not $Pipe) { return 'none' }
-    $r = Invoke-Native $Sotd @('same-version', '--endpoint', "pipe:$Pipe")
-    switch ($r.Code) { 0 { return 'current' } 3 { return 'other' } 4 { return 'held' } default { return 'none' } }
+# Does a daemon run here: its pipe exists (listed, never opened: a probe must not take an instance), or a process runs
+# from this install's bin\sotd.exe.
+function Test-DaemonRuns([string]$Pipe, [string]$BinExe) {
+    if ($Pipe) {
+        $listed = @()
+        try { $listed = @([System.IO.Directory]::GetFiles('\\.\pipe\')) } catch { }
+        if (@($listed | Where-Object { $_ -ieq $Pipe }).Count -gt 0) { return $true }
+    }
+    if ($BinExe) {
+        foreach ($p in @(Get-Process -Name sotd -ErrorAction SilentlyContinue)) {
+            $path = ''
+            try { $path = $p.Path } catch { }
+            if ($path -and ($path -ieq $BinExe)) { return $true }
+        }
+    }
+    return $false
 }
-function Wait-DaemonCurrent([string]$Sotd, [string]$Pipe, [int]$Seconds) {
+# 'current' (runs the version of $Sotd), 'other' (another version), 'unknown' (a daemon runs and cannot be told: why is in
+# $script:DaemonWhy) or 'none'. A daemon that cannot be told is never taken for none.
+function Get-DaemonState([string]$Sotd, [string]$Pipe, [string]$BinExe) {
+    $script:DaemonWhy = ''
+    if ($Pipe) {
+        $r = Invoke-Native $Sotd @('same-version', '--endpoint', "pipe:$Pipe")
+        switch ($r.Code) { 0 { return 'current' } 3 { return 'other' } 4 { return 'other' } }
+        $script:DaemonWhy = $(if ($r.Err.Count -gt 0) { $r.Err[0] } else { "exit $($r.Code)" })
+    }
+    if (Test-DaemonRuns $Pipe $BinExe) { return 'unknown' }
+    return 'none'
+}
+function Wait-DaemonCurrent([string]$Sotd, [string]$Pipe, [string]$BinExe, [int]$Seconds) {
     $t0 = Get-Date
     while ($true) {
-        $st = Get-DaemonState $Sotd $Pipe
+        $st = Get-DaemonState $Sotd $Pipe $BinExe
         if ($st -eq 'current') { return $st }
         if (((Get-Date) - $t0).TotalSeconds -ge $Seconds) { return $st }
         Start-Sleep -Seconds 1
@@ -305,6 +343,20 @@ function Format-LiveWork($Work, [string]$Lead) {
     return $out
 }
 
+# What a restart of the daemon would end, as the ask's reason ('' when nothing live and nothing unsure).
+function Get-LiveText([string]$State, [string]$Pipe, $Work) {
+    $is = $(if ($State -eq 'current') { 'is running' } else { 'runs another version' })
+    if ($State -eq 'unknown') {
+        return "a daemon runs on $Pipe and could not be told its version ($script:DaemonWhy)$(if ($Work.Rows.Count) { "; restarting it would end the REPLs of: $($Work.Rows -join ', ')" } else { '; restarting it could end live REPLs and Pluto notebooks' })"
+    }
+    if ($Work.Unsure) {
+        return "could not ask the daemon on $Pipe in full: it $is$(if ($Work.Rows.Count) { ", and restarting it would end the REPLs of: $($Work.Rows -join ', ')" }); sotd update repls: $($Work.Reason)"
+    }
+    $t = Format-LiveWork $Work 'restarting it would end'
+    if ($t) { $t = "the daemon on $Pipe $is, and $t" }
+    return $t
+}
+
 # ---- what runs here (W-5) --------------------------------------------------------------------------------------------
 function Get-ProcessCommandLine([int]$ProcessId) {
     try { return [string](Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop).CommandLine } catch { return '' }
@@ -323,6 +375,8 @@ function Get-Supervisor([string]$LogDir) {
     }
     return [pscustomobject]@{ Pid = $pidv; Code = $code }
 }
+# An ssh logon runs in session 0, the desk's in a later one (seen on a lab PC); the suite replaces this.
+function Get-EntrySessionId { return [System.Diagnostics.Process]::GetCurrentProcess().SessionId }
 function Test-WindowRuns([string]$BinDir) {
     $exe = Join-Path $BinDir 'sot.exe'
     foreach ($p in @(Get-Process -Name sot -ErrorAction SilentlyContinue)) {
@@ -379,6 +433,9 @@ function Invoke-Shortcut([string]$PrefixDir, [string]$Hub) {
         if ($Hub) { $a += @('-Hub', $Hub) }
         $r = Invoke-Native 'powershell.exe' $a
         foreach ($l in @($r.Out + $r.Err)) { if ("$l".Trim()) { Say "  $l" } }
+        # The console wraps a long warning across lines, so the refusal is looked for in the joined text.
+        $joined = (@($r.Out + $r.Err) -join ' ') -replace '\s+', ' '
+        if ($joined -match 'does not list this box') { $script:EnrollRefusal = $joined }
         if ($r.Code -ne 0) { Stop-Entry 'shortcut' "install-shortcut.ps1 ended with exit $($r.Code)" }
         return
     }
@@ -390,17 +447,22 @@ function Invoke-Shortcut([string]$PrefixDir, [string]$Hub) {
 }
 
 # ---- the update path (W-5) -------------------------------------------------------------------------------------------
-function Wait-Converge([string]$LogDir, [string]$Tag, [int]$Seconds) {
+# The checkout's own relaunch-sot.ps1 is the sentinel's one writer: installed version first, else the target's.
+function Get-RelaunchScript([string]$Prefix, [string]$InstalledVersion, [string]$TargetTag) {
+    foreach ($tag in @("v$InstalledVersion", $TargetTag)) {
+        $c = Join-Path $Prefix "repo\versions\$tag\scripts\relaunch-sot.ps1"
+        if (Test-Path -LiteralPath $c) { return $c }
+    }
+    Stop-Entry 'apply' "no relaunch-sot.ps1 under $Prefix\repo\versions to ask the window's supervisor with"
+}
+function Wait-Converge([string]$LogDir, [string]$Tag, [int]$Seconds, [string]$Relaunch) {
     $script:Step = 'apply'
     $log = Join-Path $LogDir 'supervisor.log'
     $start = 0
     if (Test-Path -LiteralPath $log) { $start = (Get-Item -LiteralPath $log).Length }
-    $sentinelDir = Join-Path $env:LOCALAPPDATA 'sot'
-    New-Item -ItemType Directory -Force -Path $sentinelDir | Out-Null
-    $sentinel = Join-Path $sentinelDir 'relaunch.request'
-    $tmp = Join-Path $sentinelDir "relaunch.request.$PID.tmp"
-    [System.IO.File]::WriteAllText($tmp, "converge`n$(Get-Date -Format o)", [System.Text.Encoding]::ASCII)
-    Move-Item -LiteralPath $tmp -Destination $sentinel -Force
+    $sentinel = Join-Path $env:LOCALAPPDATA 'sot\relaunch.request'
+    $q = Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Relaunch, '-Converge')
+    if ($q.Code -ne 0) { Stop-Entry 'apply' "relaunch-sot.ps1 -Converge ended with exit $($q.Code): $((@($q.Out + $q.Err) | Select-Object -Last 2) -join ' / ')" }
     Say "converge requested: waiting for the window's supervisor to apply $Tag (up to $Seconds s)"
     $t0 = Get-Date; $applied = $false; $lastNote = $t0
     try {
@@ -426,7 +488,12 @@ function Wait-Converge([string]$LogDir, [string]$Tag, [int]$Seconds) {
 }
 
 # ---- the end checks (E6) ---------------------------------------------------------------------------------------------
-function Test-EndState([string]$PrefixDir, $Pack, [string]$Sotd, [string]$Pipe) {
+# The id of the launcher code in a scripts folder: the launcher's own function, loaded into this function's scope.
+function Get-LauncherCode([string]$ScriptsDir) {
+    . (Join-Path $ScriptsDir 'sot-install-layout.ps1')
+    return (Get-SotLauncherCodeId -ScriptsDir $ScriptsDir)
+}
+function Test-EndState([string]$PrefixDir, $Pack, [string]$Sotd, [string]$Pipe, [string]$LogDir) {
     $script:Step = 'check'
     $v = $Pack.Version; $short = $Pack.Commit.Substring(0, 9)
     foreach ($b in @('sotd', 'sot')) {
@@ -441,7 +508,8 @@ function Test-EndState([string]$PrefixDir, $Pack, [string]$Sotd, [string]$Pipe) 
     $target = $null
     try { $target = (Get-Item -LiteralPath (Join-Path $PrefixDir 'repo\current') -Force -ErrorAction Stop).Target } catch { }
     $want = Join-Path $PrefixDir "repo\versions\$($Pack.Tag)"
-    if ($target -and ((@($target)[0] -replace '^\\\?\?\\', '') -ine $want)) { Stop-Entry 'checkout' "repo\current points at $(@($target)[0]), not $want" }
+    if (-not $target) { Stop-Entry 'checkout' "$PrefixDir\repo\current is missing or is not a junction" }
+    if ((@($target)[0] -replace '^\\\?\?\\', '') -ine $want) { Stop-Entry 'checkout' "repo\current points at $(@($target)[0]), not $want" }
     if (-not (Test-Path -LiteralPath (Join-Path $want 'scripts\launch-sot.ps1'))) { Stop-Entry 'checkout' "$want holds no launcher" }
     if (Test-Path -LiteralPath (Join-Path $PrefixDir 'updates\pending-windows-x86_64.json')) { Stop-Entry 'pointer' 'an update pointer is still armed after this run' }
     $stamp = Join-Path $(if ($env:SOT_COMM_HOME) { $env:SOT_COMM_HOME } else { Join-Path $env:USERPROFILE '.sot-comm' }) 'VERSION'
@@ -455,21 +523,39 @@ function Test-EndState([string]$PrefixDir, $Pack, [string]$Sotd, [string]$Pipe) 
         Add-Step 'install Julia (winget install --id Julialang.Juliaup -e); agent comm and local REPLs need it, then run this again'
     }
     if (-not (Get-Command jq -ErrorAction SilentlyContinue)) { Add-Step 'install jq (winget install jqlang.jq); agent comm needs it, then run this again' }
+    # The window is on this launcher: its supervisor logged the installed launcher's code id (a converge re-invokes the
+    # launcher, so one that did not logs an older id, or none).
+    $sup = Get-Supervisor $LogDir
+    if ($sup) {
+        $wantCode = Get-LauncherCode (Join-Path $want 'scripts')
+        if ($wantCode -and $sup.Code -ne $wantCode) { Add-Step 'quit Ship of Tools, choose Keep, and start it from the shortcut; the window runs an older launcher' }
+    }
     # A daemon the converge restarted is verified by the clock: it answers as the target within the bound, or this is a FAIL.
-    $st = Get-DaemonState $Sotd $Pipe
+    $st = Get-DaemonState $Sotd $Pipe $Sotd
     if ($script:ExpectDaemon) {
         $bound = $(if ($env:SOT_INSTALL_DAEMON_WAIT_S) { [int]$env:SOT_INSTALL_DAEMON_WAIT_S } else { 60 })
-        $st = Wait-DaemonCurrent $Sotd $Pipe $bound
+        $st = Wait-DaemonCurrent $Sotd $Pipe $Sotd $bound
         if ($st -ne 'current') { Stop-Entry 'daemon' "the daemon on $Pipe did not answer as $v within $bound s after the converge (it is '$st')" }
     }
-    if ($st -eq 'other' -or $st -eq 'held') { Stop-Entry 'daemon' "the daemon on $Pipe still runs another version than $v" }
+    if ($st -eq 'unknown') { Stop-Entry 'daemon' "a daemon runs on $Pipe and could not be told its version ($script:DaemonWhy)" }
+    if ($st -eq 'other') { Stop-Entry 'daemon' "the daemon on $Pipe still runs another version than $v" }
 }
 
 # ---- the entry ---------------------------------------------------------------------------------------------------------
+# The installed build as a pack, for a named run of the version already installed (nothing to download); $null when the
+# record, the binary or the tag do not agree.
+function Get-InstalledPack([string]$Prefix, [string]$Tag) {
+    $ij = Join-Path $Prefix 'install.json'
+    $ver = Get-JsonString $ij 'version'; $commit = Get-JsonString $ij 'commit'
+    if (-not $ver -or "v$ver" -ne $Tag -or $commit -notmatch '^[0-9a-f]{40}$') { return $null }
+    if ((Get-BinaryVersion (Join-Path $Prefix 'bin\sotd.exe')).Version -ne $ver) { return $null }
+    return [pscustomobject]@{ Dir = ''; Version = $ver; Tag = $Tag; Commit = $commit; Bin = (Join-Path $Prefix 'bin') }
+}
+
 function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
     $script:Step = 'options'
     $o = Read-Options $Argv
-    $prefix = $(if ($o.Prefix) { $o.Prefix } else { Join-Path $env:LOCALAPPDATA 'sot' })
+    $prefix = $(if ($o.Prefix) { Resolve-PrefixPath $o.Prefix } else { Join-Path $env:LOCALAPPDATA 'sot' })
     $ij = Join-Path $prefix 'install.json'
     Test-Preflight
 
@@ -490,7 +576,15 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
     if ($env:SOT_INSTALL_TAG -and -not $implicit) { $named = $true }
     $script:Pinned = $named
 
-    $pack = Get-Pack $o $tag $Scratch
+    $pack = $null
+    $sotd = Join-Path $prefix 'bin\sotd.exe'
+    # A named run of the version already installed, with no daemon on another version, needs no download: it only pins.
+    if ($named -and -not $o.Archive) {
+        $pack = Get-InstalledPack $prefix $tag
+        if ($pack -and (Get-DaemonState $sotd (Get-DaemonPipe $sotd) $sotd) -notin @('none', 'current')) { $pack = $null }
+    }
+    if (-not $pack) { $pack = Get-Pack $o $tag $Scratch }
+    $script:PinSuffix = $(if ($script:Pinned) { "; pinned at $($pack.Version): automatic updates stay off until a run that names no version" } else { '' })
     Say "installing Ship of Tools $($pack.Tag) into $prefix"
     $newSotd = Join-Path $pack.Bin 'sotd.exe'
     $nv = Get-BinaryVersion $newSotd
@@ -503,7 +597,6 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
     $versionDir = Join-Path $prefix "repo\versions\$($pack.Tag)"
     $base = Join-Path $prefix 'repo\base'
     $origin = $(if ($env:SOT_INSTALL_ORIGIN) { $env:SOT_INSTALL_ORIGIN } else { "https://github.com/$($script:Repo)" })
-    $sotd = Join-Path $prefix 'bin\sotd.exe'
 
     if ($fresh) {
         if ($pack.Version.Contains('+')) {
@@ -524,23 +617,33 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
         $sameCommit = ((Get-JsonString $ij 'commit') -eq $pack.Commit)
         # The same build with no daemon on another version is a repair run, named or not: an explicit run of the version a
         # box already runs writes the pin and stages, applies and restarts nothing (no sentinel, no window touched).
-        $dstate = Get-DaemonState $newSotd $pipe
+        $dstate = Get-DaemonState $newSotd $pipe $sotd
         $repair = ($direction -eq 'same' -and $sameCommit -and ($dstate -eq 'none' -or $dstate -eq 'current'))
-        if ($repair) { Say "this computer already runs $installed at $($pack.Commit.Substring(0, 9)): a repair run" }
+        if ($repair) {
+            Say "this computer already runs $installed at $($pack.Commit.Substring(0, 9)): a repair run"
+            # A run that arms no pointer itself drops the one armed over this install, with the pin in one step: the
+            # pointer would otherwise move the box the pin was written to hold.
+            Remove-Item -LiteralPath (Join-Path $prefix 'updates\pending-windows-x86_64.json') -Force -ErrorAction SilentlyContinue
+            Set-InstallPin $ij $script:Pinned
+        }
         elseif ($direction -eq 'same') { Say "this run moves the install from $installed to $($pack.Version): same version, another build" }
         else { Say "this run moves the install from $installed to $($pack.Version) ($direction)" }
         if (-not $repair) {
             Update-Installed $o $prefix $pack $base $origin $logDir $newSotd $sotd $pipe
         }
     }
-    # The layout, comm and the shortcut: the launcher's own code, run from the target checkout.
-    Set-InstallPin $ij $script:Pinned
+    # The layout, comm and the shortcut: the launcher's own code, run from the target checkout. The pin was written before
+    # the stage; the last write follows install-manifest.ps1's rewrite of the record.
     if ($script:Pending) { return 0 }
     Invoke-LayoutAndComm $prefix $versionDir $base
     Invoke-Shortcut $prefix $o.Hub
     Set-InstallPin $ij $script:Pinned
-    if ($script:Pinned) { Say "pinned at $($pack.Version): automatic updates stay off for this install until a run that names no version" }
-    Test-EndState $prefix $pack $sotd $pipe
+    Test-EndState $prefix $pack $sotd $pipe $logDir
+    if ($script:EnrollRefusal) {
+        $hubName = $(if ($o.Hub) { $o.Hub } else { Get-JsonString $ij 'hub' })
+        $me = $(if ($script:EnrollRefusal -match '\[host\.([^\]]+)\]') { $Matches[1] } else { $env:COMPUTERNAME.ToLower() })
+        Stop-Entry 'enroll' "the hosts.toml on '$hubName' does not list this computer ('$me'), so the window would open with no hosts: on '$hubName' run  sotd topology set add $me --frontend  (the sotd of its install), then run this installer again"
+    }
     $script:PassText = "Ship of Tools $($pack.Version) at $($pack.Commit.Substring(0, 9)) on this computer"
     return 0
 }
@@ -591,16 +694,12 @@ function New-VersionFolder([string]$Base, [string]$VersionDir, $Pack) {
 # Stage with the target's own sotd, then apply one way by what runs here. Sets $script:Pending when the update stays armed.
 function Update-Installed([hashtable]$O, [string]$Prefix, $Pack, [string]$Base, [string]$Origin, [string]$LogDir, [string]$NewSotd, [string]$Sotd, [string]$Pipe) {
     $script:Step = 'daemon'
-    $state = Get-DaemonState $NewSotd $Pipe
+    $installedVer = Get-JsonString (Join-Path $Prefix 'install.json') 'version'
+    # Every path below that stops or restarts a daemon asks first, whatever its version.
+    $state = Get-DaemonState $NewSotd $Pipe $Sotd
     $liveText = ''
-    if ($state -ne 'none' -and $state -ne 'current') {
-        $work = Get-LiveWork $NewSotd $Pipe
-        if ($work.Unsure) {
-            $liveText = "could not ask the daemon on $Pipe in full: it runs another version$(if ($work.Rows.Count) { ", and restarting it would end the REPLs of: $($work.Rows -join ', ')" }); sotd update repls: $($work.Reason)"
-        } else {
-            $liveText = Format-LiveWork $work 'restarting it would end'
-            if ($liveText) { $liveText = "the daemon on $Pipe runs another version, and $liveText" }
-        }
+    if ($state -ne 'none') {
+        $liveText = Get-LiveText $state $Pipe (Get-LiveWork $NewSotd $Pipe)
         if ($liveText -and -not $O.RestartDaemon) {
             Say '       Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then run this again with -RestartDaemon.'
             Stop-Entry 'daemon' $liveText 2
@@ -608,20 +707,28 @@ function Update-Installed([hashtable]$O, [string]$Prefix, $Pack, [string]$Base, 
     }
     $script:Step = 'stage'
     if (-not (Test-Path -LiteralPath (Join-Path $Base '.git'))) { Initialize-Base $Base $Origin $Pack }
+    # The pin goes in before the stage, so no automatic arm lands between the stage and the pin.
+    $ijPath = Join-Path $Prefix 'install.json'
+    $wasPinned = ((Get-Content -LiteralPath $ijPath -Raw) -match '"pinned"\s*:\s*true')
+    Set-InstallPin $ijPath $script:Pinned
+    Say "staging and preparing $($Pack.Tag) (this can take many minutes)"
     $r = Invoke-Native $NewSotd @('update', 'stage', $Pack.Dir, '--prefix', $Prefix)
     foreach ($l in $r.Out) { Say "  $l" }
     if ($r.Code -ne 0) {
-        $detail = (@($r.Err + $r.Out) -join ' / ')
-        if ($detail -match 'not armed') { $detail = "$detail (remove $Prefix\updates\bad-$($Pack.Tag)-windows-x86_64 if the version was marked bad, then run this again)" }
+        # sotd's last line says why; the lines before it are its progress.
+        $said = @($r.Err | Where-Object { "$_".Trim() })
+        if (-not $said) { $said = @($r.Out | Where-Object { "$_".Trim() }) }
+        $detail = $(if ($said) { "$($said[-1])".Trim() } else { "sotd update stage ended with exit $($r.Code)" })
+        if (@($r.Err + $r.Out) -join ' ' -match 'not armed') { $detail = "$detail (remove $Prefix\updates\bad-$($Pack.Tag)-windows-x86_64 if the version was marked bad, then run this again)" }
+        Set-InstallPin $ijPath $wasPinned
         Stop-Entry 'stage' $detail
     }
-    Set-InstallPin (Join-Path $Prefix 'install.json') $script:Pinned
     $sup = Get-Supervisor $LogDir
     $windowOnly = (-not $sup) -and (Test-WindowRuns (Join-Path $Prefix 'bin'))
     $work = $(if ($liveText) { "; $liveText" } else { '' })
     if ($sup -and $sup.Code) {
         $wait = $(if ($env:SOT_INSTALL_CONVERGE_WAIT_S) { [int]$env:SOT_INSTALL_CONVERGE_WAIT_S } else { 1800 })
-        Wait-Converge $LogDir $Pack.Tag $wait | Out-Null
+        Wait-Converge $LogDir $Pack.Tag $wait (Get-RelaunchScript $Prefix $installedVer $Pack.Tag) | Out-Null
         $script:ExpectDaemon = ($state -ne 'none')
         return
     }
@@ -630,22 +737,18 @@ function Update-Installed([hashtable]$O, [string]$Prefix, $Pack, [string]$Base, 
         Add-Step "quit Ship of Tools, choose Keep, and start it from the shortcut; the start applies $($Pack.Tag), then run this again to confirm (a converge here could end the box's sessions)$work"
         return
     }
-    if ($env:SSH_CONNECTION) {
-        Add-Step "start Ship of Tools at the desk; the start applies $($Pack.Tag) (nothing was stopped from this ssh session)$work"
+    if ((Get-EntrySessionId) -eq 0) {
+        Add-Step "start Ship of Tools at the desk; the start applies $($Pack.Tag) (nothing was stopped from this session, which is not at the desk)$work"
         return
     }
     # Nothing runs and this is a desktop session: apply here. The daemon, if one runs, is stopped first so it pins no stale image.
     $script:Step = 'apply'
-    $ldp = Join-Path $Prefix 'repo\current\scripts\sot-local-daemon.ps1'
     $applyScript = Join-Path (Join-Path $Prefix "repo\versions\$($Pack.Tag)") 'scripts\sot-apply.ps1'
-    if ((Get-DaemonState $NewSotd $Pipe) -ne 'none') {
-        $oldLd = Join-Path (Join-Path $Prefix ("repo\versions\v" + (Get-JsonString (Join-Path $Prefix 'install.json') 'version'))) 'scripts\sot-local-daemon.ps1'
-        foreach ($c in @($ldp, $oldLd)) {
-            if (Test-Path -LiteralPath $c) {
-                $s = Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $c, '-Stop')
-                foreach ($l in $s.Out) { if ("$l".Trim()) { Say "  $l" } }
-                break
-            }
+    if ((Get-DaemonState $NewSotd $Pipe $Sotd) -ne 'none') {
+        $oldLd = Join-Path (Join-Path $Prefix "repo\versions\v$installedVer") 'scripts\sot-local-daemon.ps1'
+        if (Test-Path -LiteralPath $oldLd) {
+            $s = Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $oldLd, '-Stop')
+            foreach ($l in $s.Out) { if ("$l".Trim()) { Say "  $l" } }
         }
     }
     $a = Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $applyScript, '-Prefix', $Prefix)
@@ -655,15 +758,15 @@ function Update-Installed([hashtable]$O, [string]$Prefix, $Pack, [string]$Base, 
 }
 
 function Invoke-InstallEntry([string[]]$Argv) {
-    $script:Done = $false; $script:Rc = 1; $script:Step = 'options'; $script:Steps = @(); $script:Pending = $false; $script:Pinned = $false; $script:ExpectDaemon = $false; $script:PassText = ''
+    $script:Done = $false; $script:Rc = 1; $script:Step = 'options'; $script:Steps = @(); $script:Pending = $false; $script:Pinned = $false; $script:PinSuffix = ''; $script:EnrollRefusal = ''; $script:DaemonWhy = ''; $script:ExpectDaemon = $false; $script:PassText = ''
     $scratch = Join-Path $env:TEMP ('sot-install-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     $rc = 1
     try {
         New-Item -ItemType Directory -Force -Path $scratch | Out-Null
         $rc = [int](@(Invoke-EntryBody $Argv $scratch)[-1])
         if (-not $script:Done) {
-            if ($script:Steps.Count -gt 0) { Write-Verdict "ONE STEP LEFT: $($script:Steps -join '; then ')" }
-            else { Write-Verdict "PASS: $($script:PassText)" }
+            if ($script:Steps.Count -gt 0) { Write-Verdict "ONE STEP LEFT: $($script:Steps -join '; then ')$($script:PinSuffix)" }
+            else { Write-Verdict "PASS: $($script:PassText)$($script:PinSuffix)" }
         }
     } catch {
         if ($_.Exception.Message -ne $script:StopMarker) { $script:Rc = 1; Write-Verdict "FAIL: $($script:Step): $($_.Exception.Message)" }

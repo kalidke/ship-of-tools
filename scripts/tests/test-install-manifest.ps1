@@ -118,6 +118,7 @@ class P {
     Check-Exit 'p4'
     Check 'install.json written' ((Manifest $p4) -match '"version":\s*"0\.7\.0"') 'no manifest'
     Check 'still no pointer' (-not (Pointer $p4)) 'a pointer appeared'
+    Check 'the record says this box runs its local daemon and a window (every Windows box does)' ((Manifest $p4) -match '"daemon":\s*true,\s*"frontend":\s*true') (Manifest $p4)
 
     Write-Host "`n=== 5. a pointer with no install.json yet is dropped too ===" -ForegroundColor Cyan
     $p5 = New-Prefix 'p5' '0.7.0' $null $null $true
