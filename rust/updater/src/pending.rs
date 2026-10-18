@@ -311,13 +311,24 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&prefix).await;
         tokio::fs::create_dir_all(prefix.join("updates")).await.unwrap();
         if let Some((version, commit)) = installed {
-            let json = format!(
-                r#"{{"schema":1,"prefix":"{}","version":"{version}","tag":"v{version}","commit":"{commit}"}}"#,
-                prefix.display()
-            );
-            tokio::fs::write(prefix.join(INSTALL_MANIFEST), json).await.unwrap();
+            install(&prefix, version, commit, None).await;
         }
         prefix.join("updates")
+    }
+
+    /// Write `<prefix>/install.json` naming `version`, with `pinned` only when given. serde writes it, so a prefix holding
+    /// a `\` (every Windows path) or a `"` is escaped as an installer escapes it, and the install must read back: a
+    /// manifest that does not parse reads as no install, and every arm over it would pass for the wrong reason.
+    async fn install(prefix: &Path, version: &str, commit: &str, pinned: Option<bool>) {
+        let mut json = serde_json::json!({
+            "schema": 1, "prefix": prefix, "version": version, "tag": format!("v{version}"), "commit": commit,
+        });
+        if let Some(pinned) = pinned {
+            json["pinned"] = pinned.into();
+        }
+        tokio::fs::write(prefix.join(INSTALL_MANIFEST), json.to_string()).await.unwrap();
+        let read = InstalledBuild::read(&prefix.join("updates")).expect("the fixture's install.json reads back");
+        assert_eq!((read.version.as_str(), read.pinned), (version, pinned == Some(true)));
     }
 
     async fn cleanup(root: &Path) {
@@ -390,11 +401,7 @@ mod tests {
     async fn a_pinned_install_takes_no_automatic_arm() {
         let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
         let root = prefix("pinned", Some(("0.6.6-rc9.13", "c0"))).await;
-        let json = format!(
-            r#"{{"schema":1,"prefix":"{}","version":"0.6.6-rc9.13","tag":"v0.6.6-rc9.13","commit":"c0","pinned":true}}"#,
-            root.parent().unwrap().display()
-        );
-        tokio::fs::write(root.parent().unwrap().join(INSTALL_MANIFEST), json).await.unwrap();
+        install(root.parent().unwrap(), "0.6.6-rc9.13", "c0", Some(true)).await;
         let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap();
         assert_eq!(out, ArmOutcome::Pinned);
         assert!(read(&root, T).await.unwrap().is_none(), "nothing armed over a pinned install");
@@ -415,11 +422,7 @@ mod tests {
         cleanup(&root).await;
         // An explicit false is unpinned too.
         let root = prefix("pinfalse", Some(("0.6.6-rc9.13", "c0"))).await;
-        let json = format!(
-            r#"{{"schema":1,"prefix":"{}","version":"0.6.6-rc9.13","tag":"v0.6.6-rc9.13","commit":"c0","pinned":false}}"#,
-            root.parent().unwrap().display()
-        );
-        tokio::fs::write(root.parent().unwrap().join(INSTALL_MANIFEST), json).await.unwrap();
+        install(root.parent().unwrap(), "0.6.6-rc9.13", "c0", Some(false)).await;
         assert!(!InstalledBuild::read(&root).unwrap().pinned);
         cleanup(&root).await;
     }
