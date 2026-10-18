@@ -221,34 +221,11 @@ function Set-Junction([string]$link, [string]$target) {
     }
 }
 
-# Canonicalise a path for COMPARISON. Windows hands back the same directory
-# under different spellings, and a raw string compare then reports a correct
-# junction as "did not flip" -- which sends the applier down Restore-Previous
-# and means the machine NEVER accepts an update. Caught on the CI Windows
-# runner, whose TEMP is the 8.3 form `C:\Users\RUNNER~1\...` while the
-# junction's own Target reports the expanded `C:\Users\runneradmin\...`.
-# Any install path containing a short-name component hits this.
-#
-# Normalise BOTH sides to the 8.3 SHORT form rather than trying to expand to
-# the long one. Scripting.FileSystemObject's .Path just echoes back whichever
-# spelling it was handed (so it cannot resolve the disagreement), but
-# .ShortPath maps the long and short spellings of a directory onto the same
-# string -- verified both directions. .NET's GetFullPath and Resolve-Path
-# leave 8.3 untouched, so neither helps here.
-# If 8.3 creation is disabled on the volume, .ShortPath returns the long form
-# for both sides, which is still consistent. Case needs no handling:
-# PowerShell's -eq/-ne on strings is already case-insensitive.
-# Falls back to the trimmed input if the path is gone or COM is unavailable --
-# no worse than the previous behaviour.
-function Get-ComparablePath([string]$p) {
-    if (-not $p) { return '' }
-    $t = $p.TrimEnd('\')
-    try {
-        $fso = New-Object -ComObject Scripting.FileSystemObject
-        if ($fso.FolderExists($t)) { return ([string]$fso.GetFolder($t).ShortPath).TrimEnd('\') }
-    } catch {}
-    return $t
-}
+# Get-SotComparablePath (a path for COMPARISON: the junction's reported target against the wanted folder, which Windows
+# can spell two ways) is sot-install-layout.ps1's, the one owner install.ps1 and the launcher use as well. The file is
+# this release's own, from the tree the pointer's digests already vouched for. If it cannot load, the log says so and the
+# flip check below compares nothing (a missing function returns nothing for both sides).
+try { . (Join-Path $PSScriptRoot 'sot-install-layout.ps1') } catch { Write-ApplyLog "could not load sot-install-layout.ps1: $($_.Exception.Message)" }
 
 function Get-JunctionTarget([string]$link) {
     try {
@@ -513,8 +490,8 @@ if ($script:applyFailed) { Exit-Apply 0 }
 
 if (-not (Set-Junction (Join-Path $Prefix 'repo\current') $checkout)) { Restore-Previous 'flipping repo\current failed' }
 if ($script:applyFailed) { Exit-Apply 0 }
-$flipped = Get-ComparablePath (Get-JunctionTarget (Join-Path $Prefix 'repo\current'))
-$wanted  = Get-ComparablePath $checkout
+$flipped = Get-SotComparablePath (Get-JunctionTarget (Join-Path $Prefix 'repo\current'))
+$wanted  = Get-SotComparablePath $checkout
 if ($flipped -ne $wanted) {
     Restore-Previous "repo\current did not flip (points at '$flipped', wanted '$wanted')"
     if ($script:applyFailed) { Exit-Apply 0 }

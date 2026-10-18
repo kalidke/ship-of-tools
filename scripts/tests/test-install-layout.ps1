@@ -72,6 +72,22 @@ try {
         (-not (Test-SotPinnedCheckout -RepoPath (Join-Path $root 'other\repo\current') -Prefix $prefix)) `
         'a different prefix''s repo\current reported pinned'
 
+    # An 8.3-spelled prefix (a hosted runner's TEMP) against the long spelling a script's own path reports.
+    try {
+        $shortPrefix = ([string](New-Object -ComObject Scripting.FileSystemObject).GetFolder($prefix).ShortPath).TrimEnd('\')
+        if ($shortPrefix -ieq $prefix) { Write-Host '  SKIP  1: this volume creates no 8.3 names' -ForegroundColor Yellow }
+        else {
+            Check 'repo\current under the long spelling is pinned for the prefix spelled 8.3' `
+                (Test-SotPinnedCheckout -RepoPath $repoCurrentDir -Prefix $shortPrefix) 'the same folder, spelled two ways, reported NOT pinned'
+            Check 'the 8.3 spelling of a folder and its long spelling are one comparable path' `
+                ((Get-SotComparablePath (Join-Path $shortPrefix 'repo\current')) -ieq (Get-SotComparablePath $repoCurrentDir)) 'the two spellings differ'
+            Check 'a sibling is still not pinned under the 8.3 prefix' `
+                (-not (Test-SotPinnedCheckout -RepoPath (Join-Path $root 'other\repo\current') -Prefix $shortPrefix)) 'a different prefix''s repo\current reported pinned'
+        }
+        Check 'a path that is not there compares as written (trailing separator trimmed)' `
+            ((Get-SotComparablePath (Join-Path $root 'no\such\place\')) -ceq (Join-Path $root 'no\such\place')) 'the missing path was changed'
+    } catch { Check '1: the 8.3 checks ran' $false $_.Exception.Message }
+
     Write-Host "`n=== 2. Get-SotLauncherTarget: pinned launcher when present, else the clone's ===" -ForegroundColor Cyan
     $noPinnedTarget = Get-SotLauncherTarget -Prefix $prefix -ClonePath $clone
     Check 'no repo\current\scripts\launch-sot.ps1 yet: falls back to the clone launcher' `

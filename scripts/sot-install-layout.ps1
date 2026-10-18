@@ -1,6 +1,7 @@
 # sot-install-layout.ps1 -- shared "is this launch pinned to the installed
 # checkout" predicate + shortcut-target rule, and the home of the launcher code
-# id (Get-SotLauncherCodeId), which launch-sot.ps1 uses on a converge. Dot-sourced by launch-sot.ps1
+# id (Get-SotLauncherCodeId), which launch-sot.ps1 uses on a converge, and of Get-SotComparablePath, the one path
+# comparison (sot-apply.ps1 and install.ps1 use it too). Dot-sourced by launch-sot.ps1
 # (which gates its self-update prelude on Test-SotPinnedCheckout) and
 # install-shortcut.ps1 (which uses Get-SotLauncherTarget to decide what the
 # shortcut/pin should point at). Same shape as sot-hosts.ps1: one
@@ -26,7 +27,32 @@ function Test-SotPinnedCheckout {
         [Parameter(Mandatory)][string]$RepoPath,
         [Parameter(Mandatory)][string]$Prefix
     )
-    return ($RepoPath -eq (Join-Path $Prefix 'repo\current'))
+    return ((Get-SotComparablePath $RepoPath) -eq (Get-SotComparablePath (Join-Path $Prefix 'repo\current')))
+}
+
+# Canonicalise a path for COMPARISON; the one owner (sot-apply.ps1, install.ps1 and the launcher all call it). Windows
+# hands back the same directory under different spellings, and a raw string compare then reports a correct junction as
+# "did not flip" (which sends the applier down Restore-Previous, so the machine NEVER accepts an update) or a correct
+# install as pointing elsewhere. Caught on the CI Windows runner, whose TEMP is the 8.3 form `C:\Users\RUNNER~1\...` while
+# a junction's own Target, and the $PSScriptRoot of a script started by a short path, report the expanded
+# `C:\Users\runneradmin\...`. Any install path containing a short-name component hits this. A raw string compare is right
+# only where neither side went through the OS (a process's image path keeps the spelling it was started with).
+#
+# Normalise BOTH sides to the 8.3 SHORT form rather than trying to expand to the long one. Scripting.FileSystemObject's
+# .Path just echoes back whichever spelling it was handed (so it cannot resolve the disagreement), but .ShortPath maps
+# the long and short spellings of a folder or file onto the same string. .NET's GetFullPath and Resolve-Path leave 8.3
+# untouched, so neither helps here. If 8.3 creation is disabled on the volume, .ShortPath returns the long form for both
+# sides, which is still consistent. Case needs no handling: PowerShell's -eq/-ne on strings is already case-insensitive.
+# Falls back to the trimmed input if the path is gone or COM is unavailable.
+function Get-SotComparablePath([string]$Path) {
+    if (-not $Path) { return '' }
+    $t = $Path.TrimEnd('\')
+    try {
+        $fso = New-Object -ComObject Scripting.FileSystemObject
+        if ($fso.FolderExists($t)) { return ([string]$fso.GetFolder($t).ShortPath).TrimEnd('\') }
+        if ($fso.FileExists($t)) { return [string]$fso.GetFile($t).ShortPath }
+    } catch {}
+    return $t
 }
 
 # The shortcut/pin target, in priority order: the pinned launcher once
@@ -107,7 +133,9 @@ function Get-SotLauncherCodeId {
 # shell, a junction needs neither, and every reader only traverses it as a
 # directory. Not shared by dot-sourcing: sot-apply.ps1 is fail-open by
 # contract on the launch path, and a file it would have to source in order to
-# run at all is a new way for it not to run.
+# flip the junction at all is a new way for it not to run (it sources this
+# file under a try, for Get-SotComparablePath, which only its check after the
+# flip calls).
 function Set-SotJunction {
     param([string]$Link, [string]$Target)
     try {

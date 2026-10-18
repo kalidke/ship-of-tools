@@ -153,7 +153,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `set-shortcut-aumid.ps1`: stamps the window's AppUserModelID on a shortcut.
 ### Update-apply
 - `sot-apply.sh`: offline apply and rollback of an armed update (Unix).
-- `sot-apply.ps1`: the same for Windows.
+- `sot-apply.ps1`: the same for Windows (it loads `sot-install-layout.ps1` under a try for `Get-SotComparablePath`, which its flip check uses; nothing else of the apply depends on it).
 ### Launch (Unix)
 - `launch-sot.sh`: reads the topology plan, ensures the local daemon and execs the window with `--socket` for this computer's own daemon when the install runs one, plus one `--dial` per plan host other than this one (a dev checkout runs no daemon of its own and dials this host's plan line too).
 ### Launch (Windows)
@@ -163,7 +163,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `sot-hosts.ps1`: reads `sotd topology plan` output and runs `topology sync`; `Invoke-SotWithin`
   runs a native command under a wall-clock bound (every script ssh call): at the bound it ends the command with every
   process it started, and a command that cannot start is a result (127).
-- `sot-install-layout.ps1`: the pinned-checkout test, the shortcut target, the launcher code id, the first-launch install layout and offline trust declaration delegation.
+- `sot-install-layout.ps1`: the pinned-checkout test, the shortcut target, the launcher code id, `Get-SotComparablePath` (the one comparison of a path the OS reports with one this code built: a junction's target, a script's own path against a prefix that may be 8.3-spelled; `sot-apply.ps1` and `install.ps1` load the copy in the target checkout), the first-launch install layout and offline trust declaration delegation.
 - `sot-freshness.ps1`: the armed update's apply, the dev pull's rebuild and the comm install, run before a window starts.
 - `sot-lease.ps1`: opens a lease on this computer's daemon, hands every lease over to the window, and starts the bridge (`Start-SotBridge`) for the lease and `sot-local-daemon.ps1`'s probe; `Start-SotRedirected` starts every child a launch script writes to (the bridge and every bounded run) and `Stop-SotTree` ends one with every process it started. A request the daemon has not answered within `$LeaseReplyWaitMs` is kept open, its bridge process held for the supervisor's life (`$global:SotLeasesUnanswered`), with its handover written behind it, since closing it could end the computer's sessions.
 - `relaunch-sot.ps1`: builds the window and drops the relaunch sentinel.
