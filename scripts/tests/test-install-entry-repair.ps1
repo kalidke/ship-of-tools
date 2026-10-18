@@ -80,3 +80,13 @@ Write-Host 'sot-local-daemon: stopped'
         Check '7z3: an implicit run toward 9.9.8 over a record cut inside its version, beside a 9.9.9 binary, stops at the direction step' ($e.Rc -eq 2 -and $e.Last -like 'FAIL: direction: this computer runs 9.9.9, which is newer than 9.9.8*') "rc=$($e.Rc) last='$($e.Last)'"
         Check '7z3: and the install still runs 9.9.9' ($binb -eq '9.9.9') "bin\sotd.exe reports '$binb'"
     }
+
+    # A staged sotd that predates `--installed` rejects it (exit 2, read as `unknown`): a whole record's own version is not
+    # handed on, so a re-run of the installed pack at the same commit is still seen as the pin-only repair.
+    Invoke-Case '7z4' {
+        $hn = New-Home 'n10'
+        [void](Invoke-Entry @('-Archive', $r98.Pack))
+        $env:SOT_FAKE_NO_INSTALLED = '1'
+        try { $e = Invoke-Entry @('-Archive', $r98.Pack) } finally { [Environment]::SetEnvironmentVariable('SOT_FAKE_NO_INSTALLED', $null) }
+        Check '7z4: against a sotd that rejects --installed, a re-run of the installed pack over a whole record is still a repair run' ($e.Rc -eq 0 -and ($e.Out -match 'a repair run').Count -eq 1 -and $e.Last -like 'PASS: *9.9.8*') "rc=$($e.Rc) last='$($e.Last)'; $(($e.Out | Select-Object -First 6) -join ' / ')"
+    }

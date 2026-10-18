@@ -616,7 +616,7 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
         $installed = $pack.Version
     } else {
         # The installed version read from its binary stands in where the record names none (the verb prefers the record).
-        $dir = Invoke-Native $newSotd (@('update', 'direction', $pack.Version, '--prefix', $prefix) + $(if ($installed) { @('--installed', $installed) } else { @() }))
+        $dir = Invoke-Native $newSotd (@('update', 'direction', $pack.Version, '--prefix', $prefix) + $(if ($installed -and -not (Get-JsonString $ij 'version')) { @('--installed', $installed) } else { @() }))
         $direction = $(if ($dir.Code -eq 0 -and $dir.Out.Count -gt 0) { $dir.Out[0] } else { 'unknown' })
         $script:Step = 'direction'
         if ($implicit -and $direction -eq 'older') {
