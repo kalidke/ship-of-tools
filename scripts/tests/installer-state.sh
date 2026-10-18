@@ -737,6 +737,24 @@ printf 'nonsense\n' > "$d/ctl/direction"
 entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
 check "a readable version and a sotd that cannot say still stops an implicit run (exit 2)" "2" "$ENTRY_RC"
 
+# The installed sotd's own version stands in where the record cannot say, for the channel (the prelude) and for the guard.
+d="$WORK/dir-cut-binary"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 none
+P="$d/home/.local/share/sot"; mkdir -p "$P/bin"
+printf '{\n  "schema": 1,\n  "version": "9.9.' > "$P/install.json"
+printf '#!/bin/sh\necho "sotd %s (abc 2026-10-17, protocol 3)"\n' 9.9.10 > "$P/bin/sotd"; chmod +x "$P/bin/sotd"
+printf 'older\n' > "$d/ctl/direction"
+entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+check "a record cut inside its version, the binary at 9.9.10, the release 9.9.9: an implicit run stops (exit 2), and does not move the install back" "2 9.9.10" "$ENTRY_RC $("$P/bin/sotd" --version | cut -d' ' -f2)"
+check "the sotd was told the version it read from the binary" "1" "$(sotd_log "$d" | grep -c -F -- "update direction 9.9.9 --prefix $P --installed 9.9.10" || true)"
+rm -f "$d/ctl/direction"
+entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+check "a sotd that cannot say, over a version the binary gives, still stops (exit 2)" "2" "$ENTRY_RC"
+printf '#!/bin/sh\necho "sotd 0.6.6-rc9.14-dev+abc123 (abc 2026-10-17, protocol 3)"\n' > "$P/bin/sotd"
+: > "$d/ctl/net.log"; : > "$d/ctl/prelude.log"
+entry_run "$d" --be-only --no-service
+check "the channel reads the binary too: a build with a + stops before any asset is fetched (exit 2)" "2 0" "$ENTRY_RC $(count_in "$d/ctl/net.log" 'raw.githubusercontent\|releases/download\|api.github.com\|releases/latest')"
+
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'
 else

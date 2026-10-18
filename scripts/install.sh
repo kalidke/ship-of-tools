@@ -430,6 +430,16 @@ installer_json_bool() {  # <install.json> <key>: true, false or empty
 # latest stable: no install, or a stable release), "newest" (the newest published release of any kind: a pre-release
 # runs the candidate line) or "stop" (a `+` marks a build that is not a release; it names no channel). No semver here:
 # which way the install then moves is `sotd update direction`'s answer.
+# The version a prefix runs: its install.json's, else its installed sotd's own (a record cut inside its version must not
+# hide it from the channel or from the no-move-back guard). Empty when neither says.
+installer_installed_version() {  # <prefix>
+    local v
+    v="$(installer_json_string "$1/install.json" version)"
+    if [ -z "$v" ] && [ -x "$1/bin/sotd" ]; then
+        v="$("$1/bin/sotd" --version 2>/dev/null | head -1 | awk '{ print $2 }')" || v=""
+    fi
+    printf '%s' "$v"
+}
 installer_channel() {  # <installed version, empty when none>
     case "$1" in
         '') printf latest ;;
@@ -823,7 +833,7 @@ if [ -z "${SOT_INSTALL_TAG:-}" ] && [ "$archived" = 0 ]; then
     implicit=0
     if [ -z "$tag" ]; then
         implicit=1
-        installed="$(installer_json_string "$pfx/install.json" version)"
+        installed="$(installer_installed_version "$pfx")"
         case "$(installer_channel "$installed")" in
             stop) fail 2 "this computer runs $installed, a build of the line, not a release: install a pack of the line with --archive <folder>; a release named with --version is usually older and moves this computer back; ask the person who runs it which they want" ;;
             newest)
@@ -1071,11 +1081,12 @@ fi
 # shell). A run that named no target (SOT_INSTALL_IMPLICIT, set by the prelude) never moves an install backwards;
 # naming --version or --archive says the direction and goes on. A prefix with no readable record is a first install.
 STEP=direction
-PRE_VERSION="$(installer_json_string "$PREFIX/install.json" version)"
+PRE_VERSION="$(installer_installed_version "$PREFIX")"
 PRE_COMMIT="$(installer_json_string "$PREFIX/install.json" commit)"
 DIRECTION=none
 if [ -f "$PREFIX/install.json" ]; then
-    DIRECTION="$("$BINDIR/sotd" update direction "$VER" --prefix "$PREFIX" 2>/dev/null)" || DIRECTION=unknown
+    # The version read from the installed binary stands in where the record names none (the verb prefers the record).
+    DIRECTION="$("$BINDIR/sotd" update direction "$VER" --prefix "$PREFIX" ${PRE_VERSION:+--installed "$PRE_VERSION"} 2>/dev/null)" || DIRECTION=unknown
     case "$DIRECTION" in newer|same|older) ;; *) DIRECTION=unknown ;; esac
     case "$DIRECTION" in
         unknown) say "note: could not tell which way $VERSION moves the install at $PREFIX (it records $PRE_VERSION)" ;;

@@ -197,7 +197,7 @@ entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-serv
 check "an implicit run that would move back stops (exit 2)" "2" "$ENTRY_RC"
 check "it names the installed version and --version" "1" "$(said 'FAIL: direction: this computer runs 9.9.10, which is newer than 9.9.9, the release this run found; it never moves back unless told: name the version you want with --version v9.9.9')"
 check "nothing under the prefix, ~/.local or comm changed" "$before" "$(entry_prefix_tree "$d")"
-check "the sotd was asked the installed way" "1" "$(sotd_log "$d" | grep -c -x -F "sotd update direction 9.9.9 --prefix $d/home/.local/share/sot" || true)"
+check "the sotd was asked the installed way" "1" "$(sotd_log "$d" | grep -c -x -F "sotd update direction 9.9.9 --prefix $d/home/.local/share/sot --installed 9.9.10" || true)"
 entry_archive "$d" --be-only --no-service
 check "naming the target (--archive) goes on and says older" "0 1" "$ENTRY_RC $(said 'this run moves the install from 9.9.10 to 9.9.9 (older)')"
 check "and ends in PASS, which says the install is pinned" "PASS: Ship of Tools 9.9.9 at $(cat "$d/ctl/short") on this computer; pinned at 9.9.9: automatic updates stay off until a run that names no version" "$ENTRY_LAST"

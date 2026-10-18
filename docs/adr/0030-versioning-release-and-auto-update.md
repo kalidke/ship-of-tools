@@ -814,7 +814,7 @@ apply would have downgraded it. The rule:
    --version/--archive`, `install.ps1 -Version/-Archive`, "update sot from the repo") always repairs it: an install with
    a `bin\sotd.exe` is never taken for a fresh one (install.ps1 updates it with the installed version unknown, never copying
    over a running daemon), and `sotd update direction` reads the version an unparsable record still holds as text or answers
-   `unknown`, which a run that names no version takes as "go on" when the record holds no readable version. The person is
+   `unknown`; the installers read the installed version from the record, else from the installed `sotd --version` (for the channel, and handed to the verb as `--installed`), and a run that names no version goes on only when neither says. The person is
    told in one sentence from one owner, `UnreadableInstall::sentence`: the file, the cause, and the installer run that
    works on that OS. On Windows only, an `install.json` that is missing while `bin\sotd.exe` exists is refused the same
    way, with a sentence that says it is missing and names the installer run with a version, because Windows writers

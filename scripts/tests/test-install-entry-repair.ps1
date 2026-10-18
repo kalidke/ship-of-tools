@@ -66,3 +66,17 @@ Write-Host 'sot-local-daemon: stopped'
         } finally { $held.Dispose() }
         Check '7y: the pin edit changed the record, and a handle opened before it reads the old bytes (a rename, not an in-place write)' (($still -ceq $old) -and -not ([System.IO.File]::ReadAllText($ijv) -match 'pinned') -and @(Get-ChildItem -LiteralPath $hv.Prefix -Filter 'install.json*' | Where-Object { $_.Name -ne 'install.json' }).Count -eq 0) $still
     }
+
+    # A record cut inside its version cannot say what is installed, but bin\sotd.exe can: "update sot from the repo" toward an
+    # older release stops at the direction step and moves nothing (the guard holds whenever the installed version can be read).
+    Invoke-Case '7z3' {
+        $hb = New-Home 'b3'
+        [void](Invoke-Entry @('-Archive', $r99.Pack))
+        $ijb = Join-Path $hb.Prefix 'install.json'
+        [System.IO.File]::WriteAllText($ijb, "{`n  `"schema`": 1,`n  `"version`": `"9.9.", (New-Object System.Text.UTF8Encoding($false)))
+        $env:SOT_INSTALL_TAG = 'v9.9.8'; $env:SOT_INSTALL_IMPLICIT = '1'; $script:servePack = $r98.Pack
+        $e = Invoke-Entry @()
+        $binb = (Get-BinaryVersion (Join-Path $hb.Prefix 'bin\sotd.exe')).Version
+        Check '7z3: an implicit run toward 9.9.8 over a record cut inside its version, beside a 9.9.9 binary, stops at the direction step' ($e.Rc -eq 2 -and $e.Last -like 'FAIL: direction: this computer runs 9.9.9, which is newer than 9.9.8*') "rc=$($e.Rc) last='$($e.Last)'"
+        Check '7z3: and the install still runs 9.9.9' ($binb -eq '9.9.9') "bin\sotd.exe reports '$binb'"
+    }
