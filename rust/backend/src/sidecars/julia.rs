@@ -196,13 +196,13 @@ fn resolve_juliaup_julia_from_config(
 }
 
 /// The Julia binary in a juliaup version directory, as juliaup resolves it: on macOS a DMG install is an app bundle,
-/// `<name>.app/Contents/Resources/julia/bin/julia` (the first `.app` holding the binary wins), else `bin/julia`.
+/// `<name>.app/Contents/Resources/julia/bin/julia` (the first `.app`, in directory order, holding the binary wins), else `bin/julia`.
 /// Not OS-gated, so a Linux test exercises the scan; with nothing present it names `bin/julia` for the error.
 fn juliaup_version_binary(version_dir: &Path) -> PathBuf {
     let apps = std::fs::read_dir(version_dir).into_iter().flatten().flatten().map(|e| e.path());
     let bundled = apps.filter(|p| p.extension().is_some_and(|x| x == "app"));
-    let bins = bundled.map(|app| app.join("Contents/Resources/julia/bin").join(JULIA_EXE));
-    bins.filter(|b| is_present_file(b)).min().unwrap_or_else(|| version_dir.join("bin").join(JULIA_EXE))
+    let mut bins = bundled.map(|app| app.join("Contents/Resources/julia/bin").join(JULIA_EXE));
+    bins.find(|b| is_present_file(b)).unwrap_or_else(|| version_dir.join("bin").join(JULIA_EXE))
 }
 
 /// Why the file at `path` must not be spawned as Julia because it is a Windows app-execution alias, or `None`.
@@ -464,7 +464,7 @@ mod tests {
         let version_dir = dir.path().join(APP_VERSION_DIR);
         std::fs::create_dir_all(version_dir.join("Julia-1.12.app").join("Contents")).unwrap();
         let err = resolve_juliaup_julia_from_config(dir.path(), APP_CONFIG).unwrap_err();
-        assert!(err.contains("missing on disk") && err.contains("bin"), "{err}");
+        assert!(err.contains("missing on disk") && err.ends_with(&version_dir.join("bin").join(JULIA_EXE).display().to_string()), "{err}");
         write_exe(&version_dir.join("bin").join(JULIA_EXE));
         let resolved = resolve_juliaup_julia_from_config(dir.path(), APP_CONFIG).unwrap();
         assert_eq!(resolved, version_dir.join("bin").join(JULIA_EXE));
