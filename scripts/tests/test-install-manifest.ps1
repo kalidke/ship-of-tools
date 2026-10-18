@@ -96,6 +96,15 @@ class P {
     function Check-Exit([string]$name) { Check "${name}: exit code 0" ($LASTEXITCODE -eq 0) "got $LASTEXITCODE" }
     function Pointer([string]$prefix) { return (Test-Path -LiteralPath (Join-Path $prefix "updates\$ptrName")) }
     function Manifest([string]$prefix) { return (Get-Content -LiteralPath (Join-Path $prefix 'install.json') -Raw) }
+    # The record is written through a temp file and a rename: nothing is left beside it, and it parses, with no BOM.
+    function Check-Whole([string]$name, [string]$prefix) {
+        $left = @(Get-ChildItem -LiteralPath $prefix -Filter 'install.json*' | Where-Object { $_.Name -ne 'install.json' })
+        Check "${name}: no temp file left beside install.json" ($left.Count -eq 0) (($left | ForEach-Object { $_.Name }) -join ', ')
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $prefix 'install.json'))
+        $whole = $false
+        try { $whole = [bool]((Manifest $prefix) | ConvertFrom-Json).version } catch {}
+        Check "${name}: the record is whole JSON with no BOM" ($whole -and $bytes[0] -ne 0xEF) "first byte $($bytes[0])"
+    }
 
     Write-Host "`n=== 1. a changed version drops the armed pointer ===" -ForegroundColor Cyan
     $p1 = New-Prefix 'p1' '0.6.0' '0.5.0' 'aaaa' $true
@@ -103,6 +112,7 @@ class P {
     Check-Exit 'p1'
     Check 'install.json now names the new version' ((Manifest $p1) -match '"version":\s*"0\.6\.0"') (Manifest $p1)
     Check 'pointer dropped' (-not (Pointer $p1)) 'pointer kept'
+    Check-Whole 'a replaced record (p1)' $p1
 
     Write-Host "`n=== 2. the same version at another commit drops it ===" -ForegroundColor Cyan
     $p2 = New-Prefix 'p2' '0.6.0' '0.6.0' 'not-the-tag-commit' $true
@@ -124,6 +134,7 @@ class P {
     Check-Exit 'p4'
     Check 'install.json written' ((Manifest $p4) -match '"version":\s*"0\.7\.0"') 'no manifest'
     Check 'still no pointer' (-not (Pointer $p4)) 'a pointer appeared'
+    Check-Whole 'a first record (p4)' $p4
     Check 'the record says this box runs its local daemon and a window (every Windows box does)' ((Manifest $p4) -match '"daemon":\s*true,\s*"frontend":\s*true') (Manifest $p4)
 
     Write-Host "`n=== 5. a pointer with no install.json yet is dropped too ===" -ForegroundColor Cyan

@@ -178,9 +178,17 @@ $body = @"
   "installed_at": "$( (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') )"$pinLine
 }
 "@
-# UTF8 without BOM: serde_json rejects a leading BOM, and Set-Content -Encoding
-# utf8 on PowerShell 5.1 writes one.
-[System.IO.File]::WriteAllText($manifest, $body, (New-Object System.Text.UTF8Encoding($false)))
+# UTF8 without BOM (Set-Content -Encoding utf8 on PowerShell 5.1 writes one), through a temp file in the same folder and
+# a rename, as install.sh does: an interrupted in-place write leaves a cut install.json, which cannot be read and so
+# cannot hold its pin.
+$tmp = "$manifest.new.$PID"
+try {
+    [System.IO.File]::WriteAllText($tmp, $body, (New-Object System.Text.UTF8Encoding($false)))
+    if (Test-Path -LiteralPath $manifest) { [System.IO.File]::Replace($tmp, $manifest, [NullString]::Value) } else { [System.IO.File]::Move($tmp, $manifest) }
+} catch {
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    throw
+}
 
 Write-Host "install-manifest: wrote $manifest (schema 1, version=$version, hub=$Hub)"
 

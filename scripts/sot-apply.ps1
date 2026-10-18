@@ -162,8 +162,16 @@ function Read-JsonFile([string]$path) {
 # after -- reporting only a debug-level "unreadable install manifest".
 # Every JSON this script writes goes through here. (install-manifest.ps1 uses
 # the same encoding for the same reason.)
-function Write-Utf8NoBom([string]$path, [string]$text) {
-    [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
+# It writes through a temp file in the same folder and a rename, so an interrupted write never leaves a cut install.json.
+function Write-Utf8NoBom([string]$Path, [string]$Text) {
+    $tmp = "$Path.new.$PID"
+    try {
+        [System.IO.File]::WriteAllText($tmp, $Text, (New-Object System.Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $Path) { [System.IO.File]::Replace($tmp, $Path, [NullString]::Value) } else { [System.IO.File]::Move($tmp, $Path) }
+    } catch {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        throw
+    }
 }
 
 function Get-Sha256([string]$path) {

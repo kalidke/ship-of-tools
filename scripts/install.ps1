@@ -110,8 +110,8 @@ function Get-JsonString([string]$Path, [string]$Key) {
     } catch { }
     return ''
 }
-function Write-Utf8NoBom([string]$Path, [string]$Text) {
-    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
+function Write-Utf8NoBom([string]$Path, [string]$Text) {  # a temp file and a rename, as install.sh does: a cut install.json loses its pin
+    try { [System.IO.File]::WriteAllText("$Path.new", $Text, (New-Object System.Text.UTF8Encoding($false))); [System.IO.File]::Replace("$Path.new", $Path, [NullString]::Value) } finally { Remove-Item -LiteralPath "$Path.new" -Force -ErrorAction SilentlyContinue }
 }
 
 # The pin in install.json: a surgical edit, never a parse and reserialize (the schema is additive, and sot-apply.ps1
