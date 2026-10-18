@@ -1,11 +1,13 @@
 # Tag-driven release (ADR 0030 §3 + clone addendum): build platform
-# artifacts, smoke-test them, publish a GitHub Release with git-cliff notes.
+# artifacts, smoke-test them, create a GitHub Release draft with git-cliff notes.
 # The julia bundle is RETIRED — installs clone the repo at the release tag
 # (the checkout is the resource tree + the manual), so there is no curated
 # subset to get wrong.
 #
 # Trigger paths:
-#   - tag push v*        → full pipeline incl. publish (use scripts/release.sh)
+#   - tag push v*        → full pipeline incl. publish (use scripts/release.sh); publish creates the
+#                          release as a DRAFT, which no updater lists until the release skill publishes it
+#                          (`gh release edit vX.Y.Z --draft=false`, run alone, on the go)
 #   - workflow_dispatch  → builds + checks ONLY (pipeline validation without
 #                          tagging; artifacts land as workflow artifacts)
 #
@@ -52,9 +54,9 @@ jobs:
       #
       # Gated on the ref being a TAG — deliberately the SAME condition the
       # `publish` job below uses, so the bare version is stamped on exactly
-      # the runs that can publish a release and on no others. (Note this is
+      # the runs that can create a release and on no others. (Note this is
       # a ref test, not an event test: a workflow_dispatch aimed at a tag
-      # both publishes and gets stamped, which is consistent. A dispatch on
+      # both creates the draft and gets stamped, which is consistent. A dispatch on
       # a branch does neither.) Keep the two conditions in step; if publish
       # ever narrows, this must narrow with it, or we would stamp artifacts
       # that never ship.
@@ -612,5 +614,6 @@ jobs:
           pre=""
           [[ "$GITHUB_REF_NAME" == *-* ]] && pre="--prerelease"
           gh release create "$GITHUB_REF_NAME" assets/* \
+            --draft \
             --title "Ship of Tools $GITHUB_REF_NAME" \
             --notes-file RELEASE_NOTES.md $pre
