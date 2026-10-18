@@ -79,16 +79,26 @@ pub struct InstallManifest {
 pub struct UnreadableInstall {
     pub path: PathBuf,
     pub cause: String,
+    /// The file is not there at all, with an install beside it ([`missing_record`]).
+    pub missing: bool,
 }
 
 /// How every sentence about an unreadable `install.json` begins, so a status can be told by it.
 pub const UNREADABLE_LEAD: &str = "install.json cannot be read";
+/// How the sentence about a missing `install.json` (with an install beside it) begins.
+pub const MISSING_LEAD: &str = "install.json is missing";
 
 impl UnreadableInstall {
     /// What is wrong and what to run, in one sentence: the file, the cause, and the installer run that repairs it on this
     /// OS (a run that names a version rewrites the record whole, and pins the install there).
     pub fn sentence(&self) -> String {
         let run = if cfg!(windows) { "install.ps1 -Version <version>" } else { "install.sh --version <version>" };
+        if self.missing {
+            return format!(
+                "{MISSING_LEAD} at {} while bin\\sotd.exe is installed beside it; it may have held a pin, so automatic updates stay off until `{run}` writes it again",
+                self.path.display()
+            );
+        }
         format!(
             "{UNREADABLE_LEAD} at {} ({}); it may hold a pin, so automatic updates stay off until it is repaired by running `{run}`",
             self.path.display(),
@@ -100,6 +110,18 @@ impl UnreadableInstall {
     pub fn updates_root(&self) -> PathBuf {
         self.path.parent().map_or_else(|| PathBuf::from("updates"), |p| p.join("updates"))
     }
+}
+
+/// An install whose `install.json` is not there. Windows only, because only the Windows writers can leave a record
+/// briefly missing (`File.Replace` is not one rename) and install.ps1 writes it before any daemon starts; the Unix
+/// writers rename atomically and a fresh install.sh writes it last, so there absent means no install. The install is the
+/// `bin\sotd.exe` beside the record's place, and an automatic writer treats the pair as it treats a cut record.
+pub fn missing_record(prefix: &Path) -> Option<UnreadableInstall> {
+    (cfg!(windows) && prefix.join("bin").join("sotd.exe").is_file()).then(|| UnreadableInstall {
+        path: prefix.join(INSTALL_MANIFEST),
+        cause: "missing".into(),
+        missing: true,
+    })
 }
 
 /// What a path holds for `install.json`: nothing, a file that cannot be read, or the manifest.
@@ -169,7 +191,7 @@ impl InstallManifest {
     /// Read `path` in three states: absent, present but unreadable (with its cause), or read. A reader that acts on
     /// the answer states its choice for the middle one: a file that cannot be read may hold a pin.
     pub fn load(path: &Path) -> InstallFile {
-        let unreadable = |cause: String| InstallFile::Unreadable(UnreadableInstall { path: path.to_path_buf(), cause });
+        let unreadable = |cause: String| InstallFile::Unreadable(UnreadableInstall { path: path.to_path_buf(), cause, missing: false });
         match std::fs::read_to_string(path) {
             Ok(text) => Self::parse(&text).map_or_else(|e| unreadable(e.to_string()), InstallFile::Read),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => InstallFile::Absent,
@@ -189,6 +211,7 @@ impl InstallManifest {
             return InstallFile::Absent;
         };
         match Self::load(&prefix.join(INSTALL_MANIFEST)) {
+            InstallFile::Absent => missing_record(&prefix).map_or(InstallFile::Absent, InstallFile::Unreadable),
             InstallFile::Read(mut m) => {
                 if m.prefix != prefix {
                     tracing::warn!(

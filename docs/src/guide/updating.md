@@ -125,7 +125,8 @@ and the resource tree, and changes in it are not carried to the next version.
   read at <path> (<cause>); it may hold a pin, so automatic updates stay off until it is repaired by running
   `install.sh --version <version>`" (Windows: `install.ps1 -Version <version>`). That run rewrites the record whole and
   pins the install at the version; a later run that names no version removes the pin. A leading byte-order mark alone
-  (a record saved by Notepad) is not unreadable.
+  (a record saved by Notepad) is not unreadable. On Windows a record that is missing while `bin\sotd.exe` exists is
+  treated the same way, and the status says "install.json is missing at <path> ..." with the same run to write it again.
 - **Automatic rollback.** Applying a staged update is an offline pointer flip done by `sot-apply`, which records the
   previous install as *last good*. The `--local` launcher runs `sot-apply --rollback` if the frontend exits with an error
   within 10 seconds twice in the 30 minutes after an update. Windows rolls back after a single such exit within two hours

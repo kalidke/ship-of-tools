@@ -114,6 +114,7 @@ async fn stage_folder(folder: &std::path::Path, prefix: &std::path::Path) -> Res
         // The operator's run is what repairs a record that cannot be read: it proceeds as over no record, its prefix
         // from the argument (below), and the installer then writes the record whole.
         InstallFile::Unreadable(_) => InstallManifest::bare(prefix),
+        InstallFile::Absent if sot_updater::missing_record(prefix).is_some() => InstallManifest::bare(prefix),
         InstallFile::Absent => return Err(format!("reading {}: no such file", record.display())),
     };
     install.prefix = prefix.to_path_buf();

@@ -28,7 +28,7 @@ use tokio::sync::broadcast;
 use sot_updater::identity::repo_from_env;
 use sot_updater::pending::{ArmOutcome, InstalledBuild, Writer};
 use sot_updater::prepare::{PrepareSpec, PreparedState};
-use sot_updater::{CheckOutcome, Fetcher, InstallFile, InstallManifest, ReleaseIdentity, UpdaterConfig, UNREADABLE_LEAD};
+use sot_updater::{CheckOutcome, Fetcher, InstallFile, InstallManifest, ReleaseIdentity, UpdaterConfig, MISSING_LEAD, UNREADABLE_LEAD};
 
 mod cli;
 mod refusal;
@@ -557,7 +557,7 @@ async fn run_check_once(
                 tracing::info!(tag = %id.tag, attached, "auto mode: armed but clients attached — applying at next launch/restart instead");
             }
         }
-    } else if out.status.strip_prefix("disabled: ").is_some_and(|s| s.starts_with(UNREADABLE_LEAD)) {
+    } else if out.status.strip_prefix("disabled: ").is_some_and(|s| s.starts_with(UNREADABLE_LEAD) || s.starts_with(MISSING_LEAD)) {
         // An install that may hold a pin and cannot be read: the person has to repair it, so it is not a debug line.
         tracing::warn!(status = %out.status, "update check disabled");
     } else if out.status != "ok" && !out.status.starts_with("disabled") {
@@ -1250,7 +1250,7 @@ mod tests {
 
     #[test]
     fn update_apply_refuses_a_pointer_armed_over_an_install_it_cannot_read() {
-        let cut = UnreadableInstall { path: "/p/install.json".into(), cause: "EOF while parsing".into() };
+        let cut = UnreadableInstall { path: "/p/install.json".into(), cause: "EOF while parsing".into(), missing: false };
         let armed = pointer("v0.6.6-rc9.14", Some(("0.6.6-rc9.13", "c0")));
         let why = apply_refusal(false, Err(cut.clone()), &armed).unwrap();
         assert!(why.contains("will not apply") && why.contains(&cut.sentence()), "{why}");
@@ -1280,8 +1280,11 @@ mod tests {
         std::fs::write(other.join("install.json"), r#"{"schema":1,"prefix":"/o","version":"0.6.5"}"#).unwrap();
         let exe = prefix.join("bin").join(std::env::current_exe().unwrap().file_name().unwrap());
         std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
-        let probe = |record: &str| {
-            std::fs::write(prefix.join("install.json"), record).unwrap();
+        let probe = |record: Option<&str>| {
+            match record {
+                Some(record) => std::fs::write(prefix.join("install.json"), record).unwrap(),
+                None => drop(std::fs::remove_file(prefix.join("install.json"))),
+            }
             let ran = sot_log::test_wait::run_within(
                 std::process::Command::new(&exe)
                     .args(["--exact", "update::tests::probe_check_basis_from_a_prefix", "--nocapture", "--test-threads=1"])
@@ -1292,13 +1295,23 @@ mod tests {
             let text = ran.stdout;
             text.split_once("PROBE[").and_then(|(_, rest)| rest.lines().next()?.strip_suffix(']')).map(str::to_string).unwrap_or(text)
         };
-        let cut = probe(r#"{"schema":1,"prefix":"/p","version":"0.6.7","pinned":tr"#);
+        let cut = probe(Some(r#"{"schema":1,"prefix":"/p","version":"0.6.7","pinned":tr"#));
         assert!(cut.starts_with("Err(\"disabled: install.json cannot be read at "), "{cut}");
         assert!(cut.contains(&prefix.join("install.json").display().to_string().replace('\\', "\\\\")), "names this install's file: {cut}");
         let run = if cfg!(windows) { "install.ps1 -Version" } else { "install.sh --version" };
         assert!(cut.contains(run), "names the remedy: {cut}");
-        let whole = probe(r#"{"schema":1,"prefix":"/p","version":"0.6.7"}"#);
+        let whole = probe(Some(r#"{"schema":1,"prefix":"/p","version":"0.6.7"}"#));
         assert_eq!(whole, r#"Ok("0.6.7")"#, "the exe's own record decides, not the other install's");
+        // Missing: on Windows, beside bin\sotd.exe, it is refused like a cut record; elsewhere absent is no install and
+        // the check falls to the other root, as before.
+        std::fs::write(prefix.join("bin").join("sotd.exe"), b"").unwrap();
+        let missing = probe(None);
+        if cfg!(windows) {
+            assert!(missing.starts_with("Err(\"disabled: install.json is missing at "), "{missing}");
+            assert!(missing.contains("install.ps1 -Version") && !missing.contains("repair"), "{missing}");
+        } else {
+            assert_eq!(missing, r#"Ok("0.6.5")"#, "Unix: absent is no install");
+        }
     }
 
     // The channel comes from the install on disk, not from the version the process booted with.

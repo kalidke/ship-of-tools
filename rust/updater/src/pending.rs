@@ -30,7 +30,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::ReleaseIdentity;
-use crate::manifest::{InstallFile, InstallManifest, UnreadableInstall, INSTALL_MANIFEST};
+use crate::manifest::{missing_record, InstallFile, InstallManifest, UnreadableInstall, INSTALL_MANIFEST};
 use crate::semver::compare_versions;
 
 /// The per-target pointer filename.
@@ -75,19 +75,20 @@ pub struct InstalledBuild {
 
 impl InstalledBuild {
     /// Read fresh from the install beside `updates_root` (`<prefix>/updates`), in three states: `Ok(None)` is a layout with
-    /// no install (a dev box, a test root, an `install.json` that is absent or names no version), where nothing is
-    /// installed to guard; `Err` is an `install.json` that exists and cannot be read (cut short by an interrupted write,
-    /// not JSON, or saying `"pinned": true` with no version to pin), which may hold a pin that an automatic writer
+    /// no install (a dev box, a test root, an `install.json` that is absent with no Windows install beside it, or names
+    /// no version), where nothing is installed to guard; `Err` is an `install.json` that exists and cannot be read (cut
+    /// short by an interrupted write, not JSON, or saying `"pinned": true` with no version to pin) or, on Windows, one
+    /// that is missing with `bin\sotd.exe` beside it ([`missing_record`]), which may hold a pin that an automatic writer
     /// must not lose. Each caller states its choice for the `Err`.
     pub fn try_read(updates_root: &Path) -> std::result::Result<Option<Self>, UnreadableInstall> {
         let Some(prefix) = updates_root.parent() else { return Ok(None) };
         let path = prefix.join(INSTALL_MANIFEST);
         match InstallManifest::load(&path) {
-            InstallFile::Absent => Ok(None),
+            InstallFile::Absent => missing_record(prefix).map_or(Ok(None), Err),
             InstallFile::Unreadable(u) => Err(u),
             InstallFile::Read(m) => match m.version {
                 Some(version) => Ok(Some(Self { version, commit: m.commit, pinned: m.pinned == Some(true) })),
-                None if m.pinned == Some(true) => Err(UnreadableInstall { path, cause: "it says pinned but records no version".into() }),
+                None if m.pinned == Some(true) => Err(UnreadableInstall { path, cause: "it says pinned but records no version".into(), missing: false }),
                 None => Ok(None),
             },
         }
@@ -515,11 +516,79 @@ mod tests {
             armed_over_version: over.map(Into::into),
             armed_over_commit: None,
         };
-        let cut = UnreadableInstall { path: PathBuf::from("/p/install.json"), cause: "EOF while parsing".into() };
+        let cut = UnreadableInstall { path: PathBuf::from("/p/install.json"), cause: "EOF while parsing".into(), missing: false };
         let why = pointer_refusal(&ptr(Some("0.6.6-rc9.13")), Err(cut.clone())).expect("refused");
         assert!(why.contains("0.6.6-rc9.13") && why.contains(&cut.sentence()), "{why}");
         assert!(pointer_refusal(&ptr(None), Err(cut)).is_none(), "no record: the script's exact-tag check judges it");
         assert!(pointer_refusal(&ptr(Some("0.6.6-rc9.13")), Ok(None)).is_none(), "no install: nothing to compare");
+    }
+
+    // Item 9: on Windows a missing record beside bin\sotd.exe is refused like a cut one (a writer's replace can leave it
+    // briefly missing); elsewhere, and with no install beside it, absent is no install.
+    #[tokio::test]
+    async fn a_missing_install_json_beside_a_windows_install_takes_no_automatic_arm() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
+        let root = prefix("missing", None).await;
+        let bin = root.parent().unwrap().join("bin");
+        assert_eq!(InstalledBuild::try_read(&root), Ok(None), "absent with no install beside it: no install");
+        tokio::fs::create_dir_all(&bin).await.unwrap();
+        tokio::fs::write(bin.join("sotd.exe"), b"").await.unwrap();
+        let auto = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap();
+        if cfg!(windows) {
+            let missing = InstalledBuild::try_read(&root).unwrap_err();
+            let said = missing.sentence();
+            assert!(missing.missing && said.starts_with(crate::manifest::MISSING_LEAD), "{said}");
+            assert!(said.contains("install.ps1 -Version") && !said.contains("repair"), "{said}");
+            assert!(matches!(auto, ArmOutcome::UnreadableInstall(_)), "{auto:?}");
+            assert!(read(&root, T).await.unwrap().is_none(), "nothing armed");
+            let op = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Operator).await.unwrap();
+            assert_eq!(op, ArmOutcome::Armed, "the operator's arm proceeds");
+        } else {
+            assert_eq!(InstalledBuild::try_read(&root), Ok(None), "Unix: absent stays no install");
+            assert_eq!(auto, ArmOutcome::Armed);
+        }
+        cleanup(&root).await;
+    }
+
+    // Item 9's measurement (review N1): while a writer replaces a pinned record 3000 times with the shipped helper, no
+    // automatic arm passes the pin. Without the rule an arm that meets the record missing takes it for no install.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn no_automatic_arm_passes_a_pin_while_the_record_is_replaced() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
+        let root = prefix("race", None).await;
+        let dir = root.parent().unwrap().to_path_buf();
+        tokio::fs::create_dir_all(dir.join("bin")).await.unwrap();
+        tokio::fs::write(dir.join("bin").join("sotd.exe"), b"").await.unwrap();
+        install(&dir, "0.6.6-rc9.13", "c0", Some(true)).await;
+        let layout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/sot-install-layout.ps1");
+        let record = dir.join(INSTALL_MANIFEST);
+        let script = format!(
+            "$ErrorActionPreference = 'Stop'; . '{}'; $t = [IO.File]::ReadAllText('{}'); for ($i = 0; $i -lt 3000; $i++) {{ Write-Utf8NoBomViaRename '{}' $t }}",
+            layout.display(),
+            record.display(),
+            record.display()
+        );
+        let writer = std::thread::spawn(move || {
+            sot_log::test_wait::run_within(
+                std::process::Command::new("powershell.exe").args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script]),
+                Duration::from_secs(600),
+            )
+            .ok();
+        });
+        let (mut polls, mut refused) = (0u32, 0u32);
+        while !writer.is_finished() {
+            match arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap() {
+                ArmOutcome::Pinned => {}
+                ArmOutcome::UnreadableInstall(_) => refused += 1,
+                other => panic!("an automatic arm passed the pin on poll {polls}: {other:?}"),
+            }
+            polls += 1;
+        }
+        writer.join().unwrap();
+        println!("{polls} automatic arms while the record was replaced 3000 times; {refused} found it missing and refused");
+        assert!(polls > 0 && read(&root, T).await.unwrap().is_none(), "nothing armed over the pin");
+        cleanup(&root).await;
     }
 
     // An install.json with no pin field (every install made before the field existed) is unpinned and follows its channel.

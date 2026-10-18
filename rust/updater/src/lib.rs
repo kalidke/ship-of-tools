@@ -41,7 +41,10 @@ use anyhow::{bail, Context, Result};
 
 pub use fetch::Fetcher;
 pub use identity::ReleaseIdentity;
-pub use manifest::{resolve_updates_root, InstallFile, InstallManifest, ReadyManifest, UnreadableInstall, UNREADABLE_LEAD};
+pub use manifest::{
+    missing_record, resolve_updates_root, InstallFile, InstallManifest, ReadyManifest, UnreadableInstall, MISSING_LEAD,
+    UNREADABLE_LEAD,
+};
 pub use select::select_target;
 
 /// How long a stage will wait for another process's stage to finish before

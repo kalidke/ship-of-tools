@@ -812,7 +812,10 @@ apply would have downgraded it. The rule:
    arm proceeds as over no record, `sotd update stage` included, so the person's own installer run (`install.sh
    --version/--archive`, `install.ps1 -Version/-Archive`, "update sot from the repo") always repairs it. The person is
    told in one sentence from one owner, `UnreadableInstall::sentence`: the file, the cause, and the installer run that
-   works on that OS. Every writer of `install.json` writes it through a temp file and a rename, with no BOM, so an
+   works on that OS. On Windows only, an `install.json` that is missing while `bin\sotd.exe` exists is refused the same
+   way, with a sentence that says it is missing and names the installer run with a version, because Windows writers
+   replace the record in a step that can leave it briefly missing and install.ps1 writes it before any daemon starts;
+   the Unix writers rename atomically and a fresh install.sh writes it last, so there absent stays no install. Every writer of `install.json` writes it through a temp file and a rename, with no BOM, so an
    interrupted write cannot cut it; a writer that replaces a record it cannot parse writes `"pinned": true`.
 
 **Fallbacks that fail open, and why each is acceptable.** Each leaves the old behavior in place for a case the new rule
