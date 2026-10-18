@@ -792,8 +792,9 @@ apply would have downgraded it. The rule:
    answered before daemon startup; exit 3 refuses, anything else leaves the old exact-tag check in charge, since an older
    `sotd` exits 1 on the unknown word and a `sotd update` without the verb exits 2). A pointer that cannot be parsed is
    refused too: every pointer a Rust writer wrote carries its schema, repo and version, so one that does not parse is
-   corrupt or another program's. Exit 0 stays for "this prefix is not mine" (no readable `install.json`) and "nothing
-   armed". `sot-apply.sh` and `sot-apply.ps1` ask above their re-exec of the pointer's own release's script, so a refused
+   corrupt or another program's. Exit 0 stays for "this prefix is not mine" (no `install.json`) and "nothing
+   armed". An `install.json` that exists and cannot be read (rule 6) refuses a pointer that records the install it was armed
+   over, which cannot be checked, and leaves one with no record to the scripts' exact-tag check. `sot-apply.sh` and `sot-apply.ps1` ask above their re-exec of the pointer's own release's script, so a refused
    pointer never reaches it, and drop the pointer under the lock. `sot-launch`'s `apply_pending` and Windows
    `Invoke-PendingApply` ask before they stop or restart the daemon, so a pointer that will not apply costs no restart and
    no REPL its state; then they run `sot-apply` drop-only (`--drop-only`, `-DropOnly`), which exits after the in-lock
@@ -801,16 +802,25 @@ apply would have downgraded it. The rule:
    stopped as usual. The `update.apply` op refuses the same pointers.
 5. **A new install drops the leftover pointer**: `install.sh` for its target, `install-manifest.ps1` when the version or
    commit it writes differs from the one it replaces.
+6. **An install that cannot say it is unpinned is never moved by an automatic writer.** An `install.json` that exists and
+   cannot be read (cut short by an interrupted write, not JSON, or saying `"pinned": true` with no version) may hold a
+   pin. A leading UTF-8 BOM is not unreadable. The exe's location decides the install whenever `<prefix>/install.json`
+   exists, parsed or not, so the check, the pipeline, the window's guard and `pending::arm` all see the same file.
+   `InstalledBuild::try_read` is the three-state read (absent, unreadable with its path and cause, read), and each
+   caller states its choice for the unreadable one: an automatic arm returns `ArmOutcome::UnreadableInstall`, the
+   daemon's check answers `disabled: <sentence>`, the window's guard and the apply (rule 4) refuse, and the operator's
+   arm proceeds as over no record, `sotd update stage` included, so the person's own installer run (`install.sh
+   --version/--archive`, `install.ps1 -Version/-Archive`, "update sot from the repo") always repairs it. The person is
+   told in one sentence from one owner, `UnreadableInstall::sentence`: the file, the cause, and the installer run that
+   works on that OS. Every writer of `install.json` writes it through a temp file and a rename, with no BOM, so an
+   interrupted write cannot cut it.
 
 **Fallbacks that fail open, and why each is acceptable.** Each leaves the old behavior in place for a case the new rule
 cannot judge, and none can arm or apply a downgrade without another rule catching it:
-- *`install.json` absent or without a version.* An automatic arm proceeds with no record and no comparison (there is
-  no install to compare with). (An `install.json` that exists and cannot be read does not fall here: it may hold a pin,
-  so an automatic arm refuses with `ArmOutcome::UnreadableInstall` and the daemon's check reports it, while the
-  operator's arm proceeds. A leading UTF-8 BOM is not unreadable. Every writer of `install.json` writes it through a temp
-  file and a rename, so an interrupted write cannot cut it.) The apply side catches it: a pointer with no record applies only strictly above whatever
-  `install.json` says by then, and a prefix with no readable `install.json` is not an install of ours (the verb answers 0
-  and the scripts' exact-tag check decides).
+- *`install.json` absent, or present without a version and without a pin.* An automatic arm proceeds with no record and
+  no comparison (there is no install to compare with); one that exists and cannot be read is rule 6, not this. The apply
+  side catches it: a pointer with no record applies only strictly above whatever `install.json` says by then, and a
+  prefix with no `install.json` is not an install of ours (the verb answers 0 and the scripts' exact-tag check decides).
 - *An installed version that does not parse.* `compare_versions` ranks every parsable release above it, so an automatic
   arm proceeds. Every writer of `install.json` writes the release's own tag, which the updater itself parsed to select
   it; an unparsable one is hand-edited, and the operator's `update stage` is the repair.

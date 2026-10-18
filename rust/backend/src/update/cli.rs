@@ -15,7 +15,8 @@
 //!   open in it). The installer asks before an update would restart that daemon.
 //!
 //! The pointer verb's exit code is the contract. 0 means the script goes on to its own checks (no pointer, a pointer
-//! that fits, or no install here to compare with); `REFUSED` means drop the pointer, one that cannot be read included.
+//! that fits, or no install here to compare with); `REFUSED` means drop the pointer, one that cannot be read included, and
+//! one armed over an install whose `install.json` cannot be read.
 //! An older `sotd` exits 1 on the unknown word
 //! `update` and a `sotd update` that predates this verb exits 2 on bad arguments, so a refusal is neither: any other
 //! answer leaves the script on today's exact-tag check.
@@ -24,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use sot_updater::identity::repo_from_env;
 use sot_updater::pending::{self, InstalledBuild, Writer};
-use sot_updater::{Fetcher, InstallManifest, ReleaseIdentity, UpdaterConfig};
+use sot_updater::{Fetcher, InstallFile, InstallManifest, ReleaseIdentity, UpdaterConfig};
 
 use super::{stage_prepare_arm_with, Pipeline};
 
@@ -42,8 +43,8 @@ Usage: sotd update pointer --prefix <install prefix> --target <release target>
   May the pointer armed for <target> apply onto the install at <prefix>? The apply scripts ask before they apply it.
   Reads the pointer and install.json; starts no daemon and writes nothing. Prints `ok` and exits 0 (no pointer, a
   pointer that fits, or no install here to compare with), or prints `refuse: <why>` and exits 3: the pointer cannot be
-  read, was armed over an install that is no longer the one on disk, or sits at or below the installed version (a
-  pointer with no record never applies onto a dev build).
+  read, was armed over an install that is no longer the one on disk (or that install.json cannot be read to check),
+  or sits at or below the installed version (a pointer with no record never applies onto a dev build).
 
 Usage: sotd update direction <version> --prefix <install prefix>
 
@@ -107,7 +108,14 @@ fn absolute_paths(folder: &std::path::Path, prefix: &std::path::Path) -> std::io
 async fn stage_folder(folder: &std::path::Path, prefix: &std::path::Path) -> Result<String, String> {
     let (folder, prefix) = absolute_paths(folder, prefix).map_err(|e| format!("making the paths absolute: {e}"))?;
     let (folder, prefix) = (folder.as_path(), prefix.as_path());
-    let mut install = InstallManifest::read(&prefix.join(sot_updater::manifest::INSTALL_MANIFEST)).map_err(|e| format!("{e:#}"))?;
+    let record = prefix.join(sot_updater::manifest::INSTALL_MANIFEST);
+    let mut install = match InstallManifest::load(&record) {
+        InstallFile::Read(install) => install,
+        // The operator's run is what repairs a record that cannot be read: it proceeds as over no record, its prefix
+        // from the argument (below), and the installer then writes the record whole.
+        InstallFile::Unreadable(_) => InstallManifest::bare(prefix),
+        InstallFile::Absent => return Err(format!("reading {}: no such file", record.display())),
+    };
     install.prefix = prefix.to_path_buf();
     let sums = std::fs::read_to_string(folder.join("SHA256SUMS"))
         .map_err(|e| format!("reading {}: {e}", folder.join("SHA256SUMS").display()))?;
@@ -123,7 +131,8 @@ async fn stage_folder(folder: &std::path::Path, prefix: &std::path::Path) -> Res
     };
     match stage_prepare_arm_with(&cfg, &id, Some(&install), Writer::Operator).await {
         Ok(Pipeline::Armed) => Ok(armed_line(&id, install.version.as_deref())),
-        Ok(_) => Err(format!("{} was staged but not armed: a newer release is armed, or this one is marked bad", id.tag)),
+        Ok(Pipeline::NotArmed(outcome)) => Err(format!("{} was staged but not armed: {}", id.tag, outcome.not_armed_because().unwrap_or_default())),
+        Ok(Pipeline::Staged) => Err(format!("{} was staged but not armed: no install to prepare for", id.tag)),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -187,16 +196,21 @@ fn parse_pointer_args(args: &[String]) -> Result<(PathBuf, String), String> {
     ))
 }
 
-/// The refusal for the pointer armed for `target` under `prefix`, or `None` when it may apply. Without a readable
-/// `install.json` the prefix is not an install of ours and there is nothing to compare. A pointer that exists and cannot
-/// be read is refused: every pointer a Rust writer wrote carries its schema, repo and version, so one that does not
-/// parse is corrupt or another program's, and the apply must not guess.
+/// The refusal for the pointer armed for `target` under `prefix`, or `None` when it may apply. Without an `install.json`
+/// the prefix is not an install of ours and there is nothing to compare. One that exists and cannot be read refuses a
+/// pointer that records the install it was armed over (it cannot be checked), and lets one with no record meet the
+/// script's exact-tag check. A pointer that exists and cannot be read is refused: every pointer a Rust writer wrote
+/// carries its schema, repo and version, so one that does not parse is corrupt or another program's, and the apply must
+/// not guess.
 async fn refusal(prefix: &Path, target: &str) -> Option<String> {
     let updates = prefix.join("updates");
-    let installed = InstalledBuild::read(&updates)?;
+    let installed = InstalledBuild::try_read(&updates);
+    if matches!(installed, Ok(None)) {
+        return None;
+    }
     match pending::read(&updates, target).await {
         Ok(None) => None,
-        Ok(Some(ptr)) => pending::stale_reason(&ptr, &installed),
+        Ok(Some(ptr)) => pending::pointer_refusal(&ptr, installed),
         Err(e) => Some(format!("unreadable pointer: {e:#}")),
     }
 }
@@ -511,6 +525,35 @@ mod tests {
         assert_eq!(code(&dir).await, REFUSED);
         let operator = prefix(("0.6.6-rc9.14-dev+d94ed0fac", "c1"), Some(("0.6.6-rc9.14", Some(("0.6.6-rc9.14-dev+d94ed0fac", "c1")))));
         assert_eq!(code(&operator).await, 0, "an operator's pointer carries its record");
+    }
+
+    // The review's two `update pointer` runs: a pointer armed over a record cannot be checked against an install.json that
+    // cannot be read, and one with no record meets the script's own exact-tag check.
+    #[tokio::test]
+    async fn an_unreadable_install_refuses_a_pointer_armed_over_a_record() {
+        let cut = r#"{"schema":1,"prefix":"/p","version":"0.6.7","pinned":tr"#;
+        let armed = prefix(("0.6.7", "c0"), Some(("0.6.6-rc9.14", Some(("0.6.5", "c0")))));
+        std::fs::write(armed.path().join("install.json"), cut).unwrap();
+        assert_eq!(code(&armed).await, REFUSED);
+        let why = refusal(armed.path(), T).await.unwrap();
+        assert!(why.contains("0.6.5") && why.contains(sot_updater::UNREADABLE_LEAD), "{why}");
+        let bare = prefix(("0.6.7", "c0"), Some(("0.6.6-rc9.14", None)));
+        std::fs::write(bare.path().join("install.json"), cut).unwrap();
+        assert_eq!(code(&bare).await, 0, "no record: the script's exact-tag check judges it");
+    }
+
+    // The installer's repair: `sotd update stage` over an install.json it cannot read goes on as over no record, so
+    // `install.ps1 -Version` can replace the record. It gets as far as the pack folder, which here holds nothing.
+    #[tokio::test]
+    async fn the_operators_stage_goes_on_over_an_install_json_it_cannot_read() {
+        let (prefix, folder) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let record = prefix.path().join("install.json");
+        let stage = || stage_folder(folder.path(), prefix.path());
+        let absent = stage().await.unwrap_err();
+        assert!(absent.contains("install.json"), "no record is still an error: {absent}");
+        std::fs::write(&record, r#"{"schema":1,"prefix":"/p","version":"0.6.7","pinned":tr"#).unwrap();
+        let cut = stage().await.unwrap_err();
+        assert!(cut.contains("SHA256SUMS") && !cut.contains("install.json"), "went on past the record: {cut}");
     }
 
     #[test]

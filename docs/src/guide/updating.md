@@ -120,6 +120,12 @@ and the resource tree, and changes in it are not carried to the next version.
   is pinned in place: when its daemon already answers as that version the run writes the pin, drops any update pointer
   armed over the install, and restarts nothing (on Windows a named run of the installed version fetches no release asset; the prelude still fetches the tag's `install.ps1` unless `SOT_INSTALL_TAG` is set).
   A build with a `+` never updates automatically, so a pin changes nothing there.
+- **An `install.json` that cannot be read.** A record cut short (an interrupted write, a bad hand edit) may hold a pin,
+  so automatic updates stay off for that install, and the update status says so in one sentence: "install.json cannot be
+  read at <path> (<cause>); it may hold a pin, so automatic updates stay off until it is repaired by running
+  `install.sh --version <version>`" (Windows: `install.ps1 -Version <version>`). That run rewrites the record whole and
+  pins the install at the version; a later run that names no version removes the pin. A leading byte-order mark alone
+  (a record saved by Notepad) is not unreadable.
 - **Automatic rollback.** Applying a staged update is an offline pointer flip done by `sot-apply`, which records the
   previous install as *last good*. The `--local` launcher runs `sot-apply --rollback` if the frontend exits with an error
   within 10 seconds twice in the 30 minutes after an update. Windows rolls back after a single such exit within two hours

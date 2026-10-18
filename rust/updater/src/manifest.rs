@@ -72,14 +72,90 @@ pub struct InstallManifest {
     pub pinned: Option<bool>,
 }
 
+/// An `install.json` that exists and cannot be read (cut short by an interrupted write, not JSON), which may hold a
+/// pin: an automatic writer leaves such an install where it is. The owner of the sentence that tells the person.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadableInstall {
+    pub path: PathBuf,
+    pub cause: String,
+}
+
+/// How every sentence about an unreadable `install.json` begins, so a status can be told by it.
+pub const UNREADABLE_LEAD: &str = "install.json cannot be read";
+
+impl UnreadableInstall {
+    /// What is wrong and what to run, in one sentence: the file, the cause, and the installer run that repairs it on this
+    /// OS (a run that names a version rewrites the record whole, and pins the install there).
+    pub fn sentence(&self) -> String {
+        let run = if cfg!(windows) { "install.ps1 -Version <version>" } else { "install.sh --version <version>" };
+        format!(
+            "{UNREADABLE_LEAD} at {} ({}); it may hold a pin, so automatic updates stay off until it is repaired by running `{run}`",
+            self.path.display(),
+            self.cause
+        )
+    }
+
+    /// The updates root of the install this file belongs to: `<prefix>/updates`.
+    pub fn updates_root(&self) -> PathBuf {
+        self.path.parent().map_or_else(|| PathBuf::from("updates"), |p| p.join("updates"))
+    }
+}
+
+/// What a path holds for `install.json`: nothing, a file that cannot be read, or the manifest.
+#[derive(Debug, Clone)]
+pub enum InstallFile {
+    Absent,
+    Unreadable(UnreadableInstall),
+    Read(InstallManifest),
+}
+
+impl InstallFile {
+    /// The manifest, when it was read.
+    pub fn manifest(self) -> Option<InstallManifest> {
+        match self {
+            Self::Read(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// The install's prefix when the file exists, read or not.
+    pub fn prefix(&self) -> Option<PathBuf> {
+        match self {
+            Self::Read(m) => Some(m.prefix.clone()),
+            Self::Unreadable(u) => u.path.parent().map(Path::to_path_buf),
+            Self::Absent => None,
+        }
+    }
+}
+
 impl InstallManifest {
     /// Read from an explicit path.
     pub fn read(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
+        Self::parse(&text).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    /// A record that says only where the install is: what an operator's run stages over when the install's own record
+    /// cannot be read. Every other field is as unknown as in a manifest from before the field shipped.
+    pub fn bare(prefix: &Path) -> Self {
+        Self {
+            schema: INSTALL_SCHEMA,
+            prefix: prefix.to_path_buf(),
+            config: None,
+            service: None,
+            version: None,
+            tag: None,
+            commit: None,
+            daemon: None,
+            frontend: None,
+            pinned: None,
+        }
+    }
+
+    fn parse(text: &str) -> serde_json::Result<Self> {
         // A hand edit saved by Notepad leads with a UTF-8 BOM, which is not an unreadable manifest.
-        let m: Self = serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(&text))
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let m: Self = serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(text))?;
         if m.schema > INSTALL_SCHEMA {
             tracing::warn!(
                 schema = m.schema,
@@ -89,38 +165,41 @@ impl InstallManifest {
         Ok(m)
     }
 
-    /// Locate the manifest for the running binary: `<exe>/../../install.json`
-    /// (binaries live in `<prefix>/bin/`). `None` for layouts without one —
-    /// dev builds from `target/`, pre-manifest installs.
-    ///
-    /// The exe location is the AUTHORITY on the prefix: a manifest whose
-    /// recorded `prefix` disagrees (copied install, edited file) is corrected
-    /// to the exe-derived prefix rather than trusted — otherwise a stray
-    /// manifest could redirect staging (and later the apply flip) to an
-    /// arbitrary directory.
-    pub fn for_current_exe() -> Option<Self> {
-        let exe = std::env::current_exe().ok()?;
-        let prefix = exe.parent()?.parent()?;
-        let path = prefix.join(INSTALL_MANIFEST);
-        if !path.is_file() {
-            return None;
+    /// Read `path` in three states: absent, present but unreadable (with its cause), or read. A reader that acts on
+    /// the answer states its choice for the middle one: a file that cannot be read may hold a pin.
+    pub fn load(path: &Path) -> InstallFile {
+        let unreadable = |cause: String| InstallFile::Unreadable(UnreadableInstall { path: path.to_path_buf(), cause });
+        match std::fs::read_to_string(path) {
+            Ok(text) => Self::parse(&text).map_or_else(|e| unreadable(e.to_string()), InstallFile::Read),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => InstallFile::Absent,
+            Err(e) => unreadable(e.to_string()),
         }
-        match Self::read(&path) {
-            Ok(mut m) => {
+    }
+
+    /// The install record of the running binary: `<exe>/../../install.json` (binaries live in `<prefix>/bin/`).
+    /// `Absent` for layouts without one (dev builds from `target/`, pre-manifest installs).
+    ///
+    /// The exe location is the AUTHORITY on the prefix: a file there decides the install whether or not it parses,
+    /// and a manifest whose recorded `prefix` disagrees (copied install, edited file) is corrected to the exe-derived
+    /// prefix rather than trusted, since a stray manifest could otherwise redirect staging (and later the apply flip)
+    /// to an arbitrary directory.
+    pub fn of_current_exe() -> InstallFile {
+        let Some(prefix) = std::env::current_exe().ok().and_then(|exe| exe.parent()?.parent().map(Path::to_path_buf)) else {
+            return InstallFile::Absent;
+        };
+        match Self::load(&prefix.join(INSTALL_MANIFEST)) {
+            InstallFile::Read(mut m) => {
                 if m.prefix != prefix {
                     tracing::warn!(
                         recorded = %m.prefix.display(),
                         actual = %prefix.display(),
                         "install manifest prefix disagrees with the binary's location — using the binary's"
                     );
-                    m.prefix = prefix.to_path_buf();
+                    m.prefix = prefix;
                 }
-                Some(m)
+                InstallFile::Read(m)
             }
-            Err(e) => {
-                tracing::warn!(error = %e, path = %path.display(), "unreadable install manifest — ignoring");
-                None
-            }
+            other => other,
         }
     }
 
@@ -196,7 +275,7 @@ impl ReadyManifest {
 }
 
 /// Resolve the updates root, in order:
-/// 1. the install manifest next to the running binary (`<prefix>/updates`) —
+/// 1. the install manifest next to the running binary (`<prefix>/updates`), parsed or not —
 ///    the CANONICAL root: `sot-apply` and the systemd `ExecStartPre` owner
 ///    read exactly this location, so on a release install nothing (not even
 ///    an env override) may point producers elsewhere or armed updates would
@@ -208,13 +287,19 @@ impl ReadyManifest {
 /// fallback, because staging executables into a world-writable temp dir is
 /// how updaters get owned.
 pub fn resolve_updates_root() -> Result<PathBuf> {
-    if let Some(m) = InstallManifest::for_current_exe() {
+    // A file at the exe's prefix decides the root whether or not it parses: an unreadable one is still this install's.
+    let installed = match InstallManifest::of_current_exe() {
+        InstallFile::Read(m) => Some(m.updates_root()),
+        InstallFile::Unreadable(u) => Some(u.updates_root()),
+        InstallFile::Absent => None,
+    };
+    if let Some(root) = installed {
         if std::env::var_os("SOT_UPDATE_ROOT").is_some() {
             tracing::warn!(
                 "SOT_UPDATE_ROOT ignored: this is a release install — the manifest root is canonical (the apply owners read it)"
             );
         }
-        return Ok(m.updates_root());
+        return Ok(root);
     }
     if let Some(root) = std::env::var_os("SOT_UPDATE_ROOT") {
         let p = PathBuf::from(root);
@@ -329,6 +414,28 @@ mod tests {
         assert_eq!(m.updates_root(), PathBuf::from("/home/u/.local/share/sot/updates"));
         assert_eq!(m.daemon, Some(true));
         assert_eq!(m.frontend, Some(false));
+    }
+
+    // The three states of install.json, and the one sentence for the middle one.
+    #[test]
+    fn load_tells_absent_from_unreadable_from_read() {
+        let dir = std::env::temp_dir().join(format!("sot-updater-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(INSTALL_MANIFEST);
+        assert!(matches!(InstallManifest::load(&file), InstallFile::Absent));
+        std::fs::write(&file, r#"{"schema":1,"prefix":"/p","version":"0.6.7","pinned":tr"#).unwrap();
+        let InstallFile::Unreadable(cut) = InstallManifest::load(&file) else { panic!("a cut file is unreadable") };
+        assert_eq!(cut.path, file);
+        assert_eq!(cut.updates_root(), dir.join("updates"));
+        let said = cut.sentence();
+        assert!(said.starts_with(UNREADABLE_LEAD), "{said}");
+        assert!(said.contains(&file.display().to_string()) && said.contains(&cut.cause), "names the file and the cause: {said}");
+        let run = if cfg!(windows) { "install.ps1 -Version" } else { "install.sh --version" };
+        assert!(said.contains(run), "names the remedy that works on this OS: {said}");
+        std::fs::write(&file, "\u{feff}{\"schema\":1,\"prefix\":\"/p\"}").unwrap();
+        assert!(matches!(InstallManifest::load(&file), InstallFile::Read(_)), "a BOM alone is not unreadable");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
