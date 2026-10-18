@@ -51,7 +51,8 @@ Usage: sotd update direction <version> --prefix <install prefix> [--installed <v
   Which way does the install at <prefix> move to <version> (a tag or a bare version)? Prints `newer`, `same` or `older`
   against the version install.json records and exits 0. An install.json that cannot be parsed still gives its version when
   the text holds one; when it holds none, prints `unknown` and exits 0. Exits 1 when install.json is absent or records no
-  version. --installed gives the version the caller read from the installed binary, used only where the record names none.
+  version and --installed gives none. --installed gives the version the caller read from the installed binary, used only where the record names none
+  (or is absent).
   Starts no daemon and writes nothing.
 
 Usage: sotd update repls --endpoint <unix:PATH|pipe:PATH>
@@ -260,8 +261,8 @@ fn parse_direction_args(args: &[String]) -> Result<(String, PathBuf, Option<Stri
 /// run rewrites the record); or why it cannot answer (no file, or a whole record naming no version).
 ///
 /// `read_elsewhere` is the version the caller read from the installed binary: used only where the record names none (a
-/// whole record without a version, or one that cannot be parsed and holds no version text), so a record cut inside its
-/// version cannot hide the installed one from the no-move-back guard.
+/// whole record without a version, one that cannot be parsed and holds no version text, or no record at all), so a record
+/// cut inside its version, or missing, cannot hide the installed one from the no-move-back guard.
 fn direction_answer(version: &str, record: &Path, read_elsewhere: Option<&str>) -> Result<String, String> {
     let word = |installed: &str| direction_word(version, installed).to_string();
     match InstallManifest::load(record) {
@@ -274,7 +275,9 @@ fn direction_answer(version: &str, record: &Path, read_elsewhere: Option<&str>) 
             .map(|installed| word(&installed))
             .or_else(|| read_elsewhere.map(word))
             .unwrap_or_else(|| "unknown".to_string())),
-        InstallFile::Absent => Err(format!("reading {}: no such file", record.display())),
+        InstallFile::Absent => read_elsewhere
+            .map(word)
+            .ok_or_else(|| format!("reading {}: no such file", record.display())),
     }
 }
 
@@ -648,6 +651,9 @@ mod tests {
         assert_eq!(with_binary("{not json", "0.6.5"), Ok("newer".to_string()));
         assert_eq!(with_binary(r#"{"schema":1,"prefix":"/p"}"#, "0.6.7"), Ok("older".to_string()), "a whole record with no version");
         assert_eq!(with_binary(&cut("0.6.5"), "0.6.7"), Ok("newer".to_string()), "the record's own version wins");
+        std::fs::remove_file(&record).unwrap();
+        assert_eq!(direction_answer("v0.6.6", &record, Some("0.6.7")), Ok("older".to_string()), "a missing record, the binary's version");
+        assert!(direction_answer("v0.6.6", &record, None).is_err(), "a missing record and no binary version: no answer");
         assert_eq!(ask(r#"{"schema":1,"version":"0.6"#), Ok("unknown".to_string()), "a cut value is no version");
         assert_eq!(direction_cli(&["--prefix".into(), dir.path().display().to_string(), "v0.6.6".into()]), 0);
     }
