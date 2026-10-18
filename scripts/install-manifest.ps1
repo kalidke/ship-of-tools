@@ -105,10 +105,13 @@ function ConvertTo-JsonStr([string]$s) { return ($s -replace '\\', '\\' -replace
 
 New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
 $sameInstall = $false
+$pinLine = ''
 if (Test-Path -LiteralPath $manifest) {
     try {
         $before = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
         $sameInstall = ([string]$before.version -eq $version) -and ([string]$before.commit -eq $commit)
+        # The pin belongs to the run that named the version (install.ps1 sets and removes it); a refresh keeps it.
+        if ($before.pinned -eq $true) { $pinLine = ",`n  `"pinned`": true" }
     } catch {}
 }
 $body = @"
@@ -118,10 +121,12 @@ $body = @"
   "config": "$(ConvertTo-JsonStr $config)",
   "service": "none",
   "hub": "$(ConvertTo-JsonStr $Hub)",
+  "daemon": true,
+  "frontend": true,
   "version": "$version",
   "tag": "$tag",
   "commit": "$commit",
-  "installed_at": "$( (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') )"
+  "installed_at": "$( (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') )"$pinLine
 }
 "@
 # UTF8 without BOM: serde_json rejects a leading BOM, and Set-Content -Encoding
@@ -143,11 +148,16 @@ if (-not $sameInstall) {
 # with "no hosts.toml ... yet: pass --hub <alias>" (2026-09-18 field report).
 $sotd = Join-Path $Prefix 'bin\sotd.exe'
 if ($Hub -and (Test-Path -LiteralPath $sotd)) {
+    # Continue, not Stop: Windows PowerShell 5.1 turns a native command's stderr into a terminating error under Stop, and
+    # sotd says why a sync was refused there (the install entry reads that line).
+    $eapSync = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     $syncOut = & $sotd topology sync --hub $Hub 2>&1
-    if ($LASTEXITCODE -eq 0) {
+    $syncCode = $LASTEXITCODE
+    $ErrorActionPreference = $eapSync
+    if ($syncCode -eq 0) {
         Write-Host "install-manifest: topology sync --hub $Hub ok: $syncOut"
     } else {
-        Write-Warning "install-manifest: topology sync --hub $Hub failed (exit $LASTEXITCODE): $syncOut"
+        Write-Warning "install-manifest: topology sync --hub $Hub failed (exit $syncCode): $syncOut"
         Write-Warning "  The launcher will fall back to a local-only frontend until this succeeds."
     }
 } elseif (-not $Hub) {

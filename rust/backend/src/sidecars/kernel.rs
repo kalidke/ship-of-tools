@@ -347,7 +347,7 @@ fn julia_bin(kernel_project: &Path) -> Result<(String, &'static str), String> {
         return Ok((bin.clone(), "test stub"));
     }
     let _ = kernel_project;
-    crate::sidecars::julia::resolve_bin()
+    crate::sidecars::julia::resolve_bin().map_err(|e| e.to_string())
 }
 
 /// Resolve + spawn one child, fold `kernel.hello` into the same

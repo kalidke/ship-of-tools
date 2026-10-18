@@ -234,7 +234,7 @@ async fn run(install: InstallManifest, current: String) {
         }
     };
     // The install's version when there is one, else this process's: the same dev-build rule `arm` and `admits` apply.
-    let running = InstalledBuild { version: cfg.current_version.clone(), commit: None };
+    let running = InstalledBuild { version: cfg.current_version.clone(), commit: None, pinned: false };
     if running.is_dev_build() {
         tracing::info!(current = %cfg.current_version, "fe self-update: the install is a dev build — nothing to do");
         return;
@@ -248,7 +248,8 @@ async fn run(install: InstallManifest, current: String) {
     // The window may be older than the install; only a release above the install on disk is worth the download. `arm`
     // reads the install again under the lock and decides.
     if let Some(installed) = InstalledBuild::read(&cfg.updates_root).filter(|i| !i.admits(&id.version)) {
-        tracing::info!(tag = %id.tag, installed = %installed.version, "fe self-update: the install is already at or above this release — nothing to do");
+        let why = installed.pin_note().unwrap_or_else(|| "the install is already at or above this release".into());
+        tracing::info!(tag = %id.tag, installed = %installed.version, "fe self-update: {why} — nothing to do");
         return;
     }
     // Name the point this launch starts from. Every stage below short-circuits
@@ -302,7 +303,7 @@ async fn run(install: InstallManifest, current: String) {
         Ok(ArmOutcome::KeptNewer | ArmOutcome::MarkedBad) => {
             tracing::info!(tag = %id.tag, "fe self-update: a newer/blocked arm exists")
         }
-        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall) => {
+        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall | ArmOutcome::Pinned) => {
             tracing::info!(tag = %id.tag, "fe self-update: not above the installed build — not armed")
         }
         Err(e) => tracing::warn!(tag = %id.tag, error = %e, "fe self-update: arming failed"),

@@ -1,6 +1,6 @@
 ---
 name: sot-install
-description: Install or update Ship of Tools on this computer. Activates for "update sot", "update sot from the repo", "update Ship of Tools", "install sot", "sot install", "update sot comm". Runs the installer (the update entry) and reports its one verdict line; the agent comm and skills are refreshed as part of it.
+description: Install or update Ship of Tools on this computer (Linux, macOS and Windows). Activates for "update sot", "update sot from the repo", "update Ship of Tools", "install sot", "sot install", "update sot comm". Runs the installer (the update entry) and reports its one verdict line; the agent comm and skills are refreshed as part of it.
 ---
 
 # sot-install
@@ -16,8 +16,10 @@ If `~/.local/share/sot/install.json` exists (use `--prefix <dir>` or `SOT_PREFIX
 bash ~/.local/share/sot/repo/current/scripts/install.sh
 ```
 
-With no options it follows the channel the machine already runs, keeps the role the install recorded, and never moves
-backwards. Read its **last line** and tell the human:
+With no options it follows the channel the machine already runs, takes the role from hosts.toml's entry for this computer, else a role flag, else what the install recorded, and never moves
+backwards. A run can take many minutes (the Julia environments are prepared), longer than a tool call's default
+timeout: run it in the background or with the longest timeout the tool allows, and read the **last line** of its output
+when it ends. Tell the human what that line says:
 
 - `PASS: Ship of Tools <v> at <short> on this computer`: done.
 - `ONE STEP LEFT: <step>`: the install is whole; give the human that step in those words (usually: quit the window and
@@ -29,7 +31,7 @@ backwards. Read its **last line** and tell the human:
     runs a build of the line (a `+` in its version): a pack of the line goes in with `--archive <folder>`, while a release
     named with `--version` is usually older and moves this computer back. `direction:` means the newest release is older
     than what runs here (or the direction could not be told): only a version the human names with `--version vX.Y.Z` goes
-    back. Ask which they want.
+    back, and naming one pins the install (automatic updates stay off). Ask which they want.
   - `--archive` runs the install.sh of the checkout that made the pack (the folder `scripts/pack-build.sh` wrote there),
     not the installed one: `bash <that checkout>/scripts/install.sh --archive <folder>`.
   - `enroll:` the hub's hosts.toml omits this computer: run the command the line names on the hub, then run this again.
@@ -39,12 +41,51 @@ If a run stops half way, run it again: a repeat is a repair run. If the installe
 `target:` case above: ask the human. Otherwise follow the channel: a stable version takes the latest stable release
 (`curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/kalidke/ship-of-tools/releases/latest` ends in its
 tag), a pre-release the newest published one (`curl -fsSL 'https://api.github.com/repos/kalidke/ship-of-tools/releases?per_page=1'`,
-its first `tag_name`). Tell the human that version before running
-`curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash -s -- --version <tag>`.
+its first `tag_name`). Tell the human that version, then run the installer of that tag with no version:
+`curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash`. It follows the same
+channel itself, so the install stays unpinned and its automatic updates stay on; adding `--version` would pin it.
 With no `install.json` this is a first install:
 follow `docs/INSTALL-AGENT.md` in the checkout, or fetch it from the repo. A source checkout (no `install.json`, a `+`
-in `sotd --version`) updates by `git pull` and a rebuild. On Windows there is no installer script yet; follow
-`docs/INSTALL-AGENT.md`, "Updating later".
+in `sotd --version`) updates by `git pull` and a rebuild.
+
+## Update (Windows)
+
+If `%LOCALAPPDATA%\sot\install.json` exists (pass `-Prefix <dir>` for another prefix), run the installer from the
+installed checkout. The versions path works from an ssh session too, where `repo\current` cannot be traversed:
+
+```powershell
+$p="$env:LOCALAPPDATA\sot"; $t=(Get-Content "$p\install.json" -Raw | ConvertFrom-Json).tag
+powershell -NoProfile -ExecutionPolicy Bypass -File "$p\repo\versions\$t\scripts\install.ps1"
+```
+
+It reads the same way as the Unix one: no options follows the channel the machine already runs, never moves backwards,
+and ends with exactly one line. A run can take many minutes (the stage prepares Julia, and a converge waits up to 30
+minutes for the window), longer than a tool call's default timeout: run it in the background or with the longest timeout
+the tool allows, and read the **last line** of its output when it ends. Tell the human what that line says:
+
+- `PASS: Ship of Tools <v> at <short> on this computer`: done.
+- `ONE STEP LEFT: <step>`: the install is whole, or the update is armed and waits for one thing only the human can do:
+  quit Ship of Tools (choose Keep) and start it from the shortcut, start it at the desk, or install Julia or jq with the
+  winget command the line names. Give the human the step in those words, then run the installer again to confirm.
+- `FAIL: <check>: <detail>`: report the line. Do not retry blindly.
+  - `daemon:` names rows with a live REPL and says when the Pluto server is running (a restart would end both), or says
+    why the daemon could not be asked in full. Ask the human; run it again with `-RestartDaemon` only on a yes.
+  - `target:` and `direction:` are the human's to answer: the agent does not choose a version. `target:` means the machine
+    runs a build of the line (a `+` in its version): a pack of the line (`scripts\pack-build.ps1` in the checkout that
+    built it) goes in with `-Archive <folder>`, while a release named with `-Version vX.Y.Z` is usually older, moves
+    this computer back and pins the install. `direction:` means the newest release is older than what runs here: only a version the human
+    names goes back. Ask which they want.
+  - `-Archive` runs the install.ps1 of the checkout that made the pack, not the installed one:
+    `powershell -NoProfile -ExecutionPolicy Bypass -File <that checkout>\scripts\install.ps1 -Archive <folder>`.
+
+A run that names what to install (`-Version`, `-Archive`) pins the install: automatic updates stay off until a run that
+names no version, and the PASS or ONE STEP LEFT line ends "pinned at <v>"; tell the human when it does. If a run stops
+half way, run it again: a repeat is a repair run. An install that predates `install.ps1` has no such file in its
+checkout: fetch the installer of the channel's tag (`https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.ps1`,
+with `curl.exe`) and run it with no version, so the install stays unpinned. With no install here, a first install is
+`docs/INSTALL-AGENT.md`: the same fetched installer with `-Hub`, no version (it takes the latest stable release; while the
+latest stable release has no `install.ps1`, naming a pre-release with `-Version <rc tag>` is the person's choice, and pins). A source
+checkout (no `install.json`, a `+` in `sotd.exe --version`) updates by `git pull` and a rebuild.
 
 ## Only the agent comm and skills
 

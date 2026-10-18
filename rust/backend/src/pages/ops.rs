@@ -505,7 +505,7 @@ async fn run_quarto(
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    cmd.env("QUARTO_JULIA", crate::sidecars::julia::resolve_bin().map_err(std::io::Error::other)?.0);
+    cmd.env("QUARTO_JULIA", crate::sidecars::julia::resolve_bin().map_err(|e| std::io::Error::other(e.to_string()))?.0);
     let _document = DocumentLock::take(cwd.join(file_name)).await;
     let mut contained = sig.spawn(&mut cmd)?;
     let (mut out, mut errs) = (contained.stdout.take(), contained.stderr.take());
@@ -1105,7 +1105,7 @@ mod quarto_shutdown_tests {
     fn quarto_refuses_what_the_resolver_refuses() {
         let dir = tempfile::tempdir().unwrap();
         let _pin = JuliaPin::new(std::path::Path::new("relative-julia"), None);
-        let refusal = crate::sidecars::julia::resolve_bin().unwrap_err();
+        let refusal = crate::sidecars::julia::resolve_bin().unwrap_err().to_string();
         let out = dir.path().join("qj");
         let ran = run_stub_quarto(dir.path(), &format!("printf '%s' \"$QUARTO_JULIA\" > {}\n", out.display()));
         assert!(!out.exists(), "a refused julia still rendered");
@@ -1139,7 +1139,7 @@ mod resolver_consumer_tests {
         let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _restore = crate::paths::EnvGuard::capture("SOT_JULIA_BIN");
         std::env::set_var("SOT_JULIA_BIN", "relative-julia");
-        let refusal = crate::sidecars::julia::resolve_bin().unwrap_err();
+        let refusal = crate::sidecars::julia::resolve_bin().unwrap_err().to_string();
         let dir = tempfile::tempdir().unwrap();
         // An owned program that does not exist: starting it would be a not-found error, not the resolver's.
         let missing = dir.path().join("no-such-quarto").to_string_lossy().into_owned();

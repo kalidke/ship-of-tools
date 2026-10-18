@@ -20,6 +20,15 @@ use serde_json::Value;
 /// Julia's executable file name on this target, for the PATH search and the juliaup layout.
 const JULIA_EXE: &str = if cfg!(windows) { "julia.exe" } else { "julia" };
 
+/// Why no julia was selected. A caller that can live without Julia (a Windows update's prepare) skips only `NotFound`:
+/// a `Refused` julia (named or found, a juliaup default that does not resolve included) fails the kernels and REPLs too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum JuliaError { NotFound(String), Refused(String) }
+
+impl std::fmt::Display for JuliaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { let (Self::NotFound(why) | Self::Refused(why)) = self; f.write_str(why) }
+}
+
 /// Resolve the `julia` binary honestly. Order:
 /// 1. `SOT_JULIA_BIN`, trimmed — must not be a Windows app-execution alias
 ///    (a hard error), and must be an absolute path (upstream juliaup's
@@ -38,7 +47,7 @@ const JULIA_EXE: &str = if cfg!(windows) { "julia.exe" } else { "julia" };
 ///    rejected, this is an error: a bare `"julia"` is never offered, since
 ///    the OS would resolve the same rejected file (and Windows resolves a
 ///    bare name to the Store alias).
-pub(crate) fn resolve_bin() -> Result<(String, &'static str), String> {
+pub(crate) fn resolve_bin() -> Result<(String, &'static str), JuliaError> {
     resolve_bin_on(std::env::var_os("PATH").as_deref())
 }
 
@@ -46,45 +55,42 @@ pub(crate) fn resolve_bin() -> Result<(String, &'static str), String> {
 /// and never changes the process's. Whatever [`find_on`] finds is checked once more here, so no answer is an
 /// app-execution alias, wherever it was found (a juliaup version's `Path` may point anywhere); the check reads the
 /// file, through ordinary filesystem links.
-fn resolve_bin_on(path: Option<&std::ffi::OsStr>) -> Result<(String, &'static str), String> {
+fn resolve_bin_on(path: Option<&std::ffi::OsStr>) -> Result<(String, &'static str), JuliaError> {
     let (bin, source) = find_on(path)?;
     if let Some(why) = alias_refusal(Path::new(&bin)) {
-        return Err(format!("{bin:?} ({source}) {why}"));
+        return Err(JuliaError::Refused(format!("{bin:?} ({source}) {why}")));
     }
     Ok((bin, source))
 }
 
 /// The search itself: the override, juliaup's default channel, then the PATH candidates.
-fn find_on(path: Option<&std::ffi::OsStr>) -> Result<(String, &'static str), String> {
+fn find_on(path: Option<&std::ffi::OsStr>) -> Result<(String, &'static str), JuliaError> {
     if let Some(v) = std::env::var_os("SOT_JULIA_BIN") {
         let trimmed = v.to_string_lossy().trim().to_string();
         if !trimmed.is_empty() {
             if let Some(why) = alias_refusal(Path::new(&trimmed)) {
-                return Err(format!("SOT_JULIA_BIN={trimmed:?} {why}"));
+                return Err(JuliaError::Refused(format!("SOT_JULIA_BIN={trimmed:?} {why}")));
             }
             return if Path::new(&trimmed).is_absolute() {
                 Ok((trimmed, "SOT_JULIA_BIN"))
             } else {
-                Err(format!(
-                    "SOT_JULIA_BIN={trimmed:?} is not an absolute path (juliaup requires \
-                     absolute overrides)"
-                ))
+                Err(JuliaError::Refused(format!("SOT_JULIA_BIN={trimmed:?} is not an absolute path (juliaup requires absolute overrides)")))
             };
         }
     }
-    if let Some(home) = home_dir() {
-        match resolve_juliaup_julia(&home) {
-            Ok(Some(path)) => return Ok((path.to_string_lossy().into_owned(), "juliaup")),
-            Ok(None) => {}
-            Err(e) => tracing::warn!(
-                error = %e,
-                "juliaup present but its layout didn't parse as expected; falling back to PATH"
-            ),
-        }
+    let juliaup = home_dir().map_or(Ok(None), |home| resolve_juliaup_julia(&home));
+    match &juliaup {
+        Ok(Some(bin)) => return Ok((bin.to_string_lossy().into_owned(), "juliaup")),
+        Err(e) => tracing::warn!(error = %e, "juliaup present but its layout didn't parse as expected; falling back to PATH"),
+        Ok(None) => {}
     }
     let candidates = candidates_on(path, JULIA_EXE);
     if candidates.is_empty() {
-        return Err("no `julia` found: SOT_JULIA_BIN unset, no juliaup default channel, none on PATH".into());
+        let none = "no `julia` found: SOT_JULIA_BIN unset, no juliaup default channel, none on PATH";
+        return Err(match juliaup {
+            Err(e) => JuliaError::Refused(format!("{none} (juliaup's default channel did not resolve: {e})")),
+            Ok(_) => JuliaError::NotFound(none.into()),
+        });
     }
     let mut first_rejection = None;
     for candidate in candidates {
@@ -100,10 +106,7 @@ fn find_on(path: Option<&std::ffi::OsStr>) -> Result<(String, &'static str), Str
             }
         }
     }
-    Err(format!(
-        "every `julia` on PATH was rejected (bare `julia` would resolve the same one) — {}",
-        first_rejection.unwrap_or_default()
-    ))
+    Err(JuliaError::Refused(format!("every `julia` on PATH was rejected (bare `julia` would resolve the same one) — {}", first_rejection.unwrap_or_default())))
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -487,7 +490,7 @@ mod tests {
         let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
         std::env::set_var("SOT_JULIA_BIN", "relative/julia");
         let err = resolve_bin().unwrap_err();
-        assert!(err.contains("absolute"), "unexpected message: {err}");
+        assert!(matches!(&err, JuliaError::Refused(why) if why.contains("absolute")), "unexpected error: {err:?}");
     }
 
     #[test]
@@ -612,7 +615,7 @@ mod tests {
         std::env::remove_var("JULIAUP_DEPOT_PATH");
         
         let err = resolve_bin_on(Some(path_dir.path().as_os_str())).unwrap_err();
-        assert!(err.contains("rejected"), "unexpected message: {err}");
+        assert!(matches!(&err, JuliaError::Refused(why) if why.contains("rejected")), "unexpected error: {err:?}");
     }
 
     #[test]
@@ -629,7 +632,34 @@ mod tests {
         std::env::remove_var("JULIAUP_DEPOT_PATH");
 
         let err = resolve_bin_on(Some(empty_path_dir.path().as_os_str())).unwrap_err();
-        assert!(err.contains("no `julia` found"), "unexpected message: {err}");
+        assert!(matches!(&err, JuliaError::NotFound(why) if why.contains("no `julia` found")), "unexpected error: {err:?}");
+    }
+
+    /// juliaup is installed and its default channel's binary is gone, with no julia on the PATH: a Julia exists and is
+    /// unusable, so the answer is a refusal, not "none found" (a caller that can live without Julia must not skip it).
+    #[test]
+    fn a_juliaup_default_whose_binary_is_gone_is_a_refusal_not_a_miss() {
+        let _serial = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let juliaup_dir = home.path().join(".julia").join("juliaup");
+        std::fs::create_dir_all(&juliaup_dir).unwrap();
+        let config = r#"{
+            "Default": "release",
+            "InstalledChannels": { "release": { "Version": "1.12.6" } },
+            "InstalledVersions": { "1.12.6": { "Path": "./julia-1.12.6" } }
+        }"#;
+        std::fs::write(juliaup_dir.join("juliaup.json"), config).unwrap();
+        let empty_path_dir = tempfile::tempdir().unwrap();
+
+        let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
+        let _g2 = EnvGuard::capture("HOME");
+        let _g3 = EnvGuard::capture("JULIAUP_DEPOT_PATH");
+        std::env::remove_var("SOT_JULIA_BIN");
+        std::env::set_var("HOME", home.path());
+        std::env::remove_var("JULIAUP_DEPOT_PATH");
+
+        let err = resolve_bin_on(Some(empty_path_dir.path().as_os_str())).unwrap_err();
+        assert!(matches!(&err, JuliaError::Refused(why) if why.contains("missing on disk")), "unexpected error: {err:?}");
     }
 
     /// A directory that happens to be called `WindowsApps` (any case) holds an ordinary executable: the name is not
@@ -731,7 +761,7 @@ mod tests {
             for candidate in [&sp.via_junction, &sp.via_link] {
                 std::env::set_var("SOT_JULIA_BIN", candidate);
                 let err = resolve_bin_on(Some(std::ffi::OsStr::new(""))).unwrap_err();
-                assert!(err.contains("app-execution alias"), "{}: {err}", candidate.display());
+                assert!(matches!(&err, JuliaError::Refused(why) if why.contains("app-execution alias")), "{}: {err:?}", candidate.display());
             }
         }
 
@@ -758,7 +788,7 @@ mod tests {
             std::env::set_var("HOME", home.path());
             std::env::remove_var("JULIAUP_DEPOT_PATH");
             let err = resolve_bin_on(Some(std::ffi::OsStr::new(""))).unwrap_err();
-            assert!(err.contains("app-execution alias"), "{err}");
+            assert!(matches!(&err, JuliaError::Refused(why) if why.contains("app-execution alias")), "{err:?}");
         }
 
         #[test]
@@ -778,7 +808,7 @@ mod tests {
             let path = std::env::join_paths([sp.link_dir.as_path(), real_dir.path()]).unwrap();
             assert_eq!(resolve_bin_on(Some(path.as_os_str())), Ok((real.to_string_lossy().into_owned(), "PATH")));
             let only_alias = std::env::join_paths([sp.link_dir.as_path()]).unwrap();
-            assert!(resolve_bin_on(Some(only_alias.as_os_str())).unwrap_err().contains("rejected"));
+            assert!(matches!(resolve_bin_on(Some(only_alias.as_os_str())), Err(JuliaError::Refused(why)) if why.contains("rejected")));
         }
     }
 }

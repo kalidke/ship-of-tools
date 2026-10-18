@@ -35,6 +35,7 @@ pub(crate) use cli::{run, USAGE};
 
 use crate::server::reply::HandlerOutput;
 use crate::lifecycle::lease::Leases;
+use crate::sidecars::julia::JuliaError;
 
 /// Daemon policy: every updater command belongs to this signal's contained tree registry.
 pub(crate) struct UpdaterSpawner(pub(crate) &'static crate::lifecycle::child_signal::Signal);
@@ -184,17 +185,18 @@ impl Updater {
             Ok(version) => {
                 sot_updater::check_release(&updater_spawner(), &self.repo, &version, &Fetcher::from_env()).await
             }
-            Err(status) => disabled(status),
+            Err(status) => disabled(&status),
         }
     }
 
     /// The version a check follows the channel of and compares with: the install's, read now. This process booted with
     /// `current`, and a shared prefix can have been installed past it, or onto another channel, since; `current` stands
-    /// only where there is no install to read. A dev build as the install is no basis for a release check.
-    fn check_basis(&self) -> std::result::Result<String, &'static str> {
+    /// only where there is no install to read. A dev build or a pinned install is no basis for a release check.
+    fn check_basis(&self) -> std::result::Result<String, String> {
         let installed = sot_updater::resolve_updates_root().ok().and_then(|root| InstalledBuild::read(&root));
         match installed {
-            Some(i) if i.is_dev_build() => Err("disabled: the install is a dev build"),
+            Some(i) if i.is_dev_build() => Err("disabled: the install is a dev build".into()),
+            Some(i) if i.pinned => Err(format!("disabled: {}", i.pin_note().unwrap_or_default())),
             Some(i) => Ok(i.version),
             None => Ok(self.current.clone()),
         }
@@ -328,7 +330,7 @@ pub(crate) async fn stage_prepare_arm_with(
     match sot_updater::pending::arm(&cfg.updates_root, id, &state.checkout, &state.commit, writer).await {
         Ok(ArmOutcome::Armed) => Ok(Pipeline::Armed),
         Ok(ArmOutcome::KeptNewer | ArmOutcome::MarkedBad) => Ok(Pipeline::Kept),
-        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall) => Ok(Pipeline::NotAbove),
+        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall | ArmOutcome::Pinned) => Ok(Pipeline::NotAbove),
         Err(e) => Err(PipelineError::Arm(chain(&e))),
     }
 }
@@ -352,6 +354,9 @@ fn arm_refusal(foreign: bool, installed: Option<&InstalledBuild>, id: &ReleaseId
     let installed = installed?;
     if installed.is_dev_build() {
         return Some(format!("the installed {} is a dev build", installed.version));
+    }
+    if let Some(note) = installed.pin_note() {
+        return Some(note);
     }
     (!installed.admits(&id.version)).then(|| format!("{} is not above the installed {}", id.tag, installed.version))
 }
@@ -437,9 +442,27 @@ fn backend_role_wanted(install: &InstallManifest) -> bool {
 }
 
 /// The julia an update's prepare runs for its envs: only a backend role runs one, and it is the resolver's answer, the
-/// one every other daemon child runs, with the resolver's reason when there is none.
+/// one every other daemon child runs, with the resolver's reason when there is none. On Windows no answer skips the Julia
+/// steps, as the window's own update does: the launcher instantiates a new version's environments at its first start, and
+/// a box without Julia is a supported, degraded state, not a reason to refuse every update.
 fn prepare_julia(backend_role: bool) -> Result<Option<String>, String> {
-    backend_role.then(|| crate::sidecars::julia::resolve_bin().map(|(bin, _source)| bin)).transpose()
+    if !backend_role {
+        return Ok(None);
+    }
+    julia_or_skip(crate::sidecars::julia::resolve_bin().map(|(bin, _source)| bin), cfg!(windows))
+}
+
+/// Only "no julia anywhere" is skipped; a julia the resolver found and refused stays the stage's error, since the
+/// daemon's kernels and REPLs would fail on the same one.
+fn julia_or_skip(resolved: Result<String, JuliaError>, skip_when_none: bool) -> Result<Option<String>, String> {
+    match resolved {
+        Ok(bin) => Ok(Some(bin)),
+        Err(JuliaError::NotFound(why)) if skip_when_none => {
+            tracing::info!("preparing the update without Julia: {why}");
+            Ok(None)
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 fn prepare_spec(install: &InstallManifest, cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<PrepareSpec, String> {
@@ -892,7 +915,7 @@ mod tests {
         let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _restore = crate::paths::EnvGuard::capture("SOT_JULIA_BIN");
         std::env::set_var("SOT_JULIA_BIN", "relative-julia");
-        let refusal = crate::sidecars::julia::resolve_bin().unwrap_err();
+        let refusal = crate::sidecars::julia::resolve_bin().unwrap_err().to_string();
         assert_eq!(prepare_julia(true), Err(refusal), "the resolver's error is returned unchanged");
         assert_eq!(prepare_julia(false), Ok(None), "a frontend-only role prepares no julia, whatever the override");
         // A path that does not exist, under a folder with the name an alias lives in, is a selection for the spawn
@@ -902,6 +925,22 @@ mod tests {
         std::env::set_var("SOT_JULIA_BIN", &stub);
         assert_eq!(prepare_julia(true), Ok(Some(stub.to_string_lossy().into_owned())));
         assert_eq!(prepare_julia(false), Ok(None));
+    }
+
+    /// A Windows prepare with no Julia anywhere skips the Julia steps; a Julia the resolver refused is an error on every
+    /// platform, and the others refuse with the resolver's reason.
+    #[test]
+    fn a_windows_prepare_without_julia_skips_it_but_not_a_refused_one() {
+        let none = || Err(JuliaError::NotFound("no julia".to_string()));
+        let refused = || Err(JuliaError::Refused("SOT_JULIA_BIN=\"julia\" is not an absolute path".to_string()));
+        assert_eq!(julia_or_skip(none(), true), Ok(None), "Windows: the launcher instantiates at first start");
+        assert_eq!(julia_or_skip(none(), false), Err("no julia".to_string()), "elsewhere the reason ends the stage");
+        assert_eq!(
+            julia_or_skip(refused(), true),
+            Err("SOT_JULIA_BIN=\"julia\" is not an absolute path".to_string()),
+            "Windows: a refusal names itself and ends the stage"
+        );
+        assert_eq!(julia_or_skip(Ok("/x/julia".to_string()), true), Ok(Some("/x/julia".to_string())), "a resolved julia is used");
     }
 
     /// Once a shutdown has begun its own exit stands: the update's is
@@ -1167,7 +1206,7 @@ mod tests {
     }
 
     fn installed(version: &str, commit: &str) -> InstalledBuild {
-        InstalledBuild { version: version.into(), commit: Some(commit.into()) }
+        InstalledBuild { version: version.into(), commit: Some(commit.into()), pinned: false }
     }
 
     fn pointer(tag: &str, over: Option<(&str, &str)>) -> PendingPointer {
@@ -1195,6 +1234,19 @@ mod tests {
         let above = fake_identity("v0.6.6-rc9.14");
         assert!(arm_refusal(false, Some(&at("0.6.6-rc9.14-dev+d94ed0fac")), &above).unwrap().contains("dev build"));
         assert!(arm_refusal(true, Some(&at("0.6.6-rc9.12")), &id).unwrap().contains("neither daemon nor frontend"));
+    }
+
+    // An operator's downgrade is not undone by the next daily check: the run that names a version pins the install.
+    #[test]
+    fn a_pinned_install_is_never_armed_over() {
+        let id = fake_identity("v0.6.6-rc9.14");
+        let pinned = InstalledBuild { pinned: true, ..installed("0.6.6-rc9.12", "c0") };
+        assert!(arm_refusal(false, Some(&installed("0.6.6-rc9.12", "c0")), &id).is_none());
+        assert_eq!(
+            arm_refusal(false, Some(&pinned), &id).unwrap(),
+            "pinned at 0.6.6-rc9.12: automatic updates stay off for this install until a run that names no version"
+        );
+        assert!(!pinned.admits("0.6.6-rc9.14"));
     }
 
     #[test]
@@ -1228,6 +1280,8 @@ mod tests {
         let stable = process_on_an_rc.check_basis();
         installed_at("0.6.7-dev+abc");
         let dev = process_on_an_rc.check_basis();
+        std::fs::write(dir.path().join("install.json"), r#"{"schema":1,"prefix":"/p","version":"0.6.6-rc9.12","pinned":true}"#).unwrap();
+        let pinned = process_on_an_rc.check_basis();
         match saved {
             Some(v) => std::env::set_var("SOT_UPDATE_ROOT", v),
             None => std::env::remove_var("SOT_UPDATE_ROOT"),
@@ -1235,6 +1289,11 @@ mod tests {
         assert_eq!(none, Ok("0.6.6-rc9.12".to_string()), "no install: the process's version");
         assert_eq!(stable, Ok("0.6.7".to_string()), "the install's channel, not the process's rc");
         assert!(dev.is_err(), "a dev install is no basis for a release check");
+        assert_eq!(
+            pinned,
+            Err("disabled: pinned at 0.6.6-rc9.12: automatic updates stay off for this install until a run that names no version".to_string()),
+            "a pinned install is no basis either, and the verdict says why"
+        );
     }
 
     #[test]

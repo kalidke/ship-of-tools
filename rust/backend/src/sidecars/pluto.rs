@@ -173,7 +173,7 @@ impl Pluto {
                 return Ok((running.submit.clone(), running.ready.clone(), running.start.clone()));
             }
         }
-        let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
+        let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e.to_string()))?;
         let running = spawn_supervisor(
             &julia_bin,
             &self.inner.project_dir,

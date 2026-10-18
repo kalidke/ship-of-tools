@@ -20,9 +20,11 @@ bash ~/.local/share/sot/repo/current/scripts/install.sh
 
 (`--prefix <dir>` or `SOT_PREFIX` if the install is not under `~/.local/share/sot`.) With no `--version` it follows the
 channel this computer already runs: a stable release takes the latest stable release; a pre-release takes the newest
-published release of any kind; and it keeps the role the install recorded, so it needs no `--local`, `--backend` or
-`--be-only`. It never moves the install backwards unless told (`--version vX.Y.Z` names the target; an older one is then
-said to be older and installed). It ends with exactly one line; read that line, and act on it:
+published release of any kind. The role is `hosts.toml`'s entry for this computer first (it wins over a role flag), then
+the role flag, then what the install recorded, so an update needs no `--local`, `--backend` or `--be-only`. It never moves the install backwards unless told (`--version vX.Y.Z` names the target; an older one is then
+said to be older and installed, and a run that names a version pins the install). A run can take many minutes (the
+Julia environments are prepared), longer than a tool call's default timeout: run it in the background or with the
+longest timeout the tool allows. It ends with exactly one line; read the last line of its output, and act on it:
 
 - `PASS: Ship of Tools <v> at <short> on this computer`: done. Say so.
 - `ONE STEP LEFT: <step>`: the install is whole and one thing remains that only the human can do (usually: quit the
@@ -47,9 +49,51 @@ An install old enough to predate this entry has an `install.sh` that does not en
 (`grep -q 'ONE STEP LEFT' ~/.local/share/sot/repo/current/scripts/install.sh` says which). Read `version` in its
 `install.json` first: a `+` in it is the `target:` case above, so ask the human; otherwise follow the channel (a stable
 version takes the latest stable release, a pre-release the newest published one), tell the human the version, and run
-`curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash -s -- --version <tag>`.
-A source checkout (no `install.json`) updates by `git pull` and a rebuild. On **Windows** there is no installer script
-yet: see §6, "Updating later". With no install here at all, go on to the next sections.
+that tag's installer with no version: `curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash`.
+It follows the same channel itself, so the install stays unpinned and its automatic updates stay on (`--version` would pin it).
+A source checkout (no `install.json`) updates by `git pull` and a rebuild. With no install here at all, go on to the next
+sections.
+
+## Update this computer (Windows)
+
+If `%LOCALAPPDATA%\sot\install.json` exists and the human says "update sot", "update sot from the repo" or "update Ship
+of Tools", run the installer from the installed checkout, with no options (`-Prefix <dir>` if the install is elsewhere).
+The versions path works from an ssh session too, where `repo\current` cannot be traversed:
+
+```powershell
+$p="$env:LOCALAPPDATA\sot"; $t=(Get-Content "$p\install.json" -Raw | ConvertFrom-Json).tag
+powershell -NoProfile -ExecutionPolicy Bypass -File "$p\repo\versions\$t\scripts\install.ps1"
+```
+
+It follows the channel this computer already runs, exactly as the Unix installer does (a stable release takes the latest
+stable release; a pre-release the newest published one; a `+` build stops), and never moves the install backwards unless
+told (`-Version vX.Y.Z` names the target; an older one is then said to be older and installed, and a run that names a
+version pins the install). A run can take many minutes (the stage prepares Julia, and a converge waits up to 30 minutes
+for the window), longer than a tool call's default timeout: run it in the background or with the longest timeout the tool
+allows. It ends with exactly one line; read the last line of its output, and act on it:
+
+- `PASS: Ship of Tools <v> at <short> on this computer`: done. Say so.
+- `ONE STEP LEFT: <step>`: the install is whole or the update is armed, and one thing remains that only the human can do:
+  quit Ship of Tools (choose Keep) and start it from the shortcut, start it at the desk, or install Julia or jq with the
+  winget command the line names. Tell the human that step in those words, and run the installer again to confirm.
+- `FAIL: <check>: <detail>`: stop and report the line. `daemon:` names rows with a live REPL and says when the Pluto
+  server is running (a restart would end both; the rows and their agents keep running): ask the human, and run it again
+  with `-RestartDaemon` only on a yes. `target:` and `direction:` are the human's to answer, never a version the agent
+  picks: `target:` says the install is a build of the line (a `+` in its version), which a pack of the line
+  (`scripts\pack-build.ps1` in the checkout that built it) updates with `-Archive <folder>`, while a release named with
+  `-Version` is usually older and moves this computer back; `direction:` says the newest release is older than what runs
+  here, and only a version the human names goes back. Ask the human which they want.
+
+`-Archive` runs the install.ps1 of the checkout that made the pack, not the installed one:
+`powershell -NoProfile -ExecutionPolicy Bypass -File <that checkout>\scripts\install.ps1 -Archive <folder>`. A run that
+names what to install (`-Version`, `-Archive`) pins the install: automatic updates stay off until a run that names no
+version, and the PASS or ONE STEP LEFT line ends "pinned at <v>" (tell the human when it does). If a run stops half way (a lost connection, a Ctrl-C), run it again: a repeat is a repair run that ends in `PASS`.
+
+An install that predates `install.ps1` has no such file in its checkout. Read `version` in its `install.json` first: a `+`
+in it is the `target:` case above, so ask the human; otherwise tell the human the version (a stable one takes the latest
+stable release, a pre-release the newest published one) and fetch that tag's installer:
+`curl.exe -fsSL -o "$env:TEMP\sot-install.ps1" https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.ps1`,
+then run it with no version, so the install stays unpinned: its prelude follows the same channel.
 
 ## Which install is this?
 
@@ -146,8 +190,8 @@ cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launc
 ```
 
 - **A schema-1 manifest** → this is an UPGRADE: "Update this computer" at the top
-  of this page. Role is derived fresh each run (the declared list, else the
-  role flag, else what the manifest records: its `daemon`/`frontend` bits, its
+  of this page. Role is derived fresh each run (the declared list first, which wins over a
+  role flag; then the role flag; then what the manifest records: its `daemon`/`frontend` bits, its
   `service`, its `hub`, and a remote install's alias from its wrapper) — so an
   update needs no role flag; the installer also reads `daemon` and `service`
   back, so a run never records less than they say under a declared topology
@@ -241,116 +285,50 @@ quote these facts to the human and wait for an explicit yes:
 
 ## 2b. Windows frontend → remote backend
 
-Windows is a first-class *frontend* host (the backend stays on Linux). No
-packaged installer here yet (a packaged `install.ps1` is roadmap; no tracking
-issue exists). Steps 1–4 are the minimal manual bring-up — good for proving
-the connection once. **Do not stop there**: the end state for a Windows
-machine is step 5 (the repo launcher + shortcut), which builds the dial set,
-keeps the frontend fresh, and puts the proper icon on the taskbar.
+Windows is a first-class *frontend* host (the backend stays on Linux). `scripts\install.ps1` is the whole install, and
+the update (the first section above). A fresh box has no checkout yet, so fetch the installer of the latest stable release
+(`<tag>`) and run it with no version; it takes the latest stable release itself:
 
-1. **Download + verify** from the selected release
-   (https://github.com/kalidke/ship-of-tools/releases):
-   `sot-<ver>-windows-x86_64.zip` + `SHA256SUMS`; check the hash
-   (`Get-FileHash -Algorithm SHA256`), extract **all three** binaries —
-   `sot.exe`, `sotd.exe`, `sot-capsule.exe` — into `%LOCALAPPDATA%\sot\bin`.
-   Not just `sot.exe`: the launcher reads the install's version from the
-   staged `sotd.exe` and treats its absence as a dev box (no pinned
-   `repo\current`, so the local daemon has no resources and REPL verbs fail
-   with "repl project missing"); `sot-apply.ps1` swaps and rolls back all
-   three as a set.
-2. **Backend**: install it on the Linux machine (`--be-only`, see the table
-   above — you can drive that over SSH). It listens on that user's private
-   socket, normally `/run/user/<uid>/sot/sessions/sot.sock`.
-3. **No port to forward.** The daemon has had no TCP listener since 0.4.0;
-   reaching it means the frontend spawning its own `ssh` child and speaking
-   the protocol over its stdio (C3, `docs/src/concepts/transport.md`).
-   Browser pages (Pluto, docs, video, WGLMakie) ride that same ssh child
-   through the daemon proxy (ADR 0035, v0.5.0+) — nothing here opens a
-   port, and there is nothing left to retire the old fixed helper-port
-   forwards (1234-1241) from: they, and `SOT_LEGACY_FORWARDS`, are gone.
+```powershell
+curl.exe -fsSL -o "$env:TEMP\sot-install.ps1" https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\sot-install.ps1" -Hub <hub-ssh-alias>
+```
 
-4. **Launch**: `sot.exe --dial <name>=ssh:<ssh-alias>` (`sot.exe --help`
-   prints the full flag set). Optionally persist the connection in
-   `%LOCALAPPDATA%\sot\config\hosts.toml` (config discovery, one order, no
-   repo-local layer: `$SOT_HOSTS` when set, else `%LOCALAPPDATA%\sot\config\hosts.toml`
-   — `~/.config/sot/hosts.toml` on Linux/macOS).
+While the latest stable release has no `scripts/install.ps1` (the fetch fails, or the run ends `FAIL: target:`), the person
+may choose a pre-release instead: fetch that tag's installer and run it with `-Version <rc tag>`, which pins the install,
+so its automatic updates stay off until a run that names no version. Never name a version the person did not choose.
 
-   `sot.exe` spawns the ssh child itself now — there is no forward for
-   anything else to own.
+(It needs git and curl.exe on PATH; Julia and jq are for comm and local REPLs, and the last line names the winget command
+when one is missing, on a fresh install and on an update alike.) What it does, so you can read its output:
 
-5. **Launcher + shortcut (the actual end state).** Never hand-roll a shortcut
-   to `sot.exe --dial ...` directly — that is a "naive" FE: nothing refreshes
-   the remote `sotd`, there is no ADR-0017 exit-75 self-relaunch, and the
-   taskbar shows a generic icon. The canonical Windows launcher is
-   `scripts/launch-sot.ps1` in the repo, and the shortcut that wires it up is
-   created by `scripts\install-shortcut.ps1`. They need a **clone for the
-   scripts and config — NOT a Rust build**: when `rust\target\release` has no
-   built frontend, the launcher runs the already-staged copy in
-   `%LOCALAPPDATA%\sot\bin\sot.exe` — exactly where step 1 put the release
-   zip's exe. (A source build is still supported and takes precedence when
-   present.)
+1. **Download and verify.** `sot-<ver>-windows-x86_64.zip`, `SHA256SUMS` and `COMMIT` from the tag's release; the hashes
+   are checked, and the three binaries (`sot.exe`, `sotd.exe`, `sot-capsule.exe`) go into `%LOCALAPPDATA%\sot\bin`
+   together: the launcher reads the install's version from `sotd.exe`, and `sot-apply.ps1` swaps and rolls back all three
+   as a set. `-Archive <folder>` installs a folder `scripts\pack-build.ps1` packed instead.
+2. **The layout.** A blobless clone of the repo in `repo\base`, `repo\versions\v<ver>` as a detached worktree at the
+   release's commit, and the `repo\current` junction to it: the junction is how the local daemon resolves its Julia
+   resources (`julia/repl`, `julia/kernel`, the sidecars) and where the updater prepares the next version. It then runs the
+   launcher's own layout code, which writes `install.json` and instantiates the Julia environments when Julia is on PATH,
+   the comm install (`ShipTools.update_comm()`, which needs jq), and `scripts\install-shortcut.ps1 -Hub`, which creates
+   `Desktop\Ship of Tools.lnk` -> `%LOCALAPPDATA%\sot\repo\current\scripts\launch-sot.ps1` and re-syncs an existing
+   taskbar pin. **Never hand-make a shortcut to `sot.exe --dial ...`**: that is a "naive" frontend, nothing refreshes the
+   remote `sotd`, and `install.json` is what tells the frontend it is a release install.
+3. **Backend**: install it on the Linux machine (`--be-only`, see the table above; you can drive that over SSH). It
+   listens on that user's private socket, normally `/run/user/<uid>/sot/sessions/sot.sock`. There is no port to forward:
+   the daemon has no TCP listener, and reaching it means the frontend spawning its own `ssh` child and speaking the
+   protocol over its stdio (C3, `docs/src/concepts/transport.md`); browser pages (Pluto, docs, video, WGLMakie) ride that
+   same child through the daemon proxy (ADR 0035).
+4. **hosts.toml** is never hand-written on this box: `-Hub` names the hub's ssh alias once, install.ps1 records it in
+   `install.json` and runs the first `sotd topology sync --hub`, and the launcher refreshes the file from the hub on every
+   launch (`%LOCALAPPDATA%\sot\config\hosts.toml`, or `$SOT_HOSTS`). The `hub = "..."` / `[host.<name>]` grammar is written
+   once, on the hub, per `docs/src/start/setup.md` ("hosts.toml, the declared topology") or by the `/sot-setup` skill.
+   Without `-Hub` the box launches local-only. To try the connection once by hand: `sot.exe --dial <name>=ssh:<ssh-alias>`.
 
-   ```powershell
-   git clone https://github.com/kalidke/ship-of-tools
-   cd ship-of-tools
-   # hosts.toml is never hand-written here: it lives at
-   # %LOCALAPPDATA%\sot\config\hosts.toml (or $SOT_HOSTS). -Hub names the
-   # hub's ssh alias ONCE: install-shortcut.ps1 records it in install.json
-   # and runs the box's FIRST `sotd topology sync --hub`, and the launcher
-   # (scripts\launch-sot.ps1) refreshes the file from the hub on every
-   # launch after that. Without -Hub a fresh box has no copy to learn the
-   # hub from and launches local-only ("no hosts.toml ... yet: pass --hub").
-   # The hub = "..." / [host.<name>] / daemon / frontend grammar is written
-   # ONCE, on the hub, per docs/src/start/setup.md ("hosts.toml — the
-   # declared topology"), or via the /sot-setup skill in a Claude Code session.
-   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1 -Hub <hub-ssh-alias>
-   ```
-
-   Migrating off a source checkout: the box may look configured because
-   `<repo>\.sot\hosts.toml` survives, but that repo-local layer is no longer
-   read (step 4). `-Hub` is still required.
-
-   `install-shortcut.ps1` also writes `%LOCALAPPDATA%\sot\install.json` (via
-   `install-manifest.ps1`). **Do not skip it and hand-make a shortcut**: that
-   file is what tells the frontend it is a release install, and without it the
-   startup update check returns at its first guard and the machine can never
-   update itself. It no-ops with an explanation on a source build (a `+` in its version).
-
-   `install-shortcut.ps1` creates `Desktop\Ship of Tools.lnk` →
-   `%LOCALAPPDATA%\sot\repo\current\scripts\launch-sot.ps1` once that pinned
-   checkout exists, else the clone's own `scripts\launch-sot.ps1` as a
-   bootstrap fallback (`Get-SotLauncherTarget`; docs/adr/
-   0030-versioning-release-and-auto-update.md's 2026-09-17 amendment — a
-   version is binaries + resources + scripts, and the shortcut now tracks
-   all three together). The launcher itself (opens the step-3 control
-   forward, spawns/refreshes the remote `sotd`, applies any staged update
-   via `sot-apply.ps1`, runs the frontend under the exit-75 respawn
-   supervisor) sets the SoT icon (`logo.ico`, copied to `%LOCALAPPDATA%\sot`
-   so it survives moving the clone), and stamps the AppUserModelID
-   `ShipOfTools.Sot` on the `.lnk` so the running window merges into the
-   shortcut's taskbar button with the right icon. Re-run it after pinning to
-   the taskbar — it re-syncs the pin so it never drifts back to a naive
-   `sot.exe`; the first launch after a fresh install migrates the pin onto
-   the pinned checkout itself, with no by-hand step needed.
-
-   The **first launch** finishes the layout the steps above leave incomplete:
-   the launcher creates `%LOCALAPPDATA%\sot\repo\versions\v<ver>` (a detached
-   worktree of this clone, pinned at the installed binaries' release tag) and
-   the `repo\current` junction to it, because that junction is how the local
-   daemon resolves its Julia resources (`julia/repl`, `julia/kernel`, the
-   sidecars) and where the auto-updater prepares the next version — without
-   it a release daemon falls through to the build machine's paths and REPL
-   verbs fail with "repl project missing". A box installed before this
-   existed gets the same on its next launch; every step is logged to
-   `%LOCALAPPDATA%\sot\logs\supervisor.log` and a failure never stops the
-   launch. That first launch also instantiates the checkout's Julia
-   environments (`julia/kernel`, `julia/repl`, `julia/pluto`), which takes a
-   few minutes — so a box that wants **local** REPLs or Pluto needs Julia on
-   `PATH` (juliaup); without it the launcher says so in a startup notice and
-   the frontend still runs against the remote backend. With Julia there, the
-   launch also installs the comm scripts (`ShipTools.update_comm()`), which
-   need jq on `PATH` (`winget install jqlang.jq`): without it that step
-   changes nothing and its startup notice names the command.
+The **first launch** from the shortcut starts the window under the exit-75 respawn supervisor and the box's own local
+daemon; every layout step is logged to `%LOCALAPPDATA%\sot\logs\supervisor.log`. A box that wants **local** REPLs or
+Pluto needs Julia on PATH (`winget install --id Julialang.Juliaup -e`); without it the frontend still runs against the
+remote backend. The `+` of a source build never installs here: a fresh install is a release, and a pack of the line moves
+an existing install with `-Archive`.
 
 ## 2c. macOS
 
@@ -552,7 +530,7 @@ top line of the nav pane always shows the pane-switch keys.**
 
 - The checkout **is the manual**: point yourself (and the human) at
   `~/.local/share/sot/repo/current/docs/USING.md` — on Windows that is
-  `docs\USING.md` in the clone made in §2b step 5. Inside the app, the
+  `docs\USING.md` under `%LOCALAPPDATA%\sot\repo\current` (made by §2b). Inside the app, the
   terminal-drawer agent gets the right path via `$SOT_MANUAL` on every
   platform.
 - Updating later:
@@ -560,16 +538,12 @@ top line of the nav pane always shows the pane-switch keys.**
     command, one verdict line. The app also notifies about new releases and
     stages fresh binaries itself; `sot-launch` applies them at the next start
     via `sot-apply`.
-  - **Windows** — step 3 does not run here. The frontend checks for releases
-    at startup and stages them; `launch-sot.ps1` calls `scripts\sot-apply.ps1`
-    on the next launch to verify and swap the binaries, keeping `.prev` and
-    rolling back automatically if the new build crash-loops within 10s. This
-    needs `install.json` to exist (§4 step 3) — without it the check never
-    runs. Scripts and config update the SAME way: the shortcut/pin targets
-    `%LOCALAPPDATA%\sot\repo\current\scripts\launch-sot.ps1` (docs/adr/
-    0030-versioning-release-and-auto-update.md's 2026-09-17 amendment), and
-    `sot-apply.ps1`'s junction flip carries them in the same transaction as
-    the binaries — never a separate `git pull` of the clone.
+  - **Windows** — "Update this computer (Windows)" at the top of this page: one command, one verdict line. The
+    frontend also checks for releases at startup and stages them (this needs `install.json`); `launch-sot.ps1` calls
+    `scripts\sot-apply.ps1` on the next launch to verify and swap the binaries, keeping `.prev` and rolling back if the
+    new build crash-loops. Scripts and config update the same way: the shortcut targets
+    `%LOCALAPPDATA%\sot\repo\current\scripts\launch-sot.ps1` and `sot-apply.ps1`'s junction flip carries them in the same
+    transaction as the binaries (docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17 amendment).
   - A source build (a `+` in its version) never self-updates on any platform;
     they update by pulling and rebuilding.
 - Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`;

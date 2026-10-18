@@ -69,6 +69,8 @@ pub struct PendingPointer {
 pub struct InstalledBuild {
     pub version: String,
     pub commit: Option<String>,
+    /// The install's run named what to install, so no automatic writer moves it.
+    pub pinned: bool,
 }
 
 impl InstalledBuild {
@@ -78,7 +80,7 @@ impl InstalledBuild {
     pub fn read(updates_root: &Path) -> Option<Self> {
         let path = updates_root.parent()?.join(INSTALL_MANIFEST);
         let manifest = InstallManifest::read(&path).ok()?;
-        Some(Self { version: manifest.version?, commit: manifest.commit })
+        Some(Self { version: manifest.version?, commit: manifest.commit, pinned: manifest.pinned == Some(true) })
     }
 
     /// Read the installed version fresh, or `fallback` (the running process's) when there is no install to read. The
@@ -94,10 +96,21 @@ impl InstalledBuild {
         self.version.contains('+')
     }
 
-    /// May an automatic arm offer `version`: only a release strictly above the installed build, and not into a dev
-    /// build.
+    /// Why no automatic writer moves this install, or `None`: a pinned install stays where the run that named its
+    /// version put it.
+    pub fn pin_note(&self) -> Option<String> {
+        self.pinned.then(|| {
+            format!(
+                "pinned at {}: automatic updates stay off for this install until a run that names no version",
+                self.version
+            )
+        })
+    }
+
+    /// May an automatic arm offer `version`: only a release strictly above the installed build, not into a dev
+    /// build and not into a pinned install.
     pub fn admits(&self, version: &str) -> bool {
-        !self.is_dev_build() && compare_versions(version, &self.version) == Ordering::Greater
+        !self.is_dev_build() && !self.pinned && compare_versions(version, &self.version) == Ordering::Greater
     }
 }
 
@@ -122,6 +135,8 @@ pub enum ArmOutcome {
     NotAboveInstall,
     /// An automatic writer offered a release for an install that is a dev build.
     DevInstall,
+    /// An automatic writer offered a release for an install pinned by the run that named its version.
+    Pinned,
 }
 
 /// Why `ptr` must not apply onto `installed`, or `None` when it may. A pointer that records the install it was armed
@@ -190,6 +205,10 @@ async fn arm_locked(
         if installed.is_dev_build() {
             tracing::info!(installed = %installed.version, offered = %identity.tag, "the install is a dev build — not arming a release into it");
             return Ok(ArmOutcome::DevInstall);
+        }
+        if let Some(note) = installed.pin_note() {
+            tracing::info!(offered = %identity.tag, "{note} — not arming");
+            return Ok(ArmOutcome::Pinned);
         }
         if !installed.admits(&identity.version) {
             tracing::info!(
@@ -366,6 +385,45 @@ mod tests {
         cleanup(&root).await;
     }
 
+    // The run that named a version pinned the install: no release is armed over it automatically, the operator's still is.
+    #[tokio::test]
+    async fn a_pinned_install_takes_no_automatic_arm() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
+        let root = prefix("pinned", Some(("0.6.6-rc9.13", "c0"))).await;
+        let json = format!(
+            r#"{{"schema":1,"prefix":"{}","version":"0.6.6-rc9.13","tag":"v0.6.6-rc9.13","commit":"c0","pinned":true}}"#,
+            root.parent().unwrap().display()
+        );
+        tokio::fs::write(root.parent().unwrap().join(INSTALL_MANIFEST), json).await.unwrap();
+        let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap();
+        assert_eq!(out, ArmOutcome::Pinned);
+        assert!(read(&root, T).await.unwrap().is_none(), "nothing armed over a pinned install");
+        let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Operator).await.unwrap();
+        assert_eq!(out, ArmOutcome::Armed, "the operator's arm still moves it");
+        cleanup(&root).await;
+    }
+
+    // An install.json with no pin field (every install made before the field existed) is unpinned and follows its channel.
+    #[tokio::test]
+    async fn an_install_with_no_pin_field_follows_its_channel() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
+        let root = prefix("nopin", Some(("0.6.6-rc9.13", "c0"))).await;
+        assert!(!InstalledBuild::read(&root).unwrap().pinned, "no field reads as unpinned");
+        assert!(InstalledBuild::read(&root).unwrap().admits("0.6.6-rc9.14"));
+        let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap();
+        assert_eq!(out, ArmOutcome::Armed);
+        cleanup(&root).await;
+        // An explicit false is unpinned too.
+        let root = prefix("pinfalse", Some(("0.6.6-rc9.13", "c0"))).await;
+        let json = format!(
+            r#"{{"schema":1,"prefix":"{}","version":"0.6.6-rc9.13","tag":"v0.6.6-rc9.13","commit":"c0","pinned":false}}"#,
+            root.parent().unwrap().display()
+        );
+        tokio::fs::write(root.parent().unwrap().join(INSTALL_MANIFEST), json).await.unwrap();
+        assert!(!InstalledBuild::read(&root).unwrap().pinned);
+        cleanup(&root).await;
+    }
+
     #[tokio::test]
     async fn the_operator_may_arm_the_same_or_an_older_build() {
         let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.13");
@@ -424,7 +482,7 @@ mod tests {
             armed_over_version: over.map(|o| o.0.into()),
             armed_over_commit: over.map(|o| o.1.into()),
         };
-        let at = |version: &str, commit: &str| InstalledBuild { version: version.into(), commit: Some(commit.into()) };
+        let at = |version: &str, commit: &str| InstalledBuild { version: version.into(), commit: Some(commit.into()), pinned: false };
         // A record: the install is still the one it was armed over.
         assert!(stale_reason(&ptr("0.6.6-rc9.14", Some(("0.6.6-rc9.13", "c0"))), &at("0.6.6-rc9.13", "c0")).is_none());
         // A same-stamp operator pointer is fine while the install is unchanged.
