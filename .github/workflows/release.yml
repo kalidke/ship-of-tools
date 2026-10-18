@@ -9,6 +9,11 @@
 #   - workflow_dispatch  → builds + checks ONLY (pipeline validation without
 #                          tagging; artifacts land as workflow artifacts)
 #
+# Gates of publish: the three artifact smokes (boot + version), julia-check, and the three install smokes
+# (install-linux, install-macos, install-windows): scripts/install.sh and scripts/install.ps1 install the artifacts THIS
+# run built, fresh and as an update from the newest published release older than this run's version, and each must end
+# in its PASS line. A dispatch on a branch runs all of them too (its artifacts carry the binaries' + version).
+#
 # Matrix policy (ADR 0030): all advertised release artifacts must build and
 # smoke before a tag is published. macOS aarch64 remains product-experimental
 # in the docs until it is dogfooded, but releases must not silently omit it.
@@ -421,10 +426,128 @@ jobs:
           print("hello OK — backend", p["app_version"])
           EOF
 
+  release-before:
+    # The release the update smokes start from: the newest PUBLISHED release older than this run's version, picked by
+    # version order (the build's own `sotd update direction`), never by GitHub's "latest" and never by a tag written
+    # here. One job names it for the three platforms, so they update from the same release.
+    name: release before this run
+    needs: [build]
+    runs-on: ubuntu-latest
+    # Usually under a minute.
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.before.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: bin-linux-x86_64
+      - name: Name the release before
+        id: before
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          tar xzf sot-*-linux-x86_64.tar.gz
+          d=$(ls -d sot-*-linux-x86_64/)
+          v="$("$d/sotd" --version | awk '{ print $2 }')"
+          echo "this run: $v"
+          tag="$(bash scripts/tests/release-before.sh "$d/sotd" "$v" "$GITHUB_REPOSITORY")"
+          echo "release before: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  install-linux:
+    # install.sh against this run's linux artifact in a bare ubuntu:22.04 container (the FE's glibc floor is the build
+    # image's, 2.35), as a person with nothing installed meets it. The container has no systemd user manager, so the
+    # backend scenarios take --no-service (without it install.sh stops at `systemctl --user`, "Failed to connect to
+    # bus"); Julia comes from the installer's own juliaup step. Scenarios: scripts/tests/install-smoke.sh.
+    name: install smoke (linux ${{ matrix.scenario }})
+    needs: [build, release-before]
+    runs-on: ubuntu-latest
+    # Cold: juliaup, then three Julia environments (Pluto's precompile is most of it); the update scenarios do it twice.
+    timeout-minutes: 60
+    container: ubuntu:22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [fresh-local, fresh-be-only, update-entry, update-apply]
+    steps:
+      - name: Install what a bare container lacks
+        shell: bash
+        run: |
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends git curl jq ca-certificates tar gzip procps
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: bin-linux-x86_64
+          path: artifacts
+      - name: ${{ matrix.scenario }}
+        shell: bash
+        env:
+          SOT_SMOKE_COMMIT: ${{ github.sha }}
+        run: bash scripts/tests/install-smoke.sh "${{ matrix.scenario }}" artifacts "$GITHUB_WORKSPACE" "${{ needs.release-before.outputs.tag }}"
+
+  install-macos:
+    # The same on the macOS runner (--local; no service manager is wired on macOS, so the wrapper starts the daemon).
+    name: install smoke (macOS ${{ matrix.scenario }})
+    needs: [build, release-before]
+    runs-on: macos-14
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [fresh-local, update-entry, update-apply]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: bin-macos-aarch64
+          path: artifacts
+      - name: jq (the installer stops without it)
+        shell: bash
+        run: command -v jq >/dev/null || brew install jq
+      - name: ${{ matrix.scenario }}
+        shell: bash
+        env:
+          SOT_SMOKE_COMMIT: ${{ github.sha }}
+        run: bash scripts/tests/install-smoke.sh "${{ matrix.scenario }}" artifacts "$GITHUB_WORKSPACE" "${{ needs.release-before.outputs.tag }}"
+
+  install-windows:
+    # install.ps1 against this run's windows zip under Windows PowerShell 5.1. Julia and jq are put on the runner first,
+    # so the entry's end checks (comm, the kernel environment) run and the verdict is PASS, not "install Julia". The
+    # runner's logon session may be 0 (no desk): then an update ends in the entry's "start Ship of Tools at the desk" step
+    # and the script applies it as that start does (scripts/tests/install-smoke.ps1 says which it saw).
+    name: install smoke (windows ${{ matrix.scenario }})
+    needs: [build, release-before]
+    runs-on: windows-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [fresh, update-entry, update-apply]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: bin-windows-x86_64
+          path: artifacts
+      - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
+        with:
+          version: "1.12"
+      - name: jq (agent comm needs it)
+        shell: powershell
+        run: if (-not (Get-Command jq -ErrorAction SilentlyContinue)) { choco install jq -y --no-progress }
+      - name: ${{ matrix.scenario }}
+        shell: powershell
+        env:
+          SOT_SMOKE_COMMIT: ${{ github.sha }}
+        run: ./scripts/tests/install-smoke.ps1 -Scenario "${{ matrix.scenario }}" -Artifacts artifacts -Checkout "$env:GITHUB_WORKSPACE" -Before "${{ needs.release-before.outputs.tag }}"
+
   publish:
     name: publish release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build, smoke, smoke-windows, smoke-macos, julia-check]
+    needs: [build, smoke, smoke-windows, smoke-macos, julia-check, install-linux, install-macos, install-windows]
     runs-on: ubuntu-latest
     # Usually under a minute.
     timeout-minutes: 10

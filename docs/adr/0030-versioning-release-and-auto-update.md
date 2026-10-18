@@ -114,6 +114,12 @@ One git tag → one GitHub Release containing:
   `smoke-macos`, so releases cannot silently omit the macOS artifact. The
   platform remains product-experimental in user-facing docs until dogfooded,
   but a macOS build/smoke failure fails the release.)*
+  *(Amended 2026-10-18: `publish` also hard-requires the install smokes `install-linux`, `install-macos` and
+  `install-windows`. Each runs the repo's own installer (`scripts/install.sh`, `scripts/install.ps1`) against the
+  artifacts the run built, as a fresh install and as an update from the newest published release older than the run's
+  version (picked by version order, never GitHub's "latest"), and judges the entry's one verdict line. The
+  installer is what a person runs to install or update, so a release that cannot be installed or updated to is not
+  published.)*
 - *(retired — see Amendment 2026-07-04)* `julia-bundle-vX.Y.Z.tar.gz` — the `julia/` tree (kernel, repl, plugins, pluto) + the
   ShipTools root package, **with `Manifest.toml`s generated and tested in CI**. Manifests
   stay gitignored for dev flexibility, but a release ships a frozen, tested dependency

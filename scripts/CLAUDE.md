@@ -118,7 +118,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Folders
 - `scripts/lib/`: the shared Unix launch library.
-- `scripts/tests/`: the suites and the local candidate gate.
+- `scripts/tests/`: the suites, the local candidate gate, and the install smokes release.yml runs on a release's artifacts.
 - `deploy/`: `sotd.service`, the unit template (no page; its header is its page).
 - `.github/`: workflows and the tag gate.
 - `src/`, `test/`: the comm installer package.
@@ -176,7 +176,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ## Start here
 Read `lib/sot-daemon.sh` for anything on the Unix launch path, `sot-apply.sh` for what an update does to `$PREFIX`,
 `install.sh` for a first install, and `launch-sot.ps1` for Windows launch (its top-level order is the sequence of a
-launch). A new suite joins a named step of `.github/workflows/rust.yml` in the same change.
+launch). A new suite joins a named step of `.github/workflows/rust.yml` in the same change (the install smokes join
+`release.yml`).
 
 ## Rules
 - On Windows the installer is the update entry too (`install.ps1`, run from the installed checkout's `repo\versions\<tag>`
@@ -221,6 +222,16 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   them. `install.sh` fetches `scripts/install.sh` of its own tag and `install.ps1` its tag's `scripts/install.ps1` (the preludes), shortcuts run `repo\current\scripts\launch-sot.ps1`, and `Get-SotLauncherCodeId` hashes
   `launch-sot.ps1`, `sot-hosts.ps1`, `sot-install-layout.ps1`, `sot-freshness.ps1` and `sot-lease.ps1`
   (`tests/test-install-layout.ps1` section 3). A new launcher file joins that list.
+- A release is installed before it is published. `release.yml`'s `publish` needs the install smokes (`install-linux`,
+  `install-macos`, `install-windows`), which run the entry of the run's own checkout against the artifacts the run built:
+  a fresh install and an update from the newest published release older than the run's version (`release-before`, by
+  version order, never GitHub's "latest"), each ending in the entry's PASS line, then a repair run
+  (`tests/install-smoke.sh`, `tests/install-smoke.ps1`). The update legs also run the release before's installed apply
+  over a release staged by the new `sotd`, and require that the staged release's own apply ran and left the launcher
+  (the wrapper `render_sot_launch` writes; `Get-SotLauncherCodeId` on Windows), comm and `install.json` at the new
+  release. The archive's `sot-apply` must be executable (a mode lost in packing ends the hand-off), the Linux legs take
+  `--no-service` (a container has no user manager), and a dispatch on a branch runs them too (its artifacts are named
+  `0.0.0-ci.<sha>` and carry the binaries' `+` version; the smokes repack under it).
 - Every file `launch-sot.ps1` dot-sources is in `Get-SotLauncherCodeId`'s list and in the converge parse loop of
   `launch-sot.ps1`.
 - A dev clone's prelude re-execs only when `launch-sot.ps1` itself changed (`Invoke-SelfUpdatePrelude`), so a pull that

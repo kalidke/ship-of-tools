@@ -67,6 +67,26 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   ask of the installed `sotd` under the lock, and the unit's `ExecStartPre` reading `.bashrc`.
 - `installer-support.sh`: the setup the installer suites source: install.sh and lib/sot-daemon.sh, `check`,
   `starts_with`, `case_start`, the sandboxed tool dir (`mk_tools`) and the recording stubs (`mk_stubs`).
+- `install-smoke.sh`: `install-smoke.sh SCENARIO ARTIFACTS CHECKOUT [BEFORE-TAG]` (Linux, macOS; bash 3.2): `install.sh`
+  against the artifacts a release run built. It makes the `--archive` folder from the run's tarball (SHA256SUMS, COMMIT,
+  the tarball repacked under the binaries' own `+` version when a branch run named it `0.0.0-ci.<sha>`), refuses an
+  archive whose `sot-apply` is not executable, and judges each run's one verdict line (PASS, or a ONE STEP LEFT that
+  `SOT_SMOKE_ALLOW_STEP` names). Scenarios: `fresh-local`, `fresh-be-only` (Linux, `--no-service`: no user manager in a
+  container), `update-entry` (BEFORE-TAG by its own installer through the prelude, then the entry) and `update-apply`
+  (BEFORE-TAG's installed `sot-apply` run as `ExecStartPre` runs it, over a release staged by the new `sotd`: the
+  staged apply must hand off and run, and leave the wrapper `render_sot_launch` writes, comm and `install.json` at the
+  new release); each ends with a repair run. Runs in `release.yml`'s `install-linux` and `install-macos` jobs, and off
+  CI the same way (a scratch `$HOME`; the caller's `SOT_` and XDG variables are unset).
+- `install-smoke.ps1`: the same for `install.ps1` (Windows PowerShell 5.1): scenarios `fresh`, `update-entry` and
+  `update-apply`, one scratch profile and a `USERNAME` of its own. The release before is installed by its own
+  `install.ps1` when its tag carries one, else by that tag's section 2b (`Install-BeforeByHand`, to delete when the
+  release before has `install.ps1`). In a session with no desk (session 0) an update ends in the entry's "start Ship of
+  Tools at the desk" step and the script applies it with the installed `sot-apply.ps1`, as the start does. Runs in
+  `release.yml`'s `install-windows` job.
+- `release-before.sh`: `release-before.sh SOTD VERSION [OWNER/NAME]` prints the newest published release older than
+  VERSION, by `sotd update direction` (the one version comparison; GitHub's "latest" and any written tag are never
+  used), and fails naming a missing platform asset instead of taking an older release. Runs in `release.yml`'s
+  `release-before` job.
 - `check-layout.sh`: the layout check (file and folder sizes, pages, `## Files` lists); see Tools below.
 - `check-layout.allow`: the layout exceptions CI passes to `check-layout.sh`, each with its reason.
 - `exempt.txt`: the standing exemptions `check-layout.sh` reads from beside itself.
@@ -293,7 +313,9 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   and a Linux box never run them. The step "Parse PowerShell scripts" globs `scripts/*.ps1` without recursion, so each
   `.ps1` suite parses itself and its siblings in its section 0.
 - A suite runs only if a step of `.github/workflows/rust.yml` or a job of `rc-gate.sh` names it; a new suite is added
-  to the step list in the commit that adds it. `rc-gate.sh` lists the three installer/topology shell suites and the finite selected-body proof here by name
+  to the step list in the commit that adds it. The exception is `install-smoke.sh`, `install-smoke.ps1` and
+  `release-before.sh`: they need a release run's artifacts and the published releases, so `release.yml` runs them
+  (jobs `install-*` and `release-before`), and `publish` needs those jobs. `rc-gate.sh` lists the three installer/topology shell suites and the finite selected-body proof here by name
   (`SHELL_ALL` in `producer`).
 - `installer-state.sh` (and `installer-entry.sh` it sources), `installer-wrapper.sh`, `installer-apply.sh`, `installer-shared-home.sh` and `test-topology-plan.sh` run wholly under
   bash 3.2 in `under-bash.sh`'s run, since they source the scripts they test, so they hold under 3.2 themselves: inside
