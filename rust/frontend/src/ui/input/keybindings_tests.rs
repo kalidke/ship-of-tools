@@ -573,10 +573,11 @@ fn the_quit_hint_names_the_bound_chord() {
     use crate::ui::input::global_keys::quit_hint;
     let mut b = KeyBindings::defaults();
     let default = b.first_label(Action::Quit);
-    assert_eq!(default, if cfg!(target_os = "macos") { "Cmd+Q" } else { "Ctrl+Q" });
+    // A Mac labels every chord in its glyphs (docs/src/ref/keybindings.md), Command as `⌘`.
+    assert_eq!(default, if cfg!(target_os = "macos") { "⌘Q" } else { "Ctrl+Q" });
     assert!(quit_hint(&default).starts_with(&default));
     b.merge_text("quit = \"Alt+F4\"\n");
     let rebound = b.first_label(Action::Quit);
-    assert!(quit_hint(&rebound).starts_with(&rebound) && !quit_hint(&rebound).contains("Ctrl+Q"));
+    assert!(quit_hint(&rebound).starts_with(&rebound) && !quit_hint(&rebound).contains(&default));
     assert!(!quit_hint(&rebound).contains("program"), "no claim about what a program received");
 }
