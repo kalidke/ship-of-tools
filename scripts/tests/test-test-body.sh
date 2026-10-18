@@ -405,12 +405,14 @@ if mode=='all':
         run([native_bash,str(repo/'scripts/tests/rc-gate.sh'),'--job','\t'.join(['bin','empty',str(a),str(p)])],p,
             {'RCG_D':str(repo),'RCG_L':str(p),'RCG_CARGO_DIR':'/usr/bin','RCG_JULIA_DIR':'/usr/bin'})
         check((p/'rust/empty.rc').read_text(encoding='utf-8', errors='strict').strip()=='0','empty whole binary rejected')
-        # the jobs' PATH holds the julia the gate chose: a job's `command -v julia` names the stub in RCG_JULIA_DIR
-        p=fresh('julia path'); (p/'rust').mkdir(); (p/'steps').mkdir(); (p/'jbin').mkdir()
-        j=p/'jbin/julia'; j.write_text('#!/bin/sh\nexit 0\n'); j.chmod(0o755)
+        # the jobs' PATH holds the julia the gate chose: a job's `command -v julia` names the stub in RCG_JULIA_DIR, not the
+        # one in cargo's folder (a folder of the case's own, so the proof holds whatever the host's /usr/bin holds)
+        p=fresh('julia path'); (p/'rust').mkdir(); (p/'steps').mkdir(); (p/'jbin').mkdir(); (p/'cargo-bin').mkdir()
+        j=p/'jbin/julia'
+        for f in (p/'cargo-bin/julia',j): f.write_text('#!/bin/sh\nexit 0\n'); f.chmod(0o755)
         a=p/'julia-probe'; a.write_text('#!/bin/sh\ncommand -v julia > '+q(p/'julia-path')+'\nexit 0\n'); a.chmod(0o755)
         run([native_bash,str(repo/'scripts/tests/rc-gate.sh'),'--job','\t'.join(['bin','probe',str(a),str(p)])],p,
-            {'RCG_D':str(repo),'RCG_L':str(p),'RCG_CARGO_DIR':'/usr/bin','RCG_JULIA_DIR':str(p/'jbin')})
+            {'RCG_D':str(repo),'RCG_L':str(p),'RCG_CARGO_DIR':str(p/'cargo-bin'),'RCG_JULIA_DIR':str(p/'jbin')})
         got=(p/'julia-path').read_text(encoding='utf-8', errors='strict').strip() if (p/'julia-path').exists() else 'no julia'
         check(got==str(j),f'the job found julia at {got}, not the gate-chosen {j}')
         check(not errors,'; '.join(errors))

@@ -17,7 +17,10 @@ pub struct UpdateCheckReq {}
 /// `staged` is true once the platform asset for `latest` has been downloaded,
 /// sha256-verified, and unpacked into the staging dir. `status` is a
 /// human/structured string: `"ok"`, `"disabled: dev build"`,
-/// `"disabled: update mode off"`, or `"check unavailable: <why>"`.
+/// `"disabled: update mode off"`, `"disabled: the install is a dev build"`, `"disabled: pinned at <version>: ..."`,
+/// `"disabled: install.json cannot be read at <path> (<cause>); ..."` or, on Windows, `"disabled: install.json is missing at
+/// <path> ..."` (an unreadable or missing record may hold a pin; the sentence names the installer run that repairs or
+/// rewrites it), `"update blocked: <why>"` or `"check unavailable: <why>"`.
 /// The Phase-C identity fields (`tag` … `asset_sha256`) pin the exact release
 /// the backend saw so a frontend on another machine can stage the SAME
 /// release rather than re-resolving "latest" (which may have moved). All

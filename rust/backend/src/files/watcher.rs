@@ -495,8 +495,8 @@ fn self_owned_roots() -> Vec<PathBuf> {
     // A release install's prefix (`<prefix>/updates` is the staging area, and
     // `<prefix>/bin` the binaries an apply swaps). `None` for a dev build run
     // out of `target/`, which `should_skip` already excludes by name.
-    if let Some(install) = sot_updater::InstallManifest::for_current_exe() {
-        roots.push(install.prefix);
+    if let Some(prefix) = sot_updater::InstallManifest::of_current_exe().prefix() {
+        roots.push(prefix);
     }
     // The staging area itself, asked of the SAME function the stager calls
     // (`sot_updater::stage` resolves its target this way). The prefix above

@@ -26,12 +26,14 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 
 use sot_updater::identity::repo_from_env;
-use sot_updater::pending::{ArmOutcome, InstalledBuild, PendingPointer, Writer};
+use sot_updater::pending::{ArmOutcome, InstalledBuild, Writer};
 use sot_updater::prepare::{PrepareSpec, PreparedState};
-use sot_updater::{CheckOutcome, Fetcher, InstallManifest, ReleaseIdentity, UpdaterConfig};
+use sot_updater::{CheckOutcome, Fetcher, InstallFile, InstallManifest, ReleaseIdentity, UpdaterConfig, MISSING_LEAD, UNREADABLE_LEAD};
 
 mod cli;
+mod refusal;
 pub(crate) use cli::{run, USAGE};
+use refusal::{apply_refusal, arm_refusal, host_runs_no_sotd};
 
 use crate::server::reply::HandlerOutput;
 use crate::lifecycle::lease::Leases;
@@ -193,7 +195,10 @@ impl Updater {
     /// `current`, and a shared prefix can have been installed past it, or onto another channel, since; `current` stands
     /// only where there is no install to read. A dev build or a pinned install is no basis for a release check.
     fn check_basis(&self) -> std::result::Result<String, String> {
-        let installed = sot_updater::resolve_updates_root().ok().and_then(|root| InstalledBuild::read(&root));
+        let installed = match sot_updater::resolve_updates_root() {
+            Ok(root) => InstalledBuild::try_read(&root).map_err(|unreadable| format!("disabled: {}", unreadable.sentence()))?,
+            Err(_) => None,
+        };
         match installed {
             Some(i) if i.is_dev_build() => Err("disabled: the install is a dev build".into()),
             Some(i) if i.pinned => Err(format!("disabled: {}", i.pin_note().unwrap_or_default())),
@@ -273,10 +278,8 @@ async fn stage_prepare_arm(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
 pub(crate) enum Pipeline {
     /// Staged, prepared and armed.
     Armed,
-    /// Staged and prepared; a newer release is already armed, or this one is marked bad.
-    Kept,
-    /// Not armed: an automatic writer offered a release at or below the install, or into a dev build.
-    NotAbove,
+    /// Staged and prepared, and the arm said why it armed nothing.
+    NotArmed(ArmOutcome),
     /// Staged only: the box has no install manifest to prepare for.
     Staged,
 }
@@ -329,54 +332,25 @@ pub(crate) async fn stage_prepare_arm_with(
     tracing::info!(tag = %id.tag, "arming");
     match sot_updater::pending::arm(&cfg.updates_root, id, &state.checkout, &state.commit, writer).await {
         Ok(ArmOutcome::Armed) => Ok(Pipeline::Armed),
-        Ok(ArmOutcome::KeptNewer | ArmOutcome::MarkedBad) => Ok(Pipeline::Kept),
-        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall | ArmOutcome::Pinned) => Ok(Pipeline::NotAbove),
+        Ok(not_armed) => Ok(Pipeline::NotArmed(not_armed)),
         Err(e) => Err(PipelineError::Arm(chain(&e))),
     }
 }
 
-/// Does the declared topology name this host and give it neither `daemon` nor `frontend`? Such a host runs no sotd of its
-/// own: on a shared home it is a guest of the prefix, and a pointer it arms is prepared without the Julia environments
-/// the host that does run the daemon needs. A host the topology does not name (or no topology) is not taken for one.
-fn host_runs_no_sotd() -> bool {
-    let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
-    let me = crate::comm::mail::filer::comm_self_host();
-    topo.is_some_and(|t| sot_protocol::topology::runs_no_sotd(&t, &me))
-}
-
-/// Why this daemon arms nothing into the install it runs from, or `None` when it may: this host runs no sotd
-/// (see [`host_runs_no_sotd`]), or the release is not strictly above the install on disk (the process may be
-/// older than the install).
-fn arm_refusal(foreign: bool, installed: Option<&InstalledBuild>, id: &ReleaseIdentity) -> Option<String> {
-    if foreign {
-        return Some("the topology declares this host neither daemon nor frontend".into());
-    }
-    let installed = installed?;
-    if installed.is_dev_build() {
-        return Some(format!("the installed {} is a dev build", installed.version));
-    }
-    if let Some(note) = installed.pin_note() {
-        return Some(note);
-    }
-    (!installed.admits(&id.version)).then(|| format!("{} is not above the installed {}", id.tag, installed.version))
-}
-
-/// Why `update.apply` must not exit for the apply owner to flip to `pending`, or `None`: the same foreign-install rule,
-/// and a pointer that no longer fits the install on disk.
-fn apply_refusal(foreign: bool, installed: Option<&InstalledBuild>, pending: &PendingPointer) -> Option<String> {
-    if foreign {
-        return Some("the topology declares this host neither daemon nor frontend".into());
-    }
-    let why = sot_updater::pending::stale_reason(pending, installed?)?;
-    Some(format!("the armed {} will not apply: {why}", pending.identity.tag))
-}
-
 async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
-    let install = InstallManifest::for_current_exe();
+    let install = match InstallManifest::of_current_exe() {
+        InstallFile::Read(install) => Some(install),
+        InstallFile::Absent => None,
+        InstallFile::Unreadable(unreadable) => {
+            tracing::warn!(tag = %id.tag, "not staging: {}", unreadable.sentence());
+            return;
+        }
+    };
     // Refused before the download: `arm` re-reads the install under the lock and is the authority, this only spares
     // a stale or foreign daemon the bytes and the prepare.
-    let refusal = install.as_ref().and_then(|i| {
-        arm_refusal(host_runs_no_sotd(), InstalledBuild::read(&i.updates_root()).as_ref(), id)
+    let refusal = install.as_ref().and_then(|i| match InstalledBuild::try_read(&i.updates_root()) {
+        Ok(installed) => arm_refusal(host_runs_no_sotd(), installed.as_ref(), id),
+        Err(unreadable) => Some(unreadable.sentence()),
     });
     if let Some(why) = refusal {
         tracing::info!(tag = %id.tag, "not staging: {why}");
@@ -394,8 +368,13 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
         Err(PipelineError::Prepare(e)) => tracing::warn!(tag = %id.tag, error = %e, "preparing update failed — not arming"),
         Err(PipelineError::Arm(e)) => tracing::warn!(tag = %id.tag, error = %e, "arming update failed"),
         Ok(Pipeline::Staged) => tracing::info!(tag = %id.tag, "staged (no install manifest — prepare/arm skipped)"),
-        Ok(Pipeline::Kept) => tracing::info!(tag = %id.tag, "a newer release is already armed (or this one is marked bad)"),
-        Ok(Pipeline::NotAbove) => tracing::info!(tag = %id.tag, "not armed: not above the installed build, or the install is a dev build"),
+        Ok(Pipeline::NotArmed(outcome)) => {
+            let why = outcome.not_armed_because().unwrap_or_default();
+            match outcome {
+                ArmOutcome::UnreadableInstall(_) => tracing::warn!(tag = %id.tag, "not armed: {why}"),
+                _ => tracing::info!(tag = %id.tag, "not armed: {why}"),
+            }
+        }
         Ok(Pipeline::Armed) => {}
     }
 }
@@ -578,6 +557,9 @@ async fn run_check_once(
                 tracing::info!(tag = %id.tag, attached, "auto mode: armed but clients attached — applying at next launch/restart instead");
             }
         }
+    } else if out.status.strip_prefix("disabled: ").is_some_and(|s| s.starts_with(UNREADABLE_LEAD) || s.starts_with(MISSING_LEAD)) {
+        // An install that may hold a pin and cannot be read: the person has to repair it, so it is not a debug line.
+        tracing::warn!(status = %out.status, "update check disabled");
     } else if out.status != "ok" && !out.status.starts_with("disabled") {
         // Off-matrix platform, malformed SHA256SUMS, tag mismatch, network —
         // all of these mean "this host cannot see updates" and deserve a
@@ -719,12 +701,13 @@ pub async fn handle_update_apply(
         Err(e) => return refuse(&format!("pending pointer unreadable: {e}")),
     };
 
-    let install = InstallManifest::for_current_exe();
-    let foreign = install.is_some() && host_runs_no_sotd();
-    if let Some(why) = apply_refusal(foreign, InstalledBuild::read(&cfg.updates_root).as_ref(), &pending) {
+    let install = InstallManifest::of_current_exe();
+    let foreign = !matches!(install, InstallFile::Absent) && host_runs_no_sotd();
+    if let Some(why) = apply_refusal(foreign, InstalledBuild::try_read(&cfg.updates_root), &pending) {
         return refuse(&why);
     }
     let will_restart = install
+        .manifest()
         .and_then(|m| m.service)
         .is_some_and(|s| s == "systemd");
     let tag = pending.identity.tag.clone();
@@ -789,6 +772,8 @@ async fn exit_for_update(leases: &Leases, exit: impl FnOnce(i32)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sot_updater::pending::PendingPointer;
+    use sot_updater::UnreadableInstall;
     use sot_updater::identity::DEFAULT_REPO;
 
     /// Every updater command is a contained child of the signal: its two streams and its status come back whole, and a
@@ -1253,14 +1238,80 @@ mod tests {
     fn update_apply_refuses_a_foreign_host_and_a_pointer_that_no_longer_fits() {
         let fits = pointer("v0.6.6-rc9.14", Some(("0.6.6-rc9.13", "c0")));
         let now = installed("0.6.6-rc9.13", "c0");
-        assert!(apply_refusal(false, Some(&now), &fits).is_none());
-        assert!(apply_refusal(false, None, &fits).is_none(), "no install manifest: nothing to compare");
-        assert!(apply_refusal(true, Some(&now), &fits).unwrap().contains("neither daemon nor frontend"));
+        assert!(apply_refusal(false, Ok(Some(now.clone())), &fits).is_none());
+        assert!(apply_refusal(false, Ok(None), &fits).is_none(), "no install manifest: nothing to compare");
+        assert!(apply_refusal(true, Ok(Some(now)), &fits).unwrap().contains("neither daemon nor frontend"));
         let moved = installed("0.6.6-rc9.14-dev+d94ed0fac", "c1");
-        assert!(apply_refusal(false, Some(&moved), &fits).unwrap().contains("will not apply"));
+        assert!(apply_refusal(false, Ok(Some(moved.clone())), &fits).unwrap().contains("will not apply"));
         // A pointer armed before the record existed: judged by its version alone.
         let old = pointer("v0.6.6-rc9.13", None);
-        assert!(apply_refusal(false, Some(&moved), &old).unwrap().contains("dev build"));
+        assert!(apply_refusal(false, Ok(Some(moved)), &old).unwrap().contains("dev build"));
+    }
+
+    #[test]
+    fn update_apply_refuses_a_pointer_armed_over_an_install_it_cannot_read() {
+        let cut = UnreadableInstall { path: "/p/install.json".into(), cause: "EOF while parsing".into(), missing: false };
+        let armed = pointer("v0.6.6-rc9.14", Some(("0.6.6-rc9.13", "c0")));
+        let why = apply_refusal(false, Err(cut.clone()), &armed).unwrap();
+        assert!(why.contains("will not apply") && why.contains(&cut.sentence()), "{why}");
+        assert!(apply_refusal(false, Err(cut), &pointer("v0.6.6-rc9.14", None)).is_none(), "no record: the apply's tag check judges it");
+    }
+
+    /// The probe `a_check_at_a_non_default_prefix...` runs in a copy of this binary placed under a prefix: what
+    /// `check_basis` says there, printed between markers (the test is a no-op without its marker variable).
+    #[test]
+    fn probe_check_basis_from_a_prefix() {
+        if std::env::var_os("SOT_TEST_PROBE_CHECK_BASIS").is_none() {
+            return;
+        }
+        let process = Updater { current: "0.6.6-rc9.12".into(), dev: false, mode: Mode::Notify, repo: "o/r".into() };
+        println!("PROBE[{:?}]", process.check_basis());
+    }
+
+    // The review's measurement: the exe's location decides the root whenever install.json is there, parsed or not.
+    // At a prefix that is not the default one, with a cut record, the check must not fall back to the boot version or
+    // read another install's (SOT_UPDATE_ROOT here stands for the other install a fallback would reach).
+    #[test]
+    fn a_check_at_a_non_default_prefix_over_a_cut_record_says_so() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (prefix, other) = (scratch.path().join("opt"), scratch.path().join("other"));
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::fs::create_dir_all(other.join("updates")).unwrap();
+        std::fs::write(other.join("install.json"), r#"{"schema":1,"prefix":"/o","version":"0.6.5"}"#).unwrap();
+        let exe = prefix.join("bin").join(std::env::current_exe().unwrap().file_name().unwrap());
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+        let probe = |record: Option<&str>| {
+            match record {
+                Some(record) => std::fs::write(prefix.join("install.json"), record).unwrap(),
+                None => drop(std::fs::remove_file(prefix.join("install.json"))),
+            }
+            let ran = sot_log::test_wait::run_within(
+                std::process::Command::new(&exe)
+                    .args(["--exact", "update::tests::probe_check_basis_from_a_prefix", "--nocapture", "--test-threads=1"])
+                    .env("SOT_TEST_PROBE_CHECK_BASIS", "1")
+                    .env("SOT_UPDATE_ROOT", other.join("updates")),
+                Duration::from_secs(60),
+            );
+            let text = ran.stdout;
+            text.split_once("PROBE[").and_then(|(_, rest)| rest.lines().next()?.strip_suffix(']')).map(str::to_string).unwrap_or(text)
+        };
+        let cut = probe(Some(r#"{"schema":1,"prefix":"/p","version":"0.6.7","pinned":tr"#));
+        assert!(cut.starts_with("Err(\"disabled: install.json cannot be read at "), "{cut}");
+        assert!(cut.contains(&prefix.join("install.json").display().to_string().replace('\\', "\\\\")), "names this install's file: {cut}");
+        let run = if cfg!(windows) { "install.ps1 -Version" } else { "install.sh --version" };
+        assert!(cut.contains(run), "names the remedy: {cut}");
+        let whole = probe(Some(r#"{"schema":1,"prefix":"/p","version":"0.6.7"}"#));
+        assert_eq!(whole, r#"Ok("0.6.7")"#, "the exe's own record decides, not the other install's");
+        // Missing: on Windows, beside bin\sotd.exe, it is refused like a cut record; elsewhere absent is no install and
+        // the check falls to the other root, as before.
+        std::fs::write(prefix.join("bin").join("sotd.exe"), b"").unwrap();
+        let missing = probe(None);
+        if cfg!(windows) {
+            assert!(missing.starts_with("Err(\"disabled: install.json is missing at "), "{missing}");
+            assert!(missing.contains("install.ps1 -Version") && !missing.contains("repair"), "{missing}");
+        } else {
+            assert_eq!(missing, r#"Ok("0.6.5")"#, "Unix: absent is no install");
+        }
     }
 
     // The channel comes from the install on disk, not from the version the process booted with.
@@ -1294,6 +1345,29 @@ mod tests {
             Err("disabled: pinned at 0.6.6-rc9.12: automatic updates stay off for this install until a run that names no version".to_string()),
             "a pinned install is no basis either, and the verdict says why"
         );
+    }
+
+    // An install.json that cannot be read may hold a pin, so the check does not fall back to the boot version.
+    #[test]
+    fn a_check_over_an_unreadable_install_says_so() {
+        let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var_os("SOT_UPDATE_ROOT");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("updates")).unwrap();
+        std::env::set_var("SOT_UPDATE_ROOT", dir.path().join("updates"));
+        std::fs::write(dir.path().join("install.json"), r#"{"schema":1,"prefix":"/p","version":"0.6.7","pinned":tr"#).unwrap();
+        let process = Updater { current: "0.6.6-rc9.12".into(), dev: false, mode: Mode::Notify, repo: "o/r".into() };
+        let cut = process.check_basis();
+        std::fs::write(dir.path().join("install.json"), "\u{feff}{\"schema\":1,\"prefix\":\"/p\",\"version\":\"0.6.7\"}").unwrap();
+        let bom = process.check_basis();
+        match saved {
+            Some(v) => std::env::set_var("SOT_UPDATE_ROOT", v),
+            None => std::env::remove_var("SOT_UPDATE_ROOT"),
+        }
+        let said = cut.unwrap_err();
+        assert!(said.starts_with("disabled: install.json cannot be read"), "{said}");
+        assert!(said.contains(if cfg!(windows) { "install.ps1 -Version" } else { "install.sh --version" }), "the status names the remedy: {said}");
+        assert_eq!(bom, Ok("0.6.7".to_string()), "a BOM alone is not unreadable");
     }
 
     #[test]

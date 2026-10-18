@@ -597,6 +597,8 @@ while (((Get-Date) - `$t0).TotalSeconds -lt 150) {
             Check '7t: SOT_JULIA_BIN naming this box''s Store alias is FAIL stage naming the alias' ($e.Rc -eq 1 -and $e.Last -like 'FAIL: stage: *app-execution alias*') "rc=$($e.Rc) last='$($e.Last)'"
         } else { Write-Host '  note  7t: this box has no Store julia alias; the alias case is not run' }
     }
+    # 19b. The repair cases (an install.json that is missing, cut or version-less), in a sibling file for the line limit.
+    . (Join-Path $PSScriptRoot 'test-install-entry-repair.ps1')
 
     # 20. A FAIL says what the run left behind: the pin once written, and an update it staged that is still armed.
     # A supervisor stand-in that logs code= and never takes the sentinel, so a converge times out.

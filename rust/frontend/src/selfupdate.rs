@@ -41,7 +41,7 @@
 use sot_protocol::app_version;
 use sot_updater::pending::{ArmOutcome, InstalledBuild, Writer};
 use sot_updater::prepare::{PrepareSpec, PreparedState};
-use sot_updater::{Fetcher, InstallManifest, UpdaterConfig};
+use sot_updater::{Fetcher, InstallFile, InstallManifest, UpdaterConfig};
 
 /// Window policy: native async output kills its direct child on cancellation; it does not contain descendants.
 struct WindowSpawner;
@@ -74,33 +74,38 @@ impl sot_updater::Spawner for WindowSpawner {
 /// already-current install, and a dev build all look identical in the one
 /// artifact available for diagnosis. One line per launch is a cheap price for
 /// a self-reporting updater; the acting/erroring paths were already visible.
-fn guard() -> std::result::Result<InstallManifest, &'static str> {
+fn guard() -> std::result::Result<InstallManifest, String> {
     // Asks the build flags, not the string: a clean checkout on a release
     // tag prints the same bare version the release does, so a substring test
     // could not tell them apart (ADR 0030 §8 decision 31c).
     if !sot_protocol::is_release_build() {
-        return Err("fe self-update: not a release build — hard guard, skipping (update with git pull + cargo build)");
+        return Err("fe self-update: not a release build — hard guard, skipping (update with git pull + cargo build)".into());
     }
     if matches!(
         std::env::var("SOT_UPDATE_MODE").ok().as_deref().map(str::trim),
         Some("off")
     ) {
-        return Err("fe self-update disabled: SOT_UPDATE_MODE=off");
+        return Err("fe self-update disabled: SOT_UPDATE_MODE=off".into());
     }
-    let Some(install) = InstallManifest::for_current_exe() else {
+    let install = match InstallManifest::of_current_exe() {
+        InstallFile::Read(install) => install,
         // The single most likely reason a release install never updates, and
         // the one that used to leave no trace at all. Name the file so the
         // fix is obvious from the line alone.
-        return Err(
-            "fe self-update: no install manifest at <prefix>/install.json — not a release install, skipping \
-             (Windows: run scripts\\install-manifest.ps1; Linux/macOS: re-run install.sh)",
-        );
+        InstallFile::Absent => {
+            return Err(
+                "fe self-update: no install manifest at <prefix>/install.json — not a release install, skipping \
+                 (Windows: run scripts\\install-manifest.ps1; Linux/macOS: re-run install.sh)"
+                    .into(),
+            );
+        }
+        InstallFile::Unreadable(unreadable) => return Err(format!("fe self-update: {}", unreadable.sentence())),
     };
     if backend_owns_updates_here(&install) {
-        return Err("fe self-update: the backend on this machine owns updates (declared topology, install.json, or the default), skipping");
+        return Err("fe self-update: the backend on this machine owns updates (declared topology, install.json, or the default), skipping".into());
     }
     if runs_no_sotd_here() {
-        return Err("fe self-update: the declared topology gives this machine neither daemon nor frontend — the install is another machine's, skipping");
+        return Err("fe self-update: the declared topology gives this machine neither daemon nor frontend — the install is another machine's, skipping".into());
     }
     Ok(install)
 }
@@ -247,10 +252,17 @@ async fn run(install: InstallManifest, current: String) {
     let Some(id) = out.identity else { return };
     // The window may be older than the install; only a release above the install on disk is worth the download. `arm`
     // reads the install again under the lock and decides.
-    if let Some(installed) = InstalledBuild::read(&cfg.updates_root).filter(|i| !i.admits(&id.version)) {
-        let why = installed.pin_note().unwrap_or_else(|| "the install is already at or above this release".into());
-        tracing::info!(tag = %id.tag, installed = %installed.version, "fe self-update: {why} — nothing to do");
-        return;
+    match InstalledBuild::try_read(&cfg.updates_root) {
+        Ok(Some(installed)) if !installed.admits(&id.version) => {
+            let why = installed.pin_note().unwrap_or_else(|| "the install is already at or above this release".into());
+            tracing::info!(tag = %id.tag, installed = %installed.version, "fe self-update: {why} — nothing to do");
+            return;
+        }
+        Err(unreadable) => {
+            tracing::warn!(tag = %id.tag, "fe self-update: {}", unreadable.sentence());
+            return;
+        }
+        Ok(_) => {}
     }
     // Name the point this launch starts from. Every stage below short-circuits
     // on work a previous launch finished, so without this line a log cannot
@@ -300,11 +312,11 @@ async fn run(install: InstallManifest, current: String) {
         Ok(ArmOutcome::Armed) => {
             tracing::info!(tag = %id.tag, "fe self-update: armed — applies at next launch")
         }
-        Ok(ArmOutcome::KeptNewer | ArmOutcome::MarkedBad) => {
-            tracing::info!(tag = %id.tag, "fe self-update: a newer/blocked arm exists")
+        Ok(not_armed @ ArmOutcome::UnreadableInstall(_)) => {
+            tracing::warn!(tag = %id.tag, "fe self-update: not armed: {}", not_armed.not_armed_because().unwrap_or_default())
         }
-        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall | ArmOutcome::Pinned) => {
-            tracing::info!(tag = %id.tag, "fe self-update: not above the installed build — not armed")
+        Ok(not_armed) => {
+            tracing::info!(tag = %id.tag, "fe self-update: not armed: {}", not_armed.not_armed_because().unwrap_or_default())
         }
         Err(e) => tracing::warn!(tag = %id.tag, error = %e, "fe self-update: arming failed"),
     }

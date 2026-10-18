@@ -6,7 +6,7 @@
 #
 # WHY THIS EXISTS: install.sh refuses to run on Windows (it dies on
 # MINGW*/MSYS*/CYGWIN*), and it was the ONLY writer of install.json. Without
-# that file `InstallManifest::for_current_exe()` returns None, so
+# that file `InstallManifest::of_current_exe()` is Absent, so
 # `spawn_startup_selfcheck()` in rust/frontend/src/selfupdate.rs returns at its
 # "not a release install" guard and the frontend never even CHECKS for updates.
 # That is why Windows had no auto-update -- not a missing updater, just a
@@ -39,6 +39,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Write-Utf8NoBomViaRename: the one writer of install.json for this script and sot-apply.ps1, from this checkout.
+. (Join-Path $PSScriptRoot 'sot-install-layout.ps1')
 
 if (-not $Prefix) { $Prefix = Join-Path $env:LOCALAPPDATA 'sot' }
 if (-not $Repo)   { $Repo = Resolve-Path -Path (Join-Path $PSScriptRoot '..') | Select-Object -ExpandProperty Path }
@@ -161,7 +164,12 @@ if (Test-Path -LiteralPath $manifest) {
         $sameInstall = ([string]$before.version -eq $version) -and ([string]$before.commit -eq $commit)
         # The pin belongs to the run that named the version (install.ps1 sets and removes it); a refresh keeps it.
         if ($before.pinned -eq $true) { $pinLine = ",`n  `"pinned`": true" }
-    } catch {}
+    } catch {
+        # A record that is there and cannot be read may hold a pin, and only an installer run decides a pin: an unpinned
+        # rewrite would let the next daily check move the install. Pinned keeps automatic updates off; install.ps1
+        # clears or sets it after this script.
+        $pinLine = ",`n  `"pinned`": true"
+    }
 }
 $body = @"
 {
@@ -178,9 +186,9 @@ $body = @"
   "installed_at": "$( (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') )"$pinLine
 }
 "@
-# UTF8 without BOM: serde_json rejects a leading BOM, and Set-Content -Encoding
-# utf8 on PowerShell 5.1 writes one.
-[System.IO.File]::WriteAllText($manifest, $body, (New-Object System.Text.UTF8Encoding($false)))
+# UTF8 without BOM, through a temp file in the same folder and a rename, as install.sh does: an interrupted in-place write
+# leaves a cut install.json, which cannot be read, and so keeps automatic updates off until an installer run repairs it.
+Write-Utf8NoBomViaRename $manifest $body
 
 Write-Host "install-manifest: wrote $manifest (schema 1, version=$version, hub=$Hub)"
 

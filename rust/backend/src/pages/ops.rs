@@ -788,7 +788,10 @@ mod find_site_root_tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        // Canonical, as `docs.open` hands these walks their folders (`canonicalize_and_workspace_root`): a temp folder
+        // reached through a symlink (macOS's `/var`) or spelled 8.3 (`RUNNER~1`) is resolved here as it is there, and
+        // on Windows takes the `\\?\` form the handler's paths have.
+        dir.canonicalize().unwrap()
     }
 
     fn page(path: &std::path::Path) {

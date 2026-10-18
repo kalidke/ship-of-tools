@@ -133,17 +133,32 @@ Check 'repo\current junction' ([bool]($jt.Count -gt 0 -and $jt[0])) 'junction mi
 Check 'repo\current\scripts\launch-sot.ps1 is the new tags file' `
     ((Get-Content (Join-Path $p2 'repo\current\scripts\launch-sot.ps1') -Raw) -match [regex]::Escape('v0.6.0')) `
     'flipped launcher does not name the new tag'
-# install.json must stay BOM-less: serde_json::from_str rejects a leading BOM,
-# so a BOM here makes InstallManifest::for_current_exe() return None and the
-# frontend silently stops checking for updates after the FIRST successful
-# apply. Set-Content -Encoding utf8 on 5.1 emits one; WriteAllText does not.
+# install.json stays BOM-less: a BOM made the manifest unreadable to the updater once and the frontend silently stopped
+# checking for updates after the FIRST successful apply (the reader now strips one, and no writer here emits one).
+# Set-Content -Encoding utf8 on 5.1 emits one; WriteAllText does not.
 $b2 = [System.IO.File]::ReadAllBytes((Join-Path $p2 'install.json'))
 Check 'install.json has no BOM after apply' `
-    (-not ($b2[0] -eq 0xEF -and $b2[1] -eq 0xBB -and $b2[2] -eq 0xBF)) 'BOM written - Rust will refuse to parse it'
+    (-not ($b2[0] -eq 0xEF -and $b2[1] -eq 0xBB -and $b2[2] -eq 0xBF)) 'BOM written'
 $lgb = [System.IO.File]::ReadAllBytes((Join-Path $f2.updates 'last-good-windows-x86_64.json'))
 Check 'last-good has no BOM' `
     (-not ($lgb[0] -eq 0xEF -and $lgb[1] -eq 0xBB -and $lgb[2] -eq 0xBF)) 'BOM written'
 Check 'lock released' (-not (Test-Path (Join-Path $f2.updates '.lock'))) 'lock dir left behind'
+
+Write-Host "`n=== 2b. the record is replaced by a rename: a handle opened before the apply still reads the old bytes ===" -ForegroundColor Cyan
+$p2b = Join-Path $root 'p2b'
+$f2b = New-Fixture $p2b 'v0.5.0' 'v0.6.0'
+$file2b = Join-Path $p2b 'install.json'
+$old2b = [System.IO.File]::ReadAllText($file2b)
+$held2b = [System.IO.File]::Open($file2b, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]'ReadWrite,Delete'))
+$still2b = ''
+try {
+    $out2b = & $apply -Prefix $p2b 6>&1 2>&1
+    $held2b.Position = 0
+    $still2b = (New-Object System.IO.StreamReader($held2b)).ReadToEnd()
+} finally { $held2b.Dispose() }
+Check 'the apply rewrote install.json for the new tag' ((Get-Content $file2b -Raw) -match '"tag":\s*"v0\.6\.0"') 'not rewritten'
+Check 'the handle opened before the apply reads the old record (an in-place write would show the new one)' ($still2b -ceq $old2b) $still2b
+Check 'no temp file is left beside install.json' (@(Get-ChildItem -LiteralPath $p2b -Filter 'install.json*' | Where-Object { $_.Name -ne 'install.json' }).Count -eq 0) 'a .new file remains'
 
 Write-Host "`n=== 3. corrupt archive digest: drops pointer + stage, no mutation ===" -ForegroundColor Cyan
 $p3 = Join-Path $root 'p3'

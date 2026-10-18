@@ -17,10 +17,10 @@
 //! The install is the authority on what is installed, not any process: on a
 //! shared `$HOME` one prefix serves every host's daemon, and a long-lived one
 //! knows only the version it booted with. So an automatic arm reads
-//! `<prefix>/install.json` fresh under the lock and arms only a version
-//! strictly above it, and every pointer records the install it was armed over
-//! (`armed_over_*`) so an apply can tell a pointer that no longer fits the
-//! install it would land on.
+//! `<prefix>/install.json` fresh under the lock and arms only a version strictly above it (it refuses over one that
+//! exists and cannot be read, which may hold a pin), and every pointer records the install it was armed over
+//! (`armed_over_*`) so an apply can tell a pointer that no longer fits the install it would land on (and refuses a
+//! pointer with such a record when the install cannot be read).
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -30,7 +30,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::ReleaseIdentity;
-use crate::manifest::{InstallManifest, INSTALL_MANIFEST};
+use crate::manifest::{missing_record, InstallFile, InstallManifest, UnreadableInstall, INSTALL_MANIFEST};
 use crate::semver::compare_versions;
 
 /// The per-target pointer filename.
@@ -74,20 +74,33 @@ pub struct InstalledBuild {
 }
 
 impl InstalledBuild {
-    /// Read fresh from the install beside `updates_root` (`<prefix>/updates`). `None` when there is no readable
-    /// manifest naming a version: a layout with no install (a dev box, a test root), where nothing is installed to
-    /// guard.
-    pub fn read(updates_root: &Path) -> Option<Self> {
-        let path = updates_root.parent()?.join(INSTALL_MANIFEST);
-        let manifest = InstallManifest::read(&path).ok()?;
-        Some(Self { version: manifest.version?, commit: manifest.commit, pinned: manifest.pinned == Some(true) })
+    /// Read fresh from the install beside `updates_root` (`<prefix>/updates`), in three states: `Ok(None)` is a layout with
+    /// no install (a dev box, a test root, an `install.json` that is absent with no Windows install beside it, or names
+    /// no version), where nothing is installed to guard; `Err` is an `install.json` that exists and cannot be read (cut
+    /// short by an interrupted write, not JSON, or saying `"pinned": true` with no version to pin) or, on Windows, one
+    /// that is missing with `bin\sotd.exe` beside it ([`missing_record`]), which may hold a pin that an automatic writer
+    /// must not lose. Each caller states its choice for the `Err`.
+    pub fn try_read(updates_root: &Path) -> std::result::Result<Option<Self>, UnreadableInstall> {
+        let Some(prefix) = updates_root.parent() else { return Ok(None) };
+        let path = prefix.join(INSTALL_MANIFEST);
+        match InstallManifest::load(&path) {
+            InstallFile::Absent => missing_record(prefix).map_or(Ok(None), Err),
+            InstallFile::Unreadable(u) => Err(u),
+            InstallFile::Read(m) => match m.version {
+                Some(version) => Ok(Some(Self { version, commit: m.commit, pinned: m.pinned == Some(true) })),
+                None if m.pinned == Some(true) => Err(UnreadableInstall { path, cause: "it says pinned but records no version".into(), missing: false }),
+                None => Ok(None),
+            },
+        }
     }
 
-    /// Read the installed version fresh, or `fallback` (the running process's) when there is no install to read. The
-    /// channel a check follows and the version it compares with are the install's, not the boot version of a process
-    /// that may be older than the install.
+    /// The installed version read fresh, or `fallback` (the running process's) when there is no install to read or it
+    /// cannot be: every caller that acts on the answer has been stopped first by the unreadable-install guard (the
+    /// check's basis, the window's guard, the arm), so the fallback only names a channel for a status. The channel a
+    /// check follows and the version it compares with are the install's, not the boot version of a process that may be
+    /// older than the install.
     pub fn version_or(updates_root: &Path, fallback: &str) -> String {
-        Self::read(updates_root).map_or_else(|| fallback.to_string(), |i| i.version)
+        Self::try_read(updates_root).ok().flatten().map_or_else(|| fallback.to_string(), |i| i.version)
     }
 
     /// Is the install a build that is not a release (a `+` in the version, the test `install-manifest.ps1` uses)? A
@@ -124,7 +137,7 @@ pub enum Writer {
 }
 
 /// What an [`arm`] did when it did not fail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArmOutcome {
     Armed,
     /// A pointer for a newer release is already armed over this install.
@@ -137,6 +150,24 @@ pub enum ArmOutcome {
     DevInstall,
     /// An automatic writer offered a release for an install pinned by the run that named its version.
     Pinned,
+    /// An automatic writer found an `install.json` it cannot read, so it cannot tell whether the install is pinned.
+    UnreadableInstall(UnreadableInstall),
+}
+
+impl ArmOutcome {
+    /// Why nothing was armed, or `None` when it was: the one sentence every caller logs or prints, so none paraphrases
+    /// the outcome.
+    pub fn not_armed_because(&self) -> Option<String> {
+        Some(match self {
+            Self::Armed => return None,
+            Self::KeptNewer => "a newer release is already armed".into(),
+            Self::MarkedBad => "this release crash-looped after an apply and is marked bad".into(),
+            Self::NotAboveInstall => "the release is not above the installed build".into(),
+            Self::DevInstall => "the install is a dev build".into(),
+            Self::Pinned => "the install is pinned".into(),
+            Self::UnreadableInstall(u) => u.sentence(),
+        })
+    }
 }
 
 /// Why `ptr` must not apply onto `installed`, or `None` when it may. A pointer that records the install it was armed
@@ -164,6 +195,17 @@ pub fn stale_reason(ptr: &PendingPointer, installed: &InstalledBuild) -> Option<
                 ptr.identity.version, installed.version
             )
         }),
+    }
+}
+
+/// Why `ptr` must not apply onto the install `installed` says now, or `None` when it may. A pointer that records the
+/// install it was armed over (every pointer a Rust writer armed over a readable install) cannot be checked against one
+/// that cannot be read, and is refused; a pointer with no record meets the apply's exact-tag check, as it does with no
+/// install at all.
+pub fn pointer_refusal(ptr: &PendingPointer, installed: std::result::Result<Option<InstalledBuild>, UnreadableInstall>) -> Option<String> {
+    match installed {
+        Ok(installed) => stale_reason(ptr, &installed?),
+        Err(u) => ptr.armed_over_version.as_ref().map(|over| format!("armed over {over}, which cannot be checked: {}", u.sentence())),
     }
 }
 
@@ -200,7 +242,14 @@ async fn arm_locked(
         tracing::warn!(tag = %identity.tag, "version is marked bad (crash-loop rollback) — not arming");
         return Ok(ArmOutcome::MarkedBad);
     }
-    let installed = InstalledBuild::read(updates_root);
+    let installed = match (InstalledBuild::try_read(updates_root), writer) {
+        (Ok(installed), _) => installed,
+        (Err(unreadable), Writer::Automatic) => {
+            tracing::warn!(offered = %identity.tag, "not arming: {}", unreadable.sentence());
+            return Ok(ArmOutcome::UnreadableInstall(unreadable));
+        }
+        (Err(_), Writer::Operator) => None,
+    };
     if let (Writer::Automatic, Some(installed)) = (writer, &installed) {
         if installed.is_dev_build() {
             tracing::info!(installed = %installed.version, offered = %identity.tag, "the install is a dev build — not arming a release into it");
@@ -311,13 +360,24 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&prefix).await;
         tokio::fs::create_dir_all(prefix.join("updates")).await.unwrap();
         if let Some((version, commit)) = installed {
-            let json = format!(
-                r#"{{"schema":1,"prefix":"{}","version":"{version}","tag":"v{version}","commit":"{commit}"}}"#,
-                prefix.display()
-            );
-            tokio::fs::write(prefix.join(INSTALL_MANIFEST), json).await.unwrap();
+            install(&prefix, version, commit, None).await;
         }
         prefix.join("updates")
+    }
+
+    /// Write `<prefix>/install.json` naming `version`, with `pinned` only when given. serde writes it, so a prefix holding
+    /// a `\` (every Windows path) or a `"` is escaped as an installer escapes it, and the install must read back: a
+    /// manifest that does not parse reads as no install, and every arm over it would pass for the wrong reason.
+    async fn install(prefix: &Path, version: &str, commit: &str, pinned: Option<bool>) {
+        let mut json = serde_json::json!({
+            "schema": 1, "prefix": prefix, "version": version, "tag": format!("v{version}"), "commit": commit,
+        });
+        if let Some(pinned) = pinned {
+            json["pinned"] = pinned.into();
+        }
+        tokio::fs::write(prefix.join(INSTALL_MANIFEST), json.to_string()).await.unwrap();
+        let read = InstalledBuild::try_read(&prefix.join("updates")).unwrap().expect("the fixture's install.json reads back");
+        assert_eq!((read.version.as_str(), read.pinned), (version, pinned == Some(true)));
     }
 
     async fn cleanup(root: &Path) {
@@ -390,11 +450,7 @@ mod tests {
     async fn a_pinned_install_takes_no_automatic_arm() {
         let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
         let root = prefix("pinned", Some(("0.6.6-rc9.13", "c0"))).await;
-        let json = format!(
-            r#"{{"schema":1,"prefix":"{}","version":"0.6.6-rc9.13","tag":"v0.6.6-rc9.13","commit":"c0","pinned":true}}"#,
-            root.parent().unwrap().display()
-        );
-        tokio::fs::write(root.parent().unwrap().join(INSTALL_MANIFEST), json).await.unwrap();
+        install(root.parent().unwrap(), "0.6.6-rc9.13", "c0", Some(true)).await;
         let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap();
         assert_eq!(out, ArmOutcome::Pinned);
         assert!(read(&root, T).await.unwrap().is_none(), "nothing armed over a pinned install");
@@ -403,24 +459,152 @@ mod tests {
         cleanup(&root).await;
     }
 
+    // An install.json that cannot be read may say `"pinned": true`: an automatic arm refuses over it, the operator's does not.
+    #[tokio::test]
+    async fn an_unreadable_install_takes_no_automatic_arm() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
+        let root = prefix("unreadable", None).await;
+        let file = root.parent().unwrap().join(INSTALL_MANIFEST);
+        tokio::fs::write(&file, r#"{"schema":1,"version":"0.6.6-rc9.13","pinned":tr"#).await.unwrap();
+        assert!(InstalledBuild::try_read(&root).is_err());
+        let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap();
+        assert!(matches!(out, ArmOutcome::UnreadableInstall(_)), "{out:?}");
+        assert!(read(&root, T).await.unwrap().is_none(), "nothing armed over an install that cannot be read");
+        let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Operator).await.unwrap();
+        assert_eq!(out, ArmOutcome::Armed, "the operator's arm proceeds");
+        cleanup(&root).await;
+    }
+
+    // A BOM (a hand edit saved by Notepad) is not unreadable, and an absent install.json is still no install.
+    #[tokio::test]
+    async fn a_bom_led_install_reads_and_an_absent_one_is_no_install() {
+        let root = prefix("bom", None).await;
+        assert_eq!(InstalledBuild::try_read(&root), Ok(None), "absent: no install");
+        let text = r#"{"schema":1,"prefix":"/p","version":"0.6.6-rc9.13","commit":"c0","pinned":true}"#;
+        tokio::fs::write(root.parent().unwrap().join(INSTALL_MANIFEST), format!("\u{feff}{text}")).await.unwrap();
+        let read = InstalledBuild::try_read(&root).unwrap().unwrap();
+        assert_eq!((read.version.as_str(), read.pinned), ("0.6.6-rc9.13", true));
+        cleanup(&root).await;
+    }
+
+    // `"pinned": true` with no version to pin cannot be told from a hand edit gone wrong: an automatic writer treats it
+    // as unreadable, the operator's arm proceeds, and an unpinned record with no version is still no install.
+    #[tokio::test]
+    async fn a_pin_with_no_version_is_unreadable_to_an_automatic_writer() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
+        let root = prefix("pinnoversion", None).await;
+        let file = root.parent().unwrap().join(INSTALL_MANIFEST);
+        tokio::fs::write(&file, r#"{"schema":1,"prefix":"/p","pinned":true}"#).await.unwrap();
+        assert!(InstalledBuild::try_read(&root).is_err());
+        let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap();
+        assert!(matches!(out, ArmOutcome::UnreadableInstall(_)), "{out:?}");
+        assert_eq!(arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Operator).await.unwrap(), ArmOutcome::Armed);
+        tokio::fs::write(&file, r#"{"schema":1,"prefix":"/p"}"#).await.unwrap();
+        assert_eq!(InstalledBuild::try_read(&root), Ok(None), "no version and no pin: no install");
+        cleanup(&root).await;
+    }
+
+    // The pointer's own judgment over an install that cannot be read: a pointer armed over a record cannot be checked.
+    #[test]
+    fn a_pointer_armed_over_a_record_is_refused_when_the_install_cannot_be_read() {
+        let ptr = |over: Option<&str>| PendingPointer {
+            schema: 1,
+            identity: identity("0.6.6-rc9.14"),
+            checkout: PathBuf::from("/x"),
+            commit: "cc".into(),
+            armed_at: 0,
+            armed_over_version: over.map(Into::into),
+            armed_over_commit: None,
+        };
+        let cut = UnreadableInstall { path: PathBuf::from("/p/install.json"), cause: "EOF while parsing".into(), missing: false };
+        let why = pointer_refusal(&ptr(Some("0.6.6-rc9.13")), Err(cut.clone())).expect("refused");
+        assert!(why.contains("0.6.6-rc9.13") && why.contains(&cut.sentence()), "{why}");
+        assert!(pointer_refusal(&ptr(None), Err(cut)).is_none(), "no record: the script's exact-tag check judges it");
+        assert!(pointer_refusal(&ptr(Some("0.6.6-rc9.13")), Ok(None)).is_none(), "no install: nothing to compare");
+    }
+
+    // Item 9: on Windows a missing record beside bin\sotd.exe is refused like a cut one (a writer's replace can leave it
+    // briefly missing); elsewhere, and with no install beside it, absent is no install.
+    #[tokio::test]
+    async fn a_missing_install_json_beside_a_windows_install_takes_no_automatic_arm() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
+        let root = prefix("missing", None).await;
+        let bin = root.parent().unwrap().join("bin");
+        assert_eq!(InstalledBuild::try_read(&root), Ok(None), "absent with no install beside it: no install");
+        tokio::fs::create_dir_all(&bin).await.unwrap();
+        tokio::fs::write(bin.join("sotd.exe"), b"").await.unwrap();
+        let auto = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap();
+        if cfg!(windows) {
+            let missing = InstalledBuild::try_read(&root).unwrap_err();
+            let said = missing.sentence();
+            assert!(missing.missing && said.starts_with(crate::manifest::MISSING_LEAD), "{said}");
+            assert!(said.contains("install.ps1 -Version") && !said.contains("repair"), "{said}");
+            assert!(matches!(auto, ArmOutcome::UnreadableInstall(_)), "{auto:?}");
+            assert!(read(&root, T).await.unwrap().is_none(), "nothing armed");
+            let op = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Operator).await.unwrap();
+            assert_eq!(op, ArmOutcome::Armed, "the operator's arm proceeds");
+        } else {
+            assert_eq!(InstalledBuild::try_read(&root), Ok(None), "Unix: absent stays no install");
+            assert_eq!(auto, ArmOutcome::Armed);
+        }
+        cleanup(&root).await;
+    }
+
+    // Item 9's measurement (review N1): while a writer replaces a pinned record 3000 times with the shipped helper, no
+    // automatic arm passes the pin. Without the rule an arm that meets the record missing takes it for no install.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn no_automatic_arm_passes_a_pin_while_the_record_is_replaced() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
+        let root = prefix("race", None).await;
+        let dir = root.parent().unwrap().to_path_buf();
+        tokio::fs::create_dir_all(dir.join("bin")).await.unwrap();
+        tokio::fs::write(dir.join("bin").join("sotd.exe"), b"").await.unwrap();
+        install(&dir, "0.6.6-rc9.13", "c0", Some(true)).await;
+        let layout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/sot-install-layout.ps1");
+        let record = dir.join(INSTALL_MANIFEST);
+        let script = format!(
+            "$ErrorActionPreference = 'Stop'; . '{}'; $t = [IO.File]::ReadAllText('{}'); for ($i = 0; $i -lt 3000; $i++) {{ Write-Utf8NoBomViaRename '{}' $t }}",
+            layout.display(),
+            record.display(),
+            record.display()
+        );
+        let writer = std::thread::spawn(move || {
+            sot_log::test_wait::run_within(
+                std::process::Command::new("powershell.exe").args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script]),
+                Duration::from_secs(600),
+            )
+            .ok();
+        });
+        let (mut polls, mut refused) = (0u32, 0u32);
+        while !writer.is_finished() {
+            match arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap() {
+                ArmOutcome::Pinned => {}
+                ArmOutcome::UnreadableInstall(_) => refused += 1,
+                other => panic!("an automatic arm passed the pin on poll {polls}: {other:?}"),
+            }
+            polls += 1;
+        }
+        writer.join().unwrap();
+        println!("{polls} automatic arms while the record was replaced 3000 times; {refused} found it missing and refused");
+        assert!(polls > 0 && read(&root, T).await.unwrap().is_none(), "nothing armed over the pin");
+        cleanup(&root).await;
+    }
+
     // An install.json with no pin field (every install made before the field existed) is unpinned and follows its channel.
     #[tokio::test]
     async fn an_install_with_no_pin_field_follows_its_channel() {
         let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
         let root = prefix("nopin", Some(("0.6.6-rc9.13", "c0"))).await;
-        assert!(!InstalledBuild::read(&root).unwrap().pinned, "no field reads as unpinned");
-        assert!(InstalledBuild::read(&root).unwrap().admits("0.6.6-rc9.14"));
+        assert!(!InstalledBuild::try_read(&root).unwrap().unwrap().pinned, "no field reads as unpinned");
+        assert!(InstalledBuild::try_read(&root).unwrap().unwrap().admits("0.6.6-rc9.14"));
         let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap();
         assert_eq!(out, ArmOutcome::Armed);
         cleanup(&root).await;
         // An explicit false is unpinned too.
         let root = prefix("pinfalse", Some(("0.6.6-rc9.13", "c0"))).await;
-        let json = format!(
-            r#"{{"schema":1,"prefix":"{}","version":"0.6.6-rc9.13","tag":"v0.6.6-rc9.13","commit":"c0","pinned":false}}"#,
-            root.parent().unwrap().display()
-        );
-        tokio::fs::write(root.parent().unwrap().join(INSTALL_MANIFEST), json).await.unwrap();
-        assert!(!InstalledBuild::read(&root).unwrap().pinned);
+        install(root.parent().unwrap(), "0.6.6-rc9.13", "c0", Some(false)).await;
+        assert!(!InstalledBuild::try_read(&root).unwrap().unwrap().pinned);
         cleanup(&root).await;
     }
 

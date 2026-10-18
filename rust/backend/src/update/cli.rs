@@ -15,7 +15,8 @@
 //!   open in it). The installer asks before an update would restart that daemon.
 //!
 //! The pointer verb's exit code is the contract. 0 means the script goes on to its own checks (no pointer, a pointer
-//! that fits, or no install here to compare with); `REFUSED` means drop the pointer, one that cannot be read included.
+//! that fits, or no install here to compare with); `REFUSED` means drop the pointer, one that cannot be read included, and
+//! one armed over an install whose `install.json` cannot be read.
 //! An older `sotd` exits 1 on the unknown word
 //! `update` and a `sotd update` that predates this verb exits 2 on bad arguments, so a refusal is neither: any other
 //! answer leaves the script on today's exact-tag check.
@@ -24,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use sot_updater::identity::repo_from_env;
 use sot_updater::pending::{self, InstalledBuild, Writer};
-use sot_updater::{Fetcher, InstallManifest, ReleaseIdentity, UpdaterConfig};
+use sot_updater::{Fetcher, InstallFile, InstallManifest, ReleaseIdentity, UpdaterConfig};
 
 use super::{stage_prepare_arm_with, Pipeline};
 
@@ -42,13 +43,16 @@ Usage: sotd update pointer --prefix <install prefix> --target <release target>
   May the pointer armed for <target> apply onto the install at <prefix>? The apply scripts ask before they apply it.
   Reads the pointer and install.json; starts no daemon and writes nothing. Prints `ok` and exits 0 (no pointer, a
   pointer that fits, or no install here to compare with), or prints `refuse: <why>` and exits 3: the pointer cannot be
-  read, was armed over an install that is no longer the one on disk, or sits at or below the installed version (a
-  pointer with no record never applies onto a dev build).
+  read, was armed over an install that is no longer the one on disk (or that install.json cannot be read to check),
+  or sits at or below the installed version (a pointer with no record never applies onto a dev build).
 
-Usage: sotd update direction <version> --prefix <install prefix>
+Usage: sotd update direction <version> --prefix <install prefix> [--installed <version>]
 
   Which way does the install at <prefix> move to <version> (a tag or a bare version)? Prints `newer`, `same` or `older`
-  against the version install.json records and exits 0; exits 1 when install.json cannot be read or records no version.
+  against the version install.json records and exits 0. An install.json that cannot be parsed still gives its version when
+  the text holds one; when it holds none, prints `unknown` and exits 0. Exits 1 when install.json is absent or records no
+  version and --installed gives none. --installed gives the version the caller read from the installed binary, used only where the record names none
+  (or is absent).
   Starts no daemon and writes nothing.
 
 Usage: sotd update repls --endpoint <unix:PATH|pipe:PATH>
@@ -107,7 +111,15 @@ fn absolute_paths(folder: &std::path::Path, prefix: &std::path::Path) -> std::io
 async fn stage_folder(folder: &std::path::Path, prefix: &std::path::Path) -> Result<String, String> {
     let (folder, prefix) = absolute_paths(folder, prefix).map_err(|e| format!("making the paths absolute: {e}"))?;
     let (folder, prefix) = (folder.as_path(), prefix.as_path());
-    let mut install = InstallManifest::read(&prefix.join(sot_updater::manifest::INSTALL_MANIFEST)).map_err(|e| format!("{e:#}"))?;
+    let record = prefix.join(sot_updater::manifest::INSTALL_MANIFEST);
+    let mut install = match InstallManifest::load(&record) {
+        InstallFile::Read(install) => install,
+        // The operator's run is what repairs a record that cannot be read: it proceeds as over no record, its prefix
+        // from the argument (below), and the installer then writes the record whole.
+        InstallFile::Unreadable(_) => InstallManifest::bare(prefix),
+        InstallFile::Absent if sot_updater::missing_record(prefix).is_some() => InstallManifest::bare(prefix),
+        InstallFile::Absent => return Err(format!("reading {}: no such file", record.display())),
+    };
     install.prefix = prefix.to_path_buf();
     let sums = std::fs::read_to_string(folder.join("SHA256SUMS"))
         .map_err(|e| format!("reading {}: {e}", folder.join("SHA256SUMS").display()))?;
@@ -123,7 +135,8 @@ async fn stage_folder(folder: &std::path::Path, prefix: &std::path::Path) -> Res
     };
     match stage_prepare_arm_with(&cfg, &id, Some(&install), Writer::Operator).await {
         Ok(Pipeline::Armed) => Ok(armed_line(&id, install.version.as_deref())),
-        Ok(_) => Err(format!("{} was staged but not armed: a newer release is armed, or this one is marked bad", id.tag)),
+        Ok(Pipeline::NotArmed(outcome)) => Err(format!("{} was staged but not armed: {}", id.tag, outcome.not_armed_because().unwrap_or_default())),
+        Ok(Pipeline::Staged) => Err(format!("{} was staged but not armed: no install to prepare for", id.tag)),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -187,16 +200,21 @@ fn parse_pointer_args(args: &[String]) -> Result<(PathBuf, String), String> {
     ))
 }
 
-/// The refusal for the pointer armed for `target` under `prefix`, or `None` when it may apply. Without a readable
-/// `install.json` the prefix is not an install of ours and there is nothing to compare. A pointer that exists and cannot
-/// be read is refused: every pointer a Rust writer wrote carries its schema, repo and version, so one that does not
-/// parse is corrupt or another program's, and the apply must not guess.
+/// The refusal for the pointer armed for `target` under `prefix`, or `None` when it may apply. Without an `install.json`
+/// the prefix is not an install of ours and there is nothing to compare. One that exists and cannot be read refuses a
+/// pointer that records the install it was armed over (it cannot be checked), and lets one with no record meet the
+/// script's exact-tag check. A pointer that exists and cannot be read is refused: every pointer a Rust writer wrote
+/// carries its schema, repo and version, so one that does not parse is corrupt or another program's, and the apply must
+/// not guess.
 async fn refusal(prefix: &Path, target: &str) -> Option<String> {
     let updates = prefix.join("updates");
-    let installed = InstalledBuild::read(&updates)?;
+    let installed = InstalledBuild::try_read(&updates);
+    if matches!(installed, Ok(None)) {
+        return None;
+    }
     match pending::read(&updates, target).await {
         Ok(None) => None,
-        Ok(Some(ptr)) => pending::stale_reason(&ptr, &installed),
+        Ok(Some(ptr)) => pending::pointer_refusal(&ptr, installed),
         Err(e) => Some(format!("unreadable pointer: {e:#}")),
     }
 }
@@ -223,35 +241,59 @@ async fn pointer_cli(args: &[String]) -> i32 {
 }
 
 /// `<version> --prefix <prefix>`, in either order, or the reason the arguments are not those.
-fn parse_direction_args(args: &[String]) -> Result<(String, PathBuf), String> {
-    let (mut version, mut prefix) = (None, None);
+fn parse_direction_args(args: &[String]) -> Result<(String, PathBuf, Option<String>), String> {
+    let (mut version, mut prefix, mut installed) = (None, None, None);
     let mut rest = args.iter();
     while let Some(a) = rest.next() {
         if a == "--prefix" {
             prefix = Some(rest.next().ok_or("--prefix needs a folder")?.clone());
+        } else if a == "--installed" {
+            installed = Some(rest.next().ok_or("--installed needs a version")?.clone());
         } else if version.replace(a.clone()).is_some() {
             return Err(format!("unexpected argument {a:?}"));
         }
     }
-    Ok((version.ok_or("no version given")?, prefix.ok_or("no --prefix given")?.into()))
+    Ok((version.ok_or("no version given")?, prefix.ok_or("no --prefix given")?.into(), installed))
 }
 
-/// `sotd update direction ...`: 0 with the word on stdout, 1 when the install's version cannot be read, 2 for arguments
-/// that are not `<version> --prefix <prefix>`.
+/// What `direction` answers for the install recorded at `record`: `newer`, `same` or `older`; `unknown` for an
+/// install.json that cannot be parsed and holds no version text (the installers' implicit run goes on then, because the
+/// run rewrites the record); or why it cannot answer (no file, or a whole record naming no version).
+///
+/// `read_elsewhere` is the version the caller read from the installed binary: used only where the record names none (a
+/// whole record without a version, one that cannot be parsed and holds no version text, or no record at all), so a record
+/// cut inside its version, or missing, cannot hide the installed one from the no-move-back guard.
+fn direction_answer(version: &str, record: &Path, read_elsewhere: Option<&str>) -> Result<String, String> {
+    let word = |installed: &str| direction_word(version, installed).to_string();
+    match InstallManifest::load(record) {
+        InstallFile::Read(m) => m
+            .version
+            .map(|installed| word(&installed))
+            .or_else(|| read_elsewhere.map(word))
+            .ok_or_else(|| "install.json records no version".to_string()),
+        InstallFile::Unreadable(_) => Ok(InstallManifest::version_in_text(record)
+            .map(|installed| word(&installed))
+            .or_else(|| read_elsewhere.map(word))
+            .unwrap_or_else(|| "unknown".to_string())),
+        InstallFile::Absent => read_elsewhere
+            .map(word)
+            .ok_or_else(|| format!("reading {}: no such file", record.display())),
+    }
+}
+
+/// `sotd update direction ...`: 0 with the word on stdout, 1 when there is no install.json or it records no version, 2 for
+/// arguments that are not `<version> --prefix <prefix>`.
 fn direction_cli(args: &[String]) -> i32 {
-    let (version, prefix) = match parse_direction_args(args) {
+    let (version, prefix, read_elsewhere) = match parse_direction_args(args) {
         Ok(parsed) => parsed,
         Err(why) => {
             eprintln!("sotd update: {why}\n{USAGE}");
             return 2;
         }
     };
-    let installed = InstallManifest::read(&prefix.join(sot_updater::manifest::INSTALL_MANIFEST))
-        .map_err(|e| format!("{e:#}"))
-        .and_then(|m| m.version.ok_or_else(|| "install.json records no version".to_string()));
-    match installed {
-        Ok(installed) => {
-            println!("{}", direction_word(&version, &installed));
+    match direction_answer(&version, &prefix.join(sot_updater::manifest::INSTALL_MANIFEST), read_elsewhere.as_deref()) {
+        Ok(word) => {
+            println!("{word}");
             0
         }
         Err(why) => {
@@ -513,12 +555,42 @@ mod tests {
         assert_eq!(code(&operator).await, 0, "an operator's pointer carries its record");
     }
 
+    // The review's two `update pointer` runs: a pointer armed over a record cannot be checked against an install.json that
+    // cannot be read, and one with no record meets the script's own exact-tag check.
+    #[tokio::test]
+    async fn an_unreadable_install_refuses_a_pointer_armed_over_a_record() {
+        let cut = r#"{"schema":1,"prefix":"/p","version":"0.6.7","pinned":tr"#;
+        let armed = prefix(("0.6.7", "c0"), Some(("0.6.6-rc9.14", Some(("0.6.5", "c0")))));
+        std::fs::write(armed.path().join("install.json"), cut).unwrap();
+        assert_eq!(code(&armed).await, REFUSED);
+        let why = refusal(armed.path(), T).await.unwrap();
+        assert!(why.contains("0.6.5") && why.contains(sot_updater::UNREADABLE_LEAD), "{why}");
+        let bare = prefix(("0.6.7", "c0"), Some(("0.6.6-rc9.14", None)));
+        std::fs::write(bare.path().join("install.json"), cut).unwrap();
+        assert_eq!(code(&bare).await, 0, "no record: the script's exact-tag check judges it");
+    }
+
+    // The installer's repair: `sotd update stage` over an install.json it cannot read goes on as over no record, so
+    // `install.ps1 -Version` can replace the record. It gets as far as the pack folder, which here holds nothing.
+    #[tokio::test]
+    async fn the_operators_stage_goes_on_over_an_install_json_it_cannot_read() {
+        let (prefix, folder) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let record = prefix.path().join("install.json");
+        let stage = || stage_folder(folder.path(), prefix.path());
+        let absent = stage().await.unwrap_err();
+        assert!(absent.contains("install.json"), "no record is still an error: {absent}");
+        std::fs::write(&record, r#"{"schema":1,"prefix":"/p","version":"0.6.7","pinned":tr"#).unwrap();
+        let cut = stage().await.unwrap_err();
+        assert!(cut.contains("SHA256SUMS") && !cut.contains("install.json"), "went on past the record: {cut}");
+    }
+
     #[test]
     fn direction_arguments_are_the_version_and_the_prefix_in_either_order() {
-        let want = Ok(("v0.6.6".to_string(), "p".into()));
+        let want = Ok(("v0.6.6".to_string(), "p".into(), None));
         assert_eq!(parse_direction_args(&argv("v0.6.6 --prefix p")), want);
         assert_eq!(parse_direction_args(&argv("--prefix p v0.6.6")), want);
-        for bad in ["", "v0.6.6", "--prefix p", "v0.6.6 --prefix", "a b --prefix p"] {
+        assert_eq!(parse_direction_args(&argv("--installed 0.6.5 v0.6.6 --prefix p")), Ok(("v0.6.6".to_string(), "p".into(), Some("0.6.5".to_string()))));
+        for bad in ["", "v0.6.6", "--prefix p", "v0.6.6 --prefix", "a b --prefix p", "v0.6.6 --prefix p --installed"] {
             assert!(parse_direction_args(&argv(bad)).is_err(), "{bad:?}");
             assert_eq!(direction_cli(&argv(bad)), 2, "{bad:?}");
         }
@@ -545,14 +617,45 @@ mod tests {
     }
 
     #[test]
-    fn direction_without_a_readable_install_exits_1() {
+    fn direction_without_a_record_or_a_version_exits_1() {
         let dir = tempfile::tempdir().unwrap();
         let ask = |d: &std::path::Path| direction_cli(&["--prefix".into(), d.display().to_string(), "v0.6.6".into()]);
         assert_eq!(ask(dir.path()), 1, "no install.json");
-        std::fs::write(dir.path().join("install.json"), "{not json").unwrap();
-        assert_eq!(ask(dir.path()), 1, "garbled install.json");
         std::fs::write(dir.path().join("install.json"), r#"{"schema":1,"prefix":"/p"}"#).unwrap();
         assert_eq!(ask(dir.path()), 1, "no version recorded");
+    }
+
+    // An install.json that cannot be parsed still answers where its text holds the version (as the installers read it),
+    // and says `unknown`, exit 0, where it holds none: the implicit run goes on and rewrites the record.
+    #[test]
+    fn direction_over_an_unreadable_record_reads_the_version_text_or_says_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("install.json");
+        let ask = |text: &str| {
+            std::fs::write(&record, text).unwrap();
+            direction_answer("v0.6.6", &record, None)
+        };
+        let cut = |version: &str| format!("{{\n  \"schema\": 1,\n  \"version\": \"{version}\",\n  \"pinned\": tr");
+        assert_eq!(ask(&cut("0.6.5")), Ok("newer".to_string()));
+        assert_eq!(ask(&cut("0.6.6")), Ok("same".to_string()));
+        assert_eq!(ask(&cut("0.6.7")), Ok("older".to_string()), "an implicit run still never moves back");
+        assert_eq!(ask(&format!("\u{feff}{}", cut("0.6.7"))), Ok("older".to_string()), "a BOM does not hide it");
+        assert_eq!(ask("{not json"), Ok("unknown".to_string()));
+        // The binary's version fills in only where the record names none: a record cut inside its version, or whole
+        // without one, no longer hides the installed version from the guard.
+        let with_binary = |text: &str, installed: &str| {
+            std::fs::write(&record, text).unwrap();
+            direction_answer("v0.6.6", &record, Some(installed))
+        };
+        assert_eq!(with_binary(&format!("{{\n  \"schema\": 1,\n  \"version\": \"0.6."), "0.6.7"), Ok("older".to_string()));
+        assert_eq!(with_binary("{not json", "0.6.5"), Ok("newer".to_string()));
+        assert_eq!(with_binary(r#"{"schema":1,"prefix":"/p"}"#, "0.6.7"), Ok("older".to_string()), "a whole record with no version");
+        assert_eq!(with_binary(&cut("0.6.5"), "0.6.7"), Ok("newer".to_string()), "the record's own version wins");
+        std::fs::remove_file(&record).unwrap();
+        assert_eq!(direction_answer("v0.6.6", &record, Some("0.6.7")), Ok("older".to_string()), "a missing record, the binary's version");
+        assert!(direction_answer("v0.6.6", &record, None).is_err(), "a missing record and no binary version: no answer");
+        assert_eq!(ask(r#"{"schema":1,"version":"0.6"#), Ok("unknown".to_string()), "a cut value is no version");
+        assert_eq!(direction_cli(&["--prefix".into(), dir.path().display().to_string(), "v0.6.6".into()]), 0);
     }
 
     #[test]
