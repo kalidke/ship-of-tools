@@ -804,8 +804,11 @@ apply would have downgraded it. The rule:
 
 **Fallbacks that fail open, and why each is acceptable.** Each leaves the old behavior in place for a case the new rule
 cannot judge, and none can arm or apply a downgrade without another rule catching it:
-- *`install.json` unreadable or without a version.* An automatic arm proceeds with no record and no comparison (there is
-  no install to compare with). The apply side catches it: a pointer with no record applies only strictly above whatever
+- *`install.json` absent or without a version.* An automatic arm proceeds with no record and no comparison (there is
+  no install to compare with). (An `install.json` that exists and cannot be read does not fall here: it may hold a pin,
+  so an automatic arm refuses with `ArmOutcome::UnreadableInstall` and the daemon's check reports it, while the
+  operator's arm proceeds. A leading UTF-8 BOM is not unreadable. Every writer of `install.json` writes it through a temp
+  file and a rename, so an interrupted write cannot cut it.) The apply side catches it: a pointer with no record applies only strictly above whatever
   `install.json` says by then, and a prefix with no readable `install.json` is not an install of ours (the verb answers 0
   and the scripts' exact-tag check decides).
 - *An installed version that does not parse.* `compare_versions` ranks every parsable release above it, so an automatic

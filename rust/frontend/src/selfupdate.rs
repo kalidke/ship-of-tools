@@ -306,6 +306,9 @@ async fn run(install: InstallManifest, current: String) {
         Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall | ArmOutcome::Pinned) => {
             tracing::info!(tag = %id.tag, "fe self-update: not above the installed build — not armed")
         }
+        Ok(ArmOutcome::UnreadableInstall) => {
+            tracing::warn!(tag = %id.tag, "fe self-update: install.json cannot be read — not armed")
+        }
         Err(e) => tracing::warn!(tag = %id.tag, error = %e, "fe self-update: arming failed"),
     }
 }

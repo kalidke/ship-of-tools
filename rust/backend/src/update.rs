@@ -193,7 +193,11 @@ impl Updater {
     /// `current`, and a shared prefix can have been installed past it, or onto another channel, since; `current` stands
     /// only where there is no install to read. A dev build or a pinned install is no basis for a release check.
     fn check_basis(&self) -> std::result::Result<String, String> {
-        let installed = sot_updater::resolve_updates_root().ok().and_then(|root| InstalledBuild::read(&root));
+        let installed = match sot_updater::resolve_updates_root() {
+            Ok(root) => InstalledBuild::try_read(&root)
+                .map_err(|why| format!("disabled: install.json cannot be read ({why}); an unreadable file may hold a pin"))?,
+            Err(_) => None,
+        };
         match installed {
             Some(i) if i.is_dev_build() => Err("disabled: the install is a dev build".into()),
             Some(i) if i.pinned => Err(format!("disabled: {}", i.pin_note().unwrap_or_default())),
@@ -330,7 +334,9 @@ pub(crate) async fn stage_prepare_arm_with(
     match sot_updater::pending::arm(&cfg.updates_root, id, &state.checkout, &state.commit, writer).await {
         Ok(ArmOutcome::Armed) => Ok(Pipeline::Armed),
         Ok(ArmOutcome::KeptNewer | ArmOutcome::MarkedBad) => Ok(Pipeline::Kept),
-        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall | ArmOutcome::Pinned) => Ok(Pipeline::NotAbove),
+        Ok(ArmOutcome::NotAboveInstall | ArmOutcome::DevInstall | ArmOutcome::Pinned | ArmOutcome::UnreadableInstall) => {
+            Ok(Pipeline::NotAbove)
+        }
         Err(e) => Err(PipelineError::Arm(chain(&e))),
     }
 }
@@ -1294,6 +1300,27 @@ mod tests {
             Err("disabled: pinned at 0.6.6-rc9.12: automatic updates stay off for this install until a run that names no version".to_string()),
             "a pinned install is no basis either, and the verdict says why"
         );
+    }
+
+    // An install.json that cannot be read may hold a pin, so the check does not fall back to the boot version.
+    #[test]
+    fn a_check_over_an_unreadable_install_says_so() {
+        let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var_os("SOT_UPDATE_ROOT");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("updates")).unwrap();
+        std::env::set_var("SOT_UPDATE_ROOT", dir.path().join("updates"));
+        std::fs::write(dir.path().join("install.json"), r#"{"schema":1,"prefix":"/p","version":"0.6.7","pinned":tr"#).unwrap();
+        let process = Updater { current: "0.6.6-rc9.12".into(), dev: false, mode: Mode::Notify, repo: "o/r".into() };
+        let cut = process.check_basis();
+        std::fs::write(dir.path().join("install.json"), "\u{feff}{\"schema\":1,\"prefix\":\"/p\",\"version\":\"0.6.7\"}").unwrap();
+        let bom = process.check_basis();
+        match saved {
+            Some(v) => std::env::set_var("SOT_UPDATE_ROOT", v),
+            None => std::env::remove_var("SOT_UPDATE_ROOT"),
+        }
+        assert!(cut.unwrap_err().starts_with("disabled: install.json cannot be read"));
+        assert_eq!(bom, Ok("0.6.7".to_string()), "a BOM alone is not unreadable");
     }
 
     #[test]

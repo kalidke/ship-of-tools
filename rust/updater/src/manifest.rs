@@ -1,6 +1,6 @@
 //! The two manifests the updater lives by.
 //!
-//! **Install manifest** (`<prefix>/install.json`, written by `install.sh`):
+//! **Install manifest** (`<prefix>/install.json`, written by `install.sh` and `install-manifest.ps1`):
 //! what THIS machine's install is — prefix, config dir, service mode, and
 //! the installed release identity. It's how a binary finds its own install
 //! layout instead of guessing from XDG env vars (Codex review, MUST-FIX 10):
@@ -66,8 +66,8 @@ pub struct InstallManifest {
     #[serde(default)]
     pub frontend: Option<bool>,
     /// Did the run that wrote this install name what to install (`--version`, `--archive`)? A pinned install is never
-    /// armed by an automatic writer, so the next daily check cannot undo the choice; a run that names no version
-    /// removes the pin.
+    /// armed by an automatic writer, so the next daily check cannot undo the choice, and that holds when the file cannot
+    /// be read (the arm refuses rather than assume no pin); a run that names no version removes the pin.
     #[serde(default)]
     pub pinned: Option<bool>,
 }
@@ -77,7 +77,8 @@ impl InstallManifest {
     pub fn read(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let m: Self = serde_json::from_str(&text)
+        // A hand edit saved by Notepad leads with a UTF-8 BOM, which is not an unreadable manifest.
+        let m: Self = serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(&text))
             .with_context(|| format!("parsing {}", path.display()))?;
         if m.schema > INSTALL_SCHEMA {
             tracing::warn!(

@@ -17,7 +17,8 @@
 //! The install is the authority on what is installed, not any process: on a
 //! shared `$HOME` one prefix serves every host's daemon, and a long-lived one
 //! knows only the version it booted with. So an automatic arm reads
-//! `<prefix>/install.json` fresh under the lock and arms only a version
+//! `<prefix>/install.json` fresh under the lock (an automatic arm refuses over one that exists and cannot be read, which
+//! may hold a pin) and arms only a version
 //! strictly above it, and every pointer records the install it was armed over
 //! (`armed_over_*`) so an apply can tell a pointer that no longer fits the
 //! install it would land on.
@@ -74,13 +75,24 @@ pub struct InstalledBuild {
 }
 
 impl InstalledBuild {
-    /// Read fresh from the install beside `updates_root` (`<prefix>/updates`). `None` when there is no readable
-    /// manifest naming a version: a layout with no install (a dev box, a test root), where nothing is installed to
-    /// guard.
+    /// Read fresh from the install beside `updates_root` (`<prefix>/updates`). `None` when there is no manifest
+    /// naming a version, or it cannot be read: callers that must tell the two apart use [`Self::try_read`].
     pub fn read(updates_root: &Path) -> Option<Self> {
-        let path = updates_root.parent()?.join(INSTALL_MANIFEST);
-        let manifest = InstallManifest::read(&path).ok()?;
-        Some(Self { version: manifest.version?, commit: manifest.commit, pinned: manifest.pinned == Some(true) })
+        Self::try_read(updates_root).ok().flatten()
+    }
+
+    /// Like [`Self::read`], but an `install.json` that exists and cannot be read (cut short by an interrupted write,
+    /// not JSON) is `Err` with the cause, not `Ok(None)`: `None` is a layout with no install (a dev box, a test root),
+    /// where nothing is installed to guard, and a pin on an unreadable file would otherwise be lost.
+    pub fn try_read(updates_root: &Path) -> std::result::Result<Option<Self>, String> {
+        let Some(prefix) = updates_root.parent() else { return Ok(None) };
+        match InstallManifest::read(&prefix.join(INSTALL_MANIFEST)) {
+            Ok(m) => Ok(m.version.map(|version| Self { version, commit: m.commit, pinned: m.pinned == Some(true) })),
+            Err(e) if e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {
+                Ok(None)
+            }
+            Err(e) => Err(format!("{e:#}")),
+        }
     }
 
     /// Read the installed version fresh, or `fallback` (the running process's) when there is no install to read. The
@@ -137,6 +149,8 @@ pub enum ArmOutcome {
     DevInstall,
     /// An automatic writer offered a release for an install pinned by the run that named its version.
     Pinned,
+    /// An automatic writer found an `install.json` it cannot read, so it cannot tell whether the install is pinned.
+    UnreadableInstall,
 }
 
 /// Why `ptr` must not apply onto `installed`, or `None` when it may. A pointer that records the install it was armed
@@ -200,7 +214,14 @@ async fn arm_locked(
         tracing::warn!(tag = %identity.tag, "version is marked bad (crash-loop rollback) — not arming");
         return Ok(ArmOutcome::MarkedBad);
     }
-    let installed = InstalledBuild::read(updates_root);
+    let installed = match (InstalledBuild::try_read(updates_root), writer) {
+        (Ok(installed), _) => installed,
+        (Err(why), Writer::Automatic) => {
+            tracing::warn!(offered = %identity.tag, "install.json cannot be read ({why}) — not arming: the install may be pinned");
+            return Ok(ArmOutcome::UnreadableInstall);
+        }
+        (Err(_), Writer::Operator) => None,
+    };
     if let (Writer::Automatic, Some(installed)) = (writer, &installed) {
         if installed.is_dev_build() {
             tracing::info!(installed = %installed.version, offered = %identity.tag, "the install is a dev build — not arming a release into it");
@@ -407,6 +428,34 @@ mod tests {
         assert!(read(&root, T).await.unwrap().is_none(), "nothing armed over a pinned install");
         let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Operator).await.unwrap();
         assert_eq!(out, ArmOutcome::Armed, "the operator's arm still moves it");
+        cleanup(&root).await;
+    }
+
+    // An install.json that cannot be read may say `"pinned": true`: an automatic arm refuses over it, the operator's does not.
+    #[tokio::test]
+    async fn an_unreadable_install_takes_no_automatic_arm() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
+        let root = prefix("unreadable", None).await;
+        let file = root.parent().unwrap().join(INSTALL_MANIFEST);
+        tokio::fs::write(&file, r#"{"schema":1,"version":"0.6.6-rc9.13","pinned":tr"#).await.unwrap();
+        assert!(InstalledBuild::try_read(&root).is_err());
+        let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap();
+        assert_eq!(out, ArmOutcome::UnreadableInstall);
+        assert!(read(&root, T).await.unwrap().is_none(), "nothing armed over an install that cannot be read");
+        let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Operator).await.unwrap();
+        assert_eq!(out, ArmOutcome::Armed, "the operator's arm proceeds");
+        cleanup(&root).await;
+    }
+
+    // A BOM (a hand edit saved by Notepad) is not unreadable, and an absent install.json is still no install.
+    #[tokio::test]
+    async fn a_bom_led_install_reads_and_an_absent_one_is_no_install() {
+        let root = prefix("bom", None).await;
+        assert_eq!(InstalledBuild::try_read(&root), Ok(None), "absent: no install");
+        let text = r#"{"schema":1,"prefix":"/p","version":"0.6.6-rc9.13","commit":"c0","pinned":true}"#;
+        tokio::fs::write(root.parent().unwrap().join(INSTALL_MANIFEST), format!("\u{feff}{text}")).await.unwrap();
+        let read = InstalledBuild::try_read(&root).unwrap().unwrap();
+        assert_eq!((read.version.as_str(), read.pinned), ("0.6.6-rc9.13", true));
         cleanup(&root).await;
     }
 
