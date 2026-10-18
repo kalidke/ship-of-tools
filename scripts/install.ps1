@@ -288,7 +288,8 @@ function Get-DaemonPipe([string]$Sotd) {
 function Test-DaemonRuns([string]$Pipe, [string]$BinExe) {
     if ($Pipe) {
         $listed = @()
-        try { $listed = @([System.IO.Directory]::GetFiles('\\.\pipe\')) } catch { }
+        # The listing can throw on a pipe name .NET rejects; then the one existence probe is all there is.
+        try { $listed = @([System.IO.Directory]::GetFiles('\\.\pipe\')) } catch { if (Test-Path -LiteralPath $Pipe) { return $true } }
         if (@($listed | Where-Object { $_ -ieq $Pipe }).Count -gt 0) { return $true }
     }
     if ($BinExe) {
