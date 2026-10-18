@@ -93,6 +93,10 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   VERSION, by `sotd update direction` (the one version comparison; GitHub's "latest" and any written tag are never
   used), and fails naming a missing platform asset instead of taking an older release. Runs in `release.yml`'s
   `release-before` job.
+- `test-release-before.sh`: `release-before.sh` over fixture release lists (`SOT_SMOKE_RELEASES_JSON`) with the sotd of
+  this tree (`SOT_TEST_SOTD`): the pick for a dev build, an rc, a final, the first rc of a new minor and a version with
+  nothing older, and a release missing an asset naming it instead of an older one. Runs in the `rust.yml` step "Test
+  release-before (bash)" (job `checks-linux`, after the sotd build).
 - `check-layout.sh`: the layout check (file and folder sizes, pages, `## Files` lists); see Tools below.
 - `check-layout.allow`: the layout exceptions CI passes to `check-layout.sh`, each with its reason.
 - `exempt.txt`: the standing exemptions `check-layout.sh` reads from beside itself.
@@ -316,7 +320,7 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
 - The proof binds its shell scratch root to a validated absolute directory before installing cleanup; behavior controls observe the driver and cleanup paths under relative TMPDIR.
 - A shell owner that selects one Rust body consumes the completion verdict from lib-test-body.sh; a listed name, child exit zero or a zero-test summary alone is not execution proof.
 - The five `.ps1` suites run only on the windows-latest leg of `rust.yml`, under Windows PowerShell 5.1; `rc-gate.sh`
-  and a Linux box never run them. The step "Parse PowerShell scripts" globs `scripts/*.ps1` without recursion, so each
+  and a Linux box never run them. The step "Parse PowerShell scripts" globs `scripts/*.ps1` without recursion (and names `tests/in-job.ps1` and `tests/install-smoke.ps1`), so each
   `.ps1` suite parses itself and its siblings in its section 0.
 - A suite runs only if a step of `.github/workflows/rust.yml` or a job of `rc-gate.sh` names it; a new suite is added
   to the step list in the commit that adds it. The exception is `install-smoke.sh`, `install-smoke.ps1` and

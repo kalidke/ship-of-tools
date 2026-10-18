@@ -403,7 +403,7 @@ jobs:
         working-directory: scripts
         run: |
           $failed = $false
-          Get-ChildItem -Path '*.ps1', 'tests/in-job.ps1' | ForEach-Object {
+          Get-ChildItem -Path '*.ps1', 'tests/in-job.ps1', 'tests/install-smoke.ps1' | ForEach-Object {
             $errs = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs)
             if ($errs.Count -gt 0) {
@@ -836,6 +836,15 @@ jobs:
       - name: Test installer shared home (bash)
         timeout-minutes: 5
         run: bash scripts/tests/installer-shared-home.sh
+        working-directory: .
+
+      # release.yml's release-before job picks the release an update smoke starts from: the pick over a fixture list,
+      # with the sotd built above (its `update direction` is the one version order).
+      - name: Test release-before (bash)
+        timeout-minutes: 5
+        env:
+          SOT_TEST_SOTD: "${{ github.workspace }}/rust/target/debug/sotd"
+        run: bash scripts/tests/test-release-before.sh
         working-directory: .
 
       # The context deadline covers foreground children and the final wait.
