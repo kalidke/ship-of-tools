@@ -403,6 +403,27 @@ mod tests {
         cleanup(&root).await;
     }
 
+    // An install.json with no pin field (every install made before the field existed) is unpinned and follows its channel.
+    #[tokio::test]
+    async fn an_install_with_no_pin_field_follows_its_channel() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.14");
+        let root = prefix("nopin", Some(("0.6.6-rc9.13", "c0"))).await;
+        assert!(!InstalledBuild::read(&root).unwrap().pinned, "no field reads as unpinned");
+        assert!(InstalledBuild::read(&root).unwrap().admits("0.6.6-rc9.14"));
+        let out = arm(&root, &identity("0.6.6-rc9.14"), &co, "cc", Writer::Automatic).await.unwrap();
+        assert_eq!(out, ArmOutcome::Armed);
+        cleanup(&root).await;
+        // An explicit false is unpinned too.
+        let root = prefix("pinfalse", Some(("0.6.6-rc9.13", "c0"))).await;
+        let json = format!(
+            r#"{{"schema":1,"prefix":"{}","version":"0.6.6-rc9.13","tag":"v0.6.6-rc9.13","commit":"c0","pinned":false}}"#,
+            root.parent().unwrap().display()
+        );
+        tokio::fs::write(root.parent().unwrap().join(INSTALL_MANIFEST), json).await.unwrap();
+        assert!(!InstalledBuild::read(&root).unwrap().pinned);
+        cleanup(&root).await;
+    }
+
     #[tokio::test]
     async fn the_operator_may_arm_the_same_or_an_older_build() {
         let co = PathBuf::from("/x/repo/versions/v0.6.6-rc9.13");

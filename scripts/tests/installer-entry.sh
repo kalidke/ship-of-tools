@@ -726,3 +726,12 @@ entry_run "$d" SOT_INSTALL_TAG=v9.9.9 --be-only --no-service
 check "a body run on a tag by hand is a named version" "1" "$(grep -c '"pinned": true' "$d/home/.local/share/sot/install.json" || true)"
 check "a record without the argument writes no pin" "0" "$(installer_manifest_json /p /c none 1.0.0 v1.0.0 abc 2026-10-17T00:00:00Z '' 1 0 | grep -c pinned || true)"
 check "and with it ends the object with the pin" '  "pinned": true }' "$(installer_manifest_json /p /c none 1.0.0 v1.0.0 abc 2026-10-17T00:00:00Z '' 1 0 1 | tail -2 | tr '\n' ' ' | sed 's/ $//')"
+# The lab's instrument PCs pin themselves by an explicit run of the version they already run: when the daemon already
+# answers as that version, the run writes the pin and restarts nothing.
+d="$WORK/pin2"; entry_fixture "$d"
+entry_record "$d" 9.9.9 1 0 systemd; : > "$d/ctl/unit-active"; printf '0\n' > "$d/ctl/same-rc"; printf 'repl Rig PC\n' > "$d/ctl/repls-out"; printf '3\n' > "$d/ctl/repls-rc"
+check "a record from before the pin has no pin field" "0" "$(grep -c pinned "$d/home/.local/share/sot/install.json" || true)"
+entry_archive "$d" --be-only
+check "an explicit run of the installed version ends in PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
+check "it writes the pin" "1" "$(grep -c '"pinned": true' "$d/home/.local/share/sot/install.json" || true)"
+check "it restarts nothing and asks nothing of the daemon" "0 0" "$(count_in "$d/ctl/systemctl.log" 'restart') $(sotd_log "$d" | grep -c 'update repls' || true)"

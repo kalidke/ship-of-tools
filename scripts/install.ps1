@@ -11,7 +11,8 @@
 # installed or a stable release takes the latest stable release; a pre-release takes the newest published release of any
 # kind; a build with a + stops (it is not a release; a pack of the line goes in with -Archive). It never moves the
 # install backwards unless told (an older target found by the channel fails; -Version names it, and is said to be
-# older). A run that names what to install pins the install: install.json records "pinned" and the updaters leave the
+# older). A run of the version already installed, with no daemon on another version, is a repair run whether or not it
+# names the version: it writes the pin if it names one and stages, applies and restarts nothing. A run that names what to install pins the install: install.json records "pinned" and the updaters leave the
 # install where the person put it until a run that names no version removes the pin.
 #
 # The prelude fetches the target tag's own install.ps1 and runs it (SOT_INSTALL_TAG, SOT_INSTALL_IMPLICIT); -Archive
@@ -521,7 +522,10 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
             Stop-Entry 'direction' "could not tell which way $($pack.Tag) moves the install at $prefix (it records $installed); a run that names no target never moves it unasked: name the version you want with -Version $($pack.Tag)" 2
         }
         $sameCommit = ((Get-JsonString $ij 'commit') -eq $pack.Commit)
-        $repair = ($direction -eq 'same' -and $implicit -and $sameCommit)
+        # The same build with no daemon on another version is a repair run, named or not: an explicit run of the version a
+        # box already runs writes the pin and stages, applies and restarts nothing (no sentinel, no window touched).
+        $dstate = Get-DaemonState $newSotd $pipe
+        $repair = ($direction -eq 'same' -and $sameCommit -and ($dstate -eq 'none' -or $dstate -eq 'current'))
         if ($repair) { Say "this computer already runs $installed at $($pack.Commit.Substring(0, 9)): a repair run" }
         elseif ($direction -eq 'same') { Say "this run moves the install from $installed to $($pack.Version): same version, another build" }
         else { Say "this run moves the install from $installed to $($pack.Version) ($direction)" }

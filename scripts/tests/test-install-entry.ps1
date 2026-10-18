@@ -173,6 +173,30 @@ exit 0
     Check '7c: it staged nothing' ((Get-Tree (Join-Path $h1.Prefix 'updates')) -ceq $before) 'the updates folder changed'
     Check '7c: and the repair run removed the pin (it named no version)' (-not ((Get-Content -LiteralPath (Join-Path $h1.Prefix 'install.json') -Raw) -match 'pinned')) 'pinned is still recorded'
 
+    # 3b. An explicit run of the installed version (how the lab pins a box) is a repair run too: the pin is written and
+    # nothing is staged, applied or restarted, with a window's supervisor up and a daemon answering as the installed version.
+    [Environment]::SetEnvironmentVariable('SOT_INSTALL_TAG', $null); [Environment]::SetEnvironmentVariable('SOT_INSTALL_IMPLICIT', $null)
+    $env:SOT_FAKE_DAEMON = '0'
+    $logDirP = Join-Path $h1.Home 'AppData\Local\sot\logs'
+    New-Item -ItemType Directory -Force -Path $logDirP | Out-Null
+    $supP = Join-Path $entryRoot 'launch-sot.ps1'
+    Set-Content -LiteralPath $supP -Value 'Start-Sleep -Seconds 120'
+    $procP = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $supP) -PassThru -WindowStyle Hidden
+    try {
+        Start-Sleep -Seconds 2
+        Set-Content -LiteralPath (Join-Path $logDirP 'launcher.pid') -Value "$($procP.Id)"
+        Set-Content -LiteralPath (Join-Path $logDirP 'supervisor.log') -Value "2026-10-17T00:00:00  pid=$($procP.Id)  supervisor start (relaunched=False) depth=0 ws=1MB code=abc-def"
+        $before = Get-Tree (Join-Path $h1.Prefix 'updates')
+        $e = Invoke-Entry @('-Archive', $r99.Pack)
+        Check '7c2: an explicit run of the installed version is a repair run ending in PASS' ("$($e.Rc) $($e.Verdicts)" -ceq '0 1' -and $e.Last -like 'PASS: *9.9.9*' -and ($e.Out -match 'a repair run').Count -eq 1) "rc=$($e.Rc) last='$($e.Last)'"
+        Check '7c2: it wrote the pin' ((Get-Content -LiteralPath (Join-Path $h1.Prefix 'install.json') -Raw) -match '"pinned"\s*:\s*true') 'no pin recorded'
+        Check '7c2: it staged nothing, wrote no sentinel and touched no window' (((Get-Tree (Join-Path $h1.Prefix 'updates')) -ceq $before) -and -not (Test-Path (Join-Path $h1.Home 'AppData\Local\sot\relaunch.request')) -and -not $procP.HasExited) 'something was staged or signalled'
+    } finally {
+        Stop-Process -Id $procP.Id -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $logDirP 'launcher.pid') -Force -ErrorAction SilentlyContinue
+        [Environment]::SetEnvironmentVariable('SOT_FAKE_DAEMON', $null)
+    }
+
     # 4. An implicit older target is refused before any write; an explicit one proceeds and says older.
     $env:SOT_INSTALL_TAG = 'v9.9.8'; $env:SOT_INSTALL_IMPLICIT = '1'; $script:servePack = $r98.Pack
     $before = Get-Tree $h1.Prefix
