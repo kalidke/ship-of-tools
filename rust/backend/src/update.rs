@@ -441,9 +441,25 @@ fn backend_role_wanted(install: &InstallManifest) -> bool {
 }
 
 /// The julia an update's prepare runs for its envs: only a backend role runs one, and it is the resolver's answer, the
-/// one every other daemon child runs, with the resolver's reason when there is none.
+/// one every other daemon child runs, with the resolver's reason when there is none. On Windows no answer skips the Julia
+/// steps, as the window's own update does: the launcher instantiates a new version's environments at its first start, and
+/// a box without Julia is a supported, degraded state, not a reason to refuse every update.
 fn prepare_julia(backend_role: bool) -> Result<Option<String>, String> {
-    backend_role.then(|| crate::sidecars::julia::resolve_bin().map(|(bin, _source)| bin)).transpose()
+    if !backend_role {
+        return Ok(None);
+    }
+    julia_or_skip(crate::sidecars::julia::resolve_bin().map(|(bin, _source)| bin), cfg!(windows))
+}
+
+fn julia_or_skip(resolved: Result<String, String>, skip_when_none: bool) -> Result<Option<String>, String> {
+    match resolved {
+        Ok(bin) => Ok(Some(bin)),
+        Err(why) if skip_when_none => {
+            tracing::info!("preparing the update without Julia: {why}");
+            Ok(None)
+        }
+        Err(why) => Err(why),
+    }
 }
 
 fn prepare_spec(install: &InstallManifest, cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<PrepareSpec, String> {
@@ -906,6 +922,15 @@ mod tests {
         std::env::set_var("SOT_JULIA_BIN", &stub);
         assert_eq!(prepare_julia(true), Ok(Some(stub.to_string_lossy().into_owned())));
         assert_eq!(prepare_julia(false), Ok(None));
+    }
+
+    /// A Windows prepare with no Julia that resolves skips the Julia steps; the others refuse with the resolver's reason.
+    #[test]
+    fn a_windows_prepare_without_julia_skips_it() {
+        let refusal = || Err::<String, String>("no julia".to_string());
+        assert_eq!(julia_or_skip(refusal(), true), Ok(None), "Windows: the launcher instantiates at first start");
+        assert_eq!(julia_or_skip(refusal(), false), Err("no julia".to_string()), "elsewhere the reason ends the stage");
+        assert_eq!(julia_or_skip(Ok("/x/julia".to_string()), true), Ok(Some("/x/julia".to_string())), "a resolved julia is used");
     }
 
     /// Once a shutdown has begun its own exit stands: the update's is
