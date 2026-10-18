@@ -70,19 +70,25 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `install-smoke.sh`: `install-smoke.sh SCENARIO ARTIFACTS CHECKOUT [BEFORE-TAG]` (Linux, macOS; bash 3.2): `install.sh`
   against the artifacts a release run built. It makes the `--archive` folder from the run's tarball (SHA256SUMS, COMMIT,
   the tarball repacked under the binaries' own `+` version when a branch run named it `0.0.0-ci.<sha>`), refuses an
-  archive whose `sot-apply` is not executable, and judges each run's one verdict line (PASS, or a ONE STEP LEFT that
-  `SOT_SMOKE_ALLOW_STEP` names). Scenarios: `fresh-local`, `fresh-be-only` (Linux, `--no-service`: no user manager in a
+  archive whose `sot-apply` is not executable, and judges each run's one verdict line (PASS; a ONE STEP LEFT fails).
+  Every leg ends in `state_is_new`: `install.json` (version, commit, daemon and frontend bits of the role), the checkout,
+  the binaries, `bin/sot-apply` equal to the release's own, comm, and the wrapper equal to the new `render_sot_launch`
+  (a backend-only install has none). Scenarios: `fresh-local`, `fresh-be-only` (Linux, `--no-service`: no user manager in a
   container), `update-entry` (BEFORE-TAG by its own installer through the prelude, then the entry) and `update-apply`
   (BEFORE-TAG's installed `sot-apply` run as `ExecStartPre` runs it, over a release staged by the new `sotd`: the
-  staged apply must hand off and run, and leave the wrapper `render_sot_launch` writes, comm and `install.json` at the
-  new release); each ends with a repair run. Runs in `release.yml`'s `install-linux` and `install-macos` jobs, and off
+  staged apply must hand off and run); each ends with a repair run. Runs in `release.yml`'s `install-linux` and `install-macos` jobs, and off
   CI the same way (a scratch `$HOME`; the caller's `SOT_` and XDG variables are unset).
 - `install-smoke.ps1`: the same for `install.ps1` (Windows PowerShell 5.1): scenarios `fresh`, `update-entry` and
   `update-apply`, one scratch profile and a `USERNAME` of its own. The release before is installed by its own
   `install.ps1` when its tag carries one, else by that tag's section 2b (`Install-BeforeByHand`, to delete when the
   release before has `install.ps1`). In a session with no desk (session 0) an update ends in the entry's "start Ship of
-  Tools at the desk" step and the script applies it with the installed `sot-apply.ps1`, as the start does. Runs in
-  `release.yml`'s `install-windows` job.
+  Tools at the desk" step and the script applies it with the installed `sot-apply.ps1`, as the start does. A fresh `+`
+  pack fails if the shortcut step printed "no manifest written". Each leg's log starts with the runner's session id.
+  Runs in `release.yml`'s `install-windows` job.
+- What the smokes do not cover: the systemd unit path (the default Linux install; the legs take no service), Windows
+  path (c) when the runner is session 0 (the update stays armed and the script applies it), paths (a) and (b) (a running
+  window), and the by-prelude Windows release before (the first branch of Install-Before) until a published release
+  carries install.ps1.
 - `release-before.sh`: `release-before.sh SOTD VERSION [OWNER/NAME]` prints the newest published release older than
   VERSION, by `sotd update direction` (the one version comparison; GitHub's "latest" and any written tag are never
   used), and fails naming a missing platform asset instead of taking an older release. Runs in `release.yml`'s

@@ -227,10 +227,11 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   `install-macos`, `install-windows`), which run the entry of the run's own checkout against the artifacts the run built:
   a fresh install and an update from the newest published release older than the run's version (`release-before`, by
   version order, never GitHub's "latest"), each ending in the entry's PASS line, then a repair run
-  (`tests/install-smoke.sh`, `tests/install-smoke.ps1`). The update legs also run the release before's installed apply
-  over a release staged by the new `sotd`, and require that the staged release's own apply ran and left the launcher
-  (the wrapper `render_sot_launch` writes; `Get-SotLauncherCodeId` on Windows), comm and `install.json` at the new
-  release. The archive's `sot-apply` must be executable (a mode lost in packing ends the hand-off), the Linux legs take
+  (`tests/install-smoke.sh`, `tests/install-smoke.ps1`). The `update-apply` legs (on Windows the `update-entry` leg too,
+  in a runner session 0) run the release before's installed apply over a release staged by the new `sotd`, and require
+  that the staged release's own apply ran. Every leg ends in one state check: `install.json`, the checkout, the binaries,
+  the installed `sot-apply`, the launcher (the wrapper `render_sot_launch` writes; `Get-SotLauncherCodeId` on Windows)
+  and comm are the new release's, so a release that changes nothing in the launcher still passes. The archive's `sot-apply` must be executable (a mode lost in packing ends the hand-off), the Linux legs take
   `--no-service` (a container has no user manager), and a dispatch on a branch runs them too (its artifacts are named
   `0.0.0-ci.<sha>` and carry the binaries' `+` version; the smokes repack under it).
 - Every file `launch-sot.ps1` dot-sources is in `Get-SotLauncherCodeId`'s list and in the converge parse loop of

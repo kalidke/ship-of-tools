@@ -19,8 +19,7 @@
 # carries install.ps1.
 #
 # One scratch profile (USERPROFILE, APPDATA, LOCALAPPDATA, SOT_COMM_HOME) and a USERNAME of its own hold everything.
-# The verdict of each entry run is judged: PASS, or a ONE STEP LEFT whose step matches SOT_SMOKE_ALLOW_STEP (an ERE the
-# caller names for a step its runner cannot take), or, in a session with no desk (session 0), the entry's own "start Ship
+# The verdict of each entry run is judged: PASS, or, in a session with no desk (session 0), the entry's own "start Ship
 # of Tools at the desk" step, after which this script applies the armed update as that start does.
 # Environment: SOT_SMOKE_HOME (the scratch profile folder; default a fresh one under TEMP), SOT_SMOKE_REPO (owner/name;
 # default GITHUB_REPOSITORY), SOT_SMOKE_COMMIT (default HEAD of Checkout), SOT_SMOKE_KEEP=1 (keep the scratch folders),
@@ -168,10 +167,6 @@ function Test-Verdict([string]$Label, $Pack, [string]$Ver = '', [string]$Short =
     }
     if ($script:Last.StartsWith('ONE STEP LEFT: ')) {
         $step = $script:Last.Substring('ONE STEP LEFT: '.Length)
-        if ($env:SOT_SMOKE_ALLOW_STEP -and $step -match $env:SOT_SMOKE_ALLOW_STEP) {
-            Say "${Label}: the step this runner cannot take, allowed by name: $step"
-            return 'step'
-        }
         if ($step.StartsWith('start Ship of Tools at the desk;') -and ([System.Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0)) {
             Say "${Label}: this runner's session is 0, which has no desk: the update stays armed by design ($step)"
             return 'desk'
@@ -254,7 +249,6 @@ function Install-Before([string]$Tag) {
         Say "before: $Tag carries no scripts\install.ps1; laid by its docs\INSTALL-AGENT.md section 2b"
         Install-BeforeByHand $Tag
     }
-    $script:CodeBefore = Get-LauncherCode (Join-Path $prefix 'repo\current\scripts')
     Say "before: $Tag is installed"
 }
 
@@ -295,11 +289,15 @@ function Invoke-InstalledApply($Pack) {
 }
 
 try {
+    # Hosted question 2 (does the runner have a desk) is answered by this line in every leg's log.
+    Say "session $([System.Diagnostics.Process]::GetCurrentProcess().SessionId) ($Scenario)"
     $pack = New-Pack
     switch ($Scenario) {
         'fresh' {
             Invoke-Entry 'fresh' @('-Archive', $pack.Dir)
             [void](Test-Verdict 'fresh' $pack)
+            # The shortcut step's install-manifest.ps1 call finds the record install.ps1 wrote for a pack of the line and keeps it.
+            if ($pack.Version.Contains('+') -and (Test-OutHas 'no manifest written')) { Stop-Smoke 'fresh: the run printed "no manifest written" for a pack of the line, whose record install.ps1 had written' }
             Test-StateNew 'fresh' $pack -Comm
             Invoke-RepairRun $pack
         }
@@ -310,8 +308,6 @@ try {
             if ($how -eq 'desk') {
                 if (-not (Test-Path -LiteralPath (Join-Path $prefix 'updates\pending-windows-x86_64.json'))) { Stop-Smoke 'update: the desk step was named, but no update is armed' }
                 Invoke-InstalledApply $pack
-            } else {
-                if ($script:CodeBefore -ceq (Get-LauncherCode (Join-Path $prefix 'repo\current\scripts'))) { Stop-Smoke 'update: the launcher is still the release before''s' }
             }
             Test-StateNew 'update' $pack
             Invoke-RepairRun $pack
@@ -322,7 +318,6 @@ try {
             if ($script:Rc -ne 0) { Stop-Smoke "stage: sotd update stage ended with exit $($script:Rc); its last line: $($script:Last)" }
             if (-not (Test-Path -LiteralPath (Join-Path $prefix 'updates\pending-windows-x86_64.json'))) { Stop-Smoke 'stage: no pointer is armed' }
             Invoke-InstalledApply $pack
-            if ($script:CodeBefore -ceq (Get-LauncherCode (Join-Path $prefix 'repo\current\scripts'))) { Stop-Smoke 'apply: the launcher is still the release before''s' }
             Test-StateNew 'apply' $pack
             Invoke-RepairRun $pack
         }

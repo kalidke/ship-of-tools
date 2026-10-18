@@ -17,8 +17,7 @@
 # SHA256SUMS, COMMIT and the tarball, which keeps its name when that carries the binaries' own version and is repacked
 # under it otherwise (a branch run names its artifacts 0.0.0-ci.<sha>; the binaries carry the real, +-marked version).
 #
-# Every step ends with one verdict line and the script judges it: PASS, or a ONE STEP LEFT whose step matches
-# SOT_SMOKE_ALLOW_STEP (an ERE the caller names for a step its runner cannot take; none by default), else FAIL.
+# Every step ends with one verdict line and the script judges it: PASS, else FAIL (a ONE STEP LEFT is a FAIL here).
 # Environment: SOT_SMOKE_HOME (the scratch $HOME; default a fresh folder), SOT_SMOKE_REPO (owner/name; default
 # $GITHUB_REPOSITORY), SOT_SMOKE_COMMIT (default HEAD of CHECKOUT), SOT_SMOKE_KEEP=1 (keep the scratch folders).
 # Bash 3.2 (macOS): no mapfile, no associative arrays.
@@ -101,7 +100,6 @@ printf '%s\n' "$COMMIT" > "$SMOKE/pack/COMMIT"
 ( cd "$SMOKE/pack" && sha_of "$NAME.tar.gz" COMMIT > SHA256SUMS )
 PACK="$SMOKE/pack"
 NEW_SOTD="$SMOKE/x/$NAME/sotd"
-[ -x "$NEW_SOTD" ] || NEW_SOTD="$SMOKE/x/$TOP/sotd"
 say "pack of $VER at $SHORT for $TARGET in $PACK"
 
 # ---- running an install and judging its verdict -----------------------------------------------------------------------
@@ -115,23 +113,17 @@ run() {
     LAST="$(grep -v '^[[:space:]]*$' "$SMOKE/$label.out" | tail -1)"
     return 0
 }
-# verdict <label> <expected-pass-version>: PASS for that version, or an allowed ONE STEP LEFT.
+# verdict <label> <expected-pass-version>: the last line is PASS for that version.
 verdict() {
-    local label="$1" ver="$2" step
+    local label="$1" ver="$2"
     case "$LAST" in
         "PASS: Ship of Tools $ver at $SHORT on this computer"*) [ "$RC" = 0 ] || die "$label: PASS with exit $RC" ;;
-        "ONE STEP LEFT: "*)
-            step="${LAST#ONE STEP LEFT: }"
-            if [ -n "${SOT_SMOKE_ALLOW_STEP:-}" ] && printf '%s\n' "$step" | grep -Eq "$SOT_SMOKE_ALLOW_STEP"; then
-                say "$label: the step this runner cannot take, allowed by name: $step"
-            else
-                die "$label: ONE STEP LEFT that this scenario does not allow: $step"
-            fi ;;
         *) die "$label: the last line is '$LAST' (exit $RC), not PASS for $ver at $SHORT" ;;
     esac
     say "$label: ${LAST%%;*}"
 }
 installed_json() { sed -n -E "s/^ *\"$1\": *\"([^\"]*)\".*/\1/p" "$PREFIX/install.json" | head -1; }
+installed_flag() { sed -n -E "s/^ *\"$1\": *(true|false).*/\1/p" "$PREFIX/install.json" | head -1; }
 expect_eq() {  # <what> <got> <want>
     [ "$2" = "$3" ] || die "$1 is '$2', not '$3'"
 }
@@ -146,24 +138,26 @@ install_before() {
     run before entry --version "$BEFORE" $ROLE_FLAGS
     [ "$RC" = 0 ] || die "before: $BEFORE's installer ended with exit $RC; its last line: $LAST"
     expect_eq "before: install.json version" "$(installed_json version)" "$vb"
-    WRAPPER_BEFORE="$(cksum < "$HOME/.local/bin/sot-launch")"
     say "before: $BEFORE is installed"
 }
-# The wrapper is the one the new release's library renders; the library is the installed checkout's own.
-wrapper_is_new() {
-    local want="$SMOKE/wrapper.want"
-    ( . "$PREFIX/repo/current/scripts/lib/sot-daemon.sh" && render_sot_launch "$PREFIX" "$TARGET" "$want" ) \
-        || die "render_sot_launch of the installed checkout failed"
-    cmp -s "$want" "$HOME/.local/bin/sot-launch" || die "$HOME/.local/bin/sot-launch is not what $VER's render_sot_launch writes"
-    [ "$(cksum < "$HOME/.local/bin/sot-launch")" != "${WRAPPER_BEFORE:-}" ] || die "the wrapper is the one $BEFORE wrote"
-}
-# install.json, the checkout, the binaries and comm are the new release's.
+# The state every leg ends in: install.json, the checkout, the binaries, the installed apply, the wrapper and comm are the
+# new release's. The wrapper is what the new release's library renders (the installed checkout's own); a release that
+# changes nothing in it leaves the release before's, which is right, so no leg asks for a different one.
 state_is_new() {  # <label>
+    local want="$SMOKE/wrapper.want" fe=true
+    [ "$SCENARIO" != fresh-be-only ] || fe=false
     expect_eq "$1: install.json version" "$(installed_json version)" "$VER"
     expect_eq "$1: install.json commit" "$(installed_json commit)" "$COMMIT"
+    expect_eq "$1: install.json daemon" "$(installed_flag daemon)" true
+    expect_eq "$1: install.json frontend" "$(installed_flag frontend)" "$fe"
     expect_eq "$1: the checkout repo/current names" "$(git -C "$PREFIX/repo/current" rev-parse HEAD)" "$COMMIT"
     case "$("$PREFIX/bin/sotd" --version)" in "sotd $VER ($SHORT "*) ;; *) die "$1: bin/sotd is not $VER at $SHORT" ;; esac
     expect_eq "$1: the comm stamp" "$(sed -e 's/-dirty$//' -e 1q "$HOME/.sot-comm/VERSION")" "$SHORT"
+    cmp -s "$PREFIX/bin/sot-apply" "$SMOKE/x/$NAME/sot-apply" || die "$1: bin/sot-apply is not the release's own"
+    [ "$fe" = true ] || return 0
+    ( . "$PREFIX/repo/current/scripts/lib/sot-daemon.sh" && render_sot_launch "$PREFIX" "$TARGET" "$want" ) \
+        || die "$1: render_sot_launch of the installed checkout failed"
+    cmp -s "$want" "$HOME/.local/bin/sot-launch" || die "$1: $HOME/.local/bin/sot-launch is not what $VER's render_sot_launch writes"
 }
 repair_run() {
     run repair entry --archive "$PACK"
@@ -185,7 +179,6 @@ case "$SCENARIO" in
         verdict update "$VER"
         grep -q "moves the install from ${BEFORE#v} to $VER" "$SMOKE/update.out" || die "update: the run did not say it moves the install from ${BEFORE#v}"
         state_is_new update
-        wrapper_is_new
         repair_run
         state_is_new repair ;;
     update-apply)
@@ -199,10 +192,8 @@ case "$SCENARIO" in
         [ "$RC" = 0 ] || die "apply: the installed sot-apply ended with exit $RC"
         grep -q 're-executing the staged sot-apply' "$SMOKE/apply.out" || die "apply: the installed apply did not hand off to the staged release's own"
         grep -q "sot-apply: APPLIED v$VER" "$SMOKE/apply.out" || die "apply: the staged apply did not say APPLIED v$VER"
-        cmp -s "$PREFIX/bin/sot-apply" "$SMOKE/x/$NAME/sot-apply" || die "apply: bin/sot-apply is not the release's own"
         [ ! -e "$PREFIX/updates/pending-$TARGET.json" ] || die "apply: the pointer is still armed"
         state_is_new apply
-        wrapper_is_new
         repair_run
         state_is_new repair ;;
 esac

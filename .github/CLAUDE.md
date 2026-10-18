@@ -120,5 +120,5 @@ scripts/CLAUDE.md.
 - `publish` needs `build`, the three smokes, `julia-check` and the three install smokes; the Linux smoke boots the
   artifact in an ubuntu 20.04 container to prove the old-glibc floor. The install smokes name their target by
   `--archive`/`-Archive` (the run's artifacts) and `--version`/`-Version` (the release before), so a dispatch on a
-  branch runs and passes them too, though it never publishes. The Linux ones run in a bare ubuntu 22.04 container with
+  branch runs them too, though it never publishes. The Linux ones run in a bare ubuntu 22.04 container with
   `--no-service` for the backend scenarios (no systemd user manager there).
