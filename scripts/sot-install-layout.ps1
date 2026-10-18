@@ -194,16 +194,17 @@ function Initialize-InstallLayout {
             }
             $rawVersion = $Matches[1]
             $version = $rawVersion -replace '\+.*$', ''
+            # A pack install of the line (install.ps1 -Archive) has laid down repo\versions\v<raw version> at the pack's
+            # commit; that folder is the checkout, no tag names it, and the shape check (which guards a name about to
+            # become a git ref) does not apply to it.
+            $packFolder = ($rawVersion -ne $version) -and ($rawVersion -match '^[0-9A-Za-z.+-]+$') -and (Test-Path -LiteralPath (Join-Path $prefixDir "repo\versions\v$rawVersion"))
             # Strict shape, because this string becomes a directory name and a
             # git ref: X.Y.Z with an optional alnum-led prerelease, nothing else.
-            if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$') {
+            if (-not $packFolder -and $version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$') {
                 Write-SupLog "install layout: '$rawVersion' is not a version this can pin - leaving the layout alone"
                 return
             }
-            $tag = "v$version"
-            # A pack install of the line (install.ps1 -Archive) has laid down repo\versions\v<raw version> at the pack's
-            # commit; that folder is the checkout, and no tag names it.
-            if ($rawVersion -ne $version -and (Test-Path -LiteralPath (Join-Path $prefixDir "repo\versions\v$rawVersion"))) { $tag = "v$rawVersion" }
+            $tag = $(if ($packFolder) { "v$rawVersion" } else { "v$version" })
             $checkout = Join-Path $prefixDir "repo\versions\$tag"
             if (-not (Test-Path -LiteralPath $checkout)) {
                 if (-not ((git -C $repo tag -l $tag) -join '')) {

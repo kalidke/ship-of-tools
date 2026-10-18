@@ -75,8 +75,10 @@ public class P { public static int Main(string[] a) {
         Set-Content -LiteralPath (Join-Path $origin 'VERSION.txt') -Value $Ver
         & $git -C $origin add -A 2>&1 | Out-Null
         & $git -C $origin commit -q -m "release $Ver" 2>&1 | Out-Null
-        & $git -C $origin tag "v$Ver" 2>&1 | Out-Null
+        if (-not $Ver.Contains('+')) { & $git -C $origin tag "v$Ver" 2>&1 | Out-Null }  # a pack of the line has no tag
         $commit = (& $git -C $origin rev-parse HEAD).Trim()
+        # A '+@' version takes the commit's own short id, as a real build's does (the stage refuses any other).
+        $Ver = $Ver -replace '\+@\d*$', ('+' + $commit.Substring(0, 9))
         $pack = Join-Path $entryRoot "pack-$Ver"
         $inner = Join-Path $entryRoot "stage-$Ver\sot-$Ver-windows-x86_64"
         New-Item -ItemType Directory -Force -Path $pack, $inner | Out-Null
@@ -96,7 +98,7 @@ public class P { public static int Main(string[] a) {
         [System.IO.File]::WriteAllText((Join-Path $pack 'SHA256SUMS'), (($lines -join "`n") + "`n"))
         return [pscustomobject]@{ Ver = $Ver; Pack = $pack; Commit = $commit; Short = $commit.Substring(0, 9) }
     }
-    $r98 = New-Release '9.9.8'; $r99 = New-Release '9.9.9'; $rdev = New-Release '9.9.9-dev+c0ffee123'
+    $r98 = New-Release '9.9.8'; $r99 = New-Release '9.9.9'; $rdev = New-Release '9.9.9-rc9.14-dev+@'; $rdev2 = New-Release '9.9.9-rc9.14-dev+@2'
     $ErrorActionPreference = $eapGit
     Check '7: two releases and their packs are built' ((Test-Path (Join-Path $r98.Pack 'SHA256SUMS')) -and (Test-Path (Join-Path $r99.Pack 'COMMIT'))) 'the fixture did not build'
 
@@ -695,12 +697,44 @@ Write-Host 'sot-local-daemon: stopped'
         function Test-JunctionTraversable([string]$ScriptPath) { return (Test-Path -LiteralPath $ScriptPath) }
     }
     # 24. Fresh from a pack of the line (a + version): the record names it, its tag and the pack's commit.
+    $rdevRx = [regex]::Escape($rdev.Ver)
     Invoke-Case '7a2' {
         $hd = New-Home 'hd'
         $e = Invoke-Entry @('-Archive', $rdev.Pack)
-        Check '7a2: a fresh install from a pack of the line ends in PASS, pinned' ("$($e.Rc) $($e.Verdicts) $($e.Last)" -ceq "0 1 PASS: Ship of Tools 9.9.9-dev+c0ffee123 at $($rdev.Short) on this computer$(Get-PinTail '9.9.9-dev+c0ffee123')") "rc=$($e.Rc) last='$($e.Last)'; $(($e.Out | Select-Object -Last 4) -join ' / ')"
+        Check '7a2: a fresh install from a pack of the line ends in PASS, pinned' ("$($e.Rc) $($e.Verdicts) $($e.Last)" -ceq "0 1 PASS: Ship of Tools $($rdev.Ver) at $($rdev.Short) on this computer$(Get-PinTail $rdev.Ver)") "rc=$($e.Rc) last='$($e.Last)'; $(($e.Out | Select-Object -Last 4) -join ' / ')"
         $ijd = ''; try { $ijd = Get-Content -LiteralPath (Join-Path $hd.Prefix 'install.json') -Raw } catch { }
-        Check '7a2: install.json names the + version, its tag, the pack commit, daemon and frontend, and the pin' (($ijd -match '"version":\s*"9\.9\.9-dev\+c0ffee123"') -and ($ijd -match '"tag":\s*"v9\.9\.9-dev\+c0ffee123"') -and ($ijd -match $rdev.Commit) -and ($ijd -match '"daemon":\s*true,\s*"frontend":\s*true') -and ($ijd -match '"pinned":\s*true')) $ijd
+        Check '7a2: install.json names the + version, its tag, the pack commit, daemon and frontend, and the pin' (($ijd -match "`"version`":\s*`"$rdevRx`"") -and ($ijd -match "`"tag`":\s*`"v$rdevRx`"") -and ($ijd -match $rdev.Commit) -and ($ijd -match '"daemon":\s*true,\s*"frontend":\s*true') -and ($ijd -match '"pinned":\s*true')) $ijd
+        Check '7a2: the layout pinned the pack folder, so repo\current is a junction to it (the version has a second hyphen)' ((Test-Path -LiteralPath (Join-Path $hd.Prefix 'repo\current\scripts\install-manifest.ps1')) -and ((Get-Item -LiteralPath (Join-Path $hd.Prefix 'repo\current')).Target -like "*repo\versions\v$($rdev.Ver)")) "target=$((Get-Item -LiteralPath (Join-Path $hd.Prefix 'repo\current') -ErrorAction SilentlyContinue).Target)"
+    }
+    # 25. The hub's refusal is read on a pack of the line, fresh and update (the record decision and the sync are separate).
+    Invoke-Case '7a3' {
+        $hf = New-Home 'hf'
+        $env:SOT_FAKE_SYNC = 'refuse'
+        $e = Invoke-Entry @('-Archive', $rdev.Pack, '-Hub', 'rig-hub')
+        Check '7a3: a fresh pack of the line whose hub does not list this computer is FAIL enroll' ($e.Rc -eq 1 -and $e.Verdicts -eq 1 -and $e.Last -like "FAIL: enroll: the hosts.toml on 'rig-hub' does not list this computer ('rig-pc')*") "rc=$($e.Rc) last='$($e.Last)'"
+        $env:SOT_FAKE_SYNC = 'ok'
+        $e = Invoke-Entry @('-Archive', $rdev.Pack, '-Hub', 'rig-hub')
+        Check '7a3: the same install with a hub that lists it is PASS' ($e.Rc -eq 0 -and $e.Last -like 'PASS: *') "rc=$($e.Rc) last='$($e.Last)'"
+        $hu = New-Home 'hu1'
+        $env:SOT_FAKE_SYNC = 'ok'
+        $e = Invoke-Entry @('-Archive', $rdev.Pack, '-Hub', 'rig-hub')
+        $env:SOT_FAKE_SYNC = 'refuse'
+        $e = Invoke-Entry @('-Archive', $rdev2.Pack, '-Hub', 'rig-hub')
+        Check '7a3: an update to another pack of the line whose hub does not list this computer is FAIL enroll' ($e.Rc -eq 1 -and $e.Verdicts -eq 1 -and $e.Last -like "FAIL: enroll: *" -and (Get-Json $hu.Prefix 'commit') -eq $rdev2.Commit) "rc=$($e.Rc) last='$($e.Last)' commit=$(Get-Json $hu.Prefix 'commit'); $(($e.Out | Select-Object -Last 4) -join ' / ')"
+    }
+    # 26. A lone install.ps1 (a downloaded file with nothing beside it) installs a pack of the line fresh: the record script
+    # is the target checkout's own. Last, because it dot-sources the lone copy over this scope's functions.
+    Invoke-Case '7a4' {
+        $lone = Join-Path $entryRoot 'lone'
+        New-Item -ItemType Directory -Force -Path $lone | Out-Null
+        Copy-Item -LiteralPath $entryScript -Destination (Join-Path $lone 'install.ps1') -Force
+        . (Join-Path $lone 'install.ps1')
+        function Write-EntryLine([string]$Text) { if ($script:Capturing) { $script:Captured += $Text } else { Write-Host $Text } }
+        function Get-EntrySessionId { if ($script:DeskSession) { return 3 } else { return 0 } }
+        $hl = New-Home 'hl'
+        $e = Invoke-Entry @('-Archive', $rdev.Pack)
+        $ijl = ''; try { $ijl = Get-Content -LiteralPath (Join-Path $hl.Prefix 'install.json') -Raw } catch { }
+        Check '7a4: a lone install.ps1 installs a pack of the line fresh, PASS with the record' ($e.Rc -eq 0 -and $e.Last -like 'PASS: *' -and ($ijl -match $rdev.Commit)) "rc=$($e.Rc) last='$($e.Last)'"
     }
 } catch {
     Check '7: section ran' $false $_.Exception.Message

@@ -432,6 +432,14 @@ function Invoke-LayoutAndComm([string]$PrefixDir, [string]$Checkout, [string]$Ba
     foreach ($n in @($script:launchNotices)) { Say "  note: $n" }
 }
 
+function Invoke-Script([string]$Step, [string]$Script, [string[]]$ArgList, [string]$Hub) {
+    $script:Step = $Step; $r = Invoke-Native 'powershell.exe' (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) + $ArgList + $(if ($Hub) { @('-Hub', $Hub) }))
+    foreach ($l in @($r.Out + $r.Err)) { if ("$l".Trim()) { Say "  $l" } }
+    $joined = (@($r.Out + $r.Err) -join ' ') -replace '\s+', ' '  # the console wraps a long warning
+    if ($joined -match 'does not list this box') { $script:EnrollRefusal = $joined }
+    if ($r.Code -ne 0) { Stop-Entry $Step "$(Split-Path -Leaf $Script) ended with exit $($r.Code)" }
+}
+
 # Can this session read a file through repo\current (the suite replaces this to reach the branch that cannot)?
 function Test-JunctionTraversable([string]$ScriptPath) { return (Test-Path -LiteralPath $ScriptPath) }
 # The shortcut and pin: install-shortcut.ps1 through repo\current when this session can traverse it (the shortcut's working
@@ -441,14 +449,7 @@ function Invoke-Shortcut([string]$PrefixDir, [string]$Hub) {
     $script:Step = 'shortcut'
     $viaJunction = Join-Path $PrefixDir 'repo\current\scripts\install-shortcut.ps1'
     if (Test-JunctionTraversable $viaJunction) {
-        $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $viaJunction, '-Prefix', $PrefixDir)
-        if ($Hub) { $a += @('-Hub', $Hub) }
-        $r = Invoke-Native 'powershell.exe' $a
-        foreach ($l in @($r.Out + $r.Err)) { if ("$l".Trim()) { Say "  $l" } }
-        # The console wraps a long warning across lines, so the refusal is looked for in the joined text.
-        $joined = (@($r.Out + $r.Err) -join ' ') -replace '\s+', ' '
-        if ($joined -match 'does not list this box') { $script:EnrollRefusal = $joined }
-        if ($r.Code -ne 0) { Stop-Entry 'shortcut' "install-shortcut.ps1 ended with exit $($r.Code)" }
+        Invoke-Script 'shortcut' $viaJunction @('-Prefix', $PrefixDir) $Hub
         return
     }
     $lnk = Join-Path $env:USERPROFILE 'Desktop\Ship of Tools.lnk'
@@ -613,9 +614,8 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
 
     if ($fresh) {
         Install-Fresh $prefix $pack $base $versionDir $origin
-        # A pack of the line is recorded here, with the pack's commit: the manifest script writes no record for a '+' build
-        # that is not handed one (a source checkout), and the launcher's own call after this one has none to hand.
-        if ($pack.Version.Contains('+')) { & (Join-Path $PSScriptRoot 'install-manifest.ps1') -Prefix $prefix -Repo $base -Hub $o.Hub -Commit $pack.Commit 6>&1 | Out-Null }
+        # A pack of the line is recorded here, with its commit; a '+' build handed none (a source checkout) gets no record.
+        if ($pack.Version.Contains('+')) { Invoke-Script 'record' (Join-Path $versionDir 'scripts\install-manifest.ps1') @('-Prefix', $prefix, '-Repo', $base, '-Commit', $pack.Commit) $o.Hub }
         $installed = $pack.Version
     } else {
         $dir = Invoke-Native $newSotd @('update', 'direction', $pack.Version, '--prefix', $prefix)

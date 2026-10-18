@@ -5,7 +5,7 @@
 #
 # The script reads its version from `<prefix>\bin\sot.exe --version`, so the fixture builds a stand-in sot.exe with the
 # .NET Framework's csc.exe (on every Windows): it prints the first line of version.txt beside it. The commit comes from
-# a scratch git repo with two tags. No network, no sotd, no hub: install-manifest.ps1 syncs topology only with -Hub.
+# a scratch git repo with two tags. No network, no hub: install-manifest.ps1 syncs topology only with -Hub, and case p8 gives it a stand-in sotd.
 #
 # Runs under Windows PowerShell 5.1 and pwsh 7. ASCII ONLY (see the same note in sot-apply.ps1). Self-ending: every
 # step is local and bounded, and the scratch folder is removed at the end.
@@ -140,6 +140,19 @@ class P {
     Check 'a + build with no commit (a source checkout) writes none' (-not (Test-Path -LiteralPath (Join-Path $p7 'install.json'))) 'a record was written'
     Invoke-Manifest $p6
     Check 'and a later call with no commit leaves the record it finds' ((Manifest $p6) -match $packCommit) (Manifest $p6)
+    # The sync is its own concern: a + build with no commit writes no record, and still syncs the hub it is given.
+    $srcD = Join-Path $root 'stubd.cs'
+    Set-Content -LiteralPath $srcD -Encoding ASCII -Value @'
+class D { static int Main(string[] a) { System.IO.File.WriteAllText(System.IO.Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory, "synced.txt"), string.Join(" ", a)); return 0; } }
+'@
+    $stubD = Join-Path $root 'sotd-stub.exe'
+    [void](& $csc /nologo /out:$stubD $srcD 2>&1)
+    $p8 = New-Prefix 'p8' '0.6.6-DEV+abcdef123' $null $null $false
+    Copy-Item -LiteralPath $stubD -Destination (Join-Path $p8 'bin\sotd.exe')
+    & $script -Prefix $p8 -Repo $clone -Hub rig-hub 6>&1 2>&1 | Out-Null
+    Check-Exit 'p8'
+    $syncedFile = Join-Path $p8 'bin\synced.txt'
+    Check 'a + build with no commit writes no record but still runs the hub sync' ((-not (Test-Path -LiteralPath (Join-Path $p8 'install.json'))) -and (Test-Path -LiteralPath $syncedFile) -and ((Get-Content -LiteralPath $syncedFile -Raw) -match 'topology sync --hub rig-hub')) 'record or no sync'
 } finally {
     Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
