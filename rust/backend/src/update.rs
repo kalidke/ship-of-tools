@@ -35,6 +35,7 @@ pub(crate) use cli::{run, USAGE};
 
 use crate::server::reply::HandlerOutput;
 use crate::lifecycle::lease::Leases;
+use crate::sidecars::julia::JuliaError;
 
 /// Daemon policy: every updater command belongs to this signal's contained tree registry.
 pub(crate) struct UpdaterSpawner(pub(crate) &'static crate::lifecycle::child_signal::Signal);
@@ -451,14 +452,16 @@ fn prepare_julia(backend_role: bool) -> Result<Option<String>, String> {
     julia_or_skip(crate::sidecars::julia::resolve_bin().map(|(bin, _source)| bin), cfg!(windows))
 }
 
-fn julia_or_skip(resolved: Result<String, String>, skip_when_none: bool) -> Result<Option<String>, String> {
+/// Only "no julia anywhere" is skipped; a julia the resolver found and refused stays the stage's error, since the
+/// daemon's kernels and REPLs would fail on the same one.
+fn julia_or_skip(resolved: Result<String, JuliaError>, skip_when_none: bool) -> Result<Option<String>, String> {
     match resolved {
         Ok(bin) => Ok(Some(bin)),
-        Err(why) if skip_when_none => {
+        Err(JuliaError::NotFound(why)) if skip_when_none => {
             tracing::info!("preparing the update without Julia: {why}");
             Ok(None)
         }
-        Err(why) => Err(why),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -912,7 +915,7 @@ mod tests {
         let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _restore = crate::paths::EnvGuard::capture("SOT_JULIA_BIN");
         std::env::set_var("SOT_JULIA_BIN", "relative-julia");
-        let refusal = crate::sidecars::julia::resolve_bin().unwrap_err();
+        let refusal = crate::sidecars::julia::resolve_bin().unwrap_err().to_string();
         assert_eq!(prepare_julia(true), Err(refusal), "the resolver's error is returned unchanged");
         assert_eq!(prepare_julia(false), Ok(None), "a frontend-only role prepares no julia, whatever the override");
         // A path that does not exist, under a folder with the name an alias lives in, is a selection for the spawn
@@ -924,12 +927,19 @@ mod tests {
         assert_eq!(prepare_julia(false), Ok(None));
     }
 
-    /// A Windows prepare with no Julia that resolves skips the Julia steps; the others refuse with the resolver's reason.
+    /// A Windows prepare with no Julia anywhere skips the Julia steps; a Julia the resolver refused is an error on every
+    /// platform, and the others refuse with the resolver's reason.
     #[test]
-    fn a_windows_prepare_without_julia_skips_it() {
-        let refusal = || Err::<String, String>("no julia".to_string());
-        assert_eq!(julia_or_skip(refusal(), true), Ok(None), "Windows: the launcher instantiates at first start");
-        assert_eq!(julia_or_skip(refusal(), false), Err("no julia".to_string()), "elsewhere the reason ends the stage");
+    fn a_windows_prepare_without_julia_skips_it_but_not_a_refused_one() {
+        let none = || Err(JuliaError::NotFound("no julia".to_string()));
+        let refused = || Err(JuliaError::Refused("SOT_JULIA_BIN=\"julia\" is not an absolute path".to_string()));
+        assert_eq!(julia_or_skip(none(), true), Ok(None), "Windows: the launcher instantiates at first start");
+        assert_eq!(julia_or_skip(none(), false), Err("no julia".to_string()), "elsewhere the reason ends the stage");
+        assert_eq!(
+            julia_or_skip(refused(), true),
+            Err("SOT_JULIA_BIN=\"julia\" is not an absolute path".to_string()),
+            "Windows: a refusal names itself and ends the stage"
+        );
         assert_eq!(julia_or_skip(Ok("/x/julia".to_string()), true), Ok(Some("/x/julia".to_string())), "a resolved julia is used");
     }
 
