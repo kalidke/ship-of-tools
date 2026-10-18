@@ -44,9 +44,10 @@ list() {
     for e in "$@"; do printf '%s%s' "$sep" "$e"; sep=", "; done
     printf ']\n'
 }
-# pick <list file> <version>: the tag printed, or the failure's message.
+# pick <list file> <version>: the tag printed, or the failure's message. The repository is named here, not read from the
+# environment, so a fork's GITHUB_REPOSITORY does not change the message.
 pick() {
-    SOT_SMOKE_RELEASES_JSON="$1" bash "$SCRIPT" "$SOT_TEST_SOTD" "$2" 2>&1 || true
+    SOT_SMOKE_RELEASES_JSON="$1" bash "$SCRIPT" "$SOT_TEST_SOTD" "$2" example/ship-of-tools 2>&1 || true
 }
 
 list "$(release v0.6.7-rc1 true)" "$(release v0.6.6 false)" "$(release v0.6.6-rc9.14 false)" "$(release v0.6.6-rc9.13 false)" \
@@ -61,7 +62,7 @@ check "the first rc of a new minor takes the previous final, its own draft skipp
 check "a dev build of the next version takes the previous final"      "v0.6.6" "$(pick "$WORK/full.json" 0.6.7-DEV+abc123456)"
 check "a leading v on the version is the same version"                "v0.6.6-rc9.14" "$(pick "$WORK/full.json" v0.6.6)"
 check "a version with nothing older fails and says so" \
-    "release-before: no published release of kalidke/ship-of-tools is older than 0.5.10" "$(pick "$WORK/full.json" 0.5.10)"
+    "release-before: no published release of example/ship-of-tools is older than 0.5.10" "$(pick "$WORK/full.json" 0.5.10)"
 
 echo "  a release that lacks an asset"
 list "$(release v0.6.6-rc9.14 false sot-0.6.6-rc9.14-windows-x86_64.zip)" "$(release v0.6.6-rc9.13 false)" > "$WORK/missing.json"

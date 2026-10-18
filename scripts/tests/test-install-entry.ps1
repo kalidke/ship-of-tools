@@ -729,12 +729,23 @@ Write-Host 'sot-local-daemon: stopped'
     Invoke-Case '7a5' {
         $hs = New-Home 'a-profile-with-a-long-name' -Short
         if ($hs.Prefix -notmatch '~') { Write-Host '  SKIP  7a5: this volume creates no 8.3 names' -ForegroundColor Yellow; return }
-        $e = Invoke-Entry @('-Archive', $r98.Pack)
-        Check '7a5: a fresh install under an 8.3-spelled prefix ends in PASS' ($e.Rc -eq 0 -and $e.Last -like 'PASS: Ship of Tools 9.9.8 at *') "rc=$($e.Rc) last='$($e.Last)'"
-        $e = Invoke-Entry @('-Archive', $r99.Pack)
-        Check '7a5: and so does an update under it' ($e.Rc -eq 0 -and $e.Last -like 'PASS: Ship of Tools 9.9.9 at *') "rc=$($e.Rc) last='$($e.Last)'"
-        $e = Invoke-Entry @('-Archive', $r99.Pack)
-        Check '7a5: and a repair run' ($e.Rc -eq 0 -and $e.Last -like 'PASS: *' -and ($e.Out -match 'a repair run').Count -eq 1) "rc=$($e.Rc) last='$($e.Last)'"
+        # install.ps1 sees only what its own load of the target checkout's layout file defines: while its three installs run, the
+        # two layout functions this suite dot-sourced into script scope answer "unloaded:" and their input, which no checkout path
+        # equals, so an install whose own load fails cannot borrow them; they are restored afterward.
+        $harness = @{}
+        foreach ($f in @('Get-SotComparablePath', 'Get-SotLauncherCodeId')) { $harness[$f] = (Get-Item -LiteralPath "Function:$f").ScriptBlock }
+        Set-Item -LiteralPath 'Function:script:Get-SotComparablePath' -Value { param([string]$Path) "unloaded:$Path" }
+        Set-Item -LiteralPath 'Function:script:Get-SotLauncherCodeId' -Value { param([Parameter(Mandatory)][string]$ScriptsDir) "unloaded:$ScriptsDir" }
+        try {
+            $e = Invoke-Entry @('-Archive', $r98.Pack)
+            Check '7a5: a fresh install under an 8.3-spelled prefix ends in PASS' ($e.Rc -eq 0 -and $e.Last -like 'PASS: Ship of Tools 9.9.8 at *') "rc=$($e.Rc) last='$($e.Last)'"
+            $e = Invoke-Entry @('-Archive', $r99.Pack)
+            Check '7a5: and so does an update under it' ($e.Rc -eq 0 -and $e.Last -like 'PASS: Ship of Tools 9.9.9 at *') "rc=$($e.Rc) last='$($e.Last)'"
+            $e = Invoke-Entry @('-Archive', $r99.Pack)
+            Check '7a5: and a repair run' ($e.Rc -eq 0 -and $e.Last -like 'PASS: *' -and ($e.Out -match 'a repair run').Count -eq 1) "rc=$($e.Rc) last='$($e.Last)'"
+        } finally {
+            foreach ($f in $harness.Keys) { Set-Item -LiteralPath "Function:script:$f" -Value $harness[$f] }
+        }
     }
     # 27. A lone install.ps1 (a downloaded file with nothing beside it) installs a pack of the line fresh: the record script
     # is the target checkout's own. Last, because it dot-sources the lone copy over this scope's functions.
