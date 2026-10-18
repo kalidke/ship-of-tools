@@ -1090,7 +1090,9 @@ if [ -f "$PREFIX/install.json" ]; then
     if [ "$DIRECTION" = older ] && [ "${SOT_INSTALL_IMPLICIT:-}" = 1 ]; then
         fail 2 "this computer runs $PRE_VERSION, which is newer than $VER, the release this run found; it never moves back unless told: name the version you want with --version $VERSION"
     fi
-    if [ "$DIRECTION" = unknown ] && [ "${SOT_INSTALL_IMPLICIT:-}" = 1 ]; then
+    # An install.json whose version cannot be read at all (cut short) is not a reason to stop: the run rewrites it. One
+    # whose version is readable and whose direction is unknown (a sotd that cannot say) still stops an implicit run.
+    if [ "$DIRECTION" = unknown ] && [ "${SOT_INSTALL_IMPLICIT:-}" = 1 ] && [ -n "$PRE_VERSION" ]; then
         fail 2 "could not tell which way $VERSION moves the install at $PREFIX (it records $PRE_VERSION); a run that names no target never moves it unasked: name the version you want with --version $VERSION"
     fi
 fi

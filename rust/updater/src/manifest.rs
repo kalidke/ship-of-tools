@@ -95,7 +95,7 @@ impl UnreadableInstall {
         let run = if cfg!(windows) { "install.ps1 -Version <version>" } else { "install.sh --version <version>" };
         if self.missing {
             return format!(
-                "{MISSING_LEAD} at {} while bin\\sotd.exe is installed beside it; it may have held a pin, so automatic updates stay off until `{run}` writes it again",
+                "{MISSING_LEAD} at {} while bin\\sotd.exe is installed beside it (an installer replacing it leaves it so for an instant, and the next check looks again); if it stays missing it may have held a pin, so automatic updates stay off until `{run}` writes it again",
                 self.path.display()
             );
         }
@@ -157,6 +157,15 @@ impl InstallManifest {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
         Self::parse(&text).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    /// The `"version"` an unparsable record still holds, read as text the way the installers' own readers read it, or
+    /// `None` when it holds none (the value is cut short or never there). A BOM leads some records.
+    pub fn version_in_text(path: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let rest = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        let rest = rest[rest.find("\"version\"")? + "\"version\"".len()..].trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
+        Some(rest[..rest.find('"')?].to_string()).filter(|v| !v.is_empty())
     }
 
     /// A record that says only where the install is: what an operator's run stages over when the install's own record

@@ -624,7 +624,7 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
         if ($implicit -and $direction -eq 'older') {
             Stop-Entry 'direction' "this computer runs $installed, which is newer than $($pack.Version), the release this run found; it never moves back unless told: name the version you want with -Version $($pack.Tag)" 2
         }
-        if ($implicit -and $direction -eq 'unknown') {
+        if ($implicit -and $direction -eq 'unknown' -and $installed) {
             Stop-Entry 'direction' "could not tell which way $($pack.Tag) moves the install at $prefix (it records $installed); a run that names no target never moves it unasked: name the version you want with -Version $($pack.Tag)" 2
         }
         $sameCommit = ((Get-JsonString $ij 'commit') -eq $pack.Commit)

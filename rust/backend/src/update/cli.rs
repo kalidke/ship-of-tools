@@ -49,8 +49,9 @@ Usage: sotd update pointer --prefix <install prefix> --target <release target>
 Usage: sotd update direction <version> --prefix <install prefix>
 
   Which way does the install at <prefix> move to <version> (a tag or a bare version)? Prints `newer`, `same` or `older`
-  against the version install.json records and exits 0; exits 1 when install.json cannot be read or records no version.
-  Starts no daemon and writes nothing.
+  against the version install.json records and exits 0. An install.json that cannot be parsed still gives its version when
+  the text holds one; when it holds none, prints `unknown` and exits 0. Exits 1 when install.json is absent or records no
+  version. Starts no daemon and writes nothing.
 
 Usage: sotd update repls --endpoint <unix:PATH|pipe:PATH>
 
@@ -251,8 +252,24 @@ fn parse_direction_args(args: &[String]) -> Result<(String, PathBuf), String> {
     Ok((version.ok_or("no version given")?, prefix.ok_or("no --prefix given")?.into()))
 }
 
-/// `sotd update direction ...`: 0 with the word on stdout, 1 when the install's version cannot be read, 2 for arguments
-/// that are not `<version> --prefix <prefix>`.
+/// What `direction` answers for the install recorded at `record`: `newer`, `same` or `older`; `unknown` for an
+/// install.json that cannot be parsed and holds no version text (the installers' implicit run goes on then, because the
+/// run rewrites the record); or why it cannot answer (no file, or a whole record naming no version).
+fn direction_answer(version: &str, record: &Path) -> Result<String, String> {
+    match InstallManifest::load(record) {
+        InstallFile::Read(m) => m
+            .version
+            .map(|installed| direction_word(version, &installed).to_string())
+            .ok_or_else(|| "install.json records no version".to_string()),
+        InstallFile::Unreadable(_) => Ok(InstallManifest::version_in_text(record)
+            .map_or("unknown", |installed| direction_word(version, &installed))
+            .to_string()),
+        InstallFile::Absent => Err(format!("reading {}: no such file", record.display())),
+    }
+}
+
+/// `sotd update direction ...`: 0 with the word on stdout, 1 when there is no install.json or it records no version, 2 for
+/// arguments that are not `<version> --prefix <prefix>`.
 fn direction_cli(args: &[String]) -> i32 {
     let (version, prefix) = match parse_direction_args(args) {
         Ok(parsed) => parsed,
@@ -261,12 +278,9 @@ fn direction_cli(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let installed = InstallManifest::read(&prefix.join(sot_updater::manifest::INSTALL_MANIFEST))
-        .map_err(|e| format!("{e:#}"))
-        .and_then(|m| m.version.ok_or_else(|| "install.json records no version".to_string()));
-    match installed {
-        Ok(installed) => {
-            println!("{}", direction_word(&version, &installed));
+    match direction_answer(&version, &prefix.join(sot_updater::manifest::INSTALL_MANIFEST)) {
+        Ok(word) => {
+            println!("{word}");
             0
         }
         Err(why) => {
@@ -589,14 +603,32 @@ mod tests {
     }
 
     #[test]
-    fn direction_without_a_readable_install_exits_1() {
+    fn direction_without_a_record_or_a_version_exits_1() {
         let dir = tempfile::tempdir().unwrap();
         let ask = |d: &std::path::Path| direction_cli(&["--prefix".into(), d.display().to_string(), "v0.6.6".into()]);
         assert_eq!(ask(dir.path()), 1, "no install.json");
-        std::fs::write(dir.path().join("install.json"), "{not json").unwrap();
-        assert_eq!(ask(dir.path()), 1, "garbled install.json");
         std::fs::write(dir.path().join("install.json"), r#"{"schema":1,"prefix":"/p"}"#).unwrap();
         assert_eq!(ask(dir.path()), 1, "no version recorded");
+    }
+
+    // An install.json that cannot be parsed still answers where its text holds the version (as the installers read it),
+    // and says `unknown`, exit 0, where it holds none: the implicit run goes on and rewrites the record.
+    #[test]
+    fn direction_over_an_unreadable_record_reads_the_version_text_or_says_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("install.json");
+        let ask = |text: &str| {
+            std::fs::write(&record, text).unwrap();
+            direction_answer("v0.6.6", &record)
+        };
+        let cut = |version: &str| format!("{{\n  \"schema\": 1,\n  \"version\": \"{version}\",\n  \"pinned\": tr");
+        assert_eq!(ask(&cut("0.6.5")), Ok("newer".to_string()));
+        assert_eq!(ask(&cut("0.6.6")), Ok("same".to_string()));
+        assert_eq!(ask(&cut("0.6.7")), Ok("older".to_string()), "an implicit run still never moves back");
+        assert_eq!(ask(&format!("\u{feff}{}", cut("0.6.7"))), Ok("older".to_string()), "a BOM does not hide it");
+        assert_eq!(ask("{not json"), Ok("unknown".to_string()));
+        assert_eq!(ask(r#"{"schema":1,"version":"0.6"#), Ok("unknown".to_string()), "a cut value is no version");
+        assert_eq!(direction_cli(&["--prefix".into(), dir.path().display().to_string(), "v0.6.6".into()]), 0);
     }
 
     #[test]

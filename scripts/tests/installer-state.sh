@@ -720,6 +720,23 @@ check "the record is whole and names the new version" "9.9.9" "$(entry_installed
 check "and is pinned, as a named run leaves it" "true" "$(installer_json_bool "$d/home/.local/share/sot/install.json" pinned)"
 check "no temp file is left beside it" "0" "$(find "$d/home/.local/share/sot" -maxdepth 1 -name 'install.json.*' | wc -l | tr -d ' ')"
 
+# ---------------------------------------------------------------------------
+case_start "entry_without_a_version_goes_on_over_a_record_it_cannot_read"
+# "Update sot from the repo" names no version. Over an install.json cut short before its version, the direction is unknown
+# and the run goes on (it rewrites the record); where the version can still be read and sotd cannot say, it still stops.
+d="$WORK/dir-cut-implicit"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 none
+printf '{\n  "schema": 1,\n  "ver' > "$d/home/.local/share/sot/install.json"
+entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+check "an implicit run over a record with no readable version goes on and ends in PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
+check "the record is whole, names the new version and is not pinned" "9.9.9 " "$(entry_installed "$d") $(installer_json_bool "$d/home/.local/share/sot/install.json" pinned)"
+d="$WORK/dir-cut-readable"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 none
+printf '{\n  "schema": 1,\n  "version": "9.9.10",\n  "pin' > "$d/home/.local/share/sot/install.json"
+printf 'nonsense\n' > "$d/ctl/direction"
+entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+check "a readable version and a sotd that cannot say still stops an implicit run (exit 2)" "2" "$ENTRY_RC"
+
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'
 else
