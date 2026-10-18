@@ -1081,12 +1081,16 @@ fi
 # shell). A run that named no target (SOT_INSTALL_IMPLICIT, set by the prelude) never moves an install backwards;
 # naming --version or --archive says the direction and goes on. A prefix with no readable record is a first install.
 STEP=direction
+PRE_RECORDED="$(installer_json_string "$PREFIX/install.json" version)"
 PRE_VERSION="$(installer_installed_version "$PREFIX")"
 PRE_COMMIT="$(installer_json_string "$PREFIX/install.json" commit)"
 DIRECTION=none
-if [ -f "$PREFIX/install.json" ]; then
-    # The version read from the installed binary stands in where the record names none (the verb prefers the record).
-    DIRECTION="$("$BINDIR/sotd" update direction "$VER" --prefix "$PREFIX" ${PRE_VERSION:+--installed "$PRE_VERSION"} 2>/dev/null)" || DIRECTION=unknown
+# The guard holds whenever the installed version can be read, from the record or from the installed binary.
+if [ -f "$PREFIX/install.json" ] || [ -n "$PRE_VERSION" ]; then
+    # The version read from the installed binary stands in where the record names none, and only then is it handed on: a
+    # sotd that predates the flag would answer every direction with `unknown` (the verb prefers the record anyway).
+    DIR_ARGS=(); [ -n "$PRE_RECORDED" ] || [ -z "$PRE_VERSION" ] || DIR_ARGS=(--installed "$PRE_VERSION")
+    DIRECTION="$("$BINDIR/sotd" update direction "$VER" --prefix "$PREFIX" ${DIR_ARGS[@]+"${DIR_ARGS[@]}"} 2>/dev/null)" || DIRECTION=unknown
     case "$DIRECTION" in newer|same|older) ;; *) DIRECTION=unknown ;; esac
     case "$DIRECTION" in
         unknown) say "note: could not tell which way $VERSION moves the install at $PREFIX (it records $PRE_VERSION)" ;;

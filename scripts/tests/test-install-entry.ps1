@@ -12,7 +12,7 @@
 $entryRoot = Join-Path $root 'entry'
 New-Item -ItemType Directory -Force -Path $entryRoot | Out-Null
 $savedEnv = @{}
-foreach ($n in @('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'SOT_COMM_HOME', 'SSH_CONNECTION', 'PATH', 'SOT_INSTALL_ORIGIN', 'SOT_INSTALL_TAG', 'SOT_INSTALL_IMPLICIT', 'SOT_INSTALL_CONVERGE_WAIT_S', 'SOT_INSTALL_DAEMON_WAIT_S', 'SOT_FAKE_DAEMON', 'SOT_FAKE_REPLS', 'SOT_FAKE_REPLS_RC', 'SOT_FAKE_REAL', 'SOT_FAKE_SYNC', 'SOT_FAKE_SLEEP', 'SOT_FAKE_DAEMON_FILE', 'SOT_INSTALL_REPO', 'SOT_JULIA_BIN', 'HTTPS_PROXY', 'ALL_PROXY', 'HOME')) {
+foreach ($n in @('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'SOT_COMM_HOME', 'SSH_CONNECTION', 'PATH', 'SOT_INSTALL_ORIGIN', 'SOT_INSTALL_TAG', 'SOT_INSTALL_IMPLICIT', 'SOT_INSTALL_CONVERGE_WAIT_S', 'SOT_INSTALL_DAEMON_WAIT_S', 'SOT_FAKE_DAEMON', 'SOT_FAKE_REPLS', 'SOT_FAKE_REPLS_RC', 'SOT_FAKE_REAL', 'SOT_FAKE_SYNC', 'SOT_FAKE_SLEEP', 'SOT_FAKE_NO_INSTALLED', 'SOT_FAKE_DAEMON_FILE', 'SOT_INSTALL_REPO', 'SOT_JULIA_BIN', 'HTTPS_PROXY', 'ALL_PROXY', 'HOME')) {
     $savedEnv[$n] = [Environment]::GetEnvironmentVariable($n)
 }
 try {
@@ -30,6 +30,7 @@ public class P { public static int Main(string[] a) {
   string name = Path.GetFileNameWithoutExtension(System.Reflection.Assembly.GetExecutingAssembly().Location);
   string ver = "@VER@", sha = "@SHA@";
   if (a.Length > 0 && a[0] == "--version") { Console.WriteLine(name + " " + ver + " (" + sha + " 2026-10-17)"); return 0; }
+  if (Environment.GetEnvironmentVariable("SOT_FAKE_NO_INSTALLED") != null && Array.IndexOf(a, "--installed") >= 0) { Console.Error.WriteLine("sotd update: unexpected argument --installed"); return 2; }
   if (Environment.GetEnvironmentVariable("SOT_FAKE_SLEEP") != null) { System.Threading.Thread.Sleep(60000); return 0; }
   string d = Environment.GetEnvironmentVariable("SOT_FAKE_DAEMON") ?? "2";
   string df = Environment.GetEnvironmentVariable("SOT_FAKE_DAEMON_FILE");
@@ -141,7 +142,7 @@ exit 0
         if ($Short) { $h = ([string](New-Object -ComObject Scripting.FileSystemObject).GetFolder($h).ShortPath).TrimEnd('\') }
         $env:USERPROFILE = $h; $env:APPDATA = Join-Path $h 'AppData\Roaming'; $env:LOCALAPPDATA = Join-Path $h 'AppData\Local'
         $env:SOT_COMM_HOME = Join-Path $h 'comm'; $env:PATH = "$stubs;$basePath"; $env:HOME = $h
-        foreach ($n in @('SSH_CONNECTION', 'SOT_INSTALL_TAG', 'SOT_INSTALL_IMPLICIT', 'SOT_INSTALL_REPO', 'SOT_FAKE_DAEMON', 'SOT_FAKE_DAEMON_FILE', 'SOT_FAKE_REPLS', 'SOT_FAKE_REPLS_RC', 'SOT_FAKE_SYNC', 'SOT_FAKE_SLEEP', 'HTTPS_PROXY', 'ALL_PROXY')) { [Environment]::SetEnvironmentVariable($n, $null) }
+        foreach ($n in @('SSH_CONNECTION', 'SOT_INSTALL_TAG', 'SOT_INSTALL_IMPLICIT', 'SOT_INSTALL_REPO', 'SOT_FAKE_DAEMON', 'SOT_FAKE_DAEMON_FILE', 'SOT_FAKE_REPLS', 'SOT_FAKE_REPLS_RC', 'SOT_FAKE_SYNC', 'SOT_FAKE_SLEEP', 'SOT_FAKE_NO_INSTALLED', 'HTTPS_PROXY', 'ALL_PROXY')) { [Environment]::SetEnvironmentVariable($n, $null) }
         $env:SOT_INSTALL_ORIGIN = $origin; $env:SOT_FAKE_REAL = $SotdPath; $env:SOT_JULIA_BIN = $juliaOk
         $script:DeskSession = $true
         return [pscustomobject]@{ Home = $h; Prefix = Join-Path $h 'AppData\Local\sot' }

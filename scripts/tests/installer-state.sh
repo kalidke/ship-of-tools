@@ -755,6 +755,23 @@ printf '#!/bin/sh\necho "sotd 0.6.6-rc9.14-dev+abc123 (abc 2026-10-17, protocol 
 entry_run "$d" --be-only --no-service
 check "the channel reads the binary too: a build with a + stops before any asset is fetched (exit 2)" "2 0" "$ENTRY_RC $(count_in "$d/ctl/net.log" 'raw.githubusercontent\|releases/download\|api.github.com\|releases/latest')"
 
+# A missing record beside a binary that says a newer version: the guard still holds (the install's version is readable).
+d="$WORK/dir-missing-binary"; entry_fixture "$d"
+P="$d/home/.local/share/sot"; mkdir -p "$P/bin"
+printf '#!/bin/sh\necho "sotd 9.9.10 (abc 2026-10-17, protocol 3)"\n' > "$P/bin/sotd"; chmod +x "$P/bin/sotd"
+printf 'older\n' > "$d/ctl/direction"
+entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+check "a missing record, the binary at 9.9.10, the release 9.9.9: an implicit run stops (exit 2) before anything is installed" "2 no" "$ENTRY_RC $([ -e "$P/install.json" ] && echo yes || echo no)"
+check "the sotd was handed the binary's version, the record naming none" "1" "$(sotd_log "$d" | grep -c -F -- "update direction 9.9.9 --prefix $P --installed 9.9.10" || true)"
+# A whole record's own version is not repeated to the sotd (one that predates the flag answers `unknown` to it).
+d="$WORK/dir-whole-record"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 none
+P="$d/home/.local/share/sot"; mkdir -p "$P/bin"
+printf '#!/bin/sh\necho "sotd 9.9.8 (abc 2026-10-17, protocol 3)"\n' > "$P/bin/sotd"; chmod +x "$P/bin/sotd"
+printf 'newer\n' > "$d/ctl/direction"
+entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+check "a whole record: the sotd is asked without --installed" "1 0" "$(sotd_log "$d" | grep -c -x -F -- "sotd update direction 9.9.9 --prefix $P" || true) $(sotd_log "$d" | grep -c -F -- '--installed' || true)"
+
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'
 else
