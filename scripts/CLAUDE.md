@@ -146,7 +146,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   (`-Prefix` passes its prefix); ends with an explicit `exit 0`.
 - `install-manifest.ps1`: writes `install.json` for a Windows install (`daemon` and `frontend` true, since every Windows
   box runs its local daemon; keeping a recorded `pinned`) and runs the first topology sync, whose refusal it reports
-  as a warning (the entry reads it).
+  as a warning (the entry reads it). A `+` build gets a record only when the caller hands `-Commit` (`install.ps1` does,
+  for a fresh install of a pack of the line, running the target checkout's own copy, never one beside the installer); a source
+  checkout gets none. The record decision and the sync are separate: a `+` build with no record still syncs its hub.
 - `set-shortcut-aumid.ps1`: stamps the window's AppUserModelID on a shortcut.
 ### Update-apply
 - `sot-apply.sh`: offline apply and rollback of an armed update (Unix).

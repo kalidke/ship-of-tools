@@ -703,6 +703,13 @@ from published release assets and never builds from source.
   armed update for it to shadow. The incident needed both halves; only one
   of them was wrong.
 
+**(f) A pack install of the line is recorded; a source checkout is not (2026-10-17).** `install.ps1 -Archive` of a pack
+from `pack-build.ps1` (a `+` version) writes `install.json` naming that `+` version, its tag and the pack's commit,
+handing the commit to `install-manifest.ps1`, which writes no record for a `+` build that is not handed one, as
+`install.sh` writes on Unix and as an apply leaves it. Such a record claims no release: `is_release_build()` still
+refuses a `+` build, so it never updates itself. A checkout parked on a tag still gets none. The hub sync is not part of
+that decision: it runs on every entry with a hub, so a refusal ends the run `FAIL: enroll` for a pack of the line too.
+
 
 ## Public baseline hygiene
 
