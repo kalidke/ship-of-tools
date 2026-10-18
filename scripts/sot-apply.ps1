@@ -151,28 +151,8 @@ function Read-JsonFile([string]$path) {
     catch { Write-ApplyLog "unparseable JSON at ${path}: $($_.Exception.Message)"; return $null }
 }
 
-# Write UTF-8 with NO BOM.
-#
-# `Set-Content -Encoding utf8` on Windows PowerShell 5.1 emits EF BB BF, and
-# `serde_json::from_str` -- which is what reads install.json back in
-# rust/updater/src/manifest.rs -- REJECTS a leading BOM. Getting this wrong is
-# a one-shot, self-concealing failure: the first update applies cleanly, the
-# rewritten manifest then fails to parse, `InstallManifest::for_current_exe()`
-# returns None, and the frontend silently stops checking for updates forever
-# after -- reporting only a debug-level "unreadable install manifest".
-# Every JSON this script writes goes through here. (install-manifest.ps1 uses
-# the same encoding for the same reason.)
-# It writes through a temp file in the same folder and a rename, so an interrupted write never leaves a cut install.json.
-function Write-Utf8NoBom([string]$Path, [string]$Text) {
-    $tmp = "$Path.new.$PID"
-    try {
-        [System.IO.File]::WriteAllText($tmp, $Text, (New-Object System.Text.UTF8Encoding($false)))
-        if (Test-Path -LiteralPath $Path) { [System.IO.File]::Replace($tmp, $Path, [NullString]::Value) } else { [System.IO.File]::Move($tmp, $Path) }
-    } catch {
-        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-        throw
-    }
-}
+# Every JSON this script writes goes through Write-Utf8NoBomViaRename (sot-install-layout.ps1, loaded below): UTF-8 with
+# no BOM, through a temp file and a rename, so an interrupted write never leaves a cut install.json.
 
 function Get-Sha256([string]$path) {
     try { return (Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() }
@@ -297,7 +277,7 @@ if ($Rollback) {
     if ($installText -and $lgTag) {
         $t = Set-JsonField $installText 'version' ($lgTag -replace '^v', '')
         $t = Set-JsonField $t 'tag' $lgTag
-        try { Write-Utf8NoBom $InstallJson $t } catch {
+        try { Write-Utf8NoBomViaRename $InstallJson $t } catch {
             Write-ApplyLog "could not rewrite install.json during rollback: $($_.Exception.Message)"
         }
     }
@@ -414,7 +394,7 @@ $lgBody = @"
   "checkout": "$($prevCheckout -replace '\\', '\\\\')"
 }
 "@
-try { Write-Utf8NoBom $lgTmp $lgBody } catch {
+try { Write-Utf8NoBomViaRename $lgTmp $lgBody } catch {
     Write-ApplyLog "could not write last-good state: $($_.Exception.Message)"
 }
 Move-Item -LiteralPath $lgTmp -Destination $LastGood -Force -ErrorAction SilentlyContinue
@@ -513,7 +493,7 @@ if ($installText) {
         $t = Set-JsonField $installText 'version' ($tag -replace '^v', '')
         $t = Set-JsonField $t 'tag' $tag
         $t = Set-JsonField $t 'commit' $commit
-        Write-Utf8NoBom $InstallJson $t
+        Write-Utf8NoBomViaRename $InstallJson $t
     } catch {
         Restore-Previous "rewriting install.json failed: $($_.Exception.Message)"
     }

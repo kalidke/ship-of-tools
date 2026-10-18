@@ -174,6 +174,30 @@ class D { static int Main(string[] a) { System.IO.File.WriteAllText(System.IO.Pa
     Check-Exit 'p8'
     $syncedFile = Join-Path $p8 'bin\synced.txt'
     Check 'a + build with no commit writes no record but still runs the hub sync' ((-not (Test-Path -LiteralPath (Join-Path $p8 'install.json'))) -and (Test-Path -LiteralPath $syncedFile) -and ((Get-Content -LiteralPath $syncedFile -Raw) -match 'topology sync --hub rig-hub')) 'record or no sync'
+    Write-Host "`n=== 9. a record that cannot be read keeps its pin (only an installer run decides a pin) ===" -ForegroundColor Cyan
+    $p9 = New-Prefix 'p9' '0.6.0' '0.5.0' 'aaaa' $false
+    [System.IO.File]::WriteAllText((Join-Path $p9 'install.json'), "{`n  `"schema`": 1,`n  `"version`": `"0.5.0`",`n  `"tag`": `"v0.5.0`",`n  `"pinned`": tr", (New-Object System.Text.UTF8Encoding($false)))
+    Invoke-Manifest $p9
+    Check-Exit 'p9'
+    $j9 = $null; try { $j9 = (Manifest $p9) | ConvertFrom-Json } catch {}
+    Check 'the rewritten record parses, names the new version and is pinned' (($null -ne $j9) -and $j9.version -eq '0.6.0' -and $j9.pinned -eq $true) (Manifest $p9)
+    Check-Whole 'a replaced cut record (p9)' $p9
+    Check 'a record that reads and is unpinned stays unpinned' (-not ((Manifest $p1) -match 'pinned')) (Manifest $p1)
+
+    Write-Host "`n=== 10. the record is replaced by a rename: a handle opened before the run still reads the old bytes ===" -ForegroundColor Cyan
+    $p10 = New-Prefix 'p10' '0.6.0' '0.5.0' 'aaaa' $false
+    $file10 = Join-Path $p10 'install.json'
+    $old10 = [System.IO.File]::ReadAllText($file10)
+    $held = [System.IO.File]::Open($file10, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]'ReadWrite,Delete'))
+    $still = ''
+    try {
+        Invoke-Manifest $p10
+        Check-Exit 'p10'
+        $held.Position = 0
+        $still = (New-Object System.IO.StreamReader($held)).ReadToEnd()
+    } finally { $held.Dispose() }
+    Check 'the handle opened before the run reads the old record (an in-place write would show the new one)' ($still -eq $old10) $still
+    Check 'and the file now names the new version' ((Manifest $p10) -match '"version":\s*"0\.6\.0"') (Manifest $p10)
 } finally {
     Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

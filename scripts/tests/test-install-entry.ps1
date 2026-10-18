@@ -597,6 +597,32 @@ while (((Get-Date) - `$t0).TotalSeconds -lt 150) {
             Check '7t: SOT_JULIA_BIN naming this box''s Store alias is FAIL stage naming the alias' ($e.Rc -eq 1 -and $e.Last -like 'FAIL: stage: *app-execution alias*') "rc=$($e.Rc) last='$($e.Last)'"
         } else { Write-Host '  note  7t: this box has no Store julia alias; the alias case is not run' }
     }
+    # 19b. An install.json cut short by an interrupted write cannot be read, so no automatic writer moves the install; the
+    # person's own run is the repair: the stage goes on as over no record, and the run ends PASS with a whole record.
+    Invoke-Case '7y' {
+        $hv = New-Home 'v1'
+        [void](Invoke-Entry @('-Archive', $r98.Pack))
+        $ijv = Join-Path $hv.Prefix 'install.json'
+        $whole = [System.IO.File]::ReadAllText($ijv)
+        $cut = $whole.Substring(0, $whole.IndexOf('"pinned"')) + '"pinned": tr'
+        [System.IO.File]::WriteAllText($ijv, $cut, (New-Object System.Text.UTF8Encoding($false)))
+        $reads = $true; try { [void]($cut | ConvertFrom-Json) } catch { $reads = $false }
+        Check '7y: the fixture record is cut short and cannot be read' (-not $reads) $cut
+        $e = Invoke-Entry @('-Archive', $r99.Pack)
+        Check '7y: an update over a record that cannot be read ends in PASS, pinned at the version it named' ("$($e.Rc) $($e.Verdicts) $($e.Last)" -ceq "0 1 PASS: Ship of Tools 9.9.9 at $($r99.Short) on this computer$(Get-PinTail '9.9.9')") "rc=$($e.Rc) last='$($e.Last)'; $(($e.Out | Select-Object -Last 6) -join ' / ')"
+        $back = $null; try { $back = [System.IO.File]::ReadAllText($ijv) | ConvertFrom-Json } catch { }
+        Check '7y: and leaves a whole, readable record that names the new version and is pinned' (($null -ne $back) -and $back.version -eq '9.9.9' -and $back.pinned -eq $true) ([System.IO.File]::ReadAllText($ijv))
+        # install.ps1's own writer (the pin edit) replaces the record by a rename: a handle opened before still reads the old bytes.
+        $old = [System.IO.File]::ReadAllText($ijv)
+        $held = [System.IO.File]::Open($ijv, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]'ReadWrite,Delete'))
+        $still = ''
+        try {
+            Set-InstallPin $ijv $false
+            $held.Position = 0
+            $still = (New-Object System.IO.StreamReader($held)).ReadToEnd()
+        } finally { $held.Dispose() }
+        Check '7y: the pin edit changed the record, and a handle opened before it reads the old bytes (a rename, not an in-place write)' (($still -ceq $old) -and -not ([System.IO.File]::ReadAllText($ijv) -match 'pinned') -and @(Get-ChildItem -LiteralPath $hv.Prefix -Filter 'install.json*' | Where-Object { $_.Name -ne 'install.json' }).Count -eq 0) $still
+    }
 
     # 20. A FAIL says what the run left behind: the pin once written, and an update it staged that is still armed.
     # A supervisor stand-in that logs code= and never takes the sentinel, so a converge times out.

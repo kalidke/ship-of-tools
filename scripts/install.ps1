@@ -110,8 +110,8 @@ function Get-JsonString([string]$Path, [string]$Key) {
     } catch { }
     return ''
 }
-function Write-Utf8NoBom([string]$Path, [string]$Text) {  # a temp file and a rename, as install.sh does: a cut install.json loses its pin
-    try { [System.IO.File]::WriteAllText("$Path.new", $Text, (New-Object System.Text.UTF8Encoding($false))); [System.IO.File]::Replace("$Path.new", $Path, [NullString]::Value) } finally { Remove-Item -LiteralPath "$Path.new" -Force -ErrorAction SilentlyContinue }
+function Write-Utf8NoBomViaRename([string]$Path, [string]$Text) {  # sot-install-layout.ps1's helper, copied: this runs before the target's layout file loads
+    $tmp = "$Path.new.$PID"; try { [System.IO.File]::WriteAllText($tmp, $Text, (New-Object System.Text.UTF8Encoding($false))); if (Test-Path -LiteralPath $Path) { [System.IO.File]::Replace($tmp, $Path, [NullString]::Value) } else { [System.IO.File]::Move($tmp, $Path) } } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
 }
 
 # The pin in install.json: a surgical edit, never a parse and reserialize (the schema is additive, and sot-apply.ps1
@@ -121,7 +121,7 @@ function Set-InstallPin([string]$InstallJson, [bool]$Pinned) {
     $t = [System.IO.File]::ReadAllText($InstallJson)
     $new = [regex]::Replace($t, ',\s*"pinned"\s*:\s*(true|false)', '')
     if ($Pinned) { $new = [regex]::Replace($new, '\s*\}\s*$', ",`n  `"pinned`": true`n}") }
-    if ($new -cne $t) { Write-Utf8NoBom $InstallJson $new }
+    if ($new -cne $t) { Write-Utf8NoBomViaRename $InstallJson $new }
     $script:PinWritten = $Pinned
 }
 

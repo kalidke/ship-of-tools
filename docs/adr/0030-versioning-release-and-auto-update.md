@@ -813,7 +813,7 @@ apply would have downgraded it. The rule:
    --version/--archive`, `install.ps1 -Version/-Archive`, "update sot from the repo") always repairs it. The person is
    told in one sentence from one owner, `UnreadableInstall::sentence`: the file, the cause, and the installer run that
    works on that OS. Every writer of `install.json` writes it through a temp file and a rename, with no BOM, so an
-   interrupted write cannot cut it.
+   interrupted write cannot cut it; a writer that replaces a record it cannot parse writes `"pinned": true`.
 
 **Fallbacks that fail open, and why each is acceptable.** Each leaves the old behavior in place for a case the new rule
 cannot judge, and none can arm or apply a downgrade without another rule catching it:
@@ -856,5 +856,5 @@ release over it. A run that names what to install (`--version`, `--archive`, `-V
 `update.check`, the window's self-update and `pending::arm` for an automatic writer all leave it where the person put it,
 and the status reads "pinned at <version>: automatic updates stay off for this install until a run that names no version".
 `sotd update stage` (the operator) still arms. A run that names no version removes the pin; an apply keeps it (it rewrites
-the record field by field), and `install-manifest.ps1` keeps a recorded pin when it rewrites the file. The pin is a fact
+the record field by field), and `install-manifest.ps1` keeps a recorded pin when it rewrites the file, and pins a record it replaces and cannot parse (rule 6). The pin is a fact
 about the run, not a setting for the person to maintain.

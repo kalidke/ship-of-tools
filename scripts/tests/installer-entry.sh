@@ -223,6 +223,19 @@ entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-serv
 check "a first install asks nothing of the direction" "0 0" "$ENTRY_RC $(sotd_log "$d" | grep -c 'update direction' || true)"
 
 # ---------------------------------------------------------------------------
+case_start "entry_repairs_an_install_json_that_cannot_be_read"
+# An interrupted write can cut install.json short. That file may hold a pin, so no automatic writer moves the install;
+# the person's own run (naming its target) is the repair: it goes on and leaves a whole, pinned record.
+d="$WORK/dir-cut"; entry_fixture "$d"
+entry_record "$d" 9.9.8 1 0 none
+printf '{\n  "schema": 1,\n  "version": "9.9.8",\n  "pinned": tr' > "$d/home/.local/share/sot/install.json"
+entry_archive "$d" --be-only --no-service
+check "a run that names its target over a cut record goes on and ends in PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
+check "the record is whole and names the new version" "9.9.9" "$(entry_installed "$d")"
+check "and is pinned, as a named run leaves it" "true" "$(installer_json_bool "$d/home/.local/share/sot/install.json" pinned)"
+check "no temp file is left beside it" "0" "$(find "$d/home/.local/share/sot" -maxdepth 1 -name 'install.json.*' | wc -l | tr -d ' ')"
+
+# ---------------------------------------------------------------------------
 case_start "entry_keeps_the_recorded_role"
 # With no role flag and no topology entry, the install already here says what it was.
 d="$WORK/role"; entry_fixture "$d"; P="$d/home/.local/share/sot"

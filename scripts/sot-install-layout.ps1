@@ -7,7 +7,8 @@
 # shortcut/pin should point at). Same shape as sot-hosts.ps1: one
 # dot-sourceable file, no privileged access either caller doesn't already
 # have.
-# Also the first-launch install layout (Set-SotJunction, Initialize-InstallLayout), called only by launch-sot.ps1.
+# Also the first-launch install layout (Set-SotJunction, Initialize-InstallLayout), called only by launch-sot.ps1, and
+# Write-Utf8NoBomViaRename, the one writer of install.json for sot-apply.ps1 and install-manifest.ps1.
 #
 # See docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
 # amendment for why this predicate exists and what it replaced.
@@ -53,6 +54,26 @@ function Get-SotComparablePath([string]$Path) {
         if ($fso.FileExists($t)) { return [string]$fso.GetFile($t).ShortPath }
     } catch {}
     return $t
+}
+
+# Write `Text` to `Path` as UTF-8 with NO BOM, through a temp file in the same folder (`<Path>.new.<pid>`) and a rename: a
+# reader never sees a half-written file, and a handle opened with share-delete before the write keeps reading the old
+# bytes. The one writer of install.json for sot-apply.ps1 and install-manifest.ps1, which come from one checkout (install.ps1
+# keeps its own copy: its first pin edit runs before the target's copy of this file loads, and a target that predates the
+# helper would not have it). An in-place write interrupted midway leaves a cut install.json, which cannot be read, so
+# automatic updates stay off for that install until an installer run repairs it. `Set-Content -Encoding utf8` on Windows
+# PowerShell 5.1 emits a BOM, which is why the encoding is spelled out. [NullString]::Value, not $null: 5.1 turns a $null
+# backup name into "", which File.Replace refuses as "not a legal form". A failed write removes its temp file and throws,
+# and the old file is untouched.
+function Write-Utf8NoBomViaRename([string]$Path, [string]$Text) {
+    $tmp = "$Path.new.$PID"
+    try {
+        [System.IO.File]::WriteAllText($tmp, $Text, (New-Object System.Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $Path) { [System.IO.File]::Replace($tmp, $Path, [NullString]::Value) } else { [System.IO.File]::Move($tmp, $Path) }
+    } catch {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        throw
+    }
 }
 
 # The shortcut/pin target, in priority order: the pinned launcher once

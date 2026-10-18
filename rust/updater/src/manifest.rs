@@ -67,7 +67,8 @@ pub struct InstallManifest {
     pub frontend: Option<bool>,
     /// Did the run that wrote this install name what to install (`--version`, `--archive`)? A pinned install is never
     /// armed by an automatic writer, so the next daily check cannot undo the choice, and that holds when the file cannot
-    /// be read (the arm refuses rather than assume no pin); a run that names no version removes the pin.
+    /// be read (an automatic writer refuses rather than assume no pin, and a writer that replaces a record it cannot
+    /// parse writes `true`); a run that names no version removes the pin.
     #[serde(default)]
     pub pinned: Option<bool>,
 }

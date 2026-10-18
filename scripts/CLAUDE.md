@@ -26,7 +26,11 @@ and the launch path fails open: no update step can stop a window from starting.
   `CI.yml` runs at HEAD (`release.sh` preflight).
 - Install checksums verify before any write, and `install.json` is written last (`install.sh` steps 2 and 9). Every writer of it
   (`install.sh`, `install-manifest.ps1`, `install.ps1`'s pin edit, `sot-apply.sh`, `sot-apply.ps1`) writes a temp file in
-  the same folder and renames it, with no BOM: a cut or unreadable file loses its pin.
+  the same folder and renames it, with no BOM, so an interrupted write cannot cut it: a file that cannot be read keeps
+  automatic updates off until an installer run repairs it (ADR 0030 rule 6), and `install-manifest.ps1` writes
+  `"pinned": true` over a record it replaces and cannot parse. `sot-apply.ps1` and `install-manifest.ps1` share
+  `Write-Utf8NoBomViaRename` in `sot-install-layout.ps1`; `install.ps1` keeps its own copy, because its first pin edit runs
+  before the target's layout file loads.
 - A refused install writes nothing under its prefix or `~/.local/bin`: the role and the ownership, host and record
   gates run on the unpacked `sotd` before the layout, and an unpacked `sotd` that cannot run stops the install. Without
   `--force-role-change`, a host a readable hosts.toml runs no sotd on never writes over an install at the prefix
@@ -147,7 +151,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `install-shortcut.ps1`: Windows shortcut and taskbar pin; calls the manifest writer. A step of `install.ps1`
   (`-Prefix` passes its prefix); ends with an explicit `exit 0`.
 - `install-manifest.ps1`: writes `install.json` for a Windows install (`daemon` and `frontend` true, since every Windows
-  box runs its local daemon; keeping a recorded `pinned`) and runs the first topology sync, whose refusal it reports
+  box runs its local daemon; keeping a recorded `pinned`, or setting it over a record it cannot parse) and runs the first topology sync, whose refusal it reports
   as a warning (the entry reads it). A `+` build gets a record only when the caller hands `-Commit` (`install.ps1` does,
   for a fresh install of a pack of the line, running the target checkout's own copy, never one beside the installer); a source
   checkout gets none. Called later without the commit (the shortcut step), it says it keeps the record that names the
@@ -155,7 +159,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `set-shortcut-aumid.ps1`: stamps the window's AppUserModelID on a shortcut.
 ### Update-apply
 - `sot-apply.sh`: offline apply and rollback of an armed update (Unix).
-- `sot-apply.ps1`: the same for Windows (it loads `sot-install-layout.ps1` under a try for `Get-SotComparablePath`, which its flip check uses; nothing else of the apply depends on it).
+- `sot-apply.ps1`: the same for Windows (it loads `sot-install-layout.ps1` under a try for `Get-SotComparablePath`, which its flip check uses, and `Write-Utf8NoBomViaRename`, which writes `install.json`).
 ### Launch (Unix)
 - `launch-sot.sh`: reads the topology plan, ensures the local daemon and execs the window with `--socket` for this computer's own daemon when the install runs one, plus one `--dial` per plan host other than this one (a dev checkout runs no daemon of its own and dials this host's plan line too).
 ### Launch (Windows)
@@ -165,7 +169,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `sot-hosts.ps1`: reads `sotd topology plan` output and runs `topology sync`; `Invoke-SotWithin`
   runs a native command under a wall-clock bound (every script ssh call): at the bound it ends the command with every
   process it started, and a command that cannot start is a result (127).
-- `sot-install-layout.ps1`: the pinned-checkout test, the shortcut target, the launcher code id, `Get-SotComparablePath` (the one comparison of a path the OS reports with one this code built: a junction's target, a script's own path against a prefix that may be 8.3-spelled; `sot-apply.ps1` and `install.ps1` load the copy in the target checkout), the first-launch install layout and offline trust declaration delegation.
+- `sot-install-layout.ps1`: the pinned-checkout test, the shortcut target, the launcher code id, `Write-Utf8NoBomViaRename` (the rename write of `install.json` for `sot-apply.ps1` and `install-manifest.ps1`), `Get-SotComparablePath` (the one comparison of a path the OS reports with one this code built: a junction's target, a script's own path against a prefix that may be 8.3-spelled; `sot-apply.ps1` and `install.ps1` load the copy in the target checkout), the first-launch install layout and offline trust declaration delegation.
 - `sot-freshness.ps1`: the armed update's apply, the dev pull's rebuild and the comm install, run before a window starts.
 - `sot-lease.ps1`: opens a lease on this computer's daemon, hands every lease over to the window, and starts the bridge (`Start-SotBridge`) for the lease and `sot-local-daemon.ps1`'s probe; `Start-SotRedirected` starts every child a launch script writes to (the bridge and every bounded run) and `Stop-SotTree` ends one with every process it started. A request the daemon has not answered within `$LeaseReplyWaitMs` is kept open, its bridge process held for the supervisor's life (`$global:SotLeasesUnanswered`), with its handover written behind it, since closing it could end the computer's sessions.
 - `relaunch-sot.ps1`: builds the window and drops the relaunch sentinel.
