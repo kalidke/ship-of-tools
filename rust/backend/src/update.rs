@@ -1282,13 +1282,14 @@ mod tests {
         std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
         let probe = |record: &str| {
             std::fs::write(prefix.join("install.json"), record).unwrap();
-            let out = std::process::Command::new(&exe)
-                .args(["--exact", "update::tests::probe_check_basis_from_a_prefix", "--nocapture", "--test-threads=1"])
-                .env("SOT_TEST_PROBE_CHECK_BASIS", "1")
-                .env("SOT_UPDATE_ROOT", other.join("updates"))
-                .output()
-                .unwrap();
-            let text = String::from_utf8_lossy(&out.stdout).into_owned();
+            let ran = sot_log::test_wait::run_within(
+                std::process::Command::new(&exe)
+                    .args(["--exact", "update::tests::probe_check_basis_from_a_prefix", "--nocapture", "--test-threads=1"])
+                    .env("SOT_TEST_PROBE_CHECK_BASIS", "1")
+                    .env("SOT_UPDATE_ROOT", other.join("updates")),
+                Duration::from_secs(60),
+            );
+            let text = ran.stdout;
             text.split_once("PROBE[").and_then(|(_, rest)| rest.lines().next()?.strip_suffix(']')).map(str::to_string).unwrap_or(text)
         };
         let cut = probe(r#"{"schema":1,"prefix":"/p","version":"0.6.7","pinned":tr"#);
