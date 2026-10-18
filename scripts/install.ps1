@@ -117,7 +117,7 @@ function Write-Utf8NoBomViaRename([string]$Path, [string]$Text) {  # sot-install
 # The pin in install.json: a surgical edit, never a parse and reserialize (the schema is additive, and sot-apply.ps1
 # rewrites the same file field by field).
 function Set-InstallPin([string]$InstallJson, [bool]$Pinned) {
-    if (-not (Test-Path -LiteralPath $InstallJson)) { return }
+    if (-not (Test-Path -LiteralPath $InstallJson)) { if ($Pinned) { Write-Utf8NoBomViaRename $InstallJson ('{"schema": 1, "prefix": "' + ((Split-Path -Parent $InstallJson) -replace '\\', '\\') + '", "pinned": true}'); $script:PinWritten = $true }; return }  # a missing record gets the pin alone; install-manifest.ps1 writes the rest
     $t = [System.IO.File]::ReadAllText($InstallJson)
     $new = [regex]::Replace($t, ',\s*"pinned"\s*:\s*(true|false)', '')
     if ($Pinned) { $new = [regex]::Replace($new, '\s*\}\s*$', ",`n  `"pinned`": true`n}") }
@@ -604,8 +604,8 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
     $nv = Get-BinaryVersion $newSotd
     if ($nv.Version -ne $pack.Version) { Stop-Entry 'binaries' "the packed sotd.exe reports '$($nv.Line)', not $($pack.Version)" }
 
-    $installed = Get-JsonString $ij 'version'
-    $fresh = (-not $installed) -or (-not (Test-Path -LiteralPath (Join-Path $prefix 'bin\sotd.exe')))
+    $installed = Get-JsonString $ij 'version'; $was = $(if ($installed) { $installed } else { 'an install whose record names no version' })
+    $fresh = -not (Test-Path -LiteralPath $sotd)  # bin\sotd.exe decides: an install with a missing or version-less record is updated, never copied over while it runs
     $pipe = Get-DaemonPipe $newSotd
     $logDir = Join-Path $env:LOCALAPPDATA 'sot\logs'
     $versionDir = Join-Path $prefix "repo\versions\$($pack.Tag)"
@@ -639,8 +639,8 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
             Set-InstallPin $ij $script:Pinned
             Remove-Item -LiteralPath (Join-Path $prefix 'updates\pending-windows-x86_64.json') -Force -ErrorAction SilentlyContinue
         }
-        elseif ($direction -eq 'same') { Say "this run moves the install from $installed to $($pack.Version): same version, another build" }
-        else { Say "this run moves the install from $installed to $($pack.Version) ($direction)" }
+        elseif ($direction -eq 'same') { Say "this run moves the install from $was to $($pack.Version): same version, another build" }
+        else { Say "this run moves the install from $was to $($pack.Version) ($direction)" }
         if (-not $repair) {
             Update-Installed $o $prefix $pack $base $origin $logDir $newSotd $sotd $pipe
         }
@@ -722,7 +722,7 @@ function Update-Installed([hashtable]$O, [string]$Prefix, $Pack, [string]$Base, 
     if (-not (Test-Path -LiteralPath (Join-Path $Base '.git'))) { Initialize-Base $Base $Origin $Pack }
     # The pin goes in before the stage, so no automatic arm lands between the stage and the pin.
     $ijPath = Join-Path $Prefix 'install.json'
-    $wasPinned = ((Get-Content -LiteralPath $ijPath -Raw) -match '"pinned"\s*:\s*true')
+    $wasPinned = (Test-Path -LiteralPath $ijPath) -and ((Get-Content -LiteralPath $ijPath -Raw) -match '"pinned"\s*:\s*true')
     Set-InstallPin $ijPath $script:Pinned
     Say "staging and preparing $($Pack.Tag) (this can take many minutes)"
     $r = Invoke-Native $NewSotd @('update', 'stage', $Pack.Dir, '--prefix', $Prefix)
@@ -760,7 +760,7 @@ function Update-Installed([hashtable]$O, [string]$Prefix, $Pack, [string]$Base, 
     $script:Step = 'apply'
     $applyScript = Join-Path (Join-Path $Prefix "repo\versions\$($Pack.Tag)") 'scripts\sot-apply.ps1'
     if ((Get-DaemonState $NewSotd $Pipe $Sotd) -ne 'none') {
-        $oldLd = Join-Path (Join-Path $Prefix "repo\versions\v$installedVer") 'scripts\sot-local-daemon.ps1'
+        $oldLd = [System.IO.Path]::Combine($(if ($installedVer) { Join-Path $Prefix "repo\versions\v$installedVer" } else { [string]@((Get-Item -LiteralPath (Join-Path $Prefix 'repo\current') -Force -ErrorAction SilentlyContinue).Target)[0] }), 'scripts\sot-local-daemon.ps1')
         if (Test-Path -LiteralPath $oldLd) {
             $s = Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $oldLd, '-Stop')
             foreach ($l in $s.Out) { if ("$l".Trim()) { Say "  $l" } }

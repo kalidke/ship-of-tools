@@ -133,6 +133,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   decision by the comm stamp (scripts/sot-freshness.ps1, section 5), and `Invoke-PendingApply`'s daemon stop (section 6:
   a pointer the real `sotd` refuses stops no daemon). Runs in the `rust.yml` step "Test
   install layout (pinned-checkout predicate)".
+- `test-install-entry-repair.ps1`: the repair cases of `test-install-entry.ps1` (dot-sourced there, same scope): `install.ps1` over an
+  `install.json` that is missing, holds a pin and no version, or is cut short, beside a running stand-in `sotd.exe`, with and without a
+  version named, and the pin edit's rename with an open handle
 - `test-install-entry.ps1`: section 7 of `test-install-layout.ps1` (dot-sourced there, so it runs in the same step), the
   Windows entry `scripts/install.ps1` against stand-ins in a scratch profile: a compiled sot/sotd/sot-capsule per version
   (the daemon questions answered from `SOT_FAKE_*`, every other `sotd` verb handed to the real one), a git origin at one

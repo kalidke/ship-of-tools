@@ -792,8 +792,9 @@ apply would have downgraded it. The rule:
    answered before daemon startup; exit 3 refuses, anything else leaves the old exact-tag check in charge, since an older
    `sotd` exits 1 on the unknown word and a `sotd update` without the verb exits 2). A pointer that cannot be parsed is
    refused too: every pointer a Rust writer wrote carries its schema, repo and version, so one that does not parse is
-   corrupt or another program's. Exit 0 stays for "this prefix is not mine" (no `install.json`) and "nothing
-   armed". An `install.json` that exists and cannot be read (rule 6) refuses a pointer that records the install it was armed
+   corrupt or another program's. Exit 0 stays for "this prefix is not mine" (no `install.json`, except on Windows beside
+   `bin\sotd.exe`, where it counts as unreadable) and "nothing armed". An `install.json` that exists and cannot be read
+   (rule 6) refuses a pointer that records the install it was armed
    over, which cannot be checked, and leaves one with no record to the scripts' exact-tag check. `sot-apply.sh` and `sot-apply.ps1` ask above their re-exec of the pointer's own release's script, so a refused
    pointer never reaches it, and drop the pointer under the lock. `sot-launch`'s `apply_pending` and Windows
    `Invoke-PendingApply` ask before they stop or restart the daemon, so a pointer that will not apply costs no restart and
@@ -810,7 +811,10 @@ apply would have downgraded it. The rule:
    caller states its choice for the unreadable one: an automatic arm returns `ArmOutcome::UnreadableInstall`, the
    daemon's check answers `disabled: <sentence>`, the window's guard and the apply (rule 4) refuse, and the operator's
    arm proceeds as over no record, `sotd update stage` included, so the person's own installer run (`install.sh
-   --version/--archive`, `install.ps1 -Version/-Archive`, "update sot from the repo") always repairs it. The person is
+   --version/--archive`, `install.ps1 -Version/-Archive`, "update sot from the repo") always repairs it: an install with
+   a `bin\sotd.exe` is never taken for a fresh one (install.ps1 updates it with the installed version unknown, never copying
+   over a running daemon), and `sotd update direction` reads the version an unparsable record still holds as text or answers
+   `unknown`, which a run that names no version takes as "go on" when the record holds no readable version. The person is
    told in one sentence from one owner, `UnreadableInstall::sentence`: the file, the cause, and the installer run that
    works on that OS. On Windows only, an `install.json` that is missing while `bin\sotd.exe` exists is refused the same
    way, with a sentence that says it is missing and names the installer run with a version, because Windows writers

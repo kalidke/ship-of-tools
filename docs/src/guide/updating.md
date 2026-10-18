@@ -126,7 +126,9 @@ and the resource tree, and changes in it are not carried to the next version.
   `install.sh --version <version>`" (Windows: `install.ps1 -Version <version>`). That run rewrites the record whole and
   pins the install at the version; a later run that names no version removes the pin. A leading byte-order mark alone
   (a record saved by Notepad) is not unreadable. On Windows a record that is missing while `bin\sotd.exe` exists is
-  treated the same way, and the status says "install.json is missing at <path> ..." with the same run to write it again.
+  treated the same way, and the status says "install.json is missing at <path> ..." with the same run to write it again (it
+  works while Ship of Tools runs: the installer never takes an install with a `bin\sotd.exe` for a new one). "Update sot
+  from the repo", which names no version, repairs a record it cannot read too, and does not pin.
 - **Automatic rollback.** Applying a staged update is an offline pointer flip done by `sot-apply`, which records the
   previous install as *last good*. The `--local` launcher runs `sot-apply --rollback` if the frontend exits with an error
   within 10 seconds twice in the 30 minutes after an update. Windows rolls back after a single such exit within two hours

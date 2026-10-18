@@ -66,7 +66,7 @@ and the launch path fails open: no update step can stop a window from starting.
   `--version` and no `--archive` it follows the channel `install.json` records (no install or a stable release: GitHub's
   latest stable; a pre-release: the newest published release of any kind; a `+` build: stop and send the person to
   `--archive <folder>` of a pack of the line) and never moves an install backwards: the target's own `sotd update
-  direction` says `older` (or cannot say) and the run fails, before anything under the prefix changes. `--archive` runs
+  direction` says `older` (or cannot say while the installed version is readable) and the run fails, before anything under the prefix changes; over a record whose version cannot be read at all it goes on and rewrites the record. `--archive` runs
   the `install.sh` of the checkout that made the pack. With no role flag and no topology entry the role comes back from
   `install.json` (its bits, its `service`, its `hub`; a remote install's alias from its wrapper). A daemon is restarted
   only when it runs another version (`sotd same-version`) and only an active unit no window holds; the restart, and a
